@@ -1,0 +1,32 @@
+[package]
+name = "openscout-voice-core"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[features]
+# ONNX-backed Silero VAD provider. Optional on purpose: ONNX is a provider
+# binding, not part of the wire/core contract, and `ort` links a native
+# ONNX Runtime (fetched at build time, pinned by the exact `ort` version, or
+# supplied locally via ORT_LIB_LOCATION). The default build stays pure Rust.
+silero-onnx = ["dep:ort", "dep:sha2"]
+# Deterministic replay/diagnostic binary (`voice_replay`).
+replay = ["dep:serde_json"]
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", optional = true }
+ort = { version = "=2.0.0-rc.13", optional = true, default-features = false, features = [
+  "download-binaries",
+  "std",
+  "tls-native",
+] }
+sha2 = { version = "0.10", optional = true }
+
+[dev-dependencies]
+serde_json = "1"
+
+[[bin]]
+name = "voice_replay"
+path = "src/bin/voice_replay.rs"
+required-features = ["replay"]

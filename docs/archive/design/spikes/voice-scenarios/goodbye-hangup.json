@@ -1,0 +1,15 @@
+{
+  "name": "goodbye-hangup",
+  "description": "that's all → sign-off and connection closes",
+  "steps": [
+    { "do": "speak", "text": "that's all" },
+    { "do": "silence", "ms": 800 },
+    { "do": "await", "event": "reply.audio.start", "timeoutMs": 8000 },
+    { "do": "await", "event": "reply.audio.end", "timeoutMs": 15000 },
+    { "do": "await", "event": "pc:closed", "timeoutMs": 10000 }
+  ],
+  "expect": {
+    "ladder": "deterministic",
+    "pcClosed": true
+  }
+}

@@ -1,0 +1,766 @@
+/* ── Ops > Atop: agent inventory (htop-for-agents) ──
+ *
+ * Sibling of Tail (.s-tail-*). Atop is denser table, less stream — its
+ * chrome leans on a 4-cell summary strip with sparklines and a row of
+ * harness/status pills. Surfaces use Scout's theme tokens so dark/light
+ * follow the rest of the app; status hue palette is intentionally fixed
+ * (semantic colors).
+ */
+
+.s-atop {
+  display: grid;
+  grid-template-rows: auto auto auto 1fr auto;
+  height: 100%;
+  min-height: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--font-sans);
+}
+
+.s-atop--sessions {
+  grid-template-rows: auto minmax(0, 1fr) auto;
+}
+
+/* ── Summary strip ── */
+
+.s-atop-summary {
+  display: flex;
+  align-items: stretch;
+  gap: 0;
+  border-bottom: 1px solid var(--border);
+  background: color-mix(in srgb, var(--surface) 60%, transparent);
+}
+
+.s-atop-summary-cell {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: var(--space-2xs);
+  padding: var(--space-md) var(--space-xl);
+  min-width: 0;
+  border-right: 1px solid var(--border);
+}
+
+.s-atop-summary-cell:last-of-type {
+  border-right: 0;
+}
+
+.s-atop-summary-cell--breakdown {
+  flex: 1.2;
+}
+
+.s-atop-summary-cell--rate {
+  text-align: right;
+}
+
+.s-atop-summary-num {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-xs);
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: var(--text-5xl);
+  font-weight: 600;
+  color: var(--ink);
+  line-height: var(--leading-none);
+}
+
+.s-atop-summary-cell--rate .s-atop-summary-num {
+  justify-content: flex-end;
+}
+
+.s-atop-summary-num strong {
+  font-weight: 700;
+}
+
+.s-atop-summary-of {
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  font-weight: 400;
+  color: var(--dim);
+}
+
+.s-atop-summary-lbl {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  letter-spacing: var(--tracking-lg);
+  text-transform: uppercase;
+  color: var(--dim);
+}
+
+.s-atop-summary-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  flex-wrap: wrap;
+}
+
+.s-atop-summary-spacer {
+  flex: 1;
+  border-right: 1px solid var(--border);
+}
+
+.s-atop-spark {
+  display: block;
+  margin-top: var(--space-3xs);
+  opacity: 0.8;
+}
+
+/* ── Filter bar ── */
+
+.s-atop-fbar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  padding: var(--space-xs) var(--space-lg);
+  border-bottom: 1px solid var(--border);
+  background: color-mix(in srgb, var(--surface) 35%, transparent);
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.s-atop-fbar::-webkit-scrollbar {
+  display: none;
+}
+
+.s-atop-search {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-xs);
+  padding: var(--space-2xs) var(--space-sm);
+  background: color-mix(in srgb, var(--ink) 6%, transparent);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  flex: 0 0 320px;
+  min-width: 240px;
+}
+
+.s-atop-search:focus-within {
+  border-color: var(--accent);
+}
+
+.s-atop-search-prompt {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.s-atop-search-input {
+  flex: 1;
+  background: transparent;
+  border: 0;
+  outline: 0;
+  color: var(--ink);
+  font: inherit;
+  min-width: 0;
+}
+
+.s-atop-search-input::placeholder {
+  color: var(--dim);
+}
+
+.s-atop-search-kbd {
+  font-size: var(--text-xs);
+  color: var(--dim);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: var(--space-3xs) var(--space-2xs);
+}
+
+.s-atop-fbar-label {
+  color: var(--dim);
+  text-transform: uppercase;
+  font-size: var(--text-xs);
+  letter-spacing: var(--tracking-md);
+  padding: 0 var(--space-2xs) 0 var(--space-sm);
+}
+
+.s-atop-fbar-spacer {
+  flex: 1;
+}
+
+.s-atop-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2xs);
+  padding: var(--space-2xs) var(--space-md);
+  background: color-mix(in srgb, var(--surface) 50%, transparent);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  color: var(--muted);
+  font: inherit;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: border-color 120ms, color 120ms, background 120ms;
+}
+
+.s-atop-pill:hover {
+  color: var(--ink);
+  border-color: color-mix(in srgb, var(--accent) 40%, var(--border));
+}
+
+.s-atop-pill--on {
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  border-color: var(--accent);
+  color: var(--ink);
+}
+
+.s-atop-pill-ct {
+  font-size: var(--text-xs);
+  color: var(--dim);
+  font-variant-numeric: tabular-nums;
+}
+
+.s-atop-pill--on .s-atop-pill-ct {
+  color: var(--accent);
+}
+
+/* ── Chips (runtime harness) ── */
+
+.s-atop-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: var(--space-3xs) var(--space-sm);
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  letter-spacing: var(--tracking-sm);
+  border-radius: var(--radius-sm);
+  border: 1px solid color-mix(in srgb, var(--border) 90%, transparent);
+  background: transparent;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.s-atop-chip--harness {
+  gap: var(--space-2xs);
+  color: var(--scout-chrome-ink-soft);
+  border-color: color-mix(in srgb, var(--ink) 12%, var(--border));
+  background: color-mix(in srgb, var(--ink) 4%, transparent);
+}
+
+.s-atop-chip--mute {
+  opacity: 0.55;
+}
+
+/* ── Status (dot + label) ── */
+
+.s-atop-status {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-xs);
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  font-weight: 500;
+}
+
+.s-atop-status-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex: none;
+  background: var(--dim);
+}
+
+.s-atop-status--tool .s-atop-status-dot {
+  background: var(--accent);
+  box-shadow: 0 0 6px color-mix(in srgb, var(--accent) 60%, transparent);
+}
+
+.s-atop-status--run .s-atop-status-dot {
+  background: var(--green);
+  box-shadow: 0 0 6px color-mix(in srgb, var(--green) 50%, transparent);
+}
+
+.s-atop-status--idle .s-atop-status-dot {
+  background: color-mix(in srgb, var(--dim) 70%, transparent);
+}
+
+.s-atop-status--tool { color: var(--accent); }
+.s-atop-status--run { color: var(--green); }
+.s-atop-status--idle { color: var(--dim); }
+
+/* status-pill flavors */
+.s-atop-pill--status-tool.s-atop-pill--on { border-color: var(--accent); }
+.s-atop-pill--status-run.s-atop-pill--on { border-color: var(--green); background: color-mix(in srgb, var(--green) 14%, transparent); }
+.s-atop-pill--status-run.s-atop-pill--on .s-atop-pill-ct { color: var(--green); }
+.s-atop-pill--status-idle.s-atop-pill--on { border-color: var(--dim); background: color-mix(in srgb, var(--dim) 14%, transparent); }
+.s-atop-pill--status-idle.s-atop-pill--on .s-atop-pill-ct { color: var(--muted); }
+
+/* ── Table ── */
+
+.s-atop-data-table {
+  min-height: 0;
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--border) 80%, transparent) transparent;
+}
+
+.s-atop-data-table::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+.s-atop-data-table::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--border) 80%, transparent);
+  border-radius: var(--radius-sm);
+}
+
+.s-atop-row--selected td {
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  color: var(--ink);
+}
+
+/* Column tone/alignment only — widths live in useResizableColumns so the user
+ * can drag them freely. Setting `width` here too would compete with the inline
+ * widths and cause the "recenter on resize" behavior. */
+.s-atop-col-project { color: var(--ink); overflow: hidden; text-overflow: ellipsis; }
+.s-atop-col-num {
+  text-align: right;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.s-atop-col-num--dim { color: var(--dim); }
+.s-atop-col-num--amber { color: var(--amber); }
+.s-atop-col-num--green { color: var(--green); }
+.s-atop-col-last { color: var(--dim); text-align: right; }
+.s-atop-col-runtime { color: var(--dim); text-align: right; }
+
+/* Agent column = harness chip + short session id.
+ * The flex layout lives on an inner wrapper, NOT the <td>/<th> itself —
+ * applying `display: flex` directly to a table cell removes it from
+ * table-cell layout, which (with `table-layout: fixed`) breaks column
+ * width allocation and leaves a dead-air gap to the next column. */
+.s-atop-agent-cell {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+}
+
+.s-atop-agent-id {
+  color: var(--ink);
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: var(--tracking-xs);
+}
+
+/* (legacy command/process column classes — kept so existing references still
+   render harmlessly while the table iterates) */
+.s-atop-cmd-base { color: var(--ink); font-weight: 500; }
+.s-atop-cmd-summary { color: var(--dim); }
+
+/* empty state row */
+.s-atop-empty-row td {
+  padding: 0;
+}
+
+.s-atop-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-sm);
+  padding: var(--space-8xl) var(--space-3xl);
+  text-align: center;
+  color: var(--dim);
+  font-size: var(--text-md);
+}
+
+.s-atop-empty-title {
+  color: var(--muted);
+  font-size: var(--text-sm);
+  letter-spacing: var(--tracking-xl);
+  text-transform: uppercase;
+}
+
+/* ── Key hint footer ── */
+
+.s-atop-keys {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xl);
+  padding: var(--space-2xs) var(--space-lg);
+  border-top: 1px solid var(--border);
+  background: color-mix(in srgb, var(--surface) 60%, transparent);
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  color: var(--dim);
+  letter-spacing: var(--tracking-sm);
+}
+
+.s-atop-keys-count strong {
+  color: var(--ink);
+  font-weight: 600;
+}
+
+.s-atop-keys-spacer {
+  flex: 1;
+}
+
+.s-atop-keys kbd {
+  display: inline-block;
+  padding: 0 var(--space-2xs);
+  margin-right: var(--space-2xs);
+  background: color-mix(in srgb, var(--ink) 8%, transparent);
+  color: var(--muted);
+  border-radius: var(--radius-xs);
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  border: 1px solid color-mix(in srgb, var(--border) 90%, transparent);
+}
+
+/* ── Detail panel (docks inline below the table; no longer a modal/overlay
+   that covers the persistent Inspector pane) ── */
+
+.s-atop-drawer {
+  position: relative;
+  margin-top: var(--space-xl);
+  width: 100%;
+  max-height: 52vh;
+  overflow: auto;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  display: grid;
+  grid-template-rows: auto 1fr;
+  animation: s-atop-drawer-in 0.16s ease-out;
+}
+
+@keyframes s-atop-drawer-in {
+  from {
+    transform: translateY(4px);
+    opacity: 0;
+  }
+  to {
+    transform: none;
+    opacity: 1;
+  }
+}
+
+.s-atop-drawer-head {
+  position: relative;
+  padding: var(--space-xl) var(--space-2xl);
+  border-bottom: 1px solid var(--border);
+}
+
+.s-atop-drawer-head-meta {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  color: var(--dim);
+  flex-wrap: wrap;
+}
+
+.s-atop-drawer-pid {
+  color: var(--ink);
+  font-weight: 600;
+}
+
+.s-atop-drawer-session {
+  color: var(--dim);
+}
+
+.s-atop-drawer-title {
+  margin: var(--space-sm) 0 var(--space-3xs);
+  font: 600 var(--text-2xl)/var(--leading-tight) var(--font-sans);
+  color: var(--ink);
+}
+
+.s-atop-drawer-sub {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  color: var(--dim);
+}
+
+.s-atop-drawer-close {
+  position: absolute;
+  top: 10px;
+  right: 12px;
+  background: transparent;
+  border: 0;
+  color: var(--dim);
+  font-size: var(--text-3xl);
+  cursor: pointer;
+  padding: var(--space-2xs) var(--space-sm);
+  border-radius: var(--radius-sm);
+}
+
+.s-atop-drawer-close:hover {
+  color: var(--ink);
+  background: color-mix(in srgb, var(--ink) 6%, transparent);
+}
+
+.s-atop-drawer-body {
+  overflow: auto;
+  padding: var(--space-xl) var(--space-2xl) var(--space-4xl);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2xl);
+}
+
+.s-atop-drawer-h3 {
+  margin: 0 0 var(--space-sm);
+  font: 600 var(--text-sm)/var(--leading-tight) var(--font-mono);
+  letter-spacing: var(--tracking-md);
+  text-transform: uppercase;
+  color: var(--dim);
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-sm);
+}
+
+.s-atop-drawer-h3-aside {
+  font-weight: 400;
+  letter-spacing: 0;
+  text-transform: none;
+  font-size: var(--text-sm);
+  color: var(--dim);
+}
+
+/* Activity metric grid (drawer) */
+.s-atop-metrics {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 1px;
+  background: var(--border);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+}
+
+.s-atop-metric {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2xs);
+  padding: var(--space-sm) var(--space-md);
+  background: var(--surface);
+}
+
+.s-atop-metric-lbl {
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  letter-spacing: var(--tracking-md);
+  text-transform: uppercase;
+  color: var(--dim);
+}
+
+.s-atop-metric-val {
+  font-family: var(--font-mono);
+  font-size: var(--text-xl);
+  font-weight: 600;
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+  line-height: var(--leading-none);
+}
+
+.s-atop-metric--dim .s-atop-metric-val {
+  color: var(--dim);
+  font-weight: 400;
+}
+
+.s-atop-metric--amber .s-atop-metric-val {
+  color: var(--amber);
+}
+
+.s-atop-metric--green .s-atop-metric-val {
+  color: var(--green);
+}
+
+/* Secondary (demoted) drawer section: Process block lives at bottom */
+.s-atop-drawer-section--secondary {
+  margin-top: var(--space-2xs);
+  padding-top: var(--space-xl);
+  border-top: 1px dashed color-mix(in srgb, var(--border) 90%, transparent);
+  opacity: 0.85;
+}
+
+.s-atop-drawer-section--secondary .s-atop-drawer-h3 {
+  font-size: var(--text-xs);
+  letter-spacing: var(--tracking-xl);
+}
+
+.s-atop-codeblock {
+  display: block;
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: var(--space-sm) var(--space-md);
+  color: var(--ink);
+  white-space: pre-wrap;
+  word-break: break-all;
+  line-height: var(--leading-snug);
+}
+
+.s-atop-kvs {
+  display: grid;
+  grid-template-columns: 110px 1fr;
+  gap: var(--space-2xs) var(--space-lg);
+  margin: var(--space-sm) 0 0;
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+}
+
+.s-atop-kvs dt {
+  color: var(--dim);
+  text-transform: uppercase;
+  font-size: var(--text-xs);
+  letter-spacing: var(--tracking-md);
+  align-self: center;
+}
+
+.s-atop-kvs dd {
+  margin: 0;
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+}
+
+.s-atop-chain {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3xs);
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+}
+
+.s-atop-chain li {
+  display: grid;
+  grid-template-columns: 64px 1fr;
+  gap: var(--space-sm);
+  padding: var(--space-3xs) 0;
+  border-bottom: 1px dashed color-mix(in srgb, var(--border) 80%, transparent);
+}
+
+.s-atop-chain li:last-child {
+  border-bottom: 0;
+}
+
+.s-atop-chain-pid {
+  color: var(--dim);
+  font-variant-numeric: tabular-nums;
+}
+
+.s-atop-chain-cmd {
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.s-atop-histo {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+}
+
+.s-atop-histo li {
+  display: grid;
+  grid-template-columns: 140px 1fr 36px;
+  gap: var(--space-md);
+  align-items: center;
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+}
+
+.s-atop-histo-name {
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.s-atop-histo-bar {
+  display: block;
+  height: 6px;
+  background: color-mix(in srgb, var(--border) 80%, transparent);
+  border-radius: var(--radius-pill);
+  overflow: hidden;
+}
+
+.s-atop-histo-fill {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+  border-radius: inherit;
+}
+
+.s-atop-histo-count {
+  text-align: right;
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+}
+
+.s-atop-peek {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: var(--space-xs) 0;
+  max-height: 320px;
+  overflow: auto;
+}
+
+.s-atop-peek-row {
+  display: grid;
+  grid-template-columns: 76px 80px 1fr;
+  gap: var(--space-sm);
+  padding: var(--space-3xs) var(--space-lg);
+  color: var(--muted);
+}
+
+.s-atop-peek-row:hover {
+  background: color-mix(in srgb, var(--surface) 50%, transparent);
+}
+
+.s-atop-peek-time {
+  color: var(--dim);
+  font-variant-numeric: tabular-nums;
+}
+
+.s-atop-peek-kind {
+  color: var(--dim);
+  text-transform: uppercase;
+  font-size: var(--text-xs);
+  letter-spacing: var(--tracking-sm);
+  align-self: center;
+}
+
+.s-atop-peek-text {
+  color: var(--ink);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.s-atop-peek-row--tool .s-atop-peek-kind { color: var(--accent); }
+.s-atop-peek-row--tool .s-atop-peek-text { color: var(--ink); }
+.s-atop-peek-row--tool-result .s-atop-peek-kind { color: color-mix(in srgb, var(--green) 60%, var(--ink) 40%); }
+.s-atop-peek-row--system .s-atop-peek-text { color: var(--muted); }
+.s-atop-peek-row--other .s-atop-peek-text { color: var(--muted); }
+
+.s-atop-peek-empty {
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  color: var(--dim);
+  padding: var(--space-2xl);
+  text-align: center;
+  background: var(--bg);
+  border: 1px dashed var(--border);
+  border-radius: var(--radius-md);
+}

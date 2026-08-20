@@ -1,0 +1,63 @@
+{
+  "schemaVersion": "1.0.0",
+  "id": "opencode-v2-text-completed",
+  "adapterId": "opencode-v2",
+  "fixtureSet": "opencode-v2",
+  "source": {
+    "kind": "recorded",
+    "harnessVersion": "@opencode-ai/client 0.0.0-next-17226",
+    "transport": "http-sse /api/event",
+    "capturedAt": "2026-08-11T16:59:00.000Z"
+  },
+  "redactions": [
+    { "line": 0, "pointer": "/payload/text", "replacement": "<prompt>" },
+    { "line": 0, "pointer": "/payload/remoteSessionId", "replacement": "session-recorded" },
+    { "line": 1, "pointer": "/payload/id", "replacement": "event-recorded-1" },
+    { "line": 1, "pointer": "/payload/durable/aggregateID", "replacement": "session-recorded" },
+    { "line": 1, "pointer": "/payload/data/sessionID", "replacement": "session-recorded" },
+    { "line": 1, "pointer": "/payload/data/inputID", "replacement": "input-recorded" },
+    { "line": 1, "pointer": "/payload/data/input/data/text", "replacement": "<prompt>" },
+    { "line": 2, "pointer": "/payload/id", "replacement": "event-recorded-2" },
+    { "line": 2, "pointer": "/payload/durable/aggregateID", "replacement": "session-recorded" },
+    { "line": 2, "pointer": "/payload/data/sessionID", "replacement": "session-recorded" },
+    { "line": 3, "pointer": "/payload/id", "replacement": "event-recorded-3" },
+    { "line": 3, "pointer": "/payload/durable/aggregateID", "replacement": "session-recorded" },
+    { "line": 3, "pointer": "/payload/data/sessionID", "replacement": "session-recorded" },
+    { "line": 3, "pointer": "/payload/data/inputID", "replacement": "input-recorded" },
+    { "line": 4, "pointer": "/payload/id", "replacement": "event-recorded-4" },
+    { "line": 4, "pointer": "/payload/durable/aggregateID", "replacement": "session-recorded" },
+    { "line": 4, "pointer": "/payload/data/sessionID", "replacement": "session-recorded" },
+    { "line": 4, "pointer": "/payload/data/assistantMessageID", "replacement": "assistant-message-recorded" },
+    { "line": 5, "pointer": "/payload/id", "replacement": "event-recorded-5" },
+    { "line": 5, "pointer": "/payload/data/sessionID", "replacement": "session-recorded" },
+    { "line": 5, "pointer": "/payload/data/assistantMessageID", "replacement": "assistant-message-recorded" },
+    { "line": 5, "pointer": "/payload/data/delta", "replacement": "fixture-ok" },
+    { "line": 6, "pointer": "/payload/id", "replacement": "event-recorded-6" },
+    { "line": 6, "pointer": "/payload/durable/aggregateID", "replacement": "session-recorded" },
+    { "line": 6, "pointer": "/payload/data/sessionID", "replacement": "session-recorded" },
+    { "line": 6, "pointer": "/payload/data/assistantMessageID", "replacement": "assistant-message-recorded" },
+    { "line": 6, "pointer": "/payload/data/text", "replacement": "fixture-ok" },
+    { "line": 7, "pointer": "/payload/id", "replacement": "event-recorded-7" },
+    { "line": 7, "pointer": "/payload/durable/aggregateID", "replacement": "session-recorded" },
+    { "line": 7, "pointer": "/payload/data/sessionID", "replacement": "session-recorded" }
+  ],
+  "expected": {
+    "endState": "completed",
+    "evidenceKeys": [
+      "event:turn:start",
+      "event:block:start",
+      "event:block:delta",
+      "event:block:end",
+      "event:turn:end"
+    ]
+  },
+  "determinism": {
+    "clockValues": ["2026-08-11T17:00:00.000Z", "2026-08-11T17:00:01.000Z"],
+    "idValues": ["opencode-v2-turn-001", "opencode-v2-text-001"]
+  },
+  "session": {
+    "name": "OpenCode V2 fixture",
+    "cwd": "<workspace>",
+    "model": "opencode/fixture-model"
+  }
+}

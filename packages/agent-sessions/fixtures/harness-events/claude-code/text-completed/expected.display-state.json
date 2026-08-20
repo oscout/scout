@@ -1,0 +1,44 @@
+{
+  "sessionId": "fixture-claude-code-text-completed",
+  "phase": "completed",
+  "currentMessage": {
+    "id": "claude-turn-001:claude-text-001",
+    "role": "assistant",
+    "text": "fixture-ok",
+    "updatedAt": 1786136401000,
+    "metadata": {
+      "blockId": "claude-text-001",
+      "blockType": "text",
+      "turnId": "claude-turn-001"
+    }
+  },
+  "activeTools": {},
+  "attention": {},
+  "activeSubagents": {},
+  "turns": [
+    {
+      "id": "claude-turn-001",
+      "status": "completed",
+      "startedAt": 1786136400000,
+      "endedAt": 1786136401000,
+      "blockCount": 2,
+      "messageCount": 2,
+      "toolCount": 0,
+      "attentionCount": 0,
+      "summary": "fixture-ok",
+      "updatedAt": 1786136401000,
+      "metadata": {
+        "hasActiveTool": false
+      }
+    }
+  ],
+  "tasks": [],
+  "updatedAt": 1786136401000,
+  "metadata": {
+    "adapterType": "claude-code",
+    "provider": null,
+    "sessionName": "claude-code",
+    "sessionStatus": "active",
+    "turnCount": 1
+  }
+}

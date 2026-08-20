@@ -1,0 +1,90 @@
+name: CI
+
+on:
+  # CI runs only at explicit checkpoints, not on every commit, PR, branch
+  # push, or tag. Dispatch it manually when a coherent batch is ready for
+  # validation so a series of small PRs costs one run instead of one each.
+  #
+  # Deliberately NOT on pull_request or push: a stacked series produced ~3
+  # runs per PR, most cancelling each other before finishing.
+  #
+  # The tradeoff is real, not cosmetic. CI catches things local runs cannot:
+  # the sync-exec fence, and tests that only fail on a machine without the
+  # harness CLIs installed. Nothing now blocks a merge, so the operator must
+  # explicitly dispatch a checkpoint before trusting a batch.
+  workflow_dispatch:
+  # Release Candidate deliberately reuses these checks as one lane of its
+  # explicitly initiated validation workflow. This is callable, not ambient.
+  workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  checks:
+    name: Typecheck and unit tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.13"
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Sync exec fence
+        run: bun run sync-exec:fence
+
+      - name: Typecheck
+        run: |
+          bun run --cwd packages/protocol check
+          bun run --cwd packages/agent-sessions check
+          bun run --cwd packages/runtime check
+          bun run --cwd packages/session-trace check
+          bun run --cwd packages/session-trace-react check
+          bun run --cwd apps/desktop check
+
+      - name: Unit tests
+        env:
+          OPENSCOUT_CONFORMANCE: "1"
+        run: |
+          if bun -e "const pkg = require('./package.json'); process.exit(pkg.scripts?.['test:unit'] ? 0 : 1)"; then
+            bun run test:unit
+          else
+            bun run --cwd packages/protocol test
+            bun run --cwd packages/agent-sessions test
+            bun test ./packages/runtime/src/**/*.test.ts --path-ignore-patterns='**/*live.test.ts' --path-ignore-patterns='**/scenario-suite.test.ts'
+            bun run --cwd apps/desktop test:happy
+            bun run --cwd packages/web test:happy
+            bun test packages/session-trace/src/*.test.ts packages/session-trace-react/src/*.test.tsx
+          fi
+
+  rust-scoutd:
+    name: scoutd verification
+    runs-on: macos-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Verify portable voice core
+        run: |
+          cargo check --manifest-path crates/openscout-voice-core/Cargo.toml --all-features
+          cargo test --manifest-path crates/openscout-voice-core/Cargo.toml --all-features
+
+      - name: Verify
+        run: bash scripts/scoutd-verify.sh

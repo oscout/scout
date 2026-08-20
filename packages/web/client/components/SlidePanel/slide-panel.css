@@ -1,0 +1,170 @@
+/* ── SlidePanel: reusable slide-out chrome (right or bottom) ── */
+
+.s-slide-backdrop {
+  position: absolute;
+  inset: 0;
+  background: color-mix(in srgb, var(--bg) 60%, transparent);
+  backdrop-filter: blur(2px);
+  z-index: 5;
+  animation: s-slide-fade-in 120ms ease-out;
+}
+
+.s-slide-backdrop--elevated {
+  z-index: 7;
+}
+
+.s-slide {
+  position: absolute;
+  background: var(--surface, var(--bg));
+  display: flex;
+  flex-direction: column;
+  z-index: 6;
+  color: var(--ink);
+  outline: 0;
+  box-shadow: -16px 0 32px -16px color-mix(in srgb, #000 60%, transparent);
+}
+
+/* — right variant — */
+
+.s-slide--elevated {
+  z-index: 8;
+}
+
+.s-slide--right {
+  top: 0;
+  right: 0;
+  bottom: 0;
+  border-left: 1px solid var(--border);
+  max-width: 90vw;
+  animation: s-slide-in-right 180ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+/* — bottom variant — */
+
+.s-slide--bottom {
+  left: 0;
+  right: 0;
+  bottom: 0;
+  border-top: 1px solid var(--border);
+  max-height: 90vh;
+  box-shadow: 0 -16px 32px -16px color-mix(in srgb, #000 60%, transparent);
+  animation: s-slide-in-bottom 180ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+.s-slide--resizing {
+  animation: none;
+  user-select: none;
+}
+
+/* — resize handle — */
+
+.s-slide-resize {
+  position: absolute;
+  z-index: 1;
+  background: transparent;
+  transition: background-color 120ms ease-out;
+}
+
+.s-slide-resize::after {
+  content: "";
+  position: absolute;
+  background: color-mix(in srgb, var(--accent, #62b6ff) 60%, transparent);
+  opacity: 0;
+  transition: opacity 120ms ease-out;
+  border-radius: var(--radius-xs);
+}
+
+.s-slide-resize:hover::after,
+.s-slide--resizing .s-slide-resize::after {
+  opacity: 1;
+}
+
+.s-slide-resize--right {
+  top: 0;
+  bottom: 0;
+  left: -3px;
+  width: 6px;
+  cursor: col-resize;
+}
+
+.s-slide-resize--right::after {
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 2px;
+  height: 32px;
+}
+
+.s-slide-resize--bottom {
+  left: 0;
+  right: 0;
+  top: -3px;
+  height: 6px;
+  cursor: row-resize;
+}
+
+.s-slide-resize--bottom::after {
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 32px;
+  height: 2px;
+}
+
+/* — animations — */
+
+@keyframes s-slide-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes s-slide-in-right {
+  from { transform: translateX(24px); opacity: 0; }
+  to { transform: translateX(0); opacity: 1; }
+}
+
+@keyframes s-slide-in-bottom {
+  from { transform: translateY(24px); opacity: 0; }
+  to { transform: translateY(0); opacity: 1; }
+}
+
+/* — shared utility classes for header / body / close — opt-in for callers — */
+
+.s-slide-header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  padding: var(--space-md) var(--space-xl);
+  border-bottom: 1px solid var(--border);
+  background: color-mix(in srgb, var(--surface) 60%, transparent);
+  flex: none;
+}
+
+.s-slide-spacer {
+  flex: 1;
+}
+
+.s-slide-close {
+  background: transparent;
+  border: 0;
+  color: var(--muted);
+  font-size: var(--text-3xl);
+  line-height: var(--leading-none);
+  padding: 0 var(--space-2xs);
+  cursor: pointer;
+  border-radius: var(--radius-xs);
+}
+
+.s-slide-close:hover {
+  color: var(--ink);
+  background: color-mix(in srgb, var(--ink) 8%, transparent);
+}
+
+.s-slide-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--space-lg) var(--space-xl) var(--space-4xl);
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--border) 80%, transparent) transparent;
+}

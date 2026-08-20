@@ -1,0 +1,306 @@
+{
+  "note": "Known packages/web type errors that predate the typecheck gate. Never add to this file by hand: fix the error instead. The gate rewrites it downward on its own whenever an error is fixed; `node scripts/typecheck.mjs --update` refuses any change that would grow it.",
+  "total": 82,
+  "errors": [
+    {
+      "file": "client/lib/conversation-groups.ts",
+      "code": "TS2339",
+      "message": "Property 'repoKey' does not exist on type 'Agent'.",
+      "count": 1
+    },
+    {
+      "file": "client/lib/scout-voice.ts",
+      "code": "TS2322",
+      "message": "Type 'number' is not assignable to type 'Timeout'.",
+      "count": 1
+    },
+    {
+      "file": "client/lib/scout-voice.ts",
+      "code": "TS2345",
+      "message": "Argument of type '\"session.state\"' is not assignable to parameter of type 'ScoutVoiceSessionState | \"session.partial\" | \"session.final\" | \"session.error\" | \"session.cancelled\"'.",
+      "count": 1
+    },
+    {
+      "file": "client/lib/scout-voice.ts",
+      "code": "TS2367",
+      "message": "This comparison appears to be unintentional because the types 'ScoutVoiceSessionState | \"session.final\" | \"session.error\" | \"session.cancelled\"' and '\"session.state\"' have no overlap.",
+      "count": 1
+    },
+    {
+      "file": "client/native-surfaces/lanes/NativeAgentLanes.test.ts",
+      "code": "TS2322",
+      "message": "Type 'TailDiscoveredTranscript[] | undefined' is not assignable to type 'TailDiscoveredTranscript[]'.",
+      "count": 1
+    },
+    {
+      "file": "client/scout/nav-destinations.test.ts",
+      "code": "TS2345",
+      "message": "Argument of type '{ view: \"repo-diff\"; }' is not assignable to parameter of type 'Route'.",
+      "count": 3
+    },
+    {
+      "file": "client/scout/primary-areas.test.ts",
+      "code": "TS2769",
+      "message": "No overload matches this call.",
+      "count": 7
+    },
+    {
+      "file": "client/scout/sidebar/SideRailCollapsedBody.tsx",
+      "code": "TS2339",
+      "message": "Property 'workspaceRoot' does not exist on type 'Agent'.",
+      "count": 1
+    },
+    {
+      "file": "client/scout/sidebar/SideRailCollapsedBody.tsx",
+      "code": "TS2367",
+      "message": "This comparison appears to be unintentional because the types '\"unknown\" | \"node.upserted\" | \"actor.registered\" | \"agent.registered\" | \"agent.endpoint.upserted\" | \"agent.endpoint.deleted\" | \"conversation.upserted\" | \"binding.upserted\" | ... 7 more ... | \"scout.dispatched\"' and '\"agent.updated\"' have no overlap.",
+      "count": 1
+    },
+    {
+      "file": "client/screens/chat/ConversationScreen.tsx",
+      "code": "TS2345",
+      "message": "Argument of type 'string | null | undefined' is not assignable to parameter of type 'string'.",
+      "count": 1
+    },
+    {
+      "file": "client/screens/code/CodeScreen.tsx",
+      "code": "TS2345",
+      "message": "Argument of type '\"quick\"' is not assignable to parameter of type 'RepoWatchScanDepth'.",
+      "count": 2
+    },
+    {
+      "file": "client/screens/home/home-live-action.test.ts",
+      "code": "TS2739",
+      "message": "Type '{ kind: \"ask\"; text: string; }' is missing the following properties from type 'ObserveEvent': id, t",
+      "count": 1
+    },
+    {
+      "file": "client/screens/home/home-live-action.test.ts",
+      "code": "TS2739",
+      "message": "Type '{ kind: \"note\"; text: string; }' is missing the following properties from type 'ObserveEvent': id, t",
+      "count": 3
+    },
+    {
+      "file": "client/screens/home/home-live-action.test.ts",
+      "code": "TS2739",
+      "message": "Type '{ kind: \"system\"; text: string; }' is missing the following properties from type 'ObserveEvent': id, t",
+      "count": 7
+    },
+    {
+      "file": "client/screens/home/home-live-action.test.ts",
+      "code": "TS2739",
+      "message": "Type '{ kind: \"tool\"; tool: string; arg: string; }' is missing the following properties from type 'ObserveEvent': id, t, text",
+      "count": 7
+    },
+    {
+      "file": "client/screens/home/home-moving-signal.tsx",
+      "code": "TS2345",
+      "message": "Argument of type 'KeyboardEvent<Element>' is not assignable to parameter of type 'KeyboardEvent<HTMLElement>'.",
+      "count": 1
+    },
+    {
+      "file": "client/screens/home/home-moving.test.ts",
+      "code": "TS2322",
+      "message": "Type '\"codex\"' is not assignable to type 'TailAttribution'.",
+      "count": 3
+    },
+    {
+      "file": "client/screens/home/home-moving.test.ts",
+      "code": "TS2322",
+      "message": "Type '\"message\"' is not assignable to type 'TailEventKind'.",
+      "count": 1
+    },
+    {
+      "file": "client/screens/home/home-moving.test.ts",
+      "code": "TS2322",
+      "message": "Type '\"tool-call\"' is not assignable to type 'TailEventKind'.",
+      "count": 2
+    },
+    {
+      "file": "client/screens/home/home-moving.test.ts",
+      "code": "TS2739",
+      "message": "Type '{ id: string; ts: number; kind: \"system\"; source: string; harness: \"unattributed\"; project: string; cwd: string; sessionId: string; summary: string; }' is missing the following properties from type 'TailEvent': pid, parentPid",
+      "count": 1
+    },
+    {
+      "file": "client/screens/home/home-moving.test.ts",
+      "code": "TS2739",
+      "message": "Type '{ id: string; ts: number; kind: \"tool\"; source: string; harness: \"scout-managed\"; project: string; cwd: string; sessionId: string; summary: string; }' is missing the following properties from type 'TailEvent': pid, parentPid",
+      "count": 1
+    },
+    {
+      "file": "client/screens/home/home-moving.test.ts",
+      "code": "TS2739",
+      "message": "Type '{ id: string; ts: number; kind: \"tool\"; source: string; harness: \"unattributed\"; project: string; cwd: string; sessionId: string; summary: string; }' is missing the following properties from type 'TailEvent': pid, parentPid",
+      "count": 5
+    },
+    {
+      "file": "client/screens/home/home-moving.test.ts",
+      "code": "TS2740",
+      "message": "Type '{ invocationId: string; agentId: string; status: \"working\"; updatedAt: number; }' is missing the following properties from type 'FleetAsk': flightId, agentName, conversationId, collaborationRecordId, and 10 more.",
+      "count": 1
+    },
+    {
+      "file": "client/screens/home/home-moving.test.ts",
+      "code": "TS2741",
+      "message": "Property 'files' is missing in type '{ live: true; events: { id: string; t: number; kind: \"tool\"; text: string; live: true; }[]; }' but required in type 'ObserveData'.",
+      "count": 1
+    },
+    {
+      "file": "client/screens/home/home-now-card-model.test.ts",
+      "code": "TS2352",
+      "message": "Conversion of type '{ stats: { tools: number; edits: number; reads: number; files: number; }; pops: { tools: { rows: { mark: string; tone: \"tool\"; text: string; }[]; more: number; }; edits: { rows: never[]; more: number; }; reads: { rows: never[]; more: number; }; files: { ...; }; }; context: null; }' to type 'AgentLaneCardModel' may be a mistake because neither type sufficiently overlaps with the other. If this was intentional, convert the expression to 'unknown' first.",
+      "count": 1
+    },
+    {
+      "file": "client/screens/home/home-now-card-model.test.ts",
+      "code": "TS2739",
+      "message": "Type '{ kind: \"tool\"; tool: string; arg: string; }' is missing the following properties from type 'ObserveEvent': id, t, text",
+      "count": 2
+    },
+    {
+      "file": "client/screens/home/home-now-card-model.test.ts",
+      "code": "TS2739",
+      "message": "Type '{ path: string; state: \"read\"; }' is missing the following properties from type 'ObserveFile': touches, lastT",
+      "count": 1
+    },
+    {
+      "file": "client/screens/ops/AgentFloorView.tsx",
+      "code": "TS2339",
+      "message": "Property 'sort' does not exist on type 'readonly [readonly [\"tool-led\", number], readonly [\"edit-heavy\", number], readonly [\"conversation-led\", number]]'.",
+      "count": 1
+    },
+    {
+      "file": "client/screens/ops/AgentFloorView.tsx",
+      "code": "TS7006",
+      "message": "Parameter 'left' implicitly has an 'any' type.",
+      "count": 1
+    },
+    {
+      "file": "client/screens/ops/AgentFloorView.tsx",
+      "code": "TS7006",
+      "message": "Parameter 'right' implicitly has an 'any' type.",
+      "count": 1
+    },
+    {
+      "file": "client/screens/projects/projects-inbox-model.test.ts",
+      "code": "TS2322",
+      "message": "Type '\"claude\"' is not assignable to type 'TailAttribution'.",
+      "count": 1
+    },
+    {
+      "file": "client/screens/projects/ProjectsInbox.test.ts",
+      "code": "TS2352",
+      "message": "Conversion of type '{ id: string; agentId: null; harness: string; cwd: string; sourceSessionId: null; surfaces: { backend: \"tmux\"; sessionName: string; paneId: null; socketDir: null; attachCommand: string[]; observeCommand: null; relay: null; state: \"live\"; }[]; metadata: { ...; }; }[]' to type 'TerminalSessionRecord[]' may be a mistake because neither type sufficiently overlaps with the other. If this was intentional, convert the expression to 'unknown' first.",
+      "count": 1
+    },
+    {
+      "file": "client/screens/sessions/SessionObserve.tsx",
+      "code": "TS2339",
+      "message": "Property 'technicalSourceRows' does not exist on type '{ event: ObserveEvent; repeatCount: number; }'.",
+      "count": 1
+    },
+    {
+      "file": "client/screens/sessions/SessionObserve.tsx",
+      "code": "TS2339",
+      "message": "Property 'technicalSummary' does not exist on type '{ event: ObserveEvent; repeatCount: number; }'.",
+      "count": 1
+    },
+    {
+      "file": "client/screens/sessions/SessionObserve.tsx",
+      "code": "TS7006",
+      "message": "Parameter 'sourceIndex' implicitly has an 'any' type.",
+      "count": 1
+    },
+    {
+      "file": "client/screens/sessions/SessionObserve.tsx",
+      "code": "TS7006",
+      "message": "Parameter 'sourceRow' implicitly has an 'any' type.",
+      "count": 1
+    },
+    {
+      "file": "client/terminal-relay-config.test.tsx",
+      "code": "TS2493",
+      "message": "Tuple type '[]' of length '0' has no element at index '0'.",
+      "count": 1
+    },
+    {
+      "file": "server/create-openscout-web-server.ts",
+      "code": "TS2339",
+      "message": "Property 'postOperatorMessage' does not exist on type 'never'.",
+      "count": 1
+    },
+    {
+      "file": "server/create-openscout-web-server.ts",
+      "code": "TS2353",
+      "message": "Object literal may only specify known properties, and 'messageCoverageIncomplete' does not exist in type '{ actors: { [k: string]: { displayName: string; }; }; messages: { [k: string]: MessageRecord; }; totalMessageCount: number | null; projectionStatus: \"ready\" | \"disabled\" | \"degraded\" | null; }'.",
+      "count": 1
+    },
+    {
+      "file": "server/create-openscout-web-server.ts",
+      "code": "TS2353",
+      "message": "Object literal may only specify known properties, and 'modelProvider' does not exist in type 'WebAgent'.",
+      "count": 1
+    },
+    {
+      "file": "server/db/briefings.ts",
+      "code": "TS2322",
+      "message": "Type 'string' is not assignable to type 'BriefingKind'.",
+      "count": 2
+    },
+    {
+      "file": "server/db/sessions.ts",
+      "code": "TS2345",
+      "message": "Argument of type 'string | null | undefined' is not assignable to parameter of type 'string | null'.",
+      "count": 1
+    },
+    {
+      "file": "server/db/sessions.ts",
+      "code": "TS2554",
+      "message": "Expected 3 arguments, but got 2.",
+      "count": 1
+    },
+    {
+      "file": "server/managed-terminal-relay.ts",
+      "code": "TS2345",
+      "message": "Argument of type 'number | null' is not assignable to parameter of type 'number'.",
+      "count": 1
+    },
+    {
+      "file": "server/routes/scoutbot.ts",
+      "code": "TS2783",
+      "message": "'getTailDiscovery' is specified more than once, so this usage will be overwritten.",
+      "count": 1
+    },
+    {
+      "file": "server/routes/scoutbot.ts",
+      "code": "TS2783",
+      "message": "'readRecentTranscriptEvents' is specified more than once, so this usage will be overwritten.",
+      "count": 1
+    },
+    {
+      "file": "server/routes/scoutbot.ts",
+      "code": "TS2783",
+      "message": "'refreshTailDiscovery' is specified more than once, so this usage will be overwritten.",
+      "count": 1
+    },
+    {
+      "file": "server/routes/scoutbot.ts",
+      "code": "TS2783",
+      "message": "'snapshotRecentEvents' is specified more than once, so this usage will be overwritten.",
+      "count": 1
+    },
+    {
+      "file": "server/routes/voice.ts",
+      "code": "TS2322",
+      "message": "Type '() => void' is not assignable to type '() => undefined'.",
+      "count": 1
+    },
+    {
+      "file": "server/routes/voice.ts",
+      "code": "TS2322",
+      "message": "Type '{ preference?: \"auto\" | \"parakeet\" | \"apple\" | undefined; inputDeviceId?: string | null | undefined; inputDeviceName?: string | null | undefined; modelReady?: boolean | undefined; modelInstalled?: boolean | undefined; permissions?: { ...; }[] | undefined; } | undefined' is not assignable to type 'Partial<ScoutVoiceSettings> | undefined'.",
+      "count": 1
+    }
+  ]
+}

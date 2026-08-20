@@ -1,0 +1,49 @@
+{
+  "name": "@openscout/scout",
+  "version": "0.2.82",
+  "description": "Public Scout package that installs the `scout` command and bundled local runtime",
+  "license": "Apache-2.0",
+  "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/oscout/scout.git",
+    "directory": "packages/cli"
+  },
+  "bugs": {
+    "url": "https://github.com/oscout/scout/issues"
+  },
+  "homepage": "https://github.com/oscout/scout#readme",
+  "bin": {
+    "scout": "./bin/scout",
+    "openscout-runtime": "./bin/openscout-runtime.mjs"
+  },
+  "engines": {
+    "bun": ">=1.2"
+  },
+  "files": [
+    "bin",
+    "dist",
+    "README.md"
+  ],
+  "dependencies": {
+    "@lydell/node-pty": "1.2.0-beta.12",
+    "bonjour-service": "^1.4.4",
+    "picomatch": "^4.0.4",
+    "reflect-metadata": "0.2.2",
+    "ws": "^8.18.3"
+  },
+  "scripts": {
+    "build": "bun run --cwd ../protocol build && bun run --cwd ../runtime build && node ./scripts/build.mjs",
+    "dev": "bun ./src/main.ts",
+    "test:happy": "node --test test/*.test.mjs",
+    "prepack": "bun run build && node ../../scripts/prepare-publish-manifest.mjs .",
+    "postpack": "node ../../scripts/restore-publish-manifest.mjs .",
+    "postpublish": "node ../../scripts/restore-publish-manifest.mjs ."
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "devDependencies": {
+    "@openscout/runtime": "workspace:*"
+  }
+}

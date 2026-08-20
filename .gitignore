@@ -1,0 +1,59 @@
+# Dependencies
+node_modules/
+.pnp
+.pnp.*
+.yarn/*
+!.yarn/patches
+!.yarn/plugins
+!.yarn/releases
+!.yarn/versions
+
+# Test and build output
+coverage/
+tmp/
+.next/
+out/
+build/
+target/
+**/target/
+packages/*/dist/
+apps/*/dist/
+packages/cli/bin/scoutd
+packages/*/package/
+*.tgz
+*.tsbuildinfo
+next-env.d.ts
+
+# Local Scout state and review artifacts
+.openscout/
+reviews/
+
+# Apple build output
+apps/ios/.derived-iphone/
+apps/ios/.deriveddata/
+apps/ios/.asc/artifacts/
+apps/ios/.asc/metadata/
+apps/ios/build/
+*.xcuserstate
+*.xcworkspace/xcuserdata/
+*.xcodeproj/project.xcworkspace/xcuserdata/
+
+# Local tools and deployment state
+.vercel/
+.ds-sync/
+ds-bundle/
+.design-sync/.cache/
+.design-sync/learnings/
+.design-sync/node_modules/
+
+# Secrets and machine-local files
+.env*
+!.env.example
+!.env.schema
+*.pem
+.DS_Store
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+env.d.ts

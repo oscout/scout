@@ -1,0 +1,381 @@
+:root { color-scheme: light dark; font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", sans-serif; font-synthesis: none; -webkit-font-smoothing: antialiased; }
+* { box-sizing: border-box; }
+html, body, #root { width: 100%; height: 100%; margin: 0; overflow: hidden; }
+button, textarea, input { font: inherit; }
+button { -webkit-tap-highlight-color: transparent; }
+/* A grid item's automatic minimum size is min-content, so the transcript's
+   widest atom (a 230px file card, a 224px voice note) set a floor on the
+   single column and rendered the WHOLE app ~403pt wide inside a 393pt phone.
+   Every row inherited that width, which is why a header centred correctly in
+   CSS still measured +5.2pt right on device: it was centred in a box wider
+   than the screen. This is the one line that makes the header's centre and
+   the phone's centre the same number. */
+.chat-app > * { min-width: 0; }
+.chat-app { --accent: #087dff; --scout-accent: #07785b; --incoming: #e9e9eb; --outgoing: #087dff; --canvas: #fff; --chrome: rgba(248,248,250,.94); --header: #f4f5f4; --header-top: #fafbfa; --edge-plate: rgba(11,122,95,.05); --edge-plate-live: rgba(11,122,95,.11); --edge-ring: rgba(11,122,95,.20); --ink: #111; --muted: #747479; --hairline: rgba(0,0,0,.13); position: relative; display: grid; grid-template-rows: auto auto auto minmax(0,1fr) auto; width: 100%; height: 100%; color: var(--ink); background: var(--canvas); }
+.chat-app[data-style="whatsapp"] { --accent: #008069; --incoming: #fff; --outgoing: #d9fdd3; --canvas: #efeae2; --chrome: rgba(248,249,249,.96); background-color: var(--canvas); background-image: radial-gradient(circle at 20px 20px, rgba(17,27,33,.025) 1px, transparent 1px); background-size: 38px 38px; }
+/* ── Conversation density ─────────────────────────────────────────────────
+   One global reading scale for every style and detail mode. Measure and body
+   type move together, because "how much conversation fits on screen" is a
+   single axis. `standard` is the shipped default: a little wider and a little
+   more compact than the first pass. Nothing drops below 14px in any step. */
+.chat-app,
+.chat-app[data-density="standard"] {
+  --chat-body-size: 15.5px; --chat-measure: 92%; --chat-measure-own: 86%;
+  --chat-body-size-wa: 14.5px; --chat-measure-wa: 82%; --chat-measure-wa-cap: 330px; --chat-measure-wa-ch: 40ch;
+}
+.chat-app[data-density="comfortable"] {
+  --chat-body-size: 16.5px; --chat-measure: 88%; --chat-measure-own: 80%;
+  --chat-body-size-wa: 15px; --chat-measure-wa: 76%; --chat-measure-wa-cap: 300px; --chat-measure-wa-ch: 36ch;
+}
+.chat-app[data-density="compact"] {
+  --chat-body-size: 14.5px; --chat-measure: 95%; --chat-measure-own: 90%;
+  --chat-body-size-wa: 14px; --chat-measure-wa: 87%; --chat-measure-wa-cap: 352px; --chat-measure-wa-ch: 44ch;
+}
+/* ── Sender attribution ───────────────────────────────────────────────────
+   Four hues from the cool arc. Warm signal colour is reserved app-wide, so an
+   ordinary name is never orange, yellow, pink, magenta, or red. */
+.chat-app { --ring-edge: rgba(11,122,95,.42); --ring-glow: rgba(11,122,95,.20);
+  --sender-1: #0b7a5f; --sender-2: #2f6f8f; --sender-3: #3f5bbf; --sender-4: #12857c; }
+button { color: inherit; }
+/* ── Header ───────────────────────────────────────────────────────────────
+   The identity sits on the phone's TRUE centre line. Back and Search are
+   different widths, so centring the name in the leftover column puts it
+   visibly off-axis.
+
+   A three-track grid with equal side columns is centred on paper, but it was
+   measured 5.2pt right on device: track sizing plus a `vw`-anchored reserve
+   let the row overflow, and an overflowing row drags its own centre with it.
+   Taking the cluster OUT of flow removes the dependency entirely — `left:50%`
+   with a -50% shift is exact against the header's own box no matter what the
+   edge controls measure or how the tracks resolve. The two remaining columns
+   just park Back and Search at the edges. */
+.chat-header { grid-row: 1; position: relative; z-index: 20; display: grid; grid-template-columns: minmax(0,1fr) minmax(0,1fr); align-items: center; min-height: 70px; padding: max(4px, env(safe-area-inset-top)) 8px 5px; overflow: hidden; border-bottom: .5px solid var(--hairline); background: linear-gradient(180deg, var(--header-top) 0%, var(--header) 100%); }
+.chat-header button, .search-row button { border: 0; background: transparent; cursor: pointer; touch-action: manipulation; }
+/* Both edge controls are the same authored chip: a 44pt target with a smaller
+   inset plate, so they read as one deliberate pair rather than a text
+   affordance borrowed from a messenger. The label is gone; the control keeps
+   its aria-label, and the native edge-swipe back gesture is untouched because
+   it never depended on this button. */
+.back-button, .header-actions button { position: relative; display: grid; place-items: center; width: 44px; height: 44px; min-width: 44px; min-height: 44px; padding: 0; border: 0; background: transparent; color: var(--scout-accent); }
+.back-button { justify-self: start; }
+.back-button::before, .header-actions button::before { position: absolute; width: 33px; height: 33px; border-radius: 10px; background: var(--edge-plate); box-shadow: inset 0 0 0 .5px var(--edge-ring); content: ""; }
+.back-button svg, .header-actions svg { position: relative; width: 18px; height: 18px; }
+.back-button:active::before, .header-actions button:active::before { background: var(--edge-plate-live); }
+.back-button:focus-visible::before, .header-actions button:focus-visible::before { box-shadow: inset 0 0 0 1.5px var(--scout-accent); }
+/* Stacked identity: the mark on top and the name beneath, on
+   the 50% axis. Vertical also removes the horizontal composition's asymmetry —
+   an avatar beside the text puts the optical centre off the box centre.
+   Reserving 88px of runway each side keeps it clear of both 44pt edge controls
+   at any name length; past that the name ellipsises and the status truncates,
+   so the centre line never has to move to make room. */
+.contact-button { position: absolute; right: 0; left: 0; display: grid; justify-items: center; align-content: center; gap: 3px; width: fit-content; min-width: 0; max-width: calc(100% - 176px); min-height: 44px; margin-inline: auto; padding: 1px 2px 0; }
+/* `minmax(0,1fr)` is what makes the ellipsis actually fire: an `auto` grid
+   track sizes to max-content, so the name grew past the reserve and ran
+   under both edge controls instead of truncating. */
+.contact-button strong { max-width: 100%; min-width: 0; overflow: hidden; font-size: 14.5px; font-weight: 640; letter-spacing: -.008em; line-height: 1.2; text-overflow: ellipsis; white-space: nowrap; }
+/* One calm state detail: the dot is the only thing that moves, and only while
+   the agent is actually working. Reduced motion stops it with everything else. */
+/* Scout energy, authored once and scoped to the mark: a cool luminance ring
+   that is always present and static, and breathes ONLY while the agent is
+   genuinely working. Rendered on a pseudo-element so it never fights the
+   sprite's own tile, and built from box-shadow rather than a filter so there
+   is no continuous expensive blur. Reduced motion stops it with everything
+   else via the global rule at the end of this file. */
+.chat-app[data-style] .contact-button .avatar { position: relative; width: 28px; height: 28px; }
+.contact-button .avatar::after { position: absolute; inset: -3px; border-radius: 34%; box-shadow: 0 0 0 1.25px var(--ring-edge), 0 0 12px 1px var(--ring-glow); content: ""; opacity: .62; pointer-events: none; }
+/* The breath animates opacity ONLY — compositor-friendly, and it keeps the
+   ring's geometry fixed so nothing around the mark reflows. */
+.contact-button[data-working="true"] .avatar::after { animation: scout-ring 2.4s ease-in-out infinite; }
+@keyframes scout-ring { 0%, 100% { opacity: .5 } 50% { opacity: 1 } }
+.contact-button:focus-visible { outline: 2px solid var(--scout-accent); outline-offset: 3px; border-radius: 10px; }
+.avatar { display: grid; place-items: center; flex: none; width: 34px; height: 34px; overflow: visible; background: transparent; }
+.avatar.tiny { width: 28px; height: 28px; font-size: 9px; }
+.avatar.large { width: 58px; height: 58px; font-size: 18px; }
+.avatar.huge { width: 78px; height: 78px; font-size: 24px; }
+.header-actions { display: flex; align-items: center; justify-content: flex-end; }
+.header-actions button:disabled,.info-actions button:disabled,.attachment-tray button:disabled,.info-row:disabled { opacity: .38; cursor: not-allowed; }
+.search-row { grid-row: 2; z-index: 18; display: grid; grid-template-columns: 18px 1fr 44px; gap: 7px; align-items: center; min-height: 54px; padding: 5px 6px 5px 10px; border-bottom: .5px solid var(--hairline); background: var(--chrome); }
+.search-row button { display:grid;place-items:center;width:44px;height:44px;padding:0; }
+.search-row svg { width: 17px; color: var(--muted); }
+.search-row input { min-width: 0; height: 34px; border: 0; outline: none; color: var(--ink); background: transparent; font-size: 15px; }
+.tech-strip { grid-row: 3; z-index: 15; display: flex; gap: 8px; align-items: center; min-height: 38px; padding: 5px 10px; overflow-x: auto; border-bottom: .5px solid rgba(0,0,0,.14); color: #43504c; background: #e9f7f1; font-size: 11px; white-space: nowrap; scrollbar-width: none; }
+.tech-strip div { display: flex; gap: 5px; align-items: center; }
+.tech-strip > span { padding: 3px 6px; border-radius: 5px; background: rgba(0,0,0,.055); }
+.tech-strip button { display: flex; gap: 4px; align-items: center; min-width:44px;min-height:44px;margin-left: auto; padding: 4px 9px; border: 0; border-radius: 8px; color: #ad2e24; background: rgba(173,46,36,.09); font-size: 11px; font-weight: 700; }
+.tech-strip button svg { width: 10px; height: 10px; }
+.live-dot, .idle-dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: #20a36b; }
+.live-dot { animation: pulse 1.4s ease-in-out infinite; }
+.idle-dot { background: #9a9a9d; }
+.transcript { grid-row: 4; position: relative; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 11px 10px 18px; scroll-behavior: smooth; }
+.encryption-note { width: fit-content; max-width: 82%; margin: 3px auto 14px; padding: 5px 9px; border-radius: 9px; color: var(--muted); background: rgba(118,118,128,.09); font-size: 11px; line-height: 1.35; text-align: center; }
+.chat-app[data-style="whatsapp"] .encryption-note { color: var(--note-ink); background: var(--note-fill); }
+.pinned-banner{position:sticky;top:0;z-index:12;display:grid;grid-template-columns:30px minmax(0,1fr) 20px;gap:8px;align-items:center;width:100%;min-height:52px;margin:-4px 0 12px;padding:6px 10px;border:0;border-radius:9px;color:#3b4a54;background:rgba(255,255,255,.96);box-shadow:0 2px 8px rgba(0,0,0,.08);text-align:left}.pinned-banner>span:first-child{display:grid;place-items:center;width:28px;height:28px;border-radius:50%;background:#eef1f2;font-size:18px}.pinned-banner>span:nth-child(2){display:grid;min-width:0}.pinned-banner strong,.pinned-banner small{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.pinned-banner strong{color:#008069;font-size:11px}.pinned-banner small{margin-top:2px;font-size:11px}.pinned-banner>span:last-child{font-size:22px;color:#8696a0}
+.load-earlier{display:block;min-height:44px;margin:0 auto 12px;padding:0 14px;border:0;border-radius:16px;color:var(--accent);background:rgba(118,118,128,.11);font-size:12px;font-weight:650}
+.message-row { display: flex; gap: 5px; align-items: flex-end; max-width: var(--chat-measure); margin-top: 8px; }
+.message-row[data-own="true"] { margin-left: auto; justify-content: flex-end; }
+.message-row[data-grouped="true"] { margin-top: 2px; padding-left: 33px; }
+.message-row[data-own="true"][data-grouped="true"] { padding-left: 0; }
+.bubble-stack { position: relative; min-width: 0; }
+/* Selection policy for the transcript's hit target AND its subtree.
+   `user-select:none` unprefixed does nothing on iOS WebKit, so a 420ms hold
+   still raised the selection loupe, the callout bar and a tap-highlight flash
+   on top of the custom focus gesture. WebKit needs `-webkit-user-select`, and it
+   has to reach the descendants — the text the loupe grabs lives in the bubble,
+   not on the hit target.
+   Scoped deliberately. The WebView-global cure (`textInteractionEnabled=false`)
+   is forbidden here and rightly so: it would take the composer's loupe, caret
+   and editing with it, and would foreclose any future intentional select-to-copy
+   affordance. Copy stays available through the action menu. */
+.message-hit, .message-hit * {
+  -webkit-user-select: none; user-select: none;
+  -webkit-touch-callout: none;
+  -webkit-user-drag: none;
+  /* The hit target is a div with role=button, so the global `button` rule at the
+     top of this file never covered it — this is the missing half. */
+  -webkit-tap-highlight-color: transparent;
+}
+.message-hit { display:flex;align-items:center;min-height:44px;border-radius:18px; outline: 0; touch-action: pan-y; }
+/* Released below the reply threshold, the bubble settles back instead of
+   snapping. Transform-only, and the attribute is dropped the instant a new
+   press begins so the spring-back never fights the finger. */
+.message-hit[data-settling="true"] { transition: transform 220ms var(--motion-ease-out); }
+.message-hit:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.message-bubble { position: relative; min-width: 68px; max-width: 100%; padding: 8px 11px 7px; border-radius: 18px; color: var(--ink); background: var(--incoming); box-shadow: 0 1px 1px rgba(0,0,0,.05); }
+.message-row[data-own="true"] .message-bubble { color: #fff; background: var(--outgoing); }
+.chat-app[data-style="whatsapp"] .message-bubble { border-radius: 7px; box-shadow: 0 1px 1.5px rgba(11,20,26,.16); }
+.chat-app[data-style="whatsapp"] .message-row[data-own="true"] .message-bubble { color: #111b21; }
+.message-bubble p { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font-size: var(--chat-body-size); line-height: 1.25; }
+.message-body { display: grid; min-width: 0; gap: 9px; }
+.message-body ol,.message-body ul { display: grid; gap: 7px; margin: 0; padding-inline-start: 1.35em; }
+.message-body li { padding-inline-start: .12em; overflow-wrap: anywhere; font-size: var(--chat-body-size); line-height: 1.32; }
+.message-body code { padding: 1px 4px; border-radius: 5px; color: inherit; background: rgba(127,127,127,.16); font: .88em/1.3 ui-monospace,SFMono-Regular,Menlo,monospace; overflow-wrap: anywhere; }
+.message-body[data-collapsed="true"],.message-body[data-focused="true"] { overflow: hidden; mask-image: linear-gradient(to bottom,#000 76%,transparent 100%); -webkit-mask-image: linear-gradient(to bottom,#000 76%,transparent 100%); }
+.message-body[data-collapsed="true"] { max-height: 18rem; }
+.message-body[data-focused="true"] { max-height: min(28dvh,240px); }
+.message-read-more { position: relative; min-height: 28px; margin: 2px 0 -3px; padding: 0; border: 0; color: var(--accent); background: transparent; font: inherit; font-weight: 650; text-align: left; }
+.message-read-more::before { position: absolute; inset: -8px; content: ""; }
+.chat-app[data-style="whatsapp"] .message-bubble p { padding-right: 45px; font-size: var(--chat-body-size-wa); line-height: 1.3; }
+.sender-name { display: block; margin-bottom: 3px; color: var(--sender-1); font-size: 11px; font-weight: 700; }
+.sender-name[data-hue="1"] { color: var(--sender-2); }
+.sender-name[data-hue="2"] { color: var(--sender-3); }
+.sender-name[data-hue="3"] { color: var(--sender-4); }
+.message-meta { display: flex; gap: 3px; align-items: center; justify-content: flex-end; margin-top: 3px; color: inherit; opacity: .64; font-size: 11px; white-space: nowrap; }
+.chat-app[data-style="messages"] .message-meta { position: absolute; top: calc(100% + 2px); right: 7px; color: var(--muted); opacity: 1; }
+.chat-app[data-style="messages"] .message-row { margin-bottom: 10px; }
+.message-meta svg { width: 13px; height: 13px; }
+.chat-app[data-style="messages"] .message-meta svg { display: none; }
+.chat-app[data-style="whatsapp"] .message-row[data-own="true"] .message-meta svg { color: #53bdeb; }
+.delivery-issue-mark { display: grid; place-items: center; width: 44px; height: 44px; margin:-14px; padding: 0; border: 0; color: transparent; background: transparent; font-size: 0; cursor: pointer; }.delivery-issue-mark::before{display:grid;place-items:center;width:18px;height:18px;border-radius:50%;color:#fff;background:#e43f38;font-size:11px;font-weight:800;content:"!"}.delivery-issue-mark[data-issue="unconfirmed"]::before{color:#3f2b06;background:#f2b34d}
+/* The quote is a real target — it jumps to the message being replied to — so it
+   carries the 44pt floor like every other one. Measured at 42.2pt in the
+   `messages` style; `whatsapp` already cleared it, hence a base-layer floor
+   rather than a per-theme patch. `min-width` is capped at the available width
+   for the reason given at the top of this file. */
+/* V1 — the quote is a quieter, flatter thing than it was.
+   It used to be a rounded, bordered, tinted pill with a 3px accent strip: a
+   box inside a box, competing with the message that contains it. Two problems
+   with that. Visually, hierarchy was carried by chrome instead of by type. And
+   structurally, an accent bar inside a rounded container contradicts the
+   standing rule that accent bars belong on flat, square rows.
+   What replaces it is ordinary typographic subordination — a sender line, then
+   one ellipsised line at lower weight and opacity. No strip, no border, no
+   pill. The indent alone says "this is quoted". */
+.quoted-message { display: grid; align-content: center; gap: 1px; width:100%;min-width: 0; max-width: 100%; min-height: 44px; margin: -2px 0 5px; padding: 2px 0 3px 9px; overflow: hidden; border:0;border-radius: 0; color: var(--ink); background: transparent; font-size: 11px;text-align:left;cursor:pointer; }
+.quoted-message { position: relative; }
+/* Pressed feedback without chrome at rest: the tap target still answers. */
+.quoted-message:active { opacity: .62; }
+.quoted-message:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; border-radius: 4px; }
+.quoted-message strong { color: var(--ink); font-weight: 600; opacity: .74; }
+/* `min-width:0` is load-bearing, not tidying: this span is a grid item, so its
+   automatic minimum size is its min-content — and `white-space:nowrap` makes
+   that the ENTIRE unwrapped quote. Without the floor the quote refuses to
+   shrink, propagates that width up through the bubble, and the ellipsis never
+   engages. Clipping (`overflow:hidden`) does not reduce a min-content
+   contribution; only an explicit floor does. */
+.quoted-message span { min-width: 0; overflow: hidden; color: #63636a; text-overflow: ellipsis; white-space: nowrap; }
+.reaction-badge { position: absolute; right: 4px; bottom: -13px; z-index: 2; display: grid; place-items: center; min-width: 27px; height: 22px; padding: 0 5px; border: 2px solid var(--canvas); border-radius: 12px; background: #f6f6f7; font-size: 13px; box-shadow: 0 1px 3px rgba(0,0,0,.18); }
+.message-row[data-own="true"] .reaction-badge { right: auto; left: 4px; }
+.swipe-reply-cue{position:absolute;left:-34px;top:50%;display:grid;place-items:center;width:28px;height:28px;border-radius:50%;color:var(--accent);background:var(--chrome);transform:translateY(-50%);box-shadow:0 2px 8px rgba(0,0,0,.15)}.swipe-reply-cue svg{width:14px}.message-hit{transition:transform .16s ease}.message-hit:active{transition:none}
+/* `min-width` is a preferred floor, not a licence to exceed the bubble: paired
+   with `max-width:100%` the card keeps its comfortable size wherever there is
+   room and yields on a 320pt phone, instead of setting a floor that propagates
+   up and widens whatever contains it (see the note at the top of this file). */
+.file-card { display: grid; grid-template-columns: 34px minmax(0,1fr) 30px; gap: 7px; align-items: center; min-width: min(230px, 100%); max-width: 100%; padding: 5px; border-radius: 10px; background: rgba(255,255,255,.58); color: #26272a; text-decoration: none; }
+.file-card > span:first-child { display: grid; place-items: center; width: 34px; height: 38px; border-radius: 7px; color: #fff; background: #6b6fd4; }
+.file-card strong, .file-card small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.file-card strong { font-size: 11px; }.file-card small { margin-top: 2px; color: #6b6b70; font-size: 11px; }
+.file-open { display: grid; place-items: center; width: 30px; height: 30px; border: 1px solid rgba(0,0,0,.18); border-radius: 50%; background: transparent; }
+.file-card svg { width: 15px; }
+.voice-note{display:grid;grid-template-columns:44px minmax(0,1fr);gap:7px;align-items:center;min-width:min(224px,100%);max-width:100%;padding:4px;color:inherit}.voice-note audio{display:none}.voice-note-toggle{display:grid;place-items:center;width:44px;height:44px;padding:0;border:0;border-radius:50%;color:var(--accent-ink);background:var(--accent)}.voice-note-toggle:disabled{color:var(--muted);background:var(--fill)}.voice-note-toggle svg{width:17px;height:17px;fill:currentColor}.voice-note-track{position:relative;display:grid;grid-template-rows:22px 14px;min-width:0}.voice-note-wave{display:flex;gap:2px;align-items:center;height:22px;overflow:hidden}.voice-note-wave i{display:block;flex:1;min-width:2px;height:var(--voice-bar,40%);border-radius:2px;background:currentColor;opacity:.28}.voice-note-wave i[data-played="true"]{opacity:.9}.voice-note-wave i:nth-child(4n+1){height:34%}.voice-note-wave i:nth-child(4n+2){height:72%}.voice-note-wave i:nth-child(4n+3){height:48%}.voice-note-wave i:nth-child(4n){height:88%}.voice-note-track input{position:absolute;inset:0 0 14px;width:100%;height:22px;margin:0;opacity:.001;cursor:pointer}.voice-note-track>span{align-self:end;color:inherit;font-size:11px;font-variant-numeric:tabular-nums;opacity:.64}.voice-note[data-unavailable="true"] .voice-note-wave{opacity:.45}
+.typing-row { display: flex; gap: 5px; align-items: end; margin-top: 8px; }
+.typing { display: flex; gap: 4px; padding: 10px 13px; border-radius: 18px; background: var(--incoming); }
+.typing i { width: 6px; height: 6px; border-radius: 50%; background: #888; animation: typing 1.15s ease-in-out infinite; }.typing i:nth-child(2){animation-delay:.14s}.typing i:nth-child(3){animation-delay:.28s}
+.jump-button { position: absolute; right: 12px; bottom: 78px; z-index: 16; display: grid; place-items: center; width: 44px; height: 44px; border: .5px solid var(--hairline); border-radius: 50%; color: var(--muted); background: var(--chrome); box-shadow: 0 4px 14px rgba(0,0,0,.16); }.jump-button svg{width:18px}
+.loading-stack { display: grid; gap: 9px; padding: 30px 16px; }.loading-stack i { display: block; width: 64%; height: 38px; border-radius: 18px; background: rgba(118,118,128,.12); animation: shimmer 1.4s ease-in-out infinite; }.loading-stack i:nth-child(2){width:76%;margin-left:auto}.loading-stack i:nth-child(3){width:46%}
+.inline-error { display: grid; grid-template-columns: 32px minmax(0,1fr) auto; gap: 10px; align-items: center; width: min(calc(100% - 24px), 410px); margin: 20px auto; padding: 10px; border: .5px solid var(--hairline); border-radius: 14px; color: var(--ink); background: var(--chrome); text-align: left; box-shadow: 0 2px 10px rgba(0,0,0,.045); }
+.inline-error-mark { display: grid; place-items: center; width: 32px; height: 32px; border-radius: 10px; color: #a6651b; background: rgba(214,146,48,.12); }
+.inline-error-mark svg { width: 16px; height: 16px; }
+.inline-error-copy { display: grid; gap: 3px; min-width: 0; }
+.inline-error strong { font-size: 13px; font-weight: 600; }
+.inline-error small { color: var(--muted); font-size: 11px; line-height: 1.35; }
+.inline-error > button { min-width: 58px; min-height: 44px; padding: 0 10px; border: 0; border-radius: 10px; color: var(--scout-accent); background: var(--edge-plate); font-size: 12px; font-weight: 600; }
+.inline-error > button:active { background: var(--edge-plate-live); }
+.empty-chat { display: grid; justify-items: center; max-width: 280px; margin: 18vh auto 0; text-align: center; }.empty-chat strong{margin-top:10px}.empty-chat p{margin:7px 0;color:var(--muted);font-size:13px;line-height:1.4}
+.composer-wrap { grid-row: 5; position: relative; z-index: 20; padding: 6px 8px max(7px, env(safe-area-inset-bottom)); border-top: .5px solid var(--hairline); background: var(--chrome); backdrop-filter: blur(18px); }
+.composer-row { display: grid; grid-template-columns: 44px 1fr 44px; gap: 3px; align-items: end; }
+.composer-row > button { display: grid; place-items: center; width: 44px; height: 44px; border: 0; border-radius: 50%; color: var(--accent); background: transparent; }
+.add-button { border: 1px solid rgba(118,118,128,.34) !important; color: var(--muted) !important; transition: transform .18s ease; }.add-button[data-open="true"]{transform:rotate(45deg)}
+.composer-row svg { width: 19px; height: 19px; }
+.composer-field { display: flex; align-items: flex-end; min-height: 44px; border: 1px solid rgba(118,118,128,.33); border-radius: 22px; background: rgba(255,255,255,.68); }
+.composer-field textarea { flex: 1; max-height: 104px; min-height: 42px; resize: none; padding: 11px 11px 9px; border: 0; outline: 0; color: #111; background: transparent; font-size: 15px; line-height: 1.25; }
+/* In-field controls keep a 42px LAYOUT box and get their 44pt target from a
+   transparent hit expander.
+   Growing the box itself to 44 is the obvious move and it is wrong: the field's
+   content box is its 44px minus its borders, so a 44px child pushes the field
+   to 46px — which is precisely the `align-items:end` drift this section exists
+   to remove. Measured: doing that put WhatsApp at fieldH 46 and dAttach 1.0.
+   The expander adds touch area without adding layout. */
+.composer-field button { position:relative;display:grid;place-items:center;flex:none;width:42px;height:42px;border:0;background:transparent;color:#78787e}
+.composer-field button::after { position:absolute;inset:-1px;content:"";}.composer-field button svg{width:18px}
+.voice-input{display:grid;grid-template-columns:30px minmax(64px,1fr) minmax(76px,auto);align-items:center;gap:6px;width:100%;min-width:0;height:42px;padding:4px 7px 4px 4px}.voice-input-mark{display:grid;place-items:center;width:30px;height:30px;border-radius:50%;color:#fff;background:var(--accent)}.voice-input-mark svg{width:15px;height:15px}.voice-input-wave{display:flex;align-items:center;gap:2px;min-width:0;height:22px;overflow:hidden}.voice-input-wave i{display:block;flex:1;min-width:2px;max-width:3px;border-radius:2px;background:var(--accent);transition:height .1s ease-out}.voice-input-copy{display:grid;min-width:0;text-align:right}.voice-input-copy strong,.voice-input-copy small{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.voice-input-copy strong{font-size:11px;font-weight:650;font-variant-numeric:tabular-nums}.voice-input-copy small{color:var(--muted);font-size:10px}.voice-input[data-state="preparing"] .voice-input-mark,.voice-input[data-state="transcribing"] .voice-input-mark{color:var(--muted);background:rgba(118,118,128,.14)}.composer-row[data-voice-state="listening"] .send-button svg{width:13px;height:13px;fill:currentColor}
+.send-button { color: #fff !important; background: var(--accent) !important; }.send-button:disabled{color:var(--muted)!important;background:transparent!important}
+/* The composer's reply-target chip is the SAME semantic object as the in-bubble
+   quote — a sender line plus one ellipsised quote line — and a swipe-reply puts
+   the two on screen together. So it speaks the same flat language: no 3px accent
+   strip, no pill-in-pill, no shadow. Hierarchy comes from type, exactly as it
+   does for `.quoted-message`; the only chrome left is a flat, near-imperceptible
+   fill separating it from the composer beneath. The 44pt cancel target is
+   untouched — the treatment got quieter, the affordance did not.
+
+   `flex:none` on the ✕ is load-bearing and was a real defect, found by measuring
+   rather than by reading: the chip is a flex row, the button defaulted to
+   `flex-shrink:1`, and a long quote squeezed a declared 44×44 target down to a
+   painted **28×44**. `min-width:0` on the text span lets it absorb shrinkage but
+   does not exempt its sibling, because shrink is distributed across every
+   shrinkable item. Measured identically before and after the restyle
+   (`reply-chip.html`), so this predates the flattening — it is the same
+   min-content/flex family as the overlay containment bug, in the one target the
+   containment sweep never covered, because the chip lives outside the focus
+   layer. */
+.reply-target { display: flex; justify-content: space-between; gap: 9px; align-items: center; margin: -1px 44px 6px 44px; padding: 4px 0 5px 9px; border: 0; border-radius: 0; color: var(--ink); background: rgba(118,118,128,.08); }.reply-target>span{display:grid;gap:1px;min-width:0}.reply-target strong{color:var(--ink);font-size:11px;font-weight:600;opacity:.74}.reply-target small{overflow:hidden;color:var(--ink);font-size:11px;text-overflow:ellipsis;white-space:nowrap;opacity:.52}.reply-target button{display:grid;flex:none;place-items:center;width:44px;height:44px;border:0;background:transparent}.reply-target button:active{opacity:.62}.reply-target button:focus-visible{outline:2px solid var(--accent);outline-offset:1px;border-radius:4px}.reply-target svg{width:16px}
+.attachment-previews { display: flex; gap: 7px; margin: 0 0 7px 44px; overflow-x: auto; }.attachment-preview { display:grid;grid-template-columns:36px minmax(90px,1fr) 44px;gap:7px;align-items:center;min-width:220px;padding:5px;border-radius:10px;background:rgba(118,118,128,.11)}.attachment-preview img{width:36px;height:36px;border-radius:7px;object-fit:cover}.attachment-preview>svg{width:24px}.attachment-preview span{display:grid;min-width:0}.attachment-preview strong,.attachment-preview small{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.attachment-preview strong{font-size:11px}.attachment-preview small{color:var(--muted);font-size:11px}.attachment-preview button{display:grid;place-items:center;width:44px;height:44px;padding:0;border:0;background:transparent}.attachment-preview button svg{width:14px}
+.voice-draft{position:relative;display:grid;grid-template-columns:minmax(0,1fr) 44px;min-width:280px;padding:4px;border-radius:12px;background:rgba(118,118,128,.11)}.voice-draft .voice-note{grid-column:1;min-width:0}.voice-draft>small{grid-column:1;margin:-4px 8px 4px 55px;color:var(--muted);font-size:11px}.voice-draft>button{grid-column:2;grid-row:1 / span 2;display:grid;place-items:center;width:44px;height:44px;align-self:center;padding:0;border:0;background:transparent;color:var(--muted)}.voice-draft>button svg{width:14px}
+.send-error { display:flex;justify-content:space-between;gap:8px;margin:0 44px 6px;padding:7px 9px;border-radius:8px;color:#8f251e;background:#fdebe9;font-size:11px}.send-error button{min-width:44px;min-height:44px;border:0;color:inherit;background:transparent;font-weight:700}
+.attachment-tray { position: absolute; right: 8px; bottom: calc(100% + 6px); left: 8px; display: grid; grid-template-columns: repeat(4,1fr); gap: 10px 6px; padding: 12px 8px; border: .5px solid var(--hairline); border-radius: 14px; background: var(--chrome); box-shadow: 0 -12px 36px rgba(0,0,0,.16); }.attachment-tray button{display:grid;justify-items:center;gap:5px;min-height:62px;padding:0;border:0;background:transparent;color:var(--ink);font-size:11px}.attachment-tray span{display:grid;place-items:center;width:40px;height:40px;border-radius:12px;color:#fff;font-size:20px}.attachment-tray svg{width:20px}.attachment-tray span[data-tone="blue"]{background:#2d8dff}.attachment-tray span[data-tone="teal"]{background:#12968c}.attachment-tray span[data-tone="cyan"]{background:#1f8fb5}.attachment-tray span[data-tone="indigo"]{background:#6768ce}.attachment-tray span[data-tone="purple"]{background:#8855cc}.attachment-tray span[data-tone="teal-deep"]{background:#0f6f78}.attachment-tray span[data-tone="gray"]{background:#7d8790}.attachment-tray span[data-tone="green"]{background:#24a967}
+.focus-layer,.sheet-layer { position:absolute;inset:0;z-index:100;background:rgba(0,0,0,.42);backdrop-filter:blur(4px)}/* The single track is `minmax(0,1fr)`, never `auto`. An auto track takes its
+   base size from the item's MIN-content contribution, and the lifted message
+   contains a `white-space:nowrap` quoted line whose min-content is the whole
+   unwrapped sentence (~460px). That grew the track past the phone, and
+   `justify-items:center` then centred the 324px stack inside the oversized
+   track — pushing it off the right edge, where `overflow:hidden` clipped it
+   instead of revealing it. A 0-floor fr track cannot be widened by content. */
+.focus-layer{display:grid;grid-template-columns:minmax(0,1fr);justify-items:center;align-items:center;padding:max(20px,env(safe-area-inset-top)) max(20px,env(safe-area-inset-right)) max(20px,env(safe-area-inset-bottom)) max(20px,env(safe-area-inset-left));overflow:hidden}.focused-message{display:flex;flex-direction:column;width:min(324px,100%);min-width:0;max-width:100%;max-height:100%;margin-inline:auto;outline:0}.focused-message>.message-row{flex:0 1 auto;min-width:0;min-height:0;max-width:100%;margin:0}.focused-message>.message-row .bubble-stack{width:100%;min-width:0;max-width:100%}.focused-message .message-meta,.focused-message .reaction-badge{display:none}/* Seven 44pt targets are 308pt of hard minimum. A 320pt phone offers ~280pt
+   between the safe-area gutters, so the row genuinely cannot fit — the only
+   honest options are fewer targets or a scroll, never a smaller target. It
+   scrolls: every reaction stays reachable, and at 393pt the content fits so no
+   scrolling occurs and the row looks exactly as it did. `overflow-x:auto` also
+   makes the row's min-content contribution 0, so it can never widen the layer. */
+.reaction-picker{position:relative;display:flex;flex:none;align-items:center;justify-content:space-between;gap:2px;min-width:0;max-width:100%;min-height:54px;margin-bottom:9px;padding:5px 6px;overflow-x:auto;overflow-y:hidden;overscroll-behavior-x:contain;-webkit-overflow-scrolling:touch;scrollbar-width:none;border-radius:18px;background:#fff;box-shadow:0 12px 30px rgba(0,0,0,.2)}.reaction-picker::-webkit-scrollbar{display:none}.reaction-picker button{display:grid;flex:0 0 auto;place-items:center;width:44px;height:44px;padding:0;border:0;background:transparent;font-size:21px}.reaction-picker svg{width:18px}/* `auto-fit` rather than a fixed 6, for the same arithmetic: six 44pt cells plus
+   gaps and padding exceed a 320pt phone's usable width, and a fixed column count
+   would have to shrink the targets to comply. Reflowing to five keeps 44pt. */
+.emoji-grid{display:grid;flex:none;grid-template-columns:repeat(auto-fit,minmax(44px,1fr));gap:3px;min-width:0;max-width:100%;margin:-2px 0 9px;padding:8px;border-radius:14px;background:#fff;box-shadow:0 8px 24px rgba(0,0,0,.18)}.emoji-grid button{display:grid;place-items:center;min-width:44px;min-height:44px;padding:0;border:0;border-radius:9px;background:transparent;font-size:22px}.action-menu{display:grid;flex:none;min-width:0;max-width:100%;margin-top:10px;overflow:hidden;border-radius:14px;background:#fff;box-shadow:0 12px 30px rgba(0,0,0,.2)}.action-menu button{display:flex;justify-content:space-between;align-items:center;gap:10px;min-width:0;min-height:46px;padding:0 15px;border:0;border-top:.5px solid rgba(0,0,0,.12);color:#111;background:#fff;text-align:left}.action-menu button > span:first-child{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.action-menu button:first-child{border-top:0}.action-menu svg{width:18px}.destructive{color:#d7372f!important}
+.sheet-layer{display:flex;align-items:flex-end;overflow:hidden}.info-sheet{position:relative;width:100%;min-width:0;max-height:88%;padding:8px 14px calc(20px + env(safe-area-inset-bottom));overflow-y:auto;border-radius:22px 22px 0 0;outline:0;background:#f3f3f5;text-align:center}.sheet-grab{width:40px;height:5px;margin:0 auto 18px;border-radius:3px;background:#b5b5ba}.info-sheet>.avatar{margin:auto}.info-sheet h2{margin:9px 0 0;font-size:24px}.info-sheet>p{margin:3px 0 18px;color:#747479;font-size:12px}.info-actions{display:grid;grid-template-columns:repeat(4,1fr);gap:7px;margin-bottom:18px}.info-actions button{display:grid;justify-items:center;gap:5px;min-height:58px;padding:10px 4px;border:0;border-radius:12px;color:var(--accent);background:#fff;font-size:11px}.info-actions svg{width:20px}.info-row{display:flex;align-items:center;width:100%;min-height:48px;padding:0 13px;border:0;border-bottom:.5px solid rgba(0,0,0,.1);background:#fff;text-align:left}.info-row:first-of-type{border-radius:12px 12px 0 0}.info-row svg{width:16px;margin-left:auto;color:#aaa}.info-row small{margin-left:auto;color:#777}.done-button{width:100%;min-height:46px;margin-top:16px;border:0;border-radius:12px;color:var(--accent);background:#fff;font-weight:700}
+/* ── Compact identity card ────────────────────────────────────────────────
+   Deliberately smaller than the contact sheet: a name, a few true facts, and
+   a way out. Triggers keep 44pt targets without inflating the avatar. */
+.avatar-button { display:grid;place-items:center;flex:none;width:44px;height:44px;margin:-8px;padding:0;border:0;background:transparent }
+.avatar-button:focus-visible { outline:2px solid var(--accent);outline-offset:-6px;border-radius:50% }
+button.sender-name { position:relative;padding:0;border:0;background:transparent;font:inherit;font-size:inherit;font-weight:inherit;letter-spacing:inherit;line-height:inherit;text-align:left;cursor:pointer }
+button.sender-name::before { position:absolute;inset:-11px -8px;content:"" }
+button.sender-name:focus-visible { outline:2px solid var(--accent);outline-offset:2px;border-radius:4px }
+/* Same 0-floor track as `.focus-layer`: an identity fact long enough to resist
+   wrapping must never be able to widen the track and slide the card off-screen. */
+.identity-layer { position:absolute;inset:0;z-index:120;display:grid;grid-template-columns:minmax(0,1fr);justify-items:center;align-items:center;padding:max(24px,env(safe-area-inset-top)) max(24px,env(safe-area-inset-right)) max(24px,env(safe-area-inset-bottom)) max(24px,env(safe-area-inset-left));overflow:hidden;background:rgba(0,0,0,.42);backdrop-filter:blur(4px) }
+.identity-card { display:grid;justify-items:center;gap:6px;width:min(280px,100%);min-width:0;max-height:100%;overflow-y:auto;padding:18px 16px 12px;border-radius:18px;outline:0;color:var(--ink);background:var(--chrome);box-shadow:0 18px 44px rgba(0,0,0,.3) }
+.identity-card > strong { font-size:17px;line-height:1.2;text-align:center }
+/* Facts read as a small designed block: label above value, two to a row,
+   so the card stays compact and scannable instead of a definition list
+   that grows a line per fact. */
+.identity-facts { display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:9px 12px;width:100%;margin:10px 0 2px;padding-top:11px;border-top:.5px solid var(--hairline) }
+.identity-facts > :only-child { grid-column:1 / -1 }
+.identity-fact { display:grid;gap:1px;min-width:0 }
+.identity-fact > span { color:var(--muted);font-size:9.5px;font-weight:600;letter-spacing:.07em;text-transform:uppercase }
+.identity-fact > strong { overflow:hidden;font-size:12.5px;font-weight:550;text-overflow:ellipsis;white-space:nowrap }
+/* A status line appears only when it changes what you would do next. */
+.identity-state { margin-top:-1px;color:var(--scout-accent);font-size:11px;font-weight:640;letter-spacing:.01em }
+.identity-details,.identity-dismiss { width:100%;min-height:44px;border:0;border-radius:11px;font:inherit;font-size:13px;font-weight:650 }
+.identity-details { margin-top:6px;color:var(--accent);background:rgba(118,118,128,.12) }
+.identity-dismiss { color:var(--accent);background:transparent }
+.toast { position:absolute;z-index:150;bottom:88px;left:50%;padding:8px 13px;border-radius:15px;color:#fff;background:rgba(25,25,27,.9);font-size:11px;transform:translateX(-50%);box-shadow:0 7px 20px rgba(0,0,0,.24)}
+.technical-turn { width:calc(100% - 20px);margin:15px auto 0;padding:10px;border:1px solid rgba(15,122,91,.2);border-radius:12px;background:rgba(235,248,243,.94);color:#26322e}.technical-turn>header{display:flex;gap:6px;align-items:center;margin-bottom:7px;font-size:11px}.technical-turn>header small{margin-left:auto;color:#72807b}.technical-block{display:grid;grid-template-columns:26px minmax(0,1fr) auto;gap:7px;align-items:center;padding:7px 0;border-top:1px solid rgba(0,0,0,.08)}.technical-block>span:first-child{display:grid;place-items:center;width:26px;height:26px;border-radius:7px;background:rgba(0,0,0,.06)}.technical-block svg{width:14px}.technical-block>span:nth-child(2){display:grid;min-width:0}.technical-block strong{overflow:hidden;font-size:11px;text-overflow:ellipsis;white-space:nowrap}.technical-block small{overflow:hidden;color:#65736e;font-size:11px;text-overflow:ellipsis;white-space:nowrap}.approval-buttons{display:flex;gap:4px}.approval-buttons button,.question-card button{min-height:44px;padding:7px 10px;border:0;border-radius:8px;color:#fff;background:#16805e;font-size:11px;font-weight:700}.approval-buttons button:first-child{color:#8d2c26;background:#f5deda}.approval-buttons button:disabled,.question-card button:disabled{opacity:.48}.question-card{padding:9px;border-top:1px solid rgba(0,0,0,.08)}.question-card>strong{font-size:11px}.question-card p{margin:4px 0 8px;font-size:11px}.question-card>div{display:flex;flex-wrap:wrap;gap:5px}.technical-error{margin:7px 0 0;padding:7px;border-radius:7px;color:#8f251e;background:#fdebe9;font-size:11px}
+@keyframes typing{0%,60%,100%{transform:translateY(0);opacity:.45}30%{transform:translateY(-3px);opacity:1}}@keyframes pulse{50%{opacity:.35;transform:scale(.82)}}@keyframes shimmer{50%{opacity:.5}}
+@media (prefers-color-scheme: dark){.chat-app{--ring-edge:rgba(45,212,160,.46);--ring-glow:rgba(45,212,160,.22);--sender-1:#2dd4a0;--sender-2:#7fd4f0;--sender-3:#8fa8f5;--sender-4:#5fd8c8;--scout-accent:#10b981;--canvas:#000;--chrome:rgba(28,28,30,.96);--header:#141618;--header-top:#1b1e20;--edge-plate:rgba(45,212,160,.07);--edge-plate-live:rgba(45,212,160,.14);--edge-ring:rgba(45,212,160,.22);--ink:#f5f5f7;--muted:#a1a1aa;--incoming:#2c2c2e;--hairline:rgba(255,255,255,.14)}.chat-app[data-style="whatsapp"]{--canvas:#0b141a;--chrome:rgba(32,44,51,.97);--incoming:#202c33;--outgoing:#005c4b;--ink:#e9edef;background-color:#0b141a}.composer-field{background:rgba(44,44,46,.94)}.chat-app[data-style="whatsapp"] .composer-field{background:#202c33}.composer-field textarea{color:#fff}.composer-field textarea::placeholder{color:#98989f}.reaction-picker,.emoji-grid,.action-menu,.action-menu button{color:#fff;background:#2c2c2e}.info-sheet{background:#1c1c1e}.identity-card{background:#2c2c2e;color:#fff}.identity-details{background:rgba(255,255,255,.1)}.info-actions button,.info-row,.done-button{background:#2c2c2e}.quoted-message{background:rgba(0,0,0,.25);color:#fff}.file-card{background:rgba(0,0,0,.2);color:#fff}.attachment-tray{background:rgba(36,36,38,.98)}.reply-target{background:rgba(255,255,255,.06)}.chat-app[data-style="whatsapp"] .encryption-note{color:var(--note-ink);background:var(--note-fill)}.pinned-banner{color:#e9edef;background:rgba(32,44,51,.97)}.pinned-banner>span:first-child{background:#263840}.tech-strip,.technical-turn{color:#dce9e4;background:#152b25}.message-row[data-own="true"] .message-bubble,.chat-app[data-style="whatsapp"] .message-row[data-own="true"] .message-bubble{color:#fff}}
+/* ── Motion ───────────────────────────────────────────────────────────────
+   One system, four rules.
+
+   1. Transform and opacity only. Animating width/height/top/left — or box-shadow,
+      which has already failed a pass on this surface — puts layout work on every
+      frame and costs scroll responsiveness on a phone.
+   2. Overlays move in AND out. The exit is why `overlay-motion.ts` exists: an
+      element that unmounts on dismissal cannot animate away, so it stays mounted
+      in a `closing` phase for exactly `MOTION_EXIT_MS` (160ms) first.
+   3. Nothing loops. There is no ambient motion on the header, the transcript, or
+      the viewport — only the existing local typing indicator, untouched.
+   4. Entrances never move layout. The transcript reveal is opacity-only, so
+      content cannot shift under a thumb already reaching for it.
+
+   Reduced Motion is handled by the single global switch at the end of this file,
+   not by per-rule fallbacks — those drift the moment someone adds a keyframe. */
+.chat-app{--motion-enter:220ms;--motion-exit:160ms;--motion-quick:140ms;
+  /* Decelerating: fast to start, settles rather than stops. */
+  --motion-ease-out:cubic-bezier(.32,.72,0,1);
+  --motion-ease-in:cubic-bezier(.4,0,1,1)}
+
+@keyframes scout-scrim-in{from{opacity:0}to{opacity:1}}
+@keyframes scout-scrim-out{from{opacity:1}to{opacity:0}}
+/* Lifts toward the reader rather than sliding: the message is being picked up
+   off the transcript, and 0.94 is enough to read as depth without a lurch. */
+@keyframes scout-lift-in{from{opacity:0;transform:scale(.94)}to{opacity:1;transform:none}}
+@keyframes scout-lift-out{from{opacity:1;transform:none}to{opacity:0;transform:scale(.97)}}
+@keyframes scout-sheet-in{from{transform:translateY(100%)}to{transform:translateY(0)}}
+@keyframes scout-sheet-out{from{transform:translateY(0)}to{transform:translateY(100%)}}
+@keyframes scout-rise-in{from{opacity:0;transform:translateY(10px) scale(.98)}to{opacity:1;transform:none}}
+@keyframes scout-rise-out{from{opacity:1;transform:none}to{opacity:0;transform:translateY(6px) scale(.99)}}
+@keyframes scout-content-in{from{opacity:0}to{opacity:1}}
+
+/* Scrims fade; their contents travel. Separating the two keeps the backdrop
+   from appearing to move with the card. */
+.focus-layer,.identity-layer,.sheet-layer{animation:scout-scrim-in var(--motion-enter) var(--motion-ease-out) both}
+.focus-layer[data-phase="closing"],.identity-layer[data-phase="closing"],.sheet-layer[data-phase="closing"]{animation:scout-scrim-out var(--motion-exit) var(--motion-ease-in) both}
+.focus-layer .focused-message{animation:scout-lift-in var(--motion-enter) var(--motion-ease-out) both}
+.focus-layer[data-phase="closing"] .focused-message{animation:scout-lift-out var(--motion-exit) var(--motion-ease-in) both}
+.identity-layer .identity-card{animation:scout-rise-in var(--motion-enter) var(--motion-ease-out) both}
+.identity-layer[data-phase="closing"] .identity-card{animation:scout-rise-out var(--motion-exit) var(--motion-ease-in) both}
+.sheet-layer .info-sheet{animation:scout-sheet-in var(--motion-enter) var(--motion-ease-out) both}
+.sheet-layer[data-phase="closing"] .info-sheet{animation:scout-sheet-out var(--motion-exit) var(--motion-ease-in) both}
+.attachment-tray{animation:scout-rise-in var(--motion-quick) var(--motion-ease-out) both}
+.attachment-tray[data-phase="closing"]{animation:scout-rise-out var(--motion-quick) var(--motion-ease-in) both}
+/* An exiting layer is still in the tree for its 160ms of animation. It must stop
+   accepting touches the moment it starts leaving, or a fast follow-up tap lands
+   on a scrim the operator already dismissed and appears to do nothing. */
+.focus-layer[data-phase="closing"],
+.identity-layer[data-phase="closing"],
+.sheet-layer[data-phase="closing"],
+.attachment-tray[data-phase="closing"]{pointer-events:none}
+/* The emoji grid expands inside an already-open layer, so it gets the quick
+   scale rather than a second full entrance. */
+.emoji-grid{animation:scout-rise-in var(--motion-quick) var(--motion-ease-out) both}
+/* Opacity only: the transcript must not shift as it arrives. */
+.transcript[data-revealed="true"]{animation:scout-content-in var(--motion-enter) var(--motion-ease-out) both}
+/* A message arrives by fading up a few points into the space the layout has
+   already given it. The row is NOT animated — animating the row's own box would
+   reflow the transcript under the reader — so the motion lives on the bubble,
+   which is painted inside a slot whose size never changes. */
+.message-row:last-child .message-bubble{animation:scout-message-in var(--motion-quick) var(--motion-ease-out) both}
+@keyframes scout-message-in{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+/* The count is the point of the affordance: it says how far behind you are, not
+   merely that there is a "down". */
+.jump-count{position:absolute;top:-3px;right:-3px;display:grid;place-items:center;min-width:18px;height:18px;padding:0 5px;border-radius:9px;color:#fff;background:var(--scout-accent);font-size:11px;font-variant-numeric:tabular-nums;line-height:1}
+.jump-button[data-unseen]{color:var(--ink)}
+
+@media (prefers-reduced-motion:reduce){*{animation:none!important;scroll-behavior:auto!important;transition:none!important}}

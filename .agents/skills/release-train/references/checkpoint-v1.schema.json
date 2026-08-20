@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://openscout.app/schemas/release-train/checkpoint-v1.schema.json",
+  "title": "OpenScout release train checkpoint",
+  "type": "object",
+  "required": ["schemaVersion","workflowVersion","runId","idempotencyKey","createdAt","updatedAt","repo","lock","currentStage","loopEpoch","stageHistory","inputs","outputs","decisions","receipts","retryCount","lanes","blockers","exclusions"],
+  "properties": {
+    "schemaVersion":{"const":1},
+    "workflowVersion":{"const":"1.0.0"},
+    "runId":{"type":"string","pattern":"^rt-[0-9]{8}-(09|17)-[a-f0-9]{8}$"},
+    "idempotencyKey":{"type":"string","pattern":"^sha256:"},
+    "lock":{"$ref":"#/$defs/lock"},
+    "currentStage":{"enum":["S00","S10","S20","S30","S40","S50","S60","S70","S80","S90","S100","S110"]},
+    "loopEpoch":{"type":"integer","minimum":0},
+    "completedAt":{"type":["string","null"]},
+    "lanes":{"type":"array","items":{"$ref":"#/$defs/lane"}},
+    "receipts":{"type":"array","items":{"$ref":"#/$defs/receipt"}},
+    "outputs":{"type":"object"}
+  },
+  "$defs": {
+    "lock":{"type":"object","required":["key","token","status","acquiredAt","expiresAt","releasedAt"],"properties":{"key":{"type":"string","pattern":"^sha256:"},"token":{"type":"string","minLength":1},"status":{"enum":["active","released"]},"acquiredAt":{"type":"string","format":"date-time"},"expiresAt":{"type":"string","format":"date-time"},"releasedAt":{"type":["string","null"],"format":"date-time"}},"additionalProperties":false},
+    "lane":{"type":"object","required":["laneId","idempotencyKey","checkout","branch","headSha","owner","classification","quarantined","reason"],"properties":{"classification":{"enum":["UNCLASSIFIED","READY","HOLD","BLOCK","EXCLUDE"]},"quarantined":{"type":"boolean"}}},
+    "receipt":{"type":"object","required":["receiptId","idempotencyKey","kind","stage","externalId","recordedAt"],"properties":{"idempotencyKey":{"type":"string","pattern":"^sha256:"}}}
+  },
+  "additionalProperties": true
+}

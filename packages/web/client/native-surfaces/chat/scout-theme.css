@@ -1,0 +1,667 @@
+/* Scout — the house chat style. The fourth presentation, additive to Messages
+   and WhatsApp, and to the Original renderer on the native side.
+
+   The other two styles borrow a grammar from an app you already know. This one
+   borrows nothing. It is built from the palette the rest of Scout is built
+   from — ScoutPalette in apps/ios/Scout/Theme.swift — so a conversation looks
+   like it belongs to the same product as Agents, Home, and Chats:
+
+     warm paper ground (#f6f3ed), ink that is not black (#23211d),
+     one rationed emerald (#07785b light / #10b981 dark).
+
+   The differentiator is structure, not colour. Messages is pills-on-white with
+   a gradient; this is cards-on-paper, flat, hairlined, and quiet:
+
+   - Incoming reads as a card on paper — surface fill plus a real hairline —
+     instead of a grey pill. Outgoing is one flat emerald, no gradient.
+   - Geometry is calmer: 13px radius, no tails. The only flourish is a 5px
+     anchor corner on the last bubble of a run, which points at its author
+     without drawing a tail.
+   - Grouping is carried by space (3px inside a run, 14px between), never by
+     rules or boxes, and timestamps collapse to the END of a run rather than
+     hanging under every bubble.
+   - The day marker is typographic — tracked small caps between hairlines —
+     rather than a pill.
+
+   Agent-awareness is present but never operational: the sprite avatar and the
+   sender label at the start of an agent run, and Scout's truthful receipts
+   ("Posted", "Agent is working", "Agent responded") set in the same quiet
+   register as a timestamp. No status chips, no dashboards, no second colour.
+
+   Everything is scoped to [data-style="scout"]. Messages, WhatsApp, and the
+   shared structure in scout-chat.css are untouched. */
+
+/* ---- tokens ------------------------------------------------------------ */
+.chat-app[data-style="scout"] {
+  /* Straight from ScoutPalette (light). The chat is the same material as the
+     rest of the app rather than a white sheet dropped inside it. */
+  --canvas: #f6f3ed;
+  --raised: #fffdf9;
+  --chrome: #f2eee6;
+  --header: #f2eee6;
+  --sheet: #f2eee6;
+  --field: #fffdf9;
+
+  --ink: #23211d;
+  --muted: #58534b;
+  /* Timestamps and delivery states carry meaning, so the faintest ink still
+     clears AA on paper: #69635a on #f6f3ed is 5.36:1. */
+  --faint: #69635a;
+
+  --hairline: rgba(35, 33, 29, .13);
+  --hairline-strong: rgba(35, 33, 29, .22);
+  --border: #cdc5b8;
+  --fill: rgba(35, 33, 29, .06);
+  --fill-2: rgba(35, 33, 29, .11);
+
+  /* One accent, rationed to: outgoing bubbles, the send key, the working dot,
+     and links. Nothing else in this style is allowed to be green.
+     #07785b on paper is 4.93:1; white on #07785b is 5.45:1. */
+  --accent: #07785b;
+  --scout-accent: #07785b;
+  --accent-soft: rgba(7, 120, 91, .09);
+  --accent-ink: #fffdf9;
+
+  --incoming: #fffdf9;
+  --incoming-ink: #23211d;
+  --outgoing: #07785b;
+  --outgoing-flat: #07785b;
+  --outgoing-ink: #fffdf9;
+
+  --danger: #b91c1c;
+  --danger-ink: #8f1d1d;
+  --danger-fill: #f7e8e4;
+
+  --radius-bubble: 13px;
+  --radius-anchor: 5px;
+  --radius-card: 12px;
+  --radius-tight: 8px;
+
+  /* One rhythm unit. Runs breathe at 14, lines inside a run at 3. */
+  --run-gap: 14px;
+  --line-gap: 3px;
+
+  background: var(--canvas);
+}
+
+/* ---- header — contact first, nothing else ------------------------------ */
+.chat-app[data-style="scout"] .chat-header {
+  min-height: 56px;
+  border-bottom: .5px solid var(--hairline);
+  background: var(--header);
+  backdrop-filter: none;
+}
+
+.chat-app[data-style="scout"] .back-button,
+.chat-app[data-style="scout"] .header-actions button {
+  color: var(--muted);
+}
+
+.chat-app[data-style="scout"] .back-label {
+  font-size: 15px;
+}
+
+.chat-app[data-style="scout"] .contact-button strong {
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: -.01em;
+  color: var(--ink);
+}
+
+.chat-app[data-style="scout"] .contact-button small {
+  margin-top: 1px;
+  color: var(--faint);
+  font-size: 11px;
+}
+
+.chat-app[data-style="scout"] .search-row {
+  border-bottom: .5px solid var(--hairline);
+  background: var(--chrome);
+}
+
+.chat-app[data-style="scout"] .search-row input::placeholder {
+  color: var(--faint);
+}
+
+/* ---- transcript -------------------------------------------------------- */
+.chat-app[data-style="scout"] .transcript {
+  padding: 6px 14px 20px;
+  background: var(--canvas);
+}
+
+/* The day marker: typographic, not a pill. Hairlines carry the width so the
+   label itself can stay small and quiet. */
+.chat-app[data-style="scout"] .encryption-note {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  width: 100%;
+  max-width: none;
+  margin: 10px 0 16px;
+  padding: 0;
+  border-radius: 0;
+  color: var(--faint);
+  background: transparent;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: .16em;
+  text-transform: uppercase;
+}
+
+.chat-app[data-style="scout"] .encryption-note::before,
+.chat-app[data-style="scout"] .encryption-note::after {
+  flex: 1;
+  height: .5px;
+  background: var(--hairline);
+  content: "";
+}
+
+.chat-app[data-style="scout"] .load-earlier {
+  color: var(--muted);
+  background: var(--fill);
+  font-weight: 600;
+}
+
+/* ---- runs -------------------------------------------------------------- */
+/* The avatar marks where a run STARTS, so it aligns to the first line of the
+   card rather than floating at the bottom of a tall one. */
+.chat-app[data-style="scout"] .message-row {
+  gap: 8px;
+  align-items: flex-start;
+  max-width: 86%;
+  margin-top: var(--run-gap);
+}
+
+.chat-app[data-style="scout"] .message-row[data-grouped="true"] {
+  margin-top: var(--line-gap);
+  padding-left: 36px;
+}
+
+.chat-app[data-style="scout"] .message-row[data-own="true"][data-grouped="true"] {
+  padding-left: 0;
+}
+
+/* Avatars sit on paper, not on a tile — the sprite is Scout's identity mark
+   and it reads better without a plate behind it. */
+.chat-app[data-style="scout"] .avatar.tiny {
+  width: 28px;
+  height: 28px;
+  margin-bottom: 1px;
+}
+
+.chat-app[data-style="scout"] .sender-name {
+  margin-bottom: 4px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: .02em;
+}
+
+/* ---- bubbles ----------------------------------------------------------- */
+.chat-app[data-style="scout"] .message-bubble {
+  min-width: 0;
+  padding: 9px 12px 8px;
+  border: .5px solid var(--hairline);
+  border-radius: var(--radius-bubble);
+  color: var(--incoming-ink);
+  background: var(--incoming);
+  box-shadow: none;
+}
+
+.chat-app[data-style="scout"] .message-row[data-own="true"] .message-bubble {
+  border-color: transparent;
+  color: var(--outgoing-ink);
+  background: var(--outgoing);
+}
+
+.chat-app[data-style="scout"] .message-bubble p,
+.chat-app[data-style="scout"] .message-body li {
+  font-size: 16px;
+  line-height: 1.38;
+}
+
+.chat-app[data-style="scout"] .message-body code {
+  background: var(--fill-2);
+}
+
+.chat-app[data-style="scout"] .message-row[data-own="true"] .message-body code {
+  background: rgba(255, 255, 255, .18);
+}
+
+.chat-app[data-style="scout"] .message-read-more {
+  color: var(--accent);
+}
+
+.chat-app[data-style="scout"] .message-row[data-own="true"] .message-read-more {
+  color: var(--outgoing-ink);
+  text-decoration: underline;
+}
+
+/* The one flourish: the last bubble of a run anchors toward its author. A
+   pointed corner instead of a tail — enough to say "this side is mine"
+   without borrowing anyone's speech balloon. Older WebKit without :has()
+   simply keeps the uniform radius, which is a complete design on its own. */
+@supports selector(:has(*)) {
+  .chat-app[data-style="scout"] .message-row[data-own="true"]:not(:has(+ .message-row[data-grouped="true"])) .message-bubble {
+    border-bottom-right-radius: var(--radius-anchor);
+  }
+
+  .chat-app[data-style="scout"] .message-row[data-own="false"]:not(:has(+ .message-row[data-grouped="true"])) .message-bubble {
+    border-bottom-left-radius: var(--radius-anchor);
+  }
+
+  /* Time and receipt belong to the RUN, not to every line in it. A line that
+     is continued by its own author gives its reserved meta space back. */
+  .chat-app[data-style="scout"] .message-row:has(+ .message-row[data-grouped="true"]) .message-meta {
+    display: none;
+  }
+
+  .chat-app[data-style="scout"] .message-row:has(+ .message-row[data-grouped="true"]) {
+    padding-bottom: 0;
+  }
+}
+
+/* ---- meta -------------------------------------------------------------- */
+/* The meta line hangs outside the bubble, so the row reserves its height as
+   PADDING. Margin would collapse against the next row's run gap and let the
+   timestamp print on top of the following bubble. */
+.chat-app[data-style="scout"] .message-row {
+  padding-bottom: 16px;
+}
+
+.chat-app[data-style="scout"] .message-meta {
+  position: absolute;
+  top: calc(100% + 3px);
+  right: 2px;
+  color: var(--faint);
+  opacity: 1;
+  font-size: 11px;
+  letter-spacing: .01em;
+}
+
+.chat-app[data-style="scout"] .message-row[data-own="false"] .message-meta {
+  right: auto;
+  left: 2px;
+}
+
+/* Scout's receipts are words, not ticks. */
+.chat-app[data-style="scout"] .message-meta svg {
+  display: none;
+}
+
+.chat-app[data-style="scout"] .reaction-badge {
+  border-color: var(--canvas);
+  background: var(--raised);
+  box-shadow: 0 1px 3px rgba(35, 33, 29, .14);
+}
+
+.chat-app[data-style="scout"] .quoted-message {
+  border-radius: var(--radius-tight);
+  background: var(--fill);
+}
+
+/* A quote inside an outgoing bubble has to darken, not lighten. Whitening the
+   emerald lands the preview text at ~3.7:1; sinking it holds 7.3:1. */
+.chat-app[data-style="scout"] .message-row[data-own="true"] .quoted-message {
+  background: rgba(0, 0, 0, .18);
+}
+
+.chat-app[data-style="scout"] .message-row[data-own="true"] .quoted-message strong,
+.chat-app[data-style="scout"] .message-row[data-own="true"] .quoted-message span {
+  color: var(--outgoing-ink);
+}
+
+.chat-app[data-style="scout"] .quoted-message::before {
+  background: var(--accent);
+}
+
+.chat-app[data-style="scout"] .message-row[data-own="true"] .quoted-message::before {
+  background: var(--outgoing-ink);
+}
+
+.chat-app[data-style="scout"] .quoted-message span {
+  color: var(--muted);
+}
+
+.chat-app[data-style="scout"] .file-card {
+  border: .5px solid var(--hairline);
+  border-radius: var(--radius-tight);
+  color: var(--ink);
+  background: var(--raised);
+}
+
+.chat-app[data-style="scout"] .file-card > span:first-child {
+  color: var(--accent-ink);
+  background: var(--accent);
+}
+
+.chat-app[data-style="scout"] .file-card small {
+  color: var(--faint);
+}
+
+/* ---- working ----------------------------------------------------------- */
+.chat-app[data-style="scout"] .typing {
+  border: .5px solid var(--hairline);
+  border-radius: var(--radius-bubble);
+  border-bottom-left-radius: var(--radius-anchor);
+  background: var(--incoming);
+}
+
+.chat-app[data-style="scout"] .typing i {
+  background: var(--accent);
+}
+
+.chat-app[data-style="scout"] .swipe-reply-cue,
+.chat-app[data-style="scout"] .jump-button {
+  border: .5px solid var(--hairline);
+  color: var(--muted);
+  background: var(--raised);
+  box-shadow: 0 3px 12px rgba(35, 33, 29, .14);
+}
+
+.chat-app[data-style="scout"] .loading-stack i {
+  border-radius: var(--radius-bubble);
+  background: var(--fill);
+}
+
+.chat-app[data-style="scout"] .empty-chat p {
+  color: var(--muted);
+}
+
+/* ---- composer ---------------------------------------------------------- */
+.chat-app[data-style="scout"] .composer-wrap {
+  padding: 7px 10px max(8px, env(safe-area-inset-bottom));
+  border-top: .5px solid var(--hairline);
+  background: var(--chrome);
+  backdrop-filter: none;
+}
+
+.chat-app[data-style="scout"] .composer-field {
+  border: .5px solid var(--border);
+  border-radius: 19px;
+  background: var(--field);
+}
+
+.chat-app[data-style="scout"] .composer-field textarea {
+  color: var(--ink);
+  font-size: 16px;
+}
+
+.chat-app[data-style="scout"] .composer-field textarea::placeholder {
+  color: var(--faint);
+}
+
+.chat-app[data-style="scout"] .add-button {
+  border: .5px solid var(--border) !important;
+  color: var(--muted) !important;
+}
+
+.chat-app[data-style="scout"] .send-button {
+  color: var(--accent-ink) !important;
+  background: var(--accent) !important;
+}
+
+.chat-app[data-style="scout"] .send-button:disabled {
+  color: var(--faint) !important;
+  background: var(--fill) !important;
+}
+
+.chat-app[data-style="scout"] .reply-target {
+  border-radius: var(--radius-tight);
+  color: var(--ink);
+  background: var(--fill);
+}
+
+.chat-app[data-style="scout"] .reply-target strong {
+  color: var(--accent);
+}
+
+.chat-app[data-style="scout"] .reply-target small {
+  color: var(--muted);
+}
+
+.chat-app[data-style="scout"] .attachment-preview {
+  border-radius: var(--radius-tight);
+  background: var(--fill);
+}
+
+.chat-app[data-style="scout"] .attachment-tray {
+  border: .5px solid var(--hairline);
+  border-radius: var(--radius-card);
+  background: var(--raised);
+  box-shadow: 0 -10px 30px rgba(35, 33, 29, .14);
+}
+
+/* The tray is the one place the other styles go polychrome. Scout keeps its
+   single accent and separates the actions by label instead of by hue. */
+.chat-app[data-style="scout"] .attachment-tray button {
+  color: var(--ink);
+}
+
+.chat-app[data-style="scout"] .attachment-tray span[data-tone] {
+  border: .5px solid var(--hairline);
+  border-radius: var(--radius-tight);
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.chat-app[data-style="scout"] .attachment-tray button:disabled span[data-tone] {
+  color: var(--faint);
+  background: var(--fill);
+}
+
+.chat-app[data-style="scout"] .send-error,
+.chat-app[data-style="scout"] .technical-error {
+  color: var(--danger-ink);
+  background: var(--danger-fill);
+}
+
+/* ---- overlays ---------------------------------------------------------- */
+.chat-app[data-style="scout"] .reaction-picker,
+.chat-app[data-style="scout"] .emoji-grid,
+.chat-app[data-style="scout"] .action-menu,
+.chat-app[data-style="scout"] .action-menu button {
+  color: var(--ink);
+  background: var(--raised);
+}
+
+.chat-app[data-style="scout"] .reaction-picker,
+.chat-app[data-style="scout"] .emoji-grid,
+.chat-app[data-style="scout"] .action-menu {
+  border: .5px solid var(--hairline);
+  border-radius: var(--radius-card);
+  box-shadow: 0 12px 30px rgba(35, 33, 29, .22);
+}
+
+.chat-app[data-style="scout"] .action-menu button {
+  border-top-color: var(--hairline);
+}
+
+.chat-app[data-style="scout"] .destructive {
+  color: var(--danger) !important;
+}
+
+.chat-app[data-style="scout"] .info-sheet {
+  border-radius: 20px 20px 0 0;
+  background: var(--sheet);
+}
+
+.chat-app[data-style="scout"] .sheet-grab {
+  background: var(--border);
+}
+
+.chat-app[data-style="scout"] .info-sheet > p {
+  color: var(--faint);
+}
+
+.chat-app[data-style="scout"] .info-actions button,
+.chat-app[data-style="scout"] .info-row,
+.chat-app[data-style="scout"] .done-button {
+  color: var(--accent);
+  background: var(--raised);
+}
+
+.chat-app[data-style="scout"] .info-row {
+  border-bottom-color: var(--hairline);
+  color: var(--ink);
+}
+
+.chat-app[data-style="scout"] .info-row small {
+  color: var(--faint);
+}
+
+.chat-app[data-style="scout"] .toast {
+  border-radius: var(--radius-tight);
+  color: var(--canvas);
+  background: rgba(35, 33, 29, .94);
+}
+
+/* ---- techie ------------------------------------------------------------ */
+/* Techie adds detail; it must not add a second visual language. Same paper,
+   same hairline, same single accent — just more of the record. */
+.chat-app[data-style="scout"] .tech-strip {
+  border-bottom: .5px solid var(--hairline);
+  color: var(--muted);
+  background: var(--chrome);
+}
+
+.chat-app[data-style="scout"] .tech-strip > span {
+  border-radius: 5px;
+  background: var(--fill);
+}
+
+.chat-app[data-style="scout"] .tech-strip button {
+  color: var(--danger-ink);
+  background: var(--danger-fill);
+}
+
+.chat-app[data-style="scout"] .live-dot {
+  background: var(--accent);
+}
+
+.chat-app[data-style="scout"] .technical-turn {
+  border: .5px solid var(--hairline);
+  border-radius: var(--radius-card);
+  color: var(--muted);
+  background: var(--raised);
+}
+
+.chat-app[data-style="scout"] .technical-turn strong {
+  color: var(--ink);
+}
+
+.chat-app[data-style="scout"] .technical-block {
+  border-top-color: var(--hairline);
+}
+
+.chat-app[data-style="scout"] .technical-block > span:first-child {
+  border-radius: 6px;
+  color: var(--muted);
+  background: var(--fill);
+}
+
+.chat-app[data-style="scout"] .approval-buttons button,
+.chat-app[data-style="scout"] .question-card button {
+  color: var(--accent-ink);
+  background: var(--accent);
+}
+
+.chat-app[data-style="scout"] .approval-buttons button:first-child {
+  color: var(--danger-ink);
+  background: var(--danger-fill);
+}
+
+/* ---- dark -------------------------------------------------------------- */
+/* Not an inversion. Light is paper; dark is the same room with the lights
+   off — ScoutPalette's near-black ground, a raised card that is genuinely
+   raised, and the brighter emerald the rest of Scout switches to. */
+@media (prefers-color-scheme: dark) {
+  .chat-app[data-style="scout"] {
+    --canvas: #0a0a0a;
+    --raised: #171717;
+    --chrome: #060606;
+    --header: #060606;
+    --sheet: #171717;
+    --field: #171717;
+
+    --ink: #e5e5e5;
+    --muted: #b8b8b8;
+    /* #969696 on #0a0a0a is 6.7:1 — the quiet register stays readable. */
+    --faint: #969696;
+
+    --hairline: rgba(255, 255, 255, .1);
+    --hairline-strong: rgba(255, 255, 255, .18);
+    --border: #272727;
+    --fill: rgba(255, 255, 255, .07);
+    --fill-2: rgba(255, 255, 255, .13);
+
+    --accent: #10b981;
+    --scout-accent: #10b981;
+    --accent-soft: rgba(16, 185, 129, .13);
+    --accent-ink: #06231a;
+
+    --incoming: #171717;
+    --incoming-ink: #e5e5e5;
+    /* Deep enough for white body text (4.9:1), still unmistakably the same
+       emerald as light. "Mine" keeps its identity when the phone flips. */
+    --outgoing: #0d7f61;
+    --outgoing-flat: #0d7f61;
+    --outgoing-ink: #f4fbf8;
+
+    --danger: #dc2626;
+    --danger-ink: #f7b5b0;
+    --danger-fill: rgba(185, 28, 28, .18);
+
+    background: var(--canvas);
+  }
+
+  .chat-app[data-style="scout"] .message-bubble {
+    box-shadow: none;
+  }
+
+  .chat-app[data-style="scout"] .message-row[data-own="true"] .message-bubble {
+    color: var(--outgoing-ink);
+  }
+
+  .chat-app[data-style="scout"] .composer-field,
+  .chat-app[data-style="scout"] .composer-field textarea {
+    color: var(--ink);
+    background: var(--field);
+  }
+
+  .chat-app[data-style="scout"] .reaction-badge {
+    background: var(--raised);
+  }
+
+  .chat-app[data-style="scout"] .toast {
+    color: #0a0a0a;
+    background: rgba(229, 229, 229, .94);
+  }
+
+  .chat-app[data-style="scout"] .attachment-tray,
+  .chat-app[data-style="scout"] .reaction-picker,
+  .chat-app[data-style="scout"] .emoji-grid,
+  .chat-app[data-style="scout"] .action-menu,
+  .chat-app[data-style="scout"] .action-menu button,
+  .chat-app[data-style="scout"] .info-actions button,
+  .chat-app[data-style="scout"] .info-row,
+  .chat-app[data-style="scout"] .done-button,
+  .chat-app[data-style="scout"] .technical-turn,
+  .chat-app[data-style="scout"] .file-card {
+    background: var(--raised);
+  }
+
+  .chat-app[data-style="scout"] .file-card,
+  .chat-app[data-style="scout"] .quoted-message {
+    color: var(--ink);
+  }
+
+  .chat-app[data-style="scout"] .message-row[data-own="true"] .quoted-message {
+    color: var(--outgoing-ink);
+  }
+
+  .chat-app[data-style="scout"] .tech-strip {
+    color: var(--muted);
+    background: var(--chrome);
+  }
+}

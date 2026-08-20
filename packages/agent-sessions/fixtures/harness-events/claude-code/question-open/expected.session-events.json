@@ -1,0 +1,39 @@
+[
+  {
+    "event": "turn:start",
+    "sessionId": "fixture-claude-code-question-open",
+    "turn": {
+      "id": "claude-question-turn-001",
+      "sessionId": "fixture-claude-code-question-open",
+      "status": "started",
+      "startedAt": "2026-08-07T21:30:00.000Z",
+      "blocks": []
+    }
+  },
+  {
+    "event": "block:start",
+    "sessionId": "fixture-claude-code-question-open",
+    "turnId": "claude-question-turn-001",
+    "block": {
+      "type": "question",
+      "header": "Fixture",
+      "question": "Continue?",
+      "options": [
+        {
+          "label": "Yes",
+          "description": "Continue the fixture."
+        },
+        {
+          "label": "No",
+          "description": "Leave it stopped."
+        }
+      ],
+      "multiSelect": false,
+      "questionStatus": "awaiting_answer",
+      "status": "streaming",
+      "id": "claude-question-block-001",
+      "turnId": "claude-question-turn-001",
+      "index": 0
+    }
+  }
+]

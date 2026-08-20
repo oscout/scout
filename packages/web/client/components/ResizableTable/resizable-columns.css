@@ -1,0 +1,47 @@
+/* ── Resizable column handle (paired with useResizableColumns) ── */
+
+/*
+ * Drop a <span {...getResizeHandleProps(key)} /> as the LAST child of each
+ * resizable <th>. The handle is absolute-positioned on the right edge; the
+ * <th> itself must be `position: relative` (set this on the consumer's table
+ * styles, e.g. .s-atop-table th { position: relative; padding-right: 8px; }).
+ */
+
+.s-resize-handle {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 12px;             /* roomier hit target so you don't graze sort */
+  cursor: col-resize;
+  user-select: none;
+  z-index: 2;              /* sits above the sort button so right-edge clicks resize */
+  /* visual line via ::after */
+}
+
+.s-resize-handle::after {
+  content: "";
+  position: absolute;
+  top: 22%;
+  bottom: 22%;
+  right: 4px;
+  width: 1px;
+  background: color-mix(in srgb, var(--ink, #fff) 14%, transparent);
+  border-radius: var(--radius-xs);
+  opacity: 1;              /* faintly visible always — users can see the edge */
+  transition: background 120ms ease-out, top 120ms ease-out, bottom 120ms ease-out, width 120ms ease-out;
+}
+
+.s-resize-handle:hover::after {
+  background: color-mix(in srgb, var(--accent, #62b6ff) 70%, transparent);
+  top: 10%;
+  bottom: 10%;
+  width: 2px;
+}
+
+.s-resize-handle:active::after {
+  background: var(--accent, #62b6ff);
+  top: 0;
+  bottom: 0;
+  width: 2px;
+}

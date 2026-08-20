@@ -1,0 +1,1 @@
+ALTER TABLE `invocations` ADD `execution_resolution_json` text;

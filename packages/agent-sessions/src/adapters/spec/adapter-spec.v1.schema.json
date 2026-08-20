@@ -1,0 +1,312 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://openscout.app/schemas/adapter-spec.v1.schema.json",
+  "title": "OpenScout Adapter Spec v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "specVersion",
+    "adapterId",
+    "displayName",
+    "implementation",
+    "upstream",
+    "sessionModel",
+    "capabilities",
+    "nativeProtocol",
+    "normalizedSurface",
+    "limitations"
+  ],
+  "properties": {
+    "specVersion": {
+      "const": "1.0.0"
+    },
+    "adapterId": {
+      "type": "string",
+      "pattern": "^[a-z0-9-]+$"
+    },
+    "displayName": {
+      "type": "string",
+      "minLength": 1
+    },
+    "implementation": {
+      "$ref": "#/$defs/implementation"
+    },
+    "upstream": {
+      "$ref": "#/$defs/upstream"
+    },
+    "sessionModel": {
+      "$ref": "#/$defs/sessionModel"
+    },
+    "capabilities": {
+      "$ref": "#/$defs/capabilities"
+    },
+    "nativeProtocol": {
+      "$ref": "#/$defs/nativeProtocol"
+    },
+    "normalizedSurface": {
+      "$ref": "#/$defs/normalizedSurface"
+    },
+    "limitations": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    }
+  },
+  "$defs": {
+    "stringList": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "sourceRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "ref"],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": ["url", "file", "comment", "generated"]
+        },
+        "ref": {
+          "type": "string",
+          "minLength": 1
+        },
+        "notes": {
+          "type": "string"
+        }
+      }
+    },
+    "implementation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["package", "entrypoint", "factoryExport"],
+      "properties": {
+        "package": {
+          "type": "string",
+          "minLength": 1
+        },
+        "entrypoint": {
+          "type": "string",
+          "minLength": 1
+        },
+        "factoryExport": {
+          "type": "string",
+          "minLength": 1
+        },
+        "className": {
+          "type": "string"
+        }
+      }
+    },
+    "upstream": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "name", "transport", "sources"],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": ["official_protocol", "cli_protocol", "local_implementation", "mixed"]
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "transport": {
+          "type": "string",
+          "enum": ["jsonrpc-stdio-jsonl", "stream-json-stdio", "subprocess-stream", "in-process", "mixed"]
+        },
+        "sources": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/sourceRef"
+          }
+        }
+      }
+    },
+    "sessionModel": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "lifecycle",
+        "conversationScope",
+        "resumeSupport",
+        "turnSteering",
+        "concurrentTurns",
+        "persistence"
+      ],
+      "properties": {
+        "lifecycle": {
+          "type": "string",
+          "enum": ["stateful_connection", "long_lived_process", "stateless_request"]
+        },
+        "conversationScope": {
+          "type": "string",
+          "enum": ["thread", "session", "turn", "none"]
+        },
+        "resumeSupport": {
+          "type": "string",
+          "enum": ["required", "optional", "implicit", "unsupported"]
+        },
+        "resumeOptionKey": {
+          "type": "string"
+        },
+        "turnSteering": {
+          "type": "string",
+          "enum": ["native_same_turn", "new_turn_only", "implicit_followup", "unknown"]
+        },
+        "concurrentTurns": {
+          "type": "string",
+          "enum": ["single", "multi", "unspecified"]
+        },
+        "persistence": {
+      "type": "array",
+          "items": {
+            "type": "string",
+            "enum": ["process_state", "local_files", "upstream_session_id", "upstream_thread_id", "none"]
+          }
+        }
+      }
+    },
+    "attachmentSupport": {
+      "type": "string",
+        "enum": ["none", "native", "embedded", "reference_text"]
+    },
+    "capabilities": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "promptInputs",
+        "outputBlocks",
+        "actionKinds",
+        "streaming",
+        "interactive",
+        "control"
+      ],
+      "properties": {
+        "promptInputs": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["text", "images", "files"],
+          "properties": {
+            "text": {
+              "type": "boolean"
+            },
+            "images": {
+              "$ref": "#/$defs/attachmentSupport"
+            },
+            "files": {
+              "$ref": "#/$defs/attachmentSupport"
+            }
+          }
+        },
+        "outputBlocks": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": ["text", "reasoning", "action", "error", "question"]
+          }
+        },
+        "actionKinds": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": ["command", "file_change", "subagent", "tool_call"]
+          }
+        },
+        "streaming": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["text", "reasoning", "actionOutput", "actionStatus"],
+          "properties": {
+            "text": { "type": "boolean" },
+            "reasoning": { "type": "boolean" },
+            "actionOutput": { "type": "boolean" },
+            "actionStatus": { "type": "boolean" }
+          }
+        },
+        "interactive": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["questions", "approvals", "serverRequests"],
+          "properties": {
+            "questions": {
+              "type": "string",
+              "enum": ["none", "native"]
+            },
+            "approvals": {
+              "type": "string",
+              "enum": ["none", "native"]
+            },
+            "serverRequests": {
+              "type": "string",
+              "enum": ["none", "native"]
+            }
+          }
+        },
+        "control": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["interrupt", "shutdown"],
+          "properties": {
+            "interrupt": { "type": "boolean" },
+            "shutdown": { "type": "boolean" }
+          }
+        }
+      }
+    },
+    "nativeProtocol": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "outboundRequests",
+        "outboundNotifications",
+        "inboundNotifications",
+        "inboundServerRequests",
+        "messageFormats",
+        "serverRequestStrategy"
+      ],
+      "properties": {
+        "outboundRequests": {
+          "$ref": "#/$defs/stringList"
+        },
+        "outboundNotifications": {
+          "$ref": "#/$defs/stringList"
+        },
+        "inboundNotifications": {
+          "$ref": "#/$defs/stringList"
+        },
+        "inboundServerRequests": {
+          "$ref": "#/$defs/stringList"
+        },
+        "messageFormats": {
+          "$ref": "#/$defs/stringList"
+        },
+        "serverRequestStrategy": {
+          "type": "string",
+          "enum": ["not_applicable", "reject_unsupported", "resolve_and_reject", "unknown"]
+        }
+      }
+    },
+    "normalizedSurface": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["adapterMethods", "optionalAdapterMethods", "emitsPairingEvents"],
+      "properties": {
+        "adapterMethods": {
+          "$ref": "#/$defs/stringList"
+        },
+        "optionalAdapterMethods": {
+          "$ref": "#/$defs/stringList"
+        },
+        "emitsPairingEvents": {
+          "$ref": "#/$defs/stringList"
+        }
+      }
+    }
+  }
+}

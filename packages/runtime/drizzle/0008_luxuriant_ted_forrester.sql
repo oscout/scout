@@ -1,0 +1,1 @@
+ALTER TABLE `trusted_peers` ADD `tls_spki_fingerprint` text;

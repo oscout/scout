@@ -1,0 +1,5 @@
+.scout-dev-flag {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+}

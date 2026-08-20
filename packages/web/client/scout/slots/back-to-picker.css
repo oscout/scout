@@ -1,0 +1,42 @@
+/* ── Shared back-to-picker pill ── */
+
+.s-back-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-xs);
+  padding: var(--space-2xs) var(--space-md) var(--space-2xs) var(--space-sm);
+  border: 1px solid color-mix(in srgb, var(--border) 55%, transparent);
+  background: color-mix(in srgb, var(--ink) 3%, transparent);
+  color: color-mix(in srgb, var(--ink) 65%, transparent);
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  font-weight: 600;
+  letter-spacing: var(--tracking-sm);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  align-self: flex-start;
+  transition: background 0.12s, color 0.12s, border-color 0.12s, transform 0.08s;
+}
+
+.s-back-pill:hover {
+  color: var(--ink);
+  border-color: color-mix(in srgb, var(--accent) 40%, transparent);
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+}
+
+.s-back-pill:active {
+  transform: translateY(1px);
+}
+
+.s-back-pill-glyph {
+  font-family: var(--font-mono);
+  font-size: var(--text-md);
+  font-weight: 700;
+  color: color-mix(in srgb, var(--ink) 50%, transparent);
+  transition: color 0.12s, transform 0.12s;
+}
+
+.s-back-pill:hover .s-back-pill-glyph {
+  color: var(--accent);
+  transform: translateX(-2px);
+}

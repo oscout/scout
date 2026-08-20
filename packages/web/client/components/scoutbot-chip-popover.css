@@ -1,0 +1,309 @@
+/* ── Scoutbot chip popover ─────────────────────────────────────────────
+   Opens from the chip in the left of the status bar. Carries Scoutbot's
+   contextual surface: current state, reminders, recent broadcasts,
+   actions, and the broadcast filter/mute footer. */
+
+.s-scoutbot-popover-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 10000;
+  background: transparent;
+  pointer-events: auto;
+}
+
+.s-scoutbot-popover {
+  position: fixed;
+  bottom: 36px;
+  left: 12px;
+  z-index: 10001;
+  pointer-events: auto;
+  width: min(420px, calc(100vw - 24px));
+  max-height: 70vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.45);
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  color: var(--ink);
+  overflow: hidden;
+}
+
+.s-scoutbot-popover-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  padding: var(--space-xs) var(--space-md);
+  border-bottom: 1px solid var(--border);
+  background: color-mix(in srgb, var(--surface) 70%, var(--bg));
+}
+.s-scoutbot-popover-head-icon {
+  color: color-mix(in srgb, var(--accent) 80%, var(--ink));
+  flex-shrink: 0;
+}
+.s-scoutbot-popover-head-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--text-xs);
+  letter-spacing: var(--tracking-md);
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.s-scoutbot-popover-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--muted);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: color 0.12s ease, border-color 0.12s ease;
+}
+.s-scoutbot-popover-close:hover {
+  color: var(--ink);
+  border-color: var(--border);
+}
+
+.s-scoutbot-popover-section {
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 60%, transparent);
+  overflow: hidden;
+}
+.s-scoutbot-popover-section:last-of-type {
+  border-bottom: 0;
+}
+.s-scoutbot-popover-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-xs);
+  padding: var(--space-xs) var(--space-md) var(--space-3xs);
+  font-size: var(--text-2xs);
+  letter-spacing: var(--tracking-md);
+  text-transform: uppercase;
+  color: var(--dim);
+}
+.s-scoutbot-popover-section-body {
+  padding: var(--space-2xs) var(--space-md) var(--space-sm);
+}
+
+.s-scoutbot-popover-count {
+  font-size: var(--text-2xs);
+  color: var(--muted);
+}
+
+.s-scoutbot-popover-empty-line {
+  padding: var(--space-2xs) 0;
+  color: var(--dim);
+  font-size: var(--text-xs);
+}
+
+.s-scoutbot-popover-now {
+  display: grid;
+  grid-template-columns: 10px 1fr auto auto;
+  align-items: baseline;
+  gap: var(--space-sm);
+  padding: var(--space-2xs) 0;
+  font-size: var(--text-sm);
+  color: var(--ink);
+}
+.s-scoutbot-popover-now--activity {
+  color: color-mix(in srgb, var(--accent) 70%, var(--ink));
+}
+.s-scoutbot-popover-now--error {
+  color: color-mix(in srgb, var(--red) 50%, var(--ink));
+}
+.s-scoutbot-popover-now-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.s-scoutbot-popover-now-time {
+  font-size: var(--text-xs);
+  color: var(--dim);
+  font-variant-numeric: tabular-nums;
+}
+.s-scoutbot-popover-now-dismiss {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--muted);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+.s-scoutbot-popover-now-dismiss:hover {
+  color: var(--ink);
+  border-color: var(--border);
+}
+
+.s-scoutbot-popover-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background: var(--muted);
+  display: inline-block;
+}
+.s-scoutbot-popover-dot--info  { background: var(--muted); }
+.s-scoutbot-popover-dot--warn  { background: color-mix(in srgb, var(--amber) 70%, var(--muted)); }
+.s-scoutbot-popover-dot--error { background: color-mix(in srgb, var(--red) 70%, var(--muted)); }
+.s-scoutbot-popover-dot--pulse {
+  background: color-mix(in srgb, var(--accent) 80%, var(--ink));
+  animation: s-scoutbot-popover-pulse 1.4s ease-in-out infinite;
+}
+@keyframes s-scoutbot-popover-pulse {
+  0%, 100% { opacity: 0.4; }
+  50% { opacity: 1; }
+}
+
+.s-scoutbot-popover-reminder {
+  display: grid;
+  grid-template-columns: 12px 1fr 22px 22px;
+  align-items: center;
+  gap: var(--space-xs);
+  padding: var(--space-2xs) 0;
+  font-size: var(--text-sm);
+  color: var(--ink);
+}
+.s-scoutbot-popover-reminder-icon {
+  color: color-mix(in srgb, var(--amber) 60%, var(--muted));
+  flex-shrink: 0;
+}
+.s-scoutbot-popover-reminder-body {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.s-scoutbot-popover-icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--muted);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: color 0.12s ease, border-color 0.12s ease;
+}
+.s-scoutbot-popover-icon-btn:hover {
+  color: var(--ink);
+  border-color: color-mix(in srgb, var(--accent) 40%, var(--border));
+}
+
+.s-scoutbot-popover-history {
+  display: flex;
+  flex-direction: column;
+  max-height: 200px;
+  overflow-y: auto;
+}
+.s-scoutbot-popover-history-row {
+  display: grid;
+  grid-template-columns: 10px 60px 1fr;
+  align-items: baseline;
+  gap: var(--space-sm);
+  padding: var(--space-2xs) 0;
+  font-size: var(--text-xs);
+  color: var(--ink);
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 40%, transparent);
+}
+.s-scoutbot-popover-history-row:last-child {
+  border-bottom: 0;
+}
+.s-scoutbot-popover-history-row--muted {
+  opacity: 0.45;
+}
+.s-scoutbot-popover-history-time {
+  color: var(--dim);
+  font-variant-numeric: tabular-nums;
+}
+.s-scoutbot-popover-history-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.s-scoutbot-popover-actions {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: var(--space-2xs);
+  padding: var(--space-3xs) 0;
+}
+.s-scoutbot-popover-action {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-xs);
+  padding: var(--space-xs) var(--space-sm);
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--ink);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: color 0.12s ease, border-color 0.12s ease, background 0.12s ease;
+}
+.s-scoutbot-popover-action:hover {
+  border-color: color-mix(in srgb, var(--accent) 40%, var(--border));
+  background: color-mix(in srgb, var(--accent) 6%, transparent);
+}
+.s-scoutbot-popover-action--primary {
+  color: var(--ink);
+  border-color: color-mix(in srgb, var(--accent) 60%, var(--border));
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+}
+.s-scoutbot-popover-action--primary:hover {
+  background: color-mix(in srgb, var(--accent) 24%, transparent);
+}
+
+.s-scoutbot-popover-alerts {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2xs);
+  padding: var(--space-xs) var(--space-md);
+  border-top: 1px solid var(--border);
+  background: var(--bg);
+}
+.s-scoutbot-popover-alerts-label {
+  margin-right: var(--space-2xs);
+  font-size: var(--text-2xs);
+  letter-spacing: var(--tracking-md);
+  text-transform: uppercase;
+  color: var(--dim);
+}
+.s-scoutbot-popover-mute-btn {
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  padding: var(--space-3xs) var(--space-xs);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: color 0.12s ease, border-color 0.12s ease, background 0.12s ease;
+}
+.s-scoutbot-popover-mute-btn:hover {
+  color: var(--ink);
+  border-color: var(--dim);
+}
+.s-scoutbot-popover-mute-btn--active {
+  color: var(--ink);
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}

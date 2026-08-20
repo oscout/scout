@@ -1,0 +1,23 @@
+export const SCOPE_PATH_PREFIX: "/scope";
+export const SCOPE_LEGACY_PATH_PREFIX: "/scout";
+export const SCOPE_PATH_SEGMENT: "scope";
+export const SCOPE_LEGACY_PATH_SEGMENT: "scout";
+export const SCOPE_FLAG_KEY: "surface.scope";
+export const SCOPE_LEGACY_FLAG_KEY: "surface.scout";
+export const SCOPE_FLAG_BUNDLE: "scope-instrument";
+export const SCOPE_LEGACY_FLAG_BUNDLE: "scout-instrument";
+export const SCOPE_LANE_DECK_PROFILE: "scope.lanes";
+export const SCOPE_BRAND_LABEL: "Scope";
+export const SCOPE_ROUTE_SEGMENTS: {
+  readonly lanes: "lanes";
+  readonly tail: "tail";
+  readonly sessions: "sessions";
+  readonly agents: "agents";
+};
+export const SCOPE_DEFAULT_SEGMENT: "lanes";
+export const SCOPE_STORAGE_PREFIX: "scope:";
+export function scopeStorageKey(suffix: string): string;
+export const SCOPE_FLAG_BUNDLE_ALIASES: Record<string, typeof SCOPE_FLAG_BUNDLE>;
+export function scopeSegmentPath(segment: string, suffix?: string): string;
+export function isScopePathname(pathname: string): boolean;
+export function canonicalizeScopePathname(pathname: string): string;

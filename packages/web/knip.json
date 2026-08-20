@@ -1,0 +1,26 @@
+{
+  "$schema": "https://unpkg.com/knip@5/schema.json",
+  "entry": [
+    "client/main.tsx",
+    "client/index.html",
+    "server/index.ts",
+    "server/pairing-runtime-controller.ts",
+    "server/terminal-relay-node.ts",
+    "bin/openscout-web.mjs",
+    "scripts/*.mjs",
+    "**/*.test.{ts,tsx,mjs}"
+  ],
+  "project": ["client/**", "server/**", "shared/**"],
+  "ignore": ["dist/**"],
+  "ignoreBinaries": [
+    "openssl",
+    "tailscale",
+    "tmux",
+    "ps",
+    "lsof",
+    "open",
+    "explorer.exe",
+    "xdg-open",
+    "zellij"
+  ]
+}

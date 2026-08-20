@@ -1,0 +1,727 @@
+/* Messages-familiar, Scout-expressive visual layer. Shared structure and
+   behavior stay in scout-chat.css; this file is intentionally isolated so a
+   dedicated design pass can evolve this style without changing WhatsApp.
+
+   The grammar stays familiar — pill bubbles, an outgoing tint on the right,
+   time and receipt hanging under the last bubble, tap-and-hold actions, a
+   round send key. The character is Scout's own: warm green-black ink instead
+   of a borrowed blue, one rationed emerald accent, rounded display type for
+   the few human moments, and quiet paper everywhere else.
+
+   Everything here is scoped to [data-style="messages"] so the shared header,
+   the WhatsApp style, and main.tsx are untouched. */
+
+/* ---- tokens ------------------------------------------------------------ */
+.chat-app[data-style="messages"] {
+  /* Scout's rationed accent. Chrome keeps --scout-accent from the base sheet. */
+  --accent: #0b8067;
+  --accent-soft: rgba(11, 128, 103, .1);
+  --accent-ink: #fff;
+
+  /* The outgoing voice is Scout's emerald, not ink and not a borrowed blue. It
+     holds the same hue in both schemes so "mine" never changes identity when
+     the phone flips theme. Both gradient stops clear 4.5:1 against white:
+     #0b8067 is 4.86:1, #076b55 is 6.4:1. */
+  --outgoing: linear-gradient(180deg, #0b8067 0%, #076b55 100%);
+  --outgoing-flat: #087254;
+  --outgoing-ink: #fff;
+  --incoming: #eceef0;
+  --incoming-ink: #101414;
+
+  --canvas: #fff;
+  --chrome: rgba(247, 248, 248, .94);
+  --raised: #fff;
+  --sheet: #f1f2f2;
+  --field: rgba(255, 255, 255, .8);
+  --ink: #0d1111;
+  --muted: #6f7573;
+  /* Small timestamps and truthful delivery states use this token, so it must
+     remain AA-legible rather than behaving like decorative tertiary ink. */
+  --faint: #626866;
+  --hairline: rgba(13, 17, 17, .11);
+  --hairline-strong: rgba(13, 17, 17, .2);
+  --fill: rgba(120, 126, 124, .12);
+  --fill-2: rgba(120, 126, 124, .2);
+  --danger: #c0342b;
+  --danger-ink: #8c231c;
+  --danger-fill: #fceae7;
+
+  --font-display: ui-rounded, "SF Pro Rounded", -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+  --safe-top: env(safe-area-inset-top, 0px);
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+  --safe-left: env(safe-area-inset-left, 0px);
+  --safe-right: env(safe-area-inset-right, 0px);
+  --radius-bubble: 20px;
+  --radius-tight: 8px;
+  --radius-card: 15px;
+  --shadow-1: 0 1px 2px rgba(13, 17, 17, .07);
+  --shadow-2: 0 8px 22px rgba(13, 17, 17, .14);
+  --shadow-3: 0 18px 48px rgba(13, 17, 17, .24);
+}
+
+/* Dark inverts the emphasis: the outgoing voice becomes the bright one. */
+@media (prefers-color-scheme: dark) {
+  .chat-app[data-style="messages"] {
+    --accent: #24c68c;
+    --accent-soft: rgba(36, 198, 140, .15);
+    --accent-ink: #06231a;
+    /* Same emerald voice, lifted just enough to stay lively on black while
+       still clearing 4.5:1 on white ink (#0c8467 is 4.60:1). */
+    --outgoing: linear-gradient(180deg, #0c8467 0%, #086b52 100%);
+    --outgoing-flat: #0a7a5f;
+    --outgoing-ink: #fff;
+    --incoming: #23292b;
+    --incoming-ink: #eef1f0;
+    --canvas: #000;
+    --chrome: rgba(22, 24, 24, .94);
+    --raised: #1c1f1e;
+    --sheet: #141616;
+    --field: rgba(255, 255, 255, .08);
+    --ink: #f2f4f3;
+    --muted: #9aa19e;
+    --faint: #8a918e;
+    --hairline: rgba(255, 255, 255, .13);
+    --hairline-strong: rgba(255, 255, 255, .26);
+    --fill: rgba(126, 134, 131, .24);
+    --fill-2: rgba(126, 134, 131, .36);
+    --danger: #ff6f61;
+    --danger-ink: #ffb3aa;
+    --danger-fill: rgba(200, 60, 46, .2);
+    --shadow-1: 0 1px 2px rgba(0, 0, 0, .5);
+    --shadow-2: 0 8px 22px rgba(0, 0, 0, .58);
+    --shadow-3: 0 18px 48px rgba(0, 0, 0, .72);
+  }
+}
+
+/* One explicit full-width column, and every child pinned to it. Without the
+   pin, auto-placement would give the transcript and the overlays that share
+   its row separate implicit columns instead of stacking them. */
+.chat-app[data-style="messages"] { grid-template-columns: minmax(0, 1fr); background: var(--canvas); }
+.chat-app[data-style="messages"] > * { grid-column: 1; }
+
+/* ---- transcript -------------------------------------------------------- */
+.chat-app[data-style="messages"] .transcript {
+  padding: 12px max(12px, var(--safe-right)) 16px max(12px, var(--safe-left));
+}
+
+/* The day divider is a quiet label here, not a chip. */
+.chat-app[data-style="messages"] .encryption-note {
+  margin: 4px auto 16px;
+  padding: 0;
+  border-radius: 0;
+  color: var(--faint);
+  background: transparent;
+  font-size: 11px;
+  font-weight: 640;
+  letter-spacing: .05em;
+  text-transform: uppercase;
+}
+.chat-app[data-style="messages"] .load-earlier {
+  min-height: 34px;
+  border-radius: 17px;
+  color: var(--accent);
+  background: var(--fill);
+  font-size: 12.5px;
+}
+/* The pill reads as 34pt but has to be hittable at 44, so the target is grown
+   past the paint rather than the paint grown past the rhythm. */
+.chat-app[data-style="messages"] .load-earlier { position: relative; }
+.chat-app[data-style="messages"] .load-earlier::after { position: absolute; inset: -5px -8px; content: ""; }
+
+/* ---- bubbles ----------------------------------------------------------- */
+/* Agent turns are paragraphs, not one-liners. Capping the row at 84% and then
+   spending 33pt of it on the avatar gutter left long incoming messages about
+   62% wide, which is what turned them into towering columns. The row now spans
+   the transcript and the measure is set on the stack instead, so the avatar
+   sits outside the budget rather than inside it. Incoming runs wider than
+   outgoing on purpose: this surface's long text arrives, it doesn't leave. */
+.chat-app[data-style="messages"] .message-row { width: 100%; max-width: 100%; margin-top: 10px; }
+.chat-app[data-style="messages"] .bubble-stack { max-width: var(--chat-measure); }
+.chat-app[data-style="messages"] .message-row[data-own="true"] .bubble-stack { max-width: var(--chat-measure-own); }
+/* The hit box stays 44pt tall for touch, but the bubble sits on its floor so
+   the avatar, the bubble, and the meta line all share one baseline. */
+.chat-app[data-style="messages"] .message-hit { align-items: flex-end; border-radius: var(--radius-bubble); }
+.chat-app[data-style="messages"] .message-hit:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.chat-app[data-style="messages"] .message-bubble {
+  min-width: 0;
+  padding: 9px 14px 10px;
+  border-radius: var(--radius-bubble);
+  color: var(--incoming-ink);
+  background: var(--incoming);
+  box-shadow: none;
+}
+.chat-app[data-style="messages"] .message-row[data-own="true"] .message-bubble {
+  color: var(--outgoing-ink);
+  background: var(--outgoing);
+  box-shadow: var(--shadow-1);
+}
+.chat-app[data-style="messages"] .message-bubble p {
+  font-size: var(--chat-body-size);
+  line-height: 1.38;
+  letter-spacing: -.012em;
+}
+/* Attribution above a bubble only appears where topology needs it (a group
+   thread, or Techie machine attribution). Sized to sit under the bubble
+   radius without competing with the body. */
+.chat-app[data-style="messages"] .sender-name {
+  margin: 0 0 3px;
+  font-size: 11.5px;
+  font-weight: 640;
+  letter-spacing: -.005em;
+  line-height: 1.2;
+}
+
+/* A burst from one author reads as a single block: inner corners tighten. */
+.chat-app[data-style="messages"] .message-row[data-grouped="true"] .message-bubble { border-top-left-radius: var(--radius-tight); }
+.chat-app[data-style="messages"] .message-row[data-own="true"][data-grouped="true"] .message-bubble {
+  border-top-left-radius: var(--radius-bubble);
+  border-top-right-radius: var(--radius-tight);
+}
+.chat-app[data-style="messages"] .message-row:has(+ .message-row[data-grouped="true"]) .message-bubble { border-bottom-left-radius: var(--radius-tight); }
+.chat-app[data-style="messages"] .message-row[data-own="true"]:has(+ .message-row[data-grouped="true"]) .message-bubble {
+  border-bottom-left-radius: var(--radius-bubble);
+  border-bottom-right-radius: var(--radius-tight);
+}
+
+/* ---- metadata and receipts ---------------------------------------------- */
+/* Time and receipt hang below the bubble. The row reserves that band so a long
+   truthful receipt can never be painted over by the next message. */
+.chat-app[data-style="messages"] .message-row { margin-bottom: 18px; }
+.chat-app[data-style="messages"] .message-meta {
+  top: calc(100% + 4px);
+  right: 4px;
+  gap: 5px;
+  margin: 0;
+  color: var(--faint);
+  opacity: 1;
+  font-size: 11px;
+  font-weight: 550;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: .002em;
+}
+.chat-app[data-style="messages"] .message-row:not([data-own="true"]) .message-meta { right: auto; left: 4px; }
+
+/* A burst has to close up for the tightened corners above to read as one
+   block. The row margin on this sheet outranks the base sheet's grouped rule,
+   so the tightening is restated here rather than inherited. Only the last
+   bubble of a run keeps its time, which is also the only bubble that can carry
+   a receipt. Without :has() every bubble keeps its own line and its own band —
+   airier than intended, never overlapping. */
+.chat-app[data-style="messages"] .message-row[data-grouped="true"] { margin-top: 3px; }
+.chat-app[data-style="messages"] .message-row:has(+ .message-row[data-grouped="true"]) { margin-bottom: 3px; }
+.chat-app[data-style="messages"] .message-row:has(+ .message-row[data-grouped="true"]) .message-meta { display: none; }
+
+/* A rejected send and an unconfirmed send are different facts. Both keep the
+   retry affordance, but only a broker rejection earns the danger colour. */
+.chat-app[data-style="messages"] .message-row:has(.delivery-issue-mark[data-issue="failed"]) .message-meta { color: var(--danger); font-weight: 620; }
+.chat-app[data-style="messages"] .message-row:has(.delivery-issue-mark[data-issue="unconfirmed"]) .message-meta { color: #8a620d; font-weight: 620; }
+
+/* Tapbacks perch on the bubble's outer top corner, clear of the meta band. */
+.chat-app[data-style="messages"] .reaction-badge {
+  top: -13px;
+  right: -6px;
+  bottom: auto;
+  left: auto;
+  min-width: 28px;
+  height: 24px;
+  border: 2px solid var(--canvas);
+  background: var(--raised);
+  box-shadow: var(--shadow-1);
+}
+.chat-app[data-style="messages"] .message-row[data-own="true"] .reaction-badge { right: auto; left: -6px; }
+/* 22pt was not enough: the previous row's meta hangs 4pt into the same gap and
+   the tapback reaches 13pt above this bubble, so in the capture the 👍 landed
+   on top of "10:52 PM". 30pt clears both. */
+.chat-app[data-style="messages"] .message-row:has(.reaction-badge) { margin-top: 30px; }
+.chat-app[data-style="messages"] .delivery-issue-mark[data-issue="failed"]::before { background: var(--danger); }
+
+/* ---- quoted replies, attachments ---------------------------------------- */
+/* The quote is context, not a second message. It was reading as a slab nearly
+   as heavy as the body above it, so the fill, the rail and the type all step
+   back a level and the rail is inset rather than running the full edge. */
+.chat-app[data-style="messages"] .quoted-message {
+  width: 100%;
+  min-width: 0;
+  margin: -1px 0 5px;
+  padding: 2px 0 3px 9px;
+  border-radius: 0;
+  color: inherit;
+  /* Flat and near-imperceptible, or nothing at all. Hierarchy is type's job. */
+  background: transparent;
+  font-size: 11.5px;
+  line-height: 1.3;
+}
+.chat-app[data-style="messages"] .quoted-message strong { color: inherit; font-size: 11px; font-weight: 620; opacity: .72; }
+.chat-app[data-style="messages"] .quoted-message span { color: inherit; opacity: .52; }
+/* The outgoing bubble needs no quote wash any more — the quote carries itself
+   on type, and `color: inherit` already puts it on the right ink for either
+   bubble. */
+.chat-app[data-style="messages"] .file-card {
+  min-width: 224px;
+  margin: 1px 0 4px;
+  padding: 6px;
+  border-radius: 11px;
+  color: inherit;
+  background: rgba(127, 133, 131, .16);
+}
+.chat-app[data-style="messages"] .message-row[data-own="true"] .file-card { background: rgba(255, 255, 255, .14); }
+.chat-app[data-style="messages"] .file-card > span:first-child { background: linear-gradient(160deg, #10a37a, #07785b); }
+/* The outgoing bubble is emerald now, so the emerald icon tile went muddy on
+   it. Invert inside own bubbles instead. */
+.chat-app[data-style="messages"] .message-row[data-own="true"] .file-card > span:first-child {
+  color: var(--outgoing-flat);
+  background: #fff;
+}
+.chat-app[data-style="messages"] .file-card strong { font-size: 12.5px; font-weight: 620; }
+.chat-app[data-style="messages"] .file-card small { color: inherit; opacity: .65; }
+.chat-app[data-style="messages"] .file-open { border-color: currentColor; opacity: .4; }
+.chat-app[data-style="messages"] .voice-note { min-width: 236px; margin: -2px -3px; }
+.chat-app[data-style="messages"] .message-row[data-own="true"] .voice-note-toggle { color: var(--outgoing-flat); background: #fff; }
+.chat-app[data-style="messages"] .message-row:not([data-own="true"]) .voice-note-toggle { color: var(--accent-ink); background: var(--accent); }
+.chat-app[data-style="messages"] .voice-note-track > span { color: inherit; }
+.chat-app[data-style="messages"] .swipe-reply-cue { color: var(--accent); background: var(--raised); box-shadow: var(--shadow-2); }
+
+/* ---- transcript states --------------------------------------------------- */
+.chat-app[data-style="messages"] .typing { padding: 12px 15px; border-radius: var(--radius-bubble); background: var(--incoming); }
+.chat-app[data-style="messages"] .typing i { background: var(--faint); }
+.chat-app[data-style="messages"] .loading-stack { padding: 28px 6px; }
+.chat-app[data-style="messages"] .loading-stack i { height: 40px; border-radius: var(--radius-bubble); background: var(--fill); }
+.chat-app[data-style="messages"] .inline-error {
+  border: .5px solid var(--hairline);
+  border-radius: var(--radius-card);
+  color: var(--ink);
+  background: var(--raised);
+}
+.chat-app[data-style="messages"] .inline-error strong { font-size: 13px; font-weight: 600; }
+.chat-app[data-style="messages"] .inline-error small { color: var(--muted); opacity: 1; font-size: 11px; }
+.chat-app[data-style="messages"] .empty-chat { max-width: 292px; margin-top: 16vh; }
+.chat-app[data-style="messages"] .empty-chat strong {
+  margin-top: 15px;
+  font-family: var(--font-display);
+  font-size: 19px;
+  font-weight: 640;
+  letter-spacing: -.018em;
+}
+.chat-app[data-style="messages"] .empty-chat p { color: var(--muted); font-size: 13.5px; line-height: 1.45; }
+
+/* Floating overlays share the transcript's grid cell, so they clear the
+   composer at any safe-area inset instead of guessing a fixed offset. */
+.chat-app[data-style="messages"] .jump-button,
+.chat-app[data-style="messages"] .toast {
+  grid-row: 4;
+  position: relative;
+  right: auto;
+  bottom: auto;
+  left: auto;
+  align-self: end;
+  transform: none;
+}
+.chat-app[data-style="messages"] .jump-button {
+  justify-self: end;
+  margin: 0 max(12px, var(--safe-right)) 12px 0;
+  border: .5px solid var(--hairline);
+  color: var(--muted);
+  background: var(--raised);
+  box-shadow: var(--shadow-2);
+}
+.chat-app[data-style="messages"] .toast {
+  justify-self: center;
+  max-width: calc(100% - 32px);
+  margin: 0 0 12px;
+  padding: 9px 15px;
+  border-radius: 16px;
+  background: rgba(16, 20, 19, .92);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  box-shadow: var(--shadow-2);
+  font-size: 12px;
+  font-weight: 550;
+}
+
+/* ---- search row ------------------------------------------------------------ */
+/* Sits under the shared header, so it borrows the composer's chrome rather
+   than inventing a third band colour. The header itself stays untouched. */
+.chat-app[data-style="messages"] .search-row {
+  padding: 5px max(6px, var(--safe-right)) 5px max(10px, var(--safe-left));
+  border-bottom: .5px solid var(--hairline);
+  background: var(--chrome);
+  backdrop-filter: blur(20px) saturate(180%);
+  -webkit-backdrop-filter: blur(20px) saturate(180%);
+}
+.chat-app[data-style="messages"] .search-row svg { color: var(--faint); }
+.chat-app[data-style="messages"] .search-row input {
+  color: var(--ink);
+  font-size: 16px;
+  letter-spacing: -.01em;
+}
+.chat-app[data-style="messages"] .search-row input::placeholder { color: var(--faint); }
+
+/* ---- composer ------------------------------------------------------------ */
+.chat-app[data-style="messages"] .composer-wrap {
+  padding: 7px max(8px, var(--safe-right)) max(8px, var(--safe-bottom)) max(8px, var(--safe-left));
+  background: var(--chrome);
+  backdrop-filter: blur(20px) saturate(180%);
+  -webkit-backdrop-filter: blur(20px) saturate(180%);
+}
+.chat-app[data-style="messages"] .composer-row {
+  min-height: 52px;
+  padding: 3px;
+  border: .5px solid var(--hairline-strong);
+  border-radius: 26px;
+  background: var(--raised);
+  box-shadow: var(--shadow-1);
+  transition: border-color .15s ease, box-shadow .15s ease;
+}
+.chat-app[data-style="messages"] .composer-row:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+.chat-app[data-style="messages"] .add-button {
+  border: 1px solid var(--hairline-strong) !important;
+  color: var(--muted) !important;
+}
+.chat-app[data-style="messages"] .add-button[data-open="true"] { color: var(--ink) !important; background: var(--fill) !important; }
+.chat-app[data-style="messages"] .composer-field {
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+.chat-app[data-style="messages"] .composer-field:focus-within { box-shadow: none; }
+.chat-app[data-style="messages"] .composer-field textarea {
+  padding: 11px 13px 10px;
+  color: var(--ink);
+  font-size: 16px;
+  line-height: 1.3;
+  letter-spacing: -.01em;
+}
+/* The parent shortened the placeholder to "Message", but a one-row textarea
+   will still wrap and clip any string wider than the field. Keep it on one
+   line and let it trail off instead. */
+.chat-app[data-style="messages"] .composer-field textarea::placeholder {
+  color: var(--faint);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.chat-app[data-style="messages"] .composer-field button { color: var(--faint); }
+.chat-app[data-style="messages"] .send-button {
+  color: var(--accent-ink) !important;
+  background: var(--accent) !important;
+  box-shadow: var(--shadow-1);
+  transition: transform .14s ease;
+}
+.chat-app[data-style="messages"] .send-button:disabled { color: var(--faint) !important; background: transparent !important; box-shadow: none; }
+.chat-app[data-style="messages"] .send-button:active { transform: scale(.93); }
+
+/* Flat, per V1.4/R4.1 — same treatment as this style's `.quoted-message`. The
+   accent strip and the rounded box are gone; `--fill` stays because it is
+   already a near-imperceptible wash and it tracks light/dark on its own. */
+.chat-app[data-style="messages"] .reply-target {
+  margin: 0 47px 7px;
+  padding: 4px 0 5px 11px;
+  border-left: 0;
+  border-radius: 0;
+  color: var(--ink);
+  background: var(--fill);
+}
+.chat-app[data-style="messages"] .reply-target strong { color: inherit; font-size: 11.5px; font-weight: 620; opacity: .72; }
+.chat-app[data-style="messages"] .reply-target small { color: inherit; font-size: 11.5px; opacity: .52; }
+.chat-app[data-style="messages"] .reply-target button { color: var(--faint); }
+.chat-app[data-style="messages"] .attachment-previews { margin-left: 47px; scrollbar-width: none; }
+.chat-app[data-style="messages"] .attachment-preview { gap: 8px; min-width: 224px; border-radius: 11px; background: var(--fill); }
+.chat-app[data-style="messages"] .attachment-preview > svg { justify-self: center; width: 22px; color: var(--muted); }
+.chat-app[data-style="messages"] .attachment-preview strong { font-size: 11.5px; font-weight: 620; }
+.chat-app[data-style="messages"] .attachment-preview small { color: var(--muted); }
+.chat-app[data-style="messages"] .attachment-preview button { color: var(--faint); }
+.chat-app[data-style="messages"] .voice-draft { background: var(--fill); }
+.chat-app[data-style="messages"] .voice-draft > small,
+.chat-app[data-style="messages"] .voice-draft > button { color: var(--faint); }
+.chat-app[data-style="messages"] .send-error {
+  align-items: center;
+  margin: 0 47px 7px;
+  padding: 6px 4px 6px 11px;
+  border-radius: 10px;
+  color: var(--danger-ink);
+  background: var(--danger-fill);
+  font-size: 11.5px;
+}
+.chat-app[data-style="messages"] .attachment-tray {
+  right: max(8px, var(--safe-right));
+  left: max(8px, var(--safe-left));
+  gap: 12px 6px;
+  padding: 14px 8px;
+  border: .5px solid var(--hairline);
+  border-radius: 18px;
+  background: var(--raised);
+  box-shadow: var(--shadow-3);
+}
+.chat-app[data-style="messages"] .attachment-tray button { gap: 6px; color: var(--ink); font-weight: 550; }
+.chat-app[data-style="messages"] .attachment-tray span {
+  width: 42px;
+  height: 42px;
+  border-radius: 13px;
+  box-shadow: inset 0 .5px 0 rgba(255, 255, 255, .3);
+}
+.chat-app[data-style="messages"] .attachment-tray span[data-tone="blue"] { background: linear-gradient(160deg, #4e9dff, #2d7ff0); }
+.chat-app[data-style="messages"] .attachment-tray span[data-tone="teal"] { background: linear-gradient(160deg, #22b3a6, #0e8f86); }
+.chat-app[data-style="messages"] .attachment-tray span[data-tone="cyan"] { background: linear-gradient(160deg, #38a8d4, #1c86ad); }
+.chat-app[data-style="messages"] .attachment-tray span[data-tone="indigo"] { background: linear-gradient(160deg, #7d80e0, #5b5fd0); }
+.chat-app[data-style="messages"] .attachment-tray span[data-tone="purple"] { background: linear-gradient(160deg, #a06ce0, #7f47c4); }
+.chat-app[data-style="messages"] .attachment-tray span[data-tone="teal-deep"] { background: linear-gradient(160deg, #1a8c96, #0d6570); }
+.chat-app[data-style="messages"] .attachment-tray span[data-tone="gray"] { background: linear-gradient(160deg, #949aa2, #77808a); }
+.chat-app[data-style="messages"] .attachment-tray span[data-tone="green"] { background: linear-gradient(160deg, #2fbd8b, #0f8a66); }
+
+/* ---- message actions ------------------------------------------------------ */
+.chat-app[data-style="messages"] .focus-layer,
+.chat-app[data-style="messages"] .sheet-layer {
+  background: rgba(6, 9, 8, .5);
+  backdrop-filter: blur(7px);
+  -webkit-backdrop-filter: blur(7px);
+}
+.chat-app[data-style="messages"] .focus-layer {
+  padding: max(20px, var(--safe-top)) max(20px, var(--safe-right)) max(20px, var(--safe-bottom)) max(20px, var(--safe-left));
+}
+/* The lifted message sits on a dark scrim in both themes, so its hanging meta
+   line stops borrowing the transcript's faint ink. */
+.chat-app[data-style="messages"] .focused-message .message-bubble { box-shadow: 0 12px 34px rgba(0, 0, 0, .38); }
+.chat-app[data-style="messages"] .focused-message .message-meta { color: rgba(255, 255, 255, .74); }
+.chat-app[data-style="messages"] .focused-message > .message-row { margin: 0; }
+.chat-app[data-style="messages"] .reaction-picker {
+  margin-bottom: 10px;
+  padding: 5px 6px;
+  border-radius: 21px;
+  color: var(--ink);
+  background: var(--raised);
+  box-shadow: var(--shadow-3);
+}
+.chat-app[data-style="messages"] .reaction-picker button { border-radius: 50%; font-size: 22px; }
+.chat-app[data-style="messages"] .reaction-picker button:active { background: var(--fill); }
+.chat-app[data-style="messages"] .reaction-picker svg { color: var(--muted); }
+.chat-app[data-style="messages"] .emoji-grid {
+  margin: -3px 0 10px;
+  padding: 9px;
+  border-radius: 19px;
+  background: var(--raised);
+  box-shadow: var(--shadow-2);
+}
+.chat-app[data-style="messages"] .emoji-grid button { border-radius: 12px; }
+.chat-app[data-style="messages"] .emoji-grid button:active { background: var(--fill); }
+.chat-app[data-style="messages"] .action-menu {
+  margin-top: 11px;
+  border-radius: 17px;
+  background: var(--raised);
+  box-shadow: var(--shadow-3);
+}
+.chat-app[data-style="messages"] .action-menu button {
+  gap: 12px;
+  min-height: 48px;
+  padding: 0 16px;
+  border-top: .5px solid var(--hairline);
+  color: var(--ink);
+  background: transparent;
+  font-size: 15px;
+  letter-spacing: -.01em;
+}
+.chat-app[data-style="messages"] .action-menu button:first-child { border-top: 0; }
+.chat-app[data-style="messages"] .action-menu button:active { background: var(--fill); }
+.chat-app[data-style="messages"] .action-menu svg { flex: none; color: var(--faint); }
+.chat-app[data-style="messages"] .destructive { color: var(--danger) !important; }
+.chat-app[data-style="messages"] .action-menu .destructive svg { color: var(--danger); }
+
+/* ---- profile sheet --------------------------------------------------------- */
+/* The one place the surface is allowed to be warm and a little proud: a large
+   identity mark, a rounded display name, a status the broker actually reported,
+   then quiet grouped rows. */
+.chat-app[data-style="messages"] .info-sheet {
+  max-height: 92%;
+  padding: 9px max(18px, var(--safe-right)) calc(20px + var(--safe-bottom)) max(18px, var(--safe-left));
+  border-radius: 28px 28px 0 0;
+  color: var(--ink);
+  background: var(--sheet);
+  box-shadow: 0 -.5px 0 var(--hairline-strong), var(--shadow-3);
+}
+.chat-app[data-style="messages"] .sheet-grab { width: 38px; height: 5px; margin-bottom: 22px; background: var(--hairline-strong); }
+/* The hero is a SpriteAvatar now, not initials: it paints its own 26%-radius
+   tile and its own glow, and the base .avatar box has no radius left. So the
+   type rules here are dead, the inset ring would have drawn a square hairline
+   around a squircle, and the bloom was tinted to the retired pink gradient.
+   All of it goes. Seating shadow uses drop-shadow so it follows the sprite's
+   painted shape instead of the span's box. */
+.chat-app[data-style="messages"] .info-sheet > .avatar {
+  width: 96px;
+  height: 96px;
+  margin: 2px auto 0;
+  filter: drop-shadow(0 10px 22px rgba(13, 17, 17, .2));
+}
+@media (prefers-color-scheme: dark) {
+  .chat-app[data-style="messages"] .info-sheet > .avatar {
+    filter: drop-shadow(0 10px 26px rgba(0, 0, 0, .7));
+  }
+}
+.chat-app[data-style="messages"] .info-sheet h2 {
+  margin: 15px 0 0;
+  font-family: var(--font-display);
+  font-size: 27px;
+  font-weight: 640;
+  letter-spacing: -.024em;
+  line-height: 1.14;
+}
+.chat-app[data-style="messages"] .info-sheet > p {
+  width: fit-content;
+  max-width: 100%;
+  margin: 10px auto 24px;
+  padding: 4px 13px;
+  border-radius: 999px;
+  color: var(--muted);
+  background: var(--fill);
+  font-size: 12.5px;
+  font-weight: 550;
+  letter-spacing: -.005em;
+}
+.chat-app[data-style="messages"] .info-actions { gap: 8px; margin-bottom: 24px; }
+.chat-app[data-style="messages"] .info-actions button {
+  gap: 7px;
+  min-height: 68px;
+  padding: 12px 4px;
+  border: .5px solid var(--hairline);
+  border-radius: 16px;
+  color: var(--accent);
+  background: var(--raised);
+  box-shadow: var(--shadow-1);
+  font-size: 11px;
+  font-weight: 560;
+  letter-spacing: -.005em;
+}
+.chat-app[data-style="messages"] .info-actions button:active { background: var(--fill-2); }
+/* Unavailable actions read as outlined placeholders rather than dimmed noise. */
+.chat-app[data-style="messages"] .info-actions button:disabled {
+  border-style: dashed;
+  color: var(--faint);
+  background: transparent;
+  box-shadow: none;
+  opacity: 1;
+}
+.chat-app[data-style="messages"] .info-row {
+  gap: 12px;
+  min-height: 50px;
+  padding: 0 15px;
+  border-bottom: .5px solid var(--hairline);
+  border-radius: 0;
+  color: var(--ink);
+  background: var(--raised);
+  font-size: 15px;
+  letter-spacing: -.01em;
+}
+.chat-app[data-style="messages"] .info-actions + .info-row { border-radius: var(--radius-card) var(--radius-card) 0 0; }
+.chat-app[data-style="messages"] .info-row:not(:has(+ .info-row)) {
+  border-bottom: 0;
+  border-radius: 0 0 var(--radius-card) var(--radius-card);
+}
+.chat-app[data-style="messages"] .info-row svg { color: var(--faint); }
+.chat-app[data-style="messages"] .info-row small { color: var(--faint); font-size: 13.5px; }
+.chat-app[data-style="messages"] .done-button {
+  min-height: 50px;
+  margin-top: 18px;
+  border-radius: var(--radius-card);
+  color: var(--accent);
+  background: var(--raised);
+  box-shadow: var(--shadow-1);
+  font-family: var(--font-display);
+  font-size: 16px;
+  font-weight: 640;
+  letter-spacing: -.01em;
+}
+.chat-app[data-style="messages"] .done-button:active { background: var(--fill-2); }
+
+/* ---- agent activity (techie mode) ------------------------------------------ */
+.chat-app[data-style="messages"] .tech-strip {
+  padding: 5px max(12px, var(--safe-right)) 5px max(12px, var(--safe-left));
+  border-bottom: .5px solid var(--hairline);
+  color: var(--muted);
+  background: var(--chrome);
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+}
+.chat-app[data-style="messages"] .tech-strip strong { color: var(--ink); font-weight: 620; }
+.chat-app[data-style="messages"] .tech-strip > span { padding: 3px 7px; border-radius: 6px; background: var(--fill); }
+.chat-app[data-style="messages"] .tech-strip button {
+  min-height: 32px;
+  padding: 4px 11px;
+  border: .5px solid var(--hairline);
+  border-radius: 9px;
+  color: var(--danger-ink);
+  background: var(--danger-fill);
+  font-size: 11.5px;
+  font-weight: 680;
+}
+/* Same trick as the load-earlier pill: keep the strip 38pt tall, keep the
+   Stop control hittable at 44. */
+.chat-app[data-style="messages"] .tech-strip button { position: relative; }
+.chat-app[data-style="messages"] .tech-strip button::after { position: absolute; inset: -6px -4px; content: ""; }
+.chat-app[data-style="messages"] .live-dot { background: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+.chat-app[data-style="messages"] .idle-dot { background: var(--faint); box-shadow: none; }
+.chat-app[data-style="messages"] .technical-turn {
+  width: calc(100% - 12px);
+  margin: 16px auto 6px;
+  padding: 11px 12px;
+  border: .5px solid var(--hairline);
+  border-radius: var(--radius-card);
+  color: var(--ink);
+  background: var(--raised);
+  box-shadow: var(--shadow-1);
+}
+.chat-app[data-style="messages"] .technical-turn > header { gap: 7px; font-size: 11.5px; }
+.chat-app[data-style="messages"] .technical-turn > header strong { font-weight: 660; }
+.chat-app[data-style="messages"] .technical-turn > header small { color: var(--faint); font-variant-numeric: tabular-nums; }
+.chat-app[data-style="messages"] .technical-block { gap: 9px; padding: 8px 0; border-top: .5px solid var(--hairline); }
+.chat-app[data-style="messages"] .technical-block > span:first-child { border-radius: 8px; color: var(--accent); background: var(--accent-soft); }
+.chat-app[data-style="messages"] .technical-block strong { font-size: 12px; font-weight: 620; }
+.chat-app[data-style="messages"] .technical-block small { color: var(--muted); font-size: 11.5px; }
+.chat-app[data-style="messages"] .approval-buttons button,
+.chat-app[data-style="messages"] .question-card button {
+  padding: 7px 12px;
+  border-radius: 9px;
+  color: var(--accent-ink);
+  background: var(--accent);
+  font-size: 11.5px;
+  font-weight: 680;
+}
+.chat-app[data-style="messages"] .approval-buttons button:first-child { color: var(--danger-ink); background: var(--danger-fill); }
+.chat-app[data-style="messages"] .question-card { padding: 10px 0 2px; border-top: .5px solid var(--hairline); }
+.chat-app[data-style="messages"] .question-card > strong { font-size: 12px; font-weight: 640; }
+.chat-app[data-style="messages"] .question-card p { color: var(--muted); font-size: 12px; line-height: 1.4; }
+.chat-app[data-style="messages"] .technical-error {
+  border-radius: 8px;
+  color: var(--danger-ink);
+  background: var(--danger-fill);
+  font-size: 11.5px;
+}
+.chat-app[data-style="messages"] .pinned-banner {
+  border: .5px solid var(--hairline);
+  border-radius: var(--radius-card);
+  color: var(--ink);
+  background: var(--raised);
+  box-shadow: var(--shadow-1);
+}
+.chat-app[data-style="messages"] .pinned-banner > span:first-child { color: var(--accent); background: var(--accent-soft); }
+.chat-app[data-style="messages"] .pinned-banner strong { color: var(--accent); font-weight: 680; }
+.chat-app[data-style="messages"] .pinned-banner small { color: var(--muted); font-size: 12px; }
+.chat-app[data-style="messages"] .pinned-banner > span:last-child { color: var(--faint); }
+
+/* ---- contrast preference ---------------------------------------------------- */
+@media (prefers-contrast: more) {
+  .chat-app[data-style="messages"] {
+    --muted: #454b49;
+    --faint: #5d6462;
+    --hairline: rgba(13, 17, 17, .3);
+    --hairline-strong: rgba(13, 17, 17, .5);
+  }
+}
+@media (prefers-contrast: more) and (prefers-color-scheme: dark) {
+  .chat-app[data-style="messages"] {
+    --muted: #d2d7d5;
+    --faint: #a8afad;
+    --hairline: rgba(255, 255, 255, .32);
+    --hairline-strong: rgba(255, 255, 255, .55);
+  }
+}

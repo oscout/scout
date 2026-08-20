@@ -1,0 +1,80 @@
+/* ── Dictation mic ───────────────────────────────────────────────
+   Shared composer affordance. One tap to record, one tap to stop;
+   the final transcript is appended to the surrounding draft. Sits
+   alongside the send button in any turn composer (channels, DMs,
+   focus, etc.). Scout voice handles transcription under the hood. */
+
+.s-dictation-mic {
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--muted);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  align-self: flex-end;
+  cursor: pointer;
+  transition: color 0.12s ease, border-color 0.12s ease, background 0.12s ease;
+}
+
+.s-dictation-mic:not(:disabled):hover {
+  color: var(--ink);
+  border-color: color-mix(in srgb, var(--ink) 35%, var(--border));
+}
+
+.s-dictation-mic:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.s-dictation-mic--needs-permission {
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 50%, var(--border));
+}
+
+.s-dictation-mic--needs-permission:not(:disabled):hover {
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 70%, var(--border));
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+}
+
+.s-dictation-mic--unavailable {
+  color: var(--amber);
+  border-color: color-mix(in srgb, var(--amber) 45%, var(--border));
+}
+
+.s-dictation-mic--unavailable:not(:disabled):hover {
+  color: var(--amber);
+  border-color: color-mix(in srgb, var(--amber) 65%, var(--border));
+  background: color-mix(in srgb, var(--amber) 8%, transparent);
+}
+
+.s-dictation-mic--error {
+  color: var(--red, #ef4444);
+  border-color: color-mix(in srgb, var(--red, #ef4444) 45%, var(--border));
+}
+
+.s-dictation-mic--recording {
+  color: var(--green);
+  border-color: color-mix(in srgb, var(--green) 55%, var(--border));
+  background: color-mix(in srgb, var(--green) 10%, transparent);
+}
+
+.s-dictation-mic--recording:not(:disabled):hover {
+  border-color: color-mix(in srgb, var(--green) 75%, var(--border));
+}
+
+.s-dictation-mic--busy {
+  color: var(--muted);
+}
+
+.s-dictation-mic-spin {
+  animation: s-dictation-mic-spin 1s linear infinite;
+}
+
+@keyframes s-dictation-mic-spin {
+  to { transform: rotate(360deg); }
+}

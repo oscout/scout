@@ -1,0 +1,159 @@
+name: Release Package npm
+
+on:
+  push:
+    tags:
+      - npm-v*
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to publish, for example npm-v0.2.68 or v0.2.68"
+        required: true
+      npm_tag:
+        description: "npm dist-tag"
+        required: true
+        default: "latest"
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: release-package-npm-${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: macos-15
+    timeout-minutes: 45
+    environment: Production
+    steps:
+      - name: Resolve release target
+        id: release
+        shell: bash
+        env:
+          INPUT_TAG: ${{ inputs.tag || '' }}
+          INPUT_NPM_TAG: ${{ inputs.npm_tag || '' }}
+        run: |
+          set -euo pipefail
+
+          if [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]; then
+            tag="$INPUT_TAG"
+            npm_tag="${INPUT_NPM_TAG:-latest}"
+          else
+            tag="$GITHUB_REF_NAME"
+            npm_tag="latest"
+          fi
+
+          case "$tag" in
+            npm-v*) version="${tag#npm-v}" ;;
+            v*) version="${tag#v}" ;;
+            *)
+              echo "Release tag must look like npm-vX.Y.Z or vX.Y.Z, got: $tag" >&2
+              exit 1
+              ;;
+          esac
+
+          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+ ]]; then
+            echo "Release version must look like X.Y.Z, got: $version" >&2
+            exit 1
+          fi
+
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "npm_tag=${npm_tag:-latest}" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ steps.release.outputs.tag }}
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24.x"
+          registry-url: "https://registry.npmjs.org"
+          package-manager-cache: false
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.13"
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Import Developer ID certificate
+        shell: bash
+        env:
+          P12_BASE64: ${{ secrets.MACOS_DEVELOPER_ID_APPLICATION_P12_BASE64 }}
+          P12_PASSWORD: ${{ secrets.MACOS_DEVELOPER_ID_APPLICATION_P12_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ secrets.MACOS_RELEASE_KEYCHAIN_PASSWORD }}
+        run: |
+          set -euo pipefail
+
+          if [[ -z "$P12_BASE64" || -z "$P12_PASSWORD" || -z "$KEYCHAIN_PASSWORD" ]]; then
+            echo "::error::Missing macOS signing secrets."
+            exit 1
+          fi
+
+          keychain="$RUNNER_TEMP/openscout-release.keychain-db"
+          cert="$RUNNER_TEMP/developer-id-application.p12"
+
+          printf '%s' "$P12_BASE64" | base64 -d > "$cert"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$keychain"
+          security import "$cert" -k "$keychain" -P "$P12_PASSWORD" -T /usr/bin/codesign -T /usr/bin/security
+          security list-keychains -d user -s "$keychain" "$HOME/Library/Keychains/login.keychain-db"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$keychain"
+
+      - name: Validate release manifest
+        env:
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
+          RELEASE_VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          node --input-type=module <<'JS'
+          import { readFileSync } from "node:fs";
+
+          const expected = process.env.RELEASE_VERSION;
+          const tag = process.env.RELEASE_TAG;
+          const manifests = [
+            "package.json",
+            "apps/desktop/package.json",
+            "packages/agent-sessions/package.json",
+            "packages/cli/package.json",
+            "packages/protocol/package.json",
+            "packages/runtime/package.json",
+            "packages/session-trace/package.json",
+            "packages/session-trace-react/package.json",
+            "packages/web/package.json",
+          ];
+
+          const drift = [];
+          for (const manifest of manifests) {
+            const pkg = JSON.parse(readFileSync(manifest, "utf8"));
+            if (pkg.version !== expected) {
+              drift.push(`${manifest}=${pkg.version}`);
+            }
+          }
+
+          if (drift.length > 0) {
+            throw new Error(`Manifest versions must match ${tag}: ${drift.join(", ")}`);
+          }
+
+          const cli = JSON.parse(readFileSync("packages/cli/package.json", "utf8"));
+          if (cli.name !== "@openscout/scout") {
+            throw new Error(`Unexpected public package name: ${cli.name}`);
+          }
+          JS
+
+      - name: Publish @openscout/scout
+        env:
+          NPM_TAG: ${{ steps.release.outputs.npm_tag }}
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+          # Public releases carry GitHub Actions build provenance through npm.
+          NPM_CONFIG_PROVENANCE: "true"
+          OPENSCOUT_REQUIRE_SCOUTD_SIGN: "1"
+          OPENSCOUT_SIGN_IDENTITY: ${{ vars.OPENSCOUT_SIGN_IDENTITY || '' }}
+        run: bash scripts/ship-npm.sh

@@ -1,0 +1,18 @@
+{
+  "name": "pause-question",
+  "description": "mid-thought pause must not split the turn (Spec I)",
+  "steps": [
+    { "do": "speak", "text": "How is, um" },
+    { "do": "silence", "ms": 900 },
+    { "do": "speak", "text": "the delivery campaign doing today?" },
+    { "do": "silence", "ms": 900 },
+    { "do": "await", "event": "transcript.user", "timeoutMs": 20000 },
+    { "do": "await", "event": "reply.audio.start", "timeoutMs": 15000 },
+    { "do": "await", "event": "reply.audio.end", "timeoutMs": 60000 }
+  ],
+  "expect": {
+    "userTranscripts": 1,
+    "userTranscriptIncludes": ["um", "campaign"],
+    "maxFirstReplyAudioMs": 8000
+  }
+}

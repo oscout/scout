@@ -1,0 +1,60 @@
+{
+  "name": "@openscout/protocol",
+  "version": "0.2.82",
+  "description": "Typed protocol for the OpenScout local control plane",
+  "license": "Apache-2.0",
+  "type": "module",
+  "author": "Arach Tchoupani",
+  "homepage": "https://github.com/oscout/scout/tree/main/packages/protocol#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/oscout/scout.git",
+    "directory": "packages/protocol"
+  },
+  "bugs": {
+    "url": "https://github.com/oscout/scout/issues"
+  },
+  "keywords": [
+    "openscout",
+    "protocol",
+    "agents",
+    "broker",
+    "control-plane",
+    "a2a",
+    "typescript"
+  ],
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "bun": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "src",
+    "!src/**/*.test.ts",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "prebuild": "bun ../../scripts/generate-runtime-catalog.ts",
+    "build": "rm -rf dist && tsc -p tsconfig.json",
+    "precheck": "bun ../../scripts/generate-runtime-catalog.ts",
+    "check": "tsc --noEmit -p tsconfig.json",
+    "test": "bun test src/*.test.ts",
+    "prepack": "npm run build && node ../../scripts/prepare-publish-manifest.mjs .",
+    "postpack": "node ../../scripts/restore-publish-manifest.mjs .",
+    "postpublish": "node ../../scripts/restore-publish-manifest.mjs ."
+  },
+  "devDependencies": {
+    "typescript": "^5"
+  }
+}

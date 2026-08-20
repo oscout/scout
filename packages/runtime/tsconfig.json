@@ -1,0 +1,19 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ES2022",
+    "moduleResolution": "bundler",
+    "customConditions": ["bun"],
+    "strict": true,
+    "skipLibCheck": true,
+    "declaration": true,
+    "rootDir": "src",
+    "outDir": "dist",
+    "types": [
+      "node",
+      "bun-types"
+    ]
+  },
+  "include": ["src"],
+  "exclude": ["src/**/*.test.ts"]
+}

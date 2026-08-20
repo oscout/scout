@@ -1,0 +1,58 @@
+{
+  "name": "task-launch-commit",
+  "description": "a current launch proposal commits and reports exactly once even when its commit is retried",
+  "mode": "task",
+  "taskDraft": {
+    "title": "Review portable voice",
+    "project": "openscout",
+    "prompt": "Review the portable live-voice turn contract and report any stale-effect risks.",
+    "harness": "auto",
+    "model": "auto",
+    "effort": "auto"
+  },
+  "steps": [
+    { "do": "dc", "payload": { "type": "task.launch" } },
+    { "do": "await", "event": "dc:task.launch.proposed", "timeoutMs": 3000 },
+    {
+      "do": "dc",
+      "payload": { "type": "effect.commit" },
+      "copyFromEvent": {
+        "event": "dc:task.launch.proposed",
+        "fields": ["effectId", "turn", "gen"]
+      }
+    },
+    { "do": "await", "event": "dc:task.launch", "timeoutMs": 3000 },
+    {
+      "do": "dc",
+      "payload": { "type": "effect.commit" },
+      "copyFromEvent": {
+        "event": "dc:task.launch.proposed",
+        "fields": ["effectId", "turn", "gen"]
+      }
+    },
+    { "do": "dc", "payload": { "type": "turn.commit", "text": "Keep refining the draft" } },
+    {
+      "do": "dc",
+      "payload": {
+        "type": "task.launch.result",
+        "ok": true,
+        "title": "Review portable voice",
+        "project": "openscout",
+        "conversationId": "scenario-conversation",
+        "flightId": "scenario-flight"
+      },
+      "copyFromEvent": {
+        "event": "dc:task.launch",
+        "fields": ["effectId", "turn", "gen"]
+      }
+    },
+    { "do": "await", "event": "dc:task.launched", "timeoutMs": 3000 },
+    { "do": "silence", "ms": 100 }
+  ],
+  "expect": {
+    "taskLaunches": 1,
+    "taskLaunched": 1,
+    "lateTaskLaunched": 1,
+    "irreversibleEffectsOnStaleGeneration": 0
+  }
+}

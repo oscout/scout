@@ -1,0 +1,302 @@
+export type AdapterCostProvider = "openai" | "anthropic" | "unknown";
+
+export type AdapterCostUsage = {
+  inputTokens?: number | null;
+  outputTokens?: number | null;
+  reasoningOutputTokens?: number | null;
+  cacheReadInputTokens?: number | null;
+  cacheCreationInputTokens?: number | null;
+  totalTokens?: number | null;
+  webSearchRequests?: number | null;
+  webFetchRequests?: number | null;
+  planType?: string | null;
+};
+
+export type AdapterSubscriptionWindowSnapshot = {
+  label: "5h" | "weekly" | string;
+  capturedAt: number;
+  percentRemaining: number | null;
+  used: number | null;
+  limit: number | null;
+  resetAt: number | null;
+  source: "provider" | "observed" | "estimated";
+};
+
+export type AdapterCostInput = {
+  provider?: string | null;
+  adapterType?: string | null;
+  model?: string | null;
+  usage?: AdapterCostUsage | null;
+  billingMode?: "api" | "subscription" | null;
+  capturedAt?: number | null;
+  subscriptionWindows?: AdapterSubscriptionWindowSnapshot[] | null;
+};
+
+export type AdapterCostRateCard = {
+  provider: AdapterCostProvider;
+  model: string;
+  inputPerM: number;
+  cachedInputPerM: number | null;
+  cacheWritePerM: number | null;
+  outputPerM: number;
+  webSearchPer1K?: number | null;
+};
+
+export type AdapterTokenBreakdown = {
+  input: number | null;
+  uncachedInput: number | null;
+  cachedInput: number | null;
+  cacheWrite: number | null;
+  output: number | null;
+  reasoningOutput: number | null;
+  total: number | null;
+  webSearchRequests: number | null;
+  webFetchRequests: number | null;
+};
+
+export type AdapterCostLineItem = {
+  key: "input" | "cached_input" | "cache_write" | "output" | "web_search";
+  label: string;
+  quantity: number;
+  unit: "tokens" | "requests";
+  rate: number;
+  billedRate: number;
+  costUsd: number;
+  billedCostUsd: number;
+};
+
+export type AdapterCostEstimate = {
+  provider: AdapterCostProvider;
+  model: string | null;
+  rateCard: AdapterCostRateCard | null;
+  rateCardSource: "exact" | "alias" | "provider-default" | "unknown";
+  capturedAt: number;
+  usage: AdapterTokenBreakdown;
+  lineItems: AdapterCostLineItem[];
+  totalUsd: number | null;
+  billedTotalUsd: number | null;
+  billingMode: "api" | "subscription";
+  subscriptionWindows: AdapterSubscriptionWindowSnapshot[];
+};
+
+const OPENAI_PROVIDER_HINTS = ["openai", "codex", "codex_app_server"];
+const ANTHROPIC_PROVIDER_HINTS = ["anthropic", "claude", "claude-code", "claude_stream_json"];
+
+const RATE_CARDS: Record<string, AdapterCostRateCard> = {
+  "openai:gpt-5.5": { provider: "openai", model: "gpt-5.5", inputPerM: 5, cachedInputPerM: 0.5, cacheWritePerM: null, outputPerM: 30, webSearchPer1K: 10 },
+  "openai:gpt-5.5-pro": { provider: "openai", model: "gpt-5.5-pro", inputPerM: 30, cachedInputPerM: null, cacheWritePerM: null, outputPerM: 180, webSearchPer1K: 10 },
+  "openai:gpt-5.4": { provider: "openai", model: "gpt-5.4", inputPerM: 2.5, cachedInputPerM: 0.25, cacheWritePerM: null, outputPerM: 15, webSearchPer1K: 10 },
+  "openai:gpt-5.4-mini": { provider: "openai", model: "gpt-5.4-mini", inputPerM: 0.75, cachedInputPerM: 0.075, cacheWritePerM: null, outputPerM: 4.5, webSearchPer1K: 10 },
+  "openai:gpt-5.4-nano": { provider: "openai", model: "gpt-5.4-nano", inputPerM: 0.2, cachedInputPerM: 0.02, cacheWritePerM: null, outputPerM: 1.25, webSearchPer1K: 10 },
+  "openai:gpt-5.4-pro": { provider: "openai", model: "gpt-5.4-pro", inputPerM: 30, cachedInputPerM: null, cacheWritePerM: null, outputPerM: 180, webSearchPer1K: 10 },
+  "openai:gpt-5.3-codex": { provider: "openai", model: "gpt-5.3-codex", inputPerM: 1.75, cachedInputPerM: 0.175, cacheWritePerM: null, outputPerM: 14, webSearchPer1K: 10 },
+  "openai:gpt-5.3-chat-latest": { provider: "openai", model: "gpt-5.3-chat-latest", inputPerM: 1.75, cachedInputPerM: 0.175, cacheWritePerM: null, outputPerM: 14, webSearchPer1K: 10 },
+  "openai:gpt-5.2": { provider: "openai", model: "gpt-5.2", inputPerM: 1.75, cachedInputPerM: 0.175, cacheWritePerM: null, outputPerM: 14, webSearchPer1K: 10 },
+  "openai:gpt-5.2-codex": { provider: "openai", model: "gpt-5.2-codex", inputPerM: 1.75, cachedInputPerM: 0.175, cacheWritePerM: null, outputPerM: 14, webSearchPer1K: 10 },
+  "openai:gpt-5.2-chat-latest": { provider: "openai", model: "gpt-5.2-chat-latest", inputPerM: 1.75, cachedInputPerM: 0.175, cacheWritePerM: null, outputPerM: 14, webSearchPer1K: 10 },
+  "openai:gpt-5.2-pro": { provider: "openai", model: "gpt-5.2-pro", inputPerM: 21, cachedInputPerM: null, cacheWritePerM: null, outputPerM: 168, webSearchPer1K: 10 },
+  "openai:gpt-5.1": { provider: "openai", model: "gpt-5.1", inputPerM: 1.25, cachedInputPerM: 0.125, cacheWritePerM: null, outputPerM: 10, webSearchPer1K: 10 },
+  "openai:gpt-5.1-codex": { provider: "openai", model: "gpt-5.1-codex", inputPerM: 1.25, cachedInputPerM: 0.125, cacheWritePerM: null, outputPerM: 10, webSearchPer1K: 10 },
+  "openai:gpt-5.1-codex-max": { provider: "openai", model: "gpt-5.1-codex-max", inputPerM: 1.25, cachedInputPerM: 0.125, cacheWritePerM: null, outputPerM: 10, webSearchPer1K: 10 },
+  "openai:gpt-5.1-chat-latest": { provider: "openai", model: "gpt-5.1-chat-latest", inputPerM: 1.25, cachedInputPerM: 0.125, cacheWritePerM: null, outputPerM: 10, webSearchPer1K: 10 },
+  "openai:gpt-5": { provider: "openai", model: "gpt-5", inputPerM: 1.25, cachedInputPerM: 0.125, cacheWritePerM: null, outputPerM: 10, webSearchPer1K: 10 },
+  "openai:gpt-5-codex": { provider: "openai", model: "gpt-5-codex", inputPerM: 1.25, cachedInputPerM: 0.125, cacheWritePerM: null, outputPerM: 10, webSearchPer1K: 10 },
+  "openai:gpt-5-chat-latest": { provider: "openai", model: "gpt-5-chat-latest", inputPerM: 1.25, cachedInputPerM: 0.125, cacheWritePerM: null, outputPerM: 10, webSearchPer1K: 10 },
+  "openai:gpt-5-mini": { provider: "openai", model: "gpt-5-mini", inputPerM: 0.25, cachedInputPerM: 0.025, cacheWritePerM: null, outputPerM: 2, webSearchPer1K: 10 },
+  "openai:gpt-5-nano": { provider: "openai", model: "gpt-5-nano", inputPerM: 0.05, cachedInputPerM: 0.005, cacheWritePerM: null, outputPerM: 0.4, webSearchPer1K: 10 },
+  "openai:gpt-5-pro": { provider: "openai", model: "gpt-5-pro", inputPerM: 15, cachedInputPerM: null, cacheWritePerM: null, outputPerM: 120, webSearchPer1K: 10 },
+  "openai:gpt-4.1": { provider: "openai", model: "gpt-4.1", inputPerM: 2, cachedInputPerM: 0.5, cacheWritePerM: null, outputPerM: 8, webSearchPer1K: 10 },
+  "openai:gpt-4.1-mini": { provider: "openai", model: "gpt-4.1-mini", inputPerM: 0.4, cachedInputPerM: 0.1, cacheWritePerM: null, outputPerM: 1.6, webSearchPer1K: 10 },
+  "openai:gpt-4.1-nano": { provider: "openai", model: "gpt-4.1-nano", inputPerM: 0.1, cachedInputPerM: 0.025, cacheWritePerM: null, outputPerM: 0.4, webSearchPer1K: 10 },
+  "openai:gpt-4o": { provider: "openai", model: "gpt-4o", inputPerM: 2.5, cachedInputPerM: 1.25, cacheWritePerM: null, outputPerM: 10, webSearchPer1K: 10 },
+  "openai:gpt-4o-mini": { provider: "openai", model: "gpt-4o-mini", inputPerM: 0.15, cachedInputPerM: 0.075, cacheWritePerM: null, outputPerM: 0.6, webSearchPer1K: 10 },
+  "anthropic:claude-opus-4.6": { provider: "anthropic", model: "claude-opus-4.6", inputPerM: 5, cachedInputPerM: 0.5, cacheWritePerM: 6.25, outputPerM: 25, webSearchPer1K: 10 },
+  "anthropic:claude-opus-4.5": { provider: "anthropic", model: "claude-opus-4.5", inputPerM: 5, cachedInputPerM: 0.5, cacheWritePerM: 6.25, outputPerM: 25, webSearchPer1K: 10 },
+  "anthropic:claude-opus-4.1": { provider: "anthropic", model: "claude-opus-4.1", inputPerM: 15, cachedInputPerM: 1.5, cacheWritePerM: 18.75, outputPerM: 75, webSearchPer1K: 10 },
+  "anthropic:claude-opus-4": { provider: "anthropic", model: "claude-opus-4", inputPerM: 15, cachedInputPerM: 1.5, cacheWritePerM: 18.75, outputPerM: 75, webSearchPer1K: 10 },
+  "anthropic:claude-sonnet-4.6": { provider: "anthropic", model: "claude-sonnet-4.6", inputPerM: 3, cachedInputPerM: 0.3, cacheWritePerM: 3.75, outputPerM: 15, webSearchPer1K: 10 },
+  "anthropic:claude-sonnet-4.5": { provider: "anthropic", model: "claude-sonnet-4.5", inputPerM: 3, cachedInputPerM: 0.3, cacheWritePerM: 3.75, outputPerM: 15, webSearchPer1K: 10 },
+  "anthropic:claude-sonnet-4": { provider: "anthropic", model: "claude-sonnet-4", inputPerM: 3, cachedInputPerM: 0.3, cacheWritePerM: 3.75, outputPerM: 15, webSearchPer1K: 10 },
+  "anthropic:claude-3-7-sonnet": { provider: "anthropic", model: "claude-3-7-sonnet", inputPerM: 3, cachedInputPerM: 0.3, cacheWritePerM: 3.75, outputPerM: 15, webSearchPer1K: 10 },
+  "anthropic:claude-haiku-4.5": { provider: "anthropic", model: "claude-haiku-4.5", inputPerM: 1, cachedInputPerM: 0.1, cacheWritePerM: 1.25, outputPerM: 5, webSearchPer1K: 10 },
+};
+
+const EXACT_MODEL_ALIASES: Record<string, string> = {
+  "claude-sonnet-4-5": "anthropic:claude-sonnet-4.5",
+  "claude-sonnet-4-6": "anthropic:claude-sonnet-4.6",
+  "claude-opus-4-5": "anthropic:claude-opus-4.5",
+  "claude-opus-4-6": "anthropic:claude-opus-4.6",
+  "claude-haiku-4-5": "anthropic:claude-haiku-4.5",
+};
+
+export function normalizeAdapterCostProvider(input: {
+  provider?: string | null;
+  adapterType?: string | null;
+  model?: string | null;
+}): AdapterCostProvider {
+  const provider = input.provider?.trim().toLowerCase() ?? "";
+  const adapterType = input.adapterType?.trim().toLowerCase() ?? "";
+  const model = normalizeAdapterCostModel(input.model) ?? "";
+  const haystack = [provider, adapterType].filter(Boolean);
+  if (haystack.some((value) => OPENAI_PROVIDER_HINTS.some((hint) => value.includes(hint)))) {
+    return "openai";
+  }
+  if (haystack.some((value) => ANTHROPIC_PROVIDER_HINTS.some((hint) => value.includes(hint)))) {
+    return "anthropic";
+  }
+  if (model.startsWith("gpt-") || model.startsWith("o") || model.includes("codex")) {
+    return "openai";
+  }
+  if (model.startsWith("claude-")) {
+    return "anthropic";
+  }
+  return "unknown";
+}
+
+export function normalizeAdapterCostModel(model: string | null | undefined): string | null {
+  if (!model) return null;
+  return model
+    .trim()
+    .toLowerCase()
+    .replace(/^(openai|anthropic)\//, "")
+    .replace(/_/g, "-")
+    .replace(/-\d{8}$/, "");
+}
+
+export function adapterTokenBreakdown(usage: AdapterCostUsage | null | undefined): AdapterTokenBreakdown {
+  const input = numberOrNull(usage?.inputTokens);
+  const cachedInput = numberOrNull(usage?.cacheReadInputTokens);
+  const cacheWrite = numberOrNull(usage?.cacheCreationInputTokens);
+  const output = numberOrNull(usage?.outputTokens);
+  const reasoningOutput = numberOrNull(usage?.reasoningOutputTokens);
+  const observedTotal = [input, output].reduce<number>((sum, value) => sum + (value ?? 0), 0);
+  const total = numberOrNull(usage?.totalTokens) ?? (observedTotal || null);
+  return {
+    input,
+    uncachedInput: input == null ? null : Math.max(0, input - (cachedInput ?? 0) - (cacheWrite ?? 0)),
+    cachedInput,
+    cacheWrite,
+    output,
+    reasoningOutput,
+    total,
+    webSearchRequests: numberOrNull(usage?.webSearchRequests),
+    webFetchRequests: numberOrNull(usage?.webFetchRequests),
+  };
+}
+
+export function estimateAdapterCost(input: AdapterCostInput): AdapterCostEstimate {
+  const provider = normalizeAdapterCostProvider(input);
+  const model = normalizeAdapterCostModel(input.model);
+  const usage = adapterTokenBreakdown(input.usage);
+  const resolved = resolveRateCard(provider, model);
+  const billingMode = resolveBillingMode(input);
+  if (!resolved.rateCard) {
+    return {
+      provider,
+      model,
+      rateCard: null,
+      rateCardSource: "unknown",
+      capturedAt: input.capturedAt ?? Date.now(),
+      usage,
+      lineItems: [],
+      totalUsd: null,
+      billedTotalUsd: null,
+      billingMode,
+      subscriptionWindows: input.subscriptionWindows ?? [],
+    };
+  }
+
+  const rateCard = resolved.rateCard;
+  const uncachedInput = usage.uncachedInput ?? usage.input ?? 0;
+  const cachedInput = usage.cachedInput ?? 0;
+  const cacheWrite = usage.cacheWrite ?? 0;
+  const output = usage.output ?? 0;
+  const webSearchRequests = usage.webSearchRequests ?? 0;
+  const lineItems: AdapterCostLineItem[] = [
+    tokenLine("input", "Input", uncachedInput, rateCard.inputPerM, billingMode),
+    tokenLine("cached_input", "Cached input", cachedInput, rateCard.cachedInputPerM ?? rateCard.inputPerM, billingMode),
+    tokenLine("cache_write", "Cache write", cacheWrite, rateCard.cacheWritePerM ?? rateCard.inputPerM, billingMode),
+    tokenLine("output", "Output", output, rateCard.outputPerM, billingMode),
+    {
+      key: "web_search" as const,
+      label: "Web search",
+      quantity: webSearchRequests,
+      unit: "requests" as const,
+      rate: rateCard.webSearchPer1K ?? 0,
+      billedRate: billingMode === "subscription" ? 0 : (rateCard.webSearchPer1K ?? 0),
+      costUsd: (webSearchRequests / 1_000) * (rateCard.webSearchPer1K ?? 0),
+      billedCostUsd: billingMode === "subscription" ? 0 : (webSearchRequests / 1_000) * (rateCard.webSearchPer1K ?? 0),
+    },
+  ].filter((item) => item.quantity > 0);
+
+  return {
+    provider,
+    model,
+    rateCard,
+    rateCardSource: resolved.source,
+    capturedAt: input.capturedAt ?? Date.now(),
+    usage,
+    lineItems,
+    totalUsd: lineItems.reduce((sum, item) => sum + item.costUsd, 0),
+    billedTotalUsd: lineItems.reduce((sum, item) => sum + item.billedCostUsd, 0),
+    billingMode,
+    subscriptionWindows: input.subscriptionWindows ?? [],
+  };
+}
+
+function resolveRateCard(
+  provider: AdapterCostProvider,
+  model: string | null,
+): { rateCard: AdapterCostRateCard | null; source: AdapterCostEstimate["rateCardSource"] } {
+  if (provider === "unknown") return { rateCard: null, source: "unknown" };
+  const exactKey = model ? `${provider}:${model}` : null;
+  if (exactKey && RATE_CARDS[exactKey]) {
+    return { rateCard: RATE_CARDS[exactKey], source: "exact" };
+  }
+  const aliasKey = model ? EXACT_MODEL_ALIASES[model] : null;
+  if (aliasKey && RATE_CARDS[aliasKey]) {
+    return { rateCard: RATE_CARDS[aliasKey], source: "alias" };
+  }
+  if (provider === "anthropic") {
+    if (model?.includes("opus")) return { rateCard: RATE_CARDS["anthropic:claude-opus-4.5"], source: "provider-default" };
+    if (model?.includes("haiku")) return { rateCard: RATE_CARDS["anthropic:claude-haiku-4.5"], source: "provider-default" };
+    if (model?.includes("sonnet") || !model) return { rateCard: RATE_CARDS["anthropic:claude-sonnet-4.5"], source: "provider-default" };
+  }
+  return { rateCard: null, source: "unknown" };
+}
+
+function tokenLine(
+  key: Extract<AdapterCostLineItem["key"], "input" | "cached_input" | "cache_write" | "output">,
+  label: string,
+  quantity: number,
+  rate: number,
+  billingMode: AdapterCostEstimate["billingMode"],
+): AdapterCostLineItem {
+  const billedRate = billingMode === "subscription" ? 0 : rate;
+  return {
+    key,
+    label,
+    quantity,
+    unit: "tokens",
+    rate,
+    billedRate,
+    costUsd: (quantity / 1_000_000) * rate,
+    billedCostUsd: (quantity / 1_000_000) * billedRate,
+  };
+}
+
+function numberOrNull(value: number | null | undefined): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function resolveBillingMode(input: AdapterCostInput): AdapterCostEstimate["billingMode"] {
+  if (input.billingMode) return input.billingMode;
+  const adapterType = input.adapterType?.trim().toLowerCase();
+  if (adapterType === "claude-code" || adapterType === "claude_stream_json") {
+    return "subscription";
+  }
+  const planType = input.usage?.planType?.trim().toLowerCase();
+  if (!planType) return "api";
+  if (planType === "api" || planType.includes("api")) return "api";
+  return "subscription";
+}

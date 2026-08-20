@@ -1,0 +1,28 @@
+{
+  "schemaVersion": "1.0.0",
+  "id": "echo-basic-completed",
+  "adapterId": "echo",
+  "fixtureSet": "echo",
+  "source": {
+    "kind": "synthetic",
+    "harnessVersion": "fixture-v1",
+    "transport": "in-process",
+    "capturedAt": "2026-08-07T00:00:00.000Z"
+  },
+  "expected": {
+    "endState": "completed",
+    "evidenceKeys": [
+      "event:turn:start",
+      "event:block:delta",
+      "event:block:action:output",
+      "event:turn:end"
+    ]
+  },
+  "determinism": {
+    "clockValues": ["2026-08-07T19:00:00.000Z"],
+    "idValues": ["echo-turn-001", "echo-reasoning-001", "echo-text-001", "echo-action-001", "echo-tool-001"]
+  },
+  "session": {
+    "name": "Echo fixture"
+  }
+}

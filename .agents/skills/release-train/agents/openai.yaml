@@ -1,0 +1,4 @@
+interface:
+  display_name: "Release Train"
+  short_description: "Run resumable OpenScout delivery trains"
+  default_prompt: "Use $release-train for exactly one resumable cycle."

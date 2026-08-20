@@ -1,0 +1,170 @@
+.machine-scope {
+  flex: 0 0 auto;
+}
+
+.machine-scope--bar {
+  min-height: 38px;
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  padding: var(--space-xs) var(--space-xl);
+  border-bottom: 1px solid color-mix(in srgb, var(--hud-ink) 8%, transparent);
+  background: color-mix(in srgb, var(--hud-surface) 94%, transparent);
+  color: var(--hud-ink);
+}
+
+.machine-scope--nav {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-sm);
+  min-width: 0;
+  color: var(--scout-chrome-ink);
+}
+
+.machine-scope-label {
+  font-size: var(--text-sm);
+  font-weight: 650;
+  color: color-mix(in srgb, var(--hud-ink) 58%, transparent);
+}
+
+.machine-scope--nav .machine-scope-label {
+  font-family: var(--hud-font-mono);
+  font-size: var(--text-2xs);
+  letter-spacing: var(--tracking-md);
+  text-transform: uppercase;
+  color: var(--scout-chrome-ink-faint);
+}
+
+.machine-scope-select {
+  min-width: 172px;
+  max-width: min(320px, 60vw);
+  height: 26px;
+  border: 1px solid color-mix(in srgb, var(--hud-ink) 11%, transparent);
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--hud-bg) 76%, var(--hud-surface));
+  color: var(--hud-ink);
+  font: 600 var(--text-md)/var(--leading-none) var(--hud-font-sans);
+  padding: 0 var(--space-5xl) 0 var(--space-md);
+}
+
+.machine-scope--nav .machine-scope-select {
+  min-width: 168px;
+  max-width: 24vw;
+  height: 25px;
+  border-radius: var(--radius-sm);
+  border-color: var(--scout-chrome-border-soft);
+  background: color-mix(in srgb, var(--hud-bg) 82%, transparent);
+  color: var(--scout-chrome-ink-strong);
+  font: 600 var(--text-sm)/var(--leading-none) var(--hud-font-sans);
+}
+
+.machine-scope--nav .machine-scope-select:hover {
+  border-color: color-mix(in srgb, var(--hud-ink) 16%, transparent);
+  background: var(--scout-chrome-hover);
+}
+
+/* SCO-085: expanded sidebar footer */
+.machine-scope--sidebar {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  padding: 0 2px;
+  color: var(--sidebar-foreground, var(--scout-chrome-ink));
+}
+
+.machine-scope--sidebar .machine-scope-label {
+  font-family: var(--hud-font-mono);
+  font-size: var(--text-2xs);
+  letter-spacing: var(--tracking-md);
+  text-transform: uppercase;
+  color: color-mix(in srgb, var(--sidebar-foreground, var(--hud-ink)) 55%, transparent);
+}
+
+.machine-scope--sidebar .machine-scope-select {
+  min-width: 0;
+  max-width: none;
+  width: 100%;
+  height: 26px;
+  border-radius: var(--radius-sm);
+  border-color: color-mix(in srgb, var(--sidebar-foreground, var(--hud-ink)) 12%, transparent);
+  background: color-mix(in srgb, var(--sidebar, var(--hud-bg)) 82%, transparent);
+  color: var(--sidebar-foreground, var(--scout-chrome-ink-strong));
+  font: 600 var(--text-sm) / var(--leading-none) var(--hud-font-sans);
+}
+
+/* SCO-085: 48px icon rail — icon + popover (chosen collapsed presentation) */
+.machine-scope--rail {
+  position: relative;
+  display: flex;
+  justify-content: center;
+  width: 100%;
+}
+
+.machine-scope-rail-trigger {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border: 0;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--sidebar-foreground, var(--scout-chrome-ink));
+  cursor: pointer;
+}
+
+.machine-scope-rail-trigger:hover {
+  background: var(--sidebar-accent, var(--scout-chrome-hover));
+}
+
+.machine-scope-rail-trigger[aria-expanded="true"] {
+  background: var(--sidebar-accent, var(--scout-chrome-active));
+}
+
+.machine-scope-rail-popover {
+  position: absolute;
+  left: calc(100% + 8px);
+  bottom: 0;
+  z-index: 50;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 200px;
+  padding: 10px 12px;
+  border: 1px solid color-mix(in srgb, var(--hud-ink) 12%, transparent);
+  border-radius: var(--radius-md);
+  background: var(--hud-surface, var(--bg));
+  box-shadow: var(--hud-shadow-panel, 0 12px 34px rgba(0, 0, 0, 0.45));
+  color: var(--hud-ink);
+}
+
+.machine-scope-rail-popover .machine-scope-label {
+  font-family: var(--hud-font-mono);
+  font-size: var(--text-2xs);
+  letter-spacing: var(--tracking-md);
+  text-transform: uppercase;
+  color: var(--scout-chrome-ink-faint);
+}
+
+.machine-scope-rail-popover .machine-scope-select {
+  min-width: 176px;
+  max-width: 280px;
+  width: 100%;
+}
+
+.machine-scope-select:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--hud-accent) 65%, transparent);
+  outline-offset: 2px;
+}
+
+@media (max-width: 940px) {
+  .machine-scope--nav .machine-scope-label {
+    display: none;
+  }
+
+  .machine-scope--nav .machine-scope-select {
+    min-width: 132px;
+    max-width: 30vw;
+  }
+}

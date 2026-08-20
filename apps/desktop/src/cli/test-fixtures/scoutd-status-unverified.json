@@ -1,0 +1,184 @@
+{
+  "label": "app.openscout",
+  "mode": "dev",
+  "launchAgentPath": "/Users/example/Library/LaunchAgents/app.openscout.plist",
+  "bootoutCommand": [
+    "launchctl",
+    "bootout",
+    "gui/501/app.openscout"
+  ],
+  "brokerUrl": "http://127.0.0.1:43123",
+  "effectiveBrokerUrl": "http://127.0.0.1:43123",
+  "webUrl": "http://127.0.0.1:43120",
+  "brokerSocketPath": "/Users/example/.openscout/run/broker.sock",
+  "supportDirectory": "/Users/example/Library/Application Support/OpenScout",
+  "runtimeDirectory": "/Users/example/.openscout/run",
+  "controlHome": "/Users/example/.openscout/control",
+  "stdoutLogPath": "/Users/example/Library/Logs/OpenScout/scoutd-stdout.log",
+  "stderrLogPath": "/Users/example/Library/Logs/OpenScout/scoutd-stderr.log",
+  "installed": true,
+  "loaded": true,
+  "pid": 4242,
+  "launchdState": "running",
+  "lastExitStatus": null,
+  "usesLaunchAgent": true,
+  "reachable": true,
+  "health": {
+    "reachable": true,
+    "ok": true,
+    "checkedAt": 1785683877657,
+    "transport": "unix_socket",
+    "statusCode": 200,
+    "body": "{\"ok\":true,\"nodeId\":\"example-openscout\",\"build\":{\"packageName\":\"@openscout/runtime\",\"version\":\"0.2.78\",\"commit\":null,\"mode\":\"dev\"}}",
+    "error": null
+  },
+  "lastLogLine": "scoutd fixture log line",
+  "scoutdExecutable": "/Users/example/.openscout/bin/scoutd",
+  "scoutdVersion": "0.1.0",
+  "scoutdBuild": {
+    "name": "scoutd",
+    "version": "0.1.0",
+    "gitSha": "53f79aa07a718e5433e4e72e959ba2d4165af312"
+  },
+  "hostInfoPath": "/Users/example/.openscout/run/host-info.json",
+  "scoutdStatePath": "/Users/example/.openscout/run/scoutd-state.json",
+  "scoutdState": {
+    "schemaVersion": 1,
+    "daemon": "scoutd",
+    "version": "0.1.0",
+    "gitSha": "53f79aa07a718e5433e4e72e959ba2d4165af312",
+    "runtimeBuild": {
+      "mode": "source",
+      "commit": "53f79aa07a718e5433e4e72e959ba2d4165af312",
+      "version": "0.2.78",
+      "sourceDirty": true,
+      "builtAt": null,
+      "manifestPath": null
+    },
+    "scoutdPid": 4242,
+    "startedAtMs": 1785680974886,
+    "basePid": 4243,
+    "baseState": "running",
+    "restartCount": 0,
+    "restartBackoffMs": 1000,
+    "lastChildExit": null,
+    "probePid": 4244,
+    "probeState": "running",
+    "probeRestartCount": 0,
+    "probeRestartBackoffMs": 1000,
+    "lastProbeChildExit": null,
+    "probeSocketPath": "/Users/example/.openscout/run/scoutd-probes.sock",
+    "updatedAtMs": 1785683876435
+  },
+  "runtimeFreshness": {
+    "state": "unverified",
+    "intentional": false,
+    "basis": "workspace_head",
+    "artifactCommit": "53f79aa07a718e5433e4e72e959ba2d4165af312",
+    "expectedCommit": "53f79aa07a718e5433e4e72e959ba2d4165af312",
+    "pin": null,
+    "pinReason": null,
+    "manifestPath": null,
+    "version": "0.2.78",
+    "builtAt": null,
+    "sourceDirty": true,
+    "detail": "The runtime started from a dirty source checkout; commit identity alone cannot prove that the currently loaded process includes every working-tree edit.",
+    "reasonCode": null,
+    "actualBuiltAt": null,
+    "expectedBuiltAt": null
+  },
+  "probes": {
+    "socketPath": "/Users/example/.openscout/run/scoutd-probes.sock",
+    "socketExists": true,
+    "reachable": true,
+    "daemonVersion": "0.1.0",
+    "families": [
+      {
+        "probeId": "tailscale.status",
+        "schemaVersion": 1,
+        "ttlMs": 30000
+      },
+      {
+        "probeId": "git.buildInfo",
+        "schemaVersion": 1,
+        "ttlMs": 60000
+      },
+      {
+        "probeId": "git.revParse",
+        "schemaVersion": 1,
+        "ttlMs": 60000
+      },
+      {
+        "probeId": "git.diffShortstat",
+        "schemaVersion": 1,
+        "ttlMs": 60000
+      },
+      {
+        "probeId": "git.statusPorcelain",
+        "schemaVersion": 1,
+        "ttlMs": 60000
+      },
+      {
+        "probeId": "git.mergeBase",
+        "schemaVersion": 1,
+        "ttlMs": 60000
+      },
+      {
+        "probeId": "git.logLastCommitUnix",
+        "schemaVersion": 1,
+        "ttlMs": 60000
+      },
+      {
+        "probeId": "git.worktreeListPorcelain",
+        "schemaVersion": 1,
+        "ttlMs": 60000
+      },
+      {
+        "probeId": "ps.runtime",
+        "schemaVersion": 1,
+        "ttlMs": 5000
+      },
+      {
+        "probeId": "ps.discovery",
+        "schemaVersion": 1,
+        "ttlMs": 1000
+      },
+      {
+        "probeId": "ps.cwd",
+        "schemaVersion": 1,
+        "ttlMs": 5000
+      },
+      {
+        "probeId": "net.listeners",
+        "schemaVersion": 1,
+        "ttlMs": 5000
+      },
+      {
+        "probeId": "tmux.sessions",
+        "schemaVersion": 2,
+        "ttlMs": 5000
+      },
+      {
+        "probeId": "tmux.panes",
+        "schemaVersion": 1,
+        "ttlMs": 5000
+      },
+      {
+        "probeId": "zellij.sessions",
+        "schemaVersion": 1,
+        "ttlMs": 5000
+      },
+      {
+        "probeId": "repo.scan",
+        "schemaVersion": 1,
+        "ttlMs": 0
+      },
+      {
+        "probeId": "repo.diff",
+        "schemaVersion": 1,
+        "ttlMs": 0
+      }
+    ],
+    "error": null
+  }
+}

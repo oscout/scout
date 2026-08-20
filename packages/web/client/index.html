@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#0b0c0c" />
+    <title>Scout</title>
+    <link rel="icon" href="/favicon.ico" sizes="any" />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="icon" href="/favicon-32.png" type="image/png" sizes="32x32" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <link rel="manifest" href="/site.webmanifest" />
+    <style>
+      html,
+      body,
+      #root {
+        min-height: 100%;
+        background: #050605;
+        color: #f3f4ee;
+      }
+
+      body {
+        margin: 0;
+      }
+    </style>
+    <!--
+      SCO-065: Pierre Diffs is loaded at runtime from esm.sh (see
+      scout/repo-diff/pierre.ts). It's a React *component* library, so it must
+      use ONE React instance, rendered in its own isolated root. This import map
+      canonicalises the bare `react`/`react-dom` specifiers (Pierre is fetched
+      with `?external=react,react-dom`) to a single pinned, immutable esm.sh copy
+      — matched to the app's bundled React (19.2.3). The app's own bundle never
+      imports bare `react` at runtime (Vite bundles it), so this only affects the
+      runtime-loaded Pierre subtree.
+    -->
+    <script type="importmap">
+      {
+        "imports": {
+          "react": "https://esm.sh/react@19.2.3",
+          "react/jsx-runtime": "https://esm.sh/react@19.2.3/jsx-runtime",
+          "react-dom": "https://esm.sh/react-dom@19.2.3?external=react",
+          "react-dom/client": "https://esm.sh/react-dom@19.2.3/client?external=react"
+        }
+      }
+    </script>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link rel="preload" as="style" href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,400;0,500;1,400;1,500&family=Inter+Tight:wght@400;500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500;600&family=Play:wght@400;700&family=Spectral:wght@500;600&display=swap" onload="this.onload=null;this.rel='stylesheet'" />
+    <noscript>
+      <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,400;0,500;1,400;1,500&family=Inter+Tight:wght@400;500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500;600&family=Play:wght@400;700&family=Spectral:wght@500;600&display=swap" rel="stylesheet" />
+    </noscript>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script src="/api/bootstrap.js"></script>
+    <script type="module" src="/main.tsx"></script>
+  </body>
+</html>

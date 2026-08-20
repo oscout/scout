@@ -1,0 +1,45 @@
+{
+  "name": "double-question-hold",
+  "description": "continuation hold joins two fragments into one turn",
+  "steps": [
+    {
+      "do": "speak",
+      "text": "What's running today, um"
+    },
+    {
+      "do": "silence",
+      "ms": 1000
+    },
+    {
+      "do": "speak",
+      "text": "what needs me"
+    },
+    {
+      "do": "silence",
+      "ms": 900
+    },
+    {
+      "do": "await",
+      "event": "transcript.user",
+      "timeoutMs": 20000
+    },
+    {
+      "do": "await",
+      "event": "reply.audio.start",
+      "timeoutMs": 12000
+    },
+    {
+      "do": "await",
+      "event": "reply.audio.end",
+      "timeoutMs": 30000
+    }
+  ],
+  "expect": {
+    "userTranscripts": 1,
+    "userTranscriptIncludes": [
+      "running",
+      "needs"
+    ],
+    "maxFirstReplyAudioMs": 5000
+  }
+}

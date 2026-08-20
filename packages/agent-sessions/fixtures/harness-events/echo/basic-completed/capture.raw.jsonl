@@ -1,0 +1,2 @@
+{"source":"harness","sequence":0,"payload":{"type":"fixture_unknown","assertAbsentAuthoritativeFields":["usage","progress","eta"]}}
+{"source":"harness","sequence":1,"payload":{"type":"prompt","text":"fixture"}}

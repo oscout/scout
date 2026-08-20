@@ -1,0 +1,142 @@
+{
+  "$schema": "../spec/adapter-spec.v2.schema.json",
+  "specVersion": "2.0.0",
+  "adapterId": "acp",
+  "displayName": "Agent Client Protocol",
+  "implementation": {
+    "package": "@openscout/agent-sessions",
+    "entrypoint": "src/adapters/acp/adapter.ts",
+    "factoryExport": "createAdapter",
+    "className": "AcpAdapter"
+  },
+  "upstream": {
+    "kind": "official_protocol",
+    "name": "Agent Client Protocol v1",
+    "transport": "jsonrpc-stdio-jsonl",
+    "sources": [
+      {
+        "kind": "url",
+        "ref": "https://agentclientprotocol.com/protocol/v1/overview"
+      },
+      {
+        "kind": "url",
+        "ref": "https://agentclientprotocol.com/protocol/v1/transports"
+      },
+      {
+        "kind": "url",
+        "ref": "https://agentclientprotocol.com/protocol/v1/schema"
+      },
+      {
+        "kind": "file",
+        "ref": "src/adapters/acp/adapter.ts"
+      }
+    ]
+  },
+  "sessionModel": {
+    "lifecycle": "long_lived_process",
+    "conversationScope": "session",
+    "resumeSupport": "optional",
+    "resumeOptionKey": "sessionId",
+    "turnSteering": "new_turn_only",
+    "concurrentTurns": "single",
+    "persistence": [
+      "process_state",
+      "upstream_session_id"
+    ]
+  },
+  "capabilities": {
+    "promptInputs": {
+      "text": true,
+      "images": "native",
+      "files": "reference_text"
+    },
+    "outputBlocks": [
+      "text",
+      "reasoning",
+      "action",
+      "error"
+    ],
+    "actionKinds": [
+      "tool_call"
+    ],
+    "streaming": {
+      "text": true,
+      "reasoning": true,
+      "actionOutput": true,
+      "actionStatus": true
+    },
+    "interactive": {
+      "questions": "none",
+      "approvals": "native",
+      "serverRequests": "native"
+    },
+    "control": {
+      "interrupt": true,
+      "shutdown": true
+    }
+  },
+  "nativeProtocol": {
+    "outboundRequests": [
+      "initialize",
+      "authenticate",
+      "session/new",
+      "session/load",
+      "session/resume",
+      "session/prompt",
+      "session/close"
+    ],
+    "outboundNotifications": [
+      "session/cancel"
+    ],
+    "inboundNotifications": [
+      "session/update"
+    ],
+    "inboundServerRequests": [
+      "session/request_permission",
+      "fs/read_text_file",
+      "fs/write_text_file"
+    ],
+    "messageFormats": [
+      "jsonrpc_request",
+      "jsonrpc_notification",
+      "jsonrpc_response",
+      "jsonrpc_error",
+      "jsonl_transport"
+    ],
+    "serverRequestStrategy": "resolve_and_reject"
+  },
+  "normalizedSurface": {
+    "adapterMethods": [
+      "start",
+      "send",
+      "interrupt",
+      "shutdown"
+    ],
+    "optionalAdapterMethods": [
+      "decide"
+    ],
+    "emitsPairingEvents": [
+      "session:update",
+      "turn:start",
+      "block:start",
+      "block:delta",
+      "block:action:output",
+      "block:action:status",
+      "block:action:approval",
+      "block:end",
+      "turn:error",
+      "turn:end"
+    ]
+  },
+  "conformance": {
+    "status": "grandfathered",
+    "normalizerId": "acp",
+    "fixtureSets": ["acp"]
+  },
+  "limitations": [
+    "The adapter is a client for ACP agents over stdio; it does not expose OpenScout itself as an ACP agent server.",
+    "Client-side terminal methods are not advertised or implemented.",
+    "Client-side file writes are disabled by default and require options.allowWriteTextFile.",
+    "Tool calls are normalized as generic tool_call action blocks rather than preserving every ACP tool kind as a first-class Pairing action kind."
+  ]
+}

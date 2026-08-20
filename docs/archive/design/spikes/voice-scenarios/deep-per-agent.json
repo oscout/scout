@@ -1,0 +1,17 @@
+{
+  "name": "deep-per-agent",
+  "description": "per-agent dig → quiet deep escalation, detail on dc",
+  "steps": [
+    { "do": "speak", "text": "what exactly is each agent working on right now" },
+    { "do": "silence", "ms": 900 },
+    { "do": "await", "event": "dc:ladder", "timeoutMs": 8000 },
+    { "do": "await", "event": "dc:response.detail", "timeoutMs": 60000 },
+    { "do": "await", "event": "reply.audio.start", "timeoutMs": 60000 },
+    { "do": "await", "event": "reply.audio.end", "timeoutMs": 90000 }
+  ],
+  "expect": {
+    "userTranscripts": 1,
+    "ladder": "deep",
+    "hasDetail": true
+  }
+}

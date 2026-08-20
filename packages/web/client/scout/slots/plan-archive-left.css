@@ -1,0 +1,93 @@
+.pa-panel {
+  padding: var(--space-lg) var(--space-md);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2xl);
+  font-family: var(--font-mono);
+}
+
+.pa-group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3xs);
+}
+
+.pa-group-title {
+  font-size: var(--text-2xs);
+  letter-spacing: var(--tracking-xl);
+  text-transform: uppercase;
+  color: var(--dim);
+  padding: 0 var(--space-xs) var(--space-2xs);
+}
+
+.pa-row {
+  appearance: none;
+  background: transparent;
+  border: 0;
+  text-align: left;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-sm);
+  padding: var(--space-xs) var(--space-sm);
+  border-radius: var(--radius-sm);
+  color: var(--ink);
+  font-family: inherit;
+  font-size: var(--text-sm);
+  cursor: pointer;
+  transition: background 100ms ease;
+}
+
+.pa-row:hover {
+  background: color-mix(in srgb, var(--ink) 4%, transparent);
+}
+
+.pa-row--active {
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+}
+
+.pa-row-label {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.pa-row-count {
+  font-size: var(--text-xs);
+  color: var(--dim);
+  font-variant-numeric: tabular-nums;
+}
+
+.pa-row--active .pa-row-count {
+  color: var(--accent);
+}
+
+.pa-chips {
+  display: flex;
+  gap: var(--space-2xs);
+  flex-wrap: wrap;
+  padding: 0 var(--space-2xs);
+}
+
+.pa-chip {
+  appearance: none;
+  border: 1px solid color-mix(in srgb, var(--ink) 10%, transparent);
+  background: transparent;
+  color: var(--ink);
+  font-family: inherit;
+  font-size: var(--text-sm);
+  padding: var(--space-2xs) var(--space-sm);
+  border-radius: var(--radius-xs);
+  cursor: pointer;
+  transition: background 100ms ease, border-color 100ms ease;
+}
+
+.pa-chip:hover {
+  border-color: color-mix(in srgb, var(--ink) 22%, transparent);
+}
+
+.pa-chip--active {
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  border-color: color-mix(in srgb, var(--accent) 45%, transparent);
+  color: var(--accent);
+}

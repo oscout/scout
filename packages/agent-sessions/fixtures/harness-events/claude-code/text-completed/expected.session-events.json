@@ -1,0 +1,82 @@
+[
+  {
+    "event": "turn:start",
+    "sessionId": "fixture-claude-code-text-completed",
+    "turn": {
+      "id": "claude-turn-001",
+      "sessionId": "fixture-claude-code-text-completed",
+      "status": "started",
+      "startedAt": "2026-08-07T21:00:00.000Z",
+      "blocks": []
+    }
+  },
+  {
+    "event": "block:start",
+    "sessionId": "fixture-claude-code-text-completed",
+    "turnId": "claude-turn-001",
+    "block": {
+      "type": "reasoning",
+      "text": "",
+      "status": "streaming",
+      "id": "claude-reasoning-001",
+      "turnId": "claude-turn-001",
+      "index": 0
+    }
+  },
+  {
+    "event": "block:delta",
+    "sessionId": "fixture-claude-code-text-completed",
+    "turnId": "claude-turn-001",
+    "blockId": "claude-reasoning-001",
+    "text": "<reasoning>"
+  },
+  {
+    "event": "block:end",
+    "sessionId": "fixture-claude-code-text-completed",
+    "turnId": "claude-turn-001",
+    "blockId": "claude-reasoning-001",
+    "status": "completed"
+  },
+  {
+    "event": "block:start",
+    "sessionId": "fixture-claude-code-text-completed",
+    "turnId": "claude-turn-001",
+    "block": {
+      "type": "text",
+      "text": "",
+      "status": "streaming",
+      "id": "claude-text-001",
+      "turnId": "claude-turn-001",
+      "index": 1
+    }
+  },
+  {
+    "event": "block:delta",
+    "sessionId": "fixture-claude-code-text-completed",
+    "turnId": "claude-turn-001",
+    "blockId": "claude-text-001",
+    "text": "fixture-ok"
+  },
+  {
+    "event": "block:end",
+    "sessionId": "fixture-claude-code-text-completed",
+    "turnId": "claude-turn-001",
+    "blockId": "claude-text-001",
+    "status": "completed"
+  },
+  {
+    "event": "session:update",
+    "session": {
+      "id": "fixture-claude-code-text-completed",
+      "name": "claude-code",
+      "adapterType": "claude-code",
+      "status": "active"
+    }
+  },
+  {
+    "event": "turn:end",
+    "sessionId": "fixture-claude-code-text-completed",
+    "turnId": "claude-turn-001",
+    "status": "completed"
+  }
+]

@@ -1,0 +1,270 @@
+@keyframes agentCardEnterRight {
+  from { opacity: 0; transform: translateX(-6px) scale(0.985); }
+  to { opacity: 1; transform: translateX(0) scale(1); }
+}
+
+@keyframes agentCardEnterLeft {
+  from { opacity: 0; transform: translateX(6px) scale(0.985); }
+  to { opacity: 1; transform: translateX(0) scale(1); }
+}
+
+@keyframes agentCardEnterCenter {
+  from { opacity: 0; transform: translateY(8px) scale(0.985); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+.agent-card {
+  z-index: 1000;
+  padding: var(--space-xl) var(--space-2xl) var(--space-lg);
+  border-radius: var(--radius-xl);
+  background: color-mix(in srgb, var(--surface) 96%, transparent);
+  border: 1px solid color-mix(in srgb, var(--ink) 11%, transparent);
+  backdrop-filter: blur(10px) saturate(120%);
+  -webkit-backdrop-filter: blur(10px) saturate(120%);
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, var(--ink) 8%, transparent),
+    var(--shadow-card),
+    0 1px 4px rgba(0, 0, 0, 0.1);
+  pointer-events: none;
+  transform-origin: center left;
+  will-change: transform, opacity;
+}
+
+.agent-card--side-right {
+  animation: agentCardEnterRight 160ms cubic-bezier(0.16, 1, 0.3, 1);
+  transform-origin: center left;
+}
+
+.agent-card--side-left {
+  animation: agentCardEnterLeft 160ms cubic-bezier(0.16, 1, 0.3, 1);
+  transform-origin: center right;
+}
+
+.agent-card--side-center {
+  animation: agentCardEnterCenter 180ms cubic-bezier(0.16, 1, 0.3, 1);
+  transform-origin: center;
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, var(--ink) 8%, transparent),
+    var(--shadow-card-hover),
+    0 3px 10px rgba(0, 0, 0, 0.14);
+}
+
+.agent-card--pinned {
+  pointer-events: auto;
+  border-color: color-mix(in srgb, var(--accent) 22%, transparent);
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, var(--ink) 10%, transparent),
+    0 10px 26px rgba(0, 0, 0, 0.26),
+    0 1px 6px rgba(0, 0, 0, 0.12);
+}
+
+.agent-card--pinned .agent-card-link,
+.agent-card--pinned .agent-card-close,
+.agent-card--pinned .agent-live-actions,
+.agent-card--pinned .agent-live-actions-button,
+.agent-card--pinned .agent-card-field,
+.agent-card--pinned .agent-card-name,
+.agent-card--pinned .agent-card-value {
+  pointer-events: auto;
+}
+
+.agent-card-head {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2xs);
+  padding-bottom: var(--space-xl);
+  border-bottom: 1px solid color-mix(in srgb, var(--ink) 5%, transparent);
+}
+
+.agent-card-name {
+  font-family: var(--font-mono);
+  font-size: var(--text-2xl);
+  font-weight: 600;
+  letter-spacing: 0.005em;
+  color: var(--ink);
+  line-height: var(--leading-tight);
+  word-break: break-word;
+}
+
+.agent-card-name,
+.agent-card-value,
+.agent-card-mono,
+.agent-card-branch,
+.agent-card-model {
+  user-select: text;
+  -webkit-user-select: text;
+  cursor: text;
+}
+
+.agent-card-meta {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  color: var(--muted);
+  letter-spacing: var(--tracking-xs);
+}
+
+.agent-card-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.agent-card-dot--active,
+.agent-card-dot--working {
+  box-shadow: 0 0 6px color-mix(in srgb, var(--accent) 60%, transparent);
+}
+
+.agent-card-dot--available { background: var(--green); }
+.agent-card-dot--unavailable,
+.agent-card-dot--offline { background: color-mix(in srgb, var(--ink) 25%, transparent); }
+
+.agent-card-state {
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-md);
+  font-weight: 500;
+  font-size: var(--text-xs);
+}
+
+.agent-card-state--active,
+.agent-card-state--working { color: var(--accent); }
+.agent-card-state--available { color: var(--green); }
+.agent-card-state--unavailable,
+.agent-card-state--offline { color: var(--muted); }
+
+.agent-card-sep {
+  color: color-mix(in srgb, var(--ink) 22%, transparent);
+}
+
+.agent-card-sep--inline {
+  margin: 0 var(--space-xs);
+}
+
+.agent-card-time {
+  color: var(--muted);
+}
+
+.agent-card-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-md);
+  padding: var(--space-xl) 0 var(--space-lg);
+}
+
+.agent-card-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2xs);
+}
+
+.agent-card-label {
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  font-weight: 600;
+  letter-spacing: var(--tracking-lg);
+  text-transform: uppercase;
+  color: color-mix(in srgb, var(--ink) 40%, transparent);
+}
+
+.agent-card-value {
+  font-family: var(--font-mono);
+  font-size: var(--text-md);
+  color: var(--ink);
+  line-height: var(--leading-snug);
+  letter-spacing: 0.005em;
+}
+
+.agent-card-mono {
+  font-family: var(--font-mono);
+  word-break: break-all;
+}
+
+.agent-card-branch {
+  color: var(--muted);
+}
+
+.agent-card-model {
+  color: color-mix(in srgb, var(--accent) 80%, var(--ink));
+}
+
+.agent-card-caps {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2xs);
+}
+
+.agent-card-cap {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  letter-spacing: var(--tracking-xs);
+  padding: var(--space-3xs) var(--space-sm);
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--ink) 6%, transparent);
+  color: var(--muted);
+}
+
+.agent-card-cap--more {
+  background: transparent;
+  color: color-mix(in srgb, var(--ink) 40%, transparent);
+}
+
+.agent-card-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-md);
+  padding-top: var(--space-lg);
+  border-top: 1px solid color-mix(in srgb, var(--ink) 5%, transparent);
+}
+
+.agent-card-link {
+  background: none;
+  border: none;
+  padding: var(--space-3xs) 0;
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  color: var(--accent);
+  letter-spacing: var(--tracking-xs);
+  cursor: pointer;
+  pointer-events: none;
+}
+
+.agent-card-link span {
+  margin-left: var(--space-2xs);
+  transition: transform 140ms;
+  display: inline-block;
+}
+
+.agent-card-link:hover span {
+  transform: translateX(2px);
+}
+
+.agent-card-close {
+  background: color-mix(in srgb, var(--ink) 6%, transparent);
+  border: 1px solid color-mix(in srgb, var(--ink) 10%, transparent);
+  padding: var(--space-3xs) var(--space-sm);
+  border-radius: var(--radius-sm);
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  letter-spacing: var(--tracking-md);
+  text-transform: uppercase;
+  color: var(--muted);
+  cursor: pointer;
+  pointer-events: none;
+}
+
+.agent-card-close:hover {
+  background: color-mix(in srgb, var(--ink) 10%, transparent);
+  color: var(--ink);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .agent-card--side-right,
+  .agent-card--side-left,
+  .agent-card--side-center {
+    animation: none;
+  }
+}

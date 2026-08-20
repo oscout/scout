@@ -1,0 +1,48 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="scoutRim" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#FFFFFF" stop-opacity="0.13"/>
+      <stop offset="1" stop-color="#000000" stop-opacity="0.28"/>
+    </linearGradient>
+    <filter id="scoutSurfaceGrain" x="0" y="0" width="100%" height="100%" color-interpolation-filters="sRGB">
+      <feTurbulence type="fractalNoise" baseFrequency="0.82" numOctaves="2" seed="27" result="noise"/>
+      <feColorMatrix in="noise" type="matrix" values="
+        0 0 0 0 1
+        0 0 0 0 0.94
+        0 0 0 0 0.84
+        0 0 0 0.18 0
+      "/>
+    </filter>
+    <filter id="scoutBodyShadow" x="-20%" y="-20%" width="140%" height="150%">
+      <feDropShadow dx="0" dy="22" stdDeviation="26" flood-color="#050404" flood-opacity="0.52"/>
+    </filter>
+    <filter id="scoutMarkShadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="14" stdDeviation="12" flood-color="#000000" flood-opacity="0.35"/>
+    </filter>
+  </defs><defs>
+  <radialGradient id="osc-bg-g3uzmf" cx="50%" cy="54%" r="72%">
+    <stop offset="0%" stop-color="#20251F" stop-opacity="0.32"/>
+    <stop offset="62%" stop-color="#11110F" stop-opacity="1"/>
+    <stop offset="100%" stop-color="#11110F" stop-opacity="1"/>
+  </radialGradient>
+  <pattern id="osc-dots-left-g3uzmf" width="5.50" height="5.50" patternUnits="userSpaceOnUse">
+    <circle cx="1.27" cy="1.27" r="0.74" fill="#FFF7EA" opacity="0.400"/>
+  </pattern>
+  <pattern id="osc-dots-right-g3uzmf" width="5.50" height="5.50" patternUnits="userSpaceOnUse">
+    <circle cx="1.27" cy="1.27" r="0.74" fill="#FFF7EA" opacity="0.312"/>
+  </pattern>
+  <filter id="osc-glow-g3uzmf" x="-16%" y="-16%" width="132%" height="132%">
+    <feGaussianBlur in="SourceAlpha" stdDeviation="0.80" result="blur"/>
+    <feFlood flood-color="#FFF7EA" flood-opacity="0.160" result="glow"/>
+    <feComposite in="glow" in2="blur" operator="in"/>
+    <feMerge>
+      <feMergeNode/>
+      <feMergeNode in="SourceGraphic"/>
+    </feMerge>
+  </filter>
+</defs>
+<rect width="1024" height="1024" rx="112" fill="#11110F"/>
+<rect width="1024" height="1024" rx="112" fill="url(#osc-bg-g3uzmf)"/>
+<g filter="url(#osc-glow-g3uzmf)"><g data-element-id="right-cube"><polygon points="512.00,577.91 792.21,734.83 512.00,891.75 231.79,734.83" fill="none" stroke="#BDB5A8" stroke-width="1.97" opacity="0.080"/><polygon points="512.00,198.16 792.21,355.08 792.21,668.92 512.00,825.84 231.79,668.92 231.79,355.08" fill="none" stroke="#FFF7EA" stroke-width="5.36" stroke-linejoin="round" opacity="1.000"/><line x1="792.21" y1="668.92" x2="512.00" y2="825.84" stroke="#FFF7EA" stroke-width="5.79" stroke-linecap="round" opacity="0.460"/><line x1="512.00" y1="825.84" x2="231.79" y2="668.92" stroke="#FFF7EA" stroke-width="5.79" stroke-linecap="round" opacity="0.460"/><line x1="512.00" y1="198.16" x2="512.00" y2="825.84" stroke="#FFF7EA" stroke-width="4.70" stroke-linecap="round" opacity="0.460"/><line x1="231.79" y1="355.08" x2="512.00" y2="512.00" stroke="#FFF7EA" stroke-width="4.70" stroke-linecap="round" opacity="0.460"/><line x1="792.21" y1="355.08" x2="512.00" y2="512.00" stroke="#FFF7EA" stroke-width="4.70" stroke-linecap="round" opacity="0.460"/><line x1="231.79" y1="668.92" x2="512.00" y2="512.00" stroke="#BDB5A8" stroke-width="4.14" stroke-linecap="round" opacity="0.152"/><line x1="792.21" y1="668.92" x2="512.00" y2="512.00" stroke="#BDB5A8" stroke-width="4.14" stroke-linecap="round" opacity="0.152"/><polygon points="512.00,355.08 652.11,433.54 652.11,590.46 512.00,668.92 371.89,590.46 371.89,433.54" fill="none" stroke="#FFF7EA" stroke-width="5.67" stroke-linejoin="round" opacity="0.740"/><line x1="652.11" y1="590.46" x2="512.00" y2="668.92" stroke="#FFF7EA" stroke-width="6.12" stroke-linecap="round" opacity="0.311"/><line x1="512.00" y1="668.92" x2="371.89" y2="590.46" stroke="#FFF7EA" stroke-width="6.12" stroke-linecap="round" opacity="0.311"/><line x1="512.00" y1="355.08" x2="512.00" y2="668.92" stroke="#FFF7EA" stroke-width="4.23" stroke-linecap="round" opacity="0.090"/><line x1="371.89" y1="433.54" x2="512.00" y2="512.00" stroke="#FFF7EA" stroke-width="4.23" stroke-linecap="round" opacity="0.092"/><line x1="652.11" y1="433.54" x2="512.00" y2="512.00" stroke="#FFF7EA" stroke-width="4.23" stroke-linecap="round" opacity="0.092"/><line x1="371.89" y1="590.46" x2="512.00" y2="512.00" stroke="#BDB5A8" stroke-width="3.55" stroke-linecap="round" opacity="0.080"/><line x1="652.11" y1="590.46" x2="512.00" y2="512.00" stroke="#BDB5A8" stroke-width="3.55" stroke-linecap="round" opacity="0.080"/></g></g>
+  <rect width="1024" height="1024" fill="#fff4dc" filter="url(#scoutSurfaceGrain)" opacity="0.12"/>
+  <rect width="1024" height="1024" fill="none" stroke="#ffffff" stroke-opacity="0.045" stroke-width="8"/></svg>

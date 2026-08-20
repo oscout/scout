@@ -1,0 +1,176 @@
+diff --git a/dist/chunk-JTPDIGGW.js b/dist/chunk-JTPDIGGW.js
+index 6d52dfc9c0e4236217db3ecce4c7e57eb04360b2..002894b96cf25f3fb07695383c0e25ffed26038b 100644
+--- a/dist/chunk-JTPDIGGW.js
++++ b/dist/chunk-JTPDIGGW.js
+@@ -191,6 +191,7 @@ function TerminalRelayInner({
+     sendInput,
+     resize,
+     onData,
++    onDimensions,
+     connect,
+     disconnect,
+     controlMode = "owner"
+@@ -215,6 +216,7 @@ function TerminalRelayInner({
+   const dragCounter = useRef(0);
+   const readOnlyRef = useRef(effectiveReadOnly);
+   const lastSentDimsRef = useRef(null);
++  const acceptedObserverDimsRef = useRef(null);
+   const resizeFrameRef = useRef(null);
+   const startConnectTimerRef = useRef(null);
+   const onReadyRef = useRef(onReady);
+@@ -271,14 +273,17 @@ function TerminalRelayInner({
+     const term = termRef.current;
+     if (!fit || !term) return null;
+     try {
+-      fit.fit();
++      const proposed = fit.proposeDimensions();
++      if (!proposed) return null;
++      if (controlMode !== "observe" || !acceptedObserverDimsRef.current) {
++        fit.fit();
++      }
++      emitResize(proposed.cols, proposed.rows);
++      return acceptedObserverDimsRef.current ?? { cols: term.cols, rows: term.rows };
+     } catch {
+       return null;
+     }
+-    const dims = { cols: term.cols, rows: term.rows };
+-    emitResize(dims.cols, dims.rows);
+-    return dims;
+-  }, [emitResize]);
++  }, [controlMode, emitResize]);
+   const scheduleFit = useCallback(() => {
+     if (resizeFrameRef.current !== null) return;
+     resizeFrameRef.current = window.requestAnimationFrame(() => {
+@@ -533,6 +538,17 @@ function TerminalRelayInner({
+     term.options.theme = xtermTheme;
+     term.options.minimumContrastRatio = minimumContrastRatio;
+   }, [minimumContrastRatio, xtermTheme]);
++  useEffect(() => {
++    if (!ready || !onDimensions) return;
++    onDimensions((cols, rows) => {
++      acceptedObserverDimsRef.current = { cols, rows };
++      const term = termRef.current;
++      if (term && (term.cols !== cols || term.rows !== rows)) {
++        term.resize(cols, rows);
++      }
++    });
++    return () => onDimensions(null);
++  }, [ready, onDimensions]);
+   useEffect(() => {
+     if (!ready) return;
+     onData((data, ack) => {
+diff --git a/dist/chunk-ZG2347IS.js b/dist/chunk-ZG2347IS.js
+index 28dfb2052257e92da282e0e370b916f64b4cfc67..547eb3fc52ecf4032c207f70b923a58fe3129645 100644
+--- a/dist/chunk-ZG2347IS.js
++++ b/dist/chunk-ZG2347IS.js
+@@ -74,6 +74,8 @@ function useTerminalRelay(options = {}) {
+   const sessionIdRef = useRef(persistedRef.current?.id ?? null);
+   const reconnectTokenRef = useRef(persistedRef.current?.reconnectToken ?? null);
+   const dataCallbackRef = useRef(null);
++  const dimensionsCallbackRef = useRef(null);
++  const remoteDimensionsRef = useRef(null);
+   const subscribersRef = useRef(/* @__PURE__ */ new Set());
+   const maxPendingOutput = flowControl?.maxBufferedBytes ?? 512 * 1024;
+   const send = useCallback((data) => {
+@@ -129,6 +131,11 @@ function useTerminalRelay(options = {}) {
+       }
+     }
+   }, [ackOutput, maxPendingOutput]);
++  const publishDimensions = useCallback((cols, rows) => {
++    if (typeof cols !== "number" || typeof rows !== "number" || cols <= 0 || rows <= 0) return;
++    remoteDimensionsRef.current = { cols, rows };
++    dimensionsCallbackRef.current?.(cols, rows);
++  }, []);
+   const closeCurrentSocket = useCallback(() => {
+     const ws = wsRef.current;
+     if (ws) {
+@@ -238,6 +245,7 @@ function useTerminalRelay(options = {}) {
+         const msg = JSON.parse(event.data);
+         switch (msg.type) {
+           case "session:ready":
++            publishDimensions(msg.cols, msg.rows);
+             sessionIdRef.current = msg.sessionId;
+             reconnectTokenRef.current = typeof msg.reconnectToken === "string" ? msg.reconnectToken : null;
+             persistSession(msg.sessionId, reconnectTokenRef.current);
+@@ -246,6 +254,9 @@ function useTerminalRelay(options = {}) {
+             setError(null);
+             setExitCode(null);
+             break;
++          case "terminal:dimensions":
++            publishDimensions(msg.cols, msg.rows);
++            break;
+           case "session:expired": {
+             sessionIdRef.current = null;
+             reconnectTokenRef.current = null;
+@@ -332,6 +343,11 @@ function useTerminalRelay(options = {}) {
+       }
+     }
+   }, []);
++  const onDimensions = useCallback((cb) => {
++    dimensionsCallbackRef.current = cb;
++    const dimensions = remoteDimensionsRef.current;
++    if (cb && dimensions) cb(dimensions.cols, dimensions.rows);
++  }, []);
+   const subscribeData = useCallback((cb) => {
+     subscribersRef.current.add(cb);
+     return () => {
+@@ -369,6 +385,7 @@ function useTerminalRelay(options = {}) {
+     controlMode,
+     setCwd,
+     onData,
++    onDimensions,
+     subscribeData,
+     sendInput,
+     sendLine,
+diff --git a/dist/terminal.d.ts b/dist/terminal.d.ts
+index fedb383530bb8728fd4cef7a94460b238b4c990e..1a26f99374f02c27a9d2ebaca482d0e1e72faa41 100644
+--- a/dist/terminal.d.ts
++++ b/dist/terminal.d.ts
+@@ -60,6 +60,9 @@ interface TerminalSessionReadyMessage {
+     reconnectToken?: string;
+     reconnected?: boolean;
+     capabilities?: string[];
++    /** Server-accepted terminal viewport. May be smaller than the requested grid. */
++    cols?: number;
++    rows?: number;
+ }
+ interface TerminalSessionExpiredMessage {
+     type: 'session:expired';
+@@ -75,6 +78,11 @@ interface TerminalDataMessage {
+     /** Monotonic sequence for flow-controlled relays. Client ACKs after renderer write. */
+     seq?: number;
+ }
++interface TerminalDimensionsMessage {
++    type: 'terminal:dimensions';
++    cols: number;
++    rows: number;
++}
+ interface TerminalSessionExitMessage {
+     type: 'session:exit';
+     exitCode?: number;
+@@ -83,7 +91,7 @@ interface TerminalSessionExitMessage {
+ interface TerminalSessionDetachedMessage {
+     type: 'session:detached';
+ }
+-type TerminalRelayServerMessage = TerminalSessionReadyMessage | TerminalSessionExpiredMessage | TerminalSessionErrorMessage | TerminalDataMessage | TerminalSessionExitMessage | TerminalSessionDetachedMessage;
++type TerminalRelayServerMessage = TerminalSessionReadyMessage | TerminalSessionExpiredMessage | TerminalSessionErrorMessage | TerminalDataMessage | TerminalDimensionsMessage | TerminalSessionExitMessage | TerminalSessionDetachedMessage;
+ interface UseTerminalRelayOptions {
+     /** WebSocket URL. Defaults to ws://localhost:3600 */
+     url?: string;
+@@ -125,6 +133,7 @@ interface UseTerminalRelayOptions {
+ }
+ type TerminalRelayOutputAck = () => void;
+ type TerminalRelayOutputHandler = (data: string, ack: TerminalRelayOutputAck) => void;
++type TerminalRelayDimensionsHandler = (cols: number, rows: number) => void;
+ interface TerminalRelayHandle {
+     /** Connection status */
+     status: RelayStatus;
+@@ -148,6 +157,8 @@ interface TerminalRelayHandle {
+      * trackers) use `subscribeData` instead.
+      */
+     onData: (cb: TerminalRelayOutputHandler | null) => void;
++    /** Observe the grid accepted by the relay before its corresponding output is rendered. */
++    onDimensions?: (cb: TerminalRelayDimensionsHandler | null) => void;
+     /**
+      * Subscribe to incoming PTY data without claiming the primary sink slot.
+      * Returns an unsubscribe function. Multiple subscribers allowed; called

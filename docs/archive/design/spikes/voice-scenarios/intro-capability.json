@@ -1,0 +1,17 @@
+{
+  "name": "intro-capability",
+  "description": "what can you do → deterministic + response.detail card",
+  "steps": [
+    { "do": "speak", "text": "what can you do" },
+    { "do": "silence", "ms": 800 },
+    { "do": "await", "event": "dc:response.detail", "timeoutMs": 8000 },
+    { "do": "await", "event": "reply.audio.start", "timeoutMs": 5000 },
+    { "do": "await", "event": "reply.audio.end", "timeoutMs": 30000 }
+  ],
+  "expect": {
+    "userTranscripts": 1,
+    "ladder": "deterministic",
+    "hasDetail": true,
+    "maxFirstReplyAudioMs": 2000
+  }
+}

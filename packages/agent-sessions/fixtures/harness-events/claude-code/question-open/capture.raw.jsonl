@@ -1,0 +1,2 @@
+{"source":"adapter_control","sequence":0,"event":"prompt_accepted","payload":{"text":"Ask one fixture question."}}
+{"source":"harness","sequence":1,"payload":{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","name":"AskUserQuestion","id":"question-source-001","input":{"questions":[{"header":"Fixture","question":"Continue?","options":[{"label":"Yes","description":"Continue the fixture."},{"label":"No","description":"Leave it stopped."}],"multiSelect":false}]}}]}}}

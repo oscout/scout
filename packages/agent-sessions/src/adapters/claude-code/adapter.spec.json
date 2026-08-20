@@ -1,0 +1,141 @@
+{
+  "$schema": "../spec/adapter-spec.v2.schema.json",
+  "specVersion": "2.0.0",
+  "adapterId": "claude-code",
+  "displayName": "Claude Code",
+  "implementation": {
+    "package": "@openscout/agent-sessions",
+    "entrypoint": "src/adapters/claude-code/adapter.ts",
+    "factoryExport": "createAdapter",
+    "className": "ClaudeCodeAdapter"
+  },
+  "upstream": {
+    "kind": "cli_protocol",
+    "name": "Claude Code stream-json CLI",
+    "transport": "stream-json-stdio",
+    "sources": [
+      {
+        "kind": "file",
+        "ref": "src/adapters/claude-code/adapter.ts"
+      },
+      {
+        "kind": "file",
+        "ref": "src/adapters/claude-code/references/current-implementation-protocol.md"
+      },
+      {
+        "kind": "comment",
+        "ref": "src/adapters/claude-code/adapter.ts",
+        "notes": "Header comment documents the stream-json input and output event shapes consumed by the current adapter."
+      }
+    ]
+  },
+  "sessionModel": {
+    "lifecycle": "long_lived_process",
+    "conversationScope": "session",
+    "resumeSupport": "optional",
+    "resumeOptionKey": "resume",
+    "turnSteering": "implicit_followup",
+    "concurrentTurns": "unspecified",
+    "persistence": [
+      "process_state",
+      "upstream_session_id"
+    ]
+  },
+  "capabilities": {
+    "promptInputs": {
+      "text": true,
+      "images": "embedded",
+      "files": "reference_text"
+    },
+    "outputBlocks": [
+      "text",
+      "reasoning",
+      "action",
+      "error",
+      "question"
+    ],
+    "actionKinds": [
+      "command",
+      "file_change",
+      "subagent",
+      "tool_call"
+    ],
+    "streaming": {
+      "text": true,
+      "reasoning": true,
+      "actionOutput": true,
+      "actionStatus": true
+    },
+    "interactive": {
+      "questions": "native",
+      "approvals": "none",
+      "serverRequests": "none"
+    },
+    "control": {
+      "interrupt": true,
+      "shutdown": true
+    }
+  },
+  "nativeProtocol": {
+    "outboundRequests": [
+      "user",
+      "tool_result"
+    ],
+    "outboundNotifications": [],
+    "inboundNotifications": [
+      "system",
+      "stream_event",
+      "assistant",
+      "user",
+      "tool_use",
+      "tool_result",
+      "rate_limit_event",
+      "result",
+      "error"
+    ],
+    "inboundServerRequests": [],
+    "messageFormats": [
+      "stream_json_message",
+      "user_message",
+      "assistant_message",
+      "assistant_message.tool_use",
+      "user_message.tool_result",
+      "tool_use",
+      "tool_result",
+      "result"
+    ],
+    "serverRequestStrategy": "not_applicable"
+  },
+  "normalizedSurface": {
+    "adapterMethods": [
+      "start",
+      "send",
+      "interrupt",
+      "shutdown"
+    ],
+    "optionalAdapterMethods": [
+      "answerQuestion"
+    ],
+    "emitsPairingEvents": [
+      "session:update",
+      "turn:start",
+      "block:start",
+      "block:delta",
+      "block:action:output",
+      "block:action:status",
+      "block:question:answer",
+      "block:end",
+      "turn:end"
+    ]
+  },
+  "conformance": {
+    "status": "required",
+    "normalizerId": "claude-code",
+    "fixtureSets": ["claude-code"]
+  },
+  "limitations": [
+    "Referenced files are appended to the prompt as plain text notes rather than being sent through a native file attachment channel.",
+    "The adapter does not expose a normalized approval surface and does not implement decide().",
+    "Claude-owned ecosystem state is read-only for this adapter: it may inspect Claude sessions, native Agent tool calls, and agent-team config/task topology, but it must not write .claude files, Claude subagent definitions, team config, task lists, or MCP settings."
+  ]
+}

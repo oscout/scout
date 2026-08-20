@@ -1,0 +1,32 @@
+{
+  "name": "stale-launch",
+  "description": "a task launch proposal from an older turn must be suppressed before it reaches the app execution event",
+  "mode": "task",
+  "taskDraft": {
+    "title": "Review portable voice",
+    "project": "openscout",
+    "prompt": "Review the portable live-voice turn contract and report any stale-effect risks.",
+    "harness": "auto",
+    "model": "auto",
+    "effort": "auto"
+  },
+  "steps": [
+    { "do": "dc", "payload": { "type": "task.launch" } },
+    { "do": "await", "event": "dc:task.launch.proposed", "timeoutMs": 3000 },
+    { "do": "dc", "payload": { "type": "turn.commit", "text": "Actually cancel that launch" } },
+    {
+      "do": "dc",
+      "payload": { "type": "effect.commit" },
+      "copyFromEvent": {
+        "event": "dc:task.launch.proposed",
+        "fields": ["effectId", "turn", "gen"]
+      }
+    },
+    { "do": "await", "event": "dc:effect.suppressed", "timeoutMs": 3000 }
+  ],
+  "expect": {
+    "taskLaunches": 0,
+    "minStaleEffectSuppressed": 1,
+    "irreversibleEffectsOnStaleGeneration": 0
+  }
+}

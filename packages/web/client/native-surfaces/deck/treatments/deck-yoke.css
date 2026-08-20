@@ -1,0 +1,175 @@
+/* Yoke — two fixed grips and a reading stage between them.
+ *
+ * Both grips are pinned to the screen edges where thumbs actually rest in
+ * landscape. Nothing in a grip is smaller than a thumb, and nothing in a grip
+ * scrolls: the controls stay where the hands last found them.
+ */
+
+.yoke {
+  min-height: 0;
+  display: grid;
+  /* The row is capped, not content-sized: a long grip must scroll inside its
+     own panel rather than push the stage and the far grip past the fold. */
+  grid-template-rows: minmax(0, 1fr);
+  grid-template-columns: 172px minmax(0, 1fr) 224px;
+  gap: 8px;
+}
+.yoke--standby { grid-template-columns: minmax(0, 1fr); }
+
+.yoke__grip {
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 14px 13px;
+  border: 1px solid var(--deck-line);
+  border-radius: var(--deck-radius);
+  background: rgba(7, 11, 9, .84);
+  box-shadow: inset 0 1px rgba(255,255,255,.03);
+}
+
+/* The left grip never scrolls as a whole — that is the promise the two-grip
+   model makes to the thumbs. When the scope is deep it is the ladder, and only
+   the ladder, that gives: every key keeps the position the hand learned. */
+.yoke__grip--left { align-items: center; overflow: hidden; }
+.yoke__grip--left .deck-primary { margin-top: 4px; }
+.yoke__grip--left .deck-trace-wrap { width: 100%; align-items: center; }
+.yoke__grip--right { overflow: auto; }
+
+/* Lane stepping replaces the lane grid entirely: two large keys and a readout
+   of exactly where in the scope you are. */
+.yoke__stepper {
+  width: 100%;
+  display: grid;
+  grid-template-columns: var(--deck-tap) minmax(0, 1fr) var(--deck-tap);
+  align-items: stretch;
+  gap: 4px;
+  padding: 4px;
+  border: 1px solid var(--deck-line);
+  border-radius: 8px;
+  background: rgba(255,255,255,.02);
+}
+.yoke__stepper button {
+  min-height: var(--deck-tap);
+  display: grid; place-items: center;
+  border: 1px solid transparent; border-radius: 6px;
+  background: transparent;
+  color: var(--deck-ink-3);
+  cursor: pointer;
+}
+.yoke__stepper button:hover:not(:disabled) { border-color: var(--deck-line); color: var(--deck-ink); background: rgba(255,255,255,.04); }
+.yoke__stepper button:focus-visible { outline: 2px solid rgba(106,242,197,.58); outline-offset: 2px; }
+.yoke__stepper button:disabled { opacity: .3; cursor: default; }
+.yoke__stepper > span { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px; }
+.yoke__stepper strong { color: var(--deck-ink); font: 450 21px/1 var(--deck-mono); letter-spacing: -.05em; }
+.yoke__stepper small { color: var(--deck-dim); font: 550 var(--deck-kicker)/1 var(--deck-mono); letter-spacing: .08em; text-transform: uppercase; }
+
+/* A ladder of lane positions: index plus the lane's own tone, nothing else.
+   It answers "what am I stepping into" without becoming a second lane bank. */
+.yoke__ladder {
+  width: 100%; min-height: 0; flex: 1 1 auto;
+  display: flex; flex-direction: column; gap: 4px;
+  overflow-y: auto;
+  /* Fades the last rung when the ladder runs past its box, so a half-visible
+     rung reads as more-below instead of as a clipped control. A short scope
+     never reaches the fade, so it costs nothing when everything fits. */
+  -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 16px), transparent);
+  mask-image: linear-gradient(to bottom, #000 calc(100% - 16px), transparent);
+}
+.yoke__ladder button {
+  min-height: var(--deck-tap);
+  display: grid; grid-template-columns: minmax(0, 1fr) 9px;
+  align-items: center; gap: 10px;
+  padding: 0 12px;
+  border: 1px solid var(--deck-line-soft); border-radius: 7px;
+  background: rgba(255,255,255,.016);
+  color: var(--deck-ink-3);
+  cursor: pointer;
+  text-align: left;
+}
+.yoke__ladder button:hover { border-color: var(--deck-line); color: var(--deck-ink-2); }
+.yoke__ladder button:focus-visible { outline: 2px solid rgba(106,242,197,.58); outline-offset: 2px; }
+.yoke__ladder button[data-active="true"] { border-color: rgba(237,242,235,.5); background: rgba(255,255,255,.07); color: var(--deck-ink); }
+.yoke__ladder span { font: 500 15px/1 var(--deck-mono); letter-spacing: -.03em; }
+.yoke__ladder i { width: 8px; height: 8px; border-radius: 50%; background: rgba(222,236,226,.2); }
+.yoke__ladder button[data-tone="live"] i { background: var(--deck-green); box-shadow: 0 0 9px rgba(106,242,197,.6); }
+.yoke__ladder button[data-tone="ready"] i { border: 1px solid rgba(106,242,197,.8); background: rgba(106,242,197,.34); }
+.yoke__ladder button[data-tone="attention"] i { background: var(--deck-amber); box-shadow: 0 0 9px rgba(245,184,88,.55); }
+
+/* Grip keys are full width so a thumb never has to aim inside the column. */
+.yoke__grip-keys { width: 100%; display: grid; grid-template-columns: minmax(0, 1fr); gap: 6px; }
+.yoke__grip-keys .deck-chip { width: 100%; justify-content: flex-start; padding-inline: 12px; }
+.yoke__grip-foot { width: 100%; margin-top: auto; display: flex; flex-direction: column; gap: 8px; padding-top: 10px; border-top: 1px solid var(--deck-line-soft); }
+
+/* ------------------------------------------------------------- stage */
+
+.yoke__stage {
+  min-width: 0; min-height: 0;
+  display: flex; flex-direction: column; gap: 10px;
+  padding: 14px 18px 14px;
+  border: 1px solid var(--deck-line);
+  border-radius: var(--deck-radius);
+  background: radial-gradient(circle at 50% 0%, rgba(106,242,197,.045), transparent 42%), rgba(5,8,6,.72);
+  overflow: hidden;
+}
+
+.yoke__head { display: grid; grid-template-columns: minmax(0, 1.35fr) minmax(0, 1fr); gap: 22px; align-items: start; }
+.yoke__head-lane { min-width: 0; text-align: right; }
+.yoke__head-lane h2 { margin: 0; font-size: clamp(24px, 3vw, 34px); line-height: 1; letter-spacing: -.045em; font-weight: 560; }
+.yoke__head-lane p { margin: 8px 0 0; overflow: hidden; color: rgba(222,236,226,.6); font: 500 var(--deck-label)/1.2 var(--deck-mono); text-overflow: ellipsis; white-space: nowrap; }
+
+.yoke__viewport {
+  min-height: 0; flex: 1;
+  display: flex; flex-direction: column;
+  border: 1px solid var(--deck-line); border-radius: 8px;
+  background: rgba(7,11,9,.8);
+  overflow: hidden;
+}
+.yoke__viewport-head {
+  display: flex; align-items: center; justify-content: space-between; gap: 14px;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--deck-line);
+  background: rgba(255,255,255,.018);
+}
+.yoke__viewport-body { min-height: 0; overflow: auto; padding: 2px 14px 10px; }
+
+.yoke__dock { flex: none; display: flex; flex-direction: column; gap: 8px; }
+
+/* -------------------------------------------------------- right grip */
+
+.yoke__status { display: flex; flex-direction: column; gap: 11px; }
+.yoke__status dl { margin: 0; display: flex; flex-direction: column; }
+.yoke__status dl div { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; padding: 8px 0; border-bottom: 1px solid var(--deck-line-soft); }
+.yoke__status dt, .yoke__status dd { margin: 0; font: 500 var(--deck-kicker)/1.35 var(--deck-mono); }
+.yoke__status dt { flex: none; color: var(--deck-dim); letter-spacing: .09em; text-transform: uppercase; }
+.yoke__status dd { min-width: 0; color: var(--deck-ink-2); text-align: right; overflow-wrap: anywhere; }
+
+.yoke__attention { display: flex; flex-direction: column; gap: 8px; }
+.yoke__scope { display: flex; flex-direction: column; gap: 8px; margin-top: auto; }
+.yoke__scope .deck-scope__key { width: 100%; }
+
+/* Narrow landscape (split view): the right grip folds into the stage head and
+   the left grip stays, because it is the hand that drives the turn. */
+@media (max-width: 960px) {
+  .yoke { grid-template-columns: 156px minmax(0, 1fr); }
+  .yoke__grip--right { display: none; }
+}
+
+@media (max-width: 700px) {
+  .yoke { grid-template-columns: minmax(0, 1fr); }
+  .yoke__grip--left { flex-direction: row; flex-wrap: wrap; align-items: center; }
+  .yoke__grip--left .deck-trace { width: auto; flex: 1 1 120px; }
+  .yoke__stepper { width: auto; flex: 1 1 180px; }
+  .yoke__grip-keys { width: auto; margin-top: 0; }
+  .yoke__head { grid-template-columns: minmax(0, 1fr); }
+  .yoke__head-lane { text-align: left; }
+}
+
+/* Short landscape: shave the reading stage, never the grips. */
+@media (max-height: 700px) {
+  .yoke__grip { padding: 11px 10px; gap: 9px; }
+  .yoke__stage { padding: 11px 14px; gap: 8px; }
+  .yoke__head-lane h2 { font-size: clamp(20px, 2.4vw, 27px); }
+  .deck-primary[data-size="xl"] { width: 104px; height: 104px; }
+}

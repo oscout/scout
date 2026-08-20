@@ -1,0 +1,3481 @@
+/* ── SessionObserve — editorial session replay ── */
+
+.s-observe {
+  display: grid;
+  grid-template-columns: 1fr 320px;
+  grid-template-rows: 1fr auto;
+  flex: 1;
+  min-height: 0;
+  height: 100%;
+  overflow: hidden;
+  background: var(--bg);
+  color: var(--ink);
+}
+
+.s-observe--content-only {
+  grid-template-columns: 1fr;
+}
+
+.s-observe--content-only .s-observe-stream {
+  max-width: min(1040px, 100%);
+}
+
+.s-observe--lane {
+  --lane-glyph-size: var(--text-xl);
+  --lane-glyph-width: 18px;
+  --lane-glyph-color: color-mix(in srgb, var(--accent) 62%, var(--dim));
+  grid-template-rows: 1fr;
+  height: 100%;
+  min-height: 0;
+  background: transparent;
+}
+
+.s-observe--lane .s-observe-main {
+  --lane-time-col: 62px;
+  --lane-spine-x: 64px;
+  padding: 0 var(--space-lg) var(--space-lg);
+  overflow-x: hidden;
+  scrollbar-width: none !important;
+  -ms-overflow-style: none;
+}
+
+.s-observe--lane .s-observe-main::-webkit-scrollbar {
+  display: none;
+  width: 0;
+  height: 0;
+}
+
+/* Lane trace header: one calm row — an uppercase eyebrow on the left, the
+   window/counts as quiet mono stats on the right. Truncation is a subtle
+   "partial" tag (full explanation on hover), not an amber sentence. */
+.s-observe-lane-trace-meta {
+  position: sticky;
+  top: 0;
+  z-index: 7;
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-md);
+  min-height: 32px;
+  margin: 0 calc(-1 * var(--space-lg)) var(--space-xs);
+  padding: var(--space-xs) var(--space-lg);
+  border-bottom: 1px solid color-mix(in srgb, var(--ink) 6%, transparent);
+  background: color-mix(in srgb, var(--bg) 97%, var(--surface) 3%);
+  box-shadow: 0 1px 0 color-mix(in srgb, var(--ink) 3%, transparent);
+}
+
+.s-observe-lane-trace-meta-leading {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-sm);
+  min-width: 0;
+  flex: none;
+}
+
+.s-observe-lane-trace-meta-label {
+  flex: none;
+  font-family: var(--font-sans);
+  font-size: var(--text-2xs);
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  line-height: var(--leading-none);
+  text-transform: uppercase;
+  color: var(--dim);
+}
+
+.s-observe-lane-trace-mode {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 20px;
+  padding: 2px 7px;
+  border: 1px solid color-mix(in srgb, var(--ink) 8%, transparent);
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--surface) 44%, transparent);
+  color: var(--dim);
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  letter-spacing: var(--tracking-xs);
+  line-height: 1;
+  cursor: pointer;
+  user-select: none;
+  transition: background 140ms ease, border-color 140ms ease, color 140ms ease;
+}
+
+.s-observe-lane-trace-mode:hover {
+  color: var(--ink);
+  border-color: color-mix(in srgb, var(--ink) 16%, transparent);
+  background: color-mix(in srgb, var(--surface) 72%, transparent);
+}
+
+.s-observe-lane-trace-mode--concise {
+  color: color-mix(in srgb, var(--accent) 78%, var(--dim));
+  border-color: color-mix(in srgb, var(--accent) 20%, transparent);
+  background: color-mix(in srgb, var(--accent) 8%, var(--surface));
+}
+
+.s-observe-lane-trace-mode input {
+  position: absolute;
+  inset: 0;
+  margin: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.s-observe-lane-trace-mode svg {
+  flex: none;
+  opacity: 0.9;
+}
+
+.s-observe-lane-trace-mode:has(input:focus-visible) {
+  outline: 2px solid color-mix(in srgb, var(--accent) 48%, transparent);
+  outline-offset: 2px;
+}
+
+.s-observe-lane-trace-meta-stats {
+  display: flex;
+  align-items: baseline;
+  gap: 0.35rem;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: var(--tracking-xs);
+  color: var(--dim);
+}
+
+.s-observe-lane-trace-meta-window {
+  color: var(--muted);
+}
+
+.s-observe-lane-trace-meta-sep {
+  opacity: 0.5;
+}
+
+.s-observe-lane-trace-meta-tag {
+  flex: none;
+  margin-left: var(--space-2xs);
+  padding: 0 var(--space-xs);
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--ink) 6%, transparent);
+  color: var(--dim);
+  text-transform: lowercase;
+  letter-spacing: var(--tracking-xs);
+  cursor: default;
+}
+
+.s-observe--lane .s-observe-stream {
+  max-width: 100%;
+  padding:
+    var(--space-xs)
+    var(--space-md)
+    var(--space-lg)
+    calc(var(--lane-time-col) + var(--space-xl));
+}
+
+.s-observe--lane .s-observe-spine {
+  left: var(--lane-spine-x);
+  width: 1px;
+  background: linear-gradient(
+    180deg,
+    transparent 0%,
+    color-mix(in srgb, var(--accent) 22%, transparent) 8%,
+    color-mix(in srgb, var(--accent) 38%, transparent) 50%,
+    color-mix(in srgb, var(--accent) 22%, transparent) 92%,
+    transparent 100%
+  );
+  opacity: 1;
+}
+
+.s-observe--lane .s-observe-row--selectable {
+  cursor: pointer;
+}
+
+.s-observe--lane .s-observe-row--selectable:hover .s-observe-row-bead {
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent);
+}
+
+.s-observe--lane .s-observe-row--selectable:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent) 45%, transparent);
+  outline-offset: 2px;
+}
+
+.s-observe-row--highlighted > .s-observe-row-bead {
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 28%, transparent);
+}
+
+.s-observe-row--highlighted > .s-observe-block {
+  background: color-mix(in srgb, var(--accent) 6%, transparent);
+  border-radius: var(--radius-sm);
+  padding: var(--space-sm) var(--space-md);
+}
+
+.s-observe-row--highlighted > .s-observe-tool {
+  padding: 0;
+}
+
+.s-lane-trace-sheet-body .s-observe-row--highlighted {
+  z-index: 1;
+}
+
+.s-lane-trace-sheet-body .s-observe-row--highlighted > .s-observe-row-bead {
+  background: var(--accent);
+  box-shadow:
+    0 0 0 4px color-mix(in srgb, var(--accent) 34%, transparent),
+    0 0 14px color-mix(in srgb, var(--accent) 45%, transparent);
+}
+
+.s-lane-trace-sheet-body .s-observe-row--highlighted > .s-observe-block {
+  background: color-mix(in srgb, var(--accent) 12%, var(--surface, oklch(0.178 0.005 260)));
+  outline: 1px solid color-mix(in srgb, var(--accent) 36%, transparent);
+  outline-offset: 0;
+  border-radius: var(--radius-sm);
+  padding: var(--space-md) var(--space-lg);
+  animation: s-observe-row-focus-pulse 1.4s ease-out 1;
+}
+
+.s-lane-trace-sheet-body .s-observe-row--highlighted > .s-observe-tool {
+  padding: 0;
+}
+
+.s-observe-focus-group {
+  position: relative;
+}
+
+.s-observe-focus-group--active {
+  margin-bottom: var(--space-lg);
+}
+
+.s-observe-focus-group--active .s-observe-row--focus-anchor {
+  padding-bottom: var(--space-xs);
+  z-index: 1;
+}
+
+.s-observe-focus-group--active .s-observe-row--focus-anchor > .s-observe-row-bead {
+  background: var(--accent);
+  box-shadow:
+    0 0 0 4px color-mix(in srgb, var(--accent) 34%, transparent),
+    0 0 16px color-mix(in srgb, var(--accent) 50%, transparent);
+}
+
+.s-observe-focus-group--active .s-observe-row--focus-anchor > .s-observe-block {
+  background: color-mix(in srgb, var(--accent) 10%, var(--surface, oklch(0.178 0.005 260)));
+  border-radius: var(--radius-sm) var(--radius-sm) 0 0;
+  outline: 1px solid color-mix(in srgb, var(--accent) 34%, transparent);
+  outline-offset: 0;
+  padding: var(--space-md) var(--space-lg);
+  animation: none;
+}
+
+.s-observe-focus-group--active .s-observe-row--focus-anchor > .s-observe-tool {
+  padding: 0;
+}
+
+.s-observe-focus-connector {
+  position: relative;
+  left: -14px;
+  width: 18px;
+  height: 10px;
+  margin-top: -2px;
+  margin-bottom: -1px;
+  border-left: 2px solid var(--accent);
+  border-bottom: 2px solid var(--accent);
+  border-bottom-left-radius: 6px;
+  pointer-events: none;
+}
+
+.s-observe-focus-detail {
+  position: relative;
+}
+
+@keyframes s-observe-row-focus-pulse {
+  0% {
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 42%, transparent);
+  }
+  40% {
+    box-shadow: 0 0 0 6px color-mix(in srgb, var(--accent) 0%, transparent);
+  }
+  100% {
+    box-shadow: none;
+  }
+}
+
+.s-observe--lane .s-observe-row {
+  padding-bottom: var(--space-md);
+  padding-left: var(--space-sm);
+}
+
+.s-observe--lane .s-observe-row::before {
+  content: "";
+  position: absolute;
+  left: calc(var(--lane-spine-x) + 1px - var(--lane-time-col) - var(--space-lg));
+  top: 9px;
+  width: 10px;
+  height: 1px;
+  background: color-mix(in srgb, var(--accent) 36%, transparent);
+}
+
+@keyframes s-observe-row-enter {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes s-observe-row-tick-enter {
+  from {
+    width: 0;
+    opacity: 0;
+  }
+  to {
+    width: 10px;
+    opacity: 1;
+  }
+}
+
+.s-observe--lane .s-observe-row--enter {
+  animation: s-observe-row-enter 340ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.s-observe--lane .s-observe-row--enter::before {
+  animation: s-observe-row-tick-enter 260ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .s-observe--lane .s-observe-row--enter,
+  .s-observe--lane .s-observe-row--enter::before {
+    animation: none;
+  }
+}
+
+.s-observe--lane .s-observe-row:last-child {
+  padding-bottom: var(--space-sm);
+}
+
+/* Simple single-token commands (node, pgrep, ps) — tight vertical rhythm so a
+   burst reads as one compact run instead of spaced-out rows. */
+.s-observe--lane .s-observe-row--tool-simple {
+  padding-bottom: 0;
+}
+
+.s-observe--lane .s-observe-row--tool-stacked {
+  margin-top: -3px;
+}
+
+.s-observe--lane .s-observe-row--tool-stacked::before {
+  display: none;
+}
+
+.s-observe--lane .s-observe-row--tool-stacked .s-observe-row-time {
+  visibility: hidden;
+}
+
+.s-observe--lane .s-observe-row--tool-simple > .s-observe-block {
+  margin-top: 0;
+}
+
+.s-observe--lane .s-observe-row--tool-simple.s-observe-row--selectable {
+  cursor: pointer;
+}
+
+.s-observe--lane .s-observe-row--tool-simple.s-observe-row--selectable:hover .s-observe-tool--simple {
+  color: var(--ink);
+}
+
+.s-observe-tool-hover-anchor,
+.s-observe-row-hover-target {
+  display: block;
+  width: 100%;
+  min-width: 0;
+}
+
+.s-observe--lane .s-observe-row--hover-preview {
+  z-index: 2;
+}
+
+.s-observe--lane .s-observe-row--hover-preview .s-observe-tool {
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--accent) 9%, var(--surface, oklch(0.178 0.005 260)));
+  outline: 1px solid color-mix(in srgb, var(--accent) 28%, transparent);
+  outline-offset: 0;
+}
+
+.s-observe--lane .s-observe-row--hover-preview .s-observe-tool-cmd-name,
+.s-observe--lane .s-observe-row--hover-preview .s-observe-tool-cmd-arg {
+  color: var(--ink);
+}
+
+.s-observe-tool-hover-card {
+  --hover-caret-top: 14px;
+  z-index: 10050;
+  padding: var(--space-sm) var(--space-md);
+  border-radius: var(--radius-md);
+  border: 1px solid color-mix(in srgb, var(--border, oklch(0.34 0.008 260)) 92%, var(--ink, oklch(0.965 0.006 260)));
+  background: var(--surface, oklch(0.178 0.005 260));
+  color: var(--ink, oklch(0.965 0.006 260));
+  box-shadow:
+    0 12px 28px rgba(0, 0, 0, 0.58),
+    0 0 0 1px color-mix(in srgb, var(--accent) 22%, transparent);
+  pointer-events: auto;
+  isolation: isolate;
+}
+
+.s-observe-tool-hover-card::before,
+.s-observe-tool-hover-card::after {
+  content: "";
+  position: absolute;
+  top: var(--hover-caret-top);
+  width: 0;
+  height: 0;
+  transform: translateY(-50%);
+  pointer-events: none;
+}
+
+/* Bridge line from row to card */
+.s-observe-tool-hover-card::after {
+  height: 1px;
+  width: 10px;
+  border: none;
+  background: color-mix(in srgb, var(--accent) 42%, var(--border, oklch(0.34 0.012 80)));
+  transform: translateY(-50%);
+}
+
+.s-observe-tool-hover-card--side-right::before {
+  left: -7px;
+  border-top: 7px solid transparent;
+  border-bottom: 7px solid transparent;
+  border-right: 7px solid var(--surface, oklch(0.178 0.005 260));
+  filter: drop-shadow(-1px 0 0 color-mix(in srgb, var(--accent) 30%, transparent));
+}
+
+.s-observe-tool-hover-card--side-right::after {
+  left: -11px;
+}
+
+.s-observe-tool-hover-card--side-left::before {
+  right: -7px;
+  border-top: 7px solid transparent;
+  border-bottom: 7px solid transparent;
+  border-left: 7px solid var(--surface, oklch(0.178 0.005 260));
+  filter: drop-shadow(1px 0 0 color-mix(in srgb, var(--accent) 30%, transparent));
+}
+
+.s-observe-tool-hover-card--side-left::after {
+  right: -11px;
+}
+
+.s-observe-tool-hover-card-cmd {
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  font-weight: 600;
+  color: var(--ink);
+  line-height: 1.35;
+  word-break: break-word;
+}
+
+.s-observe-tool-hover-card-meta {
+  margin-top: var(--space-3xs);
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  color: var(--muted);
+}
+
+.s-observe-tool-hover-card-line {
+  margin-top: var(--space-2xs);
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  line-height: 1.4;
+  color: color-mix(in srgb, var(--ink) 72%, var(--muted));
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.s-observe-tool-hover-card-hint {
+  margin-top: var(--space-sm);
+  padding-top: var(--space-2xs);
+  border-top: 1px solid color-mix(in srgb, var(--ink) 14%, transparent);
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  letter-spacing: var(--tracking-xs);
+  color: color-mix(in srgb, var(--muted) 55%, var(--accent) 45%);
+}
+
+.s-observe--lane .s-observe-row-time {
+  position: absolute;
+  left: calc(-1 * var(--lane-time-col) - var(--space-lg));
+  top: 4px;
+  width: var(--lane-time-col);
+  min-width: var(--lane-time-col);
+  max-width: var(--lane-time-col);
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.01em;
+  color: color-mix(in srgb, var(--dim) 84%, var(--accent) 16%);
+  text-align: right;
+  white-space: nowrap;
+  padding-right: var(--space-sm);
+}
+
+/* Lane gutters are time-only by default; Scope lanes opt into label + time. */
+.s-observe--lane .s-observe-row-clock {
+  font-size: var(--text-2xs);
+  line-height: 1.3;
+  letter-spacing: 0.015em;
+  color: color-mix(in srgb, var(--dim) 90%, transparent);
+}
+
+.s-observe--lane.s-observe--lane-gutter-label {
+  --lane-time-col: 84px;
+  --lane-spine-x: 86px;
+}
+
+.s-observe--lane.s-observe--lane-gutter-label .s-observe-row-time {
+  gap: 1px;
+}
+
+.s-observe--lane.s-observe--lane-gutter-label .s-observe-row-kind {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: var(--text-xs);
+  font-weight: 600;
+  line-height: 1.25;
+  letter-spacing: 0.01em;
+  color: color-mix(in srgb, var(--dim) 82%, var(--accent) 18%);
+}
+
+.s-observe--lane.s-observe--lane-gutter-label .s-observe-row-clock {
+  font-size: var(--text-2xs);
+  line-height: 1.25;
+  color: color-mix(in srgb, var(--dim) 78%, transparent);
+}
+
+.s-observe--lane .s-observe-row-repeat {
+  font-size: var(--text-2xs);
+  letter-spacing: 0.02em;
+  color: color-mix(in srgb, var(--dim) 72%, var(--accent) 28%);
+}
+
+.s-observe--lane .s-observe-row-gap {
+  left: calc(var(--lane-spine-x) + 1px - var(--lane-time-col) - var(--space-lg));
+  top: -1px;
+  transform: translateX(-50%);
+  font-size: var(--text-2xs);
+  letter-spacing: 0.02em;
+  color: color-mix(in srgb, var(--dim) 80%, var(--accent) 20%);
+  opacity: 0.92;
+}
+
+.s-observe--lane .s-observe-row-bead {
+  display: none;
+}
+
+.s-observe--lane .s-observe-row > .s-observe-block {
+  margin-top: 1px;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+}
+
+/* Turn boundaries read as quiet section dividers — a dim label trailed by a
+   hairline rule. No accent bar (green is reserved for live state) and, crucially,
+   border-radius is reset so the base note pill's radius can't bend a stray border
+   into a parenthesis-shaped arc. */
+.s-observe--lane .s-observe-note--lane {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  margin: var(--space-2xs) 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  line-height: 1.35;
+  max-width: 100%;
+}
+
+.s-observe--lane .s-observe-note--lane .s-observe-note-text {
+  flex: none;
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  font-weight: 500;
+  letter-spacing: var(--tracking-xs);
+  text-transform: lowercase;
+  color: var(--dim);
+  word-break: break-word;
+}
+
+.s-observe--lane .s-observe-note--lane::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  min-width: var(--space-lg);
+  background: color-mix(in srgb, var(--ink) 8%, transparent);
+}
+
+.s-observe--lane .s-observe-row--tech-summary {
+  padding-bottom: var(--space-xs);
+}
+
+.s-observe--lane .s-observe-row--tech-summary::before {
+  width: 6px;
+  opacity: 0.6;
+  background: color-mix(in srgb, var(--dim) 42%, transparent);
+}
+
+.s-observe--lane .s-observe-tech-summary {
+  display: inline-flex;
+  align-items: baseline;
+  gap: var(--space-sm);
+  max-width: 100%;
+  min-width: 0;
+  padding: 2px 8px;
+  border: 1px solid color-mix(in srgb, var(--ink) 8%, transparent);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--surface) 34%, transparent);
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  line-height: 1.4;
+  color: var(--dim);
+}
+
+.s-observe--lane .s-observe-tech-summary--toggle {
+  cursor: pointer;
+  text-align: left;
+  transition:
+    border-color 120ms ease,
+    background-color 120ms ease,
+    color 120ms ease;
+}
+
+.s-observe--lane .s-observe-tech-summary--toggle:hover,
+.s-observe--lane .s-observe-tech-summary--toggle:focus-visible {
+  border-color: color-mix(in srgb, var(--accent) 28%, transparent);
+  background: color-mix(in srgb, var(--accent) 8%, var(--surface) 34%);
+  color: color-mix(in srgb, var(--ink) 72%, var(--accent) 28%);
+  outline: none;
+}
+
+.s-observe--lane .s-observe-tech-summary--toggle.is-expanded {
+  border-color: color-mix(in srgb, var(--accent) 22%, transparent);
+  background: color-mix(in srgb, var(--accent) 6%, var(--surface) 34%);
+}
+
+.s-observe--lane .s-observe-tech-summary-chevron {
+  flex: none;
+  align-self: center;
+  opacity: 0.72;
+}
+
+.s-observe--lane .s-observe-tech-rollup-details {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  margin: 0 0 var(--space-xs) calc(var(--space-md) + 6px);
+  padding-left: var(--space-md);
+  border-left: 1px solid color-mix(in srgb, var(--ink) 10%, transparent);
+}
+
+.s-observe--lane .s-observe-tech-summary-count {
+  flex: none;
+  color: color-mix(in srgb, var(--dim) 72%, var(--accent) 28%);
+  font-weight: 600;
+}
+
+.s-observe--lane .s-observe-tech-summary-detail {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: color-mix(in srgb, var(--dim) 82%, transparent);
+}
+
+.s-observe--lane .s-observe-system--lane {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2xs);
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  line-height: 1.45;
+  letter-spacing: 0.01em;
+  color: var(--muted);
+}
+
+.s-observe--lane .s-observe-system--lane .s-observe-system-line {
+  display: block;
+  min-width: 0;
+}
+
+.s-observe--lane .s-observe-system--lane .s-observe-system-text {
+  color: var(--muted);
+  word-break: break-word;
+}
+
+/* Grok lane idioms — permissions, turns, and rare phase markers */
+.s-observe--lane .s-observe-grok-permission {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-sm);
+  max-width: 100%;
+  padding: 2px 8px;
+  border: 1px solid color-mix(in srgb, var(--ink) 10%, transparent);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--surface) 55%, transparent);
+  line-height: 1.35;
+}
+
+.s-observe--lane .s-observe-grok-permission-decision {
+  flex: none;
+  font-size: var(--text-xs);
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: lowercase;
+  color: color-mix(in srgb, var(--dim) 82%, var(--accent) 18%);
+}
+
+.s-observe--lane .s-observe-grok-permission-decision.is-allow {
+  color: color-mix(in srgb, var(--accent) 72%, var(--ink) 28%);
+}
+
+.s-observe--lane .s-observe-grok-permission-tool {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--text-xs);
+  color: var(--ink);
+}
+
+.s-observe--lane .s-observe-grok-phase {
+  display: inline-flex;
+  align-items: center;
+  max-width: 100%;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--ink) 5%, transparent);
+  line-height: 1.35;
+}
+
+.s-observe--lane .s-observe-grok-phase-label {
+  font-size: var(--text-2xs);
+  letter-spacing: 0.02em;
+  text-transform: lowercase;
+  color: color-mix(in srgb, var(--dim) 88%, var(--accent) 12%);
+}
+
+.s-observe--lane .s-observe-grok-turn {
+  display: inline-flex;
+  align-items: baseline;
+  gap: var(--space-sm);
+  max-width: 100%;
+  line-height: 1.35;
+}
+
+.s-observe--lane .s-observe-grok-turn-num {
+  flex: none;
+  font-size: var(--text-2xs);
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: lowercase;
+  color: color-mix(in srgb, var(--dim) 80%, var(--accent) 20%);
+}
+
+.s-observe--lane .s-observe-grok-turn-model {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--text-2xs);
+  color: var(--muted);
+}
+
+.s-observe--lane .s-observe-system--lane .s-observe-system-detail {
+  margin: 0;
+  padding-left: 0;
+  font-size: var(--text-2xs);
+  line-height: 1.4;
+  color: var(--dim);
+  font-style: normal;
+  word-break: break-word;
+}
+
+.s-observe--lane .s-observe-live-sticky {
+  margin: 0 0 var(--space-md);
+  padding-left: calc(var(--lane-time-col) + var(--space-lg) + var(--space-sm));
+}
+
+.s-observe--lane .s-observe-follow-btn {
+  font-family: var(--font-sans);
+  font-size: var(--text-xs);
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  padding: var(--space-2xs) var(--space-md);
+  border-radius: var(--radius-sm);
+  border: 0;
+  background: color-mix(in srgb, var(--surface) 72%, transparent);
+}
+
+.s-observe--lane .s-observe-follow-btn--on {
+  color: var(--green);
+  background: color-mix(in srgb, var(--green) 7%, var(--bg));
+}
+
+.s-observe--lane .s-observe-follow-btn--on:hover {
+  color: var(--green);
+  background: color-mix(in srgb, var(--green) 11%, var(--bg));
+}
+
+.s-observe--lane .s-observe-follow-btn:hover {
+  background: color-mix(in srgb, var(--surface) 96%, transparent);
+}
+
+.s-observe--lane .s-observe-copy-btn {
+  display: none;
+}
+
+.s-observe--lane .s-observe-message-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-family: var(--font-accent-title, var(--font-sans));
+  font-size: var(--text-xs);
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: color-mix(in srgb, var(--dim) 78%, var(--accent) 22%);
+}
+
+.s-observe--lane .s-observe-message-label::before {
+  content: "";
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: currentColor;
+  opacity: 0.85;
+}
+
+/* Human turns interrupt the technical stream without reading as a warning.
+   The spine keeps its continuity, while the request becomes a full-width,
+   chat-like band across the content column — avatar + name + time up top,
+   like a message from the operator, lifted by a whisper of accent. */
+.s-observe--lane .s-observe-row--kind-ask {
+  padding-top: var(--space-sm);
+  padding-bottom: var(--space-xl);
+}
+
+.s-observe--lane .s-observe-row--kind-ask::before {
+  left: calc(var(--lane-spine-x) + 1px - var(--lane-time-col) - var(--space-lg) - 3px);
+  top: calc(var(--space-sm) + 17px);
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--accent) 62%, var(--dim));
+  box-shadow: 0 0 0 4px var(--bg);
+}
+
+.s-observe--lane .s-observe-row.s-observe-row--kind-ask > .s-observe-ask--lane {
+  width: calc(100% + var(--space-sm) + var(--space-md));
+  max-width: none;
+  margin-left: calc(-1 * var(--space-sm));
+  margin-right: calc(-1 * var(--space-md));
+  border-block: 1px solid color-mix(in srgb, var(--accent) 18%, transparent);
+  border-inline: 0;
+  border-radius: 0;
+  background:
+    linear-gradient(90deg, color-mix(in srgb, var(--accent) 7%, transparent), transparent 58%),
+    color-mix(in srgb, var(--surface) 55%, var(--bg));
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, var(--ink) 4%, transparent),
+    inset 0 -1px 0 color-mix(in srgb, var(--bg) 60%, transparent);
+  padding: var(--space-lg) var(--space-xl);
+}
+
+.s-observe--lane .s-observe-ask-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  margin-bottom: var(--space-sm);
+}
+
+.s-observe--lane .s-observe-ask-avatar {
+  width: 22px;
+  height: 22px;
+  flex: none;
+  border-radius: var(--radius-lg);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--font-sans);
+  font-size: var(--text-xs);
+  font-weight: 700;
+  color: var(--scout-chrome-avatar-ink);
+}
+
+.s-observe--lane .s-observe-ask-author {
+  font-family: var(--font-sans);
+  font-size: var(--text-sm);
+  font-weight: 650;
+  letter-spacing: 0.01em;
+  color: color-mix(in srgb, var(--ink) 88%, var(--muted));
+}
+
+.s-observe--lane .s-observe-ask-time {
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  color: var(--dim);
+}
+
+.s-observe--lane .s-observe-ask--lane .s-observe-ask-title {
+  display: -webkit-box;
+  margin-bottom: var(--space-2xs);
+  font-family: var(--font-sans);
+  font-size: var(--text-lg);
+  font-weight: 620;
+  line-height: 1.42;
+  letter-spacing: 0;
+  color: color-mix(in srgb, var(--ink) 94%, var(--muted));
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  word-break: break-word;
+}
+
+.s-observe--lane .s-observe-ask--lane .s-observe-ask-text {
+  font-family: var(--font-sans);
+  font-size: var(--text-md);
+  font-weight: 400;
+  line-height: 1.58;
+  color: color-mix(in srgb, var(--ink) 82%, var(--muted));
+  word-break: break-word;
+}
+
+.s-observe--lane .s-observe-ask--lane .s-observe-ask-answer {
+  margin-top: var(--space-xs);
+  padding-top: var(--space-xs);
+  gap: var(--space-sm);
+}
+
+.s-observe--lane .s-observe-ask--lane .s-observe-ask-answer-meta {
+  font-size: var(--text-2xs);
+}
+
+.s-observe--lane .s-observe-ask--lane .s-observe-ask-answer-text {
+  font-size: var(--text-xs);
+  line-height: 1.5;
+}
+
+/* Message rows in lane mode — the quietest speaking row. Agent prose, not a
+   terminal line: a barely-there surface and normal-weight body a shade dimmer
+   than the ask, so an ordinary reply never competes with a human request. */
+.s-observe--lane .s-observe-message--lane {
+  position: relative;
+  overflow: hidden;
+  padding: var(--space-sm) var(--space-md) var(--space-sm) var(--space-lg);
+  border-radius: 7px;
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--surface) 55%, transparent), color-mix(in srgb, var(--surface) 32%, transparent));
+  border: 1px solid color-mix(in srgb, var(--ink) 8%, transparent);
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--ink) 5%, transparent);
+}
+
+.s-observe--lane .s-observe-message--lane .s-observe-message-label {
+  margin-bottom: var(--space-xs);
+  color: color-mix(in srgb, var(--dim) 70%, var(--accent) 30%);
+}
+
+.s-observe--lane.s-observe--lane-gutter-label .s-observe-message--lane .s-observe-message-label {
+  display: none;
+}
+
+.s-observe--lane .s-observe-message--lane .s-observe-message-text {
+  font-family: var(--font-sans);
+  font-size: var(--text-sm);
+  font-weight: 400;
+  line-height: 1.5;
+  color: color-mix(in srgb, var(--ink) 84%, var(--muted));
+}
+
+.s-observe--lane .s-observe-message--thinking {
+  border-style: dashed;
+  border-color: color-mix(in srgb, var(--accent) 16%, var(--ink) 7%);
+  background:
+    repeating-linear-gradient(
+      135deg,
+      color-mix(in srgb, var(--surface) 28%, transparent) 0,
+      color-mix(in srgb, var(--surface) 28%, transparent) 8px,
+      transparent 8px,
+      transparent 16px
+    ),
+    color-mix(in srgb, var(--surface) 24%, transparent);
+  box-shadow: none;
+}
+
+.s-observe--lane .s-observe-message--thinking .s-observe-message-label {
+  color: color-mix(in srgb, var(--dim) 78%, var(--accent) 22%);
+}
+
+.s-observe--lane .s-observe-message--thinking .s-observe-message-text {
+  font-family: var(--font-accent-title, var(--font-sans));
+  font-size: var(--text-base, 15px);
+  font-weight: 500;
+  font-style: normal;
+  letter-spacing: -0.015em;
+  line-height: 1.45;
+  color: color-mix(in srgb, var(--ink) 68%, var(--muted));
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .s-observe--lane .s-observe-message--thinking {
+    animation: s-observe-thinking-card 1.8s ease-in-out infinite;
+  }
+}
+
+@keyframes s-observe-thinking-card {
+  0%,
+  100% {
+    border-color: color-mix(in srgb, var(--accent) 12%, var(--ink) 7%);
+  }
+
+  50% {
+    border-color: color-mix(in srgb, var(--accent) 24%, var(--ink) 8%);
+  }
+}
+
+.s-observe--lane .s-observe-message--lane .s-observe-lane-expandable-body {
+  align-items: flex-start;
+  gap: var(--space-sm);
+}
+
+.s-observe-lane-expandable {
+  min-width: 0;
+}
+
+.s-observe-lane-expandable-body {
+  display: flex;
+  align-items: flex-end;
+  gap: var(--space-sm);
+  min-width: 0;
+}
+
+.s-observe-lane-expandable-text {
+  flex: 1;
+  min-width: 0;
+}
+
+.s-observe-lane-expand {
+  appearance: none;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 3px;
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  line-height: 1;
+  text-transform: lowercase;
+  color: var(--dim);
+  cursor: pointer;
+  opacity: 0.82;
+}
+
+.s-observe-lane-expand:hover,
+.s-observe-lane-expand:focus-visible {
+  color: var(--muted);
+  opacity: 1;
+}
+
+.s-observe--lane .s-observe-lane-expandable {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-2xs);
+  min-width: 0;
+}
+
+.s-observe--lane .s-observe-lane-expandable-body {
+  flex-direction: column;
+  align-items: flex-start;
+  width: 100%;
+}
+
+.s-observe--lane .s-observe-lane-expandable-body .s-observe-lane-expand {
+  align-self: flex-end;
+}
+
+.s-observe--lane .s-observe-lane-expandable--open .s-observe-message-text,
+.s-observe--lane .s-observe-lane-expandable--open .s-observe-ask-text {
+  max-height: min(42vh, 360px);
+  overflow: auto;
+}
+
+.s-observe-tool-header .s-observe-lane-expand {
+  margin-left: auto;
+  flex: none;
+  align-self: center;
+}
+
+.s-observe-tool-stream-preview {
+  margin: 0;
+  padding: var(--space-xs) var(--space-lg) var(--space-sm);
+  border-top: 1px solid color-mix(in srgb, var(--border) 55%, transparent);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  line-height: 1.4;
+  color: var(--dim);
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 3.6rem;
+  overflow: hidden;
+}
+
+.s-observe--lane .s-observe-tool-diff-inline {
+  display: inline-flex;
+  align-items: baseline;
+  gap: var(--space-2xs);
+  margin-left: var(--space-xs);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  font-variant-numeric: tabular-nums;
+  font-weight: 500;
+  letter-spacing: 0.01em;
+}
+
+.s-observe--lane .s-observe-tool-stream--lane {
+  margin-top: var(--space-2xs);
+  max-height: min(36vh, 280px);
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.s-observe--lane .s-observe-tool-result {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  line-height: 1.45;
+}
+
+.s-observe--lane .s-observe-row--kind-tool > .s-observe-row-hover-target,
+.s-observe--lane .s-observe-row--kind-think > .s-observe-block,
+.s-observe--lane .s-observe-row--kind-system > .s-observe-block,
+.s-observe--lane .s-observe-row--kind-boot > .s-observe-block,
+.s-observe--lane .s-observe-row--tech-summary > .s-observe-block {
+  margin-left: var(--space-lg);
+  max-width: calc(100% - var(--space-lg));
+}
+
+.s-observe--lane .s-observe-tool {
+  border: 0;
+  border-radius: 0;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  background: color-mix(in srgb, var(--surface) 62%, transparent);
+  transition: background 140ms ease, border-color 140ms ease;
+}
+
+.s-observe--lane .s-observe-tool:hover {
+  border-color: color-mix(in srgb, var(--ink) 14%, transparent);
+  background: color-mix(in srgb, var(--surface) 78%, transparent);
+}
+
+.s-observe--lane .s-observe-tool-header {
+  padding: var(--space-2xs) var(--space-sm);
+  gap: var(--space-sm);
+  align-items: center;
+  min-width: 0;
+  overflow: hidden;
+  background: color-mix(in srgb, var(--bg) 35%, transparent);
+}
+
+.s-observe--lane .s-observe-tool-glyph {
+  font-size: var(--lane-glyph-size);
+  width: var(--lane-glyph-width);
+  min-width: var(--lane-glyph-width);
+  flex: none;
+  text-align: center;
+  line-height: 1.35;
+  color: var(--lane-glyph-color);
+}
+
+.s-observe--lane .s-observe-tool-cmd-name {
+  color: var(--muted);
+}
+
+.s-observe--lane .s-observe-tool-diff-add,
+.s-observe--lane .s-observe-diff-line--add {
+  color: color-mix(in srgb, var(--ink) 58%, var(--muted));
+}
+
+.s-observe--lane .s-observe-tool-diff-del,
+.s-observe--lane .s-observe-diff-line--del {
+  color: color-mix(in srgb, var(--muted) 74%, var(--red) 26%);
+}
+
+.s-observe--lane .s-observe-tool-header--has-body {
+  border-bottom: 0;
+}
+
+.s-observe--lane .s-observe-tool-diff-preview,
+.s-observe--lane .s-observe-tool-stream {
+  max-height: 3.25rem;
+  overflow: hidden;
+  border-radius: 0;
+  background: color-mix(in srgb, var(--bg) 50%, transparent);
+  border: none;
+}
+
+.s-observe--lane .s-observe-tool-cmd {
+  flex: 1;
+  min-width: 0;
+  max-width: 100%;
+  font-size: var(--text-xs);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  word-break: normal;
+}
+
+/* ── bespoke per-tool lane idioms ──────────────────────────────────────────
+ * Distinction comes from typographic idiom + contrast, never categorical
+ * colour: a shell line, a file path, a quoted needle. Each family reads as its
+ * own small component while sharing the quiet terminal block around it. */
+
+/* ── bash terminal block ───────────────────────────────────────────────────
+   A shell row reads as an embedded terminal line: a bordered, recessed pill
+   with an optional powerline directory segment (a leading cd), a chevron
+   prompt, then the command in three tiers — program (ink) · args (muted) ·
+   plumbing (dim). Single line; full command on hover. All colours derive from
+   tokens so it follows the theme. Markup + parsing live in LaneBashLine /
+   lib/bash-format.ts — this is just the skin. */
+.s-observe--lane .s-observe-tool--simple,
+.s-observe--lane .s-observe-tool--simple .s-observe-tool-header {
+  background: transparent;
+  border-left: 0;
+  padding: 0;
+}
+
+.s-observe--lane .s-observe-tool--simple .s-observe-tool-header {
+  gap: var(--space-2xs);
+  line-height: 1.2;
+  min-height: 0;
+}
+
+.s-observe--lane .s-observe-tool--simple .s-observe-tool-glyph {
+  font-size: var(--text-lg);
+  width: 16px;
+  min-width: 16px;
+  line-height: 1.25;
+}
+
+.s-observe--lane .s-observe-tool--simple .s-observe-tool-cmd {
+  line-height: 1.2;
+}
+
+.s-observe--lane .s-observe-tool--simple .s-observe-tool-cmd-name {
+  color: var(--ink);
+}
+
+.s-observe--lane .s-observe-tool--simple:hover {
+  background: transparent;
+  border-color: transparent;
+}
+
+.s-observe--lane .s-observe-tool--fam-bash,
+.s-observe--lane .s-observe-tool--fam-bash .s-observe-tool-header {
+  /* the pill is the whole visual — drop the generic tool chrome around it */
+  background: transparent;
+  border-left: 0;
+  padding: 0;
+}
+
+/* SCO-085: subtle background on command/code rows for glanceability. */
+.s-observe--lane .s-observe-row:has(.s-observe-tool--fam-bash),
+.s-observe--lane .s-observe-row:has(.s-observe-tool--fam-code),
+.s-observe--lane .s-observe-row:has(.s-observe-bash) {
+  background: color-mix(in srgb, var(--ink) 2.5%, transparent);
+  border-radius: var(--radius-sm);
+}
+
+[data-scout-theme="light"] .s-observe--lane .s-observe-row:has(.s-observe-tool--fam-bash),
+[data-scout-theme-mode="light"] .s-observe--lane .s-observe-row:has(.s-observe-tool--fam-bash),
+[data-scout-theme="light"] .s-observe--lane .s-observe-row:has(.s-observe-bash),
+[data-scout-theme-mode="light"] .s-observe--lane .s-observe-row:has(.s-observe-bash) {
+  /* Warm wash, not cool ink gray. */
+  background: color-mix(in srgb, var(--cat-gold, #a9824f) 4.5%, transparent);
+}
+/* give the pill a definite width to truncate against (the row's content box) */
+.s-observe--lane .s-observe-tool--fam-bash .s-observe-tool-header,
+.s-observe--lane .s-observe-tool--fam-bash .s-observe-tool-cmd {
+  display: block;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+}
+.s-observe--lane .s-observe-bash {
+  /* Theme-native console chip — no pure #000 wash (that made light mode look
+     like cool gray bars). Dark: slight recess into surface. Light: warm paper. */
+  --bash-bg: color-mix(in srgb, var(--surface) 72%, var(--bg));
+  --bash-seg: color-mix(in srgb, var(--surface) 82%, var(--ink) 6%);
+  --bash-edge: color-mix(in srgb, var(--ink) 12%, transparent);
+  --bash-shadow: 0 1px 2px color-mix(in srgb, var(--ink) 18%, transparent);
+  --bash-inset: inset 0 1px 0 color-mix(in srgb, var(--ink) 5%, transparent);
+  display: flex;
+  align-items: baseline;
+  width: 100%;
+  max-width: 100%;
+  padding: 2px 9px;
+  border-radius: 7px;
+  background: var(--bash-bg);
+  border: 1px solid var(--bash-edge);
+  box-shadow: var(--bash-inset), var(--bash-shadow);
+  font-family: var(--font-mono);
+  font-size: var(--text-md);
+  white-space: nowrap;
+  overflow: hidden;
+  cursor: default;
+}
+
+/* Light mode: soft warm console on paper, not a black terminal strip. */
+[data-scout-theme="light"] .s-observe--lane .s-observe-bash,
+[data-scout-theme-mode="light"] .s-observe--lane .s-observe-bash {
+  --bash-bg: color-mix(in srgb, var(--surface) 88%, var(--cat-gold, #a9824f));
+  --bash-seg: color-mix(in srgb, var(--bg) 55%, var(--surface));
+  --bash-edge: color-mix(in srgb, var(--ink) 9%, transparent);
+  --bash-shadow: 0 1px 2px color-mix(in srgb, var(--ink) 7%, transparent);
+  --bash-inset: inset 0 1px 0 color-mix(in srgb, #fff 70%, transparent);
+}
+
+/* Dark mode: keep a terminal-ish recess without pure black mud. */
+[data-scout-theme="dark"] .s-observe--lane .s-observe-bash,
+[data-scout-theme-mode="dark"] .s-observe--lane .s-observe-bash {
+  --bash-bg: color-mix(in srgb, var(--bg) 55%, var(--surface));
+  --bash-seg: color-mix(in srgb, var(--surface) 78%, var(--ink) 8%);
+  --bash-edge: color-mix(in srgb, var(--ink) 14%, transparent);
+  --bash-shadow: 0 1px 3px color-mix(in srgb, #000 45%, transparent);
+  --bash-inset: inset 0 1px 0 color-mix(in srgb, var(--ink) 6%, transparent);
+}
+
+.s-observe--lane .s-observe-bash-prompt {
+  flex: none;
+  margin-right: 8px;
+  font-size: var(--lane-glyph-size);
+  font-weight: 700;
+  user-select: none;
+  color: color-mix(in srgb, var(--accent) 82%, var(--ink) 18%);
+}
+/* powerline directory segment (from a leading cd) — chip + bordered tip */
+.s-observe--lane .s-observe-bash-pl {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  margin-right: 8px;
+}
+.s-observe--lane .s-observe-bash-seg {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 5px 1px 7px;
+  background: var(--bash-seg);
+  color: var(--muted);
+  border: 1px solid var(--bash-edge);
+  border-right: 0;
+  border-radius: 3px 0 0 3px;
+  font-size: var(--text-2xs);
+  letter-spacing: var(--tracking-xs);
+}
+.s-observe--lane .s-observe-bash-sep {
+  display: inline-block;
+  width: 11px;
+  height: 11px;
+  flex: none;
+  background: var(--bash-seg);
+  border-top: 1px solid var(--bash-edge);
+  border-right: 1px solid var(--bash-edge);
+  border-top-right-radius: 2px;
+  transform: rotate(45deg);
+  margin-left: -8px;
+}
+/* the command flexes + truncates with an ellipsis; prompt/segment/ok hold firm */
+.s-observe--lane .s-observe-bash-cmd {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.s-observe--lane .s-observe-bash-prog {
+  color: var(--ink);
+  font-weight: 650;
+  letter-spacing: -0.01em;
+}
+/* Args: step down from the program name without falling into flat mid-gray. */
+.s-observe--lane .s-observe-bash-arg {
+  color: color-mix(in srgb, var(--ink) 38%, var(--muted));
+}
+.s-observe--lane .s-observe-bash-flag {
+  color: color-mix(
+    in srgb,
+    var(--muted) 65%,
+    color-mix(in srgb, var(--accent) 60%, var(--ink))
+  );
+}
+.s-observe--lane .s-observe-bash-dim {
+  color: color-mix(in srgb, var(--dim) 70%, var(--muted));
+}
+/* a cd destination — the directory name reads (muted), its path prefix recedes
+   (dim). Honest: it's plainly part of the command, not a prompt costume. */
+.s-observe--lane .s-observe-bash-dir {
+  color: color-mix(in srgb, var(--ink) 28%, var(--muted));
+}
+.s-observe--lane .s-observe-bash-dir-prefix {
+  color: color-mix(in srgb, var(--dim) 75%, var(--muted));
+}
+
+/* Light: flags get a touch of warm accent so shell lines feel less monochrome. */
+[data-scout-theme="light"] .s-observe--lane .s-observe-bash-flag,
+[data-scout-theme-mode="light"] .s-observe--lane .s-observe-bash-flag {
+  color: color-mix(
+    in srgb,
+    var(--muted) 58%,
+    color-mix(in srgb, var(--cat-gold, #a9824f) 65%, var(--ink))
+  );
+}
+.s-observe--lane .s-observe-bash-out {
+  color: var(--s-observe-muted, rgba(255, 255, 255, 0.52));
+  font-family: var(--s-observe-mono, ui-monospace, monospace);
+  font-size: 0.92em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: min(42ch, 100%);
+}
+
+.s-observe--lane .s-observe-bash-ok {
+  flex: none;
+  margin-left: 9px;
+  color: var(--dim);
+}
+/* recognised command — a one-time shimmer the first time the row appears */
+.s-observe--lane .s-observe-bash-prog--known {
+  color: var(--ink);
+}
+@supports ((-webkit-background-clip: text) or (background-clip: text)) {
+  .s-observe--lane .s-observe-bash-prog--known {
+    background: linear-gradient(
+      100deg,
+      var(--ink) 0%, var(--ink) 40%,
+      var(--accent) 50%,
+      var(--ink) 60%, var(--ink) 100%
+    );
+    background-size: 240% 100%;
+    background-position: 120% 0;
+    -webkit-background-clip: text;
+    background-clip: text;
+    -webkit-text-fill-color: transparent;
+    animation: s-observe-bash-shimmer 1100ms ease-out 200ms both;
+  }
+}
+@keyframes s-observe-bash-shimmer {
+  from { background-position: 120% 0; }
+  to { background-position: -40% 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .s-observe--lane .s-observe-bash-prog--known {
+    animation: none;
+    -webkit-text-fill-color: var(--ink);
+  }
+}
+
+/* file paths — the directory recedes and the file leaf is the hero: the leaf
+   never breaks mid-name, the directory ellipsises first if the row is cramped,
+   and the full path stays on hover (title). */
+.s-observe--lane .s-observe-tool-path {
+  display: inline-flex;
+  align-items: baseline;
+  max-width: 100%;
+  min-width: 0;
+}
+.s-observe--lane .s-observe-tool-path-dir {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--dim);
+}
+.s-observe--lane .s-observe-tool-path-base--file {
+  flex: none;
+  white-space: nowrap;
+  color: var(--ink);
+  font-weight: 600;
+}
+/* read is the passive end of the spectrum — the leaf stays quiet, no weight */
+.s-observe--lane .s-observe-tool-path-base--read {
+  flex: none;
+  white-space: nowrap;
+  color: var(--muted);
+}
+
+/* search — a quoted needle, with quotes dimmed and an optional match tally */
+.s-observe--lane .s-observe-tool-needle {
+  color: var(--ink);
+}
+.s-observe--lane .s-observe-tool-needle-q {
+  color: var(--dim);
+}
+.s-observe--lane .s-observe-tool-count {
+  margin-left: var(--space-2xs);
+  color: var(--dim);
+}
+
+/* fetch — host carries the weight, path recedes */
+.s-observe--lane .s-observe-tool-host {
+  color: var(--ink);
+}
+.s-observe--lane .s-observe-tool-host-path {
+  margin-left: 1px;
+  color: var(--dim);
+}
+
+/* agent — a delegated sub-agent name */
+.s-observe--lane .s-observe-tool-agent-name {
+  color: var(--ink);
+}
+
+/* read rows recede a touch — the quietest tool in the trace */
+.s-observe--lane .s-observe-tool--fam-read {
+  background: color-mix(in srgb, var(--surface) 42%, transparent);
+}
+.s-observe--lane .s-observe-tool--fam-read .s-observe-tool-glyph {
+  color: color-mix(in srgb, var(--dim) 55%, var(--accent) 20%);
+}
+
+.s-observe--lane .s-observe-tool--fam-file .s-observe-tool-glyph {
+  color: color-mix(in srgb, var(--accent) 70%, var(--ink) 30%);
+}
+
+.s-observe-embed-page {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--bg);
+  color: var(--ink);
+}
+
+.s-observe-embed-page > .s-observe {
+  flex: 1;
+  min-height: 0;
+}
+
+.s-observe-embed-status {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  min-height: 28px;
+  padding: 0 var(--space-xl);
+  border-bottom: 1px solid color-mix(in srgb, var(--ink) 8%, transparent);
+  background: color-mix(in srgb, var(--bg) 92%, black);
+  color: var(--dim);
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  font-weight: 600;
+  letter-spacing: 0;
+  text-transform: uppercase;
+}
+
+.s-observe-embed-status span {
+  min-width: 0;
+  max-width: 170px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.s-observe-embed-status-source {
+  color: var(--accent);
+}
+
+.s-observe-embed-status-live {
+  margin-left: auto;
+  color: var(--green);
+}
+
+.s-observe-embed-ask {
+  flex: none;
+  padding: var(--space-xl) var(--space-3xl) var(--space-lg);
+  border-bottom: 1px solid color-mix(in srgb, var(--ink) 9%, transparent);
+  background: color-mix(in srgb, var(--surface) 56%, var(--bg));
+}
+
+.s-observe-embed-ask-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-xl);
+}
+
+.s-observe-embed-ask-kicker {
+  color: var(--accent);
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  font-weight: 700;
+  letter-spacing: var(--tracking-lg);
+  text-transform: uppercase;
+}
+
+.s-observe-embed-ask-byline,
+.s-observe-embed-ask-unknown {
+  display: flex;
+  gap: var(--space-xs);
+  margin-top: 3px;
+  color: var(--dim);
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+}
+
+.s-observe-embed-ask-links {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: var(--space-sm);
+}
+
+.s-observe-embed-ask-links a {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--dim);
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  text-decoration: none;
+}
+
+.s-observe-embed-ask-links a:hover {
+  color: var(--accent);
+}
+
+.s-observe-embed-ask-body {
+  display: -webkit-box;
+  max-width: 960px;
+  margin-top: var(--space-md);
+  overflow: hidden;
+  color: var(--ink);
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  line-height: var(--leading-relaxed);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 5;
+}
+
+.s-observe-embed-ask-body.is-expanded {
+  display: block;
+  max-height: min(42vh, 420px);
+  overflow-y: auto;
+  -webkit-line-clamp: unset;
+}
+
+.s-observe-embed-ask-toggle {
+  margin-top: var(--space-sm);
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--dim);
+  cursor: pointer;
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+}
+
+.s-observe-embed-ask-toggle:hover {
+  color: var(--accent);
+}
+
+.s-observe-embed-ask--unknown {
+  padding-block: var(--space-md);
+}
+
+@media (max-width: 680px) {
+  .s-observe-embed-ask {
+    padding-inline: var(--space-xl);
+  }
+
+  .s-observe-embed-ask-head {
+    flex-direction: column;
+    gap: var(--space-md);
+  }
+
+  .s-observe-embed-ask-links {
+    justify-content: flex-start;
+  }
+}
+
+.s-observe-embed-page .s-observe-main {
+  padding: var(--space-3xl) var(--space-3xl) var(--space-5xl);
+}
+
+.s-observe-embed-page .s-observe-stream {
+  max-width: 100%;
+  padding-left: 58px;
+}
+
+.s-observe-embed-empty {
+  height: 100%;
+  display: grid;
+  place-content: center;
+  gap: var(--space-sm);
+  padding: var(--space-4xl);
+  text-align: center;
+}
+
+.s-observe-embed-empty-title {
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  font-weight: 700;
+  letter-spacing: var(--tracking-lg);
+  text-transform: uppercase;
+  color: var(--ink);
+}
+
+.s-observe-embed-empty-detail {
+  max-width: 320px;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  line-height: var(--leading-normal);
+  color: var(--dim);
+  word-break: break-word;
+}
+
+/* ── Main timeline ── */
+
+.s-observe-main {
+  grid-column: 1;
+  grid-row: 1;
+  position: relative;
+  overflow-y: auto;
+  overflow-y: overlay;
+  padding: var(--space-4xl) var(--space-4xl) var(--space-6xl);
+  scrollbar-width: thin;
+  scrollbar-color: transparent transparent;
+}
+
+.s-observe-main:hover {
+  scrollbar-color: color-mix(in srgb, var(--ink) 12%, transparent) transparent;
+}
+
+.s-observe-evidence-banner,
+.s-observe-evidence-card {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-sm);
+  border: 1px solid color-mix(in srgb, var(--border) 84%, transparent);
+  border-radius: var(--radius-lg);
+  background: color-mix(in srgb, var(--surface) 72%, var(--bg));
+  color: var(--muted);
+}
+
+.s-observe-evidence-banner {
+  max-width: min(790px, calc(100% - 68px));
+  margin: calc(-1 * var(--space-lg)) 0 var(--space-xl) 68px;
+  padding: var(--space-md) var(--space-lg);
+}
+
+.s-observe-evidence-card {
+  padding: var(--space-md);
+}
+
+.s-observe-evidence-banner > span:last-child,
+.s-observe-evidence-card > span:last-child {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3xs);
+  min-width: 0;
+}
+
+.s-observe-evidence-banner strong,
+.s-observe-evidence-card strong {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.s-observe-evidence-banner small,
+.s-observe-evidence-card small {
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  line-height: var(--leading-normal);
+  color: var(--dim);
+}
+
+.s-observe-evidence-dot {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  margin-top: 0.34em;
+  border-radius: 50%;
+  background: var(--dim);
+}
+
+[data-tone="live"] > .s-observe-evidence-dot {
+  background: var(--green);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--green) 12%, transparent);
+}
+
+[data-tone="recorded"] > .s-observe-evidence-dot {
+  background: var(--accent);
+}
+
+/* Broker setup records are provenance receipts, not observed activity. Keep
+   them marker-less and quieter than the timestamped trace timeline. */
+.s-observe-receipt-view {
+  max-width: min(790px, calc(100% - 68px));
+  margin-left: 68px;
+  padding: var(--space-xl);
+  border: 1px solid color-mix(in srgb, var(--border) 78%, transparent);
+  border-radius: var(--radius-lg);
+  background: color-mix(in srgb, var(--surface) 54%, var(--bg));
+  color: var(--dim);
+}
+
+.s-observe-receipt-view-copy {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3xs);
+  font-family: var(--font-mono);
+}
+
+.s-observe-receipt-view-copy strong {
+  color: var(--muted);
+  font-size: var(--text-sm);
+  font-weight: 600;
+}
+
+.s-observe-receipt-view-copy span {
+  font-size: var(--text-xs);
+  line-height: var(--leading-normal);
+}
+
+.s-observe-receipt-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+  margin: var(--space-xl) 0 0;
+  padding: var(--space-lg) 0 0;
+  border-top: 1px solid color-mix(in srgb, var(--border) 68%, transparent);
+  list-style: none;
+}
+
+.s-observe-receipt {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3xs);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  line-height: var(--leading-normal);
+  color: color-mix(in srgb, var(--muted) 78%, var(--dim));
+}
+
+.s-observe-receipt small {
+  color: color-mix(in srgb, var(--dim) 78%, transparent);
+  font-size: var(--text-2xs);
+}
+
+.s-observe--lane .s-observe-receipt-view {
+  max-width: 100%;
+  margin: var(--space-md) 0;
+}
+
+[data-tone="unavailable"] > .s-observe-evidence-dot {
+  background: var(--amber);
+}
+
+.s-observe-source {
+  display: inline-flex;
+  align-items: center;
+  max-width: min(100%, 860px);
+  gap: var(--space-sm);
+  margin: -4px 0 var(--space-lg) 68px;
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  line-height: var(--leading-tight);
+}
+
+.s-observe-source-label {
+  color: var(--dim);
+  letter-spacing: var(--tracking-lg);
+  text-transform: uppercase;
+}
+
+.s-observe-source-link {
+  min-width: 0;
+  max-width: min(520px, 60vw);
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--green);
+  cursor: pointer;
+  font: inherit;
+  overflow: hidden;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.s-observe-source-link:hover {
+  color: var(--ink);
+  text-decoration: underline;
+  text-decoration-color: color-mix(in srgb, var(--green) 60%, transparent);
+  text-underline-offset: 3px;
+}
+
+/* ── Replay stream with spine ── */
+
+.s-observe-stream {
+  position: relative;
+  padding-left: 68px;
+  max-width: 860px;
+  user-select: text;
+}
+
+/* Make every event block a hover anchor for its copy button. */
+.s-observe-block {
+  position: relative;
+}
+
+.s-observe-block--inline {
+  /* Note pills — keep inline-flex layout but still anchor the copy button. */
+  padding-right: 32px;
+}
+
+/* ── Copy button ── */
+
+.s-observe-copy-btn {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 22px;
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border-radius: var(--radius-md);
+  border: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
+  background: color-mix(in srgb, var(--bg) 85%, transparent);
+  color: var(--muted);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.12s, color 0.12s, border-color 0.12s, background 0.12s;
+  backdrop-filter: blur(6px);
+}
+
+.s-observe-block:hover .s-observe-copy-btn,
+.s-observe-copy-btn:focus-visible {
+  opacity: 1;
+}
+
+.s-observe-copy-btn:hover {
+  color: var(--ink);
+  border-color: color-mix(in srgb, var(--accent) 50%, var(--border));
+  background: color-mix(in srgb, var(--bg) 95%, transparent);
+}
+
+.s-observe-copy-btn--copied {
+  opacity: 1;
+  color: var(--green);
+  border-color: color-mix(in srgb, var(--green) 50%, var(--border));
+  background: color-mix(in srgb, var(--green) 8%, var(--bg));
+}
+
+.s-observe-copy-btn--inline {
+  position: static;
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+}
+
+.s-observe-spine {
+  position: absolute;
+  left: 56px;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: var(--border);
+}
+
+/* ── Stream row ── */
+
+.s-observe-row {
+  position: relative;
+  padding-bottom: var(--space-3xl);
+}
+
+.s-observe-row-gap {
+  position: absolute;
+  left: -42px;
+  top: 0;
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  color: var(--dim);
+  letter-spacing: var(--tracking-sm);
+  opacity: 0.6;
+}
+
+.s-observe-row-time {
+  position: absolute;
+  left: -68px;
+  top: 2px;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--dim);
+  letter-spacing: var(--tracking-sm);
+}
+
+.s-observe-row-bead {
+  position: absolute;
+  left: -14px;
+  top: 6px;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  box-shadow: 0 0 0 3px var(--bg);
+}
+
+/* ── Live text + reasoning disclosure ── */
+
+.s-observe-reasoning {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.s-observe-reasoning-header {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  min-height: 26px;
+  align-items: center;
+  gap: var(--space-sm);
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--dim);
+  font: inherit;
+  text-align: left;
+}
+
+.s-observe-reasoning-header--button {
+  cursor: pointer;
+}
+
+.s-observe-reasoning-header--button:hover {
+  color: var(--ink);
+}
+
+.s-observe-reasoning-header--button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.s-observe-reasoning-state {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: var(--space-xs);
+  color: currentColor;
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  font-weight: 600;
+  letter-spacing: var(--tracking-md);
+  text-transform: uppercase;
+}
+
+.s-observe-reasoning-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.s-observe-reasoning--live .s-observe-reasoning-state {
+  color: color-mix(in srgb, var(--accent) 66%, var(--dim));
+}
+
+.s-observe-reasoning--live .s-observe-reasoning-dot {
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 10%, transparent);
+}
+
+.s-observe-reasoning-preview {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  color: color-mix(in srgb, var(--ink) 56%, var(--muted));
+  font-size: var(--text-lg);
+  line-height: var(--leading-normal);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.s-observe-reasoning-chevron {
+  flex: none;
+  margin-left: auto;
+  transition: transform 150ms cubic-bezier(0.2, 0.7, 0.2, 1);
+}
+
+.s-observe-reasoning--open .s-observe-reasoning-chevron {
+  transform: rotate(180deg);
+}
+
+.s-observe-reasoning-body {
+  display: grid;
+  grid-template-rows: 0fr;
+  overflow: hidden;
+  opacity: 0;
+  transition:
+    grid-template-rows 220ms cubic-bezier(0.2, 0.7, 0.2, 1),
+    opacity 150ms cubic-bezier(0.2, 0.7, 0.2, 1);
+}
+
+.s-observe-reasoning--open .s-observe-reasoning-body {
+  grid-template-rows: 1fr;
+  opacity: 1;
+}
+
+.s-observe-reasoning-body-clip {
+  min-height: 0;
+  overflow: hidden;
+}
+
+.s-observe-reasoning-body-inner {
+  display: flex;
+  min-width: 0;
+  align-items: flex-end;
+  gap: var(--space-sm);
+  padding: var(--space-xs) 0 var(--space-sm) calc(6px + var(--space-sm));
+}
+
+.s-observe-reasoning-text {
+  min-width: 0;
+  flex: 1;
+  color: color-mix(in srgb, var(--ink) 72%, var(--muted));
+  font-family: var(--font-sans);
+  font-size: var(--text-xl);
+  font-weight: 450;
+  line-height: 1.5;
+  letter-spacing: -0.012em;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.s-observe-reasoning-tools {
+  flex: none;
+  padding-bottom: var(--space-2xs);
+}
+
+.s-observe-reasoning-tools .s-observe-copy-btn {
+  opacity: 0.72;
+}
+
+.s-observe-stream-cursor {
+  display: inline-block;
+  width: 2px;
+  height: 1.05em;
+  margin-left: var(--space-2xs);
+  background: var(--dim);
+  transform-origin: center;
+  vertical-align: -0.16em;
+}
+
+.s-observe-stream-cursor[data-receiving] {
+  background: var(--accent);
+}
+
+.s-observe-message--streaming .s-observe-message-text {
+  color: color-mix(in srgb, var(--ink) 90%, var(--muted));
+}
+
+.s-observe-reasoning--compact {
+  padding: var(--space-2xs) 0 var(--space-xs);
+}
+
+.s-observe-reasoning--compact .s-observe-reasoning-header {
+  min-height: 22px;
+}
+
+.s-observe-reasoning--compact .s-observe-reasoning-preview,
+.s-observe-reasoning--compact .s-observe-reasoning-text {
+  font-size: var(--text-sm);
+  line-height: 1.45;
+}
+
+.s-observe-reasoning--compact:not(.s-observe-reasoning--live) .s-observe-reasoning-body-inner {
+  max-height: min(42vh, 360px);
+  overflow: auto;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .s-observe-reasoning-body,
+  .s-observe-reasoning-chevron {
+    transition: none;
+  }
+}
+
+.s-observe-cursor {
+  display: inline-block;
+  width: 7px;
+  height: 14px;
+  background: var(--dim);
+  margin-left: var(--space-2xs);
+  vertical-align: -2px;
+  animation: s-profile-blink 1s steps(1) infinite;
+}
+
+/* ── Tool block ── */
+
+.s-observe-tool {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  overflow: hidden;
+}
+
+.s-observe-tool-header {
+  padding: var(--space-sm) var(--space-lg);
+  display: flex;
+  align-items: center;
+  gap: var(--space-md);
+  background: color-mix(in srgb, var(--bg) 50%, var(--surface));
+  min-width: 0;
+}
+
+.s-observe-tool-header .s-observe-tool-cmd {
+  flex: 1;
+  min-width: 0;
+}
+
+.s-observe-tool-header--has-body {
+  border-bottom: 1px solid var(--border);
+}
+
+.s-observe-tool-glyph {
+  font-family: var(--font-mono);
+  font-weight: 600;
+  color: var(--accent);
+  font-size: var(--text-lg);
+  width: 14px;
+  text-align: center;
+}
+
+.s-observe-tool-cmd {
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  letter-spacing: var(--tracking-xs);
+  color: var(--ink);
+}
+
+.s-observe-tool-cmd-name {
+  color: var(--dim);
+}
+
+.s-observe-tool-cmd-arg {
+  color: var(--ink);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.s-observe-tool-outcome {
+  margin-left: var(--space-sm);
+  font-size: var(--text-2xs);
+  letter-spacing: var(--tracking-md);
+  text-transform: uppercase;
+}
+
+.s-observe-tool-outcome--success {
+  color: var(--green);
+}
+
+.s-observe-tool-result {
+  padding: var(--space-sm) var(--space-xl);
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  color: var(--dim);
+}
+
+.s-observe-tool-diff {
+  padding: var(--space-sm) var(--space-xl);
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+}
+
+.s-observe-tool-diff-stats {
+  color: var(--dim);
+  margin-bottom: var(--space-xs);
+}
+
+.s-observe-tool-diff-add {
+  color: var(--green);
+}
+
+.s-observe-tool-diff-del {
+  color: var(--red);
+}
+
+.s-observe-tool-diff-preview {
+  margin: 0;
+  padding: var(--space-sm) var(--space-md);
+  background: color-mix(in srgb, var(--bg) 70%, black);
+  border-radius: var(--radius-sm);
+  color: var(--ink);
+  font-size: var(--text-sm);
+  line-height: var(--leading-normal);
+  white-space: pre-wrap;
+  font-family: var(--font-mono);
+}
+
+.s-observe-diff-line--add {
+  color: var(--green);
+}
+
+.s-observe-diff-line--del {
+  color: var(--red);
+}
+
+.s-observe-diff-line--hunk {
+  color: var(--dim);
+}
+
+.s-observe-tool-stream {
+  margin: 0;
+  padding: var(--space-sm) var(--space-xl);
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  color: var(--muted);
+  line-height: var(--leading-normal);
+  white-space: pre-wrap;
+}
+
+/* ── Ask line ── */
+
+.s-observe-ask {
+  border: 1px solid color-mix(in srgb, var(--ink) 12%, var(--border));
+  border-radius: 12px;
+  background:
+    linear-gradient(135deg, color-mix(in srgb, var(--ink) 4%, transparent), transparent 56%),
+    color-mix(in srgb, var(--surface) 78%, var(--bg));
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--ink) 5%, transparent);
+  padding: var(--space-lg) var(--space-xl);
+}
+
+.s-observe-ask-label {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  font-family: var(--font-sans);
+  font-size: var(--text-xs);
+  font-weight: 650;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: color-mix(in srgb, var(--ink) 58%, var(--dim));
+  margin-bottom: var(--space-sm);
+}
+
+.s-observe-ask-label::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  flex: none;
+  border-radius: 50%;
+  background: currentColor;
+  opacity: 0.8;
+}
+
+/* Injected-context wrappers (`<in-app-browser-context …>` and friends), lifted
+   out of the request prose and shown as chips — acknowledged, not rendered. */
+.s-observe-ask-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-xs);
+  margin-bottom: var(--space-sm);
+}
+
+.s-observe-ask-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  max-width: 100%;
+  padding: 2px 8px;
+  border: 1px solid color-mix(in srgb, var(--ink) 13%, transparent);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--ink) 4%, transparent);
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  line-height: 1.5;
+  color: color-mix(in srgb, var(--dim) 84%, var(--muted));
+}
+
+.s-observe-ask-tag svg {
+  flex: none;
+  opacity: 0.7;
+}
+
+.s-observe-ask-tag-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.s-observe-ask-tag-detail {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: color-mix(in srgb, var(--ink) 62%, var(--dim));
+}
+
+.s-observe-ask-tag-detail::before {
+  content: "·";
+  margin-right: 5px;
+  opacity: 0.6;
+}
+
+.s-observe-ask-title {
+  font-family: var(--font-sans);
+  font-size: var(--text-xl);
+  font-weight: 620;
+  line-height: 1.42;
+  color: color-mix(in srgb, var(--ink) 94%, var(--muted));
+  margin-bottom: var(--space-sm);
+}
+
+.s-observe-ask-text {
+  font-family: var(--font-sans);
+  font-size: var(--text-md);
+  line-height: 1.58;
+  color: color-mix(in srgb, var(--ink) 82%, var(--muted));
+}
+
+.s-observe-ask-answer {
+  margin-top: var(--space-md);
+  padding-top: var(--space-md);
+  border-top: 1px dashed var(--border);
+  display: flex;
+  gap: var(--space-md);
+  align-items: flex-start;
+}
+
+.s-observe-ask-answer-meta {
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  color: var(--dim);
+  flex-shrink: 0;
+}
+
+.s-observe-ask-answer-text {
+  font-size: var(--text-lg);
+  color: var(--muted);
+  line-height: var(--leading-snug);
+  flex: 1;
+}
+
+/* ── Message line ── */
+
+.s-observe-message-label {
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  letter-spacing: var(--tracking-lg);
+  text-transform: uppercase;
+  color: var(--dim);
+  margin-bottom: var(--space-2xs);
+}
+
+.s-observe-message-text {
+  font-size: var(--text-lg);
+  line-height: var(--leading-normal);
+  color: var(--ink);
+}
+
+/* ── Note line ── */
+
+.s-observe-note {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-sm);
+  padding: var(--space-2xs) var(--space-md);
+  background: color-mix(in srgb, var(--green) 8%, transparent);
+  border-radius: var(--radius-2xl);
+}
+
+.s-observe-note-icon {
+  color: var(--green);
+  font-size: var(--text-sm);
+}
+
+.s-observe-note-text {
+  font-size: var(--text-md);
+  color: var(--muted);
+}
+
+/* ── System line ── */
+
+.s-observe-system {
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  color: var(--dim);
+  letter-spacing: var(--tracking-sm);
+}
+
+.s-observe-system-line {
+  display: inline;
+}
+
+.s-observe-system-text {
+  color: inherit;
+}
+
+.s-observe-system-arrow {
+  color: color-mix(in srgb, var(--dim) 60%, transparent);
+}
+
+.s-observe-system-detail {
+  margin-top: var(--space-2xs);
+  color: var(--muted);
+  font-style: italic;
+}
+
+/* ── Follow toggle ── */
+
+.s-observe-live-sticky {
+  position: sticky;
+  top: 10px;
+  z-index: 5;
+  display: flex;
+  justify-content: flex-end;
+  pointer-events: none;
+  margin: -2px -10px var(--space-sm) 0;
+  padding: 0;
+}
+
+.s-observe-follow-btn {
+  pointer-events: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-xs);
+  padding: var(--space-2xs) var(--space-md) var(--space-2xs) var(--space-sm);
+  border-radius: var(--radius-md);
+  border: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
+  background: color-mix(in srgb, var(--bg) 80%, transparent);
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  letter-spacing: var(--tracking-sm);
+  cursor: pointer;
+  backdrop-filter: blur(8px);
+  transition: color 0.15s, border-color 0.15s, background 0.15s;
+}
+
+.s-observe-follow-btn:hover {
+  color: var(--ink);
+  border-color: color-mix(in srgb, var(--border) 100%, transparent);
+  background: color-mix(in srgb, var(--bg) 92%, transparent);
+}
+
+.s-observe-follow-btn--on {
+  color: var(--green);
+  border-color: color-mix(in srgb, var(--green) 35%, var(--border));
+  background: color-mix(in srgb, var(--green) 6%, var(--bg));
+}
+
+.s-observe-follow-btn--on:hover {
+  color: var(--green);
+  border-color: color-mix(in srgb, var(--green) 50%, var(--border));
+  background: color-mix(in srgb, var(--green) 10%, var(--bg));
+}
+
+/* ── Right rail ── */
+
+.s-observe-rail {
+  grid-column: 2;
+  grid-row: 1;
+  border-left: 1px solid var(--border);
+  overflow-y: auto;
+  overflow-y: overlay;
+  padding: var(--space-4xl) var(--space-3xl) var(--space-4xl);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4xl);
+  scrollbar-width: thin;
+  scrollbar-color: transparent transparent;
+}
+
+.s-observe-rail--context {
+  grid-column: auto;
+  grid-row: auto;
+  height: 100%;
+  min-height: 0;
+  border-left: 0;
+  padding: var(--space-3xl) var(--space-2xl) var(--space-4xl);
+  background: color-mix(in srgb, var(--bg) 96%, black);
+}
+
+.s-observe-rail:hover {
+  scrollbar-color: color-mix(in srgb, var(--ink) 12%, transparent) transparent;
+}
+
+.s-observe-rail-label {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-sm);
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  font-variant: small-caps;
+  font-weight: 500;
+  letter-spacing: var(--tracking-sm);
+  text-transform: none;
+  color: color-mix(in srgb, var(--muted) 62%, var(--dim));
+  margin-bottom: var(--space-md);
+}
+
+.s-observe-ctx-detail {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: color-mix(in srgb, var(--dim) 86%, transparent);
+  margin-top: var(--space-sm);
+  line-height: var(--leading-normal);
+}
+
+/* ── Unified empty state ── */
+
+.s-observe-empty {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  padding: var(--space-sm) 0;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  line-height: var(--leading-normal);
+  color: color-mix(in srgb, var(--dim) 78%, transparent);
+}
+
+.s-observe-empty::before {
+  content: "";
+  flex-shrink: 0;
+  width: 12px;
+  height: 1px;
+  background: color-mix(in srgb, var(--dim) 45%, transparent);
+}
+
+.s-observe-detail-list {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  border: 1px solid color-mix(in srgb, var(--border) 88%, var(--surface));
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+  background: color-mix(in srgb, var(--surface) 90%, var(--bg));
+  backdrop-filter: blur(10px);
+  margin-bottom: var(--space-md);
+}
+
+.s-observe-detail-row {
+  display: grid;
+  grid-template-columns: minmax(84px, 108px) minmax(0, 1fr);
+  gap: var(--space-lg);
+  align-items: start;
+  padding: var(--space-md) var(--space-lg);
+  background:
+    linear-gradient(
+      90deg,
+      color-mix(in srgb, var(--accent) 2%, transparent),
+      transparent 28%
+    ),
+    color-mix(in srgb, var(--surface) 94%, transparent);
+}
+
+.s-observe-detail-value-wrap {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  min-width: 0;
+  justify-content: end;
+}
+
+.s-observe-detail-value-wrap > .s-observe-detail-value,
+.s-observe-detail-value-wrap > .s-observe-detail-link {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.s-observe-detail-value-wrap .s-observe-copy-btn--inline {
+  opacity: 0;
+}
+
+.s-observe-detail-row:hover .s-observe-copy-btn--inline,
+.s-observe-detail-value-wrap .s-observe-copy-btn--inline:focus-visible,
+.s-observe-detail-value-wrap .s-observe-copy-btn--inline.s-observe-copy-btn--copied {
+  opacity: 1;
+}
+
+.s-observe-detail-row + .s-observe-detail-row {
+  border-top: 1px solid color-mix(in srgb, var(--border) 82%, var(--surface));
+}
+
+.s-observe-detail-label {
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  font-variant: small-caps;
+  letter-spacing: var(--tracking-sm);
+  text-transform: none;
+  line-height: var(--leading-snug);
+  color: var(--dim);
+}
+
+.s-observe-detail-value {
+  min-width: 0;
+  justify-self: end;
+  text-align: right;
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  line-height: var(--leading-snug);
+  color: var(--ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.s-observe-detail-value--wrap {
+  overflow: visible;
+  text-overflow: clip;
+  white-space: normal;
+  word-break: break-word;
+}
+
+.s-observe-detail-link {
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+  padding: 0;
+}
+
+.s-observe-detail-link:hover {
+  color: var(--green);
+  text-decoration: underline;
+  text-decoration-color: color-mix(in srgb, var(--green) 55%, transparent);
+  text-underline-offset: 3px;
+}
+
+.s-observe-path-link-group {
+  display: inline-flex;
+  align-items: baseline;
+  gap: var(--space-2xs);
+}
+
+.s-observe-path-link-external {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  padding: 0 var(--space-3xs);
+  border-radius: var(--radius-sm);
+  transition: color 0.15s ease, background 0.15s ease;
+}
+
+.s-observe-path-link-external:hover {
+  color: var(--ink);
+  background: color-mix(in srgb, var(--ink) 6%, transparent);
+}
+
+.s-observe-detail-value--accent {
+  color: var(--accent);
+}
+
+.s-observe-detail-value--good {
+  color: var(--green);
+}
+
+.s-observe-detail-value--warn {
+  color: var(--amber);
+}
+
+/* ── Files list ── */
+
+.s-observe-files {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2xs);
+}
+
+.s-observe-file {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  padding: var(--space-xs) var(--space-sm);
+  border-radius: var(--radius-md);
+}
+
+.s-observe-file--visible {
+  background: var(--surface);
+}
+
+.s-observe-file--hidden {
+  opacity: 0.35;
+}
+
+.s-observe-file-glyph {
+  width: 14px;
+  height: 14px;
+  border-radius: var(--radius-sm);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  flex-shrink: 0;
+}
+
+.s-observe-file-path {
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  color: var(--muted);
+  flex: 1;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+  overflow: hidden;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.s-observe-file-path:hover {
+  color: var(--ink);
+  text-decoration: underline;
+  text-decoration-color: color-mix(in srgb, var(--green) 45%, transparent);
+  text-underline-offset: 3px;
+}
+
+.s-observe-file-touches {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--dim);
+}
+
+/* ── Stats grid ── */
+
+.s-observe-stats {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--space-sm);
+}
+
+.s-observe-stats--usage {
+  margin-bottom: var(--space-md);
+}
+
+.s-observe-stat {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3xs);
+  padding: var(--space-md) var(--space-lg);
+  border: 1px solid color-mix(in srgb, var(--border) 88%, transparent);
+  border-radius: var(--radius-lg);
+  background:
+    radial-gradient(circle at top right, color-mix(in srgb, var(--accent) 5%, transparent), transparent 42%),
+    color-mix(in srgb, var(--surface) 92%, var(--bg));
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, white 4%, transparent),
+    0 6px 16px -20px color-mix(in srgb, black 70%, transparent);
+}
+
+/* Quiet (zero / unavailable) cards recede to a flat, near-borderless wash so
+ * the stats with real signal carry the hierarchy. */
+.s-observe-stat--quiet {
+  background: color-mix(in srgb, var(--surface) 42%, transparent);
+  border-color: color-mix(in srgb, var(--border) 48%, transparent);
+  box-shadow: none;
+}
+
+.s-observe-stat-value {
+  font-family: var(--font-accent-title);
+  font-size: var(--text-4xl);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0;
+  line-height: var(--leading-none);
+  color: var(--ink);
+}
+
+.s-observe-stat--quiet .s-observe-stat-value {
+  color: color-mix(in srgb, var(--dim) 70%, transparent);
+}
+
+.s-observe-stat-label {
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  font-variant: small-caps;
+  letter-spacing: var(--tracking-sm);
+  text-transform: none;
+  color: var(--dim);
+}
+
+.s-observe-stat-detail {
+  margin-top: var(--space-2xs);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  line-height: var(--leading-snug);
+  color: var(--dim);
+}
+
+/* ── Observe composer ── */
+
+.s-observe-compose {
+  width: 100%;
+  max-width: none;
+  margin: 0;
+  padding: 0;
+}
+
+.s-observe-compose-shell {
+  width: 100%;
+  border: 1px solid color-mix(in srgb, var(--border) 72%, var(--surface));
+  border-radius: var(--radius-xl);
+  background: var(--surface);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--ink) 2%, transparent);
+  transition:
+    border-color 0.15s ease,
+    box-shadow 0.15s ease;
+}
+
+.s-observe-compose-shell:focus-within {
+  border-color: color-mix(in srgb, var(--accent) 32%, var(--border));
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 6%, transparent);
+}
+
+.s-observe-compose-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) repeat(3, 34px);
+  grid-template-rows: minmax(74px, auto) 34px;
+  align-items: end;
+  column-gap: var(--space-sm);
+  row-gap: var(--space-xs);
+  min-width: 0;
+  padding: var(--space-sm);
+}
+
+.s-observe-compose-input {
+  display: block;
+  grid-column: 1 / -1;
+  grid-row: 1;
+  flex: 1;
+  width: 100%;
+  min-width: 0;
+  min-height: 74px;
+  max-height: 180px;
+  resize: none;
+  overflow-y: auto;
+  padding: var(--space-sm) var(--space-2xs) var(--space-sm) var(--space-md);
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--ink);
+  font-family: var(--font-sans);
+  font-size: var(--text-md);
+  line-height: var(--leading-normal);
+  outline: none;
+}
+
+.s-observe-compose-input:focus {
+  box-shadow: none;
+}
+
+.s-observe-compose-input::placeholder {
+  color: var(--dim);
+}
+
+.s-observe-compose-input:disabled {
+  cursor: not-allowed;
+  opacity: 0.58;
+}
+
+.s-observe-compose-tool {
+  grid-column: 2;
+  grid-row: 2;
+  justify-self: end;
+  width: 34px;
+  height: 34px;
+  border: 1px solid color-mix(in srgb, var(--border) 82%, var(--surface));
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--bg) 65%, transparent);
+  color: var(--muted);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  flex-shrink: 0;
+  align-self: flex-end;
+  transition:
+    border-color 0.12s ease,
+    color 0.12s ease,
+    background 0.12s ease,
+    transform 0.12s ease;
+}
+
+.s-observe-compose-row .s-dictation-mic {
+  grid-column: 3;
+  grid-row: 2;
+  justify-self: end;
+}
+
+.s-observe-compose-tool:hover {
+  color: var(--ink);
+  border-color: color-mix(in srgb, var(--ink) 28%, transparent);
+  background: color-mix(in srgb, var(--ink) 6%, transparent);
+}
+
+.s-observe-compose-tool:disabled {
+  cursor: default;
+  opacity: 0.35;
+}
+
+.s-observe-compose-send {
+  grid-column: 4;
+  grid-row: 2;
+  justify-self: end;
+  width: 34px;
+  height: 34px;
+  border: 0;
+  border-radius: 50%;
+  background: var(--ink);
+  color: var(--bg);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  flex-shrink: 0;
+  align-self: flex-end;
+  transition: opacity 0.12s ease, transform 0.12s ease;
+}
+
+.s-observe-compose-send:not(:disabled):hover {
+  transform: scale(1.05);
+}
+
+.s-observe-compose-send:disabled {
+  cursor: default;
+  opacity: 0.25;
+}
+
+.s-observe-compose-status {
+  margin-top: var(--space-sm);
+  color: var(--green);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+}
+
+.s-observe-compose-status--error {
+  color: var(--red);
+}
+
+.s-observe-compose-status--muted {
+  color: var(--dim);
+}
+
+/* ── Scrubber footer ── */
+
+.s-observe-scrubber {
+  grid-column: 1 / -1;
+  grid-row: 2;
+  border-top: 1px solid var(--border);
+  background: color-mix(in srgb, var(--bg) 80%, black);
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: var(--space-sm);
+  padding: var(--space-md) var(--space-3xl) var(--space-lg);
+}
+
+.s-observe-transport {
+  display: flex;
+  align-items: center;
+  gap: var(--space-lg);
+  width: 100%;
+}
+
+.s-observe-static-evidence {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  min-height: 32px;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--muted);
+}
+
+.s-observe-static-evidence .s-observe-evidence-dot {
+  margin-top: 0;
+}
+
+.s-observe-static-evidence small {
+  color: var(--dim);
+}
+
+.s-observe-transport[data-snap] .s-observe-track {
+  background: color-mix(in srgb, var(--ink) 13%, transparent);
+}
+
+.s-observe-play-btn {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--ink);
+  cursor: pointer;
+  font-size: var(--text-md);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  padding-left: var(--space-3xs);
+  transition:
+    border-color 0.12s ease,
+    background 0.12s ease,
+    color 0.12s ease,
+    box-shadow 0.12s ease,
+    transform 0.12s ease;
+}
+
+.s-observe-play-btn:hover {
+  border-color: var(--accent);
+}
+
+.s-observe-play-btn[data-state="tail"] {
+  border-color: color-mix(in srgb, var(--accent) 82%, var(--border));
+  background: var(--accent);
+  color: black;
+  box-shadow:
+    inset 0 2px 4px rgba(0, 0, 0, 0.28),
+    0 0 0 2px color-mix(in srgb, var(--accent) 16%, transparent);
+  transform: translateY(1px);
+}
+
+.s-observe-play-btn[data-state="playing"] {
+  border-color: color-mix(in srgb, var(--accent) 72%, var(--border));
+  background: color-mix(in srgb, var(--accent) 18%, var(--bg));
+  color: var(--accent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 8%, transparent);
+}
+
+.s-observe-play-btn[data-state="paused"] {
+  background: color-mix(in srgb, var(--ink) 5%, var(--bg));
+  color: color-mix(in srgb, var(--muted) 82%, var(--ink));
+}
+
+.s-observe-rewind-btn {
+  padding: var(--space-2xs) var(--space-sm);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: var(--text-md);
+  flex-shrink: 0;
+}
+
+.s-observe-rewind-btn:hover {
+  color: var(--ink);
+  border-color: color-mix(in srgb, var(--ink) 30%, transparent);
+}
+
+.s-observe-track-wrap {
+  flex: 1;
+  position: relative;
+  height: 54px;
+  min-width: 0;
+}
+
+.s-observe-track-barsHead {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  display: flex;
+  justify-content: space-between;
+  gap: var(--space-sm);
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  letter-spacing: var(--tracking-md);
+  text-transform: uppercase;
+  color: color-mix(in srgb, var(--muted) 72%, var(--dim));
+  pointer-events: none;
+}
+
+.s-observe-track-bars {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 15px;
+  height: 20px;
+  display: grid;
+  grid-template-columns: repeat(48, minmax(1px, 1fr));
+  align-items: end;
+  gap: 2px;
+  pointer-events: none;
+}
+
+.s-observe-track-bar {
+  min-height: 0;
+  border-radius: 2px 2px 0 0;
+  background: color-mix(in srgb, var(--accent) 42%, transparent);
+  opacity: 0;
+}
+
+.s-observe-track-bar[data-active] {
+  background: color-mix(in srgb, var(--accent) 68%, transparent);
+}
+
+.s-observe-track-bar[style] {
+  opacity: 1;
+}
+
+.s-observe-track {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 39px;
+  height: 8px;
+  background: color-mix(in srgb, var(--ink) 10%, transparent);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+
+.s-observe-track:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.s-observe-track-tick {
+  position: absolute;
+  width: 1.5px;
+  opacity: 0.7;
+}
+
+.s-observe-track-played {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  background: var(--accent);
+  border-radius: var(--radius-xs);
+}
+
+.s-observe-track-cursor {
+  position: absolute;
+  top: -4px;
+  transform: translateX(-50%);
+  width: 3px;
+  height: 16px;
+  background: var(--accent);
+  border-radius: var(--radius-xs);
+}
+
+.s-observe-speed-group {
+  display: flex;
+  gap: var(--space-2xs);
+  flex-shrink: 0;
+}
+
+
+.s-observe-speed-btn {
+  padding: var(--space-2xs) var(--space-sm);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  cursor: pointer;
+  background: transparent;
+  color: var(--muted);
+}
+
+.s-observe-speed-btn--active {
+  background: var(--accent);
+  color: black;
+  border-color: var(--accent);
+}
+
+
+/* ── Responsive ── */
+
+@media (max-width: 1080px) {
+  .s-observe {
+    grid-template-columns: 1fr;
+    grid-template-rows: 1fr auto auto;
+  }
+
+  .s-observe-rail {
+    grid-column: 1;
+    grid-row: 2;
+    border-left: 0;
+    border-top: 1px solid var(--border);
+    padding: var(--space-3xl);
+    gap: var(--space-3xl);
+  }
+
+  .s-observe-scrubber {
+    grid-column: 1;
+    grid-row: 3;
+  }
+
+  .s-observe-compose {
+    margin-left: 0;
+  }
+
+  .s-observe-transport {
+    gap: var(--space-sm);
+  }
+
+  .s-observe-detail-row {
+    grid-template-columns: 1fr;
+    gap: var(--space-xs);
+  }
+
+  .s-observe-detail-value {
+    justify-self: start;
+    text-align: left;
+    white-space: normal;
+  }
+
+  .s-observe-stats {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+
+/* ── Session header ── */
+
+.s-observe-session-header {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+}
+
+.s-observe-session-active {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2xs);
+}
+
+.s-observe-session-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+}
+
+.s-observe-session-id {
+  font-family: var(--mono);
+  font-size: var(--text-sm);
+  letter-spacing: var(--tracking-sm);
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  padding: var(--space-3xs) var(--space-xs);
+  border-radius: var(--radius-sm);
+}
+
+.s-observe-session-time {
+  font-size: var(--text-sm);
+  color: var(--dim);
+}
+
+.s-observe-takeover-btn {
+  margin-left: auto;
+  font-family: var(--mono);
+  font-size: var(--text-xs);
+  letter-spacing: var(--tracking-md);
+  text-transform: uppercase;
+  color: var(--green);
+  background: color-mix(in srgb, var(--green) 8%, transparent);
+  border: 1px solid color-mix(in srgb, var(--green) 20%, transparent);
+  padding: var(--space-2xs) var(--space-md);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.s-observe-takeover-btn:hover {
+  background: color-mix(in srgb, var(--green) 16%, transparent);
+  border-color: color-mix(in srgb, var(--green) 35%, transparent);
+}
+
+.s-observe-pair-btn {
+  margin-left: auto;
+  font-family: var(--mono);
+  font-size: var(--text-xs);
+  letter-spacing: var(--tracking-md);
+  text-transform: uppercase;
+  color: var(--ink);
+  background: transparent;
+  border: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
+  padding: var(--space-2xs) var(--space-md);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
+}
+
+.s-observe-pair-btn + .s-observe-takeover-btn {
+  margin-left: 0;
+}
+
+.s-observe-pair-btn:hover {
+  color: var(--green);
+  background: color-mix(in srgb, var(--green) 6%, transparent);
+  border-color: color-mix(in srgb, var(--green) 25%, transparent);
+}
+
+.s-observe-session-history {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2xs);
+  padding-top: var(--space-2xs);
+  border-top: 1px solid var(--border);
+}
+
+.s-observe-session-history-label {
+  font-size: var(--text-xs);
+  letter-spacing: var(--tracking-md);
+  text-transform: uppercase;
+  color: var(--dim);
+  margin-bottom: var(--space-3xs);
+}
+
+.s-observe-session-past {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  opacity: 0.6;
+}
+
+.s-observe-session-past .s-observe-session-id {
+  color: var(--dim);
+  background: color-mix(in srgb, var(--ink) 5%, transparent);
+}

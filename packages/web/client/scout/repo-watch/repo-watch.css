@@ -1,0 +1,152 @@
+/* ─────────────────────────────────────────────────────────────────────
+ * Repo Watch token shim (SCO-061).
+ *
+ * The Ledger / Triage components were designed in the studio against a set of
+ * `--studio-*` / `--status-*` / `--scout-accent` tokens + a few custom Tailwind
+ * utilities. Rather than rewrite them in the web app's class system, we:
+ *   1. register those utilities with Tailwind v4 via @theme (so `bg-studio-surface`,
+ *      `text-scout-accent`, `tracking-eyebrow`, … generate), and
+ *   2. supply the actual values, scoped to `.repo-watch-scope`, MAPPED ONTO the
+ *      app's own `--hud-*` tokens — so Repo Watch follows the active theme AND the
+ *      accent the user picks in Settings, with studio-dark fallbacks if a token
+ *      is ever missing.
+ *
+ * Imported from `arc-tailwind.css` so Tailwind processes the @theme block.
+ * ───────────────────────────────────────────────────────────────────── */
+
+@theme {
+  --color-studio-canvas: var(--studio-canvas);
+  --color-studio-canvas-alt: var(--studio-canvas-alt);
+  --color-studio-surface: var(--studio-surface);
+  --color-studio-ink: var(--studio-ink);
+  --color-studio-ink-muted: var(--studio-ink-muted);
+  --color-studio-ink-faint: var(--studio-ink-faint);
+  --color-studio-edge: var(--studio-edge);
+  --color-studio-edge-strong: var(--studio-edge-strong);
+
+  --color-scout-accent: var(--scout-accent);
+  --color-scout-accent-soft: var(--scout-accent-soft);
+
+  --color-status-ok-fg: var(--status-ok-fg);
+  --color-status-ok-bg: var(--status-ok-bg);
+  --color-status-warn-fg: var(--status-warn-fg);
+  --color-status-warn-bg: var(--status-warn-bg);
+  --color-status-error-fg: var(--status-error-fg);
+  --color-status-error-bg: var(--status-error-bg);
+  --color-status-info-fg: var(--status-info-fg);
+  --color-status-info-bg: var(--status-info-bg);
+  --color-status-neutral-fg: var(--status-neutral-fg);
+  --color-status-neutral-bg: var(--status-neutral-bg);
+
+  --tracking-eyebrow: 0.22em;
+}
+
+/* Theme-faithful mapping. Repo Watch is part of the app first and a studio
+ * design second, so the studio token vocabulary is mapped 1:1 onto the app's
+ * own hudsonkit theme tokens (`--hud-*`, set on `[data-scout-theme]`). Those
+ * flip with the active theme mode and carry the accent the operator picks in
+ * Settings — so this view tracks the app in dark AND light, never a frozen
+ * studio palette. The studio-dark values remain only as last-resort fallbacks
+ * if a `--hud-*` token is ever unset. */
+.repo-watch-scope {
+  --studio-canvas: var(--hud-bg, oklch(0.14 0.008 80));
+  --studio-surface: var(--hud-surface, oklch(0.2 0.01 80));
+  --studio-canvas-alt: color-mix(in oklab, var(--studio-surface) 60%, var(--studio-canvas));
+  --studio-ink: var(--hud-ink, oklch(0.96 0.008 80));
+  --studio-ink-muted: var(--hud-muted, oklch(0.72 0.012 80));
+  /* The neutral theme's --hud-dim (#737373) is too low-contrast on #0a0a0a for
+   * the many faint labels/captions this view uses; lift it a touch toward ink
+   * so secondary text stays legible without becoming loud. */
+  --studio-ink-faint: color-mix(in oklab, var(--hud-dim, oklch(0.58 0.012 80)), var(--hud-ink, oklch(0.96 0.008 80)) 16%);
+
+  /* Edges follow the app's own hairline (--hud-border) and NOTHING is allowed
+   * to be brighter than it — no ink-mixed "strong" rules. A line on near-black
+   * reads as harsh the instant it lifts toward white, so every divider in this
+   * view is the same quiet translucent hairline; hierarchy comes from spacing
+   * and background tone, not heavier lines. */
+  --studio-edge: var(--hud-border, oklch(0.25 0.008 80));
+  --studio-edge-strong: var(--studio-edge);
+
+  --scout-accent: var(--hud-accent, oklch(0.86 0.17 125));
+  --scout-accent-soft: var(--hud-accent-soft, color-mix(in oklab, var(--scout-accent) 18%, transparent));
+
+  --status-ok-fg: var(--hud-status-ok, oklch(0.84 0.16 155));
+  --status-ok-bg: color-mix(in oklab, var(--status-ok-fg) 16%, transparent);
+  --status-warn-fg: var(--hud-status-warn, oklch(0.85 0.15 85));
+  --status-warn-bg: color-mix(in oklab, var(--status-warn-fg) 15%, transparent);
+  --status-error-fg: var(--hud-status-error, oklch(0.78 0.17 25));
+  --status-error-bg: color-mix(in oklab, var(--status-error-fg) 15%, transparent);
+  --status-info-fg: color-mix(in oklab, var(--studio-ink-muted) 40%, oklch(0.72 0.12 230));
+  --status-info-bg: color-mix(in oklab, var(--status-info-fg) 16%, transparent);
+  --status-neutral-fg: var(--studio-ink-muted);
+  --status-neutral-bg: color-mix(in oklab, var(--studio-ink) 7%, transparent);
+
+  color: var(--studio-ink);
+
+  /* Rendering baseline — crisp text + aligned numerals across the whole view. */
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+  font-variant-numeric: tabular-nums;
+}
+
+.rw-empty-next {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-md, 12px);
+  max-width: 680px;
+}
+
+.rw-empty-copy {
+  margin: 0;
+  color: var(--studio-ink-muted);
+  font-size: var(--text-md, 13px);
+  line-height: var(--leading-snug, 1.45);
+}
+
+.rw-empty-steps {
+  display: grid;
+  gap: var(--space-sm, 8px);
+  margin: 0;
+  padding-left: 1.35em;
+  color: var(--studio-ink-muted);
+  font-size: var(--text-md, 13px);
+  line-height: var(--leading-snug, 1.45);
+  list-style: decimal;
+}
+
+.rw-empty-steps li {
+  max-width: 620px;
+  padding-left: var(--space-2xs, 4px);
+}
+
+.rw-empty-steps li::marker {
+  color: var(--studio-ink-faint);
+}
+
+.rw-empty-action-name {
+  color: var(--studio-ink);
+  font-weight: 600;
+}
+
+.rw-empty-steps code {
+  display: inline-block;
+  max-width: 100%;
+  margin-left: var(--space-xs, 6px);
+  padding: 1px 6px 2px;
+  overflow-wrap: anywhere;
+  border-radius: 4px;
+  border: 1px solid var(--studio-edge);
+  background: color-mix(in oklab, var(--studio-ink) 6%, transparent);
+  color: var(--studio-ink);
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 0.92em;
+}
+
+.rw-empty-error {
+  max-width: 620px;
+  margin: 0;
+  color: var(--status-error-fg);
+  font-size: var(--text-sm, 12px);
+  line-height: var(--leading-snug, 1.45);
+}

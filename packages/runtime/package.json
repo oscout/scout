@@ -1,0 +1,331 @@
+{
+  "name": "@openscout/runtime",
+  "version": "0.2.82",
+  "description": "Local runtime foundation for the OpenScout control plane",
+  "type": "module",
+  "bin": {
+    "openscout-runtime": "./bin/openscout-runtime.mjs"
+  },
+  "exports": {
+    ".": {
+      "bun": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    },
+    "./repo-watch": {
+      "bun": "./src/repo-watch/index.ts",
+      "types": "./dist/repo-watch/index.d.ts",
+      "import": "./dist/repo-watch/index.js",
+      "default": "./dist/repo-watch/index.js"
+    },
+    "./setup": {
+      "bun": "./src/setup.ts",
+      "types": "./dist/setup.d.ts",
+      "import": "./dist/setup.js",
+      "default": "./dist/setup.js"
+    },
+    "./onboarding": {
+      "bun": "./src/onboarding.ts",
+      "types": "./dist/onboarding.d.ts",
+      "import": "./dist/onboarding.js",
+      "default": "./dist/onboarding.js"
+    },
+    "./local-agents": {
+      "bun": "./src/local-agents.ts",
+      "types": "./dist/local-agents.d.ts",
+      "import": "./dist/local-agents.js",
+      "default": "./dist/local-agents.js"
+    },
+    "./terminal-environment": {
+      "bun": "./src/terminal-environment.ts",
+      "types": "./dist/terminal-environment.d.ts",
+      "import": "./dist/terminal-environment.js",
+      "default": "./dist/terminal-environment.js"
+    },
+    "./agent-workspace": {
+      "bun": "./src/agent-workspace.ts",
+      "types": "./dist/agent-workspace.d.ts",
+      "import": "./dist/agent-workspace.js",
+      "default": "./dist/agent-workspace.js"
+    },
+    "./control-plane-agents": {
+      "bun": "./src/control-plane-agents.ts",
+      "types": "./dist/control-plane-agents.d.ts",
+      "import": "./dist/control-plane-agents.js",
+      "default": "./dist/control-plane-agents.js"
+    },
+    "./local-agent-template": {
+      "bun": "./src/local-agent-template.ts",
+      "types": "./dist/local-agent-template.d.ts",
+      "import": "./dist/local-agent-template.js",
+      "default": "./dist/local-agent-template.js"
+    },
+    "./broker-process-manager": {
+      "bun": "./src/broker-process-manager.ts",
+      "types": "./dist/broker-process-manager.d.ts",
+      "import": "./dist/broker-process-manager.js",
+      "default": "./dist/broker-process-manager.js"
+    },
+    "./broker-api": {
+      "bun": "./src/broker-api.ts",
+      "types": "./dist/broker-api.d.ts",
+      "import": "./dist/broker-api.js",
+      "default": "./dist/broker-api.js"
+    },
+    "./broker-core-service": {
+      "bun": "./src/broker-core-service.ts",
+      "types": "./dist/broker-core-service.d.ts",
+      "import": "./dist/broker-core-service.js",
+      "default": "./dist/broker-core-service.js"
+    },
+    "./registry": {
+      "bun": "./src/registry.ts",
+      "types": "./dist/registry.d.ts",
+      "import": "./dist/registry.js",
+      "default": "./dist/registry.js"
+    },
+    "./harness-catalog": {
+      "bun": "./src/harness-catalog.ts",
+      "types": "./dist/harness-catalog.d.ts",
+      "import": "./dist/harness-catalog.js",
+      "default": "./dist/harness-catalog.js"
+    },
+    "./support-paths": {
+      "bun": "./src/support-paths.ts",
+      "types": "./dist/support-paths.d.ts",
+      "import": "./dist/support-paths.js",
+      "default": "./dist/support-paths.js"
+    },
+    "./claude-statusline": {
+      "bun": "./src/claude-statusline.ts",
+      "types": "./dist/claude-statusline.d.ts",
+      "import": "./dist/claude-statusline.js",
+      "default": "./dist/claude-statusline.js"
+    },
+    "./tool-resolution": {
+      "bun": "./src/tool-resolution.ts",
+      "types": "./dist/tool-resolution.d.ts",
+      "import": "./dist/tool-resolution.js",
+      "default": "./dist/tool-resolution.js"
+    },
+    "./runtime-adapters": {
+      "bun": "./src/runtime-adapters.ts",
+      "types": "./dist/runtime-adapters.d.ts",
+      "import": "./dist/runtime-adapters.js",
+      "default": "./dist/runtime-adapters.js"
+    },
+    "./sqlite-adapter": {
+      "bun": "./src/sqlite-adapter.ts",
+      "types": "./dist/sqlite-adapter.d.ts",
+      "import": "./dist/sqlite-adapter.js",
+      "default": "./dist/sqlite-adapter.js"
+    },
+    "./claude-stream-json": {
+      "bun": "./src/claude-stream-json.ts",
+      "types": "./dist/claude-stream-json.d.ts",
+      "import": "./dist/claude-stream-json.js",
+      "default": "./dist/claude-stream-json.js"
+    },
+    "./codex-app-server": {
+      "bun": "./src/codex-app-server.ts",
+      "types": "./dist/codex-app-server.d.ts",
+      "import": "./dist/codex-app-server.js",
+      "default": "./dist/codex-app-server.js"
+    },
+    "./pi-rpc": {
+      "bun": "./src/pi-rpc.ts",
+      "types": "./dist/pi-rpc.d.ts",
+      "import": "./dist/pi-rpc.js",
+      "default": "./dist/pi-rpc.js"
+    },
+    "./scout-agent-cards": {
+      "bun": "./src/scout-agent-cards.ts",
+      "types": "./dist/scout-agent-cards.d.ts",
+      "import": "./dist/scout-agent-cards.js",
+      "default": "./dist/scout-agent-cards.js"
+    },
+    "./mesh/tailscale": {
+      "bun": "./src/tailscale.ts",
+      "types": "./dist/tailscale.d.ts",
+      "import": "./dist/tailscale.js",
+      "default": "./dist/tailscale.js"
+    },
+    "./system-probes": {
+      "bun": "./src/system-probes/index.ts",
+      "types": "./dist/system-probes/index.d.ts",
+      "import": "./dist/system-probes/index.js",
+      "default": "./dist/system-probes/index.js"
+    },
+    "./mesh/iroh-bridge": {
+      "bun": "./src/iroh-bridge.ts",
+      "types": "./dist/iroh-bridge.d.ts",
+      "import": "./dist/iroh-bridge.js",
+      "default": "./dist/iroh-bridge.js"
+    },
+    "./user-config": {
+      "bun": "./src/user-config.ts",
+      "types": "./dist/user-config.d.ts",
+      "import": "./dist/user-config.js",
+      "default": "./dist/user-config.js"
+    },
+    "./provisional-agent-names": {
+      "bun": "./src/provisional-agent-names.ts",
+      "types": "./dist/provisional-agent-names.d.ts",
+      "import": "./dist/provisional-agent-names.js",
+      "default": "./dist/provisional-agent-names.js"
+    },
+    "./local-config": {
+      "bun": "./src/local-config.ts",
+      "types": "./dist/local-config.d.ts",
+      "import": "./dist/local-config.js",
+      "default": "./dist/local-config.js"
+    },
+    "./open-scout-network": {
+      "bun": "./src/open-scout-network.ts",
+      "types": "./dist/open-scout-network.d.ts",
+      "import": "./dist/open-scout-network.js",
+      "default": "./dist/open-scout-network.js"
+    },
+    "./local-edge": {
+      "bun": "./src/local-edge.ts",
+      "types": "./dist/local-edge.d.ts",
+      "import": "./dist/local-edge.js",
+      "default": "./dist/local-edge.js"
+    },
+    "./scout-ascii-mark": {
+      "bun": "./src/scout-ascii-mark.ts",
+      "types": "./dist/scout-ascii-mark.d.ts",
+      "import": "./dist/scout-ascii-mark.js",
+      "default": "./dist/scout-ascii-mark.js"
+    },
+    "./mobile-push": {
+      "bun": "./src/mobile-push.ts",
+      "types": "./dist/mobile-push.d.ts",
+      "import": "./dist/mobile-push.js",
+      "default": "./dist/mobile-push.js"
+    },
+    "./broker-trpc-router": {
+      "bun": "./src/broker-trpc-router.ts",
+      "types": "./dist/broker-trpc-router.d.ts",
+      "import": "./dist/broker-trpc-router.js",
+      "default": "./dist/broker-trpc-router.js"
+    },
+    "./tail": {
+      "bun": "./src/tail/index.ts",
+      "types": "./dist/tail/index.d.ts",
+      "import": "./dist/tail/index.js",
+      "default": "./dist/tail/index.js"
+    },
+    "./harness-topology": {
+      "bun": "./src/harness-topology/index.ts",
+      "types": "./dist/harness-topology/index.d.ts",
+      "import": "./dist/harness-topology/index.js",
+      "default": "./dist/harness-topology/index.js"
+    },
+    "./conversations": {
+      "bun": "./src/conversations/index.ts",
+      "types": "./dist/conversations/index.d.ts",
+      "import": "./dist/conversations/index.js",
+      "default": "./dist/conversations/index.js"
+    },
+    "./conversations/legacy-ids": {
+      "bun": "./src/conversations/legacy-ids.ts",
+      "types": "./dist/conversations/legacy-ids.d.ts",
+      "import": "./dist/conversations/legacy-ids.js",
+      "default": "./dist/conversations/legacy-ids.js"
+    },
+    "./knowledge": {
+      "bun": "./src/knowledge/index.ts",
+      "types": "./dist/knowledge/index.d.ts",
+      "import": "./dist/knowledge/index.js",
+      "default": "./dist/knowledge/index.js"
+    },
+    "./schema": {
+      "bun": "./src/schema.ts",
+      "types": "./dist/schema.d.ts",
+      "import": "./dist/schema.js",
+      "default": "./dist/schema.js"
+    },
+    "./drizzle": {
+      "bun": "./src/drizzle.ts",
+      "types": "./dist/drizzle.d.ts",
+      "import": "./dist/drizzle.js",
+      "default": "./dist/drizzle.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "types": "./dist/index.d.ts",
+  "files": [
+    "bin",
+    "dist",
+    "src",
+    "!src/**/*.test.ts",
+    "!src/**/test-helpers/**",
+    "drizzle",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "bun run --cwd ../agent-sessions build && rm -rf dist && node_modules/.bin/tsc -p tsconfig.json",
+    "broker": "node ./bin/openscout-runtime.mjs broker",
+    "service": "node ./bin/openscout-runtime.mjs service",
+    "discover": "node ./bin/openscout-runtime.mjs discover",
+    "db:generate": "bunx drizzle-kit generate --config drizzle.config.ts",
+    "db:migrate": "bun ./src/drizzle-migrate.ts",
+    "check": "bun run --cwd ../agent-sessions build && tsc --noEmit -p tsconfig.json",
+    "test": "bun test src/*.test.ts",
+    "test:conformance": "OPENSCOUT_CONFORMANCE=1 bun test src/system-probes.test.ts --test-name-pattern='scoutd conformance diff harness'",
+    "test:scenarios": "bun test src/scenario-suite.test.ts",
+    "test:live:codex-app-server": "bun test src/codex-app-server-live.test.ts",
+    "test:live:opencode-acp": "bun test src/opencode-acp-live.test.ts",
+    "test:e2e:local-agent-pass": "bash ../../scripts/run-live-local-agent-pass.sh",
+    "test:live:local-agent-pass": "bash ../../scripts/run-live-local-agent-pass.sh",
+    "prepack": "bun run build && node ../../scripts/prepare-publish-manifest.mjs .",
+    "postpack": "node ../../scripts/restore-publish-manifest.mjs .",
+    "postpublish": "node ../../scripts/restore-publish-manifest.mjs ."
+  },
+  "dependencies": {
+    "@openscout/agent-sessions": "workspace:*",
+    "@openscout/protocol": "workspace:*",
+    "@peculiar/x509": "1.12.3",
+    "@trpc/server": "^11.16.0",
+    "bonjour-service": "^1.4.4",
+    "drizzle-orm": "^0.45.2",
+    "smol-toml": "^1.6.1",
+    "varlock": "^1.16.0",
+    "ws": "^8.18.3",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@cursor/sdk": "1.0.13",
+    "@types/node": "^22",
+    "@types/ws": "^8.5.13",
+    "bun-types": "^1.3.11",
+    "drizzle-kit": "0.31.10",
+    "typescript": "^5"
+  },
+  "license": "Apache-2.0",
+  "author": "Arach Tchoupani",
+  "homepage": "https://github.com/oscout/scout/tree/main/packages/runtime#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/oscout/scout.git",
+    "directory": "packages/runtime"
+  },
+  "bugs": {
+    "url": "https://github.com/oscout/scout/issues"
+  },
+  "keywords": [
+    "openscout",
+    "runtime",
+    "agents",
+    "broker",
+    "control-plane",
+    "local-first",
+    "typescript"
+  ],
+  "engines": {
+    "node": ">=22"
+  }
+}

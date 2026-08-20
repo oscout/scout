@@ -1,0 +1,27 @@
+{
+  "schemaVersion": "1.0.0",
+  "id": "claude-code-question-open",
+  "adapterId": "claude-code",
+  "fixtureSet": "claude-code",
+  "source": {
+    "kind": "synthetic",
+    "harnessVersion": "contract-probe",
+    "transport": "stream-json-jsonl",
+    "capturedAt": "2026-08-07T21:30:00.000Z"
+  },
+  "expected": {
+    "endState": "open",
+    "openReason": "AskUserQuestion is awaiting an operator answer.",
+    "evidenceKeys": [
+      "event:turn:start",
+      "event:block:start"
+    ]
+  },
+  "determinism": {
+    "clockValues": ["2026-08-07T21:30:00.000Z"],
+    "idValues": ["claude-question-turn-001", "claude-question-block-001"]
+  },
+  "session": {
+    "name": "Claude question fixture"
+  }
+}

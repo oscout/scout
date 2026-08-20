@@ -1,0 +1,29 @@
+{
+ "name": "reflex-brief",
+ "description": "generic status question \u2192 shell ladder, brief-grounded answer (question must be brief-answerable regardless of live fleet state)",
+ "steps": [
+  {
+   "do": "speak",
+   "text": "How are things looking right now?"
+  },
+  {
+   "do": "silence",
+   "ms": 900
+  },
+  {
+   "do": "await",
+   "event": "reply.audio.start",
+   "timeoutMs": 12000
+  },
+  {
+   "do": "await",
+   "event": "reply.audio.end",
+   "timeoutMs": 45000
+  }
+ ],
+ "expect": {
+  "userTranscripts": 1,
+  "ladder": "shell",
+  "maxFirstReplyAudioMs": 5000
+ }
+}

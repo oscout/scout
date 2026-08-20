@@ -1,0 +1,7 @@
+[workspace]
+members = [
+  "crates/openscout-voice-core",
+  "crates/openscout-repo-service",
+  "crates/scoutd",
+]
+resolver = "2"

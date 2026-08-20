@@ -1,0 +1,138 @@
+:root {
+  color-scheme: dark;
+  --hud-bg: #070908;
+  --hud-surface: #111411;
+  --hud-ink: #f2f4ef;
+  --hud-muted: #aab1a7;
+  --hud-dim: #777e75;
+  --hud-border: rgba(239, 244, 237, 0.09);
+  --hud-accent: #a6ef87;
+  --hud-accent-soft: rgba(166, 239, 135, 0.1);
+  --hud-status-ok: #79d99a;
+  --hud-status-warn: #ddbd69;
+  --hud-status-error: #ff806f;
+  --hud-radius: 6px;
+  --bg: var(--hud-bg);
+  --surface: var(--hud-surface);
+  --ink: var(--hud-ink);
+  --muted: var(--hud-muted);
+  --dim: var(--hud-dim);
+  --border: var(--hud-border);
+  --accent: var(--hud-accent);
+  --accent-soft: var(--hud-accent-soft);
+  --green: var(--hud-status-ok);
+  --amber: var(--hud-status-warn);
+  --red: var(--hud-status-error);
+  --info: #62b6ff;
+  --radius: var(--hud-radius);
+  --font-sans: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  --font-serif: Spectral, Georgia, serif;
+  --font-accent-title: "Inter Tight", var(--font-sans);
+  --shadow-soft: 0 12px 34px rgba(0, 0, 0, 0.42);
+  --shadow-card: 0 8px 22px rgba(0, 0, 0, 0.22);
+  --shadow-card-hover: 0 12px 28px rgba(0, 0, 0, 0.3);
+  --focus-ring: 0 0 0 3px rgba(166, 239, 135, 0.28);
+  font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  background: #070908;
+  color: #f2f4ef;
+}
+
+* { box-sizing: border-box; }
+
+html, body, #root { min-height: 100%; margin: 0; }
+
+body {
+  background:
+    linear-gradient(rgba(255, 255, 255, 0.018) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.018) 1px, transparent 1px),
+    #070908;
+  background-size: 24px 24px;
+}
+
+.native-surface {
+  min-height: 100vh;
+  padding: 22px;
+}
+
+.native-surface--canvas {
+  width: 100vw;
+  height: 100vh;
+  min-height: 0;
+  padding: 0;
+  overflow: hidden;
+}
+
+.native-surface__header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 24px;
+  padding: 4px 2px 18px;
+  border-bottom: 1px solid rgba(239, 244, 237, 0.1);
+}
+
+.native-surface__eyebrow,
+.native-surface__revision {
+  font: 600 10px/1.2 ui-monospace, SFMono-Regular, Menlo, monospace;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: rgba(224, 232, 221, 0.48);
+}
+
+.native-surface h1 {
+  margin: 6px 0 0;
+  font-size: var(--text-6xl);
+  line-height: 1;
+  letter-spacing: -0.035em;
+}
+
+.native-surface__revision {
+  padding: 6px 8px;
+  border: 1px solid rgba(239, 244, 237, 0.1);
+  border-radius: 4px;
+}
+
+.native-surface__state {
+  min-height: 220px;
+  margin-top: 18px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 13px;
+  padding: 36px;
+  border: 1px solid rgba(239, 244, 237, 0.08);
+  border-radius: 8px;
+  background: rgba(13, 16, 14, 0.88);
+  text-align: left;
+}
+
+.native-surface__signal {
+  width: 8px;
+  height: 8px;
+  flex: none;
+  border-radius: 50%;
+  background: rgba(224, 232, 221, 0.32);
+  box-shadow: 0 0 0 5px rgba(224, 232, 221, 0.04);
+}
+
+.native-surface__state--ready .native-surface__signal {
+  background: #a6ef87;
+  box-shadow: 0 0 14px rgba(166, 239, 135, 0.55);
+}
+
+.native-surface__state--error .native-surface__signal { background: #ff806f; }
+
+.native-surface__state h2 {
+  margin: 0;
+  font-size: var(--text-2xl);
+  line-height: 1.2;
+}
+
+.native-surface__state p {
+  max-width: 520px;
+  margin: 6px 0 0;
+  color: rgba(224, 232, 221, 0.55);
+  font-size: var(--text-md);
+  line-height: 1.55;
+}

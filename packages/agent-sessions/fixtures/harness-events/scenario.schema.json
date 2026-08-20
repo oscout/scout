@@ -1,0 +1,71 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://openscout.app/schemas/harness-event-scenario.v1.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "id", "adapterId", "fixtureSet", "source", "expected", "determinism"],
+  "properties": {
+    "schemaVersion": { "const": "1.0.0" },
+    "id": { "type": "string", "pattern": "^[a-z0-9-]+$" },
+    "adapterId": { "type": "string", "pattern": "^[a-z0-9-]+$" },
+    "fixtureSet": { "type": "string", "pattern": "^[a-z0-9-]+$" },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "harnessVersion", "transport", "capturedAt"],
+      "properties": {
+        "kind": { "enum": ["recorded", "synthetic"] },
+        "harnessVersion": { "type": "string", "minLength": 1 },
+        "transport": { "type": "string", "minLength": 1 },
+        "capturedAt": { "type": "string", "format": "date-time" }
+      }
+    },
+    "redactions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["line", "pointer", "replacement"],
+        "properties": {
+          "line": { "type": "integer", "minimum": 0 },
+          "pointer": { "type": "string", "pattern": "^/" },
+          "replacement": { "type": "string" }
+        }
+      }
+    },
+    "expected": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["endState", "evidenceKeys"],
+      "properties": {
+        "endState": { "enum": ["completed", "failed", "stopped", "open"] },
+        "evidenceKeys": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^(event:[a-z0-9:_-]+|capability:/[A-Za-z0-9_./#-]+)$"
+          }
+        },
+        "openReason": { "type": "string", "minLength": 1 }
+      }
+    },
+    "determinism": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["clockValues", "idValues"],
+      "properties": {
+        "clockValues": { "type": "array", "items": { "type": "string", "format": "date-time" } },
+        "idValues": { "type": "array", "items": { "type": "string", "minLength": 1 } }
+      }
+    },
+    "session": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "name": { "type": "string" },
+        "cwd": { "type": "string" },
+        "model": { "type": "string" }
+      }
+    }
+  }
+}

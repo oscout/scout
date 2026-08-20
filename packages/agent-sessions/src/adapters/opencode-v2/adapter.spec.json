@@ -1,0 +1,166 @@
+{
+  "$schema": "../spec/adapter-spec.v2.schema.json",
+  "specVersion": "2.0.0",
+  "adapterId": "opencode-v2",
+  "displayName": "OpenCode V2 Server",
+  "implementation": {
+    "package": "@openscout/agent-sessions",
+    "entrypoint": "src/adapters/opencode-v2/adapter.ts",
+    "factoryExport": "createAdapter",
+    "className": "OpenCodeV2Adapter"
+  },
+  "upstream": {
+    "kind": "official_protocol",
+    "name": "OpenCode product V2 server API",
+    "transport": "http-sse",
+    "sources": [
+      {
+        "kind": "url",
+        "ref": "https://opencode.ai/v2/docs/migrate-v1"
+      },
+      {
+        "kind": "url",
+        "ref": "https://opencode.ai/v2/docs/build/client"
+      },
+      {
+        "kind": "url",
+        "ref": "https://opencode.ai/v2/openapi.json"
+      },
+      {
+        "kind": "file",
+        "ref": "src/adapters/opencode-v2/adapter.ts"
+      },
+      {
+        "kind": "file",
+        "ref": "src/adapters/opencode-v2/normalizer.ts"
+      }
+    ]
+  },
+  "sessionModel": {
+    "lifecycle": "stateful_connection",
+    "conversationScope": "session",
+    "resumeSupport": "optional",
+    "resumeOptionKey": "sessionId",
+    "turnSteering": "new_turn_only",
+    "concurrentTurns": "single",
+    "persistence": [
+      "process_state",
+      "local_files",
+      "upstream_session_id"
+    ]
+  },
+  "capabilities": {
+    "promptInputs": {
+      "text": true,
+      "images": "native",
+      "files": "native"
+    },
+    "outputBlocks": [
+      "text",
+      "reasoning",
+      "action",
+      "file",
+      "error",
+      "question"
+    ],
+    "actionKinds": [
+      "command",
+      "file_change",
+      "subagent",
+      "tool_call"
+    ],
+    "streaming": {
+      "text": true,
+      "reasoning": true,
+      "actionOutput": true,
+      "actionStatus": true
+    },
+    "interactive": {
+      "questions": "native",
+      "approvals": "native",
+      "serverRequests": "none"
+    },
+    "control": {
+      "interrupt": true,
+      "shutdown": true
+    }
+  },
+  "nativeProtocol": {
+    "outboundRequests": [
+      "GET /api/health",
+      "POST /api/session",
+      "GET /api/session/active",
+      "GET /api/session/:id",
+      "GET /api/session/:id/pending",
+      "POST /api/session/:id/prompt",
+      "DELETE /api/session/:id/pending/:inputID",
+      "POST /api/session/:id/wait",
+      "POST /api/session/:id/interrupt",
+      "POST /api/session/:id/permission/:requestID/reply",
+      "POST /api/session/:id/question/:requestID/reply"
+    ],
+    "outboundNotifications": [],
+    "inboundNotifications": [
+      "server.connected",
+      "session.input.*",
+      "session.execution.*",
+      "session.step.*",
+      "session.text.*",
+      "session.reasoning.*",
+      "session.tool.*",
+      "session.usage.updated",
+      "session.idle (compatibility fallback)",
+      "permission.*",
+      "question.*"
+    ],
+    "inboundServerRequests": [],
+    "messageFormats": [
+      "json_http",
+      "server_sent_events"
+    ],
+    "serverRequestStrategy": "not_applicable"
+  },
+  "normalizedSurface": {
+    "adapterMethods": [
+      "start",
+      "send",
+      "interrupt",
+      "shutdown"
+    ],
+    "optionalAdapterMethods": [
+      "answerQuestion",
+      "decide"
+    ],
+    "emitsPairingEvents": [
+      "session:update",
+      "turn:start",
+      "block:start",
+      "block:delta",
+      "block:action:output",
+      "block:action:status",
+      "block:action:approval",
+      "block:question:answer",
+      "block:end",
+      "turn:error",
+      "turn:end"
+    ]
+  },
+  "conformance": {
+    "status": "required",
+    "normalizerId": "opencode-v2",
+    "fixtureSets": ["opencode-v2"]
+  },
+  "limitations": [
+    "OpenCode product V2 is beta; the adapter pins one exact @opencode-ai/client next build and rejects a mismatched server by default.",
+    "The shared background service is discovered or ensured but never stopped by adapter shutdown.",
+    "The global /api/event stream is volatile and server-wide. Events are filtered by exact native session id; a disconnect fails an active turn before reconnecting instead of guessing across a possible event gap.",
+    "Exact resume requires an idle native session and performs a delayed second idle/pending check to reduce the managed-service restart-continuity race without depending on the experimental durable session log.",
+    "A resumed native session must be idle at prompt admission. Prompt input ids are correlated through matching input.promoted events; simultaneous control of one native session by another client fails the local turn rather than mixing events.",
+    "Originated input ids remain quarantined after interruption or an ambiguous transport edge until pending cancellation, matching late promotion plus native interruption, or bounded wait and idle/pending reconciliation. New prompts fail closed while cleanup is unresolved.",
+    "The pinned beta server keeps no cancellation tombstone, so a delayed prompt request can theoretically re-admit the same id after cancellation. Native response/admission evidence, SSE correlation, and repeated quiescence checks reduce but cannot eliminate that residual client-side race; shutdown reports unconfirmed cleanup explicitly.",
+    "A session-wide interrupt that ends with a Transport error or timeout remains an admission fence because its uninterruptible server handler may still apply later. New prompts fail closed, and shutdown reports the unresolved control instead of claiming clean cancellation.",
+    "Prompts always use queue delivery. Product-V2 steering can coalesce an input into an existing execution and is not exposed as a parallel turn semantic.",
+    "Generic filesystem.changed events have no session id and are not attributed to a turn. Session step files and tool file content are normalized instead.",
+    "The legacy opencode V1 server adapter and opencode-acp remain separate compatibility paths."
+  ]
+}

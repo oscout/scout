@@ -1,0 +1,44 @@
+{
+  "sessionId": "fixture-codex-command-output-completed",
+  "phase": "completed",
+  "currentMessage": {
+    "id": "turn-recorded:message-recorded",
+    "role": "assistant",
+    "text": "fixture-ok",
+    "updatedAt": 1786132801000,
+    "metadata": {
+      "blockId": "message-recorded",
+      "blockType": "text",
+      "turnId": "turn-recorded"
+    }
+  },
+  "activeTools": {},
+  "attention": {},
+  "activeSubagents": {},
+  "turns": [
+    {
+      "id": "turn-recorded",
+      "status": "completed",
+      "startedAt": 1786132800000,
+      "endedAt": 1786132801000,
+      "blockCount": 2,
+      "messageCount": 1,
+      "toolCount": 1,
+      "attentionCount": 0,
+      "summary": "fixture-ok",
+      "updatedAt": 1786132801000,
+      "metadata": {
+        "hasActiveTool": false
+      }
+    }
+  ],
+  "tasks": [],
+  "updatedAt": 1786132801000,
+  "metadata": {
+    "adapterType": "codex",
+    "provider": null,
+    "sessionName": "codex",
+    "sessionStatus": "idle",
+    "turnCount": 1
+  }
+}

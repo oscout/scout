@@ -1,0 +1,17 @@
+{
+  "//": "design-sync converter ONLY. Maps the app's @hudsonkit/* vite aliases to hudsonkit's real dist files so esbuild (which doesn't read vite.config) can resolve them — for JS imports and app.css's `@import \"@hudsonkit/styles\"`. Deliberately omits the react/react-dom paths the app tsconfig carries (those point at @types .d.ts and would hijack esbuild's react→window.React shim).",
+  "compilerOptions": {
+    "baseUrl": "../..",
+    "paths": {
+      "@hudsonkit/styles": ["node_modules/hudsonkit/dist/styles.css"],
+      "@hudsonkit/app-shell": ["node_modules/hudsonkit/dist/app-shell.js"],
+      "@hudsonkit/shell": ["node_modules/hudsonkit/dist/shell.js"],
+      "@hudsonkit/chrome": ["node_modules/hudsonkit/dist/chrome.js"],
+      "@hudsonkit/controls": ["node_modules/hudsonkit/dist/controls.js"],
+      "@hudsonkit/canvas": ["node_modules/hudsonkit/dist/canvas.js"],
+      "@hudsonkit/overlays": ["node_modules/hudsonkit/dist/overlays.js"],
+      "@hudsonkit/workspace": ["node_modules/hudsonkit/dist/workspace.js"],
+      "@hudsonkit": ["node_modules/hudsonkit/dist/index.js"]
+    }
+  }
+}

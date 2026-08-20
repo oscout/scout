@@ -1,0 +1,1614 @@
+/* WhatsApp-familiar, Scout-expressive visual layer.
+   Shared structure and behavior stay in scout-chat.css.
+   All rules are scoped under .chat-app[data-style="whatsapp"].
+   The shared Scout header (.chat-header) is intentionally left alone. */
+
+/* ── Tokens ─────────────────────────────────────────────────────────────── */
+
+.chat-app[data-style="whatsapp"] {
+  /* Scout forest — not WhatsApp teal clone */
+  --accent: #0b7a5f;
+  --accent-strong: #08654e;
+  --accent-soft: rgba(11, 122, 95, 0.12);
+  --accent-glow: rgba(11, 122, 95, 0.22);
+  --scout-live: #12a06f;
+  --scout-read: #2aa8d4;
+
+  --incoming: #ffffff;
+  --incoming-ink: #13201c;
+  --outgoing: #d8f3e8;
+  --outgoing-ink: #0d1f19;
+  --outgoing-edge: rgba(11, 122, 95, 0.14);
+
+  --canvas: #e8f0eb;
+  --canvas-deep: #dce8e1;
+  --chrome: rgba(244, 248, 246, 0.94);
+  --chrome-solid: #f4f8f6;
+  --ink: #13201c;
+  --muted: #5c6b66;
+  /* Carries timestamps and broker delivery state at 10.5px; keep it above AA
+     contrast on the light incoming bubble. */
+  --muted-soft: #5f6d68;
+  --hairline: rgba(19, 32, 28, 0.11);
+
+  --bubble-radius: 12px;
+  --bubble-radius-tight: 4px;
+  --bubble-shadow: 0 1px 2px rgba(19, 32, 28, 0.07), 0 0.5px 0 rgba(19, 32, 28, 0.04);
+  --bubble-shadow-own: 0 1px 2px rgba(8, 101, 78, 0.1), 0 0.5px 0 rgba(8, 101, 78, 0.06);
+  --surface-lift: 0 4px 18px rgba(19, 32, 28, 0.12), 0 1px 3px rgba(19, 32, 28, 0.06);
+  --touch: 44px;
+
+  --quote-rail: var(--accent);
+  --quote-fill: rgba(11, 122, 95, 0.07);
+  --pin-fill: rgba(255, 255, 255, 0.94);
+  --pin-ink: #2a3d36;
+  /* Informational routing notice — quiet Scout green, never the warning amber. */
+  --note-fill: rgba(11, 122, 95, 0.07);
+  --note-ink: #4a6259;
+  --danger: #c5342a;
+  --danger-soft: #fdeceb;
+
+  color: var(--ink);
+  background-color: var(--canvas);
+  /* Soft Scout mesh — familiar chat field, not a brand wallpaper */
+  background-image:
+    radial-gradient(ellipse 120% 80% at 50% -10%, rgba(11, 122, 95, 0.07), transparent 55%),
+    radial-gradient(circle at 18px 18px, rgba(19, 32, 28, 0.028) 1px, transparent 1.2px),
+    radial-gradient(circle at 36px 40px, rgba(11, 122, 95, 0.035) 0.8px, transparent 1.1px);
+  background-size: auto, 36px 36px, 48px 48px;
+  background-attachment: local;
+}
+
+/* ── Transcript atmosphere ──────────────────────────────────────────────── */
+
+.chat-app[data-style="whatsapp"] .transcript {
+  padding: 12px 12px max(20px, env(safe-area-inset-bottom, 0px));
+  scroll-padding-bottom: 12px;
+}
+
+.chat-app[data-style="whatsapp"] .encryption-note {
+  max-width: min(86%, 320px);
+  margin: 4px auto 16px;
+  padding: 7px 12px;
+  border-radius: 10px;
+  border: 0.5px solid rgba(11, 122, 95, 0.12);
+  color: var(--note-ink);
+  background: var(--note-fill);
+  box-shadow: 0 1px 2px rgba(11, 122, 95, 0.06);
+  font-size: 11.5px;
+  font-weight: 500;
+  line-height: 1.4;
+  letter-spacing: 0.01em;
+}
+
+/* Sync status earns a reserved family only when the link actually says so:
+   amber for a degraded or absent connection, red for an unreachable host.
+   A healthy or connecting link stays in the quiet neutral treatment. */
+.chat-app[data-style="whatsapp"] .encryption-note[data-tone="warning"] {
+  border-color: rgba(157, 93, 7, 0.2);
+  color: #8a620d;
+  background: rgba(242, 179, 77, 0.14);
+  box-shadow: none;
+}
+
+.chat-app[data-style="whatsapp"] .encryption-note[data-tone="error"] {
+  border-color: rgba(197, 52, 42, 0.22);
+  color: #8a221c;
+  background: var(--danger-soft);
+  box-shadow: none;
+}
+
+.chat-app[data-style="whatsapp"] .load-earlier {
+  min-height: var(--touch);
+  margin: 0 auto 14px;
+  padding: 0 16px;
+  border-radius: 999px;
+  color: var(--accent-strong);
+  background: rgba(255, 255, 255, 0.78);
+  box-shadow: 0 1px 3px rgba(19, 32, 28, 0.08);
+  font-size: 12.5px;
+  font-weight: 650;
+  letter-spacing: 0.01em;
+}
+
+.chat-app[data-style="whatsapp"] .load-earlier:active {
+  background: rgba(255, 255, 255, 0.94);
+}
+
+.chat-app[data-style="whatsapp"] .empty-chat {
+  max-width: 300px;
+  margin-top: 16vh;
+  padding: 8px;
+}
+
+.chat-app[data-style="whatsapp"] .empty-chat strong {
+  margin-top: 12px;
+  font-size: 17px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+}
+
+.chat-app[data-style="whatsapp"] .empty-chat p {
+  margin: 8px 0 0;
+  color: var(--muted);
+  font-size: 13.5px;
+  line-height: 1.45;
+}
+
+.chat-app[data-style="whatsapp"] .loading-stack {
+  gap: 10px;
+  padding: 28px 14px;
+}
+
+.chat-app[data-style="whatsapp"] .loading-stack i {
+  height: 40px;
+  border-radius: var(--bubble-radius);
+  background: linear-gradient(
+    90deg,
+    rgba(19, 32, 28, 0.05) 0%,
+    rgba(19, 32, 28, 0.1) 50%,
+    rgba(19, 32, 28, 0.05) 100%
+  );
+  background-size: 200% 100%;
+}
+
+.chat-app[data-style="whatsapp"] .inline-error {
+  border-radius: 14px;
+  color: var(--ink);
+  background: var(--chrome);
+  box-shadow: 0 2px 10px rgba(11, 20, 26, 0.08);
+}
+
+.chat-app[data-style="whatsapp"] .jump-button {
+  right: max(12px, env(safe-area-inset-right, 0px));
+  bottom: 84px;
+  width: var(--touch);
+  height: var(--touch);
+  border: 0.5px solid var(--hairline);
+  border-radius: 50%;
+  color: var(--accent-strong);
+  background: rgba(255, 255, 255, 0.94);
+  box-shadow: var(--surface-lift);
+}
+
+/* ── Pinned treatment ───────────────────────────────────────────────────── */
+
+.chat-app[data-style="whatsapp"] .pinned-banner {
+  grid-template-columns: 34px minmax(0, 1fr) 22px;
+  gap: 10px;
+  min-height: 52px;
+  margin: -2px 0 14px;
+  padding: 8px 12px;
+  border-radius: 12px;
+  border: 0.5px solid rgba(11, 122, 95, 0.14);
+  color: var(--pin-ink);
+  background: var(--pin-fill);
+  box-shadow: 0 2px 10px rgba(19, 32, 28, 0.07);
+  backdrop-filter: blur(12px);
+}
+
+.chat-app[data-style="whatsapp"] .pinned-banner > span:first-child {
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  color: var(--accent-strong);
+  background: var(--accent-soft);
+  font-size: 15px;
+}
+
+.chat-app[data-style="whatsapp"] .pinned-banner strong {
+  color: var(--accent-strong);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  text-transform: none;
+}
+
+.chat-app[data-style="whatsapp"] .pinned-banner small {
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.chat-app[data-style="whatsapp"] .pinned-banner > span:last-child {
+  color: var(--muted-soft);
+  font-size: 20px;
+  line-height: 1;
+}
+
+/* ── SpriteAvatar wrappers ────────────────────────────────────────────────
+   Parent replaced initials with deterministic SpriteAvatar tiles (tile + glow
+   on large/huge). The wrapper is a size box only — no gradient disc, no text. */
+
+.chat-app[data-style="whatsapp"] .avatar {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 34px;
+  height: 34px;
+  overflow: visible;
+  border-radius: 0;
+  color: transparent;
+  background: transparent;
+  font-size: 0;
+  line-height: 0;
+  box-shadow: none;
+}
+
+.chat-app[data-style="whatsapp"] .avatar > * {
+  width: 100%;
+  height: 100%;
+  border-radius: 26%;
+  box-shadow:
+    0 1px 2px rgba(19, 32, 28, 0.1),
+    0 0 0 0.5px rgba(19, 32, 28, 0.08);
+}
+
+.chat-app[data-style="whatsapp"] .avatar.tiny {
+  width: 30px;
+  height: 30px;
+}
+
+.chat-app[data-style="whatsapp"] .avatar.large {
+  width: 64px;
+  height: 64px;
+}
+
+.chat-app[data-style="whatsapp"] .avatar.huge {
+  width: 96px;
+  height: 96px;
+}
+
+.chat-app[data-style="whatsapp"] .avatar.large > *,
+.chat-app[data-style="whatsapp"] .avatar.huge > * {
+  box-shadow:
+    0 6px 18px rgba(19, 32, 28, 0.14),
+    0 0 0 0.5px rgba(19, 32, 28, 0.08);
+}
+
+.chat-app[data-style="whatsapp"] .empty-chat > .avatar {
+  margin-bottom: 2px;
+}
+
+/* ── Message geometry & material ──────────────────────────────────────────
+   Conversational column — long prose wraps inside a chat column, not a
+   full-bleed card. Short messages shrink-wrap. */
+
+.chat-app[data-style="whatsapp"] .message-row {
+  max-width: min(var(--chat-measure-wa), var(--chat-measure-wa-cap));
+  margin-top: 9px;
+  gap: 7px;
+  align-items: flex-end;
+}
+
+.chat-app[data-style="whatsapp"] .message-row[data-grouped="true"] {
+  margin-top: 3px;
+  padding-left: 37px; /* tiny avatar 30 + gap 7 */
+}
+
+.chat-app[data-style="whatsapp"] .message-row[data-own="true"][data-grouped="true"] {
+  padding-left: 0;
+}
+
+.chat-app[data-style="whatsapp"] .bubble-stack {
+  position: relative;
+  min-width: 0;
+  max-width: 100%;
+  width: max-content;
+}
+
+.chat-app[data-style="whatsapp"] .message-hit {
+  display: flex;
+  align-items: flex-end;
+  width: max-content;
+  max-width: 100%;
+  min-height: var(--touch);
+  border-radius: var(--bubble-radius);
+}
+
+.chat-app[data-style="whatsapp"] .message-hit:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+
+.chat-app[data-style="whatsapp"] .message-bubble {
+  min-width: 72px;
+  max-width: 100%;
+  width: max-content;
+  padding: 8px 11px 7px;
+  border-radius: var(--bubble-radius);
+  border-bottom-left-radius: var(--bubble-radius-tight);
+  color: var(--incoming-ink);
+  background: var(--incoming);
+  box-shadow: var(--bubble-shadow);
+  border: 0.5px solid rgba(19, 32, 28, 0.04);
+}
+
+.chat-app[data-style="whatsapp"] .message-row[data-own="true"] .message-bubble {
+  border-bottom-left-radius: var(--bubble-radius);
+  border-bottom-right-radius: var(--bubble-radius-tight);
+  color: var(--outgoing-ink);
+  background:
+    linear-gradient(165deg, rgba(255, 255, 255, 0.45) 0%, transparent 42%),
+    var(--outgoing);
+  box-shadow: var(--bubble-shadow-own);
+  border-color: var(--outgoing-edge);
+}
+
+.chat-app[data-style="whatsapp"] .message-row[data-grouped="true"] .message-bubble {
+  border-bottom-left-radius: var(--bubble-radius);
+}
+
+.chat-app[data-style="whatsapp"] .message-row[data-own="true"][data-grouped="true"] .message-bubble {
+  border-bottom-right-radius: var(--bubble-radius);
+}
+
+.chat-app[data-style="whatsapp"] .message-bubble p {
+  margin: 0;
+  padding-right: 0;
+  max-width: var(--chat-measure-wa-ch);
+  font-size: var(--chat-body-size-wa);
+  line-height: 1.34;
+  letter-spacing: -0.01em;
+  font-weight: 400;
+}
+
+/* Lists inside an agent report track the same density step as prose. */
+.chat-app[data-style="whatsapp"] .message-body li { font-size: var(--chat-body-size-wa); }
+
+/* ── Sender labels ──────────────────────────────────────────────────────── */
+
+.chat-app[data-style="whatsapp"] .sender-name {
+  display: block;
+  margin: 0 0 4px;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.005em;
+  line-height: 1.2;
+}
+
+/* ── Quoted messages ────────────────────────────────────────────────────── */
+
+.chat-app[data-style="whatsapp"] .quoted-message {
+  position: relative;
+  display: grid;
+  gap: 1px;
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  margin: -2px 0 6px;
+  padding: 2px 0 3px 10px;
+  overflow: hidden;
+  border: 0;
+  border-radius: 0;
+  color: var(--ink);
+  /* No fill, no inset ring, no accent strip — see the V1 note in scout-chat.css. */
+  background: transparent;
+  box-shadow: none;
+  font-size: 12px;
+  text-align: left;
+}
+
+.chat-app[data-style="whatsapp"] .quoted-message strong {
+  color: var(--ink);
+  font-size: 11.5px;
+  font-weight: 640;
+  opacity: .72;
+}
+
+.chat-app[data-style="whatsapp"] .quoted-message span {
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.3;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chat-app[data-style="whatsapp"] .message-row[data-own="true"] .quoted-message {
+  background: transparent;
+  box-shadow: none;
+}
+
+/* ── Timestamps & truthful statuses ───────────────────────────────────────
+   Meta stays a dedicated footer row so long broker honesty labels
+   ("Agent is working", "Agent responded", "Not delivered") never clip. */
+
+.chat-app[data-style="whatsapp"] .message-meta {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  gap: 4px;
+  align-items: center;
+  justify-content: flex-end;
+  float: none;
+  margin: 5px 0 0;
+  padding: 0;
+  max-width: 100%;
+  color: var(--muted-soft);
+  opacity: 1;
+  font-size: 10.5px;
+  font-weight: 550;
+  letter-spacing: 0.01em;
+  line-height: 1.2;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.chat-app[data-style="whatsapp"] .message-row[data-own="true"] .message-meta {
+  color: rgba(13, 31, 25, 0.65);
+}
+
+.chat-app[data-style="whatsapp"] .message-meta svg {
+  width: 14px;
+  height: 14px;
+  stroke-width: 2.4;
+  flex: none;
+}
+
+.chat-app[data-style="whatsapp"] .message-row[data-own="true"] .message-meta svg {
+  color: var(--scout-read);
+}
+
+.chat-app[data-style="whatsapp"] .delivery-issue-mark {
+  width: var(--touch);
+  height: var(--touch);
+  margin: -14px;
+}
+
+.chat-app[data-style="whatsapp"] .delivery-issue-mark::before {
+  width: 18px;
+  height: 18px;
+  background: var(--danger);
+  box-shadow: 0 1px 3px rgba(197, 52, 42, 0.35);
+}
+.chat-app[data-style="whatsapp"] .delivery-issue-mark[data-issue="unconfirmed"]::before {
+  color: #3f2b06;
+  background: #f2b34d;
+  box-shadow: 0 1px 3px rgba(126, 88, 14, 0.28);
+}
+
+/* ── File cards inside bubbles ──────────────────────────────────────────── */
+
+.chat-app[data-style="whatsapp"] .file-card {
+  min-width: min(230px, 72vw);
+  margin-bottom: 4px;
+  padding: 6px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.55);
+  color: var(--incoming-ink);
+  box-shadow: inset 0 0 0 0.5px rgba(19, 32, 28, 0.06);
+}
+
+.chat-app[data-style="whatsapp"] .voice-note {
+  min-width: min(238px, 72vw);
+  margin: -2px -3px;
+}
+.chat-app[data-style="whatsapp"] .voice-note-toggle {
+  color: #fff;
+  background: var(--accent-strong);
+}
+.chat-app[data-style="whatsapp"] .voice-note-toggle:disabled {
+  color: var(--muted-soft);
+  background: var(--quote-fill);
+}
+
+.chat-app[data-style="whatsapp"] .message-row[data-own="true"] .file-card {
+  background: rgba(255, 255, 255, 0.38);
+  color: var(--outgoing-ink);
+}
+
+.chat-app[data-style="whatsapp"] .file-card > span:first-child {
+  width: 34px;
+  height: 38px;
+  border-radius: 8px;
+  background: linear-gradient(145deg, #6d72d8, #565bc4);
+}
+
+.chat-app[data-style="whatsapp"] .file-card strong {
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.chat-app[data-style="whatsapp"] .file-card small {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.chat-app[data-style="whatsapp"] .file-open {
+  width: 30px;
+  height: 30px;
+  border: 1px solid rgba(19, 32, 28, 0.16);
+  border-radius: 50%;
+}
+
+/* ── Reaction badges ──────────────────────────────────────────────────────
+   Hang in a reserved band under the bubble so they never cover timestamps
+   or honesty receipts sitting in .message-meta. */
+
+.chat-app[data-style="whatsapp"] .message-row:has(.reaction-badge) .bubble-stack {
+  padding-bottom: 18px;
+}
+
+.chat-app[data-style="whatsapp"] .message-row:has(.reaction-badge) {
+  margin-bottom: 4px;
+}
+
+.chat-app[data-style="whatsapp"] .reaction-badge {
+  right: 6px;
+  bottom: 0;
+  z-index: 3;
+  min-width: 28px;
+  height: 24px;
+  padding: 0 6px;
+  border: 2px solid var(--canvas);
+  border-radius: 999px;
+  color: var(--ink);
+  background: #ffffff;
+  box-shadow: 0 2px 6px rgba(19, 32, 28, 0.14), 0 0 0 0.5px rgba(19, 32, 28, 0.06);
+  font-size: 13px;
+  line-height: 1;
+}
+
+.chat-app[data-style="whatsapp"] .message-row[data-own="true"] .reaction-badge {
+  right: auto;
+  left: 6px;
+}
+
+/* ── Swipe reply cue ────────────────────────────────────────────────────── */
+
+.chat-app[data-style="whatsapp"] .swipe-reply-cue {
+  left: -36px;
+  width: 30px;
+  height: 30px;
+  color: var(--accent-strong);
+  background: rgba(255, 255, 255, 0.94);
+  box-shadow: 0 2px 8px rgba(19, 32, 28, 0.14);
+}
+
+/* ── Typing indicator ───────────────────────────────────────────────────── */
+
+.chat-app[data-style="whatsapp"] .typing-row {
+  margin-top: 10px;
+  gap: 6px;
+}
+
+.chat-app[data-style="whatsapp"] .typing {
+  gap: 5px;
+  padding: 12px 15px;
+  border-radius: var(--bubble-radius);
+  border-bottom-left-radius: var(--bubble-radius-tight);
+  background: var(--incoming);
+  box-shadow: var(--bubble-shadow);
+  border: 0.5px solid rgba(19, 32, 28, 0.04);
+}
+
+.chat-app[data-style="whatsapp"] .typing i {
+  width: 7px;
+  height: 7px;
+  background: var(--muted-soft);
+}
+
+/* ── Composer ───────────────────────────────────────────────────────────── */
+
+.chat-app[data-style="whatsapp"] .composer-wrap {
+  padding: 7px 8px max(8px, env(safe-area-inset-bottom, 0px));
+  border-top: 0.5px solid var(--hairline);
+  background: var(--chrome);
+  backdrop-filter: blur(20px) saturate(1.15);
+}
+
+.chat-app[data-style="whatsapp"] .composer-row {
+  grid-template-columns: var(--touch) 1fr var(--touch);
+  gap: 4px;
+  align-items: end;
+}
+
+.chat-app[data-style="whatsapp"] .composer-row > button {
+  width: var(--touch);
+  height: var(--touch);
+  border-radius: 50%;
+  color: var(--accent-strong);
+}
+
+.chat-app[data-style="whatsapp"] .add-button {
+  border: 1px solid rgba(19, 32, 28, 0.14) !important;
+  color: var(--muted) !important;
+  background: rgba(255, 255, 255, 0.55) !important;
+}
+
+.chat-app[data-style="whatsapp"] .add-button[data-open="true"] {
+  color: var(--accent-strong) !important;
+  border-color: rgba(11, 122, 95, 0.28) !important;
+  background: var(--accent-soft) !important;
+}
+
+.chat-app[data-style="whatsapp"] .composer-field {
+  min-height: var(--touch);
+  border: 0.5px solid rgba(19, 32, 28, 0.1);
+  border-radius: 22px;
+  background: #ffffff;
+  box-shadow: 0 1px 2px rgba(19, 32, 28, 0.04);
+}
+
+.chat-app[data-style="whatsapp"] .composer-field textarea {
+  min-height: 42px;
+  max-height: 110px;
+  padding: 11px 10px 10px;
+  color: var(--ink);
+  font-size: 15.5px;
+  line-height: 1.3;
+  letter-spacing: -0.01em;
+}
+
+.chat-app[data-style="whatsapp"] .composer-field textarea::placeholder {
+  color: var(--muted-soft);
+}
+
+.chat-app[data-style="whatsapp"] .composer-field button {
+  /* 42px box + the base sheet's hit expander = a 44pt target that does not
+     grow the field. See the note in scout-chat.css. */
+  width: 42px;
+  height: 42px;
+  color: var(--muted);
+}
+
+.chat-app[data-style="whatsapp"] .composer-field button:active {
+  color: var(--accent-strong);
+}
+
+.chat-app[data-style="whatsapp"] .voice-input-mark {
+  background: var(--accent-strong);
+}
+
+.chat-app[data-style="whatsapp"] .voice-input-wave i {
+  background: var(--accent-strong);
+}
+
+.chat-app[data-style="whatsapp"] .voice-input-copy strong {
+  color: var(--ink);
+}
+
+.chat-app[data-style="whatsapp"] .voice-input-copy small {
+  color: var(--muted);
+}
+
+.chat-app[data-style="whatsapp"] .send-button {
+  color: #fff !important;
+  background: linear-gradient(160deg, #12956f 0%, var(--accent-strong) 100%) !important;
+  box-shadow: 0 2px 8px rgba(8, 101, 78, 0.28);
+}
+
+.chat-app[data-style="whatsapp"] .send-button:disabled {
+  color: var(--muted-soft) !important;
+  background: transparent !important;
+  box-shadow: none;
+}
+
+.chat-app[data-style="whatsapp"] .send-button:not(:disabled):active {
+  filter: brightness(0.96);
+}
+
+/* Flat, per V1.4/R4.1 — matches this style's `.quoted-message`. The white pill,
+   its shadow and the accent strip are gone; what remains is a wash faint enough
+   to separate the chip from the composer without becoming a container again. */
+.chat-app[data-style="whatsapp"] .reply-target {
+  margin: 0 44px 8px 44px;
+  padding: 4px 0 5px 10px;
+  border-radius: 0;
+  border-left: 0;
+  color: var(--ink);
+  background: rgba(19, 32, 28, 0.05);
+  box-shadow: none;
+}
+
+.chat-app[data-style="whatsapp"] .reply-target strong {
+  color: var(--ink);
+  font-size: 11.5px;
+  font-weight: 640;
+  opacity: .72;
+}
+
+.chat-app[data-style="whatsapp"] .reply-target small {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.chat-app[data-style="whatsapp"] .attachment-previews {
+  margin: 0 0 8px 44px;
+  gap: 8px;
+}
+
+.chat-app[data-style="whatsapp"] .attachment-preview {
+  min-width: 220px;
+  padding: 6px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.72);
+  box-shadow: 0 1px 3px rgba(19, 32, 28, 0.06);
+}
+.chat-app[data-style="whatsapp"] .voice-draft {
+  background: rgba(255, 255, 255, 0.72);
+}
+.chat-app[data-style="whatsapp"] .voice-draft > small,
+.chat-app[data-style="whatsapp"] .voice-draft > button {
+  color: var(--muted);
+}
+
+.chat-app[data-style="whatsapp"] .send-error {
+  margin: 0 44px 8px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  color: #8a221c;
+  background: var(--danger-soft);
+  font-size: 12px;
+}
+
+.chat-app[data-style="whatsapp"] .attachment-tray {
+  right: max(8px, env(safe-area-inset-right, 0px));
+  left: max(8px, env(safe-area-inset-left, 0px));
+  bottom: calc(100% + 8px);
+  gap: 12px 8px;
+  padding: 14px 10px 12px;
+  border: 0.5px solid var(--hairline);
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.97);
+  box-shadow: 0 -10px 36px rgba(19, 32, 28, 0.14);
+}
+
+.chat-app[data-style="whatsapp"] .attachment-tray button {
+  min-height: 64px;
+  font-size: 11px;
+  font-weight: 550;
+  color: var(--ink);
+}
+
+.chat-app[data-style="whatsapp"] .attachment-tray span {
+  width: 42px;
+  height: 42px;
+  border-radius: 14px;
+  box-shadow: 0 2px 6px rgba(19, 32, 28, 0.12);
+}
+
+/* Scout-tinted attachment tones (still readable color coding) */
+.chat-app[data-style="whatsapp"] .attachment-tray span[data-tone="blue"] { background: #2d8dff; }
+.chat-app[data-style="whatsapp"] .attachment-tray span[data-tone="teal"] { background: #109089; }
+.chat-app[data-style="whatsapp"] .attachment-tray span[data-tone="cyan"] { background: #1c86ad; }
+.chat-app[data-style="whatsapp"] .attachment-tray span[data-tone="indigo"] { background: #5f63c7; }
+.chat-app[data-style="whatsapp"] .attachment-tray span[data-tone="purple"] { background: #8454c4; }
+.chat-app[data-style="whatsapp"] .attachment-tray span[data-tone="teal-deep"] { background: #0d6570; }
+.chat-app[data-style="whatsapp"] .attachment-tray span[data-tone="gray"] { background: #6f7a82; }
+.chat-app[data-style="whatsapp"] .attachment-tray span[data-tone="green"] { background: var(--accent); }
+
+/* ── Focus / reaction overlay & action menu ─────────────────────────────── */
+
+.chat-app[data-style="whatsapp"] .focus-layer {
+  padding:
+    max(20px, env(safe-area-inset-top, 0px))
+    max(16px, env(safe-area-inset-right, 0px))
+    max(20px, env(safe-area-inset-bottom, 0px))
+    max(16px, env(safe-area-inset-left, 0px));
+  background: rgba(10, 18, 16, 0.46);
+  backdrop-filter: blur(6px) saturate(1.05);
+}
+
+/* The layer already insets by the safe area, so the stack measures against the
+   space it actually has. Subtracting a second gutter here only double-inset it. */
+.chat-app[data-style="whatsapp"] .focused-message {
+  width: min(340px, 100%);
+  min-width: 0;
+}
+
+.chat-app[data-style="whatsapp"] .focused-message .message-row {
+  min-width: 0;
+  max-width: 100%;
+  margin: 0;
+}
+
+.chat-app[data-style="whatsapp"] .focused-message .message-bubble {
+  box-shadow: 0 8px 28px rgba(10, 18, 16, 0.22);
+}
+
+.chat-app[data-style="whatsapp"] .reaction-picker {
+  position: relative;
+  margin-bottom: 10px;
+  padding: 5px 6px;
+  border-radius: 22px;
+  background: #ffffff;
+  box-shadow: var(--surface-lift);
+  border: 0.5px solid rgba(19, 32, 28, 0.06);
+}
+
+.chat-app[data-style="whatsapp"] .reaction-picker button {
+  width: var(--touch);
+  height: var(--touch);
+  border-radius: 50%;
+  font-size: 22px;
+}
+
+.chat-app[data-style="whatsapp"] .reaction-picker button:active {
+  background: var(--accent-soft);
+  transform: scale(1.06);
+}
+
+.chat-app[data-style="whatsapp"] .emoji-grid {
+  gap: 2px;
+  margin: -2px 0 10px;
+  padding: 8px;
+  border-radius: 16px;
+  background: #ffffff;
+  box-shadow: var(--surface-lift);
+  border: 0.5px solid rgba(19, 32, 28, 0.06);
+}
+
+.chat-app[data-style="whatsapp"] .emoji-grid button {
+  min-width: var(--touch);
+  min-height: var(--touch);
+  border-radius: 12px;
+  font-size: 22px;
+}
+
+.chat-app[data-style="whatsapp"] .emoji-grid button:active {
+  background: var(--accent-soft);
+}
+
+.chat-app[data-style="whatsapp"] .action-menu {
+  margin-top: 10px;
+  overflow: hidden;
+  border-radius: 16px;
+  background: #ffffff;
+  box-shadow: var(--surface-lift);
+  border: 0.5px solid rgba(19, 32, 28, 0.06);
+}
+
+.chat-app[data-style="whatsapp"] .action-menu button {
+  min-height: 48px;
+  padding: 0 16px;
+  border-top: 0.5px solid rgba(19, 32, 28, 0.08);
+  color: var(--ink);
+  background: #ffffff;
+  font-size: 15px;
+  font-weight: 500;
+}
+
+.chat-app[data-style="whatsapp"] .action-menu button:first-child {
+  border-top: 0;
+}
+
+.chat-app[data-style="whatsapp"] .action-menu button:active {
+  background: rgba(11, 122, 95, 0.06);
+}
+
+.chat-app[data-style="whatsapp"] .action-menu .destructive {
+  color: var(--danger) !important;
+}
+
+.chat-app[data-style="whatsapp"] .action-menu svg {
+  width: 18px;
+  color: var(--muted-soft);
+}
+
+/* ── Profile sheet ────────────────────────────────────────────────────────
+   Social / identity-led: hero sprite, name, status pill, then quiet rows.
+   Not an admin settings form. */
+
+.chat-app[data-style="whatsapp"] .sheet-layer {
+  background: rgba(10, 18, 16, 0.42);
+  backdrop-filter: blur(8px) saturate(1.05);
+}
+
+.chat-app[data-style="whatsapp"] .info-sheet {
+  max-height: min(90%, calc(100% - env(safe-area-inset-top, 0px) - 10px));
+  padding:
+    12px
+    max(18px, env(safe-area-inset-right, 0px))
+    calc(22px + env(safe-area-inset-bottom, 0px))
+    max(18px, env(safe-area-inset-left, 0px));
+  border-radius: 28px 28px 0 0;
+  background:
+    radial-gradient(ellipse 90% 42% at 50% 0%, rgba(11, 122, 95, 0.1), transparent 62%),
+    linear-gradient(180deg, #f8fbf9 0%, #eef4f0 100%);
+  box-shadow: 0 -14px 44px rgba(10, 18, 16, 0.2);
+  text-align: center;
+}
+
+.chat-app[data-style="whatsapp"] .sheet-grab {
+  width: 40px;
+  height: 5px;
+  margin: 0 auto 20px;
+  border-radius: 3px;
+  background: rgba(19, 32, 28, 0.16);
+}
+
+.chat-app[data-style="whatsapp"] .info-sheet > .avatar {
+  width: 104px;
+  height: 104px;
+  margin: 2px auto 0;
+}
+
+.chat-app[data-style="whatsapp"] .info-sheet > .avatar > * {
+  box-shadow:
+    0 14px 32px rgba(19, 32, 28, 0.16),
+    0 0 0 3px rgba(255, 255, 255, 0.95),
+    0 0 0 6px rgba(11, 122, 95, 0.14);
+}
+
+.chat-app[data-style="whatsapp"] .info-sheet h2 {
+  margin: 16px 0 0;
+  padding: 0 8px;
+  font-size: 26px;
+  font-weight: 720;
+  letter-spacing: -0.028em;
+  line-height: 1.15;
+  color: var(--ink);
+}
+
+.chat-app[data-style="whatsapp"] .info-sheet > p {
+  width: fit-content;
+  max-width: calc(100% - 24px);
+  margin: 10px auto 22px;
+  padding: 5px 14px;
+  border-radius: 999px;
+  color: var(--accent-strong);
+  background: var(--accent-soft);
+  font-size: 12.5px;
+  font-weight: 650;
+  letter-spacing: 0.01em;
+}
+
+.chat-app[data-style="whatsapp"] .info-actions {
+  gap: 8px;
+  margin-bottom: 22px;
+}
+
+.chat-app[data-style="whatsapp"] .info-actions button {
+  gap: 6px;
+  min-height: 64px;
+  padding: 12px 4px;
+  border-radius: 16px;
+  color: var(--accent-strong);
+  background: rgba(255, 255, 255, 0.92);
+  box-shadow: 0 1px 3px rgba(19, 32, 28, 0.06);
+  font-size: 11px;
+  font-weight: 650;
+  border: 0.5px solid rgba(19, 32, 28, 0.06);
+}
+
+/* Unavailable social actions read as placeholders, not dead controls */
+.chat-app[data-style="whatsapp"] .info-actions button:disabled {
+  border-style: dashed;
+  border-color: rgba(19, 32, 28, 0.14);
+  color: var(--muted-soft);
+  background: transparent;
+  box-shadow: none;
+  opacity: 1;
+}
+
+.chat-app[data-style="whatsapp"] .info-actions svg {
+  width: 20px;
+  height: 20px;
+}
+
+.chat-app[data-style="whatsapp"] .info-row {
+  min-height: 50px;
+  padding: 0 16px;
+  border-bottom: 0.5px solid rgba(19, 32, 28, 0.07);
+  background: rgba(255, 255, 255, 0.88);
+  font-size: 14.5px;
+  font-weight: 500;
+  color: var(--ink);
+}
+
+.chat-app[data-style="whatsapp"] .info-row:first-of-type {
+  border-radius: 16px 16px 0 0;
+}
+
+.chat-app[data-style="whatsapp"] .info-row:last-of-type,
+.chat-app[data-style="whatsapp"] .info-row.destructive {
+  border-radius: 0 0 16px 16px;
+  border-bottom: 0;
+}
+
+.chat-app[data-style="whatsapp"] .info-row small {
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.chat-app[data-style="whatsapp"] .info-row svg {
+  color: var(--muted-soft);
+}
+
+.chat-app[data-style="whatsapp"] .info-row.destructive {
+  color: var(--danger);
+  margin-top: 0;
+}
+
+.chat-app[data-style="whatsapp"] .done-button {
+  width: 100%;
+  min-height: 50px;
+  margin-top: 18px;
+  border-radius: 16px;
+  color: var(--accent-strong);
+  background: rgba(255, 255, 255, 0.94);
+  font-weight: 700;
+  font-size: 16px;
+  letter-spacing: -0.01em;
+  box-shadow: 0 1px 3px rgba(19, 32, 28, 0.06);
+  border: 0.5px solid rgba(19, 32, 28, 0.06);
+}
+
+.chat-app[data-style="whatsapp"] .done-button:active {
+  background: var(--accent-soft);
+}
+
+/* ── Toast ──────────────────────────────────────────────────────────────── */
+
+.chat-app[data-style="whatsapp"] .toast {
+  bottom: max(92px, calc(72px + env(safe-area-inset-bottom, 0px)));
+  padding: 9px 14px;
+  border-radius: 16px;
+  color: #f4f8f6;
+  background: rgba(19, 32, 28, 0.9);
+  font-size: 12px;
+  font-weight: 550;
+  box-shadow: 0 8px 24px rgba(10, 18, 16, 0.28);
+  max-width: min(88vw, 340px);
+  text-align: center;
+}
+
+/* ── Tech / agent surfaces (Scout honesty preserved) ────────────────────── */
+
+.chat-app[data-style="whatsapp"] .tech-strip {
+  min-height: 40px;
+  padding: 6px 12px;
+  color: #234038;
+  background: linear-gradient(90deg, #e4f6ee 0%, #d9f1e6 100%);
+  border-bottom-color: rgba(11, 122, 95, 0.16);
+  font-size: 11.5px;
+}
+
+.chat-app[data-style="whatsapp"] .tech-strip > span {
+  padding: 3px 7px;
+  border-radius: 6px;
+  background: rgba(11, 122, 95, 0.08);
+  font-weight: 550;
+}
+
+.chat-app[data-style="whatsapp"] .tech-strip button {
+  min-width: var(--touch);
+  min-height: var(--touch);
+  border-radius: 10px;
+  color: #a12f26;
+  background: rgba(197, 52, 42, 0.1);
+  font-weight: 700;
+}
+
+.chat-app[data-style="whatsapp"] .live-dot {
+  background: var(--scout-live);
+}
+
+.chat-app[data-style="whatsapp"] .technical-turn {
+  width: calc(100% - 16px);
+  margin: 14px auto 0;
+  padding: 11px;
+  border: 1px solid rgba(11, 122, 95, 0.18);
+  border-radius: 14px;
+  background: rgba(236, 248, 242, 0.96);
+  color: #1f302a;
+  box-shadow: 0 1px 4px rgba(11, 122, 95, 0.06);
+}
+
+.chat-app[data-style="whatsapp"] .technical-turn > header {
+  font-size: 11.5px;
+  font-weight: 650;
+}
+
+.chat-app[data-style="whatsapp"] .technical-block {
+  padding: 8px 0;
+  border-top-color: rgba(19, 32, 28, 0.08);
+}
+
+.chat-app[data-style="whatsapp"] .technical-block > span:first-child {
+  border-radius: 8px;
+  background: rgba(11, 122, 95, 0.1);
+  color: var(--accent-strong);
+}
+
+.chat-app[data-style="whatsapp"] .approval-buttons button,
+.chat-app[data-style="whatsapp"] .question-card button {
+  min-height: var(--touch);
+  border-radius: 10px;
+  font-weight: 700;
+}
+
+.chat-app[data-style="whatsapp"] .approval-buttons button:last-child,
+.chat-app[data-style="whatsapp"] .question-card button {
+  background: var(--accent-strong);
+}
+
+.chat-app[data-style="whatsapp"] .approval-buttons button:first-child {
+  color: #8a221c;
+  background: #f6e4e1;
+}
+
+.chat-app[data-style="whatsapp"] .technical-error {
+  border-radius: 9px;
+  color: #8a221c;
+  background: var(--danger-soft);
+}
+
+/* ── Search row (below header; not the header itself) ───────────────────── */
+
+.chat-app[data-style="whatsapp"] .search-row {
+  min-height: 54px;
+  padding: 6px 8px 6px 12px;
+  background: var(--chrome);
+  border-bottom-color: var(--hairline);
+}
+
+.chat-app[data-style="whatsapp"] .search-row input {
+  height: 36px;
+  color: var(--ink);
+  font-size: 15.5px;
+}
+
+.chat-app[data-style="whatsapp"] .search-row input::placeholder {
+  color: var(--muted-soft);
+}
+
+.chat-app[data-style="whatsapp"] .search-row svg {
+  color: var(--muted);
+}
+
+.chat-app[data-style="whatsapp"] .search-row button {
+  width: var(--touch);
+  height: var(--touch);
+}
+
+/* ── Dark mode ──────────────────────────────────────────────────────────── */
+
+@media (prefers-color-scheme: dark) {
+  .chat-app[data-style="whatsapp"] {
+    --accent: #1fb888;
+    --accent-strong: #2dd4a0;
+    --accent-soft: rgba(31, 184, 136, 0.16);
+    --accent-glow: rgba(31, 184, 136, 0.28);
+    --scout-live: #2dd4a0;
+    --scout-read: #53c4eb;
+
+    --incoming: #1a2622;
+    --incoming-ink: #e7efeb;
+    --outgoing: #0d4f40;
+    --outgoing-ink: #eaf7f2;
+    --outgoing-edge: rgba(45, 212, 160, 0.14);
+
+    --canvas: #0a1210;
+    --canvas-deep: #07100e;
+    --chrome: rgba(18, 28, 25, 0.96);
+    --chrome-solid: #121c19;
+    --ink: #e7efeb;
+    --muted: #93a59d;
+    --muted-soft: #91a49c;
+    --hairline: rgba(231, 239, 235, 0.1);
+
+    --bubble-shadow: 0 1px 2px rgba(0, 0, 0, 0.35), 0 0.5px 0 rgba(0, 0, 0, 0.2);
+    --bubble-shadow-own: 0 1px 3px rgba(0, 0, 0, 0.4), 0 0 0 0.5px rgba(45, 212, 160, 0.08);
+    --surface-lift: 0 8px 28px rgba(0, 0, 0, 0.45), 0 2px 6px rgba(0, 0, 0, 0.28);
+
+    --quote-fill: rgba(0, 0, 0, 0.28);
+    --pin-fill: rgba(22, 34, 30, 0.96);
+    --pin-ink: #e7efeb;
+    --note-fill: rgba(45, 212, 160, 0.1);
+    --note-ink: #9db8ae;
+    --danger: #ff6b61;
+    --danger-soft: rgba(255, 107, 97, 0.14);
+
+    background-color: var(--canvas);
+    background-image:
+      radial-gradient(ellipse 120% 70% at 50% -8%, rgba(31, 184, 136, 0.08), transparent 52%),
+      radial-gradient(circle at 18px 18px, rgba(231, 239, 235, 0.035) 1px, transparent 1.2px),
+      radial-gradient(circle at 36px 40px, rgba(45, 212, 160, 0.04) 0.8px, transparent 1.1px);
+  }
+
+  .chat-app[data-style="whatsapp"] .encryption-note {
+    border-color: rgba(45, 212, 160, 0.14);
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.25);
+  }
+
+  .chat-app[data-style="whatsapp"] .encryption-note[data-tone="warning"] {
+    border-color: rgba(245, 158, 11, 0.24);
+    color: #f2b34d;
+    background: rgba(242, 179, 77, 0.13);
+  }
+
+  .chat-app[data-style="whatsapp"] .encryption-note[data-tone="error"] {
+    border-color: rgba(255, 107, 97, 0.26);
+    color: #ffb4ae;
+    background: var(--danger-soft);
+  }
+
+  .chat-app[data-style="whatsapp"] .load-earlier {
+    color: var(--accent-strong);
+    background: rgba(26, 38, 34, 0.92);
+    box-shadow: 0 1px 4px rgba(0, 0, 0, 0.3);
+  }
+
+  .chat-app[data-style="whatsapp"] .pinned-banner {
+    border-color: rgba(45, 212, 160, 0.16);
+    box-shadow: 0 2px 12px rgba(0, 0, 0, 0.28);
+  }
+
+  .chat-app[data-style="whatsapp"] .pinned-banner > span:first-child {
+    color: var(--accent-strong);
+    background: rgba(31, 184, 136, 0.16);
+  }
+
+  .chat-app[data-style="whatsapp"] .pinned-banner small {
+    color: var(--muted);
+  }
+
+  .chat-app[data-style="whatsapp"] .message-bubble {
+    border-color: rgba(255, 255, 255, 0.04);
+  }
+
+  .chat-app[data-style="whatsapp"] .message-row[data-own="true"] .message-bubble {
+    background:
+      linear-gradient(165deg, rgba(255, 255, 255, 0.06) 0%, transparent 40%),
+      var(--outgoing);
+    border-color: var(--outgoing-edge);
+  }
+
+  .chat-app[data-style="whatsapp"] .message-meta {
+    color: var(--muted-soft);
+  }
+
+  .chat-app[data-style="whatsapp"] .message-row[data-own="true"] .message-meta {
+    color: rgba(234, 247, 242, 0.70);
+  }
+
+  .chat-app[data-style="whatsapp"] .message-row[data-own="true"] .message-meta svg {
+    color: var(--scout-read);
+  }
+
+  .chat-app[data-style="whatsapp"] .quoted-message {
+    background: transparent;
+    box-shadow: none;
+  }
+
+  .chat-app[data-style="whatsapp"] .quoted-message strong {
+    color: var(--ink);
+  }
+
+  .chat-app[data-style="whatsapp"] .quoted-message span {
+    color: var(--muted);
+  }
+
+  .chat-app[data-style="whatsapp"] .message-row[data-own="true"] .quoted-message {
+    background: transparent;
+  }
+
+  .chat-app[data-style="whatsapp"] .avatar > * {
+    box-shadow:
+      0 1px 3px rgba(0, 0, 0, 0.35),
+      0 0 0 0.5px rgba(231, 239, 235, 0.08);
+  }
+
+  .chat-app[data-style="whatsapp"] .avatar.large > *,
+  .chat-app[data-style="whatsapp"] .avatar.huge > * {
+    box-shadow:
+      0 8px 22px rgba(0, 0, 0, 0.45),
+      0 0 0 0.5px rgba(231, 239, 235, 0.08);
+  }
+
+  .chat-app[data-style="whatsapp"] .reaction-badge {
+    border-color: var(--canvas);
+    background: #1f2d29;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
+  }
+
+  .chat-app[data-style="whatsapp"] .file-card {
+    background: rgba(0, 0, 0, 0.22);
+    color: var(--incoming-ink);
+  }
+
+  .chat-app[data-style="whatsapp"] .message-row[data-own="true"] .file-card {
+    background: rgba(0, 0, 0, 0.18);
+    color: var(--outgoing-ink);
+  }
+
+  .chat-app[data-style="whatsapp"] .file-card small {
+    color: var(--muted);
+  }
+
+  .chat-app[data-style="whatsapp"] .file-open {
+    border-color: rgba(231, 239, 235, 0.2);
+  }
+
+  .chat-app[data-style="whatsapp"] .typing {
+    border-color: rgba(255, 255, 255, 0.04);
+  }
+
+  .chat-app[data-style="whatsapp"] .typing i {
+    background: var(--muted-soft);
+  }
+
+  .chat-app[data-style="whatsapp"] .composer-wrap {
+    background: var(--chrome);
+  }
+
+  .chat-app[data-style="whatsapp"] .add-button {
+    border-color: rgba(231, 239, 235, 0.14) !important;
+    color: var(--muted) !important;
+    background: rgba(26, 38, 34, 0.8) !important;
+  }
+
+  .chat-app[data-style="whatsapp"] .add-button[data-open="true"] {
+    color: var(--accent-strong) !important;
+    border-color: rgba(45, 212, 160, 0.28) !important;
+    background: var(--accent-soft) !important;
+  }
+
+  .chat-app[data-style="whatsapp"] .composer-field {
+    border-color: rgba(231, 239, 235, 0.1);
+    background: #1a2622;
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03);
+  }
+
+  .chat-app[data-style="whatsapp"] .composer-field textarea {
+    color: var(--ink);
+  }
+
+  .chat-app[data-style="whatsapp"] .composer-field textarea::placeholder {
+    color: var(--muted-soft);
+  }
+
+  .chat-app[data-style="whatsapp"] .composer-field button {
+    color: var(--muted);
+  }
+
+  .chat-app[data-style="whatsapp"] .send-button {
+    background: linear-gradient(160deg, #1fb888 0%, #0f7a5c 100%) !important;
+    box-shadow: 0 2px 10px rgba(31, 184, 136, 0.28);
+  }
+
+  .chat-app[data-style="whatsapp"] .send-button:disabled {
+    color: var(--muted-soft) !important;
+    background: transparent !important;
+    box-shadow: none;
+  }
+
+  /* Dark keeps the same flat grammar: a wash, not a raised card, and no strip
+     colour to restore because there is no strip. */
+  .chat-app[data-style="whatsapp"] .reply-target {
+    color: var(--ink);
+    background: rgba(255, 255, 255, 0.05);
+  }
+
+  .chat-app[data-style="whatsapp"] .reply-target strong {
+    color: var(--ink);
+    opacity: .72;
+  }
+
+  .chat-app[data-style="whatsapp"] .reply-target small {
+    color: var(--muted);
+  }
+
+  .chat-app[data-style="whatsapp"] .attachment-preview {
+    background: rgba(26, 38, 34, 0.92);
+  }
+
+  .chat-app[data-style="whatsapp"] .send-error {
+    color: #ffb4ae;
+    background: var(--danger-soft);
+  }
+
+  .chat-app[data-style="whatsapp"] .attachment-tray {
+    background: rgba(18, 28, 25, 0.98);
+    border-color: var(--hairline);
+    box-shadow: 0 -12px 40px rgba(0, 0, 0, 0.45);
+  }
+
+  .chat-app[data-style="whatsapp"] .attachment-tray button {
+    color: var(--ink);
+  }
+
+  .chat-app[data-style="whatsapp"] .jump-button {
+    color: var(--accent-strong);
+    background: rgba(22, 34, 30, 0.96);
+    border-color: var(--hairline);
+  }
+
+  .chat-app[data-style="whatsapp"] .focus-layer {
+    background: rgba(0, 0, 0, 0.55);
+  }
+
+  .chat-app[data-style="whatsapp"] .reaction-picker,
+  .chat-app[data-style="whatsapp"] .emoji-grid,
+  .chat-app[data-style="whatsapp"] .action-menu {
+    background: #1a2622;
+    border-color: rgba(231, 239, 235, 0.08);
+    color: var(--ink);
+  }
+
+  .chat-app[data-style="whatsapp"] .action-menu button {
+    border-top-color: rgba(231, 239, 235, 0.08);
+    color: var(--ink);
+    background: #1a2622;
+  }
+
+  .chat-app[data-style="whatsapp"] .action-menu button:active {
+    background: rgba(31, 184, 136, 0.1);
+  }
+
+  .chat-app[data-style="whatsapp"] .action-menu .destructive {
+    color: var(--danger) !important;
+  }
+
+  .chat-app[data-style="whatsapp"] .action-menu svg {
+    color: var(--muted-soft);
+  }
+
+  .chat-app[data-style="whatsapp"] .sheet-layer {
+    background: rgba(0, 0, 0, 0.55);
+  }
+
+  .chat-app[data-style="whatsapp"] .info-sheet {
+    background:
+      radial-gradient(ellipse 90% 42% at 50% 0%, rgba(31, 184, 136, 0.12), transparent 62%),
+      linear-gradient(180deg, #15201c 0%, #101816 100%);
+  }
+
+  .chat-app[data-style="whatsapp"] .sheet-grab {
+    background: rgba(231, 239, 235, 0.22);
+  }
+
+  .chat-app[data-style="whatsapp"] .info-sheet > .avatar > * {
+    box-shadow:
+      0 16px 36px rgba(0, 0, 0, 0.5),
+      0 0 0 3px rgba(26, 38, 34, 0.98),
+      0 0 0 6px rgba(45, 212, 160, 0.18);
+  }
+
+  .chat-app[data-style="whatsapp"] .info-sheet h2 {
+    color: var(--ink);
+  }
+
+  .chat-app[data-style="whatsapp"] .info-sheet > p {
+    color: var(--accent-strong);
+    background: var(--accent-soft);
+  }
+
+  .chat-app[data-style="whatsapp"] .info-actions button {
+    background: #1a2622;
+    border-color: rgba(231, 239, 235, 0.08);
+    color: var(--accent-strong);
+    box-shadow: none;
+  }
+
+  .chat-app[data-style="whatsapp"] .info-actions button:disabled {
+    border-style: dashed;
+    border-color: rgba(231, 239, 235, 0.16);
+    color: var(--muted-soft);
+    background: transparent;
+    opacity: 1;
+  }
+
+  .chat-app[data-style="whatsapp"] .info-row {
+    color: var(--ink);
+    background: #1a2622;
+    border-bottom-color: rgba(231, 239, 235, 0.08);
+  }
+
+  .chat-app[data-style="whatsapp"] .info-row small {
+    color: var(--muted);
+  }
+
+  .chat-app[data-style="whatsapp"] .info-row.destructive {
+    color: var(--danger);
+  }
+
+  .chat-app[data-style="whatsapp"] .done-button {
+    color: var(--accent-strong);
+    background: #1a2622;
+    border-color: rgba(231, 239, 235, 0.08);
+    box-shadow: none;
+  }
+
+  .chat-app[data-style="whatsapp"] .done-button:active {
+    background: var(--accent-soft);
+  }
+
+  .chat-app[data-style="whatsapp"] .toast {
+    color: #eaf7f2;
+    background: rgba(8, 14, 12, 0.94);
+  }
+
+  .chat-app[data-style="whatsapp"] .tech-strip {
+    color: #d5ebe2;
+    background: linear-gradient(90deg, #132820 0%, #153028 100%);
+    border-bottom-color: rgba(45, 212, 160, 0.14);
+  }
+
+  .chat-app[data-style="whatsapp"] .tech-strip > span {
+    background: rgba(45, 212, 160, 0.1);
+  }
+
+  .chat-app[data-style="whatsapp"] .tech-strip button {
+    color: #ffb4ae;
+    background: rgba(255, 107, 97, 0.12);
+  }
+
+  .chat-app[data-style="whatsapp"] .technical-turn {
+    color: #dceee6;
+    background: rgba(16, 36, 30, 0.96);
+    border-color: rgba(45, 212, 160, 0.18);
+  }
+
+  .chat-app[data-style="whatsapp"] .technical-block {
+    border-top-color: rgba(231, 239, 235, 0.08);
+  }
+
+  .chat-app[data-style="whatsapp"] .technical-block > span:first-child {
+    background: rgba(45, 212, 160, 0.12);
+    color: var(--accent-strong);
+  }
+
+  .chat-app[data-style="whatsapp"] .technical-block small {
+    color: var(--muted);
+  }
+
+  .chat-app[data-style="whatsapp"] .approval-buttons button:first-child {
+    color: #ffb4ae;
+    background: rgba(255, 107, 97, 0.14);
+  }
+
+  .chat-app[data-style="whatsapp"] .approval-buttons button:last-child,
+  .chat-app[data-style="whatsapp"] .question-card button {
+    background: #0f7a5c;
+  }
+
+  .chat-app[data-style="whatsapp"] .technical-error {
+    color: #ffb4ae;
+    background: var(--danger-soft);
+  }
+
+  .chat-app[data-style="whatsapp"] .search-row {
+    background: var(--chrome);
+  }
+
+  .chat-app[data-style="whatsapp"] .search-row input {
+    color: var(--ink);
+  }
+
+  .chat-app[data-style="whatsapp"] .inline-error {
+    color: var(--ink);
+    background: var(--chrome);
+  }
+
+  .chat-app[data-style="whatsapp"] .swipe-reply-cue {
+    color: var(--accent-strong);
+    background: rgba(22, 34, 30, 0.96);
+  }
+
+  .chat-app[data-style="whatsapp"] .loading-stack i {
+    background: linear-gradient(
+      90deg,
+      rgba(231, 239, 235, 0.05) 0%,
+      rgba(231, 239, 235, 0.1) 50%,
+      rgba(231, 239, 235, 0.05) 100%
+    );
+    background-size: 200% 100%;
+  }
+}
+
+/* ── Reduced motion ─────────────────────────────────────────────────────── */
+
+@media (prefers-reduced-motion: reduce) {
+  .chat-app[data-style="whatsapp"] .reaction-picker button:active,
+  .chat-app[data-style="whatsapp"] .send-button:not(:disabled):active {
+    transform: none;
+    filter: none;
+  }
+}

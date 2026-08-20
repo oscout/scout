@@ -1,0 +1,1309 @@
+/* Scope instrument — dedicated view components (not Scout ops skins). */
+
+.scope-lanes,
+.scope-dir {
+  --scope-bg: #111316;
+  --scope-panel: #15181b;
+  --scope-line: rgba(255, 255, 255, 0.1);
+  --scope-text: #ebe8e1;
+  --scope-muted: #8d8980;
+  --scope-accent: #5fd0c4;
+  --scope-live: #7bd88f;
+  --scope-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+  height: 100%;
+  background:
+    radial-gradient(1200px 600px at 10% -10%, rgba(95, 208, 196, 0.06), transparent 60%),
+    var(--scope-bg);
+  color: var(--scope-text);
+}
+
+/* ── Lane view ── */
+
+.scope-lanes-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--scope-line);
+  background: var(--scope-panel);
+}
+
+.scope-lanes-bar__summary {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  font-family: var(--scope-mono);
+  font-size: var(--text-sm);
+  letter-spacing: 0.06em;
+  color: var(--scope-muted);
+}
+
+.scope-lanes-bar__count {
+  color: var(--scope-accent);
+  text-transform: uppercase;
+}
+
+.scope-lanes-bar__controls {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.scope-lanes-bar__layouts,
+.scope-lanes-bar__horizons,
+.scope-lane-width {
+  display: flex;
+  gap: 4px;
+}
+
+.scope-lane-width__btn,
+.scope-lanes-bar__layout,
+.scope-lanes-bar__horizon {
+  appearance: none;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--scope-muted);
+  font-family: var(--scope-mono);
+  font-size: var(--text-sm);
+  padding: 4px 8px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.scope-lanes-bar__layout.is-on,
+.scope-lanes-bar__horizon.is-on,
+.scope-lane-width__btn.is-on {
+  border-color: rgba(95, 208, 196, 0.35);
+  color: var(--scope-accent);
+  background: rgba(95, 208, 196, 0.08);
+}
+
+.scope-lanes-bar__layout:focus-visible,
+.scope-lanes-bar__horizon:focus-visible,
+.scope-lane-width__btn:focus-visible {
+  outline: 2px solid var(--scope-accent);
+  outline-offset: 2px;
+}
+
+.scope-lane-width.is-compact {
+  margin-top: 4px;
+}
+
+.scope-lane-width.is-compact .scope-lane-width__btn {
+  padding: 2px 5px;
+  font-size: var(--text-2xs);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.scope-lane__meta .scope-lane-width {
+  margin-top: 6px;
+}
+
+.scope-lanes__issues {
+  padding: 8px 16px;
+  border-bottom: 1px solid var(--scope-line);
+}
+
+.scope-lanes__issues-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-family: var(--scope-mono);
+  font-size: var(--text-sm);
+  color: var(--scope-muted);
+}
+
+.scope-lanes__empty,
+.scope-dir__empty {
+  flex: 1;
+  display: grid;
+  place-items: center;
+  padding: 48px 24px;
+  font-family: var(--scope-mono);
+  font-size: var(--text-md);
+  color: var(--scope-muted);
+}
+
+.scope-lanes__canvas {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.scope-lanes__scroll {
+  display: flex;
+  gap: 12px;
+  height: 100%;
+  overflow-x: auto;
+  padding: 16px;
+  scroll-snap-type: x proximity;
+}
+
+.scope-lanes.is-dragging .scope-lanes__scroll:not(.is-grid) {
+  scroll-snap-type: none;
+}
+
+.scope-lanes.is-dragging .scope-lanes__scroll:not(.is-grid) .scope-lane-space {
+  scroll-snap-align: none;
+}
+
+.scope-lanes__scroll.is-grid {
+  --scope-grid-tracks: 4;
+  display: grid;
+  grid-template-columns: repeat(var(--scope-grid-tracks, 4), minmax(0, 1fr));
+  grid-auto-rows: minmax(220px, min(400px, 42vh));
+  align-content: start;
+  gap: 12px;
+  overflow-x: hidden;
+  overflow-y: auto;
+  scroll-snap-type: none;
+  position: relative;
+  width: 100%;
+  min-height: 0;
+  box-sizing: border-box;
+}
+
+.scope-lanes__scroll:not(.is-grid) {
+  position: relative;
+}
+
+/* Lane space — one column cell; lanes stack vertically inside */
+.scope-lane-space {
+  display: flex;
+  align-items: stretch;
+  min-height: 0;
+  min-width: 0;
+  position: relative;
+  overflow: hidden;
+  isolation: isolate;
+}
+
+.scope-lanes__scroll:not(.is-grid) .scope-lane-space {
+  flex: 0 0 auto;
+  width: var(--scope-lane-width, 512px);
+  height: 100%;
+  scroll-snap-align: start;
+}
+
+.scope-lanes__scroll.is-grid .scope-lane-space {
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  min-height: 220px;
+  max-height: min(400px, 42vh);
+  align-self: stretch;
+}
+
+@media (max-width: 640px) {
+  .scope-lanes__scroll.is-grid .scope-lane-space {
+    grid-column: 1 / -1;
+  }
+}
+
+.scope-lane-width.is-grid .scope-lane-width__btn {
+  min-width: 2.25rem;
+}
+
+.scope-lane-space__lanes {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  gap: 4px;
+  overflow: hidden;
+}
+
+.scope-lane-space__lanes > .scope-lane {
+  flex: 1 1 0;
+  min-width: 0;
+  min-height: 0;
+}
+
+.scope-lane-space[data-orient="row"] .scope-lane-space__lanes {
+  flex-direction: row;
+}
+
+.scope-lane-space[data-orient="column"] .scope-lane-space__lanes {
+  flex-direction: column;
+}
+
+.scope-lane-space[data-orient="column"][data-split="2"] .scope-lane-space__lanes,
+.scope-lane-space[data-orient="column"][data-split="3"] .scope-lane-space__lanes,
+.scope-lane-space[data-orient="column"][data-split="4"] .scope-lane-space__lanes,
+.scope-lane-space[data-orient="column"][data-split="5"] .scope-lane-space__lanes,
+.scope-lane-space[data-orient="column"][data-split="6"] .scope-lane-space__lanes {
+  min-height: calc(112px * var(--scope-lane-stack-max, 4));
+}
+
+/* Stacked lanes share one column — drop fixed trace floors so feeds stay bounded */
+.scope-lane-space[data-orient="column"][data-split]:not([data-split="1"]) .scope-lane__trace {
+  min-height: 0;
+  flex: 1 1 0;
+}
+
+.scope-lane {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  border: 1px solid var(--scope-line);
+  border-radius: 8px;
+  background: var(--scope-panel);
+  outline: none;
+  overflow: hidden;
+  position: relative;
+}
+
+.scope-lanes.is-grid .scope-lane.is-grid,
+.scope-lanes.is-grid .scope-lane {
+  min-height: 0;
+  height: auto;
+}
+
+.scope-lane.is-dragging {
+  opacity: 0.58;
+}
+
+.scope-lane.is-drop-target {
+  outline: 1px dashed rgba(95, 208, 196, 0.35);
+  outline-offset: -1px;
+}
+
+/* Swim-only lane width resize — invisible until hover (not a permanent column divider). */
+.scope-lane.is-cursor {
+  border-color: rgba(95, 208, 196, 0.45);
+  box-shadow: 0 0 0 1px rgba(95, 208, 196, 0.2);
+}
+
+.scope-lane__head {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--scope-line);
+  cursor: pointer;
+}
+
+.scope-lane__head.is-compact {
+  align-items: center;
+  padding: 5px 8px;
+  gap: 6px;
+}
+
+.scope-lane__drag {
+  flex-shrink: 0;
+  position: relative;
+  z-index: 2;
+  width: 22px;
+  height: 22px;
+  margin-top: 1px;
+  border: 1px solid rgba(95, 208, 196, 0.28);
+  border-radius: 4px;
+  background: rgba(95, 208, 196, 0.1);
+  color: var(--scope-accent);
+  font-size: var(--text-sm);
+  line-height: 22px;
+  text-align: center;
+  cursor: grab;
+  user-select: none;
+  -webkit-user-drag: element;
+  touch-action: none;
+  transition: border-color 140ms ease, color 140ms ease, background 140ms ease;
+}
+
+.scope-lane__head.is-compact .scope-lane__drag {
+  width: 18px;
+  height: 18px;
+  margin-top: 0;
+  font-size: var(--text-xs);
+  line-height: 18px;
+}
+
+.scope-lane__drag:hover {
+  border-color: rgba(95, 208, 196, 0.45);
+  color: var(--scope-text);
+  background: rgba(95, 208, 196, 0.16);
+}
+
+.scope-lane__drag:focus-visible {
+  outline: 2px solid var(--scope-accent);
+  outline-offset: 1px;
+}
+
+.scope-lane__drag:active,
+.scope-lane.is-dragging .scope-lane__drag {
+  cursor: grabbing;
+}
+
+.scope-lane-drop {
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: 5;
+  pointer-events: none;
+  border-radius: 4px;
+  box-sizing: border-box;
+}
+
+.scope-lane-drop[hidden] {
+  display: none;
+}
+
+.scope-lane-drop.is-line {
+  background: var(--scope-accent);
+  box-shadow: 0 0 10px rgba(95, 208, 196, 0.45);
+}
+
+.scope-lane-drop.is-band {
+  background: rgba(95, 208, 196, 0.12);
+  border: 1px solid var(--scope-accent);
+  border-radius: 6px;
+  box-shadow: inset 0 0 0 1px rgba(95, 208, 196, 0.22);
+}
+
+.scope-lane-drop.is-band.is-bottom-stack {
+  border-radius: 0 0 8px 8px;
+  background: rgba(95, 208, 196, 0.08);
+  box-shadow: inset 0 0 0 1px rgba(95, 208, 196, 0.18);
+}
+
+.scope-lane-drop.is-band[data-label="stack between"] {
+  background: rgba(95, 208, 196, 0.2);
+  border-radius: 4px;
+  box-shadow: 0 0 12px rgba(95, 208, 196, 0.35);
+}
+
+.scope-lane-drop.is-column {
+  background: rgba(95, 208, 196, 0.06);
+  border: 1px dashed var(--scope-accent);
+  border-radius: 8px;
+  box-shadow: inset 0 0 0 1px rgba(95, 208, 196, 0.16), 0 10px 28px -18px rgba(95, 208, 196, 0.35);
+}
+
+.scope-lane-drop[data-label]::after {
+  content: attr(data-label);
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  font-family: var(--scope-mono);
+  font-size: var(--text-2xs);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--scope-accent);
+  white-space: nowrap;
+  padding: 2px 6px;
+  border-radius: 3px;
+  background: rgba(17, 19, 22, 0.82);
+}
+
+.scope-lane__head:focus-visible {
+  outline: 2px solid var(--scope-accent);
+  outline-offset: -2px;
+}
+
+.scope-lane__live {
+  width: 6px;
+  height: 6px;
+  margin-top: 5px;
+  border-radius: 50%;
+  background: transparent;
+  flex-shrink: 0;
+}
+
+.scope-lane.is-live .scope-lane__live {
+  background: var(--scope-live);
+  box-shadow: 0 0 8px rgba(123, 216, 143, 0.5);
+}
+
+.scope-lane__meta {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  font-family: var(--scope-mono);
+  font-size: var(--text-sm);
+}
+
+.scope-lane__source {
+  color: var(--scope-accent);
+  letter-spacing: 0.04em;
+}
+
+.scope-lane__ref,
+.scope-lane__path,
+.scope-lane__status {
+  color: var(--scope-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.scope-lane.is-live .scope-lane__status {
+  color: var(--scope-live);
+}
+
+.scope-lane__trace {
+  flex: 1;
+  min-height: 200px;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.scope-lane.is-stack-compact .scope-lane__trace {
+  min-height: 96px;
+}
+
+.scope-lane.is-stack-compact .scope-lane__meta {
+  font-size: var(--text-xs);
+}
+
+.scope-lane__empty {
+  padding: 24px 12px;
+  font-family: var(--scope-mono);
+  font-size: var(--text-sm);
+  color: var(--scope-muted);
+  text-align: center;
+}
+
+/* Lane trace — SessionObserve lane timeline with Scope-local gutter + Scout tool chrome */
+.scope-lane__trace .s-observe--scope {
+  --ink: var(--scope-text);
+  --muted: color-mix(in srgb, var(--scope-text) 78%, var(--scope-muted));
+  --dim: var(--scope-muted);
+  --accent: var(--scope-accent);
+  --bg: var(--scope-bg);
+  --surface: var(--scope-panel);
+  --red: #e07a7a;
+  flex: 1;
+  min-height: 0;
+  height: 100%;
+  background: transparent;
+  color: var(--scope-text);
+}
+
+.scope-lane__trace .s-observe--scope .s-observe-main {
+  flex: 1;
+  min-height: 0;
+  padding: 8px 10px 12px;
+}
+
+.scope-lane__trace .s-observe--scope.s-observe--lane-gutter-label {
+  --lane-time-col: 88px;
+  --lane-spine-x: 90px;
+}
+
+.scope-lane__trace .s-observe--scope.s-observe--lane {
+  --lane-glyph-size: 15px;
+  --lane-glyph-width: 20px;
+  --lane-glyph-color: color-mix(in srgb, var(--scope-accent) 72%, var(--scope-text));
+}
+
+.scope-lane__trace .s-observe--scope .s-observe-tool--fam-file .s-observe-tool-path-base--file,
+.scope-lane__trace .s-observe--scope .s-observe-tool--fam-read .s-observe-tool-path-base--read {
+  color: color-mix(in srgb, var(--scope-accent) 82%, var(--scope-text));
+}
+
+.scope-lane__trace .s-observe--scope .s-observe-tool-diff-add,
+.scope-lane__trace .s-observe--scope .s-observe-diff-line--add {
+  color: color-mix(in srgb, var(--scope-live) 70%, var(--scope-text));
+}
+
+.scope-lane__trace .s-observe--scope .s-observe-row--selectable:hover .s-observe-tool,
+.scope-lane__trace .s-observe--scope .s-observe-row--selectable:focus-visible .s-observe-tool {
+  border-left-color: color-mix(in srgb, var(--scope-accent) 28%, transparent);
+  background: color-mix(in srgb, var(--scope-accent) 6%, var(--scope-panel));
+}
+
+.scope-lane__trace .s-observe--scope .s-observe-grok-permission {
+  border-color: color-mix(in srgb, var(--scope-line) 85%, transparent);
+  background: color-mix(in srgb, var(--scope-panel) 88%, transparent);
+}
+
+.scope-lane__trace .s-observe--scope .s-observe-grok-permission-decision.is-allow {
+  color: color-mix(in srgb, var(--scope-accent) 78%, var(--scope-text));
+}
+
+.scope-lane__trace .s-observe--scope .s-observe-grok-permission-tool {
+  color: var(--scope-text);
+}
+
+.scope-lane__trace .s-observe--scope .s-observe-grok-turn-num {
+  color: color-mix(in srgb, var(--scope-accent) 55%, var(--scope-muted));
+}
+
+.scope-lane__trace .s-observe--scope .s-observe-live-sticky,
+.scope-lane__trace .s-observe--scope .s-observe-scrubber,
+.scope-lane__trace .s-observe--scope .s-observe-lane-trace-meta {
+  display: none;
+}
+
+.scope-lane.is-stack-compact .scope-lane__trace .s-observe--lane .s-observe-main {
+  --lane-time-col: 72px;
+  --lane-spine-x: 74px;
+  padding: 4px 6px 6px;
+}
+
+.scope-lane.is-stack-compact .scope-lane__trace .s-observe--lane .s-observe-stream {
+  padding:
+    2px
+    4px
+    6px
+    calc(var(--lane-time-col) + 8px);
+}
+
+.scope-lane.is-stack-compact .scope-lane__trace .s-observe--lane .s-observe-row {
+  padding-bottom: 0;
+}
+
+.scope-lane.is-stack-compact .scope-lane__trace .s-observe--lane .s-observe-row-time {
+  font-size: var(--text-2xs);
+}
+
+.scope-lane.is-stack-compact .scope-lane__trace .s-observe--lane .s-observe-tool-cmd,
+.scope-lane.is-stack-compact .scope-lane__trace .s-observe--lane .s-observe-message-text,
+.scope-lane.is-stack-compact .scope-lane__trace .s-observe--lane .s-observe-reasoning-text {
+  font-size: var(--text-xs);
+  line-height: 1.35;
+}
+
+/* Keep tool-family glyphs legible even in compact grid cells */
+.scope-lane.is-stack-compact .scope-lane__trace .s-observe--lane .s-observe-tool-glyph,
+.scope-lane.is-stack-compact .scope-lane__trace .s-observe--lane .s-observe-bash-prompt {
+  font-size: var(--lane-glyph-size);
+}
+
+.scope-lane.is-stack-compact .scope-lane__trace .s-observe--lane .s-observe-tool-glyph {
+  width: var(--lane-glyph-width);
+  min-width: var(--lane-glyph-width);
+}
+
+/* Detail sheet — full timeline via SessionObserve, scope surface only */
+.scope-lane-detail__trace .s-observe--scope {
+  background: transparent;
+  color: var(--scope-text);
+}
+
+.scope-lane-detail__trace .s-observe--scope .s-observe-live-sticky,
+.scope-lane-detail__trace .s-observe--scope .s-observe-scrubber {
+  display: none;
+}
+
+/* ── Dir view ── */
+
+.scope-dir__bar {
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--scope-line);
+  background: var(--scope-panel);
+}
+
+.scope-dir__summary {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  font-family: var(--scope-mono);
+  font-size: var(--text-sm);
+  letter-spacing: 0.06em;
+  color: var(--scope-muted);
+}
+
+.scope-dir__count {
+  color: var(--scope-accent);
+  text-transform: uppercase;
+}
+
+.scope-dir__live {
+  color: var(--scope-live);
+}
+
+.scope-dir__body {
+  flex: 1;
+  overflow: auto;
+  padding: 16px;
+}
+
+.scope-dir__group + .scope-dir__group {
+  margin-top: 24px;
+}
+
+.scope-dir__group-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin-bottom: 8px;
+  font-family: var(--scope-mono);
+  font-size: var(--text-sm);
+}
+
+.scope-dir__group-name {
+  color: var(--scope-text);
+  letter-spacing: 0.04em;
+}
+
+.scope-dir__group-kind,
+.scope-dir__group-counts {
+  color: var(--scope-muted);
+}
+
+.scope-dir__list {
+  border: 1px solid var(--scope-line);
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.scope-dir__row {
+  display: grid;
+  grid-template-columns: 12px 72px 1fr auto auto;
+  gap: 10px;
+  align-items: center;
+  padding: 8px 12px;
+  font-family: var(--scope-mono);
+  font-size: var(--text-sm);
+  border-bottom: 1px solid var(--scope-line);
+  cursor: pointer;
+}
+
+.scope-dir__row:last-child {
+  border-bottom: none;
+}
+
+.scope-dir__row:hover,
+.scope-dir__row:focus-visible {
+  background: rgba(95, 208, 196, 0.06);
+  outline: none;
+}
+
+.scope-dir__row:focus-visible {
+  box-shadow: inset 0 0 0 2px var(--scope-accent);
+}
+
+.scope-dir__dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--scope-line);
+}
+
+.scope-dir__dot.is-live {
+  background: var(--scope-live);
+}
+
+.scope-dir__ref {
+  color: var(--scope-accent);
+}
+
+.scope-dir__path {
+  color: var(--scope-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.scope-dir__events {
+  color: var(--scope-muted);
+  text-align: right;
+}
+
+.scope-dir__unit {
+  opacity: 0.6;
+  margin-left: 1px;
+}
+
+.scope-dir__status {
+  color: var(--scope-muted);
+  white-space: nowrap;
+}
+
+.scope-dir__row.is-live .scope-dir__status {
+  color: var(--scope-live);
+}
+
+/* ── Detail sheet (Scope instrument, not Scout ops sheet) ── */
+
+.scope-lane-trace-sheet {
+  --slide-bg: var(--scope-panel, #15181b);
+  color: var(--scope-text, #ebe8e1);
+}
+
+.scope-lane-trace-sheet__toolbar {
+  display: flex;
+  justify-content: flex-end;
+  padding: 8px 8px 0;
+}
+
+.scope-lane-trace-sheet__close {
+  appearance: none;
+  border: none;
+  background: transparent;
+  color: var(--scope-muted, #8d8980);
+  font-size: var(--text-4xl);
+  line-height: 1;
+  padding: 4px 8px;
+  cursor: pointer;
+  border-radius: 4px;
+}
+
+.scope-lane-trace-sheet__close:focus-visible {
+  outline: 2px solid var(--scope-accent, #5fd0c4);
+  outline-offset: 2px;
+}
+
+.scope-lane-detail {
+  display: flex;
+  flex-direction: column;
+  min-height: 100%;
+}
+
+.scope-lane-detail__head {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 16px 16px 12px;
+  border-bottom: 1px solid var(--scope-line, rgba(255, 255, 255, 0.1));
+}
+
+.scope-lane-detail__copy {
+  flex: 1;
+  min-width: 0;
+}
+
+.scope-lane-detail__kicker {
+  display: block;
+  font-family: var(--scope-mono, monospace);
+  font-size: var(--text-xs);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--scope-muted, #8d8980);
+  margin-bottom: 4px;
+}
+
+.scope-lane-detail__title {
+  margin: 0;
+  font-family: var(--scope-mono, monospace);
+  font-size: var(--text-xl);
+  font-weight: 500;
+  color: var(--scope-accent, #5fd0c4);
+}
+
+.scope-lane-detail__ref {
+  color: var(--scope-muted, #8d8980);
+}
+
+.scope-lane-detail__sub {
+  margin-top: 4px;
+  font-family: var(--scope-mono, monospace);
+  font-size: var(--text-sm);
+  color: var(--scope-muted, #8d8980);
+}
+
+.scope-lane-detail__meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px 20px;
+  margin: 0;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--scope-line, rgba(255, 255, 255, 0.1));
+  font-family: var(--scope-mono, monospace);
+  font-size: var(--text-sm);
+}
+
+.scope-lane-detail__stat {
+  display: flex;
+  gap: 6px;
+}
+
+.scope-lane-detail__stat dt {
+  margin: 0;
+  color: var(--scope-muted, #8d8980);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.scope-lane-detail__stat dd {
+  margin: 0;
+  color: var(--scope-text, #ebe8e1);
+}
+
+.scope-lane-detail__trace {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+
+/* ── Sessions view (/scope/sessions) ── */
+
+.scope-sessions-route {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+  height: 100%;
+}
+
+.scope-sessions {
+  --scope-bg: #111316;
+  --scope-panel: #15181b;
+  --scope-line: rgba(255, 255, 255, 0.1);
+  --scope-text: #ebe8e1;
+  --scope-muted: #8d8980;
+  --scope-accent: #5fd0c4;
+  --scope-live: #7bd88f;
+  --scope-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+  height: 100%;
+  background:
+    radial-gradient(1200px 600px at 10% -10%, rgba(95, 208, 196, 0.06), transparent 60%),
+    var(--scope-bg);
+  color: var(--scope-text);
+}
+
+.scope-sessions__bar {
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--scope-line);
+  background: var(--scope-panel);
+}
+
+.scope-sessions__summary {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  font-family: var(--scope-mono);
+  font-size: var(--text-sm);
+  letter-spacing: 0.06em;
+  color: var(--scope-muted);
+}
+
+.scope-sessions__count {
+  color: var(--scope-accent);
+  text-transform: uppercase;
+}
+
+.scope-sessions__live {
+  color: var(--scope-live);
+}
+
+.scope-sessions__warn {
+  color: #e07a7a;
+  text-transform: uppercase;
+}
+
+.scope-sessions__body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  padding: 12px 16px 16px;
+}
+
+.scope-sessions__atop {
+  --bg: var(--scope-bg);
+  --ink: var(--scope-text);
+  --muted: var(--scope-muted);
+  --dim: var(--scope-muted);
+  --surface: var(--scope-panel);
+  --border: var(--scope-line);
+  --accent: var(--scope-accent);
+  --green: var(--scope-live);
+  --amber: #d4a574;
+  --font-mono: var(--scope-mono);
+  --font-sans: var(--scope-mono);
+
+  flex: 1;
+  min-height: 0;
+  border: 1px solid var(--scope-line);
+  border-radius: 8px;
+  overflow: hidden;
+  background: var(--scope-panel);
+}
+
+.scope-sessions__atop .s-atop-fbar {
+  background: color-mix(in srgb, var(--scope-panel) 92%, var(--scope-bg));
+  border-bottom-color: var(--scope-line);
+}
+
+.scope-sessions__atop .s-atop-search {
+  background: rgba(255, 255, 255, 0.03);
+  border-color: var(--scope-line);
+}
+
+.scope-sessions__atop .s-atop-search:focus-within {
+  border-color: rgba(95, 208, 196, 0.45);
+  box-shadow: 0 0 0 1px rgba(95, 208, 196, 0.12);
+}
+
+.scope-sessions__atop .s-atop-search-prompt,
+.scope-sessions__atop .s-atop-pill--on .s-atop-pill-ct {
+  color: var(--scope-accent);
+}
+
+.scope-sessions__atop .s-atop-pill {
+  border-color: var(--scope-line);
+  background: transparent;
+  color: var(--scope-muted);
+  border-radius: 4px;
+  font-size: var(--text-sm);
+  letter-spacing: 0.04em;
+}
+
+.scope-sessions__atop .s-atop-pill:hover {
+  color: var(--scope-text);
+  border-color: rgba(95, 208, 196, 0.35);
+}
+
+.scope-sessions__atop .s-atop-pill--on {
+  background: rgba(95, 208, 196, 0.08);
+  border-color: rgba(95, 208, 196, 0.35);
+  color: var(--scope-accent);
+}
+
+.scope-sessions__atop .s-atop-pill:focus-visible,
+.scope-sessions__atop .s-atop-search-input:focus-visible {
+  outline: 2px solid var(--scope-accent);
+  outline-offset: 2px;
+}
+
+.scope-sessions__atop .dt-wrap {
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.scope-sessions__atop .dt-table thead th {
+  background: color-mix(in srgb, var(--scope-panel) 88%, var(--scope-bg));
+  border-bottom-color: var(--scope-line);
+  color: var(--scope-muted);
+  font-size: var(--text-xs);
+  letter-spacing: 0.08em;
+}
+
+.scope-sessions__atop .dt-table tbody td {
+  border-bottom-color: var(--scope-line);
+  color: var(--scope-muted);
+}
+
+.scope-sessions__atop .dt-row--interactive:hover td,
+.scope-sessions__atop .dt-row--interactive:focus-visible td {
+  background: rgba(95, 208, 196, 0.06);
+  color: var(--scope-text);
+}
+
+.scope-sessions__atop .s-atop-row--selected td,
+.scope-sessions__atop .dt-row--active td {
+  background: rgba(95, 208, 196, 0.1);
+  color: var(--scope-text);
+}
+
+.scope-sessions__atop .s-atop-agent-id,
+.scope-sessions__atop .s-atop-col-project {
+  color: var(--scope-text);
+}
+
+.scope-sessions__atop .s-atop-chip--harness {
+  color: var(--scope-accent);
+  border-color: rgba(95, 208, 196, 0.28);
+  background: rgba(95, 208, 196, 0.06);
+}
+
+.scope-sessions__atop .s-atop-status--run {
+  color: var(--scope-live);
+}
+
+.scope-sessions__atop .s-atop-status--run .s-atop-status-dot {
+  background: var(--scope-live);
+  box-shadow: 0 0 8px rgba(123, 216, 143, 0.45);
+}
+
+.scope-sessions__atop .s-atop-status--idle {
+  color: var(--scope-muted);
+}
+
+.scope-sessions__atop .s-atop-keys {
+  background: color-mix(in srgb, var(--scope-panel) 92%, var(--scope-bg));
+  border-top-color: var(--scope-line);
+  color: var(--scope-muted);
+  font-size: var(--text-sm);
+}
+
+.scope-sessions__atop .s-atop-keys-count strong,
+.scope-sessions__atop .s-atop-keys kbd {
+  color: var(--scope-text);
+  border-color: var(--scope-line);
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.scope-sessions__atop .dt-empty-title {
+  color: var(--scope-muted);
+  font-family: var(--scope-mono);
+}
+
+.scope-sessions__atop .dt-empty {
+  color: var(--scope-muted);
+  font-family: var(--scope-mono);
+  font-size: var(--text-md);
+}
+
+/* ── Tail view (/scope/tail) ── */
+
+.scope-tail-route {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+  height: 100%;
+}
+
+.scope-tail {
+  --scope-bg: #111316;
+  --scope-panel: #15181b;
+  --scope-line: rgba(255, 255, 255, 0.1);
+  --scope-text: #ebe8e1;
+  --scope-muted: #8d8980;
+  --scope-accent: #5fd0c4;
+  --scope-live: #7bd88f;
+  --scope-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+  height: 100%;
+  background:
+    radial-gradient(1200px 600px at 10% -10%, rgba(95, 208, 196, 0.06), transparent 60%),
+    var(--scope-bg);
+  color: var(--scope-text);
+}
+
+.scope-tail__bar {
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--scope-line);
+  background: var(--scope-panel);
+}
+
+.scope-tail__summary {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  font-family: var(--scope-mono);
+  font-size: var(--text-sm);
+  letter-spacing: 0.06em;
+  color: var(--scope-muted);
+}
+
+.scope-tail__count {
+  color: var(--scope-accent);
+  text-transform: uppercase;
+}
+
+.scope-tail__hint {
+  color: var(--scope-muted);
+}
+
+.scope-tail__query {
+  color: var(--scope-text);
+  opacity: 0.85;
+}
+
+.scope-tail__body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  padding: 12px 16px 16px;
+}
+
+.scope-tail__stream {
+  --bg: var(--scope-bg);
+  --ink: var(--scope-text);
+  --muted: var(--scope-muted);
+  --dim: var(--scope-muted);
+  --surface: var(--scope-panel);
+  --border: var(--scope-line);
+  --accent: var(--scope-accent);
+  --green: var(--scope-live);
+  --amber: #d4a574;
+  --red: #e07a7a;
+  --info: color-mix(in srgb, #7eb8da 75%, var(--scope-text));
+  --cat-gold: #d4a574;
+  --cat-sky: var(--scope-accent);
+  --cat-purple: #b8a0d4;
+  --font-mono: var(--scope-mono);
+  --font-sans: var(--scope-mono);
+
+  flex: 1;
+  min-height: 0;
+  border: 1px solid var(--scope-line);
+  border-radius: 8px;
+  overflow: hidden;
+  background: var(--scope-panel);
+}
+
+.scope-tail__stream .s-tail-status {
+  background: color-mix(in srgb, var(--scope-panel) 92%, var(--scope-bg));
+  border-bottom-color: var(--scope-line);
+  font-size: var(--text-sm);
+}
+
+.scope-tail__stream .s-tail-status-state {
+  color: var(--scope-accent);
+}
+
+.scope-tail__stream .s-tail-status-state--paused {
+  color: var(--scope-muted);
+}
+
+.scope-tail__stream .s-tail-live-dot {
+  background: var(--scope-accent);
+  box-shadow: 0 0 8px rgba(95, 208, 196, 0.45);
+}
+
+.scope-tail__stream .s-tail-live-dot--paused {
+  background: var(--scope-muted);
+  box-shadow: none;
+}
+
+.scope-tail__stream .s-tail-status-cluster--display,
+.scope-tail__stream .s-tail-status-cluster--issues {
+  border-left-color: var(--scope-line);
+}
+
+.scope-tail__stream .s-tail-issue-filter-btn {
+  border-radius: 4px;
+  padding: 2px 6px;
+}
+
+.scope-tail__stream .s-tail-issue-filter-btn:hover {
+  color: var(--scope-text);
+}
+
+.scope-tail__stream .s-tail-issue-filter-btn--active {
+  color: var(--scope-accent);
+  text-decoration: none;
+  background: rgba(95, 208, 196, 0.08);
+  border: 1px solid rgba(95, 208, 196, 0.28);
+}
+
+.scope-tail__stream .s-tail-issue-filter-btn:focus-visible {
+  outline: 2px solid var(--scope-accent);
+  outline-offset: 2px;
+}
+
+.scope-tail__stream .s-tail-filter {
+  background: rgba(255, 255, 255, 0.03);
+  border-bottom-color: var(--scope-line);
+}
+
+.scope-tail__stream .s-tail-filter-prompt {
+  color: var(--scope-accent);
+}
+
+.scope-tail__stream .s-tail-filter-input {
+  color: var(--scope-text);
+}
+
+.scope-tail__stream .s-tail-filter-input::placeholder {
+  color: var(--scope-muted);
+}
+
+.scope-tail__stream .s-tail-body {
+  background: var(--scope-bg);
+}
+
+.scope-tail__stream .s-tail-row:nth-child(even) {
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.scope-tail__stream .s-tail-row:hover,
+.scope-tail__stream .s-tail-row:focus-visible {
+  background: rgba(95, 208, 196, 0.06);
+  color: var(--scope-text);
+}
+
+.scope-tail__stream .s-tail-row.s-tail-row--selected,
+.scope-tail__stream .s-tail-row.s-tail-row--selected:hover {
+  background: rgba(95, 208, 196, 0.1);
+  color: var(--scope-text);
+}
+
+.scope-tail__stream .s-tail-summary {
+  color: var(--scope-text);
+}
+
+.scope-tail__stream .s-tail-token--harness {
+  color: var(--scope-accent);
+}
+
+.scope-tail__stream .s-tail-link--active:hover,
+.scope-tail__stream .s-tail-link--active:focus-visible {
+  color: var(--scope-accent);
+}
+
+.scope-tail__stream .s-tail-glyph--assistant {
+  color: var(--scope-accent);
+}
+
+.scope-tail__stream .s-tail-glyph--tool-result {
+  color: var(--scope-live);
+}
+
+.scope-tail__stream .s-tail-divider {
+  border-color: var(--scope-line);
+  background: rgba(95, 208, 196, 0.04);
+  color: var(--scope-muted);
+  font-size: var(--text-sm);
+}
+
+.scope-tail__stream .s-tail-divider:hover,
+.scope-tail__stream .s-tail-divider:focus-visible {
+  background: rgba(95, 208, 196, 0.08);
+  color: var(--scope-accent);
+}
+
+.scope-tail__stream .s-tail-empty {
+  color: var(--scope-muted);
+  font-family: var(--scope-mono);
+  font-size: var(--text-md);
+}
+
+.scope-tail__stream .s-tail-empty-title {
+  color: var(--scope-text);
+}
+
+.scope-tail__stream .s-tail-keys {
+  background: color-mix(in srgb, var(--scope-panel) 92%, var(--scope-bg));
+  border-top: 1px solid var(--scope-line);
+  color: var(--scope-muted);
+  font-size: var(--text-sm);
+}
+
+.scope-tail__stream .s-tail-keys kbd {
+  color: var(--scope-text);
+  border-color: var(--scope-line);
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.scope-tail__stream .s-tail-body > .s-tail-row:last-child {
+  animation-name: s-tail-row-in, s-tail-row-settle-scope;
+}
+
+@keyframes s-tail-row-settle-scope {
+  from {
+    background-color: rgba(95, 208, 196, 0.12);
+  }
+  to {
+    background-color: transparent;
+  }
+}

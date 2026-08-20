@@ -1,0 +1,1173 @@
+/* Agent floor — per-agent time lanes on an isometric plane, shared across
+   surfaces. Each agent keeps a lane strip; depth is time (front = now, five
+   -minute buckets receding). The component paints entirely from the --floor-*
+   inputs below. Defaults follow the app-global tokens (so light/dark theme
+   modes just work); a host surface with its own palette reskins by overriding
+   the inputs. */
+
+.agent-floor {
+  /* palette inputs */
+  --floor-bg: var(--bg);
+  --floor-ink: var(--ink);
+  --floor-muted: var(--dim);
+  --floor-accent: var(--accent);
+  --floor-ok: var(--green);
+  --floor-mono: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace);
+  --floor-shadow: rgba(0, 0, 0, 0.42);
+  --floor-shadow-strong: rgba(0, 0, 0, 0.62);
+  --floor-dock-id-width: 210px;
+  --floor-dock-gap: 18px;
+  --floor-dock-pad: 16px;
+
+  /* derived */
+  --floor-face-1: color-mix(in oklab, var(--floor-ink) 4%, var(--floor-bg));
+  --floor-face-2: color-mix(in oklab, var(--floor-ink) 7%, var(--floor-bg));
+  --floor-face-3: color-mix(in oklab, var(--floor-ink) 11%, var(--floor-bg));
+  --floor-line-soft: color-mix(in oklab, var(--floor-ink) 6%, transparent);
+  --floor-line: color-mix(in oklab, var(--floor-ink) 12%, transparent);
+  --floor-line-2: color-mix(in oklab, var(--floor-ink) 20%, transparent);
+  --floor-ok-line: color-mix(in oklab, var(--floor-ok) 45%, transparent);
+  --floor-accent-line: color-mix(in oklab, var(--floor-accent) 55%, transparent);
+  --floor-accent-line-2: color-mix(in oklab, var(--floor-accent) 80%, transparent);
+  --floor-accent-soft: color-mix(in oklab, var(--floor-accent) 14%, transparent);
+
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+  container-type: inline-size;
+}
+
+/* Light theme: black-based shadows read heavy on paper — soften them. */
+[data-scout-theme-mode="light"] .agent-floor {
+  --floor-shadow: rgba(24, 30, 36, 0.14);
+  --floor-shadow-strong: rgba(24, 30, 36, 0.26);
+}
+
+/* Scope instrument skin — the scope surface carries its own palette. */
+.scope-lanes .agent-floor {
+  --floor-bg: var(--scope-bg);
+  --floor-ink: var(--scope-text);
+  --floor-muted: var(--scope-muted);
+  --floor-accent: var(--scope-accent);
+  --floor-ok: var(--scope-live);
+  --floor-mono: var(--scope-mono);
+  --floor-shadow: rgba(0, 0, 0, 0.42);
+  --floor-shadow-strong: rgba(0, 0, 0, 0.62);
+}
+
+.agent-floor__body {
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+/* ── Ledger — the stable index beside the plane ── */
+
+.agent-floor__ledger {
+  display: flex;
+  flex-direction: column;
+  width: 252px;
+  flex: none;
+  min-height: 0;
+  border-right: 1px solid var(--floor-line-soft);
+  background: color-mix(in oklab, var(--floor-ink) 2%, transparent);
+}
+
+.agent-floor__ledger-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 12px 14px 10px;
+  border-bottom: 1px solid var(--floor-line-soft);
+  font-family: var(--floor-mono);
+  font-size: var(--text-xs);
+}
+
+.agent-floor__ledger-title {
+  font-weight: 700;
+  color: var(--floor-ink);
+}
+
+.agent-floor__ledger-meta {
+  color: var(--floor-muted);
+}
+
+.agent-floor__ledger-trace {
+  margin-left: auto;
+  color: color-mix(in oklab, var(--floor-muted) 72%, transparent);
+}
+
+.agent-floor__ledger-rows {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 6px 0;
+}
+
+.agent-floor__ledger-rows::-webkit-scrollbar {
+  width: 6px;
+}
+
+.agent-floor__ledger-rows::-webkit-scrollbar-thumb {
+  background: var(--floor-line-2);
+  border-radius: 4px;
+}
+
+.agent-floor__ledger-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  width: 100%;
+  padding: 9px 14px;
+  border: 0;
+  background: none;
+  appearance: none;
+  cursor: pointer;
+  text-align: left;
+  color: inherit;
+  font: inherit;
+  transition: background 0.14s ease;
+}
+
+.agent-floor__ledger-row:hover,
+.agent-floor__ledger-row.is-focus {
+  background: color-mix(in oklab, var(--floor-ink) 5%, transparent);
+}
+
+.agent-floor__ledger-id {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+}
+
+.agent-floor__ledger-name {
+  font-size: var(--text-md);
+  font-weight: 700;
+  color: var(--floor-ink);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.agent-floor__ledger-action {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding-left: 25px;
+  min-width: 0;
+}
+
+.agent-floor__ledger-tally {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-left: 25px;
+  min-width: 0;
+}
+
+.agent-floor__ledger-strip {
+  display: inline-flex;
+  gap: 2px;
+  flex: none;
+}
+
+.agent-floor__ledger-cell {
+  width: 7px;
+  height: 7px;
+  border-radius: 1.5px;
+  background: var(--floor-face-3);
+  box-shadow: inset 0 0 0 1px var(--floor-line-2);
+}
+
+.agent-floor__ledger-cell.is-edit {
+  background: color-mix(in oklab, var(--floor-accent) 16%, var(--floor-face-3));
+  box-shadow: inset 0 0 0 1px var(--floor-accent-line);
+}
+
+.agent-floor__ledger-cell.is-msg {
+  box-shadow: inset 0 0 0 1px var(--floor-ok-line);
+}
+
+.agent-floor__ledger-counts {
+  font-family: var(--floor-mono);
+  font-size: var(--text-2xs);
+  color: var(--floor-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.agent-floor__ledger-foot {
+  padding: 9px 14px;
+  border-top: 1px solid var(--floor-line-soft);
+  font-family: var(--floor-mono);
+  font-size: var(--text-2xs);
+  letter-spacing: 0.04em;
+  color: color-mix(in oklab, var(--floor-muted) 75%, transparent);
+}
+
+.agent-floor__viewport {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 480px;
+  overflow: hidden;
+  cursor: grab;
+  touch-action: none;
+  background:
+    radial-gradient(1100px 540px at 50% -10%, color-mix(in oklab, var(--floor-ink) 4%, transparent), transparent 62%),
+    radial-gradient(150% 125% at 50% 26%, transparent 48%, var(--floor-shadow) 82%, var(--floor-shadow) 100%);
+}
+
+.agent-floor__viewport.is-dragging {
+  cursor: grabbing;
+}
+
+.agent-floor__viewport.is-dragging .agent-floor__stage {
+  transition: none;
+}
+
+.agent-floor__viewport::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background-image: radial-gradient(color-mix(in oklab, var(--floor-ink) 7%, transparent) 1px, transparent 1px);
+  background-size: 24px 24px;
+  opacity: 0.5;
+  -webkit-mask-image: radial-gradient(1100px 640px at 50% 8%, #000, transparent 76%);
+  mask-image: radial-gradient(1100px 640px at 50% 8%, #000, transparent 76%);
+}
+
+/* ── Isometric stage ── */
+
+.agent-floor__stage {
+  position: absolute;
+  left: 50%;
+  top: 54%;
+  transform: rotateX(57deg) rotateZ(45deg);
+  transform-style: preserve-3d;
+  transition: top 240ms ease, transform 180ms ease;
+}
+
+.agent-floor__viewport.is-inspecting .agent-floor__stage {
+  top: 43%;
+}
+
+/* ── Zoom — a multiplier on top of the automatic fit scale ── */
+
+.agent-floor__zoom {
+  position: absolute;
+  z-index: 8;
+  top: 14px;
+  right: 14px;
+  display: inline-grid;
+  grid-template-columns: 28px 46px 28px;
+  border: 1px solid var(--floor-line-2);
+  border-radius: 7px;
+  overflow: hidden;
+  background: color-mix(in oklab, var(--floor-bg) 92%, transparent);
+  box-shadow: 0 12px 28px -18px var(--floor-shadow-strong);
+  backdrop-filter: blur(10px);
+  opacity: 0.52;
+  transition: opacity 140ms ease;
+}
+
+.agent-floor__viewport:hover .agent-floor__zoom,
+.agent-floor__zoom:focus-within {
+  opacity: 1;
+}
+
+.agent-floor__zoom button {
+  appearance: none;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  border-left: 1px solid var(--floor-line-soft);
+  background: transparent;
+  color: var(--floor-muted);
+  font-family: var(--floor-mono);
+  font-size: var(--text-md);
+  cursor: pointer;
+}
+
+.agent-floor__zoom button:first-child {
+  border-left: 0;
+}
+
+.agent-floor__zoom button:hover:not(:disabled) {
+  background: color-mix(in oklab, var(--floor-ink) 6%, transparent);
+  color: var(--floor-ink);
+}
+
+.agent-floor__zoom button:disabled {
+  cursor: default;
+  opacity: 0.28;
+}
+
+.agent-floor__zoom .agent-floor__zoom-reset {
+  font-size: var(--text-2xs);
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+/* ── Selected lane trace — card-lane detail in the lower-right quadrant ── */
+
+.agent-floor__trace-panel {
+  position: absolute;
+  z-index: 7;
+  right: var(--floor-dock-pad);
+  bottom: 16px;
+  display: flex;
+  flex-direction: column;
+  width: min(47%, 680px);
+  height: clamp(390px, 60%, 680px);
+  min-width: 420px;
+  min-height: 0;
+  overflow: hidden;
+  border: 1px solid color-mix(in oklab, var(--floor-ink) 14%, transparent);
+  border-radius: 9px;
+  background:
+    linear-gradient(180deg, color-mix(in oklab, var(--floor-ink) 3.5%, transparent), transparent 22%),
+    color-mix(in oklab, var(--floor-bg) 97%, var(--floor-face-1));
+  box-shadow:
+    0 24px 56px -30px var(--floor-shadow-strong),
+    inset 0 1px 0 color-mix(in oklab, var(--floor-ink) 6%, transparent);
+  backdrop-filter: blur(18px);
+  animation: agent-floor-trace-in 220ms ease-out both;
+}
+
+.agent-floor.is-rail-ledger .agent-floor__trace-panel {
+  width: calc((100% - var(--floor-dock-pad) - var(--floor-dock-pad) - var(--floor-dock-id-width) - var(--floor-dock-gap)) / 2);
+  min-width: 0;
+}
+
+.agent-floor__trace-close {
+  appearance: none;
+  position: absolute;
+  z-index: 9;
+  top: 8px;
+  right: 8px;
+  width: 27px;
+  height: 27px;
+  padding: 0;
+  border: 1px solid var(--floor-line-2);
+  border-radius: 6px;
+  background: color-mix(in oklab, var(--floor-bg) 88%, transparent);
+  color: var(--floor-muted);
+  font-family: var(--floor-mono);
+  font-size: var(--text-xl);
+  line-height: 1;
+  cursor: pointer;
+  backdrop-filter: blur(10px);
+}
+
+.agent-floor__trace-close:hover {
+  border-color: color-mix(in oklab, var(--floor-ink) 30%, transparent);
+  color: var(--floor-ink);
+  background: color-mix(in oklab, var(--floor-ink) 7%, var(--floor-bg));
+}
+
+.agent-floor__trace-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.agent-floor__trace-body > .s-observe,
+.agent-floor__trace-body .s-observe-main {
+  height: 100%;
+  min-height: 0;
+}
+
+.agent-floor__trace-body .s-observe--lane .s-observe-main {
+  padding-top: 0;
+  background: transparent;
+}
+
+.agent-floor__trace-body .s-observe-lane-trace-meta {
+  background: color-mix(in oklab, var(--floor-bg) 94%, transparent);
+  backdrop-filter: blur(10px);
+  padding-right: 44px;
+}
+
+.agent-floor__trace-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  font-family: var(--floor-mono);
+  font-size: var(--text-xs);
+  color: var(--floor-muted);
+}
+
+@keyframes agent-floor-trace-in {
+  from { opacity: 0; transform: translateY(10px) scale(0.985); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+@container (max-width: 900px) {
+  .agent-floor__trace-panel,
+  .agent-floor.is-rail-ledger .agent-floor__trace-panel {
+    left: 14px;
+    right: 14px;
+    width: auto;
+    min-width: 0;
+  }
+
+  .agent-floor__viewport.is-inspecting .agent-floor__stage {
+    top: 38%;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .agent-floor__stage,
+  .agent-floor__trace-panel {
+    transition: none;
+    animation: none;
+  }
+}
+
+.agent-floor__field {
+  position: absolute;
+  transform-style: preserve-3d;
+}
+
+.agent-floor__plane {
+  position: absolute;
+  inset: 0;
+  border-radius: 12px;
+  border: 1px solid var(--floor-line);
+  background:
+    linear-gradient(90deg,
+      transparent 26%,
+      color-mix(in oklab, var(--floor-ink) 4.5%, transparent) 100%),
+    repeating-linear-gradient(0deg, var(--floor-line-soft) 0 1px, transparent 1px 66px),
+    repeating-linear-gradient(90deg, var(--floor-line-soft) 0 1px, transparent 1px 44px),
+    linear-gradient(135deg, var(--floor-face-1), var(--floor-bg));
+  box-shadow: 0 70px 130px -44px var(--floor-shadow-strong);
+}
+
+/* The tint gathers at the "now" edge; mirror it when history flips sides. */
+.agent-floor[data-floor-orient="past-right"] .agent-floor__plane {
+  background:
+    linear-gradient(270deg,
+      transparent 26%,
+      color-mix(in oklab, var(--floor-ink) 4.5%, transparent) 100%),
+    repeating-linear-gradient(0deg, var(--floor-line-soft) 0 1px, transparent 1px 66px),
+    repeating-linear-gradient(90deg, var(--floor-line-soft) 0 1px, transparent 1px 44px),
+    linear-gradient(135deg, var(--floor-face-1), var(--floor-bg));
+}
+
+/* Time-bucket seams — vertical: the time axis runs across the plane. */
+.agent-floor__seam {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: var(--floor-line);
+}
+
+.agent-floor__seam.is-front {
+  background: var(--floor-line-2);
+}
+
+/* Billboard — stands content back upright above the tilted plane. */
+.agent-floor__bb {
+  position: absolute;
+  width: 160px;
+  margin-left: -80px;
+  transform: translateZ(var(--z, 6px)) rotateZ(-45deg) rotateX(-57deg);
+}
+
+.agent-floor__tick {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  width: 60px;
+  margin-left: -30px;
+  font-family: var(--floor-mono);
+  font-size: var(--text-2xs);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: color-mix(in oklab, var(--floor-muted) 80%, transparent);
+  white-space: nowrap;
+}
+
+.agent-floor__tick.is-now {
+  color: color-mix(in oklab, var(--floor-ink) 78%, var(--floor-muted));
+}
+
+.agent-floor__tick-pulse,
+.agent-floor__legend-pulse {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--floor-ok);
+}
+
+.agent-floor__chip {
+  --z: 18px;
+  width: 170px;
+  margin-left: -85px;
+  font-family: var(--floor-mono);
+  font-size: var(--text-2xs);
+  color: var(--floor-muted);
+  border: 1px dashed var(--floor-line-2);
+  border-radius: 7px;
+  padding: 4px 9px;
+  text-align: center;
+  background: var(--floor-bg);
+  white-space: nowrap;
+}
+
+/* ── Agent lanes ── */
+
+.agent-floor__lanes {
+  position: absolute;
+  transform-style: preserve-3d;
+}
+
+.agent-floor__lane {
+  position: absolute;
+  padding: 0;
+  border: 0;
+  background: none;
+  appearance: none;
+  cursor: pointer;
+  transform-style: preserve-3d;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+}
+
+/* Focus the lane you're reading (hover/pin its strip, flag, or ledger row) —
+   soften only leaf paint. Opacity/filter on this 3D ancestor would collapse
+   its preserve-3d descendants into a single composited plane. */
+.agent-floor__lane.is-dim .agent-floor__face,
+.agent-floor__lane.is-dim .agent-floor__ground,
+.agent-floor__lane.is-dim .agent-floor__flag {
+  opacity: 0.8;
+}
+
+.agent-floor__lane:focus-visible {
+  outline: none;
+}
+
+.agent-floor__lane-strip {
+  position: absolute;
+  inset: 14px 0;
+  display: block;
+  box-shadow:
+    inset 0 1px 0 var(--floor-line-soft),
+    inset 0 -1px 0 var(--floor-line-soft);
+  transition: background 0.16s ease;
+}
+
+.agent-floor__lane.is-alt .agent-floor__lane-strip {
+  background: color-mix(in oklab, var(--floor-ink) 2.5%, transparent);
+}
+
+.agent-floor__lane:hover .agent-floor__lane-strip,
+.agent-floor__lane:focus-visible .agent-floor__lane-strip {
+  background: color-mix(in oklab, var(--floor-ink) 5%, transparent);
+}
+
+.agent-floor__lane.is-pinned .agent-floor__lane-strip {
+  background: color-mix(in oklab, var(--floor-accent) 7%, transparent);
+  box-shadow:
+    inset 0 1px 0 var(--floor-accent-line),
+    inset 0 -1px 0 var(--floor-accent-line);
+}
+
+.agent-floor__lane.is-pinned .agent-floor__slab .is-top,
+.agent-floor__lane.is-pinned .agent-floor__block.is-head .is-top {
+  box-shadow:
+    inset 0 0 0 1px var(--floor-accent-line-2),
+    0 0 18px var(--floor-accent-soft);
+}
+
+.agent-floor__stack {
+  position: absolute;
+  transform-style: preserve-3d;
+  display: block;
+}
+
+.agent-floor__stack-blocks {
+  position: absolute;
+  transform-style: preserve-3d;
+  display: block;
+}
+
+/* Minted-slot slab — its sides carry the tool/edit/msg mix as segments. */
+.agent-floor__slab {
+  --ring: var(--floor-line-2);
+}
+
+.agent-floor__slab .is-left,
+.agent-floor__slab .is-right {
+  background:
+    linear-gradient(90deg,
+      var(--floor-face-3) 0 var(--mix-a, 100%),
+      color-mix(in oklab, var(--floor-accent) 45%, var(--floor-face-3)) var(--mix-a, 100%) var(--mix-b, 100%),
+      color-mix(in oklab, var(--floor-ok) 40%, var(--floor-face-3)) var(--mix-b, 100%) 100%);
+}
+
+.agent-floor__slab .is-top {
+  background: var(--floor-face-2);
+}
+
+/* Hover projection — a readable summary of one five-minute slot. */
+.agent-floor__peek-anchor {
+  pointer-events: none;
+}
+
+.agent-floor__peek {
+  display: block;
+  background: linear-gradient(180deg, var(--floor-face-2), var(--floor-face-1));
+  border: 1px solid var(--floor-accent-line);
+  border-radius: 9px;
+  padding: 7px 10px;
+  box-shadow: 0 18px 38px -16px var(--floor-shadow-strong);
+}
+
+.agent-floor__peek-range {
+  display: block;
+  font-family: var(--floor-mono);
+  font-size: var(--text-2xs);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--floor-muted);
+  margin-bottom: 5px;
+  white-space: nowrap;
+}
+
+.agent-floor__peek-cols {
+  display: flex;
+  gap: 12px;
+}
+
+.agent-floor__peek-col {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-family: var(--floor-mono);
+  font-size: var(--text-xs);
+  color: color-mix(in oklab, var(--floor-ink) 82%, var(--floor-muted));
+}
+
+.agent-floor__peek-col.is-right {
+  flex: none;
+  text-align: right;
+  color: color-mix(in oklab, var(--floor-ink) 62%, var(--floor-muted));
+}
+
+.agent-floor__peek-tool {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.agent-floor__peek-tool.is-empty {
+  color: var(--floor-muted);
+}
+
+.agent-floor__pad {
+  position: absolute;
+  width: 96px;
+  height: 96px;
+  transform-style: preserve-3d;
+  display: block;
+}
+
+.agent-floor__pad .agent-floor__block.is-head {
+  left: calc((96px - var(--bs)) / 2);
+  top: calc((96px - var(--bs)) / 2);
+}
+
+.agent-floor__ground {
+  position: absolute;
+  left: -27px;
+  top: -27px;
+  width: 150px;
+  height: 150px;
+  border-radius: 50%;
+  background: radial-gradient(closest-side, var(--floor-shadow), transparent);
+  display: block;
+}
+
+/* ── Iso blocks (size parameterized via --bs footprint / --bh face height) ── */
+
+.agent-floor__block {
+  --ring: var(--floor-line);
+  position: absolute;
+  width: var(--bs, 56px);
+  height: var(--bs, 56px);
+  transform: translateZ(var(--z, 0px));
+  transform-style: preserve-3d;
+  display: block;
+}
+
+.agent-floor__face {
+  position: absolute;
+  left: 0;
+  top: 0;
+  transform-origin: 0 0;
+  display: block;
+}
+
+.agent-floor__block .is-left {
+  top: var(--bs, 56px);
+  width: var(--bs, 56px);
+  height: var(--bh, 12px);
+  transform: rotateX(90deg);
+  background: var(--floor-face-2);
+  box-shadow: inset 0 0 0 1px var(--ring);
+}
+
+.agent-floor__block .is-right {
+  left: var(--bs, 56px);
+  width: var(--bs, 56px);
+  height: var(--bh, 12px);
+  transform: rotateZ(90deg) rotateX(90deg);
+  background: var(--floor-face-1);
+  box-shadow: inset 0 0 0 1px var(--ring);
+}
+
+.agent-floor__block .is-top {
+  width: var(--bs, 56px);
+  height: var(--bs, 56px);
+  transform: translateZ(var(--bh, 12px));
+  background: var(--floor-face-3);
+  box-shadow: inset 0 0 0 1px var(--ring);
+}
+
+.agent-floor__block.is-msg {
+  --ring: var(--floor-ok-line);
+}
+
+.agent-floor__block.is-edit {
+  --ring: var(--floor-accent-line);
+}
+
+.agent-floor__block.is-edit .is-left {
+  background: color-mix(in oklab, var(--floor-accent) 12%, var(--floor-face-2));
+}
+
+.agent-floor__block.is-edit .is-right {
+  background: color-mix(in oklab, var(--floor-accent) 10%, var(--floor-face-1));
+}
+
+.agent-floor__block.is-edit .is-top {
+  background: color-mix(in oklab, var(--floor-accent) 14%, var(--floor-face-3));
+}
+
+.agent-floor__block.is-head {
+  --ring: var(--floor-line-2);
+}
+
+.agent-floor__block.is-head .is-left {
+  background: var(--floor-face-3);
+}
+
+.agent-floor__block.is-head .is-right {
+  background: var(--floor-face-2);
+}
+
+.agent-floor__block.is-head .is-top {
+  background: linear-gradient(135deg, color-mix(in oklab, var(--floor-ink) 16%, var(--floor-bg)), var(--floor-face-3));
+}
+
+.agent-floor__block.is-pedestal .is-top {
+  border-radius: 4px;
+  background: linear-gradient(135deg, var(--floor-face-3), var(--floor-face-1));
+}
+
+/* ── Identity: flag (always) → unrolled nameplate (on focus) ── */
+
+.agent-floor__flag-anchor {
+  pointer-events: none;
+  display: flex;
+  justify-content: center;
+}
+
+.agent-floor__flag {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 9px;
+  background: linear-gradient(180deg, var(--floor-face-2), var(--floor-face-1));
+  border: 1px solid var(--floor-line-2);
+  border-radius: 8px;
+  box-shadow: 0 12px 26px -14px var(--floor-shadow-strong);
+}
+
+.agent-floor__flag-name {
+  font-size: var(--text-sm);
+  font-weight: 700;
+  color: var(--floor-ink);
+  white-space: nowrap;
+  max-width: 110px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.agent-floor__flag .agent-floor__card-dot {
+  margin-left: 2px;
+}
+
+/* The flag's main line carries the live action inline with the name. */
+.agent-floor__flag-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  max-width: 190px;
+  padding-left: 7px;
+  border-left: 1px solid var(--floor-line-soft);
+}
+
+.agent-floor__flag-action .agent-floor__card-tool,
+.agent-floor__flag-action .agent-floor__card-idle {
+  font-size: var(--text-xs);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.agent-floor__flag-action .agent-floor__card-ago {
+  font-size: var(--text-2xs);
+}
+
+.agent-floor__flag.is-focus {
+  border-color: var(--floor-accent-line);
+}
+
+.agent-floor__flag.is-pinned {
+  border-color: var(--floor-accent-line-2);
+  box-shadow:
+    0 12px 26px -14px var(--floor-shadow-strong),
+    0 0 0 1px var(--floor-accent-soft);
+}
+
+/* Compact ledger rows rendered inside the app's left rail — one line each;
+   the dock below the floor carries the detail. */
+.agent-floor__ledger-row.is-rail {
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px;
+  border-radius: 7px;
+}
+
+.agent-floor__ledger-row.is-rail .agent-floor__ledger-id {
+  flex: 1;
+  min-width: 0;
+}
+
+/* ── Dock — the reading surface below the plane ── */
+
+.agent-floor__dock {
+  display: grid;
+  grid-template-columns: minmax(170px, var(--floor-dock-id-width)) minmax(0, 1fr);
+  align-items: center;
+  gap: var(--floor-dock-gap);
+  box-sizing: border-box;
+  block-size: 96px;
+  min-block-size: 96px;
+  max-block-size: 96px;
+  flex: 0 0 96px;
+  overflow: hidden;
+  padding: 10px var(--floor-dock-pad);
+  border-top: 1px solid var(--floor-line-soft);
+  background: color-mix(in oklab, var(--floor-ink) 2%, transparent);
+  transition: border-color 0.14s ease;
+}
+
+.agent-floor__dock.is-pinned {
+  border-top-color: var(--floor-line-2);
+  background: color-mix(in oklab, var(--floor-ink) 3%, transparent);
+}
+
+.agent-floor__dock.is-resting {
+  font-family: var(--floor-mono);
+  font-size: var(--text-xs);
+  color: var(--floor-muted);
+}
+
+.agent-floor__dock-fleet {
+  display: flex;
+  white-space: nowrap;
+}
+
+.agent-floor__dock-title {
+  font-weight: 700;
+  color: var(--floor-ink);
+  font-size: var(--text-sm);
+}
+
+.agent-floor__dock-id {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.agent-floor__dock-id-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.agent-floor__dock-name {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: var(--text-lg);
+  font-weight: 700;
+  color: var(--floor-ink);
+  white-space: nowrap;
+}
+
+.agent-floor__dock-lock {
+  flex: none;
+  padding: 2px 5px;
+  border: 1px solid var(--floor-accent-line);
+  border-radius: 4px;
+  font-family: var(--floor-mono);
+  font-size: var(--text-3xs);
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  line-height: 1;
+  text-transform: uppercase;
+  color: color-mix(in oklab, var(--floor-accent) 74%, var(--floor-ink));
+  background: var(--floor-accent-soft);
+}
+
+.agent-floor__dock-action {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.agent-floor__dock-insights {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  align-self: stretch;
+  min-width: 0;
+  border-inline: 1px solid var(--floor-line-soft);
+}
+
+.agent-floor__dock-insight {
+  display: grid;
+  grid-template-rows: auto auto auto 3px;
+  align-content: center;
+  gap: 3px;
+  min-width: 0;
+  padding: 4px 12px;
+  border-left: 1px solid var(--floor-line-soft);
+}
+
+.agent-floor__dock-insight:first-child {
+  border-left: 0;
+}
+
+.agent-floor__dock-insight-label {
+  font-family: var(--floor-mono);
+  font-size: var(--text-3xs);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: color-mix(in oklab, var(--floor-muted) 70%, transparent);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.agent-floor__dock-insight-value {
+  font-family: var(--floor-mono);
+  font-size: var(--text-sm);
+  font-weight: 700;
+  color: color-mix(in oklab, var(--floor-ink) 88%, var(--floor-muted));
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.agent-floor__dock-insight-detail {
+  font-family: var(--floor-mono);
+  font-size: var(--text-2xs);
+  color: var(--floor-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.agent-floor__dock-mix {
+  display: block;
+  width: 100%;
+  height: 3px;
+  margin-top: 1px;
+  border-radius: 999px;
+  opacity: 0.75;
+  background: linear-gradient(
+    90deg,
+    var(--floor-line-2) 0 var(--mix-tool),
+    var(--floor-accent-line-2) var(--mix-tool) var(--mix-edit),
+    var(--floor-ok-line) var(--mix-edit) 100%
+  );
+}
+
+/* ── Shared identity fragments (flag, ledger rows, dock) ── */
+
+.agent-floor__card-mark {
+  color: var(--floor-muted);
+  display: inline-flex;
+  flex-shrink: 0;
+}
+
+.agent-floor__card-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: color-mix(in oklab, var(--floor-muted) 60%, transparent);
+  margin-left: auto;
+  flex-shrink: 0;
+}
+
+.agent-floor__card-dot.is-live {
+  background: var(--floor-ok);
+  box-shadow: 0 0 8px var(--floor-ok);
+}
+
+.agent-floor__card-run {
+  color: var(--floor-ok);
+  font-size: var(--text-2xs);
+}
+
+.agent-floor__card-tool {
+  font-family: var(--floor-mono);
+  font-size: var(--text-xs);
+  font-weight: 600;
+  color: var(--floor-ink);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.agent-floor__card-ago {
+  font-family: var(--floor-mono);
+  font-size: var(--text-2xs);
+  color: var(--floor-muted);
+  flex-shrink: 0;
+}
+
+.agent-floor__card-pause {
+  font-family: var(--floor-mono);
+  font-size: var(--text-2xs);
+  color: color-mix(in oklab, var(--floor-ink) 60%, var(--floor-muted));
+}
+
+.agent-floor__card-idle {
+  font-family: var(--floor-mono);
+  font-size: var(--text-xs);
+  color: color-mix(in oklab, var(--floor-ink) 80%, var(--floor-muted));
+}
+
+/* ── Legend ── */
+
+.agent-floor__legend {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  padding: 12px 16px 14px;
+  font-size: var(--text-sm);
+  color: var(--floor-muted);
+  border-top: 1px solid var(--floor-line-soft);
+}
+
+.agent-floor__legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+
+.agent-floor__legend-swatch {
+  width: 9px;
+  height: 9px;
+  border-radius: 2px;
+  background: var(--floor-face-3);
+  box-shadow: inset 0 0 0 1px var(--floor-line-2);
+}
+
+.agent-floor__legend-swatch.is-edit {
+  background: color-mix(in oklab, var(--floor-accent) 14%, var(--floor-face-3));
+  box-shadow: inset 0 0 0 1px var(--floor-accent-line);
+}
+
+.agent-floor__legend-swatch.is-msg {
+  box-shadow: inset 0 0 0 1px var(--floor-ok-line);
+}
+
+.agent-floor__legend-flip {
+  appearance: none;
+  border: 1px solid var(--floor-line-2);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--floor-muted);
+  font-family: var(--floor-mono);
+  font-size: var(--text-xs);
+  padding: 3px 9px;
+  cursor: pointer;
+  transition: color 0.14s ease, border-color 0.14s ease;
+}
+
+.agent-floor__legend-flip:hover {
+  color: var(--floor-ink);
+  border-color: var(--floor-accent-line);
+}
+
+.agent-floor__legend-note {
+  margin-left: auto;
+  color: color-mix(in oklab, var(--floor-muted) 78%, transparent);
+  text-align: right;
+}
+
+/* ── Motion ── */
+
+@keyframes agent-floor-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.35; transform: scale(0.86); }
+}
+
+@keyframes agent-floor-bob {
+  0%, 100% { transform: translateZ(var(--z, 0px)); }
+  50% { transform: translateZ(calc(var(--z, 0px) + 5px)); }
+}
+
+@keyframes agent-floor-glow {
+  0%, 100% { box-shadow: inset 0 0 0 1px var(--floor-accent-line), 0 0 22px 0 var(--floor-accent-line); }
+  50% { box-shadow: inset 0 0 0 1px var(--floor-accent-line-2), 0 0 36px 2px var(--floor-accent-line-2); }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .agent-floor__tick-pulse,
+  .agent-floor__legend-pulse,
+  .agent-floor__card-dot.is-live {
+    animation: agent-floor-pulse 2.2s ease-in-out infinite;
+  }
+
+  .agent-floor__block.is-head.is-live {
+    animation: agent-floor-bob 3.6s ease-in-out infinite;
+  }
+
+  .agent-floor__block.is-head.is-live .is-top {
+    animation: agent-floor-glow 2.8s ease-in-out infinite;
+  }
+}

@@ -1,0 +1,87 @@
+[
+  {
+    "event": "turn:start",
+    "sessionId": "fixture-claude-code-tool-completed",
+    "turn": {
+      "id": "claude-tool-turn-001",
+      "sessionId": "fixture-claude-code-tool-completed",
+      "status": "started",
+      "startedAt": "2026-08-07T23:45:19.000Z",
+      "blocks": []
+    }
+  },
+  {
+    "event": "block:start",
+    "sessionId": "fixture-claude-code-tool-completed",
+    "turnId": "claude-tool-turn-001",
+    "block": {
+      "type": "action",
+      "action": {
+        "kind": "command",
+        "command": "<command>",
+        "status": "running",
+        "output": ""
+      },
+      "status": "streaming",
+      "id": "claude-tool-block-001",
+      "turnId": "claude-tool-turn-001",
+      "index": 0
+    }
+  },
+  {
+    "event": "block:action:output",
+    "sessionId": "fixture-claude-code-tool-completed",
+    "turnId": "claude-tool-turn-001",
+    "blockId": "claude-tool-block-001",
+    "output": "fixture-tool-ok"
+  },
+  {
+    "event": "block:action:status",
+    "sessionId": "fixture-claude-code-tool-completed",
+    "turnId": "claude-tool-turn-001",
+    "blockId": "claude-tool-block-001",
+    "status": "completed"
+  },
+  {
+    "event": "block:end",
+    "sessionId": "fixture-claude-code-tool-completed",
+    "turnId": "claude-tool-turn-001",
+    "blockId": "claude-tool-block-001",
+    "status": "completed"
+  },
+  {
+    "event": "block:start",
+    "sessionId": "fixture-claude-code-tool-completed",
+    "turnId": "claude-tool-turn-001",
+    "block": {
+      "type": "text",
+      "text": "fixture-done",
+      "status": "completed",
+      "id": "claude-tool-text-001",
+      "turnId": "claude-tool-turn-001",
+      "index": 1
+    }
+  },
+  {
+    "event": "block:end",
+    "sessionId": "fixture-claude-code-tool-completed",
+    "turnId": "claude-tool-turn-001",
+    "blockId": "claude-tool-text-001",
+    "status": "completed"
+  },
+  {
+    "event": "session:update",
+    "session": {
+      "id": "fixture-claude-code-tool-completed",
+      "name": "claude-code",
+      "adapterType": "claude-code",
+      "status": "active"
+    }
+  },
+  {
+    "event": "turn:end",
+    "sessionId": "fixture-claude-code-tool-completed",
+    "turnId": "claude-tool-turn-001",
+    "status": "completed"
+  }
+]

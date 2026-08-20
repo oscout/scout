@@ -1,0 +1,46 @@
+[
+  {
+    "event": "turn:start",
+    "sessionId": "fixture-opencode-v2-text-completed",
+    "turn": {
+      "id": "opencode-v2-turn-001",
+      "sessionId": "fixture-opencode-v2-text-completed",
+      "status": "started",
+      "startedAt": "2026-08-11T17:00:00.000Z",
+      "blocks": []
+    }
+  },
+  {
+    "event": "block:start",
+    "sessionId": "fixture-opencode-v2-text-completed",
+    "turnId": "opencode-v2-turn-001",
+    "block": {
+      "type": "text",
+      "text": "",
+      "status": "streaming",
+      "id": "opencode-v2-text-001",
+      "turnId": "opencode-v2-turn-001",
+      "index": 0
+    }
+  },
+  {
+    "event": "block:delta",
+    "sessionId": "fixture-opencode-v2-text-completed",
+    "turnId": "opencode-v2-turn-001",
+    "blockId": "opencode-v2-text-001",
+    "text": "fixture-ok"
+  },
+  {
+    "event": "block:end",
+    "sessionId": "fixture-opencode-v2-text-completed",
+    "turnId": "opencode-v2-turn-001",
+    "blockId": "opencode-v2-text-001",
+    "status": "completed"
+  },
+  {
+    "event": "turn:end",
+    "sessionId": "fixture-opencode-v2-text-completed",
+    "turnId": "opencode-v2-turn-001",
+    "status": "completed"
+  }
+]

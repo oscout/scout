@@ -1,0 +1,113 @@
+[
+  {
+    "event": "turn:start",
+    "sessionId": "fixture-echo-basic-completed",
+    "turn": {
+      "id": "echo-turn-001",
+      "sessionId": "fixture-echo-basic-completed",
+      "status": "started",
+      "startedAt": "2026-08-07T19:00:00.000Z",
+      "blocks": []
+    }
+  },
+  {
+    "event": "block:start",
+    "sessionId": "fixture-echo-basic-completed",
+    "turnId": "echo-turn-001",
+    "block": {
+      "id": "echo-reasoning-001",
+      "turnId": "echo-turn-001",
+      "type": "reasoning",
+      "text": "",
+      "status": "streaming",
+      "index": 0
+    }
+  },
+  {
+    "event": "block:delta",
+    "sessionId": "fixture-echo-basic-completed",
+    "turnId": "echo-turn-001",
+    "blockId": "echo-reasoning-001",
+    "text": "Thinking about: fixture"
+  },
+  {
+    "event": "block:end",
+    "sessionId": "fixture-echo-basic-completed",
+    "turnId": "echo-turn-001",
+    "blockId": "echo-reasoning-001",
+    "status": "completed"
+  },
+  {
+    "event": "block:start",
+    "sessionId": "fixture-echo-basic-completed",
+    "turnId": "echo-turn-001",
+    "block": {
+      "id": "echo-text-001",
+      "turnId": "echo-turn-001",
+      "type": "text",
+      "text": "",
+      "status": "streaming",
+      "index": 1
+    }
+  },
+  {
+    "event": "block:delta",
+    "sessionId": "fixture-echo-basic-completed",
+    "turnId": "echo-turn-001",
+    "blockId": "echo-text-001",
+    "text": "Echo: fixture"
+  },
+  {
+    "event": "block:end",
+    "sessionId": "fixture-echo-basic-completed",
+    "turnId": "echo-turn-001",
+    "blockId": "echo-text-001",
+    "status": "completed"
+  },
+  {
+    "event": "block:start",
+    "sessionId": "fixture-echo-basic-completed",
+    "turnId": "echo-turn-001",
+    "block": {
+      "id": "echo-action-001",
+      "turnId": "echo-turn-001",
+      "type": "action",
+      "status": "streaming",
+      "index": 2,
+      "action": {
+        "kind": "tool_call",
+        "toolName": "echo",
+        "toolCallId": "echo-tool-001",
+        "status": "running",
+        "output": ""
+      }
+    }
+  },
+  {
+    "event": "block:action:output",
+    "sessionId": "fixture-echo-basic-completed",
+    "turnId": "echo-turn-001",
+    "blockId": "echo-action-001",
+    "output": "fixture"
+  },
+  {
+    "event": "block:action:status",
+    "sessionId": "fixture-echo-basic-completed",
+    "turnId": "echo-turn-001",
+    "blockId": "echo-action-001",
+    "status": "completed"
+  },
+  {
+    "event": "block:end",
+    "sessionId": "fixture-echo-basic-completed",
+    "turnId": "echo-turn-001",
+    "blockId": "echo-action-001",
+    "status": "completed"
+  },
+  {
+    "event": "turn:end",
+    "sessionId": "fixture-echo-basic-completed",
+    "turnId": "echo-turn-001",
+    "status": "completed"
+  }
+]

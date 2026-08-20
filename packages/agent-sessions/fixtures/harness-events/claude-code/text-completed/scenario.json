@@ -1,0 +1,38 @@
+{
+  "schemaVersion": "1.0.0",
+  "id": "claude-code-text-completed",
+  "adapterId": "claude-code",
+  "fixtureSet": "claude-code",
+  "source": {
+    "kind": "recorded",
+    "harnessVersion": "Claude Code 2.1.220",
+    "transport": "stream-json-stdio",
+    "capturedAt": "2026-08-07T23:31:00.939Z"
+  },
+  "redactions": [
+    { "line": 0, "pointer": "/payload/text", "replacement": "<prompt>" },
+    { "line": 1, "pointer": "/payload/session_id", "replacement": "session-recorded" },
+    { "line": 2, "pointer": "/payload/event/delta/thinking", "replacement": "<reasoning>" },
+    { "line": 5, "pointer": "/payload/event/delta/text", "replacement": "fixture-ok" },
+    { "line": 7, "pointer": "/payload/session_id", "replacement": "session-recorded" },
+    { "line": 7, "pointer": "/payload/result", "replacement": "fixture-ok" }
+  ],
+  "expected": {
+    "endState": "completed",
+    "evidenceKeys": [
+      "event:turn:start",
+      "event:block:delta",
+      "event:block:end",
+      "event:turn:end"
+    ]
+  },
+  "determinism": {
+    "clockValues": ["2026-08-07T21:00:00.000Z", "2026-08-07T21:00:01.000Z"],
+    "idValues": ["claude-turn-001", "claude-reasoning-001", "claude-text-001"]
+  },
+  "session": {
+    "name": "Claude Code fixture",
+    "cwd": "<workspace>",
+    "model": "claude-haiku-4-5"
+  }
+}

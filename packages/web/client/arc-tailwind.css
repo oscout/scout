@@ -1,0 +1,49 @@
+/* Tailwind utilities scoped to Arc + this client's own source.
+ * Arc ships with Tailwind class strings in its JS bundle and expects the host
+ * to provide the matching utility CSS. We also scan our own client code so
+ * utilities used in Scout components are generated.
+ */
+@import "tailwindcss";
+@import "./scout/repo-watch/repo-watch.css";
+@source "../node_modules/@arach/arc/lib/arc.es.js";
+@source "./**/*.{ts,tsx}";
+
+/*
+ * SCO-084: register shadcn sidebar color namespace for Tailwind v4.
+ * Mapping --sidebar* in app.css alone does not make bg-sidebar etc. resolve;
+ * @theme inline wires --color-sidebar* → var(--sidebar*).
+ *
+ * Type scale: override Tailwind defaults so `text-sm` etc. mean the Scout
+ * ladder in styles/tokens.css (11px, not 0.875rem). Values reference the
+ * same --text-* tokens component CSS already uses.
+ */
+@theme inline {
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-ring: var(--sidebar-ring);
+
+  /* Literal px keep these out of a circular var(--text-*) self-reference.
+   * Keep in lockstep with styles/tokens.css — one ladder, two consumers
+   * (utilities here, component CSS via :root tokens). */
+  --text-3xs: 8px;
+  --text-2xs: 9px;
+  --text-xs: 10px;
+  --text-sm: 11px;
+  --text-md: 12px;
+  --text-base: 13px;
+  --text-lg: 13px;
+  --text-xl: 14px;
+  --text-2xl: 15px;
+  --text-3xl: 17px;
+  --text-4xl: 19px;
+  --text-5xl: 22px;
+  --text-6xl: 26px;
+  --text-7xl: 30px;
+  --text-8xl: 40px;
+  --text-9xl: 48px;
+}

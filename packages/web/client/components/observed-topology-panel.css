@@ -1,0 +1,438 @@
+.s-observed-topology {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  color: var(--ink);
+  overflow: hidden;
+}
+
+.s-observed-topology--rail {
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+
+.s-observed-topology-rail-summary {
+  margin-bottom: var(--space-md);
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  font-variant: small-caps;
+  letter-spacing: var(--tracking-sm);
+  color: color-mix(in srgb, var(--dim) 84%, transparent);
+  line-height: var(--leading-tight);
+}
+
+.s-observed-topology-rail-list {
+  display: grid;
+  gap: var(--space-3xs);
+}
+
+.s-observed-topology-rail-row {
+  display: grid;
+  grid-template-columns: 8px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--space-sm);
+  min-width: 0;
+  padding: var(--space-xs) 0;
+  border-radius: var(--radius-sm);
+  cursor: default;
+}
+
+.s-observed-topology-rail-row--completed {
+  opacity: 0.72;
+}
+
+.s-observed-topology-rail-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--dim);
+  flex-shrink: 0;
+}
+
+.s-observed-topology-rail-dot--running {
+  background: var(--accent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 18%, transparent);
+}
+
+.s-observed-topology-rail-dot--completed {
+  background: var(--green);
+}
+
+.s-observed-topology-rail-dot--failed {
+  background: var(--danger);
+}
+
+.s-observed-topology-rail-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--text-sm);
+  color: var(--ink);
+}
+
+.s-observed-topology-rail-stats {
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  color: var(--dim);
+  white-space: nowrap;
+}
+
+.s-observed-topology-rail-more {
+  padding-top: var(--space-2xs);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--dim);
+}
+
+.s-observed-topology-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-xl);
+  padding: var(--space-md) var(--space-lg);
+  border-bottom: 1px solid var(--border);
+  background: color-mix(in srgb, var(--ink) 2%, var(--surface));
+}
+
+.s-observed-topology-head h3 {
+  margin: 0;
+  font-family: var(--font-accent-title);
+  font-size: var(--text-xl);
+  font-weight: 500;
+  color: var(--ink);
+}
+
+.s-observed-topology-kicker {
+  margin-bottom: var(--space-3xs);
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  letter-spacing: var(--tracking-lg);
+  text-transform: uppercase;
+  color: var(--dim);
+}
+
+.s-observed-topology-counts {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: var(--space-2xs);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--dim);
+}
+
+.s-observed-topology-counts span {
+  padding: var(--space-3xs) var(--space-xs);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  background: var(--bg);
+}
+
+.s-observed-topology-sources {
+  display: grid;
+  gap: 0;
+}
+
+.s-observed-topology-source {
+  padding: var(--space-md) var(--space-lg) var(--space-lg);
+}
+
+.s-observed-topology-source + .s-observed-topology-source {
+  border-top: 1px solid var(--border);
+}
+
+.s-observed-topology-source-head {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--space-lg);
+  margin-bottom: var(--space-sm);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--dim);
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-md);
+}
+
+.s-observed-topology-agent-list,
+.s-observed-topology-task-list,
+.s-observed-topology-workflow-list {
+  display: grid;
+  gap: var(--space-xs);
+}
+
+.s-observed-topology-task-list {
+  margin-top: var(--space-md);
+  padding-top: var(--space-md);
+  border-top: 1px dashed var(--border);
+}
+
+.s-observed-topology-agent {
+  min-width: 0;
+}
+
+.s-observed-topology-agent-main {
+  display: grid;
+  grid-template-columns: 70px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--space-sm);
+  min-width: 0;
+}
+
+.s-observed-topology-agent-role {
+  width: fit-content;
+  max-width: 70px;
+  padding: var(--space-3xs) var(--space-2xs);
+  border-radius: var(--radius-sm);
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  line-height: var(--leading-tight);
+  color: var(--dim);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  text-transform: uppercase;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.s-observed-topology-agent-role--subagent {
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 35%, var(--border));
+}
+
+.s-observed-topology-agent-role--lead {
+  color: var(--green);
+  border-color: color-mix(in srgb, var(--green) 35%, var(--border));
+}
+
+.s-observed-topology-agent-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--text-md);
+}
+
+.s-observed-topology-agent-status {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--dim);
+  white-space: nowrap;
+}
+
+.s-observed-topology-agent-detail {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-xs);
+  margin: var(--space-3xs) 0 0 78px;
+  font-size: var(--text-sm);
+  line-height: var(--leading-tight);
+  color: var(--muted);
+}
+
+.s-observed-topology-agent-detail span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.s-observed-topology-workflow {
+  min-width: 0;
+  padding: var(--space-xs) 0;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 55%, transparent);
+}
+
+.s-observed-topology-workflow:last-child {
+  border-bottom: 0;
+}
+
+.s-observed-topology-workflow-main {
+  display: grid;
+  grid-template-columns: 82px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--space-sm);
+  min-width: 0;
+}
+
+.s-observed-topology-workflow-state {
+  width: fit-content;
+  max-width: 82px;
+  padding: var(--space-3xs) var(--space-2xs);
+  border-radius: var(--radius-sm);
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  line-height: var(--leading-tight);
+  color: var(--dim);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  text-transform: uppercase;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.s-observed-topology-workflow-state--running {
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 35%, var(--border));
+}
+
+.s-observed-topology-workflow-state--completed {
+  color: var(--green);
+  border-color: color-mix(in srgb, var(--green) 30%, var(--border));
+}
+
+.s-observed-topology-workflow-state--failed {
+  color: var(--danger);
+  border-color: color-mix(in srgb, var(--danger) 35%, var(--border));
+}
+
+.s-observed-topology-workflow-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--text-md);
+  color: var(--ink);
+}
+
+.s-observed-topology-workflow-age {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--dim);
+  white-space: nowrap;
+}
+
+.s-observed-topology-workflow-meta,
+.s-observed-topology-workflow-tasks {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-xs);
+  margin-top: var(--space-3xs);
+  margin-left: 90px;
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  line-height: var(--leading-tight);
+  color: var(--dim);
+  text-transform: uppercase;
+}
+
+.s-observed-topology-workflow-meta span,
+.s-observed-topology-workflow-tasks span {
+  min-width: 0;
+  padding: var(--space-3xs) var(--space-2xs);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--ink) 3%, transparent);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.s-observed-topology-workflow-description {
+  margin-top: var(--space-2xs);
+  margin-left: 90px;
+  color: var(--muted);
+  font-size: var(--text-sm);
+  line-height: var(--leading-snug);
+  overflow-wrap: anywhere;
+}
+
+.s-observed-topology-workflow-tasks {
+  text-transform: none;
+}
+
+.s-observed-topology-more {
+  padding: var(--space-xs) 0 0;
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  letter-spacing: var(--tracking-md);
+  text-transform: uppercase;
+  color: var(--dim);
+  text-align: center;
+}
+
+.s-observed-topology-task {
+  display: grid;
+  grid-template-columns: 70px minmax(0, 1fr);
+  gap: var(--space-sm);
+  align-items: baseline;
+  font-size: var(--text-sm);
+}
+
+.s-observed-topology-task span {
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  color: var(--dim);
+  text-transform: uppercase;
+}
+
+.s-observed-topology-task strong {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-weight: 500;
+  color: var(--muted);
+}
+
+.s-observed-topology-empty {
+  padding: var(--space-lg);
+  font-size: var(--text-md);
+  color: var(--dim);
+}
+
+.s-observed-topology--compact .s-observed-topology-head,
+.s-observed-topology--rail .s-observed-topology-head {
+  padding: var(--space-sm) var(--space-md);
+}
+
+.s-observed-topology--compact .s-observed-topology-source {
+  padding: var(--space-sm) var(--space-md) var(--space-md);
+}
+
+.s-observed-topology--rail .s-observed-topology-source {
+  padding: 0;
+}
+
+.s-observed-topology--rail .s-observed-topology-counts {
+  display: none;
+}
+
+.s-observed-topology--rail .s-observed-topology-agent-list {
+  gap: var(--space-sm);
+}
+
+.s-observed-topology--rail .s-observed-topology-agent-main {
+  grid-template-columns: 54px minmax(0, 1fr);
+  gap: var(--space-sm);
+}
+
+.s-observed-topology--rail .s-observed-topology-agent-role {
+  max-width: 54px;
+  border-color: color-mix(in srgb, var(--border) 70%, transparent);
+  background: transparent;
+}
+
+.s-observed-topology--rail .s-observed-topology-agent-name {
+  font-size: var(--text-sm);
+  color: var(--muted);
+}
+
+.s-observed-topology--rail .s-observed-topology-workflow-main {
+  grid-template-columns: 72px minmax(0, 1fr);
+}
+
+.s-observed-topology--rail .s-observed-topology-agent-status {
+  display: none;
+}
+
+.s-observed-topology--rail .s-observed-topology-workflow-age {
+  display: none;
+}
+
+.s-observed-topology--rail .s-observed-topology-agent-detail {
+  margin-left: 70px;
+}
+
+.s-observed-topology--rail .s-observed-topology-workflow-meta,
+.s-observed-topology--rail .s-observed-topology-workflow-description,
+.s-observed-topology--rail .s-observed-topology-workflow-tasks {
+  margin-left: 80px;
+}

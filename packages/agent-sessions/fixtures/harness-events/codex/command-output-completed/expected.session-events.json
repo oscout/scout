@@ -1,0 +1,106 @@
+[
+  {
+    "event": "turn:start",
+    "sessionId": "fixture-codex-command-output-completed",
+    "turn": {
+      "id": "turn-recorded",
+      "sessionId": "fixture-codex-command-output-completed",
+      "status": "started",
+      "startedAt": "2026-08-07T20:00:00.000Z",
+      "blocks": []
+    }
+  },
+  {
+    "event": "session:update",
+    "session": {
+      "id": "fixture-codex-command-output-completed",
+      "name": "codex",
+      "adapterType": "codex",
+      "status": "active"
+    }
+  },
+  {
+    "event": "block:start",
+    "sessionId": "fixture-codex-command-output-completed",
+    "turnId": "turn-recorded",
+    "block": {
+      "id": "command-recorded",
+      "type": "action",
+      "action": {
+        "kind": "command",
+        "command": "<command>",
+        "output": "",
+        "status": "running"
+      },
+      "status": "streaming",
+      "turnId": "turn-recorded",
+      "index": 0
+    }
+  },
+  {
+    "event": "block:action:output",
+    "sessionId": "fixture-codex-command-output-completed",
+    "turnId": "turn-recorded",
+    "blockId": "command-recorded",
+    "output": "fixture output\n"
+  },
+  {
+    "event": "block:action:status",
+    "sessionId": "fixture-codex-command-output-completed",
+    "turnId": "turn-recorded",
+    "blockId": "command-recorded",
+    "status": "completed",
+    "meta": {
+      "exitCode": 0
+    }
+  },
+  {
+    "event": "block:end",
+    "sessionId": "fixture-codex-command-output-completed",
+    "turnId": "turn-recorded",
+    "blockId": "command-recorded",
+    "status": "completed"
+  },
+  {
+    "event": "block:start",
+    "sessionId": "fixture-codex-command-output-completed",
+    "turnId": "turn-recorded",
+    "block": {
+      "id": "message-recorded",
+      "type": "text",
+      "text": "",
+      "status": "streaming",
+      "turnId": "turn-recorded",
+      "index": 1
+    }
+  },
+  {
+    "event": "block:delta",
+    "sessionId": "fixture-codex-command-output-completed",
+    "turnId": "turn-recorded",
+    "blockId": "message-recorded",
+    "text": "fixture-ok"
+  },
+  {
+    "event": "block:end",
+    "sessionId": "fixture-codex-command-output-completed",
+    "turnId": "turn-recorded",
+    "blockId": "message-recorded",
+    "status": "completed"
+  },
+  {
+    "event": "turn:end",
+    "sessionId": "fixture-codex-command-output-completed",
+    "turnId": "turn-recorded",
+    "status": "completed"
+  },
+  {
+    "event": "session:update",
+    "session": {
+      "id": "fixture-codex-command-output-completed",
+      "name": "codex",
+      "adapterType": "codex",
+      "status": "idle"
+    }
+  }
+]

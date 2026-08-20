@@ -1,0 +1,62 @@
+/* Scope instrument — shell chrome only. View styling lives in scope-views.css. */
+
+[data-scope-presentation] {
+  --scope-bg: #111316;
+  --scope-panel: #15181b;
+  --scope-line: rgba(255, 255, 255, 0.1);
+  --scope-text: #ebe8e1;
+  --scope-muted: #8d8980;
+  --scope-accent: #5fd0c4;
+  --scope-live: #7bd88f;
+  --scope-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
+[data-scope-presentation] .bg-background\/95 {
+  background: var(--scope-panel) !important;
+  border-color: var(--scope-line) !important;
+}
+
+[data-scope-presentation] .scout-nav-tab.active {
+  color: var(--scope-accent);
+}
+
+[data-scope-presentation] .scout-nav-action--scout {
+  appearance: none;
+  border: 1px solid rgba(95, 208, 196, 0.28);
+  background: rgba(95, 208, 196, 0.06);
+  color: var(--scope-accent);
+  border-radius: 6px;
+  padding: 4px 10px;
+  font-family: var(--scope-mono);
+  font-size: var(--text-sm);
+}
+
+[data-scope-presentation] .scout-nav-action--scout:hover {
+  background: rgba(95, 208, 196, 0.12);
+}
+
+[data-scope-presentation] .scout-surface-body {
+  background:
+    radial-gradient(1200px 600px at 10% -10%, rgba(95, 208, 196, 0.06), transparent 60%),
+    var(--scope-bg);
+  color: var(--scope-text);
+}
+
+[data-scope-presentation] .scout-nav-tabs--scope {
+  gap: 10px;
+}
+
+[data-scope-presentation] .scout-nav-scope-tag {
+  font-family: var(--scope-mono);
+  font-size: var(--text-xs);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--scope-muted);
+  padding-right: 6px;
+  border-right: 1px solid var(--scope-line);
+  margin-right: 2px;
+}
+
+[data-scope-presentation] .scout-nav-tab.active {
+  border-bottom-color: var(--scope-accent);
+}

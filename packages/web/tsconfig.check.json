@@ -1,0 +1,42 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    // The config the typecheck gate runs. It differs from tsconfig.json in one
+    // way: where HudsonKit comes from.
+    //
+    // tsconfig.json resolves every `@hudsonkit` path to a sibling
+    // `~/dev/hudson` checkout first, falling back to `client/vendor/hudsonkit`.
+    // That is good for editing both repos at once and bad for a gate, twice
+    // over. A machine with the sibling checkout grades a different HudsonKit
+    // than CI, which has none — and whichever branch that unrelated repository
+    // happens to be parked on decides the answer. Meanwhile the vendored
+    // fallback tsc lands on is not what runs: vite's alias falls back to the
+    // published `hudsonkit` package (see vite.config.ts), and the vendored
+    // directory is a hand-written types-only shim that has drifted from it. It
+    // is missing the observability exports `ScoutActivityLogOverlay` imports
+    // and its `usePersistentState` still takes two arguments, so the gate
+    // reported four phantom "has no exported member" errors and one phantom
+    // arity error against code that bundles and runs correctly.
+    //
+    // So the gate types against the published package — the same code vite
+    // bundles — and gets the same answer on every machine. Editors and
+    // `vite dev` keep the sibling-first resolution.
+    "paths": {
+      "react": ["./node_modules/@types/react/index.d.ts"],
+      "react-dom": ["./node_modules/@types/react-dom/index.d.ts"],
+      "react-dom/*": ["./node_modules/@types/react-dom/*"],
+      "react/jsx-runtime": ["./node_modules/@types/react/jsx-runtime.d.ts"],
+      "react/jsx-dev-runtime": ["./node_modules/@types/react/jsx-dev-runtime.d.ts"],
+      "@hudsonkit": ["./node_modules/hudsonkit/dist/index.d.ts"],
+      "@hudsonkit/app-shell": ["./node_modules/hudsonkit/dist/app-shell.d.ts"],
+      "@hudsonkit/shell": ["./node_modules/hudsonkit/dist/shell.d.ts"],
+      "@hudsonkit/chrome": ["./node_modules/hudsonkit/dist/chrome.d.ts"],
+      "@hudsonkit/controls": ["./node_modules/hudsonkit/dist/controls.d.ts"],
+      "@hudsonkit/canvas": ["./node_modules/hudsonkit/dist/canvas.d.ts"],
+      "@hudsonkit/overlays": ["./node_modules/hudsonkit/dist/overlays.d.ts"],
+      "hudsonkit/terminal": ["./node_modules/hudsonkit/dist/terminal.d.ts"],
+      "hudsonkit/flags": ["./node_modules/hudsonkit/dist/flags.d.ts"],
+      "@hudsonkit/styles": ["./node_modules/hudsonkit/dist/styles.css"]
+    }
+  }
+}

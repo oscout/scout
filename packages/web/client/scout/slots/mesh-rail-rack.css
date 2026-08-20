@@ -1,0 +1,452 @@
+/* ── Mesh rail rack — server-rack metaphor docked in the left navigation ── */
+
+.mesh-rail {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  padding: var(--space-sm);
+  background: transparent;
+  font-family: var(--font-mono);
+}
+
+.mesh-rail-head,
+.mesh-rail-foot {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  padding: var(--space-xs) var(--space-sm);
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--ink) 7%, transparent) 0%,
+    color-mix(in srgb, var(--ink) 1%, transparent) 100%
+  );
+  border: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
+  border-bottom: 0;
+  border-radius: var(--radius-sm) var(--radius-sm) 0 0;
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--ink) 6%, transparent);
+}
+
+.mesh-rail-foot {
+  border-top: 0;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
+  border-radius: 0 0 var(--radius-sm) var(--radius-sm);
+  justify-content: space-between;
+  padding: var(--space-2xs) var(--space-sm);
+  box-shadow:
+    inset 0 -1px 0 color-mix(in srgb, var(--ink) 6%, transparent),
+    0 4px 12px -8px rgba(0, 0, 0, 0.4);
+}
+
+.mesh-rail-ear {
+  flex: 0 0 auto;
+  width: 4px;
+  height: 12px;
+  border-radius: 1px;
+  background:
+    radial-gradient(
+      circle at 50% 50%,
+      color-mix(in srgb, var(--ink) 18%, transparent) 0%,
+      transparent 70%
+    ),
+    color-mix(in srgb, var(--ink) 10%, transparent);
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, var(--ink) 14%, transparent),
+    inset 0 -1px 0 color-mix(in srgb, var(--border) 60%, transparent);
+}
+
+.mesh-rail-title {
+  font-size: var(--text-2xs);
+  font-weight: 700;
+  letter-spacing: var(--tracking-xl);
+  color: color-mix(in srgb, var(--ink) 78%, transparent);
+}
+
+.mesh-rail-title-count {
+  margin-left: auto;
+  padding: 1px var(--space-xs);
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--ink) 8%, transparent);
+  color: var(--muted);
+  font-size: var(--text-2xs);
+  font-weight: 700;
+}
+
+/* Map / Rack toggle in the rail head */
+.mesh-rail-mode {
+  display: inline-flex;
+  align-items: stretch;
+  border: 1px solid color-mix(in srgb, var(--border) 50%, transparent);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+
+.mesh-rail-mode-btn {
+  padding: var(--space-3xs) var(--space-sm);
+  border: 0;
+  background: transparent;
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  font-weight: 700;
+  letter-spacing: var(--tracking-xl);
+  text-transform: uppercase;
+  color: color-mix(in srgb, var(--ink) 45%, transparent);
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s;
+}
+
+.mesh-rail-mode-btn + .mesh-rail-mode-btn {
+  border-left: 1px solid color-mix(in srgb, var(--border) 50%, transparent);
+}
+
+.mesh-rail-mode-btn:hover {
+  color: var(--ink);
+  background: color-mix(in srgb, var(--ink) 4%, transparent);
+}
+
+.mesh-rail-mode-btn--active {
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+}
+
+.mesh-rail-body--map {
+  background: transparent;
+  border-left: 1px solid color-mix(in srgb, var(--border) 35%, transparent);
+  border-right: 1px solid color-mix(in srgb, var(--border) 35%, transparent);
+  padding: var(--space-sm);
+}
+
+.mesh-mini-map {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(78px, 1fr));
+  gap: var(--space-2xs);
+}
+
+.mesh-mini-node {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2xs);
+  padding: var(--space-2xs) var(--space-xs);
+  border: 1px solid color-mix(in srgb, var(--border) 45%, transparent);
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--surface) 65%, transparent);
+  cursor: pointer;
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  color: var(--ink);
+  text-align: left;
+  min-width: 0;
+  transition: background 0.12s, border-color 0.12s;
+}
+
+.mesh-mini-node:hover {
+  border-color: color-mix(in srgb, var(--accent) 35%, transparent);
+  background: color-mix(in srgb, var(--accent) 6%, transparent);
+}
+
+.mesh-mini-node--active {
+  border-color: color-mix(in srgb, var(--accent) 50%, transparent);
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+}
+
+.mesh-mini-node--off {
+  opacity: 0.55;
+}
+
+.mesh-mini-led {
+  flex: 0 0 auto;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--ink) 25%, transparent);
+}
+
+.mesh-mini-label {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mesh-mini-count {
+  flex: 0 0 auto;
+  color: color-mix(in srgb, var(--ink) 55%, transparent);
+  font-variant-numeric: tabular-nums;
+}
+
+.mesh-rail-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  background: repeating-linear-gradient(
+    0deg,
+    color-mix(in srgb, var(--ink) 5%, transparent) 0px,
+    color-mix(in srgb, var(--ink) 5%, transparent) 1px,
+    transparent 1px,
+    transparent 3px
+  );
+  border-left: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
+  border-right: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
+}
+
+/* Each unit = a 1U server blade fitted to the rail width */
+
+.mesh-rail-unit {
+  position: relative;
+  display: flex;
+  align-items: stretch;
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--surface) 70%, transparent) 0%,
+    color-mix(in srgb, var(--bg) 78%, transparent) 100%
+  );
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 55%, transparent);
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, var(--ink) 4%, transparent),
+    inset 0 -1px 0 color-mix(in srgb, var(--ink) 10%, transparent);
+}
+
+.mesh-rail-unit:last-child {
+  border-bottom: 0;
+}
+
+.mesh-rail-unit-body {
+  flex: 1 1 auto;
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  min-width: 0;
+  padding: var(--space-sm) var(--space-md) var(--space-sm);
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+  font-family: inherit;
+  color: inherit;
+  transition: background 0.12s;
+}
+
+.mesh-rail-unit-body:hover {
+  background: color-mix(in srgb, var(--accent) 6%, transparent);
+}
+
+.mesh-rail-unit-body:focus-visible {
+  outline: 1px solid color-mix(in srgb, var(--accent) 70%, transparent);
+  outline-offset: -1px;
+}
+
+.mesh-rail-unit--off .mesh-rail-unit-body {
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--bg) 70%, transparent) 0%,
+    color-mix(in srgb, var(--bg) 84%, transparent) 100%
+  );
+  filter: saturate(0.4);
+}
+
+.mesh-rail-unit--off .mesh-rail-unit-name {
+  color: color-mix(in srgb, var(--ink) 38%, transparent);
+}
+
+.mesh-rail-unit--unreachable .mesh-rail-unit-stamp {
+  color: color-mix(in srgb, var(--amber) 80%, transparent);
+}
+
+.mesh-rail-unit--active {
+  box-shadow: inset 2px 0 0 0 var(--accent);
+}
+
+.mesh-rail-unit--active .mesh-rail-unit-name {
+  color: var(--accent);
+}
+
+.mesh-rail-slot {
+  flex: 0 0 auto;
+  font-size: var(--text-2xs);
+  font-weight: 700;
+  letter-spacing: var(--tracking-md);
+  color: color-mix(in srgb, var(--ink) 32%, transparent);
+  width: 16px;
+}
+
+.mesh-rail-led {
+  flex: 0 0 auto;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--ink) 14%, transparent);
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, var(--ink) 12%, transparent),
+    inset 0 -1px 0 color-mix(in srgb, var(--border) 80%, transparent);
+}
+
+.mesh-rail-led--on {
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, var(--ink) 24%, transparent),
+    0 0 6px 0 currentColor,
+    0 0 14px -2px currentColor;
+}
+
+.mesh-rail-unit-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3xs);
+}
+
+.mesh-rail-unit-name {
+  font-size: var(--text-sm);
+  font-weight: 600;
+  color: var(--ink);
+  letter-spacing: 0.01em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mesh-rail-unit-sub {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-xs);
+  font-size: var(--text-2xs);
+  color: color-mix(in srgb, var(--ink) 45%, transparent);
+}
+
+.mesh-rail-reach {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 13px;
+  height: 13px;
+  border-radius: var(--radius-xs);
+  font-size: var(--text-3xs);
+  font-weight: 800;
+  background: color-mix(in srgb, var(--ink) 8%, transparent);
+  border: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
+  color: var(--muted);
+}
+
+.mesh-rail-reach--this {
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+  border-color: color-mix(in srgb, var(--accent) 45%, transparent);
+  color: var(--accent);
+}
+
+.mesh-rail-reach--peer {
+  background: color-mix(in srgb, var(--green, #4ade80) 14%, transparent);
+  border-color: color-mix(in srgb, var(--green, #4ade80) 32%, transparent);
+  color: var(--green, #4ade80);
+}
+
+.mesh-rail-reach--tailnet {
+  background: color-mix(in srgb, var(--amber) 16%, transparent);
+  border-color: color-mix(in srgb, var(--amber) 40%, transparent);
+  color: var(--amber);
+}
+
+.mesh-rail-unit-stamp {
+  font-variant-numeric: tabular-nums;
+}
+
+.mesh-rail-unit-count {
+  flex: 0 0 auto;
+  font-size: var(--text-xs);
+  font-weight: 600;
+  color: color-mix(in srgb, var(--ink) 55%, transparent);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Right-side actions (eye + solo) */
+
+.mesh-rail-unit-actions {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2xs);
+  padding-right: var(--space-sm);
+}
+
+.mesh-rail-unit-eye {
+  width: 18px;
+  height: 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid color-mix(in srgb, var(--border) 60%, transparent);
+  background: color-mix(in srgb, var(--ink) 4%, transparent);
+  color: color-mix(in srgb, var(--ink) 60%, transparent);
+  font-size: var(--text-2xs);
+  cursor: pointer;
+  border-radius: var(--radius-xs);
+  transition: background 0.12s, color 0.12s, border-color 0.12s;
+}
+
+.mesh-rail-unit-eye:hover {
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  border-color: color-mix(in srgb, var(--accent) 40%, transparent);
+  color: var(--accent);
+}
+
+.mesh-rail-unit-eye--off {
+  color: color-mix(in srgb, var(--ink) 30%, transparent);
+}
+
+.mesh-rail-vent {
+  position: absolute;
+  right: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 5px;
+  height: 60%;
+  background: repeating-linear-gradient(
+    0deg,
+    color-mix(in srgb, var(--ink) 14%, transparent) 0px,
+    color-mix(in srgb, var(--ink) 14%, transparent) 1px,
+    transparent 1px,
+    transparent 3px
+  );
+  pointer-events: none;
+  opacity: 0.45;
+}
+
+.mesh-rail-foot-mark {
+  flex: 0 0 auto;
+  width: 4px;
+  height: 10px;
+  border-radius: 1px;
+  background: color-mix(in srgb, var(--ink) 10%, transparent);
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--ink) 12%, transparent);
+}
+
+.mesh-rail-foot-meta {
+  font-size: var(--text-2xs);
+  font-weight: 600;
+  letter-spacing: var(--tracking-xl);
+  text-transform: uppercase;
+  color: color-mix(in srgb, var(--ink) 45%, transparent);
+}
+
+.mesh-rail-foot-reset {
+  padding: var(--space-3xs) var(--space-xs);
+  border: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
+  background: transparent;
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: var(--text-3xs);
+  font-weight: 700;
+  letter-spacing: var(--tracking-xl);
+  text-transform: uppercase;
+  cursor: pointer;
+  border-radius: var(--radius-xs);
+}
+
+.mesh-rail-foot-reset:hover {
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  border-color: color-mix(in srgb, var(--accent) 40%, transparent);
+  color: var(--accent);
+}

@@ -1,0 +1,44 @@
+{
+  "sessionId": "fixture-echo-basic-completed",
+  "phase": "completed",
+  "currentMessage": {
+    "id": "echo-turn-001:echo-text-001",
+    "role": "assistant",
+    "text": "Echo: fixture",
+    "updatedAt": 1786129200000,
+    "metadata": {
+      "blockId": "echo-text-001",
+      "blockType": "text",
+      "turnId": "echo-turn-001"
+    }
+  },
+  "activeTools": {},
+  "attention": {},
+  "activeSubagents": {},
+  "turns": [
+    {
+      "id": "echo-turn-001",
+      "status": "completed",
+      "startedAt": 1786129200000,
+      "endedAt": 1786129200000,
+      "blockCount": 3,
+      "messageCount": 2,
+      "toolCount": 1,
+      "attentionCount": 0,
+      "summary": "fixture",
+      "updatedAt": 1786129200000,
+      "metadata": {
+        "hasActiveTool": false
+      }
+    }
+  ],
+  "tasks": [],
+  "updatedAt": 1786129200000,
+  "metadata": {
+    "adapterType": "echo",
+    "provider": null,
+    "sessionName": "Echo fixture",
+    "sessionStatus": "active",
+    "turnCount": 1
+  }
+}

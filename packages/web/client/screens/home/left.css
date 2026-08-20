@@ -1,0 +1,124 @@
+/* ── BaseLeftRail: consistent rail rendered when a page doesn't take over ── */
+
+.base-rail {
+  height: 100%;
+  overflow-y: auto;
+}
+
+.base-rail-prepend {
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 40%, transparent);
+}
+
+.base-rail-section {
+  padding-top: var(--space-md);
+}
+
+.base-rail-section:first-of-type {
+  padding-top: var(--space-xs);
+}
+
+.base-rail-section-label {
+  padding: var(--space-2xs) var(--space-lg) var(--space-2xs);
+}
+
+.base-rail-section-trailing {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-xs);
+}
+
+.base-rail-see-all {
+  border: 0;
+  padding: var(--space-3xs) var(--space-2xs);
+  background: transparent;
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  font-weight: 600;
+  letter-spacing: var(--tracking-lg);
+  text-transform: uppercase;
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+  transition: background 0.1s, color 0.1s;
+}
+
+.base-rail-see-all:hover {
+  background: color-mix(in srgb, var(--ink) 5%, transparent);
+  color: var(--ink);
+}
+
+.base-rail-loading {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+  padding: var(--space-sm) var(--space-lg) var(--space-md);
+}
+
+.base-rail-loading span {
+  display: block;
+  width: 82%;
+  height: 8px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--ink) 8%, transparent);
+  animation: base-rail-loading-pulse 1.2s ease-in-out infinite alternate;
+}
+
+.base-rail-loading span:nth-child(2n) {
+  width: 61%;
+}
+
+@keyframes base-rail-loading-pulse {
+  from { opacity: 0.45; }
+  to { opacity: 0.9; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .base-rail-loading span { animation: none; }
+}
+
+/* Jump-offs row */
+
+.base-rail-section--jumps {
+  border-bottom: none;
+  padding-bottom: var(--space-lg);
+}
+
+.base-rail-jumps {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: var(--space-xs);
+  padding: var(--space-2xs) var(--space-md) 0;
+}
+
+.base-rail-jump {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-sm);
+  padding: var(--space-sm) var(--space-md);
+  border: 1px solid color-mix(in srgb, var(--border) 50%, transparent);
+  background: color-mix(in srgb, var(--bg) 70%, transparent);
+  border-radius: var(--radius-md);
+  color: var(--ink);
+  cursor: pointer;
+  font-size: var(--text-sm);
+  font-weight: 500;
+  letter-spacing: -0.003em;
+  text-align: left;
+  transition: background 0.1s, border-color 0.1s, color 0.1s;
+}
+
+.base-rail-jump:hover {
+  background: color-mix(in srgb, var(--ink) 5%, transparent);
+  border-color: color-mix(in srgb, var(--border) 80%, transparent);
+}
+
+.base-rail-jump-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--muted);
+}
+
+.base-rail-jump:hover .base-rail-jump-icon {
+  color: var(--ink);
+}

@@ -1,0 +1,167 @@
+.agent-live-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-md);
+  min-width: 0;
+  padding: var(--space-sm);
+  border: 1px solid color-mix(in srgb, var(--border) 78%, transparent);
+  border-radius: var(--radius-lg);
+  background: color-mix(in srgb, var(--surface) 82%, var(--bg));
+}
+
+.agent-live-actions--inline {
+  align-self: flex-start;
+  width: min(100%, 520px);
+}
+
+.agent-live-actions--compact {
+  gap: var(--space-xs);
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+
+.agent-live-actions--compact .agent-live-actions-status {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.agent-live-actions-status {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  min-width: 0;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--muted);
+}
+
+.agent-live-actions-dot {
+  width: 7px;
+  height: 7px;
+  flex: none;
+  border-radius: var(--radius-pill);
+  background: color-mix(in srgb, var(--ink) 22%, transparent);
+}
+
+.agent-live-actions--live .agent-live-actions-dot {
+  background: var(--accent);
+  box-shadow: 0 0 10px color-mix(in srgb, var(--accent) 48%, transparent);
+}
+
+.agent-live-actions-status-main,
+.agent-live-actions-status-detail {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-live-actions-status-main {
+  color: var(--ink);
+}
+
+.agent-live-actions-status-detail {
+  color: var(--dim);
+}
+
+.agent-live-actions-buttons {
+  display: flex;
+  flex: none;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: var(--space-xs);
+}
+
+.agent-live-actions-button {
+  min-height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-xs);
+  padding: 0 var(--space-md);
+  border: 1px solid color-mix(in srgb, var(--border) 92%, transparent);
+  border-radius: var(--radius-lg);
+  background: color-mix(in srgb, var(--ink) 4%, transparent);
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  font-weight: 650;
+  line-height: var(--leading-none);
+  letter-spacing: var(--tracking-md);
+  text-transform: uppercase;
+  white-space: nowrap;
+  cursor: pointer;
+  transition:
+    border-color 140ms ease,
+    background 140ms ease,
+    color 140ms ease;
+}
+
+.agent-live-actions-button svg {
+  flex: none;
+}
+
+.agent-live-actions-button:hover {
+  border-color: color-mix(in srgb, var(--accent) 30%, transparent);
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+  color: var(--ink);
+}
+
+.agent-live-actions-button:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent) 52%, transparent);
+  outline-offset: 2px;
+}
+
+.agent-live-actions-button--primary {
+  border-color: color-mix(in srgb, var(--accent) 38%, transparent);
+  background: color-mix(in srgb, var(--accent) 13%, var(--surface));
+  color: var(--accent);
+  box-shadow: inset 0 1px 0 color-mix(in srgb, white 6%, transparent);
+}
+
+.agent-live-actions-button--primary:hover {
+  border-color: color-mix(in srgb, var(--accent) 56%, transparent);
+  background: color-mix(in srgb, var(--accent) 20%, var(--surface));
+}
+
+.agent-live-actions--compact .agent-live-actions-buttons {
+  flex: 0 0 auto;
+  flex-wrap: nowrap;
+  justify-content: flex-end;
+  gap: var(--space-2xs);
+}
+
+.agent-live-actions--compact .agent-live-actions-button {
+  min-height: 24px;
+  padding: 0 var(--space-xs);
+  border-radius: var(--radius-sm);
+  font-size: var(--text-2xs);
+}
+
+.agent-live-actions--compact .agent-live-actions-button--primary {
+  flex: 0 0 auto;
+  min-height: 24px;
+}
+
+@media (max-width: 720px) {
+  .agent-live-actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .agent-live-actions-buttons {
+    justify-content: flex-start;
+  }
+
+  .agent-live-actions--compact {
+    flex-direction: row;
+    align-items: center;
+  }
+
+  .agent-live-actions--compact .agent-live-actions-buttons {
+    justify-content: flex-end;
+  }
+}

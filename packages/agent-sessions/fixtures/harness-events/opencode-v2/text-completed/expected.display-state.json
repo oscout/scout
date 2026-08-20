@@ -1,0 +1,46 @@
+{
+  "sessionId": "fixture-opencode-v2-text-completed",
+  "phase": "completed",
+  "currentMessage": {
+    "id": "opencode-v2-turn-001:opencode-v2-text-001",
+    "role": "assistant",
+    "text": "fixture-ok",
+    "updatedAt": 1786467601000,
+    "metadata": {
+      "blockId": "opencode-v2-text-001",
+      "blockType": "text",
+      "turnId": "opencode-v2-turn-001"
+    }
+  },
+  "activeTools": {},
+  "attention": {},
+  "activeSubagents": {},
+  "turns": [
+    {
+      "id": "opencode-v2-turn-001",
+      "status": "completed",
+      "startedAt": 1786467600000,
+      "endedAt": 1786467601000,
+      "blockCount": 1,
+      "messageCount": 1,
+      "toolCount": 0,
+      "attentionCount": 0,
+      "summary": "fixture-ok",
+      "updatedAt": 1786467601000,
+      "metadata": {
+        "hasActiveTool": false
+      }
+    }
+  ],
+  "tasks": [],
+  "updatedAt": 1786467601000,
+  "metadata": {
+    "adapterType": "opencode-v2",
+    "cwd": "<workspace>",
+    "model": "opencode/fixture-model",
+    "provider": null,
+    "sessionName": "OpenCode V2 fixture",
+    "sessionStatus": "active",
+    "turnCount": 1
+  }
+}

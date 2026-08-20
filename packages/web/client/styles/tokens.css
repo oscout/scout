@@ -1,0 +1,109 @@
+/* ──────────────────────────────────────────────────────────────────────────
+ * Scout Web — Design Tokens
+ *
+ * The "middle layer" between HudsonKit's --hud-* theme primitives and the
+ * component CSS. These scales are theme-INDEPENDENT (a pixel is a pixel in
+ * dark or light), so they live in :root rather than the [data-scout-theme]
+ * wrapper. Semantic COLOR tokens (which DO change per theme) are defined in
+ * scout/Provider.tsx and consumed under [data-scout-theme].
+ *
+ * Naming: t-shirt sizes, anchored xs=6 / sm=8 / lg=12.
+ * See docs/design/tokens.md for the snapping table and usage guidance.
+ * ────────────────────────────────────────────────────────────────────────── */
+
+:root {
+  /* ── Spacing ───────────────────────────────────────────────────────────────
+   * Fine-grained at the bottom (dense ops chrome lives at 2–12px), coarser up
+   * top. Use for padding / margin / gap ONLY. Never for width/height, grid
+   * tracks, insets, transforms, border-width, shadows, or blur. */
+  --space-3xs: 2px;
+  --space-2xs: 4px;
+  --space-xs: 6px;
+  --space-sm: 8px;
+  --space-md: 10px;
+  --space-lg: 12px;
+  --space-xl: 14px;
+  --space-2xl: 16px;
+  --space-3xl: 20px;
+  --space-4xl: 24px;
+  --space-5xl: 32px;
+  --space-6xl: 40px;
+  --space-7xl: 48px;
+  --space-8xl: 64px;
+
+  /* ── Radius ────────────────────────────────────────────────────────────────
+   * --radius (= --hud-radius) stays the default for HudsonKit chrome. */
+  --radius-xs: 2px;
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 8px;
+  --radius-xl: 12px;
+  --radius-2xl: 16px;
+  --radius-pill: 999px;
+
+  /* ── Font size ─────────────────────────────────────────────────────────────
+   * Whole pixels only — fractional 9.5/10.5/11.5/12.5 sizes are retired.
+   * Body rungs (2xs–xl) stay dense-ops friendly; display rungs are one step
+   * smaller than the original ladder so titles read quieter. Studio mirrors
+   * this set via --text-* in design/studio/app/theme-aliases.css. */
+  --text-3xs: 8px; /* dense instrument chrome */
+  --text-2xs: 9px;
+  --text-xs: 10px;
+  --text-sm: 11px;
+  --text-md: 12px;
+  --text-lg: 13px; /* matches --hud-text-base */
+  --text-xl: 14px;
+  --text-2xl: 15px;
+  --text-3xl: 17px;
+  --text-4xl: 19px;
+  --text-5xl: 22px;
+  --text-6xl: 26px;
+  --text-7xl: 30px;
+  --text-8xl: 40px;
+  --text-9xl: 48px;
+
+  /* Fluid display type. Endpoints stay on the whole-pixel scale; the middle
+   * term lets large headings breathe across desktop/mobile widths. */
+  --display-xs: clamp(var(--text-5xl), calc(18px + 1vw), var(--text-6xl));
+  --display-sm: clamp(var(--text-6xl), calc(22px + 1vw), var(--text-7xl));
+  --display-md: clamp(var(--text-7xl), calc(26px + 2vw), var(--text-9xl));
+
+  /* ── Tracking (letter-spacing) ─────────────────────────────────────────────
+   * Collapses 10+ ad-hoc values. xl (0.18em) is the signature wide eyebrow. */
+  --tracking-xs: 0.02em;
+  --tracking-sm: 0.04em;
+  --tracking-md: 0.08em;
+  --tracking-lg: 0.12em;
+  --tracking-xl: 0.18em;
+
+  /* ── Leading (line-height) ─────────────────────────────────────────────────*/
+  --leading-none: 1;
+  --leading-tight: 1.35;
+  --leading-snug: 1.45;
+  --leading-normal: 1.5;
+  --leading-display: 1.12;
+
+  /* ── Motion ───────────────────────────────────────────────────────────────
+   * Scope-inspired: short hover transitions, slower state changes, entry
+   * motion only when a surface appears, and a single reduced-motion gate. */
+  --motion-duration-fast: 120ms;
+  --motion-duration-hover: 150ms;
+  --motion-duration-state: 220ms;
+  --motion-duration-enter: 340ms;
+  --motion-duration-reveal: 600ms;
+  --motion-duration-typing: 1100ms;
+  --motion-duration-pulse: 1600ms;
+  --motion-duration-breathe: 2000ms;
+  --motion-duration-scan: 3200ms;
+  --motion-ease-standard: cubic-bezier(0.2, 0.7, 0.2, 1);
+  --motion-ease-emphasis: cubic-bezier(0.16, 1, 0.3, 1);
+  --motion-ease-linear: linear;
+  /* SCO-088: deliberate rail collapse/expand + resize-commit settle. Honest
+   * 120–200ms ease-out; the reduced-motion gate collapses it to instant. */
+  --scout-rail-motion: 160ms;
+
+  /* ── Layout constants (NOT spacing — never snap these to the scale) ─────────
+   * --statusbar-h matches Hudson's SHELL_THEME.layout.statusBarHeight and the
+   * content `bottom: 28` offsets (see app.css). --sidebar-w lives in app.css. */
+  --statusbar-h: 28px;
+}

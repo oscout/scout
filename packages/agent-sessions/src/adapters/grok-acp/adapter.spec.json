@@ -1,0 +1,146 @@
+{
+  "$schema": "../spec/adapter-spec.v2.schema.json",
+  "specVersion": "2.0.0",
+  "adapterId": "grok-acp",
+  "displayName": "Grok ACP",
+  "implementation": {
+    "package": "@openscout/agent-sessions",
+    "entrypoint": "src/adapters/grok-acp/adapter.ts",
+    "factoryExport": "createAdapter"
+  },
+  "upstream": {
+    "kind": "mixed",
+    "name": "Grok ACP",
+    "transport": "jsonrpc-stdio-jsonl",
+    "sources": [
+      {
+        "kind": "url",
+        "ref": "https://docs.x.ai/build/overview"
+      },
+      {
+        "kind": "url",
+        "ref": "https://docs.x.ai/build/cli/headless-scripting"
+      },
+      {
+        "kind": "url",
+        "ref": "https://agentclientprotocol.com/protocol/v1/schema"
+      },
+      {
+        "kind": "file",
+        "ref": "src/adapters/grok-acp/adapter.ts"
+      },
+      {
+        "kind": "file",
+        "ref": "src/adapters/acp/adapter.ts"
+      }
+    ]
+  },
+  "sessionModel": {
+    "lifecycle": "long_lived_process",
+    "conversationScope": "session",
+    "resumeSupport": "optional",
+    "resumeOptionKey": "sessionId",
+    "turnSteering": "new_turn_only",
+    "concurrentTurns": "single",
+    "persistence": [
+      "process_state",
+      "upstream_session_id"
+    ]
+  },
+  "capabilities": {
+    "promptInputs": {
+      "text": true,
+      "images": "native",
+      "files": "reference_text"
+    },
+    "outputBlocks": [
+      "text",
+      "reasoning",
+      "action",
+      "error"
+    ],
+    "actionKinds": [
+      "tool_call"
+    ],
+    "streaming": {
+      "text": true,
+      "reasoning": true,
+      "actionOutput": true,
+      "actionStatus": true
+    },
+    "interactive": {
+      "questions": "none",
+      "approvals": "native",
+      "serverRequests": "native"
+    },
+    "control": {
+      "interrupt": true,
+      "shutdown": true
+    }
+  },
+  "nativeProtocol": {
+    "outboundRequests": [
+      "initialize",
+      "authenticate",
+      "session/new",
+      "session/load",
+      "session/resume",
+      "session/set_model",
+      "session/prompt",
+      "session/close"
+    ],
+    "outboundNotifications": [
+      "session/cancel"
+    ],
+    "inboundNotifications": [
+      "session/update"
+    ],
+    "inboundServerRequests": [
+      "session/request_permission",
+      "fs/read_text_file",
+      "fs/write_text_file"
+    ],
+    "messageFormats": [
+      "jsonrpc_request",
+      "jsonrpc_notification",
+      "jsonrpc_response",
+      "jsonrpc_error",
+      "jsonl_transport"
+    ],
+    "serverRequestStrategy": "resolve_and_reject"
+  },
+  "normalizedSurface": {
+    "adapterMethods": [
+      "start",
+      "send",
+      "interrupt",
+      "shutdown"
+    ],
+    "optionalAdapterMethods": [
+      "decide"
+    ],
+    "emitsPairingEvents": [
+      "session:update",
+      "turn:start",
+      "block:start",
+      "block:delta",
+      "block:action:output",
+      "block:action:status",
+      "block:action:approval",
+      "block:end",
+      "turn:error",
+      "turn:end"
+    ]
+  },
+  "conformance": {
+    "status": "grandfathered",
+    "normalizerId": "acp",
+    "fixtureSets": ["acp"]
+  },
+  "limitations": [
+    "This adapter drives the Grok CLI through its ACP stdio mode; it does not implement xAI Responses API calls directly.",
+    "The default launch requires a locally installed grok binary and either cached Grok login state or XAI_API_KEY.",
+    "Tool calls are normalized as generic tool_call action blocks by the shared ACP adapter.",
+    "Historical Grok transcript discovery is not implemented in this adapter."
+  ]
+}

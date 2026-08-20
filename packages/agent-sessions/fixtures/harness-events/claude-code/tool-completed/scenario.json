@@ -1,0 +1,47 @@
+{
+  "schemaVersion": "1.0.0",
+  "id": "claude-code-tool-completed",
+  "adapterId": "claude-code",
+  "fixtureSet": "claude-code",
+  "source": {
+    "kind": "recorded",
+    "harnessVersion": "Claude Code 2.1.220",
+    "transport": "stream-json-stdio",
+    "capturedAt": "2026-08-07T23:45:19.000Z"
+  },
+  "redactions": [
+    { "line": 0, "pointer": "/payload/text", "replacement": "<prompt>" },
+    { "line": 1, "pointer": "/payload/message/content/0/id", "replacement": "tool-recorded" },
+    { "line": 1, "pointer": "/payload/message/content/0/input/command", "replacement": "<command>" },
+    { "line": 1, "pointer": "/payload/message/content/0/input/description", "replacement": "<description>" },
+    { "line": 1, "pointer": "/payload/session_id", "replacement": "session-recorded" },
+    { "line": 1, "pointer": "/payload/uuid", "replacement": "event-recorded-tool" },
+    { "line": 2, "pointer": "/payload/message/content/0/tool_use_id", "replacement": "tool-recorded" },
+    { "line": 2, "pointer": "/payload/session_id", "replacement": "session-recorded" },
+    { "line": 2, "pointer": "/payload/uuid", "replacement": "event-recorded-result" },
+    { "line": 3, "pointer": "/payload/session_id", "replacement": "session-recorded" },
+    { "line": 3, "pointer": "/payload/uuid", "replacement": "event-recorded-text" },
+    { "line": 4, "pointer": "/payload/session_id", "replacement": "session-recorded" },
+    { "line": 4, "pointer": "/payload/uuid", "replacement": "event-recorded-terminal" }
+  ],
+  "expected": {
+    "endState": "completed",
+    "evidenceKeys": [
+      "event:turn:start",
+      "event:block:start",
+      "event:block:action:output",
+      "event:block:action:status",
+      "event:block:end",
+      "event:turn:end"
+    ]
+  },
+  "determinism": {
+    "clockValues": ["2026-08-07T23:45:19.000Z", "2026-08-07T23:45:23.000Z"],
+    "idValues": ["claude-tool-turn-001", "claude-tool-block-001", "claude-tool-text-001"]
+  },
+  "session": {
+    "name": "Claude tool fixture",
+    "cwd": "<workspace>",
+    "model": "claude-haiku-4-5"
+  }
+}

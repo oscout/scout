@@ -1,0 +1,76 @@
+import { describe, expect, test } from "bun:test";
+import { estimateAdapterCost } from "./cost";
+
+describe("adapter cost estimates", () => {
+  test("prices OpenAI tokens with cached input and output split", () => {
+    const estimate = estimateAdapterCost({
+      provider: "openai",
+      model: "gpt-5.4",
+      usage: {
+        inputTokens: 1_000_000,
+        cacheReadInputTokens: 200_000,
+        outputTokens: 100_000,
+      },
+      capturedAt: 1,
+    });
+
+    expect(estimate.rateCardSource).toBe("exact");
+    expect(estimate.billingMode).toBe("api");
+    expect(estimate.usage.uncachedInput).toBe(800_000);
+    expect(estimate.totalUsd).toBeCloseTo(3.55, 6);
+    expect(estimate.billedTotalUsd).toBeCloseTo(3.55, 6);
+  });
+
+  test("prices Anthropic cache writes separately from cache reads", () => {
+    const estimate = estimateAdapterCost({
+      provider: "anthropic",
+      model: "claude-sonnet-4-5-20250929",
+      usage: {
+        inputTokens: 100_000,
+        cacheCreationInputTokens: 1_000_000,
+        cacheReadInputTokens: 2_000_000,
+        outputTokens: 50_000,
+      },
+      capturedAt: 1,
+    });
+
+    expect(estimate.rateCardSource).toBe("alias");
+    expect(estimate.usage.uncachedInput).toBe(0);
+    expect(estimate.totalUsd).toBeCloseTo(5.1, 6);
+  });
+
+  test("marks subscription-covered usage down while preserving API-equivalent cost", () => {
+    const estimate = estimateAdapterCost({
+      provider: "openai",
+      model: "gpt-5.4",
+      billingMode: "subscription",
+      usage: {
+        inputTokens: 1_000_000,
+        outputTokens: 100_000,
+      },
+      capturedAt: 1,
+    });
+
+    expect(estimate.totalUsd).toBeCloseTo(4, 6);
+    expect(estimate.billedTotalUsd).toBe(0);
+    expect(estimate.lineItems[0]?.rate).toBe(2.5);
+    expect(estimate.lineItems[0]?.billedRate).toBe(0);
+  });
+
+  test("treats local Claude Code sessions as subscription-covered by default", () => {
+    const estimate = estimateAdapterCost({
+      adapterType: "claude-code",
+      model: "claude-opus-4-7",
+      usage: {
+        cacheReadInputTokens: 1_000_000,
+        outputTokens: 10_000,
+      },
+      capturedAt: 1,
+    });
+
+    expect(estimate.provider).toBe("anthropic");
+    expect(estimate.billingMode).toBe("subscription");
+    expect(estimate.totalUsd).toBeGreaterThan(0);
+    expect(estimate.billedTotalUsd).toBe(0);
+  });
+});

@@ -1,0 +1,53 @@
+{
+  "sessionId": "fixture-claude-code-question-open",
+  "phase": "waiting",
+  "currentMessage": null,
+  "activeTools": {},
+  "attention": {
+    "session-question:fixture-claude-code-question-open:claude-question-turn-001:claude-question-block-001": {
+      "id": "session-question:fixture-claude-code-question-open:claude-question-turn-001:claude-question-block-001",
+      "kind": "question",
+      "title": "Fixture",
+      "summary": "Continue?",
+      "sourceRef": "claude-question-block-001",
+      "updatedAt": 1786138200000,
+      "metadata": {
+        "adapterType": "claude-code",
+        "blockId": "claude-question-block-001",
+        "detail": "Options: Yes, No",
+        "severity": "warning",
+        "sourceKind": "question",
+        "sourceLabel": "claude-code question",
+        "turnId": "claude-question-turn-001",
+        "version": null
+      }
+    }
+  },
+  "activeSubagents": {},
+  "turns": [
+    {
+      "id": "claude-question-turn-001",
+      "status": "streaming",
+      "startedAt": 1786138200000,
+      "blockCount": 1,
+      "messageCount": 0,
+      "toolCount": 0,
+      "attentionCount": 1,
+      "summary": "Continue?",
+      "updatedAt": 1786138200000,
+      "metadata": {
+        "hasActiveTool": false
+      }
+    }
+  ],
+  "tasks": [],
+  "updatedAt": 1786138200000,
+  "metadata": {
+    "adapterType": "claude-code",
+    "currentTurnId": "claude-question-turn-001",
+    "provider": null,
+    "sessionName": "Claude question fixture",
+    "sessionStatus": "active",
+    "turnCount": 1
+  }
+}

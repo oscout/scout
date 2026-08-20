@@ -1,0 +1,1062 @@
+/* AgentLaneCard — web port of the signed-off studio lane card (top half).
+   The card fills its column shell (.s-agent-lane provides border/glass/shadow)
+   and owns a two-column identity header → dark-screen status box. The trace
+   below is the shared SessionObserve lane timeline, hosted as a slot.
+   Colours use app design tokens so it follows the active theme. */
+
+.s-lane-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  height: 100%;
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--ink) 2%, transparent),
+    color-mix(in srgb, var(--ink) 0.5%, transparent)
+  );
+}
+
+/* Only an actively-working lane carries the accent wash. */
+.s-lane-card--working {
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--green) 2%, transparent),
+    color-mix(in srgb, var(--ink) 0.5%, transparent)
+  );
+}
+
+.s-lane-card-hit {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  appearance: none;
+  border: 0;
+  padding: 0;
+  margin: 0;
+  background: transparent;
+  cursor: pointer;
+}
+
+/* ── working motion — only active lanes move ──────────────────────────────
+   subtle: an occasional blink + accent shimmer + a slow breathe. */
+@keyframes slc-breathe { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.03); } }
+@keyframes slc-blink { 0%, 90%, 100% { transform: scaleY(1); } 95% { transform: scaleY(0.12); } }
+@keyframes slc-shimmer { 0%, 100% { opacity: 0.95; } 50% { opacity: 0.5; } }
+.s-lane-card--working .s-lane-card-anchor--av {
+  transform-origin: center;
+  animation: slc-breathe 3.6s ease-in-out infinite;
+}
+.s-lane-card--working .s-lane-card-anchor--av .sprite-cell--eye {
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: slc-blink 4.8s ease-in-out infinite;
+}
+.s-lane-card--working .s-lane-card-anchor--av .sprite-cell--accent {
+  animation: slc-shimmer 2.8s ease-in-out infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .s-lane-card--working .s-lane-card-anchor--av,
+  .s-lane-card--working .s-lane-card-anchor--av .sprite-cell--eye,
+  .s-lane-card--working .s-lane-card-anchor--av .sprite-cell--accent {
+    animation: none;
+  }
+}
+
+.s-agent-lanes--low-motion .s-lane-card--working .s-lane-card-anchor--av,
+.s-agent-lanes--low-motion .s-lane-card--working .s-lane-card-anchor--av .sprite-cell--eye,
+.s-agent-lanes--low-motion .s-lane-card--working .s-lane-card-anchor--av .sprite-cell--accent {
+  animation: none;
+}
+
+/* ── header — two columns on ONE 4px baseline grid ─────────────────────────
+   Base unit = 4px. Every padding/gap/margin is a 4px multiple; each text row
+   has an explicit 16px line-height so it occupies a whole 4 units, and the two
+   sub-columns share identical row heights + gaps so their baselines line up
+   across the card:
+     row 1  name           ↔  harness mark top / model·effort   (top 16, h 16)
+     row 2  cwd            ↔  session id                        (top 36, h 16)
+     row 3  branch         ↔  time + caret                      (top 56, h 16)
+   The avatar (44) and harness (30) anchors both top-align to row 1. */
+.s-lane-card-head {
+  position: relative;
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 16px 16px 12px;
+}
+.s-lane-card-anchor {
+  position: relative;
+  display: inline-flex;
+  flex: none;
+}
+
+/* left identity column */
+.s-lane-card-ident {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  flex: 1 1 auto;
+  min-width: 0;
+  padding-top: 0;
+}
+.s-lane-card-name {
+  font-family: var(--font-sans);
+  font-size: var(--text-2xl);
+  line-height: 18px;
+  font-weight: 600;
+  letter-spacing: 0;
+  color: var(--ink);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* right runtime column — the harness mark anchors it on the left (mirroring the
+   avatar on the left column), with a stacked sub-column of facts beside it. */
+.s-lane-card-meta {
+  /* guaranteed room so model + session id don't get chewed up; grows for longer
+     values, shrinks only as a last resort (which caps the identity column). */
+  flex: 0 1 auto;
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  min-width: 176px;
+  max-width: 62%;
+  padding-top: 0;
+}
+.s-lane-card-anchor--hm {
+  align-self: flex-start;
+  margin-top: 0;
+}
+.s-lane-card-meta-lines {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
+  flex: 1 1 auto;
+  min-width: 0;
+  text-align: right;
+}
+.s-lane-card-meta-run {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+  height: 16px;
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  line-height: 16px;
+}
+.s-lane-card-meta-model {
+  color: var(--ink);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+.s-lane-card-meta-effort {
+  color: var(--dim);
+  flex: none;
+}
+.s-lane-card-meta-sid {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 4px;
+  width: 100%;
+  height: 16px;
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  line-height: 16px;
+  color: var(--dim);
+  min-width: 0;
+}
+.s-lane-card-meta-sid .s-lane-card-val {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+/* ── selectable key fields + discrete copy targets ─────────────────────────
+   Each key fact (name · cwd · branch · model · session id) is plain SELECTABLE
+   text — drag-select and ⌘C whatever you want, whenever. Raising it above the
+   card's full-bleed "open" hit (z-index) is what lets the mouse select it
+   rather than open the lane; empty header space still falls through to open.
+   Alongside the text, a small CopyDot appears on field hover as an explicit
+   one-click target. It lives in the quiet gutter beside its column — trailing
+   the left column, leading the right — and is absolutely positioned, so the 4px
+   grid and the right-edge alignment are untouched. */
+.s-lane-card-sel {
+  -webkit-user-select: text;
+  user-select: text;
+  cursor: text;
+  position: relative;
+  z-index: 2;
+}
+/* Each field hugs its own text (not the whole column) and carries a short
+   hover "runway" toward its CopyDot — padding that IS part of the hover zone,
+   cancelled by a matching negative margin so layout (and the 4px grid) is
+   unchanged. Result: the dot sits a few px past the text, and the text→dot path
+   is one contiguous hover target you can't slip off. */
+.s-lane-card-fieldc {
+  position: relative;
+  width: fit-content;
+  max-width: 100%;
+  border-radius: var(--radius-sm);
+  transition: background 110ms ease;
+}
+/* a barely-there wash on hover ties the field to its CopyDot */
+.s-lane-card-fieldc:hover {
+  background: color-mix(in srgb, var(--ink) 4%, transparent);
+}
+/* Lift the WHOLE field (text + runway + dot) above the card's full-bleed "open"
+   hit while interacting. Without this only the text pokes above the hit overlay
+   (z-index:2); the runway gap between text and dot dips back under it, so :hover
+   drops mid-travel and the dot vanishes before the cursor reaches it. */
+.s-lane-card-fieldc:hover,
+.s-lane-card-fieldc:focus-within {
+  z-index: 2;
+}
+.s-lane-card-fieldc--trail {
+  padding-right: 22px;
+  margin-right: -22px;
+}
+.s-lane-card-fieldc--lead {
+  padding-left: 22px;
+  margin-left: -22px;
+}
+.s-lane-card-modelwrap {
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
+}
+
+.s-lane-card-copydot {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--ink) 8%, transparent);
+  color: var(--muted);
+  cursor: pointer;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 110ms ease, color 110ms ease, background 110ms ease;
+  z-index: 3;
+}
+/* the dot sits just past the text, inside its field's hover runway */
+.s-lane-card-copydot--trail { right: 3px; }
+.s-lane-card-copydot--lead { left: 3px; }
+.s-lane-card-fieldc:hover > .s-lane-card-copydot,
+.s-lane-card-fieldc:focus-within > .s-lane-card-copydot {
+  opacity: 1;
+  pointer-events: auto;
+}
+.s-lane-card-copydot:hover {
+  color: var(--ink);
+  background: color-mix(in srgb, var(--ink) 16%, transparent);
+}
+.s-lane-card-copydot:focus-visible {
+  outline: none;
+  opacity: 1;
+  pointer-events: auto;
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 55%, transparent);
+}
+.s-lane-card-copydot--done,
+.s-lane-card-copydot--done:hover {
+  opacity: 1;
+  pointer-events: auto;
+  color: var(--green);
+  background: color-mix(in srgb, var(--green) 20%, transparent);
+}
+.s-lane-card-copydot svg {
+  display: block;
+}
+@media (prefers-reduced-motion: reduce) {
+  .s-lane-card-copydot {
+    transition: none;
+  }
+}
+
+/* the name needs a positioned wrapper so its CopyDot isn't clipped by the
+   name's own overflow:hidden (ellipsis). Hugs the name (fieldc width) so the
+   dot sits just past the last glyph, not out in the gutter. */
+.s-lane-card-namebox {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.s-lane-card-authority {
+  flex: none;
+  border: 1px solid color-mix(in srgb, var(--amber) 42%, transparent);
+  border-radius: 999px;
+  padding: 1px 5px 0;
+  font-family: var(--font-mono);
+  font-size: var(--text-3xs);
+  line-height: 12px;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  color: var(--amber);
+  background: color-mix(in srgb, var(--amber) 8%, transparent);
+  cursor: help;
+  position: relative;
+  z-index: 3;
+}
+
+/* shared glyph-led fact bits (cwd · branch in the left column) */
+.s-lane-card-d {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  height: 16px;
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  line-height: 16px;
+  color: var(--muted);
+}
+.s-lane-card-d .s-lane-card-val {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+.s-lane-card-d--strong {
+  color: var(--ink);
+}
+.s-lane-card-gmark {
+  color: var(--dim);
+  flex: none;
+}
+.s-lane-card-gchar {
+  color: var(--dim);
+  flex: none;
+  font-size: var(--text-sm);
+  line-height: 1;
+}
+.s-lane-card-hmark {
+  color: var(--muted);
+  display: inline-flex;
+  flex: none;
+  transition: color 200ms ease;
+}
+.s-lane-card--working .s-lane-card-hmark {
+  color: var(--ink);
+}
+.s-lane-card-time {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  line-height: 16px;
+  color: var(--dim);
+}
+.s-lane-card-caret {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  /* 20px hit target vertically centered on its 16px grid row (±2px overflow,
+     symmetric, keeps the baseline). The negative right margin pulls the box so
+     the centered chevron's right edge lands on the SAME right edge as the
+     model·effort and session-id text above it — the right column's rightmost
+     marks all line up on one vertical edge. */
+  margin: -2px -6px -2px 0;
+  border: 0;
+  background: transparent;
+  color: var(--dim);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: color 140ms ease, background 140ms ease;
+}
+.s-lane-card-caret:hover {
+  color: var(--ink);
+  background: color-mix(in srgb, var(--ink) 6%, transparent);
+}
+.s-lane-card-caret svg {
+  transition: transform 160ms ease;
+}
+.s-lane-card--collapsed .s-lane-card-caret svg {
+  transform: rotate(-90deg);
+}
+
+/* ── meta strip — a slim rule carrying recency (left) + the collapse caret
+   (right), between the header and the status box. Stays visible when the card
+   is collapsed so it can be reopened. ─────────────────────────────────────── */
+.s-lane-card-meta-foot {
+  position: relative;
+  z-index: 2;
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  width: 100%;
+  height: 16px;
+  margin-top: 0;
+}
+.s-lane-card-meta-foot .s-lane-card-time {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.s-lane-card-time-dot {
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--ink) 28%, transparent);
+}
+.s-lane-card--working .s-lane-card-time-dot {
+  background: var(--green);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--green) 18%, transparent);
+  animation: slc-dot-pulse 2.4s ease-in-out infinite;
+}
+@keyframes slc-dot-pulse {
+  0%, 100% { box-shadow: 0 0 0 2px color-mix(in srgb, var(--green) 18%, transparent); }
+  50% { box-shadow: 0 0 0 3px color-mix(in srgb, var(--green) 7%, transparent); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .s-lane-card--working .s-lane-card-time-dot { animation: none; }
+}
+
+.s-agent-lanes--low-motion .s-lane-card--working .s-lane-card-time-dot {
+  animation: none;
+}
+
+/* ── status box — the current-state "dark screen": a recessed dark panel, clean
+   thin border, cohesive with the SessionObserve trace below it. Green-tinted
+   while working. ──────────────────────────────────────────────────────────── */
+.s-lane-card-summary {
+  flex: none;
+  /* a recessed darkish panel — clearly darker than the card so it reads as a
+     console readout, but pulled back from a full near-black "is that a terminal?"
+     screen. Sits between the original light recess and the deep black. */
+  --lane-screen: color-mix(in srgb, #000 30%, var(--bg));
+  /* left/right 16px = the header gutter, so the box's left edge lines up with
+     the avatar's left edge and the card's other left-aligned elements. */
+  margin: 0 16px 12px;
+  padding: 8px 12px;
+  border: 1px solid color-mix(in srgb, var(--ink) 10%, transparent);
+  border-radius: var(--radius-sm);
+  background: var(--lane-screen);
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 8px;
+  /* reserve two text lines for the cockpit readout (head text clamps at two)
+     so its height stays steady whether the last step is one line or two. */
+  min-height: 48px;
+}
+/* working keeps the SAME dark screen — no green wash. "Working" is already
+   carried by the pulsing time-dot and the trace spine signal; the status panel
+   stays a calm dark readout, just a whisper of warmth on the edge. */
+.s-lane-card--working .s-lane-card-summary {
+  border-color: color-mix(in srgb, var(--green) 11%, color-mix(in srgb, var(--ink) 10%, transparent));
+}
+/* Light mode: "30% toward black" lands on a muddy mid-gray slab, and the ink
+   text inside barely clears it. The light translation of a recessed console
+   readout is a paper well — clearly below the card face, text stays ink. */
+[data-scout-theme-mode="light"] .s-lane-card-summary {
+  --lane-screen: color-mix(in srgb, var(--ink) 5%, var(--bg));
+}
+.s-lane-card-current {
+  display: flex;
+  gap: 8px;
+  font-size: var(--text-md);
+  line-height: 16px;
+  color: var(--ink);
+}
+/* console lead — a work/tool current-line reads as a console prompt echo: a soft
+   accent chevron, the line itself in mono. Conversation lines keep the ←/→ arrow
+   + prose font instead (handled in markup). */
+.s-lane-card-prompt {
+  flex: none;
+  font-family: var(--font-mono);
+  font-weight: 600;
+  line-height: 16px;
+  /* Accent-led chevron — less washed-out muted gray. */
+  color: color-mix(
+    in srgb,
+    var(--accent) 80%,
+    color-mix(in srgb, var(--ink) 70%, var(--muted))
+  );
+}
+.s-lane-card-current--console .s-lane-card-head-text {
+  font-family: var(--font-mono);
+  font-size: var(--text-md);
+  letter-spacing: -0.01em;
+  color: color-mix(in srgb, var(--ink) 94%, transparent);
+}
+
+/* the head line is cut short for a single glance; the full line (often a whole
+   message/command) lives in a hover popover. The wrap is raised above the card's
+   full-bleed "open" hit so it actually receives hover. */
+.s-lane-card-headwrap {
+  position: relative;
+  flex: 1 1 auto;
+  min-width: 0;
+  z-index: 2;
+}
+.s-lane-card-headpop {
+  position: absolute;
+  left: 0;
+  top: calc(100% + 6px);
+  z-index: 20;
+  min-width: 240px;
+  max-width: min(420px, 90vw);
+  max-height: 280px;
+  overflow: auto;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  border: 1px solid color-mix(in srgb, var(--ink) 14%, transparent);
+  background: color-mix(in srgb, #000 38%, var(--surface));
+  box-shadow: 0 10px 28px color-mix(in srgb, #000 48%, transparent);
+  color: var(--ink);
+  font-family: var(--font-sans);
+  font-size: var(--text-md);
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+  /* hidden until the line is hovered */
+  opacity: 0;
+  transform: translateY(-3px);
+  pointer-events: none;
+  transition: opacity 120ms ease, transform 120ms ease;
+}
+/* a work/console line shows its full command in mono, matching the line above */
+.s-lane-card-current--console .s-lane-card-headpop {
+  font-family: var(--font-mono);
+  font-size: var(--text-md);
+}
+.s-lane-card-headwrap:hover .s-lane-card-headpop,
+.s-lane-card-headwrap:focus-within .s-lane-card-headpop {
+  opacity: 1;
+  transform: translateY(0);
+  pointer-events: auto;
+}
+.s-lane-card-head-text {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+/* direction reads from the arrow shape (←/→), not colour — uniform with all marks */
+.s-lane-card-dir {
+  font-family: var(--font-mono);
+  flex: none;
+  font-weight: 600;
+  color: var(--dim);
+}
+/* ── status: the calm "thinking / idle" state when there's no substantive step
+   to show (replaces a stray `❯ →`). A soft pulsing dot when working. ────────── */
+.s-lane-card-wait {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: var(--text-md);
+  line-height: 16px;
+  color: var(--muted);
+}
+.s-lane-card-wait-dot {
+  flex: none;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--muted) 55%, transparent);
+}
+.s-lane-card-wait--working .s-lane-card-wait-dot {
+  background: var(--accent);
+  animation: s-lane-card-wait-pulse 1.4s ease-in-out infinite;
+}
+.s-lane-card-wait-label {
+  font-family: var(--font-mono);
+  letter-spacing: 0.01em;
+}
+@keyframes s-lane-card-wait-pulse {
+  0%, 100% { opacity: 0.4; transform: scale(0.82); }
+  50% { opacity: 1; transform: scale(1.12); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .s-lane-card-wait--working .s-lane-card-wait-dot { animation: none; opacity: 0.9; }
+}
+
+/* ── accumulators — a row BELOW the status screen (not inside it). Tool pills
+   that pop out their inventory on hover; session vitals trail on the right. The
+   16px side margin lines them up with the status box + header gutter. ────────── */
+.s-lane-card-accs {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 14px;
+  margin: 0 16px 12px;
+  /* reserve a row so the accumulator slot is held even before any tool runs —
+     the cockpit keeps a steady ~4-line footprint (2 status + 2 here). */
+  min-height: 24px;
+}
+.s-lane-card-accs-tools,
+.s-lane-card-vitals {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+}
+.s-lane-card-accs-tools {
+  gap: 6px;
+}
+.s-lane-card-vitals {
+  gap: 14px;
+  margin-left: auto;
+}
+/* quiet placeholder when no tool has run yet — keeps the reserved row from
+   reading as broken/empty while staying clearly inactive. */
+.s-lane-card-accs-empty {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  letter-spacing: 0;
+  color: var(--dim);
+  opacity: 0.65;
+}
+/* each tool accumulator reads as a small chip (the pop-out is the detail) */
+.s-lane-card-accs-tools .s-lane-card-instr {
+  padding: 3px 8px;
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--ink) 4%, transparent);
+  transition: background 110ms ease;
+}
+.s-lane-card-accs-tools .s-lane-card-instr--pop:hover {
+  background: color-mix(in srgb, var(--ink) 9%, transparent);
+}
+/* the chip itself is the affordance — drop the dotted-underline hint here */
+.s-lane-card-accs-tools .s-lane-card-instr--pop .s-lane-card-instr-val {
+  text-decoration: none;
+}
+
+/* Stretched cockpit: token dial grid — ports the lane sheet Tokens disclosure. */
+.s-lane-card-cockpit-tokens {
+  flex: none;
+  margin: -4px 16px 10px;
+}
+
+.s-lane-card-cockpit-tokens-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 0 2px 7px;
+}
+
+.s-lane-card-cockpit-tokens-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-family: var(--font-sans);
+  font-size: var(--text-xs);
+  color: var(--muted);
+}
+
+.s-lane-card-cockpit-tokens-mark {
+  font-size: var(--text-sm);
+  line-height: 1;
+  color: color-mix(in srgb, var(--ink) 55%, transparent);
+}
+
+.s-lane-card-cockpit-tokens-hint {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+}
+
+.s-lane-card-cockpit-dials {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 1px;
+  border: 1px solid color-mix(in srgb, var(--ink) 8%, transparent);
+  border-radius: 7px;
+  overflow: hidden;
+  background: color-mix(in srgb, var(--ink) 8%, transparent);
+}
+
+.s-lane-card-cockpit-dial {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3xs);
+  padding: var(--space-sm) var(--space-md);
+  min-width: 0;
+  min-height: 52px;
+  background: color-mix(in srgb, #000 30%, var(--bg));
+}
+
+.s-lane-card-cockpit-dial-value {
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.s-lane-card-cockpit-dial-label {
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  letter-spacing: var(--tracking-sm);
+  text-transform: lowercase;
+  color: var(--dim);
+}
+
+/* Stats-tier fallback when there's no token usage (e.g. Grok): the recently
+   modified files, in the same slot and visual weight as the token dials. */
+.s-lane-card-cockpit-files {
+  flex: none;
+  margin: -4px 16px 10px;
+}
+.s-lane-card-cockpit-files-list {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  border: 1px solid color-mix(in srgb, var(--ink) 8%, transparent);
+  border-radius: 7px;
+  overflow: hidden;
+  background: color-mix(in srgb, var(--ink) 8%, transparent);
+}
+.s-lane-card-cockpit-file {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-sm);
+  padding: 5px var(--space-md);
+  min-width: 0;
+  background: color-mix(in srgb, #000 30%, var(--bg));
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+}
+.s-lane-card-cockpit-file-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--muted);
+}
+.s-lane-card-cockpit-file--more {
+  color: var(--dim);
+}
+
+/* an instrument: a value + a quiet label */
+.s-lane-card-instr {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-family: var(--font-mono);
+  line-height: 1;
+}
+.s-lane-card-instr-val {
+  font-size: var(--text-sm);
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+}
+.s-lane-card-instr-label {
+  font-size: var(--text-2xs);
+  letter-spacing: 0.04em;
+  text-transform: lowercase;
+  color: var(--dim);
+}
+.s-lane-card-instr--ctx {
+  gap: 6px;
+}
+/* context slot before any usage is observed: empty gauge track + a quiet em-dash,
+   so the context-window readout is always PRESENT (and fills in the moment the
+   harness reports context tokens) rather than appearing/disappearing. */
+.s-lane-card-instr--ctx-pending .s-lane-card-instr-val {
+  color: var(--dim);
+}
+.s-lane-card-instr--ctx-pending .s-lane-card-gauge {
+  opacity: 0.55;
+}
+
+/* context gauge — a slim bar with one emerald fill (our single accent) */
+.s-lane-card-gauge {
+  position: relative;
+  width: 34px;
+  height: 4px;
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--ink) 12%, transparent);
+  overflow: hidden;
+}
+.s-lane-card-gauge-fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  height: 100%;
+  border-radius: 2px;
+  background: var(--accent);
+}
+
+/* a tool-use instrument whose file inventory drops in on hover. Raised above the
+   card's full-bleed "open" hit so the hover fires; a dotted underline hints it's
+   live without shouting. */
+.s-lane-card-instr--pop {
+  z-index: 2;
+  cursor: default;
+}
+.s-lane-card-instr--pop .s-lane-card-instr-val {
+  text-decoration: underline;
+  text-decoration-style: dotted;
+  text-decoration-color: color-mix(in srgb, var(--ink) 28%, transparent);
+  text-underline-offset: 3px;
+}
+.s-lane-card-pop {
+  position: absolute;
+  left: 0;
+  top: calc(100% + 8px);
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-width: 210px;
+  max-width: 320px;
+  max-height: 260px;
+  overflow: auto;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  border: 1px solid color-mix(in srgb, var(--ink) 14%, transparent);
+  background: color-mix(in srgb, #000 38%, var(--surface));
+  box-shadow: 0 10px 28px color-mix(in srgb, #000 48%, transparent);
+  /* floats on top of the trace (absolute → nothing below reflows) and slides
+     down into place on hover, like a small drawer. */
+  opacity: 0;
+  transform: translateY(-6px);
+  pointer-events: none;
+  transition: opacity 150ms ease, transform 170ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+.s-lane-card-instr--pop:hover .s-lane-card-pop,
+.s-lane-card-instr--pop:focus-within .s-lane-card-pop {
+  opacity: 1;
+  transform: translateY(0);
+  pointer-events: auto;
+}
+@media (prefers-reduced-motion: reduce) {
+  .s-lane-card-pop {
+    transition: opacity 150ms ease;
+    transform: none;
+  }
+}
+.s-lane-card-pop-h {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--dim);
+}
+.s-lane-card-pop-count {
+  color: var(--muted);
+}
+.s-lane-card-pop-list {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.s-lane-card-pop-row {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  min-width: 0;
+}
+.s-lane-card-pop-mark {
+  flex: none;
+  width: 26px;
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--dim);
+}
+.s-lane-card-pop-mark--mod,
+.s-lane-card-pop-mark--new {
+  color: var(--muted);
+}
+/* tool rows lead with a family glyph (❯ ✎ ◎ ⌕) in the single accent */
+.s-lane-card-pop-mark--tool {
+  font-size: var(--text-sm);
+  text-transform: none;
+  color: color-mix(in srgb, var(--accent) 70%, var(--muted));
+}
+.s-lane-card-pop-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--ink);
+}
+.s-lane-card-pop-more {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--dim);
+  padding-left: 34px;
+}
+.s-lane-card-files {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.s-lane-card-file {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  min-width: 0;
+}
+.s-lane-card-fstate {
+  color: var(--dim);
+  text-transform: uppercase;
+  font-size: var(--text-2xs);
+  letter-spacing: 0.04em;
+  width: 24px;
+  flex: none;
+}
+.s-lane-card-fstate--mod,
+.s-lane-card-fstate--new {
+  color: var(--muted);
+}
+.s-lane-card-fpath {
+  color: var(--ink);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.s-lane-card-fmore {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--dim);
+  padding-left: 32px;
+}
+
+/* The trace slot (SessionObserve's .s-agent-lane-trace) fills the rest. */
+.s-lane-card > .s-agent-lane-trace {
+  flex: 1;
+  min-height: 0;
+}
+
+/* ── avatar alignment guides — top/bottom/left/right edges of the avatar box,
+   extended across the card and revealed only when the AVATAR itself is hovered
+   (not the whole card), so they read as a deliberate "focus the agent" flourish
+   rather than firing on every card pass. Pointer-events off so they never block
+   the click overlay. ──────────────────────────────────────────────────────── */
+.s-lane-card-gl {
+  position: absolute;
+  opacity: 0;
+  transition: opacity 0.16s ease;
+  pointer-events: none;
+  z-index: 6;
+}
+.s-lane-card-gl-t,
+.s-lane-card-gl-b {
+  left: -600px;
+  right: -600px;
+  height: 1px;
+  background: repeating-linear-gradient(
+    90deg,
+    color-mix(in srgb, var(--ink) 26%, transparent) 0 3px,
+    transparent 3px 6px
+  );
+}
+.s-lane-card-gl-l,
+.s-lane-card-gl-r {
+  top: -600px;
+  bottom: -600px;
+  width: 1px;
+  background: repeating-linear-gradient(
+    0deg,
+    color-mix(in srgb, var(--ink) 26%, transparent) 0 3px,
+    transparent 3px 6px
+  );
+}
+.s-lane-card-gl-t { top: 0; }
+.s-lane-card-gl-b { bottom: 0; }
+.s-lane-card-gl-l { left: 0; }
+.s-lane-card-gl-r { right: 0; }
+.s-lane-card-anchor--av:hover .s-lane-card-gl {
+  opacity: 1;
+}
+
+/* ── electric signal — ONE elegant accent glow gliding down the trace line.
+   Anchored to the NON-scrolling viewport (.s-agent-lane-body), not the tall
+   content spine, so it sweeps the visible line steadily (like the studio) rather
+   than glimpsing past once per scroll-height. Positioned on the spine's x.
+   New card + working only. ────────────────────────────────────────────────── */
+.s-lane-card .s-agent-lane-body {
+  position: relative;
+  container-type: size;
+  /* fade the trace into the card at top + bottom (the studio vignette) so it
+     dissolves into the background further down the screen rather than hard-cuts */
+  -webkit-mask-image: linear-gradient(
+    to bottom,
+    #000 0,
+    #000 calc(100% - 56px),
+    transparent 100%
+  );
+  mask-image: linear-gradient(
+    to bottom,
+    #000 0,
+    #000 calc(100% - 56px),
+    transparent 100%
+  );
+}
+.s-lane-card--working .s-agent-lane-body::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  /* must track the trace spine: --lane-spine-x in session-observe.css (the
+     custom prop doesn't inherit up to the body, so it's mirrored here). */
+  left: calc(var(--space-lg) + 64px);
+  width: 3px;
+  height: 18px;
+  border-radius: 3px;
+  background: linear-gradient(
+    180deg,
+    transparent,
+    color-mix(in srgb, var(--accent) 70%, transparent),
+    transparent
+  );
+  filter: blur(0.5px);
+  pointer-events: none;
+  z-index: 1;
+  /* GPU-composited transform sweep over the exact viewport height (cqh) — no
+     layout thrash, so it stays smooth against the autoscroll. Slow + gentle. */
+  will-change: transform, opacity;
+  animation: slc-spine-flow 9s linear infinite;
+}
+@keyframes slc-spine-flow {
+  0% { transform: translate(-50%, -24px); opacity: 0; }
+  8% { opacity: 0.9; }
+  92% { opacity: 0.9; }
+  100% { transform: translate(-50%, 100cqh); opacity: 0; }
+}
+
+/* The lateral "electron branch" off ask rows was removed: it ran on its own
+   timer (3s) independent of the spine glow (9s), so it never actually forked
+   ON CONTACT with the passing signal — making the branch feel real would take
+   position-driven syncing (JS/physics), not timing. Until then we keep only the
+   single clean vertical spine signal. */
+@media (prefers-reduced-motion: reduce) {
+  .s-lane-card--working .s-agent-lane-body::after {
+    animation: none;
+    display: none;
+  }
+}

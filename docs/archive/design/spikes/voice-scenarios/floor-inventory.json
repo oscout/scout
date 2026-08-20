@@ -1,0 +1,15 @@
+{
+  "name": "floor-inventory",
+  "description": "what's running → deterministic inventory, sub-2s first audio",
+  "steps": [
+    { "do": "speak", "text": "what's running right now" },
+    { "do": "silence", "ms": 800 },
+    { "do": "await", "event": "reply.audio.start", "timeoutMs": 8000 },
+    { "do": "await", "event": "reply.audio.end", "timeoutMs": 20000 }
+  ],
+  "expect": {
+    "userTranscripts": 1,
+    "ladder": "deterministic",
+    "maxFirstReplyAudioMs": 2000
+  }
+}

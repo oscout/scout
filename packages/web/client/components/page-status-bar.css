@@ -1,0 +1,78 @@
+.s-page-status {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-lg);
+  height: 22px;
+  padding: 0 var(--space-lg);
+  border-top: 1px solid color-mix(in srgb, var(--ink) 7%, transparent);
+  background: color-mix(in srgb, var(--surface) 88%, transparent);
+  backdrop-filter: blur(8px);
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  color: var(--dim);
+  letter-spacing: var(--tracking-sm);
+  min-width: 0;
+  user-select: none;
+  opacity: 0;
+  transform: translateY(4px);
+  transition: opacity 140ms ease-out, transform 140ms ease-out;
+}
+
+.s-page-status--show {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+.s-page-status--leave {
+  opacity: 0;
+  transform: translateY(2px);
+  transition-duration: 220ms;
+}
+
+.s-page-status-left,
+.s-page-status-right {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  min-width: 0;
+}
+
+.s-page-status-right {
+  margin-left: auto;
+  justify-content: flex-end;
+}
+
+.s-page-status-arrow {
+  color: var(--accent);
+}
+
+.s-page-status-target {
+  color: var(--ink);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 60ch;
+}
+
+.s-page-status-route {
+  color: var(--dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 50ch;
+}
+
+.s-page-status-route::before {
+  content: "·";
+  margin-right: var(--space-xs);
+  color: color-mix(in srgb, var(--ink) 22%, transparent);
+}
+
+.s-page-status-content {
+  color: var(--dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 80ch;
+}

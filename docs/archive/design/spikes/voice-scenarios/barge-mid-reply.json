@@ -1,0 +1,24 @@
+{
+  "name": "barge-mid-reply",
+  "description": "deep dig then barge 500ms after reply audio — new turn must work; record deep-work fate (L2 baseline)",
+  "steps": [
+    { "do": "speak", "text": "what exactly is each agent working on right now" },
+    { "do": "silence", "ms": 900 },
+    {
+      "do": "speak",
+      "text": "Actually stop — what needs me?",
+      "after": { "event": "reply.audio.start", "delayMs": 500 }
+    },
+    { "do": "silence", "ms": 2500 },
+    { "do": "await", "event": "dc:barge", "timeoutMs": 6000 },
+    { "do": "await", "event": "transcript.user", "timeoutMs": 15000 },
+    { "do": "await", "event": "reply.audio.start", "timeoutMs": 12000 },
+    { "do": "await", "event": "reply.audio.end", "timeoutMs": 45000 },
+    { "do": "silence", "ms": 3000 }
+  ],
+  "expect": {
+    "minUserTranscripts": 2,
+    "hasBarge": true,
+    "notes": "deep work may die today — record honestly; hasBarge may fail if covering clip ended before speech energy sustained"
+  }
+}

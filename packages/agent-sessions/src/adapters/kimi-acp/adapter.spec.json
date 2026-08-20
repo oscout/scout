@@ -1,0 +1,147 @@
+{
+  "$schema": "../spec/adapter-spec.v2.schema.json",
+  "specVersion": "2.0.0",
+  "adapterId": "kimi-acp",
+  "displayName": "Kimi Code ACP",
+  "implementation": {
+    "package": "@openscout/agent-sessions",
+    "entrypoint": "src/adapters/kimi-acp/adapter.ts",
+    "factoryExport": "createAdapter"
+  },
+  "upstream": {
+    "kind": "official_protocol",
+    "name": "Kimi Code ACP",
+    "transport": "jsonrpc-stdio-jsonl",
+    "sources": [
+      {
+        "kind": "url",
+        "ref": "https://www.kimi.com/code/docs/en/kimi-code-cli/reference/kimi-acp.html"
+      },
+      {
+        "kind": "url",
+        "ref": "https://www.kimi.com/code/docs/en/kimi-code-cli/guides/ides.html"
+      },
+      {
+        "kind": "url",
+        "ref": "https://agentclientprotocol.com/protocol/v1/schema"
+      },
+      {
+        "kind": "file",
+        "ref": "src/adapters/kimi-acp/adapter.ts"
+      },
+      {
+        "kind": "file",
+        "ref": "src/adapters/acp/adapter.ts"
+      }
+    ]
+  },
+  "sessionModel": {
+    "lifecycle": "long_lived_process",
+    "conversationScope": "session",
+    "resumeSupport": "optional",
+    "resumeOptionKey": "sessionId",
+    "turnSteering": "new_turn_only",
+    "concurrentTurns": "single",
+    "persistence": [
+      "process_state",
+      "upstream_session_id",
+      "local_files"
+    ]
+  },
+  "capabilities": {
+    "promptInputs": {
+      "text": true,
+      "images": "native",
+      "files": "reference_text"
+    },
+    "outputBlocks": [
+      "text",
+      "reasoning",
+      "action",
+      "error"
+    ],
+    "actionKinds": [
+      "tool_call"
+    ],
+    "streaming": {
+      "text": true,
+      "reasoning": true,
+      "actionOutput": true,
+      "actionStatus": true
+    },
+    "interactive": {
+      "questions": "none",
+      "approvals": "native",
+      "serverRequests": "native"
+    },
+    "control": {
+      "interrupt": true,
+      "shutdown": true
+    }
+  },
+  "nativeProtocol": {
+    "outboundRequests": [
+      "initialize",
+      "authenticate",
+      "session/new",
+      "session/load",
+      "session/resume",
+      "session/prompt",
+      "session/close"
+    ],
+    "outboundNotifications": [
+      "session/cancel"
+    ],
+    "inboundNotifications": [
+      "session/update"
+    ],
+    "inboundServerRequests": [
+      "session/request_permission",
+      "fs/read_text_file",
+      "fs/write_text_file"
+    ],
+    "messageFormats": [
+      "jsonrpc_request",
+      "jsonrpc_notification",
+      "jsonrpc_response",
+      "jsonrpc_error",
+      "jsonl_transport"
+    ],
+    "serverRequestStrategy": "resolve_and_reject"
+  },
+  "normalizedSurface": {
+    "adapterMethods": [
+      "start",
+      "send",
+      "interrupt",
+      "shutdown"
+    ],
+    "optionalAdapterMethods": [
+      "decide"
+    ],
+    "emitsPairingEvents": [
+      "session:update",
+      "turn:start",
+      "block:start",
+      "block:delta",
+      "block:action:output",
+      "block:action:status",
+      "block:action:approval",
+      "block:end",
+      "turn:error",
+      "turn:end"
+    ]
+  },
+  "conformance": {
+    "status": "grandfathered",
+    "normalizerId": "acp",
+    "fixtureSets": ["acp"]
+  },
+  "limitations": [
+    "This adapter drives Kimi Code CLI through its ACP stdio mode; it does not call the Kimi model API directly.",
+    "The default launch requires a locally installed kimi binary and cached login state created by kimi login.",
+    "The shared ACP adapter covers Kimi's stable normal-agent flow but not Kimi's experimental unstable ACP methods.",
+    "Tool calls are normalized as generic tool_call action blocks by the shared ACP adapter.",
+    "Historical Kimi Code logs are observed by the runtime tail source rather than imported by this ACP adapter."
+  ]
+}

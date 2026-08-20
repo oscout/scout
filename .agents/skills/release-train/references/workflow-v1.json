@@ -1,0 +1,70 @@
+{
+  "$schema": "./workflow-v1.schema.json",
+  "id": "openscout-release-train/v1",
+  "version": "1.0.0",
+  "timezone": "America/Montreal",
+  "dailySlots": ["09:00", "17:00"],
+  "stateRoot": "~/.openscout/control-plane/release-train",
+  "laneClassifications": ["READY", "HOLD", "BLOCK", "EXCLUDE"],
+  "reviewModes": ["SELF", "INDEPENDENT", "MULTI_AGENT"],
+  "stages": [
+    {"id":"S00","title":"Acquire lock, preflight, and immutable baseline","outputType":"BaselineSnapshot","transitions":["S10"],"externalMutation":false},
+    {"id":"S10","title":"Discover WIP and create source/ownership ledger","outputType":"SourceOwnershipLedger","transitions":["S20"],"externalMutation":false},
+    {"id":"S20","title":"Poll owners and classify lanes","outputType":"OwnerClassificationLedger","transitions":["S30"],"externalMutation":false},
+    {"id":"S30","title":"Freeze scope and create commit/PR/release plan","outputType":"FrozenScopePlan","transitions":["S40"],"externalMutation":false},
+    {"id":"S40","title":"Create logical commits for approved lanes","outputType":"CommitReceiptSet","transitions":["S50"],"externalMutation":true},
+    {"id":"S50","title":"Run proportional validation and attach receipts","outputType":"ValidationReceiptSet","transitions":["S60"],"externalMutation":false},
+    {"id":"S60","title":"Synthesize, open, or update clean PRs","outputType":"PullRequestReceiptSet","transitions":["S70"],"externalMutation":true},
+    {"id":"S70","title":"Review gate","outputType":"ReviewDecisionSet","transitions":["S40","S50","S80"],"externalMutation":false},
+    {"id":"S80","title":"CI and mergeability gate","outputType":"MergeGateSet","transitions":["S40","S50","S90"],"externalMutation":false},
+    {"id":"S90","title":"Merge and run or verify canonical release path","outputType":"ReleaseReceiptSet","transitions":["S100"],"externalMutation":true},
+    {"id":"S100","title":"Convergence poll and authorized reconciliation","outputType":"ConvergenceLedger","transitions":["S110"],"externalMutation":true},
+    {"id":"S110","title":"Final ledger, receipts, unresolved work, and next checkpoint","outputType":"CompletionReport","transitions":[],"externalMutation":false}
+  ],
+  "mutationReceiptKinds": ["commit","push","pr_open","pr_update","merge","tag","release","rebase"],
+  "idempotentOperations": ["owner_poll","convergence_poll","review_request","commit","push","pr_open","pr_update","merge","tag","release","rebase"],
+  "operationGates": {
+    "owner_poll": ["S20"],
+    "convergence_poll": ["S100"],
+    "review_request": ["S70"],
+    "commit": ["S40"],
+    "push": ["S60"],
+    "pr_open": ["S60"],
+    "pr_update": ["S60"],
+    "merge": ["S90"],
+    "tag": ["S90"],
+    "release": ["S90"],
+    "rebase": ["S40", "S100"]
+  },
+  "reviewEscalation": [
+    {"risk":"low","examples":["narrow docs","tests only","small local refactor"],"minimumMode":"SELF"},
+    {"risk":"medium","examples":["cross-package behavior","substantial UI/UX","runtime lifecycle"],"minimumMode":"INDEPENDENT"},
+    {"risk":"high","examples":["architecture","security/privacy","migration/data integrity","public protocol/API","release/signing"],"minimumMode":"INDEPENDENT"},
+    {"risk":"critical","examples":["multiple high-risk domains","low confidence after independent review"],"minimumMode":"MULTI_AGENT"}
+  ],
+  "retryPolicy": {
+    "maxStageRetries": 3,
+    "maxArtifactAttempts": 4,
+    "ownerPollDeadlineMinutes": 10,
+    "ciPollIntervalSeconds": 45,
+    "stopAfterRepeatedBlocker": true,
+    "quarantineLaneOnBlock": true,
+    "loops": {
+      "S70": ["S40", "S50"],
+      "S80": ["S40", "S50"]
+    }
+  },
+  "terminalStop": {
+    "command": "stop",
+    "targetStage": "S110",
+    "allowedFrom": ["S00", "S10", "S20", "S30", "S40", "S50", "S60", "S70", "S80", "S90", "S100"],
+    "requiresReason": true
+  },
+  "stopPolicy": [
+    "Stop only the affected lane for HOLD, BLOCK, or EXCLUDE.",
+    "Do not classify Scout transport as unavailable from a restricted-sandbox connection failure; preserve the failure and require an exact retry with loopback/network access before recording BLOCK.",
+    "Stop S90 when release state, version, channel, signing, tag, or publication ownership is ambiguous.",
+    "Stop a mutation when authority, credentials, owner consent, or non-destructive reconciliation is missing.",
+    "Never bypass protection, force-push, dismiss blocking feedback, or duplicate a PR, poll, merge, tag, or release."
+  ]
+}

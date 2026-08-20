@@ -1,0 +1,1114 @@
+/* Agents rail — an actions column, not the roster. The list (projects/agents)
+   lives in the main pane; the rail only launches things: Search, New chat, the
+   agents you last touched, and Settings at the foot. */
+
+.s-agents-actions {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3xs);
+  padding: var(--space-md) var(--space-md) var(--space-sm);
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 40%, transparent);
+  flex-shrink: 0;
+}
+
+.s-rail-action {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  width: 100%;
+  text-align: left;
+  cursor: pointer;
+  padding: var(--space-sm);
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--muted);
+  font-family: var(--font-sans);
+  font-size: var(--text-md);
+  font-weight: 500;
+  transition: background 0.1s, color 0.1s, border-color 0.1s;
+}
+
+.s-rail-action:hover {
+  background: color-mix(in srgb, var(--ink) 5%, transparent);
+  color: var(--ink);
+}
+
+.s-rail-action--primary {
+  border-color: color-mix(in srgb, var(--border) 50%, transparent);
+}
+
+.s-rail-action-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  flex: none;
+  color: var(--dim);
+}
+
+.s-rail-action:hover .s-rail-action-icon {
+  color: var(--accent);
+}
+
+.s-rail-action-label {
+  flex: 1;
+  min-width: 0;
+}
+
+.s-agents-recent {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  /* match studio's .rail vertical rhythm (14px 8px): the rail head + rows own
+     their own horizontal/vertical spacing, so the container stays tight. */
+  padding: 14px 0;
+}
+
+.s-rail-see-all {
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  letter-spacing: var(--tracking-sm);
+  text-transform: lowercase;
+}
+
+.s-rail-see-all:hover {
+  color: var(--accent);
+}
+
+.s-agents-foot {
+  flex-shrink: 0;
+  margin-top: auto;
+  padding: var(--space-sm) var(--space-md) var(--space-md);
+  border-top: 1px solid color-mix(in srgb, var(--border) 40%, transparent);
+}
+
+/* foot becomes a compact icon row — Search · New chat · Settings — so the
+   projects list owns the full height above it. */
+.s-rail-foot-icons {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2xs);
+}
+.s-rail-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--dim);
+  cursor: pointer;
+  transition: background 0.1s, color 0.1s;
+}
+.s-rail-icon:hover {
+  background: color-mix(in srgb, var(--ink) 5%, transparent);
+  color: var(--ink);
+}
+.s-rail-icon--end { margin-left: auto; }
+
+/* ── New chat composer overlay ── */
+
+.s-newchat-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding-top: 8vh;
+  background: color-mix(in srgb, var(--bg) 76%, transparent);
+  backdrop-filter: blur(4px);
+}
+
+.s-newchat-panel {
+  position: relative;
+  display: flex;
+  width: 560px;
+  max-height: 84vh;
+  flex-direction: column;
+  max-width: calc(100vw - 48px);
+  background: color-mix(in srgb, var(--surface) 96%, var(--bg));
+  border: 1px solid color-mix(in srgb, var(--ink) 15%, transparent);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+  box-shadow: 0 24px 60px -28px rgba(0, 0, 0, 0.6);
+}
+
+.s-newchat-panel--starting {
+  box-shadow:
+    0 24px 60px -28px rgba(0, 0, 0, 0.6),
+    0 0 0 1px color-mix(in srgb, var(--accent) 24%, transparent);
+}
+
+.s-newchat-panel--dragging {
+  border-color: color-mix(in srgb, var(--accent) 72%, var(--border));
+  box-shadow:
+    0 24px 60px -28px rgba(0, 0, 0, 0.6),
+    0 0 0 3px color-mix(in srgb, var(--accent) 16%, transparent);
+}
+
+/* PLACED PANEL — once the operator drags or resizes, the panel leaves the
+   backdrop's centering and holds an absolute frame (JS clamps it to the
+   viewport, so it can never be dragged out of reach). */
+.s-newchat-panel[data-framed="true"] {
+  position: absolute;
+  margin: 0;
+}
+
+.s-newchat-panel[data-gesture] {
+  user-select: none;
+}
+
+.s-newchat-panel[data-gesture="move"] .s-newchat-head {
+  cursor: grabbing;
+}
+
+/* The draft field takes the height the chrome does not — a taller panel has to
+   mean a taller place to write, not a taller band of empty surface. */
+.s-newchat-panel[data-framed="true"] .s-msg-compose-input {
+  min-height: var(--s-newchat-input-min, 154px);
+  max-height: none;
+}
+
+.s-newchat-resize {
+  position: absolute;
+  z-index: 1;
+  touch-action: none;
+}
+
+.s-newchat-resize--e {
+  top: 0;
+  right: 0;
+  width: 6px;
+  height: 100%;
+  cursor: ew-resize;
+}
+
+.s-newchat-resize--s {
+  bottom: 0;
+  left: 0;
+  width: 100%;
+  height: 6px;
+  cursor: ns-resize;
+}
+
+.s-newchat-resize--se {
+  right: 0;
+  bottom: 0;
+  width: 16px;
+  height: 16px;
+  cursor: nwse-resize;
+}
+
+.s-newchat-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  cursor: grab;
+  touch-action: none;
+  padding: var(--space-md) var(--space-lg);
+  border-bottom: 1px solid color-mix(in srgb, var(--ink) 10%, transparent);
+  background: color-mix(in srgb, var(--bg) 46%, var(--surface));
+}
+
+.s-newchat-title {
+  flex: 0 0 auto;
+  font-size: var(--text-md);
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.s-newchat-head-status {
+  display: grid;
+  min-width: 0;
+  flex: 1;
+  padding: 0 var(--space-md);
+  color: color-mix(in srgb, var(--ink) 72%, transparent);
+  font-size: var(--text-xs);
+  line-height: var(--leading-normal);
+  text-align: right;
+}
+
+.s-newchat-head-status > span {
+  grid-area: 1 / 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.s-newchat-head-status [role="alert"] {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.s-newchat-drop-prompt {
+  padding: var(--space-sm) var(--space-lg);
+  border-bottom: 1px solid color-mix(in srgb, var(--accent) 30%, transparent);
+  background: color-mix(in srgb, var(--accent) 10%, var(--bg));
+  color: var(--accent);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  font-weight: 600;
+  text-align: center;
+}
+
+.s-newchat-close {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  line-height: 1;
+}
+
+/* The glyph is 14px but the target is 24px — small mark, usable hit area. */
+.s-newchat-close:hover {
+  background: color-mix(in srgb, var(--ink) 6%, transparent);
+}
+
+.s-newchat-close:hover {
+  color: var(--ink);
+}
+
+.s-newchat-close:disabled {
+  cursor: default;
+  opacity: 0.35;
+}
+
+/* Rhythm: tight inside a group, generous between the lead and the config block,
+   with one hairline carrying the separation. A single repeated gap gave every
+   row equal weight, which is what buried the composer at the bottom. */
+.s-newchat-body {
+  display: flex;
+  min-height: 0;
+  flex-direction: column;
+  /* 20 above the hairline against 12 below it — the asymmetry is the point, and
+     it only reads if the two values actually differ. */
+  gap: var(--space-3xl);
+  padding: var(--space-lg);
+  overflow-y: auto;
+}
+
+/* LEAD — the task, plus everything that reports on it (attachments, progress,
+   errors). Tight, because these belong to the message. */
+.s-newchat-lead {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: var(--space-sm);
+}
+
+/* Project context stays above the draft, but collapses to one quiet line until
+   the operator asks to change it. The message remains the visual event. */
+.s-newchat-project-bar {
+  display: grid;
+  grid-template-columns: 58px minmax(0, 1fr);
+  align-items: center;
+  min-width: 0;
+  padding: 0 0 var(--space-xs);
+  border-bottom: 1px solid color-mix(in srgb, var(--ink) 8%, transparent);
+}
+
+.s-newchat-project-label {
+  color: var(--dim);
+}
+
+.s-newchat-project-summary {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: baseline;
+  gap: var(--space-sm);
+  min-width: 0;
+  min-height: 30px;
+  padding: var(--space-2xs) var(--space-xs);
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--ink);
+  cursor: pointer;
+  text-align: left;
+}
+
+.s-newchat-project-summary:hover,
+.s-newchat-project-summary:focus-visible {
+  outline: none;
+  background: color-mix(in srgb, var(--ink) 5%, transparent);
+}
+
+.s-newchat-project-summary:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+
+.s-newchat-project-summary-title,
+.s-newchat-project-summary-path {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.s-newchat-project-summary-title {
+  font-size: var(--text-sm);
+  font-weight: 600;
+}
+
+.s-newchat-project-summary[data-empty="true"] .s-newchat-project-summary-title {
+  color: var(--muted);
+  font-weight: 500;
+}
+
+.s-newchat-project-summary-path {
+  color: var(--dim);
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  text-align: right;
+}
+
+.s-newchat-project-summary svg {
+  align-self: center;
+  color: var(--dim);
+  transition: transform 120ms ease;
+}
+
+.s-newchat-project-summary[aria-expanded="true"] svg {
+  transform: rotate(180deg);
+}
+
+.s-newchat-project-reminder {
+  margin: calc(var(--space-2xs) * -1) 0 0 58px;
+  color: var(--red);
+  font-size: var(--text-xs);
+}
+
+.s-newchat-project-panel {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: var(--space-2xs);
+  padding-left: 58px;
+}
+
+.s-newchat-project-panel-foot {
+  display: flex;
+  min-height: 22px;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-sm);
+}
+
+.s-newchat-project-clear {
+  flex: 0 0 auto;
+  padding: var(--space-2xs) var(--space-xs);
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--dim);
+  font-size: var(--text-xs);
+  cursor: pointer;
+}
+
+.s-newchat-project-clear:hover,
+.s-newchat-project-clear:focus-visible {
+  outline: none;
+  background: color-mix(in srgb, var(--ink) 6%, transparent);
+  color: var(--ink);
+}
+
+/* CONFIG — where the work lands. */
+.s-newchat-config {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: var(--space-lg);
+  padding-top: var(--space-lg);
+  border-top: 1px solid color-mix(in srgb, var(--ink) 8%, transparent);
+}
+
+.s-newchat-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2xs);
+}
+
+/* Type comes from the .label-md eyebrow tier — this carries only the color. */
+.s-newchat-field-label {
+  color: var(--muted);
+}
+
+.s-newchat-forward-intro {
+  max-width: 68ch;
+  margin: 0 0 var(--space-xs);
+  color: var(--muted);
+  font-size: var(--text-sm);
+  line-height: var(--leading-normal);
+}
+
+.s-newchat-forward-config {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: var(--space-lg);
+  padding: var(--space-sm) 0 var(--space-md);
+}
+
+.s-newchat-forward-runtime {
+  display: flex;
+  min-height: 34px;
+  align-items: center;
+  padding: 0 var(--space-xs);
+  border-bottom: 1px solid color-mix(in srgb, var(--ink) 10%, transparent);
+}
+
+.s-newchat-forward-runtime .s-rt-chip {
+  min-height: 28px;
+  max-width: 100%;
+  border-radius: var(--radius-sm);
+}
+
+.s-newchat-context-options {
+  display: flex;
+  flex-direction: column;
+  border-top: 1px solid color-mix(in srgb, var(--ink) 10%, transparent);
+  border-bottom: 1px solid color-mix(in srgb, var(--ink) 10%, transparent);
+}
+
+.s-newchat-context-option {
+  display: grid;
+  grid-template-columns: minmax(150px, 0.8fr) minmax(0, 1.35fr);
+  align-items: baseline;
+  gap: var(--space-md);
+  min-height: 42px;
+  padding: var(--space-xs) var(--space-sm);
+  border: none;
+  border-bottom: 1px solid color-mix(in srgb, var(--ink) 7%, transparent);
+  background: transparent;
+  color: var(--ink);
+  cursor: pointer;
+  text-align: left;
+}
+
+.s-newchat-context-option:last-child {
+  border-bottom: none;
+}
+
+.s-newchat-context-option:hover,
+.s-newchat-context-option:focus-visible {
+  outline: none;
+  background: color-mix(in srgb, var(--ink) 5%, transparent);
+}
+
+.s-newchat-context-option[aria-checked="true"] {
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+}
+
+.s-newchat-context-option[aria-checked="true"] .s-newchat-context-option-title {
+  color: var(--accent);
+}
+
+.s-newchat-context-option:disabled {
+  cursor: default;
+  opacity: 0.45;
+}
+
+.s-newchat-context-option-title {
+  font-size: var(--text-sm);
+  font-weight: 600;
+}
+
+.s-newchat-context-option-copy,
+.s-newchat-context-note {
+  color: var(--dim);
+  font-size: var(--text-xs);
+  line-height: var(--leading-normal);
+}
+
+.s-newchat-context-note {
+  margin: var(--space-2xs) 0 0;
+}
+
+
+
+.s-newchat-project-picker {
+  position: relative;
+}
+
+.s-newchat-project-search-icon {
+  position: absolute;
+  z-index: 1;
+  top: 50%;
+  left: var(--space-sm);
+  color: var(--muted);
+  pointer-events: none;
+  transform: translateY(-50%);
+}
+
+.s-newchat-project-search {
+  width: 100%;
+  box-sizing: border-box;
+  min-height: 36px;
+  padding: var(--space-xs) var(--space-md) var(--space-xs) 30px;
+  border: 1px solid color-mix(in srgb, var(--ink) 14%, transparent);
+  border-radius: var(--radius-md);
+  outline: none;
+  background: color-mix(in srgb, var(--bg) 72%, var(--surface));
+  color: var(--ink);
+  font-family: var(--font-sans);
+  font-size: var(--text-sm);
+}
+
+.s-newchat-project-search:focus {
+  border-color: color-mix(in srgb, var(--accent) 54%, var(--border));
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 10%, transparent);
+}
+
+.s-newchat-project-search::-webkit-search-cancel-button {
+  opacity: 0.55;
+}
+
+/* In normal flow, not an overlay. Flipping the old dropdown upward only moved
+   the clipping to the panel's top edge — `.s-newchat-body` scrolls, so anything
+   absolutely positioned out of a field this low gets cut off in both directions.
+   Standing rows have no placement to get wrong: typing replaces them in place. */
+.s-newchat-project-results {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  margin-top: var(--space-2xs);
+}
+
+/* Square, not rounded — these are flat rows in a band now, which is the one
+   place the 2px left accent rail is legal. */
+.s-newchat-project-option {
+  display: grid;
+  grid-template-columns: minmax(0, 0.8fr) minmax(0, 1.2fr);
+  align-items: baseline;
+  gap: var(--space-sm);
+  width: 100%;
+  padding: var(--space-xs) var(--space-sm);
+  border: none;
+  border-left: 2px solid transparent;
+  border-radius: 0;
+  background: transparent;
+  color: var(--ink);
+  text-align: left;
+  cursor: pointer;
+}
+
+/* Hover and the keyboard cursor tint with ink, so the single accent stays
+   reserved for "this is the one you picked". */
+.s-newchat-project-option:hover,
+.s-newchat-project-option[data-active="true"] {
+  background: color-mix(in srgb, var(--ink) 6%, transparent);
+}
+
+.s-newchat-project-option[aria-selected="true"] {
+  border-left-color: color-mix(in srgb, var(--accent) 60%, transparent);
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+}
+
+.s-newchat-project-option[aria-selected="true"] .s-newchat-project-option-title {
+  color: var(--accent);
+}
+
+.s-newchat-project-option[aria-disabled="true"] {
+  cursor: default;
+  opacity: 0.55;
+}
+
+.s-newchat-project-option--path {
+  border-top: 1px solid color-mix(in srgb, var(--border) 38%, transparent);
+}
+
+.s-newchat-project-option-title,
+.s-newchat-project-option-path {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.s-newchat-project-option-title {
+  font-size: var(--text-sm);
+  font-weight: 600;
+}
+
+.s-newchat-project-option-path {
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+}
+
+.s-newchat-project-empty {
+  margin: 0;
+  padding: var(--space-md) var(--space-sm);
+  color: var(--muted);
+  font-size: var(--text-xs);
+  line-height: var(--leading-normal);
+}
+
+/* Says out loud what the five standing rows are holding back, rather than
+   truncating in silence. ProjectLaunchTarget has no worktree/scratch taxonomy,
+   so this counts only what it can actually prove. */
+.s-newchat-project-foot {
+  margin: 0;
+  padding-left: var(--space-sm);
+  color: var(--dim);
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+}
+
+/* One quiet line under the field, not a row of chips. The path is what tells
+   two worktrees of the same repo apart, so it stays; the title was already the
+   field's own value and the "new worker" chip restated the dialog title. */
+.s-newchat-target {
+  margin: 0;
+  overflow: hidden;
+  color: var(--dim);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+}
+
+/* The "Run with" card is gone — harness/model/effort now ride in the composer's
+   own tool row as a single RuntimePicker chip, which is why three nested borders
+   (panel → card → well) collapsed to one. What survives is the one line that
+   reports real state: unavailable, catalog failed, or still loading. */
+.s-newchat-runtime-note {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  margin: 0;
+  color: var(--amber);
+  font-size: var(--text-xs);
+  line-height: var(--leading-normal);
+}
+
+/* Pending is not a warning — it is the boring middle state, so it stays muted
+   instead of borrowing amber from real trouble. */
+.s-newchat-runtime-note[data-pending="true"] {
+  color: var(--muted);
+}
+
+.s-newchat-runtime-note-spinner {
+  flex: 0 0 auto;
+  animation: s-spin 0.9s linear infinite;
+}
+
+.s-newchat-panel .s-msg-compose-shell {
+  border-color: color-mix(in srgb, var(--ink) 16%, transparent);
+  background: color-mix(in srgb, var(--bg) 64%, var(--surface));
+}
+
+/* The lead element earns the height. 44px is the right default for a composer
+   docked in a thread; as the first and primary field of this dialog it should
+   look like it expects a paragraph, not a search term. */
+.s-newchat-panel .s-msg-compose-input {
+  min-height: 154px;
+}
+
+.s-newchat-panel .s-msg-compose-shell:focus-within {
+  border-color: color-mix(in srgb, var(--accent) 24%, var(--border));
+}
+
+.s-newchat-panel .s-msg-compose-input::placeholder {
+  color: var(--muted);
+}
+
+.s-newchat-panel .s-msg-compose-toolbar {
+  border-top-color: color-mix(in srgb, var(--ink) 10%, transparent);
+}
+
+.s-newchat-compose-triggers {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2xs);
+  color: var(--dim);
+}
+
+.s-newchat-command-trigger {
+  padding: var(--space-2xs) var(--space-xs);
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  cursor: pointer;
+}
+
+.s-newchat-command-trigger:hover,
+.s-newchat-command-trigger:focus-visible {
+  outline: none;
+  background: color-mix(in srgb, var(--ink) 6%, transparent);
+  color: var(--ink);
+}
+
+.s-newchat-command-trigger:disabled {
+  cursor: default;
+  opacity: 0.45;
+}
+
+.s-newchat-error {
+  font-size: var(--text-sm);
+  color: var(--red);
+}
+
+.s-newchat-attachment-feedback {
+  margin-top: calc(var(--space-sm) * -1);
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+}
+
+.s-newchat-progress {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-sm);
+  padding: var(--space-sm);
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent);
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+  color: var(--ink);
+}
+
+.s-newchat-progress-spinner,
+.s-newchat-start-spinner {
+  flex: 0 0 auto;
+  animation: s-spin 0.9s linear infinite;
+}
+
+.s-newchat-progress-copy {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: var(--space-2xs);
+}
+
+/* Type comes from the .label-md eyebrow tier (see the class on the element) —
+   9px at 0.12em was not one of the four legal tiers to begin with. */
+.s-newchat-progress-title {
+  color: var(--accent);
+}
+
+.s-newchat-progress-detail,
+.s-newchat-progress-message {
+  font-size: var(--text-xs);
+  line-height: var(--leading-normal);
+}
+
+.s-newchat-progress-detail {
+  color: var(--muted);
+}
+
+.s-newchat-progress-message {
+  display: -webkit-box;
+  overflow: hidden;
+  color: var(--ink);
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+}
+
+@media (max-width: 620px) {
+  .s-newchat-backdrop {
+    padding-top: 12px;
+  }
+
+  .s-newchat-panel {
+    width: calc(100vw - 24px);
+    max-width: none;
+    max-height: calc(100vh - 24px);
+  }
+
+  /* Full-bleed already: there is no room to place the panel, so the grips and
+     the drag cursor would only promise something that cannot happen. */
+  .s-newchat-resize {
+    display: none;
+  }
+
+  .s-newchat-head {
+    cursor: default;
+  }
+
+  .s-newchat-body {
+    padding: var(--space-md);
+  }
+
+  .s-newchat-project-bar {
+    grid-template-columns: 52px minmax(0, 1fr);
+  }
+
+  .s-newchat-project-panel {
+    padding-left: 0;
+  }
+
+  .s-newchat-project-reminder {
+    margin-left: 52px;
+  }
+
+  .s-newchat-project-summary-path {
+    display: none;
+  }
+
+  .s-newchat-context-option {
+    grid-template-columns: 1fr;
+    gap: var(--space-2xs);
+  }
+
+  .s-newchat-panel .s-msg-compose-input {
+    min-height: 120px;
+  }
+}
+
+@keyframes s-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* ── project navigator (the left lane) ────────────────────────────────── */
+.s-rail-projects {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  /* tight column rhythm matching studio's .rail (gap: 1px) */
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+/* section header — mirrors studio's .railHead (agents-project page.module.css) */
+.s-rail-projects::before {
+  content: "Projects";
+  display: block;
+  flex: none;
+  font-size: var(--text-2xs);
+  font-weight: 650;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+  padding: 2px 8px 10px;
+}
+.s-rail-projects .ctx-panel-section-label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.s-rail-proj-total {
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  color: var(--dim);
+}
+.s-rail-proj {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: 1px solid transparent;
+  cursor: pointer;
+  padding: 6px 8px;
+  border-radius: var(--radius-md);
+  transition: background 0.12s ease, border-color 0.12s ease;
+}
+/* compact single-line row: avatar · name · count. The tail is a quiet
+   right-aligned count (studio .railCount): dim mono for working-only projects,
+   --accent (no pulsing halo) when the project needs you. Idle shows nothing. */
+.s-rail-proj-count {
+  flex: none;
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  font-weight: 600;
+  color: var(--dim);
+}
+.s-rail-proj-count[data-needs] {
+  color: var(--accent);
+}
+.s-rail-proj:hover {
+  background: color-mix(in srgb, var(--ink) 5%, transparent);
+}
+.s-rail-proj[data-selected] {
+  background: color-mix(in srgb, var(--ink) 8%, transparent);
+}
+.s-rail-proj-text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.s-rail-proj-top {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+}
+.s-rail-proj-name {
+  flex: 1;
+  min-width: 0;
+  font-size: var(--text-md);
+  font-weight: 540;
+  line-height: 1.2;
+  letter-spacing: -0.01em;
+  text-transform: lowercase;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* idle projects (no live processes) dim, mirroring studio's
+   .railName[data-idle] { color: var(--s-dim); font-weight: 480; } */
+.s-rail-proj-name[data-idle] {
+  color: var(--dim);
+  font-weight: 480;
+}
+.s-rail-proj[data-selected] .s-rail-proj-name,
+.s-rail-proj:hover .s-rail-proj-name {
+  color: var(--ink);
+}
+.s-rail-proj-sub {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+.s-rail-proj-dots {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  flex: none;
+}
+.s-rail-proj-dots span {
+  width: 5px;
+  height: 5px;
+  border-radius: 999px;
+  opacity: 0.9;
+}
+.s-rail-proj-meta {
+  flex: 1;
+  min-width: 0;
+  font-size: var(--text-xs);
+  font-family: var(--font-mono);
+  color: var(--dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.s-rail-proj-ago {
+  flex: none;
+  font-size: var(--text-xs);
+  font-family: var(--font-mono);
+  color: var(--dim);
+}
+.s-rail-proj-live {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: var(--text-sm);
+  font-weight: 600;
+  font-family: var(--font-mono);
+  color: var(--accent);
+}
+.s-rail-proj-livepip {
+  width: 5px;
+  height: 5px;
+  border-radius: 999px;
+  background: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-soft);
+}
+.s-rail-proj-needs {
+  flex: none;
+  font-size: var(--text-3xs);
+  font-weight: 650;
+  letter-spacing: var(--tracking-sm);
+  text-transform: uppercase;
+  color: var(--bg);
+  background: var(--accent);
+  padding: 2px 7px;
+  border-radius: 999px;
+}
+
+/* ── New task origin ────────────────────────────────────────────────────────
+   What the task will say about where it came from. Rendered as facts the
+   operator can read before sending, not as a badge implying capture happened
+   somewhere out of sight. */
+.s-newchat-origin {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-xs) var(--space-sm);
+  margin: 0 0 var(--space-xs);
+}
+
+.s-newchat-origin-label {
+  color: var(--muted);
+}
+
+.s-newchat-origin-facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-xs) var(--space-md);
+  margin: 0;
+  min-width: 0;
+}
+
+.s-newchat-origin-fact {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-3xs);
+  min-width: 0;
+}
+
+.s-newchat-origin-fact dt {
+  color: var(--muted);
+  font-size: var(--text-xs);
+}
+
+/* The URL is the long one and the least useful to read in full; let it ellipsis
+   rather than wrap the row onto three lines. The full value is in the title. */
+.s-newchat-origin-fact dd {
+  margin: 0;
+  max-width: 42ch;
+  overflow: hidden;
+  color: var(--ink);
+  font-size: var(--text-xs);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.s-newchat-origin-attach {
+  padding: 2px var(--space-xs);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: transparent;
+  color: var(--muted);
+  font-size: var(--text-xs);
+  cursor: pointer;
+}
+
+.s-newchat-origin-attach:hover,
+.s-newchat-origin-attach:focus-visible {
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
+  color: var(--ink);
+}
+
+.s-newchat-origin-attach[aria-pressed="true"] {
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
+  background: color-mix(in srgb, var(--accent) 10%, var(--surface));
+  color: var(--ink);
+}

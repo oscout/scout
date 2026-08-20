@@ -1,0 +1,1395 @@
+/* ── Mission Control: a wall of tails ──
+ *
+ * One pane per log, tiled to fill the viewport (rows × cols come from
+ * computeWallTiling in mission-wall.ts and are set inline). Agent Lanes is the
+ * composed reading of a session; this surface stays deliberately raw — pane
+ * chrome is one header line and everything else is log output.
+ */
+
+.s-wall {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  background: var(--bg);
+  font-family: var(--font-mono);
+  color: var(--ink);
+  overflow: hidden;
+}
+
+/* ── Wall status line ── */
+
+.s-wall-status {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  min-height: 26px;
+  padding: 0 var(--space-lg);
+  border-bottom: 1px solid var(--border);
+  background: color-mix(in srgb, var(--surface) 18%, var(--bg));
+  font-size: var(--text-2xs);
+  letter-spacing: 0.04em;
+}
+
+.s-wall-status-key {
+  color: var(--dim);
+  text-transform: lowercase;
+}
+
+.s-wall-status-value {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  margin-right: var(--space-md);
+}
+
+.s-wall-status-hidden {
+  color: var(--dim);
+  font-variant-numeric: tabular-nums;
+}
+
+.s-wall-status-keys {
+  margin-left: auto;
+  color: var(--dim);
+  white-space: nowrap;
+}
+
+.s-wall-status-keys kbd {
+  font: inherit;
+  color: var(--muted);
+}
+
+.s-wall-status-pin {
+  margin-left: var(--space-md);
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--accent);
+  font: inherit;
+  letter-spacing: inherit;
+  cursor: pointer;
+}
+
+.s-wall-status-pin:hover {
+  text-decoration: underline;
+}
+
+/* ── Tiling ── */
+
+.s-wall-grid {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  padding: var(--space-sm);
+  overflow: hidden;
+}
+
+/* ── Pane ── */
+
+.s-wall-pane {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  /* A pane's descendants never influence the grid tracks. Containment keeps a
+     window resize from invalidating layout and paint across every tail body. */
+  contain: layout paint;
+  min-width: 0;
+  min-height: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xs);
+  background: color-mix(in srgb, var(--surface) 34%, var(--bg));
+  overflow: hidden;
+  cursor: pointer;
+  transition: border-color 0.12s;
+}
+
+.s-wall-pane:hover {
+  border-color: color-mix(in srgb, var(--muted) 45%, var(--border));
+}
+
+.s-wall-pane--live {
+  border-color: color-mix(in srgb, var(--green) 30%, var(--border));
+}
+
+.s-wall-pane--selected,
+.s-wall-pane--selected:hover {
+  border-color: var(--accent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 45%, transparent);
+}
+
+/* The keyboard cursor. Louder than hover, quieter than selection: an outline
+   rather than a border swap, so it can sit on a live or selected pane without
+   erasing what those already say. */
+.s-wall-pane--cursor,
+.s-wall-pane--cursor:hover {
+  border-color: color-mix(in srgb, var(--accent) 70%, var(--border));
+  outline: 1px solid var(--accent);
+  outline-offset: -1px;
+}
+
+.s-wall-pane:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: -1px;
+}
+
+.s-wall-pane--revealed {
+  animation: s-wall-reveal 1.8s ease-out;
+}
+
+@keyframes s-wall-reveal {
+  0%,
+  40% {
+    box-shadow: inset 0 0 0 1px var(--accent);
+    border-color: var(--accent);
+  }
+  100% {
+    box-shadow: inset 0 0 0 1px transparent;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .s-wall-pane--revealed {
+    animation: none;
+    border-color: var(--accent);
+  }
+}
+
+/* ── Pane header: the columns that are constant inside this pane ── */
+
+.s-wall-pane-head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  min-height: 22px;
+  padding: 0 var(--space-sm);
+  border-bottom: 1px solid var(--border);
+  background: color-mix(in srgb, var(--ink) 3%, transparent);
+  font-size: var(--text-2xs);
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+.s-wall-pane-dot {
+  flex: none;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+}
+
+.s-wall-pane--live .s-wall-pane-dot {
+  animation: s-ops-pulse 1.6s ease-in-out infinite;
+}
+
+.s-wall-pane-title {
+  flex: 0 1 auto;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--ink);
+  font: inherit;
+  font-weight: 600;
+  letter-spacing: inherit;
+  text-align: start;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.s-wall-pane-title:hover {
+  color: var(--accent);
+}
+
+.s-wall-pane-title:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.s-wall-pane-where {
+  flex: 0 1 auto;
+  min-width: 0;
+  color: var(--dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.s-wall-pane-spacer {
+  flex: 1 1 auto;
+}
+
+.s-wall-pane-live {
+  flex: none;
+  color: var(--green);
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-md);
+}
+
+.s-wall-pane-file {
+  flex: none;
+  max-width: 40%;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--dim);
+  font: inherit;
+  letter-spacing: inherit;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: pointer;
+}
+
+.s-wall-pane-file:hover {
+  color: var(--accent);
+  text-decoration: underline;
+}
+
+/* ── Pane body: raw tail lines ── */
+
+.s-wall-pane-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 2px 0 4px;
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--border) 80%, transparent) transparent;
+}
+
+.s-wall-pane-body::-webkit-scrollbar {
+  width: 5px;
+}
+
+.s-wall-pane-body::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--border) 80%, transparent);
+}
+
+.s-wall-pane-idle {
+  padding: var(--space-sm) var(--space-md);
+  color: var(--dim);
+  font-size: var(--text-2xs);
+  letter-spacing: var(--tracking-sm);
+}
+
+.s-wall-line {
+  display: grid;
+  grid-template-columns: 52px 8px minmax(0, 1fr);
+  align-items: baseline;
+  /* Tail panes retain hundreds of wrapped rows. Rows above the scrollport do
+     not need to re-wrap on every window-resize frame. */
+  content-visibility: auto;
+  contain-intrinsic-size: auto 15px;
+  gap: var(--space-xs);
+  padding: 0 var(--space-sm);
+  font-size: var(--text-2xs);
+  line-height: 15px;
+  color: var(--muted);
+}
+
+.s-wall-line:nth-child(even) {
+  background: color-mix(in srgb, var(--ink) 2.5%, transparent);
+}
+
+.s-wall-line-time {
+  color: var(--dim);
+  font-variant-numeric: tabular-nums;
+}
+
+.s-wall-line-glyph {
+  color: var(--dim);
+}
+
+.s-wall-line-text {
+  min-width: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.s-wall-line-repeat {
+  color: var(--dim);
+  font-variant-numeric: tabular-nums;
+}
+
+.s-wall-line--user .s-wall-line-text {
+  color: var(--ink);
+}
+
+.s-wall-line--assistant .s-wall-line-text {
+  color: color-mix(in srgb, var(--ink) 80%, transparent);
+}
+
+.s-wall-line--tool .s-wall-line-text {
+  color: var(--accent);
+}
+
+.s-wall-line--system .s-wall-line-text,
+.s-wall-line--other .s-wall-line-text {
+  color: var(--dim);
+}
+
+/* Newest line settles in, matching /ops/tail. */
+.s-wall-pane-body > .s-wall-line:last-child {
+  animation: s-wall-line-in 220ms cubic-bezier(0.22, 0.61, 0.36, 1) both;
+}
+
+@keyframes s-wall-line-in {
+  from {
+    opacity: 0;
+    transform: translateY(2px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .s-wall-pane-body > .s-wall-line:last-child {
+    animation: none;
+  }
+}
+
+/* ── Context rail ──
+ *
+ * Docked over the right edge of the wall, never beside it: the grid keeps its
+ * tiling and the pane under the cursor does not move when the rail opens. The
+ * wall dims behind it so the cursor pane stays the thing being read.
+ */
+
+.s-wall-grid--railed .s-wall-pane:not(.s-wall-pane--cursor) {
+  opacity: 0.5;
+  transition: opacity 0.12s;
+}
+
+.s-wall-rail {
+  position: absolute;
+  top: 26px; /* below the status line */
+  right: 0;
+  bottom: 0;
+  z-index: 3;
+  width: min(400px, 46vw);
+  display: flex;
+  flex-direction: column;
+  border-left: 1px solid var(--border);
+  background: color-mix(in srgb, var(--surface) 92%, var(--bg));
+  box-shadow: -12px 0 28px -18px rgb(0 0 0 / 65%);
+  font-size: var(--text-2xs);
+  letter-spacing: 0.02em;
+  overflow: hidden;
+}
+
+.s-wall-rail-head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  min-height: 34px;
+  padding: 0 var(--space-sm);
+  border-bottom: 1px solid var(--border);
+}
+
+.s-wall-rail-dot {
+  flex: none;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--dim);
+}
+
+.s-wall-rail-dot--live {
+  background: var(--green);
+  animation: s-ops-pulse 1.6s ease-in-out infinite;
+}
+
+.s-wall-rail-identity {
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.s-wall-rail-title {
+  color: var(--ink);
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.s-wall-rail-sub {
+  color: var(--dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.s-wall-rail-close {
+  flex: none;
+  padding: 0 var(--space-2xs);
+  border: 0;
+  background: none;
+  color: var(--dim);
+  font: inherit;
+  cursor: pointer;
+}
+
+.s-wall-rail-close:hover {
+  color: var(--ink);
+}
+
+.s-wall-rail-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: var(--space-sm);
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--border) 80%, transparent) transparent;
+}
+
+.s-wall-rail-sec + .s-wall-rail-sec {
+  margin-top: var(--space-md);
+}
+
+.s-wall-rail-sechead {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  margin-bottom: var(--space-xs);
+  color: var(--dim);
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-md);
+}
+
+.s-wall-rail-seccount {
+  color: var(--muted);
+  text-transform: none;
+  letter-spacing: 0.02em;
+  font-variant-numeric: tabular-nums;
+}
+
+.s-wall-rail-secrule {
+  flex: 1 1 auto;
+  height: 1px;
+  background: var(--border);
+}
+
+/* ── Now ── */
+
+.s-wall-rail-headline {
+  color: var(--ink);
+  line-height: 1.45;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.s-wall-rail-detail {
+  margin-top: 2px;
+  color: var(--dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.s-wall-rail-empty {
+  color: var(--dim);
+  line-height: 1.45;
+}
+
+.s-wall-rail-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-md);
+  margin: var(--space-sm) 0 0;
+}
+
+.s-wall-rail-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.s-wall-rail-stat-label {
+  color: var(--dim);
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-md);
+}
+
+.s-wall-rail-stat-value {
+  margin: 0;
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── Context gauge ── */
+
+.s-wall-rail-gauge {
+  margin-top: var(--space-sm);
+}
+
+.s-wall-rail-gauge-line {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-xs);
+  color: var(--muted);
+}
+
+.s-wall-rail-gauge-label {
+  color: var(--dim);
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-md);
+}
+
+.s-wall-rail-gauge-of {
+  color: var(--dim);
+}
+
+.s-wall-rail-gauge-pct {
+  margin-left: auto;
+  font-variant-numeric: tabular-nums;
+}
+
+.s-wall-rail-gauge--over .s-wall-rail-gauge-pct {
+  color: var(--accent);
+}
+
+.s-wall-rail-gauge-bar {
+  position: relative;
+  height: 3px;
+  margin-top: 4px;
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--border) 70%, transparent);
+  overflow: hidden;
+}
+
+.s-wall-rail-gauge-fill {
+  display: block;
+  height: 100%;
+  background: color-mix(in srgb, var(--muted) 70%, transparent);
+}
+
+.s-wall-rail-gauge--over .s-wall-rail-gauge-fill {
+  background: var(--accent);
+}
+
+/* ── Runtime facts ── */
+
+.s-wall-rail-facts {
+  margin: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.s-wall-rail-fact {
+  display: grid;
+  grid-template-columns: 62px minmax(0, 1fr);
+  gap: var(--space-xs);
+  align-items: baseline;
+}
+
+.s-wall-rail-fact-label {
+  color: var(--dim);
+  letter-spacing: var(--tracking-md);
+}
+
+.s-wall-rail-fact-value {
+  margin: 0;
+  min-width: 0;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ── Files ── */
+
+.s-wall-rail-files {
+  display: grid;
+  gap: 1px;
+}
+
+.s-wall-rail-frow {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-xs);
+  width: 100%;
+  padding: 1px 2px;
+  border: 0;
+  border-radius: var(--radius-xs);
+  background: none;
+  color: inherit;
+  font: inherit;
+  letter-spacing: inherit;
+  text-align: start;
+  cursor: pointer;
+}
+
+.s-wall-rail-frow:hover {
+  background: color-mix(in srgb, var(--ink) 5%, transparent);
+}
+
+.s-wall-rail-fstate {
+  flex: none;
+  width: 8px;
+  color: var(--dim);
+}
+
+.s-wall-rail-fstate--created,
+.s-wall-rail-fstate--modified {
+  color: var(--accent);
+}
+
+.s-wall-rail-fpath {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.s-wall-rail-fdir {
+  color: var(--dim);
+}
+
+.s-wall-rail-fbase {
+  color: var(--ink);
+}
+
+/* ── Commands ── */
+
+.s-wall-rail-cmds {
+  display: grid;
+  gap: 1px;
+}
+
+.s-wall-rail-crow {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-xs);
+  padding: 1px 2px;
+  overflow: hidden;
+}
+
+.s-wall-rail-cmark {
+  flex: none;
+  color: var(--dim);
+}
+
+.s-wall-rail-ctext {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.s-wall-rail-bash-dir {
+  color: var(--dim);
+}
+
+.s-wall-rail-bash-prog {
+  color: var(--ink);
+}
+
+.s-wall-rail-bash-arg {
+  color: var(--muted);
+}
+
+.s-wall-rail-bash-dim {
+  color: var(--dim);
+}
+
+.s-wall-rail-bash-flag {
+  color: var(--dim);
+}
+
+.s-wall-rail-cresult {
+  flex: none;
+  margin-left: auto;
+  color: var(--dim);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── Rail footer ── */
+
+.s-wall-rail-foot {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  min-height: 28px;
+  padding: 0 var(--space-sm);
+  border-top: 1px solid var(--border);
+}
+
+.s-wall-rail-act {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--muted);
+  font: inherit;
+  letter-spacing: inherit;
+  cursor: pointer;
+}
+
+.s-wall-rail-act:hover {
+  color: var(--accent);
+  text-decoration: underline;
+}
+
+.s-wall-rail-keys {
+  margin-left: auto;
+  color: var(--dim);
+  white-space: nowrap;
+}
+
+.s-wall-rail-keys kbd {
+  font: inherit;
+  color: var(--muted);
+}
+
+/* ── Empty wall ── */
+
+.s-wall-empty {
+  grid-column: 1 / -1;
+  grid-row: 1 / -1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-sm);
+}
+
+.s-wall-empty-title {
+  font-family: var(--font-accent-title);
+  font-size: var(--text-4xl);
+  color: var(--ink);
+  letter-spacing: -0.01em;
+}
+
+.s-wall-empty-sub {
+  font-size: var(--text-sm);
+  color: var(--dim);
+  letter-spacing: var(--tracking-sm);
+}
+
+/* ── Focus overlay ── */
+
+.s-mission-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 10;
+  background: var(--scrim-soft);
+  backdrop-filter: blur(18px) saturate(140%);
+  -webkit-backdrop-filter: blur(18px) saturate(140%);
+  display: flex;
+  align-items: stretch;
+  justify-content: center;
+  padding: var(--space-4xl);
+  animation: s-mission-overlay-in 140ms ease-out;
+}
+
+@keyframes s-mission-overlay-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.s-mission-overlay-dialog {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  max-width: 1180px;
+  min-height: 0;
+  background: color-mix(in srgb, var(--surface) 88%, transparent);
+  border: 1px solid color-mix(in srgb, var(--ink) 12%, transparent);
+  border-radius: var(--radius-md);
+  box-shadow: 0 24px 80px -12px rgba(0, 0, 0, 0.72), 0 0 0 1px rgba(255, 255, 255, 0.04);
+  outline: none;
+  overflow: hidden;
+}
+
+.s-mission-overlay-header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xl);
+  padding: var(--space-lg) var(--space-xl) var(--space-md) var(--space-3xl);
+  border-bottom: 1px solid color-mix(in srgb, var(--ink) 9%, transparent);
+  flex: none;
+}
+
+.s-mission-overlay-identity {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.s-mission-overlay-handle {
+  color: var(--dim);
+  font-size: var(--text-sm);
+}
+
+.s-mission-overlay-close {
+  flex: 0 0 auto;
+  width: 22px;
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  background: transparent;
+  border: 1px solid color-mix(in srgb, var(--ink) 12%, transparent);
+  color: var(--dim);
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  cursor: pointer;
+  border-radius: var(--radius-xs);
+  transition: color 100ms, background 100ms, border-color 100ms;
+}
+
+.s-mission-overlay-close:hover {
+  color: var(--ink);
+  background: color-mix(in srgb, var(--ink) 6%, transparent);
+}
+
+.s-mission-overlay-tabs {
+  display: flex;
+  align-items: stretch;
+  justify-content: space-between;
+  gap: var(--space-lg);
+  padding: 0 var(--space-lg) 0 var(--space-3xl);
+  border-bottom: 1px solid color-mix(in srgb, var(--ink) 9%, transparent);
+  flex: none;
+}
+
+.s-mission-overlay-tabs-group {
+  display: flex;
+}
+
+.s-mission-overlay-tabs-action {
+  display: flex;
+  align-items: center;
+}
+
+.s-mission-overlay-jump {
+  padding: var(--space-2xs) var(--space-md);
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 32%, transparent);
+  color: var(--accent);
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  letter-spacing: var(--tracking-md);
+  cursor: pointer;
+  border-radius: var(--radius-xs);
+  transition: background 120ms, border-color 120ms, color 120ms;
+}
+
+.s-mission-overlay-jump:hover {
+  background: var(--accent);
+  color: var(--bg);
+}
+
+.s-mission-overlay-jump:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.s-mission-overlay-tab {
+  padding: var(--space-md) var(--space-xl);
+  background: transparent;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  color: var(--dim);
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  font-weight: 500;
+  letter-spacing: var(--tracking-lg);
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: color 120ms, border-color 120ms;
+  margin-bottom: -1px;
+}
+
+.s-mission-overlay-tab:hover {
+  color: var(--ink);
+}
+
+.s-mission-overlay-tab--active {
+  color: var(--ink);
+  border-bottom-color: var(--accent);
+}
+
+.s-mission-overlay-tab:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: -2px;
+}
+
+/* ── Tab content ── */
+
+.s-focus-tab {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+  padding: var(--space-3xl) var(--space-3xl);
+  gap: var(--space-2xl);
+}
+
+.s-focus-tab--activity {
+  padding: 0;
+  overflow: hidden;
+}
+
+/* ── Activity preview (compact) ── */
+
+.s-focus-tab--activity-preview {
+  gap: var(--space-xl);
+}
+
+.s-focus-stats {
+  margin: 0;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 1px;
+  background: color-mix(in srgb, var(--ink) 10%, transparent);
+  border: 1px solid color-mix(in srgb, var(--ink) 10%, transparent);
+  border-radius: var(--radius-xs);
+  overflow: hidden;
+  flex: 0 0 auto;
+}
+
+.s-focus-stat {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3xs);
+  padding: var(--space-sm) var(--space-lg);
+  background: color-mix(in srgb, var(--surface) 90%, transparent);
+  min-width: 0;
+}
+
+.s-focus-stat-label {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  letter-spacing: var(--tracking-xl);
+  text-transform: uppercase;
+  color: var(--dim);
+}
+
+.s-focus-stat-value {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: var(--text-lg);
+  font-weight: 500;
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+}
+
+.s-focus-activity-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  border: 1px solid color-mix(in srgb, var(--ink) 8%, transparent);
+  border-radius: var(--radius-xs);
+  background: color-mix(in srgb, var(--bg) 50%, transparent);
+}
+
+.s-focus-activity-empty {
+  flex: 1 1 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-4xl);
+  font-family: var(--font-sans);
+  font-size: var(--text-sm);
+  color: var(--dim);
+  border: 1px dashed color-mix(in srgb, var(--ink) 12%, transparent);
+  border-radius: var(--radius-xs);
+}
+
+.s-focus-activity-empty--rich {
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: flex-start;
+  gap: var(--space-xl);
+  padding: var(--space-2xl);
+  background: color-mix(in srgb, var(--surface) 60%, transparent);
+  border: 1px solid color-mix(in srgb, var(--ink) 8%, transparent);
+  color: var(--ink);
+}
+
+.s-focus-activity-empty-head {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2xs);
+}
+
+.s-focus-activity-empty-eyebrow {
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  letter-spacing: var(--tracking-xl);
+  text-transform: uppercase;
+  color: var(--dim);
+}
+
+.s-focus-activity-empty-title {
+  font-family: var(--font-mono);
+  font-size: var(--text-xl);
+  font-weight: 500;
+  color: var(--ink);
+  letter-spacing: var(--tracking-sm);
+}
+
+.s-focus-activity-empty-facts {
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1px;
+  background: color-mix(in srgb, var(--ink) 6%, transparent);
+  border: 1px solid color-mix(in srgb, var(--ink) 7%, transparent);
+}
+
+.s-focus-activity-empty-fact {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3xs);
+  padding: var(--space-sm) var(--space-md);
+  background: color-mix(in srgb, var(--surface) 92%, transparent);
+  min-width: 0;
+}
+
+.s-focus-activity-empty-fact dt {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  letter-spacing: var(--tracking-xl);
+  text-transform: uppercase;
+  color: var(--dim);
+}
+
+.s-focus-activity-empty-fact dd {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  color: var(--ink);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.s-focus-activity-empty-actions {
+  display: flex;
+  gap: var(--space-sm);
+  margin-top: auto;
+}
+
+.s-focus-activity-empty-btn {
+  flex: 1 1 auto;
+  appearance: none;
+  border: 1px solid color-mix(in srgb, var(--ink) 12%, transparent);
+  background: transparent;
+  color: var(--ink);
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  letter-spacing: var(--tracking-md);
+  text-transform: uppercase;
+  padding: var(--space-sm) var(--space-md);
+  cursor: pointer;
+  border-radius: var(--radius-xs);
+  transition: background 120ms ease, border-color 120ms ease;
+}
+
+.s-focus-activity-empty-btn:hover {
+  background: color-mix(in srgb, var(--ink) 5%, transparent);
+  border-color: color-mix(in srgb, var(--ink) 22%, transparent);
+}
+
+.s-focus-activity-empty-btn--primary {
+  border-color: color-mix(in srgb, var(--accent) 50%, transparent);
+  color: var(--accent);
+}
+
+.s-focus-activity-empty-btn--primary:hover {
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  border-color: var(--accent);
+}
+
+.s-focus-activity-row {
+  display: grid;
+  grid-template-columns: 36px 14px 44px 1fr;
+  align-items: baseline;
+  gap: var(--space-sm);
+  padding: var(--space-xs) var(--space-lg);
+  border-bottom: 1px solid color-mix(in srgb, var(--ink) 5%, transparent);
+  min-width: 0;
+}
+
+.s-focus-activity-row:last-child {
+  border-bottom: 0;
+}
+
+.s-focus-activity-time {
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  color: var(--dim);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  letter-spacing: var(--tracking-md);
+}
+
+.s-focus-activity-glyph {
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  color: var(--dim);
+  text-align: center;
+  line-height: var(--leading-none);
+}
+
+.s-focus-activity-row--tool .s-focus-activity-glyph { color: var(--accent); }
+.s-focus-activity-row--think .s-focus-activity-glyph { color: var(--muted, var(--dim)); }
+.s-focus-activity-row--ask .s-focus-activity-glyph { color: var(--amber); }
+.s-focus-activity-row--message .s-focus-activity-glyph { color: var(--ink); }
+.s-focus-activity-row--boot .s-focus-activity-glyph { color: var(--green); }
+
+.s-focus-activity-kind {
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  letter-spacing: var(--tracking-lg);
+  text-transform: uppercase;
+  color: var(--dim);
+}
+
+.s-focus-activity-text {
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  color: var(--ink);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+
+.s-focus-spec {
+  margin: 0;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  column-gap: var(--space-5xl);
+  row-gap: var(--space-lg);
+  flex: 0 0 auto;
+}
+
+.s-focus-spec-row {
+  display: grid;
+  grid-template-columns: 64px 1fr;
+  column-gap: var(--space-lg);
+  align-items: baseline;
+  margin: 0;
+  min-width: 0;
+}
+
+.s-focus-spec-label {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  letter-spacing: var(--tracking-xl);
+  text-transform: uppercase;
+  color: var(--dim);
+  white-space: nowrap;
+}
+
+.s-focus-spec-value {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  color: var(--ink);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+
+.s-focus-actions {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+}
+
+.s-focus-action {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2xs);
+  padding: var(--space-lg) var(--space-xl);
+  text-align: left;
+  background: color-mix(in srgb, var(--surface) 60%, transparent);
+  border: 1px solid color-mix(in srgb, var(--ink) 10%, transparent);
+  color: var(--ink);
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+  font-family: inherit;
+  transition: background 120ms, border-color 120ms;
+}
+
+.s-focus-action:hover {
+  background: color-mix(in srgb, var(--accent) 6%, transparent);
+  border-color: color-mix(in srgb, var(--accent) 32%, transparent);
+}
+
+.s-focus-action:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.s-focus-action-name {
+  font-family: var(--font-mono);
+  font-size: var(--text-md);
+  font-weight: 500;
+  letter-spacing: var(--tracking-md);
+  text-transform: uppercase;
+  color: var(--ink);
+}
+
+.s-focus-action-desc {
+  font-family: var(--font-sans);
+  font-size: var(--text-sm);
+  line-height: var(--leading-snug);
+  color: var(--muted);
+}
+
+/* ── Inline composer (Message tab) ── */
+
+.s-focus-compose {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-md);
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.s-focus-compose-label {
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  letter-spacing: var(--tracking-xl);
+  text-transform: uppercase;
+  color: var(--dim);
+}
+
+.s-focus-compose-target {
+  color: var(--accent);
+  text-transform: none;
+  letter-spacing: var(--tracking-xs);
+  font-size: var(--text-sm);
+  margin-left: var(--space-xs);
+}
+
+.s-focus-compose-input {
+  flex: 1 1 auto;
+  min-height: 120px;
+  padding: var(--space-md) var(--space-lg);
+  background: color-mix(in srgb, var(--bg) 60%, transparent);
+  border: 1px solid color-mix(in srgb, var(--ink) 12%, transparent);
+  border-radius: var(--radius-sm);
+  color: var(--ink);
+  font-family: var(--font-mono);
+  font-size: var(--text-md);
+  line-height: var(--leading-normal);
+  resize: none;
+  outline: none;
+  transition: border-color 120ms;
+}
+
+.s-focus-compose-input::placeholder {
+  color: var(--dim);
+}
+
+.s-focus-compose-input:focus {
+  border-color: color-mix(in srgb, var(--accent) 50%, transparent);
+}
+
+.s-focus-compose-input:disabled {
+  opacity: 0.6;
+}
+
+.s-focus-compose-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-lg);
+}
+
+.s-focus-compose-hint {
+  flex: 1 1 auto;
+  font-family: var(--font-sans);
+  font-size: var(--text-sm);
+  color: var(--dim);
+  line-height: var(--leading-snug);
+  min-width: 0;
+}
+
+.s-focus-compose-hint strong {
+  color: var(--ink);
+  font-weight: 500;
+}
+
+.s-focus-compose-error {
+  color: var(--red);
+}
+
+.s-focus-compose-ok {
+  color: var(--green);
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  letter-spacing: var(--tracking-md);
+}
+
+.s-focus-compose-link {
+  background: transparent;
+  border: 0;
+  padding: 0;
+  margin-left: var(--space-sm);
+  color: var(--accent);
+  font-family: inherit;
+  font-size: inherit;
+  letter-spacing: inherit;
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.s-focus-compose-link:hover {
+  color: var(--ink);
+}
+
+.s-focus-compose-actions {
+  display: flex;
+  gap: var(--space-sm);
+  flex: 0 0 auto;
+}
+
+.s-mission-overlay-name {
+  font-size: var(--text-xl);
+  font-weight: 500;
+}
+
+.s-mission-overlay-meta {
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  color: var(--dim);
+  letter-spacing: var(--tracking-sm);
+}
+
+.s-mission-overlay-actions {
+  margin-left: auto;
+  display: flex;
+  gap: var(--space-xs);
+}
+
+.s-mission-overlay-body {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}

@@ -1,0 +1,153 @@
+{
+  "$schema": "../spec/adapter-spec.v2.schema.json",
+  "specVersion": "2.0.0",
+  "adapterId": "codex",
+  "displayName": "Codex",
+  "implementation": {
+    "package": "@openscout/agent-sessions",
+    "entrypoint": "src/adapters/codex/adapter.ts",
+    "factoryExport": "createAdapter",
+    "className": "CodexAdapter"
+  },
+  "upstream": {
+    "kind": "official_protocol",
+    "name": "OpenAI Codex app-server",
+    "transport": "jsonrpc-stdio-jsonl",
+    "sources": [
+      {
+        "kind": "url",
+        "ref": "https://github.com/openai/codex/blob/main/codex-rs/app-server/README.md#protocol"
+      },
+      {
+        "kind": "url",
+        "ref": "https://github.com/openai/codex/tree/main/codex-rs/app-server-client"
+      },
+      {
+        "kind": "file",
+        "ref": "src/adapters/codex/adapter.ts"
+      },
+      {
+        "kind": "file",
+        "ref": "src/adapters/codex/references/openai-codex-app-server-protocol.md"
+      }
+    ]
+  },
+  "sessionModel": {
+    "lifecycle": "stateful_connection",
+    "conversationScope": "thread",
+    "resumeSupport": "optional",
+    "resumeOptionKey": "threadId",
+    "turnSteering": "native_same_turn",
+    "concurrentTurns": "single",
+    "persistence": [
+      "process_state",
+      "local_files",
+      "upstream_thread_id"
+    ]
+  },
+  "capabilities": {
+    "promptInputs": {
+      "text": true,
+      "images": "none",
+      "files": "none"
+    },
+    "outputBlocks": [
+      "text",
+      "reasoning",
+      "action",
+      "error"
+    ],
+    "actionKinds": [
+      "command",
+      "file_change",
+      "subagent",
+      "tool_call"
+    ],
+    "streaming": {
+      "text": true,
+      "reasoning": true,
+      "actionOutput": true,
+      "actionStatus": true
+    },
+    "interactive": {
+      "questions": "none",
+      "approvals": "none",
+      "serverRequests": "native"
+    },
+    "control": {
+      "interrupt": true,
+      "shutdown": true
+    }
+  },
+  "nativeProtocol": {
+    "outboundRequests": [
+      "initialize",
+      "thread/start",
+      "thread/resume",
+      "turn/start",
+      "turn/steer",
+      "turn/interrupt"
+    ],
+    "outboundNotifications": [
+      "initialized"
+    ],
+    "inboundNotifications": [
+      "thread/started",
+      "thread/name/updated",
+      "thread/status/changed",
+      "turn/started",
+      "item/started",
+      "item/agentMessage/delta",
+      "item/reasoning/delta",
+      "item/reasoning/summaryTextDelta",
+      "item/fileChange/outputDelta",
+      "item/commandExecution/outputDelta",
+      "item/toolCall/outputDelta",
+      "item/commandExecution/terminalInteraction",
+      "item/completed",
+      "turn/completed",
+      "error"
+    ],
+    "inboundServerRequests": [
+      "item/tool/call",
+      "*"
+    ],
+    "messageFormats": [
+      "jsonrpc_request",
+      "jsonrpc_notification",
+      "jsonrpc_response",
+      "jsonrpc_error",
+      "jsonl_transport"
+    ],
+    "serverRequestStrategy": "reject_unsupported"
+  },
+  "normalizedSurface": {
+    "adapterMethods": [
+      "start",
+      "send",
+      "interrupt",
+      "shutdown"
+    ],
+    "optionalAdapterMethods": [],
+    "emitsPairingEvents": [
+      "session:update",
+      "turn:start",
+      "block:start",
+      "block:delta",
+      "block:action:output",
+      "block:action:status",
+      "block:end",
+      "turn:end"
+    ]
+  },
+  "conformance": {
+    "status": "required",
+    "normalizerId": "codex",
+    "fixtureSets": ["codex"]
+  },
+  "limitations": [
+    "The adapter currently forwards only text prompts, even though upstream Codex app-server supports richer input shapes.",
+    "Inbound server requests are not implemented beyond clean rejection; desktop-only dynamic tools such as read_thread_terminal do not have native handlers.",
+    "The adapter does not expose approval or request_user_input flows on the normalized Pairing surface."
+  ]
+}

@@ -1,0 +1,3712 @@
+/* ── Thread screen: three-column layout ── */
+
+.s-thread-layout {
+  display: flex;
+  flex: 1 1 0;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--bg);
+}
+
+/* ── Channel rail (left) ── */
+
+.s-thread-rail {
+  width: 280px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  background: color-mix(in srgb, var(--bg) 70%, black);
+  border-right: 1px solid var(--border);
+  overflow: hidden;
+}
+
+.s-thread-rail-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding-bottom: var(--space-2xl);
+}
+
+.s-thread-rail-section {
+  padding: 0;
+}
+
+.s-thread-rail-section-label {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  padding: var(--space-xl) var(--space-2xl) var(--space-xs);
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  font-weight: 600;
+  letter-spacing: var(--tracking-lg);
+  text-transform: uppercase;
+  color: var(--dim);
+  user-select: none;
+}
+
+.s-thread-rail-section--needs-you .s-thread-rail-section-label {
+  color: var(--amber);
+}
+
+.s-thread-rail-item {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: var(--space-md);
+  padding: var(--space-sm) var(--space-2xl) var(--space-sm) var(--space-xl);
+  cursor: pointer;
+  border: none;
+  background: transparent;
+  width: 100%;
+  text-align: left;
+  transition: background 0.1s ease;
+  border-left: 2px solid transparent;
+}
+
+.s-thread-rail-item:hover {
+  background: color-mix(in srgb, var(--ink) 4%, transparent);
+}
+
+.s-thread-rail-item--active {
+  background: color-mix(in srgb, var(--accent) 6%, transparent);
+  border-left-color: var(--accent);
+}
+
+.s-thread-rail-item--needs-you {
+  background: color-mix(in srgb, var(--amber) 4%, transparent);
+}
+
+.s-thread-rail-item--needs-you:hover {
+  background: color-mix(in srgb, var(--amber) 8%, transparent);
+}
+
+.s-thread-rail-avatar {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: var(--text-sm);
+  font-weight: 600;
+  color: var(--scout-chrome-avatar-ink);
+  flex-shrink: 0;
+}
+
+.s-thread-rail-avatar--channel {
+  background: color-mix(in srgb, var(--border) 60%, transparent);
+  color: var(--muted);
+  font-size: var(--text-lg);
+  font-weight: 400;
+}
+
+.s-thread-rail-body {
+  flex: 1;
+  min-width: 0;
+}
+
+.s-thread-rail-name {
+  display: block;
+  font-size: var(--text-md);
+  font-weight: 550;
+  color: var(--ink);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  letter-spacing: -0.005em;
+}
+
+.s-thread-rail-item--active .s-thread-rail-name {
+  color: var(--ink);
+  font-weight: 600;
+}
+
+.s-thread-rail-sub {
+  display: block;
+  font-size: var(--text-xs);
+  color: var(--dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  margin-top: 1px;
+}
+
+.s-thread-rail-trailing {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  flex-shrink: 0;
+}
+
+.s-thread-rail-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 var(--space-xs);
+  border-radius: var(--radius-lg);
+  background: var(--accent);
+  color: var(--bg);
+  font-size: var(--text-xs);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.s-thread-rail-badge--amber {
+  background: var(--amber);
+}
+
+.s-thread-rail-presence-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+/* ── Thread center ── */
+
+.s-thread-center {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--bg);
+}
+
+.s-thread-center-header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-md);
+  min-height: 62px;
+  padding: var(--space-md) var(--space-3xl);
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 92%, var(--surface));
+  background: var(--surface);
+  flex-shrink: 0;
+}
+
+.s-thread-header-back {
+  min-width: 30px;
+  height: 30px;
+  padding: 0 var(--space-sm);
+  border-color: color-mix(in srgb, var(--border) 34%, transparent);
+  background: transparent;
+  color: var(--muted);
+  font-size: var(--text-xs);
+  align-self: center;
+}
+
+.s-thread-header-back:hover {
+  background: color-mix(in srgb, var(--ink) 4%, transparent);
+}
+
+.s-thread-center-header-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.s-thread-center-header-name {
+  display: block;
+  font-size: var(--text-2xl);
+  font-weight: 650;
+  letter-spacing: -0.02em;
+  color: var(--ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* On a DM the header opens the agent-info panel, but the click lived on the
+   header <div>, so the destination was mouse-only. The title carries the same
+   action as a real button; reset the UA chrome and inherit the type above.
+   Mirrors button.s-thread-participant-pill below. */
+button.s-thread-center-header-name {
+  appearance: none;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: none;
+  font-family: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.s-thread-center-header-right {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  min-width: 0;
+  flex-shrink: 0;
+}
+
+.s-thread-participants {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  min-width: 0;
+  max-width: min(48vw, 520px);
+}
+
+.s-thread-participant-pill,
+.s-thread-participant-overflow {
+  display: inline-flex;
+  align-items: center;
+  min-height: 28px;
+  border: 1px solid color-mix(in srgb, var(--border) 58%, transparent);
+  border-radius: var(--radius-pill);
+  background: color-mix(in srgb, var(--bg) 82%, transparent);
+  color: var(--muted);
+  font-size: var(--text-sm);
+}
+
+.s-thread-participant-pill {
+  gap: var(--space-xs);
+  max-width: 200px;
+  min-width: 0;
+  padding: 2px var(--space-sm) 2px 3px;
+}
+
+button.s-thread-participant-pill {
+  font: inherit;
+  cursor: pointer;
+}
+
+button.s-thread-participant-pill:hover {
+  border-color: color-mix(in srgb, var(--accent) 34%, var(--border));
+  color: var(--ink);
+}
+
+.s-thread-participant-avatar {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  flex: 0 0 auto;
+  border-radius: var(--radius-pill);
+  overflow: visible;
+}
+
+.s-thread-participant-identity {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: center;
+  min-width: 0;
+  line-height: 1.15;
+}
+
+.s-thread-participant-name {
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.s-thread-participant-model {
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--dim);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  letter-spacing: 0.01em;
+}
+
+/* Operator pill (active member) — neutral so it never reads as an agent author. */
+.s-thread-participant-pill--operator {
+  color: var(--muted);
+}
+
+.s-thread-participant-avatar--operator {
+  background: color-mix(in srgb, var(--surface) 70%, var(--bg));
+  color: var(--muted);
+  border: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
+}
+
+/* Operator observer chip — dashed + eye, signals not-in-thread. */
+.s-thread-participant-observer {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2xs, 4px);
+  min-height: 28px;
+  padding: 0 var(--space-sm);
+  border: 1px dashed color-mix(in srgb, var(--border) 60%, transparent);
+  border-radius: var(--radius-pill);
+  background: transparent;
+  color: var(--dim);
+  font-size: var(--text-xs);
+  white-space: nowrap;
+}
+
+.s-thread-participant-observer svg {
+  opacity: 0.85;
+}
+
+.s-thread-participant-overflow {
+  justify-content: center;
+  min-width: 28px;
+  padding: 0 var(--space-xs);
+  color: var(--dim);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+}
+
+.s-thread-add-participant-trigger {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  flex-shrink: 0;
+  border: 1px solid color-mix(in srgb, var(--border) 48%, transparent);
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--bg) 70%, transparent);
+  color: var(--muted);
+  cursor: pointer;
+  transition:
+    background 120ms ease,
+    border-color 120ms ease,
+    color 120ms ease;
+}
+
+.s-thread-add-participant-trigger:hover {
+  border-color: color-mix(in srgb, var(--accent) 35%, var(--border));
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+  color: var(--ink);
+}
+
+.s-thread-identity-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  min-height: 30px;
+  padding: var(--space-2xs) var(--space-3xl);
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 46%, transparent);
+  background: color-mix(in srgb, var(--surface) 72%, var(--bg));
+  overflow-x: auto;
+  flex-shrink: 0;
+}
+
+.s-thread-identity-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-xs);
+  max-width: 240px;
+  min-height: 20px;
+  padding: 0 var(--space-sm);
+  border: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
+  border-radius: var(--radius-md);
+  background: var(--bg);
+  color: var(--muted);
+  font: inherit;
+  font-size: var(--text-xs);
+  white-space: nowrap;
+}
+
+button.s-thread-identity-chip {
+  cursor: pointer;
+}
+
+button.s-thread-identity-chip:hover {
+  border-color: color-mix(in srgb, var(--accent) 32%, var(--border));
+  color: var(--ink);
+}
+
+.s-thread-identity-chip span {
+  color: var(--dim);
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  font-weight: 600;
+  letter-spacing: var(--tracking-md);
+  text-transform: uppercase;
+}
+
+.s-thread-identity-chip strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.s-thread-add-participant {
+  margin: var(--space-md) var(--space-3xl) 0;
+  padding: var(--space-lg) var(--space-xl);
+  border: 1px solid color-mix(in srgb, var(--accent) 18%, var(--border));
+  border-radius: var(--radius-lg);
+  background: color-mix(in srgb, var(--accent) 5%, var(--surface));
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-md);
+}
+
+.s-thread-add-participant-row {
+  display: flex;
+  align-items: flex-end;
+  gap: var(--space-lg);
+  flex-wrap: wrap;
+}
+
+.s-thread-add-participant-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+  flex: 1;
+  min-width: 220px;
+}
+
+.s-thread-add-participant-label {
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  font-weight: 600;
+  letter-spacing: var(--tracking-md);
+  text-transform: uppercase;
+  color: var(--dim);
+}
+
+.s-thread-add-participant-select {
+  width: 100%;
+  min-height: 36px;
+  border-radius: var(--radius-lg);
+  border: 1px solid color-mix(in srgb, var(--border) 86%, var(--surface));
+  background: var(--bg);
+  color: var(--ink);
+  font: inherit;
+  padding: 0 var(--space-md);
+}
+
+.s-thread-add-participant-select:focus-visible {
+  outline: none;
+  border-color: color-mix(in srgb, var(--accent) 40%, var(--border));
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 14%, transparent);
+}
+
+.s-thread-add-participant-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  flex-shrink: 0;
+}
+
+.s-thread-add-participant-error {
+  font-size: var(--text-sm);
+  color: var(--red);
+}
+
+/* ── Pinned ask ── */
+
+.s-thread-pinned-ask {
+  margin: var(--space-lg) var(--space-3xl) 0;
+  padding: var(--space-xl) var(--space-2xl);
+  border: 1px solid color-mix(in srgb, var(--amber) 30%, var(--border));
+  border-radius: var(--radius-xl);
+  background: color-mix(in srgb, var(--amber) 3%, var(--surface));
+  position: relative;
+  overflow: hidden;
+}
+
+.s-thread-pinned-ask::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 3px;
+  background: var(--amber);
+  border-radius: var(--radius-sm) 0 0 var(--radius-sm);
+}
+
+.s-thread-pinned-ask-label {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  font-weight: 600;
+  letter-spacing: var(--tracking-lg);
+  text-transform: uppercase;
+  color: var(--amber);
+  margin-bottom: var(--space-sm);
+}
+
+.s-thread-pinned-ask-body {
+  font-size: var(--text-2xl);
+  font-weight: 500;
+  line-height: var(--leading-snug);
+  letter-spacing: -0.01em;
+  color: var(--ink);
+  margin-bottom: var(--space-md);
+}
+
+.s-thread-pinned-ask-routing {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  font-size: var(--text-sm);
+  color: var(--muted);
+  margin-bottom: var(--space-lg);
+}
+
+.s-thread-pinned-ask-routing-arrow {
+  color: var(--dim);
+}
+
+.s-thread-pinned-ask-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+}
+
+.s-thread-pinned-ask-strip {
+  height: 2px;
+  width: 100%;
+  margin-top: var(--space-md);
+  border-radius: 1px;
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    var(--amber) 40%,
+    var(--amber) 60%,
+    transparent 100%
+  );
+  background-size: 200% 100%;
+  animation: s-thread-thinking-strip 2s ease-in-out infinite;
+}
+
+@keyframes s-thread-thinking-strip {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
+/* ── Message feed ── */
+
+.s-thread-feed {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+  padding: var(--space-3xl) var(--space-3xl) var(--space-2xl);
+  align-items: stretch;
+  background: linear-gradient(var(--bg) 2%, transparent 8%), linear-gradient(transparent 92%, var(--bg) 98%);
+  background-attachment: local;
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--border) 60%, transparent) transparent;
+}
+
+.s-thread-feed::-webkit-scrollbar {
+  width: 4px;
+}
+
+.s-thread-feed::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.s-thread-feed::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--border) 60%, transparent);
+  border-radius: var(--radius-xs);
+}
+
+.s-thread-history-control {
+  align-self: stretch;
+  display: flex;
+  justify-content: center;
+  padding: 0 0 var(--space-lg);
+}
+
+.s-thread-history-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 30px;
+  gap: var(--space-sm);
+  padding: var(--space-sm) var(--space-lg);
+  border: 1px solid color-mix(in srgb, var(--border) 82%, transparent);
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--surface) 82%, var(--bg));
+  color: var(--muted);
+  font: inherit;
+  font-size: var(--text-xs);
+  font-weight: 600;
+  cursor: pointer;
+  transition:
+    background 160ms ease-out,
+    border-color 160ms ease-out,
+    color 160ms ease-out;
+}
+
+.s-thread-history-button:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--accent) 30%, var(--border));
+  background: color-mix(in srgb, var(--accent) 7%, var(--surface));
+  color: var(--ink);
+}
+
+.s-thread-history-button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.s-thread-history-button:disabled {
+  cursor: default;
+  opacity: 0.68;
+}
+
+.s-thread-new-messages {
+  position: sticky;
+  bottom: var(--space-sm);
+  z-index: 1;
+  align-self: center;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-xs);
+  min-height: 30px;
+  margin: calc(var(--space-sm) * -1) 0 0;
+  padding: var(--space-sm) var(--space-lg);
+  border: 1px solid color-mix(in srgb, var(--accent) 48%, var(--border));
+  border-radius: var(--radius-lg);
+  background: color-mix(in srgb, var(--surface) 94%, var(--accent));
+  color: var(--accent);
+  font: inherit;
+  font-size: var(--text-xs);
+  font-weight: 600;
+  cursor: pointer;
+  box-shadow: 0 var(--space-sm) var(--space-xl) color-mix(in srgb, var(--bg) 42%, transparent);
+  transition:
+    background 160ms ease-out,
+    border-color 160ms ease-out,
+    color 160ms ease-out;
+}
+
+.s-thread-new-messages:hover {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--surface) 86%, var(--accent));
+  color: var(--ink);
+}
+
+.s-thread-new-messages:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.s-thread-history-spinner {
+  width: 11px;
+  height: 11px;
+  border: 1.5px solid color-mix(in srgb, currentColor 28%, transparent);
+  border-top-color: currentColor;
+  border-radius: 50%;
+  animation: s-thread-history-spin 700ms linear infinite;
+}
+
+@keyframes s-thread-history-spin {
+  to { transform: rotate(360deg); }
+}
+
+.s-thread-feed-block {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+  max-width: min(88%, 760px);
+}
+
+.s-thread-feed-block--you {
+  align-self: flex-end;
+}
+
+.s-thread-msg-permalink {
+  opacity: 0;
+  transition: opacity 0.15s;
+  cursor: pointer;
+  color: var(--muted);
+  background: transparent;
+  border: none;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border-radius: var(--radius-sm);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* Keep the standard presentation's action buttons as direct flex items. The
+   ledger treatment turns this into a fixed overlay so contextual actions do
+   not change the transcript column geometry. */
+.s-thread-msg-actions {
+  display: contents;
+}
+
+.s-thread-msg-card:hover .s-thread-msg-permalink {
+  opacity: 1;
+}
+
+.s-thread-msg-permalink:focus-visible {
+  opacity: 1;
+  outline: 2px solid color-mix(in srgb, var(--accent) 50%, transparent);
+  outline-offset: 1px;
+}
+
+.s-thread-msg-permalink:hover {
+  color: var(--ink);
+  background: color-mix(in srgb, var(--ink) 7%, transparent);
+}
+
+@media (hover: none) {
+  .s-thread-msg-permalink {
+    opacity: 0.72;
+  }
+}
+
+.s-thread-compose-reply {
+  display: grid;
+  grid-template-columns: auto auto auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--space-xs);
+  min-width: 0;
+  color: var(--muted);
+  font-size: var(--text-xs);
+  line-height: var(--leading-tight);
+}
+
+.s-thread-compose-reply-icon {
+  flex: none;
+  color: var(--accent);
+}
+
+.s-thread-compose-reply-label {
+  color: var(--dim);
+}
+
+.s-thread-compose-reply-actor {
+  color: var(--ink);
+  font-family: var(--font-mono);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.s-thread-compose-reply-preview {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--muted);
+}
+
+.s-thread-compose-reply-cancel {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  margin: calc(var(--space-2xs) * -1);
+  padding: 0;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--dim);
+  cursor: pointer;
+}
+
+.s-thread-compose-reply-cancel:hover {
+  color: var(--ink);
+  background: color-mix(in srgb, var(--ink) 7%, transparent);
+}
+
+.s-thread-compose-reply-cancel:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent) 50%, transparent);
+  outline-offset: 1px;
+}
+
+.s-thread-msg-dismiss {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  color: color-mix(in srgb, var(--amber) 78%, var(--muted));
+  background: color-mix(in srgb, var(--amber) 6%, transparent);
+  border: 1px solid color-mix(in srgb, var(--amber) 28%, transparent);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+}
+
+.s-thread-msg-dismiss:hover {
+  color: var(--ink);
+  background: color-mix(in srgb, var(--amber) 12%, transparent);
+  border-color: color-mix(in srgb, var(--amber) 45%, transparent);
+}
+
+.s-thread-feed-block--full-width {
+  max-width: 100%;
+  align-self: stretch;
+}
+
+.s-thread-feed-block--full-width.s-thread-feed-block--you {
+  align-items: flex-end;
+}
+
+.s-thread-feed-block--full-width.s-thread-feed-block--you .s-thread-day-divider {
+  align-self: stretch;
+}
+
+.s-thread-feed-block--full-width.s-thread-feed-block--you .s-thread-msg {
+  max-width: min(88%, 760px);
+}
+
+.s-thread-day-divider {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xl);
+  margin: var(--space-lg) 0;
+}
+
+.s-thread-day-line {
+  flex: 1;
+  height: 1px;
+  background: color-mix(in srgb, var(--border) 40%, transparent);
+}
+
+.s-thread-day-label {
+  flex-shrink: 0;
+  font-size: var(--text-xs);
+  font-weight: 600;
+  letter-spacing: var(--tracking-md);
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.s-thread-msg {
+  max-width: min(100%, 760px);
+}
+
+.s-thread-msg-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+  padding: var(--space-md) var(--space-xl);
+  border-radius: var(--radius-2xl);
+  border: 1px solid color-mix(in srgb, var(--border) 80%, var(--surface));
+  background: var(--surface);
+}
+
+.s-thread-msg-card-content {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+}
+
+.s-thread-msg-card--avatar-row {
+  flex-direction: row;
+  gap: var(--space-lg);
+  align-items: flex-start;
+}
+
+.s-thread-msg-card--avatar-row .s-thread-msg-card-content {
+  flex: 1;
+}
+
+.s-thread-msg-avatar {
+  --size: 24px;
+  display: inline-flex;
+  width: var(--size);
+  height: var(--size);
+  flex-shrink: 0;
+  margin-top: 0;
+}
+
+.s-thread-msg-avatar--working {
+  --size: 28px;
+}
+
+.s-thread-msg-avatar--nav {
+  --size: 24px;
+  display: inline-flex;
+  width: var(--size);
+  height: var(--size);
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  border: none;
+  background: transparent;
+  padding: 0;
+  cursor: pointer;
+  transition: transform 0.1s ease, box-shadow 0.15s ease;
+}
+
+.s-thread-msg-avatar--nav:hover {
+  transform: scale(1.05);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 28%, transparent);
+}
+
+.s-thread-msg-avatar--nav:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.s-thread-msg--you .s-thread-msg-card {
+  border-color: color-mix(in srgb, var(--accent) 18%, var(--border));
+  background: color-mix(in srgb, var(--accent) 7%, var(--surface));
+}
+
+.s-thread-msg-header {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-md);
+}
+
+.s-thread-msg-meta {
+  display: flex;
+  align-items: center;
+  flex: 1;
+  flex-wrap: wrap;
+  min-width: 0;
+  gap: var(--space-sm);
+}
+
+.s-thread-msg-actor {
+  min-width: 0;
+  font-size: var(--text-md);
+  font-weight: 600;
+  letter-spacing: 0;
+  color: var(--ink);
+}
+
+button.s-thread-msg-actor {
+  background: transparent;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  font-family: inherit;
+  text-align: left;
+  border-radius: var(--radius-sm);
+  transition: color 0.1s ease, text-decoration-color 0.1s ease;
+  text-decoration: underline;
+  text-decoration-color: transparent;
+  text-underline-offset: 3px;
+}
+
+button.s-thread-msg-actor:hover {
+  color: var(--accent);
+  text-decoration-color: color-mix(in srgb, var(--accent) 60%, transparent);
+}
+
+button.s-thread-msg-actor:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.s-thread-msg-handle {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: var(--text-xs);
+  color: var(--dim);
+  font-family: var(--font-mono);
+}
+
+.s-thread-msg-kind {
+  display: inline-flex;
+  align-items: center;
+  min-height: 20px;
+  padding: 0 var(--space-sm);
+  border-radius: var(--radius-md);
+  border: 1px solid color-mix(in srgb, var(--border) 70%, var(--surface));
+  background: var(--bg);
+  font-size: var(--text-xs);
+  font-weight: 500;
+  letter-spacing: var(--tracking-xs);
+  color: var(--dim);
+  font-family: var(--font-mono);
+}
+
+.s-thread-msg-time {
+  flex-shrink: 0;
+  font-size: var(--text-xs);
+  font-family: var(--font-sans);
+  color: var(--dim);
+  opacity: 0.85;
+  transition: opacity 0.12s ease;
+  margin-left: auto;
+}
+
+.s-thread-msg-card:hover .s-thread-msg-time {
+  opacity: 1;
+}
+
+.s-thread-msg-body {
+  padding: 0;
+  border: none;
+  background: none;
+  font-size: var(--text-md);
+  line-height: var(--leading-normal);
+  color: var(--ink);
+  letter-spacing: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  cursor: text;
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+/* Identifiers in prose are set as identifiers, not as accents.
+ *
+ * The global chip is emerald on emerald, which is right where a chip is rare.
+ * In a transcript every second sentence carries a filename, a token or a
+ * symbol, so the accent stops meaning anything and the eye is pulled off the
+ * sentence into a field of green. Here mono plus a faint inset does the same
+ * job, and the accent is left free for the one thing it should mark: live,
+ * addressed-to-you state. */
+.s-thread-msg-body .s-inline-code {
+  border-color: color-mix(in srgb, var(--border) 62%, transparent);
+  background: color-mix(in srgb, var(--ink) 5%, transparent);
+  color: color-mix(in srgb, var(--ink) 82%, var(--muted));
+}
+
+/* Reply-context backlink: resolves the raw [ask:<flightId>] tag into a
+   clickable reference to the originating ask, instead of leaking the token. */
+.s-thread-reply-ctx {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  margin: 0 0 5px;
+  padding: 0;
+  border: none;
+  background: none;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--dim);
+  cursor: pointer;
+}
+
+.s-thread-reply-ctx svg {
+  flex: none;
+  color: var(--dim);
+  transition: color 0.12s ease;
+}
+
+.s-thread-reply-ctx-label {
+  flex: none;
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-xs);
+  font-weight: 700;
+}
+
+.s-thread-reply-ctx-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--muted);
+  transition: color 0.12s ease;
+}
+
+.s-thread-reply-ctx-from {
+  flex: none;
+  color: var(--dim);
+}
+
+.s-thread-reply-ctx-status {
+  flex: none;
+  color: var(--dim);
+}
+
+.s-thread-reply-ctx:hover .s-thread-reply-ctx-title {
+  color: var(--accent);
+  text-decoration: underline;
+}
+
+.s-thread-reply-ctx:hover svg {
+  color: var(--accent);
+}
+
+.s-thread-reply-ctx:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent) 55%, transparent);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
+}
+
+/* ── Fan-out dispatch ──
+   One kickoff delivered to several agents. Deliberately the quietest row in
+   the feed: it is routing, not conversation, so it reads as a single mono
+   event line and only becomes prose when the operator opens it. */
+
+.s-thread-fanout {
+  align-self: stretch;
+}
+
+/* Scroll and permalink target for a delivery the row folded away. It takes no
+   space and paints nothing — its only job is to exist at `msg-<id>` so a
+   backlink still resolves; the row around it is what the reader is sent to. */
+.s-thread-fanout-anchor {
+  display: block;
+  height: 0;
+  scroll-margin-block: var(--space-2xl);
+}
+
+.s-thread-fanout-summary {
+  display: inline-flex;
+  align-items: baseline;
+  gap: var(--space-sm);
+  padding: var(--space-2xs) var(--space-sm);
+  margin-left: calc(var(--space-sm) * -1);
+  border: none;
+  border-radius: var(--radius-sm);
+  background: none;
+  color: var(--dim);
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  letter-spacing: var(--tracking-xs);
+  cursor: pointer;
+  transition: color 0.12s ease, background 0.12s ease;
+}
+
+.s-thread-fanout-summary:hover {
+  background: color-mix(in srgb, var(--ink) 4%, transparent);
+  color: var(--muted);
+}
+
+.s-thread-fanout-summary:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.s-thread-fanout-caret {
+  flex: none;
+  width: 8px;
+}
+
+.s-thread-fanout-label {
+  font-weight: 650;
+  text-transform: uppercase;
+}
+
+.s-thread-fanout-time {
+  color: color-mix(in srgb, var(--dim) 78%, transparent);
+}
+
+.s-thread-fanout-detail {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+  padding: var(--space-sm) 0 var(--space-md) var(--space-lg);
+  border-left: 1px solid color-mix(in srgb, var(--border) 55%, transparent);
+}
+
+.s-thread-fanout-recipients {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2xs) var(--space-sm);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.s-thread-fanout-recipient {
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  color: var(--muted);
+}
+
+.s-thread-fanout-body {
+  max-width: 68ch;
+  font-size: var(--text-sm);
+  line-height: var(--leading-normal);
+  color: var(--muted);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* Brief highlight when a backlink scrolls its originating message into view. */
+.s-thread-msg--flash .s-thread-msg-card {
+  animation: s-thread-msg-flash 1.2s ease;
+}
+
+/* Same highlight when the backlink pointed at a delivery this row folded. The
+   summary line is the whole row when collapsed, so it carries the flash. */
+.s-thread-fanout--flash .s-thread-fanout-summary {
+  animation: s-thread-msg-flash 1.2s ease;
+}
+
+@keyframes s-thread-msg-flash {
+  0%,
+  35% {
+    background: color-mix(in srgb, var(--accent) 12%, transparent);
+  }
+  100% {
+    background: transparent;
+  }
+}
+
+.s-thread-msg--tool .s-thread-msg-card {
+  border-style: dashed;
+  border-color: color-mix(in srgb, var(--border) 60%, transparent);
+  background: var(--bg);
+}
+
+.s-thread-msg--tool .s-thread-msg-body::before {
+  content: "\203A_";
+  font-family: var(--font-mono);
+  color: var(--dim);
+  margin-right: var(--space-xs);
+}
+
+.s-thread-msg[data-class="status"] .s-thread-msg-card {
+  border-color: color-mix(in srgb, var(--accent) 12%, var(--border));
+}
+
+.s-thread-msg[data-class="scout.dispatch"] .s-thread-msg-card {
+  border-color: color-mix(in srgb, var(--accent) 12%, var(--border));
+}
+
+/* System + status notes are signposts around real replies, not replies
+   themselves. Strip avatar weight, shrink type, and de-saturate so the
+   eye lands on the actual agent message instead. */
+.s-thread-feed-block:has(> .s-thread-msg[data-class="system"]),
+.s-thread-feed-block:has(> .s-thread-msg[data-class="status"]) {
+  max-width: min(72%, 560px);
+  align-self: center;
+}
+
+.s-thread-msg[data-class="system"] .s-thread-msg-card,
+.s-thread-msg[data-class="status"] .s-thread-msg-card {
+  gap: var(--space-3xs);
+  padding: var(--space-xs) var(--space-lg);
+  border-radius: var(--radius-lg);
+  border-color: color-mix(in srgb, var(--border) 60%, transparent);
+  background: color-mix(in srgb, var(--bg) 80%, transparent);
+}
+
+.s-thread-msg[data-class="system"] .s-thread-msg-avatar,
+.s-thread-msg[data-class="status"] .s-thread-msg-avatar {
+  --size: 18px;
+  margin-top: 1px;
+  opacity: 0.55;
+}
+
+.s-thread-presence-line-avatar {
+  display: inline-flex;
+  width: 20px;
+  height: 20px;
+}
+
+.s-thread-msg[data-class="system"] .s-thread-msg-actor,
+.s-thread-msg[data-class="status"] .s-thread-msg-actor {
+  font-size: var(--text-sm);
+  font-weight: 500;
+  color: var(--dim);
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-md);
+}
+
+.s-thread-msg[data-class="system"] .s-thread-msg-handle,
+.s-thread-msg[data-class="status"] .s-thread-msg-handle {
+  display: none;
+}
+
+.s-thread-msg[data-class="system"] .s-thread-msg-kind,
+.s-thread-msg[data-class="status"] .s-thread-msg-kind {
+  min-height: 16px;
+  padding: 0 var(--space-xs);
+  font-size: var(--text-2xs);
+  letter-spacing: var(--tracking-md);
+  text-transform: uppercase;
+  border-color: color-mix(in srgb, var(--border) 50%, transparent);
+  color: var(--dim);
+}
+
+.s-thread-msg[data-class="system"] .s-thread-msg-time,
+.s-thread-msg[data-class="status"] .s-thread-msg-time {
+  font-size: var(--text-2xs);
+}
+
+.s-thread-msg[data-class="system"] .s-thread-msg-body,
+.s-thread-msg[data-class="status"] .s-thread-msg-body {
+  font-size: var(--text-sm);
+  line-height: var(--leading-snug);
+  color: var(--muted);
+}
+
+/* ── Working indicator ── */
+
+.s-thread-msg-working-card {
+  border-color: color-mix(in srgb, var(--green) 12%, var(--border));
+  background: color-mix(in srgb, var(--green) 2%, var(--surface));
+}
+
+.s-thread-msg-working-body {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: var(--space-sm);
+  padding: 0;
+  border: none;
+  background: none;
+}
+
+.s-thread-msg-working-copy {
+  display: -webkit-box;
+  color: var(--ink);
+  font-size: var(--text-md);
+  line-height: var(--leading-snug);
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.s-thread-turn-snapshot {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-sm);
+  min-width: 0;
+}
+
+.s-thread-turn-snapshot-pulse {
+  position: relative;
+  width: 9px;
+  height: 9px;
+  flex: 0 0 auto;
+  margin-top: 16px;
+  border-radius: var(--radius-pill);
+  background: var(--green);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--green) 12%, transparent);
+}
+
+.s-thread-turn-snapshot-pulse::after {
+  content: "";
+  position: absolute;
+  inset: -5px;
+  border-radius: inherit;
+  border: 1px solid color-mix(in srgb, var(--green) 38%, transparent);
+  animation: s-thread-turn-pulse 1.8s ease-out infinite;
+}
+
+.s-thread-turn-snapshot-main {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  flex-direction: column;
+  gap: var(--space-3xs);
+}
+
+.s-thread-turn-snapshot-label {
+  color: var(--dim);
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  font-weight: 600;
+  letter-spacing: var(--tracking-md);
+  text-transform: uppercase;
+}
+
+.s-thread-turn-snapshot-stats {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0;
+  margin: var(--space-3xs) 0 0;
+  padding: var(--space-sm) 0 0;
+  border-top: 1px solid color-mix(in srgb, var(--green) 12%, transparent);
+}
+
+.s-thread-turn-snapshot-stat {
+  min-width: 0;
+  padding-right: var(--space-md);
+}
+
+.s-thread-turn-snapshot-stat + .s-thread-turn-snapshot-stat {
+  padding-left: var(--space-md);
+  border-left: 1px solid color-mix(in srgb, var(--border) 54%, transparent);
+}
+
+.s-thread-turn-snapshot-stat dt {
+  margin: 0 0 var(--space-3xs);
+  color: var(--dim);
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  font-weight: 600;
+  letter-spacing: var(--tracking-md);
+  text-transform: uppercase;
+}
+
+.s-thread-turn-snapshot-stat dd {
+  margin: 0;
+  color: var(--muted);
+  font-size: var(--text-sm);
+  font-weight: 600;
+  line-height: var(--leading-tight);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.s-thread-working-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-xs);
+  padding-top: var(--space-sm);
+  border-top: 1px solid color-mix(in srgb, var(--border) 46%, transparent);
+}
+
+.s-thread-working-actions--compact {
+  padding-top: var(--space-xs);
+}
+
+.s-thread-working-action {
+  min-height: 30px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-xs);
+  padding: 0 var(--space-md);
+  border: 1px solid color-mix(in srgb, var(--border) 78%, transparent);
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--surface) 84%, var(--bg));
+  color: var(--muted);
+  font: inherit;
+  font-size: var(--text-xs);
+  font-weight: 650;
+  cursor: pointer;
+  transition:
+    border-color 140ms ease-out,
+    background 140ms ease-out,
+    color 140ms ease-out;
+}
+
+.s-thread-working-action--primary {
+  border-color: color-mix(in srgb, var(--accent) 30%, var(--border));
+  background: color-mix(in srgb, var(--accent) 9%, var(--surface));
+  color: color-mix(in srgb, var(--accent) 72%, var(--ink));
+}
+
+.s-thread-working-action:hover {
+  border-color: color-mix(in srgb, var(--accent) 38%, var(--border));
+  background: color-mix(in srgb, var(--accent) 8%, var(--surface));
+  color: var(--ink);
+}
+
+.s-thread-working-action:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.s-thread-typing-indicator {
+  display: inline-flex;
+  gap: var(--space-3xs);
+  align-items: center;
+}
+
+.s-thread-typing-dot {
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: var(--green);
+  animation: s-thread-typing-bounce var(--motion-duration-typing) ease-in-out infinite;
+}
+
+.s-thread-typing-dot:nth-child(2) {
+  animation-delay: 0.15s;
+}
+
+.s-thread-typing-dot:nth-child(3) {
+  animation-delay: 0.3s;
+}
+
+@keyframes s-thread-typing-bounce {
+  0%, 60%, 100% { opacity: 0.3; transform: translateY(0); }
+  30% { opacity: 1; transform: translateY(-3px); }
+}
+
+@keyframes s-thread-turn-pulse {
+  0% {
+    opacity: 0.5;
+    transform: scale(0.72);
+  }
+  100% {
+    opacity: 0;
+    transform: scale(1.35);
+  }
+}
+
+/* ── Presence line ── */
+
+.s-thread-presence-line {
+  display: flex;
+  align-items: center;
+  gap: var(--space-md);
+  padding: var(--space-sm) var(--space-3xl);
+  border-top: 1px solid color-mix(in srgb, var(--border) 40%, transparent);
+  flex-shrink: 0;
+}
+
+.s-thread-presence-line-avatars {
+  display: flex;
+  align-items: center;
+}
+
+.s-thread-presence-line-avatars .s-ops-avatar {
+  --size: 20px;
+  margin-left: -4px;
+  border: 2px solid var(--bg);
+}
+
+.s-thread-presence-line-avatars .s-ops-avatar:first-child {
+  margin-left: 0;
+}
+
+.s-thread-presence-line-label {
+  min-width: 0;
+  flex: 0 1 auto;
+  font-size: var(--text-sm);
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.s-thread-presence-strip {
+  --presence-trail-start: 46%;
+  --presence-trail-duration: 2.4s;
+  flex: 1;
+  height: 2px;
+  border-radius: 1px;
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    transparent var(--presence-trail-start),
+    color-mix(in srgb, var(--green) 12%, transparent) calc(var(--presence-trail-start) + 4%),
+    color-mix(in srgb, var(--green) 44%, transparent) 53%,
+    var(--green) 58%,
+    color-mix(in srgb, var(--green) 72%, var(--ink)) 59%,
+    transparent 61%,
+    transparent 100%
+  );
+  background-size: 200% 100%;
+  animation: s-thread-thinking-strip var(--presence-trail-duration) ease-in-out infinite;
+}
+
+.s-thread-presence-strip--sustained {
+  --presence-trail-start: 32%;
+  --presence-trail-duration: 3.2s;
+}
+
+.s-thread-presence-strip--long {
+  --presence-trail-start: 14%;
+  --presence-trail-duration: 4.2s;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .s-thread-presence-strip {
+    background: color-mix(in srgb, var(--green) 58%, transparent);
+    background-size: auto;
+    animation: none;
+    opacity: 0.8;
+  }
+
+}
+
+/* ── Dispatch tiles ── */
+
+.s-thread-dispatch {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: var(--space-sm);
+  margin-top: var(--space-3xs);
+}
+
+.s-thread-dispatch-tile {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2xs);
+  padding: var(--space-md) var(--space-lg);
+  border-radius: var(--radius-xl);
+  border: 1px solid color-mix(in srgb, var(--border) 92%, var(--surface));
+  background: var(--bg);
+  cursor: pointer;
+  transition: border-color 0.12s ease, background 0.12s ease;
+}
+
+.s-thread-dispatch-tile:hover {
+  border-color: color-mix(in srgb, var(--accent) 18%, var(--border));
+  background: color-mix(in srgb, var(--accent) 4%, var(--surface));
+}
+
+.s-thread-dispatch-tile-id {
+  font-size: var(--text-md);
+  font-weight: 600;
+  color: var(--ink);
+  font-family: var(--font-mono);
+}
+
+.s-thread-dispatch-tile-state {
+  font-size: var(--text-xs);
+  color: var(--muted);
+}
+
+.s-thread-dispatch-tile-meta {
+  font-size: var(--text-xs);
+  color: var(--dim);
+}
+
+/* ── Composer ── */
+
+.s-thread-compose {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  padding: var(--space-md) var(--space-3xl) var(--space-2xl);
+  border-top: 1px solid color-mix(in srgb, var(--border) 40%, transparent);
+  background: transparent;
+  flex-shrink: 0;
+  margin-top: auto;
+}
+
+.s-thread-compose-shell {
+  position: relative;
+  box-sizing: border-box;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  border: 1px solid color-mix(in srgb, var(--border) 60%, var(--surface));
+  border-radius: var(--radius-xl);
+  background: var(--surface);
+  transition: border-color 0.15s ease;
+}
+
+.s-thread-compose-shell:focus-within {
+  border-color: color-mix(in srgb, var(--border) 100%, transparent);
+}
+
+.s-thread-compose-row {
+  display: flex;
+  align-items: flex-end;
+  gap: var(--space-sm);
+  min-width: 0;
+  padding: var(--space-xs) var(--space-sm) var(--space-xs) var(--space-xs);
+}
+
+.s-thread-compose-voice-status {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  padding: 0 var(--space-md) var(--space-sm);
+  font-size: var(--text-xs);
+  color: var(--dim);
+  line-height: var(--leading-snug);
+}
+
+.s-thread-compose-voice-status--recording {
+  color: var(--green);
+}
+
+.s-thread-compose-voice-status--processing {
+  color: var(--muted);
+}
+
+.s-thread-compose-voice-status--error {
+  color: var(--red);
+}
+
+.s-thread-compose-mode-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-lg);
+  padding: var(--space-md) var(--space-lg) 0;
+}
+
+.s-thread-compose-mode {
+  flex-shrink: 0;
+  display: flex;
+  gap: 0;
+  padding: var(--space-3xs);
+  border-radius: var(--radius-lg);
+  background: color-mix(in srgb, var(--bg) 82%, var(--surface));
+}
+
+.s-thread-compose-mode-btn {
+  padding: var(--space-2xs) var(--space-lg);
+  font-size: var(--text-sm);
+  font-weight: 500;
+  border: none;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s;
+}
+
+.s-thread-compose-mode-btn[aria-pressed="true"] {
+  background: var(--surface);
+  color: var(--ink);
+  font-weight: 600;
+}
+
+.s-thread-compose-mode-detail {
+  font-size: var(--text-xs);
+  color: var(--dim);
+  line-height: var(--leading-snug);
+}
+
+.s-thread-compose-input {
+  display: block;
+  flex: 1;
+  min-width: 0;
+  min-height: 34px;
+  max-height: 160px;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  padding: var(--space-sm) var(--space-2xs) var(--space-sm) var(--space-md);
+  font-size: var(--text-lg);
+  font-family: var(--font-sans);
+  line-height: var(--leading-normal);
+  color: var(--ink);
+  resize: none;
+  outline: none;
+  cursor: text;
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+.s-thread-compose-input::placeholder {
+  color: var(--dim);
+}
+
+.s-thread-compose-input:focus {
+  box-shadow: none;
+}
+
+.s-thread-compose-send {
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  border: none;
+  background: var(--ink);
+  color: var(--bg);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  flex-shrink: 0;
+  align-self: flex-end;
+  transition: opacity 0.12s ease, transform 0.12s ease;
+}
+
+.s-thread-compose-send:not(:disabled):hover {
+  transform: scale(1.05);
+}
+
+.s-thread-compose-send:disabled {
+  opacity: 0.25;
+  cursor: default;
+}
+
+.s-thread-compose-send--stop {
+  background: var(--red);
+}
+
+.s-thread-compose-suggest {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: calc(100% + 6px);
+  max-height: 260px;
+  overflow-y: auto;
+  padding: var(--space-2xs);
+  background: var(--surface);
+  border: 1px solid color-mix(in srgb, var(--border) 80%, transparent);
+  border-radius: var(--radius-xl);
+  box-shadow: 0 12px 32px color-mix(in srgb, var(--ink) 22%, transparent);
+  z-index: 20;
+}
+
+.s-thread-compose-suggest-label {
+  padding: var(--space-xs) var(--space-md) var(--space-2xs);
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  font-weight: 600;
+  letter-spacing: var(--tracking-lg);
+  text-transform: uppercase;
+  color: var(--dim);
+}
+
+.s-thread-compose-suggest-item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-md);
+  width: 100%;
+  padding: var(--space-xs) var(--space-md);
+  border: none;
+  border-radius: var(--radius-lg);
+  background: transparent;
+  color: var(--ink);
+  text-align: left;
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.s-thread-compose-suggest-item:hover,
+.s-thread-compose-suggest-item--active {
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+}
+
+.s-thread-compose-suggest-cmd {
+  font-family: var(--font-mono);
+  font-size: var(--text-md);
+  color: var(--ink);
+}
+
+.s-thread-compose-suggest-desc {
+  flex: 1;
+  min-width: 0;
+  font-size: var(--text-sm);
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.s-thread-compose-suggest-avatar {
+  flex-shrink: 0;
+}
+
+/* ── Presence sidebar (right) ── */
+
+.s-thread-sidebar {
+  width: 320px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  border-left: 1px solid var(--border);
+  background: var(--surface);
+  overflow-y: auto;
+}
+
+.s-thread-sidebar-section {
+  padding: var(--space-2xl);
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 60%, transparent);
+}
+
+.s-thread-sidebar-section:last-child {
+  border-bottom: none;
+}
+
+.s-thread-sidebar-label {
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  font-weight: 600;
+  letter-spacing: var(--tracking-lg);
+  text-transform: uppercase;
+  color: var(--dim);
+  margin-bottom: var(--space-lg);
+}
+
+.s-thread-sidebar-participant {
+  display: flex;
+  align-items: center;
+  gap: var(--space-md);
+  padding: var(--space-xs) 0;
+  width: 100%;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  border-radius: var(--radius-lg);
+}
+
+button.s-thread-sidebar-participant {
+  cursor: pointer;
+}
+
+button.s-thread-sidebar-participant:hover {
+  background: color-mix(in srgb, var(--ink) 5%, transparent);
+}
+
+button.s-thread-sidebar-participant:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent) 72%, transparent);
+  outline-offset: 2px;
+}
+
+.s-thread-sidebar-participant-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.s-thread-sidebar-participant-name {
+  display: block;
+  font-size: var(--text-md);
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.s-thread-sidebar-participant-handle {
+  display: block;
+  font-size: var(--text-xs);
+  color: var(--dim);
+  font-family: var(--font-mono);
+  margin-top: 1px;
+}
+
+.s-thread-sidebar-participant-detail {
+  font-size: var(--text-xs);
+  color: var(--dim);
+}
+
+.s-thread-sidebar-participant-activity {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2xs);
+  flex-shrink: 0;
+}
+
+.s-thread-sidebar-activity-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.s-thread-sidebar-activity-dot--pulse {
+  animation: s-thread-sidebar-pulse 1.5s ease-in-out infinite;
+}
+
+@keyframes s-thread-sidebar-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
+}
+
+.s-thread-sidebar-activity-label {
+  font-size: var(--text-xs);
+  color: var(--muted);
+  font-family: var(--font-mono);
+  letter-spacing: var(--tracking-xs);
+}
+
+/* ── Mini mesh SVG ── */
+
+.s-thread-mini-mesh {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-sm) 0;
+}
+
+.s-thread-mini-mesh svg {
+  width: 100%;
+  max-width: 260px;
+  height: auto;
+}
+
+.s-thread-mini-mesh-edge {
+  stroke: color-mix(in srgb, var(--border) 80%, transparent);
+  stroke-width: 1;
+  fill: none;
+}
+
+.s-thread-mini-mesh-node {
+  fill: var(--surface);
+  stroke: var(--border);
+  stroke-width: 1;
+}
+
+.s-thread-mini-mesh-node--center {
+  fill: color-mix(in srgb, var(--accent) 10%, var(--surface));
+  stroke: var(--accent);
+}
+
+.s-thread-mini-mesh-label {
+  font-family: var(--font-mono);
+  font-size: var(--text-3xs); /* below --text-2xs(9); left literal */
+  letter-spacing: var(--tracking-md);
+  text-transform: uppercase;
+  fill: var(--dim);
+  text-anchor: middle;
+  dominant-baseline: central;
+}
+
+.s-thread-mini-mesh-label--center {
+  fill: var(--accent);
+  font-weight: 600;
+}
+
+/* ── Empty / error states ── */
+
+.s-thread-empty {
+  align-self: center;
+  width: min(100%, 540px);
+  padding: var(--space-6xl) var(--space-4xl);
+  border: 1px dashed color-mix(in srgb, var(--border) 84%, var(--surface));
+  border-radius: var(--radius-2xl);
+  background: var(--surface);
+  text-align: center;
+}
+
+.s-thread-empty p:first-child {
+  font-size: var(--text-xl);
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.s-thread-empty p:last-child {
+  font-size: var(--text-md);
+  color: var(--dim);
+  margin-top: var(--space-2xs);
+}
+
+.s-thread-empty-glyph {
+  font-size: var(--text-6xl); /* large display glyph; left literal */
+  font-weight: 100;
+  color: color-mix(in srgb, var(--border) 90%, var(--muted));
+  line-height: var(--leading-none);
+  margin-bottom: var(--space-lg);
+  user-select: none;
+}
+
+.s-thread-empty-chips {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: var(--space-xs);
+  margin-top: var(--space-lg);
+}
+
+.s-thread-empty-chip {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--dim);
+  background: color-mix(in srgb, var(--border) 30%, transparent);
+  border: 1px solid color-mix(in srgb, var(--border) 50%, transparent);
+  border-radius: var(--radius-sm);
+  padding: var(--space-3xs) var(--space-sm);
+  letter-spacing: var(--tracking-sm);
+}
+
+.s-thread-motion-panel {
+  align-self: center;
+  width: min(100%, 640px);
+  position: relative;
+  display: grid;
+  gap: var(--space-lg);
+  padding: var(--space-3xl);
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--green) 24%, var(--border));
+  border-radius: var(--radius-lg);
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--green) 8%, transparent), transparent 58%),
+    color-mix(in srgb, var(--surface) 92%, var(--bg));
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, white 5%, transparent),
+    0 16px 44px color-mix(in srgb, black 18%, transparent);
+}
+
+.s-thread-motion-panel::before {
+  content: "";
+  position: absolute;
+  inset: 0 0 auto;
+  height: 2px;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    color-mix(in srgb, var(--green) 80%, white),
+    transparent
+  );
+  background-size: 180% 100%;
+  animation: s-thread-motion-scan 1.7s ease-in-out infinite;
+}
+
+.s-thread-motion-panel--pending {
+  border-color: color-mix(in srgb, var(--accent) 26%, var(--border));
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--accent) 8%, transparent), transparent 58%),
+    color-mix(in srgb, var(--surface) 92%, var(--bg));
+}
+
+.s-thread-motion-panel--pending::before {
+  background: linear-gradient(
+    90deg,
+    transparent,
+    color-mix(in srgb, var(--accent) 82%, white),
+    transparent
+  );
+}
+
+.s-thread-motion-panel--quiet {
+  border-color: color-mix(in srgb, var(--amber) 34%, var(--border));
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--amber) 8%, transparent), transparent 58%),
+    color-mix(in srgb, var(--surface) 92%, var(--bg));
+}
+
+.s-thread-motion-panel--quiet::before {
+  background: linear-gradient(
+    90deg,
+    transparent,
+    color-mix(in srgb, var(--amber) 82%, white),
+    transparent
+  );
+}
+
+.s-thread-motion-head {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 32px minmax(0, 1fr);
+  gap: var(--space-md);
+  align-items: start;
+}
+
+.s-thread-motion-beacon {
+  position: relative;
+  width: 28px;
+  height: 28px;
+  display: grid;
+  place-items: center;
+  color: var(--green);
+}
+
+.s-thread-motion-panel--pending .s-thread-motion-beacon {
+  color: var(--accent);
+}
+
+.s-thread-motion-panel--quiet .s-thread-motion-beacon {
+  color: var(--amber);
+}
+
+.s-thread-motion-beacon span {
+  width: 9px;
+  height: 9px;
+  border-radius: var(--radius-pill);
+  background: currentColor;
+  box-shadow: 0 0 0 5px color-mix(in srgb, currentColor 12%, transparent);
+}
+
+.s-thread-motion-beacon::after {
+  content: "";
+  position: absolute;
+  inset: 4px;
+  border: 1px solid currentColor;
+  border-radius: var(--radius-pill);
+  opacity: 0.45;
+  animation: s-thread-motion-ping 1.8s ease-out infinite;
+}
+
+.s-thread-motion-title-block {
+  min-width: 0;
+}
+
+.s-thread-motion-kicker {
+  margin-bottom: var(--space-2xs);
+  color: var(--green);
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  font-weight: 700;
+  letter-spacing: var(--tracking-xl);
+  text-transform: uppercase;
+}
+
+.s-thread-motion-panel--pending .s-thread-motion-kicker {
+  color: var(--accent);
+}
+
+.s-thread-motion-panel--quiet .s-thread-motion-kicker {
+  color: var(--amber);
+}
+
+.s-thread-motion-title-block h2 {
+  margin: 0;
+  color: var(--ink);
+  font-size: var(--text-3xl);
+  font-weight: 700;
+  letter-spacing: 0;
+  line-height: var(--leading-tight);
+}
+
+.s-thread-motion-title-block p {
+  display: -webkit-box;
+  margin: var(--space-2xs) 0 0;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: var(--text-md);
+  line-height: var(--leading-snug);
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.s-thread-motion-meter {
+  height: 52px;
+  display: grid;
+  grid-template-columns: repeat(12, minmax(0, 1fr));
+  align-items: end;
+  gap: var(--space-2xs);
+  padding: var(--space-sm);
+  border: 1px solid color-mix(in srgb, var(--border) 44%, transparent);
+  border-radius: var(--radius-md);
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--ink) 4%, transparent), transparent),
+    color-mix(in srgb, var(--bg) 64%, transparent);
+}
+
+.s-thread-motion-meter span {
+  height: var(--bar-height);
+  min-height: 8px;
+  border-radius: var(--radius-pill);
+  background: color-mix(in srgb, var(--green) 76%, var(--ink));
+  opacity: 0.54;
+  animation: s-thread-motion-bar 1.18s ease-in-out infinite;
+  animation-delay: var(--bar-delay);
+}
+
+.s-thread-motion-panel--pending .s-thread-motion-meter span {
+  background: color-mix(in srgb, var(--accent) 82%, var(--ink));
+}
+
+.s-thread-motion-panel--quiet .s-thread-motion-meter span {
+  background: color-mix(in srgb, var(--amber) 82%, var(--ink));
+}
+
+.s-thread-motion-stats {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0;
+  margin: 0;
+  padding: var(--space-sm) 0 0;
+  border-top: 1px solid color-mix(in srgb, var(--border) 42%, transparent);
+}
+
+.s-thread-motion-stats div {
+  min-width: 0;
+  padding-right: var(--space-md);
+}
+
+.s-thread-motion-stats div + div {
+  padding-left: var(--space-md);
+  border-left: 1px solid color-mix(in srgb, var(--border) 46%, transparent);
+}
+
+.s-thread-motion-stats dt,
+.s-thread-motion-latest span,
+.s-thread-motion-event-kind,
+.s-thread-motion-waiting span {
+  color: var(--dim);
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  font-weight: 700;
+  letter-spacing: var(--tracking-md);
+  text-transform: uppercase;
+}
+
+.s-thread-motion-stats dd {
+  margin: var(--space-2xs) 0 0;
+  overflow: hidden;
+  color: var(--ink);
+  font-size: var(--text-sm);
+  font-weight: 650;
+  line-height: var(--leading-tight);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.s-thread-motion-latest {
+  min-width: 0;
+  display: grid;
+  gap: var(--space-2xs);
+  padding: var(--space-sm) var(--space-md);
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--ink) 4%, transparent);
+}
+
+.s-thread-motion-latest strong {
+  display: -webkit-box;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--ink);
+  font-size: var(--text-md);
+  font-weight: 550;
+  line-height: var(--leading-snug);
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.s-thread-motion-events {
+  display: grid;
+  gap: var(--space-2xs);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.s-thread-motion-events li {
+  display: grid;
+  grid-template-columns: 56px minmax(0, 1fr) auto;
+  align-items: baseline;
+  gap: var(--space-xs);
+  min-height: 24px;
+  padding: var(--space-2xs) 0;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 34%, transparent);
+  animation: s-thread-motion-event-enter 560ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.s-thread-motion-event-summary {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: var(--text-sm);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.s-thread-motion-events time {
+  color: var(--dim);
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  white-space: nowrap;
+}
+
+.s-thread-motion-events--compact {
+  gap: 0;
+  padding-top: var(--space-xs);
+  border-top: 1px solid color-mix(in srgb, var(--border) 40%, transparent);
+}
+
+.s-thread-motion-events--compact li {
+  grid-template-columns: 52px minmax(0, 1fr) auto;
+  min-height: 22px;
+  padding: var(--space-3xs) 0;
+}
+
+.s-thread-motion-waiting {
+  min-width: 0;
+  display: grid;
+  gap: var(--space-2xs);
+  padding: var(--space-sm) var(--space-md);
+  border: 1px dashed color-mix(in srgb, var(--border) 58%, transparent);
+  border-radius: var(--radius-md);
+  color: var(--muted);
+}
+
+.s-thread-motion-waiting strong {
+  color: var(--muted);
+  font-size: var(--text-sm);
+  font-weight: 550;
+}
+
+/* ── Live step ledger (working turn) ──
+   What the agent is doing right now, oldest first, newest against the pulse.
+   Kinds are told apart by mark geometry, not colour; the accent is rationed to
+   the newest row so the eye lands on the live edge. */
+
+.s-thread-steps {
+  min-width: 0;
+  display: grid;
+  gap: var(--space-3xs);
+}
+
+.s-thread-steps ol {
+  display: grid;
+  gap: 0;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.s-thread-steps li {
+  display: grid;
+  grid-template-columns: auto 54px minmax(0, 1fr) auto;
+  align-items: baseline;
+  gap: var(--space-xs);
+  min-height: 22px;
+  padding: var(--space-3xs) 0;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 30%, transparent);
+  animation: s-thread-motion-event-enter 420ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.s-thread-steps li:last-child {
+  border-bottom: none;
+}
+
+.s-thread-step-mark {
+  width: 6px;
+  height: 6px;
+  align-self: center;
+  border: 1px solid currentColor;
+  border-radius: 1px;
+  color: var(--dim);
+}
+
+.s-thread-steps li[data-kind="tool"] .s-thread-step-mark {
+  background: currentColor;
+}
+
+.s-thread-steps li[data-kind="think"] .s-thread-step-mark {
+  border-radius: 50%;
+}
+
+.s-thread-steps li[data-kind="message"] .s-thread-step-mark,
+.s-thread-steps li[data-kind="ask"] .s-thread-step-mark {
+  background: currentColor;
+  border-radius: 50%;
+}
+
+.s-thread-steps li:last-child .s-thread-step-mark {
+  color: var(--accent);
+}
+
+.s-thread-step-kind {
+  color: var(--dim);
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  letter-spacing: var(--tracking-sm);
+  text-transform: uppercase;
+}
+
+.s-thread-step-body {
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2xs);
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.s-thread-step-text,
+.s-thread-step-arg {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: var(--text-sm);
+  text-overflow: ellipsis;
+}
+
+.s-thread-steps li[data-kind="think"] .s-thread-step-text {
+  color: var(--dim);
+  font-style: italic;
+}
+
+.s-thread-step-tool {
+  flex: none;
+  color: var(--fg);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+}
+
+.s-thread-step-arg {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+}
+
+.s-thread-step-repeat,
+.s-thread-step-outcome {
+  flex: none;
+  color: var(--dim);
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+}
+
+.s-thread-steps time {
+  color: var(--dim);
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  white-space: nowrap;
+}
+
+.s-thread-steps-elided {
+  color: var(--dim);
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  letter-spacing: var(--tracking-sm);
+}
+
+.s-thread-steps--compact {
+  padding-top: var(--space-xs);
+  border-top: 1px solid color-mix(in srgb, var(--border) 40%, transparent);
+}
+
+/* Pre-first-trace stage: the flight state we can actually prove, not a spinner. */
+.s-thread-steps-phase {
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-xs);
+  padding-top: var(--space-xs);
+  border-top: 1px solid color-mix(in srgb, var(--border) 40%, transparent);
+}
+
+.s-thread-steps-phase span {
+  flex: none;
+  color: var(--dim);
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  letter-spacing: var(--tracking-sm);
+  text-transform: uppercase;
+}
+
+.s-thread-steps-phase strong {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: var(--text-sm);
+  font-weight: 450;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.s-thread-motion-panel .s-thread-steps--compact,
+.s-thread-motion-panel .s-thread-steps-phase {
+  padding-top: 0;
+  border-top: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .s-thread-steps li {
+    animation: none;
+  }
+}
+
+.s-thread-motion-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-xs);
+}
+
+.s-thread-motion-chips span {
+  min-width: 0;
+  max-width: 220px;
+  overflow: hidden;
+  padding: var(--space-3xs) var(--space-sm);
+  border: 1px solid color-mix(in srgb, var(--border) 52%, transparent);
+  border-radius: var(--radius-sm);
+  color: var(--dim);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  letter-spacing: var(--tracking-sm);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@keyframes s-thread-motion-scan {
+  0% { background-position: 180% 0; }
+  100% { background-position: -180% 0; }
+}
+
+@keyframes s-thread-motion-ping {
+  0% {
+    opacity: 0.5;
+    transform: scale(0.72);
+  }
+
+  100% {
+    opacity: 0;
+    transform: scale(1.45);
+  }
+}
+
+@keyframes s-thread-motion-bar {
+  0%, 100% {
+    opacity: 0.42;
+    transform: scaleY(0.72);
+  }
+
+  48% {
+    opacity: 1;
+    transform: scaleY(1);
+  }
+}
+
+@keyframes s-thread-motion-event-enter {
+  0% {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+
+  100% {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .s-thread-motion-panel::before,
+  .s-thread-motion-beacon::after,
+  .s-thread-motion-meter span,
+  .s-thread-motion-events li {
+    animation: none;
+  }
+}
+
+.s-thread-error {
+  margin: var(--space-xl) var(--space-3xl) 0;
+  padding: var(--space-md) var(--space-xl);
+  border-radius: var(--radius-lg);
+  background: color-mix(in srgb, var(--red) 8%, var(--surface));
+  border: 1px solid color-mix(in srgb, var(--red) 20%, var(--border));
+  font-size: var(--text-md);
+  color: var(--red);
+}
+
+/* ── Status bar ── */
+
+.s-thread-status {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  margin: var(--space-xs) var(--space-3xl) 0;
+  padding: var(--space-xs) var(--space-lg);
+  border: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
+  border-radius: var(--radius-lg);
+  background: color-mix(in srgb, var(--bg) 80%, transparent);
+}
+
+.s-thread-status--pending {
+  border-color: color-mix(in srgb, var(--accent) 18%, var(--border));
+}
+
+.s-thread-status--working {
+  border-color: color-mix(in srgb, var(--green) 20%, var(--border));
+}
+
+.s-thread-status-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  animation: s-thread-sidebar-pulse 1.5s ease-in-out infinite;
+}
+
+.s-thread-status-copy {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-sm);
+  flex-wrap: wrap;
+}
+
+.s-thread-status-label {
+  font-size: var(--text-xs);
+  font-weight: 600;
+  letter-spacing: var(--tracking-md);
+  text-transform: uppercase;
+  color: var(--dim);
+  font-family: var(--font-mono);
+}
+
+.s-thread-status-detail {
+  font-size: var(--text-sm);
+  color: var(--muted);
+}
+
+/* ── KBD ── */
+
+.s-thread-kbd {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 16px;
+  padding: 0 var(--space-2xs);
+  border-radius: var(--radius-sm);
+  border: 1px solid color-mix(in srgb, var(--border) 80%, transparent);
+  background: color-mix(in srgb, var(--ink) 4%, transparent);
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  font-weight: 500;
+  color: var(--dim);
+  line-height: var(--leading-none);
+}
+
+/* ── Responsive ── */
+
+@media (max-width: 1200px) {
+  .s-thread-sidebar {
+    display: none;
+  }
+}
+
+@media (max-width: 900px) {
+  .s-thread-rail {
+    display: none;
+  }
+}
+
+@media (max-width: 720px) {
+  .s-thread-center-header {
+    padding: var(--space-lg) var(--space-2xl);
+  }
+
+  .s-thread-feed {
+    padding-inline: var(--space-2xl);
+  }
+
+  .s-thread-compose {
+    padding-inline: var(--space-2xl);
+  }
+
+  .s-thread-pinned-ask {
+    margin-inline: var(--space-2xl);
+  }
+
+  .s-thread-status {
+    margin-inline: var(--space-2xl);
+  }
+
+}
+
+/* ── Embedded mode (inside agent profile tabs) ── */
+
+.s-thread-embed {
+  display: flex;
+  width: 100vw;
+  height: 100vh;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.s-thread-layout--embedded {
+  border-top: none;
+}
+
+.s-thread-layout--embedded .s-thread-center {
+  padding: 0;
+}
+
+.s-thread-layout--embedded .s-thread-compose {
+  padding: var(--space-sm) var(--space-2xl) var(--space-lg);
+}
+
+.s-thread-layout--embedded .s-thread-compose-shell {
+  border-radius: var(--radius-xl);
+}
+
+.s-thread-layout--embedded .s-thread-compose-row {
+  padding: var(--space-2xs) var(--space-xs) var(--space-2xs) var(--space-2xs);
+  gap: var(--space-xs);
+}
+
+.s-thread-layout--embedded .s-thread-compose-input {
+  min-height: 28px;
+  padding: var(--space-xs) var(--space-2xs) var(--space-xs) var(--space-sm);
+  font-size: var(--text-md);
+}
+
+.s-thread-layout--embedded .s-thread-compose-send {
+  width: 28px;
+  height: 28px;
+}
+
+/* ── Conversations editorial jump board (no conversation selected) ── */
+
+.s-conv-board {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--space-3xl) clamp(var(--space-3xl), 3vw, var(--space-6xl)) var(--space-6xl);
+  background: var(--bg);
+  font-family: var(--font-mono);
+}
+
+.s-conv-board-shortcuts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-sm) var(--space-3xl);
+  padding: var(--space-2xs) 0 var(--space-sm);
+}
+
+.s-conv-board-shortcut {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  cursor: pointer;
+}
+
+.s-conv-board-shortcut:hover,
+.s-conv-board-shortcut:focus-visible {
+  color: var(--accent);
+  outline: none;
+}
+
+.s-conv-board-section {
+  min-width: 0;
+  width: min(100%, 920px);
+}
+
+.s-conv-board-section-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-md);
+  padding: var(--space-4xl) 0 var(--space-sm);
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  font-weight: 700;
+  letter-spacing: var(--tracking-xl);
+  text-transform: uppercase;
+  color: var(--dim);
+}
+
+.s-conv-board-count {
+  color: color-mix(in srgb, var(--dim) 86%, transparent);
+  font-variant-numeric: tabular-nums;
+}
+
+.s-conv-board-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-2xl);
+  width: 100%;
+  padding: var(--space-md) 0;
+  border: 0;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 42%, transparent);
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.s-conv-board-row:hover .s-conv-board-row-title,
+.s-conv-board-row:focus-visible .s-conv-board-row-title {
+  color: var(--accent);
+}
+
+.s-conv-board-row:focus-visible {
+  outline: none;
+}
+
+.s-conv-board-row:hover .s-conv-board-arrow,
+.s-conv-board-row:focus-visible .s-conv-board-arrow {
+  color: var(--accent);
+}
+
+.s-conv-board-row-main {
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-md);
+  overflow: hidden;
+}
+
+.s-conv-board-row-title {
+  flex: none;
+  max-width: 48%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--ink);
+  font-size: var(--text-md);
+  font-weight: 550;
+  transition: color 120ms ease;
+}
+
+.s-conv-board-preview {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--dim);
+  font-size: var(--text-xs);
+  font-weight: 400;
+}
+
+.s-conv-board-meta {
+  flex: none;
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-md);
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  font-variant-numeric: tabular-nums;
+  color: var(--dim);
+}
+
+.s-conv-board-new {
+  font-style: normal;
+  font-weight: 650;
+  color: var(--accent);
+}
+
+.s-conv-board-arrow {
+  color: var(--dim);
+  transition: color 120ms ease;
+}
+
+.s-conv-board-note {
+  margin: var(--space-4xl) 0 0;
+  max-width: 920px;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  font-style: italic;
+  color: var(--dim);
+}
+
+/* ── Conversations zero state (no conversation selected) ── */
+
+.s-conv-empty {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-5xl);
+  background: var(--bg);
+}
+
+.s-conv-empty-inner {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  width: min(100%, 420px);
+}
+
+.s-conv-empty-mesh {
+  width: 72px;
+  height: 72px;
+  margin-bottom: var(--space-4xl);
+  color: var(--border);
+}
+
+.s-conv-empty-mesh-node {
+  fill: currentColor;
+}
+
+.s-conv-empty-mesh-node--accent {
+  fill: var(--accent);
+}
+
+.s-conv-empty--offline .s-conv-empty-mesh-node--accent,
+.s-conv-empty--offline .s-conv-empty-ambient-dot {
+  fill: var(--red);
+  background: var(--red);
+}
+
+.s-conv-empty-mesh-link {
+  stroke: currentColor;
+  stroke-width: 1;
+  opacity: 0.7;
+}
+
+.s-conv-empty-eyebrow {
+  font-family: var(--font-mono);
+  text-transform: uppercase;
+  font-size: var(--text-2xs);
+  letter-spacing: var(--tracking-xl);
+  color: color-mix(in srgb, var(--accent) 70%, var(--muted));
+  margin-bottom: var(--space-md);
+}
+
+.s-conv-empty-title {
+  font-size: var(--text-2xl);
+  font-weight: 600;
+  color: var(--muted);
+  line-height: var(--leading-tight);
+  margin: 0;
+}
+
+.s-conv-empty-detail {
+  font-size: var(--text-md);
+  line-height: var(--leading-normal);
+  color: var(--dim);
+  margin: var(--space-sm) 0 0;
+}
+
+.s-conv-empty-hints {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2xl);
+  margin-top: var(--space-5xl);
+}
+
+.s-conv-empty-action {
+  min-height: 30px;
+  margin-top: var(--space-5xl);
+  padding: 0 var(--space-lg);
+  border: 1px solid color-mix(in srgb, var(--red) 34%, var(--border));
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--red) 8%, transparent);
+  color: color-mix(in srgb, var(--red) 86%, var(--ink));
+  cursor: pointer;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  letter-spacing: var(--tracking-sm);
+}
+
+.s-conv-empty-action:hover {
+  background: color-mix(in srgb, var(--red) 14%, transparent);
+  color: var(--ink);
+}
+
+.s-conv-empty-new {
+  align-self: center;
+  margin-top: var(--space-3xl);
+}
+
+.s-conv-empty-hint {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-sm);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  letter-spacing: var(--tracking-sm);
+  color: var(--dim);
+}
+
+.s-conv-empty-kbd {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 20px;
+  height: 18px;
+  padding: 0 var(--space-2xs);
+  border-radius: var(--radius-sm);
+  border: 1px solid color-mix(in srgb, var(--border) 80%, transparent);
+  background: color-mix(in srgb, var(--ink) 4%, transparent);
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  font-weight: 500;
+  color: var(--muted);
+  line-height: var(--leading-none);
+}
+
+.s-conv-empty-ambient {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-sm);
+  margin-top: var(--space-5xl);
+  font-family: var(--font-mono);
+  text-transform: uppercase;
+  font-size: var(--text-2xs);
+  letter-spacing: var(--tracking-lg);
+  color: var(--dim);
+}
+
+.s-conv-empty-ambient-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--accent);
+  flex-shrink: 0;
+}
+
+/* ── Arrival ──────────────────────────────────────────────────────────────
+   A landed turn used to simply appear; the only motion in the thread was the
+   permalink flash. Kept quiet on purpose — opacity plus a 4px rise, both
+   compositor-only, so a busy channel never feels like it is twitching. The
+   first paint staggers its last few rows (delay set inline, capped in the
+   component) so the thread assembles instead of blinking in. */
+
+@keyframes s-thread-msg-enter {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.s-thread-msg--enter {
+  animation: s-thread-msg-enter 0.22s cubic-bezier(0.2, 0.7, 0.3, 1) backwards;
+  will-change: opacity, transform;
+}
+
+/* ── Loading ──────────────────────────────────────────────────────────────
+   Shown before the transcript lands. An empty feed claims "no messages",
+   which is a different statement from "not yet" — and the difference is most
+   visible behind a native web view, where the host is booting too. Ghost
+   turns in the shape of the real ones, so the switch reads as the thread
+   filling in rather than a bounce through zero. */
+
+.s-thread-skeleton {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2xl);
+  padding: var(--space-2xl) 0;
+  max-width: min(100%, 760px);
+}
+
+.s-thread-skeleton-intro {
+  display: flex;
+  align-items: center;
+  gap: var(--space-md);
+  min-height: 32px;
+}
+
+.s-thread-loader-mark {
+  position: relative;
+  width: 28px;
+  height: 28px;
+  flex: none;
+}
+
+.s-thread-loader-orbit {
+  position: absolute;
+  inset: 2px;
+  border: 1px solid color-mix(in srgb, var(--accent) 28%, transparent);
+  border-radius: 50%;
+}
+
+.s-thread-loader-orbit > span {
+  position: absolute;
+  top: -2px;
+  left: 50%;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 8px color-mix(in srgb, var(--accent) 58%, transparent);
+  transform: translateX(-50%);
+}
+
+.s-thread-loader-core {
+  position: absolute;
+  inset: 9px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 10px color-mix(in srgb, var(--accent) 42%, transparent);
+}
+
+.s-thread-skeleton-copy {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  letter-spacing: var(--tracking-md);
+  text-transform: uppercase;
+  color: var(--dim);
+}
+
+.s-thread-skeleton-copy strong {
+  color: var(--muted);
+  font-size: var(--text-xs);
+  font-weight: 600;
+}
+
+.s-thread-skeleton-copy > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.s-thread-skeleton-turns {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3xl);
+}
+
+.s-thread-skeleton-turn {
+  display: flex;
+  gap: var(--space-lg);
+  align-items: flex-start;
+}
+
+.s-thread-skeleton-lines {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+  flex: 1;
+  min-width: 0;
+}
+
+.s-thread-skeleton-avatar,
+.s-thread-skeleton-line {
+  /* One sweep travels across the whole group rather than each bar running its
+     own loop, which reads as a shimmer instead of a flicker. */
+  background:
+    linear-gradient(
+      90deg,
+      color-mix(in srgb, var(--ink) 5%, transparent) 0%,
+      color-mix(in srgb, var(--ink) 9%, transparent) 40%,
+      color-mix(in srgb, var(--ink) 5%, transparent) 80%
+    );
+  background-size: 280% 100%;
+  border-radius: var(--radius-sm);
+  animation: s-thread-skeleton-sweep 1.6s ease-in-out infinite;
+}
+
+.s-thread-skeleton-avatar {
+  width: 24px;
+  height: 24px;
+  flex: none;
+  border-radius: var(--radius-md);
+}
+
+.s-thread-skeleton-line {
+  height: 9px;
+}
+
+.s-thread-skeleton-line--head {
+  width: 30%;
+}
+
+.s-thread-skeleton-line--short {
+  width: 62%;
+}
+
+.s-thread-skeleton-turn:nth-child(3) .s-thread-skeleton-line {
+  animation-delay: 0.12s;
+}
+
+.s-thread-skeleton-turn:nth-child(4) .s-thread-skeleton-line {
+  animation-delay: 0.24s;
+}
+
+@keyframes s-thread-skeleton-sweep {
+  from {
+    background-position: 140% 0;
+  }
+  to {
+    background-position: -40% 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .s-thread-msg--enter {
+    animation: none;
+  }
+
+  .s-thread-skeleton-avatar,
+  .s-thread-skeleton-line,
+  .s-thread-history-spinner {
+    animation: none;
+  }
+}
+
+/* ══ Presentations ═════════════════════════════════════════════════════════
+   Three ways to read the same thread, ported from the studio study at
+   /studies/message-panel-readability. The shipping look ("standard") is the
+   bordered card at ~122 chars per line; each treatment below trades that for
+   something specific, and says which trade it is making.
+
+   All three drop the card chrome and the right-aligned operator turn: a log,
+   a margin and a document each read down one column, and a bubble that jumps
+   to the other side breaks the column they depend on.                      */
+
+.s-thread-layout[data-thread-treatment] .s-thread-feed-block,
+.s-thread-layout[data-thread-treatment] .s-thread-feed-block--you,
+.s-thread-layout[data-thread-treatment] .s-thread-feed-block--full-width .s-thread-msg {
+  max-width: 100%;
+  align-self: stretch;
+  align-items: stretch;
+}
+
+.s-thread-layout[data-thread-treatment] .s-thread-msg-card,
+.s-thread-layout[data-thread-treatment] .s-thread-msg--you .s-thread-msg-card,
+.s-thread-layout[data-thread-treatment] .s-thread-msg--tool .s-thread-msg-card,
+.s-thread-layout[data-thread-treatment] .s-thread-msg[data-class="status"] .s-thread-msg-card {
+  border: none;
+  border-radius: 0;
+  background: none;
+}
+
+/* ── Familiar ────────────────────────────────────────────────────────────
+   Native Scout's default: the same spatial grammar users already know from
+   current AI chat apps. The thread holds a centered reading lane, assistant
+   prose stays flat, and the operator's prompt becomes a compact bubble on the
+   right. Scout-specific tool/status cards keep their honest structure.       */
+
+.s-thread-layout[data-thread-treatment="familiar"] .s-thread-feed {
+  gap: var(--space-2xl);
+  padding: var(--space-3xl) var(--space-2xl) var(--space-2xl);
+  align-items: center;
+}
+
+.s-thread-layout[data-thread-treatment="familiar"] .s-thread-feed-block,
+.s-thread-layout[data-thread-treatment="familiar"] .s-thread-feed-block--full-width {
+  width: min(100%, 720px);
+  max-width: 720px;
+  margin-inline: auto;
+  align-self: center;
+}
+
+.s-thread-layout[data-thread-treatment="familiar"] .s-thread-msg {
+  width: 100%;
+  max-width: 100%;
+}
+
+.s-thread-layout[data-thread-treatment="familiar"] .s-thread-msg-card {
+  padding: var(--space-sm) 0;
+}
+
+.s-thread-layout[data-thread-treatment="familiar"] .s-thread-feed-block--you {
+  align-items: flex-end;
+}
+
+.s-thread-layout[data-thread-treatment="familiar"] .s-thread-feed-block--you .s-thread-msg {
+  width: auto;
+  max-width: min(72%, 520px);
+  align-self: flex-end;
+}
+
+.s-thread-layout[data-thread-treatment="familiar"] .s-thread-msg--you .s-thread-msg-card {
+  padding: var(--space-md) var(--space-xl);
+  border: 1px solid color-mix(in srgb, var(--accent) 20%, var(--border));
+  border-radius: var(--radius-2xl);
+  background: color-mix(in srgb, var(--accent) 8%, var(--surface));
+}
+
+.s-thread-layout[data-thread-treatment="familiar"] .s-thread-msg--you .s-thread-msg-meta {
+  justify-content: flex-end;
+}
+
+.s-thread-layout[data-thread-treatment="familiar"] .s-thread-msg--you .s-thread-msg-avatar,
+.s-thread-layout[data-thread-treatment="familiar"] .s-thread-msg--you .s-thread-msg-avatar--nav,
+.s-thread-layout[data-thread-treatment="familiar"] .s-thread-msg--you .s-thread-msg-actor,
+.s-thread-layout[data-thread-treatment="familiar"] .s-thread-msg--you .s-thread-msg-handle,
+.s-thread-layout[data-thread-treatment="familiar"] .s-thread-msg--you .s-thread-msg-kind {
+  display: none;
+}
+
+.s-thread-layout[data-thread-treatment="familiar"] .s-thread-msg--tool .s-thread-msg-card,
+.s-thread-layout[data-thread-treatment="familiar"] .s-thread-msg[data-class="system"] .s-thread-msg-card,
+.s-thread-layout[data-thread-treatment="familiar"] .s-thread-msg[data-class="status"] .s-thread-msg-card {
+  padding: var(--space-md) var(--space-xl);
+  border: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
+  border-radius: var(--radius-xl);
+  background: color-mix(in srgb, var(--surface) 72%, var(--bg));
+}
+
+/* ── Ledger ──────────────────────────────────────────────────────────────
+   A log file. Time, author and body on one baseline, one hairline row per
+   turn. Measure is deliberately sacrificed for how much thread fits on
+   screen — for fast, tool-heavy conversations you monitor rather than read
+   through.                                                                */
+
+.s-thread-layout[data-thread-treatment="ledger"] .s-thread-feed {
+  gap: 0;
+  padding: var(--space-sm) 0 var(--space-xl);
+}
+
+.s-thread-layout[data-thread-treatment="ledger"] .s-thread-msg-card {
+  position: relative;
+  padding: 5px calc(var(--space-xl) + 40px) 5px var(--space-xl);
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 40%, transparent);
+}
+
+.s-thread-layout[data-thread-treatment="ledger"] .s-thread-msg-card:hover {
+  background: color-mix(in srgb, var(--accent) 5%, transparent);
+}
+
+.s-thread-layout[data-thread-treatment="ledger"] .s-thread-msg-card-content {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  column-gap: var(--space-sm);
+  row-gap: var(--space-sm);
+  align-items: baseline;
+}
+
+/* Context, attachments and tool output stay on the prose edge. Keeping them
+   in the second grid column prevents either their padding or their intrinsic
+   measure from changing the time / author / body alignment. */
+.s-thread-layout[data-thread-treatment="ledger"] .s-thread-msg-card-content > *:not(.s-thread-msg-header):not(.s-thread-msg-actions) {
+  grid-column: 2;
+  min-width: 0;
+}
+
+/* The cap moves inward so the embed keeps its own measure on its own line. */
+.s-thread-layout[data-thread-treatment="ledger"] .s-message-embeds > * {
+  max-width: min(460px, 100%);
+}
+
+/* Hover actions are contextual controls, not ledger columns. Reserve their
+   width at the row edge and keep them out of the metadata measurement. */
+.s-thread-layout[data-thread-treatment="ledger"] .s-thread-msg-actions {
+  position: absolute;
+  inset-block-start: 5px;
+  inset-inline-end: var(--space-xl);
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  pointer-events: none;
+}
+
+.s-thread-layout[data-thread-treatment="ledger"] .s-thread-msg-card:hover .s-thread-msg-actions,
+.s-thread-layout[data-thread-treatment="ledger"] .s-thread-msg-actions:focus-within {
+  pointer-events: auto;
+}
+
+.s-thread-layout[data-thread-treatment="ledger"] .s-thread-msg-header {
+  grid-column: 1;
+  grid-row: 1;
+  align-items: baseline;
+  gap: var(--space-sm);
+}
+
+.s-thread-layout[data-thread-treatment="ledger"] .s-thread-msg-meta {
+  flex: none;
+  flex-wrap: nowrap;
+  align-items: baseline;
+  gap: var(--space-sm);
+}
+
+.s-thread-layout[data-thread-treatment="ledger"] .s-thread-msg-avatar,
+.s-thread-layout[data-thread-treatment="ledger"] .s-thread-msg-avatar--nav,
+.s-thread-layout[data-thread-treatment="ledger"] .s-thread-msg-handle {
+  display: none;
+}
+
+/* Clock first, in a fixed column, so the rows scan as a log. */
+.s-thread-layout[data-thread-treatment="ledger"] .s-thread-msg-time {
+  order: -1;
+  flex: none;
+  width: 4.5ch;
+  font-size: var(--text-2xs);
+  color: var(--dim);
+}
+
+.s-thread-layout[data-thread-treatment="ledger"] .s-thread-msg-actor {
+  width: 17ch;
+  flex: none;
+  font-size: var(--text-xs);
+  font-weight: 500;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.s-thread-layout[data-thread-treatment="ledger"] .s-thread-msg-body {
+  grid-column: 2;
+  min-width: 0;
+  font-size: var(--text-sm);
+  line-height: 1.5;
+}
+
+/* ── Rail ────────────────────────────────────────────────────────────────
+   Metadata becomes a true margin: right-aligned against a vertical hairline
+   so the prose edge is one hard line down the page and the eye never hunts
+   for where a turn begins.                                                */
+
+.s-thread-layout[data-thread-treatment="rail"] .s-thread-feed {
+  /* Give the thread a working width instead of treating it like a centered
+     book page. The left metadata lane gets enough room for a name, handle and
+     timestamp to read across; the prose uses the remaining space without
+     becoming an unbounded wall of text. */
+  --thread-rail-gutter: clamp(196px, 14vw, 240px);
+  --thread-rail-measure: clamp(760px, 60vw, 1040px);
+  --thread-rail-column: calc(
+    var(--thread-rail-gutter) + var(--space-lg) + var(--thread-rail-measure)
+  );
+  gap: 0;
+  padding: var(--space-xl) var(--space-2xl) var(--space-xl);
+}
+
+.s-thread-layout[data-thread-treatment="rail"] .s-thread-feed-block {
+  width: min(100%, var(--thread-rail-column));
+  margin-inline: 0;
+}
+
+.s-thread-layout[data-thread-treatment="rail"] .s-thread-msg {
+  max-width: 100%;
+}
+
+.s-thread-layout[data-thread-treatment="rail"] .s-thread-feed-block + .s-thread-feed-block {
+  border-top: 1px solid color-mix(in srgb, var(--border) 45%, transparent);
+}
+
+.s-thread-layout[data-thread-treatment="rail"] .s-thread-msg-card {
+  position: relative;
+  padding: var(--space-md) 0 var(--space-md)
+    calc(var(--thread-rail-gutter) + var(--space-lg));
+}
+
+/* One unbroken prose edge. Drawn on the card rather than each child, so a
+   turn with attachments under it doesn't leave the line in segments. */
+.s-thread-layout[data-thread-treatment="rail"] .s-thread-msg-card::before {
+  content: "";
+  position: absolute;
+  left: var(--thread-rail-gutter);
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: color-mix(in srgb, var(--border) 70%, transparent);
+}
+
+/* The margin note is a contained float, not a grid cell.
+ *
+ * As a grid it shared row 1 with whatever body part came first, so a
+ * four-line author stack set the height of a one-line reply backlink and
+ * dropped ~80px of dead space between the backlink and the prose it belongs
+ * to. A float sizes itself, so the prose starts where the turn starts; the
+ * BFC on the content keeps a tall stack from bleeding into the next turn. */
+.s-thread-layout[data-thread-treatment="rail"] .s-thread-msg-card-content {
+  display: flow-root;
+}
+
+.s-thread-layout[data-thread-treatment="rail"] .s-thread-msg-card-content > * + * {
+  margin-top: var(--space-sm);
+}
+
+.s-thread-layout[data-thread-treatment="rail"] .s-thread-msg-header {
+  float: left;
+  display: flex;
+  width: var(--thread-rail-gutter);
+  margin-top: 0;
+  margin-left: calc(-1 * (var(--thread-rail-gutter) + var(--space-lg)));
+  padding-right: var(--space-lg);
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: baseline;
+  text-align: left;
+  gap: var(--space-2xs) var(--space-sm);
+  min-width: 0;
+}
+
+.s-thread-layout[data-thread-treatment="rail"] .s-thread-msg-meta {
+  flex: 1 1 auto;
+  flex-direction: row;
+  align-items: baseline;
+  gap: var(--space-2xs) var(--space-sm);
+  width: auto;
+}
+
+.s-thread-layout[data-thread-treatment="rail"] .s-thread-msg-handle,
+.s-thread-layout[data-thread-treatment="rail"] .s-thread-msg-time {
+  font-size: var(--text-2xs);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
+}
+
+.s-thread-layout[data-thread-treatment="rail"] .s-thread-msg-body {
+  max-width: var(--thread-rail-measure);
+  font-size: var(--text-md);
+  line-height: 1.58;
+}
+
+/* The backlink is metadata about the turn, not a heading for it.
+ *
+ * Every reply to one fan-out carries the same originating title, so at full
+ * measure the identical mono line was the first thing read on every turn and
+ * the prose came second. Held to a third of the measure and a step quieter it
+ * still answers "what is this replying to" without being the loudest row. */
+.s-thread-layout[data-thread-treatment="rail"] .s-thread-reply-ctx {
+  max-width: min(38ch, var(--thread-rail-measure));
+  margin-bottom: var(--space-2xs);
+  font-size: var(--text-2xs);
+  opacity: 0.72;
+}
+
+.s-thread-layout[data-thread-treatment="rail"] .s-thread-reply-ctx:hover,
+.s-thread-layout[data-thread-treatment="rail"] .s-thread-reply-ctx:focus-visible {
+  opacity: 1;
+}
+
+/* The live-turn card carries its avatar as a sibling of the content rather
+   than inside the header, so the floated margin note landed on top of it.
+   This one card puts the avatar in the gutter itself and leaves its header
+   in flow — the turn still reads as the same column, and nothing overlaps. */
+.s-thread-layout[data-thread-treatment="rail"] .s-thread-msg-card--avatar-row {
+  display: grid;
+  grid-template-columns: var(--thread-rail-gutter) minmax(0, 1fr);
+  column-gap: var(--space-lg);
+  align-items: start;
+  padding-left: 0;
+}
+
+.s-thread-layout[data-thread-treatment="rail"] .s-thread-msg-card--avatar-row > .s-thread-msg-avatar {
+  grid-column: 1;
+  justify-self: end;
+  margin-right: var(--space-lg);
+}
+
+.s-thread-layout[data-thread-treatment="rail"] .s-thread-msg-card--avatar-row > .s-thread-msg-card-content {
+  grid-column: 2;
+}
+
+.s-thread-layout[data-thread-treatment="rail"] .s-thread-msg-card--avatar-row .s-thread-msg-header {
+  float: none;
+  width: auto;
+  margin-left: 0;
+  padding-right: 0;
+  flex-direction: row;
+  align-items: baseline;
+  text-align: left;
+  gap: var(--space-sm);
+}
+
+.s-thread-layout[data-thread-treatment="rail"] .s-thread-msg-card--avatar-row .s-thread-msg-meta {
+  flex-direction: row;
+  align-items: baseline;
+  gap: var(--space-sm);
+  width: auto;
+}
+
+/* ── Document ────────────────────────────────────────────────────────────
+   Editorial. No avatars — identity is a small-caps byline, not a picture.
+   Wide leading, tight measure, and file chips demoted to plain mono, because
+   in a document a filename is a word rather than a button.                */
+
+.s-thread-layout[data-thread-treatment="document"] .s-thread-feed {
+  gap: 0;
+  padding: var(--space-2xl) var(--space-3xl) var(--space-2xl);
+}
+
+.s-thread-layout[data-thread-treatment="document"] .s-thread-feed-block + .s-thread-feed-block {
+  border-top: 1px solid color-mix(in srgb, var(--border) 40%, transparent);
+}
+
+.s-thread-layout[data-thread-treatment="document"] .s-thread-msg-card {
+  padding: var(--space-xl) 0;
+}
+
+.s-thread-layout[data-thread-treatment="document"] .s-thread-msg-avatar,
+.s-thread-layout[data-thread-treatment="document"] .s-thread-msg-avatar--nav,
+.s-thread-layout[data-thread-treatment="document"] .s-thread-msg-handle {
+  display: none;
+}
+
+.s-thread-layout[data-thread-treatment="document"] .s-thread-msg-header {
+  margin-bottom: var(--space-xs);
+}
+
+.s-thread-layout[data-thread-treatment="document"] .s-thread-msg-actor {
+  font-size: var(--text-2xs);
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.s-thread-layout[data-thread-treatment="document"] .s-thread-msg-time {
+  font-size: var(--text-2xs);
+  letter-spacing: 0.08em;
+}
+
+.s-thread-layout[data-thread-treatment="document"] .s-thread-msg-body {
+  max-width: 62ch;
+  font-size: var(--text-lg);
+  line-height: 1.78;
+}
+
+.s-thread-layout[data-thread-treatment="document"] .s-thread-msg-body .s-inline-code {
+  background: none;
+  border-color: transparent;
+  padding: 0;
+  color: var(--muted);
+}

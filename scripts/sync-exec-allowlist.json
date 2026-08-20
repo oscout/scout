@@ -1,0 +1,534 @@
+[
+  {
+    "path": "apps/desktop/src/app/desktop/shell-utils.ts",
+    "symbol": "execFileSync",
+    "category": "imperative",
+    "reason": "desktop shell utility remains a Phase A app-host direct command wrapper outside server request paths",
+    "owner": "desktop"
+  },
+  {
+    "path": "apps/desktop/src/app/host/agent-session.ts",
+    "symbol": "execFileSync",
+    "category": "imperative",
+    "reason": "desktop host session helper is outside the M3 server/core burn-down scope",
+    "owner": "desktop"
+  },
+  {
+    "path": "apps/desktop/src/app/host/diagnostics.ts",
+    "symbol": "execFileSync",
+    "category": "cli",
+    "reason": "desktop diagnostics one-shot command collection",
+    "owner": "desktop"
+  },
+  {
+    "path": "apps/desktop/src/cli/app-lifecycle.ts",
+    "symbol": "spawnSync",
+    "category": "process-lifecycle",
+    "reason": "owns the app/service ownership model: one-shot ps process-table reads and launchctl bootout/bootstrap/kickstart, which must be ordered and observed synchronously",
+    "owner": "desktop"
+  },
+  {
+    "path": "apps/desktop/src/cli/commands/app.ts",
+    "symbol": "spawnSync",
+    "category": "cli",
+    "reason": "app lifecycle CLI one-shot bundle discovery and launch commands",
+    "owner": "desktop"
+  },
+  {
+    "path": "apps/desktop/src/cli/commands/install.ts",
+    "symbol": "spawnSync",
+    "category": "cli",
+    "reason": "interactive installer one-shot commands",
+    "owner": "desktop"
+  },
+  {
+    "path": "apps/desktop/src/cli/commands/mcp-install.ts",
+    "symbol": "spawnSync",
+    "category": "cli",
+    "reason": "interactive MCP installer one-shot commands",
+    "owner": "desktop"
+  },
+  {
+    "path": "apps/desktop/src/cli/commands/menu.ts",
+    "symbol": "spawnSync",
+    "category": "cli",
+    "reason": "desktop menu CLI one-shot launch command",
+    "owner": "desktop"
+  },
+  {
+    "path": "apps/desktop/src/cli/commands/mesh-bridge.ts",
+    "symbol": "Bun.spawnSync",
+    "category": "cli",
+    "reason": "launchctl wrapper for one-shot bridge service install/uninstall commands",
+    "owner": "desktop"
+  },
+  {
+    "path": "apps/desktop/src/cli/commands/session.ts",
+    "symbol": "spawnSync",
+    "category": "cli",
+    "reason": "terminal session CLI owns foreground attach/create commands",
+    "owner": "desktop"
+  },
+  {
+    "path": "apps/desktop/src/cli/main.ts",
+    "symbol": "spawnSync",
+    "category": "cli",
+    "reason": "desktop CLI launchctl/scout discovery one-shots",
+    "owner": "desktop"
+  },
+  {
+    "path": "apps/desktop/src/core/broker/service.ts",
+    "symbol": "node:child_process",
+    "category": "process-lifecycle",
+    "reason": "owns optional ffplay audio process lifecycle for voice preview",
+    "owner": "desktop"
+  },
+  {
+    "path": "apps/desktop/src/core/mcp/mesh-bridge.ts",
+    "symbol": "Bun.spawnSync",
+    "category": "boot",
+    "reason": "one-shot keychain token read at bridge startup before any server loop exists",
+    "owner": "desktop"
+  },
+  {
+    "path": "apps/desktop/src/core/pairing/pairing-runtime-controller.ts",
+    "symbol": "node:child_process",
+    "category": "process-lifecycle",
+    "reason": "owns dns-sd advertisement child lifecycle for desktop pair mode",
+    "owner": "desktop"
+  },
+  {
+    "path": "apps/desktop/src/core/pairing/runtime/relay-runtime.test.ts",
+    "symbol": "node:child_process",
+    "category": "test",
+    "reason": "test subprocess fixture or git fixture setup",
+    "owner": "tests"
+  },
+  {
+    "path": "apps/desktop/src/core/pairing/runtime/relay-runtime.test.ts",
+    "symbol": "spawnSync",
+    "category": "test",
+    "reason": "test subprocess fixture",
+    "owner": "tests"
+  },
+  {
+    "path": "apps/desktop/src/core/setup/local-edge-dependencies.ts",
+    "symbol": "node:child_process",
+    "category": "boot",
+    "reason": "setup dependency probe runs during explicit setup/doctor flow",
+    "owner": "desktop"
+  },
+  {
+    "path": "apps/desktop/src/core/setup/local-edge-dependencies.ts",
+    "symbol": "spawnSync",
+    "category": "boot",
+    "reason": "setup dependency probe runs during explicit setup/doctor flow",
+    "owner": "desktop"
+  },
+  {
+    "path": "apps/desktop/src/core/setup/terminal-pty-dependencies.ts",
+    "symbol": "node:child_process",
+    "category": "boot",
+    "reason": "setup dependency probe runs during explicit setup/doctor flow",
+    "owner": "desktop"
+  },
+  {
+    "path": "apps/desktop/src/core/setup/terminal-pty-dependencies.ts",
+    "symbol": "spawnSync",
+    "category": "boot",
+    "reason": "setup dependency probe runs during explicit setup/doctor flow",
+    "owner": "desktop"
+  },
+  {
+    "path": "packages/agent-sessions/src/adapters/opencode-acp/adapter.test.ts",
+    "symbol": "spawnSync",
+    "category": "test",
+    "reason": "asserts the keychain fallback against a stub binary passed by absolute path",
+    "owner": "agent-sessions"
+  },
+  {
+    "path": "packages/agent-sessions/src/adapters/opencode-acp/adapter.ts",
+    "symbol": "spawnSync",
+    "category": "imperative",
+    "reason": "local keychain secret lookup for OPENCODE_API_KEY, mirroring the pi-rpc secret-lookup imperative",
+    "owner": "agent-sessions"
+  },
+  {
+    "path": "packages/agent-sessions/src/codex-executable.ts",
+    "symbol": "execFileSync",
+    "category": "boot",
+    "reason": "Codex executable inventory/version check used as capability discovery",
+    "owner": "agent-sessions"
+  },
+  {
+    "path": "packages/agent-sessions/src/registry.ts",
+    "symbol": "spawnSync",
+    "category": "boot",
+    "reason": "session registry one-shot git branch metadata capture (node:child_process so it works under Node and Bun)",
+    "owner": "agent-sessions"
+  },
+  {
+    "path": "packages/runtime/src/agent-workspace.test.ts",
+    "symbol": "execFileSync",
+    "category": "test",
+    "reason": "git fixture setup",
+    "owner": "tests"
+  },
+  {
+    "path": "packages/runtime/src/agent-workspace.test.ts",
+    "symbol": "node:child_process",
+    "category": "test",
+    "reason": "test subprocess fixture or git fixture setup",
+    "owner": "tests"
+  },
+  {
+    "path": "packages/runtime/src/base-daemon.ts",
+    "symbol": "node:child_process",
+    "category": "process-lifecycle",
+    "reason": "owns base broker/caddy/dns-sd daemon child lifecycle",
+    "owner": "runtime"
+  },
+  {
+    "path": "packages/runtime/src/broker-process-manager.ts",
+    "symbol": "node:child_process",
+    "category": "process-lifecycle",
+    "reason": "owns scoutd/broker service child process lifecycle",
+    "owner": "runtime"
+  },
+  {
+    "path": "packages/runtime/src/broker-process-manager.ts",
+    "symbol": "spawnSync",
+    "category": "boot",
+    "reason": "broker process manager startup scout binary discovery",
+    "owner": "runtime"
+  },
+  {
+    "path": "packages/runtime/src/broker-web-control-service.test.ts",
+    "symbol": "node:child_process",
+    "category": "test",
+    "reason": "test subprocess fixture or git fixture setup",
+    "owner": "tests"
+  },
+  {
+    "path": "packages/runtime/src/broker-web-control-service.ts",
+    "symbol": "node:child_process",
+    "category": "process-lifecycle",
+    "reason": "owns web server child process lifecycle",
+    "owner": "runtime"
+  },
+  {
+    "path": "packages/runtime/src/claude-stream-json.ts",
+    "symbol": "node:child_process",
+    "category": "process-lifecycle",
+    "reason": "owns Claude stream-json harness process lifecycle",
+    "owner": "runtime"
+  },
+  {
+    "path": "packages/runtime/src/cursor-transport-spike/cli-transport.ts",
+    "symbol": "node:child_process",
+    "category": "process-lifecycle",
+    "reason": "cursor transport spike owns experimental child process lifecycle",
+    "owner": "runtime"
+  },
+  {
+    "path": "packages/runtime/src/cursor-transport-spike/sdk-transport.ts",
+    "symbol": "node:child_process",
+    "category": "process-lifecycle",
+    "reason": "cursor transport spike owns experimental child process lifecycle",
+    "owner": "runtime"
+  },
+  {
+    "path": "packages/runtime/src/harness-catalog.ts",
+    "symbol": "execFileSync",
+    "category": "boot",
+    "reason": "harness catalog capability/version discovery",
+    "owner": "runtime"
+  },
+  {
+    "path": "packages/runtime/src/harness-catalog.ts",
+    "symbol": "node:child_process",
+    "category": "boot",
+    "reason": "harness catalog capability/version discovery remains BOOT-OK",
+    "owner": "runtime"
+  },
+  {
+    "path": "packages/runtime/src/iroh-bridge.ts",
+    "symbol": "node:child_process",
+    "category": "process-lifecycle",
+    "reason": "owns native iroh bridge process lifecycle",
+    "owner": "runtime"
+  },
+  {
+    "path": "packages/runtime/src/load-resolved-relay-agents.test.ts",
+    "symbol": "execFileSync",
+    "category": "test",
+    "reason": "git fixture setup",
+    "owner": "tests"
+  },
+  {
+    "path": "packages/runtime/src/load-resolved-relay-agents.test.ts",
+    "symbol": "node:child_process",
+    "category": "test",
+    "reason": "test subprocess fixture or git fixture setup",
+    "owner": "tests"
+  },
+  {
+    "path": "packages/runtime/src/mcp-discovery.ts",
+    "symbol": "node:child_process",
+    "category": "process-lifecycle",
+    "reason": "owns MCP server discovery child process lifecycle",
+    "owner": "runtime"
+  },
+  {
+    "path": "packages/runtime/src/mesh-bind-controller.test.ts",
+    "symbol": "node:child_process",
+    "category": "test",
+    "reason": "test cross-checks the TLS listener with a real openssl client process",
+    "owner": "tests"
+  },
+  {
+    "path": "packages/runtime/src/mesh-mdns-service.test.ts",
+    "symbol": "node:child_process",
+    "category": "test",
+    "reason": "test doubles the dns-sd advertiser child lifecycle",
+    "owner": "tests"
+  },
+  {
+    "path": "packages/runtime/src/mesh-mdns-service.ts",
+    "symbol": "node:child_process",
+    "category": "process-lifecycle",
+    "reason": "owns the long-lived dns-sd advertiser child for LAN mesh discovery",
+    "owner": "runtime"
+  },
+  {
+    "path": "packages/runtime/src/mesh-pinned-https-client.test.ts",
+    "symbol": "Bun.spawn",
+    "category": "test",
+    "reason": "test spawns a Node driver to verify the pinned HTTPS client outside Bun",
+    "owner": "tests"
+  },
+  {
+    "path": "packages/runtime/src/mesh-ssh-enroll.ts",
+    "symbol": "node:child_process",
+    "category": "imperative",
+    "reason": "explicit SSH enrollment owns a bounded argv-only ssh child process",
+    "owner": "runtime"
+  },
+  {
+    "path": "packages/runtime/src/pi-rpc.ts",
+    "symbol": "execFileSync",
+    "category": "imperative",
+    "reason": "local secret lookup command kept as explicit imperative outside M3 probe census",
+    "owner": "runtime"
+  },
+  {
+    "path": "packages/runtime/src/pi-rpc.ts",
+    "symbol": "node:child_process",
+    "category": "imperative",
+    "reason": "local secret lookup command remains explicit imperative outside server verb set",
+    "owner": "runtime"
+  },
+  {
+    "path": "packages/runtime/src/relay-agent-watchdog.test.ts",
+    "symbol": "Bun.spawn",
+    "category": "test",
+    "reason": "spawns the generated watchdog launch script to verify it reaps the harness process for real",
+    "owner": "tests"
+  },
+  {
+    "path": "packages/runtime/src/repo-service/process.ts",
+    "symbol": "node:child_process",
+    "category": "repo-service-fallback",
+    "reason": "bounded spawn fallback for repo service when scoutd transport is unavailable",
+    "owner": "runtime"
+  },
+  {
+    "path": "packages/runtime/src/repo-watch.test.ts",
+    "symbol": "execFileSync",
+    "category": "test",
+    "reason": "git fixture setup",
+    "owner": "tests"
+  },
+  {
+    "path": "packages/runtime/src/repo-watch.test.ts",
+    "symbol": "node:child_process",
+    "category": "test",
+    "reason": "test subprocess fixture or git fixture setup",
+    "owner": "tests"
+  },
+  {
+    "path": "packages/runtime/src/scout-broker.ts",
+    "symbol": "node:child_process",
+    "category": "process-lifecycle",
+    "reason": "owns optional ffplay audio process lifecycle for voice preview",
+    "owner": "runtime"
+  },
+  {
+    "path": "packages/runtime/src/setup.ts",
+    "symbol": "execFileSync",
+    "category": "boot",
+    "reason": "explicit setup/bootstrap one-shot checks",
+    "owner": "runtime"
+  },
+  {
+    "path": "packages/runtime/src/setup.ts",
+    "symbol": "node:child_process",
+    "category": "boot",
+    "reason": "explicit setup/bootstrap one-shot checks remain BOOT-OK",
+    "owner": "runtime"
+  },
+  {
+    "path": "packages/runtime/src/system-probes.test.ts",
+    "symbol": "execFileSync",
+    "category": "test",
+    "reason": "git fixture setup for probe tests",
+    "owner": "tests"
+  },
+  {
+    "path": "packages/runtime/src/system-probes.test.ts",
+    "symbol": "node:child_process",
+    "category": "test",
+    "reason": "test subprocess fixture or git fixture setup",
+    "owner": "tests"
+  },
+  {
+    "path": "packages/runtime/src/system-probes/exec.ts",
+    "symbol": "node:child_process",
+    "category": "imperative-fallback",
+    "reason": "single bounded local fallback for scout.host probes and imperative verbs when scoutd is unavailable or older",
+    "owner": "runtime"
+  },
+  {
+    "path": "packages/runtime/src/tailscale.test.ts",
+    "symbol": "node:child_process",
+    "category": "test",
+    "reason": "test subprocess fixture or git fixture setup",
+    "owner": "tests"
+  },
+  {
+    "path": "packages/runtime/src/tailscale.test.ts",
+    "symbol": "spawnSync",
+    "category": "test",
+    "reason": "subprocess fixture",
+    "owner": "tests"
+  },
+  {
+    "path": "packages/runtime/src/tailscale.ts",
+    "symbol": "execFileSync",
+    "category": "boot",
+    "reason": "startup origin resolution sync tailscale status path from BOOT-OK census",
+    "owner": "runtime"
+  },
+  {
+    "path": "packages/runtime/src/tailscale.ts",
+    "symbol": "node:child_process",
+    "category": "boot",
+    "reason": "startup tailscale origin resolution remains BOOT-OK",
+    "owner": "runtime"
+  },
+  {
+    "path": "packages/runtime/src/test-helpers/broker-daemon-harness.test.ts",
+    "symbol": "Bun.spawn",
+    "category": "test",
+    "reason": "test harness starts an isolated runtime child process",
+    "owner": "tests"
+  },
+  {
+    "path": "packages/runtime/src/test-helpers/runtime-scenario-harness.test.ts",
+    "symbol": "Bun.spawn",
+    "category": "test",
+    "reason": "test harness starts an isolated runtime child process",
+    "owner": "tests"
+  },
+  {
+    "path": "packages/web/server/core/broker/service.ts",
+    "symbol": "node:child_process",
+    "category": "process-lifecycle",
+    "reason": "owns optional ffplay audio process lifecycle for voice preview",
+    "owner": "web"
+  },
+  {
+    "path": "packages/web/server/core/pairing/pairing-runtime-controller.ts",
+    "symbol": "node:child_process",
+    "category": "process-lifecycle",
+    "reason": "owns dns-sd advertisement child lifecycle for pair mode",
+    "owner": "web"
+  },
+  {
+    "path": "packages/web/server/create-openscout-web-server.test.ts",
+    "symbol": "execFileSync",
+    "category": "test",
+    "reason": "git fixture setup",
+    "owner": "tests"
+  },
+  {
+    "path": "packages/web/server/create-openscout-web-server.test.ts",
+    "symbol": "node:child_process",
+    "category": "test",
+    "reason": "test subprocess fixture or git fixture setup",
+    "owner": "tests"
+  },
+  {
+    "path": "packages/web/server/create-openscout-web-server.ts",
+    "symbol": "Bun.spawn",
+    "category": "process-lifecycle",
+    "reason": "owns the isolated session knowledge index child lifecycle so heavy indexing cannot block the web server event loop",
+    "owner": "web"
+  },
+  {
+    "path": "packages/web/server/managed-terminal-relay.ts",
+    "symbol": "node:child_process",
+    "category": "process-lifecycle",
+    "reason": "owns terminal relay child process lifecycle",
+    "owner": "web"
+  },
+  {
+    "path": "packages/web/server/pairing-lan-beacon.ts",
+    "symbol": "node:child_process",
+    "category": "process-lifecycle",
+    "reason": "owns dns-sd LAN discovery advertisement lifecycle",
+    "owner": "web"
+  },
+  {
+    "path": "packages/web/server/pairing-pair-requests.test.ts",
+    "symbol": "Bun.spawn",
+    "category": "test",
+    "reason": "spawns two real processes to race over one shared pair-request file; in-process stores cannot interleave a read-modify-write",
+    "owner": "tests"
+  },
+  {
+    "path": "packages/web/server/pairing.ts",
+    "symbol": "node:child_process",
+    "category": "process-lifecycle",
+    "reason": "starts/stops the detached pairing runtime controller process",
+    "owner": "web"
+  },
+  {
+    "path": "packages/web/server/terminal-hosts/herdr.ts",
+    "symbol": "node:child_process",
+    "category": "process-lifecycle",
+    "reason": "spawns a detached herdr session server, which outlives the request by design and cannot be awaited",
+    "owner": "web"
+  },
+  {
+    "path": "packages/web/server/work-materials.test.ts",
+    "symbol": "execFileSync",
+    "category": "test",
+    "reason": "git fixture setup",
+    "owner": "tests"
+  },
+  {
+    "path": "packages/web/server/work-materials.test.ts",
+    "symbol": "node:child_process",
+    "category": "test",
+    "reason": "test subprocess fixture or git fixture setup",
+    "owner": "tests"
+  },
+  {
+    "path": "packages/web/vite.config.ts",
+    "symbol": "execSync",
+    "category": "build-script",
+    "reason": "Vite config build-time git metadata",
+    "owner": "web"
+  }
+]

@@ -1,0 +1,1532 @@
+/* Agents · Project view — ported from the signed-off studio study
+   (design/studio/app/studies/agents-project). One continuous two-column grid:
+   a left content column ruled into even bands sharing one left/right edge, and
+   a full-height right rail split off by a single hairline. Decorations stripped;
+   hierarchy from type weight, spacing, and hairlines. One accent, spent only as
+   the precedence dot: needs-you ▸ live ▸ idle.
+
+   Scoped under `.s-aproj`, which aliases the studio's `--s-*` skin tokens onto
+   the web's own design tokens so the rules below read identically to the studio
+   source. Class names are `ap-*`-prefixed to avoid collisions with global CSS. */
+
+.s-aproj {
+  /* Theme-aware: the studio's --s-* skin tokens now ALIAS the web's live theme
+     tokens (--scout-chrome-* / --accent, derived from the per-theme --hud-*
+     primitives in Provider.tsx). So the whole surface — masthead, rows, and the
+     expand-in-place sessions — follows theme switches and the single app accent,
+     instead of the hardcoded graphite + indigo the studio was designed in. The
+     hairline ramp is matched to the original opacities via --hud-ink mixes so the
+     ruled band structure stays legible on any theme. */
+  --s-bg: var(--hud-bg);
+  --s-surface: var(--hud-surface);
+  --s-ink: var(--scout-chrome-ink-strong);
+  --s-muted: var(--scout-chrome-ink-soft);
+  --s-dim: var(--scout-chrome-ink-faint);
+  --s-border: color-mix(in srgb, var(--hud-ink) 17%, transparent);
+  --s-hairline: color-mix(in srgb, var(--hud-ink) 9%, transparent);
+  --s-hairline-strong: color-mix(in srgb, var(--hud-ink) 20%, transparent);
+  --s-accent: var(--accent);
+  --s-accent-soft: var(--hud-accent-soft);
+  --s-font-sans: var(--hud-font-sans);
+  --s-font-mono: var(--hud-font-mono);
+
+  height: 100%;
+  min-height: 0;
+  overflow-y: auto;
+  background: var(--s-bg);
+  color: var(--s-ink);
+  font-family: var(--s-font-sans);
+}
+
+/* ── precedence dot (the only colored mark in the UI) ────────────────────── */
+.ap-dot {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--s-accent);
+}
+.ap-dot[data-tone="live"] { box-shadow: 0 0 0 3px var(--s-accent-soft); }
+.ap-dot[data-tone="needs"] { box-shadow: 0 0 0 3px var(--s-accent-soft); animation: ap-pulse 2.2s ease-in-out infinite; }
+@keyframes ap-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.45; } }
+
+/* ── sparse focus view — the project collapses to its one agent + the decision ──
+   No digest, no find, no roster, no aside. A single calm column that leads with
+   the situation the directory buried, then the decision, then the real /observe
+   tail. Reads the same --s-* graphite tokens as the rest of this pane. */
+.ap-focus {
+  min-width: 0;
+  max-width: 720px;
+  width: 100%;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  padding: 32px;
+}
+.ap-focusEmpty {
+  max-width: 720px;
+  margin: 0 auto;
+  padding: 60px 32px;
+  text-align: center;
+  font-size: var(--text-lg);
+  color: var(--s-dim);
+}
+.ap-focusHead {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding-bottom: 16px;
+  border-bottom: 1px solid var(--s-hairline);
+}
+/* session-led: the WORK is the headline, clamped to two lines */
+.ap-focusTitle {
+  margin: 0;
+  flex: 1;
+  min-width: 0;
+  font-size: var(--text-3xl);
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  line-height: 1.3;
+  color: var(--s-ink);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+/* attribution — the agent runs the session, demoted under the title */
+.ap-focusAttr {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 13px 0;
+  border-bottom: 1px solid var(--s-hairline);
+}
+.ap-focusAttrText {
+  flex: 1;
+  min-width: 0;
+  font-size: var(--text-sm);
+  font-family: var(--s-font-mono);
+  color: var(--s-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* session log — a compact changelog, not the lane/trace stream */
+.ap-logHead { display: flex; align-items: baseline; gap: 10px; padding: 16px 0 10px; }
+.ap-logHeadTitle {
+  font-size: var(--text-2xs);
+  font-weight: 680;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--s-muted);
+}
+.ap-logHeadMeta { margin-left: auto; font-size: var(--text-xs); font-family: var(--s-font-mono); color: var(--s-dim); }
+.ap-log { display: flex; flex-direction: column; gap: 4px; }
+.ap-logLine { display: grid; grid-template-columns: 40px minmax(0, 1fr); gap: 10px; align-items: baseline; }
+.ap-logT { font-family: var(--s-font-mono); font-size: var(--text-xs); color: var(--s-dim); text-align: right; }
+.ap-logText {
+  font-family: var(--s-font-mono);
+  font-size: var(--text-md);
+  line-height: 1.55;
+  color: var(--s-muted);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.ap-logLine[data-kind="ask"] .ap-logT,
+.ap-logLine[data-kind="ask"] .ap-logText { color: var(--s-accent); }
+.ap-logLine[data-kind="message"] .ap-logText { color: var(--s-ink); }
+
+/* ── session-card profile — a normal profile page built from the focus card ── */
+.ap-profile {
+  max-width: 1140px;
+  margin: 0 auto;
+  padding: 24px 28px 36px;
+  color: var(--s-ink);
+  font-family: var(--s-font-sans);
+}
+.ap-profileHead {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding-bottom: 18px;
+  border-bottom: 1px solid var(--s-hairline);
+}
+.ap-profileIdent { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.ap-profileTop { display: flex; align-items: center; gap: 10px; }
+.ap-profileName {
+  margin: 0;
+  font-size: var(--text-5xl);
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  color: var(--s-ink);
+  text-transform: lowercase;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ap-profileSub {
+  font-size: var(--text-md);
+  font-family: var(--s-font-mono);
+  color: var(--s-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ap-profileId {
+  font-size: var(--text-xs);
+  font-family: var(--s-font-mono);
+  color: var(--s-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ap-profileBody { display: grid; grid-template-columns: minmax(0, 1fr) 248px; gap: 32px; padding-top: 22px; }
+@media (max-width: 920px) { .ap-profileBody { grid-template-columns: 1fr; } }
+.ap-profileMain { min-width: 0; display: flex; flex-direction: column; }
+.ap-profileAside { min-width: 0; display: flex; flex-direction: column; gap: 22px; }
+
+.ap-profileSection {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: var(--text-2xs);
+  font-weight: 680;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--s-muted);
+  padding: 0 0 12px;
+}
+.ap-profileSection:not(:first-child) { padding-top: 26px; }
+.ap-profileCount { font-family: var(--s-font-mono); font-weight: 600; color: var(--s-dim); letter-spacing: 0; }
+
+/* the current session uses the focus card, but full-width + boxed in the column */
+.ap-focus.ap-profileCard {
+  max-width: none;
+  margin: 0;
+  padding: 20px 22px;
+  background: color-mix(in srgb, var(--s-surface) 55%, transparent);
+  border: 1px solid var(--s-hairline);
+  border-radius: 14px;
+}
+
+/* the sessions list — SM session rows */
+.ap-profileSessions { display: flex; flex-direction: column; }
+.ap-profileSession {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 10px;
+  background: none;
+  border: none;
+  border-top: 1px solid var(--s-hairline);
+  cursor: pointer;
+  text-align: left;
+  transition: background 0.12s ease;
+}
+.ap-profileSessions .ap-profileSession:last-child { border-bottom: 1px solid var(--s-hairline); }
+.ap-profileSession:hover,
+.ap-profileSession[data-selected] { background: var(--s-surface); }
+.ap-profileSessionDot { flex: none; width: 6px; height: 6px; border-radius: 999px; background: var(--s-hairline-strong); }
+.ap-profileSessionTitle { font-size: var(--text-md); font-weight: 560; color: var(--s-ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ap-profileSession[data-tone="idle"] .ap-profileSessionTitle { color: var(--s-muted); }
+.ap-profileSessionBranch,
+.ap-profileSessionWhen { flex: none; font-size: var(--text-sm); font-family: var(--s-font-mono); color: var(--s-dim); white-space: nowrap; }
+
+/* the sessions list, tabular-ish: a header row + data rows share one grid so the
+   columns line up (dot · session · engine · last). Light — not a full table. */
+.ap-sessTable { display: flex; flex-direction: column; }
+.ap-sessTableHead,
+.ap-sessRow {
+  display: grid;
+  grid-template-columns: 12px minmax(0, 1fr) minmax(0, 168px) 84px;
+  align-items: center;
+  gap: 12px;
+}
+.ap-sessTableHead {
+  padding: 0 10px 8px;
+  font-size: var(--text-2xs);
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--s-muted);
+  font-family: var(--s-font-mono);
+}
+.ap-sessTableHead > span:last-child { text-align: right; }
+.ap-sessRow {
+  padding: 8px 10px;
+  background: none;
+  border: none;
+  border-top: 1px solid var(--s-hairline);
+  cursor: pointer;
+  text-align: left;
+  transition: background 0.12s ease;
+}
+.ap-sessTable .ap-sessRow:last-child { border-bottom: 1px solid var(--s-hairline); }
+.ap-sessRow:hover,
+.ap-sessRow[data-selected] { background: var(--s-surface); }
+.ap-sessRowDot { flex: none; width: 6px; height: 6px; border-radius: 999px; background: var(--s-hairline-strong); }
+.ap-sessRowName { font-size: var(--text-md); font-weight: 540; color: var(--s-ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ap-sessRow[data-tone="idle"] .ap-sessRowName { color: var(--s-muted); }
+.ap-sessRowEngine { font-size: var(--text-sm); font-family: var(--s-font-mono); color: var(--s-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ap-sessRowWhen { font-size: var(--text-sm); font-family: var(--s-font-mono); color: var(--s-dim); text-align: right; white-space: nowrap; }
+.ap-focusIdent { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.ap-focusTop { display: flex; align-items: center; gap: 11px; }
+.ap-focusName {
+  margin: 0;
+  font-size: var(--text-5xl);
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  color: var(--s-ink);
+  text-transform: lowercase;
+}
+.ap-focusState {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--text-sm);
+  font-weight: 540;
+  font-family: var(--s-font-mono);
+  color: var(--s-dim);
+}
+.ap-focusState[data-tone="needs"] { color: var(--s-accent); }
+.ap-focusState[data-tone="live"] { color: var(--s-ink); }
+.ap-focusRoot { font-size: var(--text-md); font-family: var(--s-font-mono); color: var(--s-muted); }
+.ap-focusOpen {
+  flex: none;
+  font-size: var(--text-md);
+  font-weight: 540;
+  color: var(--s-muted);
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 4px 2px;
+  transition: color 0.12s ease;
+}
+.ap-focusOpen:hover { color: var(--s-ink); }
+
+/* the situation — the headline the directory buried + truncated */
+.ap-situation { padding: 22px 0 20px; border-bottom: 1px solid var(--s-hairline); }
+.ap-situationLead {
+  font-size: var(--text-2xl);
+  line-height: 1.5;
+  font-weight: 500;
+  letter-spacing: -0.005em;
+  color: var(--s-ink);
+}
+.ap-situation[data-tone="idle"] .ap-situationLead { color: var(--s-dim); font-weight: 460; }
+.ap-situationLead b { font-weight: 600; font-family: var(--s-font-mono); font-size: 0.92em; }
+.ap-situationTask {
+  margin-top: 10px;
+  font-size: var(--text-lg);
+  line-height: 1.5;
+  color: var(--s-muted);
+  font-family: var(--s-font-mono);
+}
+
+/* the decision — the action is the point of this screen */
+.ap-decision {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 18px 0;
+  border-bottom: 1px solid var(--s-hairline);
+}
+.ap-decisionPrimary {
+  font-size: var(--text-lg);
+  font-weight: 600;
+  color: var(--s-bg);
+  background: var(--s-accent);
+  border: none;
+  border-radius: 9px;
+  padding: 9px 18px;
+  cursor: pointer;
+  transition: filter 0.12s ease;
+}
+.ap-decisionPrimary:hover { filter: brightness(1.07); }
+.ap-decisionGhost {
+  font-size: var(--text-md);
+  font-weight: 540;
+  color: var(--s-muted);
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 4px 4px;
+  transition: color 0.12s ease;
+}
+.ap-decisionGhost:hover { color: var(--s-ink); }
+.ap-decisionMeta {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: baseline;
+  gap: 18px;
+  font-size: var(--text-md);
+  font-family: var(--s-font-mono);
+  color: var(--s-ink);
+}
+.ap-decisionMeta > span { display: inline-flex; align-items: baseline; gap: 6px; }
+
+.ap-focusBody { display: flex; flex-direction: column; padding-top: 18px; }
+
+/* most-recent preview — the agent's last message/question, clamped. A preview,
+   not a replay: no trace rows, no lane cards, no event stream. */
+.ap-preview { padding-top: 12px; }
+.ap-previewKind {
+  display: inline-block;
+  font-size: var(--text-2xs);
+  font-weight: 660;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--s-muted);
+  margin-bottom: 8px;
+}
+.ap-preview[data-kind="ask"] .ap-previewKind { color: var(--s-accent); }
+.ap-previewText {
+  margin: 0;
+  font-size: var(--text-lg);
+  line-height: 1.6;
+  color: var(--s-ink);
+  white-space: pre-wrap;
+  display: -webkit-box;
+  -webkit-line-clamp: 6;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* demoted footer — the rest of the project, quietly */
+.ap-focusFoot {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin-top: 22px;
+  padding-top: 16px;
+  border-top: 1px solid var(--s-hairline);
+}
+.ap-focusFootLink {
+  font-size: var(--text-md);
+  font-weight: 540;
+  color: var(--s-muted);
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  transition: color 0.12s ease;
+}
+.ap-focusFootLink:hover { color: var(--s-accent); }
+.ap-focusFootDim { font-size: var(--text-sm); color: var(--s-dim); font-family: var(--s-font-mono); }
+
+/* context gauge + file rows — used by the profile/focus cards (profile.tsx). */
+.ap-ctxGauge {
+  height: 5px;
+  border-radius: 999px;
+  background: var(--s-hairline);
+  overflow: hidden;
+  margin: 4px 0 9px;
+}
+.ap-ctxFill { height: 100%; background: var(--s-accent); border-radius: 999px; }
+.ap-fileRow { display: flex; align-items: baseline; gap: 9px; padding: 4px 0; }
+.ap-fileTag {
+  flex: none;
+  width: 30px;
+  font-size: var(--text-3xs);
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--s-dim);
+  font-family: var(--s-font-mono);
+}
+.ap-fileTag[data-state="modified"],
+.ap-fileTag[data-state="created"] { color: var(--s-accent); }
+.ap-fileName {
+  flex: 1;
+  min-width: 0;
+  font-size: var(--text-sm);
+  font-family: var(--s-font-mono);
+  color: var(--s-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* kind sigil — `/project` (a place) vs `@agent` (a handle). Same string reads
+   as two different kinds of thing, so name collisions stop looking redundant. */
+.ap-sigil {
+  color: var(--s-dim);
+  font-weight: 400;
+  margin-right: 1px;
+}
+
+/* ── SESSION-scoped blocks (live in the main column, not the agent rail) ───── */
+/* session meta — the live facts of THIS session: ctx · turns · tokens */
+.ap-sessMeta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 20px;
+  padding: 14px 0 2px;
+  font-size: var(--text-md);
+  font-family: var(--s-font-mono);
+  color: var(--s-ink);
+}
+.ap-sessMeta > span { display: inline-flex; align-items: baseline; gap: 6px; }
+.ap-sessMetaKey {
+  font-size: var(--text-3xs);
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--s-muted);
+  font-family: var(--s-font-sans);
+}
+/* files touched in this session — under the log, not in the agent rail */
+.ap-sessFiles {
+  margin-top: 18px;
+  padding-top: 14px;
+  border-top: 1px solid var(--s-hairline);
+}
+.ap-sessFilesHead { display: block; margin-bottom: 9px; }
+
+/* ── the AGENT card — the rail's home placement: identity + stable facts ───── */
+.ap-agentCard {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  padding-bottom: 18px;
+  border-bottom: 1px solid var(--s-hairline);
+}
+.ap-agentIdent { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.ap-agentName {
+  font-size: var(--text-xl);
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--s-ink);
+}
+.ap-agentMeta {
+  font-size: var(--text-2xs);
+  font-weight: 660;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--s-dim);
+}
+.ap-caps { display: flex; flex-wrap: wrap; gap: 6px; padding-top: 3px; }
+.ap-cap {
+  font-size: var(--text-xs);
+  font-family: var(--s-font-mono);
+  color: var(--s-muted);
+  padding: 2px 8px;
+  border: 1px solid var(--s-hairline);
+  border-radius: 999px;
+}
+
+/* The view is a single center column now — the master in a master-detail. The
+   session detail lives in the REAL shell inspector (driven by route.agentId),
+   not a page-local rail, so there is no second column to grid against. */
+.ap-view {
+  display: block;
+  min-height: 100%;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ap-resume { transition: none; }
+}
+
+/* the center column — a stack of evenly-ruled bands sharing one left/right edge */
+.ap-content {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  padding: 22px 28px 26px;
+}
+
+/* ── masthead band ───────────────────────────────────────────────────────── */
+.ap-head {
+  display: flex;
+  align-items: center;
+  gap: 13px;
+  padding-bottom: 18px;
+  border-bottom: 1px solid var(--s-hairline);
+}
+.ap-headIdent { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.ap-headTop { display: flex; align-items: center; gap: 12px; }
+.ap-headName {
+  margin: 0;
+  font-size: var(--text-5xl);
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  text-transform: lowercase;
+  color: var(--s-ink);
+}
+.ap-headState {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--text-md);
+  font-weight: 500;
+  color: var(--s-dim);
+  font-family: var(--s-font-mono);
+}
+.ap-headState[data-tone="needs"] { color: var(--s-accent); }
+.ap-headState[data-tone="live"] { color: var(--s-ink); }
+.ap-headRoot { font-size: var(--text-md); font-family: var(--s-font-mono); color: var(--s-muted); }
+.ap-headActions { display: flex; align-items: center; gap: 14px; flex: none; }
+.ap-headGhost {
+  font-size: var(--text-md);
+  font-weight: 540;
+  color: var(--s-muted);
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 4px 2px;
+  transition: color 0.12s ease;
+}
+.ap-headGhost:hover { color: var(--s-ink); }
+.ap-headCta {
+  font-size: var(--text-md);
+  font-weight: 580;
+  color: var(--s-bg);
+  background: var(--s-accent);
+  border: none;
+  border-radius: 8px;
+  padding: 7px 13px;
+  cursor: pointer;
+  transition: filter 0.12s ease;
+}
+.ap-headCta:hover { filter: brightness(1.07); }
+
+/* ── digest band ─────────────────────────────────────────────────────────── */
+.ap-digest {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 9px 0;
+  border-bottom: 1px solid var(--s-hairline);
+}
+/* demoted: reads as a quiet inline line (12 conversations · 3 in flight), with
+   middot separators, not a row of big KPI numbers. */
+.ap-stat { display: inline-flex; align-items: baseline; gap: 5px; }
+.ap-stat + .ap-stat::before {
+  content: "·";
+  margin-right: 14px;
+  color: var(--s-dim);
+}
+.ap-statNum { font-size: var(--text-md); font-weight: 600; color: var(--s-ink); letter-spacing: 0; }
+.ap-statLbl {
+  font-size: var(--text-xs);
+  font-weight: 500;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--s-muted);
+}
+.ap-statMarks {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--s-muted);
+}
+.ap-statMarks > span { display: inline-flex; }
+
+/* ── resume band — contextual, sits in the ruled rhythm ───────────────────── */
+.ap-resume {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  padding: 10px 0;
+  line-height: 1.1;
+  border-bottom: 1px solid var(--s-hairline);
+}
+.ap-resumeLbl {
+  font-size: var(--text-2xs);
+  font-weight: 680;
+  line-height: 1;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--s-accent);
+}
+.ap-resume[data-tone="live"] .ap-resumeLbl { color: var(--s-muted); }
+.ap-resumeWho { font-size: var(--text-lg); font-weight: 600; color: var(--s-ink); }
+.ap-resumeMeta {
+  margin-left: 3px;
+  padding-right: 6px;
+  font-size: var(--text-md);
+  font-family: var(--s-font-mono);
+  color: var(--s-dim);
+}
+.ap-resumeActions { margin-left: auto; display: inline-flex; gap: 16px; }
+.ap-link, .ap-linkAccent {
+  font-size: var(--text-md);
+  font-weight: 560;
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 0;
+  transition: color 0.12s ease;
+}
+.ap-link { color: var(--s-muted); }
+.ap-link:hover { color: var(--s-ink); }
+.ap-linkAccent { color: var(--s-accent); }
+.ap-linkAccent:hover { filter: brightness(1.1); }
+
+/* ── find band ───────────────────────────────────────────────────────────── */
+.ap-find {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--s-hairline);
+  transition: border-color 0.14s ease;
+}
+.ap-find:focus-within { border-bottom-color: var(--s-accent); }
+.ap-findIco { display: inline-flex; color: var(--s-muted); flex: none; }
+.ap-findInput {
+  flex: 1;
+  min-width: 0;
+  background: none;
+  border: none;
+  outline: none;
+  color: var(--s-ink);
+  font-family: var(--s-font-sans);
+  font-size: var(--text-lg);
+}
+.ap-findInput::placeholder { color: var(--s-muted); }
+.ap-findFilters { display: inline-flex; gap: 14px; flex: none; }
+.ap-filter {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: var(--text-sm);
+  font-weight: 520;
+  text-transform: capitalize;
+  color: var(--s-muted);
+  background: none;
+  border: none;
+  padding: 2px 0;
+  cursor: pointer;
+  border-bottom: 1.5px solid transparent;
+  transition: color 0.12s ease, border-color 0.12s ease;
+}
+.ap-filter:hover { color: var(--s-ink); }
+.ap-filter[data-on] { color: var(--s-ink); border-bottom-color: var(--s-accent); }
+
+/* ── roster band ─────────────────────────────────────────────────────────── */
+.ap-main { display: flex; flex-direction: column; padding-top: 16px; }
+
+.ap-sectionHead { display: flex; align-items: baseline; gap: 10px; padding: 0 0 4px; }
+.ap-sectionTitle {
+  font-size: var(--text-xs);
+  font-weight: 680;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--s-muted);
+}
+.ap-sectionMeta { font-size: var(--text-sm); color: var(--s-dim); font-family: var(--s-font-mono); }
+.ap-kbdHint {
+  margin-left: auto;
+  font-size: var(--text-xs);
+  font-family: var(--s-font-mono);
+  color: var(--s-dim);
+  opacity: 0.7;
+}
+
+/* Full-bleed list: the roster breaks out of the content column's 28px side
+   padding so each row's hairline + hover/selection background run edge-to-edge.
+   The 28px is added back as row padding, so the row *content* stays on the
+   same guide while only the background bleeds. */
+.ap-roster { display: flex; flex-direction: column; margin: 0 -28px; }
+.ap-row {
+  position: relative;
+  padding: 0 28px;
+  border-top: 1px solid var(--s-hairline);
+}
+.ap-row:last-child { border-bottom: 1px solid var(--s-hairline); }
+.ap-row::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: var(--s-surface);
+  opacity: 0;
+  transition: opacity 0.12s ease;
+  pointer-events: none;
+}
+.ap-row:hover::before, .ap-row[data-open]::before { opacity: 0.6; }
+.ap-row[data-selected]::before { opacity: 0.85; }
+.ap-row[data-selected]::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: var(--s-accent);
+}
+.ap-row[data-selected] .ap-rowName { color: var(--s-ink); }
+
+/* keyboard cursor — a quieter sibling of selection: a soft wash + a muted left
+   bar, so scrubbing the roster reads before you've committed to opening a row.
+   Selection (accent bar) outranks it when the panel is actually open. */
+.ap-row[data-cursor]::before { opacity: 0.6; }
+.ap-row[data-cursor]:not([data-selected])::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: var(--s-hairline-strong);
+}
+.ap-row:focus { outline: none; }
+.ap-row:focus-visible::before { opacity: 0.7; }
+
+/* row = avatar | body(flex) | tail(reserved lane). The tail holds ago/model
+   AND actions stacked in one cell, so the lane sizes to the wider (actions)
+   and never reflows or overlaps — the swap is pure opacity. */
+.ap-rowMain {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 13px;
+  padding: 11px 2px;
+  cursor: pointer;
+}
+.ap-rowBody { min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.ap-rowTop { display: flex; align-items: center; gap: 8px; min-width: 0; line-height: 1.15; }
+.ap-rowName {
+  font-size: var(--text-xl);
+  font-weight: 600;
+  line-height: 1.15;
+  color: var(--s-ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ap-rowName[data-idle] { color: var(--s-dim); font-weight: 540; }
+.ap-rowMark { display: inline-flex; color: var(--s-muted); flex: none; margin-left: -3px; }
+.ap-needsWord {
+  flex: none;
+  font-size: var(--text-xs);
+  font-weight: 640;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--s-accent);
+}
+/* live activity word — muted, never the reserved accent (that belongs to needs-you) */
+.ap-rowState {
+  flex: none;
+  font-size: var(--text-xs);
+  font-weight: 580;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--s-dim);
+}
+
+.ap-rowMeta { display: flex; align-items: center; gap: 9px; min-width: 0; line-height: 1.1; }
+.ap-rowBranch {
+  font-size: var(--text-sm);
+  line-height: 1.1;
+  font-family: var(--s-font-mono);
+  color: var(--s-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ap-rowBranch[data-dim] { color: var(--s-dim); }
+.ap-rowDim { font-size: var(--text-sm); color: var(--s-dim); font-family: var(--s-font-mono); flex: none; }
+.ap-rowDivider { flex: none; width: 1px; height: 10px; background: var(--s-hairline-strong); }
+
+/* tail lane — both children share grid cell 1/1; lane width = wider child */
+.ap-rowTail {
+  position: relative;
+  display: grid;
+  align-items: center;
+  justify-items: end;
+}
+.ap-tailMeta, .ap-rowActions { grid-area: 1 / 1; display: flex; transition: opacity 0.12s ease; }
+.ap-tailMeta {
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 3px;
+  text-align: right;
+}
+.ap-rowAgo { font-size: var(--text-sm); color: var(--s-dim); font-family: var(--s-font-mono); }
+.ap-rowModel { font-size: var(--text-xs); color: var(--s-dim); font-family: var(--s-font-mono); }
+.ap-rowActions { align-items: center; gap: 4px; opacity: 0; pointer-events: none; }
+.ap-row:hover .ap-tailMeta, .ap-row[data-tone="needs"] .ap-tailMeta { opacity: 0; }
+.ap-row:hover .ap-rowActions, .ap-row[data-tone="needs"] .ap-rowActions { opacity: 1; pointer-events: auto; }
+
+/* ⋯ actions trigger — outside the hover-swap so it's always present (the agent
+   is actionable), but quiet until the row is hovered so it never shouts. */
+.ap-rowTailWrap { display: flex; align-items: center; gap: 6px; }
+.ap-rowMore {
+  flex: none;
+  width: 22px;
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  color: var(--s-dim);
+  font-size: var(--text-2xl);
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0.4;
+  transition: opacity 0.12s ease, background 0.12s ease, color 0.12s ease;
+}
+.ap-row:hover .ap-rowMore, .ap-row[data-selected] .ap-rowMore { opacity: 0.9; }
+.ap-rowMore:hover { background: var(--s-surface); color: var(--s-ink); opacity: 1; }
+
+/* ── inline sessions — the work under each agent, surfaced in the main flow so
+   sessions are discoverable here, not only in the side pane. Agent is the
+   header; these are its recent work-led, clickable sessions. ──────────────── */
+.ap-rowSessions {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  margin: 1px 0 11px;
+  padding-left: 16px;
+}
+/* faint containment guide — turns a flat list into "header + bracketed children";
+   inset (left:6px) so it never collides with the data-selected accent bar at 0. */
+.ap-rowSessions::before {
+  content: "";
+  position: absolute;
+  left: 6px;
+  top: 2px;
+  bottom: 9px;
+  width: 1px;
+  background: var(--s-hairline);
+}
+.ap-rowSession {
+  position: relative;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  padding: 5px 9px 5px 5px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+}
+.ap-rowSession:hover { background: var(--s-surface); }
+.ap-rowSession:disabled { cursor: default; }
+.ap-rowSessionDot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--s-dim);
+  transition: background 0.12s ease, box-shadow 0.12s ease;
+}
+/* per-session precedence carried down to the session itself, not just the agent */
+.ap-rowSessionDot[data-tone="live"] {
+  background: var(--s-accent);
+  box-shadow: 0 0 0 3px var(--s-accent-soft);
+}
+.ap-rowSession:hover .ap-rowSessionDot { background: var(--s-accent); }
+.ap-rowSessionText {
+  min-width: 0;
+  font-size: var(--text-md);
+  line-height: 1.3;
+  color: rgba(255, 255, 255, 0.8);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ap-rowSession:hover .ap-rowSessionText { color: var(--s-ink); }
+.ap-rowSessionAgo {
+  flex: none;
+  font-size: var(--text-xs);
+  font-family: var(--s-font-mono);
+  color: var(--s-dim);
+}
+/* long-idle session — reads as reference, not a resume candidate (contrast only) */
+.ap-rowSession[data-stale] .ap-rowSessionText { color: var(--s-dim); }
+.ap-rowSession[data-stale] .ap-rowSessionDot { background: var(--s-hairline-strong); }
+.ap-rowSession[data-stale] .ap-rowSessionAgo { color: var(--s-hairline-strong); }
+/* "+N more" — the overflow the silent slice(0,2) used to hide */
+.ap-rowSessionMore {
+  align-self: flex-start;
+  margin: 1px 0 0 5px;
+  padding: 3px 4px;
+  border: 0;
+  border-radius: 4px;
+  background: none;
+  font-size: var(--text-xs);
+  font-family: var(--s-font-mono);
+  color: var(--s-dim);
+  cursor: pointer;
+  transition: color 0.12s ease, background 0.12s ease;
+}
+.ap-rowSessionMore:hover { color: var(--s-muted); background: var(--s-surface); }
+
+/* ── expand-in-place sessions (AgentSessions.tsx) ───────────────────────────
+   The agent's work, expanded in place: a collapsed row stays scannable
+   (branch · #id · turns); opening one reveals the full instrument. Single
+   --s-accent, carried down to the SESSION (running dot, gauge, changed files). */
+.ap-sx-list {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 1px 0 11px;
+  padding-left: 16px;
+}
+.ap-sx-list::before {
+  content: "";
+  position: absolute;
+  left: 6px;
+  top: 2px;
+  bottom: 9px;
+  width: 1px;
+  background: var(--s-hairline);
+}
+.ap-sx-session { border-radius: 8px; }
+.ap-sx-session[data-open] {
+  background: var(--scout-chrome-hover);
+  border: 1px solid var(--s-hairline-strong);
+  margin: 3px 0;
+}
+.ap-sx-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  width: 100%;
+  padding: 7px 10px 7px 6px;
+  border: 0;
+  border-radius: 7px;
+  background: none;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.12s ease;
+}
+.ap-sx-row > .ap-sx-tri,
+.ap-sx-row > .ap-sx-dot { margin-top: 4px; }
+.ap-sx-session:not([data-open]) .ap-sx-row:hover { background: var(--s-surface); }
+.ap-sx-tri {
+  flex: none;
+  width: 9px;
+  font-size: var(--text-3xs);
+  color: var(--s-dim);
+  transition: transform 0.14s ease;
+}
+.ap-sx-tri[data-open] { transform: rotate(90deg); }
+.ap-sx-dot {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--s-dim);
+}
+.ap-sx-dot[data-tone="running"] { background: var(--s-accent); box-shadow: 0 0 0 3px var(--s-accent-soft); }
+.ap-sx-rowBody { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.ap-sx-line { display: flex; align-items: baseline; gap: 12px; min-width: 0; }
+.ap-sx-title {
+  flex: 1;
+  min-width: 0;
+  font-size: var(--text-md);
+  color: var(--scout-chrome-ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ap-sx-session[data-open] .ap-sx-title { color: var(--s-ink); font-weight: 550; }
+.ap-sx-rowMeta { flex: none; display: inline-flex; align-items: center; gap: 11px; font-family: var(--s-font-mono); }
+.ap-sx-badge { font-size: var(--text-2xs); font-weight: 600; letter-spacing: 0.1em; color: var(--s-dim); }
+.ap-sx-badge[data-tone="running"] { color: var(--s-accent); }
+.ap-sx-age { font-size: var(--text-xs); color: var(--s-dim); min-width: 24px; text-align: right; }
+.ap-sx-sub { display: flex; align-items: center; gap: 7px; font-family: var(--s-font-mono); font-size: var(--text-sm); color: var(--s-muted); }
+.ap-sx-subBranch { color: var(--s-ink); }
+.ap-sx-subId { color: var(--s-muted); }
+.ap-sx-subSep { color: var(--s-dim); }
+
+.ap-sx-card { padding: 2px 12px 12px 14px; display: flex; flex-direction: column; gap: 14px; }
+.ap-sx-loading {
+  padding: 14px 2px;
+  font-family: var(--s-font-mono);
+  font-size: var(--text-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--s-dim);
+}
+.ap-sx-statGrid {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 10px;
+  padding: 11px 0 12px;
+  border-bottom: 1px solid var(--s-hairline);
+}
+.ap-sx-stat { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.ap-sx-statKey { font-family: var(--s-font-mono); font-size: var(--text-2xs); letter-spacing: 0.07em; text-transform: uppercase; color: var(--s-dim); }
+.ap-sx-statVal { font-size: var(--text-md); color: var(--s-ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ap-sx-statVal[data-mono] { font-family: var(--s-font-mono); font-size: var(--text-sm); }
+
+/* copy chip — any id rendered as one obvious click-to-copy; the glyph flips to
+   a check and the chip tints to accent on success (theme-aware via --s-*). */
+.ap-sx-copy {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  max-width: 100%;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.ap-sx-copyText { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ap-sx-copyIco {
+  flex: none;
+  color: var(--s-dim);
+  opacity: 0.7;
+  transition: color 0.12s ease, opacity 0.12s ease;
+}
+.ap-sx-copy:hover .ap-sx-copyIco { color: var(--s-muted); opacity: 1; }
+.ap-sx-copy[data-copied] { color: var(--s-accent); }
+.ap-sx-copy[data-copied] .ap-sx-copyIco { color: var(--s-accent); opacity: 1; }
+.ap-sx-copyStat { font-family: var(--s-font-mono); font-size: var(--text-sm); color: var(--s-ink); }
+
+.ap-sx-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 22px; }
+.ap-sx-block { min-width: 0; }
+.ap-sx-head { display: flex; align-items: baseline; gap: 8px; margin-bottom: 8px; }
+.ap-sx-lbl { font-family: var(--s-font-mono); font-size: var(--text-2xs); letter-spacing: 0.08em; text-transform: uppercase; color: var(--s-muted); }
+.ap-sx-meta { font-family: var(--s-font-mono); font-size: var(--text-xs); color: var(--s-dim); }
+.ap-sx-read { margin-left: auto; font-family: var(--s-font-mono); font-size: var(--text-xs); }
+.ap-sx-num { color: var(--s-accent); }
+.ap-sx-dim { color: var(--s-dim); }
+.ap-sx-sep { color: var(--s-dim); margin: 0 5px; }
+.ap-sx-gauge { height: 5px; border-radius: 3px; background: var(--s-surface); overflow: hidden; }
+.ap-sx-gaugeFill { display: block; height: 100%; border-radius: 3px; background: var(--s-accent); }
+.ap-sx-flow { display: flex; gap: 14px; margin-top: 7px; font-family: var(--s-font-mono); font-size: var(--text-xs); color: var(--s-muted); }
+.ap-sx-faint { color: var(--s-dim); }
+.ap-sx-empty { font-family: var(--s-font-mono); font-size: var(--text-xs); color: var(--s-dim); }
+.ap-sx-noTrace { padding: 1px 0 2px; }
+
+.ap-sx-tools { display: flex; flex-wrap: wrap; gap: 5px; }
+.ap-sx-tool {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
+  padding: 2px 7px;
+  border-radius: 5px;
+  background: var(--s-surface);
+  border: 1px solid var(--s-hairline);
+  font-family: var(--s-font-mono);
+  font-size: var(--text-xs);
+}
+.ap-sx-toolName { color: var(--s-ink); }
+.ap-sx-toolN { color: var(--s-dim); }
+
+.ap-sx-files { display: flex; flex-direction: column; gap: 3px; }
+.ap-sx-fileRow { display: grid; grid-template-columns: 10px minmax(0, 1.3fr) minmax(0, 1fr) auto; align-items: baseline; gap: 8px; }
+.ap-sx-fileMark { font-family: var(--s-font-mono); font-size: var(--text-sm); text-align: center; color: var(--s-dim); }
+.ap-sx-fileMark[data-state="modified"],
+.ap-sx-fileMark[data-state="created"] { color: var(--s-accent); }
+.ap-sx-fileName {
+  font-family: var(--s-font-mono);
+  font-size: var(--text-sm);
+  color: var(--s-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ap-sx-fileRow[data-changed] .ap-sx-fileName { color: var(--s-ink); }
+.ap-sx-fileDir {
+  font-family: var(--s-font-mono);
+  font-size: var(--text-xs);
+  color: var(--s-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ap-sx-fileN { font-family: var(--s-font-mono); font-size: var(--text-xs); color: var(--s-dim); }
+
+.ap-sx-actions { display: flex; gap: 8px; padding-top: 2px; }
+.ap-sx-open,
+.ap-sx-resume {
+  padding: 5px 13px;
+  border-radius: 6px;
+  font-family: var(--s-font-mono);
+  font-size: var(--text-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+.ap-sx-open { border: 1px solid var(--s-hairline-strong); background: none; color: var(--s-muted); }
+.ap-sx-open:hover { background: var(--s-surface); color: var(--s-ink); }
+.ap-sx-resume {
+  border: 1px solid color-mix(in srgb, var(--s-accent) 55%, transparent);
+  background: var(--s-accent-soft);
+  color: var(--s-accent);
+}
+.ap-sx-resume:hover { background: color-mix(in srgb, var(--s-accent) 22%, transparent); }
+/* copy the whole instrument as a paste-ready block; tertiary, pushed right */
+.ap-sx-copyAll {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 11px;
+  border: 1px solid var(--s-hairline);
+  border-radius: 6px;
+  background: none;
+  color: var(--s-dim);
+  font-family: var(--s-font-mono);
+  font-size: var(--text-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease, border-color 0.12s ease;
+}
+.ap-sx-copyAll:hover { background: var(--s-surface); color: var(--s-muted); border-color: var(--s-hairline-strong); }
+.ap-sx-copyAll[data-copied] {
+  color: var(--s-accent);
+  border-color: color-mix(in srgb, var(--s-accent) 45%, transparent);
+}
+.ap-sx-copyAll .ap-sx-copyIco { color: currentColor; opacity: 1; }
+.ap-act {
+  font-size: var(--text-sm);
+  font-weight: 540;
+  color: var(--s-muted);
+  background: none;
+  border: none;
+  border-radius: 6px;
+  padding: 4px 8px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: color 0.12s ease, background 0.12s ease;
+}
+.ap-act:hover { color: var(--s-ink); background: var(--s-hairline); }
+.ap-actPrimary { color: var(--s-accent); }
+.ap-actPrimary:hover { color: var(--s-accent); background: var(--s-accent-soft); }
+.ap-actIcon {
+  font-size: var(--text-xl);
+  line-height: 1;
+  color: var(--s-muted);
+  background: none;
+  border: none;
+  border-radius: 6px;
+  padding: 4px 7px;
+  cursor: pointer;
+}
+.ap-actIcon:hover { color: var(--s-ink); background: var(--s-hairline); }
+
+.ap-empty {
+  font-size: var(--text-md);
+  color: var(--s-dim);
+  padding: 22px 4px;
+  text-align: center;
+}
+
+.ap-loading {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  max-width: 760px;
+  margin: 0 auto;
+  padding: 52px 32px;
+}
+
+.ap-loading span {
+  display: block;
+  width: 100%;
+  height: 42px;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--s-ink) 7%, transparent);
+  animation: ap-loading-pulse 1.2s ease-in-out infinite alternate;
+}
+
+.ap-loading span:nth-child(3n) {
+  width: 88%;
+}
+
+@keyframes ap-loading-pulse {
+  from { opacity: 0.45; }
+  to { opacity: 0.9; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ap-loading span { animation: none; }
+}
+
+/* ── ephemeral disclosure — quiet text toggle ─────────────────────────────── */
+.ap-ephBlock { margin-top: 14px; }
+.ap-ephToggle {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: 100%;
+  font-size: var(--text-sm);
+  color: var(--s-muted);
+  background: none;
+  border: none;
+  padding: 6px 2px;
+  cursor: pointer;
+  text-align: left;
+  transition: color 0.12s ease;
+}
+.ap-ephToggle:hover { color: var(--s-ink); }
+.ap-ephCount { font-size: var(--text-sm); font-weight: 660; font-family: var(--s-font-mono); color: var(--s-dim); }
+.ap-ephCaret { margin-left: auto; color: var(--s-muted); }
+.ap-ephList { display: flex; flex-direction: column; padding: 2px 0 0; }
+.ap-ephRow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 5px 2px 5px 14px;
+  background: none;
+  border: none;
+  cursor: pointer;
+  text-align: left;
+}
+.ap-ephRow:hover { background: var(--s-hairline); }
+.ap-ephMark { flex: none; display: inline-flex; color: var(--s-muted); opacity: 0.7; }
+.ap-ephName {
+  flex: none;
+  min-width: 0;
+  max-width: 42%;
+  font-size: var(--text-md);
+  color: var(--s-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ap-ephBranch {
+  flex: 1;
+  min-width: 0;
+  font-size: var(--text-sm);
+  font-family: var(--s-font-mono);
+  color: var(--s-muted);
+  opacity: 0.8;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ap-ephAgo { flex: none; font-size: var(--text-xs); color: var(--s-dim); font-family: var(--s-font-mono); }
+
+.ap-newAgent {
+  margin-top: 16px;
+  align-self: flex-start;
+  font-size: var(--text-md);
+  font-weight: 540;
+  color: var(--s-muted);
+  background: none;
+  border: none;
+  padding: 4px 2px;
+  cursor: pointer;
+  transition: color 0.12s ease;
+}
+.ap-newAgent:hover:not(:disabled) { color: var(--s-accent); }
+.ap-newAgent:disabled { color: var(--s-dim); opacity: 0.55; cursor: default; }
+
+/* ── aside groups — label-led, hairline-divided, no boxes ─────────────────── */
+.ap-group { display: flex; flex-direction: column; }
+.ap-groupHead {
+  font-size: var(--text-2xs);
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--s-muted);
+  padding-bottom: 9px;
+  margin-bottom: 4px;
+  border-bottom: 1px solid var(--s-hairline);
+}
+.ap-groupDim { font-size: var(--text-md); color: var(--s-dim); padding: 2px 0; }
+
+.ap-recent {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 2px 8px;
+  padding: 7px 0;
+  background: none;
+  border: none;
+  border-bottom: 1px solid var(--s-hairline);
+  cursor: pointer;
+  text-align: left;
+}
+.ap-recent:last-child { border-bottom: none; }
+.ap-recentWho { font-size: var(--text-md); font-weight: 600; line-height: 1.15; color: var(--s-ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ap-recentAgo { font-size: var(--text-xs); line-height: 1.15; color: var(--s-dim); font-family: var(--s-font-mono); text-align: right; }
+.ap-recentTask {
+  grid-column: 1 / -1;
+  font-size: var(--text-sm);
+  color: var(--s-muted);
+  line-height: 1.3;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.ap-kv { display: flex; gap: 12px; align-items: baseline; padding: 5px 0; }
+.ap-kvKey {
+  flex: none;
+  width: 54px;
+  font-size: var(--text-2xs);
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--s-muted);
+}
+.ap-kvVal { flex: 1; min-width: 0; font-size: var(--text-md); color: var(--s-ink); font-family: var(--s-font-mono); }
+.ap-kvDim { color: var(--s-dim); }
+.ap-kvBranches { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.ap-kvBranch { font-size: var(--text-sm); font-family: var(--s-font-mono); color: var(--s-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* ── session detail (master–detail pane, drilled in place of the aside) ─────── */
+@keyframes ap-paneIn { from { opacity: 0; transform: translateX(16px); } to { opacity: 1; transform: translateX(0); } }
+.ap-detail {
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  padding: 22px 26px 26px;
+  border-left: 1px solid var(--s-hairline);
+  overflow: hidden;
+  animation: ap-paneIn 0.4s cubic-bezier(0.22, 0.61, 0.36, 1) both;
+}
+.ap-detailHead {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding-bottom: 14px;
+  border-bottom: 1px solid var(--s-hairline);
+}
+.ap-detailBack {
+  flex: none;
+  width: 26px;
+  height: 26px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: var(--text-3xl);
+  line-height: 1;
+  color: var(--s-muted);
+  background: none;
+  border: none;
+  border-radius: 7px;
+  cursor: pointer;
+  transition: color 0.12s ease, background 0.12s ease;
+}
+.ap-detailBack:hover { color: var(--s-ink); background: var(--s-hairline); }
+.ap-detailIdent { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.ap-detailTop { display: flex; align-items: center; gap: 10px; }
+.ap-detailName { font-size: var(--text-3xl); font-weight: 600; letter-spacing: -0.01em; color: var(--s-ink); }
+.ap-detailSub {
+  font-size: var(--text-sm);
+  font-family: var(--s-font-mono);
+  color: var(--s-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* meta strip — the right-rail readout folded into one row */
+.ap-metaStrip {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 7px 22px;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--s-hairline);
+  font-size: var(--text-md);
+  font-family: var(--s-font-mono);
+  color: var(--s-ink);
+}
+.ap-metaItem { display: inline-flex; align-items: baseline; gap: 7px; min-width: 0; }
+.ap-metaKey {
+  font-size: var(--text-2xs);
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--s-muted);
+  font-family: var(--s-font-sans);
+}
+.ap-metaVal { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ap-metaChanges { margin-left: auto; font-family: var(--s-font-mono); font-size: var(--text-md); }
+.ap-add { color: var(--s-accent); }
+.ap-del { color: var(--s-dim); }
+
+/* instance switcher — underline tabs, horizontally scrollable for busy agents */
+.ap-sessTabs {
+  display: flex;
+  gap: 18px;
+  overflow-x: auto;
+  padding: 11px 0;
+  border-bottom: 1px solid var(--s-hairline);
+  scrollbar-width: thin;
+}
+.ap-sessTab {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: none;
+  border: none;
+  padding: 2px 0;
+  cursor: pointer;
+  font-size: var(--text-sm);
+  font-family: var(--s-font-mono);
+  color: var(--s-muted);
+  white-space: nowrap;
+  border-bottom: 1.5px solid transparent;
+  transition: color 0.12s ease, border-color 0.12s ease;
+}
+.ap-sessTab:hover { color: var(--s-ink); }
+.ap-sessTab[data-on] { color: var(--s-ink); border-bottom-color: var(--s-accent); }
+.ap-sessDot { flex: none; width: 5px; height: 5px; border-radius: 999px; background: var(--s-hairline-strong); }
+.ap-sessDot[data-on] { background: var(--s-accent); box-shadow: 0 0 0 2.5px var(--s-accent-soft); }
+
+.ap-traceLoading { font-size: var(--text-md); color: var(--s-dim); padding: 24px 4px; text-align: center; }
+
+/* transcript — hosts the real SessionObserve, scrolls within the pane */
+.ap-detailBody { flex: 1; min-height: 0; display: flex; flex-direction: column; padding-top: 4px; }
+.ap-detailBody .ap-sectionHead { padding: 10px 0 0; }
+.ap-trace { flex: 1; min-height: 0; overflow: hidden; display: flex; flex-direction: column; margin: 0 -26px; }
+.ap-trace > * { flex: 1; min-height: 0; }
+
+/* steer box — pinned under the transcript */
+.ap-steer {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid var(--s-hairline);
+}
+.ap-steerInput {
+  flex: 1;
+  min-width: 0;
+  background: none;
+  border: none;
+  outline: none;
+  color: var(--s-ink);
+  font-family: var(--s-font-sans);
+  font-size: var(--text-lg);
+}
+.ap-steerInput::placeholder { color: var(--s-muted); }
+.ap-steerSend {
+  flex: none;
+  font-size: var(--text-md);
+  font-weight: 580;
+  color: var(--s-bg);
+  background: var(--s-accent);
+  border: none;
+  border-radius: 8px;
+  padding: 7px 15px;
+  cursor: pointer;
+  transition: filter 0.12s ease;
+}
+.ap-steerSend:hover { filter: brightness(1.07); }

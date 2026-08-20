@@ -1,0 +1,5 @@
+/* Brand fonts. The app loads these via a <link> in client/index.html; the
+   design bundle has no index.html, so we re-import them here so styles.css's
+   @import closure carries the families the component CSS references
+   (Inter, Inter Tight, JetBrains Mono, Play, Spectral, Cormorant Garamond). */
+@import url("https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,400;0,500;1,400;1,500&family=Inter+Tight:wght@400;500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500;600&family=Play:wght@400;700&family=Spectral:wght@500;600&display=swap");

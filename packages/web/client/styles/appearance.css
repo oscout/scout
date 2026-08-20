@@ -1,0 +1,271 @@
+/* Scout appearance profiles sit above HudsonKit's template layer. Hudson owns
+ * theme resolution and its component aliases; Scout independently chooses the
+ * palette, accent, and contrast while the Hudson template remains responsible
+ * for interface geometry and chrome behavior. Values stay as OKLCH triplets so
+ * Hudson's `oklch(var(--token))` contract remains intact. */
+
+[data-scout-theme-mode="dark"][data-scout-palette="scout"] {
+  color-scheme: dark;
+  --background: 0.132 0.004 260;
+  --foreground: 0.965 0.006 260;
+  --card: 0.178 0.005 260;
+  --card-foreground: 0.965 0.006 260;
+  --popover: 0.16 0.005 260;
+  --popover-foreground: 0.965 0.006 260;
+  --primary: 0.965 0.006 260;
+  --primary-foreground: 0.132 0.004 260;
+  --secondary: 0.22 0.006 260;
+  --secondary-foreground: 0.94 0.006 260;
+  --muted: 0.205 0.005 260;
+  --muted-foreground: 0.72 0.008 260;
+  --accent: 0.86 0.17 125;
+  --accent-foreground: 0.14 0.02 125;
+  --border: 0.32 0.007 260;
+  --input: 0.36 0.008 260;
+  --ring: 0.86 0.17 125;
+}
+
+[data-scout-theme-mode="light"][data-scout-palette="scout"] {
+  color-scheme: light;
+  --background: 0.978 0.004 85;
+  --foreground: 0.24 0.01 80;
+  --card: 0.992 0.003 85;
+  --card-foreground: 0.24 0.01 80;
+  --popover: 0.995 0.003 85;
+  --popover-foreground: 0.24 0.01 80;
+  --primary: 0.24 0.01 80;
+  --primary-foreground: 0.99 0.003 85;
+  --secondary: 0.94 0.007 84;
+  --secondary-foreground: 0.28 0.012 80;
+  --muted: 0.94 0.006 84;
+  --muted-foreground: 0.56 0.014 80;
+  --accent: 0.72 0.16 125;
+  --accent-foreground: 0.99 0.003 85;
+  --border: 0.84 0.01 82;
+  --input: 0.78 0.012 82;
+  --ring: 0.72 0.16 125;
+}
+
+[data-scout-theme-mode="dark"][data-scout-palette="graphite"] {
+  color-scheme: dark;
+  --background: 0.15 0.0021 286.1;
+  --foreground: 0.9464 0.0013 286.4;
+  --card: 0.2099 0.0039 286.1;
+  --card-foreground: 0.9464 0.0013 286.4;
+  --popover: 0.19 0.003 286;
+  --popover-foreground: 0.9464 0.0013 286.4;
+  --primary: 0.9464 0.0013 286.4;
+  --primary-foreground: 0.15 0.0021 286.1;
+  --secondary: 0.27 0.006 286;
+  --secondary-foreground: 0.92 0.002 286;
+  --muted: 0.25 0.006 286;
+  --muted-foreground: 0.7118 0.0129 286.1;
+  --accent: 0.6372 0.0325 243.7;
+  --accent-foreground: 0.15 0.0021 286.1;
+  --border: 0.3703 0.0119 285.8;
+  --input: 0.43 0.014 286;
+  --ring: 0.6372 0.0325 243.7;
+}
+
+[data-scout-theme-mode="light"][data-scout-palette="graphite"] {
+  color-scheme: light;
+  --background: 0.975 0.002 286;
+  --foreground: 0.22 0.004 286;
+  --card: 0.998 0.001 286;
+  --card-foreground: 0.22 0.004 286;
+  --popover: 0.998 0.001 286;
+  --popover-foreground: 0.22 0.004 286;
+  --primary: 0.22 0.004 286;
+  --primary-foreground: 0.998 0.001 286;
+  --secondary: 0.94 0.004 286;
+  --secondary-foreground: 0.28 0.006 286;
+  --muted: 0.93 0.004 286;
+  --muted-foreground: 0.5517 0.0138 285.9;
+  --accent: 0.54 0.04 244;
+  --accent-foreground: 0.998 0.001 286;
+  --border: 0.82 0.008 286;
+  --input: 0.75 0.01 286;
+  --ring: 0.54 0.04 244;
+}
+
+/* Polar borrows the restrained polar-night / frost relationship familiar to
+ * Nord users, but keeps Scout's semantic status colors and component grammar. */
+[data-scout-theme-mode="dark"][data-scout-palette="polar"] {
+  color-scheme: dark;
+  --background: 0.3244 0.0229 264.2;
+  --foreground: 0.9513 0.0074 260.7;
+  --card: 0.3792 0.029 266.5;
+  --card-foreground: 0.9513 0.0074 260.7;
+  --popover: 0.355 0.026 265;
+  --popover-foreground: 0.9513 0.0074 260.7;
+  --primary: 0.9513 0.0074 260.7;
+  --primary-foreground: 0.3244 0.0229 264.2;
+  --secondary: 0.418 0.034 265;
+  --secondary-foreground: 0.93 0.01 261;
+  --muted: 0.395 0.03 265;
+  --muted-foreground: 0.7671 0.0255 259.8;
+  --accent: 0.7746 0.0622 217.5;
+  --accent-foreground: 0.28 0.025 264;
+  --border: 0.4523 0.0352 264.1;
+  --input: 0.50 0.04 264;
+  --ring: 0.7746 0.0622 217.5;
+}
+
+[data-scout-theme-mode="light"][data-scout-palette="polar"] {
+  color-scheme: light;
+  --background: 0.9513 0.0074 260.7;
+  --foreground: 0.3244 0.0229 264.2;
+  --card: 1 0 0;
+  --card-foreground: 0.3244 0.0229 264.2;
+  --popover: 1 0 0;
+  --popover-foreground: 0.3244 0.0229 264.2;
+  --primary: 0.3244 0.0229 264.2;
+  --primary-foreground: 1 0 0;
+  --secondary: 0.8993 0.0164 262.7;
+  --secondary-foreground: 0.36 0.028 264;
+  --muted: 0.8993 0.0164 262.7;
+  --muted-foreground: 0.4523 0.0352 264.1;
+  --accent: 0.5944 0.0772 254;
+  --accent-foreground: 1 0 0;
+  --border: 0.82 0.025 263;
+  --input: 0.74 0.03 263;
+  --ring: 0.5944 0.0772 254;
+}
+
+/* Solar keeps Solarized's deliberately measured background / foreground
+ * relationship, reduced to Scout's UI roles rather than syntax colors. */
+[data-scout-theme-mode="dark"][data-scout-palette="solar"] {
+  color-scheme: dark;
+  --background: 0.2673 0.0486 219.8;
+  --foreground: 0.6979 0.0159 196.8;
+  --card: 0.3092 0.0518 219.7;
+  --card-foreground: 0.6979 0.0159 196.8;
+  --popover: 0.292 0.05 220;
+  --popover-foreground: 0.6979 0.0159 196.8;
+  --primary: 0.6979 0.0159 196.8;
+  --primary-foreground: 0.2673 0.0486 219.8;
+  --secondary: 0.35 0.049 219;
+  --secondary-foreground: 0.72 0.016 197;
+  --muted: 0.33 0.047 220;
+  --muted-foreground: 0.6537 0.0197 205.3;
+  --accent: 0.6437 0.1019 187.4;
+  --accent-foreground: 0.22 0.045 220;
+  --border: 0.523 0.0283 219.1;
+  --input: 0.57 0.03 215;
+  --ring: 0.6437 0.1019 187.4;
+}
+
+[data-scout-theme-mode="light"][data-scout-palette="solar"] {
+  color-scheme: light;
+  --background: 0.9735 0.0261 90.1;
+  --foreground: 0.523 0.0283 219.1;
+  --card: 0.9934 0.0107 95.2;
+  --card-foreground: 0.47 0.032 219;
+  --popover: 0.9934 0.0107 95.2;
+  --popover-foreground: 0.47 0.032 219;
+  --primary: 0.47 0.032 219;
+  --primary-foreground: 0.9934 0.0107 95.2;
+  --secondary: 0.9306 0.026 92.4;
+  --secondary-foreground: 0.49 0.03 219;
+  --muted: 0.9306 0.026 92.4;
+  --muted-foreground: 0.55 0.026 215;
+  --accent: 0.6149 0.1394 244.9;
+  --accent-foreground: 0.9934 0.0107 95.2;
+  --border: 0.82 0.026 91;
+  --input: 0.74 0.03 91;
+  --ring: 0.6149 0.1394 244.9;
+}
+
+/* Status is semantic, not decorative. Palette and interface shape never
+ * redefine what success, warning, failure, or information mean. */
+[data-scout-theme-mode="dark"][data-scout-palette] {
+  --destructive: 0.72 0.18 25;
+  --destructive-foreground: 0.98 0 0;
+  --warning: 0.82 0.15 85;
+  --success: 0.8 0.15 155;
+  --info: 0.72 0.13 240;
+}
+
+[data-scout-theme-mode="light"][data-scout-palette] {
+  --destructive: 0.62 0.19 25;
+  --destructive-foreground: 0.99 0 0;
+  --warning: 0.72 0.15 85;
+  --success: 0.64 0.16 155;
+  --info: 0.56 0.14 240;
+}
+
+/* Accent overrides are intentionally small and optional. "Theme" leaves the
+ * palette's native signal untouched. */
+[data-scout-theme-mode="dark"][data-scout-accent="lime"] {
+  --accent: 0.86 0.17 125;
+  --accent-foreground: 0.14 0.02 125;
+  --ring: 0.86 0.17 125;
+}
+
+[data-scout-theme-mode="light"][data-scout-accent="lime"] {
+  --accent: 0.72 0.16 125;
+  --accent-foreground: 0.99 0 0;
+  --ring: 0.72 0.16 125;
+}
+
+[data-scout-theme-mode="dark"][data-scout-accent="cyan"] {
+  --accent: 0.8 0.12 215;
+  --accent-foreground: 0.15 0.03 230;
+  --ring: 0.8 0.12 215;
+}
+
+[data-scout-theme-mode="light"][data-scout-accent="cyan"] {
+  --accent: 0.58 0.14 230;
+  --accent-foreground: 0.99 0 0;
+  --ring: 0.58 0.14 230;
+}
+
+[data-scout-theme-mode="dark"][data-scout-accent="violet"] {
+  --accent: 0.76 0.14 300;
+  --accent-foreground: 0.16 0.03 300;
+  --ring: 0.76 0.14 300;
+}
+
+[data-scout-theme-mode="light"][data-scout-accent="violet"] {
+  --accent: 0.58 0.17 300;
+  --accent-foreground: 0.99 0 0;
+  --ring: 0.58 0.17 300;
+}
+
+[data-scout-theme-mode="dark"][data-scout-accent="amber"] {
+  --accent: 0.82 0.15 85;
+  --accent-foreground: 0.18 0.03 85;
+  --ring: 0.82 0.15 85;
+}
+
+[data-scout-theme-mode="light"][data-scout-accent="amber"] {
+  --accent: 0.68 0.16 75;
+  --accent-foreground: 0.99 0 0;
+  --ring: 0.68 0.16 75;
+}
+
+/* Contrast changes only structural separation. It does not brighten text or
+ * repurpose the accent, so it remains safe to compare across palettes. */
+[data-scout-contrast="soft"] {
+  --hud-border: color-mix(in srgb, var(--hud-ink) 6%, transparent);
+  --hud-chrome-border: color-mix(in srgb, var(--hud-ink) 8%, transparent);
+  --hud-chrome-border-subtle: color-mix(in srgb, var(--hud-ink) 4%, transparent);
+  --hud-line: color-mix(in srgb, var(--hud-ink) 8%, transparent);
+  --hud-line-strong: color-mix(in srgb, var(--hud-ink) 12%, transparent);
+}
+
+[data-scout-contrast="balanced"] {
+  --hud-border: color-mix(in srgb, var(--hud-ink) 10%, transparent);
+  --hud-chrome-border: color-mix(in srgb, var(--hud-ink) 14%, transparent);
+  --hud-chrome-border-subtle: color-mix(in srgb, var(--hud-ink) 7%, transparent);
+  --hud-line: color-mix(in srgb, var(--hud-ink) 12%, transparent);
+  --hud-line-strong: color-mix(in srgb, var(--hud-ink) 18%, transparent);
+}
+
+[data-scout-contrast="strong"] {
+  --hud-border: color-mix(in srgb, var(--hud-ink) 16%, transparent);
+  --hud-chrome-border: color-mix(in srgb, var(--hud-ink) 24%, transparent);
+  --hud-chrome-border-subtle: color-mix(in srgb, var(--hud-ink) 12%, transparent);
+  --hud-line: color-mix(in srgb, var(--hud-ink) 20%, transparent);
+  --hud-line-strong: color-mix(in srgb, var(--hud-ink) 28%, transparent);
+}

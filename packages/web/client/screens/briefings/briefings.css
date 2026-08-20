@@ -1,0 +1,429 @@
+.briefings-placeholder {
+  padding: var(--space-4xl) 0;
+  color: var(--hud-text-muted, #888);
+  font-size: var(--text-lg);
+}
+
+.briefings-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+}
+
+.briefing-row {
+  width: 100%;
+  text-align: left;
+  background: var(--hud-surface, rgba(255, 255, 255, 0.02));
+  border: 1px solid var(--hud-border, rgba(255, 255, 255, 0.08));
+  border-radius: var(--radius-lg);
+  padding: var(--space-lg) var(--space-xl);
+  cursor: pointer;
+  color: inherit;
+  font: inherit;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+  transition: background 120ms ease, border-color 120ms ease;
+}
+
+.briefing-row:hover {
+  background: var(--hud-surface-hover, rgba(255, 255, 255, 0.04));
+  border-color: var(--hud-border-strong, rgba(255, 255, 255, 0.16));
+}
+
+.briefing-row-head {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-md);
+}
+
+.briefing-kind {
+  text-transform: uppercase;
+  font-size: var(--text-xs);
+  letter-spacing: var(--tracking-md);
+  padding: var(--space-3xs) var(--space-xs);
+  border-radius: var(--radius-sm);
+  background: var(--scout-chrome-hover);
+  color: var(--hud-text, inherit);
+}
+
+.briefing-kind-fleet-home {
+  background: rgba(72, 144, 226, 0.16);
+  color: #6fb0f0;
+}
+
+.briefing-kind-tour {
+  background: rgba(196, 144, 86, 0.16);
+  color: var(--cat-gold);
+}
+
+.briefing-row-title {
+  font-weight: 500;
+  flex: 1 1 auto;
+  font-size: var(--text-xl);
+}
+
+.briefing-row-time {
+  font-size: var(--text-sm);
+  color: var(--hud-text-muted, #888);
+  flex: 0 0 auto;
+}
+
+.briefing-row-summary {
+  font-size: var(--text-lg);
+  line-height: var(--leading-snug);
+  color: var(--hud-text, inherit);
+}
+
+.briefing-row-meta {
+  font-size: var(--text-sm);
+  color: var(--hud-text-muted, #888);
+  display: flex;
+  gap: var(--space-2xs);
+}
+
+/* Detail screen */
+.briefing-detail {
+  max-width: 920px;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4xl);
+}
+
+.briefing-detail-back {
+  background: transparent;
+  border: none;
+  color: var(--hud-text-muted, #888);
+  font-size: var(--text-md);
+  padding: 0;
+  cursor: pointer;
+  align-self: flex-start;
+}
+
+.briefing-detail-back:hover {
+  color: var(--hud-text, inherit);
+}
+
+.briefing-detail-header h2 {
+  margin: 0 0 var(--space-sm);
+  font-size: var(--text-4xl);
+}
+
+.briefing-detail-header-meta {
+  display: flex;
+  gap: var(--space-md);
+  font-size: var(--text-md);
+  color: var(--hud-text-muted, #888);
+  margin-top: var(--space-xs);
+}
+
+.briefing-detail-summary {
+  font-size: var(--text-xl);
+  line-height: var(--leading-normal);
+  margin: var(--space-lg) 0 0;
+}
+
+.briefing-detail-recommendation {
+  font-size: var(--text-lg);
+  line-height: var(--leading-normal);
+  background: rgba(196, 144, 86, 0.08);
+  border-left: 2px solid var(--cat-gold);
+  padding: var(--space-md) var(--space-lg);
+  border-radius: 0 var(--radius-md) var(--radius-md) 0;
+  margin-top: var(--space-lg);
+}
+
+.briefing-layer {
+  border: 1px solid var(--hud-border, rgba(255, 255, 255, 0.08));
+  border-radius: var(--radius-lg);
+  padding: var(--space-2xl);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-lg);
+}
+
+.briefing-layer-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  border-bottom: 1px solid var(--hud-border, rgba(255, 255, 255, 0.08));
+  padding-bottom: var(--space-sm);
+}
+
+.briefing-layer-eyebrow {
+  font-size: var(--text-xs);
+  letter-spacing: var(--tracking-md);
+  text-transform: uppercase;
+  color: var(--hud-text-muted, #888);
+}
+
+.briefing-layer-title {
+  font-size: var(--text-xl);
+  font-weight: 500;
+}
+
+/* SCO-037: markdown body becomes the canonical briefing view.
+ * Sits above the structured layers so the human-readable form is primary. */
+.briefing-layer-markdown {
+  background: color-mix(in srgb, var(--hud-surface, #1a1a1a) 60%, transparent);
+}
+
+.briefing-markdown {
+  font-size: var(--text-lg);
+  line-height: var(--leading-normal);
+  color: var(--hud-text, #ddd);
+  max-width: 72ch;
+}
+
+/* SCO-037 step 6: spoken-form disclosure — what the presenter produced
+ * for TTS, beside the markdown report. */
+.briefing-layer-presented {
+  background: color-mix(in srgb, var(--hud-accent, #f4b860) 4%, transparent);
+  border-color: color-mix(in srgb, var(--hud-accent, #f4b860) 24%, var(--hud-border, rgba(255, 255, 255, 0.08)));
+}
+
+.briefing-presented-sentences {
+  list-style: decimal;
+  padding-left: var(--space-3xl);
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+}
+
+.briefing-presented-sentence {
+  font-size: var(--text-lg);
+  line-height: var(--leading-normal);
+  color: var(--hud-text, #ddd);
+  max-width: 72ch;
+}
+
+.briefing-presented-meta {
+  margin-top: var(--space-2xs);
+  font-size: var(--text-xs);
+  letter-spacing: var(--tracking-md);
+  color: var(--hud-text-muted, #888);
+  font-family: var(--font-mono);
+}
+
+/* SCO-037 step 7: per-call telemetry (analyst + presenter). */
+.briefing-layer-telemetry {
+  border-style: dashed;
+}
+
+.briefing-telemetry {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-md);
+  margin: 0;
+}
+
+.briefing-telemetry-row {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2xs);
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  color: var(--hud-text, #ddd);
+}
+
+.briefing-telemetry-row-head {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-md);
+  flex-wrap: wrap;
+}
+
+.briefing-telemetry-label {
+  font-size: var(--text-xs);
+  letter-spacing: var(--tracking-md);
+  text-transform: uppercase;
+  color: var(--hud-text-muted, #888);
+}
+
+.briefing-telemetry-model {
+  color: var(--hud-text, #ddd);
+}
+
+.briefing-telemetry-note {
+  font-size: var(--text-xs);
+  color: color-mix(in srgb, var(--hud-accent, #f4b860) 80%, var(--hud-text-muted, #888));
+}
+
+.briefing-telemetry-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-xl);
+  color: var(--hud-text-muted, #888);
+  font-size: var(--text-sm);
+}
+
+.briefing-telemetry-response {
+  color: var(--hud-text-muted, #888);
+  font-size: var(--text-xs);
+  opacity: 0.7;
+}
+
+.briefing-steps {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-lg);
+}
+
+.briefing-step {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2xs);
+}
+
+.briefing-step-label {
+  font-size: var(--text-md);
+  font-weight: 500;
+  color: var(--hud-text-muted, #888);
+}
+
+.briefing-step-narration {
+  font-size: var(--text-lg);
+  line-height: var(--leading-normal);
+  margin: 0;
+}
+
+.briefing-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-sm);
+}
+
+.briefing-observations {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+}
+
+.briefing-observation {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+  padding: var(--space-md) var(--space-lg);
+  background: rgba(255, 255, 255, 0.02);
+  border-radius: var(--radius-md);
+  border-left: 2px solid transparent;
+}
+
+.briefing-observation-warn {
+  border-left-color: var(--cat-gold);
+}
+
+.briefing-observation-err {
+  border-left-color: #e07878;
+}
+
+.briefing-observation-text {
+  font-size: var(--text-lg);
+  line-height: var(--leading-snug);
+}
+
+.briefing-observation-refs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-xs);
+}
+
+.briefing-ref-chip {
+  font-size: var(--text-sm);
+  padding: var(--space-3xs) var(--space-xs);
+  border-radius: var(--radius-sm);
+  background: var(--scout-chrome-hover);
+  color: inherit;
+  border: none;
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.briefing-ref-chip:hover {
+  background: rgba(255, 255, 255, 0.12);
+}
+
+.briefing-ref-chip-static {
+  cursor: default;
+}
+
+.briefing-ref-chip-static:hover {
+  background: var(--scout-chrome-hover);
+}
+
+.briefing-snapshot-counts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-xl);
+  font-size: var(--text-md);
+  color: var(--hud-text-muted, #888);
+}
+
+.briefing-snapshot-count strong {
+  color: var(--hud-text, inherit);
+  font-weight: 500;
+}
+
+.briefing-snapshot-section {
+  border-top: 1px solid var(--hud-border, rgba(255, 255, 255, 0.08));
+  padding-top: var(--space-md);
+}
+
+.briefing-snapshot-section-head {
+  cursor: pointer;
+  font-size: var(--text-md);
+  font-weight: 500;
+  margin-bottom: var(--space-sm);
+}
+
+.briefing-snapshot-section-head::marker {
+  color: var(--hud-text-muted, #888);
+}
+
+.briefing-snapshot-raw {
+  font-family: var(--hud-mono, ui-monospace, SFMono-Regular, "SF Mono", monospace);
+  font-size: var(--text-sm);
+  background: rgba(0, 0, 0, 0.2);
+  padding: var(--space-md);
+  border-radius: var(--radius-md);
+  max-height: 360px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.briefing-call-grid {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: var(--space-xs) var(--space-lg);
+  font-size: var(--text-md);
+}
+
+.briefing-call-grid dt {
+  color: var(--hud-text-muted, #888);
+}
+
+.briefing-call-grid dd {
+  margin: 0;
+  font-family: var(--hud-mono, ui-monospace, monospace);
+  word-break: break-word;
+}
+
+.briefing-call-prompt {
+  font-family: var(--hud-mono, ui-monospace, monospace);
+  font-size: var(--text-sm);
+  background: rgba(0, 0, 0, 0.2);
+  padding: var(--space-md);
+  border-radius: var(--radius-md);
+  max-height: 240px;
+  overflow: auto;
+  white-space: pre-wrap;
+  margin-top: var(--space-sm);
+}

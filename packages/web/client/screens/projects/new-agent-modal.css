@@ -1,0 +1,642 @@
+/* New-agent creation modal. Portaled to <body>, so it carries its own token
+   block (mirroring the .s-av2 derivation) to stay independent of mount point.
+   Dense, dark, one rationed accent — matches the projects facet language. */
+
+.na-backdrop {
+  --na-bg: var(--hud-bg);
+  --na-ink: var(--scout-chrome-ink-strong);
+  --na-muted: var(--scout-chrome-ink-soft);
+  --na-dim: var(--scout-chrome-ink-faint);
+  --na-hairline: color-mix(in srgb, var(--hud-ink) 10%, transparent);
+  --na-accent: var(--accent);
+  --na-mono: var(--hud-font-mono);
+  --na-sans: var(--hud-font-sans);
+  --na-radius: 8px;
+  --na-radius-sm: 6px;
+  --na-surface: color-mix(in srgb, var(--hud-surface) 80%, var(--na-bg));
+  --na-field: color-mix(in srgb, var(--hud-surface) 36%, transparent);
+  --na-danger: var(--hud-danger, #ff5a5f);
+  --na-warn: var(--hud-warning, #e9b949);
+
+  position: fixed;
+  inset: 0;
+  z-index: 10000;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: clamp(24px, 8vh, 80px) 16px;
+  overflow-y: auto;
+  background: color-mix(in srgb, black 56%, transparent);
+  backdrop-filter: blur(5px) saturate(118%);
+  -webkit-backdrop-filter: blur(5px) saturate(118%);
+  animation: na-fade 120ms ease-out;
+  font-family: var(--na-sans);
+  color: var(--na-ink);
+}
+
+@keyframes na-fade {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.na-panel {
+  width: min(560px, 100%);
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--na-hairline);
+  border-radius: var(--na-radius);
+  background: var(--na-surface);
+  box-shadow:
+    0 28px 80px -20px color-mix(in srgb, black 80%, transparent),
+    inset 0 1px 0 color-mix(in srgb, white 5%, transparent);
+  outline: none;
+  animation: na-rise 140ms var(--av2-ease, cubic-bezier(0.22, 1, 0.36, 1));
+}
+
+@keyframes na-rise {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .na-backdrop,
+  .na-panel {
+    animation: none;
+  }
+}
+
+/* ── Header ─────────────────────────────────────────────────────────────── */
+.na-head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 16px 12px;
+  border-bottom: 1px solid var(--na-hairline);
+}
+
+.na-headIdent {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  min-width: 0;
+}
+
+.na-title {
+  margin: 0;
+  font-size: var(--text-lg);
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  color: var(--na-ink);
+}
+
+.na-scope {
+  font-family: var(--na-mono);
+  font-size: var(--text-sm);
+  color: var(--na-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.na-close {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border: none;
+  border-radius: var(--na-radius-sm);
+  background: transparent;
+  color: var(--na-dim);
+  cursor: pointer;
+}
+
+.na-close:hover,
+.na-close:focus-visible {
+  color: var(--na-ink);
+  background: color-mix(in srgb, var(--hud-ink) 8%, transparent);
+  outline: none;
+}
+
+/* ── Context strip ──────────────────────────────────────────────────────── */
+.na-context {
+  flex: none;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--na-hairline);
+  background: color-mix(in srgb, var(--hud-surface) 22%, transparent);
+}
+
+.na-contextChip {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+}
+
+.na-contextLabel {
+  font-family: var(--na-mono);
+  font-size: var(--text-3xs);
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--na-dim);
+}
+
+.na-contextValue {
+  font-family: var(--na-mono);
+  font-size: var(--text-xs);
+  color: var(--na-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 280px;
+}
+
+/* ── Body ───────────────────────────────────────────────────────────────── */
+.na-body {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 16px;
+}
+
+.na-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.na-sectionLabel {
+  font-family: var(--na-mono);
+  font-size: var(--text-3xs);
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--na-dim);
+}
+
+/* ── Mode framing — the disposable-vs-reusable decision ─────────────────── */
+.na-modeChoice {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.na-modeCard {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 10px 11px;
+  border: 1px solid var(--na-hairline);
+  border-radius: var(--na-radius-sm);
+  background: var(--na-field);
+  color: var(--na-muted);
+  cursor: pointer;
+  text-align: left;
+}
+
+.na-modeCard:hover {
+  border-color: color-mix(in srgb, var(--hud-ink) 18%, transparent);
+}
+
+.na-modeCard[data-active] {
+  border-color: color-mix(in srgb, var(--na-accent) 58%, var(--na-hairline));
+  background: color-mix(in srgb, var(--na-accent) 11%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--na-accent) 22%, transparent);
+}
+
+.na-modeTitle {
+  font-size: var(--text-md);
+  font-weight: 600;
+  color: var(--na-ink);
+}
+
+.na-modeCard[data-active] .na-modeTitle {
+  color: var(--na-accent);
+}
+
+.na-modeSub {
+  font-family: var(--na-mono);
+  font-size: var(--text-2xs);
+  line-height: 1.4;
+  letter-spacing: 0.01em;
+  color: var(--na-dim);
+}
+
+.na-field {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.na-field > span {
+  font-family: var(--na-mono);
+  font-size: var(--text-3xs);
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--na-dim);
+}
+
+.na-field input,
+.na-prompt {
+  width: 100%;
+  min-width: 0;
+  border: 1px solid var(--na-hairline);
+  border-radius: var(--na-radius-sm);
+  background: var(--na-field);
+  color: var(--na-ink);
+  font: inherit;
+  font-size: var(--text-md);
+  outline: none;
+}
+
+.na-field input {
+  height: 30px;
+  padding: 0 9px;
+}
+
+.na-field input::placeholder,
+.na-prompt::placeholder {
+  color: var(--na-dim);
+}
+
+.na-field input:focus,
+.na-prompt:focus {
+  border-color: color-mix(in srgb, var(--na-accent) 50%, var(--na-hairline));
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--na-accent) 18%, transparent);
+}
+
+.na-prompt {
+  resize: vertical;
+  min-height: 64px;
+  max-height: 200px;
+  padding: 8px 9px;
+  line-height: 1.5;
+}
+
+/* ── Harness selector ───────────────────────────────────────────────────── */
+.na-harnessRow {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 7px;
+}
+
+.na-harness {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 5px;
+  padding: 9px 10px;
+  border: 1px solid var(--na-hairline);
+  border-radius: var(--na-radius-sm);
+  background: var(--na-field);
+  color: var(--na-muted);
+  cursor: pointer;
+  text-align: left;
+}
+
+.na-harness:hover {
+  color: var(--na-ink);
+  border-color: color-mix(in srgb, var(--hud-ink) 18%, transparent);
+}
+
+.na-harness[data-active] {
+  color: var(--na-ink);
+  border-color: color-mix(in srgb, var(--na-accent) 55%, var(--na-hairline));
+  background: color-mix(in srgb, var(--na-accent) 10%, transparent);
+}
+
+.na-harnessName {
+  font-size: var(--text-md);
+  font-weight: 600;
+}
+
+.na-harnessState {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-family: var(--na-mono);
+  font-size: var(--text-3xs);
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--na-dim);
+}
+
+.na-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.na-harnessState[data-tone="ok"] {
+  color: var(--na-accent);
+}
+
+.na-harnessState[data-tone="warn"] {
+  color: var(--na-warn);
+}
+
+.na-harnessState[data-tone="off"] {
+  color: var(--na-dim);
+}
+
+.na-readinessNote {
+  margin: 0;
+  font-size: var(--text-xs);
+  line-height: 1.45;
+  color: var(--na-muted);
+}
+
+.na-readinessNote[data-tone="off"] {
+  color: color-mix(in srgb, var(--na-danger) 70%, var(--na-muted));
+}
+
+/* ── Handle field ───────────────────────────────────────────────────────── */
+.na-handleWrap {
+  display: flex;
+  align-items: center;
+  height: 30px;
+  border: 1px solid var(--na-hairline);
+  border-radius: var(--na-radius-sm);
+  background: var(--na-field);
+  padding-left: 8px;
+}
+
+.na-handleWrap:focus-within {
+  border-color: color-mix(in srgb, var(--na-accent) 50%, var(--na-hairline));
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--na-accent) 18%, transparent);
+}
+
+.na-handleWrap[data-tone="warn"] {
+  border-color: color-mix(in srgb, var(--na-warn) 55%, var(--na-hairline));
+}
+
+.na-handleAt {
+  font-family: var(--na-mono);
+  font-size: var(--text-md);
+  color: var(--na-dim);
+}
+
+.na-handleWrap input {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  border: none;
+  background: transparent;
+  color: var(--na-ink);
+  font-family: var(--na-mono);
+  font-size: var(--text-md);
+  padding: 0 8px 0 2px;
+  outline: none;
+}
+
+.na-suggestRow {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.na-suggestLabel {
+  font-family: var(--na-mono);
+  font-size: var(--text-3xs);
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--na-dim);
+}
+
+.na-suggest {
+  padding: 3px 7px;
+  border: 1px solid var(--na-hairline);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--na-muted);
+  font-family: var(--na-mono);
+  font-size: var(--text-xs);
+  cursor: pointer;
+}
+
+.na-suggest:hover {
+  color: var(--na-ink);
+  border-color: color-mix(in srgb, var(--na-accent) 45%, var(--na-hairline));
+  background: color-mix(in srgb, var(--na-accent) 9%, transparent);
+}
+
+.na-validation {
+  margin: 0;
+  font-size: var(--text-xs);
+  line-height: 1.45;
+  color: var(--na-muted);
+}
+
+.na-validation[data-tone="warn"] {
+  color: color-mix(in srgb, var(--na-warn) 86%, var(--na-ink));
+}
+
+.na-validation[data-tone="hint"] {
+  color: var(--na-muted);
+}
+
+.na-code {
+  font-family: var(--na-mono);
+  font-size: var(--text-xs);
+  color: var(--na-ink);
+}
+
+/* ── Routing preview ────────────────────────────────────────────────────── */
+.na-routing .na-routingBody {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+  border: 1px solid var(--na-hairline);
+  border-radius: var(--na-radius-sm);
+  background: color-mix(in srgb, var(--hud-surface) 28%, transparent);
+}
+
+.na-routingLine {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+
+.na-routingKey {
+  flex: none;
+  width: 52px;
+  font-family: var(--na-mono);
+  font-size: var(--text-3xs);
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--na-dim);
+}
+
+.na-routingValue {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--na-mono);
+  font-size: var(--text-sm);
+  color: var(--na-muted);
+  word-break: break-all;
+}
+
+.na-routingCard {
+  color: var(--na-accent);
+  font-weight: 600;
+}
+
+.na-routingResolves {
+  margin: 2px 0 0;
+  font-size: var(--text-xs);
+  line-height: 1.45;
+  color: var(--na-muted);
+}
+
+.na-routingNote {
+  margin: 0;
+  font-size: var(--text-2xs);
+  line-height: 1.45;
+  color: var(--na-dim);
+}
+
+/* One-off keeps the preview light — a disposability note, not an address. */
+.na-routing .na-routingBody[data-disposable] {
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border-style: dashed;
+  background: transparent;
+}
+
+.na-routingBody[data-disposable] .na-routingResolves {
+  margin: 0;
+}
+
+.na-promote {
+  flex: none;
+  padding: 4px 9px;
+  border: 1px solid color-mix(in srgb, var(--na-accent) 40%, var(--na-hairline));
+  border-radius: 999px;
+  background: transparent;
+  color: var(--na-accent);
+  font-family: var(--na-mono);
+  font-size: var(--text-2xs);
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.na-promote:hover {
+  background: color-mix(in srgb, var(--na-accent) 12%, transparent);
+  color: var(--na-ink);
+}
+
+/* ── Error + footer ─────────────────────────────────────────────────────── */
+.na-error {
+  margin: 0 16px;
+  padding: 7px 9px;
+  border: 1px solid color-mix(in srgb, var(--na-danger) 30%, transparent);
+  border-radius: var(--na-radius-sm);
+  background: color-mix(in srgb, var(--na-danger) 9%, transparent);
+  color: color-mix(in srgb, var(--na-danger) 84%, var(--na-ink));
+  font-size: var(--text-sm);
+}
+
+.na-foot {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 16px 14px;
+  margin-top: 4px;
+  border-top: 1px solid var(--na-hairline);
+}
+
+.na-footRoot {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--na-mono);
+  font-size: var(--text-2xs);
+  color: var(--na-dim);
+}
+
+.na-footActions {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.na-cancel {
+  height: 30px;
+  padding: 0 12px;
+  border: 1px solid var(--na-hairline);
+  border-radius: var(--na-radius-sm);
+  background: transparent;
+  color: var(--na-muted);
+  font-family: var(--na-mono);
+  font-size: var(--text-xs);
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  cursor: pointer;
+}
+
+.na-cancel:hover {
+  color: var(--na-ink);
+  border-color: color-mix(in srgb, var(--hud-ink) 18%, transparent);
+}
+
+.na-create {
+  height: 30px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 14px;
+  border: 1px solid color-mix(in srgb, var(--na-accent) 42%, transparent);
+  border-radius: var(--na-radius-sm);
+  background: color-mix(in srgb, var(--na-accent) 16%, transparent);
+  color: var(--na-accent);
+  font-family: var(--na-mono);
+  font-size: var(--text-xs);
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+
+.na-create:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--na-accent) 24%, transparent);
+  color: var(--na-ink);
+}
+
+.na-create:disabled {
+  cursor: not-allowed;
+  opacity: 0.46;
+}

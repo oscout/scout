@@ -1,0 +1,44 @@
+{
+  "schemaVersion": "1.0.0",
+  "id": "codex-command-output-completed",
+  "adapterId": "codex",
+  "fixtureSet": "codex",
+  "source": {
+    "kind": "recorded",
+    "harnessVersion": "codex-cli 0.144.1",
+    "transport": "jsonrpc-stdio-jsonl",
+    "capturedAt": "2026-07-22T17:57:48.000Z"
+  },
+  "redactions": [
+    { "line": 0, "pointer": "/payload/params/threadId", "replacement": "thread-recorded" },
+    { "line": 0, "pointer": "/payload/params/turn/id", "replacement": "turn-recorded" },
+    { "line": 1, "pointer": "/payload/params/item/id", "replacement": "command-recorded" },
+    { "line": 1, "pointer": "/payload/params/item/command/0", "replacement": "<command>" },
+    { "line": 1, "pointer": "/payload/params/item/cwd", "replacement": "<workspace>" },
+    { "line": 1, "pointer": "/payload/params/item/commandActions/0/command", "replacement": "<command>" },
+    { "line": 2, "pointer": "/payload/params/delta", "replacement": "fixture output\n" },
+    { "line": 3, "pointer": "/payload/params/item/aggregatedOutput", "replacement": "fixture output\n" },
+    { "line": 4, "pointer": "/payload/params/item/id", "replacement": "message-recorded" },
+    { "line": 5, "pointer": "/payload/params/delta", "replacement": "fixture-ok" },
+    { "line": 6, "pointer": "/payload/params/item/text", "replacement": "fixture-ok" }
+  ],
+  "expected": {
+    "endState": "completed",
+    "evidenceKeys": [
+      "event:turn:start",
+      "event:block:action:output",
+      "event:block:action:status",
+      "event:block:delta",
+      "event:turn:end"
+    ]
+  },
+  "determinism": {
+    "clockValues": ["2026-08-07T20:00:00.000Z", "2026-08-07T20:00:01.000Z"],
+    "idValues": []
+  },
+  "session": {
+    "name": "Codex fixture",
+    "cwd": "<workspace>",
+    "model": "gpt-5"
+  }
+}

@@ -1,0 +1,193 @@
+.scout-flag-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 110;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 10vh var(--space-3xl) var(--space-3xl);
+  background: var(--scrim-soft);
+  backdrop-filter: blur(18px) saturate(140%);
+  -webkit-backdrop-filter: blur(18px) saturate(140%);
+  animation: scout-flag-fade 140ms ease-out;
+}
+
+@keyframes scout-flag-fade {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.scout-flag-panel {
+  width: min(820px, 100%);
+  max-height: min(78vh, 920px);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border-radius: var(--radius-xl);
+  border: 1px solid color-mix(in srgb, var(--ink) 8%, transparent);
+  background:
+    linear-gradient(
+      180deg,
+      color-mix(in srgb, var(--surface) 72%, transparent),
+      color-mix(in srgb, var(--bg) 88%, transparent)
+    );
+  box-shadow:
+    0 28px 90px -24px color-mix(in srgb, var(--bg) 55%, transparent),
+    0 0 0 1px color-mix(in srgb, var(--ink) 4%, transparent);
+  color: var(--ink);
+  outline: none;
+}
+
+.scout-flag-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-xl);
+  padding: var(--space-2xl) var(--space-3xl);
+}
+
+.scout-flag-head-copy {
+  min-width: 0;
+}
+
+.scout-flag-title {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  font-weight: 600;
+  letter-spacing: var(--tracking-xl);
+  text-transform: uppercase;
+  color: var(--ink);
+}
+
+.scout-flag-subtitle {
+  margin: var(--space-xs) 0 0;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--dim);
+}
+
+.scout-flag-subtitle strong {
+  color: var(--muted);
+  font-weight: 500;
+}
+
+.scout-flag-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-md);
+  padding: 0 var(--space-3xl) var(--space-xl);
+}
+
+.scout-flag-toolbar-label {
+  flex: 1 1 100%;
+  margin: 0 0 var(--space-2xs);
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  letter-spacing: var(--tracking-lg);
+  text-transform: uppercase;
+  color: var(--dim);
+}
+
+.scout-flag-select {
+  appearance: none;
+  border: 1px solid color-mix(in srgb, var(--ink) 8%, transparent);
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--bg) 70%, transparent);
+  padding: var(--space-xs) var(--space-xl) var(--space-xs) var(--space-md);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--ink);
+  cursor: pointer;
+}
+
+.scout-flag-select:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+.scout-flag-bundles {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-xs);
+}
+
+.scout-flag-list {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 0 var(--space-md) var(--space-md);
+}
+
+.scout-flag-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1.4fr) auto auto minmax(88px, auto);
+  gap: var(--space-md) var(--space-lg);
+  align-items: center;
+  padding: var(--space-md) var(--space-lg);
+  border-radius: var(--radius-lg);
+  transition: background 120ms ease;
+}
+
+.scout-flag-row:hover {
+  background: color-mix(in srgb, var(--surface) 55%, transparent);
+}
+
+.scout-flag-row + .scout-flag-row {
+  margin-top: var(--space-2xs);
+}
+
+.scout-flag-key {
+  min-width: 0;
+}
+
+.scout-flag-key-name {
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  color: var(--ink);
+  word-break: break-word;
+}
+
+.scout-flag-key-desc {
+  margin-top: var(--space-3xs);
+  font-size: var(--text-xs);
+  line-height: var(--leading-snug);
+  color: var(--dim);
+}
+
+.scout-flag-meta {
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  letter-spacing: var(--tracking-sm);
+  color: var(--dim);
+  white-space: nowrap;
+}
+
+.scout-flag-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-lg);
+  padding: var(--space-lg) var(--space-3xl) var(--space-2xl);
+  background: color-mix(in srgb, var(--bg) 40%, transparent);
+}
+
+.scout-flag-count {
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  letter-spacing: var(--tracking-lg);
+  text-transform: uppercase;
+  color: var(--dim);
+}
+
+@media (max-width: 720px) {
+  .scout-flag-row {
+    grid-template-columns: 1fr;
+    gap: var(--space-sm);
+  }
+
+  .scout-flag-meta {
+    white-space: normal;
+  }
+}

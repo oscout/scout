@@ -1,0 +1,184 @@
+/* Scout Menu permissions — web settings (Scout voice host) */
+
+.s-voice-host-banner {
+  display: flex;
+  gap: var(--space-lg);
+  padding: var(--space-xl);
+  border-radius: var(--radius-md, 8px);
+  border: 1px solid var(--border);
+  background: var(--surface);
+}
+
+.s-voice-host-banner--ok {
+  border-color: color-mix(in srgb, var(--green) 35%, var(--border));
+  background: color-mix(in srgb, var(--green) 6%, var(--surface));
+}
+
+.s-voice-host-banner--warn {
+  border-color: color-mix(in srgb, var(--amber) 40%, var(--border));
+  background: color-mix(in srgb, var(--amber) 7%, var(--surface));
+}
+
+.s-voice-host-banner--fail {
+  border-color: color-mix(in srgb, var(--red, #ef4444) 40%, var(--border));
+  background: color-mix(in srgb, var(--red, #ef4444) 6%, var(--surface));
+}
+
+.s-voice-host-banner-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  margin-top: 4px;
+  flex-shrink: 0;
+  background: var(--muted);
+}
+
+.s-voice-host-banner--ok .s-voice-host-banner-dot { background: var(--green); }
+.s-voice-host-banner--warn .s-voice-host-banner-dot { background: var(--amber); }
+.s-voice-host-banner--fail .s-voice-host-banner-dot { background: var(--red, #ef4444); }
+
+.s-voice-host-banner-title {
+  font-size: var(--text-lg);
+  font-weight: 600;
+  color: var(--ink);
+  margin-bottom: var(--space-2xs);
+}
+
+.s-voice-host-banner-detail {
+  font-size: var(--text-md);
+  color: var(--copy, var(--muted));
+  line-height: 1.45;
+  margin-bottom: var(--space-sm);
+}
+
+.s-voice-host-banner-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-sm) var(--space-lg);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--dim);
+  letter-spacing: var(--tracking-sm);
+  text-transform: uppercase;
+}
+
+.s-voice-permissions-panel {
+  display: grid;
+  gap: var(--space-md);
+}
+
+.s-voice-permission-card {
+  padding: var(--space-lg);
+  border-radius: var(--radius-md, 8px);
+  border: 1px solid var(--border);
+  background: var(--bg);
+}
+
+.s-voice-permission-card--ok {
+  border-color: color-mix(in srgb, var(--green) 30%, var(--border));
+}
+
+.s-voice-permission-card--warn {
+  border-color: color-mix(in srgb, var(--amber) 35%, var(--border));
+}
+
+.s-voice-permission-card--fail {
+  border-color: color-mix(in srgb, var(--red, #ef4444) 35%, var(--border));
+}
+
+.s-voice-permission-card-head {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-md);
+  margin-bottom: var(--space-sm);
+}
+
+.s-voice-permission-card-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  margin-top: 5px;
+  flex-shrink: 0;
+  background: var(--muted);
+}
+
+.s-voice-permission-card--ok .s-voice-permission-card-dot { background: var(--green); }
+.s-voice-permission-card--warn .s-voice-permission-card-dot { background: var(--amber); }
+.s-voice-permission-card--fail .s-voice-permission-card-dot { background: var(--red, #ef4444); }
+
+.s-voice-permission-card-label {
+  font-weight: 600;
+  font-size: var(--text-lg);
+  color: var(--ink);
+}
+
+.s-voice-permission-card-app {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--dim);
+  letter-spacing: var(--tracking-sm);
+  margin-top: 2px;
+}
+
+.s-voice-permission-card-status {
+  margin-left: auto;
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  letter-spacing: var(--tracking-sm);
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.s-voice-permission-card-status--ok { color: var(--green); }
+.s-voice-permission-card-status--warn { color: var(--amber); }
+.s-voice-permission-card-status--fail { color: var(--red, #ef4444); }
+.s-voice-permission-card-status--idle { color: var(--dim); }
+
+.s-voice-permission-card-hint {
+  margin: 0 0 var(--space-2xs);
+  font-size: var(--text-sm);
+  color: var(--dim);
+}
+
+.s-voice-permission-card-detail {
+  margin: 0 0 var(--space-md);
+  font-size: var(--text-md);
+  color: var(--muted);
+  line-height: 1.4;
+}
+
+.s-voice-permission-card-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-sm);
+}
+
+.s-voice-permission-btn {
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  letter-spacing: var(--tracking-sm);
+  text-transform: uppercase;
+  padding: var(--space-xs) var(--space-md);
+  border-radius: var(--radius-sm, 4px);
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--ink);
+  cursor: pointer;
+}
+
+.s-voice-permission-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.s-voice-permission-btn--primary {
+  border-color: color-mix(in srgb, var(--accent) 50%, var(--border));
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+}
+
+.s-voice-permissions-offline {
+  margin: 0;
+  font-size: var(--text-sm);
+  color: var(--amber);
+}

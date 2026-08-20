@@ -1,0 +1,65 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "customConditions": ["bun"],
+    "allowImportingTsExtensions": true,
+    "jsx": "react-jsx",
+    "strict": true,
+    "skipLibCheck": true,
+    "noEmit": true,
+    "isolatedModules": true,
+    "resolveJsonModule": true,
+    "types": ["bun-types"],
+    "paths": {
+      "react": ["./node_modules/@types/react/index.d.ts"],
+      "react-dom": ["./node_modules/@types/react-dom/index.d.ts"],
+      "react-dom/*": ["./node_modules/@types/react-dom/*"],
+      "react/jsx-runtime": ["./node_modules/@types/react/jsx-runtime.d.ts"],
+      "react/jsx-dev-runtime": ["./node_modules/@types/react/jsx-dev-runtime.d.ts"],
+      "@hudsonkit": [
+        "../../../hudson/packages/web/hudsonkit/src/index.ts",
+        "./client/vendor/hudsonkit/index.tsx"
+      ],
+      "@hudsonkit/app-shell": [
+        "../../../hudson/packages/web/hudsonkit/src/app-shell.ts",
+        "./client/vendor/hudsonkit/app-shell.ts"
+      ],
+      "@hudsonkit/shell": [
+        "../../../hudson/packages/web/hudsonkit/src/shell.ts",
+        "./client/vendor/hudsonkit/shell.ts"
+      ],
+      "@hudsonkit/chrome": [
+        "../../../hudson/packages/web/hudsonkit/src/chrome.ts",
+        "./client/vendor/hudsonkit/chrome.tsx"
+      ],
+      "@hudsonkit/controls": [
+        "../../../hudson/packages/web/hudsonkit/src/controls.ts",
+        "./client/vendor/hudsonkit/controls.ts"
+      ],
+      "@hudsonkit/canvas": [
+        "../../../hudson/packages/web/hudsonkit/src/canvas.ts",
+        "./client/vendor/hudsonkit/canvas.tsx"
+      ],
+      "@hudsonkit/overlays": [
+        "../../../hudson/packages/web/hudsonkit/src/overlays.ts",
+        "./client/vendor/hudsonkit/overlays.tsx"
+      ],
+      "hudsonkit/terminal": [
+        "../../../hudson/packages/web/hudsonkit/src/terminal.ts"
+      ],
+      "hudsonkit/flags": [
+        "../../../hudson/packages/web/hudsonkit/src/flags/index.ts",
+        "./client/vendor/hudsonkit/flags.tsx"
+      ],
+      "@hudsonkit/styles": [
+        "../../../hudson/packages/web/hudsonkit/src/styles/bundle.css",
+        "./node_modules/hudsonkit/dist/styles.css"
+      ]
+    }
+  },
+  "include": ["client/**/*.ts", "client/**/*.tsx", "server/**/*.ts", "vite.config.ts"],
+  "exclude": ["server/**/*.test.ts"]
+}
