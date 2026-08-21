@@ -1,6 +1,6 @@
 {
   "name": "@openscout/web",
-  "version": "0.2.83",
+  "version": "0.2.84",
   "private": true,
   "description": "Standalone lightweight Scout web UI with its own bundled Bun server",
   "license": "Apache-2.0",
