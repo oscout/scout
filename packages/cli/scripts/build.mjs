@@ -14,6 +14,7 @@ import {
 } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { dirname, resolve } from "node:path";
+import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
 
 import {
@@ -235,6 +236,22 @@ function describeBinary(file) {
 function scoutdIsExpectedPackageBinary(file) {
   return describeBinary(file).includes("Mach-O 64-bit executable arm64");
 }
+function releaseRustEnvironment() {
+  // Rust embeds dependency and panic source locations in release binaries.
+  // Remap the build host's home so published artifacts never disclose it.
+  const remapFlag = `--remap-path-prefix=${homedir()}=/usr/src`;
+  if (process.env.CARGO_ENCODED_RUSTFLAGS) {
+    return {
+      ...process.env,
+      CARGO_ENCODED_RUSTFLAGS: `${process.env.CARGO_ENCODED_RUSTFLAGS}\x1f${remapFlag}`,
+    };
+  }
+  return {
+    ...process.env,
+    RUSTFLAGS: [process.env.RUSTFLAGS, remapFlag].filter(Boolean).join(" "),
+  };
+}
+
 
 function buildAndPackageScoutd() {
   const required = scoutdIsRequired();
@@ -254,7 +271,7 @@ function buildAndPackageScoutd() {
       cwd: repoRoot,
       stdio: "inherit",
       env: {
-        ...process.env,
+        ...releaseRustEnvironment(),
         ...(buildManifest.commit ? { SCOUTD_GIT_SHA: buildManifest.commit } : {}),
       },
     },
