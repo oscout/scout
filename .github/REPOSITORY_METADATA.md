@@ -4,7 +4,7 @@ Use these values when configuring `oscout/scout` on GitHub.
 
 | Field | Value |
 | --- | --- |
-| Description | Your personal cloud agent: a local control plane and mesh network for coding agents. |
+| Description | Your personal agent cloud: a local control plane and mesh network for coding agents. |
 | Website | `https://oscout.net` |
 | Social preview | `.github/assets/social-preview.png` |
 | Avatar / mark | `.github/assets/avatar.png` |

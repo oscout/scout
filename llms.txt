@@ -1,6 +1,6 @@
 # Scout
 
-> Your personal cloud agent: a local control plane and mesh network.
+> Your personal agent cloud: a local control plane and mesh network.
 
 ## Documentation
 

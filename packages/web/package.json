@@ -2,7 +2,7 @@
   "name": "@openscout/web",
   "version": "0.2.84",
   "private": true,
-  "description": "Public Scout web foundation, structural pages, and bundled local server",
+  "description": "Baseline Scout web control plane, reusable UI primitives, and bundled local server",
   "homepage": "https://github.com/oscout/scout/tree/main/packages/web#readme",
   "repository": {
     "type": "git",

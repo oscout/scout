@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1280" height="640" viewBox="0 0 1280 640" role="img" aria-labelledby="title desc" text-rendering="geometricPrecision">
   <title id="title">Scout repository social preview</title>
-  <desc id="desc">Scout, your personal cloud agent.</desc>
+  <desc id="desc">Scout, your personal agent cloud.</desc>
   <rect width="1280" height="640" fill="#10110f" />
   <g fill="none" stroke="#30352e" stroke-width="1">
     <path d="M0 128h1280M0 256h1280M0 384h1280M0 512h1280" opacity=".30" />
@@ -15,6 +15,6 @@
     <path d="M112 70 154 94v48l-42 24-42-24V94Z" fill="#f7f4ea" />
   </g>
   <text x="354" y="312" fill="#f7f4ea" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="112" font-weight="750" letter-spacing="14">SCOUT</text>
-  <text x="82" y="482" fill="#e0e5dc" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="28" font-weight="650" letter-spacing=".2">Control plane + mesh network = your personal cloud agent.</text>
+  <text x="82" y="482" fill="#e0e5dc" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="28" font-weight="650" letter-spacing=".2">Control plane + mesh network = your personal agent cloud.</text>
   <text x="82" y="548" fill="#8f998b" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="18" font-weight="600" letter-spacing="1.6">LOCAL OWNERSHIP · DURABLE HANDOFFS · EVERY HARNESS</text>
 </svg>

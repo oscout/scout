@@ -1,23 +1,40 @@
 # Scout Web
 
-The public web foundation for Scout: reusable interface primitives, the
-application shell, basic structural pages, and the local Bun/Hono server that
-ships inside `@openscout/scout`.
+Scout's baseline web control plane: the local Bun/Hono server, a coherent
+operator UI, and the reusable interface primitives needed to compose it. The
+web app ships inside `@openscout/scout` and should remain fully useful without
+private product code.
 
-This package is useful on its own and is the canonical home for public Scout web
-code. Private OpenScout surfaces consume and extend these primitives; they do
-not maintain a second copy here or require this package to import private
-modules.
+> **Migration status:** `packages/web` is still workspace-private while the
+> public package and release boundaries are established. The target is for this
+> repository to release `@openscout/web` in lockstep with the public package
+> family and for the private product to consume that exact version. Do not read
+> the target composition model below as a claim that the cutover is complete.
 
 ## What lives here
 
 - the local navigation and application shell;
-- pairing, activity, inbox, chat, and agent/session structural pages;
+- setup and health, agents and sessions, conversations and send/ask, flights
+  and work, activity, runtimes and capabilities, projects, mesh and pairing,
+  and settings views;
 - shared loading, empty, error, approval, and connection states;
 - protocol-backed client boundaries and reusable UI primitives;
 - the Bun/Hono server and bundled static client assets.
 
 The public `@openscout/scout` package vendors the production build outputs.
+
+## Target composition model
+
+The private product should extend this baseline through a trusted, build-time
+composition API. That public API will expose documented contracts for routes,
+navigation, bounded slots, namespaced server routes, and capability providers,
+along with shared design tokens, components, and the broker client. The private
+build compiles those public exports with its own product contributions; it does
+not copy this directory or import unpublished `src/` paths.
+
+The dependency is strictly one-way. Public web code never imports or assumes
+private code, and removing every private contribution must still leave a useful
+baseline Scout control plane.
 
 ## Requirements
 
@@ -42,9 +59,17 @@ The chat client requests the ten most recent conversations for the active machin
 
 Realtime Scoutbot voice is a flagged high-trust pilot. The host app's **Settings → Voice** toggle resolves the client flag for its embedded surface; there is no second browser-local opt-in. The billable server route stays closed unless the host starts the web server with `OPENSCOUT_REALTIME_VOICE_ENABLED=1`, and the operator still explicitly starts each call from the footer Voice control. Calls use the configured server-side OpenAI API key. The selected durable Scoutbot chat preserves context when a call stops or the panel closes, and the voice surface can start or restore a recent chat. An explicit operator request to coordinate with an agent is sent immediately through the broker and its delivery result is reported; downstream harness permission and review gates still apply. Allowlisted, non-destructive app navigation can be applied directly during a call. Host-local SQLite leases default to one active call and four starts per minute; see [`docs/design/realtime-voice-design-pass.md`](../../docs/design/realtime-voice-design-pass.md) for the tuning variables and boundary details.
 
-## Public Package
+## Package surface
 
-The standalone npm release surface is `@openscout/scout`. It includes the `scout` CLI, the local broker/runtime, and this web application server/client. Keep this package modular internally, but avoid adding a separate public npm package unless there is a clear external integration story.
+Today, the standalone npm release surface is `@openscout/scout`; it includes the
+`scout` CLI, local broker/runtime, and this web server/client. During the
+migration, this workspace package intentionally remains `private: true`.
+
+The target public release family adds `@openscout/web` as a supported package,
+released in lockstep with protocol, agent-sessions, runtime, and Scout. Private
+consumers pin exact versions and import only documented exports. The primary
+installation experience remains `@openscout/scout`; users are not expected to
+assemble the package family themselves.
 
 ## Build (maintainers)
 

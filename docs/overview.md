@@ -9,7 +9,7 @@ agents one broker-backed model for identity, routing, durable work, session
 observation, and mesh reachability across harnesses such as Codex and Claude
 Code.
 
-Together, the local control plane and mesh network form a personal cloud agent
+Together, the local control plane and mesh network form a personal agent cloud
 across the machines the operator owns.
 
 ## What Scout owns
@@ -51,21 +51,27 @@ Routing is explicit and independent of the calling surface:
 
 ## Product boundary
 
-This repository is the public home of the Scout core. The complete OpenScout
-applications and hosted services are developed in a private companion
-workspace. Do not infer private product features, assets, credentials, or
-release state from the public core.
+This repository is becoming the canonical home of Scout's reusable public
+primitives and complete baseline web control plane. The architecture is the
+target of an active migration: overlapping source and public release ownership
+are still being cut over, so the intended dependency model should not be read
+as proof that every migration phase is complete.
 
 Scout is currently for high-trust local developer pilots. It is not an
 enterprise-ready, compliance-ready, or hardened untrusted multi-tenant system.
 
-The public web package is the single canonical home for reusable primitives,
-the application shell, and basic structural pages. The private product consumes
-and extends those contracts with product-specific pages and services; it does
-not keep a duplicate public subtree, and the public layer never imports or
-assumes the private one. See the
-[public-source boundary](./public-source-boundary.md) for the complete ownership
-model and release invariants.
+The target dependency runs one way. The private OpenScout product consumes
+exact released public packages and adds native macOS and iOS apps, hosted
+services, advanced operations, and product-specific UI through trusted
+build-time web composition. It keeps no copied public packages or mirrored
+`packages/web`; public Scout never imports or requires the private product.
+
+The public web floor is intentionally substantial: setup and health, agents and
+sessions, conversations and requests, flights and work, activity, runtimes and
+capabilities, projects, mesh and pairing, and settings should form a coherent
+standalone operator experience. See the
+[public-source boundary](./public-source-boundary.md) for current migration
+status, target ownership, and release invariants.
 
 ## Next
 
