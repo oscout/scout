@@ -65,32 +65,24 @@ inside the message body.
 <!-- Generated from .github/diagrams/control-plane.arc.json by @arach/arc. -->
 
 ```text
-                                                                      ┌────────────┐
-                                                                      │ ◆ Codex    │
-                                                                  ┌──▶│ harness    │
-                    ┌────────────┐                                │   └────────────┘
-                    │ ◆ CLI      │                                │
-                 ┌─▶│ scout      │────┐                           │
-                 │  │            │    │                           │
-                 │  └────────────┘    │                           │   ┌────────────┐
-                 │                    │                           │   │ ◆ Claude   │
-                 │                    │                           ├──▶│ harness    │
-                 │                    │    ╔══════════════════╗   │   │            │       ┌────────────┐
-┌────────────┐   │                    │    ║ ◆ Local broker   ║   │   └────────────┘       │ ◆ Records  │
-│ ◆ Operator │   │                    │    ║ canonical writer ║   │          ┌────────────▶│ durable    │
-│ or agent   │───┤                    ├───▶║ routes + runs    ║───┼ writes ──┘             │            │
-│            │   │                    │    ║                  ║   │   ┌────────────┐       └────────────┘
-└────────────┘   │                    │    ╚══════════════════╝   │   │ ◆ Pi / ACP │
-                 │                    │                           ├──▶│ harnesses  │
-                 │                    │                           ╎   │            │
-                 │  ┌────────────┐    │                           ╎   └────────────┘
-                 │  │ ◆ Web      │    │                           ╎
-                 └─▶│ local UI   │────┘                           ╎
-                    │            │                                ╎   ┌────────────┐
-                    └────────────┘                                ╎   │ ◆ Mesh     │
-                                                                  └╌╌▶│ peer nodes │
-                                                                      │            │
-                                                                      └────────────┘
+                                                    ╔══════════════════════╗
+                     ╔══════════════════════╗       ║ ◆ Local broker       ║
+                     ║ ◆ Scout surfaces     ║       ║ canonical writer     ║
+┌────────────────┐   ║ CLI + local web      ║   ┌──▶║ route + run          ║
+│ ◆ Operator     │ ┌▶║ one control plane    ║───┘   ║                      ║
+│ or agent       │─┘ ║                      ║       ╚══════════════════════╝
+└────────────────┘   ╚══════════════════════╝                   │
+                                                                │
+                                                                │
+                                              ┌─────────────────┴─────────┐
+                                              │                           │
+                                              ▼                           │
+                                  ╔═══════════════════════╗               ▼
+                                  ║ ◆ Harnesses + mesh    ║      ┌────────────────┐
+                                  ║ Codex · Claude · ACP  ║      │ ◆ Records      │
+                                  ║ reachable peers       ║      │ durable        │
+                                  ║                       ║      │                │
+                                  ╚═══════════════════════╝      └────────────────┘
 ```
 
 <!-- arc:control-plane:end -->

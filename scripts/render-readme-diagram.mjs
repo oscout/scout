@@ -10,7 +10,7 @@ const start = "<!-- arc:control-plane:start -->";
 const end = "<!-- arc:control-plane:end -->";
 
 const diagram = JSON.parse(readFileSync(diagramPath, "utf8"));
-const ascii = renderAscii(diagram, { maxWidth: 116 });
+const ascii = renderAscii(diagram, { maxWidth: 92 });
 const readme = readFileSync(readmePath, "utf8");
 
 if (!readme.includes(start) || !readme.includes(end)) {
