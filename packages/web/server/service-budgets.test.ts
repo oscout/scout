@@ -870,7 +870,11 @@ describe("service budgets", () => {
     const rawDb = new Database(join(controlHome, "control-plane.sqlite"));
     createQuotaTable(rawDb);
 
-    const now = Date.now();
+    // Keep the two readings in one hourly history bucket. Using wall-clock
+    // `now` makes this assertion change during the first minute of an hour:
+    // the current row plus two legitimate history buckets totals three rows.
+    const historyBucketMs = 60 * 60 * 1000;
+    const now = Math.floor(Date.now() / historyBucketMs) * historyBucketMs + 2 * 60 * 1000;
     const periodEnd = now + 4 * 24 * 60 * 60 * 1000;
     const periodStart = periodEnd - 7 * 24 * 60 * 60 * 1000;
     const logsDirectory = join(home, ".grok", "logs");

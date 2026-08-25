@@ -69,14 +69,27 @@ if (docsIndex.version !== versions.get("package.json")) {
 
 const npmReleaseWorkflow = read(".github/workflows/release-package-npm.yml");
 if (
-  !npmReleaseWorkflow.includes('[[ "$version" == "0.2.88" ]]')
-  || !npmReleaseWorkflow.includes("local signed authority-cutover release")
+  !npmReleaseWorkflow.includes('minimum_version="0.2.89"')
+  || !npmReleaseWorkflow.includes("This workflow publishes v${minimum_version} or later")
 ) {
-  throw new Error("GitHub npm workflow must refuse the local-only v0.2.88 authority cutover");
+  throw new Error("GitHub npm workflow must reject releases older than v0.2.89");
+}
+if (npmReleaseWorkflow.includes("NPM_TOKEN:")) {
+  throw new Error("GitHub npm workflow must use trusted publishing without a legacy npm token");
 }
 const releaseGuide = read("docs/releases.md");
-if (!/workflow explicitly refuses `v0\.2\.88`[\s\S]*local signed publication only/i.test(releaseGuide)) {
-  throw new Error("Release guide must document the local-only v0.2.88 workflow refusal");
+if (
+  !/workflow explicitly refuses `v0\.2\.88`/i.test(releaseGuide)
+  || !/strict partial-set guard[\s\S]*neither package was promoted to[\s\S]*`latest`/i.test(releaseGuide)
+) {
+  throw new Error("Release guide must document the partial, unpromoted v0.2.88 attempt");
+}
+const sourceBoundary = read("docs/public-source-boundary.md");
+if (
+  !sourceBoundary.includes("## Broker-owned working set")
+  || !/bounded, coherent working[\s\S]*rehydrated from the broker/i.test(sourceBoundary)
+) {
+  throw new Error("Public source boundary must keep registry state broker-owned and bounded");
 }
 
 const diagram = JSON.parse(read(".github/diagrams/control-plane.arc.json"));

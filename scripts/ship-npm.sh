@@ -43,7 +43,10 @@ fi
 
 export npm_config_cache="${npm_config_cache:-${TMPDIR:-/tmp}/openscout-npm-cache}"
 export OPENSCOUT_REQUIRE_SCOUTD_SIGN=1
-NPM_DIST_TAG_VERIFY_ATTEMPTS="${NPM_DIST_TAG_VERIFY_ATTEMPTS:-12}"
+# npm can accept an upload and keep it in processing for more than a minute.
+# Keep this bounded, but long enough for the accepted artifact to become
+# observable before the fail-closed partial-set rule ends the authority session.
+NPM_DIST_TAG_VERIFY_ATTEMPTS="${NPM_DIST_TAG_VERIFY_ATTEMPTS:-60}"
 NPM_DIST_TAG_VERIFY_DELAY_SECONDS="${NPM_DIST_TAG_VERIFY_DELAY_SECONDS:-5}"
 PUBLISH_PACKAGES=(protocol cli)
 EXPECTED_REPOSITORY="https://github.com/oscout/scout"
@@ -118,6 +121,19 @@ if [[ "$release_version" == "0.2.88" ]]; then
     exit 1
   fi
   export NPM_CONFIG_PROVENANCE=false
+elif [[ "$MODE" == "publish" ]]; then
+  expected_workflow_ref="oscout/scout/.github/workflows/release-package-npm.yml@refs/heads/main"
+  if [[ "${GITHUB_ACTIONS:-}" != "true" \
+    || "${GITHUB_REPOSITORY:-}" != "oscout/scout" \
+    || "${GITHUB_WORKFLOW_REF:-}" != "$expected_workflow_ref" ]]; then
+    echo "ERROR: v${release_version} must be published by .github/workflows/release-package-npm.yml" >&2
+    echo "ERROR: refusing a second local publication authority for v0.2.89 and later" >&2
+    exit 1
+  fi
+  if [[ -n "${NPM_TOKEN:-}" ]]; then
+    echo "ERROR: v${release_version} requires npm trusted publishing; refusing token authentication" >&2
+    exit 1
+  fi
 fi
 
 normalize_repository() {

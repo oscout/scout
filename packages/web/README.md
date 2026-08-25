@@ -57,6 +57,13 @@ Caddy is the only reverse proxy in this path. Its generated configuration uses b
 
 The chat client requests the ten most recent conversations for the active machine scope and preloads a bounded recent tail with two concurrent requests. Opened histories are retained in a ten-chat LRU cache: while a chat is resident, immutable older messages are reused and focus/reconnect recovery refreshes and merges only the latest tail. Broker events for the open chat append directly to that same cache, so routine polling does not replace the full transcript.
 
+The ordinary control-plane context path requests a coherent 24-hour registry
+working set from the broker, coalesces concurrent reads, and caches that result
+for a short TTL. It rehydrates from the broker after expiry or a successful
+write. Rich agent views still contain full-snapshot reads during the migration;
+those are compatibility gaps, not the target client contract. Lifetime history
+stays broker-owned and should be read through bounded, purpose-specific APIs.
+
 Realtime Scoutbot voice is a flagged high-trust pilot. The host app's **Settings → Voice** toggle resolves the client flag for its embedded surface; there is no second browser-local opt-in. The billable server route stays closed unless the host starts the web server with `OPENSCOUT_REALTIME_VOICE_ENABLED=1`, and the operator still explicitly starts each call from the footer Voice control. Calls use the configured server-side OpenAI API key. The selected durable Scoutbot chat preserves context when a call stops or the panel closes, and the voice surface can start or restore a recent chat. An explicit operator request to coordinate with an agent is sent immediately through the broker and its delivery result is reported; downstream harness permission and review gates still apply. Allowlisted, non-destructive app navigation can be applied directly during a call. Host-local SQLite leases default to one active call and four starts per minute; see [`docs/design/realtime-voice-design-pass.md`](../../docs/design/realtime-voice-design-pass.md) for the tuning variables and boundary details.
 
 ## Package surface
