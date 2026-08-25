@@ -24,17 +24,19 @@ function plan(...args) {
 }
 
 test("public release plan is reviewed-source-only and complete-state idempotent", () => {
-  const result = plan("0.2.88");
+  const result = plan("0.2.89");
   assert.equal(result.status, 0, result.stderr);
-  assert.match(result.stdout, /@openscout\/protocol@0\.2\.88/);
-  assert.match(result.stdout, /@openscout\/scout@0\.2\.88/);
-  assert.match(result.stdout, /apps\/desktop\/src\/shared\/product\.ts: 0\.2\.88/);
-  assert.match(result.stdout, /docs\.json: 0\.2\.88/);
+  assert.match(result.stdout, /@openscout\/protocol@0\.2\.89/);
+  assert.match(result.stdout, /@openscout\/scout@0\.2\.89/);
+  assert.match(result.stdout, /apps\/desktop\/src\/shared\/product\.ts: 0\.2\.89/);
+  assert.match(result.stdout, /docs\.json: 0\.2\.89/);
   assert.match(result.stdout, /git fetch --no-tags origin refs\/heads\/main/);
   assert.match(result.stdout, /ship-npm\.sh --verify-state/);
-  assert.match(result.stdout, /ship-npm\.sh --verify-published/);
-  assert.match(result.stdout, /attach the exact npm integrity receipt/);
+  assert.match(result.stdout, /gh workflow run release-package-npm\.yml/);
+  assert.match(result.stdout, /download the exact npm integrity receipt/);
+  assert.match(result.stdout, /attach that receipt to the final GitHub release/);
   assert.match(result.stdout, /git push --atomic origin HEAD:refs\/heads\/main/);
+  assert.doesNotMatch(result.stdout, /ship-npm\.sh --verify-published/);
   assert.doesNotMatch(result.stdout, /bump-version|git commit|--follow-tags/);
   assert.doesNotMatch(result.stdout, /apps\/macos|appcast|include-ios|\.dmg/i);
 });
@@ -49,16 +51,48 @@ test("ambiguous mutating and partial-release options are rejected", () => {
     "--skip-npm",
     "--skip-github-release",
   ]) {
-    const result = plan("0.2.88", option);
+    const result = plan("0.2.89", option);
     assert.notEqual(result.status, 0, option);
     assert.match(result.stderr, /Unsupported release option/, option);
   }
 });
 
+test("0.2.89 and later execute only through the GitHub publication authority", () => {
+  const result = plan("0.2.89", "--execute", "--yes");
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /publishes only through .*release-package-npm\.yml/i);
+});
+
+test("0.2.89 npm publication rejects a local second authority", () => {
+  const result = spawnSync("bash", ["scripts/ship-npm.sh"], {
+    cwd: repoRoot,
+    encoding: "utf8",
+    env: { ...process.env, GITHUB_ACTIONS: "false" },
+  });
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /must be published by .*release-package-npm\.yml/i);
+});
+
+test("0.2.89 GitHub publication refuses legacy npm token authentication", () => {
+  const result = spawnSync("bash", ["scripts/ship-npm.sh"], {
+    cwd: repoRoot,
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      GITHUB_ACTIONS: "true",
+      GITHUB_REPOSITORY: "oscout/scout",
+      GITHUB_WORKFLOW_REF: "oscout/scout/.github/workflows/release-package-npm.yml@refs/heads/main",
+      NPM_TOKEN: "legacy-token-must-not-be-used",
+    },
+  });
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /requires npm trusted publishing; refusing token authentication/i);
+});
+
 test("GitHub npm dispatch is disabled for the authority cutover", () => {
   const result = plan("0.2.88", "--github-npm");
   assert.notEqual(result.status, 0);
-  assert.match(result.stderr, /disabled.*local signed publication/i);
+  assert.match(result.stderr, /disabled[\s\S]*historical local signed attempt/i);
 });
 
 test("release versions are exact stable semver", () => {
@@ -676,6 +710,10 @@ test("npm publication is pinned, staged as a set, and exactly scoped", () => {
   assert.match(script, /npm release lock already exists/);
   assert.match(script, /refusing to overwrite existing npm release bundle/);
   assert.match(script, /incomplete npm package set and cannot be resumed/);
+  assert.match(script, /NPM_DIST_TAG_VERIFY_ATTEMPTS="\$\{NPM_DIST_TAG_VERIFY_ATTEMPTS:-60\}"/);
+  assert.match(script, /refusing a second local publication authority for v0\.2\.89 and later/);
+  assert.match(script, /GITHUB_WORKFLOW_REF/);
+  assert.match(script, /requires npm trusted publishing; refusing token authentication/);
   assert.match(script, /assert_canonical_publish_ref/);
   assert.ok(script.indexOf("publish_missing_artifacts") < script.indexOf("promote_package_set"));
 });

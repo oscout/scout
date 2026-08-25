@@ -52,8 +52,13 @@ jobs:
             echo "Release version must look like X.Y.Z, got: $version" >&2
             exit 1
           fi
-          if [[ "$version" == "0.2.88" ]]; then
-            echo "v0.2.88 is a local signed authority-cutover release and cannot be published by this workflow." >&2
+          minimum_version="0.2.89"
+          IFS='.' read -r major minor patch <<< "$version"
+          major=$((10#$major))
+          minor=$((10#$minor))
+          patch=$((10#$patch))
+          if ((major == 0 && (minor < 2 || (minor == 2 && patch < 89)))); then
+            echo "This workflow publishes v${minimum_version} or later, got: v${version}" >&2
             exit 1
           fi
           if [[ "$npm_tag" != "latest" ]]; then
@@ -186,9 +191,33 @@ jobs:
       - name: Publish public package set
         env:
           NPM_TAG: ${{ steps.release.outputs.npm_tag }}
-          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
           # Public releases carry GitHub Actions build provenance through npm.
           NPM_CONFIG_PROVENANCE: "true"
           OPENSCOUT_REQUIRE_SCOUTD_SIGN: "1"
           OPENSCOUT_SIGN_IDENTITY: ${{ vars.OPENSCOUT_SIGN_IDENTITY || '' }}
         run: bash scripts/ship-npm.sh
+
+      - name: Locate exact release receipt
+        id: receipt
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          set -euo pipefail
+          release_sha="$(git rev-parse HEAD)"
+          receipt=".git/scout-release/npm/${RELEASE_VERSION}-${release_sha}/receipt.json"
+          test -s "$receipt" || {
+            echo "::error::Exact npm release receipt is missing: $receipt"
+            exit 1
+          }
+          artifact="$RUNNER_TEMP/scout-npm-release-receipt-${RELEASE_VERSION}.json"
+          cp "$receipt" "$artifact"
+          echo "path=$artifact" >> "$GITHUB_OUTPUT"
+
+      - name: Upload exact release receipt
+        uses: actions/upload-artifact@v4
+        with:
+          name: scout-npm-release-receipt-${{ steps.release.outputs.version }}
+          path: ${{ steps.receipt.outputs.path }}
+          if-no-files-found: error
+          retention-days: 90

@@ -44,8 +44,8 @@ function usage() {
     "  node scripts/ship-release.mjs <version> [options]",
     "",
     "Example:",
-    "  npm run ship -- 0.2.88",
-    "  npm run ship -- 0.2.88 --execute --yes",
+    "  npm run ship -- 0.2.89",
+    "  npm run ship -- 0.2.88 --execute --yes  # historical local cutover only",
     "",
     "Options:",
     "  --execute              Resume or run the package release.",
@@ -55,8 +55,8 @@ function usage() {
     "",
     "Execution never bumps or commits. Prepare and merge the reviewed release",
     "version first, then run from a clean public main checkout.",
-    "GitHub npm dispatch is disabled for the 0.2.88 authority cutover; local",
-    "signed publication is canonical.",
+    "The 0.2.88 authority cutover used local signed publication. Versions",
+    "0.2.89 and later publish only through release-package-npm.yml.",
     "",
   ].join("\n");
 }
@@ -86,7 +86,8 @@ function parseArgs(argv) {
     }
     if (arg === "--github-npm") {
       throw new Error(
-        "--github-npm is disabled for the public authority cutover; use local signed publication.",
+        "--github-npm is disabled in this command: v0.2.88 was the historical local signed attempt; "
+          + "v0.2.89 and later use release-package-npm.yml directly.",
       );
     }
     if (arg === "--execute") options.execute = true;
@@ -246,6 +247,16 @@ function printPlan(version, options) {
     "  DRY git push --atomic origin HEAD:refs/heads/main refs/tags/"
       + tag + ":refs/tags/" + tag,
   );
+  if (version !== "0.2.88") {
+    console.log(
+      "  DRY gh workflow run release-package-npm.yml --ref main -f tag="
+        + tag + " -f npm_tag=latest",
+    );
+    console.log("  DRY wait for the exact-tag GitHub OIDC publication");
+    console.log("  DRY download the exact npm integrity receipt workflow artifact");
+    console.log("  DRY attach that receipt to the final GitHub release " + tag);
+    return;
+  }
   console.log("  DRY bash scripts/ship-npm.sh");
   console.log("  DRY bash scripts/ship-npm.sh --verify-published");
   console.log("  DRY attach the exact npm integrity receipt to " + tag);
@@ -420,6 +431,13 @@ function main() {
     return;
   }
   if (!options.yes) throw new Error("Refusing to publish without --yes.");
+  if (version !== "0.2.88") {
+    throw new Error(
+      "v" + version
+        + " publishes only through .github/workflows/release-package-npm.yml; "
+        + "tag reviewed public main and dispatch that workflow.",
+    );
+  }
 
   assertCanonicalLocalSource();
   assertCleanWorktree();

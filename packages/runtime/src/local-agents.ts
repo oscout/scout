@@ -4664,9 +4664,9 @@ export async function startLocalAgent(input: StartLocalAgentInput): Promise<Scou
     throw new Error(`Invalid agent name "${input.agentName}".`);
   }
 
-  // Fast path: operate directly on the relay-agents override file. No filesystem walk,
-  // no project-config sync. The override file is the single source of truth for
-  // registered agents; if a match exists for this projectPath we skip the expensive
+  // Fast path: read the relay-agents compatibility overrides directly. The broker
+  // remains authoritative for live registry state; this file is configuration input
+  // for local definitions. A matching projectPath lets us skip the expensive
   // ensureProjectConfigForDirectory (which reads every ~/.claude/projects/<slug>/*.jsonl).
   const overrides = await readRelayAgentOverrides();
 

@@ -31,7 +31,8 @@ scout ask --project ../talkie --harness claude "can you review our docs?"
 `scout setup` is the canonical onboarding entry point. It creates or updates:
 
 - `~/Library/Application Support/OpenScout/settings.json`
-- `~/Library/Application Support/OpenScout/relay-agents.json` for compatibility with the existing machine-local agent registry
+- `~/Library/Application Support/OpenScout/relay-agents.json` as compatibility
+  configuration that the broker reconciles into its canonical live state
 - `.openscout/project.json` for the current repo when needed
 
 It also discovers local and project-backed agents from your configured workspace roots, installs the base Scout service, attempts to start it, and ensures Caddy is available for the local `scout.local` edge. On macOS, setup installs missing Caddy with `brew install caddy`; otherwise install Caddy yourself or set `OPENSCOUT_CADDY_BIN`.

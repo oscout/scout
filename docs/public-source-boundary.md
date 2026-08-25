@@ -80,6 +80,28 @@ Public documentation may describe the boundary and link to product surfaces,
 but it should not disclose private implementation details or imply that private
 features are available in the public package.
 
+## Broker-owned working set
+
+The broker is the canonical owner of live registry and coordination state.
+Control-plane clients must not download or persist the broker's lifetime
+registry as their own source of truth. They request a bounded, coherent working
+set instead: current routable agents and endpoints, active work, and a recent
+window of coordination records with the referenced identities needed to render
+it.
+
+The ordinary web context path already asks the broker for a 24-hour working
+set, coalesces concurrent reads, and keeps the result behind a short in-process
+TTL. An expired or invalidated cache is rehydrated from the broker. Conversation
+history outside that working set is loaded through its dedicated bounded APIs,
+not by growing the registry payload.
+
+This migration is not complete. Rich agent views and desktop context still have
+full-snapshot reads, and the time-windowed projection is not yet protected by an
+explicit cardinality or byte ceiling. Those paths must move to scoped,
+paginated broker reads before this boundary can be considered enforced. A
+routine registry response that returns lifetime history or grows to tens of
+megabytes is a regression, not a cache format clients should preserve.
+
 ## Release invariants
 
 The public split is trustworthy only when a release can be traced back to the
@@ -103,10 +125,12 @@ explicit and its source must remain canonical here.
 
 ### The transition release
 
-When published, `0.2.88` moves source and release authority for the currently
-published `@openscout/scout` and `@openscout/protocol` pair to this repository.
-It does not claim that the complete component-package boundary is already
-finished.
+`0.2.89` moves source and release authority for the supported
+`@openscout/scout` and `@openscout/protocol` pair to this repository. npm
+accepted only the protocol artifact from the attempted `0.2.88` cutover under
+an unpromoted staging tag; that partial version is historical and is not a
+supported Scout release. `0.2.89` does not claim that the complete
+component-package boundary is already finished.
 Supported publication of `@openscout/agent-sessions`, `@openscout/runtime`, and
 `@openscout/web` from this repository remains deferred until they have supported
 exports, standalone pack/install tests, and a zero-extension web-composition
@@ -125,8 +149,8 @@ A **Scout Distribution** is a reproducible product assembly: one exact public
 core release plus zero or more trusted build-time extensions. It is not a sixth
 npm package, a runtime plugin loader, or a source mirror.
 
-The first full five-package release—not the `0.2.88` transition release—will
-define the reference zero-extension Scout Distribution. `0.2.88` establishes
+The first full five-package release—not the `0.2.89` transition release—will
+define the reference zero-extension Scout Distribution. `0.2.89` establishes
 two-package source and publication authority; it does not claim a resolved
 distribution BOM or private BOM-based consumption.
 
