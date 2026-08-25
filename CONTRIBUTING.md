@@ -66,4 +66,3 @@ A good pull request explains:
 
 Keep generated files, caches, local state, private product material, and
 unrelated workspace changes out of the patch.
-

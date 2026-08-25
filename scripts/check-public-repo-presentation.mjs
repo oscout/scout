@@ -17,6 +17,8 @@ const required = [
   "llms.txt",
   "docs.json",
   "docs/public-source-boundary.md",
+  ".github/diagrams/control-plane.arc.json",
+  ".github/diagrams/README.md",
   ".github/PULL_REQUEST_TEMPLATE.md",
   ".github/ISSUE_TEMPLATE/bug.yml",
   ".github/ISSUE_TEMPLATE/feature.yml",
@@ -28,6 +30,7 @@ const required = [
   ".github/assets/readme-hero.png",
   ".github/assets/social-preview.svg",
   ".github/assets/social-preview.png",
+  "scripts/render-readme-diagram.mjs",
 ];
 
 const missing = required.filter((path) => !existsSync(resolve(root, path)));
@@ -61,6 +64,14 @@ if (docsIndex.version !== versions.get("package.json")) {
   throw new Error(
     `Generated docs version ${docsIndex.version} does not match package version ${versions.get("package.json")}`,
   );
+}
+
+const diagram = JSON.parse(read(".github/diagrams/control-plane.arc.json"));
+if (!Array.isArray(diagram.connectors) || diagram.connectors.length < 3) {
+  throw new Error("Arc control-plane diagram is missing its routing relationships");
+}
+if (!read("README.md").includes("Generated from .github/diagrams/control-plane.arc.json by @arach/arc")) {
+  throw new Error("README Arc diagram has not been rendered");
 }
 
 const linkedSurfaces = [

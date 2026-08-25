@@ -34,6 +34,7 @@
     "build": "bun run cli:build && bun run web:build",
     "check": "bun run sync-exec:fence && bun run --cwd packages/protocol check && bun run --cwd packages/agent-sessions check && bun run --cwd packages/runtime check && bun run --cwd packages/session-trace check && bun run --cwd packages/session-trace-react check && bun run --cwd apps/desktop check && bun run --cwd packages/web check",
     "check:presentation": "node scripts/check-public-repo-presentation.mjs",
+    "diagram:readme": "node scripts/render-readme-diagram.mjs",
     "docs:generate": "dewey generate",
     "sync-exec:fence": "bun scripts/check-sync-exec-fence.ts",
     "test": "bun run test:unit",
@@ -123,6 +124,7 @@
     "varlock": "^1.16.0"
   },
   "devDependencies": {
+    "@arach/arc": "^0.4.1",
     "@arach/dewey": "^0.2.0",
     "sharp": "^0.34.5",
     "typescript": "^5.9.3"

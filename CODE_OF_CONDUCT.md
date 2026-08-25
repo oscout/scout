@@ -32,4 +32,3 @@ participation.
 Report conduct concerns privately through the maintainer contact routes at
 [arach.dev](https://arach.dev). Do not include sensitive conduct reports in a
 public issue.
-

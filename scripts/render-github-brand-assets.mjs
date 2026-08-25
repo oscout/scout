@@ -17,4 +17,3 @@ for (const [source, output] of jobs) {
     .toFile(join(assets, output));
   console.log(`rendered .github/assets/${output}`);
 }
-

@@ -9,6 +9,7 @@
         "varlock": "^1.16.0",
       },
       "devDependencies": {
+        "@arach/arc": "^0.4.1",
         "@arach/dewey": "^0.2.0",
         "sharp": "^0.34.5",
         "typescript": "^5.9.3",

@@ -1,0 +1,43 @@
+{
+  "layout": { "width": 1240, "height": 500 },
+  "nodes": {
+    "operator": { "x": 20, "y": 190, "size": "m" },
+    "cli": { "x": 250, "y": 70, "size": "m" },
+    "web": { "x": 250, "y": 310, "size": "m" },
+    "broker": { "x": 510, "y": 175, "size": "l" },
+    "codex": { "x": 815, "y": 10, "size": "m" },
+    "claude": { "x": 815, "y": 125, "size": "m" },
+    "acp": { "x": 815, "y": 240, "size": "m" },
+    "mesh": { "x": 815, "y": 355, "size": "m" },
+    "records": { "x": 1050, "y": 175, "size": "m" }
+  },
+  "nodeData": {
+    "operator": { "icon": "UserRound", "name": "Operator", "subtitle": "or agent", "color": "zinc" },
+    "cli": { "icon": "Terminal", "name": "CLI", "subtitle": "scout", "color": "emerald" },
+    "web": { "icon": "PanelsTopLeft", "name": "Web", "subtitle": "local UI", "color": "emerald" },
+    "broker": { "icon": "Network", "name": "Local broker", "subtitle": "canonical writer", "description": "routes + runs", "color": "emerald" },
+    "codex": { "icon": "Bot", "name": "Codex", "subtitle": "harness", "color": "sky" },
+    "claude": { "icon": "Bot", "name": "Claude", "subtitle": "harness", "color": "amber" },
+    "acp": { "icon": "Bot", "name": "Pi / ACP", "subtitle": "harnesses", "color": "violet" },
+    "mesh": { "icon": "RadioTower", "name": "Mesh", "subtitle": "peer nodes", "color": "blue" },
+    "records": { "icon": "Database", "name": "Records", "subtitle": "durable", "color": "zinc" }
+  },
+  "connectors": [
+    { "from": "operator", "to": "cli", "fromAnchor": "right", "toAnchor": "left", "style": "intent" },
+    { "from": "operator", "to": "web", "fromAnchor": "right", "toAnchor": "left", "style": "intent" },
+    { "from": "cli", "to": "broker", "fromAnchor": "right", "toAnchor": "left", "style": "local" },
+    { "from": "web", "to": "broker", "fromAnchor": "right", "toAnchor": "left", "style": "local" },
+    { "from": "broker", "to": "codex", "fromAnchor": "right", "toAnchor": "left", "style": "route" },
+    { "from": "broker", "to": "claude", "fromAnchor": "right", "toAnchor": "left", "style": "route" },
+    { "from": "broker", "to": "acp", "fromAnchor": "right", "toAnchor": "left", "style": "route" },
+    { "from": "broker", "to": "mesh", "fromAnchor": "right", "toAnchor": "left", "style": "mesh" },
+    { "from": "broker", "to": "records", "fromAnchor": "right", "toAnchor": "left", "style": "records" }
+  ],
+  "connectorStyles": {
+    "intent": { "color": "zinc", "strokeWidth": 1 },
+    "local": { "color": "emerald", "strokeWidth": 2 },
+    "route": { "color": "sky", "strokeWidth": 2 },
+    "mesh": { "color": "blue", "strokeWidth": 1, "dashed": true },
+    "records": { "color": "emerald", "strokeWidth": 2, "label": "writes" }
+  }
+}

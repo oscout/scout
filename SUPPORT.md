@@ -22,4 +22,3 @@ context and contact routes.
 ## Security
 
 Do not post vulnerabilities publicly. Follow [SECURITY.md](./SECURITY.md).
-

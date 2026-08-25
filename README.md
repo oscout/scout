@@ -60,18 +60,40 @@ inside the message body.
 
 ## One broker, many surfaces
 
-```mermaid
-flowchart LR
-  O[Operator or agent] --> C[scout CLI]
-  O --> W[Local web UI]
-  C --> B[(Local broker)]
-  W --> B
-  B --> X[Codex]
-  B --> A[Claude Code]
-  B --> P[Pi / ACP harnesses]
-  B --> M[Mesh-reachable nodes]
-  B --> D[(Durable coordination records)]
+<!-- arc:control-plane:start -->
+
+<!-- Generated from .github/diagrams/control-plane.arc.json by @arach/arc. -->
+
+```text
+                                                                      ┌────────────┐
+                                                                      │ ◆ Codex    │
+                                                                  ┌──▶│ harness    │
+                    ┌────────────┐                                │   └────────────┘
+                    │ ◆ CLI      │                                │
+                 ┌─▶│ scout      │────┐                           │
+                 │  │            │    │                           │
+                 │  └────────────┘    │                           │   ┌────────────┐
+                 │                    │                           │   │ ◆ Claude   │
+                 │                    │                           ├──▶│ harness    │
+                 │                    │    ╔══════════════════╗   │   │            │       ┌────────────┐
+┌────────────┐   │                    │    ║ ◆ Local broker   ║   │   └────────────┘       │ ◆ Records  │
+│ ◆ Operator │   │                    │    ║ canonical writer ║   │          ┌────────────▶│ durable    │
+│ or agent   │───┤                    ├───▶║ routes + runs    ║───┼ writes ──┘             │            │
+│            │   │                    │    ║                  ║   │   ┌────────────┐       └────────────┘
+└────────────┘   │                    │    ╚══════════════════╝   │   │ ◆ Pi / ACP │
+                 │                    │                           ├──▶│ harnesses  │
+                 │                    │                           ╎   │            │
+                 │  ┌────────────┐    │                           ╎   └────────────┘
+                 │  │ ◆ Web      │    │                           ╎
+                 └─▶│ local UI   │────┘                           ╎
+                    │            │                                ╎   ┌────────────┐
+                    └────────────┘                                ╎   │ ◆ Mesh     │
+                                                                  └╌╌▶│ peer nodes │
+                                                                      │            │
+                                                                      └────────────┘
 ```
+
+<!-- arc:control-plane:end -->
 
 The broker is the canonical writer for Scout-owned coordination records.
 Harness transcripts remain observed source material; Scout does not bulk-import
@@ -119,6 +141,7 @@ suite is available through `bun run check` and `bun run test:unit`.
 - [Protocol guide](./packages/protocol/README.md) — integration contracts and shared types
 - [Agent sessions](./packages/agent-sessions/README.md) — harness observation and session models
 - [Public-source boundary](./docs/public-source-boundary.md) — what ships here and how package/source parity stays verifiable
+- [Architecture diagram source](./.github/diagrams/control-plane.arc.json) — editable Arc model behind the README diagram
 - [Brand assets](./.github/assets/README.md) — canonical mark, hero, avatar, and social preview sources
 - [OpenScout](https://oscout.net) — product context and project home
 
