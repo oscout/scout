@@ -11,6 +11,19 @@ import {
   type BrokerServiceConfig,
 } from "./broker-process-manager.js";
 import {
+  claimScoutPairingSupervision,
+  isScoutPairingProcessRunning,
+  readScoutPairingProcessPid,
+  readScoutPairingSupervisorIntent,
+  releaseScoutPairingSupervision,
+  resolveScoutPairingSupervisorPaths,
+  updateScoutPairingSupervisorIntent,
+} from "./pairing-supervisor.js";
+import {
+  resolveBunExecutable,
+  resolveOpenScoutRepoRoot,
+} from "./tool-resolution.js";
+import {
   DEFAULT_SCOUT_WEB_PORTAL_HOST,
   resolveConfiguredScoutWebHostname,
   resolveScoutWebNamedHostname,
@@ -34,6 +47,8 @@ const BROKER_HEALTH_POLL_MS = 250;
 // 18s outer child timeout.
 const CHILD_SHUTDOWN_TIMEOUT_MS = 15_000;
 const WEB_START_RETRY_MS = 5_000;
+const PAIRING_RECONCILE_INTERVAL_MS = 500;
+const PAIRING_STOP_TIMEOUT_MS = 5_000;
 const MENU_BUNDLE_ID = "app.openscout.scout.menu";
 const PROCESS_NAME = "scout-base";
 // openscout-runtime.mjs runs broker-daemon in-process (no second bun child),
@@ -54,12 +69,20 @@ let baseKeepAlive: ReturnType<typeof setInterval> | null = null;
 let webStartRetryTimer: ReturnType<typeof setTimeout> | null = null;
 let webStartInFlight = false;
 let parentWatcher: ReturnType<typeof setInterval> | null = null;
+let pairingProcess: ChildProcess | null = null;
+let pairingReconcileTimer: NodeJS.Timeout | null = null;
+let pairingReconcileInFlight = false;
+let pairingRestartGeneration: number | null = null;
+let pairingRestartDelayMs = RESTART_MIN_DELAY_MS;
+let pairingNextStartAt = 0;
+let pairingSupervisionClaimed = false;
 
 const parentPid = Number.parseInt(process.env.OPENSCOUT_PARENT_PID ?? "0", 10);
 
 const config = resolveBrokerServiceConfig();
 const brokerControlUrl = buildLocalBrokerControlUrl(config.brokerHost, config.brokerPort);
 
+const pairingPaths = resolveScoutPairingSupervisorPaths();
 function log(message: string, details?: unknown): void {
   if (details === undefined) {
     console.log(`[openscout-base] ${message}`);
@@ -447,6 +470,204 @@ function startMenuBarApp(): void {
     warn("menu bar app launch failed", { target: repoBundle ?? MENU_BUNDLE_ID, code });
   });
 }
+type PairingControllerCommand = {
+  command: string;
+  args: string[];
+  cwd: string;
+};
+
+function resolvePairingControllerCommand(): PairingControllerCommand | null {
+  const moduleDirectory = dirname(fileURLToPath(import.meta.url));
+  const repoRoot = resolveOpenScoutRepoRoot({
+    startDirectories: [
+      process.env.OPENSCOUT_SETUP_CWD,
+      process.cwd(),
+      moduleDirectory,
+    ],
+  });
+  const setupCwd = process.env.OPENSCOUT_SETUP_CWD?.trim()
+    || repoRoot
+    || process.cwd();
+  const explicit = process.env.OPENSCOUT_PAIRING_RUNTIME_CONTROLLER_BIN?.trim();
+  const candidates = [
+    explicit,
+    repoRoot ? join(repoRoot, "packages", "cli", "dist", "pairing-runtime-controller.mjs") : null,
+    repoRoot ? join(repoRoot, "packages", "web", "dist", "pairing-runtime-controller.mjs") : null,
+    repoRoot ? join(repoRoot, "packages", "web", "server", "pairing-runtime-controller.ts") : null,
+    resolve(moduleDirectory, "..", "pairing-runtime-controller.mjs"),
+    join(homedir(), ".bun", "install", "global", "node_modules", "@openscout", "scout", "dist", "pairing-runtime-controller.mjs"),
+    join(homedir(), ".bun", "node_modules", "@openscout", "scout", "dist", "pairing-runtime-controller.mjs"),
+  ].filter((candidate): candidate is string => Boolean(candidate));
+  const entrypoint = candidates.find((candidate) => existsSync(candidate));
+  if (!entrypoint) return null;
+
+  if (explicit === entrypoint && !/\.(?:[cm]?js|ts)$/.test(entrypoint)) {
+    return { command: entrypoint, args: [], cwd: setupCwd };
+  }
+  const bun = resolveBunExecutable();
+  return bun ? { command: bun.path, args: [entrypoint], cwd: setupCwd } : null;
+}
+
+async function waitForPairingProcessExit(pid: number): Promise<boolean> {
+  const deadline = Date.now() + PAIRING_STOP_TIMEOUT_MS;
+  while (Date.now() < deadline) {
+    if (!isScoutPairingProcessRunning(pid)) return true;
+    await sleep(100);
+  }
+  return !isScoutPairingProcessRunning(pid);
+}
+
+async function stopPairingController(): Promise<void> {
+  const ownedChild = pairingProcess;
+  if (ownedChild && !isChildExited(ownedChild)) {
+    pairingProcess = null;
+    await terminateChildProcess(ownedChild, "pairing controller", PAIRING_STOP_TIMEOUT_MS);
+    return;
+  }
+  const runtimePid = readScoutPairingProcessPid(pairingPaths.runtimePidPath);
+  if (!isScoutPairingProcessRunning(runtimePid)) {
+    pairingProcess = null;
+    return;
+  }
+  try {
+    process.kill(runtimePid as number, "SIGTERM");
+  } catch {
+    pairingProcess = null;
+    return;
+  }
+  if (!await waitForPairingProcessExit(runtimePid as number)) {
+    warn("pairing controller did not exit after SIGTERM; forcing shutdown", { pid: runtimePid });
+    try {
+      process.kill(runtimePid as number, "SIGKILL");
+    } catch {
+      // The process exited between the liveness check and the signal.
+    }
+  }
+  pairingProcess = null;
+}
+
+function spawnPairingController(): void {
+  if (shuttingDown || pairingProcess) return;
+  const descriptor = resolvePairingControllerCommand();
+  if (!descriptor) {
+    warn("pairing controller entrypoint or Bun executable could not be resolved");
+    pairingNextStartAt = Date.now() + pairingRestartDelayMs;
+    pairingRestartDelayMs = Math.min(pairingRestartDelayMs * 2, RESTART_MAX_DELAY_MS);
+    return;
+  }
+
+  const child = spawn(descriptor.command, descriptor.args, {
+    cwd: descriptor.cwd,
+    env: {
+      ...process.env,
+      OPENSCOUT_PARENT_PID: String(process.pid),
+    },
+    stdio: [
+      "ignore",
+      logFile("pairing.stdout.log"),
+      logFile("pairing.stderr.log"),
+    ],
+  });
+  pairingProcess = child;
+  log("pairing controller started", { pid: child.pid, entrypoint: descriptor.args[0] ?? descriptor.command });
+  child.once("error", (error) => {
+    warn("pairing controller failed to start", error.message);
+    if (pairingProcess !== child) return;
+    pairingProcess = null;
+    pairingNextStartAt = Date.now() + pairingRestartDelayMs;
+    pairingRestartDelayMs = Math.min(pairingRestartDelayMs * 2, RESTART_MAX_DELAY_MS);
+    void reconcilePairingController();
+  });
+  child.once("exit", (code, signal) => {
+    if (pairingProcess !== child) return;
+    pairingProcess = null;
+    if (shuttingDown) return;
+    warn("pairing controller exited", { code, signal });
+    pairingNextStartAt = Date.now() + pairingRestartDelayMs;
+    pairingRestartDelayMs = Math.min(pairingRestartDelayMs * 2, RESTART_MAX_DELAY_MS);
+    void reconcilePairingController();
+  });
+}
+
+async function reconcilePairingController(): Promise<void> {
+  if (shuttingDown || !pairingSupervisionClaimed || pairingReconcileInFlight) return;
+  pairingReconcileInFlight = true;
+  try {
+    let intent = readScoutPairingSupervisorIntent(pairingPaths.intentPath);
+    const runtimePid = readScoutPairingProcessPid(pairingPaths.runtimePidPath);
+    const runtimeRunning = isScoutPairingProcessRunning(runtimePid);
+
+    // Preserve the pre-supervisor behavior on first upgrade: pairing starts
+    // with base unless the operator has explicitly persisted a stopped intent.
+    if (intent.desiredState === null) {
+      intent = updateScoutPairingSupervisorIntent("start", pairingPaths.intentPath);
+      log(runtimeRunning
+        ? "adopted live pairing runtime as desired running state"
+        : "initialized pairing desired state as running", runtimeRunning ? { pid: runtimePid } : {});
+    }
+
+    if (pairingRestartGeneration === null) {
+      pairingRestartGeneration = intent.restartGeneration;
+    }
+    const restartRequested = pairingRestartGeneration !== intent.restartGeneration;
+    if (restartRequested) {
+      pairingRestartGeneration = intent.restartGeneration;
+    }
+
+    if (intent.desiredState !== "running") {
+      pairingNextStartAt = 0;
+      pairingRestartDelayMs = RESTART_MIN_DELAY_MS;
+      if (runtimeRunning || pairingProcess) {
+        await stopPairingController();
+      }
+      return;
+    }
+
+    if (restartRequested) {
+      await stopPairingController();
+    } else if (
+      pairingProcess
+      && !isChildExited(pairingProcess)
+      && runtimeRunning
+      && runtimePid === pairingProcess.pid
+    ) {
+      pairingRestartDelayMs = RESTART_MIN_DELAY_MS;
+      return;
+    } else if (runtimeRunning) {
+      // A menu/web-owned controller cannot be adopted as a Node ChildProcess.
+      // Replace it once so the base owns and can durably restart it.
+      await stopPairingController();
+    } else if (pairingProcess && !isChildExited(pairingProcess)) {
+      return;
+    } else {
+      pairingProcess = null;
+    }
+
+    if (Date.now() >= pairingNextStartAt) {
+      spawnPairingController();
+    }
+  } catch (error) {
+    warn("pairing supervisor reconciliation failed", error instanceof Error ? error.message : String(error));
+  } finally {
+    pairingReconcileInFlight = false;
+  }
+}
+
+function startPairingSupervision(): void {
+  try {
+    claimScoutPairingSupervision(process.pid, pairingPaths.supervisorPidPath);
+  } catch (error) {
+    warn("pairing supervision is owned by another live process", error instanceof Error ? error.message : String(error));
+    return;
+  }
+  pairingSupervisionClaimed = true;
+  pairingReconcileTimer = setInterval(() => {
+    void reconcilePairingController();
+  }, PAIRING_RECONCILE_INTERVAL_MS);
+  pairingReconcileTimer.unref();
+  void reconcilePairingController();
+}
+
 
 function isChildExited(child: ChildProcess): boolean {
   return child.exitCode !== null || child.signalCode !== null;
@@ -510,14 +731,23 @@ async function shutdown(exitCode = 0): Promise<void> {
     clearTimeout(webStartRetryTimer);
     webStartRetryTimer = null;
   }
-  // The broker is the sole owner of scout-web and awaits its drain in its own
-  // shutdown path. Scout.app owns its embedded helper through LaunchServices;
-  // base must not use a same-name process kill as a substitute for that
-  // registration boundary.
+  if (pairingReconcileTimer) {
+    clearInterval(pairingReconcileTimer);
+    pairingReconcileTimer = null;
+  }
+  // Broker owns scout-web; base owns pairing and the edge children. Scout.app
+  // owns only its embedded helper through LaunchServices.
   const activeCaddyProcess = caddyProcess;
   stopEdgeProcesses();
-  await terminateChildProcess(brokerProcess, "broker");
-  await terminateChildProcess(activeCaddyProcess, "local edge", 2_000);
+  await Promise.all([
+    stopPairingController(),
+    terminateChildProcess(brokerProcess, "broker"),
+    terminateChildProcess(activeCaddyProcess, "local edge", 2_000),
+  ]);
+  if (pairingSupervisionClaimed) {
+    releaseScoutPairingSupervision(process.pid, pairingPaths.supervisorPidPath);
+    pairingSupervisionClaimed = false;
+  }
   process.exit(exitCode);
 }
 
@@ -552,8 +782,8 @@ for (const signal of ["SIGINT", "SIGTERM"] as const) {
 }
 
 // scoutd exports OPENSCOUT_PARENT_PID when it spawns scout-base. Watch it the
-// same way broker-daemon watches this process, so a dead scoutd cannot leave
-// the base/broker/web/edge tree orphaned under launchd.
+// same way broker-daemon and the pairing controller watch this process, so a
+// dead scoutd cannot leave the base/broker/web/edge/pairing tree orphaned.
 if (Number.isFinite(parentPid) && parentPid > 0 && parentPid !== process.pid) {
   parentWatcher = setInterval(() => {
     try {
@@ -577,5 +807,6 @@ log("starting Scout base service", {
 anchorBaseDaemonLifetime();
 spawnBroker();
 startLocalEdge();
+startPairingSupervision();
 startMenuBarApp();
 void startWebWhenBrokerIsReady();

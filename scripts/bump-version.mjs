@@ -36,6 +36,8 @@ const RELEASE_VERSION_SOURCES = [
   },
 ];
 
+const RELEASE_JSON_VERSION_FILES = ["docs.json"];
+
 const DEP_SECTIONS = ["dependencies", "devDependencies", "peerDependencies", "optionalDependencies"];
 const BACKUP_FILENAME = ".package.json.publish-backup";
 
@@ -48,7 +50,7 @@ async function writePkg(dir, pkg) {
 }
 
 function bumpSemver(current, kind) {
-  const match = /^(\d+)\.(\d+)\.(\d+)(.*)$/.exec(current);
+  const match = /^(\d+)\.(\d+)\.(\d+)$/.exec(current);
   if (!match) throw new Error(`Cannot parse semver: ${current}`);
   let [, maj, min, pat] = match;
   maj = Number(maj); min = Number(min); pat = Number(pat);
@@ -76,7 +78,7 @@ async function main() {
     ? bumpSemver(currentVersion, arg)
     : arg;
 
-  if (!/^\d+\.\d+\.\d+/.test(nextVersion)) {
+  if (!/^\d+\.\d+\.\d+$/.test(nextVersion)) {
     console.error(`Invalid version: ${nextVersion}`);
     process.exit(1);
   }
@@ -147,6 +149,20 @@ async function main() {
     }
     touched += 1;
     console.log(`  ${source.path}: ${match[2]} -> ${nextVersion}${dryRun ? " (dry)" : ""}`);
+  }
+
+  for (const relativePath of RELEASE_JSON_VERSION_FILES) {
+    const file = path.join(REPO_ROOT, relativePath);
+    const contents = JSON.parse(await fs.readFile(file, "utf8"));
+    const priorVersion = contents.version;
+    if (priorVersion === nextVersion) continue;
+
+    if (!dryRun) {
+      contents.version = nextVersion;
+      await fs.writeFile(file, `${JSON.stringify(contents, null, 2)}\n`);
+    }
+    touched += 1;
+    console.log(`  ${relativePath}: ${priorVersion} -> ${nextVersion}${dryRun ? " (dry)" : ""}`);
   }
 
   if (touched === 0) {

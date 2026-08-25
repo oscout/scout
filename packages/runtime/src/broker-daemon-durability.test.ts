@@ -17,12 +17,12 @@ describe("broker daemon durability routes", () => {
       controlHome,
       env: {
         OPENSCOUT_NODE_ID: undefined,
-        OPENSCOUT_NODE_NAME: "Dev-Mac-mini-372.local",
+        OPENSCOUT_NODE_NAME: "Arts-Mac-mini-372.local",
       },
     });
-    expect(first.nodeId).toBe("dev-mac-mini-372-local-openscout");
+    expect(first.nodeId).toBe("arts-mac-mini-local-openscout");
 
-    const studioAgentId = "studio.main.dev-mac-mini-372-local";
+    const studioAgentId = "studio.main.arts-mac-mini-372-local";
     await broker.postJson(first.baseUrl, "/v1/agents", {
       id: studioAgentId,
       definitionId: "studio",
@@ -53,7 +53,7 @@ describe("broker daemon durability routes", () => {
       controlHome,
       env: {
         OPENSCOUT_NODE_ID: undefined,
-        OPENSCOUT_NODE_NAME: "Dev-Mac-mini-419.local",
+        OPENSCOUT_NODE_NAME: "Arts-Mac-mini-419.local",
       },
     });
     expect(restarted.nodeId).toBe(first.nodeId);

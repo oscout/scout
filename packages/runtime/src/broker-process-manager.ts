@@ -276,14 +276,14 @@ export function resolveBrokerUrl(
     return explicit;
   }
   if (scope === "mesh") {
-    // Prefer Tailscale MagicDNS/IP, then LAN — advertised as https so peers
-    // dial the §11.3 TLS listener (not the retired 0.0.0.0 plaintext path).
+    // LAN before Tailscale: same-house peers dial RFC1918 first. MagicDNS/CGNAT
+    // stay advertised as fallback when the LAN path is unreachable.
+    if (lanHost) {
+      return buildDefaultBrokerHttpsUrl(lanHost, port);
+    }
     const tailnetHost = readTailscaleSelfWebHostsSync(env)[0];
     if (tailnetHost) {
       return buildDefaultBrokerHttpsUrl(tailnetHost, port);
-    }
-    if (lanHost) {
-      return buildDefaultBrokerHttpsUrl(lanHost, port);
     }
   }
   return buildDefaultBrokerUrl(host, port);

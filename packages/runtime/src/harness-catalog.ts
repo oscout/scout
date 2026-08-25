@@ -64,6 +64,7 @@ export type HarnessSessionDefaults = {
 export type HarnessCatalogEntry = {
   name: string;
   harness: AgentHarness | (string & {});
+  aliases?: string[];
   label: string;
   description: string;
   homepage?: string;
@@ -377,6 +378,7 @@ const BUILT_IN_HARNESS_CATALOG: HarnessCatalogEntry[] = [
   {
     name: "opencode",
     harness: "opencode",
+    aliases: ["oc", "opencode2"],
     label: "OpenCode",
     description: "OpenCode's coding agent over ACP, fronting many model vendors via OpenCode Zen",
     homepage: "https://opencode.ai/docs/",
@@ -699,7 +701,8 @@ export function findHarnessEntry(
   harness: string | null | undefined,
 ): HarnessCatalogEntry | null {
   if (!harness) return null;
-  return BUILT_IN_HARNESS_CATALOG.find((e) => e.harness === harness || e.name === harness) ?? null;
+  const lower = harness.trim().toLowerCase();
+  return BUILT_IN_HARNESS_CATALOG.find((e) => e.harness === lower || e.name === lower || e.aliases?.includes(lower)) ?? null;
 }
 
 export function resolveHarnessSessionDefaults(
@@ -710,8 +713,9 @@ export function resolveHarnessSessionDefaults(
   } = {},
 ): { harness: string; transport: string; fallbackTransports: string[] } | null {
   if (!harness) return null;
+  const lower = harness.trim().toLowerCase();
   const entry = (options.entries ?? BUILT_IN_HARNESS_CATALOG)
-    .find((candidate) => candidate.harness === harness || candidate.name === harness);
+    .find((candidate) => candidate.harness === lower || candidate.name === lower || candidate.aliases?.includes(lower));
   const defaults = entry?.sessionDefaults;
   if (!entry || !defaults) return null;
 
@@ -730,6 +734,7 @@ export function resolveHarnessSessionDefaults(
 export function createBuiltInHarnessCatalog(): HarnessCatalogEntry[] {
   return BUILT_IN_HARNESS_CATALOG.map((entry) => ({
     ...entry,
+    aliases: entry.aliases ? [...entry.aliases] : undefined,
     tags: [...entry.tags],
     support: { ...entry.support },
     install: entry.install ? { ...entry.install, requires: [...(entry.install.requires ?? [])] } : undefined,

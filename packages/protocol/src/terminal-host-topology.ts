@@ -13,8 +13,11 @@
  * The server builds this from `herdr --session <n> workspace list`,
  * `tab list`, and `pane list` JSON, plus the per-tab layout geometry from
  * `herdr --session <n> api snapshot`. A session whose server is stopped
- * projects as `{ running: false, workspaces: [] }` — an ordinary state, not
- * an error.
+ * projects from its persisted `session.json` instead — same shape, marked by
+ * `running: false` and `savedAt`; geometry, terminal ids, and live agent
+ * status are simply absent from a persisted projection. A session with no
+ * persisted state projects as `{ running: false, workspaces: [] }` — an
+ * ordinary state, not an error.
  */
 
 /** Agent state as herdr reports it, never as Scout infers it. */
@@ -125,6 +128,12 @@ export type HerdrSessionTopology = {
   workspaces: HerdrWorkspaceProjection[];
   /** Server wall-clock when the projection was observed. */
   observedAt: number;
+  /**
+   * When the projection came from the persisted session state (server stopped),
+   * the mtime of that state — the session's last known change. Absent when the
+   * projection is live.
+   */
+  savedAt?: number | null;
 };
 
 export function emptyHerdrSessionTopology(session: string, running: boolean): HerdrSessionTopology {

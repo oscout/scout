@@ -39,6 +39,53 @@ export const NODE_FINGERPRINT_PREFIX = "osc1";
 export const NODE_CARD_TTL_MS = 24 * 60 * 60 * 1_000;
 const stableNodeQualifierCache = new Map<string, string>();
 
+/**
+ * Strip mDNS/Bonjour collision increments (e.g. `Arts-Mac-mini-2`,
+ * `Arachs-Mac-mini-292.local`, `air-6-local-openscout`) from hostnames and
+ * node identifiers so routing authority remains immune to DHCP/mDNS drift.
+ */
+export function stripBonjourCollisionSuffix(value: string): string {
+  if (!value || typeof value !== "string") return "";
+  let trimmed = value.trim();
+
+  // Check if ending with .local
+  const isDotLocal = /\.local\.?$/i.test(trimmed);
+  if (isDotLocal) {
+    trimmed = trimmed.replace(/\.local\.?$/i, "");
+  }
+
+  // Check if ending with -local or -local-openscout (for qualifiers / node IDs)
+  const isHyphenLocalOpenscout = /-local-openscout$/i.test(trimmed);
+  const isHyphenLocal = !isHyphenLocalOpenscout && /-local$/i.test(trimmed);
+  if (isHyphenLocalOpenscout) {
+    trimmed = trimmed.replace(/-local-openscout$/i, "");
+  } else if (isHyphenLocal) {
+    trimmed = trimmed.replace(/-local$/i, "");
+  }
+
+  // Only strip numeric collision suffixes if this is an mDNS/Bonjour identifier
+  if (!isDotLocal && !isHyphenLocalOpenscout && !isHyphenLocal) {
+    return trimmed;
+  }
+
+  // Strip trailing numeric collision suffix e.g. -2, -292, -372
+  trimmed = trimmed.replace(/(?<=[a-zA-Z].*?)(?:-\d+)+$/, "");
+
+  if (isDotLocal) return `${trimmed}.local`;
+  if (isHyphenLocalOpenscout) return `${trimmed}-local-openscout`;
+  if (isHyphenLocal) return `${trimmed}-local`;
+  return trimmed;
+}
+
+/**
+ * Compute the canonical mesh node ID for a given node ID or hostname string,
+ * stripping volatile Bonjour collision numbering while preserving custom IDs.
+ */
+export function canonicalMeshNodeId(nodeId: string): string {
+  if (!nodeId || typeof nodeId !== "string") return "";
+  return stripBonjourCollisionSuffix(nodeId);
+}
+
 export type NodeIdentity = {
   version: 1;
   /** base64 DER (spki) Ed25519 public key */
@@ -114,6 +161,12 @@ export function loadOrCreateStableNodeQualifier(
   const identity = loadOrCreateNodeIdentity(supportDirectory);
   const existing = normalizeNodeQualifier(identity.nodeQualifier);
   if (existing) {
+    if (identity.nodeQualifier !== existing) {
+      persistNodeIdentity(path, {
+        ...identity,
+        nodeQualifier: existing,
+      });
+    }
     stableNodeQualifierCache.set(path, existing);
     return existing;
   }
@@ -169,7 +222,7 @@ function readAndValidateNodeIdentity(path: string): NodeIdentity {
   if (parsed.version !== 1 || !parsed.publicKey || !parsed.privateKey) {
     throw new Error(`Corrupt node identity at ${path}; remove it to generate a fresh one.`);
   }
-  if (parsed.nodeQualifier !== undefined && normalizeNodeQualifier(parsed.nodeQualifier) !== parsed.nodeQualifier) {
+  if (parsed.nodeQualifier !== undefined && normalizePersistedNodeQualifier(parsed.nodeQualifier) !== parsed.nodeQualifier) {
     throw new Error(`Corrupt node identity at ${path}; remove it to generate a fresh one.`);
   }
   // Verify the pair: re-derive the public key from the private key.
@@ -185,8 +238,7 @@ function readAndValidateNodeIdentity(path: string): NodeIdentity {
   }
   return parsed;
 }
-
-function normalizeNodeQualifier(value: unknown): string {
+function normalizePersistedNodeQualifier(value: unknown): string {
   return typeof value === "string"
     ? value
       .trim()
@@ -195,6 +247,11 @@ function normalizeNodeQualifier(value: unknown): string {
       .replace(/-+/g, "-")
       .replace(/^-+|-+$/g, "")
     : "";
+}
+
+
+export function normalizeNodeQualifier(value: unknown): string {
+  return stripBonjourCollisionSuffix(normalizePersistedNodeQualifier(value));
 }
 
 function persistNodeIdentity(path: string, identity: NodeIdentity): void {

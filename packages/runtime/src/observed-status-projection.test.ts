@@ -8,6 +8,7 @@ import type {
   WorkItemRecord,
 } from "@openscout/protocol";
 
+import { ActivityTransitionTracker } from "./activity-transitions.js";
 import { createRuntimeRegistrySnapshot } from "./registry.js";
 import {
   projectObservedStatusForAgent,
@@ -113,6 +114,80 @@ describe("observed status projection", () => {
       },
     });
     expect(status.provenance[0]).toMatchObject({ source: "flight", refId: "flight-1" });
+  });
+
+  test("takes freshness from the freshest candidate, not the winning one", () => {
+    // Selection is winner-take-all by rank and the flight wins, which is right
+    // for *what* the agent is doing. It is wrong for *whether it is still
+    // there*: the endpoint heartbeat is the only thing attesting the runtime is
+    // alive, and discarding it dated a nine-minute turn to when it began.
+    const startedAt = now - 9 * 60_000;
+    const snapshot = createRuntimeRegistrySnapshot({
+      agents: { "agent-1": makeAgent() },
+      endpoints: {
+        "endpoint-1": makeEndpoint({
+          state: "active",
+          metadata: { lastSeenAt: now, lastStartedAt: startedAt },
+        }),
+      },
+      invocations: { "inv-1": makeInvocation() },
+      flights: { "flight-1": makeFlight({ state: "running", startedAt }) },
+    });
+
+    const status = projectObservedStatusForAgent(snapshot, "agent-1", { now });
+
+    // What: the flight. How fresh: the endpoint.
+    expect(status.subjectKind).toBe("flight");
+    expect(status.activity).toBe("working");
+    expect(status.updatedAt).toBe(now);
+    expect(status.staleAt).toBe(now + 90_000);
+  });
+
+  test("dates time-in-state from when the activity began, not when it was last confirmed", () => {
+    const startedAt = now - 9 * 60_000;
+    const snapshot = createRuntimeRegistrySnapshot({
+      agents: { "agent-1": makeAgent() },
+      endpoints: {
+        "endpoint-1": makeEndpoint({
+          state: "active",
+          metadata: { lastSeenAt: now, lastStartedAt: startedAt },
+        }),
+      },
+      invocations: { "inv-1": makeInvocation() },
+      flights: { "flight-1": makeFlight({ state: "running", startedAt }) },
+    });
+
+    const status = projectObservedStatusForAgent(snapshot, "agent-1", {
+      now,
+      transitions: new ActivityTransitionTracker(),
+    });
+
+    expect(status.transitionAt).toBe(startedAt);
+    expect(status.updatedAt).toBe(now);
+  });
+
+  test("recovers endpoint time-in-state from the record, not the heartbeat", () => {
+    // The restart case: a fresh tracker has no memory, so the stamp has to come
+    // out of the endpoint itself or every agent's clock resets to zero.
+    const startedAt = now - 9 * 60_000;
+    const snapshot = createRuntimeRegistrySnapshot({
+      agents: { "agent-1": makeAgent() },
+      endpoints: {
+        "endpoint-1": makeEndpoint({
+          state: "active",
+          metadata: { lastSeenAt: now, lastStartedAt: startedAt },
+        }),
+      },
+    });
+
+    const status = projectObservedStatusForAgent(snapshot, "agent-1", {
+      now,
+      transitions: new ActivityTransitionTracker(),
+    });
+
+    expect(status.subjectKind).toBe("endpoint");
+    expect(status.activity).toBe("working");
+    expect(status.transitionAt).toBe(startedAt);
   });
 
   test("lets collaboration attention override generic running state", () => {

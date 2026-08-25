@@ -17,7 +17,10 @@ type ActivityQuery = Parameters<SQLiteControlPlaneStore["listActivityItems"]>[0]
 type RecoverableSQLiteProjectionOptions = {
   disabled?: boolean;
   createStore?: (dbPath: string) => SQLiteControlPlaneStore;
+  replayYieldEvery?: number;
 };
+
+const DEFAULT_REPLAY_YIELD_EVERY = 256;
 
 export type SQLiteProjectionStatusSnapshot = {
   state: "ready" | "degraded" | "disabled";
@@ -641,6 +644,21 @@ export class RecoverableSQLiteProjection {
     return next;
   }
 
+  private async replayJournal(
+    visitor: (entry: BrokerJournalEntry) => void | Promise<void>,
+  ): Promise<void> {
+    const configuredBatchSize = this.options.replayYieldEvery ?? DEFAULT_REPLAY_YIELD_EVERY;
+    const batchSize = Math.max(1, Math.floor(configuredBatchSize));
+    let visited = 0;
+    await this.journal.replay(async (entry) => {
+      await visitor(entry);
+      visited += 1;
+      if (visited % batchSize === 0) {
+        await new Promise<void>((resolve) => setImmediate(resolve));
+      }
+    });
+  }
+
   private async ensureStore(): Promise<SQLiteControlPlaneStore | null> {
     if (this.options.disabled || this.closed) {
       return null;
@@ -656,9 +674,11 @@ export class RecoverableSQLiteProjection {
       // second pass applies the journal in order. Memory is bounded by current
       // entity cardinality instead of historical journal entry count.
       const parents = createReplayParentScan();
-      await this.journal.replay((entry) => { collectReplayParents(parents, entry); });
+      await this.replayJournal((entry) => {
+        collectReplayParents(parents, entry);
+      });
       prepareReplayParents(store, parents);
-      await this.journal.replay((entry) => {
+      await this.replayJournal((entry) => {
         try {
           applyJournalEntryToStore(store, entry);
         } catch (error) {

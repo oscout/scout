@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 
 import type { ScoutBrokerChildServiceSnapshots } from "./broker-api.js";
 import { resolveBrokerServiceConfig } from "./broker-process-manager.js";
-import { resolveWebPort } from "./local-config.js";
+import { resolveWebAuthToken, resolveWebPort } from "./local-config.js";
 import {
   resolveBunExecutable,
   resolveOpenScoutRepoRoot,
@@ -195,7 +195,7 @@ export class BrokerWebControlService {
   constructor(private readonly options: BrokerWebControlServiceOptions) {
     this.env = options.env ?? process.env;
     this.webAuthToken = this.env.OPENSCOUT_WEB_AUTH_TOKEN?.trim()
-      || randomBytes(32).toString("base64url");
+      || resolveWebAuthToken(this.env);
     this.fetchImpl = options.fetch ?? fetch;
     this.spawnImpl = options.spawnProcess ?? (spawn as unknown as RuntimeSpawnFunction<RuntimeChildProcessLike>);
     this.trustedHosts = new Set(

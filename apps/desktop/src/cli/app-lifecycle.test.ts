@@ -78,6 +78,7 @@ function healthyTable(root = OURS): string {
     line(300, 200, `scout-broker run ${runtime} broker`),
     // Edge names no file it owns — only a Caddyfile outside the checkout.
     line(301, 200, "scout-edge run --config /Users/dev/.scout/local-edge/Caddyfile --adapter caddyfile"),
+    line(650, 200, `${root.root}/pairing-runtime-controller.ts`),
     line(400, 300, `scout-web run ${runtime} web`),
     line(500, 1, `${root.dist}/Scout.app/Contents/MacOS/Scout`),
     line(600, 500, `${root.dist}/Scout.app/Contents/Library/LoginItems/ScoutMenu.app/Contents/MacOS/ScoutMenu`),
@@ -183,6 +184,7 @@ describe("classifyProcesses", () => {
     expect(tree.layers.web.map((entry) => entry.pid)).toEqual([400]);
     expect(tree.layers.app.map((entry) => entry.pid)).toEqual([500]);
     expect(tree.layers.menu.map((entry) => entry.pid)).toEqual([600]);
+    expect(tree.layers.pairing.map((entry) => entry.pid)).toEqual([650]);
     expect(tree.foreign).toEqual([]);
     expect(verifyTree(tree)).toEqual([]);
   });
@@ -288,9 +290,8 @@ describe("resolveLaunchdLabel", () => {
 });
 
 describe("planStop", () => {
-  test("takes the LaunchServices tree down leaf-first, then bootouts the supervised tree", () => {
-    const table = `${healthyTable()}\n${line(650, 600, "/repo/pairing-runtime-controller.ts")}`;
-    const tree = classifyProcesses(parseProcessTable(table), paths);
+  test("stops LaunchServices apps before booting out the supervised tree", () => {
+    const tree = classifyProcesses(parseProcessTable(healthyTable()), paths);
     const steps = planStop(tree);
 
     expect(steps.map((step) => (step.kind === "signal" ? step.layer : step.kind))).toEqual([
@@ -299,11 +300,10 @@ describe("planStop", () => {
       "sweep",
     ]);
 
-    // Pairing controllers are owned by the menu, so they clear before it does.
     const signalled = steps.flatMap((step) => (step.kind === "signal" ? [{ layer: step.layer, pids: step.pids }] : []));
-    expect(signalled[0]).toEqual({ layer: "pairing", pids: [650] });
-    expect(signalled[1]).toEqual({ layer: "menu", pids: [600] });
-    expect(signalled[2]).toEqual({ layer: "app", pids: [500] });
+    expect(signalled[0]).toEqual({ layer: "menu", pids: [600] });
+    expect(signalled[1]).toEqual({ layer: "app", pids: [500] });
+    expect(steps.at(-1)).toMatchObject({ kind: "sweep", pids: expect.arrayContaining([650]) });
   });
 
   test("never signals supervised layers before the bootout", () => {
@@ -328,7 +328,7 @@ describe("planStop", () => {
     const sweep = steps.at(-1);
     expect(sweep?.kind).toBe("sweep");
     if (sweep?.kind === "sweep") {
-      expect(sweep.pids.sort()).toEqual([100, 200, 201, 300, 301, 400]);
+      expect(sweep.pids.sort()).toEqual([100, 200, 201, 300, 301, 400, 650]);
     }
   });
 
@@ -358,6 +358,14 @@ describe("chooseLaunchdStartMethod", () => {
 
   test("kickstarts a job that is still loaded", () => {
     expect(chooseLaunchdStartMethod({ loaded: true, plistExists: true })).toBe("kickstart");
+  });
+
+  test("uses the checkout scoutd when a loaded job may point somewhere stale", () => {
+    expect(chooseLaunchdStartMethod({
+      loaded: true,
+      plistExists: true,
+      scoutdPath: "/repo/bin/scoutd",
+    })).toBe("scoutd");
   });
 
   test("reports unavailable rather than pretending when there is no plist", () => {
@@ -421,10 +429,48 @@ describe("verifyTree", () => {
     expect(verifyTree(tree).some((problem) => /not owned by launchd/.test(problem.message))).toBe(true);
   });
 
-  test("flags a pairing controller adopted away from the menu", () => {
-    const table = `${healthyTable()}\n${line(650, 1, `${OURS.root}/pairing-runtime-controller.ts`)}`;
+  test("flags a missing pairing controller", () => {
+    const table = healthyTable().replace(
+      line(650, 200, `${OURS.root}/pairing-runtime-controller.ts`),
+      "",
+    );
     const tree = classifyProcesses(parseProcessTable(table), paths);
-    expect(verifyTree(tree).some((problem) => problem.layer === "pairing")).toBe(true);
+    expect(verifyTree(tree).some((problem) =>
+      problem.layer === "pairing" && /no pairing process is running/.test(problem.message)
+    )).toBe(true);
+  });
+
+  test("flags a pairing controller not owned by base", () => {
+    const table = healthyTable().replace(
+      line(650, 200, `${OURS.root}/pairing-runtime-controller.ts`),
+      line(650, 600, `${OURS.root}/pairing-runtime-controller.ts`),
+    );
+    const tree = classifyProcesses(parseProcessTable(table), paths);
+    expect(verifyTree(tree).some((problem) =>
+      problem.layer === "pairing" && /owned by pid 600, expected 200/.test(problem.message)
+    )).toBe(true);
+  });
+
+  test("accepts menu ownership only when the base supervisor is unavailable", () => {
+    const table = [
+      line(500, 1, `${OURS.dist}/Scout.app/Contents/MacOS/Scout`),
+      line(600, 500, `${OURS.dist}/Scout.app/Contents/Library/LoginItems/ScoutMenu.app/Contents/MacOS/ScoutMenu`),
+      line(650, 600, `${OURS.root}/pairing-runtime-controller.ts`),
+    ].join("\n");
+    const tree = classifyProcesses(parseProcessTable(table), paths);
+    expect(verifyTree(tree).filter((problem) => problem.layer === "pairing")).toEqual([]);
+  });
+
+  test("does not treat duplicate base supervisors as fallback eligibility", () => {
+    const runtime = `${OURS.root}/packages/runtime/bin/openscout-runtime.mjs`;
+    const table = `${healthyTable().replace(
+      line(650, 200, `${OURS.root}/pairing-runtime-controller.ts`),
+      line(650, 600, `${OURS.root}/pairing-runtime-controller.ts`),
+    )}\n${line(202, 100, `scout-base ${runtime} base`)}`;
+    const tree = classifyProcesses(parseProcessTable(table), paths);
+    expect(verifyTree(tree).some((problem) =>
+      problem.layer === "pairing" && /owned by pid 600, expected 200/.test(problem.message)
+    )).toBe(true);
   });
 
   test("keeps a sibling checkout informational rather than failing our tree", () => {

@@ -50,12 +50,12 @@ test("forwardMeshMessage uses the injected signed and pinned peer client", async
   };
 
   await expect(forwardMeshMessage(
-    "https://dev-mac-mini.tailnet.example:43110",
+    "https://arts-mac-mini.tailnet.example:43110",
     makeBundle(),
     { peerFetch },
   )).resolves.toEqual({ ok: true });
   expect(calls).toEqual([{
-    baseUrl: "https://dev-mac-mini.tailnet.example:43110",
+    baseUrl: "https://arts-mac-mini.tailnet.example:43110",
     path: "/v1/mesh/messages",
     method: "POST",
   }]);
@@ -229,6 +229,24 @@ describe("mesh forwarding", () => {
       },
     });
 
+    expect(result).toEqual({ ok: true, duplicate: false });
+  });
+
+  test("falls back to a later HTTP entrypoint when the first dial fails", async () => {
+    const liveUrl = startJsonServer(async (request) => {
+      const pathname = new URL(request.url).pathname;
+      if (pathname === "/v1/node") {
+        return new Response(null, { status: 404 });
+      }
+      expect(pathname).toBe("/v1/mesh/messages");
+      return Response.json({ ok: true, duplicate: false });
+    });
+    const peer = makePeerNode({
+      brokerUrl: "http://127.0.0.1:1",
+      meshEntrypoints: [{ kind: "http", url: liveUrl }],
+    });
+
+    const result = await forwardMeshMessage(peer, makeBundle(), { timeoutMs: 250 });
     expect(result).toEqual({ ok: true, duplicate: false });
   });
 

@@ -25,6 +25,14 @@ describe("broker runtime profiles", () => {
       model: "opus",
       session: "new",
     });
+    expect(resolveBrokerRuntimeProfile("oc")?.execution).toEqual({
+      harness: "opencode",
+      session: "new",
+    });
+    expect(resolveBrokerRuntimeProfile("OpenCode")?.execution).toEqual({
+      harness: "opencode",
+      session: "new",
+    });
   });
 
   test("accepts only known optional effort values", () => {

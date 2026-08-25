@@ -34,7 +34,9 @@ afterEach(() => {
   } else {
     process.env.OPENSCOUT_PROVISIONAL_AGENT_NAMES_FILE = priorEnvFile;
   }
-  saveUserConfig({});
+  // No saveUserConfig({}) here: with the real OPENSCOUT_HOME restored it
+  // would blank the operator's real ~/.openscout/user.json. rmSync above
+  // already removed the temp config.
 });
 
 function useTempHome(): string {

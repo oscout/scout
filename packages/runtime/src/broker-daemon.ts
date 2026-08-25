@@ -31,8 +31,12 @@ import {
 import { createInMemoryControlRuntime } from "./broker.js";
 import {
   publishControlEvent,
+  publishEphemeralControlEvent,
   replaceControlEventBacklog,
+  setPresenceSnapshotSource,
+  snapshotPresenceControlEvents,
 } from "./broker-control-events.js";
+import { BrokerPresenceService } from "./broker-presence-service.js";
 import { BrokerDeliveryStore } from "./broker-delivery-store.js";
 import { FileBackedBrokerJournal, type BrokerJournalEntry } from "./broker-journal.js";
 import { BrokerDurableRecordStore } from "./broker-durable-record-store.js";
@@ -231,6 +235,7 @@ import {
   createMeshBindController,
   readPersistedAdvertiseScope,
   type MeshBindController,
+  type MeshBindState,
 } from "./mesh-bind-controller.js";
 import {
   PEER_AUTH_MAX_SKEW_MS,
@@ -512,6 +517,9 @@ const controlStreams = new BrokerControlStreamService({
   listDeliveries: (options) => projection.listDeliveries(options),
   messageById: (messageId) => runtime.message(messageId),
   invocationById: (invocationId) => knownInvocations.get(invocationId),
+  // Reads the same registered source the tRPC subscribe path uses, so both
+  // transports hand a new subscriber the identical current value.
+  presenceSnapshot: () => snapshotPresenceControlEvents(),
 });
 const operatorActorId = "operator";
 const durableRecords = new BrokerDurableRecordStore({
@@ -834,6 +842,9 @@ if (runtimeCatalogRefreshMs > 0) {
 void runtimeCatalogService.read();
 let shuttingDown = false;
 const sseKeepAliveIntervalMs = Number.parseInt(process.env.OPENSCOUT_SSE_KEEPALIVE_MS ?? "15000", 10);
+// Presence observation cadence. The TTL is sized at three missed samples, so a
+// dropped sample never flaps an agent out of freshness.
+const presenceSampleIntervalMs = Number.parseInt(process.env.OPENSCOUT_PRESENCE_SAMPLE_MS ?? "15000", 10);
 let meshRendezvousPublisher: MeshRendezvousPublisher | null = null;
 let parentWatcher: ReturnType<typeof setInterval> | null = null;
 
@@ -852,6 +863,32 @@ runtime.subscribe((event) => {
   controlStreams.streamEvent(event);
   publishControlEvent(event);
 });
+
+// Presence: broker-observed, ephemeral, latest-per-agent. Deliberately not on
+// the `runtime.subscribe` path above — that pairing writes a durable row for
+// every event, and presence must create none. Transitions go straight to the
+// in-memory bus and the live SSE clients.
+const presenceService = new BrokerPresenceService({
+  snapshot: () => runtime.snapshot(),
+  publish: (event) => {
+    controlStreams.streamEphemeralEvent(event);
+    publishEphemeralControlEvent(event);
+  },
+  createId: createRuntimeId,
+  actorId: nodeId,
+  nodeId,
+});
+setPresenceSnapshotSource(() => presenceService.snapshotEvents());
+if (presenceSampleIntervalMs > 0) {
+  presenceService.sample();
+  setInterval(() => {
+    try {
+      presenceService.sample();
+    } catch (error) {
+      console.warn("[openscout-runtime] presence sample failed:", error);
+    }
+  }, presenceSampleIntervalMs).unref();
+}
 
 if (sseKeepAliveIntervalMs > 0) {
   setInterval(() => {
@@ -986,6 +1023,22 @@ async function bootstrapRegisteredLocalAgents(): Promise<void> {
 
 function currentLocalNode(): NodeDefinition {
   return runtime.node(nodeId) ?? localNode;
+}
+
+function localNodeWithBindState(node: NodeDefinition, state: MeshBindState): NodeDefinition {
+  const httpEntrypoints = state.endpoints.map((url) => ({
+    kind: "http" as const,
+    url,
+    lastSeenAt: Date.now(),
+  }));
+  const otherEntrypoints = (node.meshEntrypoints ?? []).filter((entrypoint) => entrypoint.kind !== "http");
+  return {
+    ...node,
+    advertiseScope: state.scope,
+    brokerUrl: state.brokerUrl,
+    meshEntrypoints: [...httpEntrypoints, ...otherEntrypoints],
+    lastSeenAt: Date.now(),
+  };
 }
 
 function currentRendezvousNode(): NodeDefinition {
@@ -1335,9 +1388,11 @@ const localAgentSyncService = new BrokerLocalAgentSyncService({
   log: (message) => console.log(message),
 });
 
-projection.warm();
-await upsertNodeDurably(localNode);
-await upsertActorDurably(systemActor);
+// Prime required bootstrap identities in memory before routes are built. Their
+// journal/SQLite write runs after the listeners bind, so replaying a large
+// pilot journal cannot make launchd report a dead broker for several minutes.
+await runtime.upsertNode(localNode);
+await runtime.upsertActor(systemActor);
 
 function operatorActorDisplayName(): string {
   return resolveOperatorName().trim() || operatorActorId;
@@ -2058,6 +2113,13 @@ try {
   await listenTcp(server, { host: isLoopbackHost(host) || host === "0.0.0.0" || host === "::" ? "127.0.0.1" : host, port });
   await listenUnixSocket(socketServer, brokerSocketPath);
 
+  projection.warm();
+  void upsertNodeDurably(localNode)
+    .then(() => upsertActorDurably(systemActor))
+    .catch((error) => {
+      console.error("[openscout-runtime] bootstrap identity persistence failed:", error);
+    });
+
   function handleBrokerHttp(
     request: import("node:http").IncomingMessage,
     response: import("node:http").ServerResponse,
@@ -2089,12 +2151,7 @@ try {
     onStateChange: async (state) => {
       advertiseScope = state.scope;
       brokerUrl = state.brokerUrl;
-      const nextNode = {
-        ...currentLocalNode(),
-        advertiseScope: state.scope,
-        brokerUrl: state.brokerUrl,
-        lastSeenAt: Date.now(),
-      };
+      const nextNode = localNodeWithBindState(currentLocalNode(), state);
       Object.assign(localNode, nextNode);
       await upsertNodeDurably(nextNode).catch((error) => {
         console.warn("[openscout-runtime] mesh bind: failed to update node registry:", error);
@@ -2110,11 +2167,7 @@ try {
     const state = meshBindController.getState();
     advertiseScope = state.scope;
     brokerUrl = state.brokerUrl;
-    Object.assign(localNode, {
-      advertiseScope: state.scope,
-      brokerUrl: state.brokerUrl,
-      lastSeenAt: Date.now(),
-    });
+    Object.assign(localNode, localNodeWithBindState(localNode, state));
     await upsertNodeDurably(localNode).catch(() => undefined);
   }
 
@@ -2174,11 +2227,26 @@ setTimeout(() => {
   sweepIdleCardlessSessions().catch((error) => {
     console.error("[openscout-runtime] initial cardless session sweep failed:", error);
   });
+  sweepAndCompactMeshNodes();
   relayAgentReaper.sweep("startup").catch((error) => {
     console.error("[openscout-runtime] startup relay-agent sweep failed:", error);
   });
   routeAliasService?.sweepExpired();
 }, 0).unref();
+
+function sweepAndCompactMeshNodes(): void {
+  if (!trustedPeerStore) return;
+  try {
+    const result = trustedPeerStore.compactAndPruneMeshNodes({ localNodeId: nodeId });
+    if (result.rehomedNodeCount > 0 || result.prunedNodeCount > 0) {
+      console.log(
+        `[openscout-runtime] mesh node compaction: rehomed ${result.rehomedNodeCount} node(s), pruned ${result.prunedNodeCount} ghost row(s)`,
+      );
+    }
+  } catch (error) {
+    console.error("[openscout-runtime] mesh node compaction failed:", error);
+  }
+}
 
 // Heartbeat for relay-agent watchdogs: relays self-terminate once this file's
 // mtime goes stale, so a dead runtime cannot leave live relay processes behind.
@@ -2230,6 +2298,11 @@ if (Number.isFinite(relayAgentSweepIntervalMs) && relayAgentSweepIntervalMs > 0)
     });
   }, Math.max(60_000, relayAgentSweepIntervalMs)).unref();
 }
+
+// Periodic mesh node compaction sweep to prune Bonjour collision sediments
+setInterval(() => {
+  sweepAndCompactMeshNodes();
+}, 15 * 60_000).unref();
 
 if (routeAliasService) {
   setInterval(() => {

@@ -93,7 +93,7 @@ afterEach(() => {
 
 describe("tail transcript sources", () => {
   test("discovers and parses Claude transcript files without process discovery", () => {
-    const projectDir = join(process.env.OPENSCOUT_TAIL_CLAUDE_PROJECTS_ROOT!, "-Users-example-dev-openscout");
+    const projectDir = join(process.env.OPENSCOUT_TAIL_CLAUDE_PROJECTS_ROOT!, "-Users-arach-dev-openscout");
     mkdirSync(projectDir, { recursive: true });
     const transcriptPath = join(projectDir, "claude-session.jsonl");
     writeFileSync(
@@ -185,7 +185,7 @@ describe("tail transcript sources", () => {
   });
 
   test("discovers active Claude child-agent transcripts separately from their parent session", () => {
-    const projectDir = join(process.env.OPENSCOUT_TAIL_CLAUDE_PROJECTS_ROOT!, "-Users-example-dev-openscout");
+    const projectDir = join(process.env.OPENSCOUT_TAIL_CLAUDE_PROJECTS_ROOT!, "-Users-arach-dev-openscout");
     const subagentsDir = join(projectDir, "claude-session", "subagents");
     const workflowDir = join(subagentsDir, "workflows", "wf_fixture");
     mkdirSync(workflowDir, { recursive: true });

@@ -1,4 +1,6 @@
+import { readFile, stat } from "node:fs/promises";
 import { homedir } from "node:os";
+import { join } from "node:path";
 
 import { emptyHerdrSessionTopology } from "@openscout/protocol";
 import type {
@@ -10,6 +12,7 @@ import type {
   HerdrTabProjection,
   HerdrWorkspaceProjection,
 } from "@openscout/protocol";
+
 
 import type { RuntimeEnv } from "../portable-types.js";
 
@@ -552,6 +555,131 @@ export function parseHerdrTopology(inputs: {
   return workspaces;
 }
 
+/**
+ * Project a stopped session's persisted `session.json` into the same topology
+ * shape a live read produces. Herdr owns the file and may grow or rename any
+ * field, so parsing is defensive: anything unreadable is absent, never guessed.
+ * Persisted tabs carry no ids and no geometry, so tab ids are synthesized from
+ * position (`<workspace>:t<n>`) and `layout` is null; agent status reads
+ * "unknown" because a stopped session has no live status to report.
+ *
+ * Returns null when the value is not a session state at all (caller treats it
+ * as "nothing persisted"); a valid state with zero workspaces returns [].
+ */
+export function parseHerdrPersistedTopology(value: unknown): HerdrWorkspaceProjection[] | null {
+  if (!value || typeof value !== "object") return null;
+  const root = value as Record<string, unknown>;
+  const workspacesRaw = root.workspaces;
+  if (!Array.isArray(workspacesRaw)) return null;
+  const activeWorkspace = herdrNumber(root.active) ?? herdrNumber(root.selected) ?? 0;
+
+  const workspaces: HerdrWorkspaceProjection[] = [];
+  workspacesRaw.forEach((entry, workspaceIndex) => {
+    if (!entry || typeof entry !== "object") return;
+    const record = entry as Record<string, unknown>;
+    const workspaceId = herdrString(record.id) ?? `w${workspaceIndex + 1}`;
+    const identityCwd = herdrString(record.identity_cwd);
+    const tabsRaw = Array.isArray(record.tabs) ? record.tabs : [];
+    const activeTab = herdrNumber(record.active_tab) ?? 0;
+    const tabNumbers = Array.isArray(record.public_tab_numbers) ? record.public_tab_numbers : [];
+
+    const tabs: HerdrTabProjection[] = tabsRaw.flatMap((tabEntry, tabIndex) => {
+      if (!tabEntry || typeof tabEntry !== "object") return [];
+      const tabRecord = tabEntry as Record<string, unknown>;
+      const tabId = `${workspaceId}:t${tabIndex + 1}`;
+      const focusedPane = herdrNumber(tabRecord.focused);
+      const panesRaw = tabRecord.panes && typeof tabRecord.panes === "object"
+        ? Object.entries(tabRecord.panes as Record<string, unknown>)
+        : [];
+      const panes: HerdrPaneProjection[] = panesRaw.flatMap(([paneKey, paneEntry]) => {
+        if (!paneEntry || typeof paneEntry !== "object") return [];
+        const paneRecord = paneEntry as Record<string, unknown>;
+        const agentSessionRaw = paneRecord.agent_session;
+        // The agent name alone already answers "what lives here" — keep it even
+        // when the ref is partial; the full ref needs every field.
+        const agentRef = agentSessionRaw && typeof agentSessionRaw === "object"
+          ? agentSessionRaw as Record<string, unknown>
+          : null;
+        const agentName = agentRef ? herdrString(agentRef.agent) : null;
+        const agentSession: HerdrAgentSessionRef | null = (() => {
+          if (!agentRef) return null;
+          const kind = herdrString(agentRef.kind);
+          const source = herdrString(agentRef.source);
+          const refValue = herdrString(agentRef.value);
+          return agentName && kind && source && refValue
+            ? { agent: agentName, kind, source, value: refValue }
+            : null;
+        })();
+        return [{
+          paneId: paneKey,
+          // Persisted panes have no live terminal id; herdr mints it at start.
+          terminalId: null,
+          tabId,
+          workspaceId,
+          label: null,
+          agent: agentName,
+          agentStatus: "unknown" as const,
+          agentSession,
+          cwd: herdrString(paneRecord.cwd) ?? identityCwd,
+          foregroundCwd: null,
+          focused: focusedPane !== null && Number(paneKey) === focusedPane,
+          scroll: null,
+        }];
+      });
+      return [{
+        tabId,
+        workspaceId,
+        label: herdrString(tabRecord.custom_name),
+        number: herdrNumber(tabNumbers[tabIndex]) ?? tabIndex + 1,
+        focused: tabIndex === activeTab,
+        agentStatus: "unknown" as const,
+        panes,
+        layout: null,
+      }];
+    });
+
+    workspaces.push({
+      workspaceId,
+      label: herdrString(record.custom_name),
+      number: workspaceIndex + 1,
+      focused: workspaceIndex === activeWorkspace,
+      activeTabId: tabs[activeTab]?.tabId ?? tabs[0]?.tabId ?? null,
+      agentStatus: "unknown",
+      tabs,
+    });
+  });
+  return workspaces;
+}
+
+/**
+ * The stopped-session projection: the persisted layout from
+ * `<sessionDir>/session.json`, stamped with the file's mtime as the session's
+ * last known change. Null when there is no readable persisted state — the
+ * caller then falls back to the empty projection.
+ */
+async function readPersistedHerdrTopology(
+  sessionName: string,
+  env: RuntimeEnv,
+): Promise<HerdrSessionTopology | null> {
+  try {
+    const sessions = await readHerdrSessions({ env });
+    const sessionDir = sessions.find((session) => session.name === sessionName)?.sessionDir;
+    if (!sessionDir) return null;
+    const path = join(sessionDir, "session.json");
+    const [raw, stats] = await Promise.all([readFile(path, "utf8"), stat(path)]);
+    const workspaces = parseHerdrPersistedTopology(JSON.parse(raw));
+    if (workspaces === null) return null;
+    return {
+      session: sessionName,
+      running: false,
+      workspaces,
+      observedAt: Date.now(),
+      savedAt: stats.mtimeMs,
+    };
+  } catch {
+    return null;
+  }
+}
 async function readHerdrTopologyUncached(sessionName: string, env: RuntimeEnv): Promise<HerdrSessionTopology> {
   const bin = herdrBin(env);
   const exec = (args: string[]) => execSystemFile(bin, ["--session", sessionName, ...args], {
@@ -574,9 +702,10 @@ async function readHerdrTopologyUncached(sessionName: string, env: RuntimeEnv): 
     };
   } catch {
     // The session's herdr server is not running (connection refused). An
-    // ordinary state: report an empty projection and let the caller offer the
-    // start path instead of an error.
-    return emptyHerdrSessionTopology(sessionName, false);
+    // ordinary state: the layout persists on disk, so project that as the
+    // last-known topology rather than pretending there is nothing to show.
+    const persisted = await readPersistedHerdrTopology(sessionName, env);
+    return persisted ?? emptyHerdrSessionTopology(sessionName, false);
   }
 }
 

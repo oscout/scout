@@ -83,6 +83,17 @@ describe("findMeshTlsBindAddresses", () => {
     expect(findMeshTlsBindAddresses(interfaces)).toEqual(["192.168.1.10", "100.64.0.20"]);
   });
 
+  test("advertises LAN before Tailscale even if TLS listeners came up in reverse", async () => {
+    const { orderMeshDialUrls } = await import("./mesh-dial-order.ts");
+    expect(orderMeshDialUrls([
+      "https://100.64.0.20:43110",
+      "https://192.168.1.10:43110",
+    ])).toEqual([
+      "https://192.168.1.10:43110",
+      "https://100.64.0.20:43110",
+    ]);
+  });
+
   test("returns empty when only loopback is present", () => {
     expect(findMeshTlsBindAddresses({
       lo0: [{ address: "127.0.0.1", family: "IPv4", internal: true }],

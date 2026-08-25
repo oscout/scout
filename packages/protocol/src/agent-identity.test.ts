@@ -78,6 +78,13 @@ describe("agent identity grammar", () => {
       harness: "claude",
       model: "sonnet",
     });
+
+    expect(parseAgentIdentity("@lattices#oc")).toEqual({
+      raw: "lattices#oc",
+      label: "@lattices.harness:opencode",
+      definitionId: "lattices",
+      harness: "opencode",
+    });
   });
 
   test("parses 3-segment positional as definitionId.workspaceQualifier.nodeQualifier", () => {

@@ -5,6 +5,11 @@ import { dirname } from "node:path";
 import { and, asc, eq } from "drizzle-orm";
 
 import {
+  canonicalMeshNodeId,
+  stripBonjourCollisionSuffix,
+} from "./node-identity.js";
+
+import {
   epochMs,
   normalizeTerminalWorkspaceColumns,
   nowMs,
@@ -1465,6 +1470,139 @@ export class SQLiteControlPlaneStore {
     return {
       aliasesDeleted: aliasesResult.changes ?? 0,
       sessionsDeleted: sessionsResult.changes ?? 0,
+    };
+  }
+
+  /**
+   * Re-homes historical references from volatile collision-suffixed node rows
+   * (e.g. `arachs-mac-mini-292-local-openscout` -> `arachs-mac-mini-local-openscout`)
+   * to their canonical stable node IDs and prunes the stale ghost node rows.
+   */
+  compactAndPruneMeshNodes(options: {
+    localNodeId?: string;
+    now?: number;
+    maxStaleAgeMs?: number;
+  } = {}): {
+    rehomedNodeCount: number;
+    prunedNodeCount: number;
+    rehomedMappings: Array<{ from: string; to: string }>;
+  } {
+    const now = options.now ?? currentTimestampMs();
+    const maxStaleAgeMs = options.maxStaleAgeMs ?? 7 * 24 * 60 * 60 * 1000;
+    const staleCutoff = now - maxStaleAgeMs;
+
+    const nodeRows = this.db.query("SELECT * FROM nodes").all() as NodeRow[];
+    const peerRows = this.db.query("SELECT * FROM trusted_peers").all() as TrustedPeerRow[];
+
+    const rehomedMappings: Array<{ from: string; to: string }> = [];
+    const rehomeMap = new Map<string, { to: string; candidateRow: NodeRow }>();
+
+    for (const row of nodeRows) {
+      const canonicalId = canonicalMeshNodeId(row.id);
+      if (canonicalId && canonicalId !== row.id) {
+        rehomeMap.set(row.id, { to: canonicalId, candidateRow: row });
+      }
+    }
+
+    let rehomedNodeCount = 0;
+    let prunedNodeCount = 0;
+
+    (this.db as SQLiteTransactionalDatabase).transaction(() => {
+      // Step 1: Ensure canonical targets exist with newest metadata
+      for (const [staleId, { to: canonicalId, candidateRow }] of rehomeMap.entries()) {
+        const existingCanonical = nodeRows.find((r) => r.id === canonicalId);
+        if (!existingCanonical) {
+          this.db.query(
+            `INSERT INTO nodes (
+              id, mesh_id, name, host_name, advertise_scope, broker_url, tailnet_name,
+              capabilities_json, labels_json, metadata_json, last_seen_at, registered_at
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+            ON CONFLICT(id) DO UPDATE SET
+              last_seen_at = MAX(COALESCE(nodes.last_seen_at, 0), COALESCE(excluded.last_seen_at, 0)),
+              broker_url = COALESCE(excluded.broker_url, nodes.broker_url),
+              tailnet_name = COALESCE(excluded.tailnet_name, nodes.tailnet_name)`,
+          ).run(
+            canonicalId,
+            candidateRow.mesh_id,
+            stripBonjourCollisionSuffix(candidateRow.name) || candidateRow.name,
+            stripBonjourCollisionSuffix(candidateRow.host_name ?? "") || (candidateRow.host_name ?? null),
+            candidateRow.advertise_scope,
+            candidateRow.broker_url ?? null,
+            candidateRow.tailnet_name ?? null,
+            candidateRow.capabilities_json ?? null,
+            candidateRow.labels_json ?? null,
+            candidateRow.metadata_json ?? null,
+            candidateRow.last_seen_at ?? null,
+            candidateRow.registered_at,
+          );
+        } else {
+          this.db.query(
+            `UPDATE nodes SET
+              last_seen_at = MAX(COALESCE(last_seen_at, 0), COALESCE(?1, 0)),
+              broker_url = COALESCE(?2, broker_url)
+             WHERE id = ?3`,
+          ).run(candidateRow.last_seen_at ?? null, candidateRow.broker_url ?? null, canonicalId);
+        }
+
+        // Step 2: Re-home foreign key references across all referencing tables
+        this.db.query("UPDATE agents SET home_node_id = ?1 WHERE home_node_id = ?2").run(canonicalId, staleId);
+        this.db.query("UPDATE agents SET authority_node_id = ?1 WHERE authority_node_id = ?2").run(canonicalId, staleId);
+        this.db.query("UPDATE agent_endpoints SET node_id = ?1 WHERE node_id = ?2").run(canonicalId, staleId);
+        this.db.query("UPDATE runtime_sessions SET node_id = ?1 WHERE node_id = ?2").run(canonicalId, staleId);
+        this.db.query("UPDATE runtime_session_aliases SET node_id = ?1 WHERE node_id = ?2").run(canonicalId, staleId);
+        this.db.query("UPDATE conversations SET authority_node_id = ?1 WHERE authority_node_id = ?2").run(canonicalId, staleId);
+        this.db.query("UPDATE conversation_read_cursors SET reader_node_id = ?1 WHERE reader_node_id = ?2").run(canonicalId, staleId);
+        this.db.query("UPDATE messages SET origin_node_id = ?1 WHERE origin_node_id = ?2").run(canonicalId, staleId);
+        this.db.query("UPDATE deliveries SET target_node_id = ?1 WHERE target_node_id = ?2").run(canonicalId, staleId);
+        this.db.query("UPDATE invocations SET requester_node_id = ?1 WHERE requester_node_id = ?2").run(canonicalId, staleId);
+        this.db.query("UPDATE invocations SET target_node_id = ?1 WHERE target_node_id = ?2").run(canonicalId, staleId);
+        this.db.query("UPDATE thread_events SET authority_node_id = ?1 WHERE authority_node_id = ?2").run(canonicalId, staleId);
+        this.db.query("UPDATE thread_cursors SET authority_node_id = ?1 WHERE authority_node_id = ?2").run(canonicalId, staleId);
+        this.db.query("UPDATE trusted_peers SET node_id = ?1 WHERE node_id = ?2").run(canonicalId, staleId);
+
+        // Step 3: Delete stale ghost node row
+        const delRes = this.db.query("DELETE FROM nodes WHERE id = ?1").run(staleId) as { changes?: number };
+        if ((delRes.changes ?? 0) > 0) {
+          prunedNodeCount++;
+          rehomedNodeCount++;
+          rehomedMappings.push({ from: staleId, to: canonicalId });
+        }
+      }
+
+      // Step 3b: Ensure any trusted peers with collision-suffixed node_id are canonicalized
+      for (const peer of peerRows) {
+        if (peer.node_id) {
+          const canonical = canonicalMeshNodeId(peer.node_id);
+          if (canonical && canonical !== peer.node_id) {
+            this.db.query("UPDATE trusted_peers SET node_id = ?1 WHERE key_id = ?2").run(canonical, peer.key_id);
+          }
+        }
+      }
+
+      // Step 4: Prune any remaining disconnected stale nodes that have 0 references across all tables
+      const remainingNodes = this.db.query("SELECT * FROM nodes").all() as NodeRow[];
+      for (const row of remainingNodes) {
+        if (row.id === options.localNodeId) continue;
+        const lastActive = row.last_seen_at ?? row.registered_at;
+        if (lastActive > staleCutoff) continue;
+        const isTrusted = peerRows.some((p) => p.node_id === row.id);
+        if (isTrusted) continue;
+
+        try {
+          const delRes = this.db.query("DELETE FROM nodes WHERE id = ?1").run(row.id) as { changes?: number };
+          if ((delRes.changes ?? 0) > 0) {
+            prunedNodeCount++;
+          }
+        } catch {
+          // Foreign key constraint failure means it has active references; leave it safe
+        }
+      }
+    })();
+
+    return {
+      rehomedNodeCount,
+      prunedNodeCount,
+      rehomedMappings,
     };
   }
 

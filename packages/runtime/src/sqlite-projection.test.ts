@@ -23,6 +23,7 @@ function createProjectionOptions(overrides: {
   busyOnFirstMessage?: boolean;
   disabled?: boolean;
   replayEntries?: BrokerJournalEntry[];
+  replayYieldEvery?: number;
 } = {}) {
   const root = mkdtempSync(join(tmpdir(), "openscout-sqlite-projection-"));
   tempRoots.add(root);
@@ -113,6 +114,7 @@ function createProjectionOptions(overrides: {
       journal,
       {
         disabled: overrides.disabled,
+        replayYieldEvery: overrides.replayYieldEvery,
         createStore: () => {
           stats.createStoreCalls += 1;
           if (overrides.failOnOpen) {
@@ -174,6 +176,23 @@ describe("RecoverableSQLiteProjection", () => {
       "conversation:conv-1",
       "message:msg-1",
     ]);
+  });
+
+  test("yields to the event loop between replay batches", async () => {
+    const { projection } = createProjectionOptions({
+      replayEntries: [sampleMessageEntry()],
+      replayYieldEvery: 1,
+    });
+    let eventLoopTurnReached = false;
+    const marker = setImmediate(() => {
+      eventLoopTurnReached = true;
+    });
+
+    projection.warm();
+    await projection.flush();
+    clearImmediate(marker);
+
+    expect(eventLoopTurnReached).toBe(true);
   });
 
   test("reports the projection failure when opening degrades", async () => {

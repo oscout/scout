@@ -716,9 +716,15 @@ async function recordCodexSessionCatalog(
 }
 
 async function closeCodexSessionCatalog(runtimeDirectory: string, threadId: string | null): Promise<void> {
+  if (!threadId) {
+    return;
+  }
   const catalog = await readCodexSessionCatalog(runtimeDirectory);
+  if (catalog.activeSessionId !== threadId) {
+    return;
+  }
+  const activeSessionId = threadId;
   const now = Date.now();
-  const activeSessionId = threadId ?? catalog.activeSessionId;
   const sessions = catalog.sessions.map((session) =>
     session.id === activeSessionId && !session.endedAt
       ? { ...session, endedAt: now }
@@ -754,8 +760,10 @@ export class CodexAppServerTransport {
   }>();
 
   private starting: Promise<void> | null = null;
+  private threadPersistence: Promise<void> = Promise.resolve();
   private threadId: string | null = null;
   private threadPath: string | null = null;
+  private durableThreadId: string | null = null;
   private proactiveShutdown: ProactiveCodexAppServerShutdown | null = null;
   private lastConfigSignature: string;
   private readonly notificationListeners = new Set<(message: CodexAppServerNotification) => void>();
@@ -838,7 +846,7 @@ export class CodexAppServerTransport {
       cwd: this.options.cwd,
       input: this.textInput(prompt),
     });
-    await this.persistState();
+    await this.persistThreadId();
     return response;
   }
 
@@ -897,11 +905,14 @@ export class CodexAppServerTransport {
         child.kill("SIGKILL");
       }
     }
+    await this.threadPersistence;
+
 
     if (options.resetThread) {
-      await closeCodexSessionCatalog(this.options.runtimeDirectory, this.threadId);
+      await closeCodexSessionCatalog(this.options.runtimeDirectory, this.durableThreadId);
       this.threadId = null;
       this.threadPath = null;
+      this.durableThreadId = null;
       await rm(this.threadIdPath, { force: true });
     }
 
@@ -1031,6 +1042,7 @@ export class CodexAppServerTransport {
     const requestedThreadId = this.options.threadId?.trim() || null;
     const storedThreadId = requestedThreadId ?? await readOptionalFile(this.threadIdPath);
     if (storedThreadId) {
+      const threadOrigin = requestedThreadId ? "requested" : "stored";
       try {
         const resumed = await this.request<ThreadResumeResult>("thread/resume", {
           threadId: storedThreadId,
@@ -1042,19 +1054,20 @@ export class CodexAppServerTransport {
         });
         this.threadId = resumed.thread.id;
         this.threadPath = resumed.thread.path ?? null;
-        await this.persistThreadId();
-        await recordCodexSessionCatalog(this.options.runtimeDirectory, this.threadId, this.catalogRuntimeMeta());
+        await this.persistThreadId({ confirmed: true });
         return;
       } catch (error) {
         await appendFile(
           this.stderrLogPath,
-          `[openscout] failed to resume stored Codex thread ${storedThreadId}: ${errorMessage(error)}\n`,
+          `[openscout] failed to resume ${threadOrigin} Codex thread ${storedThreadId}: ${errorMessage(error)}\n`,
         ).catch(() => undefined);
         if (!requestedThreadId && isMissingCodexRolloutError(error)) {
           await rm(this.threadIdPath, { force: true }).catch(() => undefined);
+          await closeCodexSessionCatalog(this.options.runtimeDirectory, storedThreadId);
+          await this.persistState();
         }
         if (requestedThreadId || this.options.requireExistingThread) {
-          throw new Error(`Failed to resume requested Codex thread ${storedThreadId}: ${errorMessage(error)}`);
+          throw new Error(`Failed to resume ${threadOrigin} Codex thread ${storedThreadId}: ${errorMessage(error)}`);
         }
       }
     }
@@ -1077,8 +1090,10 @@ export class CodexAppServerTransport {
     });
     this.threadId = started.thread.id;
     this.threadPath = started.thread.path ?? null;
+    if (this.durableThreadId !== this.threadId) {
+      this.durableThreadId = null;
+    }
     await this.persistThreadId();
-    await recordCodexSessionCatalog(this.options.runtimeDirectory, this.threadId, this.catalogRuntimeMeta());
   }
 
   private catalogRuntimeMeta(): {
@@ -1164,11 +1179,16 @@ export class CodexAppServerTransport {
     if (method === "thread/started" || method === "thread/name/updated") {
       const thread = params.thread as { id?: string; path?: string | null } | undefined;
       if (thread?.id) {
+        if (thread.id !== this.threadId) {
+          this.durableThreadId = null;
+        }
         this.threadId = thread.id;
       }
       if ("path" in (thread ?? {})) {
         this.threadPath = thread?.path ?? null;
       }
+      void this.persistThreadId();
+    } else if (this.threadId && !this.durableThreadId) {
       void this.persistThreadId();
     }
 
@@ -1230,17 +1250,50 @@ export class CodexAppServerTransport {
     void this.persistState();
   }
 
-  private async persistThreadId(): Promise<void> {
-    if (!this.threadId) {
+  private persistThreadId(options: { confirmed?: boolean } = {}): Promise<void> {
+    const persistence = this.threadPersistence.then(() => this.persistThreadIdNow(options));
+    this.threadPersistence = persistence.catch(() => undefined);
+    return persistence;
+  }
+
+  private async persistThreadIdNow(options: { confirmed?: boolean }): Promise<void> {
+    const threadId = this.threadId;
+    if (!threadId) {
+      this.durableThreadId = null;
       await rm(this.threadIdPath, { force: true });
+      await this.persistState();
       return;
     }
 
-    await writeFile(this.threadIdPath, `${this.threadId}\n`);
+    let rolloutExists = false;
+    if (this.threadPath) {
+      try {
+        rolloutExists = (await stat(this.threadPath)).isFile();
+      } catch {
+        rolloutExists = false;
+      }
+    }
+
+    if (!options.confirmed && !rolloutExists && this.durableThreadId !== threadId) {
+      this.durableThreadId = null;
+      await rm(this.threadIdPath, { force: true });
+      await this.persistState();
+      return;
+    }
+
+    const becameDurable = this.durableThreadId !== threadId;
+    await writeFile(this.threadIdPath, `${threadId}\n`);
+    this.durableThreadId = threadId;
     await this.persistState();
+    if (becameDurable) {
+      await recordCodexSessionCatalog(this.options.runtimeDirectory, threadId, this.catalogRuntimeMeta());
+    }
   }
 
   private async persistState(): Promise<void> {
+    const durableThreadPath = this.durableThreadId === this.threadId
+      ? this.threadPath
+      : null;
     await mkdir(this.options.runtimeDirectory, { recursive: true });
     await writeFile(
       this.statePath,
@@ -1250,8 +1303,8 @@ export class CodexAppServerTransport {
         sessionId: this.options.sessionId,
         projectRoot: this.options.cwd,
         cwd: this.options.cwd,
-        threadId: this.threadId,
-        threadPath: this.threadPath,
+        threadId: this.durableThreadId,
+        threadPath: durableThreadPath,
         requestedThreadId: this.options.threadId ?? null,
         requireExistingThread: this.options.requireExistingThread === true,
         pid: this.process?.pid ?? null,

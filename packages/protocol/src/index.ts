@@ -20,6 +20,7 @@ export * from "./budget.js";
 export * from "./agent-broker-feed.js";
 export * from "./durable-actions.js";
 export * from "./observed-status.js";
+export * from "./presence.js";
 export * from "./activity.js";
 export * from "./harness-feature-support.js";
 export * from "./host-integrations.js";

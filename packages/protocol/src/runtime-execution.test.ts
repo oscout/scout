@@ -4,6 +4,7 @@ import {
   createScoutExecutionResolution,
   parseScoutRuntimeSpec,
   formatScoutRuntimeSpec,
+  isScoutRuntimeHarnessListed,
   normalizeScoutRuntimeModel,
   SCOUT_LAUNCHABLE_HARNESSES,
   SCOUT_REASONING_EFFORT_LABELS,
@@ -35,6 +36,8 @@ describe("runtime execution contracts", () => {
     expect(scoutRuntimeDefaultReasoningEffort("claude", "claude-opus-5")).toBe("medium");
     expect(SCOUT_REASONING_EFFORT_LABELS.low).toBe("Light");
     expect(SCOUT_REASONING_EFFORT_LABELS.xhigh).toBe("Extra High");
+    expect(isScoutRuntimeHarnessListed("grok")).toBe(false);
+    expect(isScoutRuntimeHarnessListed("grok-acp")).toBe(true);
   });
 
   test("lets Scout define a different effort ladder for each model", () => {

@@ -128,7 +128,7 @@ describe("local web hostnames", () => {
   });
 
   test("normalizes hostnames into DNS labels", () => {
-    expect(normalizeLocalHostnameLabel("Developer's MacBook Pro.local")).toBe("developer-s-macbook-pro");
+    expect(normalizeLocalHostnameLabel("Art's MacBook Pro.local")).toBe("art-s-macbook-pro");
     expect(normalizeLocalHostnameLabel("mini.office.example")).toBe("mini");
     expect(normalizeLocalHostnameLabel("")).toBe("localhost");
     expect(normalizeLocalHostname("Scout M1.local")).toBe("scout-m1.local");

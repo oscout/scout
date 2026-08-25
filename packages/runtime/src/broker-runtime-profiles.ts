@@ -37,6 +37,18 @@ const BROKER_RUNTIME_PROFILES: Record<ScoutReservedRuntimeProfileId, BrokerRunti
     supportsReasoningEffort: true,
     execution: { harness: "claude", model: "opus", session: "new" },
   },
+  oc: {
+    id: "oc",
+    displayName: "OpenCode",
+    supportsReasoningEffort: false,
+    execution: { harness: "opencode", session: "new" },
+  },
+  opencode: {
+    id: "opencode",
+    displayName: "OpenCode",
+    supportsReasoningEffort: false,
+    execution: { harness: "opencode", session: "new" },
+  },
 };
 
 export function resolveBrokerRuntimeProfile(

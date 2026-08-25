@@ -11,7 +11,6 @@ import {
   listUserConfigFieldIds,
   parseUserConfigFieldValue,
 } from "./user-config-fields.js";
-import { saveUserConfig } from "./user-config.js";
 
 const priorHome = process.env.OPENSCOUT_HOME;
 let tempHome = "";
@@ -26,7 +25,10 @@ afterEach(() => {
   } else {
     process.env.OPENSCOUT_HOME = priorHome;
   }
-  saveUserConfig({});
+  // No saveUserConfig({}) here: with the real OPENSCOUT_HOME restored it
+  // would blank the operator's real ~/.openscout/user.json (it did — that is
+  // how onboarding forgot the operator's name). rmSync above already removed
+  // the temp config.
 });
 
 function useTempHome(): void {

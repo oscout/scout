@@ -118,6 +118,26 @@ describe("session knowledge indexer (kimi)", () => {
     expect(indexed.sessions[0]?.project).toBe("openscout");
     expect(indexed.sessions[0]?.chunks ?? 0).toBeGreaterThan(0);
 
+    writeFileSync(
+      join(
+        process.env.OPENSCOUT_TAIL_KIMI_SESSIONS_ROOT,
+        "wd_openscout_test",
+        "session_test-kimi-ios-build",
+        "state.json",
+      ),
+      JSON.stringify({
+        workDir: "/Users/example/dev/openscout",
+        title: "iOS navigation slice",
+      }),
+      "utf8",
+    );
+    const legacyIndexed = await indexRecentSessionKnowledge({
+      hours: 12,
+      harness: "kimi",
+      force: true,
+    });
+    expect(legacyIndexed.sessions[0]?.project).toBe("openscout");
+
     const store = new SQLiteKnowledgeStore();
     try {
       const hits = store.searchLexical({

@@ -13,8 +13,11 @@ describe("runtime profile syntax", () => {
       "kimi",
       "grok",
       "opus",
+      "oc",
+      "opencode",
     ]);
     expect(normalizeReservedRuntimeProfileId(" FABLE ")).toBe("fable");
+    expect(normalizeReservedRuntimeProfileId(" OC ")).toBe("oc");
     expect(normalizeReservedRuntimeProfileId("Composer Review")).toBeNull();
   });
 

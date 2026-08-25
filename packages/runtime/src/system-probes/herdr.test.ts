@@ -10,6 +10,7 @@ import {
   buildHerdrWorkspaceCreateCommand,
   herdrProbeKey,
   parseHerdrAgentList,
+  parseHerdrPersistedTopology,
   parseHerdrSessionListJson,
   parseHerdrSnapshotLayouts,
   parseHerdrTopology,
@@ -352,5 +353,91 @@ describe("readHerdrSessions environment", () => {
     } finally {
       cleanup();
     }
+  });
+});
+
+describe("parseHerdrPersistedTopology", () => {
+  // A stopped session's session.json (v3), captured from a real herdr install.
+  const persisted = {
+    version: 3,
+    workspaces: [
+      {
+        id: "w1",
+        custom_name: null,
+        identity_cwd: "/Users/example/dev/talkie",
+        public_pane_numbers: { "1": 1, "2": 2 },
+        public_tab_numbers: [1, 2],
+        tabs: [
+          {
+            custom_name: "main",
+            layout: { Pane: 1 },
+            panes: {
+              "1": {
+                cwd: "/Users/example/dev/talkie",
+                agent_session: { source: "herdr:claude", agent: "claude", kind: "id", value: "sess-1" },
+              },
+              "2": { cwd: "/Users/example/dev/openscout", agent_session: null },
+            },
+            zoomed: false,
+            focused: 1,
+            root_pane: 1,
+          },
+          {
+            custom_name: null,
+            panes: { "1": { agent_session: { source: "herdr:codex", agent: "codex", kind: "id", value: "sess-2" } } },
+            focused: 1,
+          },
+        ],
+        active_tab: 0,
+      },
+    ],
+    active: 0,
+    selected: 0,
+  };
+
+  test("projects workspaces, tabs, and panes in the live topology shape", () => {
+    const workspaces = parseHerdrPersistedTopology(persisted);
+    expect(workspaces).toHaveLength(1);
+    const workspace = workspaces![0]!;
+    expect(workspace.workspaceId).toBe("w1");
+    expect(workspace.focused).toBe(true);
+    expect(workspace.tabs).toHaveLength(2);
+    expect(workspace.activeTabId).toBe(workspace.tabs[0]!.tabId);
+
+    const [main, second] = workspace.tabs;
+    expect(main!.label).toBe("main");
+    expect(main!.number).toBe(1);
+    expect(main!.panes).toHaveLength(2);
+    expect(second!.label).toBeNull();
+    expect(second!.number).toBe(2);
+
+    const [claude, shell] = main!.panes;
+    expect(claude!.agent).toBe("claude");
+    expect(claude!.agentSession).toEqual({ source: "herdr:claude", agent: "claude", kind: "id", value: "sess-1" });
+    expect(claude!.cwd).toBe("/Users/example/dev/talkie");
+    expect(claude!.focused).toBe(true);
+    expect(shell!.agent).toBeNull();
+    expect(shell!.focused).toBe(false);
+  });
+
+  test("marks everything unknown and geometry-less: a stopped session has no live truth", () => {
+    const workspaces = parseHerdrPersistedTopology(persisted)!;
+    const pane = workspaces[0]!.tabs[0]!.panes[0]!;
+    expect(pane.agentStatus).toBe("unknown");
+    expect(pane.terminalId).toBeNull();
+    expect(pane.scroll).toBeNull();
+    expect(workspaces[0]!.tabs[0]!.layout).toBeNull();
+  });
+
+  test("falls back to the workspace identity cwd when a pane did not record one", () => {
+    const workspaces = parseHerdrPersistedTopology(persisted)!;
+    expect(workspaces[0]!.tabs[1]!.panes[0]!.cwd).toBe("/Users/example/dev/talkie");
+  });
+
+  test("returns null for values that are not a session state", () => {
+    expect(parseHerdrPersistedTopology(null)).toBeNull();
+    expect(parseHerdrPersistedTopology({})).toBeNull();
+    expect(parseHerdrPersistedTopology({ workspaces: "nope" })).toBeNull();
+    expect(parseHerdrPersistedTopology({ workspaces: [] })).toEqual([]);
   });
 });

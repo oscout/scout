@@ -70,11 +70,11 @@ describe("setup inventory", () => {
     writeFileSync(join(projectRoot, ".git", "HEAD"), "ref: refs/heads/main\n", "utf8");
     process.env.OPENSCOUT_SUPPORT_DIRECTORY = supportDirectory;
 
-    loadOrCreateStableNodeQualifier("Dev-Mac-mini-372.local", supportDirectory);
+    loadOrCreateStableNodeQualifier("Arts-Mac-mini-372.local", supportDirectory);
 
     expect(buildRelayAgentInstance("studio", projectRoot)).toMatchObject({
-      id: "studio.main.dev-mac-mini-372-local",
-      nodeQualifier: "dev-mac-mini-372-local",
+      id: "studio.main.arts-mac-mini-local",
+      nodeQualifier: "arts-mac-mini-local",
     });
   });
 

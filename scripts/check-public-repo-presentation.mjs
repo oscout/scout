@@ -17,6 +17,7 @@ const required = [
   "llms.txt",
   "docs.json",
   "docs/public-source-boundary.md",
+  "docs/releases.md",
   ".github/diagrams/control-plane.arc.json",
   ".github/diagrams/README.md",
   ".github/PULL_REQUEST_TEMPLATE.md",
@@ -83,6 +84,7 @@ const linkedSurfaces = [
   "docs/overview.md",
   "docs/quickstart.md",
   "docs/public-source-boundary.md",
+  "docs/releases.md",
   ".github/assets/README.md",
 ];
 const brokenTargets = [];

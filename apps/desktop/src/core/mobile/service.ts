@@ -11,6 +11,7 @@ import type {
 import {
   channelNaturalKeyFromMetadata,
   epochMs,
+  isScoutRuntimeHarnessListed,
   SCOUT_RUNTIME_CATALOG,
   scoutRuntimeDefaultHarness,
   scoutRuntimeDefaultModel,

@@ -104,7 +104,8 @@ function canonicalizeIdentity(input: AgentIdentityInput): AgentIdentityInput | n
     ? normalizeAgentIdentitySegment(input.workspaceQualifier)
     : undefined;
   const profile = input.profile ? normalizeAgentIdentitySegment(input.profile) : undefined;
-  const harness = input.harness ? normalizeAgentIdentitySegment(input.harness) : undefined;
+  const rawHarness = input.harness ? normalizeAgentIdentitySegment(input.harness) : undefined;
+  const harness = rawHarness === "oc" ? "opencode" : rawHarness;
   const model = input.model ? normalizeAgentIdentitySegment(input.model) : undefined;
   const nodeQualifier = input.nodeQualifier
     ? normalizeAgentIdentitySegment(input.nodeQualifier)

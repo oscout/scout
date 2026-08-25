@@ -5,10 +5,12 @@ import {
   renameSync,
   writeFileSync,
 } from "node:fs";
+import { randomBytes } from "node:crypto";
 import { homedir, hostname as osHostname } from "node:os";
 import { dirname, join } from "node:path";
 
 import { assertTestIsolatedUserData } from "./support-paths.js";
+import { stripBonjourCollisionSuffix } from "./node-identity.js";
 
 export const LOCAL_CONFIG_VERSION = 1;
 export const DEFAULT_SCOUT_WEB_PORTAL_HOST = "scout.local";
@@ -58,7 +60,8 @@ export const DEFAULT_LOCAL_CONFIG = {
 } as const;
 
 export function normalizeLocalHostnameLabel(value: string | undefined): string {
-  const firstLabel = value
+  const stripped = value ? stripBonjourCollisionSuffix(value) : value;
+  const firstLabel = stripped
     ?.trim()
     .replace(/\.local\.?$/i, "")
     .split(".")
@@ -73,7 +76,8 @@ export function normalizeLocalHostnameLabel(value: string | undefined): string {
 }
 
 export function normalizeLocalHostname(value: string | undefined): string {
-  const trimmed = value?.trim().replace(/\.$/, "").toLowerCase();
+  const stripped = value ? stripBonjourCollisionSuffix(value) : value;
+  const trimmed = stripped?.trim().replace(/\.$/, "").toLowerCase();
   const labels = trimmed
     ?.split(".")
     .map((label) =>
@@ -249,4 +253,34 @@ export function writeLocalConfig(config: LocalConfig): void {
 
 export function localConfigExists(): boolean {
   return existsSync(localConfigPath());
+}
+
+export function resolveWebAuthToken(env: NodeJS.ProcessEnv = process.env): string {
+  const envToken = env.OPENSCOUT_WEB_AUTH_TOKEN?.trim();
+  if (envToken) return envToken;
+
+  const supportDir = env.OPENSCOUT_SUPPORT_DIRECTORY
+    ?? join(homedir(), "Library", "Application Support", "OpenScout");
+  const tokenPath = join(supportDir, "runtime", "web-auth-token");
+
+  try {
+    if (existsSync(tokenPath)) {
+      const stored = readFileSync(tokenPath, "utf8").trim();
+      if (stored) return stored;
+    }
+  } catch {
+    /* ignore read failures */
+  }
+
+  const generated = randomBytes(32).toString("base64url");
+  try {
+    if (process.env.NODE_ENV === "test" && !env.OPENSCOUT_SUPPORT_DIRECTORY) {
+      return generated;
+    }
+    mkdirSync(dirname(tokenPath), { recursive: true });
+    writeFileSync(tokenPath, `${generated}\n`, { encoding: "utf8", mode: 0o600 });
+  } catch {
+    /* ignore write failures */
+  }
+  return generated;
 }

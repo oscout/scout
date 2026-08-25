@@ -66,6 +66,10 @@ const REQUIRED_PACKED_FILES = {
   "@openscout/scout": ["package/bin/scoutd"],
 };
 
+const FORBIDDEN_PACKED_PREFIXES = {
+  "@openscout/scout": ["package/dist/client/crew/"],
+};
+
 function listTarballEntries(tarballPath, packageDir) {
   return execFileSync("tar", ["-tzf", tarballPath], {
     cwd: packageDir,
@@ -104,11 +108,15 @@ async function inspectPackedManifest(packageDir, tempDir) {
   const missingFiles = (REQUIRED_PACKED_FILES[pkg.name] ?? []).filter(
     (required) => !entries.includes(required),
   );
+  const forbiddenFiles = entries.filter((entry) =>
+    (FORBIDDEN_PACKED_PREFIXES[pkg.name] ?? []).some((prefix) => entry.startsWith(prefix)),
+  );
 
   return {
     name: pkg.name,
     leaks: findWorkspaceLeaks(JSON.parse(packedManifestText)),
     missingFiles,
+    forbiddenFiles,
     tarballPath,
   };
 }
@@ -121,7 +129,11 @@ async function main() {
 
     for (const packageDir of findWorkspaceDirs()) {
       const result = await inspectPackedManifest(packageDir, tempDir);
-      if (result.leaks.length > 0 || result.missingFiles.length > 0) {
+      if (
+        result.leaks.length > 0
+        || result.missingFiles.length > 0
+        || result.forbiddenFiles.length > 0
+      ) {
         failures.push(result);
       }
     }
@@ -138,6 +150,12 @@ async function main() {
           console.error(`${failure.name} is missing required packed files:`);
           for (const missing of failure.missingFiles) {
             console.error(`  - ${missing}`);
+          }
+        }
+        if (failure.forbiddenFiles.length > 0) {
+          console.error(`${failure.name} contains private product assets:`);
+          for (const forbidden of failure.forbiddenFiles) {
+            console.error(`  - ${forbidden}`);
           }
         }
       }

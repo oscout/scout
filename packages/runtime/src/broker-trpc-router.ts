@@ -18,6 +18,7 @@ import type { ControlEvent } from "@openscout/protocol";
 import { z } from "zod";
 
 import {
+  snapshotPresenceControlEvents,
   snapshotRecentControlEvents,
   subscribeControlEvents,
 } from "./broker-control-events.js";
@@ -305,6 +306,15 @@ const controlRouter = t.router({
       for (let i = startIdx; i < backlog.length; i++) {
         const event = backlog[i];
         if (!event) continue;
+        if (filter && !filter.has(event.kind)) continue;
+        yield tracked(event.id, event);
+      }
+
+      // Presence is snapshot, not replayed: the latest-per-agent map is the
+      // whole state a new subscriber needs, and it is sent regardless of
+      // `since` because a resumed stream still missed every transition while it
+      // was disconnected. Sent after the backlog so current presence wins.
+      for (const event of snapshotPresenceControlEvents()) {
         if (filter && !filter.has(event.kind)) continue;
         yield tracked(event.id, event);
       }

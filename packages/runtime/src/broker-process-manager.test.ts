@@ -174,11 +174,19 @@ describe("broker service scoutd adapter", () => {
       expect(resolveAdvertiseScope()).toBe("mesh");
       // P1.5: plaintext mesh default is loopback; non-loopback TLS is separate.
       expect(resolveBrokerHost("mesh")).toBe("127.0.0.1");
-      expect(resolveBrokerUrl("127.0.0.1", 65535, "mesh")).toBe("https://mini.tailnet.test:65535");
+      expect(resolveBrokerUrl("127.0.0.1", 65535, "mesh", process.env, "192.168.18.22"))
+        .toBe("https://192.168.18.22:65535");
+      expect(resolveBrokerUrl("127.0.0.1", 65535, "mesh", process.env, null))
+        .toBe("https://mini.tailnet.test:65535");
       const serviceConfig = resolveBrokerServiceConfig();
       expect(serviceConfig.advertiseScope).toBe("mesh");
       expect(serviceConfig.brokerHost).toBe("127.0.0.1");
-      expect(serviceConfig.brokerUrl).toBe(`https://mini.tailnet.test:${DEFAULT_BROKER_PORT}`);
+      const lan = findLanIPv4Address();
+      expect(serviceConfig.brokerUrl).toBe(
+        lan
+          ? `https://${lan}:${DEFAULT_BROKER_PORT}`
+          : `https://mini.tailnet.test:${DEFAULT_BROKER_PORT}`,
+      );
     });
 
     await withEnv({
@@ -186,7 +194,10 @@ describe("broker service scoutd adapter", () => {
       OPENSCOUT_BROKER_URL: "http://0.0.0.0:65535",
       OPENSCOUT_TAILSCALE_STATUS_JSON: tailscaleStatus,
     }, () => {
-      expect(resolveBrokerUrl("127.0.0.1", 65535, "mesh")).toBe("https://mini.tailnet.test:65535");
+      expect(resolveBrokerUrl("127.0.0.1", 65535, "mesh", process.env, null))
+        .toBe("https://mini.tailnet.test:65535");
+      expect(resolveBrokerUrl("127.0.0.1", 65535, "mesh", process.env, "192.168.18.22"))
+        .toBe("https://192.168.18.22:65535");
     });
   });
 

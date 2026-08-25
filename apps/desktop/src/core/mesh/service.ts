@@ -1,5 +1,6 @@
 import type { NodeDefinition } from "@openscout/protocol";
 import { meshPeerFetch } from "@openscout/runtime";
+import { httpMeshUrlsForNode, orderMeshDialUrls } from "@openscout/runtime/mesh-dial-order";
 import {
   type TailscalePeerCandidate,
 } from "@openscout/runtime/mesh/tailscale";
@@ -257,70 +258,72 @@ export async function runMeshPing(target: string): Promise<MeshPingReport> {
   const context = await loadScoutBrokerContext(brokerUrl);
   const localMeshId = context?.node.meshId ?? null;
 
-  // Resolve the target: could be a node ID, a URL, or a hostname
-  let probeUrl: string;
-  if (target.startsWith("http://") || target.startsWith("https://")) {
-    probeUrl = target;
-  } else {
-    const nodes = context?.snapshot.nodes ?? {};
-    const matchedNode = Object.values(nodes).find(
-      (n) => n.id === target || n.name === target || n.hostName === target,
-    );
-    if (matchedNode?.brokerUrl) {
-      probeUrl = matchedNode.brokerUrl;
-    } else {
-      probeUrl = `http://${target}:43110`;
-    }
-  }
-
+  // Resolve the target: URL, node id/name, or hostname. Try LAN before Tailscale.
+  const probeUrls = resolveMeshPingUrls(target, context?.snapshot.nodes ?? {});
   const start = performance.now();
+  let lastError: string | null = null;
+  let lastUrl = probeUrls[0] ?? `http://${target}:43110`;
 
-  try {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 3000);
-    const response = await meshPeerFetch(probeUrl, "/v1/node", {
-      signal: controller.signal,
-      headers: { accept: "application/json" },
-    });
-    clearTimeout(timeout);
-    const latencyMs = Math.round(performance.now() - start);
+  for (const probeUrl of probeUrls) {
+    lastUrl = probeUrl;
+    try {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 3000);
+      const response = await meshPeerFetch(probeUrl, "/v1/node", {
+        signal: controller.signal,
+        headers: { accept: "application/json" },
+      });
+      clearTimeout(timeout);
+      const latencyMs = Math.round(performance.now() - start);
 
-    if (!response.ok) {
+      if (!response.ok) {
+        lastError = `HTTP ${response.status}`;
+        continue;
+      }
+
+      const node = await response.json() as NodeDefinition;
       return {
         target,
         url: probeUrl,
-        reachable: false,
+        reachable: true,
         latencyMs,
-        node: null,
-        meshIdMatch: false,
+        node,
+        meshIdMatch: localMeshId !== null && node.meshId === localMeshId,
         localMeshId,
-        error: `HTTP ${response.status}`,
+        error: null,
       };
+    } catch (error) {
+      lastError = error instanceof Error ? error.message : String(error);
     }
-
-    const node = await response.json() as NodeDefinition;
-    return {
-      target,
-      url: probeUrl,
-      reachable: true,
-      latencyMs,
-      node,
-      meshIdMatch: localMeshId !== null && node.meshId === localMeshId,
-      localMeshId,
-      error: null,
-    };
-  } catch (error) {
-    return {
-      target,
-      url: probeUrl,
-      reachable: false,
-      latencyMs: Math.round(performance.now() - start),
-      node: null,
-      meshIdMatch: false,
-      localMeshId,
-      error: error instanceof Error ? error.message : String(error),
-    };
   }
+
+  return {
+    target,
+    url: lastUrl,
+    reachable: false,
+    latencyMs: Math.round(performance.now() - start),
+    node: null,
+    meshIdMatch: false,
+    localMeshId,
+    error: lastError,
+  };
+}
+
+function resolveMeshPingUrls(target: string, nodes: Record<string, NodeDefinition>): string[] {
+  if (target.startsWith("http://") || target.startsWith("https://")) {
+    return [target];
+  }
+  const matchedNode = Object.values(nodes).find(
+    (n) => n.id === target || n.name === target || n.hostName === target,
+  );
+  if (matchedNode) {
+    const urls = httpMeshUrlsForNode(matchedNode);
+    if (urls.length > 0) return urls;
+  }
+  return orderMeshDialUrls([
+    `https://${target}:43110`,
+    `http://${target}:43110`,
+  ]);
 }
 
 export async function loadMeshNodes(): Promise<{

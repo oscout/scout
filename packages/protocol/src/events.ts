@@ -8,6 +8,8 @@ import type { ConversationReadCursor } from "./read-receipts.js";
 import type { AgentDefinition, AgentEndpoint, ActorIdentity } from "./actors.js";
 import type { CollaborationEvent, CollaborationRecord } from "./collaboration.js";
 import type { ScoutDispatchRecord } from "./scout-dispatch.js";
+import type { PresenceBeat } from "./presence.js";
+import type { ObservedActivity } from "./observed-status.js";
 
 export const OPENSCOUT_CONTROL_EVENT_VERSION = 1 as const;
 
@@ -96,6 +98,21 @@ export type ScoutDispatchedEvent = ControlEventBase<"scout.dispatched", {
   dispatch: ScoutDispatchRecord;
 }>;
 
+/**
+ * An agent entered a new activity.
+ *
+ * Emitted on **transition only** — heartbeats bump the broker's presence map in
+ * place and put nothing on the wire. This event is ephemeral by construction:
+ * it must never be persisted and must never enter the shared control-event
+ * backlog (see {@link isEphemeralControlEvent}). The presence map *is* its
+ * backlog — latest-per-agent — and subscribers receive that map on connect.
+ */
+export type PresenceUpdatedEvent = ControlEventBase<"presence.updated", {
+  beat: PresenceBeat;
+  /** Absent when the agent had no prior presence entry. */
+  previousActivity?: ObservedActivity;
+}>;
+
 export type ControlEvent =
   | NodeUpsertedEvent
   | ActorRegisteredEvent
@@ -113,7 +130,26 @@ export type ControlEvent =
   | DeliveryStateChangedEvent
   | CollaborationUpsertedEvent
   | CollaborationEventAppendedEvent
-  | ScoutDispatchedEvent;
+  | ScoutDispatchedEvent
+  | PresenceUpdatedEvent;
+
+/**
+ * Control-event kinds that are ephemeral by construction.
+ *
+ * Ephemeral events ride the in-memory control bus for live fan-out and are
+ * dropped everywhere else: no SQLite row, no journal entry, no place in the
+ * shared bounded backlog. Presence traffic creating zero durable records is a
+ * hard constraint, so the durable and backlog paths check this set rather than
+ * trusting every call site to route correctly.
+ */
+export const EPHEMERAL_CONTROL_EVENT_KINDS: ReadonlySet<ControlEvent["kind"]> = new Set<ControlEvent["kind"]>([
+  "presence.updated",
+]);
+
+/** True when the event must never be persisted or backlogged. */
+export function isEphemeralControlEvent(event: Pick<ControlEvent, "kind">): boolean {
+  return EPHEMERAL_CONTROL_EVENT_KINDS.has(event.kind);
+}
 
 /**
  * Stamp the current envelope version onto a control event when it is missing.

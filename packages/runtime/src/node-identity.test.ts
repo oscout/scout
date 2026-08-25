@@ -7,13 +7,16 @@ import { describe, expect, test } from "bun:test";
 import {
   buildSignedNodeCard,
   canonicalJson,
+  canonicalMeshNodeId,
   loadOrCreateNodeIdentity,
   loadOrCreateStableNodeQualifier,
   nodeFingerprint,
+  nodeIdentityPath,
   nodeKeyId,
   readStableNodeQualifier,
   resolveStableLocalNodeId,
   signNodePayload,
+  stripBonjourCollisionSuffix,
   verifyNodeSignature,
   verifySignedNodeCard,
 } from "./node-identity.js";
@@ -49,31 +52,60 @@ describe("node identity", () => {
     expect(nodeFingerprint(other.publicKey)).not.toBe(fingerprint);
   });
 
+  test("strips Bonjour collision suffixes and canonicalizes node IDs", () => {
+    expect(stripBonjourCollisionSuffix("Arts-Mac-mini-372.local")).toBe("Arts-Mac-mini.local");
+    expect(stripBonjourCollisionSuffix("Arachs-Mac-mini-292.local")).toBe("Arachs-Mac-mini.local");
+    expect(stripBonjourCollisionSuffix("air-6.local")).toBe("air.local");
+    expect(stripBonjourCollisionSuffix("arachs-mac-mini-292-local-openscout")).toBe("arachs-mac-mini-local-openscout");
+    expect(stripBonjourCollisionSuffix("arts-mac-mini-57-local")).toBe("arts-mac-mini-local");
+    expect(stripBonjourCollisionSuffix("ocean-iron")).toBe("ocean-iron");
+
+    expect(canonicalMeshNodeId("arachs-mac-mini-292-local-openscout")).toBe("arachs-mac-mini-local-openscout");
+    expect(canonicalMeshNodeId("arts-mac-mini-769-local-openscout")).toBe("arts-mac-mini-local-openscout");
+    expect(canonicalMeshNodeId("air-6-local-openscout")).toBe("air-local-openscout");
+    expect(canonicalMeshNodeId("ocean-iron-openscout")).toBe("ocean-iron-openscout");
+  });
+
   test("persists routing authority across hostname collision suffix drift", () => {
     const dir = tempSupportDirectory();
 
-    expect(loadOrCreateStableNodeQualifier("Dev-Mac-mini-372.local", dir))
-      .toBe("dev-mac-mini-372-local");
-    expect(loadOrCreateStableNodeQualifier("Dev-Mac-mini-419.local", dir))
-      .toBe("dev-mac-mini-372-local");
-    expect(readStableNodeQualifier(dir)).toBe("dev-mac-mini-372-local");
+    expect(loadOrCreateStableNodeQualifier("Arts-Mac-mini-372.local", dir))
+      .toBe("arts-mac-mini-local");
+    expect(loadOrCreateStableNodeQualifier("Arts-Mac-mini-419.local", dir))
+      .toBe("arts-mac-mini-local");
+    expect(readStableNodeQualifier(dir)).toBe("arts-mac-mini-local");
 
     expect(resolveStableLocalNodeId({
-      nodeName: "Dev-Mac-mini-476.local",
+      nodeName: "Arts-Mac-mini-476.local",
       meshId: "openscout",
       supportDirectory: dir,
-    })).toBe("dev-mac-mini-372-local-openscout");
+    })).toBe("arts-mac-mini-local-openscout");
+  });
+
+  test("migrates a persisted collision-suffixed routing authority", () => {
+    const dir = tempSupportDirectory();
+    const identity = loadOrCreateNodeIdentity(dir);
+    const path = nodeIdentityPath(dir);
+    writeFileSync(path, `${JSON.stringify({
+      ...identity,
+      nodeQualifier: "arts-mac-mini-372-local",
+    }, null, 2)}\n`);
+
+    expect(loadOrCreateStableNodeQualifier("Arts-Mac-mini-419.local", dir))
+      .toBe("arts-mac-mini-local");
+    const persisted = JSON.parse(readFileSync(path, "utf8")) as { nodeQualifier?: string };
+    expect(persisted.nodeQualifier).toBe("arts-mac-mini-local");
   });
 
   test("an explicit node id still overrides persisted default authority", () => {
     const dir = tempSupportDirectory();
     expect(resolveStableLocalNodeId({
       configuredNodeId: "operator-pinned-node",
-      nodeName: "Dev-Mac-mini-476.local",
+      nodeName: "Arts-Mac-mini-476.local",
       meshId: "openscout",
       supportDirectory: dir,
     })).toBe("operator-pinned-node");
-    expect(readStableNodeQualifier(dir)).toBe("dev-mac-mini-476-local");
+    expect(readStableNodeQualifier(dir)).toBe("arts-mac-mini-local");
   });
 
   test("signs and verifies payloads; rejects wrong keys and tampering", () => {
@@ -95,8 +127,8 @@ describe("node identity", () => {
   test("signed node cards verify and detect tampering", () => {
     const identity = loadOrCreateNodeIdentity(tempSupportDirectory());
     const card = buildSignedNodeCard(identity, {
-      nodeId: "dev-mac-mini-local-openscout",
-      label: "Development Mac Mini",
+      nodeId: "arts-mac-mini-local-openscout",
+      label: "Art's Mac Mini",
       version: "0.9.0",
       capabilities: ["control", "observe"],
       endpoints: ["http://192.168.18.9:43110"],
