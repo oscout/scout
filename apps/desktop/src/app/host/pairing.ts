@@ -17,6 +17,16 @@ import {
   type SessionSummary,
 } from "@openscout/agent-sessions";
 import { findNearestProjectRoot } from "@openscout/runtime/setup";
+import {
+  readLiveScoutPairingRuntimeOwner,
+  readLiveScoutPairingSupervisorPid,
+  readScoutPairingProcessPid as readSupervisedPairingProcessPid,
+  readScoutPairingSupervisorIntent,
+  resolveScoutPairingSupervisorPaths,
+  signalScoutPairingRuntimeOwner,
+  updateScoutPairingSupervisorIntent,
+  type ScoutPairingRuntimeOwner,
+} from "@openscout/runtime/pairing-supervisor";
 import { loadLocalConfig } from "@openscout/runtime/local-config";
 import { resolveBunExecutable as resolveResolvedBunExecutable } from "@openscout/runtime/tool-resolution";
 
@@ -33,6 +43,7 @@ export const SCOUT_PAIRING_DEFAULT_PORT = 7_888;
 export const SCOUT_PAIRING_LOG_TAIL_LINE_LIMIT = 160;
 export const SCOUT_PAIRING_RUNTIME_BOOTSTRAP_DELAY_MS = 350;
 export const SCOUT_PAIRING_PROCESS_EXIT_TIMEOUT_MS = 5_000;
+export const SCOUT_PAIRING_SUPERVISOR_ACTION_TIMEOUT_MS = 8_000;
 export const SCOUT_PAIRING_PROCESS_EXIT_POLL_MS = 100;
 export const SCOUT_PAIRING_COMMAND_LABEL = "scout pair";
 export const SCOUT_PAIRING_RUNTIME_VERSION = 1 as const;
@@ -861,10 +872,11 @@ async function ensureDefaultScoutPairingWorkspaceConfig(currentDirectory?: strin
   });
 }
 
-async function waitForScoutPairingProcessExit(pid: number): Promise<void> {
+async function waitForScoutPairingProcessExit(owner: ScoutPairingRuntimeOwner): Promise<void> {
+  const ownerPath = resolveScoutPairingSupervisorPaths().runtimeOwnerPath;
   const startedAt = Date.now();
   while (Date.now() - startedAt < SCOUT_PAIRING_PROCESS_EXIT_TIMEOUT_MS) {
-    if (!isScoutPairingProcessRunning(pid)) {
+    if (!readLiveScoutPairingRuntimeOwner(ownerPath, { expectedToken: owner.token })) {
       return;
     }
     await sleep(SCOUT_PAIRING_PROCESS_EXIT_POLL_MS);
@@ -894,10 +906,13 @@ async function startScoutPairingRuntime(): Promise<void> {
 }
 
 async function stopScoutPairingRuntime(): Promise<void> {
+  const supervisorPaths = resolveScoutPairingSupervisorPaths();
   const pid = readScoutPairingRuntimePid();
-  if (pid && isScoutPairingProcessRunning(pid)) {
-    process.kill(pid, "SIGTERM");
-    await waitForScoutPairingProcessExit(pid);
+  const owner = readLiveScoutPairingRuntimeOwner(supervisorPaths.runtimeOwnerPath);
+  if (pid && owner?.pid === pid && signalScoutPairingRuntimeOwner(owner, "SIGTERM", {
+    ownerPath: supervisorPaths.runtimeOwnerPath,
+  })) {
+    await waitForScoutPairingProcessExit(owner);
   }
 }
 
@@ -912,6 +927,31 @@ async function ensureScoutPairingRuntimeStarted(): Promise<void> {
   }
   await startScoutPairingRuntime();
 }
+async function requestPairingActionFromSupervisor(
+  action: ScoutPairingControlAction,
+): Promise<boolean> {
+  const paths = resolveScoutPairingSupervisorPaths();
+  const previousOwner = readLiveScoutPairingRuntimeOwner(paths.runtimeOwnerPath);
+  updateScoutPairingSupervisorIntent(action, paths.intentPath);
+  const supervisorPid = readLiveScoutPairingSupervisorPid(paths.supervisorPidPath);
+  if (!supervisorPid) return false;
+  const deadline = Date.now() + SCOUT_PAIRING_SUPERVISOR_ACTION_TIMEOUT_MS;
+  while (Date.now() < deadline) {
+    const currentPid = readSupervisedPairingProcessPid(paths.runtimePidPath);
+    const currentOwner = readLiveScoutPairingRuntimeOwner(paths.runtimeOwnerPath);
+    const running = currentPid !== null && currentOwner?.pid === currentPid;
+    if (action === "stop"
+      ? !running
+      : running && (action !== "restart" || currentOwner?.token !== previousOwner?.token)) {
+      return true;
+    }
+    await sleep(SCOUT_PAIRING_PROCESS_EXIT_POLL_MS);
+  }
+  throw new Error(
+    `Scout pairing supervisor ${supervisorPid} did not complete ${action} within ${SCOUT_PAIRING_SUPERVISOR_ACTION_TIMEOUT_MS}ms.`,
+  );
+}
+
 
 export async function getScoutDesktopPairingState(currentDirectory?: string): Promise<ScoutPairingState> {
   return readScoutPairingState(currentDirectory);
@@ -943,14 +983,20 @@ export async function controlScoutDesktopPairingService(
   switch (action) {
     case "start":
       await ensureDefaultScoutPairingWorkspaceConfig(currentDirectory);
-      await ensureScoutPairingRuntimeStarted();
+      if (!await requestPairingActionFromSupervisor(action)) {
+        await ensureScoutPairingRuntimeStarted();
+      }
       break;
     case "stop":
-      await stopScoutPairingRuntime();
+      if (!await requestPairingActionFromSupervisor(action)) {
+        await stopScoutPairingRuntime();
+      }
       break;
     case "restart":
       await ensureDefaultScoutPairingWorkspaceConfig(currentDirectory);
-      await restartScoutPairingRuntime();
+      if (!await requestPairingActionFromSupervisor(action)) {
+        await restartScoutPairingRuntime();
+      }
       break;
   }
 
@@ -962,8 +1008,12 @@ export async function updateScoutDesktopPairingConfig(
   currentDirectory?: string,
 ): Promise<ScoutPairingState> {
   await updateScoutPairingConfig(input, currentDirectory);
-  if (isScoutPairingRuntimeRunning()) {
-    await restartScoutPairingRuntime();
+  const supervisorPaths = resolveScoutPairingSupervisorPaths();
+  const desiredRunning = readScoutPairingSupervisorIntent(supervisorPaths.intentPath).desiredState === "running";
+  if (desiredRunning || isScoutPairingRuntimeRunning()) {
+    if (!await requestPairingActionFromSupervisor("restart")) {
+      await restartScoutPairingRuntime();
+    }
   }
   return readScoutPairingState(currentDirectory);
 }

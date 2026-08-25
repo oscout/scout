@@ -174,8 +174,6 @@ describe("OpenScout onboarding contract", () => {
     const state = await saveOpenScoutOnboardingIdentity({
       currentDirectory: repo,
       name: "Ada Lovelace",
-      broker: fakeBroker(false),
-      catalog: fakeCatalog(false),
       now: 42,
     });
 
@@ -247,8 +245,6 @@ describe("OpenScout onboarding contract", () => {
       contextRoot: repo,
       sourceRoots: [join(home, "dev")],
       defaultHarness: "codex",
-      broker: fakeBroker(false),
-      catalog: fakeCatalog(false),
       now: 17,
     });
 
@@ -267,16 +263,12 @@ describe("OpenScout onboarding contract", () => {
       contextRoot: repo,
       sourceRoots: [join(home, "dev")],
       defaultHarness: "codex",
-      broker: fakeBroker(false),
-      catalog: fakeCatalog(false),
       now: 21,
     });
     await saveOpenScoutOnboardingProject({
       currentDirectory: repo,
       contextRoot: repo,
       sourceRoots: [repo],
-      broker: fakeBroker(false),
-      catalog: fakeCatalog(false),
       now: 22,
     });
 
@@ -298,8 +290,6 @@ describe("OpenScout onboarding contract", () => {
       contextRoot: repo,
       sourceRoots: [join(home, "dev"), oss],
       defaultHarness: "codex",
-      broker: fakeBroker(false),
-      catalog: fakeCatalog(false),
       now: 31,
     });
 
@@ -312,8 +302,6 @@ describe("OpenScout onboarding contract", () => {
       contextRoot: repo,
       sourceRoots: [],
       defaultHarness: "claude",
-      broker: fakeBroker(false),
-      catalog: fakeCatalog(false),
       now: 32,
     });
 
@@ -330,19 +318,8 @@ describe("OpenScout onboarding contract", () => {
     const repo = join(home, "dev", "alpha");
     mkdirSync(repo, { recursive: true });
     writeProjectConfig(repo);
-    await ensureOpenScoutOnboardingLocalConfig({
-      currentDirectory: repo,
-      broker: fakeBroker(true),
-      catalog: fakeCatalog(false),
-      now: 10,
-    });
-    await saveOpenScoutOnboardingIdentity({
-      currentDirectory: repo,
-      name: "Ada",
-      broker: fakeBroker(true),
-      catalog: fakeCatalog(false),
-      now: 11,
-    });
+    await ensureOpenScoutOnboardingLocalConfig({ currentDirectory: repo, now: 10 });
+    await saveOpenScoutOnboardingIdentity({ currentDirectory: repo, name: "Ada", now: 11 });
 
     const missing = await markOpenScoutOnboardingCommand({
       command: "runtimes",

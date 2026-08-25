@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, mock, test } from "bun:test";
 import type { ScoutOutput } from "../output.ts";
 
-const SUPPORTED_LOCAL_AGENT_HARNESSES = ["claude", "codex", "grok", "grok-acp", "kimi", "pi", "cursor"];
+const SUPPORTED_LOCAL_AGENT_HARNESSES = ["claude", "codex", "grok", "grok-acp", "kimi", "pi", "cursor", "opencode"];
 
 afterEach(() => {
   mock.restore();

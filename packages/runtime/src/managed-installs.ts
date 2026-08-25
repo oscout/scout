@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 
-import { resolveOpenScoutSupportPaths } from "./support-paths.js";
+import { assertTestIsolatedUserData, resolveOpenScoutSupportPaths } from "./support-paths.js";
 
 export type ManagedInstallKind =
   | "skill"
@@ -107,6 +107,7 @@ async function readManagedInstallsFile(path = resolveOpenScoutSupportPaths().man
 }
 
 async function writeManagedInstallsFile(file: ManagedInstallsFile, path = resolveOpenScoutSupportPaths().managedInstallsPath): Promise<void> {
+  assertTestIsolatedUserData("write the managed-installs registry", "OPENSCOUT_SUPPORT_DIRECTORY");
   await mkdir(dirname(path), { recursive: true });
   await writeFile(path, JSON.stringify(file, null, 2) + "\n", "utf8");
 }

@@ -10,7 +10,7 @@
 <p align="center">
   <a href="https://www.npmjs.com/package/@openscout/scout"><img alt="npm version" src="https://img.shields.io/npm/v/@openscout/scout?style=flat-square&label=npm&color=94d59a&labelColor=171a16" /></a>
   <a href="https://github.com/oscout/scout/blob/main/LICENSE"><img alt="Apache 2.0 license" src="https://img.shields.io/badge/license-Apache--2.0-f7f4ea?style=flat-square&labelColor=171a16" /></a>
-  <a href="https://oscout.net"><img alt="OpenScout" src="https://img.shields.io/badge/built_for-OpenScout-dde6d8?style=flat-square&labelColor=171a16" /></a>
+  <a href="https://openscout.app"><img alt="OpenScout" src="https://img.shields.io/badge/built_for-OpenScout-dde6d8?style=flat-square&labelColor=171a16" /></a>
 </p>
 
 ---
@@ -149,9 +149,10 @@ suite is available through `bun run check` and `bun run test:unit`.
 - [Protocol guide](./packages/protocol/README.md) — integration contracts and shared types
 - [Agent sessions](./packages/agent-sessions/README.md) — harness observation and session models
 - [Public-source boundary](./docs/public-source-boundary.md) — what ships here and how package/source parity stays verifiable
+- [Release guide](./docs/releases.md) — reviewed-source, package, tag, and registry invariants
 - [Architecture diagram source](./.github/diagrams/control-plane.arc.json) — editable Arc model behind the README diagram
 - [Brand assets](./.github/assets/README.md) — canonical mark, hero, avatar, and social preview sources
-- [OpenScout](https://oscout.net) — product context and project home
+- [OpenScout](https://openscout.app) — product context and project home
 
 ## License
 

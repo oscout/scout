@@ -6,6 +6,11 @@ import { join } from "node:path";
 import { Database } from "bun:sqlite";
 
 import { applyControlPlaneSchemaMigrations } from "./control-plane-migrations.ts";
+import {
+  loadOrCreateNodeIdentity,
+  nodeFingerprint,
+  nodeKeyId,
+} from "./node-identity.ts";
 import { CONTROL_PLANE_SCHEMA_VERSION } from "./schema.ts";
 import { SQLiteControlPlaneStore } from "./sqlite-store.ts";
 
@@ -2252,6 +2257,114 @@ describe("terminal workspaces", () => {
       const record = store.upsertTerminalWorkspace({ name: "Empty" });
       expect(record.cells).toEqual([]);
       expect(store.getTerminalWorkspace(record.id)?.cells).toEqual([]);
+    } finally {
+      store.close();
+    }
+  });
+
+  test("compactAndPruneMeshNodes never conflates numeric hostnames backed by distinct keys", () => {
+    const store = createStore();
+    try {
+      const now = 2_000_000_000_000;
+      const staleAt = now - 30 * 24 * 60 * 60 * 1_000;
+      const nodes = [
+        { id: "pi-4-local-openscout", hostName: "pi-4.local", agentId: "agent.pi-4" },
+        { id: "pi-5-local-openscout", hostName: "pi-5.local", agentId: "agent.pi-5" },
+      ] as const;
+
+      for (const node of nodes) {
+        const identityDirectory = mkdtempSync(join(tmpdir(), "openscout-node-key-test-"));
+        dbRoots.add(identityDirectory);
+        const identity = loadOrCreateNodeIdentity(identityDirectory);
+        store.upsertNode({
+          id: node.id,
+          meshId: "openscout",
+          name: node.hostName,
+          hostName: node.hostName,
+          advertiseScope: "mesh",
+          brokerUrl: `https://${node.hostName}:43110`,
+          capabilities: ["control", "observe"],
+          labels: [],
+          metadata: {},
+          registeredAt: staleAt,
+          lastSeenAt: staleAt,
+        });
+        store.upsertActor({
+          id: node.agentId,
+          kind: "agent",
+          displayName: `Agent on ${node.hostName}`,
+        });
+        store.upsertAgent({
+          id: node.agentId,
+          kind: "agent",
+          displayName: `Agent on ${node.hostName}`,
+          agentClass: "general",
+          definitionId: node.agentId,
+          capabilities: ["chat"],
+          wakePolicy: "on_demand",
+          advertiseScope: "mesh",
+          homeNodeId: node.id,
+          authorityNodeId: node.id,
+        });
+        store.upsertTrustedPeer({
+          keyId: nodeKeyId(identity.publicKey),
+          publicKey: identity.publicKey,
+          fingerprint: nodeFingerprint(identity.publicKey),
+          nodeId: node.id,
+          label: node.hostName,
+          tier: "control",
+          grantedVia: "mesh-trust",
+          grantedAt: staleAt,
+          metadata: {},
+        });
+      }
+
+      const result = store.compactAndPruneMeshNodes({
+        localNodeId: "controller-local-openscout",
+        now,
+      });
+
+      expect(result.rehomedNodeCount).toBe(0);
+      expect(result.prunedNodeCount).toBe(0);
+      expect(result.rehomedMappings).toEqual([]);
+      const snapshot = store.loadSnapshot();
+      expect(snapshot.nodes["pi-4-local-openscout"]?.hostName).toBe("pi-4.local");
+      expect(snapshot.nodes["pi-5-local-openscout"]?.hostName).toBe("pi-5.local");
+      expect(snapshot.nodes["pi-local-openscout"]).toBeUndefined();
+      expect(snapshot.agents["agent.pi-4"]?.homeNodeId).toBe("pi-4-local-openscout");
+      expect(snapshot.agents["agent.pi-5"]?.homeNodeId).toBe("pi-5-local-openscout");
+      expect(store.listTrustedPeers().map((peer) => peer.nodeId).sort()).toEqual([
+        "pi-4-local-openscout",
+        "pi-5-local-openscout",
+      ]);
+    } finally {
+      store.close();
+    }
+  });
+
+  test("compactAndPruneMeshNodes still removes an unreferenced stale node", () => {
+    const store = createStore();
+    try {
+      const now = 2_000_000_000_000;
+      store.upsertNode({
+        id: "offline-ghost",
+        meshId: "openscout",
+        name: "Offline ghost",
+        advertiseScope: "mesh",
+        registeredAt: now - 30 * 24 * 60 * 60 * 1_000,
+      });
+
+      const result = store.compactAndPruneMeshNodes({
+        localNodeId: "controller-local-openscout",
+        now,
+      });
+
+      expect(result).toEqual({
+        rehomedNodeCount: 0,
+        prunedNodeCount: 1,
+        rehomedMappings: [],
+      });
+      expect(store.loadSnapshot().nodes["offline-ghost"]).toBeUndefined();
     } finally {
       store.close();
     }

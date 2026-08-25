@@ -91,6 +91,7 @@ function createService(input: {
   deliveries?: DeliveryIntent[];
   messages?: MessageRecord[];
   invocations?: InvocationRequest[];
+  presenceSnapshot?: ControlEvent[];
 } = {}) {
   const deliveries = new Map((input.deliveries ?? []).map((item) => [item.id, item]));
   const messages = new Map((input.messages ?? []).map((item) => [item.id, item]));
@@ -102,8 +103,29 @@ function createService(input: {
     listDeliveries: () => [...deliveries.values()],
     messageById: (messageId) => messages.get(messageId),
     invocationById: (invocationId) => invocations.get(invocationId),
+    presenceSnapshot: input.presenceSnapshot ? () => input.presenceSnapshot ?? [] : undefined,
   });
   return { enqueuedEvents, service };
+}
+
+function presenceEvent(agentId: string): ControlEvent {
+  return {
+    id: `event-presence-${agentId}`,
+    kind: "presence.updated",
+    ts: 1_700_000_000_000,
+    actorId: agentId,
+    payload: {
+      beat: {
+        agentId,
+        activity: "executing",
+        phase: "running",
+        transitionAt: 1_699_999_000_000,
+        updatedAt: 1_700_000_000_000,
+        staleAt: 1_700_000_045_000,
+        confidence: 0.9,
+      },
+    },
+  } as ControlEvent;
 }
 
 describe("broker control stream service", () => {
@@ -132,6 +154,45 @@ describe("broker control stream service", () => {
     expect(invocationIdsForEvent(event, {
       findDeliveryById: (deliveryId) => deliveryId === relatedDelivery.id ? relatedDelivery : undefined,
     })).toEqual(["invocation-1"]);
+  });
+
+  test("replays the presence current value to a new event-stream subscriber", () => {
+    const { enqueuedEvents, service } = createService({
+      presenceSnapshot: [presenceEvent("agent-1"), presenceEvent("agent-2")],
+    });
+    const request = new FakeRequest();
+    const response = new FakeResponse();
+
+    service.addEventStream({
+      request: request as never,
+      response: response as never,
+      hello: { nodeId: "node-1" },
+    });
+
+    const body = response.body();
+    expect(body.indexOf("event: hello")).toBeLessThan(body.indexOf("event: presence.updated"));
+    expect(body).toContain('"agentId":"agent-1"');
+    expect(body).toContain('"agentId":"agent-2"');
+    // Replaying current value must not create a durable row, and must not
+    // resemble a backlog: one frame per agent, no history.
+    expect(enqueuedEvents).toEqual([]);
+    expect(body.split("event: presence.updated").length - 1).toBe(2);
+  });
+
+  test("event streams open cleanly when nothing has ever published presence", () => {
+    const { service } = createService();
+    const request = new FakeRequest();
+    const response = new FakeResponse();
+
+    service.addEventStream({
+      request: request as never,
+      response: response as never,
+      hello: { nodeId: "node-1" },
+    });
+
+    expect(response.body()).toContain("event: hello");
+    expect(response.body()).not.toContain("presence.updated");
+    expect(service.eventSubscriberCount()).toBe(1);
   });
 
   test("streams invocation snapshots and cleans up subscribers on close", () => {

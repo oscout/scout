@@ -43,7 +43,7 @@ import { collectUserLevelProjectRootHints, encodeClaudeProjectsSlug } from "./us
 export type RelayRuntimeTransport = "claude_stream_json" | "codex_app_server" | "pi_rpc" | "grok_acp" | "kimi_acp" | "cursor_acp" | "opencode_acp" | "tmux" | "cursor_exec";
 export type TelegramBridgeMode = "auto" | "webhook" | "polling";
 export const SCOUT_AGENT_ID = "scout";
-export const MANAGED_AGENT_HARNESSES = ["claude", "codex", "cursor", "grok", "grok-acp", "kimi", "pi"] as const;
+export const MANAGED_AGENT_HARNESSES = ["claude", "codex", "cursor", "grok", "grok-acp", "kimi", "pi", "opencode"] as const;
 export type ManagedAgentHarness = typeof MANAGED_AGENT_HARNESSES[number];
 
 export type RelayHarnessProfile = {
@@ -543,6 +543,10 @@ const PROJECT_HARNESS_MARKERS: Record<ManagedAgentHarness, readonly string[]> = 
     "PI.md",
     ".pi",
   ],
+  opencode: [
+    "OPENCODE.md",
+    ".opencode",
+  ],
 };
 
 function partitionFlatAndNestedMarkers(markers: readonly string[]): { flat: string[]; nested: string[] } {
@@ -657,6 +661,9 @@ function normalizeManagedHarness(
   }
   if (value === "pi") {
     return "pi";
+  }
+  if (value === "opencode") {
+    return "opencode";
   }
   return fallback;
 }
@@ -1653,6 +1660,7 @@ async function detectHarnessMarkers(projectRoot: string): Promise<Record<Managed
     "grok-acp": [],
     kimi: [],
     pi: [],
+    opencode: [],
   };
 
   for (const harness of MANAGED_AGENT_HARNESSES) {
@@ -1926,6 +1934,7 @@ export function resolveOpenScoutSetupContextRoot(options: {
 export async function writeOpenScoutSettings(settings: UpdateOpenScoutSettingsInput, options: { currentDirectory?: string } = {}): Promise<OpenScoutSettings> {
   assertTestIsolatedUserData("write OpenScout settings", "OPENSCOUT_SUPPORT_DIRECTORY");
   ensureOpenScoutCleanSlateSync();
+  const settingsPath = resolveOpenScoutSupportPaths().settingsPath;
   const current = await readOpenScoutSettings(options);
   const merged = {
     ...current,
@@ -1983,7 +1992,18 @@ export async function writeOpenScoutSettings(settings: UpdateOpenScoutSettingsIn
     currentDirectory: options.currentDirectory,
   });
 
-  await writeJsonFile(resolveOpenScoutSupportPaths().settingsPath, normalized);
+  // The target path is resolved from the environment, and a test teardown can
+  // swap that environment while an abandoned (timed-out) call is still
+  // awaiting above; re-resolving here would then retarget the operator's real
+  // settings file with fixture state. Refuse to write anywhere but where this
+  // call started.
+  const settingsPathNow = resolveOpenScoutSupportPaths().settingsPath;
+  if (settingsPathNow !== settingsPath) {
+    throw new Error(
+      `Refusing to write OpenScout settings: target moved from ${settingsPath} to ${settingsPathNow} mid-write (test teardown?).`,
+    );
+  }
+  await writeJsonFile(settingsPath, normalized);
   return normalized;
 }
 
@@ -2319,6 +2339,8 @@ export async function readRelayAgentOverrides(): Promise<Record<string, RelayAge
 }
 
 export async function writeRelayAgentOverrides(overrides: Record<string, RelayAgentOverride>): Promise<void> {
+  assertTestIsolatedUserData("write the relay-agents registry", "OPENSCOUT_SUPPORT_DIRECTORY");
+  const registryPath = resolveOpenScoutSupportPaths().relayAgentsRegistryPath;
   const normalizedAgents = Object.fromEntries(
     Object.entries(overrides).map(([agentId, record]) => {
       const definitionId = normalizeAgentId(record.definitionId || record.agentId || agentId);
@@ -2360,7 +2382,15 @@ export async function writeRelayAgentOverrides(overrides: Record<string, RelayAg
     }),
   );
 
-  await writeJsonFile(resolveOpenScoutSupportPaths().relayAgentsRegistryPath, {
+  // Same mid-write environment-swap hazard as writeOpenScoutSettings: only
+  // write where this call started.
+  const registryPathNow = resolveOpenScoutSupportPaths().relayAgentsRegistryPath;
+  if (registryPathNow !== registryPath) {
+    throw new Error(
+      `Refusing to write the relay-agents registry: target moved from ${registryPath} to ${registryPathNow} mid-write (test teardown?).`,
+    );
+  }
+  await writeJsonFile(registryPath, {
     version: 1,
     agents: normalizedAgents,
   });

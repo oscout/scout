@@ -101,6 +101,118 @@ something to fix by editing version strings alone. A private product may
 deliberately consume an older public-core revision, but that revision must be
 explicit and its source must remain canonical here.
 
+### The transition release
+
+When published, `0.2.88` moves source and release authority for the currently
+published `@openscout/scout` and `@openscout/protocol` pair to this repository.
+It does not claim that the complete component-package boundary is already
+finished.
+Supported publication of `@openscout/agent-sessions`, `@openscout/runtime`, and
+`@openscout/web` from this repository remains deferred until they have supported
+exports, standalone pack/install tests, and a zero-extension web-composition
+fixture. Historical registry artifacts are not the supported lockstep family.
+
+The first full pre-`1.0` component release is one exact five-package set:
+protocol, agent sessions, runtime, web, and Scout. Its manifests, packed
+first-party dependencies, public source tag, npm dist-tags, and distribution BOM
+must all resolve to one version. The private product can have an independent
+product version, but it consumes one complete public set without ranges or
+source paths.
+
+## Scout distributions
+
+A **Scout Distribution** is a reproducible product assembly: one exact public
+core release plus zero or more trusted build-time extensions. It is not a sixth
+npm package, a runtime plugin loader, or a source mirror.
+
+The first full five-package release—not the `0.2.88` transition release—will
+define the reference zero-extension Scout Distribution. `0.2.88` establishes
+two-package source and publication authority; it does not claim a resolved
+distribution BOM or private BOM-based consumption.
+
+A private product will extend the zero-extension baseline by immutable BOM
+digest, contribute product routes, navigation, semantic UI slots, namespaced
+server routes, and capability providers, and emit one flattened resolved BOM
+for diagnostics. It will not restate or copy the public package source.
+
+An eventual resolved BOM records source identity, registry integrity,
+provenance, composition-contract identity, and extensions:
+
+```jsonc
+// Illustrative v1alpha1 shape; field names are not yet normative.
+{
+  "apiVersion": "scout.openscout.dev/v1alpha1",
+  "kind": "ScoutDistribution",
+  "metadata": {
+    "id": "org.oscout.scout",
+    "version": "<distribution-version>"
+  },
+  "core": {
+    "version": "<core-version>",
+    "source": {
+      "repository": "https://github.com/oscout/scout",
+      "tag": "v<core-version>",
+      "commit": "<40-character-commit>"
+    },
+    "packages": [
+      {
+        "name": "@openscout/protocol",
+        "version": "<core-version>",
+        "integrity": "sha512-<registry-sri>",
+        "provenance": "<attestation-reference>"
+      },
+      {
+        "name": "@openscout/agent-sessions",
+        "version": "<core-version>",
+        "integrity": "sha512-<registry-sri>",
+        "provenance": "<attestation-reference>"
+      },
+      {
+        "name": "@openscout/runtime",
+        "version": "<core-version>",
+        "integrity": "sha512-<registry-sri>",
+        "provenance": "<attestation-reference>"
+      },
+      {
+        "name": "@openscout/web",
+        "version": "<core-version>",
+        "integrity": "sha512-<registry-sri>",
+        "provenance": "<attestation-reference>"
+      },
+      {
+        "name": "@openscout/scout",
+        "version": "<core-version>",
+        "integrity": "sha512-<registry-sri>",
+        "provenance": "<attestation-reference>"
+      }
+    ]
+  },
+  "composition": {
+    "contract": {
+      "package": "@openscout/web",
+      "export": "./composition",
+      "version": "<core-version>"
+    },
+    "extensions": []
+  },
+  "capabilities": {
+    "requires": [],
+    "declares": []
+  }
+}
+```
+
+The normative full-family BOM contains exactly the five public package names,
+all at the same pre-`1.0` version. A private overlay repeats only the public
+distribution id, version, BOM URL, and digest, then lists its own extension
+identities and digests. Live availability and authorization remain
+broker-owned; BOM capabilities describe build-time requirements and
+declarations only.
+
+The resolved BOM is created after registry publication and attached to the
+release with a signature or attestation. It cannot live inside a tarball whose
+own integrity it records.
+
 ## Moving a surface across the boundary
 
 When code becomes public, move a coherent slice with its tests, documentation,

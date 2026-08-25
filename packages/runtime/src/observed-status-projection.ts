@@ -1,3 +1,4 @@
+import { flightSessionTrace } from "@openscout/protocol";
 import type {
   AgentEndpoint,
   CollaborationRecord,
@@ -13,14 +14,35 @@ import type {
 } from "@openscout/protocol";
 
 import type { RuntimeRegistrySnapshot } from "./registry.js";
+import type { ActivityTransitionLog } from "./activity-transitions.js";
 
 export interface ObservedStatusProjectionOptions {
   now?: number;
   staleAfterMs?: number;
+  /**
+   * Transition log used to stamp `transitionAt` (when the current activity
+   * began). Optional: without it the projection stays a pure function of the
+   * snapshot and leaves `transitionAt` undefined rather than guessing, since
+   * time-in-state cannot be recovered from a single snapshot.
+   *
+   * Passing a log makes the call stateful — it records the observation.
+   */
+  transitions?: ActivityTransitionLog;
 }
 
+/**
+ * A candidate carries two timestamps that must never collapse into one.
+ *
+ * `updatedAt` is *last-verified-at*: when this source last attested that the
+ * agent's runtime is alive. `stateEnteredAt` is *began-at*: when the activity
+ * this candidate describes started. A flight running for nine minutes has a
+ * nine-minute-old `stateEnteredAt` and an `updatedAt` that moves with every
+ * acknowledgement. Reading the first as the second is what decayed live agents
+ * out of the presence map 105s after they started work.
+ */
 type StatusCandidate = ObservedStatusProjection & {
   rank: number;
+  stateEnteredAt?: number;
 };
 
 const DEFAULT_STALE_AFTER_MS = 90_000;
@@ -51,7 +73,7 @@ export function projectObservedStatusForAgent(
   }
 
   if (candidates.length === 0) {
-    return stripRank({
+    return withTransitionAt(stripRank({
       subjectKind: "agent",
       subjectId: agentId,
       agentId,
@@ -61,11 +83,74 @@ export function projectObservedStatusForAgent(
       confidence: snapshot.agents[agentId] ? 0.7 : 0.3,
       updatedAt: now,
       rank: snapshot.agents[agentId] ? 15 : 0,
-    });
+    }), agentId, now, options, now);
   }
 
   candidates.sort(compareCandidates);
-  return stripRank(candidates[0]!);
+  const winner = candidates[0]!;
+  return withTransitionAt(
+    stripRank({ ...winner, ...freshestEvidence(candidates) }),
+    agentId,
+    now,
+    options,
+    winner.stateEnteredAt,
+  );
+}
+
+/**
+ * Freshness for the selected projection, taken across *every* candidate.
+ *
+ * Selection is winner-take-all by rank, and that is right for "what is this
+ * agent doing" — a running flight outranks an idle endpoint. It is wrong for
+ * "is this agent still there". The flight knows the task; the endpoint's
+ * heartbeat is what proves the runtime is alive. Keeping only the winner's
+ * timestamps discarded that heartbeat and then read "this state began a while
+ * ago" as "the observer went quiet".
+ *
+ * So the *what* comes from the highest-ranked candidate and the *how fresh*
+ * comes from the freshest one, decided independently.
+ */
+function freshestEvidence(
+  candidates: StatusCandidate[],
+): Pick<ObservedStatusProjection, "updatedAt" | "staleAt"> {
+  let updatedAt = Number.NEGATIVE_INFINITY;
+  let staleAt: number | undefined;
+  for (const candidate of candidates) {
+    if (candidate.updatedAt > updatedAt) updatedAt = candidate.updatedAt;
+    if (candidate.staleAt !== undefined && (staleAt === undefined || candidate.staleAt > staleAt)) {
+      staleAt = candidate.staleAt;
+    }
+  }
+  return staleAt === undefined ? { updatedAt } : { updatedAt, staleAt };
+}
+
+/**
+ * Stamp state-entry time onto a projection, when the caller supplied a
+ * transition log to remember it with. Without one the field stays undefined —
+ * an absent timestamp is honest, a fabricated one is not.
+ *
+ * Seeded from the winning candidate's `stateEnteredAt`, never from `updatedAt`:
+ * the log is asked "when did this begin", and `updatedAt` answers "when was
+ * this last confirmed". Feeding it the second question's answer is what reset
+ * time-in-state to zero for every endpoint-sourced agent on broker restart.
+ */
+function withTransitionAt(
+  status: ObservedStatusProjection,
+  agentId: ScoutId,
+  now: number,
+  options: ObservedStatusProjectionOptions,
+  stateEnteredAt?: number,
+): ObservedStatusProjection {
+  if (!options.transitions) return status;
+  return {
+    ...status,
+    transitionAt: options.transitions.record(
+      agentId,
+      status.activity,
+      stateEnteredAt ?? status.updatedAt,
+      now,
+    ),
+  };
 }
 
 export function projectObservedStatusesFromRuntimeSnapshot(
@@ -156,8 +241,37 @@ function projectEndpointStatus(
     confidence,
     updatedAt,
     staleAt,
+    stateEnteredAt: endpointStateEnteredAt(endpoint, activity, updatedAt),
     rank,
   };
+}
+
+/**
+ * When the endpoint's current state began, as opposed to when it last checked
+ * in.
+ *
+ * Read from the endpoint's own record so time-in-state survives a broker
+ * restart. Seeding from `lastSeenAt` — the heartbeat — reset the clock to zero
+ * for every endpoint-sourced agent the moment the broker came back, which left
+ * `transitionAt` restart-safe for flights and not for endpoints.
+ *
+ * Only states with real evidence get a stamp: `working` began when the current
+ * turn started, `idle` began when the last one finished. For anything else the
+ * record says nothing, and an absent stamp lets the caller fall back rather
+ * than invent history.
+ */
+function endpointStateEnteredAt(
+  endpoint: AgentEndpoint,
+  activity: ObservedActivity,
+  updatedAt: number,
+): number | undefined {
+  const evidence = activity === "working"
+    ? parseTimestamp(endpoint.metadata?.lastStartedAt)
+    : activity === "idle"
+      ? parseTimestamp(endpoint.metadata?.lastCompletedAt)
+      : null;
+  if (evidence === null) return undefined;
+  return Math.min(evidence, updatedAt);
 }
 
 function projectFlightStatus(
@@ -165,7 +279,14 @@ function projectFlightStatus(
   invocation: InvocationRequest | undefined,
   now: number,
 ): StatusCandidate {
-  const updatedAt = flight.completedAt ?? flight.startedAt ?? invocation?.createdAt ?? now;
+  const stateEnteredAt = flight.completedAt ?? flight.startedAt ?? invocation?.createdAt ?? now;
+  // A flight record is edge-triggered: the broker writes `running` once and a
+  // terminal state once, so the record never gets fresher while work is in
+  // flight. Its own liveness evidence is the session trace's acknowledgements,
+  // and where there are none the agent's endpoint heartbeat supplies it via
+  // `freshestEvidence`. Dating the claim from `startedAt` is what aged a
+  // running flight out of presence while it was still running.
+  const updatedAt = Math.max(stateEnteredAt, latestSessionAck(flight) ?? stateEnteredAt);
   const phaseByState: Record<FlightRecord["state"], ObservedStatusPhase> = {
     queued: "registered",
     waking: "starting",
@@ -212,8 +333,22 @@ function projectFlightStatus(
     }],
     confidence: 0.96,
     updatedAt,
+    stateEnteredAt,
     rank: rankByState[flight.state],
   };
+}
+
+/**
+ * The most recent acknowledgement across a flight's session trace — the only
+ * "still alive" signal a flight record carries on its own.
+ */
+function latestSessionAck(flight: FlightRecord): number | null {
+  let latest: number | null = null;
+  for (const entry of flightSessionTrace(flight)) {
+    const ack = Math.max(entry.lastAcknowledgedAt, entry.endedAt ?? 0);
+    if (latest === null || ack > latest) latest = ack;
+  }
+  return latest;
 }
 
 function projectCollaborationStatus(record: CollaborationRecord, agentId: ScoutId): StatusCandidate {
@@ -250,6 +385,7 @@ function projectQuestionStatus(record: QuestionRecord, agentId: ScoutId): Status
     provenance: collaborationProvenance(record, 0.95),
     confidence: 0.95,
     updatedAt: record.updatedAt,
+    stateEnteredAt: record.updatedAt,
     rank: mapped.rank,
   };
 }
@@ -284,6 +420,7 @@ function projectWorkItemStatus(record: WorkItemRecord, agentId: ScoutId): Status
     provenance: collaborationProvenance(record, 0.95),
     confidence: 0.95,
     updatedAt: record.updatedAt,
+    stateEnteredAt: record.updatedAt,
     rank: mapped.rank,
   };
 }
@@ -314,7 +451,12 @@ function flightUpdatedAt(flight: FlightRecord, invocation: InvocationRequest | u
 }
 
 function endpointTimestamp(endpoint: AgentEndpoint): number | null {
-  const value = endpoint.metadata?.lastSeenAt ?? endpoint.metadata?.lastCompletedAt ?? endpoint.metadata?.lastStartedAt;
+  return parseTimestamp(
+    endpoint.metadata?.lastSeenAt ?? endpoint.metadata?.lastCompletedAt ?? endpoint.metadata?.lastStartedAt,
+  );
+}
+
+function parseTimestamp(value: unknown): number | null {
   if (typeof value === "number" && Number.isFinite(value)) return value;
   if (typeof value === "string") {
     const numeric = Number(value);
@@ -356,6 +498,6 @@ function compareCandidates(left: StatusCandidate, right: StatusCandidate): numbe
 }
 
 function stripRank(candidate: StatusCandidate): ObservedStatusProjection {
-  const { rank: _rank, ...status } = candidate;
+  const { rank: _rank, stateEnteredAt: _stateEnteredAt, ...status } = candidate;
   return status;
 }

@@ -29,6 +29,7 @@ import {
   PeerCardVerificationError,
   type MeshPeerFetch,
 } from "./mesh-peer-client.js";
+import { httpMeshUrlsForNode, orderMeshDialUrls } from "./mesh-dial-order.js";
 import type { RuntimeRegistrySnapshot } from "./registry.js";
 
 export interface MeshMessageBundle {
@@ -384,8 +385,11 @@ function isNodeDefinition(target: MeshForwardTarget): target is NodeDefinition {
   return typeof target === "object" && target !== null && "id" in target;
 }
 
-function brokerUrlForTarget(target: MeshForwardTarget): string | undefined {
-  return typeof target === "string" ? target : target.brokerUrl;
+function httpUrlsForTarget(target: MeshForwardTarget): string[] {
+  if (typeof target === "string") {
+    return orderMeshDialUrls([target]);
+  }
+  return httpMeshUrlsForNode(target);
 }
 
 function irohEntrypointForTarget(target: MeshForwardTarget): IrohMeshEntrypoint | undefined {
@@ -416,7 +420,7 @@ async function forwardMeshEnvelope<TResponse>(
   payload: unknown,
   options?: MeshForwardRequestOptions,
 ): Promise<TResponse> {
-  const brokerUrl = brokerUrlForTarget(target);
+  const httpUrls = httpUrlsForTarget(target);
   const irohEntrypoint = irohEntrypointForTarget(target);
 
   if (shouldTryIrohForwarding(irohEntrypoint, options)) {
@@ -441,7 +445,7 @@ async function forwardMeshEnvelope<TResponse>(
         JSON.stringify(response.body),
       );
     } catch (error) {
-      if (!brokerUrl) {
+      if (httpUrls.length === 0) {
         throw new PeerUnreachableError(
           `Iroh peer unreachable and no HTTP broker URL is available: ${error instanceof Error ? error.message : String(error)}`,
           `iroh:${irohEntrypoint.endpointId}/${route}`,
@@ -456,13 +460,33 @@ async function forwardMeshEnvelope<TResponse>(
     }
   }
 
-  if (!brokerUrl) {
+  if (httpUrls.length === 0) {
     throw new PeerUnreachableError(
       `peer broker unreachable: no broker URL or usable Iroh entrypoint for route ${route}`,
       `mesh:${route}`,
     );
   }
-  return postJson(brokerUrl, path, payload, options);
+
+  let lastError: unknown;
+  for (const url of httpUrls) {
+    try {
+      return await postJson(url, path, payload, options);
+    } catch (error) {
+      if (error instanceof PeerCardVerificationError || error instanceof PeerRejectedError) {
+        throw error;
+      }
+      lastError = error;
+    }
+  }
+
+  if (lastError instanceof PeerUnreachableError) {
+    throw lastError;
+  }
+  throw new PeerUnreachableError(
+    `peer broker unreachable: ${lastError instanceof Error ? lastError.message : String(lastError)}`,
+    httpUrls[httpUrls.length - 1] ?? `mesh:${route}`,
+    lastError,
+  );
 }
 
 export async function forwardMeshMessage(

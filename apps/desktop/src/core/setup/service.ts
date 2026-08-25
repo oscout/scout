@@ -8,6 +8,7 @@ import {
   resolveScoutWebNamedHostname,
 } from "@openscout/runtime/local-config";
 import {
+  isScoutRuntimeHarnessListed,
   SCOUT_RUNTIME_CATALOG,
   scoutRuntimeDefaultHarness,
   scoutRuntimeDefaultModel,

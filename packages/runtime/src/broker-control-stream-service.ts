@@ -9,6 +9,7 @@ import type {
   InvocationRequest,
   MessageRecord,
 } from "@openscout/protocol";
+import { isEphemeralControlEvent } from "@openscout/protocol";
 
 export const DEFAULT_INBOX_STATUSES = new Set<DeliveryStatus>([
   "pending",
@@ -23,6 +24,15 @@ export type BrokerControlStreamServiceDeps = {
   listDeliveries: (options: { limit: number }) => Promise<DeliveryIntent[]> | DeliveryIntent[];
   messageById: (messageId: string) => MessageRecord | undefined;
   invocationById: (invocationId: string) => InvocationRequest | undefined;
+  /**
+   * Current value of every ephemeral fact a fresh subscriber needs, replayed on
+   * connect. Not a backlog: one entry per subject, overwritten in place.
+   *
+   * Presence publishes transitions plus bounded freshness refreshes. A client
+   * can still connect between them, so it must receive current state immediately
+   * rather than wait for the next refresh. The tRPC path follows the same rule.
+   */
+  presenceSnapshot?: () => ControlEvent[];
 };
 
 export function parseInboxStatuses(url: URL): Set<DeliveryStatus> | undefined {
@@ -209,6 +219,13 @@ export class BrokerControlStreamService {
       connection: "keep-alive",
     });
     writeSseFrame(options.response, "hello", options.hello);
+    // Current value before live fan-out, in the same frame shape a live event
+    // uses, so a client has exactly one code path for both. Ephemeral by
+    // construction — nothing here was read from disk, and a cold broker replays
+    // nothing because it knows nothing.
+    for (const event of this.deps.presenceSnapshot?.() ?? []) {
+      writeSseFrame(options.response, event.kind, event);
+    }
     this.eventClients.add(options.response);
     options.request.on("close", () => {
       this.eventClients.delete(options.response);
@@ -217,6 +234,14 @@ export class BrokerControlStreamService {
   }
 
   streamEvent(event: ControlEvent): void {
+    if (isEphemeralControlEvent(event)) {
+      // `enqueueEvent` writes a durable row. Ephemeral kinds must never reach
+      // it, and this is the guard rather than a convention every caller has to
+      // remember — presence creating zero durable records is a hard constraint.
+      this.streamEphemeralEvent(event);
+      return;
+    }
+
     this.deps.enqueueEvent(event);
     const payload = `event: ${event.kind}\ndata: ${JSON.stringify(event)}\n\n`;
     for (const client of this.eventClients) {
@@ -235,6 +260,20 @@ export class BrokerControlStreamService {
       const delivery = (event as Extract<ControlEvent, { kind: "delivery.planned" | "delivery.state.changed" }>)
         .payload.delivery;
       this.publishInboxDeliveryEvent(delivery, event.kind === "delivery.planned" ? "inbox.item" : "inbox.item.updated");
+    }
+  }
+
+  /**
+   * Fan an event out to live SSE clients without persisting it.
+   *
+   * The invocation and inbox routers are deliberately skipped: those streams
+   * are scoped to a durable object's lifecycle, and presence belongs to the
+   * agent, not to any one invocation.
+   */
+  streamEphemeralEvent(event: ControlEvent): void {
+    const payload = `event: ${event.kind}\ndata: ${JSON.stringify(event)}\n\n`;
+    for (const client of this.eventClients) {
+      client.write(payload);
     }
   }
 

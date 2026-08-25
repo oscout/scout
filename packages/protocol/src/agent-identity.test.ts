@@ -78,6 +78,13 @@ describe("agent identity grammar", () => {
       harness: "claude",
       model: "sonnet",
     });
+
+    expect(parseAgentIdentity("@lattices#oc")).toEqual({
+      raw: "lattices#oc",
+      label: "@lattices.harness:opencode",
+      definitionId: "lattices",
+      harness: "opencode",
+    });
   });
 
   test("parses 3-segment positional as definitionId.workspaceQualifier.nodeQualifier", () => {
@@ -216,7 +223,7 @@ describe("agent identity resolution", () => {
       definitionId: "hudson",
       workspaceQualifier: "hudson-main-8012ac",
       harness: "codex",
-      nodeQualifier: "arachs-mac-mini-local",
+      nodeQualifier: "scout-mac-mini-local",
       aliases: ["@huddy"],
     },
     {
@@ -225,7 +232,7 @@ describe("agent identity resolution", () => {
       workspaceQualifier: "hudson-main-8012ac",
       profile: "dev-browser",
       harness: "codex",
-      nodeQualifier: "arachs-mac-mini-local",
+      nodeQualifier: "scout-mac-mini-local",
     },
     {
       agentId: "hudson.other-node",
@@ -311,18 +318,18 @@ describe("agent identity resolution", () => {
           definitionId: "hudson",
           workspaceQualifier: "hudson-main-8012ac",
           harness: "codex",
-          nodeQualifier: "arachs-mac-mini-local",
+          nodeQualifier: "scout-mac-mini-local",
         },
       },
     ]);
 
     expect(identity).toEqual({
-      raw: "hudson.hudson-main-8012ac.harness:codex.node:arachs-mac-mini-local",
-      label: "@hudson.hudson-main-8012ac.harness:codex.node:arachs-mac-mini-local",
+      raw: "hudson.hudson-main-8012ac.harness:codex.node:scout-mac-mini-local",
+      label: "@hudson.hudson-main-8012ac.harness:codex.node:scout-mac-mini-local",
       definitionId: "hudson",
       workspaceQualifier: "hudson-main-8012ac",
       harness: "codex",
-      nodeQualifier: "arachs-mac-mini-local",
+      nodeQualifier: "scout-mac-mini-local",
     });
   });
 

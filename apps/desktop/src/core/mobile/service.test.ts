@@ -7,6 +7,7 @@ import {
 
 import {
   getScoutMobileAgents,
+  getScoutMobileRuntimeCapabilities,
   getScoutMobileActivity,
   getScoutMobileConversations,
   getScoutMobileServiceBudgets,
@@ -28,6 +29,12 @@ afterEach(() => {
 test("transitional mobile gauges keep stable empty compatibility shapes", async () => {
   expect(await getScoutMobileServiceBudgets()).toEqual({ budgets: [] });
   expect(await getScoutMobileTerminals()).toEqual({ terminals: [] });
+});
+
+test("mobile runtime capabilities hide the duplicate Grok harness", async () => {
+  const catalog = await getScoutMobileRuntimeCapabilities();
+  expect(catalog.harnesses.map((harness) => harness.id)).not.toContain("grok");
+  expect(catalog.harnesses.map((harness) => harness.id)).toContain("grok-acp");
 });
 
 describe("getScoutMobileSessionSnapshot", () => {

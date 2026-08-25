@@ -1,6 +1,6 @@
 {
   "name": "openscout",
-  "version": "0.2.84",
+  "version": "0.2.88",
   "description": "Your personal agent cloud: a local control plane and mesh network for coding agents",
   "private": true,
   "packageManager": "bun@1.3.13",
@@ -38,7 +38,7 @@
     "docs:generate": "dewey generate",
     "sync-exec:fence": "bun scripts/check-sync-exec-fence.ts",
     "test": "bun run test:unit",
-    "test:unit": "bun run --cwd packages/protocol test && bun run --cwd packages/agent-sessions test && bun test ./packages/runtime/src --path-ignore-patterns='**/*live.test.ts' --path-ignore-patterns='**/scenario-suite.test.ts' && bun run --cwd apps/desktop test && bun run --cwd packages/web test && bun run --cwd packages/session-trace test && bun run --cwd packages/session-trace-react test",
+    "test:unit": "bun run --cwd packages/protocol test && bun run --cwd packages/agent-sessions test && bun test ./packages/runtime/src --path-ignore-patterns='**/*live.test.ts' --path-ignore-patterns='**/scenario-suite.test.ts' && bun run --cwd apps/desktop test && bun run --cwd packages/web test && bun run --cwd packages/session-trace test && bun run --cwd packages/session-trace-react test && node --test scripts/ship-release.test.mjs",
     "test:happy": "cd apps/desktop && bun run test:happy && cd ../../packages/cli && bun run test:happy",
     "test:scenarios": "bun run --cwd packages/runtime test:scenarios",
     "test:e2e": "bun run check && bun run test:scenarios && bun run test:e2e:agents",

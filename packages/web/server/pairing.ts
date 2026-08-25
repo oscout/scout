@@ -18,6 +18,12 @@ import {
   type SessionSummary,
 } from "@openscout/agent-sessions";
 import { findNearestProjectRoot } from "@openscout/runtime/setup";
+import {
+  readLiveScoutPairingRuntimeOwner,
+  resolveScoutPairingSupervisorPaths,
+  signalScoutPairingRuntimeOwner,
+  type ScoutPairingRuntimeOwner,
+} from "@openscout/runtime/pairing-supervisor";
 import { loadLocalConfig } from "@openscout/runtime/local-config";
 import { resolveBunExecutable as resolveResolvedBunExecutable } from "@openscout/runtime/tool-resolution";
 
@@ -894,10 +900,11 @@ async function ensureDefaultScoutPairingWorkspaceConfig(currentDirectory?: strin
   });
 }
 
-async function waitForScoutPairingProcessExit(pid: number): Promise<void> {
+async function waitForScoutPairingProcessExit(owner: ScoutPairingRuntimeOwner): Promise<void> {
+  const ownerPath = resolveScoutPairingSupervisorPaths().runtimeOwnerPath;
   const startedAt = Date.now();
   while (Date.now() - startedAt < SCOUT_PAIRING_PROCESS_EXIT_TIMEOUT_MS) {
-    if (!isScoutPairingProcessRunning(pid)) {
+    if (!readLiveScoutPairingRuntimeOwner(ownerPath, { expectedToken: owner.token })) {
       return;
     }
     await sleep(SCOUT_PAIRING_PROCESS_EXIT_POLL_MS);
@@ -927,10 +934,13 @@ async function startScoutPairingRuntime(): Promise<void> {
 }
 
 async function stopScoutPairingRuntime(): Promise<void> {
+  const supervisorPaths = resolveScoutPairingSupervisorPaths();
   const pid = readScoutPairingRuntimePid();
-  if (pid && isScoutPairingProcessRunning(pid)) {
-    process.kill(pid, "SIGTERM");
-    await waitForScoutPairingProcessExit(pid);
+  const owner = readLiveScoutPairingRuntimeOwner(supervisorPaths.runtimeOwnerPath);
+  if (pid && owner?.pid === pid && signalScoutPairingRuntimeOwner(owner, "SIGTERM", {
+    ownerPath: supervisorPaths.runtimeOwnerPath,
+  })) {
+    await waitForScoutPairingProcessExit(owner);
   }
 }
 

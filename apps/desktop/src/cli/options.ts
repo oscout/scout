@@ -3,9 +3,9 @@ import { resolve } from "node:path";
 import {
   epochMs,
   normalizeAgentSelectorSegment,
+  normalizeScoutLaunchableHarness,
   normalizeReservedRuntimeProfileId,
   normalizeRuntimeProfileReasoningEffort,
-  isScoutLaunchableHarness,
   parseScoutRuntimeSpec,
   parseScoutComposerRoute,
   parseScoutComposerRouteTarget,
@@ -284,7 +284,8 @@ function parseNaturalLanguageAskTarget(
   const leadingToken = trimmed.match(/^(\S+)(?:\s+|$)([\s\S]*)$/u);
   const runtimeToken = leadingToken?.[1] ?? "";
   const runtimeCandidate = runtimeToken.includes("/")
-    || (isScoutLaunchableHarness(runtimeToken) && !normalizeReservedRuntimeProfileId(runtimeToken))
+    || (normalizeScoutLaunchableHarness(runtimeToken) !== null
+      && !normalizeReservedRuntimeProfileId(runtimeToken))
     ? parseScoutRuntimeSpec(runtimeToken)
     : null;
   if (runtimeCandidate?.ok) {
@@ -399,7 +400,7 @@ function rejectUnsupportedRuntimeProfileEffort(
   profile: string,
   reasoningEffort: string | undefined,
 ): void {
-  if (reasoningEffort && (profile === "grok" || profile === "kimi")) {
+  if (reasoningEffort && (profile === "grok" || profile === "kimi" || profile === "oc" || profile === "opencode")) {
     throw new ScoutCliError(
       `reasoning_effort_harness_mismatch: ${profile} runtime profile does not support reasoning effort through its ACP transport`,
     );
@@ -583,7 +584,7 @@ export function parseSetupCommandOptions(
     }
     if (current === "--default-harness" || current.startsWith("--default-harness=")) {
       const value = parseFlagValue(parsed.args, index, "--default-harness");
-      if (!["claude", "codex", "cursor", "grok", "pi"].includes(value.value)) {
+      if (!["claude", "codex", "cursor", "grok", "pi", "opencode"].includes(value.value)) {
         throw new ScoutCliError(`invalid default harness: ${value.value}`);
       }
       defaultHarness = value.value;

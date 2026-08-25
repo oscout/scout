@@ -49,31 +49,51 @@ describe("node identity", () => {
     expect(nodeFingerprint(other.publicKey)).not.toBe(fingerprint);
   });
 
+  test("keeps legitimate numeric hostnames as distinct key-backed identities", () => {
+    const pi4 = tempSupportDirectory();
+    const pi5 = tempSupportDirectory();
+
+    expect(loadOrCreateStableNodeQualifier("pi-4.local", pi4)).toBe("pi-4-local");
+    expect(loadOrCreateStableNodeQualifier("pi-5.local", pi5)).toBe("pi-5-local");
+    expect(resolveStableLocalNodeId({
+      nodeName: "pi-4.local",
+      meshId: "openscout",
+      supportDirectory: pi4,
+    })).toBe("pi-4-local-openscout");
+    expect(resolveStableLocalNodeId({
+      nodeName: "pi-5.local",
+      meshId: "openscout",
+      supportDirectory: pi5,
+    })).toBe("pi-5-local-openscout");
+    expect(loadOrCreateNodeIdentity(pi4).publicKey)
+      .not.toBe(loadOrCreateNodeIdentity(pi5).publicKey);
+  });
+
   test("persists routing authority across hostname collision suffix drift", () => {
     const dir = tempSupportDirectory();
 
-    expect(loadOrCreateStableNodeQualifier("Dev-Mac-mini-372.local", dir))
-      .toBe("dev-mac-mini-372-local");
-    expect(loadOrCreateStableNodeQualifier("Dev-Mac-mini-419.local", dir))
-      .toBe("dev-mac-mini-372-local");
-    expect(readStableNodeQualifier(dir)).toBe("dev-mac-mini-372-local");
+    expect(loadOrCreateStableNodeQualifier("Test-Workstation-372.local", dir))
+      .toBe("test-workstation-372-local");
+    expect(loadOrCreateStableNodeQualifier("Test-Workstation-419.local", dir))
+      .toBe("test-workstation-372-local");
+    expect(readStableNodeQualifier(dir)).toBe("test-workstation-372-local");
 
     expect(resolveStableLocalNodeId({
-      nodeName: "Dev-Mac-mini-476.local",
+      nodeName: "Test-Workstation-476.local",
       meshId: "openscout",
       supportDirectory: dir,
-    })).toBe("dev-mac-mini-372-local-openscout");
+    })).toBe("test-workstation-372-local-openscout");
   });
 
   test("an explicit node id still overrides persisted default authority", () => {
     const dir = tempSupportDirectory();
     expect(resolveStableLocalNodeId({
       configuredNodeId: "operator-pinned-node",
-      nodeName: "Dev-Mac-mini-476.local",
+      nodeName: "Test-Workstation-476.local",
       meshId: "openscout",
       supportDirectory: dir,
     })).toBe("operator-pinned-node");
-    expect(readStableNodeQualifier(dir)).toBe("dev-mac-mini-476-local");
+    expect(readStableNodeQualifier(dir)).toBe("test-workstation-476-local");
   });
 
   test("signs and verifies payloads; rejects wrong keys and tampering", () => {
@@ -95,8 +115,8 @@ describe("node identity", () => {
   test("signed node cards verify and detect tampering", () => {
     const identity = loadOrCreateNodeIdentity(tempSupportDirectory());
     const card = buildSignedNodeCard(identity, {
-      nodeId: "dev-mac-mini-local-openscout",
-      label: "Development Mac Mini",
+      nodeId: "test-workstation-local-openscout",
+      label: "Test Workstation",
       version: "0.9.0",
       capabilities: ["control", "observe"],
       endpoints: ["http://192.168.18.9:43110"],

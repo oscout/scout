@@ -14,6 +14,8 @@ export const SCOUT_RESERVED_RUNTIME_PROFILE_IDS = [
   "kimi",
   "grok",
   "opus",
+  "oc",
+  "opencode",
 ] as const;
 
 export type ScoutReservedRuntimeProfileId =

@@ -128,11 +128,15 @@ describe("local web hostnames", () => {
   });
 
   test("normalizes hostnames into DNS labels", () => {
-    expect(normalizeLocalHostnameLabel("Developer's MacBook Pro.local")).toBe("developer-s-macbook-pro");
+    expect(normalizeLocalHostnameLabel("Developer's Workstation.local")).toBe("developer-s-workstation");
     expect(normalizeLocalHostnameLabel("mini.office.example")).toBe("mini");
     expect(normalizeLocalHostnameLabel("")).toBe("localhost");
     expect(normalizeLocalHostname("Scout M1.local")).toBe("scout-m1.local");
     expect(normalizeLocalHostname("Scout.M1.local")).toBe("scout.m1.local");
+    expect(normalizeLocalHostnameLabel("pi-4.local")).toBe("pi-4");
+    expect(normalizeLocalHostnameLabel("pi-5.local")).toBe("pi-5");
+    expect(normalizeLocalHostname("pi-4.local")).toBe("pi-4.local");
+    expect(normalizeLocalHostname("pi-5.local")).toBe("pi-5.local");
   });
 
 });

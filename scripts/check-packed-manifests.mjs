@@ -66,6 +66,10 @@ const REQUIRED_PACKED_FILES = {
   "@openscout/scout": ["package/bin/scoutd"],
 };
 
+const FORBIDDEN_PACKED_PREFIXES = {
+  "@openscout/scout": ["package/dist/client/crew/"],
+};
+
 function listTarballEntries(tarballPath, packageDir) {
   return execFileSync("tar", ["-tzf", tarballPath], {
     cwd: packageDir,
@@ -74,6 +78,33 @@ function listTarballEntries(tarballPath, packageDir) {
     .split("\n")
     .map((line) => line.trim())
     .filter(Boolean);
+}
+
+function auditTarball(tarballPath, packageDir = repoRoot) {
+  const packedManifestText = execFileSync(
+    "tar",
+    ["-xOf", tarballPath, "package/package.json"],
+    {
+      cwd: packageDir,
+      encoding: "utf8",
+    },
+  );
+  const pkg = JSON.parse(packedManifestText);
+  const entries = listTarballEntries(tarballPath, packageDir);
+  const missingFiles = (REQUIRED_PACKED_FILES[pkg.name] ?? []).filter(
+    (required) => !entries.includes(required),
+  );
+  const forbiddenFiles = entries.filter((entry) =>
+    (FORBIDDEN_PACKED_PREFIXES[pkg.name] ?? []).some((prefix) => entry.startsWith(prefix)),
+  );
+
+  return {
+    name: pkg.name,
+    leaks: findWorkspaceLeaks(pkg),
+    missingFiles,
+    forbiddenFiles,
+    tarballPath,
+  };
 }
 
 async function inspectPackedManifest(packageDir, tempDir) {
@@ -91,56 +122,54 @@ async function inspectPackedManifest(packageDir, tempDir) {
     stdio: "inherit",
   });
 
-  const packedManifestText = execFileSync(
-    "tar",
-    ["-xOf", tarballPath, "package/package.json"],
-    {
-      cwd: packageDir,
-      encoding: "utf8",
-    },
-  );
+  return auditTarball(tarballPath, packageDir);
+}
 
-  const entries = listTarballEntries(tarballPath, packageDir);
-  const missingFiles = (REQUIRED_PACKED_FILES[pkg.name] ?? []).filter(
-    (required) => !entries.includes(required),
+function reportFailures(results) {
+  const failures = results.filter((result) =>
+    result.leaks.length > 0
+    || result.missingFiles.length > 0
+    || result.forbiddenFiles.length > 0
   );
-
-  return {
-    name: pkg.name,
-    leaks: findWorkspaceLeaks(JSON.parse(packedManifestText)),
-    missingFiles,
-    tarballPath,
-  };
+  for (const failure of failures) {
+    if (failure.leaks.length > 0) {
+      console.error(`${failure.name} packed with workspace dependencies:`);
+      for (const leak of failure.leaks) console.error(`  - ${leak}`);
+    }
+    if (failure.missingFiles.length > 0) {
+      console.error(`${failure.name} is missing required packed files:`);
+      for (const missing of failure.missingFiles) console.error(`  - ${missing}`);
+    }
+    if (failure.forbiddenFiles.length > 0) {
+      console.error(`${failure.name} contains private product assets:`);
+      for (const forbidden of failure.forbiddenFiles) console.error(`  - ${forbidden}`);
+    }
+  }
+  return failures.length;
 }
 
 async function main() {
+  if (process.argv[2] === "--tarball") {
+    const tarballs = process.argv.slice(3).map((value) => path.resolve(value));
+    if (tarballs.length === 0) {
+      throw new Error("--tarball requires at least one exact candidate path");
+    }
+    process.exitCode = reportFailures(tarballs.map((tarball) => auditTarball(tarball))) > 0
+      ? 1
+      : 0;
+    return;
+  }
+
   const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "openscout-pack-check-"));
 
   try {
-    const failures = [];
+    const results = [];
 
     for (const packageDir of findWorkspaceDirs()) {
-      const result = await inspectPackedManifest(packageDir, tempDir);
-      if (result.leaks.length > 0 || result.missingFiles.length > 0) {
-        failures.push(result);
-      }
+      results.push(await inspectPackedManifest(packageDir, tempDir));
     }
 
-    if (failures.length > 0) {
-      for (const failure of failures) {
-        if (failure.leaks.length > 0) {
-          console.error(`${failure.name} packed with workspace dependencies:`);
-          for (const leak of failure.leaks) {
-            console.error(`  - ${leak}`);
-          }
-        }
-        if (failure.missingFiles.length > 0) {
-          console.error(`${failure.name} is missing required packed files:`);
-          for (const missing of failure.missingFiles) {
-            console.error(`  - ${missing}`);
-          }
-        }
-      }
+    if (reportFailures(results) > 0) {
       process.exitCode = 1;
       return;
     }

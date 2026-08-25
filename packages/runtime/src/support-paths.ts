@@ -28,17 +28,30 @@ export type OpenScoutSupportPaths = {
 const OPENSCOUT_RPC_CUTOVER_MARKER = "rpc-runtime-cutover-v1";
 
 /**
+ * True when this process is a test run. NODE_ENV=test is the primary signal,
+ * but bun test does not override a preset NODE_ENV (a dev shell exporting
+ * NODE_ENV=development silently disarmed the old check), so also recognize
+ * the runner by its entrypoint: under bun test the main module is always a
+ * test file.
+ */
+function isTestRunnerProcess(): boolean {
+  if (process.env.NODE_ENV === "test") return true;
+  const entry = typeof Bun !== "undefined" ? Bun.main : process.argv[1] ?? "";
+  return /[._](test|spec)\.[cm]?[jt]sx?$/.test(entry);
+}
+
+/**
  * Tests must never touch real user data. Every writer of OpenScout user state
- * calls this first: under a test runner (bun test sets NODE_ENV=test) the
- * write is refused unless the isolation env var redirects it to a temp
- * directory. This exists because an unisolated test once persisted its fake
- * temp-home workspaceRoots into the operator's real settings.json.
+ * calls this first: under a test runner the write is refused unless the
+ * isolation env var redirects it to a temp directory. This exists because an
+ * unisolated test once persisted its fake temp-home workspaceRoots into the
+ * operator's real settings.json.
  */
 export function assertTestIsolatedUserData(operation: string, isolationEnvKey: string): void {
-  if (process.env.NODE_ENV !== "test") return;
+  if (!isTestRunnerProcess()) return;
   if (process.env[isolationEnvKey]?.trim()) return;
   throw new Error(
-    `Refusing to ${operation} while NODE_ENV=test without ${isolationEnvKey} set. `
+    `Refusing to ${operation} under a test runner without ${isolationEnvKey} set. `
       + "Tests must isolate OpenScout user data in a temp directory (see prepareHome in onboarding.test.ts).",
   );
 }

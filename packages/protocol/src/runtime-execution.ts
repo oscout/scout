@@ -352,8 +352,9 @@ export function parseScoutRuntimeSpec(input: string): ScoutRuntimeSpecParseResul
       error: "runtime must be <harness>[/<model>[/<effort>]]",
     };
   }
-  const harness = parts[0]!.trim().toLowerCase();
-  if (!isScoutLaunchableHarness(harness)) {
+  const rawHarness = parts[0]!.trim().toLowerCase();
+  const harness = normalizeScoutLaunchableHarness(rawHarness);
+  if (!harness) {
     return {
       ok: false,
       error: `unsupported runtime harness "${parts[0]}"; expected one of: ${SCOUT_LAUNCHABLE_HARNESSES.join(", ")}`,
@@ -402,9 +403,19 @@ export type ScoutRuntimeTupleIssue = {
   message: string;
 };
 
+export function normalizeScoutLaunchableHarness(
+  value: string | null | undefined,
+): ScoutLaunchableHarness | null {
+  if (!value) return null;
+  const normalized = value.trim().toLowerCase();
+  if (normalized === "oc") return "opencode";
+  return isScoutLaunchableHarness(normalized) ? normalized : null;
+}
+
 export function isScoutLaunchableHarness(value: string | null | undefined): value is ScoutLaunchableHarness {
-  return Boolean(value)
-    && SCOUT_LAUNCHABLE_HARNESSES.includes(value!.trim().toLowerCase() as ScoutLaunchableHarness);
+  if (!value) return false;
+  const normalized = value.trim().toLowerCase();
+  return SCOUT_LAUNCHABLE_HARNESSES.includes(normalized as ScoutLaunchableHarness);
 }
 
 export function normalizeScoutReasoningEffort(
@@ -472,7 +483,8 @@ export function validateScoutRuntimeTuple(
   input: ScoutRuntimeTuple,
   catalog?: Pick<ScoutRuntimeCapabilityCatalog, "models" | "efforts">,
 ): ScoutRuntimeTupleIssue[] {
-  const harness = input.harness?.trim().toLowerCase();
+  const rawHarness = input.harness?.trim().toLowerCase();
+  const harness = rawHarness === "oc" ? "opencode" : rawHarness;
   const model = input.model?.trim();
   const effortRaw = input.reasoningEffort?.trim();
   const issues: ScoutRuntimeTupleIssue[] = [];
@@ -523,7 +535,8 @@ export function validateScoutRuntimeTuple(
   const modelSelectableHarness = harness === "claude"
     || harness === "codex"
     || harness === "grok"
-    || harness === "grok-acp";
+    || harness === "grok-acp"
+    || harness === "opencode";
   if (model && harness && !modelSelectableHarness) {
     issues.push({
       code: "unsupported_model_dimension",

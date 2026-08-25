@@ -477,7 +477,7 @@ function titleCaseLocalAgentName(value: string): string {
     .join(" ");
 }
 
-export const SUPPORTED_LOCAL_AGENT_HARNESSES: AgentHarness[] = ["claude", "codex", "grok", "grok-acp", "kimi", "pi", "cursor"];
+export const SUPPORTED_LOCAL_AGENT_HARNESSES: AgentHarness[] = ["claude", "codex", "grok", "grok-acp", "kimi", "pi", "cursor", "opencode"];
 export const SUPPORTED_SCOUT_HARNESSES: AgentHarness[] = [...SCOUT_LAUNCHABLE_HARNESSES];
 
 type LocalAgentSystemPromptTemplateContext = {

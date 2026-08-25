@@ -18,6 +18,7 @@ import type { ControlEvent } from "@openscout/protocol";
 import { z } from "zod";
 
 import {
+  snapshotPresenceControlEvents,
   snapshotRecentControlEvents,
   subscribeControlEvents,
 } from "./broker-control-events.js";
@@ -296,21 +297,50 @@ const controlRouter = t.router({
       const kinds = input?.kinds;
       const filter = kinds && kinds.length > 0 ? new Set(kinds) : null;
 
-      const backlog = snapshotRecentControlEvents(CONTROL_BACKLOG_LIMIT);
-      let startIdx = 0;
-      if (input?.since) {
-        const idx = backlog.findIndex((event: ControlEvent) => event.id === input.since);
-        if (idx >= 0) startIdx = idx + 1;
-      }
-      for (let i = startIdx; i < backlog.length; i++) {
-        const event = backlog[i];
-        if (!event) continue;
-        if (filter && !filter.has(event.kind)) continue;
-        yield tracked(event.id, event);
-      }
+      // Install the live listener before reading either snapshot. Yielding from
+      // an async generator hands control back to the caller, so subscribing only
+      // in the final `for await` left a real transition-loss window between the
+      // presence snapshot and live mode. Events arriving during replay are now
+      // buffered and drained after the snapshots.
+      const liveIterator = controlEventIterable(kinds, signal)[Symbol.asyncIterator]();
+      const replayedIds = new Set<string>();
 
-      for await (const event of controlEventIterable(kinds, signal)) {
-        yield tracked(event.id, event);
+      try {
+        const backlog = snapshotRecentControlEvents(CONTROL_BACKLOG_LIMIT);
+        let startIdx = 0;
+        if (input?.since) {
+          const idx = backlog.findIndex((event: ControlEvent) => event.id === input.since);
+          if (idx >= 0) startIdx = idx + 1;
+        }
+        for (let i = startIdx; i < backlog.length; i++) {
+          const event = backlog[i];
+          if (!event) continue;
+          if (filter && !filter.has(event.kind)) continue;
+          replayedIds.add(event.id);
+          yield tracked(event.id, event);
+        }
+
+        // Presence is snapshot, not replayed: the latest-per-agent map is the
+        // whole state a new subscriber needs, and it is sent regardless of
+        // `since` because a resumed stream still missed every transition while
+        // it was disconnected. Sent after the backlog so current presence wins.
+        for (const event of snapshotPresenceControlEvents()) {
+          if (filter && !filter.has(event.kind)) continue;
+          replayedIds.add(event.id);
+          yield tracked(event.id, event);
+        }
+
+        while (true) {
+          const next = await liveIterator.next();
+          if (next.done) return;
+          // A durable event published after listener installation but before
+          // the backlog read can appear in both sources. Suppress that one
+          // buffered duplicate while retaining the no-loss handoff.
+          if (replayedIds.delete(next.value.id)) continue;
+          yield tracked(next.value.id, next.value);
+        }
+      } finally {
+        await liveIterator.return?.();
       }
     }),
 });

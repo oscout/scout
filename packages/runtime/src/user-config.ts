@@ -1,7 +1,7 @@
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import { resolveOpenScoutSupportPaths } from "./support-paths.js";
+import { assertTestIsolatedUserData, resolveOpenScoutSupportPaths } from "./support-paths.js";
 
 export type InterruptThreshold = "always" | "blocking-only" | "batched" | "never";
 
@@ -63,6 +63,7 @@ export function loadUserConfig(): OpenScoutUserConfig {
 }
 
 export function saveUserConfig(config: OpenScoutUserConfig): void {
+  assertTestIsolatedUserData("write the OpenScout user config", "OPENSCOUT_HOME");
   const configPath = userConfigPath();
   mkdirSync(dirname(configPath), { recursive: true });
   writeFileSync(configPath, JSON.stringify(config, null, 2) + "\n", "utf8");

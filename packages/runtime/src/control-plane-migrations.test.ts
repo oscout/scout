@@ -221,6 +221,48 @@ describe("control-plane managed migrations", () => {
     expect(ledgerRows(db)).toEqual(fullChainLedger);
   });
 
+  test("imperative migrations preserve numeric hostnames backed by distinct trusted keys", () => {
+    const db = new Database(":memory:");
+    db.exec(CONTROL_PLANE_SQLITE_SCHEMA);
+    const fixtures = [
+      { nodeId: "pi-4-local-openscout", hostName: "pi-4.local", keyId: "a".repeat(64) },
+      { nodeId: "pi-5-local-openscout", hostName: "pi-5.local", keyId: "b".repeat(64) },
+    ];
+    for (const fixture of fixtures) {
+      db.query(
+        `INSERT INTO nodes (
+           id, mesh_id, name, host_name, advertise_scope, registered_at
+         ) VALUES (?1, 'openscout', ?2, ?2, 'mesh', 1)`,
+      ).run(fixture.nodeId, fixture.hostName);
+      db.query(
+        `INSERT INTO trusted_peers (
+           key_id, public_key, fingerprint, node_id, label, tier, granted_via, granted_at
+         ) VALUES (?1, ?2, ?3, ?4, ?5, 'control', 'mesh-trust', 1)`,
+      ).run(
+        fixture.keyId,
+        `test-public-key-${fixture.hostName}`,
+        fixture.hostName === "pi-4.local" ? "osc1:aaaa-aaaa" : "osc1:bbbb-bbbb",
+        fixture.nodeId,
+        fixture.hostName,
+      );
+    }
+
+    applyControlPlaneSchemaMigrations(db);
+
+    expect(
+      db.query("SELECT id FROM nodes ORDER BY id").all(),
+    ).toEqual([
+      { id: "pi-4-local-openscout" },
+      { id: "pi-5-local-openscout" },
+    ]);
+    expect(
+      db.query("SELECT key_id, node_id FROM trusted_peers ORDER BY key_id").all(),
+    ).toEqual([
+      { key_id: "a".repeat(64), node_id: "pi-4-local-openscout" },
+      { key_id: "b".repeat(64), node_id: "pi-5-local-openscout" },
+    ]);
+  });
+
   test("partially created database (interrupted first boot) seeds and repairs", () => {
     const db = new Database(":memory:");
     // Only the baseline's first table exists — the seed condition must treat

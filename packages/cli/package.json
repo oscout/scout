@@ -1,6 +1,6 @@
 {
   "name": "@openscout/scout",
-  "version": "0.2.84",
+  "version": "0.2.88",
   "description": "Scout CLI and bundled local control plane for coordinating coding agents",
   "license": "Apache-2.0",
   "type": "module",

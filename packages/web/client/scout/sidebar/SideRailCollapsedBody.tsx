@@ -99,7 +99,9 @@ function HomeCollapsedStrip() {
     if (
       event.kind === "message.posted"
       || event.kind === "flight.updated"
-      || event.kind === "agent.updated"
+      // Agent state changes surface as presence updates; there is no
+      // "agent.updated" control event.
+      || event.kind === "presence.updated"
     ) {
       void load();
     }

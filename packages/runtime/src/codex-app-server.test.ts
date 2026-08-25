@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { chmodSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 
@@ -116,6 +116,71 @@ for await (const line of rl) {
 `, "utf8");
   chmodSync(executablePath, 0o755);
   return executablePath;
+}
+
+function writeMissingRolloutFakeCodexExecutable(baseDirectory: string): {
+  executablePath: string;
+  methodsPath: string;
+  rolloutPath: string;
+  startedThreadId: string;
+} {
+  const executablePath = join(baseDirectory, "fake-codex-missing-rollout");
+  const methodsPath = join(baseDirectory, "methods.log");
+  const rolloutPath = join(baseDirectory, "replacement-thread.jsonl");
+  const startedThreadId = "replacement-thread";
+  writeFileSync(executablePath, `#!/usr/bin/env bun
+import readline from "node:readline";
+import { appendFileSync, writeFileSync } from "node:fs";
+
+const methodsPath = ${JSON.stringify(methodsPath)};
+const rolloutPath = ${JSON.stringify(rolloutPath)};
+const startedThreadId = ${JSON.stringify(startedThreadId)};
+const rl = readline.createInterface({
+  input: process.stdin,
+  crlfDelay: Infinity,
+});
+
+for await (const line of rl) {
+  const trimmed = line.trim();
+  if (!trimmed) continue;
+  const message = JSON.parse(trimmed);
+  const id = message.id;
+  const method = message.method;
+  const params = message.params ?? {};
+  appendFileSync(methodsPath, \`\${method}\\n\`, "utf8");
+
+  if (method === "initialize") {
+    console.log(JSON.stringify({ id, result: {} }));
+    continue;
+  }
+
+  if (method === "thread/resume") {
+    const threadId = String(params.threadId ?? "thread-unknown");
+    console.log(JSON.stringify({ id, error: { message: \`no rollout found for thread id \${threadId}\` } }));
+    continue;
+  }
+
+  if (method === "thread/start") {
+    const thread = { id: startedThreadId, path: rolloutPath, cwd: params.cwd ?? null };
+    console.log(JSON.stringify({ id, result: { thread } }));
+    console.log(JSON.stringify({ method: "thread/started", params: { thread } }));
+    continue;
+  }
+
+  if (method === "turn/start") {
+    writeFileSync(rolloutPath, "{}\\n", "utf8");
+    const threadId = String(params.threadId ?? startedThreadId);
+    const turn = { id: "turn-replacement", status: "inProgress", items: [] };
+    console.log(JSON.stringify({ id, result: { turn } }));
+    console.log(JSON.stringify({ method: "turn/started", params: { threadId, turn } }));
+    continue;
+  }
+
+  console.log(JSON.stringify({ id, result: {} }));
+}
+`, "utf8");
+  chmodSync(executablePath, 0o755);
+  return { executablePath, methodsPath, rolloutPath, startedThreadId };
 }
 
 function writeArgCaptureFakeCodexExecutable(baseDirectory: string): {
@@ -1246,6 +1311,219 @@ describe("ensureCodexAppServerAgentOnline", () => {
 
     const stderr = readFileSync(join(logsDirectory, "stderr.log"), "utf8");
     expect(stderr).toContain(`Codex app-server cwd does not exist for codex-missing-cwd: ${missingCwd}`);
+  });
+
+  test("replaces a missing stored rollout without caching the new thread before its rollout exists", async () => {
+    const tempRoot = mkdtempSync(join(tmpdir(), "openscout-codex-rollout-recovery-test-"));
+    tempPaths.add(tempRoot);
+    const runtimeDirectory = join(tempRoot, "runtime");
+    const logsDirectory = join(tempRoot, "logs");
+    const threadIdPath = join(runtimeDirectory, "codex-thread-id.txt");
+    const sessionCatalogPath = join(runtimeDirectory, "session-catalog.json");
+    const fixture = writeMissingRolloutFakeCodexExecutable(tempRoot);
+    process.env.OPENSCOUT_CODEX_BIN = fixture.executablePath;
+    mkdirSync(runtimeDirectory, { recursive: true });
+    writeFileSync(threadIdPath, "missing-stored-thread\n", "utf8");
+    writeFileSync(sessionCatalogPath, JSON.stringify({
+      activeSessionId: "missing-stored-thread",
+      sessions: [{
+        id: "missing-stored-thread",
+        startedAt: 1,
+        cwd: process.cwd(),
+        harness: "codex",
+        transport: "codex_app_server",
+        model: null,
+        approvalPolicy: "never",
+        sandbox: "danger-full-access",
+      }],
+    }, null, 2));
+
+    const options = {
+      agentName: "codex-rollout-recovery",
+      sessionId: "codex-rollout-recovery",
+      cwd: process.cwd(),
+      systemPrompt: "Start a replacement session.",
+      runtimeDirectory,
+      logsDirectory,
+      launchArgs: [],
+    } as const;
+
+    try {
+      const online = await ensureCodexAppServerAgentOnline(options);
+      expect(online.threadId).toBe(fixture.startedThreadId);
+      expect(readFileSync(fixture.methodsPath, "utf8")).toContain("thread/resume\nthread/start\n");
+      expect(existsSync(threadIdPath)).toBe(false);
+      const recoveredCatalog = JSON.parse(readFileSync(sessionCatalogPath, "utf8")) as {
+        activeSessionId?: string | null;
+        sessions?: Array<{ id?: string; endedAt?: number }>;
+      };
+      expect(recoveredCatalog.activeSessionId).toBeNull();
+      expect(recoveredCatalog.sessions?.[0]).toEqual(expect.objectContaining({
+        id: "missing-stored-thread",
+        endedAt: expect.any(Number),
+      }));
+
+      const pendingState = JSON.parse(readFileSync(join(runtimeDirectory, "state.json"), "utf8")) as {
+        threadId?: string | null;
+        threadPath?: string | null;
+      };
+      expect(pendingState.threadId).toBeNull();
+      expect(pendingState.threadPath).toBeNull();
+
+      const turn = await startCodexAppServerAgent({
+        ...options,
+        prompt: "Create the rollout.",
+      });
+      expect(turn.threadId).toBe(fixture.startedThreadId);
+      expect(readFileSync(threadIdPath, "utf8").trim()).toBe(fixture.startedThreadId);
+
+      const durableState = JSON.parse(readFileSync(join(runtimeDirectory, "state.json"), "utf8")) as {
+        threadId?: string | null;
+        threadPath?: string | null;
+      };
+      expect(durableState.threadId).toBe(fixture.startedThreadId);
+      expect(durableState.threadPath).toBe(fixture.rolloutPath);
+
+      const catalog = JSON.parse(readFileSync(sessionCatalogPath, "utf8")) as {
+        activeSessionId?: string | null;
+      };
+      expect(catalog.activeSessionId).toBe(fixture.startedThreadId);
+    } finally {
+      await shutdownCodexAppServerAgent(options, { resetThread: true });
+    }
+  });
+
+  test("preserves an unrelated active catalog when a stale stored rollout is missing", async () => {
+    const tempRoot = mkdtempSync(join(tmpdir(), "openscout-codex-unrelated-catalog-test-"));
+    tempPaths.add(tempRoot);
+    const runtimeDirectory = join(tempRoot, "runtime");
+    const logsDirectory = join(tempRoot, "logs");
+    const threadIdPath = join(runtimeDirectory, "codex-thread-id.txt");
+    const sessionCatalogPath = join(runtimeDirectory, "session-catalog.json");
+    const fixture = writeMissingRolloutFakeCodexExecutable(tempRoot);
+    process.env.OPENSCOUT_CODEX_BIN = fixture.executablePath;
+    mkdirSync(runtimeDirectory, { recursive: true });
+    writeFileSync(threadIdPath, "missing-stored-thread\n", "utf8");
+    writeFileSync(sessionCatalogPath, JSON.stringify({
+      activeSessionId: "unrelated-active-thread",
+      sessions: [{
+        id: "unrelated-active-thread",
+        startedAt: 1,
+        cwd: process.cwd(),
+        harness: "codex",
+        transport: "codex_app_server",
+        model: null,
+        approvalPolicy: "never",
+        sandbox: "danger-full-access",
+      }],
+    }, null, 2));
+
+    const options = {
+      agentName: "codex-unrelated-catalog",
+      sessionId: "codex-unrelated-catalog",
+      cwd: process.cwd(),
+      systemPrompt: "Start a replacement session.",
+      runtimeDirectory,
+      logsDirectory,
+      launchArgs: [],
+    } as const;
+
+    try {
+      await ensureCodexAppServerAgentOnline(options);
+      const catalog = JSON.parse(readFileSync(sessionCatalogPath, "utf8")) as {
+        activeSessionId?: string | null;
+        sessions?: Array<{ id?: string; endedAt?: number }>;
+      };
+      expect(catalog.activeSessionId).toBe("unrelated-active-thread");
+      expect(catalog.sessions?.[0]).toEqual({
+        id: "unrelated-active-thread",
+        startedAt: 1,
+        cwd: process.cwd(),
+        harness: "codex",
+        transport: "codex_app_server",
+        model: null,
+        approvalPolicy: "never",
+        sandbox: "danger-full-access",
+      });
+    } finally {
+      await shutdownCodexAppServerAgent(options, { resetThread: true });
+    }
+    const catalogAfterReset = JSON.parse(readFileSync(sessionCatalogPath, "utf8")) as {
+      activeSessionId?: string | null;
+      sessions?: Array<{ id?: string; endedAt?: number }>;
+    };
+    expect(catalogAfterReset.activeSessionId).toBe("unrelated-active-thread");
+    expect(catalogAfterReset.sessions?.[0]?.endedAt).toBeUndefined();
+  });
+
+  test("reports a missing cached rollout as stored when an existing thread is required", async () => {
+    const tempRoot = mkdtempSync(join(tmpdir(), "openscout-codex-stored-rollout-test-"));
+    tempPaths.add(tempRoot);
+    const runtimeDirectory = join(tempRoot, "runtime");
+    const logsDirectory = join(tempRoot, "logs");
+    const threadIdPath = join(runtimeDirectory, "codex-thread-id.txt");
+    const fixture = writeMissingRolloutFakeCodexExecutable(tempRoot);
+    process.env.OPENSCOUT_CODEX_BIN = fixture.executablePath;
+    mkdirSync(runtimeDirectory, { recursive: true });
+    writeFileSync(threadIdPath, "missing-stored-thread\n", "utf8");
+
+    const options = {
+      agentName: "codex-required-stored-rollout",
+      sessionId: "codex-required-stored-rollout",
+      cwd: process.cwd(),
+      systemPrompt: "Resume the stored session.",
+      runtimeDirectory,
+      logsDirectory,
+      requireExistingThread: true,
+      launchArgs: [],
+    } as const;
+
+    try {
+      await expect(ensureCodexAppServerAgentOnline(options)).rejects.toThrow(
+        "Failed to resume stored Codex thread missing-stored-thread: no rollout found for thread id missing-stored-thread",
+      );
+      expect(readFileSync(fixture.methodsPath, "utf8")).not.toContain("thread/start");
+      expect(existsSync(threadIdPath)).toBe(false);
+      expect(existsSync(join(runtimeDirectory, "session-catalog.json"))).toBe(false);
+      expect(readFileSync(join(logsDirectory, "stderr.log"), "utf8")).toContain(
+        "failed to resume stored Codex thread missing-stored-thread",
+      );
+    } finally {
+      await shutdownCodexAppServerAgent(options, { resetThread: true });
+    }
+  });
+
+  test("reports an explicitly requested missing rollout as requested", async () => {
+    const tempRoot = mkdtempSync(join(tmpdir(), "openscout-codex-requested-rollout-test-"));
+    tempPaths.add(tempRoot);
+    const runtimeDirectory = join(tempRoot, "runtime");
+    const logsDirectory = join(tempRoot, "logs");
+    const fixture = writeMissingRolloutFakeCodexExecutable(tempRoot);
+    process.env.OPENSCOUT_CODEX_BIN = fixture.executablePath;
+
+    const options = {
+      agentName: "codex-required-requested-rollout",
+      sessionId: "codex-required-requested-rollout",
+      cwd: process.cwd(),
+      systemPrompt: "Resume the requested session.",
+      runtimeDirectory,
+      logsDirectory,
+      threadId: "missing-requested-thread",
+      requireExistingThread: true,
+      launchArgs: [],
+    } as const;
+
+    try {
+      await expect(ensureCodexAppServerAgentOnline(options)).rejects.toThrow(
+        "Failed to resume requested Codex thread missing-requested-thread: no rollout found for thread id missing-requested-thread",
+      );
+      expect(readFileSync(fixture.methodsPath, "utf8")).not.toContain("thread/start");
+      expect(readFileSync(join(logsDirectory, "stderr.log"), "utf8")).toContain(
+        "failed to resume requested Codex thread missing-requested-thread",
+      );
+    } finally {
+      await shutdownCodexAppServerAgent(options, { resetThread: true });
+    }
   });
 
   test("normalizes legacy model launch args for app-server sessions", () => {

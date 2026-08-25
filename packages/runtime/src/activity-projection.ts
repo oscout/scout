@@ -17,6 +17,7 @@ import type {
 import { collaborationRequesterId } from "@openscout/protocol";
 
 import type { RuntimeRegistrySnapshot } from "./registry.js";
+import type { ActivityTransitionLog } from "./activity-transitions.js";
 import { projectObservedStatusForAgent } from "./observed-status-projection.js";
 
 export interface ActivityProjectionOptions {
@@ -24,6 +25,13 @@ export interface ActivityProjectionOptions {
   staleAfterMs?: number;
   operatorId?: ScoutId;
   latestEventsLimit?: number;
+  /**
+   * Transition log threaded through to the observed-status projection so the
+   * returned `status` carries `transitionAt`. Share one log with the broker's
+   * presence map: the fleet surface and chat presence must report the same
+   * time-in-state or they will visibly disagree.
+   */
+  transitions?: ActivityTransitionLog;
 }
 
 export type ActivityProjectionSnapshot = Pick<

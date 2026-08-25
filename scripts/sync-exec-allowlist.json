@@ -315,6 +315,20 @@
     "owner": "runtime"
   },
   {
+    "path": "packages/runtime/src/pairing-supervisor.ts",
+    "symbol": "execFileSync",
+    "category": "process-lifecycle",
+    "reason": "pairs a runtime ownership nonce with one-shot ps birth and command identity reads before process signals",
+    "owner": "runtime"
+  },
+  {
+    "path": "packages/runtime/src/pairing-supervisor.ts",
+    "symbol": "node:child_process",
+    "category": "process-lifecycle",
+    "reason": "uses bounded argv-only ps reads to prevent signaling a recycled pairing runtime PID",
+    "owner": "runtime"
+  },
+  {
     "path": "packages/runtime/src/pi-rpc.ts",
     "symbol": "execFileSync",
     "category": "imperative",

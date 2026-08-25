@@ -1,7 +1,9 @@
 import { describe, expect, test } from "bun:test";
 
 import {
+  EPHEMERAL_CONTROL_EVENT_KINDS,
   OPENSCOUT_CONTROL_EVENT_VERSION,
+  isEphemeralControlEvent,
   normalizeControlEvent,
 } from "./events.js";
 import type {
@@ -23,6 +25,7 @@ import type {
   CollaborationUpsertedEvent,
   CollaborationEventAppendedEvent,
   ScoutDispatchedEvent,
+  PresenceUpdatedEvent,
 } from "./events.js";
 
 // ---------------------------------------------------------------------------
@@ -66,6 +69,8 @@ function assertExhaustiveControlEvent(event: ControlEvent): string {
       return event.payload.event.id;
     case "scout.dispatched":
       return event.payload.dispatch.id;
+    case "presence.updated":
+      return event.payload.beat.agentId;
     default: {
       const _exhaustive: never = event;
       return _exhaustive;
@@ -336,5 +341,56 @@ describe("control-event envelope version", () => {
 
     expect(withoutV.v).toBeUndefined();
     expect(withV.v).toBe(1);
+  });
+});
+
+describe("ephemeral control events", () => {
+  const presence: PresenceUpdatedEvent = {
+    id: "evt-200",
+    kind: "presence.updated",
+    ts: 1_700_000_020_000,
+    actorId: "broker",
+    payload: {
+      beat: {
+        agentId: "agent-1",
+        activity: "executing",
+        phase: "running",
+        transitionAt: 1_700_000_020_000,
+        updatedAt: 1_700_000_020_000,
+        staleAt: 1_700_000_065_000,
+        confidence: 0.9,
+      },
+      previousActivity: "thinking",
+    },
+  };
+
+  test("presence.updated is ephemeral", () => {
+    expect(isEphemeralControlEvent(presence)).toBe(true);
+    expect(EPHEMERAL_CONTROL_EVENT_KINDS.has("presence.updated")).toBe(true);
+  });
+
+  test("durable event kinds are not ephemeral", () => {
+    expect(isEphemeralControlEvent({ kind: "message.posted" })).toBe(false);
+    expect(isEphemeralControlEvent({ kind: "flight.updated" })).toBe(false);
+    expect(isEphemeralControlEvent({ kind: "collaboration.upserted" })).toBe(false);
+  });
+
+  test("presence.updated carries state-entry time distinct from last observation", () => {
+    const stillExecuting: PresenceUpdatedEvent = {
+      ...presence,
+      payload: {
+        beat: {
+          ...presence.payload.beat,
+          updatedAt: 1_700_000_560_000,
+          staleAt: 1_700_000_605_000,
+        },
+      },
+    };
+
+    // Nine minutes of observations, one unchanged activity: updatedAt moved,
+    // transitionAt did not. Collapsing them would erase time-in-state.
+    expect(stillExecuting.payload.beat.transitionAt).toBe(1_700_000_020_000);
+    expect(stillExecuting.payload.beat.updatedAt).toBe(1_700_000_560_000);
+    expect(stillExecuting.payload.previousActivity).toBeUndefined();
   });
 });

@@ -1468,6 +1468,62 @@ export class SQLiteControlPlaneStore {
     };
   }
 
+  /**
+   * Prunes old, disconnected node rows without inferring identity from a
+   * hostname. Numeric labels such as `pi-4.local` and `pi-5.local` are valid,
+   * distinct machine names; merging either one requires durable evidence that
+   * both node IDs were authenticated by the same identity key. The current
+   * schema does not retain that alias history, so this sweep deliberately
+   * leaves every referenced or trusted node ID intact.
+   */
+  compactAndPruneMeshNodes(options: {
+    localNodeId?: string;
+    now?: number;
+    maxStaleAgeMs?: number;
+  } = {}): {
+    rehomedNodeCount: number;
+    prunedNodeCount: number;
+    rehomedMappings: Array<{ from: string; to: string }>;
+  } {
+    const now = options.now ?? currentTimestampMs();
+    const maxStaleAgeMs = options.maxStaleAgeMs ?? 7 * 24 * 60 * 60 * 1000;
+    const staleCutoff = now - maxStaleAgeMs;
+
+    const peerRows = this.db.query("SELECT * FROM trusted_peers").all() as TrustedPeerRow[];
+
+    const rehomedMappings: Array<{ from: string; to: string }> = [];
+    const rehomedNodeCount = 0;
+    let prunedNodeCount = 0;
+
+    (this.db as SQLiteTransactionalDatabase).transaction(() => {
+      // Prune disconnected stale nodes. Foreign keys fail closed if any
+      // durable record still refers to the node.
+      const remainingNodes = this.db.query("SELECT * FROM nodes").all() as NodeRow[];
+      for (const row of remainingNodes) {
+        if (row.id === options.localNodeId) continue;
+        const lastActive = row.last_seen_at ?? row.registered_at;
+        if (lastActive > staleCutoff) continue;
+        const isTrusted = peerRows.some((p) => p.node_id === row.id);
+        if (isTrusted) continue;
+
+        try {
+          const delRes = this.db.query("DELETE FROM nodes WHERE id = ?1").run(row.id) as { changes?: number };
+          if ((delRes.changes ?? 0) > 0) {
+            prunedNodeCount++;
+          }
+        } catch {
+          // Foreign key constraint failure means it has active references; leave it safe
+        }
+      }
+    })();
+
+    return {
+      rehomedNodeCount,
+      prunedNodeCount,
+      rehomedMappings,
+    };
+  }
+
   close(): void {
     this.flushPendingEvents();
     if (this.flushPendingEventsTimer) {

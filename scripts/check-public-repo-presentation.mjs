@@ -17,6 +17,7 @@ const required = [
   "llms.txt",
   "docs.json",
   "docs/public-source-boundary.md",
+  "docs/releases.md",
   ".github/diagrams/control-plane.arc.json",
   ".github/diagrams/README.md",
   ".github/PULL_REQUEST_TEMPLATE.md",
@@ -66,6 +67,18 @@ if (docsIndex.version !== versions.get("package.json")) {
   );
 }
 
+const npmReleaseWorkflow = read(".github/workflows/release-package-npm.yml");
+if (
+  !npmReleaseWorkflow.includes('[[ "$version" == "0.2.88" ]]')
+  || !npmReleaseWorkflow.includes("local signed authority-cutover release")
+) {
+  throw new Error("GitHub npm workflow must refuse the local-only v0.2.88 authority cutover");
+}
+const releaseGuide = read("docs/releases.md");
+if (!/workflow explicitly refuses `v0\.2\.88`[\s\S]*local signed publication only/i.test(releaseGuide)) {
+  throw new Error("Release guide must document the local-only v0.2.88 workflow refusal");
+}
+
 const diagram = JSON.parse(read(".github/diagrams/control-plane.arc.json"));
 if (!Array.isArray(diagram.connectors) || diagram.connectors.length < 3) {
   throw new Error("Arc control-plane diagram is missing its routing relationships");
@@ -83,6 +96,7 @@ const linkedSurfaces = [
   "docs/overview.md",
   "docs/quickstart.md",
   "docs/public-source-boundary.md",
+  "docs/releases.md",
   ".github/assets/README.md",
 ];
 const brokenTargets = [];

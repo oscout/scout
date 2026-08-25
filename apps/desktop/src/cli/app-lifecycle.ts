@@ -4,11 +4,11 @@
  *
  * Two supervision trees make up a running OpenScout:
  *
- *   launchd        -> scoutd -> base/probes -> broker/edge -> web
- *   LaunchServices -> Scout  -> embedded ScoutMenu -> pairing runtime
+ *   launchd        -> scoutd -> base/probes -> pairing/broker/edge -> web
+ *   LaunchServices -> Scout  -> embedded ScoutMenu
  *
  * They tear down differently and the difference is load-bearing. The launchd
- * tree is *supervised*: killing the broker directly only makes scoutd start a
+ * tree is *supervised*: killing a child directly only makes its owner start a
  * new one, so the whole tree comes down with a single `launchctl bootout` and
  * per-process kills are a straggler sweep, never the primary move. The
  * LaunchServices tree has no supervisor, so it comes down leaf-first by hand.
@@ -53,8 +53,8 @@ export type LifecycleLayerName =
   | "pairing";
 
 /** Leaf-first. The launchd tree is bootout'd as a unit before its sweep. */
-export const SUPERVISED_LAYERS: LifecycleLayerName[] = ["web", "edge", "broker", "probes", "base", "scoutd"];
-export const LAUNCH_SERVICES_LAYERS: LifecycleLayerName[] = ["pairing", "menu", "app"];
+export const SUPERVISED_LAYERS: LifecycleLayerName[] = ["pairing", "web", "edge", "broker", "probes", "base", "scoutd"];
+export const LAUNCH_SERVICES_LAYERS: LifecycleLayerName[] = ["menu", "app"];
 
 export const SCOUT_LAUNCHD_LABEL = "app.openscout";
 
@@ -378,8 +378,8 @@ export function classifyProcesses(
   const supervisedIsOurs = (record: ProcessRecord) => ourServices.has(record.pid);
 
   // The LaunchServices tree is rooted on the two bundles we can name by path.
-  // The pairing runtime is a child of the menu helper rather than of scoutd, so
-  // it inherits from here instead.
+  // Pairing normally descends from base, with app descent retained only to
+  // recognize the direct fallback used when the supervisor is unavailable.
   const appRoots = new Set<number>();
   for (const record of records) {
     if (isSimulatorProcess(record)) continue;
@@ -484,9 +484,9 @@ export type StopStep =
 /**
  * Leaf-first, with the supervised tree taken down as a unit.
  *
- * The LaunchServices apps go first and individually: nothing restarts them, and
- * the menu owns the pairing controllers, so the controllers have to be clear
- * before the menu is. Then one bootout collapses the entire launchd tree.
+ * The LaunchServices apps go first and individually; nothing restarts them.
+ * Then one bootout collapses the entire launchd tree, including the pairing
+ * controller owned by base.
  * Anything still standing after that is a straggler, not a supervised child,
  * and only then is a direct kill correct.
  */
@@ -644,31 +644,27 @@ export function bootstrapLaunchdJob(plistPath: string, uid: number): { ok: boole
 }
 
 /**
- * Brings the launchd job up, whichever state it is in.
+ * Selects the launch mechanism without preserving a stale service definition.
  *
  * `bootout` pairs with `bootstrap`, not with `kickstart`: booting a job out
  * *unloads it from the domain*, so a subsequent kickstart fails with "Could not
- * find service ... in domain for user". Kickstart only restarts a job that is
- * still loaded. Stop uses bootout, so start has to bootstrap from the plist —
- * checking first, because kickstart is the cheaper path when the job is loaded.
+ * find service ... in domain for user".
+ *
+ * When a checkout supplies scoutd, its `start_service` must run whether or not
+ * the shared job label is already loaded. It regenerates the LaunchAgent from
+ * this checkout's config before replacing the job. Kickstarting would preserve
+ * a globally installed or stale Program path and leave this checkout's entire
+ * supervised tree classified as foreign.
  */
 export type LaunchdStartMethod = "kickstart" | "scoutd" | "bootstrap" | "unavailable";
 
-/**
- * `scoutd start` outranks a bare bootstrap when a checkout is present, because
- * bootstrapping only loads whatever plist is already on disk. scoutd's
- * `start_service` renders the LaunchAgent from current config first (checkout
- * paths, runtime entrypoint) and boots out the legacy job. Replacing
- * `scoutd restart` with raw launchctl silently dropped both, so a checkout that
- * moved kept booting the old paths forever.
- */
 export function chooseLaunchdStartMethod(input: {
   loaded: boolean;
   plistExists: boolean;
   scoutdPath?: string | null;
 }): LaunchdStartMethod {
-  if (input.loaded) return "kickstart";
   if (input.scoutdPath) return "scoutd";
+  if (input.loaded) return "kickstart";
   return input.plistExists ? "bootstrap" : "unavailable";
 }
 
@@ -768,14 +764,12 @@ export function verifyTree(tree: LifecycleTree): VerifyProblem[] {
   const app = single("app");
   const menu = single("menu");
 
-  for (const controller of tree.layers.pairing) {
-    if (menu && controller.ppid !== menu.pid) {
-      problems.push({
-        layer: "pairing",
-        message: `pairing controller pid ${controller.pid} is not owned by ScoutMenu pid ${menu.pid}`,
-      });
-    }
-  }
+  const pairing = single("pairing");
+  // Pairing normally belongs to the canonical base process. A direct
+  // menu-owned controller is valid only when no base supervisor exists at all;
+  // duplicate base processes are unhealthy, not fallback eligibility.
+  const pairingOwner = tree.layers.base[0] ?? menu;
+  ownedBy(pairing, pairingOwner, "pairing");
 
   // A process that names one of this checkout's paths but is detached from the
   // expected ownership tree is ours-and-malformed, not a harmless sibling.
@@ -796,5 +790,6 @@ export function verifyTree(tree: LifecycleTree): VerifyProblem[] {
   }
 
   void app;
+  void menu;
   return problems;
 }

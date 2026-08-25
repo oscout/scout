@@ -267,10 +267,8 @@ export async function loadOpenScoutOnboardingState(options: {
 
   const contextRoot = settings.discovery.contextRoot ?? null;
   const project = await resolveProjectConfig({ currentDirectory, contextRoot });
-  const [broker, catalog] = await Promise.all([
-    options.broker ?? brokerServiceStatus().catch(() => null),
-    options.catalog ?? loadHarnessCatalogSnapshot().catch(() => null),
-  ]);
+  const broker = options.broker ?? await brokerServiceStatus().catch(() => null);
+  const catalog = options.catalog ?? await loadHarnessCatalogSnapshot().catch(() => null);
   const readyRuntimeCount = catalog?.entries.filter((entry) => entry.readinessReport.ready).length ?? 0;
   const hasReadyRuntime = readyRuntimeCount > 0;
   const hasLocalConfig = localConfigExists();
@@ -327,8 +325,6 @@ export async function ensureOpenScoutOnboardingLocalConfig(options: {
   currentDirectory?: string;
   host?: string;
   ports?: { broker?: number; web?: number; pairing?: number };
-  broker?: BrokerServiceStatus | null;
-  catalog?: HarnessCatalogSnapshot | null;
   now?: number;
 } = {}): Promise<OpenScoutOnboardingState> {
   const shouldWrite = !localConfigExists() || Boolean(options.host || options.ports);
@@ -351,19 +347,13 @@ export async function ensureOpenScoutOnboardingLocalConfig(options: {
   }, {
     currentDirectory: options.currentDirectory,
   });
-  return loadOpenScoutOnboardingState({
-    currentDirectory: options.currentDirectory,
-    broker: options.broker,
-    catalog: options.catalog,
-  });
+  return loadOpenScoutOnboardingState({ currentDirectory: options.currentDirectory });
 }
 
 export async function saveOpenScoutOnboardingIdentity(input: {
   name: string;
   currentDirectory?: string;
   now?: number;
-  broker?: BrokerServiceStatus | null;
-  catalog?: HarnessCatalogSnapshot | null;
 }): Promise<OpenScoutOnboardingState> {
   const name = input.name.trim();
   if (!name) {
@@ -384,11 +374,7 @@ export async function saveOpenScoutOnboardingIdentity(input: {
     currentDirectory: input.currentDirectory,
   });
 
-  return loadOpenScoutOnboardingState({
-    currentDirectory: input.currentDirectory,
-    broker: input.broker,
-    catalog: input.catalog,
-  });
+  return loadOpenScoutOnboardingState({ currentDirectory: input.currentDirectory });
 }
 
 export async function saveOpenScoutOnboardingProject(input: {
@@ -397,8 +383,6 @@ export async function saveOpenScoutOnboardingProject(input: {
   sourceRoots: string[];
   defaultHarness?: string | null;
   now?: number;
-  broker?: BrokerServiceStatus | null;
-  catalog?: HarnessCatalogSnapshot | null;
 }): Promise<OpenScoutOnboardingState> {
   const contextRoot = normalizePath(input.contextRoot);
   const sourceRoots = Array.from(new Set(input.sourceRoots.map(normalizePath).filter(Boolean)));
@@ -436,11 +420,7 @@ export async function saveOpenScoutOnboardingProject(input: {
     currentDirectory: input.currentDirectory ?? contextRoot,
   });
 
-  return loadOpenScoutOnboardingState({
-    currentDirectory: contextRoot,
-    broker: input.broker,
-    catalog: input.catalog,
-  });
+  return loadOpenScoutOnboardingState({ currentDirectory: contextRoot });
 }
 
 /**

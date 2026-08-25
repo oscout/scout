@@ -1,6 +1,6 @@
 {
   "name": "@openscout/runtime",
-  "version": "0.2.84",
+  "version": "0.2.88",
   "description": "Local runtime foundation for the OpenScout control plane",
   "type": "module",
   "bin": {
@@ -67,6 +67,12 @@
       "import": "./dist/broker-process-manager.js",
       "default": "./dist/broker-process-manager.js"
     },
+    "./mesh-dial-order": {
+      "bun": "./src/mesh-dial-order.ts",
+      "types": "./dist/mesh-dial-order.d.ts",
+      "import": "./dist/mesh-dial-order.js",
+      "default": "./dist/mesh-dial-order.js"
+    },
     "./broker-api": {
       "bun": "./src/broker-api.ts",
       "types": "./dist/broker-api.d.ts",
@@ -108,6 +114,12 @@
       "types": "./dist/tool-resolution.d.ts",
       "import": "./dist/tool-resolution.js",
       "default": "./dist/tool-resolution.js"
+    },
+    "./pairing-supervisor": {
+      "bun": "./src/pairing-supervisor.ts",
+      "types": "./dist/pairing-supervisor.d.ts",
+      "import": "./dist/pairing-supervisor.js",
+      "default": "./dist/pairing-supervisor.js"
     },
     "./runtime-adapters": {
       "bun": "./src/runtime-adapters.ts",

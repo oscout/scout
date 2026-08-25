@@ -185,7 +185,6 @@ function readAndValidateNodeIdentity(path: string): NodeIdentity {
   }
   return parsed;
 }
-
 function normalizeNodeQualifier(value: unknown): string {
   return typeof value === "string"
     ? value

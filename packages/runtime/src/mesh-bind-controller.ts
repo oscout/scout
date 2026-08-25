@@ -20,6 +20,7 @@ import {
   writePersistedAdvertiseScope,
   type BrokerAdvertiseScope,
 } from "./broker-process-manager.js";
+import { orderMeshDialUrls } from "./mesh-dial-order.js";
 import { closeServer, listenTcp } from "./broker-server-lifecycle.js";
 import {
   MeshMdnsService,
@@ -151,7 +152,9 @@ export function createMeshBindController(deps: MeshBindControllerDeps): MeshBind
   function snapshot(): MeshBindState {
     const tlsAddresses = tlsListeners.map((entry) => entry.address);
     const hasNonLoopbackListener = tlsAddresses.some((address) => !isLoopbackHost(address));
-    const httpsEndpoints = tlsAddresses.map((address) => `https://${address}:${deps.port}`);
+    const httpsEndpoints = orderMeshDialUrls(
+      tlsAddresses.map((address) => `https://${address}:${deps.port}`),
+    );
     return {
       scope,
       port: deps.port,

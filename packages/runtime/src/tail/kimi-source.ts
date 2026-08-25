@@ -192,8 +192,8 @@ function readKimiTranscriptMetadata(file: TranscriptFileStat): KimiTranscriptMet
   ) {
     return cached;
   }
-
   const parentSessionId = basename(sessionDirectory);
+
   let cwd: string | null = null;
   let title: string | null = null;
   try {

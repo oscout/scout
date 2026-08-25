@@ -4,7 +4,7 @@ Design pass for the four management actions (Switch profile · Repair registrati
 
 - Component: `AgentManagementStrip` — `packages/web/client/screens/AgentsScreen.tsx:1362`
 - Styles: `.s-profile-management*` — `packages/web/client/screens/agents-screen.css:431`
-- Reference route: `…/agents/missionwriter.master.arachs-mac-mini-local?tab=profile`
+- Reference route: `…/agents/missionwriter.master.scout-mac-mini-local?tab=profile`
 
 Tokens in play (from `styles/tokens.css`): space 3xs 2 · 2xs 4 · xs 6 · sm 8 · md 10 · lg 12 · xl 14 · 2xl 16 · 3xl 20; text 2xs 9 · xs 10 · sm 11 · md 12; radius sm 4 · md 6 · lg 8. Colors `--ink --muted --dim --border --surface --bg --accent --green --amber --red`.
 
