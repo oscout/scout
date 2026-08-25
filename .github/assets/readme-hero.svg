@@ -1,4 +1,4 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="440" viewBox="0 0 1200 440" role="img" aria-labelledby="title desc">
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="440" viewBox="0 0 1200 440" role="img" aria-labelledby="title desc" text-rendering="geometricPrecision">
   <title id="title">Scout</title>
   <desc id="desc">Scout is your personal cloud agent: a local control plane plus a mesh network.</desc>
   <rect width="1200" height="440" rx="28" fill="#10110f" />
@@ -18,7 +18,7 @@
     <path d="M112 70 154 94v48l-42 24-42-24V94Z" fill="#f7f4ea" />
   </g>
   <text x="262" y="230" fill="#f7f4ea" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="86" font-weight="700" letter-spacing="12">SCOUT</text>
-  <text x="266" y="277" fill="#c8cec4" font-family="system-ui, -apple-system, BlinkMacSystemFont, sans-serif" font-size="24" font-weight="500">Control plane + mesh network = your personal cloud agent.</text>
+  <text x="266" y="277" fill="#e0e5dc" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="22" font-weight="650" letter-spacing=".2">Control plane + mesh network = your personal cloud agent.</text>
   <g font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="14" font-weight="650" letter-spacing="1.2">
     <g transform="translate(64 350)"><rect width="152" height="38" rx="19" fill="#1b201a" stroke="#394238"/><text x="76" y="24" fill="#dce5d7" text-anchor="middle">LOCAL-FIRST</text></g>
     <g transform="translate(232 350)"><rect width="184" height="38" rx="19" fill="#1b201a" stroke="#394238"/><text x="92" y="24" fill="#dce5d7" text-anchor="middle">EXPLICIT ROUTING</text></g>

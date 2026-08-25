@@ -13,7 +13,7 @@ const jobs = [
 
 for (const [source, output] of jobs) {
   await sharp(join(assets, source), { density: 144 })
-    .png({ compressionLevel: 9, palette: true })
+    .png({ compressionLevel: 9 })
     .toFile(join(assets, output));
   console.log(`rendered .github/assets/${output}`);
 }
