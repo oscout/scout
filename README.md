@@ -1,10 +1,10 @@
 <p align="center">
-  <img src=".github/assets/readme-hero.svg" alt="Scout — the local control plane for your coding agents" width="100%" />
+  <img src=".github/assets/readme-hero.svg" alt="Scout — your personal cloud agent" width="100%" />
 </p>
 
 <p align="center">
-  <strong>One local control plane for every coding agent you run.</strong><br />
-  Discover sessions, route work, keep durable handoffs, and operate your agent mesh without giving up local ownership.
+  <strong>Your personal cloud agent.</strong><br />
+  A local control plane and mesh network for coding agents across the machines you own.
 </p>
 
 <p align="center">
@@ -18,6 +18,10 @@
 Scout is the CLI, broker, runtime, protocol, and web control surface behind the
 OpenScout agent mesh. It gives Codex, Claude Code, Cursor, Pi, and future
 harnesses one explicit coordination model instead of a pile of one-off relays.
+
+> **Local control plane + mesh network = your personal cloud agent.** Control
+> stays with you while Scout makes sessions reachable and useful across your
+> own machines.
 
 > **Current posture:** Scout is for high-trust local developer pilots. It is
 > not yet a hardened multi-tenant or compliance-ready control plane.

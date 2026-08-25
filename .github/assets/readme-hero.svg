@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1200" height="440" viewBox="0 0 1200 440" role="img" aria-labelledby="title desc">
   <title id="title">Scout</title>
-  <desc id="desc">The local control plane for every coding agent you run.</desc>
+  <desc id="desc">Scout is your personal cloud agent: a local control plane plus a mesh network.</desc>
   <rect width="1200" height="440" rx="28" fill="#10110f" />
   <g fill="none" stroke="#30352e" stroke-width="1">
     <path d="M0 88h1200M0 176h1200M0 264h1200M0 352h1200" opacity=".34" />
@@ -12,13 +12,13 @@
     <circle cx="750" cy="156" r="4" /><circle cx="930" cy="52" r="4" /><circle cx="1110" cy="156" r="4" /><circle cx="930" cy="260" r="5" />
   </g>
   <path d="M64 66h58" stroke="#94d59a" stroke-width="4" stroke-linecap="round" />
-  <text x="138" y="72" fill="#9ba497" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="16" font-weight="600" letter-spacing="2.4">OSCOUT / LOCAL AGENT CONTROL PLANE</text>
+  <text x="138" y="72" fill="#9ba497" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="16" font-weight="600" letter-spacing="2.4">OSCOUT / PERSONAL CLOUD AGENT</text>
   <g transform="translate(64 116) scale(.73)">
     <path d="M103.01 13.21 Q112 8 120.99 13.21 L198.01 57.79 Q207 63 207 73.39 L207 162.61 Q207 173 198.01 178.21 L120.99 222.79 Q112 228 103.01 222.79 L25.99 178.21 Q17 173 17 162.61 L17 73.39 Q17 63 25.99 57.79 Z" fill="none" stroke="#f7f4ea" stroke-width="24" stroke-linejoin="round" />
     <path d="M112 70 154 94v48l-42 24-42-24V94Z" fill="#f7f4ea" />
   </g>
   <text x="262" y="230" fill="#f7f4ea" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="86" font-weight="700" letter-spacing="12">SCOUT</text>
-  <text x="266" y="277" fill="#c8cec4" font-family="system-ui, -apple-system, BlinkMacSystemFont, sans-serif" font-size="25" font-weight="500">One local control plane for every coding agent you run.</text>
+  <text x="266" y="277" fill="#c8cec4" font-family="system-ui, -apple-system, BlinkMacSystemFont, sans-serif" font-size="24" font-weight="500">Control plane + mesh network = your personal cloud agent.</text>
   <g font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="14" font-weight="650" letter-spacing="1.2">
     <g transform="translate(64 350)"><rect width="152" height="38" rx="19" fill="#1b201a" stroke="#394238"/><text x="76" y="24" fill="#dce5d7" text-anchor="middle">LOCAL-FIRST</text></g>
     <g transform="translate(232 350)"><rect width="184" height="38" rx="19" fill="#1b201a" stroke="#394238"/><text x="92" y="24" fill="#dce5d7" text-anchor="middle">EXPLICIT ROUTING</text></g>

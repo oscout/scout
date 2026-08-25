@@ -1,6 +1,6 @@
 # Scout
 
-> One local control plane for every coding agent you run.
+> Your personal cloud agent: a local control plane and mesh network.
 
 ## Documentation
 

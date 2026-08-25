@@ -4,7 +4,7 @@ Use these values when configuring `oscout/scout` on GitHub.
 
 | Field | Value |
 | --- | --- |
-| Description | Local-first control plane for discovering, routing, and coordinating coding agents. |
+| Description | Your personal cloud agent: a local control plane and mesh network for coding agents. |
 | Website | `https://oscout.net` |
 | Social preview | `.github/assets/social-preview.png` |
 | Avatar / mark | `.github/assets/avatar.png` |

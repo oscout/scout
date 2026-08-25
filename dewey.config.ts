@@ -7,7 +7,7 @@ const packageMetadata = JSON.parse(
 export default {
   project: {
     name: "Scout",
-    tagline: "One local control plane for every coding agent you run.",
+    tagline: "Your personal cloud agent: a local control plane and mesh network.",
     type: "monorepo",
     version: packageMetadata.version,
   },

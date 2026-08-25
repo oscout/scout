@@ -1,7 +1,7 @@
 {
   "name": "openscout",
   "version": "0.2.84",
-  "description": "Local-first control plane for discovering, routing, and coordinating coding agents",
+  "description": "Your personal cloud agent: a local control plane and mesh network for coding agents",
   "private": true,
   "packageManager": "bun@1.3.13",
   "repository": {

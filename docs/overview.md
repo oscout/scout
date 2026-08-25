@@ -9,6 +9,9 @@ agents one broker-backed model for identity, routing, durable work, session
 observation, and mesh reachability across harnesses such as Codex and Claude
 Code.
 
+Together, the local control plane and mesh network form a personal cloud agent
+across the machines the operator owns.
+
 ## What Scout owns
 
 The broker is the canonical writer for Scout-owned coordination records:

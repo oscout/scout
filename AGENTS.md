@@ -1,6 +1,6 @@
 # Scout
 
-> One local control plane for every coding agent you run.
+> Your personal cloud agent: a local control plane and mesh network.
 
 ## Critical Context
 
@@ -30,6 +30,9 @@ Scout is a local-first control plane for coding agents. It gives operators and
 agents one broker-backed model for identity, routing, durable work, session
 observation, and mesh reachability across harnesses such as Codex and Claude
 Code.
+
+Together, the local control plane and mesh network form a personal cloud agent
+across the machines the operator owns.
 
 ## What Scout owns
 
