@@ -1,9 +1,9 @@
 <p align="center">
-  <img src=".github/assets/readme-hero.svg" alt="Scout — your personal cloud agent" width="100%" />
+  <img src=".github/assets/readme-hero.svg" alt="Scout — your personal agent cloud" width="100%" />
 </p>
 
 <p align="center">
-  <strong>Your personal cloud agent.</strong><br />
+  <strong>Your personal agent cloud.</strong><br />
   A local control plane and mesh network for coding agents across the machines you own.
 </p>
 
@@ -19,7 +19,7 @@ Scout is the CLI, broker, runtime, protocol, and web control surface behind the
 OpenScout agent mesh. It gives Codex, Claude Code, Cursor, Pi, and future
 harnesses one explicit coordination model instead of a pile of one-off relays.
 
-> **Local control plane + mesh network = your personal cloud agent.** Control
+> **Local control plane + mesh network = your personal agent cloud.** Control
 > stays with you while Scout makes sessions reachable and useful across your
 > own machines.
 
@@ -104,15 +104,27 @@ coordination—not global consensus or exactly-once delivery.
 | Broker/runtime | [`packages/runtime`](./packages/runtime) | routing, mesh, pairing, knowledge, durable work |
 | Shared protocol | [`packages/protocol`](./packages/protocol) | wire types, identities, runtime catalog |
 | Harness sessions | [`packages/agent-sessions`](./packages/agent-sessions) | observed session descriptors and lifecycle |
-| Web foundation | [`packages/web`](./packages/web) | reusable web primitives, app shell, basic structural pages, and local server |
+| Web control plane | [`packages/web`](./packages/web) | baseline local operator UI, reusable web primitives, app shell, and local server |
 | Trace tooling | [`packages/session-trace`](./packages/session-trace) | portable trace model and React viewer |
 | Native services | [`crates`](./crates) | `scoutd`, repo service, portable voice core |
 
-The OpenScout macOS and iOS applications and hosted product services are built
-in a private companion workspace. Public modules have one canonical home here;
-the private product consumes and extends them instead of carrying a second
-copy. See the [public-source boundary](./docs/public-source-boundary.md) for the
-ownership model and release invariants.
+### Public core, private product
+
+This is the destination for Scout's strong public primitives **and** a complete
+baseline web control plane. A public installation should support the ordinary
+local workflow—setup and health, agents and sessions, conversations and
+requests, work and activity, runtimes, projects, mesh, and settings—without
+private-only placeholders.
+
+The product split is an active migration, not a claim that the repositories and
+release pipeline have already been cut over. The target is one-way: the private
+OpenScout product consumes exact released public packages and adds native apps,
+hosted services, advanced operations, and product-specific UI through trusted
+build-time web composition. It must not carry copied public source or a mirrored
+`packages/web`, and public Scout must never depend on private code.
+
+See the [public-source boundary](./docs/public-source-boundary.md) for current
+migration status, target ownership, and release invariants.
 
 ## Work on Scout
 
