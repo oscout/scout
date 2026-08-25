@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="640" viewBox="0 0 1280 640" role="img" aria-labelledby="title desc" text-rendering="geometricPrecision">
+  <title id="title">Scout repository social preview</title>
+  <desc id="desc">Scout, your personal cloud agent.</desc>
+  <rect width="1280" height="640" fill="#10110f" />
+  <g fill="none" stroke="#30352e" stroke-width="1">
+    <path d="M0 128h1280M0 256h1280M0 384h1280M0 512h1280" opacity=".30" />
+    <path d="M128 0v640M256 0v640M384 0v640M512 0v640M640 0v640M768 0v640M896 0v640M1024 0v640M1152 0v640" opacity=".17" />
+    <path d="M1014 94 1202 202 1202 418 1014 526 826 418 826 202Z" opacity=".48" />
+    <path d="m1014 94 0 216m-188-108 188 108 188-108" opacity=".28" />
+  </g>
+  <g fill="#94d59a"><circle cx="826" cy="202" r="5"/><circle cx="1014" cy="94" r="5"/><circle cx="1202" cy="202" r="5"/><circle cx="1014" cy="310" r="6"/></g>
+  <text x="74" y="82" fill="#94d59a" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="18" font-weight="700" letter-spacing="3">OSCOUT / OPEN AGENT INFRASTRUCTURE</text>
+  <g transform="translate(74 148) scale(1.12)">
+    <path d="M103.01 13.21 Q112 8 120.99 13.21 L198.01 57.79 Q207 63 207 73.39 L207 162.61 Q207 173 198.01 178.21 L120.99 222.79 Q112 228 103.01 222.79 L25.99 178.21 Q17 173 17 162.61 L17 73.39 Q17 63 25.99 57.79 Z" fill="none" stroke="#f7f4ea" stroke-width="24" stroke-linejoin="round" />
+    <path d="M112 70 154 94v48l-42 24-42-24V94Z" fill="#f7f4ea" />
+  </g>
+  <text x="354" y="312" fill="#f7f4ea" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="112" font-weight="750" letter-spacing="14">SCOUT</text>
+  <text x="82" y="482" fill="#e0e5dc" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="28" font-weight="650" letter-spacing=".2">Control plane + mesh network = your personal cloud agent.</text>
+  <text x="82" y="548" fill="#8f998b" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="18" font-weight="600" letter-spacing="1.6">LOCAL OWNERSHIP · DURABLE HANDOFFS · EVERY HARNESS</text>
+</svg>

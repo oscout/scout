@@ -1,0 +1,67 @@
+---
+title: Quickstart
+description: Install Scout, verify readiness, and route the first task
+order: 2
+---
+
+This path installs the public `scout` command, initializes its machine-local
+state, and routes one real request through the broker.
+
+## Prerequisites
+
+- Bun 1.3 or newer;
+- macOS or Linux;
+- at least one supported coding-agent harness if you want Scout to launch or
+  route work.
+
+Install Bun from [bun.sh](https://bun.sh) if `bun --version` is unavailable.
+
+## Installation
+
+```bash
+bun add -g @openscout/scout
+scout --version
+```
+
+Installing the package does not silently start services. Initialize the local
+control plane explicitly:
+
+```bash
+scout setup
+scout doctor
+```
+
+## Orient
+
+From a project directory:
+
+```bash
+scout whoami
+scout who
+scout runtimes
+```
+
+`whoami` shows the sender identity Scout inferred from the current project and
+harness. `who` shows known targets. `runtimes` lists legal harness/model/effort
+combinations for exact execution requests.
+
+## Route the first task
+
+Let Scout resolve or start a Codex session for the current project:
+
+```bash
+scout ask --project . --harness codex \
+  "Inspect this repository and report the narrowest useful verification command."
+```
+
+Use `scout send --to <target>` for a tell or update where no reply is expected.
+Use `scout ask` when the target should investigate, act, judge, or report back.
+
+## Next Steps
+
+- Read the [CLI guide](../packages/cli/README.md) for routing, profiles,
+  sessions, aliases, channels, and file-backed prompts.
+- Read the [overview](./overview.md) for the broker ownership and public/private
+  repository boundaries.
+- Run `scout doctor --fix` when the native daemon exposes a conservative repair
+  for a reported readiness issue.

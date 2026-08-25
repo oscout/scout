@@ -3,6 +3,12 @@
   "version": "0.2.84",
   "private": true,
   "description": "Framework-agnostic live session trace model for OpenScout",
+  "homepage": "https://github.com/oscout/scout/tree/main/packages/session-trace#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/oscout/scout.git",
+    "directory": "packages/session-trace"
+  },
   "type": "module",
   "exports": {
     ".": {

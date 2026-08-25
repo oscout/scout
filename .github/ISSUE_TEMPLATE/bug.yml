@@ -1,0 +1,63 @@
+name: Bug report
+description: Report a reproducible problem in the public Scout core
+title: "bug: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for helping improve Scout. Remove credentials, private prompts, agent output, and personal file paths before submitting.
+  - type: input
+    id: version
+    attributes:
+      label: Scout version
+      description: Output of `scout --version`.
+      placeholder: 0.2.x
+    validations:
+      required: true
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Platform
+      options:
+        - macOS
+        - Linux
+        - Other
+    validations:
+      required: true
+  - type: input
+    id: surface
+    attributes:
+      label: Affected surface
+      placeholder: CLI, broker/runtime, protocol, web UI, scoutd, mesh, session observation…
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Minimal reproduction
+      description: Include exact commands and sanitized inputs.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: Include sanitized logs or screenshots when useful.
+    validations:
+      required: true
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Safety check
+      options:
+        - label: I removed secrets, private prompts, agent output, and personal paths.
+          required: true
+        - label: This is not a vulnerability report; security issues follow SECURITY.md.
+          required: true

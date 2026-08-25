@@ -1,0 +1,18 @@
+{
+  "name": "Scout Field",
+  "colors": {
+    "field": "#10110f",
+    "surface": "#1b201a",
+    "ink": "#f7f4ea",
+    "mutedInk": "#c8cec4",
+    "quietInk": "#8f998b",
+    "hairline": "#394238",
+    "signal": "#94d59a"
+  },
+  "geometry": {
+    "sourceViewBox": "0 0 224 236",
+    "ringStroke": 24,
+    "minimumMarkSizePx": 24,
+    "preferredCornerRadiusPx": 28
+  }
+}

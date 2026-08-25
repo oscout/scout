@@ -1,0 +1,29 @@
+{
+  "layout": { "width": 780, "height": 410 },
+  "nodes": {
+    "operator": { "x": 20, "y": 90, "size": "m" },
+    "surfaces": { "x": 205, "y": 65, "size": "l" },
+    "broker": { "x": 490, "y": 50, "size": "l" },
+    "execution": { "x": 330, "y": 245, "size": "l" },
+    "records": { "x": 610, "y": 260, "size": "m" }
+  },
+  "nodeData": {
+    "operator": { "icon": "UserRound", "name": "Operator", "subtitle": "or agent", "color": "zinc" },
+    "surfaces": { "icon": "PanelsTopLeft", "name": "Scout surfaces", "subtitle": "CLI + local web", "description": "one control plane", "color": "emerald" },
+    "broker": { "icon": "Network", "name": "Local broker", "subtitle": "canonical writer", "description": "route + run", "color": "emerald" },
+    "execution": { "icon": "Bot", "name": "Harnesses + mesh", "subtitle": "Codex · Claude · ACP", "description": "reachable peers", "color": "sky" },
+    "records": { "icon": "Database", "name": "Records", "subtitle": "durable", "color": "zinc" }
+  },
+  "connectors": [
+    { "from": "operator", "to": "surfaces", "fromAnchor": "right", "toAnchor": "left", "style": "intent" },
+    { "from": "surfaces", "to": "broker", "fromAnchor": "right", "toAnchor": "left", "style": "local" },
+    { "from": "broker", "to": "execution", "fromAnchor": "bottom", "toAnchor": "top", "style": "route" },
+    { "from": "broker", "to": "records", "fromAnchor": "bottom", "toAnchor": "top", "style": "records" }
+  ],
+  "connectorStyles": {
+    "intent": { "color": "zinc", "strokeWidth": 1 },
+    "local": { "color": "emerald", "strokeWidth": 2 },
+    "route": { "color": "sky", "strokeWidth": 2 },
+    "records": { "color": "emerald", "strokeWidth": 2 }
+  }
+}

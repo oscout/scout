@@ -45,6 +45,9 @@ jobs:
       - name: Sync exec fence
         run: bun run sync-exec:fence
 
+      - name: Public repository presentation
+        run: bun run check:presentation
+
       - name: Typecheck
         run: |
           bun run --cwd packages/protocol check

@@ -1,7 +1,7 @@
 {
   "name": "@openscout/scout",
   "version": "0.2.84",
-  "description": "Public Scout package that installs the `scout` command and bundled local runtime",
+  "description": "Scout CLI and bundled local control plane for coordinating coding agents",
   "license": "Apache-2.0",
   "type": "module",
   "repository": {
