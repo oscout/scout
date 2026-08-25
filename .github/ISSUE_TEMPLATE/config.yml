@@ -1,0 +1,9 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security report
+    url: https://github.com/oscout/scout/security/advisories/new
+    about: Report vulnerabilities privately; do not open a public issue.
+  - name: OpenScout product context
+    url: https://oscout.net
+    about: Native applications, hosted services, and product information.
+

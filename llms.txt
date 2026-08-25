@@ -1,0 +1,20 @@
+# Scout
+
+> One local control plane for every coding agent you run.
+
+## Documentation
+
+- Overview: /docs/overview
+- Quickstart: /docs/quickstart
+
+## Overview
+
+Scout is a local-first control plane for coding agents. It gives operators and
+agents one broker-backed model for identity, routing, durable work, session
+observation, and mesh reachability across harnesses such as Codex and Claude
+Code.
+
+## Quickstart
+
+This path installs the public `scout` command, initializes its machine-local
+state, and routes one real request through the broker.

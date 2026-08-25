@@ -1,0 +1,46 @@
+name: Feature request
+description: Propose a focused improvement to the public Scout core
+title: "proposal: "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What operator, agent, or integration problem needs solving?
+    validations:
+      required: true
+  - type: textarea
+    id: outcome
+    attributes:
+      label: Desired outcome
+      description: Describe observable behavior, not only an implementation.
+    validations:
+      required: true
+  - type: dropdown
+    id: boundary
+    attributes:
+      label: Public-core boundary
+      options:
+        - CLI
+        - Broker/runtime
+        - Protocol or integration contract
+        - Harness session observation
+        - Web control plane
+        - Native service
+        - Documentation or developer experience
+        - Unsure
+    validations:
+      required: true
+  - type: textarea
+    id: constraints
+    attributes:
+      label: Constraints and alternatives
+      description: Note compatibility, trust-model, routing, or data-ownership implications.
+  - type: checkboxes
+    id: posture
+    attributes:
+      label: Architecture check
+      options:
+        - label: I reviewed the broker ownership and explicit-routing model in the README.
+          required: true

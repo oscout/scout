@@ -1,7 +1,7 @@
 {
   "name": "@openscout/agent-sessions",
   "version": "0.2.84",
-  "description": "Browser-safe session boundary for OpenScout agent sessions",
+  "description": "Browser-safe adapters and normalized event streams for coding-agent sessions",
   "license": "Apache-2.0",
   "type": "module",
   "author": "Arach Tchoupani",

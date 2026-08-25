@@ -1,6 +1,7 @@
 {
   "name": "openscout",
   "version": "0.2.84",
+  "description": "Local-first control plane for discovering, routing, and coordinating coding agents",
   "private": true,
   "packageManager": "bun@1.3.13",
   "repository": {
@@ -32,6 +33,8 @@
     "scout:tui": "bun packages/cli/src/main.ts tui",
     "build": "bun run cli:build && bun run web:build",
     "check": "bun run sync-exec:fence && bun run --cwd packages/protocol check && bun run --cwd packages/agent-sessions check && bun run --cwd packages/runtime check && bun run --cwd packages/session-trace check && bun run --cwd packages/session-trace-react check && bun run --cwd apps/desktop check && bun run --cwd packages/web check",
+    "check:presentation": "node scripts/check-public-repo-presentation.mjs",
+    "docs:generate": "dewey generate",
     "sync-exec:fence": "bun scripts/check-sync-exec-fence.ts",
     "test": "bun run test:unit",
     "test:unit": "bun run --cwd packages/protocol test && bun run --cwd packages/agent-sessions test && bun test ./packages/runtime/src --path-ignore-patterns='**/*live.test.ts' --path-ignore-patterns='**/scenario-suite.test.ts' && bun run --cwd apps/desktop test && bun run --cwd packages/web test && bun run --cwd packages/session-trace test && bun run --cwd packages/session-trace-react test",
@@ -120,7 +123,9 @@
     "varlock": "^1.16.0"
   },
   "devDependencies": {
-    "sharp": "^0.34.5"
+    "@arach/dewey": "^0.2.0",
+    "sharp": "^0.34.5",
+    "typescript": "^5.9.3"
   },
   "patchedDependencies": {
     "hudsonkit@0.3.5": "patches/hudsonkit@0.3.5.patch"

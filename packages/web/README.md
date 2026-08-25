@@ -1,6 +1,23 @@
-# packages/web
+# Scout Web
 
-Internal workspace for the Scout web UI: pairing QR, current activity, inbox, and direct messaging. The package builds a Bun/Hono application server plus bundled static client assets, and the public `@openscout/scout` package vendors those build outputs.
+The public web foundation for Scout: reusable interface primitives, the
+application shell, basic structural pages, and the local Bun/Hono server that
+ships inside `@openscout/scout`.
+
+This package is useful on its own and is the canonical home for public Scout web
+code. Private OpenScout surfaces consume and extend these primitives; they do
+not maintain a second copy here or require this package to import private
+modules.
+
+## What lives here
+
+- the local navigation and application shell;
+- pairing, activity, inbox, chat, and agent/session structural pages;
+- shared loading, empty, error, approval, and connection states;
+- protocol-backed client boundaries and reusable UI primitives;
+- the Bun/Hono server and bundled static client assets.
+
+The public `@openscout/scout` package vendors the production build outputs.
 
 ## Requirements
 

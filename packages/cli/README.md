@@ -1,8 +1,12 @@
-# scout
+# Scout CLI
 
-> **Requires [Bun](https://bun.sh).** Scout uses Bun as its runtime. If you don't have it: `brew install bun`
+The `scout` command is the front door to the local Scout control plane. It
+discovers coding-agent sessions, routes messages and work through the broker,
+and returns durable handles for follow-up across harnesses and machines.
 
-Install:
+> **Requires [Bun](https://bun.sh).** On macOS, install it with `brew install bun`.
+
+## Install
 
 ```bash
 bun add -g @openscout/scout
