@@ -415,17 +415,17 @@ describe("resolveAgentLabel", () => {
     const snapshot = makeSnapshot(
       [
         makeAgent({
-          id: "openscout.feat-web-design-system.arts-mac-mini-local",
+          id: "openscout.feat-web-design-system.test-workstation-local",
           definitionId: "openscout",
-          nodeQualifier: "arts-mac-mini-local",
+          nodeQualifier: "test-workstation-local",
           workspaceQualifier: "feat-web-design-system",
-          selector: "@openscout.feat-web-design-system.node:arts-mac-mini-local",
+          selector: "@openscout.feat-web-design-system.node:test-workstation-local",
         }),
       ],
       [
         makeEndpoint({
           id: "endpoint.openscout.codex",
-          agentId: "openscout.feat-web-design-system.arts-mac-mini-local",
+          agentId: "openscout.feat-web-design-system.test-workstation-local",
           harness: "codex",
           state: "waiting",
         }),
@@ -434,22 +434,22 @@ describe("resolveAgentLabel", () => {
 
     const qualified = resolveAgentLabel(
       snapshot,
-      "@openscout.feat-web-design-system.node:arts-mac-mini-local",
+      "@openscout.feat-web-design-system.node:test-workstation-local",
       { helpers },
     );
     expect(qualified.kind).toBe("resolved");
     if (qualified.kind === "resolved") {
-      expect(qualified.agent.id).toBe("openscout.feat-web-design-system.arts-mac-mini-local");
+      expect(qualified.agent.id).toBe("openscout.feat-web-design-system.test-workstation-local");
     }
 
     const codex = resolveAgentLabel(
       snapshot,
-      "@openscout.feat-web-design-system.arts-mac-mini-local#codex",
+      "@openscout.feat-web-design-system.test-workstation-local#codex",
       { helpers },
     );
     expect(codex.kind).toBe("resolved");
     if (codex.kind === "resolved") {
-      expect(codex.agent.id).toBe("openscout.feat-web-design-system.arts-mac-mini-local");
+      expect(codex.agent.id).toBe("openscout.feat-web-design-system.test-workstation-local");
     }
   });
 

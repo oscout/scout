@@ -309,10 +309,10 @@ async function callNative<T>(method: string, params: Record<string, unknown> = {
 function previewHost(): HostIdentity | null {
   const preview = new URLSearchParams(window.location.search);
   const state = preview.get("host");
-  if (!state) return { name: "Arts Mac mini", state: "synced" };
+  if (!state) return { name: "Scout Mac mini", state: "synced" };
   if (state === "unnamed") return { name: null, state: "synced" };
   if (state === "none") return null;
-  return { name: "Arts Mac mini", state };
+  return { name: "Scout Mac mini", state };
 }
 
 function bootstrap(): Bootstrap {

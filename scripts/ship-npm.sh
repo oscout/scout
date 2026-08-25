@@ -1,10 +1,10 @@
 #!/bin/bash
-# Build, verify, and resumably publish the public Scout npm package set.
+# Build, verify, and publish the public Scout npm package set.
 #
 # Publication is two-phase: both immutable versions are uploaded under a
 # version-specific staging dist-tag, verified against the current public commit,
-# and only then promoted to latest. A retry skips matching completed work and
-# rejects any mismatched registry artifact.
+# and only then promoted to latest. A completed release is idempotent; a partial
+# immutable package set fails closed so separate attempts cannot mix candidates.
 
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -51,9 +51,18 @@ mkdir -p "$npm_config_cache"
 
 STATE_DIR=$(mktemp -d "${TMPDIR:-/tmp}/scout-npm-release.XXXXXX")
 NPMRC=""
+RELEASE_LOCK_DIR=""
+RELEASE_LOCK_HELD=0
+RELEASE_STAGE_DIR=""
 cleanup() {
   if [[ -n "$NPMRC" && -f "$NPMRC" ]]; then
     rm -f "$NPMRC"
+  fi
+  if [[ -n "$RELEASE_STAGE_DIR" && -d "$RELEASE_STAGE_DIR" ]]; then
+    rm -rf "$RELEASE_STAGE_DIR"
+  fi
+  if [[ "$RELEASE_LOCK_HELD" == "1" && -n "$RELEASE_LOCK_DIR" ]]; then
+    rmdir "$RELEASE_LOCK_DIR" 2>/dev/null || true
   fi
   rm -rf "$STATE_DIR"
 }
@@ -65,6 +74,8 @@ PACKAGE_NAMES=()
 PACKAGE_VERSIONS=()
 PACKAGE_EXISTS=()
 PACKAGE_LATEST=()
+PACKAGE_TARBALLS=()
+PACKAGE_INTEGRITIES=()
 release_version=""
 
 for pkg in "${PUBLISH_PACKAGES[@]}"; do
@@ -85,7 +96,29 @@ for pkg in "${PUBLISH_PACKAGES[@]}"; do
 done
 
 release_sha=$(git rev-parse HEAD^{commit})
+[[ "$release_sha" =~ ^[0-9a-f]{40,64}$ ]] || {
+  echo "ERROR: release HEAD is not a full Git object id: $release_sha" >&2
+  exit 1
+}
 STAGING_NPM_TAG="scout-release-${release_version//./-}"
+PUBLICATION_AUTHORITY="local-signed"
+if [[ "${GITHUB_ACTIONS:-}" == "true" ]]; then
+  PUBLICATION_AUTHORITY="github-oidc"
+fi
+RELEASE_STATE_DIR="${SCOUT_NPM_RELEASE_STATE_DIR:-}"
+if [[ -z "$RELEASE_STATE_DIR" ]]; then
+  git_common_dir=$(git rev-parse --path-format=absolute --git-common-dir)
+  RELEASE_STATE_DIR="${git_common_dir}/scout-release/npm/${release_version}-${release_sha}"
+fi
+RELEASE_RECEIPT_PATH="$RELEASE_STATE_DIR/receipt.json"
+RELEASE_LOCK_DIR="${RELEASE_STATE_DIR}.lock"
+if [[ "$release_version" == "0.2.88" ]]; then
+  if [[ "${GITHUB_ACTIONS:-}" == "true" ]]; then
+    echo "ERROR: v0.2.88 is a local signed authority-cutover release, not a GitHub Actions publication" >&2
+    exit 1
+  fi
+  export NPM_CONFIG_PROVENANCE=false
+fi
 
 normalize_repository() {
   local value="$1"
@@ -116,7 +149,7 @@ inspect_exact_artifact() {
   local version="${PACKAGE_VERSIONS[$index]}"
   local identity="${name}@${version}"
   local error_file="$STATE_DIR/npm-view-error"
-  local observed diagnostic published_sha published_repository integrity
+  local observed diagnostic published_sha published_repository integrity expected_integrity
 
   if observed=$(npm view "$identity" version "${NPM_READ_ARGS[@]}" 2>"$error_file"); then
     if [[ "$observed" != "$version" ]]; then
@@ -147,6 +180,11 @@ inspect_exact_artifact() {
   fi
   if [[ -z "$integrity" ]]; then
     echo "ERROR: ${identity} has no registry integrity receipt" >&2
+    exit 1
+  fi
+  expected_integrity="${PACKAGE_INTEGRITIES[$index]:-}"
+  if [[ -n "$expected_integrity" && "$integrity" != "$expected_integrity" ]]; then
+    echo "ERROR: ${identity} registry integrity does not match the exact reviewed candidate" >&2
     exit 1
   fi
 }
@@ -214,6 +252,116 @@ all_packages_promoted() {
     [[ "$value" == "$release_version" ]] || return 1
   done
   return 0
+}
+
+assert_registry_preflight() {
+  local value existing_count=0
+  for value in "${PACKAGE_EXISTS[@]}"; do
+    [[ "$value" == "1" ]] && existing_count=$((existing_count + 1))
+  done
+  if ((existing_count == 0)); then
+    return
+  fi
+  # Once the complete immutable set exists, it can be compared with the exact
+  # local candidates and any missing mutable dist-tags can be promoted safely.
+  # Only a genuinely partial immutable set is unrecoverable across attempts.
+  if all_artifacts_exist; then
+    return
+  fi
+  echo "ERROR: ${release_version} has an incomplete npm package set and cannot be resumed across publication attempts" >&2
+  echo "ERROR: choose a fresh version instead of mixing immutable artifacts from different candidates or authorities" >&2
+  exit 1
+}
+
+load_release_receipt() {
+  local output index line integrity filename extra
+  if [[ ! -f "$RELEASE_RECEIPT_PATH" ]]; then
+    echo "ERROR: complete npm package set has no durable local integrity receipt: $RELEASE_RECEIPT_PATH" >&2
+    echo "ERROR: refusing to reconstruct exact candidate identity from a nondeterministic rebuild" >&2
+    exit 1
+  fi
+
+  if ! output=$(node scripts/npm-release-receipt.mjs verify \
+    "$RELEASE_RECEIPT_PATH" "$RELEASE_STATE_DIR" "$EXPECTED_REPOSITORY" \
+    "$release_version" "$release_sha" "$PUBLICATION_AUTHORITY" \
+    "${PACKAGE_NAMES[0]}" "${PACKAGE_VERSIONS[0]}" \
+    "${PACKAGE_NAMES[1]}" "${PACKAGE_VERSIONS[1]}"); then
+    echo "ERROR: invalid npm release integrity receipt: $RELEASE_RECEIPT_PATH" >&2
+    exit 1
+  fi
+
+  PACKAGE_INTEGRITIES=()
+  PACKAGE_TARBALLS=()
+  for index in "${!PACKAGE_NAMES[@]}"; do
+    line="${output%%$'\n'*}"
+    if [[ "$output" == *$'\n'* ]]; then
+      output="${output#*$'\n'}"
+    else
+      output=""
+    fi
+    IFS=$'\t' read -r integrity filename extra <<< "$line"
+    if [[ -z "$integrity" || -z "$filename" || -n "$extra" ]]; then
+      echo "ERROR: receipt verifier returned malformed package data" >&2
+      exit 1
+    fi
+    PACKAGE_INTEGRITIES[$index]="$integrity"
+    PACKAGE_TARBALLS[$index]="$RELEASE_STATE_DIR/$filename"
+  done
+  [[ -z "$output" ]] || {
+    echo "ERROR: receipt verifier returned an unexpected package" >&2
+    exit 1
+  }
+  echo "  ✓ durable integrity receipt loaded for ${release_version}"
+}
+
+acquire_release_lock() {
+  mkdir -p "$(dirname "$RELEASE_LOCK_DIR")"
+  if ! mkdir "$RELEASE_LOCK_DIR"; then
+    echo "ERROR: npm release lock already exists: $RELEASE_LOCK_DIR" >&2
+    echo "ERROR: confirm no publication is running, then remove that stale lock explicitly" >&2
+    exit 1
+  fi
+  chmod 700 "$RELEASE_LOCK_DIR"
+  RELEASE_LOCK_HELD=1
+}
+
+persist_release_bundle() {
+  local bundle_parent bundle_name index source target
+  if [[ -e "$RELEASE_STATE_DIR" ]]; then
+    echo "ERROR: refusing to overwrite existing npm release bundle: $RELEASE_STATE_DIR" >&2
+    exit 1
+  fi
+  bundle_parent=$(dirname "$RELEASE_STATE_DIR")
+  bundle_name=$(basename "$RELEASE_STATE_DIR")
+  mkdir -p "$bundle_parent"
+  RELEASE_STAGE_DIR=$(mktemp -d "${bundle_parent}/.${bundle_name}.tmp.XXXXXX")
+  chmod 700 "$RELEASE_STAGE_DIR"
+
+  for index in "${!PACKAGE_TARBALLS[@]}"; do
+    source="${PACKAGE_TARBALLS[$index]}"
+    target="$RELEASE_STAGE_DIR/$(basename "$source")"
+    cp "$source" "$target"
+    chmod 600 "$target"
+    PACKAGE_TARBALLS[$index]="$target"
+  done
+
+  node scripts/npm-release-receipt.mjs create \
+    "$RELEASE_STAGE_DIR/receipt.json" "$EXPECTED_REPOSITORY" \
+    "$release_version" "$release_sha" "$PUBLICATION_AUTHORITY" \
+    "${PACKAGE_NAMES[0]}" "${PACKAGE_VERSIONS[0]}" "${PACKAGE_TARBALLS[0]}" \
+    "${PACKAGE_NAMES[1]}" "${PACKAGE_VERSIONS[1]}" "${PACKAGE_TARBALLS[1]}"
+
+  node -e '
+    const { existsSync, openSync, closeSync, fsyncSync, renameSync } = require("node:fs");
+    const [source, target] = process.argv.slice(1);
+    if (existsSync(target)) throw new Error(`release bundle already exists: ${target}`);
+    renameSync(source, target);
+    const descriptor = openSync(require("node:path").dirname(target), "r");
+    try { fsyncSync(descriptor); } finally { closeSync(descriptor); }
+  ' "$RELEASE_STAGE_DIR" "$RELEASE_STATE_DIR"
+  RELEASE_STAGE_DIR=""
+  load_release_receipt
+  echo "  ✓ durable release bundle recorded at $RELEASE_STATE_DIR"
 }
 
 assert_clean_publish_source() {
@@ -296,6 +444,80 @@ build_and_check() {
   node scripts/check-packed-manifests.mjs
 }
 
+prepare_release_tarballs() {
+  local index pkg name version filename tarball integrity pack_root audit_root
+  local packed_name packed_version packed_sha packed_repository
+  PACKAGE_TARBALLS=()
+  PACKAGE_INTEGRITIES=()
+  echo "Preparing exact publication candidates…"
+  for index in "${!PUBLISH_PACKAGES[@]}"; do
+    pkg="${PUBLISH_PACKAGES[$index]}"
+    name="${PACKAGE_NAMES[$index]}"
+    version="${PACKAGE_VERSIONS[$index]}"
+    filename="${name#@}"
+    filename="${filename//\//-}-${version}.tgz"
+    tarball="$STATE_DIR/$filename"
+
+    # npm adds gitHead when publishing a directory, but not when publishing an
+    # already-packed tarball. Build the immutable candidate from an isolated
+    # copy with the reviewed commit stamped into its manifest so the registry
+    # can prove both source identity and exact tarball integrity.
+    pack_root="$STATE_DIR/pack-$pkg"
+    mkdir -p "$pack_root"
+    cp -R "packages/$pkg/." "$pack_root/"
+    # Apply the same workspace-range normalization as the package prepack hook,
+    # but inside the isolated candidate copy. The exact tarball is then packed
+    # with lifecycle scripts disabled so no later hook can change its bytes.
+    node scripts/prepare-publish-manifest.mjs "$pack_root" "$PWD"
+    node -e '
+      const { readFileSync, writeFileSync } = require("node:fs");
+      const path = process.argv[1];
+      const manifest = JSON.parse(readFileSync(path, "utf8"));
+      manifest.gitHead = process.argv[2];
+      writeFileSync(path, `${JSON.stringify(manifest, null, 2)}\n`);
+    ' "$pack_root/package.json" "$release_sha"
+    (
+      cd "$pack_root"
+      npm pack --ignore-scripts --pack-destination "$STATE_DIR" >/dev/null
+    )
+    [[ -f "$tarball" ]] || {
+      echo "ERROR: npm pack did not produce expected candidate $tarball" >&2
+      exit 1
+    }
+
+    audit_root="$STATE_DIR/audit-$pkg"
+    mkdir -p "$audit_root"
+    tar -xzf "$tarball" -C "$audit_root" package/package.json
+    packed_name=$(node -p "require(process.argv[1]).name" "$audit_root/package/package.json")
+    packed_version=$(node -p "require(process.argv[1]).version" "$audit_root/package/package.json")
+    packed_sha=$(node -p "require(process.argv[1]).gitHead || ''" "$audit_root/package/package.json")
+    packed_repository=$(normalize_repository "$(node -p "require(process.argv[1]).repository?.url || ''" "$audit_root/package/package.json")")
+    if [[ "$packed_name" != "$name" || "$packed_version" != "$version" ]]; then
+      echo "ERROR: exact candidate identity is ${packed_name}@${packed_version}, expected ${name}@${version}" >&2
+      exit 1
+    fi
+    if [[ "$packed_sha" != "$release_sha" ]]; then
+      echo "ERROR: exact candidate gitHead is ${packed_sha:-missing}, expected ${release_sha}" >&2
+      exit 1
+    fi
+    if [[ "$packed_repository" != "$EXPECTED_REPOSITORY" ]]; then
+      echo "ERROR: exact candidate repository is ${packed_repository:-missing}, expected ${EXPECTED_REPOSITORY}" >&2
+      exit 1
+    fi
+    # Audit the exact candidate that will be retained, receipted, and uploaded;
+    # a separately generated npm-pack check is not publication evidence.
+    node scripts/check-packed-manifests.mjs --tarball "$tarball"
+    integrity=$(node -e '
+      const { createHash } = require("node:crypto");
+      const { readFileSync } = require("node:fs");
+      process.stdout.write("sha512-" + createHash("sha512").update(readFileSync(process.argv[1])).digest("base64"));
+    ' "$tarball")
+    PACKAGE_TARBALLS[$index]="$tarball"
+    PACKAGE_INTEGRITIES[$index]="$integrity"
+    echo "  ✓ ${name}@${version} candidate integrity recorded"
+  done
+}
+
 wait_for_exact_artifact() {
   local index="$1"
   local name="${PACKAGE_NAMES[$index]}"
@@ -316,23 +538,23 @@ wait_for_exact_artifact() {
 }
 
 publish_missing_artifacts() {
-  local index pkg name version
+  local index name version tarball
   for index in "${!PUBLISH_PACKAGES[@]}"; do
     if [[ "${PACKAGE_EXISTS[$index]}" == "1" ]]; then
       echo "  ✓ ${PACKAGE_NAMES[$index]}@${PACKAGE_VERSIONS[$index]} already matches ${release_sha}"
       continue
     fi
-    pkg="${PUBLISH_PACKAGES[$index]}"
     name="${PACKAGE_NAMES[$index]}"
     version="${PACKAGE_VERSIONS[$index]}"
+    tarball="${PACKAGE_TARBALLS[$index]}"
     echo ""
     echo "Publishing ${name}@${version} under staging tag ${STAGING_NPM_TAG}…"
-    (
-      cd "packages/$pkg"
-      npm publish --access public --tag "$STAGING_NPM_TAG" \
-        "${NPM_READ_ARGS[@]}" "${NPM_AUTH_ARGS[@]}"
-    )
+    npm publish "$tarball" --access public --tag "$STAGING_NPM_TAG" \
+      "${NPM_READ_ARGS[@]}" "${NPM_AUTH_ARGS[@]}"
     wait_for_exact_artifact "$index"
+    # Verify each immutable upload before attempting the next one. A bad first
+    # artifact must stop the train before it can poison the rest of the set.
+    inspect_exact_artifact "$index"
   done
 }
 
@@ -384,11 +606,33 @@ promote_package_set() {
   done
 }
 
+if [[ "$MODE" == "publish" ]]; then
+  acquire_release_lock
+fi
+
 inspect_registry_state
+assert_registry_preflight
 
 if [[ "$MODE" == "verify-state" ]]; then
-  echo "Registry state is compatible with resumable ${release_version} publication."
+  if all_artifacts_exist; then
+    load_release_receipt
+    inspect_registry_state
+  fi
+  echo "Registry state is pristine or has a complete immutable ${release_version} package set."
   exit 0
+fi
+
+if [[ "$MODE" == "dry-run" ]]; then
+  echo "Dry run — building and packing without registry mutation."
+  build_and_check
+  prepare_release_tarballs
+  echo "✓ Public npm package builds verified."
+  exit 0
+fi
+
+if [[ "$MODE" == "publish" ]]; then
+  assert_clean_publish_source
+  assert_canonical_publish_ref
 fi
 
 if [[ "$MODE" == "verify-published" ]]; then
@@ -396,42 +640,67 @@ if [[ "$MODE" == "verify-published" ]]; then
     echo "ERROR: not all ${release_version} package artifacts are published" >&2
     exit 1
   }
+  load_release_receipt
+  inspect_registry_state
   all_packages_promoted || {
     echo "ERROR: not all ${release_version} packages are promoted to ${FINAL_NPM_TAG}" >&2
     exit 1
   }
-  echo "✓ Public npm package set ${release_version} is published and promoted."
+  echo "✓ Public npm package set ${release_version} exactly matches the reviewed candidates and is promoted."
   exit 0
 fi
 
-if [[ "$MODE" == "dry-run" ]]; then
-  echo "Dry run — building and packing without registry mutation."
-  build_and_check
-  echo "✓ Public npm package builds verified."
-  exit 0
-fi
-
-assert_clean_publish_source
-assert_canonical_publish_ref
-
-if all_artifacts_exist && all_packages_promoted; then
-  echo "✓ Public npm package set ${release_version} already matches ${release_sha} and latest."
-  exit 0
-fi
-
-configure_publish_credentials
-
-if ! all_artifacts_exist; then
-  build_and_check
-  # Generation and pack hooks must not have rewritten reviewed source. The
-  # immutable npm artifacts must still describe the exact clean release SHA.
-  assert_clean_publish_source
-  publish_missing_artifacts
+if all_artifacts_exist; then
+  # Never rebuild to prove an immutable registry artifact. The CLI bundle and
+  # its signature are intentionally nondeterministic, so only the receipt made
+  # before the first upload can identify the exact accepted bytes on a retry.
+  load_release_receipt
   inspect_registry_state
-  all_artifacts_exist || {
-    echo "ERROR: package set remained incomplete after publication" >&2
-    exit 1
-  }
+  if all_packages_promoted; then
+    echo "✓ Public npm package set ${release_version} already matches the exact reviewed candidates and latest."
+    exit 0
+  fi
+  configure_publish_credentials
+else
+  configure_publish_credentials
+  if [[ -e "$RELEASE_STATE_DIR" ]]; then
+    # A prior attempt may have stopped after the atomic bundle commit but before
+    # its first upload. Reuse those retained bytes; never rebuild over them.
+    load_release_receipt
+    inspect_registry_state
+  else
+    build_and_check
+    prepare_release_tarballs
+    # Generation and pack hooks must not have rewritten reviewed source. The
+    # immutable npm artifacts must still describe the exact clean release SHA.
+    assert_clean_publish_source
+    inspect_registry_state
+    assert_registry_preflight
+
+    if all_artifacts_exist; then
+      # A remote authority raced this build. Without its durable receipt, its
+      # bytes cannot be inferred safely from this invocation's rebuild.
+      load_release_receipt
+      inspect_registry_state
+    else
+      # Registry state is still pristine, so this invocation owns the candidate.
+      # Atomically retain both tarballs and their receipt before the first upload.
+      persist_release_bundle
+      inspect_registry_state
+      assert_registry_preflight
+    fi
+  fi
+
+  assert_registry_preflight
+  if ! all_artifacts_exist; then
+    publish_missing_artifacts
+    inspect_registry_state
+    assert_registry_preflight
+    all_artifacts_exist || {
+      echo "ERROR: package set remained incomplete after publication" >&2
+      exit 1
+    }
+  fi
 fi
 
 promote_package_set

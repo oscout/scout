@@ -930,12 +930,12 @@ describe("local agent prompts", () => {
     useTestOperatorIdentity("Arach", "arach");
 
     const prompt = buildLocalAgentDirectInvocationPrompt(
-      "openscout-codex.main.arachs-mac-mini-local",
+      "openscout-codex.main.scout-mac-mini-local",
       {
         id: "inv-wake-08vm",
         requesterId: "operator",
         requesterNodeId: "node-1",
-        targetAgentId: "openscout-codex.main.arachs-mac-mini-local",
+        targetAgentId: "openscout-codex.main.scout-mac-mini-local",
         action: "wake",
         task: "hello?",
         messageId: "msg-wake-08vm",
@@ -952,7 +952,7 @@ describe("local agent prompts", () => {
     );
 
     expect(prompt).toBe([
-      "⌖ Arach (@arach) → @openscout-codex.main.arachs-mac-mini-local · wake:08vm › hello?",
+      "⌖ Arach (@arach) → @openscout-codex.main.scout-mac-mini-local · wake:08vm › hello?",
       "delivery: routed · session: continuing session",
       "",
       "Treat this as a message/update, not a reply-required ask. Continue your current work and reply only if useful.",

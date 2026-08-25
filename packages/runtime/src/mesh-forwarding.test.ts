@@ -50,12 +50,12 @@ test("forwardMeshMessage uses the injected signed and pinned peer client", async
   };
 
   await expect(forwardMeshMessage(
-    "https://arts-mac-mini.tailnet.example:43110",
+    "https://peer-workstation.tailnet.example:43110",
     makeBundle(),
     { peerFetch },
   )).resolves.toEqual({ ok: true });
   expect(calls).toEqual([{
-    baseUrl: "https://arts-mac-mini.tailnet.example:43110",
+    baseUrl: "https://peer-workstation.tailnet.example:43110",
     path: "/v1/mesh/messages",
     method: "POST",
   }]);

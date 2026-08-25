@@ -3,11 +3,11 @@
  * Canonical package release entry point for the public Scout repository.
  *
  * Release preparation is intentionally separate. Execution only accepts an
- * already-versioned, reviewed, clean public main commit and resumes matching
- * tag, npm, and GitHub state after an interrupted attempt.
+ * already-versioned, reviewed, clean public main commit. Completed matching
+ * release state is idempotent; partial immutable npm state fails closed.
  */
 import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -248,6 +248,7 @@ function printPlan(version, options) {
   );
   console.log("  DRY bash scripts/ship-npm.sh");
   console.log("  DRY bash scripts/ship-npm.sh --verify-published");
+  console.log("  DRY attach the exact npm integrity receipt to " + tag);
   const note = options.releaseNotesFile
     ? " --notes-file " + options.releaseNotesFile
     : " --generate-notes";
@@ -316,7 +317,7 @@ function inspectGithubRelease(tag) {
   const result = spawnCapture("gh", [
     "release", "view", tag,
     "--repo", CANONICAL_GITHUB_REPOSITORY,
-    "--json", "tagName,isDraft,isPrerelease,url",
+    "--json", "tagName,isDraft,isPrerelease,url,assets",
   ]);
   if (result.status === 0) {
     let release;
@@ -370,6 +371,42 @@ function ensureGithubRelease(tag, options) {
     throw new Error("GitHub release " + tag + " is not a final stable release.");
   }
   console.log("\nGitHub release: " + release.url);
+  return release;
+}
+
+function npmReleaseReceiptPath(version, releaseSha) {
+  if (process.env.SCOUT_NPM_RELEASE_STATE_DIR) {
+    return path.resolve(repoRoot, process.env.SCOUT_NPM_RELEASE_STATE_DIR, "receipt.json");
+  }
+  const commonDirectory = capture("git", [
+    "rev-parse", "--path-format=absolute", "--git-common-dir",
+  ]);
+  return path.join(
+    commonDirectory,
+    "scout-release",
+    "npm",
+    version + "-" + releaseSha,
+    "receipt.json",
+  );
+}
+
+function ensureGithubReceiptAsset(tag, receiptPath) {
+  if (!existsSync(receiptPath) || !statSync(receiptPath).isFile()) {
+    throw new Error("Verified npm release receipt is missing: " + receiptPath);
+  }
+  run("gh", [
+    "release", "upload", tag,
+    receiptPath,
+    "--repo", CANONICAL_GITHUB_REPOSITORY,
+    "--clobber",
+  ]);
+  const release = inspectGithubRelease(tag);
+  const expectedSize = statSync(receiptPath).size;
+  const asset = release?.assets?.find((candidate) => candidate.name === "receipt.json");
+  if (!asset || asset.size !== expectedSize) {
+    throw new Error("GitHub release npm receipt asset did not verify at " + expectedSize + " bytes.");
+  }
+  console.log("npm integrity receipt: " + asset.url);
 }
 
 function main() {
@@ -404,6 +441,7 @@ function main() {
   run("bash", ["scripts/ship-npm.sh"]);
   run("bash", ["scripts/ship-npm.sh", "--verify-published"]);
   ensureGithubRelease(tag, options);
+  ensureGithubReceiptAsset(tag, npmReleaseReceiptPath(version, head));
 
   const finalTag = remoteTagCommit(tag);
   if (finalTag !== head) {

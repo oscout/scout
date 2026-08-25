@@ -51,11 +51,22 @@ npm run ship -- 0.2.88 --execute --yes
 
 The command refuses a non-public origin, a branch other than `main`, a HEAD that
 does not match freshly fetched `origin/main`, a dirty tree, mismatched existing
-tag or registry state, or unsigned `scoutd`. Matching tag, npm, and GitHub
-release state is resumable after an interrupted attempt. It builds and
-pack-checks before tagging or publishing, uploads both packages under a
-version-specific staging dist-tag, verifies the complete set, and only then
-promotes the pair to `latest`.
+tag or registry state, or unsigned `scoutd`. Matching tag and completed npm and
+GitHub release state are idempotent. Before its first immutable upload, the
+publisher atomically retains both exact tarballs and an integrity receipt under
+the repository's common Git directory at
+`.git/scout-release/npm/<version>-<release-sha>/`. Keep that bundle through final
+npm and GitHub verification; it is the evidence used to resume without
+rebuilding the signed CLI. The receipt is also attached to the GitHub release.
+
+The `0.2.88` cutover fails closed if only part of its immutable npm package set
+already exists; use a fresh version instead of mixing artifacts across
+publication attempts. A complete immutable set may resume missing mutable
+dist-tag promotion only when every registry SRI matches the retained receipt.
+Missing, altered, or mismatched receipt state also fails closed—do not delete the
+bundle during a release train. The publisher uploads the retained candidates
+under a version-specific staging dist-tag, verifies the complete pair, and only
+then promotes both packages to `latest`.
 
 Local npm publication does not create GitHub OIDC provenance. The preferred
 long-term path is the public workflow once all of these are configured:
@@ -67,10 +78,12 @@ long-term path is the public workflow once all of these are configured:
 - npm trusted publishing for
   `oscout/scout/.github/workflows/release-package-npm.yml`
 
-The workflow remains manual-only until those prerequisites are present. Once
-they are, dispatch `release-package-npm.yml` for an already-reviewed public
-`vX.Y.Z` tag and wait for it to verify both packages; do not weaken the signing
-gate or publish a GitHub release before the package set succeeds.
+The workflow explicitly refuses `v0.2.88`: that one authority-cutover release
+is local signed publication only. The workflow remains manual-only until the
+prerequisites are present. Once they are, dispatch
+`release-package-npm.yml` for an already-reviewed public `v0.2.89` or later tag
+and wait for it to verify both packages; do not weaken the signing gate or
+publish a GitHub release before the package set succeeds.
 
 ## Verify
 

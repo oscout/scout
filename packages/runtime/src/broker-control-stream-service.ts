@@ -28,13 +28,9 @@ export type BrokerControlStreamServiceDeps = {
    * Current value of every ephemeral fact a fresh subscriber needs, replayed on
    * connect. Not a backlog: one entry per subject, overwritten in place.
    *
-   * Presence publishes on transition only, so an agent that has been executing
-   * for nine minutes puts nothing on the wire during those nine minutes. Without
-   * this replay an SSE client that connects mid-window is blind until the next
-   * transition — and a nine-minute-old state is exactly the one an operator
-   * needs on connect. The tRPC subscribe path already does this; the SSE path
-   * did not, which made the two transports disagree about what a new subscriber
-   * knows.
+   * Presence publishes transitions plus bounded freshness refreshes. A client
+   * can still connect between them, so it must receive current state immediately
+   * rather than wait for the next refresh. The tRPC path follows the same rule.
    */
   presenceSnapshot?: () => ControlEvent[];
 };

@@ -4,6 +4,8 @@ import {
   createScoutExecutionResolution,
   parseScoutRuntimeSpec,
   formatScoutRuntimeSpec,
+  isScoutLaunchableHarness,
+  normalizeScoutLaunchableHarness,
   isScoutRuntimeHarnessListed,
   normalizeScoutRuntimeModel,
   SCOUT_LAUNCHABLE_HARNESSES,
@@ -23,6 +25,16 @@ describe("runtime execution contracts", () => {
     expect(SCOUT_LAUNCHABLE_HARNESSES).toContain("codex");
     expect(SCOUT_LAUNCHABLE_HARNESSES).not.toContain("worker" as never);
     expect(SCOUT_LAUNCHABLE_HARNESSES).not.toContain("bridge" as never);
+  });
+
+  test("normalizes aliases without making the canonical harness type guard unsound", () => {
+    expect(isScoutLaunchableHarness("opencode")).toBe(true);
+    expect(isScoutLaunchableHarness("oc")).toBe(false);
+    expect(normalizeScoutLaunchableHarness("oc")).toBe("opencode");
+    expect(parseScoutRuntimeSpec("oc/qwen3-coder")).toEqual({
+      ok: true,
+      value: { harness: "opencode", model: "qwen3-coder" },
+    });
   });
 
   test("uses the Scout-owned catalog for product defaults and display labels", () => {

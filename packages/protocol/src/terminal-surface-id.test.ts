@@ -15,11 +15,11 @@ import {
 
 const surface: TerminalSurface = {
   backend: "tmux",
-  sessionName: "relay-openscout-main-arts-mac-mini-local-claude",
+  sessionName: "relay-openscout-main-test-workstation-local-claude",
   paneId: null,
-  attachCommand: ["tmux", "attach", "-t", "relay-openscout-main-arts-mac-mini-local-claude"],
+  attachCommand: ["tmux", "attach", "-t", "relay-openscout-main-test-workstation-local-claude"],
   observeCommand: null,
-  relay: { backend: "tmux", sessionName: "relay-openscout-main-arts-mac-mini-local-claude" },
+  relay: { backend: "tmux", sessionName: "relay-openscout-main-test-workstation-local-claude" },
 };
 
 describe("terminal surface ids", () => {
@@ -132,7 +132,7 @@ describe("terminalSurfaceIdForSurface", () => {
     expect(terminalSurfaceMatchesId(surface, paneHandle)).toBe(false);
     expect(terminalSurfaceMatchesId({ ...surface, paneId: "%3" }, paneHandle)).toBe(true);
     // A legacy key names no pane, so it still reaches a pane-scoped surface.
-    expect(terminalSurfaceMatchesId({ ...surface, paneId: "%3" }, "tmux:relay-openscout-main-arts-mac-mini-local-claude")).toBe(true);
+    expect(terminalSurfaceMatchesId({ ...surface, paneId: "%3" }, "tmux:relay-openscout-main-test-workstation-local-claude")).toBe(true);
   });
 
   test("a node-scoped handle does not match a surface on another node", () => {

@@ -2708,8 +2708,8 @@ describe("createOpenScoutWebServer", () => {
 
   test("projects active Claude tmux permission prompts into agent and operator attention", async () => {
     useIsolatedOpenScoutHome();
-    const agentId = "paper-screen-fable.work-hud-013-voice-settings.arachs-mac-mini-local";
-    const sessionId = "relay-paper-screen-fable-work-hud-013-voice-settings-arachs-mac-mini-local-claude";
+    const agentId = "paper-screen-fable.work-hud-013-voice-settings.scout-mac-mini-local";
+    const sessionId = "relay-paper-screen-fable-work-hud-013-voice-settings-scout-mac-mini-local-claude";
     queryAgentsResult = [{
       id: agentId,
       definitionId: "paper-screen-fable",
@@ -2725,7 +2725,7 @@ describe("createOpenScoutWebServer", () => {
       transport: "tmux",
       selector: "@paper-screen-fable",
       defaultSelector: "@paper-screen-fable",
-      nodeQualifier: "arachs-mac-mini-local",
+      nodeQualifier: "scout-mac-mini-local",
       workspaceQualifier: "work-hud-013-voice-settings",
       wakePolicy: "on_demand",
       capabilities: ["chat", "invoke", "deliver"],

@@ -4,6 +4,7 @@ import type {
   PresenceUpdatedEvent,
   ScoutId,
 } from "@openscout/protocol";
+import { PRESENCE_REFRESH_INTERVAL_MS } from "@openscout/protocol";
 
 import type { RuntimeRegistrySnapshot } from "./registry.js";
 import { projectObservedStatusesFromRuntimeSnapshot } from "./observed-status-projection.js";
@@ -26,6 +27,8 @@ export interface BrokerPresenceServiceDeps {
   nodeId?: ScoutId;
   now?: () => number;
   map?: BrokerPresenceMapOptions;
+  /** Maximum gap between emitted beats while fresh evidence keeps arriving. */
+  refreshIntervalMs?: number;
 }
 
 /**
@@ -38,9 +41,12 @@ export interface BrokerPresenceServiceDeps {
  */
 export class BrokerPresenceService {
   readonly presence: BrokerPresenceMap;
+  private readonly lastPublished = new Map<ScoutId, { at: number; updatedAt: number }>();
+  private readonly refreshIntervalMs: number;
 
   constructor(private readonly deps: BrokerPresenceServiceDeps) {
     this.presence = new BrokerPresenceMap(deps.map);
+    this.refreshIntervalMs = Math.max(1, deps.refreshIntervalMs ?? PRESENCE_REFRESH_INTERVAL_MS);
   }
 
   /** Current live map, for handing to a subscriber on connect. */
@@ -62,10 +68,11 @@ export class BrokerPresenceService {
   /**
    * Project every known agent, fold it into the map, publish transitions.
    *
-   * Returns the number of transitions published. Steady state is zero: a fleet
-   * of agents heartbeating through unchanged activities puts nothing on the
-   * wire, because the timestamps already in each renderer's hands keep ageing
-   * on their own.
+   * Returns the number of updates published. Activity/detail transitions are
+   * immediate. Otherwise a freshness refresh is emitted at a bounded cadence
+   * while newer liveness evidence keeps arriving; without that refresh a
+   * connected client would eventually classify its last `staleAt` as stale
+   * even though the broker's private map kept receiving heartbeats.
    */
   sample(now = this.now()): number {
     const snapshot = this.deps.snapshot();
@@ -84,12 +91,23 @@ export class BrokerPresenceService {
         needRef: needRefForStatus(status),
         boundConversationId: boundConversationIdForStatus(status, snapshot),
       }, now);
-      if (!result?.transitioned) continue;
-      this.deps.publish(this.presenceEvent(result.beat, result.previousActivity, now));
+      if (!result) continue;
+      const lastPublished = this.lastPublished.get(agentId);
+      const refreshDue = !result.transitioned
+        && lastPublished !== undefined
+        && result.beat.updatedAt > lastPublished.updatedAt
+        && now - lastPublished.at >= this.refreshIntervalMs;
+      if (!result.transitioned && !refreshDue) continue;
+      this.deps.publish(this.presenceEvent(
+        result.beat,
+        result.transitioned ? result.previousActivity : undefined,
+        now,
+      ));
+      this.lastPublished.set(agentId, { at: now, updatedAt: result.beat.updatedAt });
       published += 1;
     }
 
-    this.presence.prune(now);
+    this.forgetPublished(this.presence.prune(now));
     return published;
   }
 
@@ -102,7 +120,9 @@ export class BrokerPresenceService {
    * just went quiet, which is exactly why it cannot be trusted to arrive.
    */
   sweep(now = this.now()): ScoutId[] {
-    return this.presence.prune(now);
+    const dropped = this.presence.prune(now);
+    this.forgetPublished(dropped);
+    return dropped;
   }
 
   private presenceEvent(
@@ -122,6 +142,10 @@ export class BrokerPresenceService {
 
   private now(): number {
     return this.deps.now?.() ?? Date.now();
+  }
+
+  private forgetPublished(agentIds: ScoutId[]): void {
+    for (const agentId of agentIds) this.lastPublished.delete(agentId);
   }
 }
 

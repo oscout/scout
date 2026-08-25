@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Reviewed public release tag, for example v0.2.88"
+        description: "Reviewed public release tag (v0.2.89 or later; v0.2.88 is local-only)"
         required: true
       npm_tag:
         description: "npm dist-tag"
@@ -50,6 +50,10 @@ jobs:
 
           if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
             echo "Release version must look like X.Y.Z, got: $version" >&2
+            exit 1
+          fi
+          if [[ "$version" == "0.2.88" ]]; then
+            echo "v0.2.88 is a local signed authority-cutover release and cannot be published by this workflow." >&2
             exit 1
           fi
           if [[ "$npm_tag" != "latest" ]]; then

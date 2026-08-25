@@ -12,12 +12,18 @@ import {
 } from "./broker-process-manager.js";
 import {
   claimScoutPairingSupervision,
+  claimScoutPairingRuntimeOwnership,
   isScoutPairingProcessRunning,
+  isScoutPairingRuntimeOwnerPidRunning,
+  readLiveScoutPairingRuntimeOwner,
   readScoutPairingProcessPid,
+  readScoutPairingRuntimeOwner,
   readScoutPairingSupervisorIntent,
   releaseScoutPairingSupervision,
   resolveScoutPairingSupervisorPaths,
+  signalScoutPairingRuntimeOwner,
   updateScoutPairingSupervisorIntent,
+  type ScoutPairingRuntimeOwner,
 } from "./pairing-supervisor.js";
 import {
   resolveBunExecutable,
@@ -508,13 +514,17 @@ function resolvePairingControllerCommand(): PairingControllerCommand | null {
   return bun ? { command: bun.path, args: [entrypoint], cwd: setupCwd } : null;
 }
 
-async function waitForPairingProcessExit(pid: number): Promise<boolean> {
+async function waitForPairingProcessExit(owner: ScoutPairingRuntimeOwner): Promise<boolean> {
   const deadline = Date.now() + PAIRING_STOP_TIMEOUT_MS;
   while (Date.now() < deadline) {
-    if (!isScoutPairingProcessRunning(pid)) return true;
+    if (!readLiveScoutPairingRuntimeOwner(pairingPaths.runtimeOwnerPath, {
+      expectedToken: owner.token,
+    })) return true;
     await sleep(100);
   }
-  return !isScoutPairingProcessRunning(pid);
+  return !readLiveScoutPairingRuntimeOwner(pairingPaths.runtimeOwnerPath, {
+    expectedToken: owner.token,
+  });
 }
 
 async function stopPairingController(): Promise<void> {
@@ -525,22 +535,26 @@ async function stopPairingController(): Promise<void> {
     return;
   }
   const runtimePid = readScoutPairingProcessPid(pairingPaths.runtimePidPath);
-  if (!isScoutPairingProcessRunning(runtimePid)) {
+  const runtimeOwner = readLiveScoutPairingRuntimeOwner(pairingPaths.runtimeOwnerPath);
+  if (!runtimePid || !runtimeOwner || runtimeOwner.pid !== runtimePid) {
+    if (isScoutPairingProcessRunning(runtimePid)) {
+      warn("refusing to signal unverified pairing runtime pid", { pid: runtimePid });
+    }
     pairingProcess = null;
     return;
   }
-  try {
-    process.kill(runtimePid as number, "SIGTERM");
-  } catch {
+  if (!signalScoutPairingRuntimeOwner(runtimeOwner, "SIGTERM", {
+    ownerPath: pairingPaths.runtimeOwnerPath,
+  })) {
     pairingProcess = null;
     return;
   }
-  if (!await waitForPairingProcessExit(runtimePid as number)) {
+  if (!await waitForPairingProcessExit(runtimeOwner)) {
     warn("pairing controller did not exit after SIGTERM; forcing shutdown", { pid: runtimePid });
-    try {
-      process.kill(runtimePid as number, "SIGKILL");
-    } catch {
-      // The process exited between the liveness check and the signal.
+    if (!signalScoutPairingRuntimeOwner(runtimeOwner, "SIGKILL", {
+      ownerPath: pairingPaths.runtimeOwnerPath,
+    })) {
+      warn("pairing controller ownership changed before SIGKILL; refusing escalation", { pid: runtimePid });
     }
   }
   pairingProcess = null;
@@ -595,7 +609,25 @@ async function reconcilePairingController(): Promise<void> {
   try {
     let intent = readScoutPairingSupervisorIntent(pairingPaths.intentPath);
     const runtimePid = readScoutPairingProcessPid(pairingPaths.runtimePidPath);
-    const runtimeRunning = isScoutPairingProcessRunning(runtimePid);
+    let runtimeOwner = readScoutPairingRuntimeOwner(pairingPaths.runtimeOwnerPath);
+    if (!runtimeOwner && runtimePid) {
+      // One-time adoption for controllers launched before ownership claims
+      // existed. Adoption still requires the live command marker and captures
+      // its OS birth stamp before any future signal is allowed.
+      try {
+        runtimeOwner = claimScoutPairingRuntimeOwnership({
+          pid: runtimePid,
+          ownerPath: pairingPaths.runtimeOwnerPath,
+        });
+        log("adopted legacy pairing runtime ownership", { pid: runtimePid });
+      } catch {
+        runtimeOwner = null;
+      }
+    }
+    // The 500 ms health loop must stay cheap. PID reuse is relevant when we
+    // are about to signal, not while observing a known owner; TERM and KILL
+    // both go through signalScoutPairingRuntimeOwner's exact proof below.
+    const runtimeRunning = isScoutPairingRuntimeOwnerPidRunning(runtimeOwner, runtimePid);
 
     // Preserve the pre-supervisor behavior on first upgrade: pairing starts
     // with base unless the operator has explicitly persisted a stopped intent.
@@ -624,6 +656,10 @@ async function reconcilePairingController(): Promise<void> {
     }
 
     if (restartRequested) {
+      // A deliberate operator restart is a new attempt, not another crash in
+      // the previous attempt's exponential-backoff series.
+      pairingNextStartAt = 0;
+      pairingRestartDelayMs = RESTART_MIN_DELAY_MS;
       await stopPairingController();
     } else if (
       pairingProcess

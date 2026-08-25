@@ -10,7 +10,6 @@ import { homedir, hostname as osHostname } from "node:os";
 import { dirname, join } from "node:path";
 
 import { assertTestIsolatedUserData } from "./support-paths.js";
-import { stripBonjourCollisionSuffix } from "./node-identity.js";
 
 export const LOCAL_CONFIG_VERSION = 1;
 export const DEFAULT_SCOUT_WEB_PORTAL_HOST = "scout.local";
@@ -60,8 +59,7 @@ export const DEFAULT_LOCAL_CONFIG = {
 } as const;
 
 export function normalizeLocalHostnameLabel(value: string | undefined): string {
-  const stripped = value ? stripBonjourCollisionSuffix(value) : value;
-  const firstLabel = stripped
+  const firstLabel = value
     ?.trim()
     .replace(/\.local\.?$/i, "")
     .split(".")
@@ -76,8 +74,7 @@ export function normalizeLocalHostnameLabel(value: string | undefined): string {
 }
 
 export function normalizeLocalHostname(value: string | undefined): string {
-  const stripped = value ? stripBonjourCollisionSuffix(value) : value;
-  const trimmed = stripped?.trim().replace(/\.$/, "").toLowerCase();
+  const trimmed = value?.trim().replace(/\.$/, "").toLowerCase();
   const labels = trimmed
     ?.split(".")
     .map((label) =>
