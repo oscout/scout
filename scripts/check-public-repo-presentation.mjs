@@ -69,17 +69,28 @@ if (docsIndex.version !== versions.get("package.json")) {
 
 const npmReleaseWorkflow = read(".github/workflows/release-package-npm.yml");
 if (
-  !npmReleaseWorkflow.includes('minimum_version="0.2.89"')
+  !npmReleaseWorkflow.includes('minimum_version="0.2.90"')
   || !npmReleaseWorkflow.includes("This workflow publishes v${minimum_version} or later")
 ) {
-  throw new Error("GitHub npm workflow must reject releases older than v0.2.89");
+  throw new Error("GitHub npm workflow must reject releases older than v0.2.90");
 }
 if (npmReleaseWorkflow.includes("NPM_TOKEN:")) {
   throw new Error("GitHub npm workflow must use trusted publishing without a legacy npm token");
 }
+if (!npmReleaseWorkflow.includes("  group: release-package-npm\n")) {
+  throw new Error("GitHub npm releases must serialize registry-wide across version tags");
+}
+const publishIndex = npmReleaseWorkflow.indexOf("          bash scripts/ship-npm.sh\n");
+const verifyIndex = npmReleaseWorkflow.indexOf(
+  "          bash scripts/ship-npm.sh --verify-published\n",
+);
+const receiptIndex = npmReleaseWorkflow.indexOf("      - name: Locate exact release receipt\n");
+if (publishIndex < 0 || verifyIndex < publishIndex || receiptIndex < verifyIndex) {
+  throw new Error("GitHub npm workflow must verify the public registry before uploading a receipt");
+}
 const releaseGuide = read("docs/releases.md");
 if (
-  !/workflow explicitly refuses `v0\.2\.88`/i.test(releaseGuide)
+  !/workflow explicitly refuses `v0\.2\.89` and older/i.test(releaseGuide)
   || !/strict partial-set guard[\s\S]*neither package was promoted to[\s\S]*`latest`/i.test(releaseGuide)
 ) {
   throw new Error("Release guide must document the partial, unpromoted v0.2.88 attempt");
