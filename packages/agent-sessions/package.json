@@ -1,6 +1,6 @@
 {
   "name": "@openscout/agent-sessions",
-  "version": "0.2.90",
+  "version": "0.2.91",
   "description": "Browser-safe adapters and normalized event streams for coding-agent sessions",
   "license": "Apache-2.0",
   "type": "module",

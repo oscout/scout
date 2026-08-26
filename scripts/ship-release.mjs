@@ -44,7 +44,7 @@ function usage() {
     "  node scripts/ship-release.mjs <version> [options]",
     "",
     "Example:",
-    "  npm run ship -- 0.2.90",
+    "  npm run ship -- 0.2.91",
     "  npm run ship -- 0.2.88 --execute --yes  # historical local cutover only",
     "",
     "Options:",

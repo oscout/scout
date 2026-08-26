@@ -1,6 +1,6 @@
 {
   "name": "@openscout/web",
-  "version": "0.2.90",
+  "version": "0.2.91",
   "private": true,
   "description": "Baseline Scout web control plane, reusable UI primitives, and bundled local server",
   "homepage": "https://github.com/oscout/scout/tree/main/packages/web#readme",

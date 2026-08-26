@@ -358,8 +358,16 @@ function createPublishFixture({
     `    "$fixture/release-state/openscout-scout-${version}.tgz") key="scout" ;;`,
     '    *) exit 78 ;;',
     '  esac',
+    '  publish_tag=""',
+    '  while [[ "$#" -gt 0 ]]; do',
+    '    if [[ "$1" == "--tag" ]]; then publish_tag="$2"; shift 2; else shift; fi',
+    '  done',
+    '  [[ -n "$publish_tag" ]] || exit 80',
     '  : > "$state_dir/${key}-exists"',
-    '  echo "publish $key" >> "$state_dir/mutations.log"',
+    '  if [[ "$publish_tag" == "latest" ]]; then echo ' +
+      version +
+      ' > "$state_dir/${key}-latest"; fi',
+    '  echo "publish $key tag=$publish_tag" >> "$state_dir/mutations.log"',
     '  exit 0',
     'fi',
     'if [[ "$command" == "dist-tag" && "$2" == "add" ]]; then',
@@ -545,7 +553,10 @@ test("publish resumes from retained candidates and records them before npm mutat
     assert.equal(result.status, 0, result.stderr);
     assert.doesNotMatch(result.stdout, /Building packages|Preparing exact publication candidates/);
     const mutations = readFileSync(join(stateDir, "mutations.log"), "utf8");
-    assert.match(mutations, /^publish protocol\npublish scout\n/);
+    assert.match(
+      mutations,
+      /^publish protocol tag=scout-release-0-2-88\npublish scout tag=scout-release-0-2-88\n/,
+    );
     assert.match(mutations, /promote protocol\npromote scout\n/);
   } finally {
     rmSync(fixture, { recursive: true, force: true });
@@ -578,8 +589,208 @@ test("trusted publishing works without optional token arguments on macOS Bash", 
     assert.equal(result.status, 0, result.stderr);
     assert.equal(existsSync(join(fixture, "secret-called")), false);
     const mutations = readFileSync(join(stateDir, "mutations.log"), "utf8");
-    assert.match(mutations, /^publish protocol\npublish scout\n/);
-    assert.match(mutations, /promote protocol\npromote scout\n/);
+    assert.match(mutations, /^publish protocol tag=latest\npublish scout tag=latest\n/);
+    assert.doesNotMatch(mutations, /promote|remove-stage/);
+  } finally {
+    rmSync(fixture, { recursive: true, force: true });
+  }
+});
+
+test("trusted publishing converges split older latest tags with one fresh version", () => {
+  const { fixture, stateDir } = createPublishFixture({
+    version: "0.2.91",
+    authority: "github-oidc",
+    protocolLatest: "0.2.90",
+    scoutLatest: "0.2.87",
+  });
+  try {
+    const result = spawnSync("bash", ["scripts/ship-npm.sh"], {
+      cwd: fixture,
+      encoding: "utf8",
+      env: {
+        ...registryEnv(fixture),
+        GITHUB_ACTIONS: "true",
+        GITHUB_REPOSITORY: "oscout/scout",
+        GITHUB_WORKFLOW_REF:
+          "oscout/scout/.github/workflows/release-package-npm.yml@refs/heads/main",
+        NPM_TOKEN: "",
+      },
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /latest is split across older versions/i);
+    assert.equal(
+      readFileSync(join(stateDir, "mutations.log"), "utf8"),
+      "publish protocol tag=latest\npublish scout tag=latest\n",
+    );
+  } finally {
+    rmSync(fixture, { recursive: true, force: true });
+  }
+});
+
+test("prepared OIDC candidate bundles are reusable without npm mutation", () => {
+  const { fixture, stateDir } = createPublishFixture({
+    version: "0.2.91",
+    authority: "github-oidc",
+  });
+  try {
+    const result = spawnSync("bash", ["scripts/ship-npm.sh", "--prepare"], {
+      cwd: fixture,
+      encoding: "utf8",
+      env: {
+        ...registryEnv(fixture),
+        GITHUB_ACTIONS: "true",
+        GITHUB_REPOSITORY: "oscout/scout",
+        GITHUB_WORKFLOW_REF:
+          "oscout/scout/.github/workflows/release-package-npm.yml@refs/heads/main",
+        NPM_TOKEN: "",
+      },
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /candidate bundle 0\.2\.91 is ready/i);
+    assert.equal(readFileSync(join(stateDir, "mutations.log"), "utf8"), "");
+  } finally {
+    rmSync(fixture, { recursive: true, force: true });
+  }
+});
+
+test("publish-prepared refuses to mutate npm without an exact candidate bundle", () => {
+  const { fixture, stateDir } = createPublishFixture({
+    version: "0.2.91",
+    authority: "github-oidc",
+  });
+  try {
+    rmSync(join(fixture, "release-state"), { recursive: true, force: true });
+    const result = spawnSync("bash", ["scripts/ship-npm.sh", "--publish-prepared"], {
+      cwd: fixture,
+      encoding: "utf8",
+      env: {
+        ...registryEnv(fixture),
+        GITHUB_ACTIONS: "true",
+        GITHUB_REPOSITORY: "oscout/scout",
+        GITHUB_WORKFLOW_REF:
+          "oscout/scout/.github/workflows/release-package-npm.yml@refs/heads/main",
+        NPM_TOKEN: "",
+      },
+    });
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /publish-prepared requires an exact retained candidate bundle/i);
+    assert.equal(readFileSync(join(stateDir, "mutations.log"), "utf8"), "");
+  } finally {
+    rmSync(fixture, { recursive: true, force: true });
+  }
+});
+
+test("OIDC recovery resumes only the missing Scout package from the exact protocol prefix", () => {
+  const { fixture, stateDir } = createPublishFixture({
+    version: "0.2.91",
+    authority: "github-oidc",
+    protocolLatest: "0.2.91",
+    scoutLatest: "0.2.87",
+  });
+  try {
+    writeFileSync(join(stateDir, "protocol-exists"), "");
+    const result = spawnSync("bash", ["scripts/ship-npm.sh", "--publish-prepared"], {
+      cwd: fixture,
+      encoding: "utf8",
+      env: {
+        ...registryEnv(fixture),
+        GITHUB_ACTIONS: "true",
+        GITHUB_REPOSITORY: "oscout/scout",
+        GITHUB_WORKFLOW_REF:
+          "oscout/scout/.github/workflows/release-package-npm.yml@refs/heads/main",
+        NPM_TOKEN: "",
+      },
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /exact protocol prefix is recoverable/i);
+    assert.equal(readFileSync(join(stateDir, "mutations.log"), "utf8"), "publish scout tag=latest\n");
+  } finally {
+    rmSync(fixture, { recursive: true, force: true });
+  }
+});
+
+test("OIDC recovery rejects a protocol artifact that has not reached latest", () => {
+  const { fixture, stateDir } = createPublishFixture({
+    version: "0.2.91",
+    authority: "github-oidc",
+    protocolLatest: "0.2.90",
+    scoutLatest: "0.2.87",
+  });
+  try {
+    writeFileSync(join(stateDir, "protocol-exists"), "");
+    const result = spawnSync("bash", ["scripts/ship-npm.sh", "--publish-prepared"], {
+      cwd: fixture,
+      encoding: "utf8",
+      env: {
+        ...registryEnv(fixture),
+        GITHUB_ACTIONS: "true",
+        GITHUB_REPOSITORY: "oscout/scout",
+        GITHUB_WORKFLOW_REF:
+          "oscout/scout/.github/workflows/release-package-npm.yml@refs/heads/main",
+        NPM_TOKEN: "",
+      },
+    });
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /not the recoverable protocol-first prefix/i);
+    assert.equal(readFileSync(join(stateDir, "mutations.log"), "utf8"), "");
+  } finally {
+    rmSync(fixture, { recursive: true, force: true });
+  }
+});
+
+test("OIDC recovery rejects a Scout-only partial set before npm mutation", () => {
+  const { fixture, stateDir } = createPublishFixture({
+    version: "0.2.91",
+    authority: "github-oidc",
+    protocolLatest: "0.2.87",
+    scoutLatest: "0.2.91",
+  });
+  try {
+    writeFileSync(join(stateDir, "scout-exists"), "");
+    const result = spawnSync("bash", ["scripts/ship-npm.sh", "--publish-prepared"], {
+      cwd: fixture,
+      encoding: "utf8",
+      env: {
+        ...registryEnv(fixture),
+        GITHUB_ACTIONS: "true",
+        GITHUB_REPOSITORY: "oscout/scout",
+        GITHUB_WORKFLOW_REF:
+          "oscout/scout/.github/workflows/release-package-npm.yml@refs/heads/main",
+        NPM_TOKEN: "",
+      },
+    });
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /exists before its protocol dependency/i);
+    assert.equal(readFileSync(join(stateDir, "mutations.log"), "utf8"), "");
+  } finally {
+    rmSync(fixture, { recursive: true, force: true });
+  }
+});
+
+test("trusted publishing refuses dist-tag recovery for an existing unpromoted set", () => {
+  const { fixture, stateDir } = createPublishFixture({
+    version: "0.2.90",
+    authority: "github-oidc",
+    completeSet: true,
+    protocolLatest: "0.2.87",
+    scoutLatest: "0.2.87",
+  });
+  try {
+    const result = spawnSync("bash", ["scripts/ship-npm.sh"], {
+      cwd: fixture,
+      encoding: "utf8",
+      env: {
+        ...registryEnv(fixture),
+        GITHUB_ACTIONS: "true",
+        GITHUB_REPOSITORY: "oscout/scout",
+        GITHUB_WORKFLOW_REF:
+          "oscout/scout/.github/workflows/release-package-npm.yml@refs/heads/main",
+        NPM_TOKEN: "",
+      },
+    });
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /npm OIDC cannot mutate dist-tags/i);
+    assert.equal(readFileSync(join(stateDir, "mutations.log"), "utf8"), "");
   } finally {
     rmSync(fixture, { recursive: true, force: true });
   }
@@ -595,7 +806,10 @@ test("first-upload SRI mismatch stops before the second immutable upload", () =>
     });
     assert.notEqual(result.status, 0);
     assert.match(result.stderr, /registry integrity does not match the exact reviewed candidate/i);
-    assert.equal(readFileSync(join(stateDir, "mutations.log"), "utf8"), "publish protocol\n");
+    assert.equal(
+      readFileSync(join(stateDir, "mutations.log"), "utf8"),
+      "publish protocol tag=scout-release-0-2-88\n",
+    );
   } finally {
     rmSync(fixture, { recursive: true, force: true });
   }
@@ -728,7 +942,7 @@ test("the isolated retained Scout candidate is normalized and passes the exact a
   }
 });
 
-test("npm publication is pinned, staged as a set, and exactly scoped", () => {
+test("npm publication is pinned, OIDC-compatible, and exactly scoped", () => {
   const script = readFileSync(new URL("ship-npm.sh", import.meta.url), "utf8");
   const publishMissing = script.slice(
     script.indexOf("publish_missing_artifacts()"),
@@ -736,7 +950,8 @@ test("npm publication is pinned, staged as a set, and exactly scoped", () => {
   );
   assert.match(script, /PUBLISH_PACKAGES=\(protocol cli\)/);
   assert.match(script, /NPM_REGISTRY_URL="https:\/\/registry\.npmjs\.org"/);
-  assert.match(script, /--tag "\$STAGING_NPM_TAG"/);
+  assert.match(script, /PUBLISH_NPM_TAG="\$FINAL_NPM_TAG"/);
+  assert.match(script, /--tag "\$PUBLISH_NPM_TAG"/);
   assert.match(script, /gitHead/);
   assert.match(script, /repository\.url/);
   assert.match(script, /registry integrity does not match the exact reviewed candidate/);
@@ -747,7 +962,10 @@ test("npm publication is pinned, staged as a set, and exactly scoped", () => {
   assert.match(script, /prepare-publish-manifest\.mjs "\$pack_root" "\$PWD"/);
   assert.match(script, /check-packed-manifests\.mjs --tarball "\$tarball"/);
   assert.ok(publishMissing.indexOf('wait_for_exact_artifact "$index"') < publishMissing.indexOf('inspect_exact_artifact "$index"'));
-  const execution = script.slice(script.indexOf('if [[ "$MODE" == "publish" ]]'));
+  const execution = script.slice(
+    script.indexOf("if all_artifacts_exist; then", script.indexOf("if [[ \"$MODE\" == \"publish-prepared\"")),
+  );
+  assert.ok(execution.length > 0);
   assert.ok(execution.indexOf("persist_release_bundle") < execution.indexOf("publish_missing_artifacts"));
   assert.match(script, /npm release lock already exists/);
   assert.match(script, /refusing to overwrite existing npm release bundle/);
@@ -756,6 +974,7 @@ test("npm publication is pinned, staged as a set, and exactly scoped", () => {
   assert.match(script, /refusing a second local publication authority for v0\.2\.89 and later/);
   assert.match(script, /GITHUB_WORKFLOW_REF/);
   assert.match(script, /requires npm trusted publishing; refusing token authentication/);
+  assert.match(script, /npm OIDC cannot mutate dist-tags/);
   assert.match(script, /assert_canonical_publish_ref/);
   assert.ok(script.indexOf("publish_missing_artifacts") < script.indexOf("promote_package_set"));
 });

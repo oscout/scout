@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Reviewed public release tag (v0.2.90 or later)"
+        description: "Reviewed public release tag (v0.2.91 or later)"
         required: true
       npm_tag:
         description: "npm dist-tag"
@@ -13,13 +13,19 @@ on:
         type: choice
         options:
           - latest
+      recovery_run_id:
+        description: "Prior failed run containing the exact candidate bundle (optional)"
+        required: false
+        default: ""
+        type: string
 
 permissions:
+  actions: read
   contents: read
   id-token: write
 
 concurrency:
-  # Dist-tag promotion is registry-global, so releases must serialize even when
+  # npm publication is registry-global, so releases must serialize even when
   # different version tags are dispatched close together.
   group: release-package-npm
   cancel-in-progress: false
@@ -36,11 +42,13 @@ jobs:
         env:
           INPUT_TAG: ${{ inputs.tag || '' }}
           INPUT_NPM_TAG: ${{ inputs.npm_tag || '' }}
+          INPUT_RECOVERY_RUN_ID: ${{ inputs.recovery_run_id || '' }}
         run: |
           set -euo pipefail
 
           tag="$INPUT_TAG"
           npm_tag="${INPUT_NPM_TAG:-latest}"
+          recovery_run_id="$INPUT_RECOVERY_RUN_ID"
 
           case "$tag" in
             v*) version="${tag#v}" ;;
@@ -54,12 +62,12 @@ jobs:
             echo "Release version must look like X.Y.Z, got: $version" >&2
             exit 1
           fi
-          minimum_version="0.2.90"
+          minimum_version="0.2.91"
           IFS='.' read -r major minor patch <<< "$version"
           major=$((10#$major))
           minor=$((10#$minor))
           patch=$((10#$patch))
-          if ((major == 0 && (minor < 2 || (minor == 2 && patch < 90)))); then
+          if ((major == 0 && (minor < 2 || (minor == 2 && patch < 91)))); then
             echo "This workflow publishes v${minimum_version} or later, got: v${version}" >&2
             exit 1
           fi
@@ -67,22 +75,40 @@ jobs:
             echo "Canonical public releases require npm_tag=latest, got: $npm_tag" >&2
             exit 1
           fi
+          if [[ -n "$recovery_run_id" && ! "$recovery_run_id" =~ ^[1-9][0-9]*$ ]]; then
+            echo "Recovery run id must be a positive integer, got: $recovery_run_id" >&2
+            exit 1
+          fi
 
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "npm_tag=${npm_tag:-latest}" >> "$GITHUB_OUTPUT"
 
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
-          ref: ${{ steps.release.outputs.tag }}
+          ref: refs/tags/${{ steps.release.outputs.tag }}
           fetch-depth: 0
 
       - name: Verify canonical public source
+        id: source
         shell: bash
+        env:
+          DISPATCH_REF: ${{ github.ref }}
+          DISPATCH_SHA: ${{ github.sha }}
+          RELEASE_VERSION: ${{ steps.release.outputs.version }}
         run: |
           set -euo pipefail
           [[ "$GITHUB_REPOSITORY" == "oscout/scout" ]] || {
             echo "Release workflow must run in oscout/scout, got: $GITHUB_REPOSITORY" >&2
+            exit 1
+          }
+          [[ "$DISPATCH_REF" == "refs/heads/main" ]] || {
+            echo "Release workflow must be dispatched from public main, got: $DISPATCH_REF" >&2
+            exit 1
+          }
+          release_sha="$(git rev-parse HEAD^{commit})"
+          [[ "$release_sha" == "$DISPATCH_SHA" ]] || {
+            echo "Release tag resolves to $release_sha, but the main dispatch attests $DISPATCH_SHA" >&2
             exit 1
           }
           git fetch --no-tags origin refs/heads/main
@@ -90,19 +116,73 @@ jobs:
             echo "Release tag is not reachable from public main." >&2
             exit 1
           }
+          git_common_dir="$(git rev-parse --path-format=absolute --git-common-dir)"
+          bundle_path="${git_common_dir}/scout-release/npm/${RELEASE_VERSION}-${release_sha}"
+          echo "sha=$release_sha" >> "$GITHUB_OUTPUT"
+          echo "bundle_path=$bundle_path" >> "$GITHUB_OUTPUT"
+          echo "candidate_artifact_name=scout-npm-candidate-bundle-${RELEASE_VERSION}-${release_sha}" >> "$GITHUB_OUTPUT"
 
-      - uses: actions/setup-node@v6
+      - name: Validate recovery run
+        if: ${{ inputs.recovery_run_id != '' }}
+        shell: bash
+        env:
+          EXPECTED_ARTIFACT: ${{ steps.source.outputs.candidate_artifact_name }}
+          EXPECTED_SHA: ${{ steps.source.outputs.sha }}
+          GH_TOKEN: ${{ github.token }}
+          RECOVERY_RUN_ID: ${{ inputs.recovery_run_id }}
+        run: |
+          set -euo pipefail
+
+          run_record="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${RECOVERY_RUN_ID}" \
+            --jq '[.path, .event, (.head_branch // ""), .head_sha, .status, (.conclusion // "")] | @tsv')"
+          IFS=$'\t' read -r run_path run_event run_branch run_sha run_status run_conclusion <<< "$run_record"
+          [[ "$run_path" == ".github/workflows/release-package-npm.yml" \
+            && "$run_event" == "workflow_dispatch" \
+            && "$run_branch" == "main" \
+            && "$run_sha" == "$EXPECTED_SHA" \
+            && "$run_status" == "completed" ]] || {
+            echo "Recovery run does not match this workflow, main, and exact release SHA." >&2
+            exit 1
+          }
+          case "$run_conclusion" in
+            failure|cancelled|timed_out) ;;
+            *)
+              echo "Recovery run conclusion is not eligible: ${run_conclusion:-missing}" >&2
+              exit 1
+              ;;
+          esac
+
+          artifact_matches="$(gh api \
+            "repos/${GITHUB_REPOSITORY}/actions/runs/${RECOVERY_RUN_ID}/artifacts?per_page=100" \
+            --jq ".artifacts[] | select(.name == \"${EXPECTED_ARTIFACT}\" and .expired == false) | .id")"
+          if [[ -z "$artifact_matches" || "$artifact_matches" == *$'\n'* ]]; then
+            echo "Recovery run must expose exactly one live ${EXPECTED_ARTIFACT} artifact." >&2
+            exit 1
+          fi
+          echo "Validated recovery artifact ${artifact_matches} from run ${RECOVERY_RUN_ID}."
+
+      - name: Restore exact release candidate bundle
+        if: ${{ inputs.recovery_run_id != '' }}
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: ${{ steps.source.outputs.candidate_artifact_name }}
+          path: ${{ steps.source.outputs.bundle_path }}
+          github-token: ${{ github.token }}
+          repository: oscout/scout
+          run-id: ${{ inputs.recovery_run_id }}
+
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: "24.x"
           registry-url: "https://registry.npmjs.org"
           package-manager-cache: false
 
-      - uses: oven-sh/setup-bun@v2
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
         with:
           bun-version: "1.3.13"
 
       - name: Set up Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
 
       - name: Install dependencies
         run: bun install --frozen-lockfile
@@ -190,15 +270,31 @@ jobs:
           }
           JS
 
-      - name: Publish public package set
+      - name: Prepare exact release candidates
         env:
           NPM_TAG: ${{ steps.release.outputs.npm_tag }}
           # Public releases carry GitHub Actions build provenance through npm.
           NPM_CONFIG_PROVENANCE: "true"
           OPENSCOUT_REQUIRE_SCOUTD_SIGN: "1"
           OPENSCOUT_SIGN_IDENTITY: ${{ vars.OPENSCOUT_SIGN_IDENTITY || '' }}
+        run: bash scripts/ship-npm.sh --prepare
+
+      - name: Upload exact release candidate bundle
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ${{ steps.source.outputs.candidate_artifact_name }}
+          path: ${{ steps.source.outputs.bundle_path }}
+          if-no-files-found: error
+          include-hidden-files: true
+          compression-level: 0
+          retention-days: 90
+
+      - name: Publish public package set
+        env:
+          NPM_TAG: ${{ steps.release.outputs.npm_tag }}
+          NPM_CONFIG_PROVENANCE: "true"
         run: |
-          bash scripts/ship-npm.sh
+          bash scripts/ship-npm.sh --publish-prepared
           # Defense in depth: a durable candidate receipt is not publication
           # evidence. Re-read npm before any receipt can be uploaded.
           bash scripts/ship-npm.sh --verify-published
@@ -221,7 +317,7 @@ jobs:
           echo "path=$artifact" >> "$GITHUB_OUTPUT"
 
       - name: Upload exact release receipt
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: scout-npm-release-receipt-${{ steps.release.outputs.version }}
           path: ${{ steps.receipt.outputs.path }}

@@ -69,28 +69,96 @@ if (docsIndex.version !== versions.get("package.json")) {
 
 const npmReleaseWorkflow = read(".github/workflows/release-package-npm.yml");
 if (
-  !npmReleaseWorkflow.includes('minimum_version="0.2.90"')
+  !npmReleaseWorkflow.includes('minimum_version="0.2.91"')
+  || !npmReleaseWorkflow.includes("(minor == 2 && patch < 91)")
   || !npmReleaseWorkflow.includes("This workflow publishes v${minimum_version} or later")
 ) {
-  throw new Error("GitHub npm workflow must reject releases older than v0.2.90");
+  throw new Error("GitHub npm workflow must reject releases older than v0.2.91");
 }
 if (npmReleaseWorkflow.includes("NPM_TOKEN:")) {
   throw new Error("GitHub npm workflow must use trusted publishing without a legacy npm token");
 }
+const unpinnedReleaseActions = [...npmReleaseWorkflow.matchAll(/uses:\s+([^\s@]+)@([^\s#]+)/g)]
+  .filter(([, , revision]) => !/^[0-9a-f]{40}$/.test(revision))
+  .map(([, action, revision]) => `${action}@${revision}`);
+if (unpinnedReleaseActions.length > 0) {
+  throw new Error(`Trusted-publisher actions must use immutable commit pins: ${unpinnedReleaseActions.join(", ")}`);
+}
 if (!npmReleaseWorkflow.includes("  group: release-package-npm\n")) {
   throw new Error("GitHub npm releases must serialize registry-wide across version tags");
 }
-const publishIndex = npmReleaseWorkflow.indexOf("          bash scripts/ship-npm.sh\n");
+if (
+  !npmReleaseWorkflow.includes("      recovery_run_id:\n")
+  || !npmReleaseWorkflow.includes("Recovery run id must be a positive integer")
+  || !npmReleaseWorkflow.includes("      - name: Validate recovery run\n")
+  || !npmReleaseWorkflow.includes("        if: ${{ inputs.recovery_run_id != '' }}\n")
+  || !npmReleaseWorkflow.includes("          run-id: ${{ inputs.recovery_run_id }}\n")
+  || !npmReleaseWorkflow.includes(".github/workflows/release-package-npm.yml")
+  || !npmReleaseWorkflow.includes("run_sha\" == \"$EXPECTED_SHA")
+  || !npmReleaseWorkflow.includes("run_conclusion")
+  || !npmReleaseWorkflow.includes("must expose exactly one live")
+) {
+  throw new Error("GitHub npm recovery must validate one explicit, exact-source recovery run and artifact");
+}
+if (
+  !npmReleaseWorkflow.includes("          ref: refs/tags/${{ steps.release.outputs.tag }}\n")
+  || !npmReleaseWorkflow.includes('[[ "$DISPATCH_REF" == "refs/heads/main" ]]')
+  || !npmReleaseWorkflow.includes('[[ "$release_sha" == "$DISPATCH_SHA" ]]')
+) {
+  throw new Error("GitHub npm provenance must bind the explicit release tag to the attested main dispatch SHA");
+}
+const recoveryValidationIndex = npmReleaseWorkflow.indexOf(
+  "      - name: Validate recovery run\n",
+);
+const restoreIndex = npmReleaseWorkflow.indexOf(
+  "      - name: Restore exact release candidate bundle\n",
+);
+const prepareIndex = npmReleaseWorkflow.indexOf(
+  "        run: bash scripts/ship-npm.sh --prepare\n",
+);
+const candidateUploadIndex = npmReleaseWorkflow.indexOf(
+  "      - name: Upload exact release candidate bundle\n",
+);
+const publishIndex = npmReleaseWorkflow.indexOf(
+  "          bash scripts/ship-npm.sh --publish-prepared\n",
+);
 const verifyIndex = npmReleaseWorkflow.indexOf(
   "          bash scripts/ship-npm.sh --verify-published\n",
 );
-const receiptIndex = npmReleaseWorkflow.indexOf("      - name: Locate exact release receipt\n");
-if (publishIndex < 0 || verifyIndex < publishIndex || receiptIndex < verifyIndex) {
-  throw new Error("GitHub npm workflow must verify the public registry before uploading a receipt");
+const receiptIndex = npmReleaseWorkflow.indexOf(
+  "      - name: Locate exact release receipt\n",
+);
+const finalReceiptUploadIndex = npmReleaseWorkflow.indexOf(
+  "      - name: Upload exact release receipt\n",
+);
+if (
+  recoveryValidationIndex < 0
+  || restoreIndex < recoveryValidationIndex
+  || prepareIndex < restoreIndex
+  || candidateUploadIndex < prepareIndex
+  || publishIndex < candidateUploadIndex
+  || verifyIndex < publishIndex
+  || receiptIndex < verifyIndex
+  || finalReceiptUploadIndex < receiptIndex
+) {
+  throw new Error(
+    "GitHub npm workflow must restore, prepare, retain, publish, verify, then upload its final receipt",
+  );
+}
+const candidateArtifactName = /candidate_artifact_name=(scout-npm-[a-z-]+)-\$\{RELEASE_VERSION\}/
+  .exec(npmReleaseWorkflow)?.[1];
+const finalReceiptArtifactName = /name: (scout-npm-[a-z-]+)-\$\{\{ steps\.release\.outputs\.version \}\}/
+  .exec(npmReleaseWorkflow)?.[1];
+if (
+  candidateArtifactName !== "scout-npm-candidate-bundle"
+  || finalReceiptArtifactName !== "scout-npm-release-receipt"
+  || candidateArtifactName === finalReceiptArtifactName
+) {
+  throw new Error("GitHub npm candidate and final receipt artifacts must have distinct names");
 }
 const releaseGuide = read("docs/releases.md");
 if (
-  !/workflow explicitly refuses `v0\.2\.89` and older/i.test(releaseGuide)
+  !/workflow explicitly refuses `v0\.2\.90` and older/i.test(releaseGuide)
   || !/strict partial-set guard[\s\S]*neither package was promoted to[\s\S]*`latest`/i.test(releaseGuide)
 ) {
   throw new Error("Release guide must document the partial, unpromoted v0.2.88 attempt");
