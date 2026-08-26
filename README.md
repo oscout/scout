@@ -150,6 +150,7 @@ suite is available through `bun run check` and `bun run test:unit`.
 - [Agent sessions](./packages/agent-sessions/README.md) — harness observation and session models
 - [Public-source boundary](./docs/public-source-boundary.md) — what ships here and how package/source parity stays verifiable
 - [Release guide](./docs/releases.md) — reviewed-source, package, tag, and registry invariants
+- [OpenScout for macOS](./releases/macos/README.md) — public downloads, updater trust, and verification
 - [Architecture diagram source](./.github/diagrams/control-plane.arc.json) — editable Arc model behind the README diagram
 - [Brand assets](./.github/assets/README.md) — canonical mark, hero, avatar, and social preview sources
 - [OpenScout](https://openscout.app) — product context and project home
