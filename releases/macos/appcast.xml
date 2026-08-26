@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" xmlns:dc="http://purl.org/dc/elements/1.1/">
+  <channel>
+    <title>Scout</title>
+    <link>https://raw.githubusercontent.com/oscout/scout/main/releases/macos/appcast.xml</link>
+    <description>Automatic updates for the Scout macOS app.</description>
+    <language>en</language>
+  </channel>
+</rss>

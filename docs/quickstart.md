@@ -10,7 +10,8 @@ state, and routes one real request through the broker.
 ## Prerequisites
 
 - Bun 1.3 or newer;
-- macOS or Linux;
+- Apple-silicon macOS, or Linux with a process manager for the foreground
+  broker;
 - at least one supported coding-agent harness if you want Scout to launch or
   route work.
 
@@ -23,11 +24,24 @@ bun add -g @openscout/scout
 scout --version
 ```
 
-Installing the package does not silently start services. Initialize the local
-control plane explicitly:
+Installing the package does not silently start services. On Apple-silicon
+macOS, initialize the local control plane explicitly:
 
 ```bash
 scout setup
+scout doctor
+```
+
+On Linux, `setup` initializes Scout but does not install a system service. Keep
+the broker running under your process manager, then run `doctor` from another
+shell:
+
+```bash
+scout setup
+openscout-runtime broker
+```
+
+```bash
 scout doctor
 ```
 

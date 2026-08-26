@@ -16,7 +16,7 @@ is not public `oscout/scout` `main`.
 
 ## Current publication set
 
-The `0.2.91` public release publishes:
+The `0.2.92` public release publishes:
 
 - `@openscout/protocol`
 - `@openscout/scout`
@@ -35,9 +35,9 @@ Choose an explicit unused version. Never use `patch` to recover from registry
 drift.
 
 ```bash
-node scripts/bump-version.mjs 0.2.91
+node scripts/bump-version.mjs 0.2.92
 bun install
-npm run ship -- 0.2.91
+npm run ship -- 0.2.92
 bun run check
 bun run test:unit
 bash scripts/ship-npm.sh --dry-run

@@ -37,6 +37,8 @@ const RELEASE_VERSION_SOURCES = [
 ];
 
 const RELEASE_JSON_VERSION_FILES = ["docs.json"];
+const LOCKFILE_PATH = "bun.lock";
+const LOCKFILE_WORKSPACES = RELEASE_MANIFESTS.filter((relativePath) => relativePath !== ".");
 
 const DEP_SECTIONS = ["dependencies", "devDependencies", "peerDependencies", "optionalDependencies"];
 const BACKUP_FILENAME = ".package.json.publish-backup";
@@ -60,6 +62,28 @@ function bumpSemver(current, kind) {
   throw new Error(`Unknown bump kind: ${kind}`);
 }
 
+function compareSemver(left, right) {
+  const leftParts = left.split(".").map(Number);
+  const rightParts = right.split(".").map(Number);
+  for (let index = 0; index < 3; index += 1) {
+    const difference = (leftParts[index] ?? 0) - (rightParts[index] ?? 0);
+    if (difference !== 0) return difference;
+  }
+  return 0;
+}
+
+function lockfileWorkspaceVersion(contents, relativePath) {
+  const marker = `    "${relativePath}": {`;
+  const start = contents.indexOf(marker);
+  if (start < 0) throw new Error(`Could not find ${relativePath} workspace in ${LOCKFILE_PATH}`);
+  const nextWorkspace = contents.indexOf('\n    "', start + marker.length);
+  const end = nextWorkspace >= 0 ? nextWorkspace : contents.length;
+  const block = contents.slice(start, end);
+  const match = /("version"\s*:\s*")([^"]+)(")/.exec(block);
+  if (!match) throw new Error(`Could not find ${relativePath} version in ${LOCKFILE_PATH}`);
+  return { version: match[2], start: start + match.index + match[1].length, end: start + match.index + match[1].length + match[2].length };
+}
+
 async function main() {
   const args = process.argv.slice(2);
   const dryRun = args.includes("--dry-run");
@@ -81,6 +105,51 @@ async function main() {
   if (!/^\d+\.\d+\.\d+$/.test(nextVersion)) {
     console.error(`Invalid version: ${nextVersion}`);
     process.exit(1);
+  }
+  if (compareSemver(nextVersion, currentVersion) < 0) {
+    throw new Error(`Refusing to downgrade the public release from ${currentVersion} to ${nextVersion}.`);
+  }
+
+  // Validate every version source before writing any of them. This keeps a
+  // missing pattern or stale manifest from leaving a half-bumped worktree.
+  for (const rel of RELEASE_MANIFESTS) {
+    const pkg = await readPkg(path.join(REPO_ROOT, rel));
+    if (pkg.version !== currentVersion) {
+      throw new Error(
+        `Release manifests are not lockstep before bump: ${rel}/package.json=${pkg.version}, `
+          + `expected ${currentVersion}.`,
+      );
+    }
+  }
+  for (const source of RELEASE_VERSION_SOURCES) {
+    const contents = await fs.readFile(path.join(REPO_ROOT, source.path), "utf8");
+    const match = source.pattern.exec(contents);
+    if (!match) throw new Error(`Could not find release version in ${source.path}`);
+    if (match[2] !== currentVersion) {
+      throw new Error(
+        `Release sources are not lockstep before bump: ${source.path}=${match[2]}, `
+          + `expected ${currentVersion}.`,
+      );
+    }
+  }
+  for (const relativePath of RELEASE_JSON_VERSION_FILES) {
+    const contents = JSON.parse(await fs.readFile(path.join(REPO_ROOT, relativePath), "utf8"));
+    if (contents.version !== currentVersion) {
+      throw new Error(
+        `Release sources are not lockstep before bump: ${relativePath}=${contents.version}, `
+          + `expected ${currentVersion}.`,
+      );
+    }
+  }
+  const lockfileContents = await fs.readFile(path.join(REPO_ROOT, LOCKFILE_PATH), "utf8");
+  for (const relativePath of LOCKFILE_WORKSPACES) {
+    const observed = lockfileWorkspaceVersion(lockfileContents, relativePath).version;
+    if (observed !== currentVersion) {
+      throw new Error(
+        `Release lockfile is not lockstep before bump: ${relativePath}=${observed}, `
+          + `expected ${currentVersion}.`,
+      );
+    }
   }
 
   // Map of package-name -> new-version (for pinned cross-package rewrites).
@@ -163,6 +232,23 @@ async function main() {
     }
     touched += 1;
     console.log(`  ${relativePath}: ${priorVersion} -> ${nextVersion}${dryRun ? " (dry)" : ""}`);
+  }
+
+  let rewrittenLockfile = lockfileContents;
+  let lockfileChanged = false;
+  for (const relativePath of LOCKFILE_WORKSPACES) {
+    const observed = lockfileWorkspaceVersion(rewrittenLockfile, relativePath);
+    if (observed.version === nextVersion) continue;
+    rewrittenLockfile =
+      rewrittenLockfile.slice(0, observed.start)
+      + nextVersion
+      + rewrittenLockfile.slice(observed.end);
+    lockfileChanged = true;
+  }
+  if (lockfileChanged) {
+    if (!dryRun) await fs.writeFile(path.join(REPO_ROOT, LOCKFILE_PATH), rewrittenLockfile);
+    touched += 1;
+    console.log(`  ${LOCKFILE_PATH}: workspace versions -> ${nextVersion}${dryRun ? " (dry)" : ""}`);
   }
 
   if (touched === 0) {

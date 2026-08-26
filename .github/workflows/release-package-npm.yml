@@ -242,6 +242,21 @@ jobs:
             }
           }
 
+          const lockfile = readFileSync("bun.lock", "utf8");
+          for (const manifest of manifests.slice(1)) {
+            const workspace = manifest.replace(/\/package\.json$/, "");
+            const marker = `    "${workspace}": {`;
+            const start = lockfile.indexOf(marker);
+            const nextWorkspace = start < 0 ? -1 : lockfile.indexOf('\n    "', start + marker.length);
+            const block = start < 0
+              ? ""
+              : lockfile.slice(start, nextWorkspace >= 0 ? nextWorkspace : lockfile.length);
+            const lockVersion = block.match(/"version"\s*:\s*"([^"]+)"/)?.[1];
+            if (lockVersion !== expected) {
+              drift.push(`bun.lock:${workspace}=${lockVersion ?? "missing"}`);
+            }
+          }
+
           if (drift.length > 0) {
             throw new Error(`Manifest versions must match ${tag}: ${drift.join(", ")}`);
           }

@@ -4,7 +4,7 @@
  * relevant Vite clients into dist/ for published packages.
  */
 import { spawnSync } from "node:child_process";
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -13,14 +13,6 @@ export function getOpenScoutRepoRoot() {
   return resolve(dirname(fileURLToPath(import.meta.url)), "..");
 }
 
-/**
- * Compatibility bundle for older packaging entry names. This now builds the
- * current @openscout/web server instead of the retired desktop web server.
- *
- * @param {string} repoRoot
- * @param {string} outfile Absolute path to scout-web-server.mjs
- * @returns {boolean}
- */
 // The web server graph includes tsyringe (via @peculiar/x509 in
 // @openscout/runtime's node-tls-identity), which throws at module init
 // unless the reflect-metadata polyfill has already been evaluated. Bun's
@@ -32,15 +24,24 @@ export function getOpenScoutRepoRoot() {
 // packages/cli/package.json.
 export const REFLECT_METADATA_BANNER = '--banner=import "reflect-metadata";';
 
-export function bundleScoutWebServerBun(repoRoot, outfile) {
+/**
+ * Keep the legacy internal server entry resolvable without bundling the same
+ * implementation twice. The canonical module owns its import.meta.url-relative
+ * client assets, so importing it from this sibling preserves static-root
+ * resolution for older launchers.
+ *
+ * @param {string} _repoRoot Kept for compatibility with the former bundler API.
+ * @param {string} outfile Absolute path to scout-web-server.mjs
+ * @returns {boolean}
+ */
+export function bundleScoutWebServerBun(_repoRoot, outfile) {
   mkdirSync(dirname(outfile), { recursive: true });
-  const entry = resolve(repoRoot, "packages/web/server/index.ts");
-  const result = spawnSync(
-    "bun",
-    ["build", entry, "--target=bun", "--format=esm", "--outfile", outfile, "--external", "vite", REFLECT_METADATA_BANNER],
-    { cwd: repoRoot, stdio: "inherit" },
+  writeFileSync(
+    outfile,
+    '// Compatibility entry point. Use scout-control-plane-web.mjs.\nimport "./scout-control-plane-web.mjs";\n',
   );
-  return (result.status ?? 1) === 0;
+  console.log(`  wrote web-server compatibility entry -> ${outfile}`);
+  return verifyBundleStaticChecks(outfile);
 }
 
 /**

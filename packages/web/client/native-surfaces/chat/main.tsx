@@ -275,7 +275,7 @@ function previewFixtureMessages() {
     // Quoted, because the report this fixture stands for was itself a reply —
     // and a long body alone never reproduced the containment failure.
     replyToMessageId: "demo-3",
-    body: "[ask:f-preview] Reviewed the phone captures and found the layout issue. **The message actions should stay reachable even when an agent sends a long report.**\n\n1. The reaction row stays compact and keeps 44-point targets.\n\n2. The lifted message becomes a bounded preview instead of taking over the screen.\n\n3. The complete report remains in the conversation behind Read more.\n\n" + "This paragraph intentionally exercises a realistic long agent response without changing the production conversation record. ".repeat(16),
+    body: "[" + "ask:f-preview] Reviewed the phone captures and found the layout issue. **The message actions should stay reachable even when an agent sends a long report.**\n\n1. The reaction row stays compact and keeps 44-point targets.\n\n2. The lifted message becomes a bounded preview instead of taking over the screen.\n\n3. The complete report remains in the conversation behind Read more.\n\n" + "This paragraph intentionally exercises a realistic long agent response without changing the production conversation record. ".repeat(16),
     createdAt: Date.now() - 180_000,
     isOperator: false,
     attachments: [],

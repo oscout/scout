@@ -14,6 +14,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { findFootprintFailures } from "./check-packed-manifests.mjs";
 
 const repoRoot = new URL("..", import.meta.url);
 const currentVersion = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"))
@@ -131,6 +132,14 @@ test("SCOUT_APP_VERSION participates in release lockstep", () => {
         JSON.stringify({ name, version: "0.2.88" }),
       );
     }
+    const lockWorkspaces = manifests
+      .filter((directory) => directory !== ".")
+      .map((directory) => `    "${directory}": {\n      "version": "0.2.88",\n    },`)
+      .join("\n");
+    writeFileSync(
+      join(fixture, "bun.lock"),
+      `{\n  "lockfileVersion": 1,\n  "workspaces": {\n${lockWorkspaces}\n  },\n}\n`,
+    );
     mkdirSync(join(fixture, "apps/desktop/src/shared"), { recursive: true });
     writeFileSync(
       join(fixture, "apps/desktop/src/shared/product.ts"),
@@ -904,7 +913,14 @@ test("the isolated retained Scout candidate is normalized and passes the exact a
     );
     writeFileSync(join(fixture, "candidate/bin/scout"), "#!/bin/sh\n");
     writeFileSync(join(fixture, "candidate/bin/scoutd"), "fixture broker\n");
+    mkdirSync(join(fixture, "candidate/dist/client"), { recursive: true });
     writeFileSync(join(fixture, "candidate/dist/main.mjs"), "export {};\n");
+    writeFileSync(join(fixture, "candidate/dist/scout-control-plane-web.mjs"), "export {};\n");
+    writeFileSync(
+      join(fixture, "candidate/dist/scout-web-server.mjs"),
+      'import "./scout-control-plane-web.mjs";\n',
+    );
+    writeFileSync(join(fixture, "candidate/dist/client/index.html"), "<!doctype html>\n");
     writeFileSync(join(fixture, "candidate/README.md"), "# Scout\n");
 
     const normalize = spawnSync(
@@ -940,6 +956,26 @@ test("the isolated retained Scout candidate is normalized and passes the exact a
   } finally {
     rmSync(fixture, { recursive: true, force: true });
   }
+});
+
+test("Scout's release footprint gate rejects the previous duplicate web bundle", () => {
+  const reviewed = findFootprintFailures("@openscout/scout", {
+    packedBytes: 8_078_367,
+    unpackedBytes: 36_969_198,
+    fileCount: 445,
+    fileSizes: new Map([["package/dist/scout-web-server.mjs", 103]]),
+  });
+  assert.deepEqual(reviewed, []);
+
+  const duplicated = findFootprintFailures("@openscout/scout", {
+    packedBytes: 8_823_743,
+    unpackedBytes: 40_496_165,
+    fileCount: 445,
+    fileSizes: new Map([["package/dist/scout-web-server.mjs", 3_450_009]]),
+  });
+  assert.match(duplicated.join("\n"), /packed size .* exceeds/);
+  assert.match(duplicated.join("\n"), /unpacked size .* exceeds/);
+  assert.match(duplicated.join("\n"), /compatibility entry must not exceed/);
 });
 
 test("npm publication is pinned, OIDC-compatible, and exactly scoped", () => {
