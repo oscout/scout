@@ -5,6 +5,12 @@ import { join } from "node:path";
 
 import type { ScoutCommandContext } from "../context.ts";
 import { ScoutCliError } from "../errors.ts";
+import {
+  layerProcesses,
+  readLifecycleTree,
+  resolveAppBundlePaths,
+  terminateProcesses,
+} from "../app-lifecycle.ts";
 
 const GITHUB_OWNER = "oscout";
 const GITHUB_REPO = "scout";
@@ -14,7 +20,6 @@ const APP_PATH = `/Applications/${APP_NAME}`;
 const INFO_PLIST_PATH = `${APP_PATH}/Contents/Info.plist`;
 const APP_BUNDLE_ID = "app.openscout.scout";
 const HELPER_BUNDLE_ID = "app.openscout.scout.menu";
-const APP_PROCESS_NAME = "Scout";
 const USER_AGENT = "scout-cli";
 const EXPECTED_TEAM_ID = "2U83JFPW66";
 const MINIMUM_MACOS_MAJOR = 26;
@@ -317,7 +322,9 @@ function plistValue(plistPath: string, key: string): string {
 
 function verifyDmg(dmgPath: string): void {
   verifyDeveloperIdSignature(dmgPath, "OpenScout DMG");
-  commandOutput("xcrun", ["stapler", "validate", dmgPath], "DMG notarization ticket");
+  // Gatekeeper is part of macOS and validates the Developer ID/notarization
+  // policy without requiring Xcode or the Command Line Tools. Release tooling
+  // separately verifies the stapled ticket before publishing the immutable DMG.
   commandOutput(
     "spctl",
     ["--assess", "--type", "open", "--context", "context:primary-signature", "--verbose=2", dmgPath],
@@ -353,7 +360,6 @@ function verifyAppBundle(appPath: string, expectedVersion: string): void {
     throw new ScoutCliError(`mounted helper does not require macOS ${MINIMUM_MACOS_VERSION}`);
   }
   verifyDeveloperIdSignature(helperPath, "ScoutMenu.app");
-  commandOutput("xcrun", ["stapler", "validate", appPath], "app notarization ticket");
   commandOutput("spctl", ["--assess", "--type", "execute", "--verbose=2", appPath], "app Gatekeeper assessment");
 }
 
@@ -440,21 +446,27 @@ function removeQuarantine(): void {
   spawnSync("xattr", ["-rd", "com.apple.quarantine", APP_PATH], { encoding: "utf8" });
 }
 
-function isAppRunning(): boolean {
-  return (spawnSync("pgrep", ["-x", APP_PROCESS_NAME], { encoding: "utf8" }).status ?? 1) === 0;
-}
+async function stopInstalledAppProcesses(): Promise<boolean> {
+  const tree = readLifecycleTree(resolveAppBundlePaths(APP_PATH));
+  const processes = layerProcesses(tree, ["menu", "app"]);
+  if (processes.length === 0) return false;
 
-function quitApp(): void {
-  spawnSync("osascript", ["-e", `tell application id "${APP_BUNDLE_ID}" to quit`], {
-    encoding: "utf8",
-  });
-}
-
-function launchApp(): void {
-  const byId = spawnSync("open", ["-b", APP_BUNDLE_ID], { encoding: "utf8" });
-  if ((byId.status ?? 1) !== 0) {
-    spawnSync("open", [APP_PATH], { encoding: "utf8" });
+  const pids = [...new Set(processes.map((entry) => entry.pid))];
+  const { survivors } = await terminateProcesses(pids);
+  if (survivors.length > 0) {
+    throw new ScoutCliError(
+      `could not stop the installed OpenScout processes (${survivors.join(", ")}); the app was not replaced`,
+    );
   }
+  return true;
+}
+
+function launchApp(): boolean {
+  // Open the exact installed bundle before falling back to LaunchServices'
+  // bundle-id lookup, which may also know about a developer build.
+  const byPath = spawnSync("open", [APP_PATH], { encoding: "utf8" });
+  if ((byPath.status ?? 1) === 0) return true;
+  return (spawnSync("open", ["-b", APP_BUNDLE_ID], { encoding: "utf8" }).status ?? 1) === 0;
 }
 
 function renderInstallResult(result: ScoutInstallResult): string {
@@ -539,17 +551,27 @@ export async function runInstallCommand(context: ScoutCommandContext, args: stri
   }
 
   const asset = findAppDmgAsset(release);
-  const wasRunning = isAppRunning();
 
   const workDir = mkdtempSync(join(tmpdir(), "scout-install-"));
   const dmgPath = join(workDir, asset.name);
   let mountPoint: string | null = null;
+  let wasRunning = false;
   try {
     await downloadDmg(asset, dmgPath, context);
     verifyDmg(dmgPath);
     context.stderr(`Installing OpenScout ${target} to ${APP_PATH}…`);
     mountPoint = mountDmg(dmgPath);
+    // Stop only processes whose executable resolves inside the installed
+    // /Applications bundle. Name-only matching can kill a developer build or
+    // miss the independently running embedded ScoutMenu helper.
+    wasRunning = await stopInstalledAppProcesses();
     copyAppFromMount(mountPoint, target);
+  } catch (error) {
+    // copyAppFromMount restores the previous bundle on failure. Restore its
+    // running state as well, even when --no-restart was requested for a
+    // successful update, and preserve the original installation error.
+    if (wasRunning) launchApp();
+    throw error;
   } finally {
     if (mountPoint) unmountDmg(mountPoint);
     rmSync(workDir, { recursive: true, force: true });
@@ -558,8 +580,11 @@ export async function runInstallCommand(context: ScoutCommandContext, args: stri
   removeQuarantine();
 
   if (wasRunning && options.restart) {
-    quitApp();
-    launchApp();
+    if (!launchApp()) {
+      throw new ScoutCliError(
+        `OpenScout ${target} was installed, but macOS could not relaunch it. Open ${APP_PATH} manually.`,
+      );
+    }
   }
 
   const installedAfter = getInstalledVersion() ?? target;

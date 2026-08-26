@@ -392,9 +392,11 @@ scout menu restart
 scout menu quit
 ```
 
-If you run it from an OpenScout repo checkout, Scout prefers the repo helper at
-`apps/macos/bin/openscout-menu.ts`, so it can auto-build and launch the app bundle for you.
-Outside the repo, it opens an installed `OpenScout Menu` app when available.
+For an installed product, `scout menu` opens the helper embedded in
+`/Applications/OpenScout.app`; use `scout install` to install or update it.
+Private OpenScout product checkouts may also provide a developer-only repo
+helper. That native source and its build/DMG commands are not part of this
+public repository.
 
 ### Web UI (`scout server start`, `scout server open`)
 

@@ -26,9 +26,9 @@ harnesses one explicit coordination model instead of a pile of one-off relays.
 > **Current posture:** Scout is for high-trust local developer pilots. It is
 > not yet a hardened multi-tenant or compliance-ready control plane.
 
-## Start in 60 seconds
+## Start on Apple-silicon macOS in 60 seconds
 
-Scout uses [Bun](https://bun.sh) as its runtime.
+Scout uses [Bun](https://bun.sh) 1.3 or newer as its runtime.
 
 ```bash
 bun add -g @openscout/scout
@@ -37,6 +37,10 @@ scout setup
 scout doctor
 scout who
 ```
+
+On Linux, Scout uses the same package but runs its broker as a foreground
+process under your process manager. Follow the [quickstart](./docs/quickstart.md)
+for that lifecycle.
 
 Then route real work from any project:
 
