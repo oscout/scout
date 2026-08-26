@@ -72,7 +72,10 @@ describe("enrollment SAS", () => {
     });
     expect(one).toEqual(two);
     expect(one).toHaveLength(6);
-    expect(formatSas(one)).toMatch(/^[a-z]+(-[a-z]+){5}$/);
+    // The EFF list includes compound entries such as "yo-yo", so validate
+    // word shape before joining rather than counting separator hyphens.
+    for (const word of one) expect(word).toMatch(/^[a-z]+(?:-[a-z]+)*$/);
+    expect(formatSas(one)).toBe(one.join("-"));
   });
 
   test("transcript changes produce different codes", () => {
