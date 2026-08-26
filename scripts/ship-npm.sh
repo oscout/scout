@@ -1,10 +1,11 @@
 #!/bin/bash
 # Build, verify, and publish the public Scout npm package set.
 #
-# Publication is two-phase: both immutable versions are uploaded under a
-# version-specific staging dist-tag, verified against the current public commit,
-# and only then promoted to latest. A completed release is idempotent; a partial
-# immutable package set fails closed so separate attempts cannot mix candidates.
+# GitHub OIDC publication pre-verifies both immutable candidates, then publishes
+# them directly to latest in dependency order. npm trusted publishing authorizes
+# `npm publish`, but not the separate `npm dist-tag` mutations used by the
+# historical local 0.2.88 two-phase path. A completed release is idempotent; a
+# partial immutable package set fails closed so attempts cannot mix candidates.
 
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -16,11 +17,13 @@ if [[ "$#" -gt 1 ]]; then
 fi
 case "$MODE" in
   publish) ;;
+  --prepare) MODE="prepare" ;;
+  --publish-prepared) MODE="publish-prepared" ;;
   --dry-run) MODE="dry-run" ;;
   --verify-state) MODE="verify-state" ;;
   --verify-published) MODE="verify-published" ;;
   -h|--help)
-    echo "Usage: scripts/ship-npm.sh [--dry-run|--verify-state|--verify-published]"
+    echo "Usage: scripts/ship-npm.sh [--prepare|--publish-prepared|--dry-run|--verify-state|--verify-published]"
     exit 0
     ;;
   *)
@@ -57,6 +60,7 @@ NPMRC=""
 RELEASE_LOCK_DIR=""
 RELEASE_LOCK_HELD=0
 RELEASE_STAGE_DIR=""
+RELEASE_RECEIPT_LOADED=0
 cleanup() {
   if [[ -n "$NPMRC" && -f "$NPMRC" ]]; then
     rm -f "$NPMRC"
@@ -107,6 +111,12 @@ PUBLICATION_AUTHORITY="local-signed"
 if [[ "${GITHUB_ACTIONS:-}" == "true" ]]; then
   PUBLICATION_AUTHORITY="github-oidc"
 fi
+DIRECT_FINAL_PUBLISH=0
+PUBLISH_NPM_TAG="$STAGING_NPM_TAG"
+if [[ "$PUBLICATION_AUTHORITY" == "github-oidc" ]]; then
+  DIRECT_FINAL_PUBLISH=1
+  PUBLISH_NPM_TAG="$FINAL_NPM_TAG"
+fi
 RELEASE_STATE_DIR="${SCOUT_NPM_RELEASE_STATE_DIR:-}"
 if [[ -z "$RELEASE_STATE_DIR" ]]; then
   git_common_dir=$(git rev-parse --path-format=absolute --git-common-dir)
@@ -120,7 +130,7 @@ if [[ "$release_version" == "0.2.88" ]]; then
     exit 1
   fi
   export NPM_CONFIG_PROVENANCE=false
-elif [[ "$MODE" == "publish" ]]; then
+elif [[ "$MODE" == "publish" || "$MODE" == "prepare" || "$MODE" == "publish-prepared" ]]; then
   expected_workflow_ref="oscout/scout/.github/workflows/release-package-npm.yml@refs/heads/main"
   if [[ "${GITHUB_ACTIONS:-}" != "true" \
     || "${GITHUB_REPOSITORY:-}" != "oscout/scout" \
@@ -207,6 +217,7 @@ inspect_exact_artifact() {
 validate_latest_baseline() {
   local baseline=""
   local latest
+  local skewed_baseline=0
   for latest in "${PACKAGE_LATEST[@]}"; do
     if [[ -z "$latest" ]]; then
       echo "ERROR: an npm package has no latest dist-tag" >&2
@@ -215,28 +226,36 @@ validate_latest_baseline() {
     if [[ "$latest" == "$release_version" ]]; then
       continue
     fi
-    if [[ -z "$baseline" ]]; then
-      baseline="$latest"
-    elif [[ "$latest" != "$baseline" ]]; then
-      echo "ERROR: npm latest baseline is split across the public package set: ${PACKAGE_LATEST[*]}" >&2
+    if [[ ! "$latest" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+      echo "ERROR: npm latest has invalid stable version ${latest}" >&2
       exit 1
     fi
-  done
-
-  if [[ -n "$baseline" ]]; then
     node -e '
       const target = process.argv[1].split(".").map(Number);
       const base = process.argv[2].split(".").map(Number);
-      if (target.length !== 3 || base.length !== 3 || [...target, ...base].some(Number.isNaN)) process.exit(2);
       for (let i = 0; i < 3; i += 1) {
         if (target[i] > base[i]) process.exit(0);
         if (target[i] < base[i]) process.exit(1);
       }
       process.exit(1);
-    ' "$release_version" "$baseline" || {
-      echo "ERROR: release ${release_version} does not advance npm latest ${baseline}" >&2
+    ' "$release_version" "$latest" || {
+      echo "ERROR: release ${release_version} does not advance npm latest ${latest}" >&2
       exit 1
     }
+    if [[ -z "$baseline" ]]; then
+      baseline="$latest"
+    elif [[ "$latest" != "$baseline" ]]; then
+      if [[ "$DIRECT_FINAL_PUBLISH" == "1" ]]; then
+        skewed_baseline=1
+      else
+        echo "ERROR: npm latest baseline is split across the public package set: ${PACKAGE_LATEST[*]}" >&2
+        exit 1
+      fi
+    fi
+  done
+
+  if [[ "$skewed_baseline" == "1" ]]; then
+    echo "  WARN: npm latest is split across older versions (${PACKAGE_LATEST[*]}); ${release_version} will converge it"
   fi
 }
 
@@ -277,14 +296,28 @@ assert_registry_preflight() {
   if ((existing_count == 0)); then
     return
   fi
-  # Once the complete immutable set exists, it can be compared with the exact
-  # local candidates and any missing mutable dist-tags can be promoted safely.
-  # Only a genuinely partial immutable set is unrecoverable across attempts.
   if all_artifacts_exist; then
     return
   fi
+  # OIDC can safely resume only the dependency-ordered prefix from an exact,
+  # restored candidate bundle. Every observed artifact has already been checked
+  # against that bundle's SRI, public commit, and repository by this point.
+  if [[ "$DIRECT_FINAL_PUBLISH" == "1" && "$RELEASE_RECEIPT_LOADED" == "1" ]]; then
+    if [[ "${PACKAGE_EXISTS[0]}" == "1" \
+      && "${PACKAGE_EXISTS[1]}" == "0" \
+      && "${PACKAGE_LATEST[0]}" == "$release_version" ]]; then
+      echo "  ✓ exact protocol prefix is recoverable from the retained candidate bundle"
+      return
+    fi
+    if [[ "${PACKAGE_EXISTS[0]}" == "0" && "${PACKAGE_EXISTS[1]}" == "1" ]]; then
+      echo "ERROR: ${PACKAGE_NAMES[1]} exists before its protocol dependency for ${release_version}" >&2
+      exit 1
+    fi
+    echo "ERROR: partial ${release_version} registry state is not the recoverable protocol-first prefix" >&2
+    exit 1
+  fi
   echo "ERROR: ${release_version} has an incomplete npm package set and cannot be resumed across publication attempts" >&2
-  echo "ERROR: choose a fresh version instead of mixing immutable artifacts from different candidates or authorities" >&2
+  echo "ERROR: restore its exact candidate bundle or choose a fresh version" >&2
   exit 1
 }
 
@@ -326,6 +359,7 @@ load_release_receipt() {
     echo "ERROR: receipt verifier returned an unexpected package" >&2
     exit 1
   }
+  RELEASE_RECEIPT_LOADED=1
   echo "  ✓ durable integrity receipt loaded for ${release_version}"
 }
 
@@ -579,8 +613,12 @@ publish_missing_artifacts() {
     version="${PACKAGE_VERSIONS[$index]}"
     tarball="${PACKAGE_TARBALLS[$index]}"
     echo ""
-    echo "Publishing ${name}@${version} under staging tag ${STAGING_NPM_TAG}…"
-    run_npm_mutation publish "$tarball" --access public --tag "$STAGING_NPM_TAG" \
+    if [[ "$DIRECT_FINAL_PUBLISH" == "1" ]]; then
+      echo "Publishing ${name}@${version} directly to ${FINAL_NPM_TAG} with GitHub OIDC…"
+    else
+      echo "Publishing ${name}@${version} under staging tag ${STAGING_NPM_TAG}…"
+    fi
+    run_npm_mutation publish "$tarball" --access public --tag "$PUBLISH_NPM_TAG" \
       "${NPM_READ_ARGS[@]}"
     wait_for_exact_artifact "$index"
     # Verify each immutable upload before attempting the next one. A bad first
@@ -608,6 +646,18 @@ wait_for_final_tag() {
 
 promote_package_set() {
   local index name version staged
+  if [[ "$DIRECT_FINAL_PUBLISH" == "1" ]]; then
+    echo ""
+    echo "Verifying direct OIDC publication to ${FINAL_NPM_TAG}…"
+    for index in "${!PUBLISH_PACKAGES[@]}"; do
+      name="${PACKAGE_NAMES[$index]}"
+      version="${PACKAGE_VERSIONS[$index]}"
+      wait_for_final_tag "$name" "$version"
+      echo "  ✓ ${name}@${version} (${FINAL_NPM_TAG})"
+    done
+    return
+  fi
+
   echo ""
   echo "Promoting verified package set to ${FINAL_NPM_TAG}…"
   for index in "${!PUBLISH_PACKAGES[@]}"; do
@@ -637,15 +687,21 @@ promote_package_set() {
   done
 }
 
-if [[ "$MODE" == "publish" ]]; then
-  acquire_release_lock
+case "$MODE" in
+  publish|prepare|publish-prepared) acquire_release_lock ;;
+esac
+
+# A restored bundle must be verified before registry state can be considered
+# resumable. The receipt verifier checks both retained tarballs byte-for-byte.
+if [[ "$MODE" != "dry-run" && -e "$RELEASE_STATE_DIR" ]]; then
+  load_release_receipt
 fi
 
 inspect_registry_state
 assert_registry_preflight
 
 if [[ "$MODE" == "verify-state" ]]; then
-  if all_artifacts_exist; then
+  if all_artifacts_exist && [[ "$RELEASE_RECEIPT_LOADED" != "1" ]]; then
     load_release_receipt
     inspect_registry_state
   fi
@@ -661,9 +717,33 @@ if [[ "$MODE" == "dry-run" ]]; then
   exit 0
 fi
 
-if [[ "$MODE" == "publish" ]]; then
+case "$MODE" in
+  publish|prepare|publish-prepared)
+    assert_clean_publish_source
+    assert_canonical_publish_ref
+    ;;
+esac
+
+if [[ "$MODE" == "prepare" ]]; then
+  if [[ "$RELEASE_RECEIPT_LOADED" == "1" ]]; then
+    echo "✓ Exact npm candidate bundle ${release_version} is ready for publication."
+    exit 0
+  fi
+
+  build_and_check
+  prepare_release_tarballs
+  # Generation and pack hooks must not have rewritten reviewed source. The
+  # immutable npm artifacts must still describe the exact clean release SHA.
   assert_clean_publish_source
-  assert_canonical_publish_ref
+  inspect_registry_state
+  assert_registry_preflight
+  if all_artifacts_exist; then
+    echo "ERROR: ${release_version} appeared during candidate preparation without this run's exact bundle" >&2
+    exit 1
+  fi
+  persist_release_bundle
+  echo "✓ Exact npm candidate bundle ${release_version} is ready for publication."
+  exit 0
 fi
 
 if [[ "$MODE" == "verify-published" ]]; then
@@ -671,7 +751,7 @@ if [[ "$MODE" == "verify-published" ]]; then
     echo "ERROR: not all ${release_version} package artifacts are published" >&2
     exit 1
   }
-  load_release_receipt
+  [[ "$RELEASE_RECEIPT_LOADED" == "1" ]] || load_release_receipt
   inspect_registry_state
   all_packages_promoted || {
     echo "ERROR: not all ${release_version} packages are promoted to ${FINAL_NPM_TAG}" >&2
@@ -681,45 +761,47 @@ if [[ "$MODE" == "verify-published" ]]; then
   exit 0
 fi
 
+if [[ "$MODE" == "publish-prepared" && "$RELEASE_RECEIPT_LOADED" != "1" ]]; then
+  echo "ERROR: --publish-prepared requires an exact retained candidate bundle at $RELEASE_STATE_DIR" >&2
+  exit 1
+fi
+
 if all_artifacts_exist; then
   # Never rebuild to prove an immutable registry artifact. The CLI bundle and
   # its signature are intentionally nondeterministic, so only the receipt made
   # before the first upload can identify the exact accepted bytes on a retry.
-  load_release_receipt
+  [[ "$RELEASE_RECEIPT_LOADED" == "1" ]] || load_release_receipt
   inspect_registry_state
   if all_packages_promoted; then
     echo "✓ Public npm package set ${release_version} already matches the exact reviewed candidates and latest."
     exit 0
   fi
+  if [[ "$DIRECT_FINAL_PUBLISH" == "1" ]]; then
+    echo "ERROR: ${release_version} exists without the ${FINAL_NPM_TAG} tag, and npm OIDC cannot mutate dist-tags" >&2
+    echo "ERROR: choose a fresh version and publish it directly to ${FINAL_NPM_TAG}" >&2
+    exit 1
+  fi
   configure_publish_credentials
 else
   configure_publish_credentials
-  if [[ -e "$RELEASE_STATE_DIR" ]]; then
-    # A prior attempt may have stopped after the atomic bundle commit but before
-    # its first upload. Reuse those retained bytes; never rebuild over them.
-    load_release_receipt
+  if [[ "$RELEASE_RECEIPT_LOADED" == "1" ]]; then
+    # Reuse retained or explicitly restored bytes; never rebuild a signed CLI
+    # candidate during recovery.
     inspect_registry_state
   else
     build_and_check
     prepare_release_tarballs
-    # Generation and pack hooks must not have rewritten reviewed source. The
-    # immutable npm artifacts must still describe the exact clean release SHA.
     assert_clean_publish_source
     inspect_registry_state
     assert_registry_preflight
 
     if all_artifacts_exist; then
-      # A remote authority raced this build. Without its durable receipt, its
-      # bytes cannot be inferred safely from this invocation's rebuild.
-      load_release_receipt
-      inspect_registry_state
-    else
-      # Registry state is still pristine, so this invocation owns the candidate.
-      # Atomically retain both tarballs and their receipt before the first upload.
-      persist_release_bundle
-      inspect_registry_state
-      assert_registry_preflight
+      echo "ERROR: ${release_version} appeared during candidate preparation without this run's exact bundle" >&2
+      exit 1
     fi
+    persist_release_bundle
+    inspect_registry_state
+    assert_registry_preflight
   fi
 
   assert_registry_preflight

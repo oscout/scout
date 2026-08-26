@@ -1,22 +1,22 @@
 # Public package releases
 
-Beginning with `0.2.90`, Scout's complete supported public npm set is released
-from this repository. npm accepted `@openscout/protocol@0.2.88` under its
-version-specific staging tag, but delayed registry processing outlived the
-single authority session before `@openscout/scout@0.2.88` could publish. The
-strict partial-set guard stopped the attempt, neither package was promoted to
-`latest`, and `0.2.88` must not be represented as a complete Scout release.
-The subsequent `0.2.89` workflow retained exact candidates but stopped before
-its first upload because macOS Bash rejected an empty optional-auth argument;
-there are no `0.2.89` npm artifacts, and that version is also unsupported.
+Beginning with `0.2.91`, Scout's complete supported public npm set is released
+from this repository. npm accepted only `@openscout/protocol@0.2.88` during the
+local authority cutover; the strict partial-set guard stopped that attempt, and
+neither package was promoted to `latest`. Version `0.2.89` stopped before its
+first upload. The first GitHub OIDC attempt then published both `0.2.90`
+artifacts under their version-specific staging tag, but npm correctly rejected
+the workflow's later `dist-tag` mutations: trusted publishing authorizes
+`npm publish`, not `npm dist-tag`. None of those versions reached `latest`, so
+all three are historical and unsupported.
 
-Do not complete or promote the partial `0.2.88` set. Do not publish public
-packages from a private product checkout or from a commit that is not public
-`oscout/scout` `main`.
+Do not complete or manually promote the `0.2.88` or `0.2.90` candidates. Do not
+publish public packages from a private product checkout or from a commit that
+is not public `oscout/scout` `main`.
 
 ## Current publication set
 
-The `0.2.90` public release publishes:
+The `0.2.91` public release publishes:
 
 - `@openscout/protocol`
 - `@openscout/scout`
@@ -35,9 +35,9 @@ Choose an explicit unused version. Never use `patch` to recover from registry
 drift.
 
 ```bash
-node scripts/bump-version.mjs 0.2.90
+node scripts/bump-version.mjs 0.2.91
 bun install
-npm run ship -- 0.2.90
+npm run ship -- 0.2.91
 bun run check
 bun run test:unit
 bash scripts/ship-npm.sh --dry-run
@@ -86,15 +86,40 @@ these configured:
 - npm trusted publishing for
   `oscout/scout/.github/workflows/release-package-npm.yml`
 
-The workflow explicitly refuses `v0.2.89` and older. Dispatch
-`release-package-npm.yml` for an already-reviewed public `v0.2.90` or later tag
-and wait for it to verify both packages. npm may keep an accepted upload in
-processing for several minutes, so the workflow waits for up to five minutes
-per immutable upload before failing closed. It uploads the exact integrity
-receipt as a workflow artifact only after a separate registry-verification pass;
-attach that receipt to the GitHub release only after both packages verify and
-reach `latest`. Do not weaken the signing gate or publish a GitHub release before
-the package set succeeds.
+The workflow explicitly refuses `v0.2.90` and older. Dispatch
+`release-package-npm.yml` for an already-reviewed public `v0.2.91` or later tag
+and wait for it to verify both packages. Before its first npm mutation, the
+workflow builds and audits both exact tarballs, writes their durable receipt,
+and uploads the complete candidate bundle as a run artifact. The candidate
+bundle and final receipt use distinct artifact names: the former is recovery
+state containing both immutable tarballs and their receipt, while the latter is
+publication evidence uploaded only after registry verification.
+
+GitHub OIDC publishes protocol first and Scout second, directly to `latest`; it
+never invokes `npm dist-tag`. That dependency-safe ordering gives consumers a
+valid protocol before the CLI that consumes it appears. npm may keep an accepted
+upload in processing for several minutes, so the workflow waits for up to five
+minutes per immutable upload before failing closed.
+
+Recovery is explicit and deliberately narrow. If a run stops after publishing
+only protocol, dispatch the same reviewed tag again with `recovery_run_id` set
+to that failed workflow run. The new run downloads the prior run's exact
+candidate bundle before preparation. It first proves that the prior run used
+this exact workflow on `main` for the same release commit, ended unsuccessfully,
+and owns exactly one live artifact with the expected version-and-SHA name. It
+then verifies the receipt and both retained tarballs byte-for-byte, and may
+publish only the missing Scout tarball when the registry is the exact
+protocol-first prefix: protocol matches the retained SRI, public commit,
+repository, version, and `latest`, while Scout does not yet exist. A missing or
+foreign `recovery_run_id`, a rebuilt candidate, Scout-first state, a mismatched
+artifact, a different partial prefix, or a complete unpromoted set fails closed
+and requires a fresh version.
+
+After both packages match the retained candidates and reach `latest`, the
+workflow performs a separate registry-verification pass and uploads the final
+integrity receipt. Attach that receipt to the GitHub release only after the
+package set succeeds. Do not weaken the signing gate or publish a GitHub release
+before that verification completes.
 
 ## Verify
 
