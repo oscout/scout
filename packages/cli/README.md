@@ -4,7 +4,9 @@ The `scout` command is the front door to the local Scout control plane. It
 discovers coding-agent sessions, routes messages and work through the broker,
 and returns durable handles for follow-up across harnesses and machines.
 
-> **Requires [Bun](https://bun.sh).** On macOS, install it with `brew install bun`.
+> **Requires [Bun](https://bun.sh) 1.3 or newer.** The bundled native service
+> supports Apple-silicon macOS. Linux runs the broker as a foreground process
+> under your process manager. On macOS, install Bun with `brew install bun`.
 
 ## Install
 
@@ -14,6 +16,10 @@ scout --help
 ```
 
 `@openscout/scout` is the public package name. It installs the `scout` command and carries the bundled broker/runtime and web UI. Installing it does not start services; commands such as `scout setup`, `scout up`, and `scout server start` activate them explicitly.
+
+On Linux, `scout setup` initializes the local state but cannot install or start
+a system service. Run `openscout-runtime broker` in a separate supervised
+process, then use `scout doctor` from another shell to verify readiness.
 
 ## Canonical Flow
 
@@ -386,9 +392,11 @@ scout menu restart
 scout menu quit
 ```
 
-If you run it from an OpenScout repo checkout, Scout prefers the repo helper at
-`apps/macos/bin/openscout-menu.ts`, so it can auto-build and launch the app bundle for you.
-Outside the repo, it opens an installed `OpenScout Menu` app when available.
+For an installed product, `scout menu` opens the helper embedded in
+`/Applications/OpenScout.app`; use `scout install` to install or update it.
+Private OpenScout product checkouts may also provide a developer-only repo
+helper. That native source and its build/DMG commands are not part of this
+public repository.
 
 ### Web UI (`scout server start`, `scout server open`)
 

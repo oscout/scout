@@ -35,6 +35,7 @@ const VERSION_MANIFESTS = [
 
 const APP_VERSION_SOURCE = "apps/desktop/src/shared/product.ts";
 const DOCS_VERSION_SOURCE = "docs.json";
+const LOCKFILE_SOURCE = "bun.lock";
 const APP_VERSION_PATTERN =
   /export const SCOUT_APP_VERSION = process\.env\.SCOUT_APP_VERSION\?\.trim\(\) \|\| "([^"]+)";/;
 
@@ -44,7 +45,7 @@ function usage() {
     "  node scripts/ship-release.mjs <version> [options]",
     "",
     "Example:",
-    "  npm run ship -- 0.2.91",
+    "  npm run ship -- 0.2.92",
     "  npm run ship -- 0.2.88 --execute --yes  # historical local cutover only",
     "",
     "Options:",
@@ -199,6 +200,18 @@ function readAppVersion() {
   return match[1];
 }
 
+function lockfileWorkspaceVersion(relativePath) {
+  const contents = readFileSync(path.join(repoRoot, LOCKFILE_SOURCE), "utf8");
+  const marker = `    "${relativePath}": {`;
+  const start = contents.indexOf(marker);
+  if (start < 0) throw new Error(`Could not find ${relativePath} in ${LOCKFILE_SOURCE}`);
+  const nextWorkspace = contents.indexOf('\n    "', start + marker.length);
+  const block = contents.slice(start, nextWorkspace >= 0 ? nextWorkspace : contents.length);
+  const version = block.match(/"version"\s*:\s*"([^"]+)"/)?.[1];
+  if (!version) throw new Error(`Could not read ${relativePath} version from ${LOCKFILE_SOURCE}`);
+  return version;
+}
+
 function verifyReleaseVersion(version) {
   const drift = [];
   for (const relativeDir of VERSION_MANIFESTS) {
@@ -209,6 +222,10 @@ function verifyReleaseVersion(version) {
   if (appVersion !== version) drift.push(APP_VERSION_SOURCE + "=" + appVersion);
   const docsVersion = readJson(DOCS_VERSION_SOURCE).version;
   if (docsVersion !== version) drift.push(DOCS_VERSION_SOURCE + "=" + docsVersion);
+  for (const relativeDir of VERSION_MANIFESTS.filter((entry) => entry !== ".")) {
+    const lockVersion = lockfileWorkspaceVersion(relativeDir);
+    if (lockVersion !== version) drift.push(`${LOCKFILE_SOURCE}:${relativeDir}=${lockVersion}`);
+  }
   if (drift.length > 0) {
     throw new Error("Reviewed release sources are not synced to " + version + ": " + drift.join(", "));
   }
@@ -231,6 +248,7 @@ function printVersionTable(version) {
   }
   console.log("  " + APP_VERSION_SOURCE + ": " + readAppVersion());
   console.log("  " + DOCS_VERSION_SOURCE + ": " + readJson(DOCS_VERSION_SOURCE).version);
+  console.log(`  ${LOCKFILE_SOURCE}: all workspace versions ${version}`);
   console.log("\nPublished package set:");
   for (const pkg of PUBLIC_PACKAGES) console.log("  " + pkg.name + "@" + version);
 }

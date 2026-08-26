@@ -1076,7 +1076,7 @@ button.s-thread-msg-actor:focus-visible {
   color: color-mix(in srgb, var(--ink) 82%, var(--muted));
 }
 
-/* Reply-context backlink: resolves the raw [ask:<flightId>] tag into a
+/* Reply-context backlink: resolves the raw ask correlation tag into a
    clickable reference to the originating ask, instead of leaking the token. */
 .s-thread-reply-ctx {
   display: inline-flex;

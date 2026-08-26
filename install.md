@@ -5,7 +5,8 @@ broker is ready to route work.
 
 ## Requirements
 
-- macOS or Linux;
+- Apple-silicon macOS, or Linux with a process manager for the foreground
+  broker;
 - [Bun](https://bun.sh) 1.3 or newer;
 - a supported coding-agent harness such as Codex or Claude Code for routed
   work.
@@ -17,16 +18,31 @@ bun add -g @openscout/scout
 scout --version
 ```
 
-Initialize Scout explicitly, then run its readiness check:
+On Apple-silicon macOS, initialize Scout explicitly, then run its readiness
+check:
 
 ```bash
 scout setup
 scout doctor
 ```
 
+On Linux, `setup` initializes Scout but does not install a system service. Keep
+the broker running in a separate supervised process, then run `doctor` from
+another shell:
+
+```bash
+scout setup
+openscout-runtime broker
+```
+
+```bash
+scout doctor
+```
+
 Installation is successful when `scout --version` prints a version and
 `scout doctor` reports no blocking setup error. `setup` owns the supported
-machine bootstrap; avoid manually creating broker state or service files.
+machine bootstrap. On Linux, the documented foreground broker is the supported
+lifecycle boundary; use your normal process manager to keep it alive.
 
 ## Verify identity and routing
 

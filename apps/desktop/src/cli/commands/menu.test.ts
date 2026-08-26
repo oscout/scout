@@ -4,8 +4,12 @@ import { parseMenuCommand, renderMenuCommandHelp } from "./menu.ts";
 
 describe("menu command helpers", () => {
   test("documents the quick launch flow", () => {
-    expect(renderMenuCommandHelp()).toContain("scout menu");
-    expect(renderMenuCommandHelp()).toContain("scout menu restart");
+    const help = renderMenuCommandHelp();
+    expect(help).toContain("scout menu");
+    expect(help).toContain("scout menu restart");
+    expect(help).not.toContain("scout menu build");
+    expect(help).not.toContain("scout menu dmg");
+    expect(help).not.toContain("apps/macos");
   });
 
   test("defaults to launch", () => {
@@ -19,6 +23,11 @@ describe("menu command helpers", () => {
     expect(parseMenuCommand(["open"]).action).toBe("launch");
     expect(parseMenuCommand(["start"]).action).toBe("launch");
     expect(parseMenuCommand(["stop"]).action).toBe("quit");
+  });
+
+  test("keeps native build and DMG operations out of the public CLI", () => {
+    expect(() => parseMenuCommand(["build"])).toThrow(/unknown subcommand/);
+    expect(() => parseMenuCommand(["dmg"])).toThrow(/unknown subcommand/);
   });
 
   test("treats leading flags as launch passthrough", () => {
