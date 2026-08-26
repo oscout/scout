@@ -4,6 +4,7 @@ import { createHash } from "node:crypto";
 import {
   chmodSync,
   copyFileSync,
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -15,6 +16,8 @@ import { join } from "node:path";
 import test from "node:test";
 
 const repoRoot = new URL("..", import.meta.url);
+const currentVersion = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"))
+  .version;
 
 function plan(...args) {
   return spawnSync(process.execPath, ["scripts/ship-release.mjs", ...args], {
@@ -24,12 +27,12 @@ function plan(...args) {
 }
 
 test("public release plan is reviewed-source-only and complete-state idempotent", () => {
-  const result = plan("0.2.89");
+  const result = plan(currentVersion);
   assert.equal(result.status, 0, result.stderr);
-  assert.match(result.stdout, /@openscout\/protocol@0\.2\.89/);
-  assert.match(result.stdout, /@openscout\/scout@0\.2\.89/);
-  assert.match(result.stdout, /apps\/desktop\/src\/shared\/product\.ts: 0\.2\.89/);
-  assert.match(result.stdout, /docs\.json: 0\.2\.89/);
+  assert.ok(result.stdout.includes(`@openscout/protocol@${currentVersion}`));
+  assert.ok(result.stdout.includes(`@openscout/scout@${currentVersion}`));
+  assert.ok(result.stdout.includes(`apps/desktop/src/shared/product.ts: ${currentVersion}`));
+  assert.ok(result.stdout.includes(`docs.json: ${currentVersion}`));
   assert.match(result.stdout, /git fetch --no-tags origin refs\/heads\/main/);
   assert.match(result.stdout, /ship-npm\.sh --verify-state/);
   assert.match(result.stdout, /gh workflow run release-package-npm\.yml/);
@@ -51,14 +54,14 @@ test("ambiguous mutating and partial-release options are rejected", () => {
     "--skip-npm",
     "--skip-github-release",
   ]) {
-    const result = plan("0.2.89", option);
+    const result = plan(currentVersion, option);
     assert.notEqual(result.status, 0, option);
     assert.match(result.stderr, /Unsupported release option/, option);
   }
 });
 
 test("0.2.89 and later execute only through the GitHub publication authority", () => {
-  const result = plan("0.2.89", "--execute", "--yes");
+  const result = plan(currentVersion, "--execute", "--yes");
   assert.notEqual(result.status, 0);
   assert.match(result.stderr, /publishes only through .*release-package-npm\.yml/i);
 });
@@ -147,6 +150,8 @@ test("SCOUT_APP_VERSION participates in release lockstep", () => {
 });
 
 function createRegistryFixture({
+  version = "0.2.88",
+  authority = "local-signed",
   mismatchedGitHead = false,
   completeSet = false,
   receiptState = "matching",
@@ -168,11 +173,11 @@ function createRegistryFixture({
   chmodSync(join(fixture, "scripts/ship-npm.sh"), 0o755);
   writeFileSync(
     join(fixture, "packages/protocol/package.json"),
-    JSON.stringify({ name: "@openscout/protocol", version: "0.2.88" }),
+    JSON.stringify({ name: "@openscout/protocol", version }),
   );
   writeFileSync(
     join(fixture, "packages/cli/package.json"),
-    JSON.stringify({ name: "@openscout/scout", version: "0.2.88" }),
+    JSON.stringify({ name: "@openscout/scout", version }),
   );
 
   writeFileSync(
@@ -188,7 +193,7 @@ if [[ "$1" == "remote" && "$2" == "get-url" ]]; then
   exit 0
 fi
 if [[ "$1" == "ls-remote" ]]; then
-  printf 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\\trefs/tags/v0.2.88\\n'
+  printf 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\\trefs/tags/v${version}\\n'
   exit 0
 fi
 exit 1
@@ -196,8 +201,8 @@ exit 1
   );
   chmodSync(join(fixture, "fake-bin/git"), 0o755);
 
-  const protocolTarball = join(fixture, "release-state/openscout-protocol-0.2.88.tgz");
-  const scoutTarball = join(fixture, "release-state/openscout-scout-0.2.88.tgz");
+  const protocolTarball = join(fixture, `release-state/openscout-protocol-${version}.tgz`);
+  const scoutTarball = join(fixture, `release-state/openscout-scout-${version}.tgz`);
   writeFileSync(protocolTarball, "exact protocol candidate\n");
   writeFileSync(scoutTarball, "exact scout candidate\n");
   const integrity = (path) =>
@@ -212,14 +217,14 @@ exit 1
         "create",
         "release-state/receipt.json",
         "https://github.com/oscout/scout",
-        "0.2.88",
+        version,
         "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-        "local-signed",
+        authority,
         "@openscout/protocol",
-        "0.2.88",
+        version,
         protocolTarball,
         "@openscout/scout",
-        "0.2.88",
+        version,
         scoutTarball,
       ],
       { cwd: fixture, encoding: "utf8" },
@@ -239,13 +244,13 @@ exit 1
 if [[ "$1" != "view" ]]; then exit 9; fi
 identity="$2"
 field="$3"
-if [[ "$identity" == "@openscout/scout@0.2.88" ]]; then
+if [[ "$identity" == "@openscout/scout@${version}" ]]; then
   if [[ "${completeSet}" != "true" ]]; then
     echo "npm error code E404" >&2
     exit 1
   fi
   case "$field" in
-    version) echo 0.2.88 ;;
+    version) echo ${version} ;;
     gitHead) echo ${observedSha} ;;
     repository.url) echo git+https://github.com/oscout/scout.git ;;
     dist.integrity) echo ${registryIntegrityMismatch ? "sha512-registrymismatch" : scoutIntegrity} ;;
@@ -253,9 +258,9 @@ if [[ "$identity" == "@openscout/scout@0.2.88" ]]; then
   esac
   exit 0
 fi
-if [[ "$identity" == "@openscout/protocol@0.2.88" ]]; then
+if [[ "$identity" == "@openscout/protocol@${version}" ]]; then
   case "$field" in
-    version) echo 0.2.88 ;;
+    version) echo ${version} ;;
     gitHead) echo ${observedSha} ;;
     repository.url) echo git+https://github.com/oscout/scout.git ;;
     dist.integrity) echo ${protocolIntegrity} ;;
@@ -289,12 +294,14 @@ function registryEnv(fixture) {
 }
 
 function createPublishFixture({
+  version = "0.2.88",
+  authority = "local-signed",
   completeSet = false,
   firstUploadIntegrityMismatch = false,
-  protocolLatest = completeSet ? "0.2.88" : "0.2.87",
-  scoutLatest = completeSet ? "0.2.88" : "0.2.87",
+  protocolLatest = completeSet ? version : "0.2.87",
+  scoutLatest = completeSet ? version : "0.2.87",
 } = {}) {
-  const fixture = createRegistryFixture();
+  const fixture = createRegistryFixture({ version, authority });
   const stateDir = join(fixture, "registry-state");
   mkdirSync(stateDir, { recursive: true });
   writeFileSync(join(stateDir, "protocol-latest"), protocolLatest);
@@ -312,6 +319,7 @@ function createPublishFixture({
   const protocolIntegrity = firstUploadIntegrityMismatch
     ? "sha512-registrymismatch"
     : protocolReceipt.integrity;
+  const stagingTag = `scout-release-${version.replaceAll(".", "-")}`;
 
   const npmScript = [
     "#!/bin/bash",
@@ -324,12 +332,12 @@ function createPublishFixture({
     '  identity="$2"',
     '  field="$3"',
     '  key=""',
-    '  if [[ "$identity" == "@openscout/protocol@0.2.88" ]]; then key="protocol"; fi',
-    '  if [[ "$identity" == "@openscout/scout@0.2.88" ]]; then key="scout"; fi',
+    `  if [[ "$identity" == "@openscout/protocol@${version}" ]]; then key="protocol"; fi`,
+    `  if [[ "$identity" == "@openscout/scout@${version}" ]]; then key="scout"; fi`,
     '  if [[ -n "$key" ]]; then',
     '    if [[ ! -f "$state_dir/${key}-exists" ]]; then echo "npm error code E404" >&2; exit 1; fi',
     '    case "$field" in',
-    '      version) echo 0.2.88 ;;',
+    `      version) echo ${version} ;;`,
     '      gitHead) echo aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa ;;',
     '      repository.url) echo git+https://github.com/oscout/scout.git ;;',
     '      dist.integrity) if [[ "$key" == "protocol" ]]; then echo "$protocol_integrity"; else echo "$scout_integrity"; fi ;;',
@@ -339,15 +347,15 @@ function createPublishFixture({
     '  fi',
     '  if [[ "$identity" == "@openscout/protocol" && "$field" == "dist-tags.latest" ]]; then cat "$state_dir/protocol-latest"; exit 0; fi',
     '  if [[ "$identity" == "@openscout/scout" && "$field" == "dist-tags.latest" ]]; then cat "$state_dir/scout-latest"; exit 0; fi',
-    '  if [[ "$field" == "dist-tags.scout-release-0-2-88" ]]; then echo 0.2.88; exit 0; fi',
+    `  if [[ "$field" == "dist-tags.${stagingTag}" ]]; then echo ${version}; exit 0; fi`,
     '  exit 7',
     'fi',
     'if [[ "$command" == "publish" ]]; then',
     '  tarball="$2"',
     '  [[ -f "$fixture/release-state/receipt.json" ]] || exit 77',
     '  case "$tarball" in',
-    '    "$fixture/release-state/openscout-protocol-0.2.88.tgz") key="protocol" ;;',
-    '    "$fixture/release-state/openscout-scout-0.2.88.tgz") key="scout" ;;',
+    `    "$fixture/release-state/openscout-protocol-${version}.tgz") key="protocol" ;;`,
+    `    "$fixture/release-state/openscout-scout-${version}.tgz") key="scout" ;;`,
     '    *) exit 78 ;;',
     '  esac',
     '  : > "$state_dir/${key}-exists"',
@@ -357,11 +365,11 @@ function createPublishFixture({
     'if [[ "$command" == "dist-tag" && "$2" == "add" ]]; then',
     '  identity="$3"',
     '  case "$identity" in',
-    '    @openscout/protocol@0.2.88) key="protocol" ;;',
-    '    @openscout/scout@0.2.88) key="scout" ;;',
+    `    @openscout/protocol@${version}) key="protocol" ;;`,
+    `    @openscout/scout@${version}) key="scout" ;;`,
     '    *) exit 79 ;;',
     '  esac',
-    '  echo 0.2.88 > "$state_dir/${key}-latest"',
+    `  echo ${version} > "$state_dir/\${key}-latest"`,
     '  echo "promote $key" >> "$state_dir/mutations.log"',
     '  exit 0',
     'fi',
@@ -544,6 +552,39 @@ test("publish resumes from retained candidates and records them before npm mutat
   }
 });
 
+test("trusted publishing works without optional token arguments on macOS Bash", () => {
+  const { fixture, stateDir } = createPublishFixture({
+    version: "0.2.90",
+    authority: "github-oidc",
+  });
+  try {
+    writeFileSync(
+      join(fixture, "fake-bin/secret"),
+      `#!/bin/bash\necho called > ${JSON.stringify(join(fixture, "secret-called"))}\necho legacy-token\n`,
+    );
+    chmodSync(join(fixture, "fake-bin/secret"), 0o755);
+    const result = spawnSync("bash", ["scripts/ship-npm.sh"], {
+      cwd: fixture,
+      encoding: "utf8",
+      env: {
+        ...registryEnv(fixture),
+        GITHUB_ACTIONS: "true",
+        GITHUB_REPOSITORY: "oscout/scout",
+        GITHUB_WORKFLOW_REF:
+          "oscout/scout/.github/workflows/release-package-npm.yml@refs/heads/main",
+        NPM_TOKEN: "",
+      },
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(existsSync(join(fixture, "secret-called")), false);
+    const mutations = readFileSync(join(stateDir, "mutations.log"), "utf8");
+    assert.match(mutations, /^publish protocol\npublish scout\n/);
+    assert.match(mutations, /promote protocol\npromote scout\n/);
+  } finally {
+    rmSync(fixture, { recursive: true, force: true });
+  }
+});
+
 test("first-upload SRI mismatch stops before the second immutable upload", () => {
   const { fixture, stateDir } = createPublishFixture({ firstUploadIntegrityMismatch: true });
   try {
@@ -699,7 +740,8 @@ test("npm publication is pinned, staged as a set, and exactly scoped", () => {
   assert.match(script, /gitHead/);
   assert.match(script, /repository\.url/);
   assert.match(script, /registry integrity does not match the exact reviewed candidate/);
-  assert.match(script, /npm publish "\$tarball"/);
+  assert.match(script, /run_npm_mutation publish "\$tarball"/);
+  assert.doesNotMatch(script, /NPM_AUTH_ARGS/);
   assert.match(script, /manifest\.gitHead = process\.argv\[2\]/);
   assert.match(script, /exact candidate gitHead/);
   assert.match(script, /prepare-publish-manifest\.mjs "\$pack_root" "\$PWD"/);

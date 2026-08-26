@@ -125,11 +125,12 @@ explicit and its source must remain canonical here.
 
 ### The transition release
 
-`0.2.89` moves source and release authority for the supported
-`@openscout/scout` and `@openscout/protocol` pair to this repository. npm
-accepted only the protocol artifact from the attempted `0.2.88` cutover under
-an unpromoted staging tag; that partial version is historical and is not a
-supported Scout release. `0.2.89` does not claim that the complete
+`0.2.89` moved canonical source and GitHub OIDC publication authority for
+`@openscout/scout` and `@openscout/protocol` to this repository, but published
+no npm artifacts. npm had accepted only the protocol artifact from the earlier
+`0.2.88` cutover under an unpromoted staging tag; that partial version is also
+historical and unsupported. `0.2.90` is the first complete supported pair from
+the public authority. It does not claim that the complete
 component-package boundary is already finished.
 Supported publication of `@openscout/agent-sessions`, `@openscout/runtime`, and
 `@openscout/web` from this repository remains deferred until they have supported
@@ -149,8 +150,8 @@ A **Scout Distribution** is a reproducible product assembly: one exact public
 core release plus zero or more trusted build-time extensions. It is not a sixth
 npm package, a runtime plugin loader, or a source mirror.
 
-The first full five-package release—not the `0.2.89` transition release—will
-define the reference zero-extension Scout Distribution. `0.2.89` establishes
+The first full five-package release—not the `0.2.90` transition release—will
+define the reference zero-extension Scout Distribution. `0.2.90` establishes
 two-package source and publication authority; it does not claim a resolved
 distribution BOM or private BOM-based consumption.
 

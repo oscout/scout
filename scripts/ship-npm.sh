@@ -72,7 +72,6 @@ cleanup() {
 trap cleanup EXIT
 
 NPM_READ_ARGS=(--registry "$NPM_REGISTRY_URL")
-NPM_AUTH_ARGS=()
 PACKAGE_NAMES=()
 PACKAGE_VERSIONS=()
 PACKAGE_EXISTS=()
@@ -422,6 +421,13 @@ assert_canonical_publish_ref() {
 }
 
 configure_publish_credentials() {
+  if [[ "${GITHUB_ACTIONS:-}" == "true" ]]; then
+    # Canonical public releases have one authority: npm trusted publishing.
+    # Never probe a runner-local credential helper that could silently replace
+    # OIDC with a legacy token after the earlier environment check.
+    echo "Relying on npm trusted publishing/OIDC."
+    return
+  fi
   if [[ -z "${NPM_TOKEN:-}" ]] && command -v secret >/dev/null 2>&1; then
     NPM_TOKEN="$(secret get OPENSCOUT_NPM_TOKEN 2>/dev/null || true)"
   fi
@@ -429,12 +435,21 @@ configure_publish_credentials() {
     NPMRC=$(mktemp "$STATE_DIR/npmrc.XXXXXX")
     chmod 600 "$NPMRC"
     printf '//registry.npmjs.org/:_authToken=%s\n' "$NPM_TOKEN" > "$NPMRC"
-    NPM_AUTH_ARGS=(--userconfig "$NPMRC")
-  elif [[ "${GITHUB_ACTIONS:-}" == "true" ]]; then
-    echo "No NPM_TOKEN set; relying on npm trusted publishing/OIDC."
   else
     echo "ERROR: NPM_TOKEN is not set (try: secret set OPENSCOUT_NPM_TOKEN)" >&2
     exit 1
+  fi
+}
+
+run_npm_mutation() {
+  # macOS still ships Bash 3.2, where expanding a declared-but-empty array
+  # under `set -u` aborts with "unbound variable". Keep the optional local
+  # token argument behind an explicit scalar check so trusted publishing can
+  # invoke npm without an empty-array expansion.
+  if [[ -n "$NPMRC" ]]; then
+    npm "$@" --userconfig "$NPMRC"
+  else
+    npm "$@"
   fi
 }
 
@@ -565,8 +580,8 @@ publish_missing_artifacts() {
     tarball="${PACKAGE_TARBALLS[$index]}"
     echo ""
     echo "Publishing ${name}@${version} under staging tag ${STAGING_NPM_TAG}…"
-    npm publish "$tarball" --access public --tag "$STAGING_NPM_TAG" \
-      "${NPM_READ_ARGS[@]}" "${NPM_AUTH_ARGS[@]}"
+    run_npm_mutation publish "$tarball" --access public --tag "$STAGING_NPM_TAG" \
+      "${NPM_READ_ARGS[@]}"
     wait_for_exact_artifact "$index"
     # Verify each immutable upload before attempting the next one. A bad first
     # artifact must stop the train before it can poison the rest of the set.
@@ -599,8 +614,8 @@ promote_package_set() {
     name="${PACKAGE_NAMES[$index]}"
     version="${PACKAGE_VERSIONS[$index]}"
     if [[ "${PACKAGE_LATEST[$index]}" != "$version" ]]; then
-      npm dist-tag add "${name}@${version}" "$FINAL_NPM_TAG" \
-        "${NPM_READ_ARGS[@]}" "${NPM_AUTH_ARGS[@]}"
+      run_npm_mutation dist-tag add "${name}@${version}" "$FINAL_NPM_TAG" \
+        "${NPM_READ_ARGS[@]}"
     fi
     wait_for_final_tag "$name" "$version"
     echo "  ✓ ${name}@${version} (${FINAL_NPM_TAG})"
@@ -614,8 +629,8 @@ promote_package_set() {
     version="${PACKAGE_VERSIONS[$index]}"
     staged=$(npm view "$name" "dist-tags.${STAGING_NPM_TAG}" "${NPM_READ_ARGS[@]}" 2>/dev/null || true)
     if [[ "$staged" == "$version" ]]; then
-      if ! npm dist-tag rm "$name" "$STAGING_NPM_TAG" \
-        "${NPM_READ_ARGS[@]}" "${NPM_AUTH_ARGS[@]}"; then
+      if ! run_npm_mutation dist-tag rm "$name" "$STAGING_NPM_TAG" \
+        "${NPM_READ_ARGS[@]}"; then
         echo "  WARN: could not remove staging tag ${name}@${STAGING_NPM_TAG}" >&2
       fi
     fi

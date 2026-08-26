@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Reviewed public release tag (v0.2.89 or later; v0.2.88 is local-only)"
+        description: "Reviewed public release tag (v0.2.90 or later)"
         required: true
       npm_tag:
         description: "npm dist-tag"
@@ -19,7 +19,9 @@ permissions:
   id-token: write
 
 concurrency:
-  group: release-package-npm-${{ inputs.tag }}
+  # Dist-tag promotion is registry-global, so releases must serialize even when
+  # different version tags are dispatched close together.
+  group: release-package-npm
   cancel-in-progress: false
 
 jobs:
@@ -52,12 +54,12 @@ jobs:
             echo "Release version must look like X.Y.Z, got: $version" >&2
             exit 1
           fi
-          minimum_version="0.2.89"
+          minimum_version="0.2.90"
           IFS='.' read -r major minor patch <<< "$version"
           major=$((10#$major))
           minor=$((10#$minor))
           patch=$((10#$patch))
-          if ((major == 0 && (minor < 2 || (minor == 2 && patch < 89)))); then
+          if ((major == 0 && (minor < 2 || (minor == 2 && patch < 90)))); then
             echo "This workflow publishes v${minimum_version} or later, got: v${version}" >&2
             exit 1
           fi
@@ -195,7 +197,11 @@ jobs:
           NPM_CONFIG_PROVENANCE: "true"
           OPENSCOUT_REQUIRE_SCOUTD_SIGN: "1"
           OPENSCOUT_SIGN_IDENTITY: ${{ vars.OPENSCOUT_SIGN_IDENTITY || '' }}
-        run: bash scripts/ship-npm.sh
+        run: |
+          bash scripts/ship-npm.sh
+          # Defense in depth: a durable candidate receipt is not publication
+          # evidence. Re-read npm before any receipt can be uploaded.
+          bash scripts/ship-npm.sh --verify-published
 
       - name: Locate exact release receipt
         id: receipt

@@ -1,6 +1,6 @@
 {
   "name": "@openscout/runtime",
-  "version": "0.2.89",
+  "version": "0.2.90",
   "description": "Local runtime foundation for the OpenScout control plane",
   "type": "module",
   "bin": {
