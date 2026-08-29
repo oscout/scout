@@ -144,7 +144,13 @@ async function main() {
 
   await restoreStaleBackup(packageDir);
 
-  const repoRoot = await findRepoRoot(packageDir);
+  const repoRoot = process.argv[3]
+    ? path.resolve(process.argv[3])
+    : await findRepoRoot(packageDir);
+  const rootPkg = await readJson(path.join(repoRoot, "package.json"));
+  if (!Array.isArray(rootPkg.workspaces)) {
+    throw new Error(`Explicit repository root has no workspaces: ${repoRoot}`);
+  }
   const versions = await collectWorkspaceVersions(repoRoot);
   const pkgText = await fs.readFile(pkgPath, "utf8");
   const pkg = JSON.parse(pkgText);
