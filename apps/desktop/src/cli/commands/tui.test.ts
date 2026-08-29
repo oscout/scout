@@ -109,10 +109,10 @@ describe("scout tui", () => {
       cwd: dir,
     });
     await runTuiCommand(context, ["--take", "quota"], {
-      spawnSync: ((command, args) => {
-        calls.push({ command: String(command), args: args as string[] });
+      spawnSync: ((command: string, args?: readonly string[]) => {
+        calls.push({ command, args: [...(args ?? [])] });
         return { status: 0, signal: null, error: undefined, pid: 0, output: [], stdout: "", stderr: "" };
-      }) as typeof import("node:child_process").spawnSync,
+      }) as unknown as typeof import("node:child_process").spawnSync,
       exit: () => {
         throw new Error("should not exit on success");
       },
