@@ -2123,7 +2123,8 @@ describe("createOpenScoutWebServer", () => {
     );
 
     expect(response.status).toBe(200);
-    expect(loadScoutBrokerContextCalls).toBe(0);
+    expect(loadScoutBrokerContextCalls).toBe(1);
+    expect(loadScoutBrokerContextOptions).toEqual([{ since: null }]);
     const agents = await response.json() as Array<Record<string, unknown>>;
     expect(agents).toHaveLength(1);
     expect(agents[0]).toMatchObject({
