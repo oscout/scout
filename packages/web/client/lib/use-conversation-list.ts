@@ -5,6 +5,7 @@ import {
   getConversationListError,
   getConversationListSnapshot,
   loadConversationList,
+  scheduleConversationListRefresh,
   subscribeConversationList,
 } from "./conversation-list-cache.ts";
 import { useBrokerEvents } from "./sse.ts";
@@ -41,7 +42,7 @@ export function useConversationList() {
 
   useBrokerEvents((event) => {
     if (event.kind === "message.posted" || event.kind === "conversation.upserted") {
-      void reload(true);
+      scheduleConversationListRefresh();
     }
   });
 

@@ -6,6 +6,8 @@ import type { Route } from "../../lib/types.ts";
 import { shortHomePath } from "./project-overview-helpers.ts";
 import { useProjectsInbox } from "./useProjectsInbox.ts";
 import {
+  findInboxSession,
+  findInboxThread,
   sessionOpenRoute,
   threadObserveRoute,
   threadOpenRoute,
@@ -25,13 +27,9 @@ function findSelection(
   route: Extract<Route, { view: "agents-v2" }>,
 ): AsideSelection | null {
   if (route.sessionId) {
-    const session = sessions.find((entry) =>
-      entry.sessionId === route.sessionId ||
-      entry.conversationId === route.sessionId ||
-      entry.id === route.sessionId
-    );
+    const session = findInboxSession(sessions, route);
     if (session) return { kind: "session", session };
-    const thread = threads.find((entry) => entry.kind === "native" && entry.sessionId === route.sessionId) ?? null;
+    const thread = findInboxThread(threads, route);
     if (thread) return { kind: "thread", thread };
   }
   if (route.selectedAgentId) {

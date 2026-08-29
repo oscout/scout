@@ -183,6 +183,49 @@ for await (const line of rl) {
   return { executablePath, methodsPath, rolloutPath, startedThreadId };
 }
 
+function writeHeldThreadFakeCodexExecutable(baseDirectory: string): {
+  executablePath: string;
+  methodsPath: string;
+} {
+  const executablePath = join(baseDirectory, "fake-codex-held-thread");
+  const methodsPath = join(baseDirectory, "methods.log");
+  writeFileSync(executablePath, `#!/usr/bin/env bun
+import readline from "node:readline";
+import { appendFileSync } from "node:fs";
+
+const methodsPath = ${JSON.stringify(methodsPath)};
+const rl = readline.createInterface({
+  input: process.stdin,
+  crlfDelay: Infinity,
+});
+
+for await (const line of rl) {
+  const trimmed = line.trim();
+  if (!trimmed) continue;
+  const message = JSON.parse(trimmed);
+  const id = message.id;
+  const method = message.method;
+  const params = message.params ?? {};
+  appendFileSync(methodsPath, \`\${method}\\n\`, "utf8");
+
+  if (method === "initialize") {
+    console.log(JSON.stringify({ id, result: {} }));
+    continue;
+  }
+
+  if (method === "thread/resume") {
+    const threadId = String(params.threadId ?? "thread-unknown");
+    console.log(JSON.stringify({ id, error: { code: -32600, message: \`thread/resume failed: thread \${threadId} already has an active writer\` } }));
+    continue;
+  }
+
+  console.log(JSON.stringify({ id, result: {} }));
+}
+`, "utf8");
+  chmodSync(executablePath, 0o755);
+  return { executablePath, methodsPath };
+}
+
 function writeArgCaptureFakeCodexExecutable(baseDirectory: string): {
   executablePath: string;
   argsPath: string;
@@ -1313,6 +1356,52 @@ describe("ensureCodexAppServerAgentOnline", () => {
     expect(stderr).toContain(`Codex app-server cwd does not exist for codex-missing-cwd: ${missingCwd}`);
   });
 
+  test("keeps a new thread provisional until its first rollout-backed turn", async () => {
+    const tempRoot = mkdtempSync(join(tmpdir(), "openscout-codex-provisional-thread-test-"));
+    tempPaths.add(tempRoot);
+    const runtimeDirectory = join(tempRoot, "runtime");
+    const logsDirectory = join(tempRoot, "logs");
+    const threadIdPath = join(runtimeDirectory, "codex-thread-id.txt");
+    const fixture = writeMissingRolloutFakeCodexExecutable(tempRoot);
+    process.env.OPENSCOUT_CODEX_BIN = fixture.executablePath;
+
+    const options = {
+      agentName: "codex-provisional-thread",
+      sessionId: "codex-provisional-thread",
+      cwd: process.cwd(),
+      systemPrompt: "Start a new session.",
+      runtimeDirectory,
+      logsDirectory,
+      launchArgs: [],
+    } as const;
+
+    try {
+      const online = await ensureCodexAppServerAgentOnline(options);
+      expect(online).toEqual({
+        threadId: fixture.startedThreadId,
+        durableThreadId: null,
+      });
+      expect(existsSync(threadIdPath)).toBe(false);
+
+      await startCodexAppServerAgent({
+        ...options,
+        prompt: "Create the first rollout.",
+      });
+
+      const durable = await ensureCodexAppServerAgentOnline(options);
+      expect(durable).toEqual({
+        threadId: fixture.startedThreadId,
+        durableThreadId: fixture.startedThreadId,
+      });
+      expect(readFileSync(threadIdPath, "utf8").trim()).toBe(fixture.startedThreadId);
+      const methods = readFileSync(fixture.methodsPath, "utf8");
+      expect(methods).toContain("thread/start\nturn/start\n");
+      expect(methods).not.toContain("thread/resume");
+    } finally {
+      await shutdownCodexAppServerAgent(options, { resetThread: true });
+    }
+  });
+
   test("replaces a missing stored rollout without caching the new thread before its rollout exists", async () => {
     const tempRoot = mkdtempSync(join(tmpdir(), "openscout-codex-rollout-recovery-test-"));
     tempPaths.add(tempRoot);
@@ -1351,6 +1440,7 @@ describe("ensureCodexAppServerAgentOnline", () => {
     try {
       const online = await ensureCodexAppServerAgentOnline(options);
       expect(online.threadId).toBe(fixture.startedThreadId);
+      expect(online.durableThreadId).toBeNull();
       expect(readFileSync(fixture.methodsPath, "utf8")).toContain("thread/resume\nthread/start\n");
       expect(existsSync(threadIdPath)).toBe(false);
       const recoveredCatalog = JSON.parse(readFileSync(sessionCatalogPath, "utf8")) as {
@@ -1521,6 +1611,40 @@ describe("ensureCodexAppServerAgentOnline", () => {
       expect(readFileSync(join(logsDirectory, "stderr.log"), "utf8")).toContain(
         "failed to resume requested Codex thread missing-requested-thread",
       );
+    } finally {
+      await shutdownCodexAppServerAgent(options, { resetThread: true });
+    }
+  });
+
+  test("classifies an externally held thread as held-externally, not a generic resume failure", async () => {
+    const tempRoot = mkdtempSync(join(tmpdir(), "openscout-codex-held-thread-test-"));
+    tempPaths.add(tempRoot);
+    const runtimeDirectory = join(tempRoot, "runtime");
+    const logsDirectory = join(tempRoot, "logs");
+    const fixture = writeHeldThreadFakeCodexExecutable(tempRoot);
+    process.env.OPENSCOUT_CODEX_BIN = fixture.executablePath;
+
+    const options = {
+      agentName: "codex-held-thread",
+      sessionId: "codex-held-thread",
+      cwd: process.cwd(),
+      systemPrompt: "Resume the requested session.",
+      runtimeDirectory,
+      logsDirectory,
+      threadId: "held-requested-thread",
+      requireExistingThread: true,
+      launchArgs: [],
+    } as const;
+
+    try {
+      // SCO-098: the single-writer conflict is a distinct, retryable state —
+      // the thread exists and is open in another app-server. Callers park
+      // delivery on this code instead of latching the endpoint offline.
+      await expect(ensureCodexAppServerAgentOnline(options)).rejects.toMatchObject({
+        code: "CODEX_THREAD_HELD_EXTERNALLY",
+        threadId: "held-requested-thread",
+      });
+      expect(readFileSync(fixture.methodsPath, "utf8")).not.toContain("thread/start");
     } finally {
       await shutdownCodexAppServerAgent(options, { resetThread: true });
     }
@@ -1809,6 +1933,7 @@ describe("ensureCodexAppServerAgentOnline", () => {
 
     const online = await ensureCodexAppServerAgentOnline(options);
     expect(online.threadId).toBe(threadId);
+    expect(online.durableThreadId).toBe(threadId);
 
     const state = JSON.parse(readFileSync(join(runtimeDirectory, "state.json"), "utf8")) as {
       threadId?: string;

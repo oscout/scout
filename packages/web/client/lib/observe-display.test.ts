@@ -4,6 +4,7 @@ import type { ObserveEvent } from "./types.ts";
 import {
   collapseObserveDisplayRows,
   collapseTechnicalObserveDisplayRows,
+  hasPendingPermissionRequest,
   isSimpleLaneToolEvent,
   observeEventSignature,
 } from "./observe-display.ts";
@@ -402,5 +403,38 @@ describe("collapseTechnicalObserveDisplayRows", () => {
     expect(rows).toHaveLength(3);
     expect(rows[1]?.event.id).toBe("edit");
     expect(rows[2]?.technicalSummary?.totalCount).toBe(2);
+  });
+});
+
+
+describe("hasPendingPermissionRequest", () => {
+  function ev(id: string, text: string, kind: ObserveEvent["kind"] = "system"): ObserveEvent {
+    return { id, text, kind, t: parseInt(id, 10) || 0 };
+  }
+
+  test("returns false on empty trace", () => {
+    expect(hasPendingPermissionRequest([])).toBe(false);
+  });
+
+  test("returns false when every request has a matching resolution", () => {
+    expect(hasPendingPermissionRequest([
+      ev("1", "permission requested · Read"),
+      ev("2", "permission allow · Read"),
+    ])).toBe(false);
+  });
+
+  test("returns true when the latest request is unresolved", () => {
+    expect(hasPendingPermissionRequest([
+      ev("1", "permission requested · Read"),
+      ev("2", "permission allow · Read"),
+      ev("3", "permission requested · Shell"),
+    ])).toBe(true);
+  });
+
+  test("returns false when the latest action resolved the request", () => {
+    expect(hasPendingPermissionRequest([
+      ev("1", "permission requested · Shell"),
+      ev("2", "permission deny · Shell"),
+    ])).toBe(false);
   });
 });

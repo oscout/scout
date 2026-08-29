@@ -18,14 +18,12 @@ import {
 } from "@openscout/agent-sessions";
 import { findNearestProjectRoot } from "@openscout/runtime/setup";
 import {
-  readLiveScoutPairingRuntimeOwner,
+  isScoutPairingProcessRunning as isLivePairingProcess,
   readLiveScoutPairingSupervisorPid,
   readScoutPairingProcessPid as readSupervisedPairingProcessPid,
   readScoutPairingSupervisorIntent,
   resolveScoutPairingSupervisorPaths,
-  signalScoutPairingRuntimeOwner,
   updateScoutPairingSupervisorIntent,
-  type ScoutPairingRuntimeOwner,
 } from "@openscout/runtime/pairing-supervisor";
 import { loadLocalConfig } from "@openscout/runtime/local-config";
 import { resolveBunExecutable as resolveResolvedBunExecutable } from "@openscout/runtime/tool-resolution";
@@ -872,11 +870,10 @@ async function ensureDefaultScoutPairingWorkspaceConfig(currentDirectory?: strin
   });
 }
 
-async function waitForScoutPairingProcessExit(owner: ScoutPairingRuntimeOwner): Promise<void> {
-  const ownerPath = resolveScoutPairingSupervisorPaths().runtimeOwnerPath;
+async function waitForScoutPairingProcessExit(pid: number): Promise<void> {
   const startedAt = Date.now();
   while (Date.now() - startedAt < SCOUT_PAIRING_PROCESS_EXIT_TIMEOUT_MS) {
-    if (!readLiveScoutPairingRuntimeOwner(ownerPath, { expectedToken: owner.token })) {
+    if (!isScoutPairingProcessRunning(pid)) {
       return;
     }
     await sleep(SCOUT_PAIRING_PROCESS_EXIT_POLL_MS);
@@ -906,13 +903,10 @@ async function startScoutPairingRuntime(): Promise<void> {
 }
 
 async function stopScoutPairingRuntime(): Promise<void> {
-  const supervisorPaths = resolveScoutPairingSupervisorPaths();
   const pid = readScoutPairingRuntimePid();
-  const owner = readLiveScoutPairingRuntimeOwner(supervisorPaths.runtimeOwnerPath);
-  if (pid && owner?.pid === pid && signalScoutPairingRuntimeOwner(owner, "SIGTERM", {
-    ownerPath: supervisorPaths.runtimeOwnerPath,
-  })) {
-    await waitForScoutPairingProcessExit(owner);
+  if (pid && isScoutPairingProcessRunning(pid)) {
+    process.kill(pid, "SIGTERM");
+    await waitForScoutPairingProcessExit(pid);
   }
 }
 
@@ -931,18 +925,15 @@ async function requestPairingActionFromSupervisor(
   action: ScoutPairingControlAction,
 ): Promise<boolean> {
   const paths = resolveScoutPairingSupervisorPaths();
-  const previousOwner = readLiveScoutPairingRuntimeOwner(paths.runtimeOwnerPath);
+  const previousPid = readSupervisedPairingProcessPid(paths.runtimePidPath);
   updateScoutPairingSupervisorIntent(action, paths.intentPath);
   const supervisorPid = readLiveScoutPairingSupervisorPid(paths.supervisorPidPath);
   if (!supervisorPid) return false;
   const deadline = Date.now() + SCOUT_PAIRING_SUPERVISOR_ACTION_TIMEOUT_MS;
   while (Date.now() < deadline) {
     const currentPid = readSupervisedPairingProcessPid(paths.runtimePidPath);
-    const currentOwner = readLiveScoutPairingRuntimeOwner(paths.runtimeOwnerPath);
-    const running = currentPid !== null && currentOwner?.pid === currentPid;
-    if (action === "stop"
-      ? !running
-      : running && (action !== "restart" || currentOwner?.token !== previousOwner?.token)) {
+    const running = isLivePairingProcess(currentPid);
+    if (action === "stop" ? !running : running && (action !== "restart" || currentPid !== previousPid)) {
       return true;
     }
     await sleep(SCOUT_PAIRING_PROCESS_EXIT_POLL_MS);

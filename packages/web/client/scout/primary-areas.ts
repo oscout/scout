@@ -70,7 +70,7 @@ export const PRIMARY_AREAS: readonly PrimaryArea[] = [
   },
   {
     id: "projects",
-    label: "Projects",
+    label: "Crew",
     icon: FolderKanban,
     defaultRoute: { view: "agents-v2" },
     section: "navigate",

@@ -10,35 +10,63 @@ export type CollapsedLabelTone = "default" | "accent" | "attention" | "live";
 /**
  * Compact section label for the 48px collapsed rail — pill + mono caption,
  * optional count. Use inside `CollapsedStrip` or alone.
+ *
+ * When `onClick` is provided the pill renders as a button (the collapsed
+ * rail's "section icon is the expander" pattern): on hover the little mark
+ * dash swaps to a › glyph, so the affordance reads without any extra chrome.
  */
 export function CollapsedStripLabel({
   children,
   count,
   tone = "default",
   title,
+  onClick,
 }: {
   children: string;
   /** Optional tabular count under the name (e.g. unread / item total). */
   count?: number | string;
   tone?: CollapsedLabelTone;
   title?: string;
+  onClick?: () => void;
 }) {
-  return (
-    <div
-      className={[
-        "collapsed-strip-label",
-        tone !== "default" && `collapsed-strip-label--${tone}`,
-        count != null && "collapsed-strip-label--has-count",
-      ]
-        .filter(Boolean)
-        .join(" ")}
-      title={title ?? children}
-    >
+  const classes = [
+    "collapsed-strip-label",
+    tone !== "default" && `collapsed-strip-label--${tone}`,
+    count != null && "collapsed-strip-label--has-count",
+    onClick && "collapsed-strip-label--button",
+  ]
+    .filter(Boolean)
+    .join(" ");
+  const inner = (
+    <>
       <span className="collapsed-strip-label-mark" aria-hidden />
+      {onClick ? (
+        <span className="collapsed-strip-label-expand" aria-hidden>
+          ›
+        </span>
+      ) : null}
       <span className="collapsed-strip-label-text">{children}</span>
       {count != null ? (
         <span className="collapsed-strip-label-count">{count}</span>
       ) : null}
+    </>
+  );
+  if (onClick) {
+    return (
+      <button
+        type="button"
+        className={classes}
+        title={title ?? children}
+        aria-label={title ?? children}
+        onClick={onClick}
+      >
+        {inner}
+      </button>
+    );
+  }
+  return (
+    <div className={classes} title={title ?? children}>
+      {inner}
     </div>
   );
 }
@@ -50,6 +78,7 @@ export function CollapsedStrip({
   showLabel = true,
   labelTone = "default",
   labelCount,
+  onLabelClick,
   children,
 }: {
   label: string;
@@ -57,11 +86,18 @@ export function CollapsedStrip({
   showLabel?: boolean;
   labelTone?: CollapsedLabelTone;
   labelCount?: number | string;
+  /** Makes the label pill the rail's expander (click → expand). */
+  onLabelClick?: () => void;
   children: ReactNode;
 }) {
   const empty = !children || (Array.isArray(children) && children.length === 0);
   const caption = showLabel ? (
-    <CollapsedStripLabel tone={labelTone} count={labelCount}>
+    <CollapsedStripLabel
+      tone={labelTone}
+      count={labelCount}
+      onClick={onLabelClick}
+      title={onLabelClick ? `Expand ${label}` : undefined}
+    >
       {label}
     </CollapsedStripLabel>
   ) : null;
@@ -93,6 +129,7 @@ export function CollapsedChip({
   ava,
   avaColor,
   glyph,
+  avatarNode,
   dot,
   pinned,
   onClick,
@@ -103,6 +140,7 @@ export function CollapsedChip({
   ava?: string;
   avaColor?: string;
   glyph?: ReactNode;
+  avatarNode?: ReactNode;
   dot?: "unread" | "attention" | "live" | null;
   pinned?: boolean;
   onClick: () => void;
@@ -129,15 +167,27 @@ export function CollapsedChip({
       aria-current={active ? "page" : undefined}
       onClick={onClick}
     >
-      {ava ? (
+      {avatarNode ? (
+        <span className="collapsed-chip-avatar-wrap">
+          {avatarNode}
+        </span>
+      ) : ava ? (
         <span
           className="collapsed-chip-ava"
-          style={avaColor ? ({ background: avaColor } satisfies CSSProperties) : undefined}
+          style={
+            avaColor
+              ? ({ "--ava-color": avaColor } as CSSProperties)
+              : undefined
+          }
         >
           {ava}
         </span>
       ) : (
-        <span className="collapsed-chip-glyph">{glyph}</span>
+        <span
+          className={`collapsed-chip-glyph${typeof glyph === "string" && glyph.length > 1 ? " collapsed-chip-glyph--long" : ""}`}
+        >
+          {glyph}
+        </span>
       )}
       {dot ? (
         <span

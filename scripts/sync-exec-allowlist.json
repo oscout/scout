@@ -70,6 +70,20 @@
     "owner": "desktop"
   },
   {
+    "path": "apps/desktop/src/cli/commands/tui.test.ts",
+    "symbol": "spawnSync",
+    "category": "test",
+    "reason": "injects a fake spawnSync to assert scout-tui launch argv without starting the binary",
+    "owner": "desktop"
+  },
+  {
+    "path": "apps/desktop/src/cli/commands/tui.ts",
+    "symbol": "spawnSync",
+    "category": "cli",
+    "reason": "scout tui launches the ratatui binary as a one-shot inherited process",
+    "owner": "desktop"
+  },
+  {
     "path": "apps/desktop/src/cli/main.ts",
     "symbol": "spawnSync",
     "category": "cli",
@@ -312,20 +326,6 @@
     "symbol": "node:child_process",
     "category": "imperative",
     "reason": "explicit SSH enrollment owns a bounded argv-only ssh child process",
-    "owner": "runtime"
-  },
-  {
-    "path": "packages/runtime/src/pairing-supervisor.ts",
-    "symbol": "execFileSync",
-    "category": "process-lifecycle",
-    "reason": "pairs a runtime ownership nonce with one-shot ps birth and command identity reads before process signals",
-    "owner": "runtime"
-  },
-  {
-    "path": "packages/runtime/src/pairing-supervisor.ts",
-    "symbol": "node:child_process",
-    "category": "process-lifecycle",
-    "reason": "uses bounded argv-only ps reads to prevent signaling a recycled pairing runtime PID",
     "owner": "runtime"
   },
   {

@@ -15,7 +15,7 @@ function pr(overrides: Partial<RepoPullRequestItem> = {}): RepoPullRequestItem {
   return {
     id: "pr-1",
     repo: "arach/openscout",
-    path: "/Users/example/dev/openscout",
+    path: "/Users/art/dev/openscout",
     number: 412,
     title: "Polish repos PR actions",
     url: "https://github.com/oscout/scout/pull/412",
@@ -35,8 +35,8 @@ function agent(overrides: Partial<PullRequestReviewAgent> = {}): PullRequestRevi
     name: "other",
     handle: "other",
     state: "available",
-    projectRoot: "/Users/example/dev/other",
-    cwd: "/Users/example/dev/other",
+    projectRoot: "/Users/art/dev/other",
+    cwd: "/Users/art/dev/other",
     project: "other",
     branch: "main",
     harness: "claude",
@@ -58,7 +58,7 @@ describe("pullRequestReviewPrompt", () => {
     const prompt = pullRequestReviewPrompt(pr());
     expect(prompt).toContain("#412: Polish repos PR actions");
     expect(prompt).toContain("https://github.com/oscout/scout/pull/412");
-    expect(prompt).toContain("Local path: /Users/example/dev/openscout");
+    expect(prompt).toContain("Local path: /Users/art/dev/openscout");
     expect(prompt).toContain("ship / revise / hold");
   });
 });
@@ -70,7 +70,7 @@ describe("rankAgentsForPullRequest", () => {
       agent({
         id: "same-path",
         handle: "reviewer",
-        projectRoot: "/Users/example/dev/openscout",
+        projectRoot: "/Users/art/dev/openscout",
         project: "openscout",
         branch: "sco-088/anchored-l-polish",
       }),
@@ -83,12 +83,12 @@ describe("rankAgentsForPullRequest", () => {
 describe("projectOptionsForPullRequest", () => {
   test("includes the PR path and additional repo-watch projects", () => {
     const options = projectOptionsForPullRequest(pr(), [
-      { root: "/Users/example/dev/openscout", name: "openscout" },
-      { root: "/Users/example/dev/other", name: "other" },
+      { root: "/Users/art/dev/openscout", name: "openscout" },
+      { root: "/Users/art/dev/other", name: "other" },
     ]);
     expect(options.map((item) => item.path)).toEqual([
-      "/Users/example/dev/openscout",
-      "/Users/example/dev/other",
+      "/Users/art/dev/openscout",
+      "/Users/art/dev/other",
     ]);
   });
 });
@@ -118,7 +118,7 @@ describe("buildPullRequestMenuItems", () => {
       onBeginAssign: () => {},
       matchingWorktree: {
         id: "wt-1",
-        path: "/Users/example/dev/openscout",
+        path: "/Users/art/dev/openscout",
         branch: "sco-088/anchored-l-polish",
       },
       onSelectWorktreeId: () => {},

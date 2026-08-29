@@ -353,8 +353,8 @@ export function parseScoutRuntimeSpec(input: string): ScoutRuntimeSpecParseResul
     };
   }
   const rawHarness = parts[0]!.trim().toLowerCase();
-  const harness = normalizeScoutLaunchableHarness(rawHarness);
-  if (!harness) {
+  const harness = (rawHarness === "oc" ? "opencode" : rawHarness) as ScoutLaunchableHarness;
+  if (!isScoutLaunchableHarness(harness)) {
     return {
       ok: false,
       error: `unsupported runtime harness "${parts[0]}"; expected one of: ${SCOUT_LAUNCHABLE_HARNESSES.join(", ")}`,
@@ -415,7 +415,7 @@ export function normalizeScoutLaunchableHarness(
 export function isScoutLaunchableHarness(value: string | null | undefined): value is ScoutLaunchableHarness {
   if (!value) return false;
   const normalized = value.trim().toLowerCase();
-  return SCOUT_LAUNCHABLE_HARNESSES.includes(normalized as ScoutLaunchableHarness);
+  return normalized === "oc" || SCOUT_LAUNCHABLE_HARNESSES.includes(normalized as ScoutLaunchableHarness);
 }
 
 export function normalizeScoutReasoningEffort(

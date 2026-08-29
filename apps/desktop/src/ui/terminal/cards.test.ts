@@ -13,8 +13,8 @@ function makeCard(overrides: Partial<ScoutAgentCard> = {}): ScoutAgentCard {
     handle: "usetalkie-brand",
     selector: "@usetalkie-brand.brand-refresh-v1.node:mini",
     defaultSelector: "@usetalkie-brand",
-    projectRoot: "/Users/example/dev/usetalkie.com",
-    currentDirectory: "/Users/example/dev/usetalkie.com",
+    projectRoot: "/Users/arach/dev/usetalkie.com",
+    currentDirectory: "/Users/arach/dev/usetalkie.com",
     harness: "claude",
     transport: "tmux",
     sessionId: "relay-usetalkie-brand-copy-humanize-ideas-blog-mini-claude",
@@ -42,7 +42,7 @@ describe("renderScoutAgentCard", () => {
       "Usetalkie Brand",
       "Contact: @usetalkie-brand.eshv1",
       "Agent: usetalkie-brand.brand-refresh-v1.mini",
-      "Project: /Users/example/dev/usetalkie.com",
+      "Project: /Users/arach/dev/usetalkie.com",
     ]);
   });
 

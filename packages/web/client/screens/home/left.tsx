@@ -204,14 +204,14 @@ function RecentActivitySection({
   return (
     <section className="ctx-panel-section base-rail-section">
       <SectionLabel
-        title="Recent activity"
+        title="Recent Scout coordination"
         meta={items.length > 0 ? undefined : undefined}
         onSeeAll={items.length > 0 ? onSeeAll : undefined}
       />
       {loading ? (
         <RailLoadingRows />
       ) : items.length === 0 ? (
-        <div className="ctx-panel-empty">Quiet so far</div>
+        <div className="ctx-panel-empty">No recent Scout messages or dispatches</div>
       ) : (
         items.map((item) => {
           const label = item.actorName ?? item.agentName ?? item.agentId ?? "system";

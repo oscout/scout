@@ -256,10 +256,14 @@ describe("createBrokerHttpRouter", () => {
       },
     });
 
-    const result = await requestRouter(harness, "GET", "/v1/snapshot?since=1234");
+    const result = await requestRouter(
+      harness,
+      "GET",
+      "/v1/snapshot?since=1234&scope=conversations",
+    );
 
     expect(result.response.status).toBe(200);
-    expect(queries).toEqual([{ since: 1234 }]);
+    expect(queries).toEqual([{ since: 1234, scope: "conversations" }]);
   });
 
   test("forwards scoped alias writes to the authoritative broker without touching the local store", async () => {

@@ -163,13 +163,16 @@ export type ThreadTreatment = (typeof THREAD_TREATMENTS)[number];
 
 export function resolveThreadEmbedProps(params: URLSearchParams): {
   conversationId: string;
+  initialDraft?: string;
   embedded: true;
   showBackNav: false;
   treatment: ThreadTreatment;
 } {
   const candidate = params.get("treatment")?.trim() as ThreadTreatment | undefined;
+  const initialDraft = params.get("composeDraft")?.trim() || undefined;
   return {
     conversationId: params.get("conversationId")?.trim() || "",
+    ...(initialDraft ? { initialDraft } : {}),
     embedded: true,
     showBackNav: false,
     treatment: candidate && THREAD_TREATMENTS.includes(candidate) ? candidate : "standard",
@@ -710,7 +713,7 @@ export function selectTurnAsk(
   );
 }
 
-// The bracketed ask correlation tag agents echo (and the broker matches
+// The `[ask:<flightId>]` correlation tag agents echo (and the broker matches
 // on) leaks into the stored message body. We strip it from the rendered prose
 // and, when the turn replies to a known message, lift it into a backlink.
 const ASK_REPLY_TAG_FIRST = /\[ask:([^\]]+)\]/i;
@@ -749,7 +752,7 @@ function askReplyTitle(body: string): string {
 }
 
 // Resolve an ask-reply turn back to its originating message via the structured
-// replyToMessageId. The ask correlation id itself is an ephemeral runtime
+// replyToMessageId. The `[ask:<flightId>]` id itself is an ephemeral runtime
 // correlation token (not in the flights/asks payloads), so it is the trigger,
 // not the lookup key.
 export function resolveAskReplyContext(input: {

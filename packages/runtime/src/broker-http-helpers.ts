@@ -126,7 +126,8 @@ export function throwIfAborted(signal?: AbortSignal): void {
 
 export function json(response: RuntimeHttpResponseLike, status: number, payload: unknown): void {
   response.writeHead(status, { "content-type": "application/json; charset=utf-8" });
-  response.end(JSON.stringify(payload, null, 2));
+  // Compact on purpose: pretty-printing inflated large snapshot responses by ~25%.
+  response.end(JSON.stringify(payload));
 }
 
 export function a2aJson(
@@ -140,7 +141,7 @@ export function a2aJson(
     ...headers,
     "content-type": `${A2A_JSON_RPC_CONTENT_TYPE}; charset=utf-8`,
   });
-  response.end(JSON.stringify(payload, null, 2));
+  response.end(JSON.stringify(payload));
 }
 
 export function jsonWithHeaders(
@@ -153,7 +154,7 @@ export function jsonWithHeaders(
     ...headers,
     "content-type": "application/json; charset=utf-8",
   });
-  response.end(JSON.stringify(payload, null, 2));
+  response.end(JSON.stringify(payload));
 }
 
 export type ServerTimingMetric = {

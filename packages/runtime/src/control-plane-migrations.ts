@@ -13,6 +13,10 @@ import {
   CONTROL_PLANE_TERMINAL_WORKSPACE_SQLITE_SCHEMA,
 } from "./schema.js";
 import { resolveOpenScoutSupportPaths } from "./support-paths.js";
+import {
+  canonicalMeshNodeId,
+  stripBonjourCollisionSuffix,
+} from "./node-identity.js";
 
 export type ControlPlaneSchemaMigration = {
   id: string;
@@ -26,6 +30,13 @@ function hasColumn(database: ControlPlaneSqliteDatabase, tableName: string, colu
     `SELECT name FROM pragma_table_info('${escapedTableName}')`,
   ).all() as Array<{ name: string }>;
   return rows.some((row) => row.name === columnName);
+}
+
+function hasTable(database: ControlPlaneSqliteDatabase, tableName: string): boolean {
+  const row = database.query(
+    "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?1",
+  ).get(tableName);
+  return Boolean(row);
 }
 
 export const CONTROL_PLANE_SCHEMA_MIGRATIONS: ControlPlaneSchemaMigration[] = [
@@ -238,6 +249,73 @@ WHERE latest.invocation_id = inv.id
     apply(database) {
       if (!hasColumn(database, "trusted_peers", "tls_spki_fingerprint")) {
         database.exec("ALTER TABLE trusted_peers ADD COLUMN tls_spki_fingerprint TEXT");
+      }
+    },
+  },
+  {
+    id: "canonicalize-mesh-nodes-and-rehome",
+    description: "Re-homes foreign key references on Bonjour collision-suffixed ghost nodes to canonical stable node IDs and prunes ghost nodes.",
+    apply(database) {
+      if (!hasTable(database, "nodes")) return;
+      const nodeRows = database.query("SELECT * FROM nodes").all() as Array<{
+        id: string;
+        mesh_id: string;
+        name: string;
+        host_name: string | null;
+        advertise_scope: string;
+        broker_url: string | null;
+        tailnet_name: string | null;
+        capabilities_json: string | null;
+        labels_json: string | null;
+        metadata_json: string | null;
+        last_seen_at: number | null;
+        registered_at: number;
+      }>;
+      for (const row of nodeRows) {
+        const canonicalId = canonicalMeshNodeId(row.id);
+        if (canonicalId && canonicalId !== row.id) {
+          const existing = nodeRows.find((r) => r.id === canonicalId);
+          if (!existing) {
+            database.query(
+              `INSERT INTO nodes (
+                id, mesh_id, name, host_name, advertise_scope, broker_url, tailnet_name,
+                capabilities_json, labels_json, metadata_json, last_seen_at, registered_at
+              ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+              ON CONFLICT(id) DO UPDATE SET
+                last_seen_at = MAX(COALESCE(nodes.last_seen_at, 0), COALESCE(excluded.last_seen_at, 0)),
+                broker_url = COALESCE(excluded.broker_url, nodes.broker_url),
+                tailnet_name = COALESCE(excluded.tailnet_name, nodes.tailnet_name)`,
+            ).run(
+              canonicalId,
+              row.mesh_id,
+              stripBonjourCollisionSuffix(row.name) || row.name,
+              stripBonjourCollisionSuffix(row.host_name ?? "") || (row.host_name ?? null),
+              row.advertise_scope,
+              row.broker_url ?? null,
+              row.tailnet_name ?? null,
+              row.capabilities_json ?? null,
+              row.labels_json ?? null,
+              row.metadata_json ?? null,
+              row.last_seen_at ?? null,
+              row.registered_at,
+            );
+          }
+          database.query("UPDATE agents SET home_node_id = ?1 WHERE home_node_id = ?2").run(canonicalId, row.id);
+          database.query("UPDATE agents SET authority_node_id = ?1 WHERE authority_node_id = ?2").run(canonicalId, row.id);
+          database.query("UPDATE agent_endpoints SET node_id = ?1 WHERE node_id = ?2").run(canonicalId, row.id);
+          database.query("UPDATE runtime_sessions SET node_id = ?1 WHERE node_id = ?2").run(canonicalId, row.id);
+          database.query("UPDATE runtime_session_aliases SET node_id = ?1 WHERE node_id = ?2").run(canonicalId, row.id);
+          database.query("UPDATE conversations SET authority_node_id = ?1 WHERE authority_node_id = ?2").run(canonicalId, row.id);
+          database.query("UPDATE conversation_read_cursors SET reader_node_id = ?1 WHERE reader_node_id = ?2").run(canonicalId, row.id);
+          database.query("UPDATE messages SET origin_node_id = ?1 WHERE origin_node_id = ?2").run(canonicalId, row.id);
+          database.query("UPDATE deliveries SET target_node_id = ?1 WHERE target_node_id = ?2").run(canonicalId, row.id);
+          database.query("UPDATE invocations SET requester_node_id = ?1 WHERE requester_node_id = ?2").run(canonicalId, row.id);
+          database.query("UPDATE invocations SET target_node_id = ?1 WHERE target_node_id = ?2").run(canonicalId, row.id);
+          database.query("UPDATE thread_events SET authority_node_id = ?1 WHERE authority_node_id = ?2").run(canonicalId, row.id);
+          database.query("UPDATE thread_cursors SET authority_node_id = ?1 WHERE authority_node_id = ?2").run(canonicalId, row.id);
+          database.query("UPDATE trusted_peers SET node_id = ?1 WHERE node_id = ?2").run(canonicalId, row.id);
+          database.query("DELETE FROM nodes WHERE id = ?1").run(row.id);
+        }
       }
     },
   },

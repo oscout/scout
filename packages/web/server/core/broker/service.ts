@@ -58,6 +58,7 @@ import {
   type ScoutBrokerChildServiceSnapshots,
   type ScoutBrokerHealthPayload,
   type ScoutBrokerProjectionStatus,
+  type ScoutBrokerStartupStatus,
 } from "@openscout/runtime/broker-api";
 import {
   resolveBrokerServiceConfig,
@@ -81,6 +82,7 @@ import {
   scoutBrokerMessagesListPath,
   scoutBrokerPaths,
 } from "./paths.ts";
+import { coalesce } from "../../server-core.ts";
 
 export type ScoutBrokerActorRecord = ActorIdentity;
 export type ScoutBrokerAgentRecord = AgentDefinition;
@@ -127,6 +129,7 @@ export type ScoutBrokerHealthState = {
   build: ScoutBrokerBuildIdentity | null;
   services: ScoutBrokerChildServiceSnapshots | null;
   projection: ScoutBrokerProjectionStatus | null;
+  startup: ScoutBrokerStartupStatus | null;
   counts: {
     nodes: number;
     actors: number;
@@ -185,6 +188,8 @@ export type ScoutBrokerHomePayload = {
   updatedAt: number;
   agents: ScoutBrokerHomeAgentRecord[];
   activity: ScoutBrokerHomeActivityRecord[];
+  activitySource: "sqlite_projection" | "runtime_snapshot";
+  activityState: "ready" | "warming" | "degraded" | "disabled";
 };
 
 export type ScoutMentionTarget = {
@@ -977,6 +982,7 @@ export async function readScoutBrokerHealth(
       build: health.build ?? null,
       services: health.services ?? null,
       projection: health.projection ?? null,
+      startup: health.startup ?? null,
       counts: health.counts
         ? {
             nodes: health.counts.nodes ?? 0,
@@ -1011,6 +1017,7 @@ export async function readScoutBrokerHealth(
       build: null,
       services: null,
       projection: null,
+      startup: null,
       counts: null,
       error: error instanceof Error ? error.message : null,
     };
@@ -1112,6 +1119,34 @@ export async function readScoutBrokerSnapshot(
 }
 
 /**
+ * This node's broker identity from `/v1/node` alone — a read of a few hundred
+ * bytes. Callers that only need to know which node THIS machine is (terminal
+ * workspace reconciliation, for one) must not pay for `loadScoutBrokerContext`,
+ * whose registry snapshot can run to tens of megabytes on a long-running
+ * broker. A success is held for 30s — a broker's node id does not change while
+ * it runs — and a failure is never cached, so a broker coming up is seen on
+ * the next request while concurrent callers still share one in-flight read.
+ */
+const readScoutBrokerNodeIdCoalesced = coalesce(async (): Promise<string> => {
+  const node = await brokerReadJson<ScoutBrokerNodeRecord>(
+    resolveScoutBrokerUrl(),
+    scoutBrokerPaths.v1.node,
+  );
+  if (!node?.id) {
+    throw new Error("broker /v1/node returned no node id");
+  }
+  return node.id;
+}, 30_000);
+
+export async function readScoutBrokerNodeId(): Promise<string | null> {
+  try {
+    return await readScoutBrokerNodeIdCoalesced();
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Read the broker's compact, canonical message feed without loading the full
  * registry snapshot. Dispatch only needs recent messages, and the full
  * snapshot can be tens of megabytes on a long-running broker.
@@ -1163,7 +1198,12 @@ export async function recordScoutBrokerReadCursor(
 
 export async function loadScoutBrokerContext(
   baseUrl = resolveScoutBrokerUrl(),
-  options: { signal?: AbortSignal; since?: number | null } = {},
+  options: {
+    signal?: AbortSignal;
+    since?: number | null;
+    force?: boolean;
+    scope?: "conversations";
+  } = {},
 ): Promise<ScoutBrokerContext | null> {
   const since = options.since === undefined
     ? Math.floor(
@@ -1171,9 +1211,21 @@ export async function loadScoutBrokerContext(
         / DEFAULT_SCOUT_BROKER_SNAPSHOT_BUCKET_MS,
       ) * DEFAULT_SCOUT_BROKER_SNAPSHOT_BUCKET_MS
     : options.since;
+  // A forced read follows an out-of-band mutation (mesh scope changes are
+  // performed by scoutd rather than brokerPostJson). Evict every bounded
+  // snapshot for this broker before repopulating the requested key so the
+  // following ordinary poll cannot resurrect pre-mutation state.
+  if (options.force) {
+    invalidateScoutBrokerContextCache(baseUrl);
+  }
   const cacheKey = options.signal
     ? null
-    : [baseUrl, resolveBrokerSocketPathForBaseUrl(baseUrl) ?? "http", since ?? "full"].join("\u0000");
+    : [
+        baseUrl,
+        resolveBrokerSocketPathForBaseUrl(baseUrl) ?? "http",
+        since ?? "full",
+        options.scope ?? "default",
+      ].join("\u0000");
   const now = Date.now();
   for (const [key, entry] of scoutBrokerContextCache) {
     if (entry.expiresAt <= now) scoutBrokerContextCache.delete(key);
@@ -1188,8 +1240,12 @@ export async function loadScoutBrokerContext(
     if (!health.reachable || !health.ok) {
       return null;
     }
-    const snapshotPath = since && since > 0
-      ? `${scoutBrokerPaths.v1.snapshot}?since=${Math.trunc(since)}`
+    const snapshotQuery = new URLSearchParams();
+    if (since && since > 0) snapshotQuery.set("since", String(Math.trunc(since)));
+    if (options.scope) snapshotQuery.set("scope", options.scope);
+    const queryString = snapshotQuery.toString();
+    const snapshotPath = queryString
+      ? `${scoutBrokerPaths.v1.snapshot}?${queryString}`
       : scoutBrokerPaths.v1.snapshot;
     try {
       const [node, snapshot] = await Promise.all([

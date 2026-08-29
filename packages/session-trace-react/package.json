@@ -1,14 +1,8 @@
 {
   "name": "@openscout/session-trace-react",
-  "version": "0.2.92",
+  "version": "0.2.94",
   "private": true,
   "description": "React presentation layer for OpenScout live session traces",
-  "homepage": "https://github.com/oscout/scout/tree/main/packages/session-trace-react#readme",
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/oscout/scout.git",
-    "directory": "packages/session-trace-react"
-  },
   "type": "module",
   "exports": {
     ".": {

@@ -8,9 +8,9 @@ import {
 
 describe("terminal relay multiplexer session names", () => {
   test("accepts the full generated name of an existing tmux session", () => {
-    const sessionName = "relay-arc-opus-beautification-master-scout-mac-mini-local-claude";
+    const sessionName = "relay-arc-opus-beautification-master-arachs-mac-mini-local-claude";
 
-    expect(sessionName).toHaveLength(64);
+    expect(sessionName).toHaveLength(65);
     expect(isValidMultiplexerName(sessionName)).toBe(true);
   });
 

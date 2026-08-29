@@ -21,10 +21,11 @@ type Navigate = (route: Route) => void;
 type ProjectSort = "recent" | "name" | "sessions";
 
 const PROJECT_SESSION_PREVIEW_LIMIT = 4;
+const RECENT_REPLY_PREVIEW_LIMIT = 4;
 const PINNED_SESSIONS_STORAGE_KEY = "openscout.projects.pinnedSessions";
 const ARCHIVED_SESSIONS_STORAGE_KEY = "openscout.projects.archivedSessions";
 
-type RailProjectGroup = {
+export type RailProjectGroup = {
   project: InboxProject;
   sessions: InboxSession[];
   lastActivityAt: number;
@@ -115,6 +116,13 @@ export function ProjectsRail({
           ),
     [projectSessions, pinnedSessions, query, zeroPreview],
   );
+  const recentReplySessions = useMemo(
+    () =>
+      zeroPreview
+        ? []
+        : recentReplySessionsForRail(projectSessions, query),
+    [projectSessions, query, zeroPreview],
+  );
 
   const openProject = useCallback((slug: string) => {
     setCollapsedProjects((current) => withoutValue(current, slug));
@@ -164,7 +172,7 @@ export function ProjectsRail({
       writePinnedSessions(next);
       return next;
     });
-    if (isSessionSelected(session, route)) {
+    if (isSessionSelected(session, route, projectSessions)) {
       navigate({
         view: "agents-v2",
         projectSlug: session.projectSlug,
@@ -173,7 +181,7 @@ export function ProjectsRail({
         ...(showEphemeral ? { showEphemeral: true } : {}),
       });
     }
-  }, [machineId, navigate, route, showEphemeral]);
+  }, [machineId, navigate, projectSessions, route, showEphemeral]);
 
   return (
     <nav className="s-pi s-pi-rail" aria-label="Projects" aria-busy={loading || undefined} data-loading={loading || undefined}>
@@ -241,7 +249,28 @@ export function ProjectsRail({
                         key={`pinned:${session.id}`}
                         session={session}
                         pinned
-                        selected={isSessionSelected(session, route)}
+                        selected={isSessionSelected(session, route, projectSessions)}
+                        showProject
+                        nowMs={nowMs}
+                        onOpenSession={openSession}
+                        onTogglePinnedSession={togglePinnedSession}
+                        onArchiveSession={archiveSession}
+                      />
+                    ))}
+                  </div>
+                </div>
+              ) : null}
+
+              {recentReplySessions.length > 0 ? (
+                <div className="pi-recentReplies" aria-label="Latest harness replies">
+                  <div className="pi-pinnedLabel">Latest replies</div>
+                  <div className="pi-projectSessionList">
+                    {recentReplySessions.map((session) => (
+                      <ProjectSessionRailRow
+                        key={`reply:${session.id}`}
+                        session={session}
+                        pinned={pinnedSessions.has(sessionKey(session))}
+                        selected={isSessionSelected(session, route, projectSessions)}
                         showProject
                         nowMs={nowMs}
                         onOpenSession={openSession}
@@ -261,6 +290,7 @@ export function ProjectsRail({
                   collapsed={collapsedProjects.has(group.project.slug)}
                   expanded={expandedProjects.has(group.project.slug)}
                   pinnedSessions={pinnedSessions}
+                  allSessions={projectSessions}
                   nowMs={nowMs}
                   route={route}
                   onOpenProject={openProject}
@@ -296,6 +326,7 @@ export function ProjectsRail({
                           collapsed={collapsedProjects.has(group.project.slug)}
                           expanded={expandedProjects.has(group.project.slug)}
                           pinnedSessions={pinnedSessions}
+                          allSessions={projectSessions}
                           nowMs={nowMs}
                           route={route}
                           onOpenProject={openProject}
@@ -330,6 +361,7 @@ function ProjectRailGroup({
   collapsed,
   expanded,
   pinnedSessions,
+  allSessions,
   nowMs,
   route,
   onOpenProject,
@@ -344,6 +376,8 @@ function ProjectRailGroup({
   collapsed: boolean;
   expanded: boolean;
   pinnedSessions: Set<string>;
+  /** Full rail universe, so legacy bare refs fail closed across project groups. */
+  allSessions: InboxSession[];
   nowMs: number;
   route: Extract<Route, { view: "agents-v2" }>;
   onOpenProject: (slug: string) => void;
@@ -406,7 +440,7 @@ function ProjectRailGroup({
               key={session.id}
               session={session}
               pinned={pinnedSessions.has(sessionKey(session))}
-              selected={isSessionSelected(session, route)}
+              selected={isSessionSelected(session, route, allSessions)}
               showProject={false}
               nowMs={nowMs}
               onOpenSession={onOpenSession}
@@ -523,7 +557,13 @@ const ProjectSessionRailRow = memo(function ProjectSessionRailRow({
         >
           <Archive size={11} strokeWidth={2} aria-hidden />
         </button>
-        <span className="pi-projectSessionWhen">{session.lastActivityAt ? timeAgo(session.lastActivityAt, nowMs) : "-"}</span>
+        <span className="pi-projectSessionWhen">
+          {session.latestReplyAt
+            ? timeAgo(session.latestReplyAt, nowMs)
+            : session.lastActivityAt
+              ? timeAgo(session.lastActivityAt, nowMs)
+              : "-"}
+        </span>
       </div>
       {preview ? <ProjectSessionHoverCard session={session} left={preview.left} top={preview.top} nowMs={nowMs} /> : null}
     </>
@@ -577,14 +617,25 @@ function buildProjectGroups(projects: InboxProject[], sessions: InboxSession[]):
   });
 }
 
-function filterAndSortProjectGroups(groups: RailProjectGroup[], query: string, sort: ProjectSort): RailProjectGroup[] {
+export function filterAndSortProjectGroups(
+  groups: RailProjectGroup[],
+  query: string,
+  sort: ProjectSort,
+): RailProjectGroup[] {
   const needle = query.trim().toLowerCase();
   const filtered = needle
-    ? groups.filter((group) =>
-        group.project.title.toLowerCase().includes(needle)
-        || group.project.slug.toLowerCase().includes(needle)
-        || group.sessions.some((session) => sessionMatchesQuery(session, needle))
-      )
+    ? groups.flatMap((group) => {
+        const projectMatches = group.project.title.toLowerCase().includes(needle)
+          || group.project.slug.toLowerCase().includes(needle);
+        const matchingSessions = group.sessions.filter((session) => sessionMatchesQuery(session, needle));
+        if (!projectMatches && matchingSessions.length === 0) return [];
+        // A session-only match must survive the four-row project preview. When
+        // the project itself matches, retain its normal session overview.
+        return [{
+          ...group,
+          sessions: projectMatches ? group.sessions : matchingSessions,
+        }];
+      })
     : groups;
   return [...filtered].sort((a, b) => {
     switch (sort) {
@@ -607,9 +658,9 @@ function filterAndSortProjectGroups(groups: RailProjectGroup[], query: string, s
 function sortSessionsForRail(sessions: InboxSession[]): InboxSession[] {
   return [...sessions].sort(
     (a, b) =>
-      Number(b.working) - Number(a.working)
+      (b.latestReplyAt ?? b.lastActivityAt) - (a.latestReplyAt ?? a.lastActivityAt)
+      || Number(b.working) - Number(a.working)
       || sessionAddressability(b) - sessionAddressability(a)
-      || b.lastActivityAt - a.lastActivityAt
       || sessionTitle(a).localeCompare(sessionTitle(b)),
   );
 }
@@ -626,9 +677,20 @@ function sessionMatchesQuery(session: InboxSession, query: string): boolean {
   return session.projectTitle.toLowerCase().includes(needle)
     || session.projectSlug.toLowerCase().includes(needle)
     || sessionTitle(session).toLowerCase().includes(needle)
+    || session.work.toLowerCase().includes(needle)
+    || session.id.toLowerCase().includes(needle)
+    || (session.sessionId?.toLowerCase().includes(needle) ?? false)
+    || (sessionRouteRef(session)?.toLowerCase().includes(needle) ?? false)
     || session.agentName.toLowerCase().includes(needle)
     || session.harness.toLowerCase().includes(needle)
     || (session.branch?.toLowerCase().includes(needle) ?? false);
+}
+
+export function recentReplySessionsForRail(sessions: InboxSession[], query: string): InboxSession[] {
+  return [...sessions]
+    .filter((session) => session.latestReplyAt !== null && sessionMatchesQuery(session, query))
+    .sort((a, b) => (b.latestReplyAt ?? 0) - (a.latestReplyAt ?? 0))
+    .slice(0, RECENT_REPLY_PREVIEW_LIMIT);
 }
 
 function sessionKey(session: InboxSession): string {
@@ -636,6 +698,11 @@ function sessionKey(session: InboxSession): string {
 }
 
 function sessionTitle(session: InboxSession): string {
+  if (session.latestReplyPreview) {
+    const preview = session.latestReplyPreview.replace(/\s+/gu, " ").trim();
+    const clipped = preview.length > 42 ? `${preview.slice(0, 39).trim()}...` : preview;
+    return `${sentenceCase(session.harness)} replied · ${clipped}`;
+  }
   const raw = session.work || session.sessionId || session.id;
   const leaf = raw.includes("/") ? pathLeaf(raw) : raw;
   return compactSessionLabel(leaf, session.harness);

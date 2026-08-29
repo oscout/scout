@@ -3,8 +3,9 @@ import {
   type RefObject,
   type SetStateAction,
 } from "react";
-import { Reply, X } from "lucide-react";
+import { Pencil, Reply, X, Zap } from "lucide-react";
 import { actorColor } from "../../lib/colors.ts";
+import { AgentAvatar } from "../../components/AgentAvatar.tsx";
 import {
   ComposerAttachmentStrip,
   MessageComposer,
@@ -129,10 +130,14 @@ export function ConversationComposer({
             id: mention.id,
             token: `@${mention.handle}`,
             description: mention.name,
-            avatar: {
-              label: mention.name[0]?.toUpperCase() ?? "?",
-              color: actorColor(mention.name),
-            },
+            avatarNode: (
+              <AgentAvatar
+                name={mention.name}
+                size={20}
+                tile
+                presence={false}
+              />
+            ),
           }))}
           activeIndex={mentionState.index}
           onPick={(index) => {
@@ -235,7 +240,7 @@ export function ConversationComposer({
           {entry.id === editingQueuedId ? (
             <button
               type="button"
-              className="s-msg-compose-queue-edit"
+              className="s-msg-compose-queue-edit btn btn--sm btn--ghost"
               title="Stop rewriting — leave this row as it was"
               aria-label={`Cancel rewriting queued message ${index + 1}`}
               onClick={onCancelEdit}
@@ -245,28 +250,30 @@ export function ConversationComposer({
           ) : (
             <button
               type="button"
-              className="s-msg-compose-queue-edit"
+              className="s-msg-compose-queue-edit btn btn--sm btn--ghost"
               title="Pull this back into the input box to rewrite it"
               aria-label={`Edit queued message ${index + 1}`}
               disabled={sending || isEditing}
               onClick={() => onEditQueued(entry.id)}
             >
-              Edit
+              <Pencil size={11} aria-hidden="true" />
+              <span>Edit</span>
             </button>
           )}
           <button
             type="button"
-            className="s-msg-compose-queue-now"
+            className="s-msg-compose-queue-now btn btn--sm btn--accent"
             title="Interrupt this turn and send this now"
             aria-label={`Send queued message ${index + 1} now`}
             disabled={sending || entry.id === editingQueuedId}
             onClick={() => onSendQueuedNow(entry.id)}
           >
-            Send now
+            <Zap size={11} aria-hidden="true" />
+            <span>Send now</span>
           </button>
           <button
             type="button"
-            className="s-msg-compose-queue-drop"
+            className="s-msg-compose-queue-drop btn btn--ghost btn--icon"
             title="Cancel — drop this from the queue"
             aria-label={`Cancel queued message ${index + 1}`}
             onClick={() => onUnqueue(entry.id)}
@@ -320,26 +327,26 @@ export function ConversationComposer({
       header={
         <>
           {replyTarget ? (
-            <div className="s-thread-compose-reply" role="status">
+            <div className="s-thread-compose-reply surface-card surface-card--inset" role="status">
               <Reply
-                className="s-thread-compose-reply-icon"
+                className="s-thread-compose-reply-icon text-muted"
                 size={13}
                 strokeWidth={1.8}
                 aria-hidden="true"
               />
-              <span className="s-thread-compose-reply-label">Replying to</span>
-              <span className="s-thread-compose-reply-actor">
+              <span className="s-thread-compose-reply-label label-xs text-muted">Replying to</span>
+              <span className="s-thread-compose-reply-actor chip chip--sm chip--mono chip--neutral">
                 {replyTarget.actorLabel}
               </span>
               <span
-                className="s-thread-compose-reply-preview"
+                className="s-thread-compose-reply-preview text-muted"
                 title={replyTarget.preview}
               >
                 {replyTarget.preview}
               </span>
               <button
                 type="button"
-                className="s-thread-compose-reply-cancel"
+                className="s-thread-compose-reply-cancel btn btn--ghost btn--icon"
                 aria-label="Cancel reply"
                 title="Cancel reply"
                 onClick={onCancelReply}

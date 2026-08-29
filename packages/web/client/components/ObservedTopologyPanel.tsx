@@ -234,9 +234,13 @@ export function ObservedTopologyPanel({
 }: ObservedTopologyPanelProps) {
   const [snapshot, setSnapshot] = useState<HarnessTopologySnapshot | null>(null);
   const [failed, setFailed] = useState(false);
+  // A request in flight is not an answer. Without this the panel reports
+  // "nothing observed" for the whole first fetch, which reads as a finding.
+  const [pending, setPending] = useState(!topology);
 
   useEffect(() => {
     if (topology) return;
+    setPending(true);
     let cancelled = false;
     const query = sessionId ? `?sessionId=${encodeURIComponent(sessionId)}` : "";
     api<HarnessTopologySnapshot>(`/api/topology/snapshot${query}`)
@@ -248,6 +252,9 @@ export function ObservedTopologyPanel({
       })
       .catch(() => {
         if (!cancelled) setFailed(true);
+      })
+      .finally(() => {
+        if (!cancelled) setPending(false);
       });
     return () => {
       cancelled = true;
@@ -301,7 +308,11 @@ export function ObservedTopologyPanel({
           </header>
         )}
         <div className="s-observed-topology-empty">
-          {failed ? "Topology is unavailable right now." : "No interacted agents observed yet."}
+          {pending
+            ? "Reading topology…"
+            : failed
+              ? "Topology is unavailable right now."
+              : "No interacted agents observed yet."}
         </div>
       </section>
     );

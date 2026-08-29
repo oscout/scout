@@ -89,5 +89,8 @@ jobs:
           cargo check --manifest-path crates/openscout-voice-core/Cargo.toml --all-features
           cargo test --manifest-path crates/openscout-voice-core/Cargo.toml --all-features
 
+      - name: Verify scout-tui
+        run: cargo check --manifest-path crates/scout-tui/Cargo.toml
+
       - name: Verify
         run: bash scripts/scoutd-verify.sh

@@ -10,6 +10,7 @@ import {
   ScoutbotRealtimeVoiceCallHeader,
 } from "../../scout/scoutbot/ScoutbotRealtimeVoiceCall.tsx";
 import { useScoutbotRealtimeVoice } from "../../scout/scoutbot/ScoutbotRealtimeVoiceContext.tsx";
+import { ScoutbotPanel } from "../../scout/scoutbot/ScoutbotPanel.tsx";
 import { defineSurface } from "../../surfaces/types.ts";
 
 declare global {
@@ -33,7 +34,7 @@ export function RealtimeVoiceScreen({
   dictationActive?: boolean;
   autoStart?: boolean;
 }) {
-  const enabled = useOptionalFlag(SCOUT_REALTIME_VOICE_FLAG, false);
+  const enabled = useOptionalFlag(SCOUT_REALTIME_VOICE_FLAG, true);
   const { enabled: operatorEnabled, state, leaseId, startCall, endCall } = useScoutbotRealtimeVoice();
   const autoStartAttemptedRef = useRef(false);
   const stopInFlightRef = useRef<Promise<boolean> | null>(null);
@@ -100,8 +101,7 @@ export function RealtimeVoiceScreen({
           Live voice is off
         </p>
         <p className="text-sm leading-snug text-[var(--scout-chrome-ink-faint)]">
-          Turn on the <span className="font-mono">{SCOUT_REALTIME_VOICE_FLAG}</span> flag to hold live
-          conversations with Scoutbot. Calls use the configured OpenAI API account.
+          This Scout build has live conversations disabled. Calls use the configured OpenAI API account when the feature is available.
         </p>
       </div>
     );
@@ -133,39 +133,85 @@ export function RealtimeVoiceScreen({
   );
 }
 
-/** Full routed workspace for longer calls and a readable, scrollable audit trail. */
+/** Routed voice workspace. Direct, turn-based voice is the default; GPT Live remains available as a separate mode. */
 export function RealtimeVoicePage() {
-  const enabled = useOptionalFlag(SCOUT_REALTIME_VOICE_FLAG, false);
+  const enabled = useOptionalFlag(SCOUT_REALTIME_VOICE_FLAG, true);
   const { enabled: operatorEnabled, state } = useScoutbotRealtimeVoice();
+  const [mode, setMode] = useState<"direct" | "realtime">("direct");
+  const realtimeReady = enabled && operatorEnabled;
 
-  if (!enabled || !operatorEnabled) {
-    return <RealtimeVoiceScreen />;
+  if (mode === "direct") {
+    return (
+      <main className="h-full min-h-0 overflow-hidden bg-[#f3f0e9]">
+        <ScoutbotPanel
+          forceExpanded
+          fill
+          presentation="direct-voice"
+          onOpenLive={() => setMode("realtime")}
+        />
+      </main>
+    );
   }
 
   return (
     <main className="flex h-full min-h-0 flex-col overflow-hidden bg-[var(--scout-chrome-bg)]">
-      <div className="border-b border-[var(--scout-chrome-border-soft)] px-6 py-5">
-        <p className="font-mono text-xs uppercase tracking-[0.14em] text-[var(--scout-chrome-ink-faint)]">
-          Scoutbot
-        </p>
-        <h1 className="mt-1 text-3xl font-medium text-[var(--scout-chrome-ink-strong)]">Live voice</h1>
-        <p className="mt-1 max-w-2xl text-xs leading-relaxed text-[var(--scout-chrome-ink-faint)]">
-          Hold a live conversation, inspect navigation attempts, and audit what Scoutbot tried without leaving the call.
-        </p>
-      </div>
-      <div className="min-h-0 flex-1 p-5">
-        <section className="mx-auto flex h-full min-h-[26rem] w-full max-w-5xl flex-col overflow-hidden rounded-xl border border-[color-mix(in_srgb,var(--hud-ink)_11%,transparent)] bg-[color-mix(in_srgb,var(--scout-chrome-bg)_96%,black)] shadow-[0_18px_48px_rgba(0,0,0,0.24)]">
-          <ScoutbotRealtimeVoiceCallHeader state={state} layout="page" />
-          <ScoutbotRealtimeVoiceCall dictationActive={false} layout="page" />
-        </section>
-      </div>
+      <header className="flex min-h-14 shrink-0 items-center justify-between gap-4 border-b border-[var(--scout-chrome-border-soft)] px-4 py-2.5 sm:px-7">
+        <div className="flex min-w-0 items-center gap-3">
+          <h1 className="truncate font-[var(--font-accent-title)] text-[17px] font-semibold tracking-[-0.018em] text-[var(--scout-chrome-ink-strong)]">
+            GPT Live
+          </h1>
+          <span className="hidden h-4 w-px bg-[var(--scout-chrome-border-soft)] sm:block" aria-hidden="true" />
+          <span className="hidden items-center gap-2 text-xs text-[var(--scout-chrome-ink-faint)] sm:flex">
+            <span
+              className={`h-1.5 w-1.5 rounded-full ${
+                realtimeReady ? "bg-[var(--scout-accent)]" : "bg-[var(--scout-chrome-ink-ghost)]"
+              }`}
+              aria-hidden="true"
+            />
+            {realtimeReady ? "Ready for a live call" : "Live voice unavailable"}
+          </span>
+        </div>
+        <div
+          className="flex rounded-md border border-[var(--scout-chrome-border-soft)] bg-[var(--scout-chrome-hover)] p-0.5"
+          role="tablist"
+          aria-label="Voice mode"
+        >
+          <button
+            type="button"
+            role="tab"
+            aria-selected="false"
+            onClick={() => setMode("direct")}
+            className="rounded-[4px] px-3 py-1.5 text-[11px] font-medium text-[var(--scout-chrome-ink-faint)] transition-colors hover:text-[var(--scout-chrome-ink-strong)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--scout-accent)]"
+          >
+            Direct
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected="true"
+            className="rounded-[4px] bg-[var(--scout-chrome-ink-strong)] px-3 py-1.5 text-[11px] font-medium text-[var(--scout-chrome-bg)] shadow-[0_1px_2px_rgba(0,0,0,0.14)]"
+          >
+            Live
+          </button>
+        </div>
+      </header>
+      <section className="min-h-0 flex-1 overflow-hidden">
+        {realtimeReady ? (
+          <div className="flex h-full min-h-0 flex-col overflow-hidden">
+            <ScoutbotRealtimeVoiceCallHeader state={state} layout="page" />
+            <ScoutbotRealtimeVoiceCall dictationActive={false} layout="page" />
+          </div>
+        ) : (
+          <RealtimeVoiceScreen />
+        )}
+      </section>
     </main>
   );
 }
 
 export const scoutSurface = defineSurface({
   id: "voice",
-  label: "Live voice",
+  label: "Voice",
   route: { view: "voice" },
   webPath: "/voice",
   screen: "RealtimeVoiceScreen",

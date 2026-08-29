@@ -1,6 +1,6 @@
 import { once } from "node:events";
 import { createReadStream, createWriteStream } from "node:fs";
-import { appendFile, mkdir, rename, unlink } from "node:fs/promises";
+import { appendFile, mkdir, rename, stat, unlink } from "node:fs/promises";
 import { dirname } from "node:path";
 import { createInterface } from "node:readline";
 
@@ -75,6 +75,21 @@ type JournalSnapshotState = {
   scoutDispatches: ScoutDispatchRecord[];
 };
 
+export type BrokerJournalLoadReport = {
+  startedAt: number;
+  completedAt: number;
+  totalMs: number;
+  scanMs: number;
+  compactionMs: number;
+  sourceBytes: number;
+  compactedBytes: number;
+  validEntries: number;
+  invalidLines: number;
+  blankLines: number;
+  compactionRequired: boolean;
+  countsByKind: Partial<Record<BrokerJournalEntry["kind"], number>>;
+};
+
 type DedupableJournalEntry =
   | BrokerJournalEntry & { kind: "node.upsert" }
   | BrokerJournalEntry & { kind: "actor.upsert" }
@@ -82,6 +97,17 @@ type DedupableJournalEntry =
   | BrokerJournalEntry & { kind: "agent.endpoint.upsert" }
   | BrokerJournalEntry & { kind: "conversation.upsert" }
   | BrokerJournalEntry & { kind: "binding.upsert" };
+
+type JournalVisitReport = {
+  rawLines: number;
+  validEntries: number;
+  invalidLines: number;
+  blankLines: number;
+};
+
+export type BrokerJournalReplayBoundary = {
+  endByteExclusive: number;
+};
 
 function cloneSnapshot(snapshot: RuntimeRegistrySnapshot): RuntimeRegistrySnapshot {
   return createRuntimeRegistrySnapshot({
@@ -189,23 +215,36 @@ export class FileBackedBrokerJournal {
 
   private loaded = false;
 
+  private latestLoadReport: BrokerJournalLoadReport | null = null;
+
   private writeQueue: Promise<void> = Promise.resolve();
 
   constructor(filePath: string) {
     this.filePath = filePath;
   }
 
-  async load(): Promise<void> {
+  async load(): Promise<BrokerJournalLoadReport> {
     if (this.loaded) {
-      return;
+      return this.latestLoadReport!;
     }
 
+    const startedAt = Date.now();
+    const sourceBytes = await stat(this.filePath).then((value) => value.size).catch((error) => {
+      const code = error && typeof error === "object" && "code" in error
+        ? (error as { code?: unknown }).code
+        : undefined;
+      if (code === "ENOENT") return 0;
+      throw error;
+    });
     const latestIndexByKey = new Map<string, number>();
     const lastFlightById = new Map<string, FlightRecord>();
+    const countsByKind: BrokerJournalLoadReport["countsByKind"] = {};
     let compactionRequired = false;
 
-    await this.visitEntries((entry, index) => {
+    const scanStartedAt = Date.now();
+    const scan = await this.visitEntries((entry, index) => {
       this.apply(entry);
+      countsByKind[entry.kind] = (countsByKind[entry.kind] ?? 0) + 1;
       const key = dedupeKey(entry);
       if (key) {
         if (latestIndexByKey.has(key)) {
@@ -221,12 +260,42 @@ export class FileBackedBrokerJournal {
         lastFlightById.set(entry.flight.id, entry.flight);
       }
     });
+    const scanMs = Date.now() - scanStartedAt;
 
+    let compactionMs = 0;
     if (compactionRequired) {
+      const compactionStartedAt = Date.now();
       await this.rewriteCompactedEntries(latestIndexByKey);
+      compactionMs = Date.now() - compactionStartedAt;
     }
 
     this.loaded = true;
+    const completedAt = Date.now();
+    const compactedBytes = await stat(this.filePath).then((value) => value.size).catch(() => 0);
+    this.latestLoadReport = {
+      startedAt,
+      completedAt,
+      totalMs: completedAt - startedAt,
+      scanMs,
+      compactionMs,
+      sourceBytes,
+      compactedBytes,
+      validEntries: scan.validEntries,
+      invalidLines: scan.invalidLines,
+      blankLines: scan.blankLines,
+      compactionRequired,
+      countsByKind,
+    };
+    return this.latestLoadReport;
+  }
+
+  loadReport(): BrokerJournalLoadReport | null {
+    return this.latestLoadReport
+      ? {
+          ...this.latestLoadReport,
+          countsByKind: { ...this.latestLoadReport.countsByKind },
+        }
+      : null;
   }
 
   async readEntries(): Promise<BrokerJournalEntry[]> {
@@ -235,8 +304,33 @@ export class FileBackedBrokerJournal {
     return entries;
   }
 
-  async replay(visitor: (entry: BrokerJournalEntry) => void | Promise<void>): Promise<void> {
-    await this.visitEntries((entry) => visitor(entry));
+  captureReplayBoundary(): Promise<BrokerJournalReplayBoundary> {
+    let boundary: BrokerJournalReplayBoundary = { endByteExclusive: 0 };
+    const capture = this.writeQueue.then(async () => {
+      boundary = {
+        endByteExclusive: await stat(this.filePath)
+          .then((value) => value.size)
+          .catch((error) => {
+            const code = error && typeof error === "object" && "code" in error
+              ? (error as { code?: unknown }).code
+              : undefined;
+            if (code === "ENOENT") return 0;
+            throw error;
+          }),
+      };
+    });
+    this.writeQueue = capture.then(() => undefined, () => undefined);
+    return capture.then(() => boundary);
+  }
+
+  async replay(
+    visitor: (entry: BrokerJournalEntry) => void | Promise<void>,
+    boundary?: BrokerJournalReplayBoundary,
+  ): Promise<void> {
+    await this.visitEntries(
+      (entry) => visitor(entry),
+      boundary ? { endByteExclusive: boundary.endByteExclusive } : {},
+    );
   }
 
   snapshot(): RuntimeRegistrySnapshot {
@@ -359,16 +453,44 @@ export class FileBackedBrokerJournal {
 
   private async visitEntries(
     visitor: (entry: BrokerJournalEntry, index: number) => void | Promise<void>,
-  ): Promise<void> {
-    const input = createReadStream(this.filePath, { encoding: "utf8" });
+    options: { endByteExclusive?: number } = {},
+  ): Promise<JournalVisitReport> {
+    const endByteExclusive = options.endByteExclusive;
+    if (endByteExclusive !== undefined && endByteExclusive <= 0) {
+      return {
+        rawLines: 0,
+        validEntries: 0,
+        invalidLines: 0,
+        blankLines: 0,
+      };
+    }
+    const input = createReadStream(this.filePath, {
+      encoding: "utf8",
+      ...(endByteExclusive === undefined ? {} : { end: endByteExclusive - 1 }),
+    });
     const lines = createInterface({ input, crlfDelay: Infinity });
     let index = 0;
+    const report: JournalVisitReport = {
+      rawLines: 0,
+      validEntries: 0,
+      invalidLines: 0,
+      blankLines: 0,
+    };
     try {
       for await (const rawLine of lines) {
+        report.rawLines += 1;
+        if (!rawLine.trim()) {
+          report.blankLines += 1;
+          continue;
+        }
         const entry = parseEntry(rawLine);
-        if (!entry) continue;
+        if (!entry) {
+          report.invalidLines += 1;
+          continue;
+        }
         await visitor(entry, index);
         index += 1;
+        report.validEntries += 1;
       }
     } catch (error) {
       const code = error && typeof error === "object" && "code" in error
@@ -381,6 +503,7 @@ export class FileBackedBrokerJournal {
       lines.close();
       input.destroy();
     }
+    return report;
   }
 
   private async rewriteCompactedEntries(latestIndexByKey: Map<string, number>): Promise<void> {

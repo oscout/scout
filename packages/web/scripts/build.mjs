@@ -18,6 +18,7 @@ if ((clientBuild.status ?? 1) !== 0) {
   process.exit(clientBuild.status ?? 1);
 }
 
+
 mkdirSync(outputDirectory, { recursive: true });
 
 const entries = [

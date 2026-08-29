@@ -1,11 +1,12 @@
 'use client';
 
 import React, { useState, useCallback, useEffect, useMemo, useRef } from "react";
-import { ChevronDown, ChevronRight, Maximize2, Minimize2, Pin, PinOff, Search, Sparkles, Terminal as TerminalIcon, X } from "lucide-react";
+import { ChevronDown, ChevronRight, Maximize2, Minimize2, PanelBottom, PanelRight, Pin, PinOff, Search, Sparkles, Terminal as TerminalIcon, X } from "lucide-react";
 import { Assistant, type HudsonApp, type CommandOption, usePersistentState, usePlatform, usePlatformLayout } from "@hudsonkit";
 import { CommandDock, Frame, SidePanel, StatusBar } from "@hudsonkit/chrome";
 import { FeatureFlagsProvider, useOptionalFlag } from "hudsonkit/flags";
 import { ScoutFeatureFlagPanel } from "./components/ScoutFeatureFlagPanel.tsx";
+import { ScoutMark } from "./components/ScoutMark.tsx";
 import { DevFlagToggle } from "./components/DevFlagToggle.tsx";
 import { isScoutDevToolsAvailable } from "./lib/use-scout-dev-flags.ts";
 import { CommandPalette, TerminalDrawer } from "@hudsonkit/overlays";
@@ -61,6 +62,7 @@ import {
   RAIL_COLLAPSED_WIDTH,
   RAIL_HEADER_HEIGHT,
   RAIL_TOGGLE_HEADER_TOP,
+  railToggleOffset,
   SIDEBAR_COLLAPSED_WIDTH,
   SIDEBAR_EXPANDED_WIDTH,
   SLACK_SIDEBAR_COLLAPSED_WIDTH,
@@ -73,15 +75,16 @@ import {
   useSidebarCollapse,
 } from "./scout/sidebar/useSidebarCollapse.ts";
 import { CollapsedRail } from "./scout/sidebar/CollapsedRail.tsx";
+import { InspectorCollapsedBody } from "./scout/sidebar/InspectorCollapsedBody.tsx";
 
 import { RailToggle } from "./components/RailToggle.tsx";
 import { useScoutbotState } from "./scout/scoutbot/ScoutbotStateContext.tsx";
 import {
   isLanesContextEmpty,
-  nextLanesContextToggle,
   resolveLanesContextCollapsed,
 } from "./scout/sidebar/empty-context-collapse.ts";
 import { routeHasMeaningfulInspector } from "./scout/sidebar/inspector-visibility.ts";
+import { nextRightPanelToggle } from "./scout/sidebar/right-panel-toggle.ts";
 
 interface OpenScoutAppShellProps {
   app: HudsonApp;
@@ -124,33 +127,6 @@ function computeSidePanelMaxWidth(viewportWidth: number) {
   return Math.min(
     SIDE_PANEL_MAX_WIDTH_HARD_CAP,
     Math.max(SIDE_PANEL_MAX_WIDTH_FLOOR, Math.floor(viewportWidth * SIDE_PANEL_MAX_WIDTH_VIEWPORT_RATIO)),
-  );
-}
-
-function ScoutChromeMark({ className = "" }: { className?: string }) {
-  return (
-    <svg
-      viewBox="0 0 20 20"
-      aria-hidden="true"
-      className={className}
-      fill="none"
-      stroke="currentColor"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-    >
-      <polygon
-        points="10,4.3 14.8,7.1 14.8,12.9 10,15.7 5.2,12.9 5.2,7.1"
-        strokeWidth="1.9"
-        fill="currentColor"
-        fillOpacity="0.12"
-      />
-      <polygon
-        points="10,7 12.4,8.4 12.4,10.6 10,12 7.6,10.6 7.6,8.4"
-        strokeWidth="0.9"
-        fill="currentColor"
-        fillOpacity="0.9"
-      />
-    </svg>
   );
 }
 
@@ -211,7 +187,12 @@ function ScoutNavigationBar({ title, center, actions, search }: ScoutNavigationB
             aria-label={title}
             className="flex items-center gap-2 rounded-sm px-0.5 -mx-0.5 leading-none text-foreground/90"
           >
-            <ScoutChromeMark className="h-5 w-5 text-[#f8f3e8] drop-shadow-[0_0_6px_rgba(255,247,234,0.3)]" />
+            {/* Inherits the chrome's own ink instead of a baked cream, and sized
+                a step up from the 16px nav icons — the brand should be the
+                largest mark in the bar, not the smallest. The glow is dropped
+                with the hardcoded colour: a white bloom is a dark-theme effect,
+                and on paper it only fogged the mark it was meant to lift. */}
+            <ScoutMark className="h-[22px] w-[22px] text-[var(--scout-chrome-ink-strong,currentColor)]" />
             <span className="font-mono text-sm font-medium tracking-[0.06em] leading-none">
               {title}
             </span>
@@ -285,7 +266,7 @@ function OpenScoutStatusBarLeft({
   dictationActive: boolean;
 }) {
   const scoutbotEnabled = useOptionalFlag("surface.scoutbot", true);
-  const realtimeVoiceEnabled = useOptionalFlag(SCOUT_REALTIME_VOICE_FLAG, false);
+  const realtimeVoiceEnabled = useOptionalFlag(SCOUT_REALTIME_VOICE_FLAG, true);
   const meshValueClass = statusBar.mesh.color === "amber"
     ? "text-amber-400"
     : statusBar.mesh.color === "red"
@@ -294,13 +275,6 @@ function OpenScoutStatusBarLeft({
 
   return (
     <div className="flex items-center gap-3 font-mono leading-none">
-      <div className="flex items-center gap-1.5">
-        <span className="text-2xs font-normal uppercase tracking-[0.16em] text-muted-foreground">
-          {statusBar.activeAgents.label}
-        </span>
-        <span className="text-xs tabular-nums text-foreground">{statusBar.activeAgents.count}</span>
-      </div>
-      <span aria-hidden="true" className="select-none text-muted-foreground/40 text-xs">·</span>
       <div className="flex items-center gap-1.5">
         <span className="text-2xs font-normal uppercase tracking-[0.16em] text-muted-foreground">
           {statusBar.mesh.label}
@@ -796,6 +770,67 @@ function OpenScoutAppShellInner({ app, assistantEnabled }: { app: HudsonApp; ass
     [leftWidth, setLeftCollapsed, setLeftWidth, triggerRailSettle],
   );
 
+  const agentsV2Route = route.view === "agents-v2";
+  const hasMeaningfulInspector = routeHasMeaningfulInspector(route, {
+    hasBrokerAttempt: Boolean(selectedBrokerAttempt),
+    hasKnowledgeHit: Boolean(selectedKnowledgeHit),
+  });
+
+  // Empty /ops/lanes context is derived above the panel because a collapsed
+  // SidePanel unmounts its children. Expanding it sets a route-scoped override,
+  // never a permanent preference; every entry point shares toggleRightPanel.
+  const lanesContextRoute = route.view === "ops" && route.mode === "lanes";
+  const [lanesContextForceOpen, setLanesContextForceOpen] = useState(false);
+  const scoutbotConversation = scoutbotPublic.state.conversation;
+  const lanesContextEmpty = isLanesContextEmpty(route, scoutbotConversation);
+  useEffect(() => {
+    if (!lanesContextRoute) setLanesContextForceOpen(false);
+  }, [lanesContextRoute]);
+  useEffect(() => {
+    if (!lanesContextEmpty) setLanesContextForceOpen(false);
+  }, [lanesContextEmpty]);
+  const baseRightCollapsed = rightCollapsed || scopePresentation;
+  const effectiveRightCollapsed = resolveLanesContextCollapsed({
+    empty: lanesContextEmpty,
+    forceOpen: lanesContextForceOpen,
+    baseCollapsed: baseRightCollapsed,
+  });
+  const showRightPanel = !terminalFocusActive
+    && !scopePresentation
+    && hasMeaningfulInspector;
+  const bottomPanelAvailable = drawerTabs.length > 0;
+  const rightPanelAvailable = !scopePresentation && hasMeaningfulInspector;
+  const rightPanelExpanded = showRightPanel && !effectiveRightCollapsed;
+  const toggleRightPanel = useCallback(() => {
+    const next = nextRightPanelToggle({
+      available: rightPanelAvailable,
+      terminalFocusActive,
+      lanesContextRoute,
+      lanesContextEmpty,
+      lanesContextForceOpen,
+      rightCollapsed,
+    });
+    if (!next) return;
+    if (next.terminalFocusActive !== terminalFocusActive) {
+      setTerminalFocus(next.terminalFocusActive);
+    }
+    if (next.lanesContextForceOpen !== lanesContextForceOpen) {
+      setLanesContextForceOpen(next.lanesContextForceOpen);
+    }
+    if (next.rightCollapsed !== rightCollapsed) {
+      setRightCollapsed(next.rightCollapsed);
+    }
+  }, [
+    lanesContextEmpty,
+    lanesContextForceOpen,
+    lanesContextRoute,
+    rightCollapsed,
+    rightPanelAvailable,
+    setRightCollapsed,
+    setTerminalFocus,
+    terminalFocusActive,
+  ]);
+
   const shellCommands: CommandOption[] = useMemo(() => {
     const toggleLeft = () => {
       if (sidebarChrome) {
@@ -821,7 +856,7 @@ function OpenScoutAppShellInner({ app, assistantEnabled }: { app: HudsonApp; ass
         id: "shell:toggle-right",
         label: "Toggle Right Panel",
         shortcut: "Cmd+]",
-        action: () => setRightCollapsed((collapsed) => !collapsed),
+        action: toggleRightPanel,
       },
       {
         id: "shell:toggle-right-overlay",
@@ -876,13 +911,13 @@ function OpenScoutAppShellInner({ app, assistantEnabled }: { app: HudsonApp; ass
     route,
     setActiveTab,
     setLeftCollapsed,
-    setRightCollapsed,
     setRightOverlay,
     setShowFlagPanel,
     setTerminalFocus,
     sidebarChrome,
     sidebarCollapse,
     terminalFocus,
+    toggleRightPanel,
   ]);
 
   const allCommands = useMemo(() => [...appCommands, ...shellCommands], [appCommands, shellCommands]);
@@ -957,7 +992,7 @@ function OpenScoutAppShellInner({ app, assistantEnabled }: { app: HudsonApp; ass
         if (e.shiftKey) {
           setRightOverlay((overlay) => !overlay);
         } else {
-          setRightCollapsed((collapsed) => !collapsed);
+          toggleRightPanel();
         }
       }
       if (e.ctrlKey && e.key === "`") {
@@ -1002,6 +1037,7 @@ function OpenScoutAppShellInner({ app, assistantEnabled }: { app: HudsonApp; ass
     sidebarCollapse,
     startGoShortcut,
     takeoverActive,
+    toggleRightPanel,
   ]);
 
   useEffect(() => {
@@ -1104,36 +1140,6 @@ function OpenScoutAppShellInner({ app, assistantEnabled }: { app: HudsonApp; ass
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
   }, [takeoverActive, takeoverDismissible, takeoverOnDismiss]);
-
-  const agentsV2Route = route.view === "agents-v2";
-  const hasMeaningfulInspector = routeHasMeaningfulInspector(route, {
-    hasBrokerAttempt: Boolean(selectedBrokerAttempt),
-    hasKnowledgeHit: Boolean(selectedKnowledgeHit),
-  });
-
-  // SCO-085 empty CONTEXT on /ops/lanes: expose message count/loading ABOVE the
-  // panel (ScoutbotStateContext) so we never depend on mounted panel children
-  // (collapsed SidePanel unmounts them → deadlock). Emptiness derives collapse;
-  // expand sets a TEMPORARY route-scoped open override — never flips stored prefs.
-  const lanesContextRoute = route.view === "ops" && route.mode === "lanes";
-  const [lanesContextForceOpen, setLanesContextForceOpen] = useState(false);
-  const scoutbotConversation = scoutbotPublic.state.conversation;
-  const lanesContextEmpty = isLanesContextEmpty(route, scoutbotConversation);
-  useEffect(() => {
-    if (!lanesContextRoute) setLanesContextForceOpen(false);
-  }, [lanesContextRoute]);
-  useEffect(() => {
-    if (!lanesContextEmpty) setLanesContextForceOpen(false);
-  }, [lanesContextEmpty]);
-  const baseRightCollapsed = rightCollapsed || scopePresentation;
-  const effectiveRightCollapsed = resolveLanesContextCollapsed({
-    empty: lanesContextEmpty,
-    forceOpen: lanesContextForceOpen,
-    baseCollapsed: baseRightCollapsed,
-  });
-  const showRightPanel = !terminalFocusActive
-    && !scopePresentation
-    && hasMeaningfulInspector;
 
   // Scope presentation: legacy chrome collapses left/right as derived state
   // (never written to prefs). New sidebar chrome keeps a path-aware Scope model.
@@ -1303,25 +1309,29 @@ function OpenScoutAppShellInner({ app, assistantEnabled }: { app: HudsonApp; ass
                     />
                     </SidebarProvider>
 
-                  {/* SCO-087: sidebar edge chevron rendered by the shell (not the
-                      sidebar body) so it aligns to the same panel-header band as the
-                      side rail / inspector chevrons. SCO-088c (Codex blocker 1): it
-                      stays pinned at the committed edge during drag (the ghost line
-                      is the live preview) and snaps to the new edge on commit — no
-                      per-frame layout animation. */}
+                  {/* One control, both states, in the nav column's own header
+                      band: expanded it tucks against the inner edge, collapsed
+                      it centres in the rail. It no longer straddles the seam —
+                      the seam is the resize handle's, and a control that belongs
+                      to neither side belongs to no one. SCO-088c (Codex blocker
+                      1): it stays pinned at the committed edge during drag (the
+                      ghost line is the live preview). */}
                   <RailToggle
                     side="left"
                     collapsed={sidebarCollapse.effectiveCollapsed}
                     label="Sidebar"
                     onToggle={sidebarCollapse.toggleCollapsed}
                     onMouseDown={(e) => e.stopPropagation()}
-                    className="scout-rail-toggle--sidebar-edge"
+                    className="scout-rail-toggle--band"
                     style={{
                       position: "fixed",
-                      left: sidebarCollapse.width,
+                      left: railToggleOffset(
+                        sidebarCollapse.width,
+                        sidebarCollapse.effectiveCollapsed,
+                        sidebarCollapsedWidth,
+                      ),
                       top: railToggleTop,
                       zIndex: 46,
-                      transform: "translateX(-50%)",
                     }}
                   />
 
@@ -1582,27 +1592,74 @@ function OpenScoutAppShellInner({ app, assistantEnabled }: { app: HudsonApp; ass
                     onOpenSearch={() => setShowCommandPalette(true)}
                     rightUtility={(
                       <>
+                        <TopRowIdentity presentation={slackShell ? "slack" : "scout"} />
                         {route.view === "terminal" ? (
+                          <>
+                            <div id="scout-terminal-header-slot" data-scout-terminal-header-slot="" />
+                            <button
+                              type="button"
+                              data-scout-terminal-focus-toggle=""
+                              aria-label={terminalFocusActive ? "Exit terminal focus" : "Focus terminal"}
+                              aria-pressed={terminalFocusActive}
+                              aria-keyshortcuts="Meta+Shift+B Control+Shift+B"
+                              title={terminalFocusActive
+                                ? "Exit focus (⌘⇧B)"
+                                : "Focus terminal (⌘⇧B)"}
+                              className={`scout-terminal-focus-toggle${
+                                terminalFocusActive ? " scout-terminal-focus-toggle--active" : ""
+                              }`}
+                              onClick={() => setTerminalFocus((focused) => !focused)}
+                            >
+                              {terminalFocusActive
+                                ? <Minimize2 size={13} strokeWidth={1.8} aria-hidden="true" />
+                                : <Maximize2 size={13} strokeWidth={1.8} aria-hidden="true" />}
+                            </button>
+                          </>
+                        ) : null}
+                        <span
+                          className="scout-top-row-panel-toggles"
+                          role="group"
+                          aria-label="Layout panels"
+                        >
                           <button
                             type="button"
-                            data-scout-terminal-focus-toggle=""
-                            aria-label={terminalFocusActive ? "Exit terminal focus" : "Focus terminal"}
-                            aria-pressed={terminalFocusActive}
-                            aria-keyshortcuts="Meta+Shift+B Control+Shift+B"
-                            title={terminalFocusActive
-                              ? "Exit focus (⌘⇧B)"
-                              : "Focus terminal (⌘⇧B)"}
-                            className={`scout-terminal-focus-toggle${
-                              terminalFocusActive ? " scout-terminal-focus-toggle--active" : ""
+                            data-scout-bottom-panel-toggle=""
+                            aria-label={bottomPanelAvailable
+                              ? (showTerminal ? "Hide bottom panel" : "Show bottom panel")
+                              : "Bottom panel unavailable"}
+                            aria-pressed={showTerminal}
+                            aria-keyshortcuts="Control+`"
+                            title={bottomPanelAvailable
+                              ? (showTerminal ? "Hide bottom panel (⌃`)" : "Show bottom panel (⌃`)")
+                              : "No bottom panel is available in this app"}
+                            className={`scout-top-row-panel-toggle${
+                              showTerminal ? " scout-top-row-panel-toggle--active" : ""
                             }`}
-                            onClick={() => setTerminalFocus((focused) => !focused)}
+                            disabled={!bottomPanelAvailable}
+                            onClick={() => setShowTerminal((visible) => !visible)}
                           >
-                            {terminalFocusActive
-                              ? <Minimize2 size={13} strokeWidth={1.8} aria-hidden="true" />
-                              : <Maximize2 size={13} strokeWidth={1.8} aria-hidden="true" />}
+                            <PanelBottom size={14} strokeWidth={1.8} aria-hidden="true" />
                           </button>
-                        ) : null}
-                        <TopRowIdentity presentation={slackShell ? "slack" : "scout"} />
+                          <button
+                            type="button"
+                            data-scout-right-panel-toggle=""
+                            aria-label={rightPanelAvailable
+                              ? (rightPanelExpanded ? "Hide right panel" : "Show right panel")
+                              : "Right panel unavailable for this view"}
+                            aria-pressed={rightPanelExpanded}
+                            aria-keyshortcuts="Meta+] Control+]"
+                            title={rightPanelAvailable
+                              ? (rightPanelExpanded ? "Hide right panel (⌘])" : "Show right panel (⌘])")
+                              : "No right panel is available for this view"}
+                            className={`scout-top-row-panel-toggle${
+                              rightPanelExpanded ? " scout-top-row-panel-toggle--active" : ""
+                            }`}
+                            disabled={!rightPanelAvailable}
+                            onClick={toggleRightPanel}
+                          >
+                            <PanelRight size={14} strokeWidth={1.8} aria-hidden="true" />
+                          </button>
+                        </span>
                       </>
                     )}
                     onInteractiveMouseDown={onInteractiveMouseDown}
@@ -1616,36 +1673,42 @@ function OpenScoutAppShellInner({ app, assistantEnabled }: { app: HudsonApp; ass
                   : agentsV2Route
                     ? "Detail"
                     : app.rightPanel?.title ?? "Inspector";
-                const handleRightToggle = () => {
-                  // SCO-085: /ops/lanes empty CONTEXT uses a temporary route-scoped
-                  // open override — never permanently flip stored rightCollapsed for emptiness.
-                  if (lanesContextRoute) {
-                    const next = nextLanesContextToggle({
-                      empty: lanesContextEmpty,
-                      forceOpen: lanesContextForceOpen,
-                      rightCollapsed,
-                    });
-                    setLanesContextForceOpen(next.forceOpen);
-                    if (next.rightCollapsed !== rightCollapsed) {
-                      setRightCollapsed(next.rightCollapsed);
-                    }
-                    return;
-                  }
-                  setRightCollapsed(!rightCollapsed);
-                };
-
                 // SCO-086: sidebar chrome uses OpenScout CollapsedRail at 48px;
                 // legacy path keeps HudsonKit's 0-width floating expand button.
                 if (sidebarChrome && effectiveRightCollapsed) {
                   return (
-                    <CollapsedRail
-                      side="right"
-                      title={inspectorTitle}
-                      onToggle={handleRightToggle}
-                      edgeOffset={0}
-                      top={contentTopOffset}
-                      style={panelTopStyle}
-                    />
+                    <>
+                      <CollapsedRail
+                        side="right"
+                        title={inspectorTitle}
+                        onToggle={toggleRightPanel}
+                        edgeOffset={0}
+                        top={contentTopOffset}
+                        style={panelTopStyle}
+                        body={(
+                          <InspectorCollapsedBody
+                            route={route}
+                            onExpand={toggleRightPanel}
+                          />
+                        )}
+                      />
+                      {/* Same band, same y as the expanded control — mirrored to
+                          the inspector's inner (left) edge. */}
+                      <RailToggle
+                        side="right"
+                        collapsed
+                        label={inspectorTitle}
+                        onToggle={toggleRightPanel}
+                        onMouseDown={(e) => e.stopPropagation()}
+                        className="scout-rail-toggle--band"
+                        style={{
+                          position: "fixed",
+                          right: railToggleOffset(RAIL_COLLAPSED_WIDTH, true),
+                          top: railToggleTop,
+                          zIndex: 45,
+                        }}
+                      />
+                    </>
                   );
                 }
 
@@ -1656,7 +1719,7 @@ function OpenScoutAppShellInner({ app, assistantEnabled }: { app: HudsonApp; ass
                       title={inspectorTitle}
                       icon={app.rightPanel?.icon}
                       isCollapsed={sidebarChrome ? false : effectiveRightCollapsed}
-                      onToggleCollapse={sidebarChrome ? undefined : handleRightToggle}
+                      onToggleCollapse={sidebarChrome ? undefined : toggleRightPanel}
                       width={rightWidth}
                       onResizeStart={handleResizeStart("right")}
                       floating={rightPanelOverlaysContent}
@@ -1693,14 +1756,14 @@ function OpenScoutAppShellInner({ app, assistantEnabled }: { app: HudsonApp; ass
                         side="right"
                         collapsed={false}
                         label={inspectorTitle}
-                        onToggle={handleRightToggle}
-                        className="scout-rail-toggle--panel scout-rail-toggle--inspector"
+                        onToggle={toggleRightPanel}
+                        onMouseDown={(e) => e.stopPropagation()}
+                        className="scout-rail-toggle--band"
                         style={{
                           position: "fixed",
-                          right: rightWidth,
+                          right: railToggleOffset(rightWidth, false),
                           top: railToggleTop,
                           zIndex: 45,
-                          transform: "translateX(50%)",
                         }}
                       />
                     ) : null}

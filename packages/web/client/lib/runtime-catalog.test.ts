@@ -210,6 +210,11 @@ describe("Scout-owned runtime seed", () => {
     ]);
   });
 
+  test("hides the duplicate Grok harness from the picker", () => {
+    expect(catalog.harnesses.map((harness) => harness.value)).not.toContain("grok");
+    expect(catalog.harnesses.map((harness) => harness.value)).toContain("grok-acp");
+  });
+
   test("uses the model-specific Scout ladder rather than vendor discovery", () => {
     expect(effortsFor(catalog, "codex", "gpt-5.6-luna")?.map((effort) => effort.value)).toEqual([
       "low",

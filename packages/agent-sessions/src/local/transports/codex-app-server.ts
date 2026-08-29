@@ -123,6 +123,7 @@ export type CodexAppServerTurnStartResult = {
 
 export type CodexAppServerThreadResult = {
   threadId: string;
+  durableThreadId: string | null;
 };
 
 export type CodexAppServerExitKind =
@@ -189,6 +190,32 @@ export class CodexAppServerRequesterTimeoutError extends Error {
     this.label = input.label;
     this.timeoutMs = input.timeoutMs;
   }
+}
+
+export class CodexThreadHeldExternallyError extends Error {
+  readonly code = "CODEX_THREAD_HELD_EXTERNALLY";
+  readonly threadId: string;
+  readonly agentName: string;
+
+  constructor(input: { agentName: string; threadId: string; detail?: string | null }) {
+    super(
+      `Codex thread ${input.threadId} is open in another application`
+        + (input.detail ? ` (${input.detail})` : "")
+        + "; it will accept turns once that application releases it.",
+    );
+    this.name = "CodexThreadHeldExternallyError";
+    this.threadId = input.threadId;
+    this.agentName = input.agentName;
+  }
+}
+
+export function isCodexThreadHeldExternallyError(error: unknown): error is CodexThreadHeldExternallyError {
+  return error instanceof CodexThreadHeldExternallyError
+    || Boolean(
+      error
+        && typeof error === "object"
+        && (error as { code?: unknown }).code === "CODEX_THREAD_HELD_EXTERNALLY",
+    );
 }
 
 function codexAppServerExitMessage(input: {
@@ -741,6 +768,12 @@ function isMissingCodexRolloutError(error: unknown): boolean {
   return message.includes("no rollout found for thread id");
 }
 
+function isCodexThreadWriterConflictError(error: unknown): boolean {
+  const message = errorMessage(error).toLowerCase();
+  return message.includes("already has an active writer")
+    || message.includes("thread-store conflict");
+}
+
 type ProactiveCodexAppServerShutdown = {
   reason: string;
 };
@@ -783,6 +816,10 @@ export class CodexAppServerTransport {
 
   get currentThreadPath(): string | null {
     return this.threadPath;
+  }
+
+  get currentDurableThreadId(): string | null {
+    return this.durableThreadId;
   }
 
   get stdoutLogFile(): string {
@@ -832,6 +869,7 @@ export class CodexAppServerTransport {
 
     return {
       threadId: this.threadId,
+      durableThreadId: this.durableThreadId,
     };
   }
 
@@ -1067,6 +1105,16 @@ export class CodexAppServerTransport {
           await this.persistState();
         }
         if (requestedThreadId || this.options.requireExistingThread) {
+          if (isCodexThreadWriterConflictError(error)) {
+            // Single-writer rule: the thread is open in another app-server
+            // (typically the Codex desktop app). The session is not gone —
+            // callers park delivery and retry when the writer lock releases.
+            throw new CodexThreadHeldExternallyError({
+              agentName: this.options.agentName,
+              threadId: storedThreadId,
+              detail: errorMessage(error),
+            });
+          }
           throw new Error(`Failed to resume ${threadOrigin} Codex thread ${storedThreadId}: ${errorMessage(error)}`);
         }
       }

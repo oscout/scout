@@ -18,7 +18,12 @@ import type {
   Route,
   SessionEntry,
   TailDiscoverySnapshot,
+  TailEvent,
 } from "../../lib/types.ts";
+import {
+  formatSessionRouteRef,
+  parseSessionRouteRef,
+} from "../../../shared/session-route-ref.ts";
 import { filterAgentsByMachineScope } from "../../lib/machine-scope.ts";
 import {
   buildDirProjects,
@@ -57,6 +62,8 @@ export type InboxThread = {
   agentId: string | null;
   agentName: string;
   harness: string;
+  /** Exact tail/runtime source used for collision-free native session routing. */
+  source?: string;
   branch: string | null;
   // ── the work ──
   work: string;
@@ -83,12 +90,17 @@ export type InboxSession = {
   agentId: string | null;
   agentName: string;
   harness: string;
+  /** Exact tail/runtime source used for collision-free native session routing. */
+  source?: string;
   branch: string | null;
   work: string;
   group: ThreadGroup;
   needs: false;
   working: boolean;
   lastActivityAt: number;
+  /** Latest observed harness assistant output; never a Scout-owned message. */
+  latestReplyAt: number | null;
+  latestReplyPreview: string | null;
   sessionCount: 1;
   contextPct: number | null;
   conversationId: string | null;
@@ -132,6 +144,7 @@ export type BuildInboxInput = {
   sessions: SessionEntry[];
   fleet: FleetState | null;
   discovery: TailDiscoverySnapshot | null;
+  recentEvents?: TailEvent[];
   nowMs: number;
   showEphemeral: boolean;
 };
@@ -259,6 +272,7 @@ function nativeThread(
     agentId: null,
     agentName: `${titleCaseHarness(harness)} session`,
     harness,
+    source: node.harness,
     branch: null,
     work: humanizeWorkText(node.detail ?? node.label) || node.label,
     group: "working",
@@ -295,6 +309,7 @@ function projectSession(
   nowMs: number,
   agent?: Agent,
   branch?: string | null,
+  latestReply?: TailEvent | null,
 ): InboxSession {
   const harness = harnessOf(node.harness);
   const routeId = sessionRouteId(node.route);
@@ -309,12 +324,15 @@ function projectSession(
     agentId: agent?.id ?? null,
     agentName: agent?.name ?? `${titleCaseHarness(harness)} session`,
     harness,
+    source: node.harness,
     branch: branchLabel(branch ? [branch] : []),
     work: humanizeWorkText(node.detail ?? node.label) || node.label,
     group: sessionGroup(node, nowMs),
     needs: false,
     working,
     lastActivityAt: node.lastActivityAt ?? nowMs,
+    latestReplyAt: latestReply?.ts ?? null,
+    latestReplyPreview: latestReply?.summary.trim() || null,
     sessionCount: 1,
     contextPct: null,
     conversationId: node.route?.view === "conversation" ? node.route.conversationId : null,
@@ -323,7 +341,81 @@ function projectSession(
   };
 }
 
-function projectSessions(project: DirProject, nowMs: number): InboxSession[] {
+function normalizedSessionRef(value: string | null | undefined): string | null {
+  const trimmed = value?.trim();
+  if (!trimmed) return null;
+  const leaf = trimmed.split(/[\\/]/u).filter(Boolean).at(-1) ?? trimmed;
+  return leaf.endsWith(".jsonl") ? leaf.slice(0, -".jsonl".length) : leaf;
+}
+
+function observedSessionKey(source: string, value: string | null | undefined): string | null {
+  const ref = normalizedSessionRef(value);
+  if (!ref) return null;
+  // Harness session ids are not globally unique. Keep the same source-scoped
+  // identity boundary as the runtime tail registry so one provider's reply can
+  // never label or reorder another provider's session.
+  return `${source.trim().toLowerCase()}\u0000${ref}`;
+}
+
+function observedMessageRole(event: TailEvent): string | null {
+  if (!event.raw || typeof event.raw !== "object" || Array.isArray(event.raw)) return null;
+  const payload = (event.raw as Record<string, unknown>).payload;
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return null;
+  const role = (payload as Record<string, unknown>).role;
+  return typeof role === "string" ? role.trim().toLowerCase() : null;
+}
+
+function isApprovalReviewerDecision(summary: string): boolean {
+  const trimmed = summary.trim();
+  if (!trimmed.startsWith("{")) return false;
+  // Tail summaries are deliberately clipped, so recognize the stable schema
+  // before attempting a full JSON parse.
+  if (
+    trimmed.startsWith('{"risk_level":')
+    && trimmed.includes('"user_authorization":')
+    && trimmed.includes('"outcome":')
+    && trimmed.includes('"rationale":')
+  ) {
+    return true;
+  }
+  try {
+    const parsed = JSON.parse(trimmed) as Record<string, unknown>;
+    return typeof parsed.risk_level === "string"
+      && typeof parsed.user_authorization === "string"
+      && typeof parsed.outcome === "string"
+      && typeof parsed.rationale === "string";
+  } catch {
+    return false;
+  }
+}
+
+/** True only for a user-facing harness reply, not developer or approval plumbing. */
+export function isObservedAssistantReply(event: TailEvent): boolean {
+  if (event.kind !== "assistant") return false;
+  const summary = event.summary.trim();
+  if (!summary || /^\[(?:assistant|message)\]$/iu.test(summary)) return false;
+  const role = observedMessageRole(event);
+  if (role && role !== "assistant") return false;
+  return !isApprovalReviewerDecision(summary);
+}
+
+function latestAssistantEventsBySession(events: TailEvent[]): Map<string, TailEvent> {
+  const latest = new Map<string, TailEvent>();
+  for (const event of events) {
+    if (!isObservedAssistantReply(event)) continue;
+    const key = observedSessionKey(event.source, event.sessionId);
+    if (!key) continue;
+    const current = latest.get(key);
+    if (!current || event.ts > current.ts) latest.set(key, event);
+  }
+  return latest;
+}
+
+function projectSessions(
+  project: DirProject,
+  nowMs: number,
+  repliesBySession: Map<string, TailEvent>,
+): InboxSession[] {
   const sessions: InboxSession[] = [];
   for (const agentNode of project.agents) {
     for (const node of agentNode.sessions) {
@@ -335,13 +427,21 @@ function projectSessions(project: DirProject, nowMs: number): InboxSession[] {
           nowMs,
           agentNode.row.agent,
           agentNode.row.branch,
+          repliesBySession.get(observedSessionKey(node.harness, sessionRouteId(node.route)) ?? "") ?? null,
         ),
       );
     }
   }
   for (const node of project.unassigned) {
     if (!canOpenProjectSessionNode(node)) continue;
-    sessions.push(projectSession(project, node, nowMs));
+    sessions.push(projectSession(
+      project,
+      node,
+      nowMs,
+      undefined,
+      undefined,
+      repliesBySession.get(observedSessionKey(node.harness, sessionRouteId(node.route)) ?? "") ?? null,
+    ));
   }
   return sessions.sort((a, b) => b.lastActivityAt - a.lastActivityAt || a.agentName.localeCompare(b.agentName));
 }
@@ -396,6 +496,7 @@ export function buildProjectsInboxModel(input: BuildInboxInput): ProjectsInboxMo
   const native = buildNativeSessionRows(input.discovery, nowMs);
   const dirProjects = buildDirProjects(rows, input.sessions, native);
   const registryAgents = buildRegistryAgents(dirProjects, showEphemeral);
+  const repliesBySession = latestAssistantEventsBySession(input.recentEvents ?? []);
 
   const threads: InboxThread[] = registryAgents.map((entry) =>
     agentThread(entry, conversationByAgentId, attention, nowMs),
@@ -413,7 +514,7 @@ export function buildProjectsInboxModel(input: BuildInboxInput): ProjectsInboxMo
 
   threads.sort((a, b) => threadRank(b, nowMs) - threadRank(a, nowMs) || b.lastActivityAt - a.lastActivityAt);
 
-  const sessions = dirProjects.flatMap((project) => projectSessions(project, nowMs));
+  const sessions = dirProjects.flatMap((project) => projectSessions(project, nowMs, repliesBySession));
 
   const threadsBySlug = new Map<string, InboxThread[]>();
   for (const thread of threads) {
@@ -531,13 +632,44 @@ function scopeBase(route: Extract<Route, { view: "agents-v2" }>): Extract<Route,
 }
 
 export function threadKey(thread: InboxThread): string {
-  return thread.agentId ? `agent:${thread.agentId}` : `native:${thread.sessionId ?? thread.id}`;
+  return thread.agentId ? `agent:${thread.agentId}` : `native:${threadRouteRef(thread) ?? thread.id}`;
 }
 
-export function isThreadSelected(thread: InboxThread, route: Extract<Route, { view: "agents-v2" }>): boolean {
-  if (thread.agentId && route.selectedAgentId) return route.selectedAgentId === thread.agentId;
-  if (thread.kind === "native" && thread.sessionId && route.sessionId) return route.sessionId === thread.sessionId;
-  return false;
+export function threadRouteRef(thread: InboxThread): string | null {
+  if (thread.kind !== "native" || !thread.sessionId) return null;
+  return formatSessionRouteRef(thread.source ?? thread.harness, thread.sessionId);
+}
+
+export function findInboxThread(
+  threads: InboxThread[],
+  route: Extract<Route, { view: "agents-v2" }>,
+): InboxThread | null {
+  const scoped = route.projectSlug
+    ? threads.filter((thread) => thread.projectSlug === route.projectSlug)
+    : threads;
+  if (route.selectedAgentId) {
+    const agents = scoped.filter((thread) => thread.agentId === route.selectedAgentId);
+    return agents.length === 1 ? agents[0]! : null;
+  }
+  const routeRef = route.sessionId?.trim();
+  if (!routeRef) return null;
+  const exact = scoped.filter((thread) => threadRouteRef(thread) === routeRef);
+  if (exact.length === 1) return exact[0]!;
+  const parsedRoute = parseSessionRouteRef(routeRef);
+  if (exact.length > 1 || parsedRoute?.qualified) return null;
+  const legacyRef = parsedRoute?.refId ?? routeRef;
+  const legacy = scoped.filter((thread) => (
+    thread.kind === "native" && thread.sessionId === legacyRef
+  ));
+  return legacy.length === 1 ? legacy[0]! : null;
+}
+
+export function isThreadSelected(
+  thread: InboxThread,
+  route: Extract<Route, { view: "agents-v2" }>,
+  threads: InboxThread[],
+): boolean {
+  return findInboxThread(threads, route) === thread;
 }
 
 /** Single click — peek the thread in the right aside without leaving the inbox. */
@@ -546,14 +678,15 @@ export function threadSelectRoute(
   route: Extract<Route, { view: "agents-v2" }>,
 ): Extract<Route, { view: "agents-v2" }> {
   if (thread.kind === "native") {
-    return { ...scopeBase(route), sessionId: thread.sessionId ?? undefined };
+    return { ...scopeBase(route), sessionId: threadRouteRef(thread) ?? undefined };
   }
   return { ...scopeBase(route), selectedAgentId: thread.agentId ?? undefined };
 }
 
 /** Enter / open — the primary destination: the live conversation or session. */
 export function threadOpenRoute(thread: InboxThread, route: Extract<Route, { view: "agents-v2" }>): Route {
-  if (thread.kind === "native" && thread.sessionId) return { view: "sessions", sessionId: thread.sessionId };
+  const nativeRef = threadRouteRef(thread);
+  if (nativeRef) return { view: "sessions", sessionId: nativeRef };
   if (thread.conversationId) return { view: "conversation", conversationId: thread.conversationId };
   if (thread.agentId) return openProjectAgentProfile(route, thread.agentId);
   return scopeBase(route);
@@ -563,7 +696,8 @@ export function threadObserveRoute(
   thread: InboxThread,
   route: Extract<Route, { view: "agents-v2" }>,
 ): Route | null {
-  if (thread.kind === "native" && thread.sessionId) return { view: "sessions", sessionId: thread.sessionId };
+  const nativeRef = threadRouteRef(thread);
+  if (nativeRef) return { view: "sessions", sessionId: nativeRef };
   if (thread.agentId) return { ...openProjectAgentProfile(route, thread.agentId), tab: "observe" };
   return null;
 }
@@ -582,16 +716,42 @@ export function sessionSelectRoute(
   };
 }
 
-export function isSessionSelected(session: InboxSession, route: Extract<Route, { view: "agents-v2" }>): boolean {
-  const sessionRef = sessionRouteRef(session);
-  if (sessionRef && route.sessionId) return route.sessionId === sessionRef;
-  return false;
+export function isSessionSelected(
+  session: InboxSession,
+  route: Extract<Route, { view: "agents-v2" }>,
+  sessions: InboxSession[],
+): boolean {
+  return findInboxSession(sessions, route) === session;
 }
 
 export function sessionRouteRef(session: InboxSession): string | null {
-  if (session.sessionId) return session.sessionId;
+  if (session.conversationId && session.route?.view === "conversation") return session.conversationId;
+  if (session.sessionId) return formatSessionRouteRef(session.source ?? session.harness, session.sessionId);
   if (session.conversationId) return session.conversationId;
   return null;
+}
+
+/** Resolve a route inside its project and fail closed when a legacy bare id is ambiguous. */
+export function findInboxSession(
+  sessions: InboxSession[],
+  route: Extract<Route, { view: "agents-v2" }>,
+): InboxSession | null {
+  const routeRef = route.sessionId?.trim();
+  if (!routeRef) return null;
+  const scoped = route.projectSlug
+    ? sessions.filter((session) => session.projectSlug === route.projectSlug)
+    : sessions;
+  const exact = scoped.filter((session) => sessionRouteRef(session) === routeRef);
+  if (exact.length === 1) return exact[0]!;
+  const parsedRoute = parseSessionRouteRef(routeRef);
+  if (exact.length > 1 || parsedRoute?.qualified) return null;
+  const legacyRef = parsedRoute?.refId ?? routeRef;
+  const legacy = scoped.filter((session) =>
+    session.sessionId === legacyRef
+    || session.conversationId === legacyRef
+    || session.id === legacyRef
+  );
+  return legacy.length === 1 ? legacy[0]! : null;
 }
 
 export function sessionOpenRoute(session: InboxSession, route: Extract<Route, { view: "agents-v2" }>): Route {

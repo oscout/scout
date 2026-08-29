@@ -98,7 +98,7 @@ const intents: AppIntent[] = [
   },
   {
     commandId: "nav:repos",
-    title: "Open Repos",
+    title: "Open Repositories",
     description: "Navigate to the repos view for branches, diffs, and working-tree state",
     category: "navigation",
     keywords: ["repos", "repositories", "git", "branches", "diffs"],

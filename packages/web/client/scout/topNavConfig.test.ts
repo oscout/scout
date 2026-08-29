@@ -9,10 +9,10 @@ import {
 } from "./topNavConfig.ts";
 
 describe("top nav config", () => {
-  test("is a single personality: Home · Projects · Sessions · Messages", () => {
+  test("is a single personality: Home · Crew · Sessions · Messages", () => {
     expect(topNavItems()).toBe(TOP_NAV_ITEMS);
     expect(TOP_NAV_ITEMS.map((item) => item.key)).toEqual(["home", "agents", "sessions", "chat"]);
-    expect(TOP_NAV_ITEMS.map((item) => item.label)).toEqual(["Home", "Projects", "Sessions", "Messages"]);
+    expect(TOP_NAV_ITEMS.map((item) => item.label)).toEqual(["Home", "Crew", "Sessions", "Messages"]);
     expect(TOP_NAV_ITEMS.map((item) => item.route)).toEqual([
       { view: "inbox" },
       { view: "agents-v2" },
@@ -27,11 +27,14 @@ describe("top nav config", () => {
     expect(topNavKeyForRoute({ view: "activity" })).toBe("home");
     expect(topNavKeyForRoute({ view: "briefings" })).toBe("home");
     expect(topNavKeyForRoute({ view: "agents-v2" })).toBe("agents");
-        expect(topNavKeyForRoute({ view: "agent-info", conversationId: "c1" })).toBe("agents");
+    expect(topNavKeyForRoute({ view: "agent-info", conversationId: "c1" })).toBe("agents");
+    expect(topNavKeyForRoute({ view: "repos" })).toBe("agents");
+    expect(topNavKeyForRoute({ view: "repo-diff", path: "/tmp/x" })).toBe("agents");
+    expect(topNavKeyForRoute({ view: "code" })).toBe("agents");
     expect(topNavKeyForRoute({ view: "settings", section: "agents" })).toBe("agents");
     expect(topNavKeyForRoute({ view: "sessions" })).toBe("sessions");
     expect(topNavKeyForRoute({ view: "conversation", conversationId: "c1" })).toBe("chat");
-        expect(topNavKeyForRoute({ view: "messages" })).toBe("chat");
+    expect(topNavKeyForRoute({ view: "messages" })).toBe("chat");
     // A channel is a conversation on the unified route, so it lands on chat too.
     expect(topNavKeyForRoute({ view: "messages", conversationId: "chan-1" })).toBe("chat");
   });
@@ -41,12 +44,10 @@ describe("top nav config", () => {
     expect(topNavKeyForRoute({ view: "ops", mode: "tail" })).toBe("system");
     expect(topNavKeyForRoute({ view: "ops", mode: "lanes" })).toBe("system");
     expect(topNavKeyForRoute({ view: "broker" })).toBe("system");
-    expect(topNavKeyForRoute({ view: "repos" })).toBe("system");
     expect(topNavKeyForRoute({ view: "harnesses" })).toBe("system");
     expect(topNavKeyForRoute({ view: "mesh" })).toBe("system");
     expect(topNavKeyForRoute({ view: "terminal" })).toBe("system");
     expect(topNavKeyForRoute({ view: "search" })).toBe("system");
-    expect(topNavKeyForRoute({ view: "code" })).toBe("system");
     expect(topNavKeyForRoute({ view: "work", workId: "w1" })).toBe("system");
     expect(topNavKeyForRoute({ view: "follow" })).toBe("system");
     expect(topNavKeyForRoute({ view: "settings" })).toBe("system");
@@ -57,6 +58,8 @@ describe("top nav config", () => {
     expect(isSystemRoute({ view: "ops", mode: "tail" })).toBe(true);
     expect(isSystemRoute({ view: "settings" })).toBe(true);
     expect(isSystemRoute({ view: "settings", section: "agents" })).toBe(false);
+    expect(isSystemRoute({ view: "repos" })).toBe(false);
+    expect(isSystemRoute({ view: "code" })).toBe(false);
     expect(isSystemRoute({ view: "inbox" })).toBe(false);
     expect(isSystemRoute({ view: "sessions" })).toBe(false);
     expect(isSystemRoute({ view: "messages" })).toBe(false);

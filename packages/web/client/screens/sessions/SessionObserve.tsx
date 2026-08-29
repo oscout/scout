@@ -70,7 +70,11 @@ import {
   type ObserveEvidenceSource,
 } from "../../lib/observe-fidelity.ts";
 import { queueTakeover } from "../../lib/terminal-takeover.ts";
-import { harnessFromAdapterType, invokeSession, resumeAgentSession } from "../../lib/session-start.ts";
+import {
+  invokeSession,
+  resumableHarnessFromAdapterType,
+  resumeAgentSession,
+} from "../../lib/session-start.ts";
 import { useScout } from "../../scout/Provider.tsx";
 import { openContent } from "../../scout/slots/openContent.ts";
 import { ObservedTopologyPanel } from "../../components/ObservedTopologyPanel.tsx";
@@ -2821,6 +2825,7 @@ function SessionObserveComposer({
   return (
     <div className="s-observe-compose">
       <MessageComposer
+        renderWhenEmbedded
         density="panel"
         value={draft}
         onChange={setDraft}
@@ -3091,12 +3096,13 @@ export function SessionObserve({
   // user can engage — resumed the correct way in (its own harness + model),
   // with an agent identity minted on top by the broker.
   const invokeTargetSessionId = sessionId?.trim() || sessionMeta?.externalSessionId?.trim() || null;
+  const invokeHarness = resumableHarnessFromAdapterType(sessionMeta?.adapterType);
   const invokeTarget =
-    !agentId && sessionMeta?.cwd && invokeTargetSessionId
+    !agentId && sessionMeta?.cwd && invokeTargetSessionId && invokeHarness
       ? {
           projectPath: sessionMeta.cwd,
           sessionId: invokeTargetSessionId,
-          harness: harnessFromAdapterType(sessionMeta.adapterType),
+          harness: invokeHarness,
           model: sessionMeta.model,
           reasoningEffort: sessionMeta.effort,
         }

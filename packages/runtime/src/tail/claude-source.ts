@@ -55,7 +55,7 @@ function rememberMetadata(file: TranscriptFileStat, metadata: TranscriptMetadata
 
 function encodeProjectDir(cwd: string): string {
   // Claude encodes the cwd by replacing "/" with "-" and prefixing the result.
-  // Example: /Users/example/dev/openscout → -Users-example-dev-openscout
+  // Example: /Users/arach/dev/openscout → -Users-arach-dev-openscout
   return cwd.replace(/\//g, "-");
 }
 

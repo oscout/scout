@@ -38,7 +38,7 @@ function toolRow(event: ObserveEvent): LanePopRow {
   return { mark: toolGlyph(event.tool), tone: "tool", text, full: raw || (event.tool ?? text) };
 }
 
-/** Last two path segments — "/Users/example/dev/openscout/packages/web" → "packages/web". */
+/** Last two path segments — "/Users/art/dev/openscout/packages/web" → "packages/web". */
 function formatCwd(path: string): string {
   const parts = path.replace(/\/+$/u, "").split(/[\\/]/u).filter(Boolean);
   return parts.length === 0 ? path : parts.slice(-2).join("/");

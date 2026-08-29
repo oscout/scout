@@ -2,6 +2,7 @@ import type {
   MeshStatusReport,
   MeshDoctorReport,
   MeshDiscoverReport,
+  MeshJoinReport,
   MeshPingReport,
 } from "../../core/mesh/service.ts";
 import type { NodeDefinition } from "@openscout/protocol";
@@ -195,6 +196,27 @@ export function renderMeshDiscover(report: MeshDiscoverReport): string {
     }
   }
 
+  return lines.join("\n");
+}
+
+export function renderMeshJoin(report: MeshJoinReport): string {
+  const lines: string[] = [];
+  lines.push("Joined mesh.");
+  lines.push(`  Scope: ${report.localNode?.advertiseScope ?? "mesh"}`);
+  lines.push(`  Broker URL: ${report.localNode?.brokerUrl ?? report.brokerUrl}`);
+  lines.push(`  Discovered: ${report.discovery.discoveredCount} peer node${report.discovery.discoveredCount === 1 ? "" : "s"}`);
+  const remoteCount = Object.values(report.nodes).filter((node) => node.id !== report.localNode?.id).length;
+  lines.push(`  Known peers: ${remoteCount}`);
+  if (report.discovery.error) {
+    lines.push(`  Discovery warning: ${report.discovery.error}`);
+  }
+  if (report.warnings.length > 0) {
+    lines.push("");
+    lines.push("Warnings:");
+    for (const warning of report.warnings) {
+      lines.push(`  - ${warning}`);
+    }
+  }
   return lines.join("\n");
 }
 

@@ -17,6 +17,7 @@ import {
 import {
   type ComponentProps,
   type CSSProperties,
+  type KeyboardEvent as ReactKeyboardEvent,
   type MouseEvent as ReactMouseEvent,
   type PointerEvent as ReactPointerEvent,
   type ReactNode,
@@ -146,6 +147,13 @@ import type {
 import type { MenuItem } from "../../components/ContextMenu.tsx";
 import type { Agent, Route, SessionCatalogWithResume, TerminalSurfaceDescriptor } from "../../lib/types.ts";
 import type { useScout as UseScout } from "../../scout/Provider.tsx";
+import { TerminalHeaderMount } from "./TerminalHeaderMount.tsx";
+import {
+  nextTerminalPickerSource,
+  terminalPickerPanelId,
+  terminalPickerTabId,
+  type TerminalPickerSource,
+} from "./terminal-picker-navigation.ts";
 
 export type TerminalNavigate = ReturnType<typeof UseScout>["navigate"];
 export type TerminalRoute = Extract<Route, { view: "terminal" }>;
@@ -219,6 +227,7 @@ type TerminalWorkspaceView = "library" | "builder" | "workspace";
 type TerminalPickerView = "list" | "table";
 
 const TERMINAL_PICKER_VIEW_STORAGE_KEY = "openscout.terminal.picker-view.v1";
+const TERMINAL_PICKER_SOURCE_STORAGE_KEY = "openscout.terminal.picker-source.v1";
 
 /**
  * A new workspace opens as a grid that fits itself to the tiles in it, which is
@@ -1190,7 +1199,12 @@ function TerminalHome({ navigate }: { navigate: TerminalNavigate }) {
     TERMINAL_PICKER_VIEW_STORAGE_KEY,
     "list",
   );
+  const [pickerSource, setPickerSource] = usePersistentState<TerminalPickerSource>(
+    TERMINAL_PICKER_SOURCE_STORAGE_KEY,
+    "multiplexer",
+  );
   const [pickerSort, setPickerSort] = useState<TerminalSessionSort>(DEFAULT_TERMINAL_SESSION_SORT);
+  const [selectedMultiplexerId, setSelectedMultiplexerId] = useState<string | null>(null);
   const [workspaceResolutions, setWorkspaceResolutions] = useState<TerminalWorkspaceResolution[]>([]);
   const [workspaceSyncError, setWorkspaceSyncError] = useState<string | null>(null);
   const [pickerDraggedTargetId, setPickerDraggedTargetId] = useState<string | null>(null);
@@ -1288,19 +1302,38 @@ function TerminalHome({ navigate }: { navigate: TerminalNavigate }) {
     () => terminalItems.filter((item) => item.surface.state !== "exited"),
     [terminalItems],
   );
-  // Every herdr session the inventory knows, one entry per session name: these
-  // are the ready-made layouts the "+ Herdr" menu can bind a tile to.
-  const herdrTargets = useMemo(() => {
-    const seen = new Set<string>();
-    const targets: RegisteredTerminalTarget[] = [];
-    for (const item of terminalItems) {
-      if (item.surface.backend !== "herdr" || seen.has(item.surface.sessionName)) continue;
-      seen.add(item.surface.sessionName);
-      targets.push(registeredTargetFromListItem(item));
+  const { managed: multiplexerItems } = useMemo(
+    () => partitionTerminalListItems(liveTerminalItems),
+    [liveTerminalItems],
+  );
+  const engagedSessionItems = useMemo(
+    () => liveTerminalItems.filter((item) => item.origin === "scout"),
+    [liveTerminalItems],
+  );
+  const terminalAgents = useMemo(
+    () => sortTerminalAgents(agents).filter((agent) => Boolean(resolveAgentTerminalSurface(agent))),
+    [agents],
+  );
+  const selectedMultiplexer = multiplexerItems.find((item) => item.id === selectedMultiplexerId)
+    ?? multiplexerItems[0]
+    ?? null;
+
+  useEffect(() => {
+    if (selectedMultiplexer?.id !== selectedMultiplexerId) {
+      setSelectedMultiplexerId(selectedMultiplexer?.id ?? null);
     }
-    return targets;
-  }, [terminalItems]);
-  const terminalAgents = useMemo(() => sortTerminalAgents(agents), [agents]);
+  }, [selectedMultiplexer?.id, selectedMultiplexerId]);
+  const pickerAttachableItems = useMemo(() => {
+    if (pickerSource === "multiplexer") return multiplexerItems;
+    if (pickerSource === "session") return engagedSessionItems;
+    const represented = new Set<string>();
+    return terminalAgents.flatMap((agent) => {
+      const item = liveTerminalItems.find((candidate) => findTerminalItemAgent(candidate, [agent])?.id === agent.id);
+      if (!item || represented.has(item.id)) return [];
+      represented.add(item.id);
+      return [item];
+    });
+  }, [engagedSessionItems, liveTerminalItems, multiplexerItems, pickerSource, terminalAgents]);
   const sessionError = state.state === "failed" ? state.error : null;
   const workspaceDefinitions = deck.workspaces;
   const activeWorkspace = deck.workspaces.find((workspace) => workspace.id === deck.activeWorkspaceId) ?? null;
@@ -1497,23 +1530,6 @@ function TerminalHome({ navigate }: { navigate: TerminalNavigate }) {
     [tiles],
   );
 
-  // "Pick a layout and run with it": the menu lists the herdr sessions the
-  // host already runs, and choosing one binds a tile to that whole session.
-  const showHerdrSessionsMenu = useCallback((event: ReactMouseEvent) => {
-    const items: MenuItem[] = herdrTargets.length > 0
-      ? herdrTargets.map((target) => {
-          const attached = attachedTargetIds.has(registeredTerminalTargetKey(target));
-          const state = target.surface.state === "live" ? "running" : "detached";
-          return {
-            kind: "action" as const,
-            label: `${target.surface.sessionName} · ${state}${attached ? " · in grid" : ""}`,
-            onSelect: () => placeRegisteredTarget(target),
-          };
-        })
-      : [{ kind: "action" as const, label: "No herdr sessions discovered", onSelect: () => {} }];
-    showContextMenu(event, items);
-  }, [herdrTargets, attachedTargetIds, placeRegisteredTarget, showContextMenu]);
-
   const clearPickerDrag = useCallback((event?: ReactPointerEvent<HTMLElement>) => {
     if (event?.currentTarget.hasPointerCapture(event.pointerId)) {
       event.currentTarget.releasePointerCapture(event.pointerId);
@@ -1579,8 +1595,8 @@ function TerminalHome({ navigate }: { navigate: TerminalNavigate }) {
     clearPickerDrag(event);
   }, [clearPickerDrag]);
 
-  const attachAllLiveTerminals = useCallback(() => {
-    const targets = liveTerminalItems.map(registeredTargetFromListItem);
+  const attachAllPickerTargets = useCallback(() => {
+    const targets = pickerAttachableItems.map(registeredTargetFromListItem);
     if (targets.length === 0) return;
     updateActiveCells((cells) => {
       const placed = cells.filter((cell) => cell.kind === "registered");
@@ -1598,7 +1614,7 @@ function TerminalHome({ navigate }: { navigate: TerminalNavigate }) {
         }));
       return additions.length === 0 ? cells : [...cells, ...additions];
     });
-  }, [liveTerminalItems, updateActiveCells]);
+  }, [pickerAttachableItems, updateActiveCells]);
 
   const closeTile = useCallback((tileId: string) => {
     updateActiveCells((cells) => {
@@ -1667,6 +1683,14 @@ function TerminalHome({ navigate }: { navigate: TerminalNavigate }) {
   const showGridMenu = useCallback((event: ReactMouseEvent) => {
     showContextMenu(event, gridMenuItems());
   }, [gridMenuItems, showContextMenu]);
+
+  const showNewTerminalMenu = useCallback((event: ReactMouseEvent) => {
+    showContextMenu(event, TERMINAL_FRESH_AGENT_OPTIONS.map((option): MenuItem => ({
+      kind: "action",
+      label: option.value === "shell" ? "New shell" : `New ${option.label} terminal`,
+      onSelect: () => addFreshTile("pty", option.value),
+    })));
+  }, [addFreshTile, showContextMenu]);
 
   const showTileMenu = useCallback((event: ReactMouseEvent, tile: TerminalWorkspaceTileModel) => {
     const tileIndex = tiles.findIndex((candidate) => candidate.id === tile.id);
@@ -1762,6 +1786,17 @@ function TerminalHome({ navigate }: { navigate: TerminalNavigate }) {
     setPickerSort((current) => toggleTerminalSessionSort(current, column));
   }, []);
 
+  const handlePickerSourceKeyDown = useCallback((
+    event: ReactKeyboardEvent<HTMLButtonElement>,
+    source: TerminalPickerSource,
+  ) => {
+    const nextSource = nextTerminalPickerSource(source, event.key);
+    if (!nextSource) return;
+    event.preventDefault();
+    setPickerSource(nextSource);
+    document.getElementById(terminalPickerTabId(nextSource))?.focus();
+  }, [setPickerSource]);
+
   const reloadWorkspace = useCallback(() => {
     loadSessions();
     setWorkspaceReload((current) => current + 1);
@@ -1777,9 +1812,95 @@ function TerminalHome({ navigate }: { navigate: TerminalNavigate }) {
       .catch((error) => setWorkspaceSyncError(error instanceof Error ? error.message : String(error)));
   }, [activeWorkspace, loadSessions]);
 
+  const cancelWorkspaceBuilder = useCallback(() => {
+    setWorkspaceView(activeWorkspace ? "workspace" : "library");
+  }, [activeWorkspace, setWorkspaceView]);
+
+  const terminalHeader = (
+    <TerminalHeaderMount>
+      <div className="s-term-topline" aria-label="Terminal workspace controls">
+        <div className="s-term-topline-context">
+          <strong>
+            {workspaceView === "builder"
+              ? (editingWorkspaceId ? "Edit workspace" : "New workspace")
+              : workspaceView === "library"
+                ? "Workspaces"
+                : activeWorkspace?.name ?? "Workspace"}
+          </strong>
+          <span>
+            {workspaceDefinitions.length} workspace{workspaceDefinitions.length === 1 ? "" : "s"}
+            <i aria-hidden="true">·</i>
+            {liveTerminalItems.length} terminal{liveTerminalItems.length === 1 ? "" : "s"}
+          </span>
+        </div>
+        <div className="s-term-topline-actions">
+          <a
+            className="s-term-topline-button"
+            href="scout://terminal"
+            title="Open this terminal workspace in the Scout app"
+          >
+            <ExternalLink size={13} strokeWidth={1.8} />
+            <span>Open in Scout</span>
+          </a>
+          {workspaceView === "library" ? (
+            <button type="button" className="s-term-topline-button is-primary" onClick={() => startWorkspaceBuilder()}>
+              <Plus size={13} strokeWidth={1.9} />
+              <span>New workspace</span>
+            </button>
+          ) : workspaceView === "builder" ? (
+            <>
+              <button type="button" className="s-term-topline-button" onClick={cancelWorkspaceBuilder}>Cancel</button>
+              <button
+                type="button"
+                className="s-term-topline-button is-primary"
+                onClick={saveWorkspaceDraft}
+                disabled={!workspaceDraftName.trim()}
+              >
+                {editingWorkspaceId ? "Save" : "Create"}
+              </button>
+            </>
+          ) : (
+            <>
+              <button type="button" className="s-term-topline-button" onClick={showWorkspaceLibrary}>
+                Workspaces
+              </button>
+              <button type="button" className="s-term-topline-button is-primary" onClick={showNewTerminalMenu}>
+                <Plus size={13} strokeWidth={1.9} />
+                <span>New</span>
+              </button>
+              <button
+                type="button"
+                className="s-term-topline-button"
+                onClick={() => setPickerVisible((current) => !current)}
+                aria-pressed={pickerVisible}
+              >
+                <TerminalIcon size={13} strokeWidth={1.8} />
+                <span>{pickerVisible ? "Hide picker" : "Show picker"}</span>
+              </button>
+              <button type="button" className="s-term-topline-icon" onClick={showGridMenu} title="Workspace layout and settings" aria-label="Workspace layout and settings">
+                <MoreHorizontal size={14} strokeWidth={1.8} />
+              </button>
+              <button
+                type="button"
+                className="s-term-topline-icon"
+                onClick={reloadWorkspace}
+                disabled={state.state === "loading"}
+                title="Reload terminal inventory and previews"
+                aria-label="Reload terminal inventory and previews"
+              >
+                <RefreshCw size={13} strokeWidth={1.8} />
+              </button>
+            </>
+          )}
+        </div>
+      </div>
+    </TerminalHeaderMount>
+  );
+
   if (workspaceView === "library") {
     return (
       <TerminalWorkspaceLibrary
+        header={terminalHeader}
         workspaces={workspaceDefinitions}
         sessionsReady={state.state !== "loading"}
         onOpen={enterWorkspace}
@@ -1793,6 +1914,7 @@ function TerminalHome({ navigate }: { navigate: TerminalNavigate }) {
   if (workspaceView === "builder") {
     return (
       <TerminalWorkspaceBuilder
+        header={terminalHeader}
         editing={Boolean(editingWorkspaceId)}
         name={workspaceDraftName}
         purpose={workspaceDraftPurpose}
@@ -1826,95 +1948,15 @@ function TerminalHome({ navigate }: { navigate: TerminalNavigate }) {
               }
             : cell
         ))}
-        onCancel={() => {
-          if (activeWorkspace) {
-            setWorkspaceView("workspace");
-          } else {
-            setWorkspaceView("library");
-          }
-        }}
-        onSave={saveWorkspaceDraft}
       />
     );
   }
 
   return (
     <div className="s-term s-term--workspace">
+      {terminalHeader}
       <div className="s-term-workspace">
-        <header className="s-term-workspace-head">
-          <div className="s-term-workspace-title">
-            <span className="s-term-summary-mark">
-              <Grid2X2 size={18} strokeWidth={1.7} />
-              <span>Workspaces / {activeWorkspace?.name ?? "Workspace"}</span>
-            </span>
-            <h1>{activeWorkspace?.name ?? "Workspace"}</h1>
-            {activeWorkspace?.purpose && <p>{activeWorkspace.purpose}</p>}
-          </div>
-          <div className="s-term-workspace-actions" aria-label="Terminal workspace actions">
-            <button
-              type="button"
-              className="s-term-workspace-action"
-              onClick={showWorkspaceLibrary}
-            >
-              <span>All workspaces</span>
-            </button>
-            <button
-              type="button"
-              className="s-term-workspace-action s-term-workspace-action--primary"
-              onClick={() => activeWorkspace && startWorkspaceBuilder(activeWorkspace)}
-            >
-              <Grid2X2 size={14} strokeWidth={1.8} />
-              <span>Edit workspace</span>
-            </button>
-            <button
-              type="button"
-              className="s-term-workspace-action"
-              onClick={() => addFreshTile("pty")}
-              title="Add a shell tile"
-            >
-              <Plus size={14} strokeWidth={1.9} />
-              <span>Shell</span>
-            </button>
-            <button
-              type="button"
-              className="s-term-workspace-action s-term-workspace-action--primary"
-              onClick={() => addFreshTile("pty", "codex")}
-              title="Add a Codex TUI tile"
-            >
-              <Plus size={14} strokeWidth={1.9} />
-              <span>Codex</span>
-            </button>
-            <button
-              type="button"
-              className="s-term-workspace-action"
-              onClick={showHerdrSessionsMenu}
-              title="Add a herdr session's layout as a tile"
-            >
-              <Plus size={14} strokeWidth={1.9} />
-              <span>Herdr</span>
-            </button>
-            <button
-              type="button"
-              className="s-term-workspace-action"
-              onClick={() => setPickerVisible((current) => !current)}
-              title={pickerVisible ? "Hide terminal picker" : "Show terminal picker"}
-              aria-pressed={pickerVisible}
-            >
-              <TerminalIcon size={14} strokeWidth={1.8} />
-              <span>{pickerVisible ? "Hide picker" : "Show picker"}</span>
-            </button>
-            <button
-              type="button"
-              className="s-term-icon-button"
-              onClick={reloadWorkspace}
-              disabled={state.state === "loading"}
-              title="Reload all terminal tiles"
-              aria-label="Reload all terminal tiles"
-            >
-              <RefreshCw size={14} strokeWidth={1.8} />
-            </button>
-          </div>
-        </header>
+        <h1 className="s-term-visually-hidden">{activeWorkspace?.name ?? "Terminal workspace"}</h1>
 
         {sessionError && (
           <div className="s-term-home-error">
@@ -1989,11 +2031,10 @@ function TerminalHome({ navigate }: { navigate: TerminalNavigate }) {
           <header className="s-term-picker-head">
             <div className="s-term-picker-title">
               <TerminalIcon size={14} strokeWidth={1.8} />
-              <h2 id="terminal-picker-title">Terminal picker</h2>
-              <span>{state.state === "loading" ? "syncing" : liveTerminalItems.length}</span>
+              <h2 id="terminal-picker-title">Add to workspace</h2>
             </div>
             <div className="s-term-picker-actions">
-              {pickerVisible && (
+              {pickerVisible && pickerSource === "session" && (
                 <div className="s-term-picker-views" role="group" aria-label="Picker view">
                   {(["list", "table"] as const).map((view) => (
                     <button
@@ -2012,11 +2053,11 @@ function TerminalHome({ navigate }: { navigate: TerminalNavigate }) {
                 <button
                   type="button"
                   className="s-term-workspace-action"
-                  onClick={attachAllLiveTerminals}
-                  disabled={liveTerminalItems.length === 0}
+                  onClick={attachAllPickerTargets}
+                  disabled={pickerAttachableItems.length === 0}
                 >
                   <LogIn size={13} strokeWidth={1.8} />
-                  <span>Attach all</span>
+                  <span>Add all</span>
                 </button>
               )}
               <button
@@ -2032,21 +2073,103 @@ function TerminalHome({ navigate }: { navigate: TerminalNavigate }) {
           </header>
           {pickerVisible && (
             <>
-              <p className="s-term-picker-hint">Drag a terminal onto a cell to place it, or onto New slot to grow the grid.</p>
-              {liveTerminalItems.length === 0 && state.state !== "loading" ? (
-                <div className="s-term-picker-empty">No live terminals</div>
-              ) : (
-                <TerminalSessionPicker
-                  items={liveTerminalItems}
-                  view={pickerView}
-                  sort={pickerSort}
-                  attachedIds={attachedTargetIds}
-                  draggedTargetId={pickerDraggedTargetId}
-                  onSort={sortPickerBy}
-                  onAttach={attachRegisteredTarget}
-                  navigate={navigate}
-                />
-              )}
+              <div className="s-term-picker-sources" role="tablist" aria-label="Ways to find a terminal">
+                {([
+                  {
+                    source: "multiplexer",
+                    label: "Multiplexer setups",
+                    detail: "Multi-pane · Herdr, tmux, Zellij",
+                    count: multiplexerItems.length,
+                    icon: Grid2X2,
+                  },
+                  {
+                    source: "agent",
+                    label: "Agent sessions",
+                    detail: "Agent-owned · managed terminals",
+                    count: terminalAgents.length,
+                    icon: Zap,
+                  },
+                  {
+                    source: "session",
+                    label: "Recent sessions",
+                    detail: "Individual · previously opened by Scout",
+                    count: engagedSessionItems.length,
+                    icon: TerminalIcon,
+                  },
+                ] as const).map(({ source, label, detail, count, icon: SourceIcon }) => (
+                  <button
+                    key={source}
+                    type="button"
+                    role="tab"
+                    id={terminalPickerTabId(source)}
+                    aria-controls={terminalPickerPanelId()}
+                    className={pickerSource === source ? "is-selected" : ""}
+                    aria-selected={pickerSource === source}
+                    tabIndex={pickerSource === source ? 0 : -1}
+                    onClick={() => setPickerSource(source)}
+                    onKeyDown={(event) => handlePickerSourceKeyDown(event, source)}
+                  >
+                    <SourceIcon size={16} strokeWidth={1.7} aria-hidden="true" />
+                    <span>
+                      <strong>{label}</strong>
+                      <small>{detail}</small>
+                    </span>
+                    <em aria-label={`${state.state === "loading" ? "Loading" : count} ${label.toLowerCase()}`}>
+                      {state.state === "loading" ? "·" : count}
+                    </em>
+                  </button>
+                ))}
+              </div>
+              <div
+                className="s-term-picker-panel"
+                role="tabpanel"
+                id={terminalPickerPanelId()}
+                aria-labelledby={terminalPickerTabId(pickerSource)}
+              >
+                <p className="s-term-picker-hint">
+                  {pickerSource === "multiplexer"
+                    ? "Preview a complete multiplexer setup, then open it or add the host-owned layout to this workspace."
+                    : pickerSource === "agent"
+                      ? "Start from ownership: open the terminal associated with a managed agent, or add that surface here."
+                      : "Return to individual terminal sessions Scout has already opened or registered."}
+                </p>
+                {pickerSource === "multiplexer" ? (
+                  <TerminalMultiplexerPicker
+                    items={multiplexerItems}
+                    selectedId={selectedMultiplexer?.id ?? null}
+                    attachedIds={attachedTargetIds}
+                    draggedTargetId={pickerDraggedTargetId}
+                    onSelect={setSelectedMultiplexerId}
+                    onAttach={attachRegisteredTarget}
+                    navigate={navigate}
+                  />
+                ) : pickerSource === "agent" ? (
+                  <TerminalAgentPicker
+                    agents={terminalAgents}
+                    items={liveTerminalItems}
+                    attachedIds={attachedTargetIds}
+                    onAttach={attachRegisteredTarget}
+                    navigate={navigate}
+                  />
+                ) : engagedSessionItems.length === 0 && state.state !== "loading" ? (
+                  <div className="s-term-picker-empty s-term-picker-empty--explained">
+                    <strong>No recent sessions yet</strong>
+                    <span>Open or register a terminal session and it will appear here.</span>
+                  </div>
+                ) : (
+                  <TerminalSessionPicker
+                    items={engagedSessionItems}
+                    view={pickerView}
+                    sort={pickerSort}
+                    attachedIds={attachedTargetIds}
+                    draggedTargetId={pickerDraggedTargetId}
+                    onSort={sortPickerBy}
+                    onAttach={attachRegisteredTarget}
+                    navigate={navigate}
+                    groupManaged={false}
+                  />
+                )}
+              </div>
             </>
           )}
         </section>
@@ -2056,6 +2179,7 @@ function TerminalHome({ navigate }: { navigate: TerminalNavigate }) {
 }
 
 function TerminalWorkspaceLibrary({
+  header,
   workspaces,
   sessionsReady,
   onOpen,
@@ -2063,6 +2187,7 @@ function TerminalWorkspaceLibrary({
   onEdit,
   onDelete,
 }: {
+  header: ReactNode;
   workspaces: TerminalWorkspaceDefinition[];
   sessionsReady: boolean;
   onOpen: (workspace: TerminalWorkspaceDefinition) => void;
@@ -2072,21 +2197,9 @@ function TerminalWorkspaceLibrary({
 }) {
   return (
     <div className="s-term s-term--workspace-library">
+      {header}
       <main className="s-term-workspace-library">
-        <header className="s-term-workspace-library-head">
-          <div>
-            <span className="s-term-summary-mark">
-              <Grid2X2 size={18} strokeWidth={1.7} />
-              <span>Terminals</span>
-            </span>
-            <h1>Workspaces</h1>
-            <p>Saved terminal layouts for projects, roles, and cross-project operations.</p>
-          </div>
-          <button type="button" className="s-term-workspace-action s-term-workspace-action--primary" onClick={onCreate}>
-            <Plus size={14} strokeWidth={1.9} />
-            <span>New workspace</span>
-          </button>
-        </header>
+        <h1 className="s-term-visually-hidden">Terminal workspaces</h1>
 
         {workspaces.length === 0 ? (
           <section className="s-term-workspace-library-empty">
@@ -2147,6 +2260,7 @@ function layoutModePreviewCells(mode: TerminalWorkspaceLayoutMode, columns: numb
 }
 
 function TerminalWorkspaceBuilder({
+  header,
   editing,
   name,
   purpose,
@@ -2169,9 +2283,8 @@ function TerminalWorkspaceBuilder({
   onPickerSort,
   onAssignFresh,
   onAssignRegistered,
-  onCancel,
-  onSave,
 }: {
+  header: ReactNode;
   editing: boolean;
   name: string;
   purpose: string;
@@ -2194,34 +2307,13 @@ function TerminalWorkspaceBuilder({
   onPickerSort: (column: TerminalSessionColumn) => void;
   onAssignFresh: (backend: TerminalCellBackend, agent?: TerminalAgentKind) => void;
   onAssignRegistered: (item: TerminalHomeListItem) => void;
-  onCancel: () => void;
-  onSave: () => void;
 }) {
   const previewColumns = resolveTerminalWorkspaceColumns(layout, { tileCount: cells.length });
   return (
     <div className="s-term s-term--workspace-builder">
+      {header}
       <main className="s-term-workspace-builder">
-        <header className="s-term-workspace-builder-head">
-          <div>
-            <span className="s-term-summary-mark">
-              <Grid2X2 size={18} strokeWidth={1.7} />
-              <span>Workspace builder</span>
-            </span>
-            <h1>{editing ? "Edit workspace" : "Create a workspace"}</h1>
-            <p>Define the job, choose the grid, and place the sessions before entering.</p>
-          </div>
-          <div className="s-term-workspace-builder-actions">
-            <button type="button" className="s-term-workspace-action" onClick={onCancel}>Cancel</button>
-            <button
-              type="button"
-              className="s-term-workspace-action s-term-workspace-action--primary"
-              onClick={onSave}
-              disabled={!name.trim()}
-            >
-              {editing ? "Save and enter" : "Create and enter"}
-            </button>
-          </div>
-        </header>
+        <h1 className="s-term-visually-hidden">{editing ? "Edit terminal workspace" : "Create terminal workspace"}</h1>
 
         <section className="s-term-workspace-builder-identity" aria-label="Workspace identity">
           <label>
@@ -2425,20 +2517,21 @@ function TerminalPickerItem({
   item,
   attached,
   dragging,
+  selected = false,
+  onSelect,
   onAttach,
   onOpen,
 }: {
   item: TerminalHomeListItem;
   attached: boolean;
   dragging: boolean;
+  selected?: boolean;
+  onSelect?: () => void;
   onAttach: (target: RegisteredTerminalTarget) => void;
   onOpen?: () => void;
 }) {
-  return (
-    <article
-      className={`s-term-picker-item${attached ? " s-term-picker-item--attached" : ""}${dragging ? " s-term-picker-item--dragging" : ""}`}
-      data-picker-item-id={item.id}
-    >
+  const summary = (
+    <>
       <span className="s-term-picker-grip" aria-hidden="true">⠿</span>
       <div className="s-term-picker-item-main">
         <strong title={item.surface.sessionName}>{item.title}</strong>
@@ -2449,6 +2542,27 @@ function TerminalPickerItem({
         <span>{terminalSessionStateLabel(item)}</span>
         <span title={item.session.cwd ?? undefined}>{item.project}</span>
       </div>
+    </>
+  );
+
+  return (
+    <article
+      className={`s-term-picker-item${attached ? " s-term-picker-item--attached" : ""}${dragging ? " s-term-picker-item--dragging" : ""}${selected ? " s-term-picker-item--selected" : ""}${onSelect ? " s-term-picker-item--selectable" : ""}`}
+      data-picker-item-id={item.id}
+      role={onSelect ? "listitem" : undefined}
+    >
+      {onSelect ? (
+        <button
+          type="button"
+          className="s-term-picker-item-summary s-term-picker-item-select"
+          aria-pressed={selected}
+          onClick={onSelect}
+        >
+          {summary}
+        </button>
+      ) : (
+        <div className="s-term-picker-item-summary">{summary}</div>
+      )}
       {onOpen && (
         <button
           type="button"
@@ -2470,6 +2584,136 @@ function TerminalPickerItem({
   );
 }
 
+function TerminalMultiplexerPicker({
+  items,
+  selectedId,
+  attachedIds,
+  draggedTargetId,
+  onSelect,
+  onAttach,
+  navigate,
+}: {
+  items: TerminalHomeListItem[];
+  selectedId: string | null;
+  attachedIds: Set<string>;
+  draggedTargetId: string | null;
+  onSelect: (itemId: string) => void;
+  onAttach: (target: RegisteredTerminalTarget) => void;
+  navigate: TerminalNavigate;
+}) {
+  const selected = items.find((item) => item.id === selectedId) ?? items[0] ?? null;
+  if (!selected) return <div className="s-term-picker-empty">No multiplexers discovered</div>;
+  const previewSurface = terminalSurfaceDescriptorFromRegisteredSurface(selected.surface);
+
+  return (
+    <div className="s-term-picker-explorer">
+      <div className="s-term-picker-list s-term-picker-list--explorer" role="list" aria-label="Managed multiplexers">
+        {items.map((item) => {
+          const target = registeredTargetFromListItem(item);
+          const targetId = registeredTerminalTargetKey(target);
+          return (
+            <TerminalPickerItem
+              key={item.id}
+              item={item}
+              attached={attachedIds.has(targetId)}
+              dragging={draggedTargetId === targetId}
+              selected={item.id === selected.id}
+              onSelect={() => onSelect(item.id)}
+              onAttach={onAttach}
+              onOpen={() => navigate({
+                view: "terminal",
+                terminalSessionId: item.session.id,
+                terminalSurfaceKey: surfaceKey(item.surface),
+              })}
+            />
+          );
+        })}
+      </div>
+      <section className="s-term-picker-preview" aria-label={`${selected.title} live preview`}>
+        <div className="s-term-picker-preview-title">
+          <div>
+            <strong>{selected.title}</strong>
+            <span>{selected.surface.backend} · {selected.project} · {terminalSessionStateLabel(selected)}</span>
+          </div>
+          <span>{terminalItemRunningDetail(selected, findTerminalItemAgent(selected, []))}</span>
+        </div>
+        {previewSurface ? (
+          <TmuxPeekPanel
+            surface={previewSurface}
+            lines={28}
+            columns={112}
+            className="s-term-multiplexer-peek"
+          />
+        ) : (
+          <div className="s-term-picker-empty">This host does not expose a web preview</div>
+        )}
+      </section>
+    </div>
+  );
+}
+
+function TerminalAgentPicker({
+  agents,
+  items,
+  attachedIds,
+  onAttach,
+  navigate,
+}: {
+  agents: Agent[];
+  items: TerminalHomeListItem[];
+  attachedIds: Set<string>;
+  onAttach: (target: RegisteredTerminalTarget) => void;
+  navigate: TerminalNavigate;
+}) {
+  if (agents.length === 0) return <div className="s-term-picker-empty">No terminal-backed agents</div>;
+  return (
+    <div className="s-term-picker-list" aria-label="Terminal-backed agents">
+      {agents.map((agent) => {
+        const surface = resolveAgentTerminalSurface(agent);
+        const item = items.find((candidate) => findTerminalItemAgent(candidate, [agent])?.id === agent.id) ?? null;
+        const target = item ? registeredTargetFromListItem(item) : null;
+        const attached = target ? attachedIds.has(registeredTerminalTargetKey(target)) : false;
+        return (
+          <article
+            key={agent.id}
+            className={`s-term-picker-item${attached ? " s-term-picker-item--attached" : ""}`}
+            data-picker-item-id={item?.id}
+          >
+            <span className="s-term-picker-grip" aria-hidden="true">
+              <span className="s-term-picker-agent-dot" data-state={agent.state} />
+            </span>
+            <div className="s-term-picker-item-main">
+              <strong title={agent.name}>{agent.name}</strong>
+              <span title={agent.cwd ?? agent.projectRoot ?? undefined}>{agent.handle ? `@${agent.handle}` : compactTerminalPath(agent.cwd ?? agent.projectRoot)}</span>
+            </div>
+            <div className="s-term-picker-item-meta">
+              <span>{surface?.backend ?? agent.harness}</span>
+              <span>{agentStateLabel(agent.state)}</span>
+              <span>{terminalAgentProject(agent)}</span>
+            </div>
+            <button
+              type="button"
+              className="s-term-picker-add"
+              onClick={() => navigate({ view: "terminal", agentId: agent.id, mode: "takeover" })}
+            >
+              Open
+            </button>
+            <button
+              type="button"
+              className="s-term-picker-add"
+              onClick={() => target && onAttach(target)}
+              disabled={!target || attached}
+              title={!target ? "This agent has no registered terminal surface to add" : undefined}
+            >
+              {attached ? "In grid" : "Add"}
+            </button>
+          </article>
+        );
+      })}
+    </div>
+  );
+}
+
 /**
  * The session picker's rows, in either presentation.
  *
@@ -2487,6 +2731,7 @@ function TerminalSessionPicker({
   onSort,
   onAttach,
   navigate,
+  groupManaged = true,
 }: {
   items: TerminalHomeListItem[];
   view: TerminalPickerView;
@@ -2496,11 +2741,15 @@ function TerminalSessionPicker({
   onSort: (column: TerminalSessionColumn) => void;
   onAttach: (target: RegisteredTerminalTarget) => void;
   navigate?: TerminalNavigate;
+  groupManaged?: boolean;
 }) {
   const rows = useMemo(() => sortTerminalSessionItems(items, sort), [items, sort]);
-  // Managed sessions — herdr layouts and multi-window tmux, where the host owns
-  // the layout — get their own section above the regular single-pane list.
-  const { managed, regular } = useMemo(() => partitionTerminalListItems(items), [items]);
+  // Multiplexer sessions — herdr, tmux, and zellij, where the host owns the
+  // durable layout — get their own section above plain PTY sessions.
+  const { managed, regular } = useMemo(
+    () => groupManaged ? partitionTerminalListItems(items) : { managed: [], regular: items },
+    [groupManaged, items],
+  );
   const managedRows = useMemo(() => sortTerminalSessionItems(managed, sort), [managed, sort]);
   const regularRows = useMemo(() => sortTerminalSessionItems(regular, sort), [regular, sort]);
   const openItem = (item: TerminalHomeListItem) => {

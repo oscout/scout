@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import "../../scout/slots/ctx-panel.css";
 import { api } from "../../lib/api.ts";
-import { useBrokerEvents } from "../../lib/sse.ts";
+import { useBrokerEventsRefresh } from "../../lib/sse.ts";
 import { useScout } from "../../scout/Provider.tsx";
 import { useFleetActiveAsks } from "../../lib/use-fleet-active-asks.ts";
 import { isAgentOnline } from "../../lib/agent-state.ts";
@@ -51,11 +51,10 @@ export function OpsAgentsLeft() {
     void loadSessions();
   }, [loadSessions]);
 
-  useBrokerEvents((event) => {
-    if (RAIL_REFRESH_EVENTS.has(event.kind)) {
-      void loadSessions();
-    }
-  });
+  useBrokerEventsRefresh(
+    (event) => RAIL_REFRESH_EVENTS.has(event.kind),
+    () => void loadSessions(),
+  );
 
   const online = useMemo(() => agents.filter((a) => isAgentOnline(a.state)).length, [agents]);
   const errored = useMemo(() => {

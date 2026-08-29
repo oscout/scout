@@ -31,7 +31,11 @@ describe("center-pane header seam projections (SCO-085 / SCO-086)", () => {
 
   test("area sub-nav strip is present for projects/sessions mouse paths", () => {
     const projects = areaSubNavForRoute({ view: "agents-v2" });
-    expect(projects?.items.map((i) => i.label)).toEqual(["Projects", "Repositories", "Code Browser"]);
+    expect(projects?.items.map((i) => i.label)).toEqual([
+      "Crew & Workspaces",
+      "Repositories",
+      "Code Browser",
+    ]);
 
     const terminals = areaSubNavForRoute({ view: "terminal" });
     expect(terminals?.items.map((i) => i.id)).toEqual(["sessions", "terminals"]);

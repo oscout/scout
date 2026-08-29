@@ -20,23 +20,42 @@ import { api } from "../../lib/api.ts";
 import { routeMachineId } from "../../lib/router.ts";
 import { useBrokerEvents } from "../../lib/sse.ts";
 import { isScoutSurfaceActive, onScoutSurfaceActivated } from "../../lib/surface-activity.ts";
+import { useTailEvents } from "../../lib/tail-events.ts";
 import { useScout } from "../../scout/Provider.tsx";
 import { keepPreviousIfJsonEqual } from "../chat/conversation-model.ts";
-import type { FleetState, Route, SessionEntry, TailDiscoverySnapshot } from "../../lib/types.ts";
+import type {
+  Agent,
+  FleetState,
+  Route,
+  SessionEntry,
+  TailDiscoverySnapshot,
+  TailEvent,
+} from "../../lib/types.ts";
 import {
   buildProjectsInboxModel,
+  isObservedAssistantReply,
   type BuildInboxInput,
   type ProjectsInboxModel,
 } from "./projects-inbox-model.ts";
+import {
+  createReplyBurstCoalescer,
+  deferProjectsInboxWork,
+  latestObservedAssistantReplies,
+} from "./projects-inbox-replies.ts";
 
 const REFRESH_INTERVAL_MS = 15_000;
 const NOW_TICK_MS = 30_000;
 const SSE_DEBOUNCE_MS = 250;
+const RECENT_CONTROL_EVENT_LIMIT = 200;
+const RECENT_CONTROL_REFRESH_INTERVAL_MS = 5_000;
+const RECENT_ASSISTANT_REPLIES_PATH =
+  `/api/tail/recent?limit=${RECENT_CONTROL_EVENT_LIMIT}&transcripts=1&mode=assistant-replies`;
 
 type FetchSnapshot = {
   sessions: SessionEntry[];
   fleet: FleetState | null;
   discovery: TailDiscoverySnapshot | null;
+  recentEvents: TailEvent[];
   loadedAt: number | null;
   loading: boolean;
   error: string | null;
@@ -47,6 +66,7 @@ let snapshot: FetchSnapshot = {
   sessions: [],
   fleet: null,
   discovery: null,
+  recentEvents: [],
   loadedAt: null,
   loading: true,
   error: null,
@@ -55,7 +75,11 @@ let snapshot: FetchSnapshot = {
 
 const subscribers = new Set<() => void>();
 let refCount = 0;
-let requestId = 0;
+let recentEventsLoadedAt = 0;
+let loadInFlight: Promise<void> | null = null;
+let loadQueued = false;
+let recentEventsInFlight: Promise<void> | null = null;
+let recentEventsDeferredCancel: (() => void) | null = null;
 let refreshTimer: ReturnType<typeof setTimeout> | null = null;
 let pollTimer: ReturnType<typeof setInterval> | null = null;
 let nowTimer: ReturnType<typeof setInterval> | null = null;
@@ -87,71 +111,144 @@ function set(patch: Partial<FetchSnapshot>): void {
   emit();
 }
 
-async function load(mode: "initial" | "background"): Promise<void> {
-  const id = ++requestId;
-  loadRuns += 1;
-  if (typeof window !== "undefined") {
-    (window as unknown as { __projectsInboxLoads?: number }).__projectsInboxLoads = loadRuns;
+/**
+ * Harness replies are observed control-plane activity, not Scout chat
+ * messages. Load them independently so transcript replay never delays the
+ * project shell's first paint.
+ */
+async function loadRecentControlEvents(): Promise<void> {
+  if (Date.now() - recentEventsLoadedAt < RECENT_CONTROL_REFRESH_INTERVAL_MS) return;
+  if (recentEventsInFlight) return recentEventsInFlight;
+  recentEventsInFlight = (async () => {
+    try {
+      const result = await api<{ events?: TailEvent[] }>(
+        RECENT_ASSISTANT_REPLIES_PATH,
+      );
+      recentEventsLoadedAt = Date.now();
+      const merged = latestObservedAssistantReplies(
+        [...snapshot.recentEvents, ...(result.events ?? [])],
+        RECENT_CONTROL_EVENT_LIMIT,
+      );
+      const recentEvents = keepPreviousIfJsonEqual(snapshot.recentEvents, merged);
+      if (recentEvents !== snapshot.recentEvents) set({ recentEvents });
+    } catch {
+      // Discovery remains useful without response previews; keep the last good
+      // projection rather than making the whole Projects surface fail.
+    }
+  })();
+  try {
+    await recentEventsInFlight;
+  } finally {
+    recentEventsInFlight = null;
   }
-  if (snapshot.loadedAt === null && mode !== "background") {
-    set({ loading: true, error: null });
-  }
+}
 
-  const [sessionsResult, fleetResult, discoveryResult] = await Promise.allSettled([
-    api<SessionEntry[]>("/api/conversations"),
-    api<FleetState>("/api/fleet"),
-    api<TailDiscoverySnapshot>("/api/tail/discover"),
-  ]);
+function scheduleRecentControlEventsLoad(): void {
+  if (recentEventsDeferredCancel || recentEventsInFlight) return;
+  recentEventsDeferredCancel = deferProjectsInboxWork(() => {
+    recentEventsDeferredCancel = null;
+    if (refCount > 0) void loadRecentControlEvents();
+  });
+}
 
-  // Requests race; only the newest one is allowed to commit.
-  if (id !== requestId) return;
-
-  // Keep the PREVIOUS reference when the MODEL-RELEVANT slice is unchanged. On an
-  // active machine the broker floods events, so most background refreshes return
-  // the same meaningful data — reusing refs means the model cache hits, the
-  // inbox's ~150 sprite rows don't reconcile, and an idle surface stays idle.
-  // Churning fresh refs every 250ms (even for identical data) is what pegged a
-  // core. NB: /api/fleet and /api/tail/discover stamp a fresh `generatedAt`
-  // every call, so we compare only the fields the model reads (activeAsks;
-  // transcripts + processes) — never the whole envelope.
-  const nextSessions = sessionsResult.status === "fulfilled"
-    ? keepPreviousIfJsonEqual(snapshot.sessions, sessionsResult.value)
-    : snapshot.sessions;
-  const nextFleet = fleetResult.status === "fulfilled"
-    ? keepFleet(snapshot.fleet, fleetResult.value)
-    : snapshot.fleet;
-  const nextDiscovery = discoveryResult.status === "fulfilled"
-    ? keepDiscovery(snapshot.discovery, discoveryResult.value)
-    : snapshot.discovery;
-
-  const failed = [sessionsResult, fleetResult, discoveryResult].find(
-    (result): result is PromiseRejectedResult => result.status === "rejected",
+const liveReplyCoalescer = createReplyBurstCoalescer((events) => {
+  const merged = latestObservedAssistantReplies(
+    [...snapshot.recentEvents, ...events],
+    RECENT_CONTROL_EVENT_LIMIT,
   );
-  const nextError = failed
-    ? failed.reason instanceof Error
-      ? failed.reason.message
-      : String(failed.reason)
-    : null;
+  const recentEvents = keepPreviousIfJsonEqual(snapshot.recentEvents, merged);
+  if (recentEvents !== snapshot.recentEvents) set({ recentEvents });
+});
 
-  const changed =
-    nextSessions !== snapshot.sessions ||
-    nextFleet !== snapshot.fleet ||
-    nextDiscovery !== snapshot.discovery ||
-    nextError !== snapshot.error ||
-    snapshot.loading;
+function recordLiveControlEvent(event: TailEvent): void {
+  if (!isObservedAssistantReply(event)) return;
+  liveReplyCoalescer.push(event);
+}
 
-  // Always advance loadedAt (sync freshness), but only notify subscribers — and
-  // therefore re-render — when something a pane would show actually changed.
-  snapshot = {
-    ...snapshot,
-    sessions: nextSessions,
-    fleet: nextFleet,
-    discovery: nextDiscovery,
-    error: nextError,
-    loading: false,
-    loadedAt: Date.now(),
-  };
-  if (changed) emit();
+async function load(mode: "initial" | "background"): Promise<void> {
+  // A busy transcript can emit events faster than these three endpoints return.
+  // Never let overlapping refreshes invalidate one another: finish the current
+  // request, then run at most one coalesced follow-up with the newest state.
+  if (loadInFlight) {
+    loadQueued = true;
+    return loadInFlight;
+  }
+
+  loadInFlight = (async () => {
+    loadRuns += 1;
+    if (typeof window !== "undefined") {
+      (window as unknown as { __projectsInboxLoads?: number }).__projectsInboxLoads = loadRuns;
+    }
+    if (snapshot.loadedAt === null && mode !== "background") {
+      set({ loading: true, error: null });
+    }
+    const [sessionsResult, fleetResult, discoveryResult] = await Promise.allSettled([
+      api<SessionEntry[]>("/api/conversations"),
+      api<FleetState>("/api/fleet"),
+      api<TailDiscoverySnapshot>("/api/tail/discover"),
+    ]);
+
+    // Keep the PREVIOUS reference when the MODEL-RELEVANT slice is unchanged. On an
+    // active machine the broker floods events, so most background refreshes return
+    // the same meaningful data — reusing refs means the model cache hits, the
+    // inbox's ~150 sprite rows don't reconcile, and an idle surface stays idle.
+    // Churning fresh refs every 250ms (even for identical data) is what pegged a
+    // core. NB: /api/fleet and /api/tail/discover stamp a fresh `generatedAt`
+    // every call, so we compare only the fields the model reads (activeAsks;
+    // transcripts + processes) — never the whole envelope.
+    const nextSessions = sessionsResult.status === "fulfilled"
+      ? keepPreviousIfJsonEqual(snapshot.sessions, sessionsResult.value)
+      : snapshot.sessions;
+    const nextFleet = fleetResult.status === "fulfilled"
+      ? keepFleet(snapshot.fleet, fleetResult.value)
+      : snapshot.fleet;
+    const nextDiscovery = discoveryResult.status === "fulfilled"
+      ? keepDiscovery(snapshot.discovery, discoveryResult.value)
+      : snapshot.discovery;
+
+    const failed = [sessionsResult, fleetResult, discoveryResult].find(
+      (result): result is PromiseRejectedResult => result.status === "rejected",
+    );
+    const nextError = failed
+      ? failed.reason instanceof Error
+        ? failed.reason.message
+        : String(failed.reason)
+      : null;
+
+    const changed =
+      nextSessions !== snapshot.sessions ||
+      nextFleet !== snapshot.fleet ||
+      nextDiscovery !== snapshot.discovery ||
+      nextError !== snapshot.error ||
+      snapshot.loading;
+
+    // Always advance loadedAt (sync freshness), but only notify subscribers — and
+    // therefore re-render — when something a pane would show actually changed.
+    snapshot = {
+      ...snapshot,
+      sessions: nextSessions,
+      fleet: nextFleet,
+      discovery: nextDiscovery,
+      error: nextError,
+      loading: false,
+      loadedAt: Date.now(),
+    };
+    if (changed) emit();
+    // Cold transcript replay is useful enrichment, never a first-paint gate.
+    // Start it only after all three shell reads have settled and their snapshot
+    // has been committed to subscribers.
+    scheduleRecentControlEventsLoad();
+  })();
+
+  try {
+    await loadInFlight;
+  } finally {
+    loadInFlight = null;
+    if (loadQueued && refCount > 0) {
+      loadQueued = false;
+      void load("background");
+    }
+  }
 }
 
 function scheduleRefresh(): void {
@@ -177,6 +274,9 @@ function startLoop(): void {
 }
 
 function stopLoop(): void {
+  recentEventsDeferredCancel?.();
+  recentEventsDeferredCancel = null;
+  liveReplyCoalescer.cancel();
   if (refreshTimer) {
     clearTimeout(refreshTimer);
     refreshTimer = null;
@@ -215,6 +315,10 @@ function useFetchSnapshot(): FetchSnapshot {
   // Debounced, module-level, coalesced — three panes firing this collapse to one
   // background load per burst of broker events.
   useBrokerEvents(scheduleRefresh);
+  // Tail events are the control-plane equivalent of an unread chat event. Add
+  // assistant outputs immediately; the periodic transcript replay only fills
+  // history that happened before this surface mounted.
+  useTailEvents(recordLiveControlEvent);
   return snap;
 }
 
@@ -271,6 +375,7 @@ function computeModel(input: BuildInboxInput): ProjectsInboxModel {
     input.sessions,
     input.fleet,
     input.discovery,
+    input.recentEvents,
     input.machineId,
     Math.floor(input.nowMs / NOW_TICK_MS),
     input.showEphemeral,
@@ -285,6 +390,9 @@ function computeModel(input: BuildInboxInput): ProjectsInboxModel {
 
 export type ProjectsInbox = {
   model: ProjectsInboxModel;
+  /** The raw agent registry backing the model — for projections (e.g. Crew &
+     Workspaces) that need agent fields the collapsed model doesn't carry. */
+  agents: Agent[];
   nowMs: number;
   loading: boolean;
   loadedAt: number | null;
@@ -305,14 +413,16 @@ export function useProjectsInbox(route: Extract<Route, { view: "agents-v2" }>): 
         sessions: snap.sessions,
         fleet: snap.fleet,
         discovery: snap.discovery,
+        recentEvents: snap.recentEvents,
         nowMs: snap.nowMs,
         showEphemeral,
       }),
-    [agents, machineId, snap.sessions, snap.fleet, snap.discovery, snap.nowMs, showEphemeral],
+    [agents, machineId, snap.sessions, snap.fleet, snap.discovery, snap.recentEvents, snap.nowMs, showEphemeral],
   );
 
   return {
     model,
+    agents,
     nowMs: snap.nowMs,
     loading: snap.loading,
     loadedAt: snap.loadedAt,

@@ -5,7 +5,7 @@ import { StatusPill } from "../../components/StatusPill.tsx";
 import { createTextDocument } from "../../components/TextDocumentSurface.tsx";
 import { WorkFilesViewer } from "./WorkFilesViewer.tsx";
 import { renderWithMentions } from "../../lib/mentions.tsx";
-import { api } from "../../lib/api.ts";
+import { api, peekApiGet } from "../../lib/api.ts";
 import {
   filterWorkDetailByMachineScope,
   machineScopedAgentIds,
@@ -26,6 +26,12 @@ type ActionCue = {
   body: string;
   tone: "attention" | "blocked" | "active" | "quiet";
 };
+
+const ROUTE_CACHE_MAX_AGE_MS = 30_000;
+
+function workDetailPath(workId: string): string {
+  return `/api/work/${encodeURIComponent(workId)}`;
+}
 
 function stateLabel(state: string): string {
   switch (state) {
@@ -973,14 +979,19 @@ export function WorkDetailScreen({
   navigate: (r: Route) => void;
 }) {
   const { agents, route } = useScout();
-  const [detail, setDetail] = useState<WorkDetail | null>(null);
+  // Warm start: returning to an already-viewed item paints its last-known
+  // detail instantly; load() still refreshes it in the background.
+  const [initialDetail] = useState(() =>
+    peekApiGet<WorkDetail>(workDetailPath(workId), ROUTE_CACHE_MAX_AGE_MS),
+  );
+  const [detail, setDetail] = useState<WorkDetail | null>(initialDetail);
   const [error, setError] = useState<string | null>(null);
-  const [loaded, setLoaded] = useState(false);
+  const [loaded, setLoaded] = useState(initialDetail !== null);
 
   const load = useCallback(async () => {
     setError(null);
     try {
-      const next = await api<WorkDetail>(`/api/work/${encodeURIComponent(workId)}`);
+      const next = await api<WorkDetail>(workDetailPath(workId));
       setDetail(next);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -991,9 +1002,17 @@ export function WorkDetailScreen({
   }, [workId]);
 
   useEffect(() => {
-    setLoaded(false);
+    // Only blank to the loading state when we have nothing cached for this
+    // workId; a cached detail paints immediately while load() refreshes it.
+    const cached = peekApiGet<WorkDetail>(workDetailPath(workId), ROUTE_CACHE_MAX_AGE_MS);
+    if (cached) {
+      setDetail(cached);
+      setLoaded(true);
+    } else {
+      setLoaded(false);
+    }
     void load();
-  }, [load]);
+  }, [load, workId]);
   useBrokerEvents(() => {
     void load();
   });

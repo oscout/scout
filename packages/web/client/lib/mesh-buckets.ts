@@ -1,4 +1,5 @@
 import type { Agent, MeshStatus } from "./types.ts";
+import { filterMeshRosterAgents } from "./mesh-roster.ts";
 
 export type HostFacts = NonNullable<MeshStatus["nodes"][string]["host"]>;
 
@@ -34,9 +35,9 @@ function tailnetPeerLabel(peer: { hostName?: string | null; name?: string | null
 }
 
 /** Stable host key for dedup across registered node + tailscale peer rows.
- *  Tailscale's display name ("Dev Mac mini") and the node's hostname
- *  ("Dev-Mac-mini.local") differ; both reduce via shortHost on the dnsName
- *  ("dev-mac-mini.tailnet-1234.ts.net") to the same short form. */
+ *  Tailscale's display name ("Art's Mac mini") and the node's hostname
+ *  ("Arts-Mac-mini.local") differ; both reduce via shortHost on the dnsName
+ *  ("arts-mac-mini.tailnet-1234.ts.net") to the same short form. */
 function tailnetPeerHostKey(peer: { dnsName?: string | null; hostName?: string | null; name?: string | null }): string {
   return shortHost(peer.dnsName) || shortHost(peer.hostName) || (peer.name ?? "").toLowerCase();
 }
@@ -45,7 +46,15 @@ function nodeHostKey(node: { hostName?: string; name?: string }): string {
   return shortHost(node.hostName) || (node.name ? shortHost(node.name) : "");
 }
 
+function isLoopbackTailnetPeer(peer: { hostName?: string | null; dnsName?: string | null; name?: string | null }): boolean {
+  const host = (peer.hostName ?? peer.dnsName ?? peer.name ?? "").trim().toLowerCase();
+  if (!host) return false;
+  const short = shortHost(host).toLowerCase();
+  return short === "localhost" || host === "127.0.0.1" || host.startsWith("localhost.");
+}
+
 export function bucketAgentsByMachine(agents: Agent[], mesh: MeshStatus): MachineBucket[] {
+  const rosterAgents = filterMeshRosterAgents(agents);
   const buckets = new Map<string, MachineBucket>();
   const localId = mesh.localNode?.id ?? "local";
   const localLabel = machineLabelFor(mesh.localNode);
@@ -60,8 +69,9 @@ export function bucketAgentsByMachine(agents: Agent[], mesh: MeshStatus): Machin
     agents: [],
   });
 
-  for (const agent of agents) {
+  for (const agent of rosterAgents) {
     const id = agent.authorityNodeId ?? agent.homeNodeId ?? localId;
+    if (id !== localId && !mesh.nodes?.[id]) continue;
     let bucket = buckets.get(id);
     if (!bucket) {
       const remote = mesh.nodes?.[id];
@@ -88,6 +98,7 @@ export function bucketAgentsByMachine(agents: Agent[], mesh: MeshStatus): Machin
     }
   }
   for (const peer of mesh.tailscale?.peers ?? []) {
+    if (isLoopbackTailnetPeer(peer)) continue;
     const label = tailnetPeerLabel(peer);
     const hostKey = tailnetPeerHostKey(peer).toLowerCase();
     if (hostKey && knownHosts.has(hostKey)) continue;

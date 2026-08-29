@@ -14,7 +14,6 @@ import {
 } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { dirname, resolve } from "node:path";
-import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
 
 import {
@@ -102,7 +101,20 @@ rmSync(buildManifestOutput, { force: true });
 // Use --outdir so bun can emit WASM/asset side-files alongside the main bundle
 const result = spawnSync(
   "bun",
-  ["build", entryFile, "--target=bun", "--outdir", outputDirectory, REFLECT_METADATA_BANNER],
+  [
+    "build",
+    entryFile,
+    "--target=bun",
+    "--outdir",
+    outputDirectory,
+    "--external",
+    "@opentui/core",
+    "--external",
+    "@opentui/react",
+    "--external",
+    "react",
+    REFLECT_METADATA_BANNER,
+  ],
   { cwd: packageDirectory, stdio: "inherit" },
 );
 
@@ -236,22 +248,6 @@ function describeBinary(file) {
 function scoutdIsExpectedPackageBinary(file) {
   return describeBinary(file).includes("Mach-O 64-bit executable arm64");
 }
-function releaseRustEnvironment() {
-  // Rust embeds dependency and panic source locations in release binaries.
-  // Remap the build host's home so published artifacts never disclose it.
-  const remapFlag = `--remap-path-prefix=${homedir()}=/usr/src`;
-  if (process.env.CARGO_ENCODED_RUSTFLAGS) {
-    return {
-      ...process.env,
-      CARGO_ENCODED_RUSTFLAGS: `${process.env.CARGO_ENCODED_RUSTFLAGS}\x1f${remapFlag}`,
-    };
-  }
-  return {
-    ...process.env,
-    RUSTFLAGS: [process.env.RUSTFLAGS, remapFlag].filter(Boolean).join(" "),
-  };
-}
-
 
 function buildAndPackageScoutd() {
   const required = scoutdIsRequired();
@@ -271,7 +267,7 @@ function buildAndPackageScoutd() {
       cwd: repoRoot,
       stdio: "inherit",
       env: {
-        ...releaseRustEnvironment(),
+        ...process.env,
         ...(buildManifest.commit ? { SCOUTD_GIT_SHA: buildManifest.commit } : {}),
       },
     },

@@ -18,7 +18,7 @@ import {
 import type { BrokerJournalEntry } from "./broker-journal.js";
 import type { BrokerInvocationDispatchJob } from "./broker-dispatch-job.js";
 
-type DurableCommitOptions = {
+export type DurableCommitOptions = {
   enqueueProjection?: boolean;
 };
 
@@ -118,24 +118,32 @@ export function isEndpointLastSeenHeartbeat(
 export class BrokerDurableRecordStore {
   constructor(private readonly options: BrokerDurableRecordStoreOptions) {}
 
-  readonly upsertNode = async (node: NodeDefinition): Promise<void> => {
+  readonly upsertNode = async (
+    node: NodeDefinition,
+    options: DurableCommitOptions = {},
+  ): Promise<void> => {
     await this.options.durableStore.runWrite(async () => {
       await this.options.durableStore.commitEntries(
         { kind: "node.upsert", node },
         async () => {
           await this.options.runtime.upsertNode(node);
         },
+        options,
       );
     });
   };
 
-  readonly upsertActor = async (actor: ActorIdentity): Promise<void> => {
+  readonly upsertActor = async (
+    actor: ActorIdentity,
+    options: DurableCommitOptions = {},
+  ): Promise<void> => {
     await this.options.durableStore.runWrite(async () => {
       await this.options.durableStore.commitEntries(
         { kind: "actor.upsert", actor },
         async () => {
           await this.options.runtime.upsertActor(actor);
         },
+        options,
       );
     });
   };

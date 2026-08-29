@@ -12,5 +12,5 @@ export const CORE_SYSTEM_MENU_ENTRIES: SystemMenuEntry[] = projectCoreSystemMenu
 
 // Power cluster — gated by `ops.control`, the same audience gate the old Ops
 // top tab used. Mission Control remains here even though it is intentionally
-// absent from the primary Home/Projects/Sessions/Chat navigation.
+// absent from the primary Home/Crew/Sessions/Messages navigation.
 export const SYSTEM_OPS_ENTRIES: SystemMenuEntry[] = projectOpsSystemMenuEntries();

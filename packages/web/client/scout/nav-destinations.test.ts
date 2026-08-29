@@ -44,6 +44,21 @@ describe("nav destination catalog", () => {
     }
   });
 
+  test("exposes Crew, Repositories, and Code Browser as first-class destinations", () => {
+    expect(getDestination("projects")).toMatchObject({
+      label: "Crew & Workspaces",
+      route: { view: "agents-v2" },
+    });
+    expect(getDestination("repos")).toMatchObject({
+      label: "Repositories",
+      route: { view: "repos" },
+    });
+    expect(getDestination("code")).toMatchObject({
+      label: "Code Browser",
+      route: { view: "code" },
+    });
+  });
+
   test("top nav projection matches the public TOP_NAV_ITEMS export", () => {
     expect(projectTopNavItems()).toEqual(TOP_NAV_ITEMS);
     expect(TOP_NAV_ITEMS.map((item) => item.key)).toEqual([
@@ -61,6 +76,8 @@ describe("nav destination catalog", () => {
     expect(projectOpsSystemMenuEntries().map((e) => e.key)).toEqual(
       SYSTEM_OPS_ENTRIES.map((e) => e.key),
     );
+    expect(SYSTEM_OPS_ENTRIES.map((e) => e.key)).not.toContain("repos");
+    expect(SYSTEM_OPS_ENTRIES.map((e) => e.key)).not.toContain("code");
 
     const systemMission = SYSTEM_OPS_ENTRIES.find((e) => e.key === "control");
     const secondaryMission = OPS_SECONDARY_NAV
@@ -106,7 +123,7 @@ describe("nav destination catalog", () => {
       "mesh",
       "tail",
       "runtime",
-      "plans",
+      "advisor",
     ]);
   });
 
@@ -152,6 +169,9 @@ describe("nav destination catalog", () => {
     expect(gated.some((c) => c.id === "nav:ops-atop")).toBe(false);
     // Settings drawer is intentionally absent from the destination projection.
     expect(all.some((c) => c.id === "nav:settings")).toBe(false);
+    expect(all.find((c) => c.id === "nav:agents")?.label).toBe("Go to Crew");
+    expect(all.find((c) => c.id === "nav:repos")?.label).toBe("Open Repositories");
+    expect(all.find((c) => c.id === "nav:code")?.label).toBe("Open Code Browser");
     // Agent config remains a routed destination.
     expect(all.find((c) => c.id === "nav:agent-config")?.route).toEqual({
       view: "settings",
@@ -173,6 +193,11 @@ describe("nav destination catalog", () => {
   test("AREA_SUB_NAV projection covers repos/code/terminals (SCO-085)", () => {
     const projects = projectAreaSubNav("projects");
     expect(projects.map((item) => item.id)).toEqual(["projects", "repos", "code"]);
+    expect(projects.map((item) => item.label)).toEqual([
+      "Crew & Workspaces",
+      "Repositories",
+      "Code Browser",
+    ]);
     expect(projects.find((item) => item.id === "repos")?.route).toEqual({ view: "repos" });
     expect(projects.find((item) => item.id === "code")?.route).toEqual({ view: "code" });
 
@@ -248,7 +273,7 @@ describe("nav destination catalog", () => {
       "Runtime",
       "Network",
       "Live Activity",
-      "Plans",
+      "Host Advisor",
     ]);
 
     const gated = sidebarSubNavForRoute(
@@ -260,7 +285,7 @@ describe("nav destination catalog", () => {
       "Providers",
       "Network",
       "Live Activity",
-      "Plans",
+      "Host Advisor",
     ]);
   });
 });

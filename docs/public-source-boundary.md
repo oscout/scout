@@ -12,6 +12,19 @@ without pretending to contain every OpenScout product surface.
 > canonical source, exact package consumption, and web composition are
 > invariants to complete and enforce—not claims that the cutover is finished.
 
+## Temporary overlay
+
+Until public Scout is the canonical source, the private workspace may export an
+allowlisted snapshot onto this repository. That is a migration export, not a
+recurring two-repository merge and not proof that the cutover is finished. The
+inverse remains the destination: public modules become canonical here, then the
+private product consumes exact released packages.
+
+The current overlay copies a source dump of `packages/web`, including product
+UI that has not been split into the baseline control plane. Native-surface
+scripts (`build:native-surfaces`, `check:native-surfaces`) write into the
+private iOS app and are not part of the public supported check surface.
+
 ## Target at a glance
 
 | Public `oscout/scout` | Private product |

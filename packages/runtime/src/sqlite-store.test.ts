@@ -6,11 +6,6 @@ import { join } from "node:path";
 import { Database } from "bun:sqlite";
 
 import { applyControlPlaneSchemaMigrations } from "./control-plane-migrations.ts";
-import {
-  loadOrCreateNodeIdentity,
-  nodeFingerprint,
-  nodeKeyId,
-} from "./node-identity.ts";
 import { CONTROL_PLANE_SCHEMA_VERSION } from "./schema.ts";
 import { SQLiteControlPlaneStore } from "./sqlite-store.ts";
 
@@ -2262,109 +2257,83 @@ describe("terminal workspaces", () => {
     }
   });
 
-  test("compactAndPruneMeshNodes never conflates numeric hostnames backed by distinct keys", () => {
+  test("compactAndPruneMeshNodes re-homes collision-suffixed ghost nodes and prunes them cleanly", () => {
     const store = createStore();
     try {
-      const now = 2_000_000_000_000;
-      const staleAt = now - 30 * 24 * 60 * 60 * 1_000;
-      const nodes = [
-        { id: "pi-4-local-openscout", hostName: "pi-4.local", agentId: "agent.pi-4" },
-        { id: "pi-5-local-openscout", hostName: "pi-5.local", agentId: "agent.pi-5" },
-      ] as const;
+      // 1. Create a stale ghost node with Bonjour collision suffix
+      const staleNodeId = "arachs-mac-mini-292-local-openscout";
+      const canonicalNodeId = "arachs-mac-mini-local-openscout";
+      const keyId = "1cf8f5a98049ab651cf8f5a98049ab651cf8f5a98049ab651cf8f5a98049ab65";
 
-      for (const node of nodes) {
-        const identityDirectory = mkdtempSync(join(tmpdir(), "openscout-node-key-test-"));
-        dbRoots.add(identityDirectory);
-        const identity = loadOrCreateNodeIdentity(identityDirectory);
-        store.upsertNode({
-          id: node.id,
-          meshId: "openscout",
-          name: node.hostName,
-          hostName: node.hostName,
-          advertiseScope: "mesh",
-          brokerUrl: `https://${node.hostName}:43110`,
-          capabilities: ["control", "observe"],
-          labels: [],
-          metadata: {},
-          registeredAt: staleAt,
-          lastSeenAt: staleAt,
-        });
-        store.upsertActor({
-          id: node.agentId,
-          kind: "agent",
-          displayName: `Agent on ${node.hostName}`,
-        });
-        store.upsertAgent({
-          id: node.agentId,
-          kind: "agent",
-          displayName: `Agent on ${node.hostName}`,
-          agentClass: "general",
-          definitionId: node.agentId,
-          capabilities: ["chat"],
-          wakePolicy: "on_demand",
-          advertiseScope: "mesh",
-          homeNodeId: node.id,
-          authorityNodeId: node.id,
-        });
-        store.upsertTrustedPeer({
-          keyId: nodeKeyId(identity.publicKey),
-          publicKey: identity.publicKey,
-          fingerprint: nodeFingerprint(identity.publicKey),
-          nodeId: node.id,
-          label: node.hostName,
-          tier: "control",
-          grantedVia: "mesh-trust",
-          grantedAt: staleAt,
-          metadata: {},
-        });
-      }
-
-      const result = store.compactAndPruneMeshNodes({
-        localNodeId: "controller-local-openscout",
-        now,
-      });
-
-      expect(result.rehomedNodeCount).toBe(0);
-      expect(result.prunedNodeCount).toBe(0);
-      expect(result.rehomedMappings).toEqual([]);
-      const snapshot = store.loadSnapshot();
-      expect(snapshot.nodes["pi-4-local-openscout"]?.hostName).toBe("pi-4.local");
-      expect(snapshot.nodes["pi-5-local-openscout"]?.hostName).toBe("pi-5.local");
-      expect(snapshot.nodes["pi-local-openscout"]).toBeUndefined();
-      expect(snapshot.agents["agent.pi-4"]?.homeNodeId).toBe("pi-4-local-openscout");
-      expect(snapshot.agents["agent.pi-5"]?.homeNodeId).toBe("pi-5-local-openscout");
-      expect(store.listTrustedPeers().map((peer) => peer.nodeId).sort()).toEqual([
-        "pi-4-local-openscout",
-        "pi-5-local-openscout",
-      ]);
-    } finally {
-      store.close();
-    }
-  });
-
-  test("compactAndPruneMeshNodes still removes an unreferenced stale node", () => {
-    const store = createStore();
-    try {
-      const now = 2_000_000_000_000;
       store.upsertNode({
-        id: "offline-ghost",
+        id: staleNodeId,
         meshId: "openscout",
-        name: "Offline ghost",
-        advertiseScope: "mesh",
-        registeredAt: now - 30 * 24 * 60 * 60 * 1_000,
+        name: "Arachs-Mac-mini-292.local",
+        hostName: "Arachs-Mac-mini-292.local",
+        advertiseScope: "local",
+        brokerUrl: "http://192.168.18.9:43110",
+        capabilities: ["control", "observe"],
+        labels: [],
+        metadata: {},
+        registeredAt: Date.now() - 10000,
+        lastSeenAt: Date.now() - 5000,
       });
 
-      const result = store.compactAndPruneMeshNodes({
-        localNodeId: "controller-local-openscout",
-        now,
+      // 2. Create an agent referencing the stale node
+      store.upsertActor({
+        id: "agent.arach.main",
+        kind: "agent",
+        displayName: "Arach Agent",
+      });
+      store.upsertAgent({
+        id: "agent.arach.main",
+        kind: "agent",
+        displayName: "Arach Agent",
+        agentClass: "general",
+        definitionId: "agent.arach.main",
+        capabilities: ["chat"],
+        wakePolicy: "on_demand",
+        advertiseScope: "local",
+        homeNodeId: staleNodeId,
+        authorityNodeId: staleNodeId,
       });
 
-      expect(result).toEqual({
-        rehomedNodeCount: 0,
-        prunedNodeCount: 1,
-        rehomedMappings: [],
+      // 3. Create a trusted peer referencing the stale node
+      store.upsertTrustedPeer({
+        keyId,
+        publicKey: "MCowBQYDK2VwAyEAexamplePubKeyForTestOnly1234567890=",
+        fingerprint: "osc1:abcd-ef01",
+        nodeId: staleNodeId,
+        label: "Arach Mac Mini",
+        tier: "control",
+        grantedVia: "mesh-trust",
+        grantedAt: Date.now(),
+        metadata: {},
       });
-      expect(store.loadSnapshot().nodes["offline-ghost"]).toBeUndefined();
+
+      // Run compaction
+      const result = store.compactAndPruneMeshNodes({ localNodeId: "arts-mac-mini-local-openscout" });
+
+      expect(result.rehomedNodeCount).toBe(1);
+      expect(result.prunedNodeCount).toBe(1);
+      expect(result.rehomedMappings).toEqual([{ from: staleNodeId, to: canonicalNodeId }]);
+
+      // Verify canonical node exists and stale node is gone
+      const snapshot = store.loadSnapshot();
+      expect(snapshot.nodes[staleNodeId]).toBeUndefined();
+      expect(snapshot.nodes[canonicalNodeId]).toBeDefined();
+      expect(snapshot.nodes[canonicalNodeId]?.name).toBe("Arachs-Mac-mini.local");
+
+      // Verify agent was re-homed to canonical node
+      const agent = snapshot.agents["agent.arach.main"];
+      expect(agent?.homeNodeId).toBe(canonicalNodeId);
+      expect(agent?.authorityNodeId).toBe(canonicalNodeId);
+
+      // Verify trusted peer was re-homed
+      const peer = store.trustedPeer(keyId);
+      const rawPeer = getWritableDb(store).query("SELECT * FROM trusted_peers WHERE key_id = ?1").get(keyId) as any;
+      expect(rawPeer?.node_id).toBe(canonicalNodeId);
+      expect(peer?.nodeId).toBe(canonicalNodeId);
     } finally {
       store.close();
     }

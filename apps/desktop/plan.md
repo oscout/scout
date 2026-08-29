@@ -68,7 +68,7 @@ apps/desktop/
 - `core/broker` owns `send`, `speak`, `ask`, `watch`, `who`, and `broadcast`.
 - `cli` now owns shared command context, option parsing, output mode selection, and context-root handling.
 - `pairing` and `agents` now have Scout-native command paths.
-- `monitor` now has a Scout-native terminal surface behind `scout tui`.
+- `monitor` is the v1 OpenTUI console behind `scout monitor`. The TUI is `scout tui`.
 - `app/desktop` now owns Scout-native desktop shell composition and phone-preparation state.
 - `app/host` now owns desktop host config, the Scout-native service surface for app info/shell state/phone-preparation state, and the typed IPC contract for host wiring.
 - Host integration now lives in `app/host`; remaining donor cleanup should continue there instead of reintroducing legacy host-specific layers.

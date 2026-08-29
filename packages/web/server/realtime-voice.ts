@@ -2,7 +2,10 @@ import { Database } from "bun:sqlite";
 import { mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 
-import { SCOUT_REALTIME_VOICE_FAR_FIELD_INPUT } from "../shared/realtime-voice.ts";
+import {
+  SCOUT_REALTIME_VOICE_FAR_FIELD_INPUT,
+  type ScoutRealtimeVoiceSettings,
+} from "../shared/realtime-voice.ts";
 import { resolveDbPath } from "./db/internal/db.ts";
 
 const OPENAI_REALTIME_CALLS_URL = "https://api.openai.com/v1/realtime/calls";
@@ -197,6 +200,11 @@ export class ScoutRealtimeVoiceAdmission {
     this.database.query("DELETE FROM realtime_voice_leases WHERE id = ?1").run(leaseId);
   }
 
+  releaseAll(): number {
+    const result = this.database.query("DELETE FROM realtime_voice_leases").run();
+    return result.changes;
+  }
+
   activeLeaseCount(): number {
     const now = this.now();
     const row = this.database.query(
@@ -222,6 +230,41 @@ export function resolveScoutRealtimeVoiceConfig(
 
 export function isScoutRealtimeVoiceEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
   return /^(?:1|true|yes|on)$/i.test(env.OPENSCOUT_REALTIME_VOICE_ENABLED?.trim() ?? "");
+}
+
+export function scoutRealtimeVoiceEnvironmentOverride(
+  env: NodeJS.ProcessEnv = process.env,
+): boolean | null {
+  const value = env.OPENSCOUT_REALTIME_VOICE_ENABLED?.trim();
+  if (!value) return null;
+  if (/^(?:1|true|yes|on)$/i.test(value)) return true;
+  if (/^(?:0|false|no|off)$/i.test(value)) return false;
+  return null;
+}
+
+/**
+ * The persisted operator preference is the everyday control. An explicit env
+ * value remains a deployment override for managed or recovery environments.
+ */
+export function resolveScoutRealtimeVoiceSettings(
+  configuredEnabled: boolean,
+  env: NodeJS.ProcessEnv = process.env,
+): ScoutRealtimeVoiceSettings {
+  const environmentOverride = scoutRealtimeVoiceEnvironmentOverride(env);
+  if (environmentOverride !== null) {
+    return {
+      enabled: environmentOverride,
+      configuredEnabled,
+      source: "environment",
+      locked: true,
+    };
+  }
+  return {
+    enabled: configuredEnabled,
+    configuredEnabled,
+    source: "settings",
+    locked: false,
+  };
 }
 
 export function resolveScoutRealtimeVoiceAdmissionConfig(

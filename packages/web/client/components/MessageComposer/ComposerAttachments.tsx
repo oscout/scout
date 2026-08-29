@@ -155,6 +155,19 @@ export function useComposerAttachments(): ComposerAttachmentsState {
   };
 }
 
+function formatFileSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  const kb = bytes / 1024;
+  if (kb < 1024) return `${kb.toFixed(0)} KB`;
+  const mb = kb / 1024;
+  return `${mb.toFixed(1)} MB`;
+}
+
+function fileExtBadge(filename: string): string {
+  const ext = filename.split(".").pop()?.toUpperCase() ?? "FILE";
+  return ext.slice(0, 4);
+}
+
 function StagedAttachment({
   file,
   onRemove,
@@ -167,22 +180,30 @@ function StagedAttachment({
 
   const isVideo = file.type.startsWith("video/");
   const isImage = file.type.startsWith("image/");
+  const ext = fileExtBadge(file.name);
+  const size = formatFileSize(file.size);
+
   return (
-    <div className="s-msg-compose-attachment">
+    <div className="s-msg-compose-attachment surface-card surface-card--inset">
       {isVideo ? (
         <video src={url} muted playsInline />
       ) : isImage ? (
         <img src={url} alt={file.name} />
       ) : (
-        <div className="s-msg-compose-attachment-file" title={file.name}>
-          <FileText size={18} aria-hidden="true" />
-          <span>{file.name}</span>
+        <div className="s-msg-compose-attachment-file" title={`${file.name} (${size})`}>
+          <div className="s-msg-compose-attachment-file-icon">
+            <FileText size={16} aria-hidden="true" />
+            <span className="s-msg-compose-attachment-ext label-xs">{ext}</span>
+          </div>
+          <span className="s-msg-compose-attachment-name">{file.name}</span>
+          <span className="s-msg-compose-attachment-size label-xs text-dim">{size}</span>
         </div>
       )}
       <button
         type="button"
-        className="s-msg-compose-attachment-remove"
+        className="s-msg-compose-attachment-remove btn btn--ghost btn--icon"
         aria-label={`Remove ${file.name}`}
+        title={`Remove ${file.name}`}
         onClick={onRemove}
       >
         ×

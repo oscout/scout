@@ -19,6 +19,7 @@ import type {
 import {
   fetchRepoPullRequests,
   fetchRepoWatchSnapshot,
+  getCachedRepoWatchSnapshot,
   type RepoPullRequestItem,
   type RepoPullRequestSnapshot,
   type RepoWatchScanDepth,
@@ -520,12 +521,16 @@ export function ReposScreen({
   /** Absolute project root to pre-select (deep link from a project surface). */
   focusRoot?: string | null;
 }) {
-  const [snapshot, setSnapshot] = useState<RepoWatchSnapshot | null>(null);
-  const [phase, setPhase] = useState<"loading" | "ready" | "error">("loading");
+  // Warm start: paint the last snapshot this session fetched (CodeScreen does
+  // the same) so SPA navigations back to Repos never re-block on a scan; the
+  // mount effect's load() still refreshes it in the background.
+  const [initialSnapshot] = useState(() => getCachedRepoWatchSnapshot());
+  const [snapshot, setSnapshot] = useState<RepoWatchSnapshot | null>(initialSnapshot);
+  const [phase, setPhase] = useState<"loading" | "ready" | "error">(initialSnapshot ? "ready" : "loading");
   const [error, setError] = useState<string | null>(null);
-  const hasData = useRef(false);
+  const hasData = useRef(initialSnapshot !== null);
   const emptyStreak = useRef(0);
-  const snapshotRef = useRef<RepoWatchSnapshot | null>(null);
+  const snapshotRef = useRef<RepoWatchSnapshot | null>(initialSnapshot);
   const loadInFlight = useRef(false);
 
   // Tone + view persist to localStorage; selection is shared across both views.

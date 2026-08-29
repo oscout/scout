@@ -769,8 +769,8 @@ describe("service budgets", () => {
       plan: "Advanced",
     }));
     expect(kimi && kimi.kind === "quota" ? kimi.windows : []).toEqual([
-      expect.objectContaining({ label: "5h", usedLabel: "6%" }),
-      expect.objectContaining({ label: "7d", usedLabel: "53%" }),
+      expect.objectContaining({ label: "5h", usedLabel: "6%", windowMs: 5 * 60 * 60_000 }),
+      expect.objectContaining({ label: "7d", usedLabel: "53%", windowMs: 7 * 24 * 60 * 60_000 }),
     ]);
     delete process.env.OPENSCOUT_KIMI_USAGE_JSON;
     resetServiceBudgetsCache();
@@ -870,11 +870,7 @@ describe("service budgets", () => {
     const rawDb = new Database(join(controlHome, "control-plane.sqlite"));
     createQuotaTable(rawDb);
 
-    // Keep the two readings in one hourly history bucket. Using wall-clock
-    // `now` makes this assertion change during the first minute of an hour:
-    // the current row plus two legitimate history buckets totals three rows.
-    const historyBucketMs = 60 * 60 * 1000;
-    const now = Math.floor(Date.now() / historyBucketMs) * historyBucketMs + 2 * 60 * 1000;
+    const now = Date.now();
     const periodEnd = now + 4 * 24 * 60 * 60 * 1000;
     const periodStart = periodEnd - 7 * 24 * 60 * 60 * 1000;
     const logsDirectory = join(home, ".grok", "logs");

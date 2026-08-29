@@ -136,7 +136,7 @@ starter ledger. Run `help` for the complete contract.
 ## Validate changes to this skill
 
 ```bash
-python3 /Users/example/.codex/skills/.system/skill-creator/scripts/quick_validate.py \
+python3 /Users/art/.codex/skills/.system/skill-creator/scripts/quick_validate.py \
   .agents/skills/release-train
 bun test ./.agents/skills/release-train/scripts/release-train.test.ts
 bun .agents/skills/release-train/scripts/release-train.ts validate

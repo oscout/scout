@@ -439,6 +439,7 @@ type ScoutVoiceHealthBody = {
   capture?: ScoutVoiceCaptureMode;
   microphoneGranted?: boolean;
   microphoneCanRequest?: boolean;
+  inputDevice?: { id?: string; name?: string } | null;
   host?: { hostId?: string } | null;
 };
 
@@ -449,6 +450,7 @@ export type ScoutVoiceProbeSnapshot = {
   hostReachable: boolean;
   microphoneGranted: boolean | null;
   microphoneCanRequest: boolean | null;
+  inputDeviceName: string | null;
   probedAt: number;
 };
 
@@ -512,6 +514,7 @@ export class ScoutVoiceClient {
   private hostReachable = false;
   private microphoneGranted: boolean | null = null;
   private microphoneCanRequest: boolean | null = null;
+  private inputDeviceName: string | null = null;
 
   get connectionState(): ScoutVoiceConnectionState {
     return this.state;
@@ -527,6 +530,10 @@ export class ScoutVoiceClient {
 
   get isVoiceHostReachable(): boolean {
     return this.hostReachable;
+  }
+
+  get activeInputDeviceName(): string | null {
+    return this.inputDeviceName;
   }
 
   get isMicrophoneGranted(): boolean | null {
@@ -606,6 +613,9 @@ export class ScoutVoiceClient {
       const microphoneCanRequest = typeof body.microphoneCanRequest === "boolean"
         ? body.microphoneCanRequest
         : null;
+      const inputDeviceName = typeof body.inputDevice?.name === "string" && body.inputDevice.name.trim()
+        ? body.inputDevice.name.trim()
+        : null;
       const captureMode = body.capture === "browser" ? "browser" : "native";
       const ok = response.ok && body.ok === true;
       const reason = ok
@@ -621,6 +631,7 @@ export class ScoutVoiceClient {
         hostReachable,
         microphoneGranted,
         microphoneCanRequest,
+        inputDeviceName,
         probedAt: Date.now(),
       };
       lastVoiceProbe = snapshot;
@@ -638,6 +649,7 @@ export class ScoutVoiceClient {
         hostReachable: false,
         microphoneGranted: null,
         microphoneCanRequest: null,
+        inputDeviceName: null,
         probedAt: Date.now(),
       };
       lastVoiceProbe = snapshot;
@@ -653,6 +665,7 @@ export class ScoutVoiceClient {
     this.hostReachable = snapshot.hostReachable;
     this.microphoneGranted = snapshot.microphoneGranted;
     this.microphoneCanRequest = snapshot.microphoneCanRequest;
+    this.inputDeviceName = snapshot.inputDeviceName;
     if (snapshot.ok) {
       this.unavailableReason = null;
       this.captureMode = snapshot.captureMode;
@@ -1134,6 +1147,51 @@ export function startScoutSpeechWithEffects(
   return {
     promise: speakWithEffects(text, { ...options, signal: controller.signal }),
     stop: () => controller.abort(),
+  };
+}
+
+export function startScoutSystemSpeech(
+  text: string,
+  options: { speed?: number } = {},
+): { promise: Promise<void>; stop: () => void } {
+  if (typeof window === "undefined" || typeof SpeechSynthesisUtterance === "undefined" || !window.speechSynthesis) {
+    return {
+      promise: Promise.reject(new Error("System speech synthesis is unavailable in this browser.")),
+      stop: () => {},
+    };
+  }
+
+  const synthesis = window.speechSynthesis;
+  const utterance = new SpeechSynthesisUtterance(text);
+  utterance.rate = normalizeSpeechSpeed(options.speed) ?? 1;
+  let settled = false;
+  let rejectResult: ((error: Error) => void) | null = null;
+  const promise = new Promise<void>((resolve, reject) => {
+    rejectResult = reject;
+    utterance.onend = () => {
+      settled = true;
+      resolve();
+    };
+    utterance.onerror = (event) => {
+      settled = true;
+      if (event.error === "canceled" || event.error === "interrupted") {
+        reject(stoppedSpeechError());
+        return;
+      }
+      reject(new Error(`System speech synthesis failed: ${event.error}.`));
+    };
+  });
+
+  synthesis.cancel();
+  synthesis.speak(utterance);
+  return {
+    promise,
+    stop: () => {
+      if (settled) return;
+      settled = true;
+      synthesis.cancel();
+      rejectResult?.(stoppedSpeechError());
+    },
   };
 }
 

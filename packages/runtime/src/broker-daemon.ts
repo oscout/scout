@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { createServer, type IncomingMessage } from "node:http";
 import { mkdir, readFile, rename, stat, unlink, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { hostname } from "node:os";
@@ -7,6 +7,8 @@ import { basename, dirname, join, resolve } from "node:path";
 import type { Duplex } from "node:stream";
 
 import { applyWSSHandler } from "@trpc/server/adapters/ws";
+
+import type { RuntimeHttpRequestLike, RuntimeHttpResponseLike } from "./portable-types.js";
 
 import { brokerRouter } from "./broker-trpc-router.js";
 
@@ -41,6 +43,7 @@ import { BrokerDeliveryStore } from "./broker-delivery-store.js";
 import { FileBackedBrokerJournal, type BrokerJournalEntry } from "./broker-journal.js";
 import { BrokerDurableRecordStore } from "./broker-durable-record-store.js";
 import { BrokerDurableStore } from "./broker-durable-store.js";
+import { BrokerStartupTrafficGate } from "./broker-startup-traffic-gate.js";
 import { BrokerReadCursorStore } from "./broker-read-cursor-store.js";
 import { BrokerWorkItemStore } from "./broker-work-item-store.js";
 import { BrokerDeliveryRouter } from "./broker-delivery-routing.js";
@@ -335,7 +338,12 @@ const relayAgentIdleTtlMs = Number.parseInt(
 );
 const runtimeHeartbeatIntervalMs = 30_000;
 const repoWatchServeCacheTtlMs = Number.parseInt(process.env.OPENSCOUT_REPO_WATCH_CACHE_TTL_MS ?? "1200000", 10);
+const tailRecentServeCacheTtlMs = Number.parseInt(process.env.OPENSCOUT_TAIL_RECENT_SERVE_CACHE_TTL_MS ?? "4000", 10);
 const repoWatchRehydrateAfterMs = Number.parseInt(process.env.OPENSCOUT_REPO_WATCH_REHYDRATE_AFTER_MS ?? "30000", 10);
+const startupBoundaryTestDelayMs = Number.parseInt(
+  process.env.OPENSCOUT_TEST_STARTUP_BOUNDARY_DELAY_MS ?? "0",
+  10,
+);
 // Mesh trust cone rollout (docs/proposals/mesh-trust-cone.md §10): the ingress
 // gate verifies everything but only warns until OPENSCOUT_MESH_GATE=enforce.
 const meshGateMode = resolveMeshGateMode(process.env);
@@ -359,7 +367,7 @@ nodeId = resolveStableLocalNodeId({
 });
 
 const journal = new FileBackedBrokerJournal(journalPath);
-await journal.load();
+const journalLoadReport = await journal.load();
 const initialSnapshot = journal.snapshot();
 assertNoReservedStoredAgentNames(initialSnapshot.agents, { localNodeId: nodeId });
 
@@ -370,6 +378,10 @@ if (!sqliteDisabled) {
   await mkdir(dirname(dbPath), { recursive: true });
 }
 const projection = new RecoverableSQLiteProjection(dbPath, journal, { disabled: sqliteDisabled });
+let projectionWarmStarted = false;
+const bootstrapProjectionOptions = () => (
+  projectionWarmStarted ? undefined : { enqueueProjection: false as const }
+);
 const routeAliasDatabase = sqliteDisabled
   ? null
   : openControlPlaneSqliteDatabase(dbPath, { create: true }) as ControlPlaneSqliteTransactionalDatabase;
@@ -1350,6 +1362,10 @@ const localInvocationService = new BrokerLocalInvocationService({
   createId: createRuntimeId,
   transitionInvocation,
   persistEndpoint,
+  // Lazily bound: dispatchRecoveryService is constructed later in this module,
+  // and deferral only fires during dispatch, long after initialization.
+  deferInvocationRetry: (invocationId, notBeforeTs) =>
+    dispatchRecoveryService.deferInvocation(invocationId, notBeforeTs),
   postInvocationStatusMessage,
   postConversationMessage,
   existingBrokerReplyForInvocation,
@@ -1829,9 +1845,12 @@ const deliveryAcceptanceService = new BrokerDeliveryAcceptanceService({
   warn: (message, detail) => console.warn(message, detail),
 });
 
+const startupTrafficGate = new BrokerStartupTrafficGate();
+
 const homeService = new BrokerHomeService({
   runtimeSnapshot: () => runtime.snapshot(),
   listActivityItems: (options) => projection.listActivityItems(options),
+  projectionStatus: () => projection.statusSnapshot(),
   actorDisplayName: brokerActorDisplayName,
   operatorActorId,
 });
@@ -1848,6 +1867,7 @@ const brokerService = createBrokerCoreService({
   isReconciledStaleFlightActivityItem,
   readChildServices: () => webControl.readChildServiceSnapshots(),
   readProjectionStatus: () => projection.statusSnapshot(),
+  readStartupStatus: () => startupTrafficGate.snapshot(),
   readHome: () => homeService.read(),
   readCapabilities: readBrokerCapabilityMatrixSnapshot,
   readRuntimeCatalog: readBrokerRuntimeCatalogSnapshot,
@@ -1867,10 +1887,9 @@ const brokerRepoTailService = new BrokerRepoTailService({
   readRecentTranscriptEvents,
   repoWatchServeCacheTtlMs,
   repoWatchRehydrateAfterMs,
+  tailRecentServeCacheTtlMs,
   warn: (message) => console.warn(message),
 });
-
-registerActiveScoutBrokerService(brokerService);
 
 const rendezvousService = new BrokerRendezvousService();
 
@@ -2028,18 +2047,33 @@ function createBrokerHttpServer(): ReturnType<typeof createServer> {
     // verify-warn: logs and allows). Local transports pass through untouched.
     meshIngressGate
       .gateHttpRequest(request, response, (gatedRequest) =>
-        routeRequest(gatedRequest, response).catch((error) => {
-          json(response, 500, {
-            error: "internal_error",
-            detail: error instanceof Error ? error.message : String(error),
-          });
-        }))
+        routeBrokerHttpRequest(gatedRequest, response))
       .catch((error) => {
         json(response, 500, {
           error: "internal_error",
           detail: error instanceof Error ? error.message : String(error),
         });
       });
+  });
+}
+
+async function routeBrokerHttpRequest(
+  request: RuntimeHttpRequestLike,
+  response: RuntimeHttpResponseLike,
+): Promise<void> {
+  if (!startupTrafficGate.admits(request.method, request.url ?? "/")) {
+    json(response, 503, {
+      error: "broker_restoring",
+      detail: "Recovery reads are available; this route will resume after the startup projection boundary is established.",
+      retryable: true,
+    });
+    return;
+  }
+  await routeRequest(request, response).catch((error) => {
+    json(response, 500, {
+      error: "internal_error",
+      detail: error instanceof Error ? error.message : String(error),
+    });
   });
 }
 
@@ -2113,9 +2147,8 @@ try {
   await listenTcp(server, { host: isLoopbackHost(host) || host === "0.0.0.0" || host === "::" ? "127.0.0.1" : host, port });
   await listenUnixSocket(socketServer, brokerSocketPath);
 
-  projection.warm();
-  void upsertNodeDurably(localNode)
-    .then(() => upsertActorDurably(systemActor))
+  const bootstrapIdentityWrite = upsertNodeDurably(localNode, bootstrapProjectionOptions())
+    .then(() => upsertActorDurably(systemActor, bootstrapProjectionOptions()))
     .catch((error) => {
       console.error("[openscout-runtime] bootstrap identity persistence failed:", error);
     });
@@ -2126,12 +2159,7 @@ try {
   ): void {
     meshIngressGate
       .gateHttpRequest(request, response, (gatedRequest) =>
-        routeRequest(gatedRequest, response).catch((error) => {
-          json(response, 500, {
-            error: "internal_error",
-            detail: error instanceof Error ? error.message : String(error),
-          });
-        }))
+        routeBrokerHttpRequest(gatedRequest, response))
       .catch((error) => {
         json(response, 500, {
           error: "internal_error",
@@ -2153,7 +2181,7 @@ try {
       brokerUrl = state.brokerUrl;
       const nextNode = localNodeWithBindState(currentLocalNode(), state);
       Object.assign(localNode, nextNode);
-      await upsertNodeDurably(nextNode).catch((error) => {
+      await upsertNodeDurably(nextNode, bootstrapProjectionOptions()).catch((error) => {
         console.warn("[openscout-runtime] mesh bind: failed to update node registry:", error);
       });
       await writeHostInfo().catch((error) => {
@@ -2168,13 +2196,12 @@ try {
     advertiseScope = state.scope;
     brokerUrl = state.brokerUrl;
     Object.assign(localNode, localNodeWithBindState(localNode, state));
-    await upsertNodeDurably(localNode).catch(() => undefined);
+    await upsertNodeDurably(localNode, bootstrapProjectionOptions()).catch(() => undefined);
   }
 
   await writeHostInfo().catch((error) => {
     console.warn("[openscout-runtime] failed to write .host-info:", error);
   });
-  peerDelivery.start();
   const meshRendezvousConfig = resolveMeshRendezvousPublishConfig();
   if (meshRendezvousConfig) {
     meshRendezvousPublisher = startMeshRendezvousPublisher(currentRendezvousNode, {
@@ -2182,6 +2209,15 @@ try {
       logger: console,
     });
   }
+  if (Number.isFinite(startupBoundaryTestDelayMs) && startupBoundaryTestDelayMs > 0) {
+    await sleep(startupBoundaryTestDelayMs);
+  }
+  await bootstrapIdentityWrite;
+  projectionWarmStarted = true;
+  await projection.warm();
+  startupTrafficGate.admitMutations();
+  registerActiveScoutBrokerService(brokerService);
+  peerDelivery.start();
   console.log(`[openscout-runtime] broker listening on 127.0.0.1:${port} (scope: ${advertiseScope}, url: ${brokerUrl})`);
   console.log(`[openscout-runtime] broker local socket ${brokerSocketPath}`);
   const bindState = meshBindController.getState();
@@ -2193,6 +2229,11 @@ try {
   console.log(`[openscout-runtime] node ${nodeId} in mesh ${meshId}`);
   console.log(`[openscout-runtime] mesh trust: keyId ${nodeIdentityKeyId} fingerprint ${nodeIdentityFingerprint} (gate: ${effectiveGateMode()})`);
   console.log(`[openscout-runtime] journal ${journalPath}`);
+  console.log(
+    `[openscout-runtime] journal load ${journalLoadReport.totalMs}ms `
+    + `(scan ${journalLoadReport.scanMs}ms, compaction ${journalLoadReport.compactionMs}ms, `
+    + `${journalLoadReport.validEntries} entries, ${journalLoadReport.sourceBytes} -> ${journalLoadReport.compactedBytes} bytes)`,
+  );
   console.log(`[openscout-runtime] sqlite ${sqliteDisabled ? "disabled" : dbPath}`);
 } catch (error) {
   unregisterActiveScoutBrokerService(brokerService);
@@ -2303,6 +2344,15 @@ if (Number.isFinite(relayAgentSweepIntervalMs) && relayAgentSweepIntervalMs > 0)
 setInterval(() => {
   sweepAndCompactMeshNodes();
 }, 15 * 60_000).unref();
+
+// Backstop retry for queued deliveries with no endpoint event to wake them —
+// deferred thread_held_externally parks and any flight whose attach event was
+// missed. Deferrals gate per-invocation cadence inside the recovery service.
+setInterval(() => {
+  dispatchRecoveryService.recoverQueuedFlights({ reason: "queued_retry_sweep" }).catch((error) => {
+    console.error("[openscout-runtime] queued dispatch retry sweep failed:", error);
+  });
+}, 60_000).unref();
 
 if (routeAliasService) {
   setInterval(() => {

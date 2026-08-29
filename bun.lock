@@ -17,7 +17,7 @@
     },
     "apps/desktop": {
       "name": "@scout/app",
-      "version": "0.2.92",
+      "version": "0.2.94",
       "bin": {
         "scout": "./bin/scout.ts",
         "pairing-runtime-controller": "./bin/pairing-runtime-controller.ts",
@@ -53,7 +53,7 @@
     },
     "packages/agent-sessions": {
       "name": "@openscout/agent-sessions",
-      "version": "0.2.92",
+      "version": "0.2.94",
       "dependencies": {
         "@opencode-ai/client": "0.0.0-next-17226",
       },
@@ -65,15 +65,18 @@
     },
     "packages/cli": {
       "name": "@openscout/scout",
-      "version": "0.2.92",
+      "version": "0.2.94",
       "bin": {
         "scout": "./bin/scout",
         "openscout-runtime": "./bin/openscout-runtime.mjs",
       },
       "dependencies": {
         "@lydell/node-pty": "1.2.0-beta.12",
+        "@opentui/core": "^0.1.88",
+        "@opentui/react": "^0.1.88",
         "bonjour-service": "^1.4.4",
         "picomatch": "^4.0.4",
+        "react": "19.2.3",
         "reflect-metadata": "0.2.2",
         "ws": "^8.18.3",
       },
@@ -83,14 +86,14 @@
     },
     "packages/protocol": {
       "name": "@openscout/protocol",
-      "version": "0.2.92",
+      "version": "0.2.94",
       "devDependencies": {
         "typescript": "^5",
       },
     },
     "packages/runtime": {
       "name": "@openscout/runtime",
-      "version": "0.2.92",
+      "version": "0.2.94",
       "bin": {
         "openscout-runtime": "./bin/openscout-runtime.mjs",
       },
@@ -117,7 +120,7 @@
     },
     "packages/session-trace": {
       "name": "@openscout/session-trace",
-      "version": "0.2.92",
+      "version": "0.2.94",
       "dependencies": {
         "@openscout/agent-sessions": "workspace:*",
       },
@@ -127,7 +130,7 @@
     },
     "packages/session-trace-react": {
       "name": "@openscout/session-trace-react",
-      "version": "0.2.92",
+      "version": "0.2.94",
       "dependencies": {
         "@openscout/session-trace": "workspace:*",
       },
@@ -141,7 +144,7 @@
     },
     "packages/web": {
       "name": "@openscout/web",
-      "version": "0.2.92",
+      "version": "0.2.94",
       "bin": {
         "openscout-web": "./bin/openscout-web.mjs",
       },
@@ -902,7 +905,7 @@
 
     "devlop": ["devlop@1.1.0", "", { "dependencies": { "dequal": "^2.0.0" } }, "sha512-RWmIqhcFf1lRYBvNmr7qTNuyCt/7/ns2jbpp1+PalgE/rDQcBT0fioSMUpJ93irlUhC5hrg4cYqe6U+0ImW0rA=="],
 
-    "diff": ["diff@8.0.3", "", {}, "sha512-qejHi7bcSD4hQAZE0tNAawRK1ZtafHDmMTMkrrIGgSLl7hTnQHmKCeB45xAcbfTqK2zowkM3j3bHt/4b/ARbYQ=="],
+    "diff": ["diff@8.0.2", "", {}, "sha512-sSuxWU5j5SR9QQji/o2qMvqRNYRDOcBTgsJ/DeCf4iSN4gW+gNMXM7wFIP+fdXZxoNiAnHUTGjCr+TSWXdRDKg=="],
 
     "dns-packet": ["dns-packet@5.6.1", "", { "dependencies": { "@leichtgewicht/ip-codec": "^2.0.1" } }, "sha512-l4gcSouhcgIKRvyy99RNVOgxXiicE+2jZoNmaNmZ6JXiGajBOJAesk1OBlJuM5k2c+eudGdLxDqXuPCKIj6kpw=="],
 
@@ -1720,7 +1723,7 @@
 
     "@jimp/types/zod": ["zod@3.25.76", "", {}, "sha512-gzUt/qt81nXsFGKIFcC3YnfEAx5NkunCfnDlvuBSSFS02bcXu4Lmea0AFIUwbLWxWPx3d9p8S5QoaujKcNQxcQ=="],
 
-    "@opentui/core/diff": ["diff@8.0.2", "", {}, "sha512-sSuxWU5j5SR9QQji/o2qMvqRNYRDOcBTgsJ/DeCf4iSN4gW+gNMXM7wFIP+fdXZxoNiAnHUTGjCr+TSWXdRDKg=="],
+    "@pierre/diffs/diff": ["diff@8.0.3", "", {}, "sha512-qejHi7bcSD4hQAZE0tNAawRK1ZtafHDmMTMkrrIGgSLl7hTnQHmKCeB45xAcbfTqK2zowkM3j3bHt/4b/ARbYQ=="],
 
     "@pierre/diffs/shiki": ["shiki@3.23.0", "", { "dependencies": { "@shikijs/core": "3.23.0", "@shikijs/engine-javascript": "3.23.0", "@shikijs/engine-oniguruma": "3.23.0", "@shikijs/langs": "3.23.0", "@shikijs/themes": "3.23.0", "@shikijs/types": "3.23.0", "@shikijs/vscode-textmate": "^10.0.2", "@types/hast": "^3.0.4" } }, "sha512-55Dj73uq9ZXL5zyeRPzHQsK7Nbyt6Y10k5s7OjuFZGMhpp4r/rsLBH0o/0fstIzX1Lep9VxefWljK/SKCzygIA=="],
 

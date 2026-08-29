@@ -3,6 +3,7 @@ import { api } from "../../lib/api.ts";
 import { timeAgo } from "../../lib/time.ts";
 import { normalizeAgentState } from "../../lib/agent-state.ts";
 import { filterAgentsByMachineScope } from "../../lib/machine-scope.ts";
+import { filterMeshRosterAgents } from "../../lib/mesh-roster.ts";
 import { routeMachineId } from "../../lib/router.ts";
 import type { MeshStatus, Route } from "../../lib/types.ts";
 import { MeshCanvas } from "./MeshCanvas.tsx";
@@ -171,9 +172,10 @@ export function MeshScreen({ navigate }: { navigate: (r: Route) => void }) {
   const { agents } = useLocalAgents();
   const { route } = useScout();
   const machineId = routeMachineId(route);
+  const rosterAgents = useMemo(() => filterMeshRosterAgents(agents), [agents]);
   const scopedAgents = useMemo(
-    () => filterAgentsByMachineScope(agents, machineId, mesh?.localNode?.id),
-    [agents, machineId, mesh?.localNode?.id],
+    () => filterAgentsByMachineScope(rosterAgents, machineId, mesh?.localNode?.id),
+    [rosterAgents, machineId, mesh?.localNode?.id],
   );
   const meshRef = useRef<MeshStatus | null>(null);
   const requestIdRef = useRef(0);

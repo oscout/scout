@@ -59,7 +59,7 @@ describe("MissionLogPane", () => {
 
     expect(html).toContain('class="s-wall-pane-title"');
     expect(html).toContain('aria-label="Focus @alpha"');
-    expect(html).toContain('class="s-wall-pane-file"');
-    expect(html.match(/<button/g)?.length).toBe(2);
+    expect(html).toContain('aria-label="Open raw tail"');
+    expect(html.match(/<button/g)?.length).toBe(3);
   });
 });

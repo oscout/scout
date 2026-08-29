@@ -52,11 +52,23 @@ import {
   shouldShowConversationWorkingTurn,
 } from "../../lib/conversations.ts";
 import { MessageMarkup } from "../../lib/message-markup.tsx";
-import { isNoisyConversationStatusMessage } from "../../lib/message-visibility.ts";
+import {
+  dismissConversationFailure,
+  loadDismissedConversationFailureIds,
+} from "../../lib/conversation-failure-dismissals.ts";
+import {
+  conversationFailureNotice,
+  conversationalTargetLabel,
+  isNoisyConversationStatusMessage,
+} from "../../lib/message-visibility.ts";
+import { dismissOperatorAttention } from "../../lib/operator-attention.ts";
 import {
   routeMachineId,
 } from "../../lib/router.ts";
-import { forwardScoutbotUiActionToNativeHost } from "../../lib/scoutbot.ts";
+import {
+  forwardScoutbotUiActionToNativeHost,
+  isScoutbotAgent,
+} from "../../lib/scoutbot.ts";
 import {
   saveLastViewed,
 } from "../../lib/sessionRead.ts";
@@ -324,6 +336,9 @@ export function ConversationScreen({
     typeof window === "undefined" ? null : messageIdFromLocationHash(window.location.hash),
   );
   const [error, setError] = useState<string | null>(null);
+  const [dismissedFailureMessageIds, setDismissedFailureMessageIds] = useState(() =>
+    loadDismissedConversationFailureIds(conversationId)
+  );
   const [loadingEarlierMessages, setLoadingEarlierMessages] = useState(false);
   const [feedPaused, setFeedPaused] = useState(false);
   const [pendingNewMessageCount, setPendingNewMessageCount] = useState(0);
@@ -342,6 +357,7 @@ export function ConversationScreen({
   const lastForegroundRefreshAtRef = useRef(0);
   const appliedInitialDraftKeyRef = useRef<string | null>(null);
   const lastPostedReadCursorMessageIdRef = useRef<string | null>(null);
+  const reconciledFailureDismissalsRef = useRef(new Set<string>());
   const activeConversationIdRef = useRef(conversationId);
   activeConversationIdRef.current = conversationId;
   const optimisticMessageIdByClientIdRef = useRef(new Map<string, string>());
@@ -373,7 +389,74 @@ export function ConversationScreen({
     setExpandedFanOutKeys(new Set());
     optimisticMessageIdByClientIdRef.current.clear();
     setCurrentFlight(pendingConversationFlight(conversationId));
+    setDismissedFailureMessageIds(loadDismissedConversationFailureIds(conversationId));
   }, [conversationId]);
+
+  const persistConversationFailureDismissal = useCallback(async (message: Message) => {
+    const explicitFlightId = typeof message.metadata?.["flightId"] === "string"
+      ? message.metadata["flightId"].trim()
+      : "";
+    let flightId = explicitFlightId;
+    if (!flightId && message.replyToMessageId) {
+      try {
+        const flights = await api<Flight[]>(
+          `/api/flights?conversationId=${encodeURIComponent(conversationId)}&active=false`,
+        );
+        flightId = flights.find((flight) => flight.messageId === message.replyToMessageId)?.id ?? "";
+      } catch {
+        // The conversation-level acknowledgement below is sufficient to keep
+        // this exact failed turn out of native chrome even when the optional
+        // flight lookup is temporarily unavailable.
+      }
+    }
+    await dismissOperatorAttention({
+      ...(flightId ? { flightId } : {}),
+      conversationId,
+      messageId: message.replyToMessageId ?? message.id,
+      itemUpdatedAt: normalizeTimestampMs(message.createdAt) ?? Date.now(),
+    });
+  }, [conversationId]);
+
+  const clearConversationFailure = useCallback((message: Message) => {
+    const attentionMessageId = message.replyToMessageId ?? message.id;
+    setDismissedFailureMessageIds(
+      dismissConversationFailure(conversationId, message.id),
+    );
+    // The macOS shell owns the conversation list. Clear the matching failed
+    // turn there optimistically as well; the durable acknowledgement below
+    // prevents the next channel refresh from restoring it.
+    forwardScoutbotUiActionToNativeHost({
+      type: "dismiss-conversation-failure",
+      conversationId,
+      messageId: attentionMessageId,
+      reason: "The operator cleared this delivery issue",
+    });
+    const key = `${conversationId}:${message.id}`;
+    reconciledFailureDismissalsRef.current.add(key);
+    void persistConversationFailureDismissal(message).catch(() => {
+      // Clearing the reading-surface notice is still valid if the durable
+      // attention acknowledgement cannot be reached; the flight remains in
+      // the dispatch ledger for later inspection.
+      reconciledFailureDismissalsRef.current.delete(key);
+    });
+  }, [conversationId, persistConversationFailureDismissal]);
+
+  useEffect(() => {
+    for (const message of messages) {
+      if (
+        !dismissedFailureMessageIds.has(message.id)
+        || !conversationFailureNotice(message)
+      ) {
+        continue;
+      }
+      const key = `${conversationId}:${message.id}`;
+      if (reconciledFailureDismissalsRef.current.has(key)) continue;
+      reconciledFailureDismissalsRef.current.add(key);
+      void persistConversationFailureDismissal(message).catch(() => {
+        reconciledFailureDismissalsRef.current.delete(key);
+      });
+    }
+  }, [conversationId, dismissedFailureMessageIds, messages, persistConversationFailureDismissal]);
 
   const agentId = sessionMeta?.agentId ?? null;
   const isDm = sessionMeta?.kind === "direct";
@@ -1118,11 +1201,6 @@ export function ConversationScreen({
       } satisfies ConversationHeaderParticipant;
     });
   }, [agentId, participantMetaById, scopedAgents, sessionMeta]);
-  const visibleHeaderParticipants = headerParticipants.slice(0, 4);
-  const hiddenHeaderParticipantCount = Math.max(
-    headerParticipants.length - visibleHeaderParticipants.length,
-    0,
-  );
   const headerOperator = useMemo<ConversationHeaderOperator>(
     () => ({ name: operatorName, active: operatorIsParticipant }),
     [operatorIsParticipant, operatorName],
@@ -1131,6 +1209,12 @@ export function ConversationScreen({
   const messagesById = useMemo(
     () => new Map(messages.map((message) => [message.id, message])),
     [messages],
+  );
+  const scoutbotConversationId = useMemo(
+    () => scopedAgents.find((candidate) =>
+      isScoutbotAgent(candidate) && Boolean(candidate.conversationId?.trim())
+    )?.conversationId?.trim() ?? null,
+    [scopedAgents],
   );
 
   /// The feed's rows, with one kickoff's per-recipient deliveries folded back
@@ -1584,6 +1668,66 @@ export function ConversationScreen({
     } finally {
       setSending(false);
     }
+  };
+
+  const retryConversationFailure = async (failureMessage: Message) => {
+    const original = failureMessage.replyToMessageId
+      ? messagesById.get(failureMessage.replyToMessageId)
+      : null;
+    if (!original || sending) return;
+    const reusableAttachments: OutgoingAttachment[] = [];
+    for (const attachment of original.attachments ?? []) {
+      if (!attachment.url) {
+        setError("This request includes an attachment that can’t be reused. Add it again, then retry.");
+        requestAnimationFrame(() => composeRef.current?.focus());
+        return;
+      }
+      reusableAttachments.push({
+        id: attachment.id,
+        mediaType: attachment.mediaType,
+        ...(attachment.fileName ? { fileName: attachment.fileName } : {}),
+        url: attachment.url,
+      });
+    }
+    const outcome = await sendText(original.body, {
+      forceAction: "invoke",
+      attachments: reusableAttachments,
+    });
+    if (outcome !== "failed") {
+      clearConversationFailure(failureMessage);
+    }
+  };
+
+  const askScoutbotAboutFailure = (
+    failureMessage: Message,
+    targetName: string,
+    explanation: string,
+  ) => {
+    if (!scoutbotConversationId) return;
+    const originalBody = failureMessage.replyToMessageId
+      ? messagesById.get(failureMessage.replyToMessageId)?.body.trim()
+      : "";
+    const excerpt = originalBody
+      ? `${originalBody.slice(0, 1_200)}${originalBody.length > 1_200 ? "…" : ""}`
+      : "(The original request is no longer available in this transcript.)";
+    const composeDraft = [
+      `Help me recover a failed request to ${targetName}.`,
+      explanation,
+      "",
+      "Original request:",
+      excerpt,
+    ].join("\n");
+    const recoveryRoute: Route = {
+      view: "conversation",
+      conversationId: scoutbotConversationId,
+      composeDraft,
+    };
+    if (embedded && forwardScoutbotUiActionToNativeHost({
+      type: "navigate",
+      route: recoveryRoute,
+      reason: "Ask @scoutbot to help recover a failed conversation request",
+    })) return;
+    navigate(recoveryRoute);
   };
 
   /**
@@ -2100,8 +2244,7 @@ export function ConversationScreen({
             agentId={agent?.id ?? null}
             sessionId={conversationSessionId}
             detailRoute={conversationDetailRoute}
-            visibleParticipants={visibleHeaderParticipants}
-            hiddenParticipantCount={hiddenHeaderParticipantCount}
+            participants={headerParticipants}
             operator={headerOperator}
             canAddParticipants={canAddParticipants}
             onToggleAddParticipant={() => {
@@ -2137,8 +2280,30 @@ export function ConversationScreen({
           <PinnedAskCard
             pinnedAsk={pinnedAsk}
             onAnswer={() => {
-              composeRef.current?.focus();
+              // Answer must visibly arm the composer — a bare focus() reads as
+              // "nothing happened". Anchor the reply to the agent's latest
+              // word so the chip shows who is being answered.
+              const anchor = [...messages]
+                .reverse()
+                .find((candidate) => candidate.actorId === pinnedAsk.agentId)
+                ?? [...messages]
+                  .reverse()
+                  .find((candidate) =>
+                    !isOperatorMessage(candidate, operatorName)
+                    && candidate.class !== "status"
+                    && candidate.class !== "system");
+              if (anchor) {
+                beginReply(
+                  anchor,
+                  anchor.actorId
+                    ? participantMetaById.get(anchor.actorId)?.scopedAlias ?? null
+                    : null,
+                );
+              } else {
+                composeRef.current?.focus();
+              }
             }}
+            onSteer={focusSteerComposer}
           />
         )}
 
@@ -2260,6 +2425,26 @@ export function ConversationScreen({
                   : replyOrigin.actorName
                 : null;
               const displayBody = askReply ? askReply.body : message.body;
+              const failureNotice = conversationFailureNotice(message);
+              if (failureNotice && dismissedFailureMessageIds.has(message.id)) {
+                return null;
+              }
+              const failureTargetId = typeof message.metadata?.["targetAgentId"] === "string"
+                ? message.metadata["targetAgentId"]
+                : null;
+              const failureTargetAgent = failureNotice
+                ? resolveAgentByIdentity(scopedAgents, [
+                    failureTargetId,
+                    failureNotice.target,
+                  ])
+                : null;
+              const failureTargetName = failureNotice
+                ? minimalAgentDisplayName({
+                    name: failureTargetAgent?.name,
+                    id: failureTargetAgent?.id,
+                    title: conversationalTargetLabel(failureNotice.target),
+                  })
+                : null;
 
               return (
                 <div
@@ -2274,6 +2459,84 @@ export function ConversationScreen({
                 >
                   {showDayDivider && <ThreadDayDivider at={message.createdAt} />}
 
+                  {failureNotice && failureTargetName ? (
+                    <article
+                      id={`msg-${message.id}`}
+                      className={[
+                        "s-thread-msg",
+                        "s-thread-failure-notice",
+                        (isFirstPaint || enteringIds?.has(message.id)) && "s-thread-msg--enter",
+                      ]
+                        .filter(Boolean)
+                        .join(" ")}
+                      style={
+                        isFirstPaint
+                          ? {
+                              animationDelay: `${
+                                Math.max(0, 7 - (feedRows.length - 1 - index)) * 26
+                              }ms`,
+                            }
+                          : undefined
+                      }
+                      data-class={rowClass}
+                      aria-label="Delivery issue"
+                    >
+                      <span className="s-thread-failure-notice-mark" aria-hidden="true">
+                        !
+                      </span>
+                      <div className="s-thread-failure-notice-content">
+                        <p>
+                          <strong>{failureTargetName} couldn’t reply.</strong>{" "}
+                          <span>{failureNotice.explanation}</span>
+                        </p>
+                        {failureNotice.technicalDetail && (
+                          <details className="s-thread-failure-notice-details">
+                            <summary>Technical details</summary>
+                            <pre>{failureNotice.technicalDetail}</pre>
+                          </details>
+                        )}
+                        <div className="s-thread-failure-notice-actions">
+                          {message.replyToMessageId && messagesById.has(message.replyToMessageId) && (
+                            <button
+                              className="s-thread-failure-notice-action s-thread-failure-notice-action--primary"
+                              type="button"
+                              disabled={sending}
+                              onClick={() => void retryConversationFailure(message)}
+                            >
+                              {sending ? "Retrying…" : "Retry"}
+                            </button>
+                          )}
+                          {scoutbotConversationId && (
+                            <button
+                              className="s-thread-failure-notice-action"
+                              type="button"
+                              onClick={() => askScoutbotAboutFailure(
+                                message,
+                                failureTargetName,
+                                failureNotice.explanation,
+                              )}
+                            >
+                              Ask @scoutbot
+                            </button>
+                          )}
+                          <button
+                            className="s-thread-failure-notice-action s-thread-failure-notice-action--clear"
+                            type="button"
+                            onClick={() => clearConversationFailure(message)}
+                            aria-label={`Clear delivery issue for ${failureTargetName}`}
+                          >
+                            Clear
+                          </button>
+                        </div>
+                      </div>
+                      <span
+                        className="s-thread-failure-notice-time"
+                        title={absoluteTime}
+                      >
+                        {timeAgo(message.createdAt)}
+                      </span>
+                    </article>
+                  ) : (
                   <article
                     id={`msg-${message.id}`}
                     className={[
@@ -2322,6 +2585,7 @@ export function ConversationScreen({
                                   agent={messageAgent ?? undefined}
                                   name={avatarName}
                                   placement="turn"
+                                  size={28}
                                   className="s-thread-msg-avatar"
                                   title={avatarName}
                                 />
@@ -2505,6 +2769,7 @@ export function ConversationScreen({
                       </div>
                     </div>
                   </article>
+                  )}
                 </div>
               );
             })
@@ -2518,6 +2783,7 @@ export function ConversationScreen({
                     agent={agent ?? undefined}
                     name={agentName}
                     placement="turn"
+                    size={28}
                     className="s-thread-msg-avatar s-thread-msg-avatar--working"
                     title={agentName}
                   />
@@ -2618,6 +2884,7 @@ export function ConversationScreen({
                 agent={agent ?? undefined}
                 name={agentName}
                 placement="turn"
+                size={22}
                 className="s-thread-presence-line-avatar"
                 title={agentName}
               />

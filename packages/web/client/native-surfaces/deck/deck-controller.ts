@@ -167,7 +167,7 @@ const PREVIEW_THREAD: CodexDeckThreadSnapshot = {
       name: "Rework the Deck turn flow",
       adapterType: "codex",
       status: "active",
-      cwd: "/Users/example/dev/openscout",
+      cwd: "/Users/arach/dev/openscout",
       model: "gpt-5.6",
       providerMeta: { threadId: "019fa45a-scout-deck" },
     },

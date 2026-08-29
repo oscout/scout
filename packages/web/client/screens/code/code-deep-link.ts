@@ -4,9 +4,9 @@
      scout://openscout
      scout://openscout/packages/web/client/foo.ts
      scout://openscout/foo.ts?wt=comms&line=12&endLine=20
-     scout:///Users/example/dev/openscout/foo.ts
-     scout:///Users/example/dev/openscout/foo.ts?line=12
-     scout://file/Users/example/dev/openscout/foo.ts   (explicit absolute)
+     scout:///Users/art/dev/openscout/foo.ts
+     scout:///Users/art/dev/openscout/foo.ts?line=12
+     scout://file/Users/art/dev/openscout/foo.ts   (explicit absolute)
      scout://code/openscout/foo.ts                 (legacy host)
 
    Hosts reserved for other Scout surfaces are never treated as project slugs.

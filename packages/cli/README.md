@@ -1,14 +1,8 @@
-# Scout CLI
+# scout
 
-The `scout` command is the front door to the local Scout control plane. It
-discovers coding-agent sessions, routes messages and work through the broker,
-and returns durable handles for follow-up across harnesses and machines.
+> **Requires [Bun](https://bun.sh).** Scout uses Bun as its runtime. If you don't have it: `brew install bun`
 
-> **Requires [Bun](https://bun.sh) 1.3 or newer.** The bundled native service
-> supports Apple-silicon macOS. Linux runs the broker as a foreground process
-> under your process manager. On macOS, install Bun with `brew install bun`.
-
-## Install
+Install:
 
 ```bash
 bun add -g @openscout/scout
@@ -16,10 +10,6 @@ scout --help
 ```
 
 `@openscout/scout` is the public package name. It installs the `scout` command and carries the bundled broker/runtime and web UI. Installing it does not start services; commands such as `scout setup`, `scout up`, and `scout server start` activate them explicitly.
-
-On Linux, `scout setup` initializes the local state but cannot install or start
-a system service. Run `openscout-runtime broker` in a separate supervised
-process, then use `scout doctor` from another shell to verify readiness.
 
 ## Canonical Flow
 
@@ -37,8 +27,7 @@ scout ask --project ../talkie --harness claude "can you review our docs?"
 `scout setup` is the canonical onboarding entry point. It creates or updates:
 
 - `~/Library/Application Support/OpenScout/settings.json`
-- `~/Library/Application Support/OpenScout/relay-agents.json` as compatibility
-  configuration that the broker reconciles into its canonical live state
+- `~/Library/Application Support/OpenScout/relay-agents.json` for compatibility with the existing machine-local agent registry
 - `.openscout/project.json` for the current repo when needed
 
 It also discovers local and project-backed agents from your configured workspace roots, installs the base Scout service, attempts to start it, and ensures Caddy is available for the local `scout.local` edge. On macOS, setup installs missing Caddy with `brew install caddy`; otherwise install Caddy yourself or set `OPENSCOUT_CADDY_BIN`.
@@ -109,7 +98,7 @@ The routing rules do not change by harness, UI, or host:
 Short mutable callback names are broker-owned route aliases:
 
 ```bash
-scout alias set review --to scope.main.dev-mac-mini-local
+scout alias set review --to scope.main.arts-mac-mini-local
 scout alias set patch --to session:019eff52-9347-7470-ba5c-6bfe99d8dd83
 scout alias resolve patch
 scout alias repoint patch --to session:<new-id> --if-revision 1
@@ -362,24 +351,31 @@ scout pair
 scout server start
 scout server open
 scout tui
+scout tui --take mesh
 ```
 
-### Provider Usage (`scout providers usage`)
+### Provider Usage and Orchestration Map
 
 Read every quota window from the live `/providers` feed without opening the
-web UI. Status-only provider cards are intentionally omitted:
+web UI, or combine those windows with Scout's role/model/provider policy:
 
 ```bash
 scout providers usage
 scout providers usage --json
 scout providers usage --cached
+scout providers map
+scout providers map --role implementation
+scout providers map --json
 ```
 
-The default command refreshes the shared service-budget pipeline and prints
-every available quota window with percent used and remaining, the local reset
-time, source, and observation freshness. `--cached` skips live provider probes
-when a recent server snapshot is available; a cold or expired cache still reads
-the providers normally.
+`usage` refreshes the shared service-budget pipeline and prints every available
+quota window with percent used and remaining, the local reset time, source, and
+observation freshness. `map` derives each window's burn pace, telemetry
+confidence, and binding remaining quota, then recommends a model/provider for
+product judgment, synthesis, critique, inventory, implementation, and review.
+These dispatch roles are recommendations; they do not create durable
+`scout role` assignments. `--cached` skips live provider probes when a recent
+server snapshot is available; a cold or expired cache still reads providers.
 
 ### Menu Bar App (`scout menu`)
 
@@ -392,11 +388,9 @@ scout menu restart
 scout menu quit
 ```
 
-For an installed product, `scout menu` opens the helper embedded in
-`/Applications/OpenScout.app`; use `scout install` to install or update it.
-Private OpenScout product checkouts may also provide a developer-only repo
-helper. That native source and its build/DMG commands are not part of this
-public repository.
+If you run it from an OpenScout repo checkout, Scout prefers the repo helper at
+`apps/macos/bin/openscout-menu.ts`, so it can auto-build and launch the app bundle for you.
+Outside the repo, it opens an installed `OpenScout Menu` app when available.
 
 ### Web UI (`scout server start`, `scout server open`)
 

@@ -10,6 +10,7 @@ const SCOUTBOT_AGENT_IDS = new Set([
 ]);
 
 const OPS_MODES = new Set([
+  "advisor",
   "plan",
   "conductor",
   "conduct",
@@ -37,6 +38,12 @@ const ONLINE_SCOUTBOT_STATES = new Set([
 export type ScoutbotUiAction =
   | { type: "navigate"; route: Route; reason?: string }
   | { type: "focus-composer"; reason?: string }
+  | {
+      type: "dismiss-conversation-failure";
+      conversationId: string;
+      messageId: string;
+      reason?: string;
+    }
   | { type: "open-scoutbot"; mode?: "ask" | "tell"; reason?: string }
   | { type: "refresh"; reason?: string }
   | { type: "view-file"; path: string; reason?: string }
@@ -496,8 +503,9 @@ function normalizeOpsMode(mode: string): OpsMode | undefined {
     case "conduct":
     case "conductor":
       return "mission";
+    case "advisor":
     case "plan":
-      return "plan";
+      return "advisor";
     case "issues":
     case "errors":
     case "warnings":

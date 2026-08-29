@@ -109,7 +109,10 @@ export function terminalHostSupportsControl(
  * shell-out CAN time out on a loaded machine — and when it did, the host
  * silently disappeared from "start something new". Holding the last successful
  * answer for a short window means a busy box no longer looks like a machine
- * without tmux.
+ * without tmux. A fresh success ANSWERS without spawning: the cache used to be
+ * consulted only after a probe failed, so every describe of every host still
+ * shelled out on every request — three spawns per caller for an answer the
+ * cache already held.
  *
  * Two rules keep that from becoming a lie, and a review reproduced what
  * happens without them.
@@ -120,7 +123,7 @@ export function terminalHostSupportsControl(
  * zellij, and herdr installed, with versions collected somewhere else. An
  * environment is what decides which binary is found, so it belongs in the key.
  *
- * And a substituted answer now says so. `stale` marks a reading that came from
+ * And a substituted answer says so. `stale` marks a reading that came from
  * cache after the current check failed, with a reason naming the age and the
  * failure, so a caller about to shell out can re-probe for real instead of
  * treating a memory as an observation.
@@ -156,7 +159,10 @@ export async function probeTerminalHostAvailability(
   now: number = Date.now(),
 ): Promise<TerminalHostAvailability> {
   const key = availabilityCacheKey(adapter, context);
-  const cached = availabilityCache.get(key);
+  const fresh = availabilityCache.get(key);
+  if (fresh && now - fresh.at < HOST_AVAILABILITY_TTL_MS) {
+    return fresh.value;
+  }
   const availability = await adapter.probe(context).catch((error): TerminalHostAvailability => ({
     installed: false,
     reason: error instanceof Error ? error.message : String(error),
@@ -166,13 +172,16 @@ export async function probeTerminalHostAvailability(
     return { ...availability, stale: false, checkedAt: now };
   }
 
+  // Re-read after the probe: a concurrent probe can land a success while this
+  // one is failing, and that memory is the one worth substituting.
+  const cached = availabilityCache.get(key);
   const age = cached ? now - cached.at : Number.POSITIVE_INFINITY;
   if (cached && age < HOST_AVAILABILITY_TTL_MS) {
     return {
       ...cached.value,
       stale: true,
       checkedAt: cached.at,
-      reason: `last seen ${Math.round(age / 1000)}s ago; the current check failed: `
+      reason: `last seen ${Math.max(0, Math.round(age / 1000))}s ago; the current check failed: `
         + `${availability.reason ?? "unknown"}`,
     };
   }
@@ -209,16 +218,23 @@ export async function describeTerminalHosts(
 }
 
 /**
- * The host Scout picks when the operator has not chosen one: the first
- * installed host that the web relay can actually render, preferring the
- * declared default. Returns null when nothing durable is installed — the caller
- * must then offer a plain shell and say so, not default to a host that is not
- * there.
+ * Pure preference over an already-probed host list: the first installed host
+ * that the web relay can actually render, preferring the declared default.
+ * Extracted so a caller already holding `describeTerminalHosts()` output
+ * derives the default without probing every host a second time. Returns null
+ * when nothing durable is installed — the caller must then offer a plain shell
+ * and say so, not default to a host that is not there.
  */
+export function preferredTerminalHost(
+  hosts: readonly TerminalHostDescriptor[],
+): TerminalHostDescriptor | null {
+  const usable = hosts.filter((host) => host.availability.installed && host.capabilities.relayAttach);
+  return usable.find((host) => host.id === DEFAULT_TERMINAL_HOST_ID) ?? usable[0] ?? null;
+}
+
+/** The host Scout picks when the operator has not chosen one. */
 export async function resolvePreferredTerminalHost(
   context: TerminalHostContext = {},
 ): Promise<TerminalHostDescriptor | null> {
-  const hosts = await describeTerminalHosts(context);
-  const usable = hosts.filter((host) => host.availability.installed && host.capabilities.relayAttach);
-  return usable.find((host) => host.id === DEFAULT_TERMINAL_HOST_ID) ?? usable[0] ?? null;
+  return preferredTerminalHost(await describeTerminalHosts(context));
 }

@@ -73,7 +73,7 @@ describe("session-alias", () => {
     expect(formatSessionAliasPointer({
       alias: "project-chopin",
       sessionId: "session-mqvw7fgy-ineuic-extra",
-      projectRoot: "/Users/example/dev/scope",
+      projectRoot: "/Users/art/dev/scope",
       harness: "codex",
     })).toBe("alias project-chopin → session-mqvw…-extra (scope, codex)");
   });
@@ -114,8 +114,8 @@ describe("session-alias", () => {
           harness: "codex",
           transport: "codex_app_server",
           state: "idle",
-          projectRoot: "/Users/example/dev/scope",
-          cwd: "/Users/example/dev/scope",
+          projectRoot: "/Users/art/dev/scope",
+          cwd: "/Users/art/dev/scope",
           metadata: { cardless: true, handle: "project-chopin" },
         },
       },

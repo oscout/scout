@@ -2,12 +2,12 @@
 name: Scout Web
 description: The browser dialect of the Lit Control Room — an OKLCH neutral canvas, a lime signal, and hairline-flat instrument chrome.
 colors:
-  canvas: "oklch(0.132 0.004 260)"
-  surface: "oklch(0.178 0.005 260)"
-  ink: "oklch(0.965 0.006 260)"
-  muted: "oklch(0.72 0.008 260)"
-  dim: "oklch(0.57 0.007 260)"
-  border: "oklch(0.965 0.006 260 / 0.04)"
+  canvas: "oklch(0.118 0.004 260)"
+  surface: "oklch(0.205 0.005 260)"
+  ink: "oklch(0.975 0.006 260)"
+  muted: "oklch(0.80 0.008 260)"
+  dim: "oklch(0.70 0.007 260)"
+  border: "oklch(0.975 0.006 260 / 0.08)"
   accent: "oklch(0.86 0.17 125)"
   accent-soft: "oklch(0.86 0.17 125 / 0.08)"
   status-ok: "oklch(0.80 0.15 155)"
@@ -189,23 +189,23 @@ entire chromatic weight of the screen.
 
 ### Neutral
 
-- **Deep Slate Canvas** (`oklch(0.132 0.004 260)`) / **Warm Paper Canvas**
+- **Deep Slate Canvas** (`oklch(0.118 0.004 260)`) / **Warm Paper Canvas**
   (`oklch(0.978 0.004 85)`): the page floor. Note the hue flip — dark is cool-neutral,
   light is warm-neutral, so light mode reads as paper rather than office-cool.
-- **Lifted Slate Surface** (`oklch(0.178 0.005 260)`) / **Near-White Surface**
+- **Lifted Slate Surface** (`oklch(0.205 0.005 260)`) / **Near-White Surface**
   (`oklch(0.992 0.003 85)`): cards and panels, one clear step off the canvas.
-- **Full Ink** (`oklch(0.965 0.006 260)` / `oklch(0.24 0.01 80)`): primary text.
-- **Muted Ink** (`oklch(0.72 0.008 260)` / `oklch(0.56 0.014 80)`): secondary text.
-- **Dim Ink** (`oklch(0.57 0.007 260)` / `oklch(0.72 0.01 80)`): tertiary text and
+- **Full Ink** (`oklch(0.975 0.006 260)` / `oklch(0.24 0.01 80)`): primary text.
+- **Muted Ink** (`oklch(0.80 0.008 260)` / `oklch(0.56 0.014 80)`): secondary text.
+- **Dim Ink** (`oklch(0.70 0.007 260)` / `oklch(0.72 0.01 80)`): tertiary text and
   disabled affordances.
-- **Whisper Border** (`oklch(0.965 0.006 260 / 0.04)`): the 4%-alpha hairline that
+- **Whisper Border** (`oklch(0.975 0.006 260 / 0.08)`): the 8%-alpha hairline that
   does nearly all structural separation in dark mode.
 
-On top of these sit a set of derived chrome inks — strong (92–94%), normal (78%),
-soft (58–60%), faint (55–56%), ghost (48–50%) — plus hover (4%) and active (8%)
+On top of these sit a set of derived chrome inks — strong (94%), normal (84%),
+soft (68%), faint (64%), ghost (56%) — plus hover (5%) and active (9%)
 tints, all built with `color-mix` off the ink token so they follow the theme
-automatically. The faint tier was deliberately raised from ~35% to 55–60% for
-sidebar, rail, and lane text; do not lower it back.
+automatically. The faint tier stays above 60% so sidebar, rail, and lane text
+remain readable on near-black; do not lower it back.
 
 ### Status
 

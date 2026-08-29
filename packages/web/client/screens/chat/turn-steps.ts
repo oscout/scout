@@ -29,6 +29,16 @@ export const TURN_STEP_LIMIT = 60;
 
 export type TurnStepKind = ObserveEvent["kind"];
 
+export type TurnExecutionPhase =
+  | "planning"
+  | "inspection"
+  | "mutation"
+  | "execution"
+  | "verification"
+  | "coordination";
+
+export type TurnStepStatus = "working" | "success" | "warning" | "error";
+
 export type TurnStep = {
   id: string;
   ts: number;
@@ -40,12 +50,186 @@ export type TurnStep = {
   outcome?: string;
   /** Consecutive identical lines collapse into one row with a count. */
   repeatCount: number;
+  /** Classified execution phase */
+  phase: TurnExecutionPhase;
+  /** Execution status for telemetry */
+  status: TurnStepStatus;
+  /** Execution duration in ms (if calculable) */
+  durationMs?: number;
 };
 
 export type TurnLaunchPhase = {
   label: string;
   detail: string;
 };
+
+export const TURN_PHASE_LABELS: Record<TurnExecutionPhase, string> = {
+  planning: "Planning",
+  inspection: "Inspection",
+  mutation: "Mutations",
+  execution: "Execution",
+  verification: "Verification",
+  coordination: "Coordination",
+};
+
+export type PhaseSummary = {
+  phase: TurnExecutionPhase;
+  label: string;
+  count: number;
+  active: boolean;
+};
+
+export function classifyTurnStepPhase(input: {
+  kind: TurnStepKind;
+  tool?: string;
+  arg?: string;
+  text?: string;
+  outcome?: string;
+}): TurnExecutionPhase {
+  if (input.kind === "think") return "planning";
+
+  const toolLower = input.tool?.toLowerCase() ?? "";
+  const argLower = input.arg?.toLowerCase() ?? "";
+  const textLower = input.text?.toLowerCase() ?? "";
+  const outcomeLower = input.outcome?.toLowerCase() ?? "";
+
+  // Verification (tests, typecheck, lint, check)
+  if (
+    toolLower.includes("test") ||
+    toolLower.includes("check") ||
+    toolLower.includes("lint") ||
+    toolLower.includes("typecheck") ||
+    toolLower.includes("verify") ||
+    /\b(?:bun|npm|pnpm|yarn|cargo|pytest|go|vitest|jest|playwright|cypress)\s+(?:test|run\s+(?:check|test|lint)|check|typecheck)/i.test(argLower) ||
+    /\b(?:\d+\s+pass|all tests passed|test passed|lint clean|tsc clean)\b/i.test(outcomeLower)
+  ) {
+    return "verification";
+  }
+
+  // File mutations (edits, writes, deletions, patches)
+  if (
+    toolLower === "write" ||
+    toolLower === "edit" ||
+    toolLower === "strreplace" ||
+    toolLower === "str_replace" ||
+    toolLower === "delete" ||
+    toolLower === "write_file" ||
+    toolLower === "edit_file" ||
+    toolLower === "patch" ||
+    toolLower === "apply_patch" ||
+    toolLower === "todowrite" ||
+    toolLower === "todo_write" ||
+    /\b(?:git\s+apply|git\s+commit|git\s+add|rm\s+|mkdir\s+|touch\s+|sed\s+|awk\s+)/i.test(argLower) ||
+    /^\+\d+\s+[−-]\d+/u.test(outcomeLower)
+  ) {
+    return "mutation";
+  }
+
+  // Inspection / Search / Read
+  if (
+    toolLower === "read" ||
+    toolLower === "glob" ||
+    toolLower === "grep" ||
+    toolLower === "filesearch" ||
+    toolLower === "file_search" ||
+    toolLower === "list_dir" ||
+    toolLower === "list_directory" ||
+    toolLower === "view" ||
+    toolLower === "fetch" ||
+    toolLower === "webfetch" ||
+    toolLower === "websearch" ||
+    toolLower === "scout_search" ||
+    toolLower === "search" ||
+    /\b(?:grep|find|rg|cat|head|tail|ls|git\s+status|git\s+diff|git\s+log|git\s+branch)/i.test(argLower)
+  ) {
+    return "inspection";
+  }
+
+  // Planning / Reasoning in text
+  if (
+    input.kind === "note" ||
+    /\b(?:planning|plan|evaluating|analyzing|reasoning|strategy)\b/i.test(textLower)
+  ) {
+    return "planning";
+  }
+
+  // Tool / Subprocess Execution
+  if (
+    input.kind === "tool" ||
+    toolLower === "bash" ||
+    toolLower === "shell" ||
+    toolLower === "terminal" ||
+    toolLower === "exec" ||
+    toolLower === "run" ||
+    toolLower === "command" ||
+    toolLower === "task"
+  ) {
+    return "execution";
+  }
+
+  return "coordination";
+}
+
+export function deriveStepStatus(input: {
+  outcome?: string;
+  isLatest?: boolean;
+  isActive?: boolean;
+}): TurnStepStatus {
+  const outcomeLower = input.outcome?.toLowerCase() ?? "";
+  if (
+    outcomeLower.includes("error") ||
+    outcomeLower.includes("fail") ||
+    outcomeLower.includes("exit 1") ||
+    outcomeLower.includes("rejected") ||
+    outcomeLower.includes("timed out")
+  ) {
+    return "error";
+  }
+  if (outcomeLower.includes("warn") || outcomeLower.includes("skipped")) {
+    return "warning";
+  }
+  if (input.outcome || !input.isLatest) {
+    return "success";
+  }
+  return input.isActive ? "working" : "success";
+}
+
+export function formatStepDuration(durationMs: number): string {
+  if (durationMs < 1000) return `${Math.round(durationMs)}ms`;
+  const secs = durationMs / 1000;
+  if (secs < 60) return `${secs.toFixed(1).replace(/\.0$/, "")}s`;
+  const mins = Math.floor(secs / 60);
+  const remSecs = Math.round(secs % 60);
+  return `${mins}m ${remSecs}s`;
+}
+
+export function summarizeTurnPhases(steps: TurnStep[]): PhaseSummary[] {
+  if (steps.length === 0) return [];
+  const counts = new Map<TurnExecutionPhase, number>();
+  for (const step of steps) {
+    counts.set(step.phase, (counts.get(step.phase) ?? 0) + (step.repeatCount || 1));
+  }
+  const lastStep = steps.at(-1);
+  const activePhase = lastStep?.phase ?? "planning";
+
+  const phases: TurnExecutionPhase[] = [
+    "planning",
+    "inspection",
+    "mutation",
+    "execution",
+    "verification",
+    "coordination",
+  ];
+
+  return phases
+    .filter((phase) => (counts.get(phase) ?? 0) > 0)
+    .map((phase) => ({
+      phase,
+      label: TURN_PHASE_LABELS[phase],
+      count: counts.get(phase) ?? 0,
+      active: phase === activePhase,
+    }));
+}
 
 function pushUnique(into: string[], seen: Set<string>, value: string | null | undefined): void {
   const trimmed = value?.trim();
@@ -137,6 +321,15 @@ export function toTurnSteps(events: TailEvent[]): TurnStep[] {
       if (previous?.kind === "tool") {
         previous.outcome = row.meta.result?.outcome ?? previous.outcome ?? "done";
         previous.ts = row.event.ts;
+        previous.status = deriveStepStatus({ outcome: previous.outcome });
+        // Recalculate phase if outcome clarifies mutation/verification
+        previous.phase = classifyTurnStepPhase({
+          kind: previous.kind,
+          tool: previous.tool,
+          arg: previous.arg,
+          text: previous.text,
+          outcome: previous.outcome,
+        });
       }
       continue;
     }
@@ -145,18 +338,36 @@ export function toTurnSteps(events: TailEvent[]): TurnStep[] {
     const text = stepText(row.event, observeTextFromTailEvent(row.event, row.meta), kind);
     if (!text && kind !== "think") continue;
 
+    const tool = row.meta.tool;
+    const arg = row.meta.arg ? truncateStepText(row.meta.arg) : undefined;
+    const outcome = row.meta.result?.outcome;
+    const phase = classifyTurnStepPhase({ kind, tool, arg, text, outcome });
+    const status = deriveStepStatus({ outcome });
+
     const step: TurnStep = {
       id: row.event.id,
       ts: row.event.ts,
       kind,
       text,
       repeatCount: row.repeatCount,
+      phase,
+      status,
     };
-    if (row.meta.tool) step.tool = row.meta.tool;
-    if (row.meta.arg) step.arg = truncateStepText(row.meta.arg);
-    if (row.meta.result?.outcome) step.outcome = row.meta.result.outcome;
+    if (tool) step.tool = tool;
+    if (arg) step.arg = arg;
+    if (outcome) step.outcome = outcome;
     steps.push(step);
   }
+
+  // Calculate duration between steps
+  for (let i = 0; i < steps.length - 1; i++) {
+    const current = steps[i];
+    const next = steps[i + 1];
+    if (current && next && next.ts >= current.ts) {
+      current.durationMs = next.ts - current.ts;
+    }
+  }
+
   return steps;
 }
 
@@ -229,23 +440,43 @@ export function observeTurnSteps(input: {
       ? events
       : [];
 
-  return scoped.slice(-TURN_STEP_LIMIT).map((event) => {
+  const steps = scoped.slice(-TURN_STEP_LIMIT).map((event) => {
+    const outcome = observeResultOutcome(event.result);
+    const diffOutcome = event.diff ? `+${event.diff.add} −${event.diff.del}` : undefined;
+    const finalOutcome = diffOutcome || outcome;
+    const phase = classifyTurnStepPhase({
+      kind: event.kind,
+      tool: event.tool,
+      arg: event.arg,
+      text: event.text,
+      outcome: finalOutcome,
+    });
+    const status = deriveStepStatus({ outcome: finalOutcome });
+
     const step: TurnStep = {
       id: `observe:${observe.sessionId ?? "session"}:${event.id}`,
       ts: event.at ?? event.t,
       kind: event.kind,
       text: truncateStepText(event.text || event.tool || "step"),
       repeatCount: 1,
+      phase,
+      status,
     };
     if (event.tool) step.tool = event.tool;
     if (event.arg) step.arg = truncateStepText(event.arg);
-    const outcome = observeResultOutcome(event.result);
-    if (outcome) step.outcome = outcome;
-    if (event.diff) {
-      step.outcome = `+${event.diff.add} −${event.diff.del}`;
-    }
+    if (finalOutcome) step.outcome = finalOutcome;
     return step;
   });
+
+  for (let i = 0; i < steps.length - 1; i++) {
+    const current = steps[i];
+    const next = steps[i + 1];
+    if (current && next && next.ts >= current.ts) {
+      current.durationMs = next.ts - current.ts;
+    }
+  }
+
+  return steps;
 }
 
 /**

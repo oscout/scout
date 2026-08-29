@@ -10,16 +10,66 @@ export const RAIL_COLLAPSED_WIDTH = 48;
 export const SLACK_SIDEBAR_COLLAPSED_WIDTH = 56;
 
 /**
- * Chevron band geometry, shared so every rail's toggle lands on ONE baseline.
- * The shell positions the sidebar-edge chevron from these; CollapsedRail offsets
- * its own chevron from its top edge by the same amount. Previously the collapsed
- * rail hardcoded 8px against a 44px band, so it sat 2px below its neighbour.
+ * Shared vertical slot grid for every collapsed rail (primary, context, inspector).
+ * Slot N starts at: RAIL_SLOT_TOP + N * RAIL_SLOT_ROW.
+ * Keep in sync with the CSS vars on `html[data-scout-sidebar-chrome]` (app.css).
+ */
+export const RAIL_SLOT_CELL = 32;
+export const RAIL_SLOT_GAP = 6;
+export const RAIL_SLOT_ROW = RAIL_SLOT_CELL + RAIL_SLOT_GAP;
+/** Top pad before slot 0 — brand / first chip / first inspector glyph. */
+export const RAIL_SLOT_TOP = 8;
+
+/**
+ * The header band — 44px, on EVERY column, in BOTH states.
+ *
+ * This is the one law the collapse control obeys: the toggle occupies the same
+ * cell whether the column is open or shut, so collapse/expand happens in place
+ * (the glyph flips, nothing moves). It also keeps the header hairline running
+ * unbroken across the window — collapsing a column used to delete its band and
+ * punch a hole in the line that runs NAVIGATE -> HOME -> CONTEXT.
+ *
+ * Collapsed rails therefore RESERVE this band before slot 0, which is what puts
+ * all three columns' first content row on one baseline (band + top pad).
  */
 export const RAIL_HEADER_HEIGHT = 44;
-export const RAIL_TOGGLE_HEIGHT = 32;
+export const RAIL_TOGGLE_HEIGHT = 28;
+export const RAIL_TOGGLE_WIDTH = 22;
 export const RAIL_TOGGLE_HEADER_TOP = Math.round(
   (RAIL_HEADER_HEIGHT - RAIL_TOGGLE_HEIGHT) / 2,
 );
+/** Inline inset of the toggle from the column's inner edge when expanded. */
+export const RAIL_BAND_INSET = 8;
+
+/**
+ * Distance from a column's OUTER edge to its band toggle.
+ *
+ * Expanded, the toggle tucks against the inner edge (`width - inset - w`); it is
+ * part of the column it governs, not a widget balanced on the seam — the seam
+ * belongs to resize. Collapsed, the rail centres it. Left columns apply the
+ * result as `left`, the inspector as `right`; the formula is the same for both.
+ *
+ * `collapsedWidth` exists because the Slack presentation gives the primary rail a
+ * 56px collapsed measure (see SLACK_SIDEBAR_COLLAPSED_WIDTH) — centring against a
+ * hardcoded 48 would park its toggle 4px left of its own centre line.
+ */
+export function railToggleOffset(
+  width: number,
+  collapsed: boolean,
+  collapsedWidth: number = RAIL_COLLAPSED_WIDTH,
+): number {
+  if (collapsed) {
+    return Math.round((collapsedWidth - RAIL_TOGGLE_WIDTH) / 2);
+  }
+  // Guard NaN like every other measure in this module: `Math.max(8, NaN)` is
+  // NaN, which would reach the DOM as `left: NaN` and drop the control out of
+  // the band entirely.
+  if (!Number.isFinite(width)) return RAIL_BAND_INSET;
+  return Math.max(
+    RAIL_BAND_INSET,
+    Math.round(width) - RAIL_BAND_INSET - RAIL_TOGGLE_WIDTH,
+  );
+}
 
 /** @deprecated Prefer RAIL_COLLAPSED_WIDTH — same value, shared across rails. */
 export const SIDEBAR_COLLAPSED_WIDTH = RAIL_COLLAPSED_WIDTH;

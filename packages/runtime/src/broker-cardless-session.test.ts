@@ -19,7 +19,7 @@ import {
 import { resolveBrokerRouteTarget } from "./scout-dispatcher.js";
 
 const helpers = { isStale: () => false };
-const PROJECT = "/Users/example/dev/openscout";
+const PROJECT = "/Users/arach/dev/openscout";
 
 function newRuntime() {
   return createInMemoryControlRuntime({}, { localNodeId: "node-1" });
@@ -185,7 +185,7 @@ describe("SCO-070 cardless sessions", () => {
       sessionId: "sess-elsewhere",
       transport: "codex_app_server",
       harness: "codex",
-      cwd: "/Users/example/dev/hudson",
+      cwd: "/Users/arach/dev/hudson",
       nodeId: "node-1",
     });
     const snapshot = runtime.snapshot();

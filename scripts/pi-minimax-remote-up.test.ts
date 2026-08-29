@@ -22,7 +22,7 @@ describe("remote Pi MiniMax bootstrap", () => {
     expect(() => validateSshHost("-V")).toThrow("--host");
     expect(() => validateSshHost("-Fattacker-config")).toThrow("--host");
     expect(() => validateSshHost("worker; touch /tmp/nope")).toThrow("--host");
-    expect(validateSshHost("operator@host.local")).toBe("operator@host.local");
+    expect(validateSshHost("arach@air.local")).toBe("arach@air.local");
   });
 
   test("builds a quoted remote login command", () => {

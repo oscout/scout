@@ -116,6 +116,37 @@ function sampleDurableAction(input: Partial<DurableAction> = {}): DurableAction 
 }
 
 describe("FileBackedBrokerJournal", () => {
+  test("reports startup scan and compaction diagnostics without record payloads", async () => {
+    const { journal, journalPath } = createJournal();
+    const actor = sampleActor();
+    writeFileSync(
+      journalPath,
+      [
+        JSON.stringify({ kind: "actor.upsert", actor }),
+        "",
+        "{not-json",
+        JSON.stringify({ kind: "actor.upsert", actor: { ...actor, displayName: "Updated" } }),
+        JSON.stringify({ kind: "message.record", message: sampleMessage() }),
+      ].join("\n") + "\n",
+      "utf8",
+    );
+
+    const report = await journal.load();
+
+    expect(report.validEntries).toBe(3);
+    expect(report.invalidLines).toBe(1);
+    expect(report.blankLines).toBe(1);
+    expect(report.compactionRequired).toBe(true);
+    expect(report.countsByKind).toEqual({
+      "actor.upsert": 2,
+      "message.record": 1,
+    });
+    expect(report.sourceBytes).toBeGreaterThan(report.compactedBytes);
+    expect(report.totalMs).toBeGreaterThanOrEqual(report.scanMs + report.compactionMs);
+    expect(JSON.stringify(report)).not.toContain("hello");
+    expect(journal.loadReport()).toEqual(report);
+  });
+
   test("skips redundant entity upserts on append", async () => {
     const { journal, journalPath } = createJournal();
     await journal.load();
@@ -140,6 +171,24 @@ describe("FileBackedBrokerJournal", () => {
 
     expect(lines.filter((entry) => entry.kind === "actor.upsert")).toHaveLength(1);
     expect(lines.filter((entry) => entry.kind === "agent.upsert")).toHaveLength(1);
+  });
+
+  test("replays a stable byte boundary while later appends remain queued for projection", async () => {
+    const { journal } = createJournal();
+    await journal.load();
+    await journal.appendEntries({ kind: "actor.upsert", actor: sampleActor() });
+
+    const boundary = await journal.captureReplayBoundary();
+    await journal.appendEntries({ kind: "message.record", message: sampleMessage() });
+
+    const boundedKinds: string[] = [];
+    await journal.replay((entry) => {
+      boundedKinds.push(entry.kind);
+    }, boundary);
+    const allKinds = (await journal.readEntries()).map((entry) => entry.kind);
+
+    expect(boundedKinds).toEqual(["actor.upsert"]);
+    expect(allKinds).toEqual(["actor.upsert", "message.record"]);
   });
 
   test("skips identical flight records while preserving state transitions", async () => {

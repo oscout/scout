@@ -70,6 +70,25 @@ function permissionToolName(event: ObserveEvent): string | null {
   return null;
 }
 
+/** True when the trace ends with a permission request still awaiting an
+ *  operator decision (no later `permission <decision> · <tool>` row for that
+ *  tool). Reuses the same "permission requested/resolved" phrasing the
+ *  collapse layer already recognizes, so a pending ask the agent is blocked on
+ *  lights up "needs attention" without a second, drift-prone parser. */
+export function hasPendingPermissionRequest(events: ObserveEvent[]): boolean {
+  const pending = new Set<string>();
+  for (const event of events) {
+    if (isPermissionRequested(event)) {
+      const tool = permissionToolName(event);
+      if (tool) pending.add(tool);
+    } else if (isPermissionResolved(event)) {
+      const tool = permissionToolName(event);
+      if (tool) pending.delete(tool);
+    }
+  }
+  return pending.size > 0;
+}
+
 function mergeThinkRun(latest: ObserveEvent, repeatCount: number): ObserveEvent {
   const text = latest.text.trim();
   return {

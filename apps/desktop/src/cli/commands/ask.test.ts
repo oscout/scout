@@ -27,7 +27,7 @@ describe("formatScoutAskRoutingError", () => {
     expect(formatScoutAskRoutingError(
       {
         targetDiagnostic: {
-          agentId: "talkie.scout-mac-mini-local.master",
+          agentId: "talkie.arachs-mac-mini-local.master",
           state: "discovered",
           registrationKind: "discovered",
           projectRoot: "/tmp/dev/talkie",

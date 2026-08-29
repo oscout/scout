@@ -29,11 +29,6 @@ import {
   type PairingRuntimeRelayEndpoint,
   type StartedPairingRuntime,
 } from "./runtime/runtime.ts";
-import {
-  claimScoutPairingRuntimeOwnership,
-  readLiveScoutPairingRuntimeOwner,
-  releaseScoutPairingRuntimeOwnership,
-} from "@openscout/runtime/pairing-supervisor";
 import type { MeshRendezvousPublisher } from "@openscout/runtime";
 
 const SCOUT_PAIR_REFRESH_LEEWAY_MS = 30_000;
@@ -62,20 +57,11 @@ export async function runPairingRuntimeController(): Promise<void> {
   clearStalePairingRuntimeFiles();
 
   const existingPid = readPairingRuntimePid();
-  let existingOwner = readLiveScoutPairingRuntimeOwner();
-  if (!existingOwner && existingPid && existingPid !== process.pid) {
-    try {
-      existingOwner = claimScoutPairingRuntimeOwnership({ pid: existingPid });
-    } catch {
-      existingOwner = null;
-    }
-  }
-  if (existingPid && existingPid !== process.pid && existingOwner?.pid === existingPid) {
+  if (existingPid && existingPid !== process.pid && isProcessRunning(existingPid)) {
     console.error(`Scout pairing runtime controller is already running (pid ${existingPid}).`);
     process.exit(1);
   }
 
-  const runtimeOwner = claimScoutPairingRuntimeOwnership();
   writePairingRuntimePid(process.pid);
 
   const state: PairingRuntimeControllerState = {
@@ -120,7 +106,6 @@ export async function runPairingRuntimeController(): Promise<void> {
       childPid: null,
     });
     clearPairingRuntimePid();
-    releaseScoutPairingRuntimeOwnership(runtimeOwner);
     process.exit(0);
   };
 

@@ -1,4 +1,5 @@
 import { lazy, Suspense, useCallback, useMemo } from "react";
+import { useBrowserLocation } from "../lib/router.ts";
 import type { Route } from "../lib/types.ts";
 import { useScout } from "../scout/Provider.tsx";
 import { routeEmbeddedNavigation } from "./embed-navigation.ts";
@@ -29,6 +30,7 @@ function routeMatchesSurfaceRoute(route: unknown, surfaceRoute: unknown): boolea
 
 export function DiscoveredEmbedHost({ surface }: { surface: RegisteredSurface }) {
   const { route, navigate, agents } = useScout();
+  const { searchStr } = useBrowserLocation();
   const Screen = surface.Screen;
   const embed = surface.embed!;
   const ownsInternalRoutes = Boolean(surface.embed?.ownsInternalRoutes);
@@ -49,8 +51,8 @@ export function DiscoveredEmbedHost({ surface }: { surface: RegisteredSurface })
 
   const extraProps = useMemo(() => {
     if (!embed.resolveEmbedProps) return {};
-    return embed.resolveEmbedProps(new URLSearchParams(window.location.search));
-  }, [embed]);
+    return embed.resolveEmbedProps(new URLSearchParams(searchStr));
+  }, [embed, searchStr]);
 
   const chrome = resolveEmbedChrome(embed);
   const rootClassName = [

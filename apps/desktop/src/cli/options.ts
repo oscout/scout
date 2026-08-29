@@ -3,9 +3,9 @@ import { resolve } from "node:path";
 import {
   epochMs,
   normalizeAgentSelectorSegment,
-  normalizeScoutLaunchableHarness,
   normalizeReservedRuntimeProfileId,
   normalizeRuntimeProfileReasoningEffort,
+  isScoutLaunchableHarness,
   parseScoutRuntimeSpec,
   parseScoutComposerRoute,
   parseScoutComposerRouteTarget,
@@ -109,7 +109,7 @@ export type ScoutCardCreateCommandOptions = ContextRootOptions & {
   oneTimeUse?: boolean;
 };
 
-export type ScoutTuiCommandOptions = ContextRootOptions & {
+export type ScoutMonitorCommandOptions = ContextRootOptions & {
   channel?: string;
   limit: number;
   intervalMs: number;
@@ -284,8 +284,7 @@ function parseNaturalLanguageAskTarget(
   const leadingToken = trimmed.match(/^(\S+)(?:\s+|$)([\s\S]*)$/u);
   const runtimeToken = leadingToken?.[1] ?? "";
   const runtimeCandidate = runtimeToken.includes("/")
-    || (normalizeScoutLaunchableHarness(runtimeToken) !== null
-      && !normalizeReservedRuntimeProfileId(runtimeToken))
+    || (isScoutLaunchableHarness(runtimeToken) && !normalizeReservedRuntimeProfileId(runtimeToken))
     ? parseScoutRuntimeSpec(runtimeToken)
     : null;
   if (runtimeCandidate?.ok) {
@@ -1782,10 +1781,10 @@ export function parseCardCreateCommandOptions(
   };
 }
 
-export function parseTuiCommandOptions(
+export function parseMonitorCommandOptions(
   args: string[],
   defaultCurrentDirectory: string,
-): ScoutTuiCommandOptions {
+): ScoutMonitorCommandOptions {
   const parsed = parseContextRootPrefix(args, defaultCurrentDirectory);
   let channel: string | undefined;
   let limit = 12;
@@ -1819,7 +1818,7 @@ export function parseTuiCommandOptions(
       index = value.nextIndex;
       continue;
     }
-    unexpectedArgs("tui", args);
+    unexpectedArgs("monitor", args);
   }
 
   return {

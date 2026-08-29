@@ -153,6 +153,43 @@ describe("BrokerDispatchRecoveryService", () => {
     expect(harness.logs[0]).toContain("startup");
   });
 
+  test("defers a parked invocation until its retry time, then dispatches it", async () => {
+    const harness = createService({
+      flights: { "flight-1": flight() },
+    });
+
+    // Deferred into the future (now is fixed at 10_000): the queued flight is
+    // suppressed — this is what keeps a thread_held_externally park from
+    // redispatching in a hot loop off the endpoint-persist recovery hook.
+    harness.service.deferInvocation("invocation-1", 20_000);
+    const deferred = await harness.service.recoverQueuedFlights({ reason: "endpoint_online" });
+    expect(deferred.dispatched).toBe(0);
+    expect(harness.dispatched).toEqual([]);
+
+    // Once due, the deferral clears and the flight dispatches normally.
+    harness.service.deferInvocation("invocation-1", 10_000);
+    const due = await harness.service.recoverQueuedFlights({ reason: "queued_retry_sweep" });
+    expect(due.dispatched).toBe(1);
+    expect(harness.dispatched.map((item) => item.id)).toEqual(["invocation-1"]);
+  });
+
+  test("defers dispatch jobs alongside queued flights", async () => {
+    const harness = createService({
+      dispatchJobs: [dispatchJob()],
+      flights: {},
+    });
+
+    harness.service.deferInvocation("invocation-1", 20_000);
+    const deferred = await harness.service.recoverQueuedFlights({ reason: "endpoint_online" });
+    expect(deferred.dispatched).toBe(0);
+    expect(harness.runJobs).toEqual([]);
+
+    harness.service.deferInvocation("invocation-1", 9_000);
+    const due = await harness.service.recoverQueuedFlights({ reason: "queued_retry_sweep" });
+    expect(due.dispatched).toBe(1);
+    expect(harness.runJobs.map((item) => item.job.id)).toEqual(["dispatch-invocation-1"]);
+  });
+
   test("can drain only one target agent after an endpoint comes online", async () => {
     const invocations = {
       "invocation-agent-1": invocation({ id: "invocation-agent-1", targetAgentId: "agent-1" }),

@@ -30,10 +30,17 @@ import {
   resolveScoutSenderId,
 } from "../../core/broker/sender.ts";
 import {
+  getScoutDesktopAgentSession,
+  type ScoutDesktopAgentSessionInspector,
+} from "../../app/host/agent-session.ts";
+import {
+  buildScoutTuiLivePaneProjection,
   clampScoutTuiSelection,
   filterScoutTuiCommands,
-  findScoutHarnessCommandDefinition,
   findScoutHarnessAgent,
+  findScoutHarnessCommandDefinition,
+  findScoutTuiTailSelectionIndex,
+  findScoutTuiSelectionIndex,
   moveScoutTuiSelection,
   parseScoutHarnessCommand,
   parseScoutHarnessRuntime,
@@ -279,6 +286,37 @@ function truncate(value: string, width: number): string {
 function fitLine(value: string, width: number): string {
   const fitted = truncate(value, width);
   return fitted.padEnd(Math.max(0, width), " ");
+}
+
+function buildShimmerLine(width: number, frame: number, seed = 0): string {
+  if (width <= 0) return "";
+  const sweep = "░▒▓█▓▒░";
+  const cycle = width + sweep.length;
+  const offset = (frame * 4 + seed * 5) % cycle - sweep.length;
+  const chars = Array.from({ length: width }, () => "─");
+  for (let index = 0; index < sweep.length; index += 1) {
+    const target = offset + index;
+    if (target >= 0 && target < chars.length) {
+      chars[target] = sweep[index] ?? "─";
+    }
+  }
+  return chars.join("");
+}
+
+function useLiveFrame(active: boolean): number {
+  const [frame, setFrame] = useState(0);
+  const motionActive = active
+    && process.env.SCOUT_TUI_REDUCED_MOTION !== "1"
+    && process.env.TERM !== "dumb";
+  useEffect(() => {
+    if (!motionActive) {
+      setFrame(0);
+      return;
+    }
+    const timer = setInterval(() => setFrame((current) => (current + 1) % 4_096), 110);
+    return () => clearInterval(timer);
+  }, [motionActive]);
+  return frame;
 }
 
 function wrapText(value: string, width: number): string[] {
@@ -706,19 +744,44 @@ function NewCommandPanel({
 
 function AgentDetailPanel({
   agent,
-  activity,
+  inspector,
+  inspectorLoading,
+  inspectorError,
   width,
   height,
 }: {
   agent: ScoutMonitorAgent | null;
-  activity: ScoutMonitorActivity[];
+  inspector: ScoutDesktopAgentSessionInspector | null;
+  inspectorLoading: boolean;
+  inspectorError: string | null;
   width: number;
   height: number;
 }) {
+  const traceLive = !inspectorError && Boolean(
+    agent?.state === "working"
+    || inspector?.trace?.currentTurnId
+    || inspector?.trace?.turns.at(-1)?.status === "streaming",
+  );
+  const frame = useLiveFrame(traceLive || (inspectorLoading && !inspector));
   const lineWidth = Math.max(24, width - 4);
+  const compact = height <= 10;
+  const showTask = Boolean(agent?.activeTask) && height >= 12;
+  const labelWidth = 7;
+  const rowTextWidth = Math.max(8, lineWidth - labelWidth - 1);
+  const outputRowBudget = compact ? 1 : Math.max(1, height - (showTask ? 10 : 9));
+  const livePane = useMemo(
+    () => buildScoutTuiLivePaneProjection(
+      inspector?.trace ?? null,
+      inspector?.body ?? "",
+      outputRowBudget,
+      rowTextWidth,
+    ),
+    [inspector, outputRowBudget, rowTextWidth],
+  );
+
   if (!agent) {
     return (
-      <box flexDirection="column" width={width} height={height} border borderStyle="rounded" borderColor={C.border} padding={1} title="Agent signal">
+      <box flexDirection="column" width={width} height={height} border borderStyle="rounded" borderColor={C.border} padding={1} title="Live signal">
         <text fg={C.dim}>{fitLine("Select an agent to inspect its live broker signal.", lineWidth)}</text>
       </box>
     );
@@ -726,18 +789,75 @@ function AgentDetailPanel({
 
   const status = sourceText(agent.statusLabel || agent.state);
   const needsAttention = /waiting|blocked|approval|permission/i.test(status);
-  const compact = height <= 10;
-  const relatedActivity = activity
-    .filter((item) => item.actorId === agent.id || item.actorName === agent.title)
-    .slice(0, Math.max(0, height - 12));
-  const detailLines = [
-    ["STATE", status],
-    ["PROJECT", compactPath(agent.projectRoot) ?? "unknown"],
-    ["ROLE", sourceText(agent.role) || "unassigned"],
-    ["LAST SIGNAL", formatRelative(agent.lastSeenAt)],
-  ] as const;
+  const runtime = [
+    inspector?.harness,
+    inspector?.transport,
+  ].filter((value): value is string => Boolean(value)).join(" · ")
+    || runtimeLabel(agent.statusDetail);
+  const project = compactPath(agent.projectRoot) ?? "unknown project";
+  const outputRows = livePane.rows;
+  const latestRow = outputRows.at(-1) ?? null;
+  const latestRowLive = Boolean(
+    latestRow
+    && !inspectorError
+    && (latestRow.live || (traceLive && livePane.source === "log")),
+  );
+  const waitingForOutput = traceLive && outputRows.length === 0;
+  const liveGlyph = ["·", "•", "●", "•"][Math.floor(frame / 2) % 4] ?? "●";
+  const outputNoun = livePane.source === "trace"
+    ? "TRACE"
+    : livePane.source === "log"
+      ? "LOG"
+      : "OUTPUT";
+  const outputHeading = inspectorError
+    ? `${outputNoun} · STALE`
+    : inspector?.updatedAtLabel
+      ? `${traceLive ? "LIVE" : "LATEST"} ${outputNoun} · ${inspector.updatedAtLabel}`
+      : traceLive
+        ? `LIVE ${outputNoun}`
+        : `LATEST ${outputNoun}`;
+  const shimmerWidth = Math.max(3, lineWidth - outputHeading.length - 1);
+  const outputRule = traceLive || (inspectorLoading && !inspector)
+    ? buildShimmerLine(shimmerWidth, frame)
+    : "─".repeat(shimmerWidth);
+  const panelTitle = inspectorError
+    ? "Live output · stale"
+    : needsAttention
+      ? "Attention · live"
+      : traceLive
+        ? "Live · working"
+        : "Agent signal";
+  const borderColor = inspectorError
+    ? C.red
+    : needsAttention
+      ? C.yellow
+      : traceLive
+        ? C.accent
+        : C.borderStrong;
+  const waitingMessage = livePane.source === "trace"
+    ? "Waiting for live session trace…"
+    : livePane.source === "log"
+      ? "Waiting for live runtime log…"
+      : inspector?.subtitle || "Waiting for live session output…";
 
   if (compact) {
+    const latestLabel = latestRow?.label
+      ? `${latestRowLive ? liveGlyph : " "} ${latestRow.label}`
+      : "";
+    const latestLabelTone = latestRow?.kind === "error"
+      ? C.red
+      : latestRow?.kind === "question" || latestRow?.label === "WAIT"
+        ? C.yellow
+        : latestRowLive
+          ? C.accent
+          : C.dim;
+    const latestTextTone = latestRow?.kind === "error"
+      ? C.red
+      : latestRow?.kind === "reasoning"
+        ? C.dim
+        : latestRowLive
+          ? C.text
+          : C.muted;
     return (
       <box
         flexDirection="column"
@@ -745,35 +865,51 @@ function AgentDetailPanel({
         height={height}
         border
         borderStyle="rounded"
-        borderColor={needsAttention ? C.yellow : C.borderStrong}
+        borderColor={borderColor}
         backgroundColor={C.surface}
         paddingLeft={1}
         paddingRight={1}
-        title={needsAttention ? "Attention required" : "Agent signal"}
+        title={panelTitle}
       >
         <box height={1}>
           <text fg={needsAttention ? C.yellow : stateColor(agent.state)}>
             {fitLine(`${agent.reachable ? "●" : "○"} ${agent.title} · ${status}`, lineWidth)}
           </text>
         </box>
-        <box height={1}>
-          <text fg={C.dim}>
-            {fitLine(`${compactPath(agent.projectRoot) ?? "unknown project"} · ${formatRelative(agent.lastSeenAt)}`, lineWidth)}
-          </text>
-        </box>
         {height >= 7 ? (
           <box height={1}>
-            <text fg={agent.activeTask ? C.text : C.dim}>
-              {fitLine(agent.activeTask ? `Now · ${sourceText(agent.activeTask)}` : sourceText(agent.summary) || "No active task reported", lineWidth)}
+            <text fg={C.dim}>{fitLine(`${runtime} · ${formatRelative(agent.lastSeenAt)}`, lineWidth)}</text>
+          </box>
+        ) : null}
+        {inspectorError ? (
+          <box height={1}>
+            <text fg={C.red}>{fitLine(`STALE · Live output unavailable · ${inspectorError}`, lineWidth)}</text>
+          </box>
+        ) : latestRow ? (
+          <box flexDirection="row" height={1} gap={1}>
+            <text fg={latestLabelTone}>{fitLine(latestLabel, labelWidth)}</text>
+            <text fg={latestTextTone}>{fitLine(latestRow.text, rowTextWidth)}</text>
+          </box>
+        ) : (
+          <box height={1}>
+            <text fg={waitingForOutput || inspectorLoading ? C.accent : C.dim}>
+              {fitLine(
+                waitingForOutput || inspectorLoading
+                  ? `${liveGlyph} ${waitingMessage}`
+                  : inspector?.subtitle || "No live output yet",
+                lineWidth,
+              )}
+            </text>
+          </box>
+        )}
+        <box flexGrow={1} />
+        {height >= 5 ? (
+          <box height={1}>
+            <text fg={agent.state === "offline" ? C.dim : C.accent}>
+              {fitLine(agent.state === "offline" ? "a  ask (queues until routable)" : "a / enter  ask this agent", lineWidth)}
             </text>
           </box>
         ) : null}
-        <box flexGrow={1} />
-        <box height={1}>
-          <text fg={agent.state === "offline" ? C.dim : C.accent}>
-            {fitLine(agent.state === "offline" ? "a  ask (queues until routable)" : "a / enter  ask this agent", lineWidth)}
-          </text>
-        </box>
       </box>
     );
   }
@@ -785,45 +921,81 @@ function AgentDetailPanel({
       height={height}
       border
       borderStyle="rounded"
-      borderColor={needsAttention ? C.yellow : C.borderStrong}
+      borderColor={borderColor}
       backgroundColor={C.surface}
       padding={1}
-      title={needsAttention ? "Attention required" : "Agent signal"}
+      title={panelTitle}
     >
       <box height={1}>
         <text fg={needsAttention ? C.yellow : stateColor(agent.state)}>
-          {fitLine(`${agent.reachable ? "●" : "○"} ${agent.title}`, lineWidth)}
+          {fitLine(`${agent.reachable ? "●" : "○"} ${agent.title} · ${status}`, lineWidth)}
         </text>
       </box>
-      {agent.summary ? (
-        <box height={1}>
-          <text fg={C.muted}>{fitLine(sourceText(agent.summary), lineWidth)}</text>
-        </box>
-      ) : null}
-      <box height={1}><text fg={C.dim}>{fitLine("", lineWidth)}</text></box>
-      {detailLines.map(([label, value]) => (
-        <box key={label} height={1}>
-          <text fg={C.dim}>{fitLine(`${label.padEnd(12, " ")} ${value}`, lineWidth)}</text>
-        </box>
-      ))}
-      <box height={1}><text fg={C.dim}>{fitLine("", lineWidth)}</text></box>
       <box height={1}>
-        <text fg={agent.activeTask ? C.text : C.dim}>
-          {fitLine(agent.activeTask ? `NOW  ${sourceText(agent.activeTask)}` : "NOW  No active task reported", lineWidth)}
+        <text fg={C.dim}>
+          {fitLine(`${runtime} · ${project} · ${formatRelative(agent.lastSeenAt)}`, lineWidth)}
         </text>
       </box>
-      {relatedActivity.length > 0 ? (
-        <>
-          <box height={1}><text fg={C.dim}>{fitLine("RECENT SIGNAL", lineWidth)}</text></box>
-          {relatedActivity.map((item) => (
-            <box key={item.id} height={1}>
-              <text fg={C.muted}>
-                {fitLine(`${formatClock(item.timestamp)}  ${sourceText(item.title || item.detail)}`, lineWidth)}
-              </text>
-            </box>
-          ))}
-        </>
+      {showTask ? (
+        <box height={1}>
+          <text fg={C.text}>{fitLine(`NOW  ${sourceText(agent.activeTask)}`, lineWidth)}</text>
+        </box>
       ) : null}
+      <box height={1}>
+        <text fg={inspectorError ? C.red : traceLive ? C.accent : C.dim}>
+          {fitLine(`${outputHeading} ${outputRule}`, lineWidth)}
+        </text>
+      </box>
+      {inspectorError ? (
+        <box height={1}>
+          <text fg={C.red}>{fitLine(`Live output unavailable · ${inspectorError}`, lineWidth)}</text>
+        </box>
+      ) : (inspectorLoading && !inspector) || waitingForOutput ? (
+        Array.from({ length: Math.min(3, outputRowBudget) }, (_, index) => (
+          <box key={`loading:${index}`} height={1}>
+            <text fg={index === 0 ? C.muted : C.dim}>
+              {fitLine(
+                index === 0
+                  ? waitingMessage
+                  : buildShimmerLine(Math.max(12, lineWidth - index * 6), frame, index + 1),
+                lineWidth,
+              )}
+            </text>
+          </box>
+        ))
+      ) : outputRows.length > 0 ? (
+        outputRows.map((row) => {
+          const rowLive = row.live
+            || (traceLive && livePane.source === "log" && row.id === latestRow?.id);
+          const rowLabel = row.label
+            ? `${rowLive ? liveGlyph : " "} ${row.label}`
+            : "";
+          const labelTone = row.kind === "error"
+            ? C.red
+            : row.kind === "question" || row.label === "WAIT"
+              ? C.yellow
+              : rowLive
+                ? C.accent
+                : C.dim;
+          const textTone = row.kind === "error"
+            ? C.red
+            : row.kind === "reasoning"
+              ? C.dim
+              : rowLive
+                ? C.text
+                : C.muted;
+          return (
+            <box key={row.id} flexDirection="row" height={1} gap={1}>
+              <text fg={labelTone}>{fitLine(rowLabel, labelWidth)}</text>
+              <text fg={textTone}>{fitLine(row.text, rowTextWidth)}</text>
+            </box>
+          );
+        })
+      ) : (
+        <box height={1}>
+          <text fg={C.dim}>{fitLine(inspector?.subtitle || "No live output yet", lineWidth)}</text>
+        </box>
+      )}
       <box flexGrow={1} />
       <box height={1}>
         <text fg={agent.state === "offline" ? C.dim : C.accent}>
@@ -871,12 +1043,18 @@ function HomePanel({
   snapshot,
   selectedIndex,
   onSelect,
+  inspector,
+  inspectorLoading,
+  inspectorError,
   width,
   height,
 }: {
   snapshot: ScoutMonitorSnapshot;
   selectedIndex: number;
   onSelect: (index: number) => void;
+  inspector: ScoutDesktopAgentSessionInspector | null;
+  inspectorLoading: boolean;
+  inspectorError: string | null;
   width: number;
   height: number;
 }) {
@@ -900,12 +1078,26 @@ function HomePanel({
       {wide ? (
         <box flexDirection="row" height={bodyHeight} gap={1}>
           <AgentListPanel agents={snapshot.agents} selectedIndex={selectedIndex} onSelect={onSelect} width={agentWidth} height={agentsHeight} />
-          <AgentDetailPanel agent={selectedAgent} activity={snapshot.activity} width={sideWidth} height={detailHeight} />
+          <AgentDetailPanel
+            agent={selectedAgent}
+            inspector={inspector}
+            inspectorLoading={inspectorLoading}
+            inspectorError={inspectorError}
+            width={sideWidth}
+            height={detailHeight}
+          />
         </box>
       ) : (
         <box flexDirection="column" height={bodyHeight} gap={1}>
           <AgentListPanel agents={snapshot.agents} selectedIndex={selectedIndex} onSelect={onSelect} width={agentWidth} height={agentsHeight} />
-          <AgentDetailPanel agent={selectedAgent} activity={snapshot.activity} width={sideWidth} height={detailHeight} />
+          <AgentDetailPanel
+            agent={selectedAgent}
+            inspector={inspector}
+            inspectorLoading={inspectorLoading}
+            inspectorError={inspectorError}
+            width={sideWidth}
+            height={detailHeight}
+          />
         </box>
       )}
     </box>
@@ -1041,27 +1233,25 @@ function buildTailDetailLines(entry: TailEntry, width: number): TailLine[] {
 function TailPanel({
   entries,
   channel,
-  selectionOffset,
+  selectedKey,
   detailOpen,
   detailScrollOffset,
   width,
   height,
-  onSelectOffset,
+  onSelectKey,
 }: {
   entries: TailEntry[];
   channel: string;
-  selectionOffset: number;
+  selectedKey: string | null;
   detailOpen: boolean;
   detailScrollOffset: number;
   width: number;
   height: number;
-  onSelectOffset: (offset: number) => void;
+  onSelectKey: (key: string) => void;
 }) {
   const panelHeight = Math.max(6, height);
   const lineWidth = Math.max(24, width - 4);
-  const selectedIndex = entries.length === 0
-    ? 0
-    : clampScoutTuiSelection(entries.length - 1 - selectionOffset, entries.length);
+  const selectedIndex = findScoutTuiTailSelectionIndex(entries, selectedKey);
   const selectedEntry = entries[selectedIndex] ?? null;
   const availableRows = Math.max(3, panelHeight - 5);
   const windowStart = Math.min(
@@ -1102,13 +1292,12 @@ function TailPanel({
         visible.map((entry, index) => {
           const entryIndex = windowStart + index;
           const selected = entryIndex === selectedIndex;
-          const offset = Math.max(0, entries.length - 1 - entryIndex);
           return (
           <box
             key={entry.key}
             height={1}
             backgroundColor={selected ? C.selected : C.surface}
-            onMouseDown={() => onSelectOffset(offset)}
+            onMouseDown={() => onSelectKey(entry.key)}
           >
             <text fg={selected ? C.accent : entry.color}>
               {fitLine(`${selected ? "›" : " "} ${formatClock(entry.timestamp)}  ${entry.kind.padEnd(7, " ")}  ${truncate(entry.actor, 12).padEnd(12, " ")}  ${entry.headline}`, lineWidth)}
@@ -1600,10 +1789,14 @@ export function ScoutMonitorApp(props: ScoutMonitorAppProps) {
   const [snapshot, setSnapshot] = useState<ScoutMonitorSnapshot | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshError, setRefreshError] = useState<string | null>(null);
-  const [tailSelectionOffset, setTailSelectionOffset] = useState(0);
+  const [selectedTailKey, setSelectedTailKey] = useState<string | null>(null);
   const [tailDetailOpen, setTailDetailOpen] = useState(false);
   const [tailDetailScrollOffset, setTailDetailScrollOffset] = useState(0);
-  const [selectedAgentIndex, setSelectedAgentIndex] = useState(0);
+  const [selectedAgentKey, setSelectedAgentKey] = useState<string | null>(null);
+  const [agentInspectorTargetId, setAgentInspectorTargetId] = useState<string | null>(null);
+  const [agentInspector, setAgentInspector] = useState<ScoutDesktopAgentSessionInspector | null>(null);
+  const [agentInspectorLoading, setAgentInspectorLoading] = useState(false);
+  const [agentInspectorError, setAgentInspectorError] = useState<string | null>(null);
   const [overlay, setOverlay] = useState<MonitorOverlay>(null);
   const [paletteQuery, setPaletteQuery] = useState("");
   const [paletteIndex, setPaletteIndex] = useState(0);
@@ -1671,19 +1864,37 @@ export function ScoutMonitorApp(props: ScoutMonitorAppProps) {
       detail: `${agent.status} · ${agent.project} · ${agent.runtime}`,
     })),
   ], [orderedAgentRows]);
-  const selectedTailIndex = tailEntries.length === 0
-    ? 0
-    : clampScoutTuiSelection(tailEntries.length - 1 - tailSelectionOffset, tailEntries.length);
+  const selectedTailIndex = findScoutTuiTailSelectionIndex(tailEntries, selectedTailKey);
   const selectedTailEntry = tailEntries[selectedTailIndex] ?? null;
   const tailDetailVisibleRows = Math.max(3, Math.max(8, height - 5) - 5);
   const tailDetailLineCount = selectedTailEntry
     ? buildTailDetailLines(selectedTailEntry, Math.max(24, width - 6)).length
     : 0;
   const tailDetailMaxOffset = Math.max(0, tailDetailLineCount - tailDetailVisibleRows);
+  const selectedAgentIndex = findScoutTuiSelectionIndex(orderedAgentRows, selectedAgentKey);
   const selectedAgentRow = orderedAgentRows[selectedAgentIndex];
   const selectedAgent = selectedAgentRow && snapshot
     ? snapshot.agents.find((agent) => agent.id === selectedAgentRow.key) ?? null
     : null;
+  const selectedAgentId = selectedAgent?.id ?? null;
+  const agentInspectorMatchesSelection = Boolean(
+    selectedAgentId
+    && agentInspectorTargetId === selectedAgentId
+    && (!agentInspector || agentInspector.agentId === selectedAgentId),
+  );
+  const visibleAgentInspector = agentInspectorMatchesSelection ? agentInspector : null;
+  const visibleAgentInspectorLoading = agentInspectorMatchesSelection
+    ? agentInspectorLoading
+    : Boolean(selectedAgentId);
+  const visibleAgentInspectorError = agentInspectorMatchesSelection ? agentInspectorError : null;
+  const selectAgentAtIndex = useCallback((index: number) => {
+    const next = orderedAgentRows[clampScoutTuiSelection(index, orderedAgentRows.length)];
+    setSelectedAgentKey(next?.key ?? null);
+  }, [orderedAgentRows]);
+  const moveAgentSelection = useCallback((direction: -1 | 1) => {
+    const nextIndex = moveScoutTuiSelection(selectedAgentIndex, direction, orderedAgentRows.length);
+    setSelectedAgentKey(orderedAgentRows[nextIndex]?.key ?? null);
+  }, [orderedAgentRows, selectedAgentIndex]);
   const harnessTargetAgent = snapshot?.agents.find((agent) => agent.id === harnessTargetAgentId) ?? null;
   const harnessTargetLabel = harnessProfile
     ? `profile:${harnessProfile}`
@@ -1734,8 +1945,6 @@ export function ScoutMonitorApp(props: ScoutMonitorAppProps) {
         if (stopped.current) return;
         setSnapshot(next);
         setRefreshError(null);
-        const nextTailCount = buildTailEntries(next).length;
-        setTailSelectionOffset((current) => clampScoutTuiSelection(current, nextTailCount));
       } while (refreshQueued.current && !stopped.current);
     } catch (error) {
       if (!stopped.current) {
@@ -2101,7 +2310,7 @@ export function ScoutMonitorApp(props: ScoutMonitorAppProps) {
         return true;
       }
       const agent = orderedAgentRows[match.index]!;
-      setSelectedAgentIndex(match.index);
+      setSelectedAgentKey(agent.key);
       setHarnessTargetAgentId(agent.key);
       setHarnessProfile(null);
       setHarnessRuntimeLiteral(null);
@@ -2160,8 +2369,9 @@ export function ScoutMonitorApp(props: ScoutMonitorAppProps) {
       setHarnessProfile(null);
       setHarnessRuntimeLiteral(null);
       setHarnessTargetAgentId(target.agentId);
-      const agentIndex = orderedAgentRows.findIndex((agent) => agent.key === target.agentId);
-      if (agentIndex >= 0) setSelectedAgentIndex(agentIndex);
+      if (orderedAgentRows.some((agent) => agent.key === target.agentId)) {
+        setSelectedAgentKey(target.agentId);
+      }
       dispatchTarget = {
         profile: null,
         runtimeLiteral: null,
@@ -2240,7 +2450,7 @@ export function ScoutMonitorApp(props: ScoutMonitorAppProps) {
     if (harnessView === "agents") {
       const agent = orderedAgentRows[clampScoutTuiSelection(harnessViewIndex, orderedAgentRows.length)];
       if (!agent) return;
-      setSelectedAgentIndex(orderedAgentRows.findIndex((candidate) => candidate.key === agent.key));
+      setSelectedAgentKey(agent.key);
       setHarnessTargetAgentId(agent.key);
       setHarnessProfile(null);
       setHarnessRuntimeLiteral(null);
@@ -2342,11 +2552,11 @@ export function ScoutMonitorApp(props: ScoutMonitorAppProps) {
         break;
       case "next-agent":
         setTab("home");
-        setSelectedAgentIndex((current) => moveScoutTuiSelection(current, 1, orderedAgentRows.length));
+        moveAgentSelection(1);
         break;
       case "previous-agent":
         setTab("home");
-        setSelectedAgentIndex((current) => moveScoutTuiSelection(current, -1, orderedAgentRows.length));
+        moveAgentSelection(-1);
         break;
       case "refresh":
         void refresh();
@@ -2355,19 +2565,66 @@ export function ScoutMonitorApp(props: ScoutMonitorAppProps) {
         shutdown();
         break;
     }
-  }, [openAsk, openHarness, openNewCommand, orderedAgentRows.length, paletteIndex, refresh, shutdown, visiblePaletteCommands]);
+  }, [moveAgentSelection, openAsk, openHarness, openNewCommand, paletteIndex, refresh, shutdown, visiblePaletteCommands]);
 
   useEffect(() => {
-    setSelectedAgentIndex((current) => clampScoutTuiSelection(current, orderedAgentRows.length));
-  }, [orderedAgentRows.length]);
+    setSelectedAgentKey((current) => {
+      if (current && orderedAgentRows.some((row) => row.key === current)) return current;
+      return orderedAgentRows[0]?.key ?? null;
+    });
+  }, [orderedAgentRows]);
+  useEffect(() => {
+    if (!selectedAgentId || tab !== "home") {
+      if (!selectedAgentId) {
+        setAgentInspectorTargetId(null);
+        setAgentInspector(null);
+        setAgentInspectorError(null);
+        setAgentInspectorLoading(false);
+      }
+      return;
+    }
+    const agentId = selectedAgentId;
+
+    let cancelled = false;
+    let timer: NodeJS.Timeout | undefined;
+    const interval = Math.min(1_000, Math.max(500, props.refreshIntervalMs));
+    setAgentInspectorTargetId(agentId);
+    setAgentInspector(null);
+    setAgentInspectorError(null);
+    setAgentInspectorLoading(true);
+
+    async function tick() {
+      try {
+        const next = await getScoutDesktopAgentSession(agentId);
+        if (cancelled) return;
+        setAgentInspector(next);
+        setAgentInspectorError(null);
+      } catch (error) {
+        if (cancelled) return;
+        setAgentInspectorError(error instanceof Error ? error.message : String(error));
+      } finally {
+        if (cancelled) return;
+        setAgentInspectorLoading(false);
+        timer = setTimeout(() => void tick(), interval);
+      }
+    }
+
+    void tick();
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [props.refreshIntervalMs, selectedAgentId, tab]);
 
   useEffect(() => {
     setNewCommandTargetIndex((current) => clampScoutTuiSelection(current, newCommandTargets.length));
   }, [newCommandTargets.length]);
 
   useEffect(() => {
-    setTailSelectionOffset((current) => clampScoutTuiSelection(current, tailEntries.length));
-  }, [tailEntries.length]);
+    if (selectedTailKey && !tailEntries.some((entry) => entry.key === selectedTailKey)) {
+      setSelectedTailKey(tailEntries.at(-1)?.key ?? null);
+    }
+  }, [selectedTailKey, tailEntries]);
 
   useEffect(() => {
     if (
@@ -2729,26 +2986,27 @@ export function ScoutMonitorApp(props: ScoutMonitorAppProps) {
           return;
         }
         if (key.name === "up" || key.name === "k") {
-          setTailSelectionOffset((current) => clampScoutTuiSelection(current + 1, tailEntries.length));
+          setSelectedTailKey(tailEntries[clampScoutTuiSelection(selectedTailIndex - 1, tailEntries.length)]?.key ?? null);
           setTailDetailScrollOffset(0);
           return;
         }
         if (key.name === "down" || key.name === "j") {
-          setTailSelectionOffset((current) => Math.max(0, current - 1));
+          setSelectedTailKey(tailEntries[clampScoutTuiSelection(selectedTailIndex + 1, tailEntries.length)]?.key ?? null);
           setTailDetailScrollOffset(0);
           return;
         }
         if (key.name === "pageup" || (key.name === "u" && key.ctrl)) {
-          setTailSelectionOffset((current) => clampScoutTuiSelection(current + 5, tailEntries.length));
+          setSelectedTailKey(tailEntries[clampScoutTuiSelection(selectedTailIndex - 5, tailEntries.length)]?.key ?? null);
           setTailDetailScrollOffset(0);
           return;
         }
         if (key.name === "pagedown" || (key.name === "d" && key.ctrl)) {
-          setTailSelectionOffset((current) => Math.max(0, current - 5));
+          setSelectedTailKey(tailEntries[clampScoutTuiSelection(selectedTailIndex + 5, tailEntries.length)]?.key ?? null);
           setTailDetailScrollOffset(0);
           return;
         }
         if ((key.name === "return" || key.name === "enter") && selectedTailEntry) {
+          setSelectedTailKey(selectedTailEntry.key);
           setTailDetailOpen(true);
           setTailDetailScrollOffset(0);
           return;
@@ -2806,11 +3064,11 @@ export function ScoutMonitorApp(props: ScoutMonitorAppProps) {
       return;
     }
     if (tab === "home" && (key.name === "up" || key.name === "k")) {
-      setSelectedAgentIndex((current) => moveScoutTuiSelection(current, -1, orderedAgentRows.length));
+      moveAgentSelection(-1);
       return;
     }
     if (tab === "home" && (key.name === "down" || key.name === "j")) {
-      setSelectedAgentIndex((current) => moveScoutTuiSelection(current, 1, orderedAgentRows.length));
+      moveAgentSelection(1);
       return;
     }
     if (tab === "home" && (key.name === "a" || key.name === "return" || key.name === "enter")) {
@@ -2835,7 +3093,10 @@ export function ScoutMonitorApp(props: ScoutMonitorAppProps) {
         <HomePanel
           snapshot={snapshot}
           selectedIndex={selectedAgentIndex}
-          onSelect={setSelectedAgentIndex}
+          onSelect={selectAgentAtIndex}
+          inspector={visibleAgentInspector}
+          inspectorLoading={visibleAgentInspectorLoading}
+          inspectorError={visibleAgentInspectorError}
           width={width}
           height={height}
         />
@@ -2848,13 +3109,13 @@ export function ScoutMonitorApp(props: ScoutMonitorAppProps) {
           <TailPanel
             entries={tailEntries}
             channel={snapshot.channel}
-            selectionOffset={tailSelectionOffset}
+            selectedKey={selectedTailKey}
             detailOpen={tailDetailOpen}
             detailScrollOffset={tailDetailScrollOffset}
             width={Math.max(32, width - 2)}
             height={Math.max(8, height - 5)}
-            onSelectOffset={(offset) => {
-              setTailSelectionOffset(offset);
+            onSelectKey={(key) => {
+              setSelectedTailKey(key);
               setTailDetailScrollOffset(0);
             }}
           />
@@ -2940,12 +3201,16 @@ export function ScoutMonitorApp(props: ScoutMonitorAppProps) {
     harnessViewIndex,
     harnessViewScrollOffset,
     height,
+    visibleAgentInspector,
+    visibleAgentInspectorError,
+    visibleAgentInspectorLoading,
     refreshError,
     newCommandChoosingTarget,
     newCommandError,
     newCommandTargetIndex,
     newCommandTargets,
     selectedAgentIndex,
+    selectAgentAtIndex,
     orderedAgentRows,
     overlay,
     props.currentDirectory,
@@ -2956,7 +3221,7 @@ export function ScoutMonitorApp(props: ScoutMonitorAppProps) {
     tailDetailOpen,
     tailDetailScrollOffset,
     tailEntries,
-    tailSelectionOffset,
+    selectedTailKey,
     width,
   ]);
 

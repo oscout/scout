@@ -165,6 +165,7 @@ function TerminalEmbedScoutProvider({
     updateAppearanceDetails: () => {},
     reload,
     onboarding: null,
+    operatorName: null,
     refreshOnboarding: async () => {},
     onboardingSkipped: true,
     skipOnboarding: () => {},

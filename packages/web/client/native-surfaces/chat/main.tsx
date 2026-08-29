@@ -251,7 +251,7 @@ function overlayStressMessages(): Message[] {
     // Replying makes the lifted message carry the nowrap quote — the exact
     // geometry in the operator's captures, which no other preview row produces.
     replyToMessageId: "demo-stress-quote",
-    body: "Ready. Same Scout identity and content, with a warmer conversation grammar.\n\nlog: /Users/example/Library/Application-Support/OpenScout/diagnostics/chat-overlay-containment-measurement-2026-08-12.jsonl\n\n" + "This paragraph intentionally exercises a realistic long agent response without changing the production conversation record. ".repeat(16),
+    body: "Ready. Same Scout identity and content, with a warmer conversation grammar.\n\nlog: /Users/art/Library/Application-Support/OpenScout/diagnostics/chat-overlay-containment-measurement-2026-08-12.jsonl\n\n" + "This paragraph intentionally exercises a realistic long agent response without changing the production conversation record. ".repeat(16),
     createdAt: Date.now() - 190_000,
     isOperator: false,
     attachments: [
@@ -275,7 +275,7 @@ function previewFixtureMessages() {
     // Quoted, because the report this fixture stands for was itself a reply —
     // and a long body alone never reproduced the containment failure.
     replyToMessageId: "demo-3",
-    body: "[" + "ask:f-preview] Reviewed the phone captures and found the layout issue. **The message actions should stay reachable even when an agent sends a long report.**\n\n1. The reaction row stays compact and keeps 44-point targets.\n\n2. The lifted message becomes a bounded preview instead of taking over the screen.\n\n3. The complete report remains in the conversation behind Read more.\n\n" + "This paragraph intentionally exercises a realistic long agent response without changing the production conversation record. ".repeat(16),
+    body: "[ask:f-preview] Reviewed the phone captures and found the layout issue. **The message actions should stay reachable even when an agent sends a long report.**\n\n1. The reaction row stays compact and keeps 44-point targets.\n\n2. The lifted message becomes a bounded preview instead of taking over the screen.\n\n3. The complete report remains in the conversation behind Read more.\n\n" + "This paragraph intentionally exercises a realistic long agent response without changing the production conversation record. ".repeat(16),
     createdAt: Date.now() - 180_000,
     isOperator: false,
     attachments: [],
@@ -309,10 +309,10 @@ async function callNative<T>(method: string, params: Record<string, unknown> = {
 function previewHost(): HostIdentity | null {
   const preview = new URLSearchParams(window.location.search);
   const state = preview.get("host");
-  if (!state) return { name: "Scout Mac mini", state: "synced" };
+  if (!state) return { name: "Arts Mac mini", state: "synced" };
   if (state === "unnamed") return { name: null, state: "synced" };
   if (state === "none") return null;
-  return { name: "Scout Mac mini", state };
+  return { name: "Arts Mac mini", state };
 }
 
 function bootstrap(): Bootstrap {
@@ -440,7 +440,7 @@ function ChatApp() {
     host: previewHost(),
     generatedAt: Date.now(),
     session: {
-      session: { id: "preview", name: config.title, adapterType: "codex", status: "ready", cwd: "/Users/example/dev/openscout", model: "gpt-5" },
+      session: { id: "preview", name: config.title, adapterType: "codex", status: "ready", cwd: "/Users/art/dev/openscout", model: "gpt-5" },
       currentTurnId: null,
       turns: [{
         id: "preview-turn",

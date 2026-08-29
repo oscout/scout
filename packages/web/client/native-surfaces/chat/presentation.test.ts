@@ -120,8 +120,8 @@ describe("isGroupedWithPrevious", () => {
 
 describe("hostStatus", () => {
   it("names the machine when the host reports one", () => {
-    expect(hostStatus({ name: "Scout Mac mini", state: "synced" }))
-      .toEqual({ text: "Synced with Scout Mac mini", tone: "neutral", state: "synced" });
+    expect(hostStatus({ name: "Arts Mac mini", state: "synced" }))
+      .toEqual({ text: "Synced with Arts Mac mini", tone: "neutral", state: "synced" });
   });
 
   it("falls back to a generic phrasing only when no name is available", () => {
@@ -131,18 +131,18 @@ describe("hostStatus", () => {
   });
 
   it("trims a padded name rather than rendering the padding", () => {
-    expect(hostStatus({ name: "  Scout Mac mini  ", state: "synced" })?.text).toBe("Synced with Scout Mac mini");
+    expect(hostStatus({ name: "  Arts Mac mini  ", state: "synced" })?.text).toBe("Synced with Arts Mac mini");
   });
 
   it("never claims synced while disconnected, degraded, or failed", () => {
     const claims = (["connecting", "degraded", "offline", "failed"] as const)
-      .map((state) => hostStatus({ name: "Scout Mac mini", state })?.text ?? "");
+      .map((state) => hostStatus({ name: "Arts Mac mini", state })?.text ?? "");
     expect(claims.some((text) => text.toLowerCase().includes("synced"))).toBe(false);
     expect(claims).toEqual([
-      "Connecting to Scout Mac mini…",
-      "Reconnecting to Scout Mac mini",
-      "Not connected to Scout Mac mini",
-      "Can’t reach Scout Mac mini",
+      "Connecting to Arts Mac mini…",
+      "Reconnecting to Arts Mac mini",
+      "Not connected to Arts Mac mini",
+      "Can’t reach Arts Mac mini",
     ]);
   });
 
@@ -155,23 +155,23 @@ describe("hostStatus", () => {
   });
 
   it("shows nothing at all when the host reports nothing usable", () => {
-    for (const identity of [null, undefined, {}, { name: "Scout Mac mini" }, { state: "bogus" }, { state: null }]) {
+    for (const identity of [null, undefined, {}, { name: "Arts Mac mini" }, { state: "bogus" }, { state: null }]) {
       expect(hostStatus(identity as never)).toBeNull();
     }
   });
 });
 
 describe("identityFor", () => {
-  const session = { name: "Fable", adapterType: "codex", status: "ready", cwd: "/Users/example/dev/openscout", model: "gpt-5" };
+  const session = { name: "Fable", adapterType: "codex", status: "ready", cwd: "/Users/art/dev/openscout", model: "gpt-5" };
   const base = {
     actorId: "fable", name: "Fable", kind: "agent" as const,
-    soleIncomingActorId: "fable", session, hostName: "Scout Mac mini",
+    soleIncomingActorId: "fable", session, hostName: "Arts Mac mini",
   };
 
   it("shows the identity facts people actually use in Normie", () => {
     const identity = identityFor({ ...base, mode: "normie" });
     expect(identity.facts).toEqual([
-      { label: "Host", value: "Scout Mac mini" },
+      { label: "Host", value: "Arts Mac mini" },
       { label: "Project", value: "openscout" },
       { label: "Model", value: "gpt-5" },
     ]);
@@ -217,7 +217,7 @@ describe("identityFor", () => {
   });
 
   it("names the project from the working directory, not the whole path", () => {
-    for (const [cwd, expected] of [["/Users/example/dev/openscout", "openscout"], ["/Users/example/dev/openscout/", "openscout"], ["/", null]] as const) {
+    for (const [cwd, expected] of [["/Users/art/dev/openscout", "openscout"], ["/Users/art/dev/openscout/", "openscout"], ["/", null]] as const) {
       const facts = identityFor({ ...base, mode: "normie", session: { ...session, cwd } }).facts;
       expect(facts.find((fact) => fact.label === "Project")?.value ?? null).toBe(expected);
     }
@@ -254,7 +254,7 @@ describe("decisionStatus", () => {
     const session = { name: "Fable", adapterType: "codex", status: "error", cwd: "/w/openscout", model: "gpt-5" };
     const identity = identityFor({
       actorId: "fable", name: "Fable", kind: "agent", mode: "normie",
-      soleIncomingActorId: "fable", session, hostName: "Scout Mac mini",
+      soleIncomingActorId: "fable", session, hostName: "Arts Mac mini",
     });
     expect(identity.status).toBe("Error");
   });

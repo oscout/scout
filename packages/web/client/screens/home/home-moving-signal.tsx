@@ -1,9 +1,9 @@
 /**
- * Home "What's moving" — signal-first list.
+ * Home "What's moving" — Signal-first stream & Docked Sidecar Inspector.
  *
- * One-line rows (age · where · harness mark · action). Recent is a flat
- * stream; Grouped wraps the same rows under project bands. Selection opens a
- * fixed centered glass overlay (detail + actions) without reflowing the list.
+ * One-line machine rows (age · harness mark · project/branch · action · context).
+ * Selecting a row docks a rich sidecar inspector alongside the fleet stream
+ * without losing context of the overall control room.
  */
 
 import {
@@ -13,18 +13,27 @@ import {
   useRef,
   useState,
   type KeyboardEvent as ReactKeyboardEvent,
-  type MouseEvent as ReactMouseEvent,
 } from "react";
-import { createPortal } from "react-dom";
+import {
+  ArrowRight,
+  Code2,
+  Cpu,
+  ExternalLink,
+  FileCode2,
+  GitBranch,
+  Terminal,
+  X,
+} from "lucide-react";
 import { HarnessMark } from "../../components/HarnessMark.tsx";
 import type { ObserveCache } from "../../lib/observe.ts";
-import { useFocusTrap } from "../../lib/keyboard-nav.ts";
 import { normalizeTimestampMs } from "../../lib/time.ts";
 import type {
   Agent,
   FleetActivity,
   FleetAsk,
   ObserveData,
+  ObserveEvent,
+  ObserveFile,
   Route,
 } from "../../lib/types.ts";
 import type { AgentLane } from "../ops/agent-lanes-model.ts";
@@ -38,7 +47,7 @@ import {
   liveActionSummary,
   usefulHeadline,
 } from "./home-live-action.ts";
-import type { HomeMovingSortMode, WorkingAgentContext } from "./home-moving.ts";
+import type { HomeMovingSortMode } from "./home-moving.ts";
 import "./home-moving-signal.css";
 
 export type HomeMovingSignalCard =
@@ -61,20 +70,27 @@ export type HomeMovingSignalCard =
       lastActivityAt: number;
     };
 
-type SignalRowModel = {
+export type SignalRowModel = {
   id: string;
   /** Primary left-side line — prefer the ongoing ask/task over turn churn. */
   action: string;
-  /** Latest turn/tool update when it differs from the ask (overlay only). */
+  /** Latest turn/tool update when it differs from the ask (inspector only). */
   nowLine: string | null;
   name: string;
   harness: string | null;
   projectKey: string;
   projectLabel: string;
+  projectRoot: string | null;
   branch: string | null;
   lastAge: string;
   sessionAge: string | null;
   live: boolean;
+  contextPct: number | null;
+  tokensUsed: number | null;
+  tokensMax: number | null;
+  touchedFiles: ObserveFile[];
+  recentEvents: ObserveEvent[];
+  observeData: ObserveData | null;
   /** For action routing */
   agent: Agent | null;
   observeRoute: Route | null;
@@ -92,6 +108,7 @@ function ongoingAskLine(ask: FleetAsk | null | undefined): string | null {
   if (/^(working|idle|queued)$/i.test(task)) return null;
   return usefulHeadline(task);
 }
+
 function linesDiffer(left: string | null | undefined, right: string | null | undefined): boolean {
   const a = left?.replace(/\s+/g, " ").trim().toLowerCase() ?? "";
   const b = right?.replace(/\s+/g, " ").trim().toLowerCase() ?? "";
@@ -137,6 +154,21 @@ function summarize(text: string | null | undefined, max = 140): string {
   return compact.length > max ? `${compact.slice(0, max - 1)}…` : compact;
 }
 
+function extractContextUsage(observeData: ObserveData | null | undefined): {
+  contextPct: number | null;
+  tokensUsed: number | null;
+  tokensMax: number | null;
+} {
+  const usage = observeData?.metadata?.usage;
+  const contextInput = usage?.contextInputTokens;
+  const window = usage?.contextWindowTokens;
+  if (typeof contextInput === "number" && typeof window === "number" && window > 0) {
+    const contextPct = Math.min(100, Math.round((contextInput / window) * 100));
+    return { contextPct, tokensUsed: contextInput, tokensMax: window };
+  }
+  return { contextPct: null, tokensUsed: null, tokensMax: null };
+}
+
 function buildWorkingSignal(
   agent: Agent,
   ask: FleetAsk | null | undefined,
@@ -147,7 +179,6 @@ function buildWorkingSignal(
 ): SignalRowModel {
   const root = agent.projectRoot ?? agent.cwd ?? null;
   const projectKey = projectKeyFromRoot(root);
-  // Left scan line: ongoing ask first. Turn/tool churn is secondary (overlay).
   const askLine = ongoingAskLine(ask);
   const turnLine = usefulHeadline(liveActionSummary({
     observeData,
@@ -165,7 +196,7 @@ function buildWorkingSignal(
     live: observeLive,
     attachedOnly: onlyDiscovery && !observeLive,
   });
-  // Every candidate goes through usefulHeadline so discovery/lifecycle never win.
+
   const action = askLine
     || turnLine
     || usefulHeadline(ask?.summary)
@@ -176,6 +207,7 @@ function buildWorkingSignal(
     ? turnLine
     : null;
   const sessionStart = normalizeTimestampMs(observeData?.metadata?.session?.sessionStart);
+  const { contextPct, tokensUsed, tokensMax } = extractContextUsage(observeData);
 
   return {
     id: agent.id,
@@ -185,6 +217,7 @@ function buildWorkingSignal(
     harness: agent.harness?.trim() || null,
     projectKey,
     projectLabel: projectLabelFromRoot(root),
+    projectRoot: root,
     branch: agent.branch?.trim() || null,
     lastAge: formatAge(lastActivityAt, nowMs),
     sessionAge: sessionStart !== null ? formatAge(sessionStart, nowMs) : null,
@@ -194,6 +227,12 @@ function buildWorkingSignal(
         || ask.agentState === "working"
         || ask.agentState === "in_flight"),
     ),
+    contextPct,
+    tokensUsed,
+    tokensMax,
+    touchedFiles: observeData?.files ?? [],
+    recentEvents: (observeData?.events ?? []).slice(-6),
+    observeData: observeData ?? null,
     agent,
     observeRoute: homeCardRoute(agent, "observe"),
     profileRoute: homeCardRoute(agent, "profile"),
@@ -230,6 +269,7 @@ function buildNativeSignal(
       attachedOnly: !turnLine && !fileLine,
     });
   const sessionStart = normalizeTimestampMs(lane.observe?.metadata?.session?.sessionStart);
+  const { contextPct, tokensUsed, tokensMax } = extractContextUsage(lane.observe);
 
   return {
     id: lane.id,
@@ -239,10 +279,17 @@ function buildNativeSignal(
     harness: agent.harness?.trim() || null,
     projectKey,
     projectLabel: projectLabelFromRoot(root),
+    projectRoot: root,
     branch: agent.branch?.trim() || null,
     lastAge: formatAge(lastActivityAt, nowMs),
     sessionAge: sessionStart !== null ? formatAge(sessionStart, nowMs) : null,
     live: observeLive,
+    contextPct,
+    tokensUsed,
+    tokensMax,
+    touchedFiles: lane.observe?.files ?? [],
+    recentEvents: (lane.observe?.events ?? []).slice(-6),
+    observeData: lane.observe ?? null,
     agent,
     observeRoute: homeCardRoute(agent, "observe"),
     profileRoute: homeCardRoute(agent, "profile"),
@@ -278,10 +325,17 @@ function buildObservedSignal(
     harness: null,
     projectKey: "observed",
     projectLabel: "observed",
+    projectRoot: null,
     branch: null,
     lastAge: formatAge(lastActivityAt, nowMs),
     sessionAge: null,
     live: false,
+    contextPct: null,
+    tokensUsed: null,
+    tokensMax: null,
+    touchedFiles: [],
+    recentEvents: [],
+    observeData: null,
     agent: null,
     observeRoute: route,
     profileRoute: actor.agentId
@@ -322,25 +376,7 @@ export function HomeMovingSignalList({
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [hover, setHover] = useState<{ id: string; top: number; left: number } | null>(null);
   const hoverTimer = useRef<number | null>(null);
-
-  const showHover = useCallback((id: string, rect: DOMRect) => {
-    if (hoverTimer.current !== null) window.clearTimeout(hoverTimer.current);
-    hoverTimer.current = window.setTimeout(() => {
-      const cardWidth = 380;
-      const cardHeightGuess = 240;
-      const left = Math.max(16, Math.min(rect.left + 96, window.innerWidth - cardWidth - 16));
-      const top = rect.bottom + 8 + cardHeightGuess > window.innerHeight
-        ? Math.max(16, rect.top - 8 - cardHeightGuess)
-        : rect.bottom + 8;
-      setHover({ id, top, left });
-    }, 180);
-  }, []);
-
-  const hideHover = useCallback(() => {
-    if (hoverTimer.current !== null) window.clearTimeout(hoverTimer.current);
-    hoverTimer.current = null;
-    setHover(null);
-  }, []);
+  const stageRef = useRef<HTMLDivElement | null>(null);
 
   const signals = useMemo(() => {
     return cards.map((card) => {
@@ -362,111 +398,146 @@ export function HomeMovingSignalList({
   }, [cards, movingAskByAgent, nowMs, observeCache]);
 
   const groups = useMemo(() => groupByProject(signals), [signals]);
-  const selected = signals.find((row) => row.id === selectedId) ?? null;
-  const hoverRow = !selectedId && hover
-    ? signals.find((row) => row.id === hover.id) ?? null
-    : null;
+  const selectedIndex = signals.findIndex((row) => row.id === selectedId);
+  const selected = selectedIndex >= 0 ? signals[selectedIndex]! : null;
+
+  const showHover = useCallback((id: string, rect: DOMRect) => {
+    if (selectedId) return; // Suppress hover when docked inspector is active
+    if (hoverTimer.current !== null) window.clearTimeout(hoverTimer.current);
+    hoverTimer.current = window.setTimeout(() => {
+      const cardWidth = 360;
+      const cardHeightGuess = 220;
+      const left = Math.max(16, Math.min(rect.left + 96, window.innerWidth - cardWidth - 16));
+      const top = rect.bottom + 8 + cardHeightGuess > window.innerHeight
+        ? Math.max(16, rect.top - 8 - cardHeightGuess)
+        : rect.bottom + 8;
+      setHover({ id, top, left });
+    }, 180);
+  }, [selectedId]);
+
+  const hideHover = useCallback(() => {
+    if (hoverTimer.current !== null) window.clearTimeout(hoverTimer.current);
+    hoverTimer.current = null;
+    setHover(null);
+  }, []);
 
   const toggle = useCallback((id: string) => {
     hideHover();
     setSelectedId((cur) => (cur === id ? null : id));
   }, [hideHover]);
 
-  useEffect(() => {
-    if (!selectedId) return;
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setSelectedId(null);
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [selectedId]);
+  // Keyboard navigation across signals
+  const handleStageKeyDown = useCallback((event: ReactKeyboardEvent) => {
+    if (signals.length === 0) return;
 
-  // Drop selection if the row leaves the list.
+    if (event.key === "ArrowDown") {
+      event.preventDefault();
+      const nextIndex = selectedIndex < 0 ? 0 : Math.min(signals.length - 1, selectedIndex + 1);
+      setSelectedId(signals[nextIndex]?.id ?? null);
+    } else if (event.key === "ArrowUp") {
+      event.preventDefault();
+      const prevIndex = selectedIndex < 0 ? signals.length - 1 : Math.max(0, selectedIndex - 1);
+      setSelectedId(signals[prevIndex]?.id ?? null);
+    } else if (event.key === "Escape") {
+      event.preventDefault();
+      setSelectedId(null);
+    } else if (event.key === "Enter" && selected) {
+      if (selected.observeRoute) {
+        event.preventDefault();
+        navigate(selected.observeRoute);
+      }
+    }
+  }, [navigate, selected, selectedIndex, signals]);
+
   useEffect(() => {
     if (selectedId && !signals.some((row) => row.id === selectedId)) {
       setSelectedId(null);
     }
   }, [selectedId, signals]);
 
-  // Drop the hover card if its row leaves the list.
-  useEffect(() => {
-    if (hover && !signals.some((row) => row.id === hover.id)) {
-      setHover(null);
-    }
-  }, [hover, signals]);
-
-  // A scroll detaches the fixed-position card from its row — just close it.
-  useEffect(() => {
-    if (!hover) return;
-    const onScroll = () => setHover(null);
-    window.addEventListener("scroll", onScroll, true);
-    return () => window.removeEventListener("scroll", onScroll, true);
-  }, [hover]);
-
   return (
-    <div className="s-moving-signal-stage">
-      {sort === "grouped" ? (
-        <div className="s-moving-signal-grouped">
-          {groups.map(([projectKey, rows]) => (
-            <section key={projectKey} className="s-moving-signal-group">
-              <header className="s-moving-signal-band">
-                <span>{rows[0]?.projectLabel ?? projectKey}</span>
-                <span>
-                  {rows.length} moving
-                  {rows[0]?.branch ? ` · ${rows[0].branch}` : ""}
-                </span>
-              </header>
-              <div className="s-moving-signal-list">
-                {rows.map((row) => (
-                  <SignalRow
-                    key={row.id}
-                    row={row}
-                    grouped
-                    selected={selectedId === row.id}
-                    onSelect={toggle}
-                    onHoverStart={showHover}
-                    onHoverEnd={hideHover}
-                  />
-                ))}
-              </div>
-            </section>
-          ))}
-        </div>
-      ) : (
-        <div className="s-moving-signal-list">
-          {signals.map((row) => (
-            <SignalRow
-              key={row.id}
-              row={row}
-              selected={selectedId === row.id}
-              onSelect={toggle}
-              onHoverStart={showHover}
-              onHoverEnd={hideHover}
-            />
-          ))}
-        </div>
+    <div
+      ref={stageRef}
+      className={`s-moving-signal-stage ${selected ? "s-moving-signal-stage--split" : ""}`}
+      onKeyDown={handleStageKeyDown}
+      tabIndex={0}
+      role="region"
+      aria-label="What's moving signal stream and inspector"
+    >
+      {/* ── Main Signals Stream Pane ───────────────────────────────── */}
+      <div className="s-moving-stream-pane">
+        {sort === "grouped" ? (
+          <div className="s-moving-signal-grouped">
+            {groups.map(([projectKey, rows]) => (
+              <section key={projectKey} className="s-moving-signal-group">
+                <header className="s-moving-signal-band">
+                  <span className="s-moving-signal-band-title">
+                    {rows[0]?.projectLabel ?? projectKey}
+                  </span>
+                  <span className="label-xs s-moving-signal-band-count">
+                    {rows.length} {rows.length === 1 ? "Signal" : "Signals"}
+                    {rows[0]?.branch ? ` · ${rows[0].branch}` : ""}
+                  </span>
+                </header>
+                <div className="s-moving-signal-list">
+                  {rows.map((row) => (
+                    <SignalRow
+                      key={row.id}
+                      row={row}
+                      grouped
+                      selected={selectedId === row.id}
+                      onSelect={toggle}
+                      onHoverStart={showHover}
+                      onHoverEnd={hideHover}
+                    />
+                  ))}
+                </div>
+              </section>
+            ))}
+          </div>
+        ) : (
+          <div className="s-moving-signal-list">
+            {signals.map((row) => (
+              <SignalRow
+                key={row.id}
+                row={row}
+                selected={selectedId === row.id}
+                onSelect={toggle}
+                onHoverStart={showHover}
+                onHoverEnd={hideHover}
+              />
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* ── Grounded Docked Sidecar Inspector ──────────────────────── */}
+      {selected && (
+        <aside
+          className="s-moving-inspector-pane"
+          aria-label={`Live Inspector · ${selected.name}`}
+        >
+          <DockedSidecarInspector
+            row={selected}
+            onClose={() => setSelectedId(null)}
+            navigate={navigate}
+          />
+        </aside>
       )}
 
-      {hoverRow && hover && typeof document !== "undefined"
-        ? createPortal(
-            <SignalHoverCard row={hoverRow} top={hover.top} left={hover.left} />,
-            document.body,
-          )
-        : null}
-
-      {selected && typeof document !== "undefined"
-        ? createPortal(
-            <SignalOverlay
-              row={selected}
-              onClose={() => setSelectedId(null)}
-              navigate={navigate}
-            />,
-            document.body,
-          )
-        : null}
+      {/* ── Floating Hover Card (Suppressed when Inspector is open) ── */}
+      {!selected && hover && (
+        <SignalHoverCard
+          row={signals.find((r) => r.id === hover.id) ?? null}
+          top={hover.top}
+          left={hover.left}
+        />
+      )}
     </div>
   );
 }
+
+/* ── Signal Row Component ────────────────────────────────────────── */
 
 function SignalRow({
   row,
@@ -483,116 +554,73 @@ function SignalRow({
   onHoverStart: (id: string, rect: DOMRect) => void;
   onHoverEnd: () => void;
 }) {
-  // Where-column: flat mode leads with project · branch (agent name moves to
-  // the tooltip + overlay); grouped mode sits under a project band already,
-  // so the agent name takes the slot instead.
   const hasProject = row.projectKey !== "other" && row.projectKey !== "observed";
-  const where = grouped || !hasProject
+  const whereLabel = grouped || !hasProject
     ? row.name
-    : `${row.projectKey}${row.branch ? ` · ${row.branch}` : ""}`;
-  const context = [row.name, row.harness, hasProject ? row.projectKey : null, row.branch]
-    .filter(Boolean)
-    .join(" · ");
+    : row.projectKey;
 
   return (
     <div className="s-moving-signal-item">
       <button
         type="button"
-        className={`s-moving-signal-row${selected ? " is-selected" : ""}`}
+        className={`s-moving-signal-row ${selected ? "is-selected" : ""}`}
         aria-pressed={selected}
-        aria-controls={selected ? "home-moving-signal-overlay" : undefined}
         onClick={() => onSelect(row.id)}
         onMouseEnter={(event) => onHoverStart(row.id, event.currentTarget.getBoundingClientRect())}
         onMouseLeave={onHoverEnd}
         onFocus={(event) => onHoverStart(row.id, event.currentTarget.getBoundingClientRect())}
         onBlur={onHoverEnd}
       >
-        <span className={`s-moving-signal-age${row.live ? " is-live" : ""}`}>
-          {row.lastAge}
+        {/* Elapsed age + live pulse */}
+        <span className={`s-moving-signal-age ${row.live ? "is-live" : ""}`}>
+          <span
+            className={`dot ${row.live ? "dot--working dot--pulse dot--glow" : "dot--neutral"}`}
+            aria-hidden="true"
+          />
+          <span className="label-xs">{row.lastAge}</span>
         </span>
+
+        {/* Harness mark */}
         <span className="s-moving-signal-mark">
-          {row.harness ? <HarnessMark harness={row.harness} size={11} /> : null}
+          {row.harness ? <HarnessMark harness={row.harness} size={12} /> : <Cpu size={12} />}
         </span>
-        <span className="s-moving-signal-where" title={context}>
-          {where}
+
+        {/* Where / Project & Branch */}
+        <span className="s-moving-signal-where">
+          <span className="s-moving-signal-project">{whereLabel}</span>
+          {row.branch && (
+            <span className="chip chip--mono chip--sm chip--neutral s-moving-signal-branch-chip">
+              <GitBranch size={9} aria-hidden="true" />
+              <span>{row.branch}</span>
+            </span>
+          )}
         </span>
+
+        {/* Action pill */}
         <span className="s-moving-signal-action" title={row.action}>
           {row.action}
         </span>
+
+        {/* Mini token context badge */}
+        {row.contextPct !== null && (
+          <span className="s-moving-signal-ctx-badge" title={`Context window: ${row.contextPct}%`}>
+            <span className="s-moving-signal-ctx-mini-bar">
+              <span
+                className="s-moving-signal-ctx-mini-fill"
+                style={{ width: `${row.contextPct}%` }}
+              />
+            </span>
+            <span className="label-xs">{row.contextPct}%</span>
+          </span>
+        )}
       </button>
     </div>
   );
 }
 
-function SignalMeta({ row }: { row: SignalRowModel }) {
-  return (
-    <dl className="s-moving-signal-overlay-meta">
-      <div>
-        <dt>Agent</dt>
-        <dd>{row.name}</dd>
-      </div>
-      {row.harness ? (
-        <div>
-          <dt>Harness</dt>
-          <dd>{row.harness}</dd>
-        </div>
-      ) : null}
-      <div>
-        <dt>Project</dt>
-        <dd>{row.projectLabel}</dd>
-      </div>
-      {row.branch ? (
-        <div>
-          <dt>Branch</dt>
-          <dd>{row.branch}</dd>
-        </div>
-      ) : null}
-      {row.sessionAge ? (
-        <div>
-          <dt>Session</dt>
-          <dd>new {row.sessionAge}</dd>
-        </div>
-      ) : null}
-    </dl>
-  );
-}
+/* ── Docked Sidecar Inspector ─────────────────────────────────────── */
 
-/** Non-interactive peek card — detail only; click still opens the overlay. */
-function SignalHoverCard({
-  row,
-  top,
-  left,
-}: {
-  row: SignalRowModel;
-  top: number;
-  left: number;
-}) {
-  return (
-    <div
-      className="s-moving-signal-hovercard"
-      style={{ top, left }}
-      role="presentation"
-      aria-hidden="true"
-    >
-      <div className="s-moving-signal-overlay-kicker">
-        {row.live ? <span className="s-moving-signal-overlay-live">Live</span> : null}
-        <span>{row.lastAge} ago</span>
-        {row.harness ? <HarnessMark harness={row.harness} size={11} /> : null}
-        <span>{row.name}</span>
-      </div>
-      <p className="s-moving-signal-overlay-action">{row.action}</p>
-      {row.nowLine ? (
-        <p className="s-moving-signal-overlay-now" title={row.nowLine}>
-          <span className="s-moving-signal-overlay-now-label">Now</span>
-          {row.nowLine}
-        </p>
-      ) : null}
-      <SignalMeta row={row} />
-    </div>
-  );
-}
-
-function SignalOverlay({
+function DockedSidecarInspector({
   row,
   onClose,
   navigate,
@@ -601,100 +629,203 @@ function SignalOverlay({
   onClose: () => void;
   navigate: (route: Route) => void;
 }) {
-  const focusTrap = useFocusTrap<HTMLElement>();
-  const go = (route: Route | null) => (event: ReactMouseEvent) => {
-    event.stopPropagation();
-    if (!route) return;
-    onClose();
-    navigate(route);
-  };
+  return (
+    <div className="s-moving-inspector">
+      {/* ── Inspector Header ────────────────────────────────────── */}
+      <header className="s-moving-inspector-head">
+        <div className="s-moving-inspector-head-left">
+          <span
+            className={`dot dot--sm ${row.live ? "dot--working dot--glow dot--pulse" : "dot--neutral"}`}
+            aria-hidden="true"
+          />
+          <span className="label-xs s-moving-inspector-live-status">
+            {row.live ? "LIVE ACTIVE" : "IDLE / LOGGED"}
+          </span>
+          <span className="label-xs s-moving-inspector-age">{row.lastAge} ago</span>
+        </div>
+        <div className="s-moving-inspector-head-right">
+          <button
+            type="button"
+            className="s-moving-inspector-close-btn"
+            title="Close inspector (Esc)"
+            aria-label="Close inspector"
+            onClick={onClose}
+          >
+            <X size={13} aria-hidden="true" />
+          </button>
+        </div>
+      </header>
 
-  const onKeyDown = (event: ReactKeyboardEvent) => {
-    focusTrap.onKeyDown(event);
-    if (event.key === "Escape") {
-      event.stopPropagation();
-      onClose();
-    }
-  };
+      {/* ── Agent & Identity Bar ────────────────────────────────── */}
+      <div className="s-moving-inspector-agent-strip">
+        <div className="s-moving-inspector-agent-ident">
+          <span className="s-moving-inspector-harness-icon">
+            {row.harness ? <HarnessMark harness={row.harness} size={16} /> : <Cpu size={16} />}
+          </span>
+          <div className="s-moving-inspector-agent-meta">
+            <span className="s-moving-inspector-name">{row.name}</span>
+            <span className="label-xs s-moving-inspector-harness-tag">
+              {row.harness || "native agent"}
+            </span>
+          </div>
+        </div>
+        {row.branch && (
+          <span className="chip chip--mono chip--sm chip--working">
+            <GitBranch size={10} aria-hidden="true" />
+            <span>{row.branch}</span>
+          </span>
+        )}
+      </div>
+
+      {/* ── Inspector Scroll Body ───────────────────────────────── */}
+      <div className="s-moving-inspector-body">
+        {/* Main Objective */}
+        <div className="s-moving-inspector-section">
+          <span className="label-xs s-moving-inspector-sec-label">Active Task</span>
+          <p className="s-moving-inspector-action-text">{row.action}</p>
+        </div>
+
+        {/* Live Step / Tool Action */}
+        {row.nowLine && (
+          <div className="s-moving-inspector-section s-moving-inspector-section--now">
+            <span className="label-xs s-moving-inspector-now-badge">Latest Step</span>
+            <p className="s-moving-inspector-now-text">{row.nowLine}</p>
+          </div>
+        )}
+
+        {/* Token Context Gauge */}
+        {row.contextPct !== null && (
+          <div className="s-moving-inspector-section s-moving-inspector-token-sec">
+            <div className="s-moving-inspector-token-header">
+              <span className="label-xs s-moving-inspector-sec-label">Context Window</span>
+              <span className="label-xs s-moving-inspector-token-pct">{row.contextPct}%</span>
+            </div>
+            <div className="s-moving-inspector-token-bar">
+              <div
+                className={`s-moving-inspector-token-fill ${row.contextPct > 80 ? "s-moving-inspector-token-fill--warn" : ""}`}
+                style={{ width: `${row.contextPct}%` }}
+              />
+            </div>
+            {row.tokensUsed !== null && row.tokensMax !== null && (
+              <span className="label-xs s-moving-inspector-token-counts">
+                {Math.round(row.tokensUsed / 1000)}k / {Math.round(row.tokensMax / 1000)}k tokens
+              </span>
+            )}
+          </div>
+        )}
+
+        {/* Machine Metadata Grid */}
+        <div className="s-moving-inspector-section">
+          <span className="label-xs s-moving-inspector-sec-label">Session Metadata</span>
+          <dl className="s-moving-inspector-meta-grid">
+            {row.projectRoot && (
+              <div>
+                <dt>Root</dt>
+                <dd title={row.projectRoot}>{compactPath(row.projectRoot)}</dd>
+              </div>
+            )}
+            {row.sessionAge && (
+              <div>
+                <dt>Session</dt>
+                <dd>{row.sessionAge} uptime</dd>
+              </div>
+            )}
+            <div>
+              <dt>Status</dt>
+              <dd>{row.live ? "streaming" : "ready"}</dd>
+            </div>
+          </dl>
+        </div>
+
+        {/* Touched Files */}
+        {row.touchedFiles.length > 0 && (
+          <div className="s-moving-inspector-section">
+            <span className="label-xs s-moving-inspector-sec-label">
+              Active Files ({row.touchedFiles.length})
+            </span>
+            <ul className="s-moving-inspector-files-list">
+              {row.touchedFiles.slice(0, 4).map((file, i) => (
+                <li key={i} className="s-moving-inspector-file-item">
+                  <FileCode2 size={11} aria-hidden="true" />
+                  <span className="s-moving-inspector-file-path" title={file.path}>
+                    {file.path.split("/").slice(-2).join("/")}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+      </div>
+
+      {/* ── 1-Click Action Footer ───────────────────────────────── */}
+      <footer className="s-moving-inspector-footer">
+        {row.observeRoute && (
+          <button
+            type="button"
+            className="btn btn--sm btn--accent s-moving-inspector-primary-action"
+            onClick={() => navigate(row.observeRoute!)}
+          >
+            <span>Observe Live</span>
+            <ArrowRight size={11} aria-hidden="true" />
+          </button>
+        )}
+        {row.profileRoute && (
+          <button
+            type="button"
+            className="btn btn--sm btn--ghost"
+            onClick={() => navigate(row.profileRoute!)}
+          >
+            <span>Profile</span>
+          </button>
+        )}
+        {row.terminalEnabled && row.terminalRoute && (
+          <button
+            type="button"
+            className="btn btn--sm btn--ghost"
+            onClick={() => navigate(row.terminalRoute!)}
+          >
+            <Terminal size={11} aria-hidden="true" />
+            <span>Terminal</span>
+          </button>
+        )}
+      </footer>
+    </div>
+  );
+}
+
+/* ── Lightweight Hover Card ──────────────────────────────────────── */
+
+function SignalHoverCard({
+  row,
+  top,
+  left,
+}: {
+  row: SignalRowModel | null;
+  top: number;
+  left: number;
+}) {
+  if (!row) return null;
 
   return (
     <div
-      className="s-moving-signal-overlay-root"
-      role="presentation"
-      onClick={onClose}
+      className="s-moving-signal-hovercard"
+      style={{ top, left }}
+      role="tooltip"
+      aria-hidden="true"
     >
-      <aside
-        ref={focusTrap.ref}
-        id="home-moving-signal-overlay"
-        className="s-moving-signal-overlay"
-        role="dialog"
-        aria-modal="true"
-        aria-label={`Details · ${row.name}`}
-        tabIndex={-1}
-        onKeyDown={onKeyDown}
-        onClick={(event) => event.stopPropagation()}
-      >
-        <header className="s-moving-signal-overlay-head">
-          <div className="s-moving-signal-overlay-kicker">
-            {row.live ? <span className="s-moving-signal-overlay-live">Live</span> : null}
-            <span>{row.lastAge} ago</span>
-          </div>
-          <button
-            type="button"
-            className="s-moving-signal-overlay-close"
-            aria-label="Close"
-            onClick={onClose}
-          >
-            ✕
-          </button>
-        </header>
-
-        <div className="s-moving-signal-overlay-body">
-          <p className="s-moving-signal-overlay-action">{row.action}</p>
-          {row.nowLine ? (
-            <p className="s-moving-signal-overlay-now" title={row.nowLine}>
-              <span className="s-moving-signal-overlay-now-label">Now</span>
-              {row.nowLine}
-            </p>
-          ) : null}
-          <SignalMeta row={row} />
-        </div>
-
-        <div className="s-moving-signal-overlay-actions">
-          <button
-            type="button"
-            className="s-moving-signal-overlay-primary"
-            disabled={!row.observeRoute}
-            onClick={go(row.observeRoute)}
-          >
-            Observe
-          </button>
-          <button
-            type="button"
-            className="s-moving-signal-overlay-ghost"
-            disabled={!row.profileRoute}
-            onClick={go(row.profileRoute)}
-          >
-            Profile
-          </button>
-          <button
-            type="button"
-            className="s-moving-signal-overlay-ghost"
-            disabled={!row.terminalEnabled || !row.terminalRoute}
-            onClick={go(row.terminalRoute)}
-          >
-            Terminal
-          </button>
-          <button
-            type="button"
-            className="s-moving-signal-overlay-ghost"
-            disabled={!row.peekEnabled || !row.peekRoute}
-            onClick={go(row.peekRoute)}
-          >
-            Peek
-          </button>
-        </div>
-      </aside>
+      <div className="s-moving-signal-hover-kicker">
+        {row.live && <span className="chip chip--working chip--sm chip--caps">Live</span>}
+        <span className="label-xs">{row.lastAge} ago</span>
+        {row.harness && <HarnessMark harness={row.harness} size={11} />}
+        <span className="s-moving-signal-hover-name">{row.name}</span>
+      </div>
+      <p className="s-moving-signal-hover-action">{row.action}</p>
+      {row.nowLine && (
+        <p className="s-moving-signal-hover-now">
+          <span className="label-xs s-moving-signal-hover-now-tag">Now</span>
+          <span>{row.nowLine}</span>
+        </p>
+      )}
     </div>
   );
 }

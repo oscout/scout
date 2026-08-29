@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { createHash } from "node:crypto";
-import { readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { dirname, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
@@ -10,6 +10,13 @@ const scriptDirectory = dirname(fileURLToPath(import.meta.url));
 const packageDirectory = resolve(scriptDirectory, "..");
 const repoRoot = resolve(packageDirectory, "../..");
 const outputDirectory = resolve(repoRoot, "apps/ios/Scout/Resources/WebSurfaces");
+
+if (!existsSync(resolve(repoRoot, "apps/ios"))) {
+  console.error(
+    "Native web surfaces compile into the private iOS app (apps/ios). They are not part of the public oscout/scout check surface.",
+  );
+  process.exit(1);
+}
 
 for (const [index, surface] of ["lanes", "deck", "dispatch", "chat"].entries()) {
   const build = spawnSync(

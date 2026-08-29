@@ -1276,7 +1276,7 @@ async function discoverSessionFiles(maxAgeDays: number, limit: number): Promise<
 }
 
 function extractProjectName(filePath: string): string {
-  // Claude Code pattern: ~/.claude/projects/-Users-example-dev-PROJECT/...
+  // Claude Code pattern: ~/.claude/projects/-Users-arach-dev-PROJECT/...
   const claudeMatch = filePath.match(/\.claude\/projects\/[^/]*-dev-([^/]+)/);
   if (claudeMatch?.[1]) return claudeMatch[1];
 

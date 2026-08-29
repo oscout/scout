@@ -620,8 +620,8 @@ describe("BrokerLocalInvocationService", () => {
       transport: "codex_app_server",
       harness: "codex",
       sessionId: sessionActor.id,
-      projectRoot: "/Users/example/dev/scope",
-      cwd: "/Users/example/dev/scope",
+      projectRoot: "/Users/art/dev/scope",
+      cwd: "/Users/art/dev/scope",
       metadata: {
         cardless: true,
         handle: "project-chopin",
@@ -645,7 +645,7 @@ describe("BrokerLocalInvocationService", () => {
     );
   });
 
-  test("persists the provider session and traces it before a deferred cardless turn completes", async () => {
+  test("keeps a provider session provisional until a deferred cardless turn completes", async () => {
     const turnGate = deferred();
     const sessionActor = testActor({
       id: "session-spinoza-2",
@@ -660,8 +660,8 @@ describe("BrokerLocalInvocationService", () => {
       transport: "codex_app_server",
       harness: "codex",
       sessionId: sessionActor.id,
-      projectRoot: "/Users/example/dev/openscout-derived-state-retention",
-      cwd: "/Users/example/dev/openscout-derived-state-retention",
+      projectRoot: "/Users/art/dev/openscout-derived-state-retention",
+      cwd: "/Users/art/dev/openscout-derived-state-retention",
       metadata: {
         cardless: true,
         handle: "project-spinoza-2",
@@ -675,7 +675,7 @@ describe("BrokerLocalInvocationService", () => {
       actor: sessionActor,
       endpoint,
       ensureResult: {
-        externalSessionId: "019ff3f8-322d-7572-990f-447725ffd348",
+        externalSessionId: null,
       },
       async invokeEndpoint(nextEndpoint) {
         invokedEndpoint = nextEndpoint;
@@ -699,15 +699,15 @@ describe("BrokerLocalInvocationService", () => {
       // The Scout-owned id remains stable for routing.
       sessionId: sessionActor.id,
       metadata: expect.objectContaining({
-        externalSessionId: "019ff3f8-322d-7572-990f-447725ffd348",
-        threadId: "019ff3f8-322d-7572-990f-447725ffd348",
-        pendingExternalSession: false,
+        pendingExternalSession: true,
       }),
     }));
+    expect(harness.persistedEndpoints[0]?.metadata?.externalSessionId).toBeUndefined();
+    expect(harness.persistedEndpoints[0]?.metadata?.threadId).toBeUndefined();
     expect(invokedEndpoint).toEqual(expect.objectContaining({
       sessionId: sessionActor.id,
       metadata: expect.objectContaining({
-        externalSessionId: "019ff3f8-322d-7572-990f-447725ffd348",
+        pendingExternalSession: true,
       }),
     }));
     expect(harness.persistedFlights).toHaveLength(1);
@@ -716,10 +716,10 @@ describe("BrokerLocalInvocationService", () => {
       summary: "alias project-spinoza-2 → session-spinoza-2 (openscout-derived-state-retention, codex) acknowledged via attach.",
       metadata: expect.objectContaining({
         dispatchAck: expect.objectContaining({
-          sessionId: "019ff3f8-322d-7572-990f-447725ffd348",
+          sessionId: sessionActor.id,
         }),
         sessionTrace: [expect.objectContaining({
-          sessionId: "019ff3f8-322d-7572-990f-447725ffd348",
+          sessionId: sessionActor.id,
         })],
       }),
     }));
@@ -730,6 +730,22 @@ describe("BrokerLocalInvocationService", () => {
     expect(harness.persistedFlights.at(-1)).toEqual(expect.objectContaining({
       state: "completed",
       output: "investigation complete",
+      metadata: expect.objectContaining({
+        dispatchAck: expect.objectContaining({
+          sessionId: "019ff3f8-322d-7572-990f-447725ffd348",
+          refinesSessionId: sessionActor.id,
+        }),
+      }),
+    }));
+    expect(harness.persistedEndpoints.at(-1)).toEqual(expect.objectContaining({
+      id: endpoint.id,
+      state: "idle",
+      sessionId: sessionActor.id,
+      metadata: expect.objectContaining({
+        externalSessionId: "019ff3f8-322d-7572-990f-447725ffd348",
+        threadId: "019ff3f8-322d-7572-990f-447725ffd348",
+        pendingExternalSession: false,
+      }),
     }));
   });
 

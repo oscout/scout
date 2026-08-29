@@ -114,6 +114,39 @@ function flight(
 }
 
 describe("queryRuntimeRegistrySnapshot", () => {
+  test("conversation scope omits unrelated current agent registrations", () => {
+    const snapshot = createRuntimeRegistrySnapshot({
+      actors: {
+        operator: actor("operator"),
+        participant: agent("participant"),
+        unrelated: agent("unrelated"),
+      },
+      agents: {
+        participant: agent("participant"),
+        unrelated: agent("unrelated"),
+      },
+      endpoints: {
+        "endpoint-participant": endpoint("endpoint-participant", "participant", "active"),
+        "endpoint-unrelated": endpoint("endpoint-unrelated", "unrelated", "active"),
+      },
+      conversations: {
+        recent: conversation("recent", ["operator", "participant"], 10),
+      },
+      messages: {
+        recent: message("recent", "recent", "participant", 10),
+      },
+    });
+
+    const result = queryRuntimeRegistrySnapshot(snapshot, {
+      since: 1,
+      scope: "conversations",
+    });
+
+    expect(Object.keys(result.agents)).toEqual(["participant"]);
+    expect(Object.keys(result.endpoints)).toEqual(["endpoint-participant"]);
+    expect(Object.keys(result.actors).sort()).toEqual(["operator", "participant"]);
+  });
+
   test("keeps a coherent current and recent working set", () => {
     const now = 10 * DAY_MS;
     const since = now - DAY_MS;
@@ -194,5 +227,78 @@ describe("queryRuntimeRegistrySnapshot", () => {
     const result = queryRuntimeRegistrySnapshot(snapshot, { since });
 
     expect(Object.keys(result.conversations)).toEqual(["legacy"]);
+  });
+
+  test("keeps active-flight invocations beyond the per-conversation history cap", () => {
+    const activeInvocation = {
+      ...invocation("active", "participant", 1),
+      conversationId: "channel",
+    };
+    const completedInvocations = Object.fromEntries(
+      Array.from({ length: 12 }, (_, index) => {
+        const id = `completed-${index}`;
+        return [id, {
+          ...invocation(id, "participant", index + 2),
+          conversationId: "channel",
+        }];
+      }),
+    );
+    const completedFlights = Object.fromEntries(
+      Object.keys(completedInvocations).map((id, index) => [
+        id,
+        flight(id, id, "participant", "completed", index + 2),
+      ]),
+    );
+    const snapshot = createRuntimeRegistrySnapshot({
+      actors: { operator: actor("operator"), participant: agent("participant") },
+      agents: { participant: agent("participant") },
+      conversations: {
+        channel: {
+          ...conversation("channel", ["operator", "participant"], 1),
+          kind: "channel",
+        },
+      },
+      invocations: { active: activeInvocation, ...completedInvocations },
+      flights: {
+        active: flight("active", "active", "participant", "running"),
+        ...completedFlights,
+      },
+    });
+
+    const result = queryRuntimeRegistrySnapshot(snapshot, { since: 1, scope: "conversations" });
+
+    expect(result.invocations.active?.id).toBe("active");
+    expect(result.flights.active?.state).toBe("running");
+    expect(Object.keys(result.invocations)).toHaveLength(13);
+  });
+
+  test("keeps live channel participants beyond the rich-roster cap", () => {
+    const participantIds = ["operator", ...Array.from({ length: 33 }, (_, index) => `agent-${index}`)];
+    const liveAgentId = participantIds.at(-1)!;
+    const participantAgents = Object.fromEntries(
+      participantIds.slice(1).map((id) => [id, agent(id)]),
+    );
+    const snapshot = createRuntimeRegistrySnapshot({
+      actors: { operator: actor("operator"), ...participantAgents },
+      agents: participantAgents,
+      endpoints: {
+        live: endpoint("live", liveAgentId, "active"),
+      },
+      conversations: {
+        channel: {
+          ...conversation("channel", participantIds, 1),
+          kind: "channel",
+        },
+      },
+      messages: {
+        recent: message("recent", "channel", "operator", 2),
+      },
+    });
+
+    const result = queryRuntimeRegistrySnapshot(snapshot, { since: 1, scope: "conversations" });
+
+    expect(result.actors[liveAgentId]?.id).toBe(liveAgentId);
+    expect(result.agents[liveAgentId]?.id).toBe(liveAgentId);
+    expect(result.endpoints.live?.agentId).toBe(liveAgentId);
   });
 });

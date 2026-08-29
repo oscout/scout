@@ -343,6 +343,7 @@ export type BrokerHistoryKey = "attempts" | "failedQueries" | "failedDeliveries"
 export type BrokerDiagnosticsSource = {
   mode: "live_broker" | "sqlite_projection";
   status: "current" | "degraded" | "unknown";
+  brokerReachable?: boolean | null;
   latestMessageAt: number | null;
   projectionLatestMessageAt: number | null;
   liveMessageCount: number | null;
@@ -734,6 +735,11 @@ export type SessionEntry = {
     transport?: string | null;
     workspaceRoot?: string | null;
   }>;
+  /**
+   * True total participant count. `participantIds`/`participants` may be
+   * capped server-side for large channel rosters — prefer this for counts.
+   */
+  participantCount?: number;
   authorityNodeId?: string | null;
   authorityNodeName?: string | null;
   agentId: string | null;
@@ -1501,7 +1507,7 @@ export type Route =
 	    };
 
 export type AgentTab = "profile" | "config" | "observe" | "message";
-export type OpsMode = "plan" | "mission" | "issues" | "agents" | "tail" | "atop" | "lanes";
+export type OpsMode = "advisor" | "mission" | "issues" | "agents" | "tail" | "atop" | "lanes";
 export type FollowPreferredView = "tail" | "session" | "chat" | "work";
 /** URL-addressable settings surface sections (SCO-082 Phase B). */
 export type SettingsSection =

@@ -102,3 +102,37 @@ export function useBrokerEvents(onEvent: (event: BrokerEvent) => void) {
     });
   }, []);
 }
+
+/**
+ * Debounced refetch-on-broker-event: a burst of matching events collapses
+ * into one `refresh()` per debounce window. Use this instead of calling a
+ * fetch directly from `useBrokerEvents` — event storms otherwise fan out
+ * into back-to-back full refetches.
+ */
+export function useBrokerEventsRefresh(
+  matches: (event: BrokerEvent) => boolean,
+  refresh: () => void,
+  debounceMs = 250,
+) {
+  const matchesRef = useRef(matches);
+  matchesRef.current = matches;
+  const refreshRef = useRef(refresh);
+  refreshRef.current = refresh;
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useBrokerEvents((event) => {
+    if (!matchesRef.current(event)) return;
+    if (timerRef.current) return;
+    timerRef.current = setTimeout(() => {
+      timerRef.current = null;
+      refreshRef.current();
+    }, debounceMs);
+  });
+
+  useEffect(() => () => {
+    if (timerRef.current) {
+      clearTimeout(timerRef.current);
+      timerRef.current = null;
+    }
+  }, []);
+}

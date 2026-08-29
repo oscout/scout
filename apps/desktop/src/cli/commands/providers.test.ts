@@ -1,5 +1,9 @@
 import { describe, expect, test } from "bun:test";
 
+import {
+  buildOrchestrationProviderMap,
+  renderOrchestrationProviderMap,
+} from "@openscout/protocol";
 import { createScoutCommandContext, type ScoutCommandContext } from "../context.ts";
 import {
   buildProviderUsageReport,
@@ -122,6 +126,7 @@ describe("providers command", () => {
     const help = renderProvidersCommandHelp();
 
     expect(help).toContain("scout providers usage");
+    expect(help).toContain("scout providers map");
     expect(help).toContain("every provider quota window");
     expect(help).toContain("--cached");
     expect(help).toContain("--json");
@@ -136,6 +141,15 @@ describe("providers command", () => {
       command: "usage",
       forceRefresh: false,
     });
+    expect(parseProvidersCommandOptions(["map", "--role", "implementation", "--cached"])).toEqual({
+      command: "map",
+      forceRefresh: false,
+      role: "implementation",
+    });
+    expect(() => parseProvidersCommandOptions(["map", "--role", "unknown"]))
+      .toThrow("must be one of");
+    expect(() => parseProvidersCommandOptions(["usage", "--role", "implementation"]))
+      .toThrow("does not accept --role");
     expect(() => parseProvidersCommandOptions(["usage", "--refresh", "--cached"]))
       .toThrow("only one of --refresh or --cached");
   });
@@ -175,6 +189,290 @@ describe("providers command", () => {
     });
     expect(report.providers[0]?.windows[0]?.resetAtLocal)
       .toMatch(/^Tue, Aug 11(?: at|,) 8:00 PM UTC$/u);
+  });
+
+  test("maps orchestration roles using capability fit and multi-window pacing", () => {
+    const report = buildProviderUsageReport({
+      generatedAt: NOW,
+      gauges: [
+        ...serviceBudgetsPayload.gauges as unknown[],
+        {
+          id: "kimi",
+          label: "kimi",
+          kind: "quota",
+          fill: 0.367,
+          plan: "Advanced",
+          windows: [
+            {
+              label: "5h",
+              fill: 0,
+              windowMs: 5 * 60 * 60_000,
+              resetAt: NOW + 2 * 60 * 60_000,
+              capturedAt: NOW,
+              source: "Kimi API",
+            },
+            {
+              label: "7d",
+              fill: 0.367,
+              windowMs: 7 * 24 * 60 * 60_000,
+              resetAt: NOW + 30 * 60 * 60_000,
+              capturedAt: NOW,
+              source: "Kimi API",
+            },
+            {
+              label: "monthly",
+              fill: 0.3288,
+              windowMs: 31 * 24 * 60 * 60_000,
+              resetAt: NOW + 20 * 24 * 60 * 60_000,
+              capturedAt: NOW,
+              source: "Kimi dashboard",
+            },
+          ],
+        },
+        {
+          id: "grok",
+          label: "grok",
+          kind: "quota",
+          fill: 0.08,
+          windows: [{
+            label: "7d",
+            fill: 0.08,
+            windowMs: 7 * 24 * 60 * 60_000,
+            resetAt: NOW + 24 * 60 * 60_000,
+            capturedAt: NOW,
+            source: "Grok local billing",
+          }],
+        },
+      ],
+    }, formatOptions);
+    const map = buildOrchestrationProviderMap(report, { now: NOW });
+
+    expect(map.assignments.find((assignment) => assignment.role === "large_context_synthesis"))
+      .toMatchObject({
+        modelLabel: "Kimi Code",
+        route: { providerId: "kimi", harness: "kimi", profile: "Kimi" },
+        fit: 100,
+        objective: expect.stringContaining("Repository-wide investigations"),
+        taskRationale: expect.stringContaining("long-context retrieval"),
+        quotaRisk: false,
+        quotaRiskMessage: null,
+        caution: expect.stringContaining("probe before large fan-out"),
+        quota: {
+          availability: "abundant",
+          pacing: "on_track",
+          minimumRemainingPercent: 63.3,
+          bindingWindow: "7d",
+        },
+        alternatives: [
+          expect.objectContaining({
+            label: "Opus 5",
+            fit: 91,
+            taskRationale: expect.stringContaining("structural understanding"),
+            quotaRisk: false,
+            capability: expect.stringContaining("Long-context synthesis"),
+            caution: expect.stringContaining("Premium shared Claude quota"),
+          }),
+          expect.anything(),
+        ],
+      });
+    expect(map.assignments.find((assignment) => assignment.role === "adversarial_critique"))
+      .toMatchObject({ modelLabel: "Grok 4.6" });
+    expect(map.assignments.find((assignment) => assignment.role === "implementation"))
+      .toMatchObject({ modelLabel: "GPT-5.6 Sol" });
+    expect(map.models.find((model) => model.modelLabel === "Kimi Code")).toMatchObject({
+      guidance: "use_now",
+      quotaRisk: false,
+      roles: [{ role: "large_context_synthesis", label: "Large-context synthesis" }],
+      strengths: [expect.stringContaining("Dense repository")],
+      cautions: [expect.stringContaining("quota telemetry can be stale")],
+    });
+    expect(map.models.find((model) => model.modelLabel === "Grok 4.6"))
+      .toMatchObject({ guidance: "use_now" });
+
+
+    const quotaBiasedMap = buildOrchestrationProviderMap(report, { now: NOW, bias: "quota" });
+    expect(quotaBiasedMap.bias).toBe("quota");
+    expect(quotaBiasedMap.assignments.find((assignment) => assignment.role === "product_judgment"))
+      .toMatchObject({ modelLabel: "Grok 4.6" });
+
+    const capabilityBiasedMap = buildOrchestrationProviderMap(report, { now: NOW, bias: "capability" });
+    expect(capabilityBiasedMap.bias).toBe("capability");
+    expect(capabilityBiasedMap.assignments.find((assignment) => assignment.role === "product_judgment"))
+      .toMatchObject({ modelLabel: "Fable 5" });
+    const rendered = renderOrchestrationProviderMap(map);
+    expect(rendered).toContain("Orchestration map · quota-aware");
+    expect(rendered).toContain("Large-context synthesis");
+    expect(rendered).toContain("63.3% minimum remaining · usage tracks elapsed time · telemetry fresh");
+    expect(rendered).toContain("not durable `scout role` assignments");
+  });
+
+  test("falls back from a constrained preferred provider", () => {
+    const report = buildProviderUsageReport({
+      generatedAt: NOW,
+      gauges: [
+        {
+          id: "claude",
+          label: "claude",
+          kind: "quota",
+          fill: 0.95,
+          windows: [{
+            label: "7d",
+            fill: 0.95,
+            windowMs: 7 * 24 * 60 * 60_000,
+            resetAt: NOW + 5 * 24 * 60 * 60_000,
+            capturedAt: NOW,
+            source: "Claude local status",
+          }],
+        },
+        {
+          id: "codex",
+          label: "codex",
+          kind: "quota",
+          fill: 0.1,
+          windows: [{
+            label: "7d",
+            fill: 0.1,
+            windowMs: 7 * 24 * 60 * 60_000,
+            resetAt: NOW + 3 * 24 * 60 * 60_000,
+            capturedAt: NOW,
+            source: "Codex local session",
+          }],
+        },
+      ],
+    }, formatOptions);
+    const map = buildOrchestrationProviderMap(report, {
+      now: NOW,
+      role: "product_judgment",
+    });
+
+    expect(map.assignments).toHaveLength(1);
+    expect(map.assignments[0]).toMatchObject({
+      role: "product_judgment",
+      modelLabel: "GPT-5.6 Sol",
+      route: { providerId: "codex" },
+      quotaRisk: false,
+      quotaRiskMessage: null,
+      alternatives: expect.arrayContaining([
+        expect.objectContaining({
+          label: "Fable 5",
+          quotaRisk: true,
+        }),
+      ]),
+    });
+  });
+
+  test("prefers a quota-safe provider fallback and keeps risk guidance consistent", () => {
+    const report = buildProviderUsageReport({
+      generatedAt: NOW,
+      gauges: [
+        {
+          id: "codex",
+          label: "codex",
+          kind: "quota",
+          fill: 0.8,
+          windows: [{
+            label: "7d",
+            fill: 0.8,
+            windowMs: 7 * 24 * 60 * 60_000,
+            resetAt: NOW + 60 * 60_000,
+            capturedAt: NOW,
+            source: "Codex local session",
+          }],
+        },
+        {
+          id: "claude",
+          label: "claude",
+          kind: "quota",
+          fill: 0.5,
+          windows: [{
+            label: "7d",
+            fill: 0.5,
+            windowMs: 7 * 24 * 60 * 60_000,
+            resetAt: NOW + 3.5 * 24 * 60 * 60_000,
+            capturedAt: NOW,
+            source: "Claude local status",
+          }],
+        },
+      ],
+    }, formatOptions);
+    const map = buildOrchestrationProviderMap(report, {
+      now: NOW,
+      role: "implementation",
+    });
+
+    const assignment = map.assignments[0]!;
+    expect(assignment).toMatchObject({
+      modelLabel: "GPT-5.6 Sol",
+      quotaRisk: true,
+    });
+    expect(assignment.alternatives[0]).toMatchObject({
+      label: "Sonnet 4.6",
+      route: { providerId: "claude" },
+      quotaRisk: false,
+    });
+    expect(assignment.alternatives[1]).toMatchObject({
+      label: "GPT-5.6 Terra",
+      route: { providerId: "codex" },
+      quotaRisk: true,
+    });
+    expect(map.models.find((model) => model.modelLabel === "GPT-5.6 Sol"))
+      .toMatchObject({ guidance: "conserve", quotaRisk: true });
+  });
+
+  test("does not call unknown telemetry a quota-safe fallback", () => {
+    const report = buildProviderUsageReport({
+      generatedAt: NOW,
+      gauges: [
+        {
+          id: "minimax",
+          label: "minimax",
+          kind: "quota",
+          fill: 0.8,
+          windows: [{
+            label: "7d",
+            fill: 0.8,
+            windowMs: 7 * 24 * 60 * 60_000,
+            resetAt: NOW + 60 * 60_000,
+            capturedAt: NOW,
+            source: "MiniMax API",
+          }],
+        },
+        {
+          id: "claude",
+          label: "claude",
+          kind: "quota",
+          fill: 0.5,
+          windows: [{
+            label: "7d",
+            fill: 0.5,
+            windowMs: 7 * 24 * 60 * 60_000,
+            resetAt: NOW + 3.5 * 24 * 60 * 60_000,
+            capturedAt: NOW,
+            source: "Claude local status",
+          }],
+        },
+      ],
+    }, formatOptions);
+    const map = buildOrchestrationProviderMap(report, {
+      now: NOW,
+      role: "evidence_inventory",
+      bias: "capability",
+    });
+
+    const assignment = map.assignments[0]!;
+    expect(assignment).toMatchObject({ modelLabel: "MiniMax M3", quotaRisk: true });
+    expect(assignment.alternatives[0]).toMatchObject({
+      label: "Haiku 4.5",
+      quotaRisk: false,
+      quota: { confidence: "fresh", minimumRemainingPercent: 50 },
+    });
+    expect(assignment.alternatives[1]).toMatchObject({
+      label: "GPT-5.6 Luna",
+      quotaRisk: false,
+      quota: { confidence: "unknown", minimumRemainingPercent: null },
+    });
+    expect(map.models.find((model) => model.modelLabel === "GPT-5.6 Luna"))
+      .toMatchObject({ guidance: "probe_first", quotaRisk: false });
   });
 
   test("renders a compact local-time view with source and freshness", () => {

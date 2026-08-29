@@ -243,128 +243,718 @@ button.s-thread-center-header-name {
   flex-shrink: 0;
 }
 
+/* Facepile — inset coin. See design/studio `/studies/thread-facepile`
+   (variant E) for the argument; the geometry below is the whole of it.
+
+   The textbook facepile assumes photographs, which stay recognisable from a
+   fraction of themselves. Ours are 7x7 generative sprites where the entire
+   grid IS the identity, so an earlier overlap pass turned five creatures into
+   one smear. The defect was never the overlap — it was that the sprite filled
+   its disc edge to edge, so overlapping discs necessarily overlapped
+   identities. Inset the sprite and the disc gains a ring of deliberate dead
+   space: the coins lap, and the lap only ever eats dead space.
+
+   One invariant does the work. Every coin but the leftmost loses `lap` px of
+   its left side to the neighbour on top, plus `cut` px to the carved gap, so
+   the sprite must clear that much on the occluded side — and it is centred,
+   so it pays on both:
+
+     sprite = coin - 2 x (lap + cut)     [less 1px of anti-alias slack]
+
+   Raise the lap and the sprite shrinks with it; the creature can never reach
+   the carve, so it is never eaten. */
 .s-thread-participants {
+  --fp-coin: 46px;
+  /* How deeply the coins lap. Everything else follows from it. */
+  --fp-lap: 9px;
+  /* The carved gap between coins. */
+  --fp-cut: 1px;
+  --fp-step: calc(var(--fp-coin) - var(--fp-lap));
+  /* The invariant would give 25px here. The suit re-fits it to 24 and seats it
+     high in the helmet instead of centring it — see the Astronaut section at
+     the foot of this block for why the vertical half of the invariant stops
+     applying once there is a body under the head. 24 < 25, so the horizontal
+     clearance the invariant exists to guarantee still holds. */
+  --fp-sprite: 24px;
+  /* Harness badge. Not on the 45° diagonal, where it would bridge the carved
+     gap into the next coin — swung down to ~70°, where the neighbouring disc
+     has curved away and the badge clears it entirely. */
+  --fp-badge: 14px;
   display: flex;
   align-items: center;
-  gap: var(--space-xs);
   min-width: 0;
   max-width: min(48vw, 520px);
 }
 
-.s-thread-participant-pill,
-.s-thread-participant-overflow {
+/* The slot: unclipped, owns spacing and stacking. `--fp-z` descends
+   left→right (set in ConversationHeader.tsx) so the leftmost coin paints on
+   top and every coin is cut by its own left neighbour. */
+.s-thread-participant {
+  position: relative;
+  z-index: var(--fp-z, 0);
   display: inline-flex;
   align-items: center;
-  min-height: 28px;
-  border: 1px solid color-mix(in srgb, var(--border) 58%, transparent);
-  border-radius: var(--radius-pill);
-  background: color-mix(in srgb, var(--bg) 82%, transparent);
+  justify-content: center;
+  width: var(--fp-coin);
+  height: var(--fp-coin);
+  flex: 0 0 auto;
+  padding: 0;
+  border: 0;
+  background: transparent;
   color: var(--muted);
-  font-size: var(--text-sm);
 }
 
-.s-thread-participant-pill {
-  gap: var(--space-xs);
-  max-width: 200px;
-  min-width: 0;
-  padding: 2px var(--space-sm) 2px 3px;
+.s-thread-participant + .s-thread-participant {
+  margin-left: calc(var(--fp-lap) * -1);
 }
 
-button.s-thread-participant-pill {
+/* The coin. `overflow: hidden` is load-bearing — the sprite renderer lets
+   pixels bleed past their box (glow, sub-pixel rounding), and in a pile a
+   bleeding neighbour fills the carve back in. */
+.s-thread-participant-face {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: var(--fp-coin);
+  height: var(--fp-coin);
+  border-radius: 50%;
+  overflow: hidden;
+  background: color-mix(in srgb, var(--ink) 7%, var(--surface));
+  transition:
+    background 160ms ease,
+    box-shadow 160ms ease;
+}
+
+/* The carve: a real hole punched by the left neighbour, radius = its radius
+   plus the gap, centred one step to the left. Because the separation is
+   absence rather than paint, it holds over any background — an opaque ring in
+   the surface colour shows as a visible halo the moment the band is
+   translucent or gradient. */
+.s-thread-participant + .s-thread-participant .s-thread-participant-face {
+  --fp-carve: radial-gradient(
+    circle at calc(50% - var(--fp-step)) 50%,
+    transparent calc(var(--fp-coin) / 2 + var(--fp-cut)),
+    #000 calc(var(--fp-coin) / 2 + var(--fp-cut) + 0.5px)
+  );
+  -webkit-mask-image: var(--fp-carve);
+  mask-image: var(--fp-carve);
+}
+
+button.s-thread-participant {
   font: inherit;
   cursor: pointer;
 }
 
-button.s-thread-participant-pill:hover {
-  border-color: color-mix(in srgb, var(--accent) 34%, var(--border));
+/* ── The wake: pointer NEAR the pile ──────────────────────────────────
+   Hovering anywhere on the pile brings every coin up out of the band —
+   fill lifts, a hairline ring appears — rippling left→right off `--fp-i`.
+   Deliberately no geometry change: a facepile that re-flows on approach
+   slides the coin out from under the pointer you aimed with. */
+.s-thread-participants:hover .s-thread-participant-face {
+  background: color-mix(in srgb, var(--ink) 12%, var(--surface));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--border) 60%, transparent);
+  transition-delay: calc(var(--fp-i, 0) * 26ms);
+}
+
+/* ── The reaction: pointer ON one coin ────────────────────────────────
+   It comes forward — above its neighbours, un-carved, lifted, the creature
+   scaled up and glancing. Everything a coin can be is here, so the answer to
+   "which one am I pointing at" needs no reading. These rules follow the wake
+   above, so they win at equal specificity; `:hover` also beats `--fp-z`. */
+.s-thread-participant {
+  transition:
+    transform 180ms cubic-bezier(0.22, 1, 0.36, 1),
+    filter 180ms ease;
+}
+
+.s-thread-participant:hover {
+  z-index: 40;
+  transform: translateY(-3px);
+  filter: drop-shadow(0 4px 8px color-mix(in srgb, var(--bg) 70%, transparent));
+}
+
+.s-thread-participant:hover .s-thread-participant-face {
+  -webkit-mask-image: none;
+  mask-image: none;
+  background: color-mix(in srgb, var(--ink) 14%, var(--surface));
+  box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--accent) 55%, transparent);
+  transition-delay: 0s;
+}
+
+.s-thread-participant:hover .s-thread-participant-avatar {
+  transform: scale(1.1);
+}
+
+/* The glance. One dart and back, inside the sclera — the eye cell is 10 user
+   units and the pupil ~4.8, so ±1.4 stays in the white. SVG children take
+   transforms in user units, which is why these are unitless-looking px. */
+.s-thread-participant:hover .sprite-cell--eye circle {
+  animation: s-thread-participant-glance 460ms cubic-bezier(0.34, 1.4, 0.64, 1) 1;
+}
+
+@keyframes s-thread-participant-glance {
+  0% {
+    transform: translateX(0);
+  }
+  30% {
+    transform: translateX(1.4px);
+  }
+  62% {
+    transform: translateX(-1.2px);
+  }
+  100% {
+    transform: translateX(0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .s-thread-participant,
+  .s-thread-participant-face,
+  .s-thread-participant-avatar {
+    transition: none;
+  }
+
+  .s-thread-participant:hover {
+    transform: none;
+  }
+
+  .s-thread-participant:hover .s-thread-participant-avatar {
+    transform: none;
+  }
+
+  .s-thread-participant:hover .sprite-cell--eye circle {
+    animation: none;
+  }
+}
+
+/* The sprite, inset so it clears the lap and the carve on every side — see
+   the invariant above. */
+.s-thread-participant-avatar {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--fp-sprite);
+  height: var(--fp-sprite);
+  flex: 0 0 auto;
+  transition: transform 180ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+/* Harness mark — the runtime, at rest, without touching the creature. It sits
+   on the slot rather than the face (the face is clipped and carved), hung low
+   on the coin's right so it clears both the sprite box above it and the next
+   coin beside it. The ring is painted rather than carved: this badge is small,
+   opaque, and always over the header band's own colour. */
+.s-thread-participant-harness {
+  position: absolute;
+  right: 4px;
+  bottom: -3px;
+  display: grid;
+  place-items: center;
+  width: var(--fp-badge);
+  height: var(--fp-badge);
+  border-radius: 50%;
+  /* Lighter than the coin it sits on and ringed in the band's own colour, so
+     it reads as a badge pinned to the coin rather than a glyph floating under
+     it. Stays the lightest fill in the pile through every hover state. */
+  background: color-mix(in srgb, var(--ink) 18%, var(--surface));
+  box-shadow: 0 0 0 1.5px var(--surface);
+  color: var(--muted);
+  pointer-events: none;
+  transition: color 160ms ease;
+}
+
+.s-thread-participant:hover .s-thread-participant-harness {
   color: var(--ink);
 }
 
+/* Operator (active member) — neutral so it never reads as an agent author. */
+.s-thread-participant--operator .s-thread-participant-face {
+  background: color-mix(in srgb, var(--surface) 70%, var(--bg));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--border) 70%, transparent);
+  color: var(--muted);
+}
+
+/* ══ Astronaut ═══════════════════════════════════════════════════════════
+   The coin is a helmet and the creature is what you see through the visor.
+   The suit (AstronautSuit.tsx) is its own layer, never extra rows on the
+   sprite, so the generator is untouched and a creature invented tomorrow
+   drops into the same body.
+
+   It is also what pays for the density. What is common carries no identity,
+   so the suit is the one part of a coin a neighbour may safely eat — which is
+   how the lap reaches 20% with every head still whole. The head sits high in
+   the helmet rather than centred, so the invariant's vertical symmetry no
+   longer applies; its horizontal guarantee still does. */
+.s-thread-participant-face {
+  /* Team colours. The base follows the theme; `--fp-suit-hue` is the runtime's
+     own hue angle, set per slot in ConversationHeader.tsx and absent for an
+     agent whose harness is unknown — which correctly leaves a grey suit. */
+  --fp-suit: color-mix(
+    in oklab,
+    oklch(0.62 0.14 var(--fp-suit-hue, 260)) 22%,
+    color-mix(in srgb, var(--ink) 13%, var(--surface))
+  );
+  --fp-suit-light: color-mix(
+    in oklab,
+    oklch(0.68 0.16 var(--fp-suit-hue, 260)) 34%,
+    color-mix(in srgb, var(--ink) 20%, var(--surface))
+  );
+  /* Above ~10% this reads as a scratch on the glass rather than a highlight. */
+  --fp-visor: color-mix(in srgb, var(--ink) 9%, transparent);
+  align-items: start;
+}
+
+.s-thread-participant-suit {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+
+[data-scout-avatar-style="crew"] .s-thread-participant-suit,
+[data-scout-avatar-style="chip"] .s-thread-participant-suit {
+  display: none;
+}
+
+[data-scout-avatar-style="crew"] .s-thread-participant-face,
+[data-scout-avatar-style="chip"] .s-thread-participant-face {
+  align-items: center;
+  justify-content: center;
+}
+
+[data-scout-avatar-style="crew"] .s-thread-participant-avatar,
+[data-scout-avatar-style="chip"] .s-thread-participant-avatar {
+  align-self: center;
+  margin-top: 0;
+  width: 100% !important;
+  height: 100% !important;
+}
+
+[data-scout-avatar-style="crew"] .s-thread-participant-harness,
+[data-scout-avatar-style="chip"] .s-thread-participant-harness {
+  display: none;
+}
+
+/* Seated, not centred — and centred horizontally at rest, always. An earlier
+   pass nudged the sprite right to buy clearance from the carve; at a 9px lap
+   it does not need to, and the nudge read as a permanent lean. */
 .s-thread-participant-avatar {
+  align-self: start;
+  margin-top: 6px;
+}
+
+.s-thread-participant:hover .s-thread-participant-avatar {
+  transform: scale(1.08);
+  transform-origin: 50% 38%;
+}
+
+/* The overflow count has no head, so it keeps the centred treatment. */
+.s-thread-participant-face--overflow {
+  align-items: center;
+}
+
+/* ── The runtime mark: subtle, then active ────────────────────────────
+   Quiet at rest so four glyphs do not compete with four creatures, legible
+   the moment the pointer reaches the pile (rippling off `--fp-i` like the
+   wake), full contrast on the coin itself, and always legible on whoever
+   holds the turn. Printing it into the suit instead was tried and rejected:
+   at ~10px on this creature it stops being a mark. */
+.s-thread-participant-harness {
+  right: 3px;
+  bottom: 2px;
+  background: color-mix(in srgb, var(--ink) 15%, var(--surface));
+  box-shadow: none;
+  color: color-mix(in srgb, var(--ink) 44%, transparent);
+  transform: scale(0.9);
+  transition:
+    background 180ms ease,
+    color 180ms ease,
+    transform 200ms cubic-bezier(0.34, 1.4, 0.64, 1);
+}
+
+.s-thread-participants:hover .s-thread-participant-harness {
+  background: color-mix(in srgb, var(--ink) 26%, var(--surface));
+  color: color-mix(in srgb, var(--ink) 80%, transparent);
+  transform: scale(1);
+  transition-delay: calc(var(--fp-i, 0) * 26ms);
+}
+
+.s-thread-participant:hover .s-thread-participant-harness {
+  background: color-mix(in srgb, var(--ink) 34%, var(--surface));
+  color: var(--ink);
+  transform: scale(1.08);
+  transition-delay: 0s;
+}
+
+/* ── The turn ─────────────────────────────────────────────────────────
+   The agent mid-turn takes what the pointer gives: raised above its
+   neighbours, un-carved, ringed in the accent. Driven by state rather than
+   the mouse, off the same `data-state` the attention loop reads. */
+.s-thread-participant[data-state="in_turn"] {
+  z-index: 50;
+  transform: translateY(-3px);
+}
+
+.s-thread-participant[data-state="in_turn"] .s-thread-participant-face {
+  -webkit-mask-image: none;
+  mask-image: none;
+  background: color-mix(in srgb, var(--ink) 12%, var(--surface));
+  animation: s-thread-participant-turn 2600ms ease-in-out infinite;
+}
+
+.s-thread-participant[data-state="in_turn"] + .s-thread-participant .s-thread-participant-face {
+  -webkit-mask-image: none;
+  mask-image: none;
+}
+
+.s-thread-participant[data-state="in_turn"] .s-thread-participant-harness {
+  background: color-mix(in srgb, var(--ink) 30%, var(--surface));
+  color: var(--ink);
+  transform: scale(1);
+}
+
+@keyframes s-thread-participant-turn {
+  0%,
+  100% {
+    box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--accent) 26%, transparent);
+  }
+  50% {
+    box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--accent) 72%, transparent);
+  }
+}
+
+/* ── What the eyes do ─────────────────────────────────────────────────
+   Five behaviours across four deliberately disjoint channels, so no two ever
+   contend for the same property:
+
+     .sprite-cell--eye   scaleY      blink       ambient, staggered
+     circle              transform   gaze/scan   pointer near / working
+     circle              r           dilate      holding the turn
+                                     widen       pointer on the coin
+     avatar svg          rotate      lean        pointer near
+
+   The transform and rotate channels live in use-facepile-attention.ts; the
+   rest are here. Gaze and scan share the pupil's position on purpose — they
+   are the same channel arbitrated by distance.
+
+   `r` is an SVG geometry property, animatable in CSS in Chrome and Safari;
+   where it is not, the pupil simply holds its resting radius and the ring
+   still carries the turn. */
+.s-thread-participant .sprite-cell--eye {
+  transform-box: fill-box;
+  transform-origin: 50% 50%;
+  animation: s-thread-participant-blink 7200ms ease-in-out infinite;
+  /* Negative per-slot stagger, so the pile never blinks in unison. */
+  animation-delay: calc(var(--fp-i, 0) * -1730ms);
+}
+
+@keyframes s-thread-participant-blink {
+  0%,
+  93%,
+  100% {
+    transform: scaleY(1);
+  }
+  96% {
+    transform: scaleY(0.06);
+  }
+}
+
+/* Gaze owns the pupil's position, so pointing at a coin cannot dart it — it
+   widens instead, which is a different property and composes cleanly. This
+   replaces the earlier translate-based glance. */
+.s-thread-participant .sprite-cell--eye circle {
+  transition: transform 120ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.s-thread-participant:hover .sprite-cell--eye circle {
+  animation: s-thread-participant-widen 420ms ease-out 1;
+}
+
+.s-thread-participant[data-state="in_turn"] .sprite-cell--eye circle {
+  animation: s-thread-participant-dilate 2600ms ease-in-out infinite;
+}
+
+@keyframes s-thread-participant-widen {
+  0%,
+  100% {
+    r: 2.4px;
+  }
+  42% {
+    r: 3px;
+  }
+}
+
+@keyframes s-thread-participant-dilate {
+  0%,
+  100% {
+    r: 2.4px;
+  }
+  50% {
+    r: 3.2px;
+  }
+}
+
+/* The head's rotation is written inline by the attention loop, so it needs the
+   pivot and the easing from here. Origin low in the box: a head leans at the
+   neck, not around its middle. */
+.s-thread-participant-avatar svg {
+  transform-origin: 50% 92%;
+  transition: transform 220ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+/* Every one of the five stops dead. The loop never starts (it checks the same
+   query), and these cover the CSS half plus anything the loop left inline. */
+@media (prefers-reduced-motion: reduce) {
+  .s-thread-participant .sprite-cell--eye,
+  .s-thread-participant .sprite-cell--eye circle,
+  .s-thread-participant:hover .sprite-cell--eye circle,
+  .s-thread-participant[data-state="in_turn"] .sprite-cell--eye circle {
+    animation: none;
+    transition: none;
+    transform: none !important;
+  }
+
+  .s-thread-participant-avatar svg {
+    transition: none;
+    transform: none !important;
+  }
+
+  .s-thread-participant[data-state="in_turn"] {
+    transform: none;
+  }
+
+  .s-thread-participant[data-state="in_turn"] .s-thread-participant-face {
+    animation: none;
+    box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--accent) 55%, transparent);
+  }
+}
+
+/* Overflow count — a quiet coin continuing the pile. Text, not a creature, so
+   it takes the inset as leading padding instead: the count then centres in the
+   part of the coin the neighbour has not carved away, rather than in the box
+   (which would push the leading `+` under the cut). */
+.s-thread-participant-face--overflow {
+  padding-left: calc(var(--fp-lap) + var(--fp-cut));
+  background: color-mix(in srgb, var(--surface) 80%, var(--bg));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--border) 55%, transparent);
+  color: var(--dim);
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  font-variant-numeric: tabular-nums;
+  /* The widest count compactCount() can produce ("+7.3k") has to clear the
+     carve on both sides of the coin. */
+  letter-spacing: -0.04em;
+  white-space: nowrap;
+}
+
+/* Operator observer mark — dashed eye disc, signals not-in-thread. */
+.s-thread-participant-observer {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   width: 22px;
   height: 22px;
   flex: 0 0 auto;
-  border-radius: var(--radius-pill);
-  overflow: visible;
-}
-
-.s-thread-participant-identity {
-  display: inline-flex;
-  flex-direction: column;
-  align-items: flex-start;
-  justify-content: center;
-  min-width: 0;
-  line-height: 1.15;
-}
-
-.s-thread-participant-name {
-  min-width: 0;
-  max-width: 100%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.s-thread-participant-model {
-  min-width: 0;
-  max-width: 100%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  color: var(--dim);
-  font-family: var(--font-mono);
-  font-size: var(--text-xs);
-  letter-spacing: 0.01em;
-}
-
-/* Operator pill (active member) — neutral so it never reads as an agent author. */
-.s-thread-participant-pill--operator {
-  color: var(--muted);
-}
-
-.s-thread-participant-avatar--operator {
-  background: color-mix(in srgb, var(--surface) 70%, var(--bg));
-  color: var(--muted);
-  border: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
-}
-
-/* Operator observer chip — dashed + eye, signals not-in-thread. */
-.s-thread-participant-observer {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-2xs, 4px);
-  min-height: 28px;
-  padding: 0 var(--space-sm);
+  margin-left: var(--space-xs);
   border: 1px dashed color-mix(in srgb, var(--border) 60%, transparent);
-  border-radius: var(--radius-pill);
+  border-radius: 50%;
   background: transparent;
   color: var(--dim);
-  font-size: var(--text-xs);
-  white-space: nowrap;
 }
 
 .s-thread-participant-observer svg {
   opacity: 0.85;
 }
 
-.s-thread-participant-overflow {
-  justify-content: center;
-  min-width: 28px;
+/* Participant disclosure. The compact header keeps names and runtime details
+   out of the standing layout; hover and keyboard focus reveal the same card. */
+.s-thread-participant--button {
+  appearance: none;
+}
+
+.s-thread-participant-card {
+  position: absolute;
+  z-index: 80;
+  top: calc(100% + 8px);
+  right: -8px;
+  display: grid;
+  width: max-content;
+  min-width: 168px;
+  max-width: 240px;
+  gap: 2px;
+  padding: var(--space-sm) var(--space-md);
+  border: 1px solid color-mix(in srgb, var(--border) 72%, transparent);
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--surface) 96%, var(--bg));
+  box-shadow: 0 10px 26px color-mix(in srgb, var(--bg) 42%, transparent);
+  color: var(--muted);
+  font-size: var(--text-xs);
+  line-height: 1.35;
+  text-align: left;
+  pointer-events: none;
+  opacity: 0;
+  visibility: hidden;
+  transform: translateY(-3px);
+  transition:
+    opacity 120ms ease,
+    transform 160ms cubic-bezier(0.22, 1, 0.36, 1),
+    visibility 0s linear 160ms;
+}
+
+.s-thread-participant-card strong {
+  overflow: hidden;
+  color: var(--ink);
+  font-size: var(--text-sm);
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.s-thread-participant-card-action {
+  margin-top: var(--space-2xs);
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.s-thread-participant:hover .s-thread-participant-card,
+.s-thread-participant:focus-visible .s-thread-participant-card,
+.s-thread-participant-observer:hover .s-thread-participant-card,
+.s-thread-participant-observer:focus-visible .s-thread-participant-card {
+  opacity: 1;
+  visibility: visible;
+  transform: translateY(0);
+  transition-delay: 0s;
+}
+
+.s-thread-participant:focus-visible {
+  z-index: 40;
+  outline: none;
+  filter: drop-shadow(0 4px 8px color-mix(in srgb, var(--bg) 70%, transparent));
+  transform: translateY(-3px);
+}
+
+.s-thread-participant:focus-visible .s-thread-participant-face {
+  -webkit-mask-image: none;
+  mask-image: none;
+  background: color-mix(in srgb, var(--ink) 14%, var(--surface));
+  box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--accent) 72%, transparent);
+}
+
+.s-thread-participant-observer {
+  position: relative;
+}
+
+.s-thread-participant-observer:hover,
+.s-thread-participant-observer:focus-visible {
+  border-color: color-mix(in srgb, var(--accent) 54%, var(--border));
+  color: var(--ink);
+  outline: none;
+}
+
+.s-thread-participant-observer .s-thread-participant-card {
+  right: 0;
+}
+
+.s-thread-participant--compact-overflow,
+.s-thread-participant--narrow-overflow {
+  display: none;
+}
+
+/* The overflow coin opens a real roster rather than discarding identities. */
+.s-thread-participant-roster {
+  position: absolute;
+  z-index: 90;
+  top: calc(100% + 10px);
+  right: 0;
+  display: grid;
+  width: min(290px, calc(100vw - 32px));
+  gap: var(--space-sm);
+  padding: var(--space-md);
+  border: 1px solid color-mix(in srgb, var(--border) 74%, transparent);
+  border-radius: var(--radius-lg);
+  background: color-mix(in srgb, var(--surface) 97%, var(--bg));
+  box-shadow: 0 16px 38px color-mix(in srgb, var(--bg) 48%, transparent);
+}
+
+.s-thread-participant-roster-title {
   padding: 0 var(--space-xs);
-  color: var(--dim);
-  font-family: var(--font-mono);
+  color: var(--ink);
+  font-size: var(--text-sm);
+}
+
+.s-thread-participant-roster-list {
+  display: grid;
+  max-height: min(360px, 55vh);
+  overflow-y: auto;
+}
+
+.s-thread-participant-roster-row {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  min-width: 0;
+  gap: var(--space-sm);
+  padding: var(--space-sm);
+  border: 0;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  text-align: left;
+}
+
+button.s-thread-participant-roster-row {
+  cursor: pointer;
+}
+
+button.s-thread-participant-roster-row:hover,
+button.s-thread-participant-roster-row:focus-visible {
+  background: color-mix(in srgb, var(--accent) 9%, transparent);
+  outline: none;
+}
+
+.s-thread-participant-roster-row > span:last-child {
+  display: grid;
+  min-width: 0;
+}
+
+.s-thread-participant-roster-row strong,
+.s-thread-participant-roster-row small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.s-thread-participant-roster-row small {
+  color: var(--muted);
   font-size: var(--text-xs);
 }
 
+.s-thread-participant-roster-avatar {
+  width: 24px;
+  height: 24px;
+  flex: 0 0 auto;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .s-thread-participant-card {
+    transition: none;
+  }
+
+  .s-thread-participant:focus-visible {
+    transform: none;
+  }
+}
+
+
+/* Sized off the coin so the row keeps one optical height. */
 .s-thread-add-participant-trigger {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 30px;
-  height: 30px;
+  width: 34px;
+  height: 34px;
   padding: 0;
   flex-shrink: 0;
   border: 1px solid color-mix(in srgb, var(--border) 48%, transparent);
@@ -504,74 +1094,117 @@ button.s-thread-identity-chip:hover {
   color: var(--red);
 }
 
-/* ── Pinned ask ── */
+/* ── Pinned ask & Operator Attention Cards ── */
 
 .s-thread-pinned-ask {
   margin: var(--space-lg) var(--space-3xl) 0;
   padding: var(--space-xl) var(--space-2xl);
-  border: 1px solid color-mix(in srgb, var(--amber) 30%, var(--border));
+  border: 1px solid color-mix(in srgb, var(--amber) 40%, var(--border));
   border-radius: var(--radius-xl);
-  background: color-mix(in srgb, var(--amber) 3%, var(--surface));
+  background: color-mix(in srgb, var(--amber) 4%, var(--surface));
+  box-shadow: 0 0 16px color-mix(in srgb, var(--amber) 12%, transparent);
   position: relative;
   overflow: hidden;
+  transition: all 180ms cubic-bezier(0.16, 1, 0.3, 1);
 }
 
-.s-thread-pinned-ask::before {
-  content: "";
-  position: absolute;
-  left: 0;
-  top: 0;
-  bottom: 0;
-  width: 3px;
-  background: var(--amber);
-  border-radius: var(--radius-sm) 0 0 var(--radius-sm);
+.s-thread-pinned-ask--approval {
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
+  background: color-mix(in srgb, var(--accent) 4%, var(--surface));
+  box-shadow: 0 0 16px color-mix(in srgb, var(--accent) 14%, transparent);
 }
 
-.s-thread-pinned-ask-label {
+.s-thread-pinned-ask-header {
   display: flex;
   align-items: center;
   gap: var(--space-sm);
-  font-family: var(--font-mono);
-  font-size: var(--text-2xs);
-  font-weight: 600;
-  letter-spacing: var(--tracking-lg);
-  text-transform: uppercase;
-  color: var(--amber);
-  margin-bottom: var(--space-sm);
-}
-
-.s-thread-pinned-ask-body {
-  font-size: var(--text-2xl);
-  font-weight: 500;
-  line-height: var(--leading-snug);
-  letter-spacing: -0.01em;
-  color: var(--ink);
   margin-bottom: var(--space-md);
+  flex-wrap: wrap;
 }
 
-.s-thread-pinned-ask-routing {
+.s-thread-pinned-ask-beacon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.s-thread-pinned-ask-kicker {
   display: flex;
   align-items: center;
   gap: var(--space-xs);
-  font-size: var(--text-sm);
-  color: var(--muted);
-  margin-bottom: var(--space-lg);
+}
+
+.s-thread-pinned-ask-eyebrow {
+  color: var(--amber);
+  font-weight: 700;
+}
+
+.s-thread-pinned-ask--approval .s-thread-pinned-ask-eyebrow {
+  color: var(--accent);
+}
+
+.s-thread-pinned-ask-routing {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2xs);
 }
 
 .s-thread-pinned-ask-routing-arrow {
   color: var(--dim);
+  font-size: var(--text-xs);
+  padding: 0 2px;
+}
+
+.s-thread-pinned-ask-body {
+  margin-bottom: var(--space-lg);
+}
+
+.s-thread-pinned-ask-text {
+  font-size: var(--text-xl);
+  font-weight: 550;
+  line-height: var(--leading-snug);
+  letter-spacing: -0.01em;
+  color: var(--ink);
+  margin: 0;
+  /* An ask reads in a breath; anything longer lives in the thread itself. */
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 4;
+  overflow: hidden;
+}
+
+.s-thread-pinned-ask-context {
+  font-size: var(--text-sm);
+  line-height: var(--leading-normal);
+  /* Explicit color: .text-muted is not a real class in this bundle, and an
+     inherited ink here reads as either invisible or shouting per theme. */
+  color: var(--muted);
+  margin: var(--space-xs) 0 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .s-thread-pinned-ask-actions {
   display: flex;
   align-items: center;
   gap: var(--space-sm);
+  flex-wrap: wrap;
+}
+
+.s-thread-pinned-ask-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-xs);
+  font-weight: 600;
+  letter-spacing: 0.01em;
 }
 
 .s-thread-pinned-ask-strip {
   height: 2px;
   width: 100%;
-  margin-top: var(--space-md);
+  margin-top: var(--space-lg);
   border-radius: 1px;
   background: linear-gradient(
     90deg,
@@ -582,6 +1215,81 @@ button.s-thread-identity-chip:hover {
   );
   background-size: 200% 100%;
   animation: s-thread-thinking-strip 2s ease-in-out infinite;
+}
+
+.s-thread-pinned-ask--approval .s-thread-pinned-ask-strip {
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    var(--accent) 40%,
+    var(--accent) 60%,
+    transparent 100%
+  );
+  background-size: 200% 100%;
+}
+
+/* ── Approval Gate Component ── */
+
+.s-thread-approval-gate {
+  margin: var(--space-lg) var(--space-3xl) 0;
+  padding: var(--space-xl) var(--space-2xl);
+  border: 1px solid color-mix(in srgb, var(--amber) 40%, var(--border));
+  border-radius: var(--radius-xl);
+  background: color-mix(in srgb, var(--surface) 95%, transparent);
+  box-shadow: 0 0 16px color-mix(in srgb, var(--amber) 12%, transparent);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-md);
+}
+
+.s-thread-approval-gate-head {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2xs);
+}
+
+.s-thread-approval-gate-title-wrap {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+}
+
+.s-thread-approval-gate-title {
+  margin: 0;
+  font-size: var(--text-2xl);
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.s-thread-approval-gate-desc {
+  margin: 0;
+  font-size: var(--text-md);
+  color: var(--muted);
+}
+
+.s-thread-approval-gate-command,
+.s-thread-approval-gate-diff {
+  padding: var(--space-sm) var(--space-md);
+  border-radius: var(--radius-lg);
+  background: color-mix(in srgb, var(--bg) 85%, transparent);
+  border: 1px solid color-mix(in srgb, var(--border) 40%, transparent);
+}
+
+.s-thread-approval-gate-code,
+.s-thread-approval-gate-diff-pre code {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--ink);
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.s-thread-approval-gate-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  flex-wrap: wrap;
+  padding-top: var(--space-xs);
 }
 
 @keyframes s-thread-thinking-strip {
@@ -920,20 +1628,24 @@ button.s-thread-identity-chip:hover {
 }
 
 .s-thread-msg-avatar {
-  --size: 24px;
+  --size: 28px;
   display: inline-flex;
+  align-items: center;
+  justify-content: center;
   width: var(--size);
   height: var(--size);
   flex-shrink: 0;
   margin-top: 0;
+  border-radius: 50%;
+  overflow: hidden;
 }
 
 .s-thread-msg-avatar--working {
-  --size: 28px;
+  --size: 32px;
 }
 
 .s-thread-msg-avatar--nav {
-  --size: 24px;
+  --size: 28px;
   display: inline-flex;
   width: var(--size);
   height: var(--size);
@@ -944,7 +1656,8 @@ button.s-thread-identity-chip:hover {
   background: transparent;
   padding: 0;
   cursor: pointer;
-  transition: transform 0.1s ease, box-shadow 0.15s ease;
+  border-radius: 50%;
+  transition: transform 0.15s cubic-bezier(0.2, 0, 0, 1), box-shadow 0.15s ease;
 }
 
 .s-thread-msg-avatar--nav:hover {
@@ -1076,7 +1789,7 @@ button.s-thread-msg-actor:focus-visible {
   color: color-mix(in srgb, var(--ink) 82%, var(--muted));
 }
 
-/* Reply-context backlink: resolves the raw ask correlation tag into a
+/* Reply-context backlink: resolves the raw [ask:<flightId>] tag into a
    clickable reference to the originating ask, instead of leaking the token. */
 .s-thread-reply-ctx {
   display: inline-flex;
@@ -1341,6 +2054,154 @@ button.s-thread-msg-actor:focus-visible {
   color: var(--muted);
 }
 
+/* Invocation failures belong in the conversation, but adapter diagnostics do
+   not belong on its reading surface. Lead with the human outcome, keep the
+   raw error behind explicit disclosure, and avoid dressing either as a reply
+   from SYSTEM. */
+.s-thread-failure-notice {
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr) max-content;
+  align-items: start;
+  gap: var(--space-sm);
+  width: 100%;
+  padding: var(--space-xs) var(--space-2xs);
+}
+
+.s-thread-failure-notice-mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  margin-top: 1px;
+  border: 1px solid color-mix(in srgb, var(--red) 44%, transparent);
+  border-radius: 50%;
+  color: color-mix(in srgb, var(--red) 80%, var(--ink));
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  font-weight: 700;
+  line-height: 1;
+}
+
+.s-thread-failure-notice-content { min-width: 0; }
+
+.s-thread-failure-notice-content p {
+  margin: 0;
+  color: var(--muted);
+  font-size: var(--text-sm);
+  line-height: var(--leading-normal);
+}
+
+.s-thread-failure-notice-content strong {
+  color: var(--ink);
+  font-weight: 600;
+}
+
+.s-thread-failure-notice-time {
+  padding-top: 1px;
+  color: var(--dim);
+  font-size: var(--text-2xs);
+  white-space: nowrap;
+}
+
+.s-thread-failure-notice-details {
+  margin-top: var(--space-2xs);
+  color: var(--dim);
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+}
+
+.s-thread-failure-notice-details summary {
+  width: max-content;
+  max-width: 100%;
+  cursor: pointer;
+  user-select: none;
+}
+
+.s-thread-failure-notice-details summary:hover { color: var(--muted); }
+
+.s-thread-failure-notice-details summary:focus-visible {
+  border-radius: var(--radius-sm);
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.s-thread-failure-notice-details pre {
+  max-width: 100%;
+  margin: var(--space-sm) 0 0;
+  padding: var(--space-sm) var(--space-md);
+  overflow-x: auto;
+  border: 1px solid color-mix(in srgb, var(--border) 56%, transparent);
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--bg) 82%, transparent);
+  color: var(--dim);
+  font: inherit;
+  line-height: var(--leading-normal);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.s-thread-failure-notice-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-sm);
+  margin-top: var(--space-sm);
+}
+
+.s-thread-failure-notice-action {
+  min-height: 24px;
+  padding: 2px var(--space-sm);
+  border: 1px solid color-mix(in srgb, var(--border) 72%, transparent);
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--surface) 84%, transparent);
+  color: var(--muted);
+  font: 600 var(--text-2xs)/var(--leading-normal) var(--font-sans);
+  cursor: pointer;
+}
+
+.s-thread-failure-notice-action--primary {
+  border-color: color-mix(in srgb, var(--accent) 34%, var(--border));
+  background: color-mix(in srgb, var(--accent) 9%, transparent);
+  color: color-mix(in srgb, var(--accent) 76%, var(--ink));
+}
+
+.s-thread-failure-notice-action--clear {
+  min-height: 24px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--dim);
+}
+
+.s-thread-failure-notice-action:hover:not(:disabled) { color: var(--ink); }
+
+.s-thread-failure-notice-action:disabled {
+  cursor: not-allowed;
+  opacity: 0.44;
+}
+
+.s-thread-failure-notice-action:focus-visible {
+  border-radius: var(--radius-sm);
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+@media (max-width: 700px) {
+  .s-thread-failure-notice {
+    grid-template-columns: 16px minmax(0, 1fr);
+  }
+
+  .s-thread-failure-notice-action {
+    min-height: 44px;
+    padding-inline: var(--space-md);
+  }
+
+  .s-thread-failure-notice-action--clear { padding-inline: var(--space-sm); }
+
+  .s-thread-failure-notice-time { grid-column: 2; }
+}
+
 /* ── Working indicator ── */
 
 .s-thread-msg-working-card {
@@ -1348,6 +2209,89 @@ button.s-thread-msg-actor:focus-visible {
   background: color-mix(in srgb, var(--green) 2%, var(--surface));
 }
 
+/* The sprite paces while the turn is in flight.
+ *
+ * Three transform-only animations, split across the three nodes the avatar
+ * already renders — so nothing composes, nothing repaints, and no JS timer
+ * is involved. The card only mounts while the agent is working, so the
+ * motion lives exactly as long as the work does.
+ *
+ *   host  → the walk   (X, across the lane the card gap opens up)
+ *   inner → the step   (Y, a shallow bob per stride)
+ *   svg   → the hop    (Y + squash, once every couple of minutes)
+ */
+
+.s-thread-msg-working-card.s-thread-msg-card--avatar-row {
+  /* Opens the lane the sprite walks. Wide enough to cross a half body
+     without ever reaching the copy. */
+  gap: var(--space-4xl);
+}
+
+.s-thread-msg-avatar--working {
+  --sprite-lane: 16px;
+  --sprite-stride: 4.5s;
+  --sprite-hop-every: 150s;
+  animation: s-thread-sprite-walk var(--sprite-stride) ease-in-out infinite
+    alternate;
+}
+
+.s-thread-msg-avatar--working > span {
+  animation: s-thread-sprite-step calc(var(--sprite-stride) / 5) ease-in-out
+    infinite;
+}
+
+.s-thread-msg-avatar--working svg {
+  transform-origin: 50% 100%;
+  animation: s-thread-sprite-hop var(--sprite-hop-every) linear infinite;
+}
+
+@keyframes s-thread-sprite-walk {
+  from {
+    transform: translate3d(0, 0, 0);
+  }
+  to {
+    transform: translate3d(var(--sprite-lane), 0, 0);
+  }
+}
+
+@keyframes s-thread-sprite-step {
+  0%,
+  100% {
+    transform: translate3d(0, 0, 0);
+  }
+  50% {
+    transform: translate3d(0, -1.5px, 0);
+  }
+}
+
+/* Idle for 99% of the cycle, then one hop — crouch, up, land — in the last
+   ~1.5s. Stretching the interval is a one-token change (--sprite-hop-every). */
+@keyframes s-thread-sprite-hop {
+  0%,
+  99% {
+    transform: translate3d(0, 0, 0) scaleY(1);
+  }
+  99.2% {
+    transform: translate3d(0, 0, 0) scaleY(0.9);
+  }
+  99.45% {
+    transform: translate3d(0, -7px, 0) scaleY(1.05);
+  }
+  99.7% {
+    transform: translate3d(0, 0, 0) scaleY(0.94);
+  }
+  100% {
+    transform: translate3d(0, 0, 0) scaleY(1);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .s-thread-msg-avatar--working,
+  .s-thread-msg-avatar--working > span,
+  .s-thread-msg-avatar--working svg {
+    animation: none;
+  }
+}
 .s-thread-msg-working-body {
   display: flex;
   flex-direction: column;
@@ -2412,31 +3356,197 @@ button.s-thread-sidebar-participant:focus-visible {
 
 .s-thread-steps {
   min-width: 0;
-  display: grid;
-  gap: var(--space-3xs);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
 }
 
-.s-thread-steps ol {
-  display: grid;
-  gap: 0;
+.s-thread-turn-phases-ribbon {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2xs);
+  flex-wrap: wrap;
+  padding-bottom: var(--space-2xs);
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 40%, transparent);
+}
+
+.s-thread-turn-phase-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2xs);
+  transition: all 140ms ease;
+}
+
+.s-thread-turn-phase-chip--active {
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  border-color: color-mix(in srgb, var(--accent) 40%, var(--border));
+  color: var(--accent);
+}
+
+.s-thread-turn-phase-count {
+  font-size: var(--text-3xs);
+  opacity: 0.75;
+}
+
+.s-thread-steps-elided {
+  color: var(--dim);
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  letter-spacing: var(--tracking-sm);
+  padding: 0 var(--space-2xs);
+}
+
+.s-thread-steps-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2xs);
   margin: 0;
   padding: 0;
   list-style: none;
 }
 
-.s-thread-steps li {
-  display: grid;
-  grid-template-columns: auto 54px minmax(0, 1fr) auto;
-  align-items: baseline;
-  gap: var(--space-xs);
-  min-height: 22px;
-  padding: var(--space-3xs) 0;
-  border-bottom: 1px solid color-mix(in srgb, var(--border) 30%, transparent);
-  animation: s-thread-motion-event-enter 420ms cubic-bezier(0.16, 1, 0.3, 1) both;
+.s-thread-step-card {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid color-mix(in srgb, var(--border) 50%, transparent);
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--surface) 50%, var(--bg));
+  padding: var(--space-2xs) var(--space-sm);
+  transition: all 140ms cubic-bezier(0.16, 1, 0.3, 1);
+  animation: s-thread-motion-event-enter 340ms cubic-bezier(0.16, 1, 0.3, 1) both;
 }
 
-.s-thread-steps li:last-child {
-  border-bottom: none;
+.s-thread-step-card:hover {
+  background: color-mix(in srgb, var(--surface) 80%, var(--bg));
+  border-color: color-mix(in srgb, var(--border) 80%, transparent);
+}
+
+.s-thread-step-card--latest {
+  border-color: color-mix(in srgb, var(--accent) 30%, var(--border));
+  background: color-mix(in srgb, var(--accent) 3%, var(--surface));
+}
+
+.s-thread-step-card--error {
+  border-color: color-mix(in srgb, var(--red) 35%, var(--border));
+  background: color-mix(in srgb, var(--red) 4%, var(--surface));
+}
+
+.s-thread-step-card--warning {
+  border-color: color-mix(in srgb, var(--amber) 35%, var(--border));
+  background: color-mix(in srgb, var(--amber) 4%, var(--surface));
+}
+
+.s-thread-step-header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  min-height: 24px;
+}
+
+.s-thread-step-indicator {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.s-thread-step-kind {
+  flex-shrink: 0;
+}
+
+.s-thread-step-body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2xs);
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.s-thread-step-tool-arg {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.s-thread-step-arg-code {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--ink);
+  background: color-mix(in srgb, var(--ink) 4%, transparent);
+  padding: 1px var(--space-3xs);
+  border-radius: var(--radius-xs);
+}
+
+.s-thread-step-text {
+  font-size: var(--text-sm);
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.s-thread-step-card[data-kind="think"] .s-thread-step-text {
+  color: var(--dim);
+  font-style: italic;
+}
+
+.s-thread-step-meta {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  flex-shrink: 0;
+}
+
+.s-thread-step-duration {
+  color: var(--dim);
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+}
+
+.s-thread-step-meta time {
+  color: var(--dim);
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  white-space: nowrap;
+}
+
+.s-thread-step-toggle {
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  color: var(--dim);
+}
+
+.s-thread-step-toggle:hover {
+  color: var(--ink);
+}
+
+.s-thread-step-output {
+  margin-top: var(--space-2xs);
+  padding: var(--space-xs) var(--space-sm);
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--bg) 90%, transparent);
+  border: 1px solid color-mix(in srgb, var(--border) 40%, transparent);
+}
+
+.s-thread-step-output-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: var(--space-3xs);
+}
+
+.s-thread-step-output-code {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--muted);
+  white-space: pre-wrap;
+  word-break: break-word;
+  line-height: var(--leading-tight);
 }
 
 .s-thread-step-mark {
@@ -2448,121 +3558,32 @@ button.s-thread-sidebar-participant:focus-visible {
   color: var(--dim);
 }
 
-.s-thread-steps li[data-kind="tool"] .s-thread-step-mark {
-  background: currentColor;
-}
-
-.s-thread-steps li[data-kind="think"] .s-thread-step-mark {
-  border-radius: 50%;
-}
-
-.s-thread-steps li[data-kind="message"] .s-thread-step-mark,
-.s-thread-steps li[data-kind="ask"] .s-thread-step-mark {
-  background: currentColor;
-  border-radius: 50%;
-}
-
-.s-thread-steps li:last-child .s-thread-step-mark {
-  color: var(--accent);
-}
-
-.s-thread-step-kind {
-  color: var(--dim);
-  font-family: var(--font-mono);
-  font-size: var(--text-2xs);
-  letter-spacing: var(--tracking-sm);
-  text-transform: uppercase;
-}
-
-.s-thread-step-body {
+.s-thread-steps-phase {
   min-width: 0;
   display: flex;
-  align-items: baseline;
-  gap: var(--space-2xs);
-  overflow: hidden;
-  white-space: nowrap;
+  flex-direction: column;
+  gap: var(--space-3xs);
+  padding: var(--space-sm) var(--space-md);
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--surface) 60%, var(--bg));
+  border: 1px solid color-mix(in srgb, var(--border) 40%, transparent);
 }
 
-.s-thread-step-text,
-.s-thread-step-arg {
-  min-width: 0;
-  overflow: hidden;
-  color: var(--muted);
+.s-thread-steps-phase-header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+}
+
+.s-thread-steps-phase-detail {
   font-size: var(--text-sm);
-  text-overflow: ellipsis;
-}
-
-.s-thread-steps li[data-kind="think"] .s-thread-step-text {
-  color: var(--dim);
-  font-style: italic;
-}
-
-.s-thread-step-tool {
-  flex: none;
-  color: var(--fg);
-  font-family: var(--font-mono);
-  font-size: var(--text-xs);
-}
-
-.s-thread-step-arg {
-  font-family: var(--font-mono);
-  font-size: var(--text-xs);
-}
-
-.s-thread-step-repeat,
-.s-thread-step-outcome {
-  flex: none;
-  color: var(--dim);
-  font-family: var(--font-mono);
-  font-size: var(--text-2xs);
-}
-
-.s-thread-steps time {
-  color: var(--dim);
-  font-family: var(--font-mono);
-  font-size: var(--text-2xs);
-  white-space: nowrap;
-}
-
-.s-thread-steps-elided {
-  color: var(--dim);
-  font-family: var(--font-mono);
-  font-size: var(--text-2xs);
-  letter-spacing: var(--tracking-sm);
+  font-weight: 500;
+  color: var(--muted);
 }
 
 .s-thread-steps--compact {
   padding-top: var(--space-xs);
   border-top: 1px solid color-mix(in srgb, var(--border) 40%, transparent);
-}
-
-/* Pre-first-trace stage: the flight state we can actually prove, not a spinner. */
-.s-thread-steps-phase {
-  min-width: 0;
-  display: flex;
-  align-items: baseline;
-  gap: var(--space-xs);
-  padding-top: var(--space-xs);
-  border-top: 1px solid color-mix(in srgb, var(--border) 40%, transparent);
-}
-
-.s-thread-steps-phase span {
-  flex: none;
-  color: var(--dim);
-  font-family: var(--font-mono);
-  font-size: var(--text-2xs);
-  letter-spacing: var(--tracking-sm);
-  text-transform: uppercase;
-}
-
-.s-thread-steps-phase strong {
-  min-width: 0;
-  overflow: hidden;
-  color: var(--muted);
-  font-size: var(--text-sm);
-  font-weight: 450;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .s-thread-motion-panel .s-thread-steps--compact,
@@ -2572,7 +3593,7 @@ button.s-thread-sidebar-participant:focus-visible {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .s-thread-steps li {
+  .s-thread-step-card {
     animation: none;
   }
 }
@@ -3709,4 +4730,40 @@ button.s-thread-sidebar-participant:focus-visible {
   border-color: transparent;
   padding: 0;
   color: var(--muted);
+}
+
+/* Preserve the title first as the header narrows: four coins become two, then
+   one, while a single overflow coin keeps every participant reachable. */
+@media (max-width: 560px) {
+  .s-thread-participants {
+    --fp-coin: 40px;
+    --fp-lap: 8px;
+    --fp-sprite: 21px;
+    --fp-badge: 13px;
+    max-width: none;
+  }
+
+  .s-thread-participant[data-compact-hidden="true"],
+  .s-thread-participant--desktop-overflow {
+    display: none;
+  }
+
+  .s-thread-participant--compact-overflow {
+    display: inline-flex;
+  }
+
+  .s-thread-participant-card {
+    right: -4px;
+  }
+}
+
+@media (max-width: 420px) {
+  .s-thread-participant[data-narrow-hidden="true"],
+  .s-thread-participant--compact-overflow {
+    display: none;
+  }
+
+  .s-thread-participant--narrow-overflow {
+    display: inline-flex;
+  }
 }

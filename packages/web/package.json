@@ -1,14 +1,8 @@
 {
   "name": "@openscout/web",
-  "version": "0.2.92",
+  "version": "0.2.94",
   "private": true,
-  "description": "Baseline Scout web control plane, reusable UI primitives, and bundled local server",
-  "homepage": "https://github.com/oscout/scout/tree/main/packages/web#readme",
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/oscout/scout.git",
-    "directory": "packages/web"
-  },
+  "description": "Standalone lightweight Scout web UI with its own bundled Bun server",
   "license": "Apache-2.0",
   "type": "module",
   "bin": {

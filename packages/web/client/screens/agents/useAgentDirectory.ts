@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { api } from "../../lib/api.ts";
 import { filterAgentsByMachineScope } from "../../lib/machine-scope.ts";
 import { routeMachineId } from "../../lib/router.ts";
-import { useBrokerEvents } from "../../lib/sse.ts";
+import { useBrokerEventsRefresh } from "../../lib/sse.ts";
 import { isScoutSurfaceActive, onScoutSurfaceActivated } from "../../lib/surface-activity.ts";
 import { useScout } from "../../scout/Provider.tsx";
 import type {
@@ -58,9 +58,12 @@ export function useAgentDirectory(): { projects: DirProject[] } {
       stopActivationListener();
     };
   }, [load]);
-  useBrokerEvents(() => {
-    if (isScoutSurfaceActive()) void load();
-  });
+  useBrokerEventsRefresh(
+    () => true,
+    () => {
+      if (isScoutSurfaceActive()) void load();
+    },
+  );
 
   const asksByAgent = useMemo(() => {
     const m = new Map<string, FleetAsk[]>();

@@ -31,6 +31,7 @@ export function useLaneDeck(
   setLaneWidth: (laneId: string, width: AgentLaneWidthTier | number) => void;
   setDefaultLaneWidth: (width: AgentLaneWidthTier) => void;
   addHarnessLane: (harness: string, title?: string) => void;
+  addProjectLane: (projectPath: string, title?: string) => void;
   addAttentionLane: () => void;
   clearPins: () => void;
   isPinned: (laneId: string) => boolean;
@@ -85,6 +86,19 @@ export function useLaneDeck(
     }));
   }, [deck, persist]);
 
+  const addProjectLane = useCallback((projectPath: string, title?: string) => {
+    const trimmed = projectPath.trim();
+    if (!trimmed) return;
+    const leaf = title?.trim() || trimmed.split(/[\\/]/u).filter(Boolean).pop() || trimmed;
+    persist(addFilterLane(deck, {
+      kind: "project",
+      title: leaf,
+      projectPath: trimmed,
+      zone: "main",
+      width: deck.defaultLaneWidth,
+    }));
+  }, [deck, persist]);
+
   const addAttentionLane = useCallback(() => {
     persist(addFilterLane(deck, {
       kind: "attention",
@@ -110,6 +124,7 @@ export function useLaneDeck(
     setDefaultLaneWidth: setDefaultLaneWidthTier,
     addHarnessLane,
     addAttentionLane,
+    addProjectLane,
     clearPins,
     isPinned,
     pinnedZone,

@@ -198,24 +198,65 @@ describe("host availability", () => {
     };
   }
 
-  test("a transient probe failure does not make an installed host disappear", async () => {
+  test("a fresh cached success answers without spawning another probe", async () => {
     resetTerminalHostAvailabilityCache();
-    const adapter = fakeAdapter([
-      { installed: true, version: "tmux 3.5" },
-      { installed: false, reason: "timed out" },
-    ]);
+    let probes = 0;
+    const adapter: TerminalHostAdapter = {
+      ...tmuxTerminalHost,
+      id: "fake-host",
+      probe: async () => {
+        probes += 1;
+        return { installed: true, version: "tmux 3.5" };
+      },
+    };
 
     const first = await probeTerminalHostAvailability(adapter, {}, 1_000);
-    expect(first).toMatchObject({ installed: true, version: "tmux 3.5", stale: false });
+    expect(first).toMatchObject({ installed: true, version: "tmux 3.5", stale: false, checkedAt: 1_000 });
+    expect(probes).toBe(1);
 
-    // Within the TTL the last good answer stands, because a busy machine is not
-    // a machine without tmux — but it is MARKED as the memory it is, so a
-    // caller about to shell out can re-probe instead of trusting it.
+    // Within the TTL the cached success IS the answer — no `--version`
+    // shell-out per request for a binary that was just seen.
     const second = await probeTerminalHostAvailability(adapter, {}, 6_000);
-    expect(second.installed).toBe(true);
-    expect(second.stale).toBe(true);
-    expect(second.checkedAt).toBe(1_000);
-    expect(second.reason).toContain("timed out");
+    expect(second).toMatchObject({ installed: true, version: "tmux 3.5", stale: false, checkedAt: 1_000 });
+    expect(probes).toBe(1);
+
+    // Past the TTL the probe runs again for real.
+    const third = await probeTerminalHostAvailability(adapter, {}, 1_000 + 30_001);
+    expect(third).toMatchObject({ installed: true, stale: false, checkedAt: 1_000 + 30_001 });
+    expect(probes).toBe(2);
+  });
+
+  test("a probe that fails while a fresh success exists serves the memory, marked", async () => {
+    resetTerminalHostAvailabilityCache();
+    // Two overlapping probes: the first succeeds while the second is still in
+    // flight, then the second fails. The failing probe must fall back to the
+    // fresh success — because a busy machine is not a machine without tmux —
+    // but MARKED as the memory it is, so a caller about to shell out can
+    // re-probe instead of trusting it.
+    let releaseFailure!: () => void;
+    const gate = new Promise<void>((resolve) => { releaseFailure = resolve; });
+    let probes = 0;
+    const adapter: TerminalHostAdapter = {
+      ...tmuxTerminalHost,
+      id: "fake-host",
+      probe: async () => {
+        probes += 1;
+        if (probes === 1) return { installed: true, version: "tmux 3.5" };
+        await gate;
+        return { installed: false, reason: "timed out" };
+      },
+    };
+
+    const first = probeTerminalHostAvailability(adapter, {}, 1_000);
+    const second = probeTerminalHostAvailability(adapter, {}, 6_000);
+    expect(await first).toMatchObject({ installed: true, stale: false, checkedAt: 1_000 });
+    releaseFailure();
+
+    const substituted = await second;
+    expect(substituted.installed).toBe(true);
+    expect(substituted.stale).toBe(true);
+    expect(substituted.checkedAt).toBe(1_000);
+    expect(substituted.reason).toContain("timed out");
   });
 
   test("the substitution expires rather than standing forever", async () => {

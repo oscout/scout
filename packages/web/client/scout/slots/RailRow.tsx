@@ -15,6 +15,8 @@ type RailRowProps = {
   sub?: string;
   /** Dot tone — agent state, neutral, or a channel/dm hint. */
   tone?: Tone;
+  /** Avatar agent identity. */
+  agent?: { name: string; harness?: string | null; state?: string | null };
   /** Avatar name. When set, renders an Avatar in the leading slot. */
   avatarName?: string;
   /** Avatar kind — "channel" renders "#" instead of an initial. */
@@ -59,6 +61,7 @@ export function RailRow({
   meta,
   sub,
   tone = "neutral",
+  agent,
   avatarName,
   avatarKind = "user",
   leadingIcon,
@@ -119,6 +122,7 @@ export function RailRow({
           icon={leadingIcon}
           tone={tone}
           caret={caret}
+          agent={agent}
           avatarName={avatarName}
           avatarKind={avatarKind}
         />
@@ -161,12 +165,14 @@ function RowLeading({
   icon,
   tone,
   caret,
+  agent,
   avatarName,
   avatarKind,
 }: {
   icon: ReactNode | undefined;
   tone: Tone;
   caret: "open" | "closed" | undefined;
+  agent?: { name: string; harness?: string | null; state?: string | null };
   avatarName: string | undefined;
   avatarKind: AvatarKind;
 }) {
@@ -180,27 +186,26 @@ function RowLeading({
       </span>
     );
   }
-  if (avatarName) {
+  if (avatarName || agent) {
     if (avatarKind === "channel") {
       return (
-        <AgentAvatar
-          kind="channel"
-          name={avatarName}
-          channelClassName="rr-row-hash"
-        />
+        <span className="rr-row-hash" aria-hidden>
+          #
+        </span>
       );
     }
     const normalized = normalizeAgentTone(tone);
-    const showPresence = normalized === "active" || normalized === "available";
+    const showPresence = normalized === "active" || normalized === "available" || normalized === "working" || normalized === "in_turn";
     return (
       <span className="rr-row-avatar-wrap" aria-hidden>
-        <AgentAvatar name={avatarName} placement="roster" className="rr-row-avatar" />
-        {showPresence && (
-          <PresenceDot
-            state={normalized}
-            className={`rr-row-presence rr-row-presence--${normalized}`}
-          />
-        )}
+        <AgentAvatar
+          agent={agent}
+          name={avatarName ?? agent?.name}
+          placement="row"
+          size={20}
+          tile
+          presence={showPresence}
+        />
       </span>
     );
   }

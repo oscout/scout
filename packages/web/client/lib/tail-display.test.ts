@@ -174,7 +174,7 @@ describe("observeToolFieldsFromTailEvent", () => {
     });
     expect(observeToolFieldsFromTailEvent(event({
       source: "codex",
-      summary: "exec_command({\"cmd\":\"npm --prefix packages/web run build:client\",\"workdir\":\"/Users/example/dev/openscout\",\"yield_time_ms\":1000,\"",
+      summary: "exec_command({\"cmd\":\"npm --prefix packages/web run build:client\",\"workdir\":\"/Users/art/dev/openscout\",\"yield_time_ms\":1000,\"",
       kind: "tool",
     }))).toEqual({
       tool: "Shell",

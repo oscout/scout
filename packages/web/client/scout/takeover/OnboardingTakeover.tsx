@@ -13,7 +13,10 @@ export function OnboardingTakeover() {
   if (!onboarding.hasLocalConfig) return <Frame><PortsStep step={1} /></Frame>;
   if (!onboarding.hasOperatorName) return <Frame><NameStep step={2} /></Frame>;
   if (!onboarding.hasProjectConfig) return <Frame><ProjectStep step={3} /></Frame>;
-  if (onboarding.needed !== false && (!onboarding.brokerReachable || !onboarding.hasReadyRuntime)) {
+  // `needed === true` only comes from a real /api/onboarding/state response;
+  // a missing `needed` means we are looking at a client-side placeholder and
+  // must not take over the app.
+  if (onboarding.needed === true && (!onboarding.brokerReachable || !onboarding.hasReadyRuntime)) {
     return <Frame><SetupStep step={4} /></Frame>;
   }
   return null;

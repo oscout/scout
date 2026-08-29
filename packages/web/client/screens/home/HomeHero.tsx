@@ -1,4 +1,5 @@
 import { useLayoutEffect, useRef, useState } from "react";
+import { Activity, RefreshCw } from "lucide-react";
 import type { Route } from "../../lib/types.ts";
 import "./home-hero.css";
 
@@ -20,6 +21,7 @@ type ServiceQuotaWindowGauge = {
   capLabel: string;
   unitLabel: string;
   resetAt: number;
+  windowMs?: number;
   capturedAt?: number;
   source?: string;
   history?: ServiceQuotaHistoryPoint[];
@@ -54,6 +56,7 @@ export type ServiceGauge =
 
 export type HomeHeroProps = {
   now: Date;
+  operatorName?: string;
   syncLabel: string;
   error: string | null;
   loading: boolean;
@@ -80,8 +83,7 @@ const SHORT_WEEKDAY = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
 function formatResetChip(resetAt: number, now: Date): { label: string; imminent: boolean } {
   const diffMs = resetAt - now.getTime();
-  const sameDay =
-    new Date(resetAt).toDateString() === now.toDateString();
+  const sameDay = new Date(resetAt).toDateString() === now.toDateString();
   const reset = new Date(resetAt);
   const hh = String(reset.getHours()).padStart(2, "0");
   const mm = String(reset.getMinutes()).padStart(2, "0");
@@ -114,14 +116,16 @@ function formatResetRelative(resetAt: number, now: Date): string {
 function quotaWindows(g: Extract<ServiceGauge, { kind: "quota" }>): ServiceQuotaWindowGauge[] {
   return g.windows && g.windows.length > 0
     ? g.windows
-    : [{
-        label: formatLegacyQuotaLabel(g.unitLabel),
-        fill: g.fill,
-        usedLabel: g.usedLabel,
-        capLabel: g.capLabel,
-        unitLabel: g.unitLabel,
-        resetAt: g.resetAt,
-      }];
+    : [
+        {
+          label: formatLegacyQuotaLabel(g.unitLabel),
+          fill: g.fill,
+          usedLabel: g.usedLabel,
+          capLabel: g.capLabel,
+          unitLabel: g.unitLabel,
+          resetAt: g.resetAt,
+        },
+      ];
 }
 
 function formatLegacyQuotaLabel(label: string): string {
@@ -166,9 +170,10 @@ function splitQuotaWindows(windows: ServiceQuotaWindowGauge[]): {
   shortWindow: ServiceQuotaWindowGauge | null;
   longWindow: ServiceQuotaWindowGauge | null;
 } {
-  const sorted = [...windows].sort((a, b) =>
-    (quotaWindowMinutes(a.label) ?? Number.MAX_SAFE_INTEGER) -
-    (quotaWindowMinutes(b.label) ?? Number.MAX_SAFE_INTEGER),
+  const sorted = [...windows].sort(
+    (a, b) =>
+      (quotaWindowMinutes(a.label) ?? Number.MAX_SAFE_INTEGER) -
+      (quotaWindowMinutes(b.label) ?? Number.MAX_SAFE_INTEGER),
   );
   const longWindow =
     sorted.find((window) => (quotaWindowMinutes(window.label) ?? 0) >= 24 * 60) ??
@@ -194,9 +199,12 @@ function QuotaUsageCell({ window }: { window: ServiceQuotaWindowGauge | null }) 
   const windowTone = gaugeTone(window.fill);
   return (
     <span className="hd-gauge-cell hd-gauge-cell--usage">
-      <span className="hd-gauge-window-name">{window.label}</span>
+      <span className="hd-gauge-window-name label-xs">{window.label}</span>
       <span className="hd-gauge-bar" aria-hidden="true">
-        <span className={`hd-gauge-bar-fill hd-gauge-bar-fill--${windowTone}`} style={{ width: `${windowPct}%` }} />
+        <span
+          className={`hd-gauge-bar-fill hd-gauge-bar-fill--${windowTone}`}
+          style={{ width: `${windowPct}%` }}
+        />
       </span>
       <span className="hd-gauge-window-used">{usageLabel(window)}</span>
     </span>
@@ -332,9 +340,6 @@ function buildSmoothPath(points: { x: number; y: number }[]): string {
   return segs.join(" ");
 }
 
-/* The graph is drawn at 1:1 against its own measured width so the viewBox never
- * letterboxes: a fixed viewBox in a fluid panel would scale to `meet` and leave
- * the plot stranded as a narrow island in the middle of the panel. */
 function useMeasuredWidth(fallback: number) {
   const ref = useRef<HTMLDivElement | null>(null);
   const [width, setWidth] = useState(fallback);
@@ -359,14 +364,13 @@ function useMeasuredWidth(fallback: number) {
 
 function HeartrateGraph({ buckets }: { buckets: HeartrateBucketView[] }) {
   const [ref, W] = useMeasuredWidth(372);
-  const H = 70;
-  const top = 6;
-  const bottom = 56;
+  const H = 72;
+  const top = 8;
+  const bottom = 54;
   const labelY = 67;
   const N = buckets.length;
   const allZero = N < 2 || buckets.every((b) => b.count === 0);
-  // Keep the trailing marker inside the box instead of clipping it at the edge.
-  const plotW = Math.max(1, W - 3);
+  const plotW = Math.max(1, W - 4);
 
   const svgProps = {
     viewBox: `0 0 ${W} ${H}`,
@@ -375,7 +379,7 @@ function HeartrateGraph({ buckets }: { buckets: HeartrateBucketView[] }) {
 
   if (allZero) {
     return (
-      <div ref={ref}>
+      <div ref={ref} className="hd-heartrate-svg-wrap">
         <svg {...svgProps}>
           <line x1="0" y1={bottom} x2={W} y2={bottom} stroke="var(--border)" />
         </svg>
@@ -392,20 +396,21 @@ function HeartrateGraph({ buckets }: { buckets: HeartrateBucketView[] }) {
   const areaPath = `${path} L ${plotW} ${bottom} L 0 ${bottom} Z`;
 
   return (
-    <div ref={ref}>
+    <div ref={ref} className="hd-heartrate-svg-wrap">
       <svg {...svgProps}>
         <defs>
           <linearGradient id="hrdFill" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stopColor="var(--accent)" stopOpacity="0.22" />
-            <stop offset="100%" stopColor="var(--accent)" stopOpacity="0" />
+            <stop offset="0%" stopColor="var(--accent)" stopOpacity="0.28" />
+            <stop offset="100%" stopColor="var(--accent)" stopOpacity="0.0" />
           </linearGradient>
         </defs>
-        <line x1="0" y1={top} x2={W} y2={top} stroke="var(--border)" opacity="0.18" />
-        <line x1="0" y1={(top + bottom) / 2} x2={W} y2={(top + bottom) / 2} stroke="var(--border)" opacity="0.22" />
+        <line x1="0" y1={top} x2={W} y2={top} stroke="var(--border)" opacity="0.25" />
+        <line x1="0" y1={(top + bottom) / 2} x2={W} y2={(top + bottom) / 2} stroke="var(--border)" opacity="0.25" />
         <line x1="0" y1={bottom} x2={W} y2={bottom} stroke="var(--border)" />
         <path d={areaPath} fill="url(#hrdFill)" />
-        <path d={path} fill="none" stroke="var(--accent)" strokeWidth="1.5" strokeLinecap="round" />
-        <circle cx={points[N - 1].x} cy={points[N - 1].y} r="2.5" fill="var(--accent)" />
+        <path d={path} fill="none" stroke="var(--accent)" strokeWidth="1.75" strokeLinecap="round" />
+        <circle cx={points[N - 1].x} cy={points[N - 1].y} r="3" fill="var(--accent)" />
+        <circle cx={points[N - 1].x} cy={points[N - 1].y} r="6" fill="var(--accent)" opacity="0.25" />
         <text x="0" y={labelY} fill="var(--dim)" fontSize="9" fontFamily="var(--font-mono)">7d</text>
         <text x={W / 2} y={labelY} textAnchor="middle" fill="var(--dim)" fontSize="9" fontFamily="var(--font-mono)">3d</text>
         <text x={W} y={labelY} textAnchor="end" fill="var(--dim)" fontSize="9" fontFamily="var(--font-mono)">now</text>
@@ -442,7 +447,7 @@ function Gauge({
         <EmptyGaugeCell />
         <EmptyGaugeCell />
         <span className="hd-gauge-cell hd-gauge-cell--usage hd-gauge-cell--status">
-          <span className="hd-gauge-window-name">{gauge.windowLabel ?? "usage"}</span>
+          <span className="hd-gauge-window-name label-xs">{gauge.windowLabel ?? "usage"}</span>
           <span className="hd-gauge-status">{gauge.statusLabel}</span>
         </span>
         <span className="hd-gauge-cell hd-gauge-reset">{gauge.detailLabel ?? "quota n/a"}</span>
@@ -491,9 +496,6 @@ function gaugeUsageScore(gauge: ServiceGauge): number {
   if (gauge.kind === "quota") {
     return Math.max(gauge.fill, ...quotaWindows(gauge).map((window) => window.fill));
   }
-
-  // Status gauges do not have a quota denominator. Treat nonzero observed usage
-  // as noteworthy, but let any meaningfully-used quota window outrank it.
   return compactNumberValue(gauge.statusLabel) > 0 ? 0.01 : 0;
 }
 
@@ -502,8 +504,7 @@ function isQuotaGauge(gauge: ServiceGauge): gauge is Extract<ServiceGauge, { kin
 }
 
 function topServiceGauges(gauges: ServiceGauge[]): ServiceGauge[] {
-  return sortedServiceGauges(gauges)
-    .slice(0, HOME_SERVICE_GAUGE_LIMIT);
+  return sortedServiceGauges(gauges).slice(0, HOME_SERVICE_GAUGE_LIMIT);
 }
 
 function sortedServiceGauges(gauges: ServiceGauge[]): ServiceGauge[] {
@@ -516,6 +517,7 @@ function sortedServiceGauges(gauges: ServiceGauge[]): ServiceGauge[] {
 export default function HomeHero(props: HomeHeroProps) {
   const {
     now,
+    operatorName,
     syncLabel,
     error,
     loading,
@@ -536,80 +538,102 @@ export default function HomeHero(props: HomeHeroProps) {
   const compactGauges = topServiceGauges(subscriptionGauges);
   const gauges = showAllGauges ? sortedGauges : compactGauges;
   const hasHiddenGauges = subscriptionGauges.length > compactGauges.length;
-  const showHeartrate = heartrate.reduce((total, bucket) => total + bucket.count, 0)
-    >= heartrateVisibleEventThreshold;
+
+  const totalHeartrateEvents = heartrate.reduce((total, bucket) => total + bucket.count, 0);
+  const showHeartrate = totalHeartrateEvents >= heartrateVisibleEventThreshold;
+
   return (
-    <section className="hd">
-      {/* With no gauges the panel has no content of its own — only the freshness
-          line — so it drops its frame rather than drawing an empty box. */}
-      <div className={`hd-topbar${gauges.length > 0 ? "" : " hd-topbar--bare"}`}>
-        {/* Route identity, operator and clock moved to the shell: they are the
-            same on every surface, and the shell states them once. What stays is
-            what this view owns — how fresh its own data is, and the control
-            that refreshes it. */}
-        <div className="hd-topbar-r">
-          <span className={`hd-dot hd-dot--${syncTone}`} aria-hidden="true" />
-          <span className={`hd-meta hd-meta--${syncTone}`}>{syncLabel}</span>
-          <span className="hd-topbar-actions">
-            <button
-              type="button"
-              className="hd-btn"
-              disabled={loading || refreshing}
-              onClick={onRefresh}
-            >
-              [{refreshing ? "refreshing" : "r refresh"}]
-            </button>
-          </span>
+    <section className="hd" aria-label="Fleet Cockpit and Service Cluster">
+      {/* ── Cockpit Vitals Band ────────────────────────────────────── */}
+      <div className="hd-vitals-band">
+        <div className="hd-vitals-left">
+          <span className="label-sm hd-vitals-title">Fleet Cockpit</span>
+          {operatorName && (
+            <span className="chip chip--neutral chip--mono chip--sm hd-vitals-callsign">
+              {operatorName}
+            </span>
+          )}
         </div>
-        {gauges.length > 0 && (
-          <div className="hd-topbar-c" aria-label="subscription usage">
-            <div className="hd-gauge-title-row">
-              <span className="hd-gauge-window">SUBSCRIPTIONS</span>
-              {hasHiddenGauges && (
-                <button
-                  type="button"
-                  className="hd-gauge-toggle"
-                  aria-expanded={showAllGauges}
-                  onClick={() => setShowAllGauges((value) => !value)}
-                >
-                  [{showAllGauges ? "top 2" : `all ${subscriptionGauges.length}`}]
-                </button>
-              )}
-            </div>
-            <div className="hd-gauge-set">
-              <div className="hd-gauge-table-head" aria-hidden="true">
-                <span>service</span>
-                <span>short window</span>
-                <span>resets</span>
-                <span>long window</span>
-                <span>resets in</span>
-              </div>
-              {gauges.map((g) => (
-                <span key={g.id} className="hd-gauge-wrap">
-                  <Gauge gauge={g} now={now} onClick={() => navigate({ view: "harnesses" })} />
-                </span>
-              ))}
-            </div>
-          </div>
-        )}
+        <div className="hd-vitals-right">
+          {error && <span className="dot dot--warning" aria-hidden="true" />}
+          <span className={`hd-meta hd-meta--${syncTone}`}>{syncLabel}</span>
+          <button
+            type="button"
+            className="hd-refresh-btn"
+            disabled={loading || refreshing}
+            onClick={onRefresh}
+            title="Refresh status (r)"
+            aria-label={refreshing ? "Refreshing status" : "Refresh status"}
+          >
+            <RefreshCw size={11} className={refreshing ? "hd-spin" : ""} aria-hidden="true" />
+          </button>
+        </div>
       </div>
 
-      {showHeartrate && (
-        <div className="hd-grid hd-grid--single">
-          <div className="hd-panel hd-panel--hr">
-            <div className="hd-panel-title">
-              <span>HEART-RATE</span>
-              <span className="hd-sep">·</span>
-              <span>{heartrateWindow}</span>
-              {heartrateBucketLabel ? (
-                <>
-                  <span className="hd-sep">·</span>
-                  <span>{heartrateBucketLabel}</span>
-                </>
-              ) : null}
+      {/* ── Modular HUD Telemetry Cards ────────────────────────────── */}
+      {(gauges.length > 0 || showHeartrate) && (
+        <div className={`hd-telemetry-grid ${showHeartrate && gauges.length > 0 ? "hd-telemetry-grid--split" : "hd-telemetry-grid--single"}`}>
+          {/* Subscriptions & Quotas Card */}
+          {gauges.length > 0 && (
+            <div className="hd-card hd-card--quotas">
+              <div className="hd-card-head">
+                <div className="hd-card-head-left">
+                  <span className="label-xs hd-card-title">Subscriptions & Quotas</span>
+                  <span className="chip chip--neutral chip--mono chip--sm">
+                    {gauges.length} Active
+                  </span>
+                </div>
+                {hasHiddenGauges && (
+                  <button
+                    type="button"
+                    className="hd-gauge-toggle"
+                    aria-expanded={showAllGauges}
+                    onClick={() => setShowAllGauges((value) => !value)}
+                  >
+                    [{showAllGauges ? "Top 2" : `All ${subscriptionGauges.length}`}]
+                  </button>
+                )}
+              </div>
+
+              <div className="hd-gauge-set">
+                <div className="hd-gauge-table-head label-xs" aria-hidden="true">
+                  <span>Service</span>
+                  <span>Short Window</span>
+                  <span>Resets</span>
+                  <span>Long Window</span>
+                  <span>Reset Countdown</span>
+                </div>
+                {gauges.map((g) => (
+                  <span key={g.id} className="hd-gauge-wrap">
+                    <Gauge gauge={g} now={now} onClick={() => navigate({ view: "harnesses" })} />
+                  </span>
+                ))}
+              </div>
             </div>
-            <HeartrateGraph buckets={heartrate} />
-          </div>
+          )}
+
+          {/* Fleet Velocity & Heartrate Oscilloscope Card */}
+          {showHeartrate && (
+            <div className="hd-card hd-card--heartrate">
+              <div className="hd-card-head">
+                <div className="hd-card-head-left">
+                  <Activity size={12} className="hd-heartrate-icon" aria-hidden="true" />
+                  <span className="label-xs hd-card-title">Fleet Velocity</span>
+                </div>
+                <div className="hd-card-head-right">
+                  <span className="label-xs hd-card-sub">
+                    {heartrateWindow} {heartrateBucketLabel ? `· ${heartrateBucketLabel}` : ""}
+                  </span>
+                  <span className="chip chip--working chip--mono chip--sm">
+                    {totalHeartrateEvents} {totalHeartrateEvents === 1 ? "Event" : "Events"}
+                  </span>
+                </div>
+              </div>
+              <div className="hd-heartrate-plot-body">
+                <HeartrateGraph buckets={heartrate} />
+              </div>
+            </div>
+          )}
         </div>
       )}
     </section>

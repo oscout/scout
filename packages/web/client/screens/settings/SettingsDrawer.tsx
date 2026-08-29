@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type KeyboardEvent } from "react";
 import { useOptionalFlag } from "hudsonkit/flags";
 import { useOptionalTheme } from "hudsonkit/theme";
-import { Check, Copy, Monitor, Moon, RefreshCw, Sun } from "lucide-react";
+import { Check, Copy, Maximize2, Minimize2, Monitor, Moon, RefreshCw, Sparkles, Sun } from "lucide-react";
 import { api } from "../../lib/api.ts";
 import {
   deleteOpenAIApiKey,
@@ -45,8 +45,21 @@ import {
   type ScoutThemePalette,
   type ScoutShellStyle,
   type ScoutThemeTemplate,
+  type ScoutAvatarStyle,
+  type ScoutAvatarSize,
 } from "../../lib/theme.ts";
+import { CAST_MEMBERS, CREW_ASSETS_AVAILABLE, rendererCoverage } from "../../lib/crew-registry.ts";
+import { CrewAvatar } from "../../components/CrewAvatar.tsx";
+import { CastPicker } from "../../components/CastPicker.tsx";
+import { placementSize } from "../../components/AgentAvatar.tsx";
+import { CrewStage } from "../../components/CrewStage.tsx";
+import { SpriteAvatar } from "../../components/SpriteAvatar.tsx";
 import { SCOUT_REALTIME_VOICE_FLAG } from "../../../shared/realtime-voice.ts";
+import {
+  fetchScoutRealtimeVoiceSettings,
+  publishScoutRealtimeVoiceSettings,
+  saveScoutRealtimeVoiceSettings,
+} from "../../lib/realtime-voice-settings.ts";
 import { VoiceHostStatusBanner, VoicePermissionsPanel } from "./VoicePermissionsPanel.tsx";
 import "./settings-drawer.css";
 import "./voice-permissions-panel.css";
@@ -214,6 +227,58 @@ const ACCENT_OPTIONS = [
   { id: "amber", label: "Amber" },
 ] as const satisfies readonly { id: ScoutThemeAccent; label: string }[];
 
+const AVATAR_STYLES = [
+  {
+    id: "crew",
+    label: "Crew Cast",
+    sub: "Rendered character art with 4-slot status ring & eye animation",
+    spec: "4-SLOT CAST",
+  },
+  {
+    id: "sprite",
+    label: "Generative",
+    sub: "Deterministic 7×7 creatures from name hashes",
+    spec: "PRNG VECTOR",
+  },
+  {
+    id: "chip",
+    label: "Pixel Chip",
+    sub: "Pixel portraits of the chip cast; everyone else stays generative",
+    spec: "PIXEL ART",
+  },
+] as const satisfies readonly {
+  id: ScoutAvatarStyle;
+  label: string;
+  sub: string;
+  spec: string;
+}[];
+
+const AVAILABLE_AVATAR_STYLES = CREW_ASSETS_AVAILABLE
+  ? AVATAR_STYLES
+  : AVATAR_STYLES.filter((option) => option.id === "sprite");
+
+/**
+ * Avatar size is a DENSITY choice, so the copy names what you get more of —
+ * rows on screen, or a face you can read without leaning in — rather than a
+ * measurement. The px are shown too, but read off the ladder in AgentAvatar
+ * rather than restated here, so the label and the drawing cannot drift apart.
+ */
+const AVATAR_SIZES = [
+  { id: "compact", label: "Compact", sub: "More rows per screen; the name carries" },
+  { id: "regular", label: "Regular", sub: "Scout's default balance" },
+  { id: "large", label: "Large", sub: "Faces legible at a glance" },
+] as const satisfies readonly {
+  id: ScoutAvatarSize;
+  label: string;
+  sub: string;
+}[];
+
+/** Three faces, not one: the tier that reads well for a pale member can still
+ *  lose a dark one, and the point of previewing at true size is to catch that
+ *  before committing. Members with chip art so the row is honest under every
+ *  renderer. */
+const AVATAR_SIZE_SPECIMENS = ["milo", "vex", "sprout"] as const;
+
 function AppearanceFrame({
   className,
   theme,
@@ -335,6 +400,8 @@ function AppearanceSection() {
   const styleLabel = INTERFACE_STYLES.find((option) => option.id === activeTemplate)?.label ?? "Rounded";
   const contrastLabel = CONTRAST_LEVELS.find((option) => option.id === appearanceDetails.contrast)?.label ?? "Defined";
   const accentLabel = ACCENT_OPTIONS.find((option) => option.id === appearanceDetails.accent)?.label ?? "Theme";
+  const avatarStyleLabel = AVAILABLE_AVATAR_STYLES.find((option) => option.id === appearanceDetails.avatarStyle)?.label ?? "Generative";
+  const avatarSizeLabel = AVATAR_SIZES.find((option) => option.id === appearanceDetails.avatarSize)?.label ?? "Regular";
 
   return (
     <div className="s-settings-col-gap">
@@ -519,6 +586,102 @@ function AppearanceSection() {
             })}
           </div>
 
+          <SectionRule label="Avatar system" right={`currently ${avatarStyleLabel.toLowerCase()}`} />
+          <div className="s-settings-avatar-grid" role="group" aria-label="Avatar system">
+            {AVAILABLE_AVATAR_STYLES.map((option) => {
+              const active = appearanceDetails.avatarStyle === option.id;
+              return (
+                <button
+                  key={option.id}
+                  type="button"
+                  className="s-settings-palette-choice s-settings-avatar-choice"
+                  data-active={active || undefined}
+                  aria-pressed={active}
+                  onClick={() => updateAppearanceDetails({ avatarStyle: option.id })}
+                >
+                  {/* ONE specimen. This used to draw the covered member and the
+                      generative fallback overlapped, to show coverage — but two
+                      unrelated creatures half on top of each other read as a
+                      layout fault, not as a claim, and the coverage is already
+                      stated in words a line below ("5 of 7 cast", "everyone else
+                      stays generative"). A picture that has to be explained is
+                      losing to the sentence that explains it. */}
+                  <div className="s-settings-avatar-preview">
+                    {option.id === "crew" ? (
+                      <CrewAvatar slug="milo" size={38} ring={false} badge={false} />
+                    ) : option.id === "chip" ? (
+                      <CrewAvatar slug="milo" size={38} chip ring={false} badge={false} />
+                    ) : (
+                      <SpriteAvatar name="Milo" size={38} />
+                    )}
+                  </div>
+                  <span className="s-settings-choice-copy">
+                    <span className="s-settings-choice-title">
+                      <strong>{option.label}</strong>
+                      {active ? <Check className="s-settings-theme-check" size={14} aria-hidden /> : null}
+                    </span>
+                    <small>{option.sub}</small>
+                    <span>
+                      {option.spec}
+                      {(() => {
+                        const c = rendererCoverage(option.id);
+                        return c ? ` · ${c.covered} of ${c.total} cast` : " · every agent";
+                      })()}
+                    </span>
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+
+          <SectionRule label="Avatar size" right={`currently ${avatarSizeLabel.toLowerCase()}`} />
+          <div className="s-settings-avatar-size-row" role="group" aria-label="Avatar size">
+            {AVATAR_SIZES.map((option) => {
+              const active = appearanceDetails.avatarSize === option.id;
+              /* Previewed at the size it actually draws, in the placement this
+                 setting is felt in most — the list row. A swatch scaled to fit
+                 the card would be a picture of the choice rather than the
+                 choice itself, and the whole question here is "can I read that
+                 face at that size". */
+              const px = placementSize("row", option.id) ?? 24;
+              return (
+                <button
+                  key={option.id}
+                  type="button"
+                  className="s-settings-avatar-size-choice"
+                  data-active={active || undefined}
+                  aria-pressed={active}
+                  onClick={() => updateAppearanceDetails({ avatarSize: option.id })}
+                >
+                  <span className="s-settings-avatar-size-sample" aria-hidden>
+                    {AVATAR_SIZE_SPECIMENS.map((slug) => (
+                      !CREW_ASSETS_AVAILABLE || appearanceDetails.avatarStyle === "sprite"
+                        ? <SpriteAvatar key={slug} name={slug} size={px} />
+                        : (
+                          <CrewAvatar
+                            key={slug}
+                            slug={slug}
+                            size={px}
+                            chip={appearanceDetails.avatarStyle === "chip"}
+                            ring={false}
+                            badge={false}
+                          />
+                        )
+                    ))}
+                  </span>
+                  <span className="s-settings-choice-title">
+                    <strong>{option.label}</strong>
+                    {active ? <Check className="s-settings-theme-check" size={14} aria-hidden /> : null}
+                  </span>
+                  <small>{option.sub}</small>
+                  <span className="s-settings-avatar-size-spec">
+                    {`${px}PX ROW · ${placementSize("inspector", option.id)}PX TILE`}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+
           <div className="s-settings-appearance-note">
             <strong>Saved on this device</strong>
             <span>Layout, mode, palette, shape, separation, and accent stay in sync across tabs. URL overrides remain available for embeds and visual QA.</span>
@@ -555,34 +718,143 @@ function OperatorSection({
   profile: OperatorProfile;
   update: (patch: Partial<OperatorProfile>) => void;
 }) {
+  const { appearanceDetails, updateAppearanceDetails } = useScout();
+  const [selectedMascot, setSelectedMascot] = useState(
+    appearanceDetails.operatorCharacter || "milo",
+  );
+  const activeMascot = selectedMascot;
+  const [breakoutOpen, setBreakoutOpen] = useState(true);
+
+  const activeMember = CREW_ASSETS_AVAILABLE
+    ? (CAST_MEMBERS.find((m) => m.slug.toLowerCase() === activeMascot.toLowerCase()) ?? CAST_MEMBERS[0])
+    : {
+        slug: "sprite",
+        name: profile.name || "Operator",
+        kernel: "name·hue·deterministic",
+        title: "Generative Identity",
+        blurb: "Built locally from your display name and identity hue, without external artwork.",
+      };
+
+  const handleSelectMascot = (slug: string) => {
+    setSelectedMascot(slug);
+    updateAppearanceDetails({ operatorCharacter: slug });
+  };
+
   return (
     <div className="s-settings-col-gap">
-      <SectionRule label="Identity" right="visible to every agent" />
+      <SectionRule
+        label={CREW_ASSETS_AVAILABLE ? "Operator Character Stage" : "Operator Identity"}
+        right={CREW_ASSETS_AVAILABLE ? "cast mascot & identity" : "generative avatar"}
+      />
 
-      <div className="s-settings-identity-card">
-        <span className="s-settings-identity-dot" style={{
-          background: hueColor(profile.hue),
-          color: hueInk(profile.hue),
-        }}>
-          {(profile.name || "?")[0].toUpperCase()}
-        </span>
-        <div style={{ flex: 1 }}>
-          <div className="s-settings-identity-name">{profile.name || "Unnamed"}</div>
-          <div className="s-settings-identity-meta">
-            {profile.handle || "@you"} · {profile.pronouns || "—"} · operator
+      <div
+        className="s-settings-stage-hero-card"
+        data-open={CREW_ASSETS_AVAILABLE && breakoutOpen ? "true" : "false"}
+      >
+        <div className="s-settings-stage-hero-header">
+          <div className="s-settings-stage-hero-badge">
+            <span className="s-settings-stage-live-dot" />
+            <span className="s-settings-stage-badge-text">
+              {breakoutOpen ? "FULL FIGURE BREAKOUT" : "COIN DISC FRAMING"}
+            </span>
           </div>
+
+          {CREW_ASSETS_AVAILABLE ? (
+            <button
+              type="button"
+              className="s-settings-stage-toggle-btn"
+              onClick={() => setBreakoutOpen((v) => !v)}
+              title={breakoutOpen ? "Collapse to coin framing" : "Break out to full body figure"}
+            >
+              {breakoutOpen ? (
+                <>
+                  <Minimize2 size={13} aria-hidden />
+                  <span>Coin Framing</span>
+                </>
+              ) : (
+                <>
+                  <Sparkles size={13} aria-hidden />
+                  <span>Breakout Figure</span>
+                </>
+              )}
+            </button>
+          ) : null}
         </div>
-        <div className="s-settings-hue-wrap">
-          <span className="s-settings-field-label">Identity hue</span>
-          <div className="s-settings-hue-row">
-            {HUE_PRESETS.map((h) => (
-              <button key={h} onClick={() => update({ hue: h })}
-                className={`s-settings-hue-dot${profile.hue === h ? " s-settings-hue-dot--active" : ""}`}
-                style={{ background: hueColor(h) }} />
-            ))}
+
+        <div className="s-settings-stage-hero-body">
+          <div className="s-settings-stage-art-col">
+            {CREW_ASSETS_AVAILABLE ? (
+              // Character (cast PNG) and background (disc) are decoupled —
+              // the disc falls back to a neutral band based on art.ink,
+              // not the operator's identity hue. profile.hue still tints
+              // the SpriteAvatar fallback below.
+              <CrewStage
+                slug={activeMascot}
+                open={breakoutOpen}
+                onToggle={() => setBreakoutOpen((v) => !v)}
+                coin={64}
+                figure={256}
+                state="working"
+              />
+            ) : (
+              <SpriteAvatar name={profile.name || "Operator"} size={96} hue={profile.hue} />
+            )}
+            <span className="s-settings-stage-click-hint">
+              {CREW_ASSETS_AVAILABLE
+                ? (breakoutOpen ? "Click avatar to collapse" : "Click avatar to break out")
+                : "Deterministic identity · no external artwork"}
+            </span>
+          </div>
+
+          <div className="s-settings-stage-meta-col">
+            <div className="s-settings-stage-title-row">
+              <span className="s-settings-stage-char-name">{activeMember.name}</span>
+              <span className="s-settings-stage-char-title">{activeMember.title}</span>
+            </div>
+
+            <div className="s-settings-stage-kernel-pill">
+              <code>{activeMember.kernel}</code>
+            </div>
+
+            <p className="s-settings-stage-blurb">{activeMember.blurb}</p>
+
+            <div className="s-settings-stage-identity-group">
+              <div className="s-settings-stage-operator-id">
+                <strong>{profile.name || "Operator"}</strong>
+                <span>{profile.handle || "@you"} · {profile.pronouns || "—"}</span>
+              </div>
+
+              <div className="s-settings-hue-wrap">
+                <span className="s-settings-field-label">Stage & Identity Hue</span>
+                <div className="s-settings-hue-row">
+                  {HUE_PRESETS.map((h) => (
+                    <button
+                      key={h}
+                      type="button"
+                      onClick={() => update({ hue: h })}
+                      className={`s-settings-hue-dot${profile.hue === h ? " s-settings-hue-dot--active" : ""}`}
+                      style={{ background: hueColor(h) }}
+                      title={`Hue ${h}°`}
+                    />
+                  ))}
+                </div>
+              </div>
+            </div>
           </div>
         </div>
       </div>
+
+      {CREW_ASSETS_AVAILABLE ? (
+        <>
+          <SectionRule label="Your character mascot" right={`currently ${activeMember.name.toLowerCase()}`} />
+          <div className="s-settings-cast-grid-wrap">
+            <CastPicker
+              selectedSlug={activeMascot}
+              onSelect={handleSelectMascot}
+            />
+          </div>
+        </>
+      ) : null}
 
       <Field label="Display name" hint="Shown when agents address you.">
         <TextInput value={profile.name} onChange={(v) => update({ name: v })} />
@@ -866,24 +1138,30 @@ const VOICE_ENGINE_OPTIONS: { id: ScoutVoicePreference; label: string; sub: stri
 ];
 
 function VoiceSection() {
-  const realtimeVoiceAvailable = useOptionalFlag(SCOUT_REALTIME_VOICE_FLAG, false);
+  const realtimeVoiceAvailable = useOptionalFlag(SCOUT_REALTIME_VOICE_FLAG, true);
   const [settings, setSettings] = useState<ScoutVoiceSettings | null>(null);
+  const [realtimeSettings, setRealtimeSettings] = useState<Awaited<ReturnType<typeof fetchScoutRealtimeVoiceSettings>> | null>(null);
   const [devices, setDevices] = useState<ScoutVoiceInputDevice[]>([]);
   const [history, setHistory] = useState<ScoutVoiceSessionHistoryEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [realtimeSaving, setRealtimeSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const [snapshot, sessions] = await Promise.all([
+      const [snapshot, sessions, realtime] = await Promise.all([
         fetchScoutVoiceSettings(),
         fetchScoutVoiceHistory(12).catch(() => []),
+        // The host voice inventory remains useful when an older or restarting
+        // web server has not mounted the realtime settings endpoint yet.
+        fetchScoutRealtimeVoiceSettings().catch(() => null),
       ]);
       setSettings(snapshot.settings);
       setDevices(snapshot.devices);
       setHistory(sessions);
+      setRealtimeSettings(realtime);
       setError(null);
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : String(loadError));
@@ -912,6 +1190,20 @@ function VoiceSection() {
     }
   }, []);
 
+  const applyRealtimeEnabled = useCallback(async (enabled: boolean) => {
+    setRealtimeSaving(true);
+    setError(null);
+    try {
+      const snapshot = await saveScoutRealtimeVoiceSettings(enabled);
+      setRealtimeSettings(snapshot);
+      publishScoutRealtimeVoiceSettings(snapshot);
+    } catch (saveError) {
+      setError(saveError instanceof Error ? saveError.message : String(saveError));
+    } finally {
+      setRealtimeSaving(false);
+    }
+  }, []);
+
   if (loading && !settings) {
     return <div className="s-settings-field-hint">Loading voice settings…</div>;
   }
@@ -922,6 +1214,20 @@ function VoiceSection() {
   const micPermission = settings?.permissions?.find((entry) => entry.kind === "microphone") ?? null;
   const speechPermission = settings?.permissions?.find((entry) => entry.kind === "speechRecognition") ?? null;
   const hostOnline = (settings?.permissions?.length ?? 0) > 0 || devices.length > 0;
+  const realtimeEnabled = realtimeVoiceAvailable && realtimeSettings?.enabled === true;
+  const realtimeToggleDisabled = realtimeSaving
+    || !realtimeVoiceAvailable
+    || !realtimeSettings
+    || realtimeSettings.locked;
+  const realtimeStatus = !realtimeVoiceAvailable
+    ? "Unavailable in this build."
+    : !realtimeSettings
+      ? "Live voice settings are temporarily unavailable."
+      : realtimeSettings.locked
+        ? `Controlled by OPENSCOUT_REALTIME_VOICE_ENABLED · ${realtimeSettings.enabled ? "on" : "off"}`
+        : realtimeEnabled
+          ? "Ready. Use Voice in the footer to start a call."
+          : "Off. No microphone or OpenAI connection runs in the background.";
 
   const troubleshootingTips = [
     !hostOnline
@@ -950,23 +1256,32 @@ function VoiceSection() {
     <div className="s-settings-col-gap">
       {error && <div className="s-settings-field-hint" style={{ color: "var(--amber)" }}>{error}</div>}
 
-      <SectionRule label="Realtime conversation" right="footer control" />
+      <SectionRule label="Realtime conversation" right="operator control" />
       <div
         className="s-settings-realtime-voice"
-        data-enabled={realtimeVoiceAvailable || undefined}
+        data-enabled={realtimeEnabled || undefined}
         data-unavailable={!realtimeVoiceAvailable || undefined}
       >
         <span className="s-settings-realtime-voice-copy">
-          <strong>{realtimeVoiceAvailable ? "Realtime voice enabled" : "Realtime voice disabled"}</strong>
+          <strong>Enable live voice on this Scout</strong>
           <span>
-            Starting a call sends microphone audio to OpenAI Realtime and bills the configured OpenAI API account. Voice may read live Scout context and navigate this app; agent requests still require confirmation.
+            Allows live conversations with Scoutbot. Microphone audio and OpenAI usage begin only when you explicitly start a call.
           </span>
-          {!realtimeVoiceAvailable ? (
-            <em>Turn on Live voice in the host app's Settings → Voice.</em>
-          ) : (
-            <em>Use Voice in the footer to start or manage a call.</em>
-          )}
+          <em>{realtimeStatus}</em>
         </span>
+        <button
+          type="button"
+          role="switch"
+          aria-checked={realtimeEnabled}
+          aria-label="Enable live voice on this Scout"
+          disabled={realtimeToggleDisabled}
+          data-checked={realtimeEnabled || undefined}
+          className="s-settings-switch"
+          onClick={() => void applyRealtimeEnabled(!realtimeEnabled)}
+        >
+          <span className="s-settings-switch-thumb" aria-hidden="true" />
+          <span className="sr-only">{realtimeEnabled ? "On" : "Off"}</span>
+        </button>
       </div>
 
       <VoiceHostStatusBanner

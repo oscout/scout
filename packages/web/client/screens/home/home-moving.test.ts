@@ -344,7 +344,7 @@ function observeEntry(overrides: Partial<ObserveCacheEntry> = {}): ObserveCacheE
   return {
     source: "history",
     fidelity: "timestamped",
-    historyPath: "/Users/example/.claude/projects/openscout/sess-a.jsonl",
+    historyPath: "/Users/art/.claude/projects/openscout/sess-a.jsonl",
     sessionId: "sess-a",
     updatedAt: Date.now(),
     data: { events: [], files: [] },
@@ -357,7 +357,7 @@ describe("observedSessionKey", () => {
     expect(observedSessionKey(observeEntry())).toBe("session:sess-a");
     expect(
       observedSessionKey(observeEntry({ sessionId: null })),
-    ).toBe("history:/Users/example/.claude/projects/openscout/sess-a.jsonl");
+    ).toBe("history:/Users/art/.claude/projects/openscout/sess-a.jsonl");
     expect(observedSessionKey(observeEntry({ sessionId: null, historyPath: null }))).toBeNull();
     expect(observedSessionKey(undefined)).toBeNull();
   });
@@ -398,7 +398,7 @@ describe("dedupeWorkingAgentsByObservedSession", () => {
       distinct: observeEntry(),
       other: observeEntry({
         sessionId: "sess-b",
-        historyPath: "/Users/example/.claude/projects/openscout/sess-b.jsonl",
+        historyPath: "/Users/art/.claude/projects/openscout/sess-b.jsonl",
       }),
     };
 
@@ -427,7 +427,7 @@ describe("buildHomeNativeMovingLanes", () => {
       }],
       transcripts: [{
         source: "grok",
-        transcriptPath: "/Users/example/.grok/sessions/openscout/sess-grok/events.jsonl",
+        transcriptPath: "/Users/art/.grok/sessions/openscout/sess-grok/events.jsonl",
         sessionId: "sess-grok",
         cwd: "/Users/dev/openscout",
         project: "openscout",
@@ -457,7 +457,7 @@ describe("buildHomeNativeMovingLanes", () => {
     }];
     const transcripts = [{
       source: "grok",
-      transcriptPath: "/Users/example/.grok/sessions/openscout/sess-grok/events.jsonl",
+      transcriptPath: "/Users/art/.grok/sessions/openscout/sess-grok/events.jsonl",
       sessionId: "sess-grok",
       cwd: "/Users/dev/openscout",
       project: "openscout",
@@ -498,7 +498,7 @@ describe("buildHomeNativeMovingLanes", () => {
       }],
       transcripts: [{
         source: "grok",
-        transcriptPath: "/Users/example/.grok/sessions/openscout/sess-grok/events.jsonl",
+        transcriptPath: "/Users/art/.grok/sessions/openscout/sess-grok/events.jsonl",
         sessionId: "sess-grok",
         cwd: "/Users/dev/openscout",
         project: "openscout",

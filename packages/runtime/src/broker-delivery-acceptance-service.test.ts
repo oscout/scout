@@ -659,6 +659,52 @@ describe("BrokerDeliveryAcceptanceService", () => {
     }));
   });
 
+  test("accepts and queues delivery to an offline session endpoint instead of refusing", async () => {
+    // SCO-098: a resolved session whose endpoint is offline (non-terminal) is
+    // the store-and-forward case — record the message and dispatch so the
+    // invocation path wakes the session or parks the flight, instead of
+    // returning "nothing was sent."
+    const sessionEndpoint = testEndpoint({
+      id: "endpoint-session-offline",
+      agentId: "session-agent",
+      sessionId: "session-mw-offline",
+      transport: "codex_app_server",
+      state: "offline",
+      metadata: { sessionBacked: true },
+    });
+    const harness = createHarness({
+      now: 20_260,
+      resolution: {
+        kind: "resolved_session",
+        session: {
+          sessionId: "session-mw-offline",
+          actorId: "session-agent",
+          endpoint: sessionEndpoint,
+          label: "target:mw-offline",
+          nodeId: "node-1",
+        },
+      },
+    });
+
+    const result = await harness.service.accept({
+      id: "deliver-offline-session",
+      body: "check in when you can",
+      intent: "consult",
+      target: { kind: "target_handle", handle: "mw-offline", value: "target:mw-offline" },
+      caller: { actorId: "operator", nodeId: "node-1" },
+    });
+
+    expect(result.kind).toBe("delivery");
+    expect(harness.postedMessages).toHaveLength(1);
+    expect(harness.acceptedInvocations[0]).toEqual(expect.objectContaining({
+      targetAgentId: "session-agent",
+      execution: expect.objectContaining({
+        session: "existing",
+        targetSessionId: "session-mw-offline",
+      }),
+    }));
+  });
+
   test("project-path consult with an explicit agent target does not synthesize a cardless session", async () => {
     const harness = createHarness({ now: 20_500 });
 

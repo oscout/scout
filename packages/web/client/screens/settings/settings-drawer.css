@@ -149,6 +149,7 @@
 .s-settings-palette-choice,
 .s-settings-interface-choice,
 .s-settings-contrast-choice,
+.s-settings-avatar-size-choice,
 .s-settings-accent-choice {
   position: relative;
   display: flex;
@@ -178,6 +179,7 @@
 .s-settings-palette-choice:hover,
 .s-settings-interface-choice:hover,
 .s-settings-contrast-choice:hover,
+.s-settings-avatar-size-choice:hover,
 .s-settings-accent-choice:hover {
   border-color: color-mix(in srgb, var(--ink) 26%, var(--border));
   background: color-mix(in srgb, var(--ink) 4%, var(--surface));
@@ -188,6 +190,7 @@
 .s-settings-palette-choice:focus-visible,
 .s-settings-interface-choice:focus-visible,
 .s-settings-contrast-choice:focus-visible,
+.s-settings-avatar-size-choice:focus-visible,
 .s-settings-accent-choice:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
@@ -199,6 +202,7 @@
 .s-settings-palette-choice:active,
 .s-settings-interface-choice:active,
 .s-settings-contrast-choice:active,
+.s-settings-avatar-size-choice:active,
 .s-settings-accent-choice:active {
   transform: scale(0.985);
 }
@@ -208,6 +212,7 @@
 .s-settings-palette-choice[data-active],
 .s-settings-interface-choice[data-active],
 .s-settings-contrast-choice[data-active],
+.s-settings-avatar-size-choice[data-active],
 .s-settings-accent-choice[data-active] {
   border-color: color-mix(in srgb, var(--ink) 58%, var(--border));
   background: var(--surface);
@@ -596,6 +601,260 @@
   height: 8px;
   border-radius: 50%;
   background: var(--hud-accent);
+}
+
+/* ── Avatar System & Character Choices ──────────────────────────────── */
+
+.s-settings-avatar-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--space-sm);
+}
+
+.s-settings-avatar-choice {
+  display: grid;
+  /* `auto`, not a fixed 56px: the cast renderers preview a PAIR (covered member
+     + fallback), which is wider than one coin — a fixed column pushed the
+     fallback sprite out over the copy. Let the column state its own width and
+     the copy take what is left. */
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: var(--space-md);
+  min-height: 84px;
+  padding: var(--space-md);
+  text-align: left;
+}
+
+.s-settings-avatar-preview {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* Avatar size. Every specimen is drawn at the px the tier really resolves to,
+   so the three cards are deliberately NOT uniform inside — the difference
+   between them is the whole content of the control. The sample band is a fixed
+   height instead, so the cards still line up and the coins grow against a
+   constant frame rather than pushing the copy around. */
+.s-settings-avatar-size-row {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--space-sm);
+}
+
+.s-settings-avatar-size-choice {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-2xs);
+  padding: var(--space-md);
+}
+
+.s-settings-avatar-size-sample {
+  display: flex;
+  align-items: center;
+  min-height: 40px;
+  margin-bottom: var(--space-2xs);
+  /* Overlapped like a facepile: crowding is exactly what a size choice trades
+     away, so the preview should show it. */
+  gap: 0;
+}
+
+.s-settings-avatar-size-sample > * + * {
+  margin-left: -6px;
+}
+
+.s-settings-avatar-size-choice .s-settings-choice-title {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2xs);
+  color: var(--ink);
+  font-size: var(--text-md);
+  font-weight: 620;
+}
+
+.s-settings-avatar-size-choice small {
+  color: var(--muted);
+  font-size: var(--text-2xs);
+  line-height: 1.35;
+}
+
+.s-settings-avatar-size-spec {
+  color: color-mix(in srgb, var(--muted) 78%, transparent);
+  font-family: var(--font-mono);
+  font-size: var(--text-3xs, var(--text-2xs));
+  letter-spacing: 0.06em;
+}
+
+/* ── Operator Character Hero Stage & Breakout Card ───────────────────── */
+
+.s-settings-stage-hero-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--hud-border);
+  border-top: 1px solid color-mix(in srgb, var(--hud-border) 70%, white 30%);
+  border-radius: calc(var(--hud-radius) * 1.5);
+  background: color-mix(in srgb, var(--hud-surface) 88%, var(--hud-bg));
+  box-shadow: inset 0 1px 0 0 rgba(255, 255, 255, 0.05), 0 4px 20px color-mix(in srgb, black 25%, transparent);
+  padding: var(--space-lg);
+  overflow: hidden;
+  transition: all 300ms ease;
+}
+
+.s-settings-stage-hero-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-md);
+  padding-bottom: var(--space-md);
+  border-bottom: 1px solid color-mix(in srgb, var(--hud-border) 60%, transparent);
+}
+
+.s-settings-stage-hero-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  color: var(--hud-muted);
+}
+
+.s-settings-stage-live-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--hud-ink) 45%, transparent);
+}
+
+.s-settings-stage-toggle-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: var(--space-2xs) var(--space-sm);
+  border: 1px solid var(--hud-border);
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--hud-surface) 70%, transparent);
+  color: var(--hud-ink);
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 150ms ease;
+}
+
+.s-settings-stage-toggle-btn:hover {
+  border-color: color-mix(in srgb, var(--hud-border) 60%, white 40%);
+  background: color-mix(in srgb, var(--hud-surface) 90%, white 10%);
+  color: var(--hud-ink);
+}
+
+.s-settings-stage-hero-body {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  align-items: center;
+  gap: var(--space-xl);
+  padding-top: var(--space-md);
+}
+
+.s-settings-stage-art-col {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-width: 140px;
+}
+
+.s-settings-stage-click-hint {
+  margin-top: 8px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--hud-muted);
+  text-align: center;
+  user-select: none;
+}
+
+.s-settings-stage-meta-col {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+  min-width: 0;
+}
+
+.s-settings-stage-title-row {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-sm);
+  flex-wrap: wrap;
+}
+
+.s-settings-stage-char-name {
+  font-family: var(--font-mono);
+  font-size: var(--text-lg);
+  font-weight: 700;
+  color: var(--hud-ink);
+  letter-spacing: 0.05em;
+}
+
+.s-settings-stage-char-title {
+  font-family: var(--font-sans);
+  font-size: var(--text-sm);
+  font-weight: 500;
+  color: var(--hud-muted);
+}
+
+.s-settings-stage-kernel-pill {
+  display: inline-flex;
+  align-items: center;
+  width: fit-content;
+  padding: 2px 8px;
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--hud-ink) 7%, transparent);
+  border: 1px solid color-mix(in srgb, var(--hud-border) 60%, transparent);
+}
+
+.s-settings-stage-kernel-pill code {
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  color: var(--hud-ink);
+  opacity: 0.85;
+}
+
+.s-settings-stage-blurb {
+  margin: 4px 0 8px;
+  font-size: var(--text-xs);
+  line-height: 1.45;
+  color: var(--hud-muted);
+}
+
+.s-settings-stage-identity-group {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-md);
+  padding: var(--space-sm) var(--space-md);
+  border: 1px solid color-mix(in srgb, var(--hud-border) 70%, transparent);
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--hud-bg) 70%, var(--hud-surface));
+  flex-wrap: wrap;
+}
+
+.s-settings-stage-operator-id {
+  display: flex;
+  flex-direction: column;
+}
+
+.s-settings-stage-operator-id strong {
+  font-size: var(--text-sm);
+  font-weight: 600;
+  color: var(--hud-ink);
+}
+
+.s-settings-stage-operator-id span {
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  color: var(--hud-muted);
 }
 
 .s-settings-preview-column {
@@ -1472,8 +1731,8 @@
 }
 
 .s-settings-realtime-voice[data-enabled="true"] {
-  border-color: color-mix(in srgb, var(--green) 36%, var(--border));
-  background: color-mix(in srgb, var(--green) 6%, var(--surface));
+  border-color: color-mix(in srgb, var(--accent) 36%, var(--border));
+  background: color-mix(in srgb, var(--accent) 6%, var(--surface));
 }
 
 .s-settings-realtime-voice[data-unavailable="true"] {
@@ -1484,6 +1743,7 @@
   display: grid;
   gap: var(--space-2xs);
   min-width: 0;
+  flex: 1;
 }
 
 .s-settings-realtime-voice-copy strong {
@@ -1503,6 +1763,57 @@
   font-family: var(--font-mono);
   font-size: var(--text-2xs);
   font-style: normal;
+}
+
+.s-settings-switch {
+  position: relative;
+  width: 44px;
+  height: 24px;
+  flex: 0 0 auto;
+  margin-top: var(--space-3xs);
+  padding: 3px;
+  border: 1px solid color-mix(in srgb, var(--border) 82%, transparent);
+  border-radius: var(--radius-pill);
+  background: color-mix(in srgb, var(--ink) 10%, var(--surface));
+  cursor: pointer;
+  transition:
+    background-color var(--motion-duration-fast) var(--motion-ease-standard),
+    border-color var(--motion-duration-fast) var(--motion-ease-standard);
+}
+
+.s-settings-switch:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--ink) 24%, var(--border));
+}
+
+.s-settings-switch[data-checked="true"] {
+  border-color: color-mix(in srgb, var(--accent) 58%, var(--border));
+  background: color-mix(in srgb, var(--accent) 72%, var(--surface));
+}
+
+.s-settings-switch:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 35%, transparent);
+}
+
+.s-settings-switch:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.s-settings-switch-thumb {
+  display: block;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--ink);
+  box-shadow: 0 1px 2px color-mix(in srgb, black 34%, transparent);
+  transform: translateX(0);
+  transition: transform var(--motion-duration-fast) var(--motion-ease-emphasis);
+}
+
+.s-settings-switch[data-checked="true"] .s-settings-switch-thumb {
+  transform: translateX(20px);
+  background: var(--canvas);
 }
 
 @media (max-width: 1180px) {

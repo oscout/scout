@@ -14,6 +14,7 @@ import { formatTerminalSurfaceId } from "@openscout/protocol";
 import type { TerminalSurface } from "@openscout/protocol";
 
 import { errorReason, probeCommand } from "./tmux.ts";
+import { readHerdrLastKnownState } from "./herdr-session-state.ts";
 import type {
   TerminalHostAdapter,
   TerminalHostSession,
@@ -63,12 +64,25 @@ export const herdrTerminalHost: TerminalHostAdapter = {
 
   async list(context = {}) {
     const snapshot = await herdrSessionsProbe.for({ env: context.env ?? process.env }).fresh();
-    return (snapshot.value ?? []).map((session): TerminalHostSession => ({
-      name: session.name,
+    return Promise.all((snapshot.value ?? []).map(async (session): Promise<TerminalHostSession> => {
       // A herdr session that is not running still exists and still reattaches;
-      // it is detached, not exited.
-      state: session.running ? "live" : "detached",
-      metadata: { isDefault: session.isDefault, running: session.running },
+      // it is detached, not exited. Its persisted layout is the only honest
+      // answer to "what was in it" while the server is down.
+      const lastKnown = !session.running && session.sessionDir
+        ? await readHerdrLastKnownState(session.sessionDir)
+        : null;
+      return {
+        name: session.name,
+        state: session.running ? "live" : "detached",
+        // The last-known pane cwd stands in for a live one: a stopped session
+        // has no current directory, but "where was this" is what the row needs.
+        ...(lastKnown?.cwds[0] ? { cwd: lastKnown.cwds[0] } : {}),
+        metadata: {
+          isDefault: session.isDefault,
+          running: session.running,
+          ...(lastKnown ? { lastKnownLayout: lastKnown } : {}),
+        },
+      };
     }));
   },
 

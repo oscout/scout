@@ -14,7 +14,11 @@ import { useTailEvents } from "../../lib/tail-events.ts";
 import { agentStateLabel, isAgentBusy, normalizeAgentState } from "../../lib/agent-state.ts";
 import { stateColor } from "../../lib/colors.ts";
 import { AgentLiveActions } from "../../components/AgentLiveActions.tsx";
-import { isNoisyConversationStatusMessage } from "../../lib/message-visibility.ts";
+import {
+  conversationFailureNotice,
+  conversationalMessagePreview,
+  isNoisyConversationStatusMessage,
+} from "../../lib/message-visibility.ts";
 import {
   compactAgentId,
   minimalAgentDisplayName,
@@ -512,13 +516,19 @@ export function ConversationInspector() {
   const lastAt = meta?.lastMessageAt ?? latestMessage?.createdAt ?? null;
   const messageCount = meta?.messageCount ?? null;
   const participantCount = meta
-    ? meta.participantIds.filter((id) => id !== "operator").length + 1
+    ? meta.participantCount
+      ?? meta.participantIds.filter((id) => id !== "operator").length + 1
     : null;
   const agentState = agent?.state ?? null;
   const agentStateNormalized = normalizeAgentState(agentState);
-  const preview =
-    latestMessage?.body?.trim() || meta?.preview?.trim() || null;
-  const previewActor = latestMessage?.actorName ?? null;
+  const latestFailureNotice = latestMessage
+    ? conversationFailureNotice(latestMessage)
+    : null;
+  const previewSource = latestMessage?.body?.trim() || meta?.preview?.trim() || null;
+  const preview = previewSource
+    ? conversationalMessagePreview(previewSource)
+    : null;
+  const previewActor = latestFailureNotice ? null : latestMessage?.actorName ?? null;
   const liveSessionLabel = compactSessionId(activeSessionId);
   const primarySessionId = activeSessionId ?? harnessSessionId;
   const primarySessionLabel = compactSessionId(primarySessionId);

@@ -18,6 +18,7 @@ import { normalizeAgentState } from "../../lib/agent-state.ts";
 import { statusOnHover } from "../../lib/page-status.ts";
 import {
   collapseTailDisplayRows,
+  observeToolFieldsFromTailEvent,
   TAIL_KIND_GLYPH,
   TAIL_KIND_LABEL,
 } from "../../lib/tail-display.ts";
@@ -57,8 +58,18 @@ export function MissionLogPane({
 
   // A harness that re-states the same line (polling loops, retried tools) would
   // otherwise fill the pane with its own echo. Same collapse rule as /ops/tail.
+  //
+  // A tool result's outcome is read here, inside the same memo, rather than per
+  // render: 22 panes × hundreds of rows × a regex-heavy parse is not a per-frame
+  // cost the wall can carry.
   const rows = useMemo(
-    () => collapseTailDisplayRows(log.lines.map((event) => ({ event, meta: undefined }))),
+    () => collapseTailDisplayRows(log.lines.map((event) => ({ event, meta: undefined })))
+      .map((row) => ({
+        ...row,
+        outcome: row.event.kind === "tool-result"
+          ? observeToolFieldsFromTailEvent(row.event).result?.outcome ?? null
+          : null,
+      })),
     [log.lines],
   );
 
@@ -153,8 +164,16 @@ export function MissionLogPane({
             no output since page load
           </div>
         ) : (
-          rows.map(({ event: line, repeatCount }) => (
-            <div key={line.id} className={`s-wall-line s-wall-line--${line.kind}`}>
+          rows.map(({ event: line, repeatCount, outcome }) => (
+            <div
+              key={line.id}
+              className={[
+                "s-wall-line",
+                `s-wall-line--${line.kind}`,
+                outcome === "success" ? "s-wall-line--result-ok" : null,
+                outcome === "error" ? "s-wall-line--result-error" : null,
+              ].filter(Boolean).join(" ")}
+            >
               <span className="s-wall-line-time">
                 {formatClockTimestamp(line.ts, { milliseconds: false }) || "—"}
               </span>

@@ -3,7 +3,7 @@ import { useScout } from "../scout/Provider.tsx";
 /* ── Filepath detection ──────────────────────────────────────────────────
  *
  * Matches paths likely to be filesystem references:
- *   - absolute paths starting with `/` (e.g. `/Users/example/...`)
+ *   - absolute paths starting with `/` (e.g. `/Users/arach/...`)
  *   - home-relative paths starting with `~/`
  *   - rooted relative paths (`./foo`, `../foo`)
  *   - file-like tokens with a recognized extension and at least one `/`

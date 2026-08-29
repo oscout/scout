@@ -360,6 +360,16 @@
   padding: 5px 0 8px;
   border-bottom: 1px solid var(--pi-hairline);
 }
+
+.pi-recentReplies {
+  margin-bottom: 8px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--pi-hairline);
+}
+
+.pi-recentReplies .pi-projectSessionTitle {
+  color: var(--pi-ink);
+}
 .pi-pinnedLabel {
   padding: 0 8px 4px;
   font-size: var(--text-2xs);

@@ -25,6 +25,10 @@ import {
 } from "../../lib/realtime-voice.ts";
 import { SCOUT_REALTIME_VOICE_FLAG } from "../../../shared/realtime-voice.ts";
 import {
+  fetchScoutRealtimeVoiceSettings,
+  subscribeScoutRealtimeVoiceSettings,
+} from "../../lib/realtime-voice-settings.ts";
+import {
   extractScoutbotUiActions,
   isScoutNativeUiActionHost,
   type ScoutbotUiAction,
@@ -83,7 +87,9 @@ const ScoutbotRealtimeVoiceContext = createContext<ScoutbotRealtimeVoiceContextV
 
 export function ScoutbotRealtimeVoiceProvider({ children }: { children: ReactNode }) {
   const { route, applyScoutbotUiAction } = useScout();
-  const enabled = useOptionalFlag(SCOUT_REALTIME_VOICE_FLAG, false);
+  const featureAvailable = useOptionalFlag(SCOUT_REALTIME_VOICE_FLAG, true);
+  const [settingsEnabled, setSettingsEnabled] = useState(false);
+  const enabled = featureAvailable && settingsEnabled;
   const [open, setOpen] = useState(false);
   const [state, setState] = useState<ScoutRealtimeVoiceConnectionState | "idle">("idle");
   const [leaseId, setLeaseId] = useState<string | null>(null);
@@ -124,6 +130,32 @@ export function ScoutbotRealtimeVoiceProvider({ children }: { children: ReactNod
     if (!disposedRef.current) setChatState(next);
     return next;
   }, []);
+
+  useEffect(() => {
+    if (!featureAvailable) {
+      setSettingsEnabled(false);
+      return;
+    }
+    const controller = new AbortController();
+    let cancelled = false;
+    const unsubscribe = subscribeScoutRealtimeVoiceSettings((settings) => {
+      setSettingsEnabled(settings.enabled);
+    });
+    void fetchScoutRealtimeVoiceSettings(controller.signal)
+      .then((settings) => {
+        if (!cancelled) setSettingsEnabled(settings.enabled);
+      })
+      .catch((caught) => {
+        if (cancelled || isAbortError(caught)) return;
+        setSettingsEnabled(false);
+        setError(caught instanceof Error ? caught.message : "Could not load live voice settings.");
+      });
+    return () => {
+      cancelled = true;
+      controller.abort();
+      unsubscribe();
+    };
+  }, [featureAvailable]);
 
   useEffect(() => {
     if (!enabled) return;

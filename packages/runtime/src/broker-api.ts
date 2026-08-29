@@ -68,8 +68,13 @@ export type ScoutBrokerChildServiceSnapshots = {
 };
 
 export type ScoutBrokerProjectionStatus = {
-  state: "ready" | "degraded" | "disabled";
+  state: "ready" | "warming" | "degraded" | "disabled";
   detail: string | null;
+};
+
+export type ScoutBrokerStartupStatus = {
+  state: "restoring" | "ready";
+  mutationsAdmitted: boolean;
 };
 
 export type ScoutBrokerHealthPayload = {
@@ -79,6 +84,7 @@ export type ScoutBrokerHealthPayload = {
   build?: ScoutBrokerBuildIdentity;
   services?: ScoutBrokerChildServiceSnapshots;
   projection?: ScoutBrokerProjectionStatus;
+  startup?: ScoutBrokerStartupStatus;
   counts: {
     nodes: number;
     actors: number;

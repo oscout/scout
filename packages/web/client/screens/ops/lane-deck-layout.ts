@@ -1,6 +1,7 @@
 import {
   ATTENTION_LANE_DEF_ID,
   compareLaneZones,
+  laneDefIdForProject,
   resolveLaneWidthPx,
   sortLaneSlots,
   type AgentLaneWidthTier,
@@ -10,10 +11,11 @@ import {
   type LaneSlot,
 } from "./lane-deck.ts";
 import {
-  isAgentLaneLive,
   lanePrimaryLabel,
   type AgentLane,
 } from "./agent-lanes-model.ts";
+import { normalizeAgentState } from "../../lib/agent-state.ts";
+import { hasPendingPermissionRequest } from "../../lib/observe-display.ts";
 
 export type ResolvedLaneColumn = {
   key: string;
@@ -86,7 +88,8 @@ export function laneMatchesProject(lane: AgentLane, projectPath: string | null |
 }
 
 export function laneNeedsAttention(lane: AgentLane): boolean {
-  return lane.current || isAgentLaneLive(lane.observe);
+  if (normalizeAgentState(lane.agent.state ?? null, lane.agent) === "needs_attention") return true;
+  return hasPendingPermissionRequest(lane.observe?.events ?? []);
 }
 
 function laneWidthFor(
@@ -211,5 +214,13 @@ export function hasAttentionLane(deck: LaneDeckState): boolean {
 
 export function hasHarnessLane(deck: LaneDeckState, harness: string): boolean {
   const id = `harness:${slugValue(harness)}`;
+  return deck.slots.some((slot) => slot.laneDefId === id);
+}
+
+/** True when the deck already carries a pinned lane scoped to this project
+ *  path. Used to disable the sheet-level "Pin project" CTA when the same
+ *  scope has already been pinned, so the operator never silently doubles up. */
+export function hasProjectLane(deck: LaneDeckState, projectPath: string): boolean {
+  const id = laneDefIdForProject(projectPath);
   return deck.slots.some((slot) => slot.laneDefId === id);
 }

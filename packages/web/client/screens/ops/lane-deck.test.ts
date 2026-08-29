@@ -23,9 +23,9 @@ function lane(id: string, harness = "codex", current = false): AgentLane {
       name: id,
       harness,
       harnessSessionId: `session-${id}`,
-      project: "/Users/example/dev/openscout",
-      projectRoot: "/Users/example/dev/openscout",
-      cwd: "/Users/example/dev/openscout",
+      project: "/Users/art/dev/openscout",
+      projectRoot: "/Users/art/dev/openscout",
+      cwd: "/Users/art/dev/openscout",
       definitionId: id,
     } as AgentLane["agent"],
     source: "native",
@@ -86,9 +86,19 @@ describe("resolveLaneDeckLayout", () => {
 });
 
 describe("lane filters", () => {
-  it("matches harness and attention", () => {
+  it("matches harness and rejects bare-current as attention", () => {
     expect(laneMatchesHarness(lane("alpha", "codex"), "codex")).toBe(true);
     expect(laneMatchesHarness(lane("beta", "claude"), "codex")).toBe(false);
-    expect(laneNeedsAttention({ ...lane("gamma"), current: true })).toBe(true);
+    // Active-in-window (current: true) alone is NOT attention — the spec change
+    // makes the attention lane mean real operator input, not "currently live".
+    expect(laneNeedsAttention({ ...lane("gamma"), current: true })).toBe(false);
+  });
+
+  it("flags needs_attention agent state", () => {
+    const flagged = {
+      ...lane("gamma"),
+      agent: { ...lane("gamma").agent, state: "needs_attention" },
+    };
+    expect(laneNeedsAttention(flagged)).toBe(true);
   });
 });

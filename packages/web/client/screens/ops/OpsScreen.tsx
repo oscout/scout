@@ -5,7 +5,7 @@ import { PageStatusBar } from "../../components/PageStatusBar.tsx";
 import { AgentLanesView } from "./AgentLanesView.tsx";
 import { MissionControlView } from "./MissionControlView.tsx";
 import { OpsAgentsView } from "./OpsAgentsView.tsx";
-import { PlanView } from "./PlanView.tsx";
+import { HostAdvisorView } from "./HostAdvisorView.tsx";
 import { AtopView } from "./AtopView.tsx";
 import { TailView } from "../shared/TailView.tsx";
 import type { OpsMode, Route } from "../../lib/types.ts";
@@ -23,9 +23,6 @@ export function OpsScreen({
 }) {
   const { agents, route } = useScout();
   const contentOwnsSecondaryNav = useContentOwnsSecondaryNav();
-  const selectedPlanDocumentId = route.view === "ops" && route.mode === "plan"
-    ? route.planDocumentId
-    : undefined;
 
   return (
     <div className="s-ops">
@@ -37,11 +34,10 @@ export function OpsScreen({
       <div className="s-ops-body">
         {mode === "mission" && <MissionControlView navigate={navigate} agents={agents} />}
         {mode === "agents" && <OpsAgentsView navigate={navigate} agents={agents} />}
-        {mode === "plan" && (
-          <PlanView
+        {mode === "advisor" && (
+          <HostAdvisorView
             navigate={navigate}
             agents={agents}
-            selectedPlanDocumentId={selectedPlanDocumentId}
           />
         )}
         {mode === "issues" && <TailView navigate={navigate} initialFilter={tailQuery} variant="issues" />}

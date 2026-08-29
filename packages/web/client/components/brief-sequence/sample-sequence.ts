@@ -168,7 +168,7 @@ export const briefGenerationSequence: BriefStep[] = [
           kind: "idle",
           label: "hkshell quiet for 6h",
           detail: "last tail event was a tool-result at 05:24",
-          resource: "hkshell · /Users/example/dev/hkshell",
+          resource: "hkshell · /Users/arach/dev/hkshell",
           suggested: "send a wake-up ping or dismiss the agent",
         },
         {

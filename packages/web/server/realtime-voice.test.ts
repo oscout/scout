@@ -9,6 +9,7 @@ import {
   SCOUT_REALTIME_VOICE_CALL_PATH,
   SCOUT_REALTIME_VOICE_LEASE_HEADER,
   SCOUT_REALTIME_VOICE_LEASE_PATH,
+  SCOUT_REALTIME_VOICE_SETTINGS_PATH,
 } from "../shared/realtime-voice.ts";
 import {
   ScoutRealtimeVoiceAdmission,
@@ -19,6 +20,7 @@ import {
   readScoutRealtimeOffer,
   resolveScoutRealtimeVoiceAdmissionConfig,
   resolveScoutRealtimeVoiceConfig,
+  resolveScoutRealtimeVoiceSettings,
   validateScoutRealtimeOffer,
 } from "./realtime-voice.ts";
 import { mountScoutVoiceRoutes } from "./routes/voice.ts";
@@ -64,11 +66,95 @@ describe("Scout Realtime voice", () => {
       body: "v=0\r\noffer\r\n",
     });
 
-    expect(response.status).toBe(404);
+    expect(response.status).toBe(409);
     expect(await response.json()).toEqual({
-      error: expect.stringContaining("OPENSCOUT_REALTIME_VOICE_ENABLED=1"),
+      error: expect.stringContaining("Settings → Voice"),
     });
     expect(resolvedApiKey).toBe(false);
+  });
+
+  test("lets the operator toggle live voice without restarting the server", async () => {
+    let configuredEnabled = false;
+    const admission = createTestAdmission();
+    const app = new Hono();
+    mountScoutVoiceRoutes(app, {
+      readRealtimeVoiceEnabled: async () => configuredEnabled,
+      writeRealtimeVoiceEnabled: async (enabled) => {
+        configuredEnabled = enabled;
+        return configuredEnabled;
+      },
+      realtimeVoiceEnvironment: {},
+      realtimeVoiceAdmission: admission,
+      resolveOpenAIApiKey: async () => "sk-test",
+      createRealtimeVoiceCall: async () => "v=0\r\nanswer\r\n",
+    });
+
+    const initial = await app.request(SCOUT_REALTIME_VOICE_SETTINGS_PATH);
+    expect(initial.status).toBe(200);
+    expect(await initial.json()).toEqual({
+      enabled: false,
+      configuredEnabled: false,
+      source: "settings",
+      locked: false,
+    });
+
+    const enabled = await app.request(SCOUT_REALTIME_VOICE_SETTINGS_PATH, {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ enabled: true }),
+    });
+    expect(enabled.status).toBe(200);
+    expect(await enabled.json()).toEqual(expect.objectContaining({
+      enabled: true,
+      configuredEnabled: true,
+      locked: false,
+    }));
+
+    const call = await app.request(SCOUT_REALTIME_VOICE_CALL_PATH, {
+      method: "POST",
+      headers: { "content-type": "application/sdp" },
+      body: "v=0\r\noffer\r\n",
+    });
+    expect(call.status).toBe(200);
+    expect(admission.activeLeaseCount()).toBe(1);
+
+    const disabled = await app.request(SCOUT_REALTIME_VOICE_SETTINGS_PATH, {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ enabled: false }),
+    });
+    expect(disabled.status).toBe(200);
+    expect(await disabled.json()).toEqual(expect.objectContaining({ enabled: false }));
+    expect(admission.activeLeaseCount()).toBe(0);
+  });
+
+  test("keeps an explicit environment override locked", async () => {
+    let wrote = false;
+    const app = new Hono();
+    mountScoutVoiceRoutes(app, {
+      readRealtimeVoiceEnabled: async () => true,
+      writeRealtimeVoiceEnabled: async (enabled) => {
+        wrote = enabled;
+        return enabled;
+      },
+      realtimeVoiceEnvironment: { OPENSCOUT_REALTIME_VOICE_ENABLED: "off" },
+    });
+
+    const snapshot = await app.request(SCOUT_REALTIME_VOICE_SETTINGS_PATH);
+    expect(await snapshot.json()).toEqual({
+      enabled: false,
+      configuredEnabled: true,
+      source: "environment",
+      locked: true,
+    });
+
+    const update = await app.request(SCOUT_REALTIME_VOICE_SETTINGS_PATH, {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ enabled: true }),
+    });
+    expect(update.status).toBe(409);
+    expect(wrote).toBe(false);
   });
 
   test("admits one call across the server boundary and releases its lease", async () => {
@@ -344,9 +430,34 @@ describe("Scout Realtime voice", () => {
     });
   });
 
-  test("requires explicit server enablement and keeps admission defaults configurable", () => {
+  test("resolves operator settings with optional environment overrides", () => {
     expect(isScoutRealtimeVoiceEnabled({})).toBe(false);
     expect(isScoutRealtimeVoiceEnabled({ OPENSCOUT_REALTIME_VOICE_ENABLED: "yes" })).toBe(true);
+    expect(resolveScoutRealtimeVoiceSettings(true, {})).toEqual({
+      enabled: true,
+      configuredEnabled: true,
+      source: "settings",
+      locked: false,
+    });
+    expect(resolveScoutRealtimeVoiceSettings(false, {
+      OPENSCOUT_REALTIME_VOICE_ENABLED: "on",
+    })).toEqual({
+      enabled: true,
+      configuredEnabled: false,
+      source: "environment",
+      locked: true,
+    });
+    expect(resolveScoutRealtimeVoiceSettings(true, {
+      OPENSCOUT_REALTIME_VOICE_ENABLED: "off",
+    })).toEqual({
+      enabled: false,
+      configuredEnabled: true,
+      source: "environment",
+      locked: true,
+    });
+  });
+
+  test("keeps admission defaults configurable", () => {
     expect(resolveScoutRealtimeVoiceAdmissionConfig({
       OPENSCOUT_REALTIME_VOICE_MAX_CONCURRENT: "2",
       OPENSCOUT_REALTIME_VOICE_STARTS_PER_MINUTE: "6",

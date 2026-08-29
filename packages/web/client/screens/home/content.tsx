@@ -7,7 +7,7 @@ import HomeHero, {
   type ServiceGauge,
 } from "./HomeHero.tsx";
 import { TailView } from "../shared/TailView.tsx";
-import { api } from "../../lib/api.ts";
+import { api, peekApiGet } from "../../lib/api.ts";
 import { useObservePolling } from "../../lib/observe.ts";
 import { useBrokerEvents } from "../../lib/sse.ts";
 import { isScoutSurfaceActive, onScoutSurfaceActivated } from "../../lib/surface-activity.ts";
@@ -32,6 +32,7 @@ import {
 } from "../../lib/runtime-catalog.ts";
 import {
   MessageComposer,
+  MessageComposerToolSelect,
   RuntimePicker,
 } from "../../components/MessageComposer/index.ts";
 import { useScout } from "../../scout/Provider.tsx";
@@ -110,6 +111,7 @@ const MOVING_SORT_STORAGE_KEY = "openscout.home.movingSort.v1";
 const SERVICE_BUDGETS_REFRESH_MS = 60_000;
 const LOCAL_TAIL_REFRESH_MS = 30_000;
 const HEARTRATE_COMBINED_EVENT_THRESHOLD = 3;
+const ROUTE_CACHE_MAX_AGE_MS = 30_000;
 
 function formatAge(timestamp: number | null | undefined, nowMs: number): string {
   const timestampMs = normalizeTimestampMs(timestamp);
@@ -286,39 +288,6 @@ export function HomeContent({
     () => filterAgentsByMachineScope(allAgents, machineId),
     [allAgents, machineId],
   );
-  const [fleet, setFleet] = useState<FleetState | null>(null);
-  const [heartrate, setHeartrate] = useState<HeartrateBucketView[]>([]);
-  const [heartrateWindow, setHeartrateWindow] = useState("trailing 7d");
-  const [heartrateBucketLabel, setHeartrateBucketLabel] = useState("3h buckets");
-  const [tailEvents, setTailEvents] = useState<TailEvent[]>([]);
-  const [tailDiscovery, setTailDiscovery] = useState<TailDiscoverySnapshot | null>(null);
-  const [serviceGauges, setServiceGauges] = useState<ServiceGauge[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [refreshing, setRefreshing] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [lastLoadedAt, setLastLoadedAt] = useState<number | null>(null);
-  const refreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const requestIdRef = useRef(0);
-  const lastForegroundRefreshAtRef = useRef(0);
-  const fleetRef = useRef<FleetState | null>(null);
-
-  useEffect(() => {
-    fleetRef.current = fleet;
-  }, [fleet]);
-
-  const fetchServiceGauges = useCallback(async (forceRefresh = false): Promise<ServiceGauge[]> => {
-    const suffix = forceRefresh ? "?refresh=1" : "";
-    const result = await api<{ gauges: ServiceGauge[] }>(`/api/service-budgets${suffix}`, {
-      cache: "no-store",
-    });
-    return result.gauges ?? [];
-  }, []);
-
-  const scopedFleet = useMemo(
-    () => filterFleetByMachineScope(fleet, scopedAgentIds),
-    [fleet, scopedAgentIds],
-  );
-
   const [lookbackMs, setLookbackMs] = usePersistentNumber(
     LOOKBACK_STORAGE_KEY,
     DEFAULT_LOOKBACK_MS,
@@ -345,6 +314,65 @@ export function HomeContent({
     [movingWindowKey],
   );
 
+  // Warm start: paint last-known responses immediately on remount while the
+  // fetch effects below refresh in the background. Peeked paths must stay
+  // byte-identical to the paths those fetches use so the cache keys match.
+  const [warmStart] = useState(() => {
+    const fleetQuery = new URLSearchParams({
+      activityLookbackMs: String(lookbackOption.value),
+      activityLimit: String(lookbackOption.activityLimit),
+    }).toString();
+    const tailQuery = new URLSearchParams({
+      limit: String(localTailRecentLimit),
+      transcripts: "true",
+    }).toString();
+    return {
+      fleet: peekApiGet<FleetState>(`/api/fleet?${fleetQuery}`, ROUTE_CACHE_MAX_AGE_MS),
+      heartrate: peekApiGet<{
+        windowLabel: string;
+        bucketLabel?: string;
+        buckets: HeartrateBucketView[];
+      }>("/api/heartrate", ROUTE_CACHE_MAX_AGE_MS),
+      gauges: peekApiGet<{ gauges: ServiceGauge[] }>("/api/service-budgets", ROUTE_CACHE_MAX_AGE_MS),
+      tailRecent: peekApiGet<{ events: TailEvent[] }>(`/api/tail/recent?${tailQuery}`, ROUTE_CACHE_MAX_AGE_MS),
+      tailDiscovery: peekApiGet<TailDiscoverySnapshot>("/api/tail/discover", ROUTE_CACHE_MAX_AGE_MS),
+    };
+  });
+  const [fleet, setFleet] = useState<FleetState | null>(warmStart.fleet);
+  const [heartrate, setHeartrate] = useState<HeartrateBucketView[]>(warmStart.heartrate?.buckets ?? []);
+  const [heartrateWindow, setHeartrateWindow] = useState(warmStart.heartrate?.windowLabel ?? "trailing 7d");
+  const [heartrateBucketLabel, setHeartrateBucketLabel] = useState(
+    warmStart.heartrate ? warmStart.heartrate.bucketLabel ?? "" : "3h buckets",
+  );
+  const [tailEvents, setTailEvents] = useState<TailEvent[]>(warmStart.tailRecent?.events ?? []);
+  const [tailDiscovery, setTailDiscovery] = useState<TailDiscoverySnapshot | null>(warmStart.tailDiscovery);
+  const [serviceGauges, setServiceGauges] = useState<ServiceGauge[]>(warmStart.gauges?.gauges ?? []);
+  const [loading, setLoading] = useState(warmStart.fleet === null);
+  const [refreshing, setRefreshing] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [lastLoadedAt, setLastLoadedAt] = useState<number | null>(null);
+  const refreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const requestIdRef = useRef(0);
+  const lastForegroundRefreshAtRef = useRef(0);
+  const fleetRef = useRef<FleetState | null>(warmStart.fleet);
+
+  useEffect(() => {
+    fleetRef.current = fleet;
+  }, [fleet]);
+
+  const fetchServiceGauges = useCallback(async (forceRefresh = false): Promise<ServiceGauge[]> => {
+    const suffix = forceRefresh ? "?refresh=1" : "";
+    const result = await api<{ gauges: ServiceGauge[] }>(`/api/service-budgets${suffix}`, {
+      cache: "no-store",
+    });
+    return result.gauges ?? [];
+  }, []);
+
+  const scopedFleet = useMemo(
+    () => filterFleetByMachineScope(fleet, scopedAgentIds),
+    [fleet, scopedAgentIds],
+  );
+
   const load = useCallback(async (mode: LoadMode = "initial") => {
     const requestId = ++requestIdRef.current;
     const hasSnapshot = fleetRef.current !== null;
@@ -361,16 +389,15 @@ export function HomeContent({
       activityLimit: String(lookbackOption.activityLimit),
     }).toString();
 
-    const [fleetResult, heartrateResult, agentsResult] =
-      await Promise.allSettled([
-        api<FleetState>(`/api/fleet?${fleetQuery}`),
-        api<{
-          windowLabel: string;
-          bucketLabel?: string;
-          buckets: HeartrateBucketView[];
-        }>("/api/heartrate"),
-        reload(),
-      ]);
+    const [fleetResult, heartrateResult, agentsResult] = await Promise.allSettled([
+      api<FleetState>(`/api/fleet?${fleetQuery}`),
+      api<{
+        windowLabel: string;
+        bucketLabel?: string;
+        buckets: HeartrateBucketView[];
+      }>("/api/heartrate"),
+      reload(),
+    ]);
 
     if (requestId !== requestIdRef.current) return;
 
@@ -704,7 +731,7 @@ export function HomeContent({
     : error
       ? `${isOfflineSyncError(error) ? "offline" : "sync issue"} · ${lastLoadedAt ? timeAgo(lastLoadedAt) : "waiting"}`
       : lastLoadedAt
-        ? `updated ${timeAgo(lastLoadedAt)}`
+        ? `Last updated ${timeAgo(lastLoadedAt)}`
         : "waiting";
   const handleRefresh = useCallback(() => {
     void load("manual");
@@ -837,11 +864,11 @@ export function HomeContent({
           </div>
         )}
 
-        {/* ── Activity stream ────────────────────────────────────── */}
+        {/* ── Scout coordination stream ─────────────────────────── */}
         {showActivitySection && (
           <div className="s-fleet-section">
             <SectionRule
-              label={`Live activity · ${liveActivity.length}${activityCapReached ? "+" : ""}`}
+              label={`Scout coordination · ${liveActivity.length}${activityCapReached ? "+" : ""}`}
               right={
                 <LookbackPicker
                   value={lookbackMs}
@@ -1111,7 +1138,7 @@ function LiveActivityEmpty({
   return (
     <div className="s-mc-empty s-fleet-live-empty">
       <div className="s-fleet-live-empty-title">
-        Quiet — no activity in the last {formatLookback(lookbackMs)}.
+        No Scout messages or dispatches in the last {formatLookback(lookbackMs)}.
       </div>
       <div className="s-fleet-live-empty-detail">{polledLabel}</div>
       {nextOption && (
@@ -1291,26 +1318,23 @@ function QuietStartPanel({
             disabled={submitting || !selectedAgent}
             sending={submitting}
             canSend={!submitting && Boolean(selectedAgent) && prompt.trim().length > 0}
-            header={(
-              <div className="s-quiet-target-row s-quiet-target-row--in-compose">
-                <label className="s-quiet-label" htmlFor="home-catchup-agent">
-                  To
-                </label>
-                <select
-                  id="home-catchup-agent"
-                  className="s-quiet-select s-quiet-select--target"
+            leadingTools={(
+              /* Target rides in the toolbar like every other composer control
+                 (main-composer grammar) — not as a bar above the input. */
+              <div className="s-quiet-target-chip">
+                <span className="s-quiet-label">To</span>
+                <MessageComposerToolSelect
+                  label="Send to agent"
                   value={agentId}
-                  onChange={(event) => setAgentId(event.target.value)}
+                  onChange={setAgentId}
                   disabled={catchupAgents.length === 0 || submitting}
-                >
-                  {catchupAgents.length === 0 ? (
-                    <option value="">No registered agents</option>
-                  ) : catchupAgents.map((agent) => (
-                    <option key={agent.id} value={agent.id}>
-                      {agent.name}
-                    </option>
-                  ))}
-                </select>
+                  options={catchupAgents.length === 0
+                    ? [{ value: "", label: "No registered agents" }]
+                    : catchupAgents.map((agent) => ({
+                        value: agent.id,
+                        label: agent.name,
+                      }))}
+                />
               </div>
             )}
             tools={(

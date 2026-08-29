@@ -308,9 +308,32 @@ export function harnessFromAdapterType(
       return "cursor";
     case "grok":
       return "grok";
+    case "grok-acp":
+    case "grok_acp":
+      return "grok-acp";
+    case "kimi":
+      return "kimi";
+    case "opencode":
+    case "opencode_acp":
+      return "opencode";
     default:
       return undefined;
   }
+}
+
+/**
+ * Tail-only traces may expose a composer only when the built-in harness catalog
+ * advertises a concrete native resume command. ACP-only adapters such as Kimi
+ * and Grok ACP can resume an already attached endpoint, but cannot safely wake
+ * an arbitrary transcript by id.
+ */
+export function resumableHarnessFromAdapterType(
+  adapterType: string | null | undefined,
+): string | undefined {
+  const harness = harnessFromAdapterType(adapterType);
+  return harness && ["claude", "codex", "grok", "opencode", "pi"].includes(harness)
+    ? harness
+    : undefined;
 }
 
 /**

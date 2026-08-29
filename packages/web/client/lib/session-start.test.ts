@@ -8,6 +8,7 @@ import {
   invokeSession,
   orderProjectLaunchTargetsByRecency,
   resumeAgentSession,
+  resumableHarnessFromAdapterType,
   searchProjectLaunchTargets,
   startAgentSession,
   startProjectSession,
@@ -205,7 +206,14 @@ describe("startAgentSession", () => {
   test("maps transcript adapter types only to known broker harnesses", () => {
     expect(harnessFromAdapterType("claude-code")).toBe("claude");
     expect(harnessFromAdapterType("CODEX_APP_SERVER")).toBe("codex");
+    expect(harnessFromAdapterType("kimi")).toBe("kimi");
+    expect(harnessFromAdapterType("opencode_acp")).toBe("opencode");
+    expect(harnessFromAdapterType("grok_acp")).toBe("grok-acp");
     expect(harnessFromAdapterType("unknown-adapter")).toBeUndefined();
+    expect(resumableHarnessFromAdapterType("codex")).toBe("codex");
+    expect(resumableHarnessFromAdapterType("opencode_acp")).toBe("opencode");
+    expect(resumableHarnessFromAdapterType("kimi")).toBeUndefined();
+    expect(resumableHarnessFromAdapterType("grok_acp")).toBeUndefined();
   });
 });
 

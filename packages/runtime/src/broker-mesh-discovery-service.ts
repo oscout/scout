@@ -6,6 +6,7 @@ import {
   type MeshDiscoveryResult,
 } from "./mesh-discovery.js";
 import { fetchPeerAgents } from "./mesh-forwarding.js";
+import { collectCurrentMeshPeerNodes } from "./mesh-peer-filter.js";
 import type { RuntimeRegistrySnapshot } from "./registry.js";
 
 export type BrokerMeshDiscoveryRuntime = {
@@ -96,8 +97,11 @@ export class BrokerMeshDiscoveryService {
   private async syncPeerAgents(discovered: NodeDefinition[]): Promise<void> {
     const peersToSync = new Map<string, NodeDefinition>();
     for (const node of discovered) peersToSync.set(node.id, node);
-    for (const node of Object.values(this.deps.runtime.snapshot().nodes)) {
-      if (node.id === this.deps.nodeId || !node.brokerUrl) continue;
+    for (const node of collectCurrentMeshPeerNodes({
+      nodes: this.deps.runtime.snapshot().nodes,
+      localNodeId: this.deps.nodeId,
+      meshId: this.deps.meshId,
+    })) {
       peersToSync.set(node.id, node);
     }
 

@@ -161,6 +161,7 @@ export function ScoutbotRealtimeVoiceCall({
   layout?: "compact" | "page";
 }) {
   const {
+    enabled,
     state,
     error,
     trace,
@@ -205,7 +206,13 @@ export function ScoutbotRealtimeVoiceCall({
   // One control for the call, not a switch plus a second stop button below it.
   // The label carries the state, so the primary action never moves or
   // duplicates itself as the call progresses.
-  const callAction = state === "connecting"
+  const callAction = !enabled && !active
+    ? {
+      label: "Open voice settings",
+      icon: <Settings2 size={11} />,
+      tone: "border-[color-mix(in_srgb,var(--hud-ink)_10%,transparent)] bg-[color-mix(in_srgb,var(--hud-ink)_5%,transparent)] text-[var(--scout-chrome-ink)] hover:bg-[var(--scout-chrome-hover)]",
+    }
+    : state === "connecting"
     ? {
       label: "Cancel connection",
       icon: <Loader2 size={11} className="animate-spin" />,
@@ -308,12 +315,14 @@ export function ScoutbotRealtimeVoiceCall({
                 ? "Microphone and spoken replies are active."
                 : state === "connecting"
                   ? "Opening the audio connection…"
-                  : "Start when you are ready to speak."}
+                  : enabled
+                    ? "Start when you are ready to speak."
+                    : "Turn on live voice before starting a call."}
             </p>
             <button
               type="button"
               disabled={dictationActive && !active}
-              onClick={() => void (active ? endCall() : startCall())}
+              onClick={() => void (active ? endCall() : enabled ? startCall() : openVoiceSettings())}
               className={`mt-3 flex h-9 w-full items-center justify-center gap-2 rounded-md border font-mono text-sm uppercase tracking-[0.1em] transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${callAction.tone}`}
             >
               {callAction.icon}

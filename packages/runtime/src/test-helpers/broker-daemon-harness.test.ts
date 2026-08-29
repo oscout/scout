@@ -96,6 +96,7 @@ export function createBrokerDaemonTestHarness() {
   async function startBroker(input: {
     controlHome?: string;
     env?: Record<string, string | undefined>;
+    waitForMutationReady?: boolean;
   } = {}): Promise<BrokerHarness> {
     const controlHome = input.controlHome ?? mkdtempSync(join(tmpdir(), "openscout-runtime-test-"));
     const port = 38000 + Math.floor(Math.random() * 2000);
@@ -127,7 +128,7 @@ export function createBrokerDaemonTestHarness() {
     });
     const outputDrain = [drainProcessOutput(child.stdout), drainProcessOutput(child.stderr)];
 
-    await waitForHealth(baseUrl);
+    await waitForHealth(baseUrl, input.waitForMutationReady !== false);
     const node = await getJson<{ id: string }>(baseUrl, "/v1/node");
     const harness = { baseUrl, controlHome, nodeId: node.id, child, outputDrain };
     harnesses.add(harness);
@@ -203,15 +204,28 @@ export function createBrokerDaemonTestHarness() {
     await new Response(stream).arrayBuffer().catch(() => undefined);
   }
 
-  async function waitForHealth(baseUrl: string): Promise<void> {
+  async function waitForHealth(baseUrl: string, waitForMutationReady: boolean): Promise<void> {
     let lastError: unknown;
     for (let attempt = 0; attempt < 60; attempt += 1) {
       try {
         const response = await fetch(`${baseUrl}/health`);
         if (response.ok) {
-          return;
+          const health = await response.json() as {
+            ok?: boolean;
+            startup?: { state?: string; mutationsAdmitted?: boolean };
+          };
+          if (
+            health.ok
+            && (!waitForMutationReady
+              || !health.startup
+              || (health.startup.state === "ready" && health.startup.mutationsAdmitted === true))
+          ) {
+            return;
+          }
+          lastError = new Error("broker is alive but still restoring");
+        } else {
+          lastError = new Error(`health returned ${response.status}`);
         }
-        lastError = new Error(`health returned ${response.status}`);
       } catch (error) {
         lastError = error;
       }

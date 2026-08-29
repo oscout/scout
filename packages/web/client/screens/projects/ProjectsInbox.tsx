@@ -3,22 +3,19 @@ import { ArrowRight, ArrowUpRight, ChevronRight, ExternalLink, Folder, FolderPlu
 import { AgentAvatar } from "../../components/AgentAvatar.tsx";
 import { HarnessMark } from "../../components/HarnessMark.tsx";
 import { api } from "../../lib/api.ts";
-import {
-  fetchRepoWatchSnapshot,
-  getCachedRepoWatchSnapshot,
-  type RepoPullRequestItem,
-} from "../../scout/repo-watch/api.ts";
-import type { RepoWatchProject, RepoWatchSnapshot, RepoWatchWorktree } from "../../scout/repo-watch/types.ts";
+import type { RepoPullRequestItem } from "../../scout/repo-watch/api.ts";
+import type { RepoWatchProject, RepoWatchWorktree } from "../../scout/repo-watch/types.ts";
 import { agentLive, reviewChurnOf } from "../../scout/repo-watch/ui.ts";
 import type { ScoutRepoDiffSnapshot } from "../../scout/repo-diff/types.ts";
 import { formatClockTimestamp, normalizeTimestampMs, timeAgo } from "../../lib/time.ts";
 import { fetchTerminalSessions } from "../../lib/terminal-sessions.ts";
-import type { ObserveData, ObserveUsageMeta, Route } from "../../lib/types.ts";
+import type { Agent, ObserveData, ObserveUsageMeta, Route } from "../../lib/types.ts";
 import { useScout } from "../../scout/Provider.tsx";
 import { openContent } from "../../scout/slots/openContent.ts";
 import { pathLeaf } from "../agents/model.ts";
 import { SessionRefScreen, type SessionRefLookup } from "../sessions/SessionRefScreen.tsx";
 import { AddProjectForm } from "./AddProjectForm.tsx";
+import { CrewWorkspaces } from "./CrewWorkspaces.tsx";
 import { shortHomePath } from "./project-overview-helpers.ts";
 import {
   nativeTerminalDeepLink,
@@ -26,12 +23,13 @@ import {
   type ProjectSessionTmuxTarget,
 } from "./project-session-terminal.ts";
 import { refreshProjectsInbox, useProjectsInbox } from "./useProjectsInbox.ts";
-import { onVisible, useProjectRepositoryState } from "./useProjectRepositoryState.ts";
+import { useProjectRepositoryState } from "./useProjectRepositoryState.ts";
 import {
   groupItems,
   isSessionSelected,
   isThreadSelected,
   sessionOpenRoute,
+  findInboxSession,
   sessionSelectRoute,
   sessionsForProject,
   threadOpenRoute,
@@ -46,6 +44,8 @@ import "./projects-inbox.css";
 
 type Navigate = (route: Route) => void;
 type ProjectHarness = "claude" | "codex";
+
+const EMPTY_AGENTS: Agent[] = [];
 
 type ProjectPickOption = {
   slug: string;
@@ -634,14 +634,7 @@ function plural(count: number, noun: string): string {
 }
 
 function findSelectedSession(sessions: InboxSession[], route: Extract<Route, { view: "agents-v2" }>): InboxSession | null {
-  if (!route.sessionId) return null;
-  return (
-    sessions.find((session) =>
-      session.sessionId === route.sessionId ||
-      session.conversationId === route.sessionId ||
-      session.id === route.sessionId
-    ) ?? null
-  );
+  return findInboxSession(sessions, route);
 }
 
 function isSyntheticProcessSessionRef(value: string | null | undefined): boolean {
@@ -1779,220 +1772,6 @@ function ProjectOverviewMain({
   );
 }
 
-const RECENT_PROJECTS_LIMIT = 8;
-const ACTIVE_DIFFS_LIMIT = 6;
-const REPO_WATCH_REFRESH_MS = 30_000;
-const REPO_WATCH_TIMEOUT_MS = 15_000;
-
-type ActiveDiff = {
-  projectName: string;
-  projectRoot: string;
-  worktree: RepoWatchWorktree;
-};
-
-/** Cross-project repo-watch summary for the unscoped landing — one standard
-   scan, visibility-gated, sharing the module cache with repos/code surfaces. */
-function useRepoWatchSummary(): { snapshot: RepoWatchSnapshot | null; loading: boolean } {
-  const [snapshot, setSnapshot] = useState<RepoWatchSnapshot | null>(() => getCachedRepoWatchSnapshot());
-  const [loading, setLoading] = useState<boolean>(() => getCachedRepoWatchSnapshot() === null);
-
-  useEffect(() => {
-    let cancelled = false;
-    let inFlight = false;
-    const load = async () => {
-      if (inFlight) return;
-      inFlight = true;
-      try {
-        const next = await fetchRepoWatchSnapshot("standard", false, REPO_WATCH_TIMEOUT_MS);
-        if (!cancelled) {
-          setSnapshot(next);
-          setLoading(false);
-        }
-      } catch {
-        if (!cancelled) setLoading(false);
-      } finally {
-        inFlight = false;
-      }
-    };
-    void load();
-    const timer = window.setInterval(() => {
-      if (document.visibilityState === "visible") void load();
-    }, REPO_WATCH_REFRESH_MS);
-    const offVisible = onVisible(() => void load());
-    return () => {
-      cancelled = true;
-      window.clearInterval(timer);
-      offVisible();
-    };
-  }, []);
-
-  return { snapshot, loading };
-}
-
-function collectActiveDiffs(snapshot: RepoWatchSnapshot | null): ActiveDiff[] {
-  if (!snapshot) return [];
-  const rows: ActiveDiff[] = [];
-  for (const project of snapshot.projects) {
-    for (const worktree of project.worktrees) {
-      if (worktree.status.changedFiles <= 0 && worktree.branch.ahead <= 0) continue;
-      rows.push({ projectName: project.name, projectRoot: project.root, worktree });
-    }
-  }
-  return rows.sort(
-    (a, b) =>
-      b.worktree.status.changedFiles - a.worktree.status.changedFiles
-      || (b.worktree.lastCommitAt ?? 0) - (a.worktree.lastCommitAt ?? 0)
-      || a.projectName.localeCompare(b.projectName),
-  );
-}
-
-function ProjectsMetaOverview({
-  model,
-  route,
-  navigate,
-  nowMs,
-}: {
-  model: ProjectsInboxModel;
-  route: Extract<Route, { view: "agents-v2" }>;
-  navigate: Navigate;
-  nowMs: number;
-}) {
-  const [addingProject, setAddingProject] = useState(false);
-  const machineScope = route.machineId ? { machineId: route.machineId } : {};
-  const ephemeralScope = route.showEphemeral ? { showEphemeral: true } : {};
-  const recentProjects = useMemo(
-    () =>
-      [...model.projects]
-        .sort((a, b) => b.lastActivityAt - a.lastActivityAt || a.title.localeCompare(b.title))
-        .slice(0, RECENT_PROJECTS_LIMIT),
-    [model.projects],
-  );
-  const { snapshot: repoSnapshot, loading: repoLoading } = useRepoWatchSummary();
-  const activeDiffs = useMemo(() => collectActiveDiffs(repoSnapshot).slice(0, ACTIVE_DIFFS_LIMIT), [repoSnapshot]);
-
-  const openProject = (project: InboxProject) =>
-    navigate({ view: "agents-v2", projectSlug: project.slug, ...machineScope, ...ephemeralScope });
-
-  return (
-    <main className="pi-meta" aria-label="Projects overview">
-      <div className="pi-metaShortcuts">
-        <button
-          type="button"
-          className="pi-shortcut"
-          aria-expanded={addingProject}
-          onClick={() => setAddingProject((open) => !open)}
-        >
-          <FolderPlus size={13} strokeWidth={1.8} aria-hidden />
-          Add project
-        </button>
-        <button type="button" className="pi-shortcut" onClick={() => navigate({ view: "search" })}>
-          <Search size={13} strokeWidth={1.8} aria-hidden />
-          Search agents &amp; sessions
-        </button>
-        <button type="button" className="pi-shortcut" onClick={() => navigate({ view: "sessions", ...machineScope })}>
-          Browse sessions
-        </button>
-      </div>
-      {addingProject ? <AddProjectForm onClose={() => setAddingProject(false)} /> : null}
-
-      <section className="pi-metaSection" aria-label="Recent projects">
-        <div className="pi-sectionHead">
-          <span className="pi-sectionLabel">Recent projects</span>
-          <span className="pi-sectionCount">{model.projects.length}</span>
-        </div>
-        {recentProjects.map((project) => (
-          <RecentProjectRow key={project.slug} project={project} nowMs={nowMs} onOpen={() => openProject(project)} />
-        ))}
-      </section>
-
-      <section className="pi-metaSection" aria-label="Active diffs">
-        <div className="pi-sectionHead">
-          <span className="pi-sectionLabel">Active diffs</span>
-          <span className="pi-sectionCount">{activeDiffs.length}</span>
-        </div>
-        {activeDiffs.length > 0 ? (
-          activeDiffs.map((diff) => (
-            <ActiveDiffRow key={diff.worktree.id} diff={diff} machineScope={machineScope} navigate={navigate} />
-          ))
-        ) : (
-          <div className="pi-metaEmpty">
-            {repoLoading ? "Reading repositories…" : "No uncommitted changes across your repos."}
-          </div>
-        )}
-      </section>
-    </main>
-  );
-}
-
-function RecentProjectRow({
-  project,
-  nowMs,
-  onOpen,
-}: {
-  project: InboxProject;
-  nowMs: number;
-  onOpen: () => void;
-}) {
-  const needs = project.needs > 0;
-  const liveCount = Math.max(project.liveSessionCount, project.working);
-  return (
-    <button
-      type="button"
-      className="pi-recentRow"
-      data-state={needs ? "needs" : liveCount > 0 ? "live" : undefined}
-      onClick={onOpen}
-    >
-      <span className="pi-recentDot" aria-hidden />
-      <span className="pi-recentMain">
-        <span className="pi-recentTitle">/{project.title}</span>
-        <span className="pi-recentRoot">{project.root ? shortHomePath(project.root) : "Discovered project"}</span>
-      </span>
-      <span className="pi-recentMeta">
-        {needs ? <b>{project.needs} needs you</b> : null}
-        {liveCount > 0 ? <span>{liveCount} live</span> : null}
-        <time>{project.lastActivityAt ? timeAgo(project.lastActivityAt, nowMs) : "—"}</time>
-      </span>
-    </button>
-  );
-}
-
-function ActiveDiffRow({
-  diff,
-  machineScope,
-  navigate,
-}: {
-  diff: ActiveDiff;
-  machineScope: { machineId?: string };
-  navigate: Navigate;
-}) {
-  const churn = reviewChurnOf(diff.worktree);
-  return (
-    <div className="pi-diffRow">
-      <button
-        type="button"
-        className="pi-diffMain"
-        title={diff.worktree.path}
-        onClick={() => navigate({ view: "repos", root: diff.projectRoot, ...machineScope })}
-      >
-        <span className="pi-diffProject">/{diff.projectName}</span>
-        <span className="pi-diffBranch">{diff.worktree.branch.name ?? "main"}</span>
-      </button>
-      <span className="pi-diffChurn">
-        <b className="pi-projectWorktreeAdd">+{compactNumber(churn.add)}</b>
-        <b className="pi-projectWorktreeDel">−{compactNumber(churn.del)}</b>
-        <small>{compactNumber(diff.worktree.status.changedFiles)} changed</small>
-      </span>
-      <button
-        type="button"
-        className="pi-projectWorktreeOpenDiff"
-        onClick={() => navigate({ view: "repo-diff", path: diff.worktree.path })}
-      >
-        View diff
-      </button>
-    </div>
-  );
-}
-
 function ProjectOverviewWithRepository({
   project,
   threads,
@@ -2048,7 +1827,7 @@ export function ProjectsInbox({
   navigate: Navigate;
   zeroPreview?: boolean;
 }) {
-  const { model, nowMs, loading, error } = useProjectsInbox(route);
+  const { model, nowMs, loading, error, agents = EMPTY_AGENTS } = useProjectsInbox(route);
   const scoped = Boolean(route.projectSlug);
   const selectedSessionRef =
     scoped && !isSyntheticProcessSessionRef(route.sessionId) ? route.sessionId ?? null : null;
@@ -2088,8 +1867,8 @@ export function ProjectsInbox({
   const waiting = loading && !zeroPreview;
   const showProjectZeroState =
     !scoped && !waiting && (zeroPreview || (model.projects.length === 0 && items.length === 0));
-  // Mount meta overview with the first wave so useRepoWatchSummary can fire in
-  // parallel with inbox snapshot load (do not wait for hasModelData).
+  // Mount the crew-first landing with the first wave — do not wait for
+  // hasModelData, so the toolbar/filters render immediately over an empty grid.
   const showMeta = !scoped && !showProjectZeroState;
 
   const [cursor, setCursor] = useState(-1);
@@ -2180,7 +1959,7 @@ export function ProjectsInbox({
           nowMs={nowMs}
         />
       ) : showMeta ? (
-        <ProjectsMetaOverview model={model} route={route} navigate={navigate} nowMs={nowMs} />
+        <CrewWorkspaces model={model} agents={agents} route={route} navigate={navigate} nowMs={nowMs} />
       ) : (
         <div className="pi-threads">
           {initialLoading ? <ProjectRowsSkeleton /> : null}
@@ -2204,7 +1983,9 @@ export function ProjectsInbox({
                       key={thread.id}
                       thread={thread}
                       crossProject={!scoped}
-                      selected={thread.kind === "session" ? isSessionSelected(thread, route) : isThreadSelected(thread, route)}
+                      selected={thread.kind === "session"
+                        ? isSessionSelected(thread, route, model.sessions)
+                        : isThreadSelected(thread, route, model.threads)}
                       cursor={cursor === index}
                       nowMs={nowMs}
                       onSelect={() => {

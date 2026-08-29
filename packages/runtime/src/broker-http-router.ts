@@ -919,7 +919,10 @@ export function createBrokerHttpRouter(
   // discovery (fetchPeerAgents) reads it in enforce mode; the local-tier
   // route stays loopback-only and is never widened.
   if (method === "GET" && (url.pathname === "/v1/snapshot" || url.pathname === "/v1/mesh/snapshot")) {
-    json(response, 200, await brokerService.readSnapshot({ since: parseSince(url) }));
+    json(response, 200, await brokerService.readSnapshot({
+      since: parseSince(url),
+      scope: url.searchParams.get("scope") === "conversations" ? "conversations" : undefined,
+    }));
     return;
   }
 

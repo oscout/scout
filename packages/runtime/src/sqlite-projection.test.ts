@@ -3,7 +3,11 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import type { BrokerJournalEntry, FileBackedBrokerJournal } from "./broker-journal.ts";
+import type {
+  BrokerJournalEntry,
+  BrokerJournalReplayBoundary,
+  FileBackedBrokerJournal,
+} from "./broker-journal.ts";
 import { RecoverableSQLiteProjection } from "./sqlite-projection.ts";
 
 const tempRoots = new Set<string>();
@@ -24,6 +28,11 @@ function createProjectionOptions(overrides: {
   disabled?: boolean;
   replayEntries?: BrokerJournalEntry[];
   replayYieldEvery?: number;
+  captureReplayBoundary?: () => Promise<BrokerJournalReplayBoundary>;
+  replay?: (
+    visitor: (entry: BrokerJournalEntry) => void | Promise<void>,
+    boundary?: BrokerJournalReplayBoundary,
+  ) => Promise<void>;
 } = {}) {
   const root = mkdtempSync(join(tmpdir(), "openscout-sqlite-projection-"));
   tempRoots.add(root);
@@ -34,6 +43,7 @@ function createProjectionOptions(overrides: {
     recordEventCalls: 0,
     recordMessageCalls: 0,
     replayCalls: 0,
+    replayBoundaryCalls: 0,
     replayOrder: [] as string[],
   };
 
@@ -99,8 +109,22 @@ function createProjectionOptions(overrides: {
   };
 
   const journal = {
-    replay: async (visitor: (entry: BrokerJournalEntry) => void | Promise<void>): Promise<void> => {
+    captureReplayBoundary: async () => {
+      stats.replayBoundaryCalls += 1;
+      if (overrides.captureReplayBoundary) {
+        return overrides.captureReplayBoundary();
+      }
+      return { endByteExclusive: overrides.replayEntries?.length ?? 0 };
+    },
+    replay: async (
+      visitor: (entry: BrokerJournalEntry) => void | Promise<void>,
+      boundary?: BrokerJournalReplayBoundary,
+    ): Promise<void> => {
       stats.replayCalls += 1;
+      if (overrides.replay) {
+        await overrides.replay(visitor, boundary);
+        return;
+      }
       for (const entry of overrides.replayEntries ?? []) {
         await visitor(entry);
       }
@@ -130,7 +154,7 @@ function createProjectionOptions(overrides: {
   };
 }
 
-function sampleMessageEntry(): BrokerJournalEntry {
+function sampleMessageEntry(): Extract<BrokerJournalEntry, { kind: "message.record" }> {
   return {
     kind: "message.record",
     message: {
@@ -157,6 +181,10 @@ describe("RecoverableSQLiteProjection", () => {
     });
 
     projection.warm();
+    expect(projection.statusSnapshot()).toEqual({
+      state: "warming",
+      detail: "SQLite activity projection is rebuilding from the broker journal.",
+    });
     await projection.flush();
 
     expect(projection.statusSnapshot()).toEqual({ state: "ready", detail: null });
@@ -170,12 +198,36 @@ describe("RecoverableSQLiteProjection", () => {
     await projection.flush();
 
     expect(stats.replayCalls).toBe(2);
+    expect(stats.replayBoundaryCalls).toBe(1);
     expect(stats.replayOrder).toEqual([
       "node:node-1",
       "actor:actor-1",
       "conversation:conv-1",
       "message:msg-1",
     ]);
+  });
+
+  test("does not let pre-recovery runtime events capture the journal boundary", async () => {
+    const { projection, stats } = createProjectionOptions();
+    projection.enqueueEvent({
+      kind: "node.upserted",
+      id: "evt-bootstrap-node",
+      actorId: "system",
+      nodeId: "node-1",
+      ts: Date.now(),
+      payload: {},
+    } as never);
+
+    await projection.flush();
+    expect(stats.replayBoundaryCalls).toBe(0);
+    expect(stats.createStoreCalls).toBe(0);
+    expect(stats.recordEventCalls).toBe(0);
+
+    await projection.warm();
+    await projection.flush();
+    expect(stats.replayBoundaryCalls).toBe(1);
+    expect(stats.createStoreCalls).toBe(1);
+    expect(stats.recordEventCalls).toBe(1);
   });
 
   test("yields to the event loop between replay batches", async () => {
@@ -193,6 +245,58 @@ describe("RecoverableSQLiteProjection", () => {
     clearImmediate(marker);
 
     expect(eventLoopTurnReached).toBe(true);
+  });
+
+  test("applies a write arriving during warm exactly once after the fixed replay boundary", async () => {
+    const base = sampleMessageEntry();
+    const live: BrokerJournalEntry = {
+      ...sampleMessageEntry(),
+      message: {
+        ...sampleMessageEntry().message,
+        id: "msg-live",
+        body: "arrived during warm",
+      },
+    };
+    const entries = [base];
+    let releaseFirstReplay: () => void = () => {};
+    let replayCall = 0;
+    const { projection, stats } = createProjectionOptions({
+      captureReplayBoundary: async () => {
+        return { endByteExclusive: entries.length };
+      },
+      replay: async (visitor, boundary) => {
+        replayCall += 1;
+        for (const entry of entries.slice(0, boundary?.endByteExclusive ?? entries.length)) {
+          await visitor(entry);
+        }
+        if (replayCall === 1) {
+          await new Promise<void>((resolve) => {
+            releaseFirstReplay = resolve;
+          });
+        }
+      },
+    });
+
+    const warmBoundary = projection.warm();
+    await warmBoundary;
+    expect(projection.statusSnapshot().state).toBe("warming");
+    entries.push(live);
+    let liveApplied = false;
+    const liveWrite = projection.applyEntries(live).then(() => {
+      liveApplied = true;
+    });
+    await Bun.sleep(0);
+
+    expect(projection.statusSnapshot().state).toBe("warming");
+    expect(liveApplied).toBe(false);
+    releaseFirstReplay();
+    await liveWrite;
+
+    expect(stats.replayOrder.filter((entry) => entry.startsWith("message:"))).toEqual([
+      "message:msg-1",
+      "message:msg-live",
+    ]);
+    expect(projection.statusSnapshot()).toEqual({ state: "ready", detail: null });
   });
 
   test("reports the projection failure when opening degrades", async () => {
@@ -224,6 +328,9 @@ describe("RecoverableSQLiteProjection", () => {
   test("does not invalidate the store when opening the projection hits SQLITE_BUSY", async () => {
     const { projection, stats } = createProjectionOptions({ busyOnFirstOpen: true });
 
+    projection.warm();
+    await projection.flush();
+
     projection.enqueueEvent({
       kind: "test.event",
       id: "evt-1",
@@ -246,11 +353,14 @@ describe("RecoverableSQLiteProjection", () => {
 
     expect(stats.createStoreCalls).toBe(2);
     expect(stats.closeCalls).toBe(0);
-    expect(stats.recordEventCalls).toBe(1);
+    expect(stats.recordEventCalls).toBe(2);
   });
 
   test("preserves the projection store when SQLite reports busy contention", async () => {
     const { projection, stats } = createProjectionOptions({ busyOnFirstEvent: true });
+
+    projection.warm();
+    await projection.flush();
 
     projection.enqueueEvent({
       kind: "test.event",
@@ -280,6 +390,9 @@ describe("RecoverableSQLiteProjection", () => {
   test("still invalidates the projection store on malformed database errors", async () => {
     const { projection, stats } = createProjectionOptions({ fatalOnFirstEvent: true });
 
+    projection.warm();
+    await projection.flush();
+
     projection.enqueueEvent({
       kind: "test.event",
       id: "evt-1",
@@ -307,6 +420,9 @@ describe("RecoverableSQLiteProjection", () => {
 
   test("keeps a busy batch replay from poisoning later projection calls", async () => {
     const { projection, stats } = createProjectionOptions({ busyOnFirstMessage: true });
+
+    projection.warm();
+    await projection.flush();
 
     await projection.applyEntries(sampleMessageEntry());
     await projection.applyEntries(sampleMessageEntry());

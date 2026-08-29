@@ -18,11 +18,11 @@ import {
   isScoutSpeechStopped,
   ensureScoutVoiceAutoProbe,
   getSharedScoutVoiceClient,
+  startScoutSpeech,
   startScoutSpeechWithEffects,
   subscribeScoutVoiceProbe,
   type ScoutVoiceLiveHandle,
   type ScoutVoiceSessionState,
-  type ScoutSpeechHandle,
 } from "../../lib/scout-voice.ts";
 import { SCOUT_REALTIME_VOICE_FLAG } from "../../../shared/realtime-voice.ts";
 import { scoutbotUiContext } from "../../../shared/scoutbot-navigation.ts";
@@ -34,8 +34,15 @@ import {
   type ScoutbotPublicState,
 } from "./ScoutbotStateContext.tsx";
 import { ChatHistory, ChatInput } from "./ScoutbotChat.tsx";
+import { DirectVoicePanel } from "./DirectVoicePanel.tsx";
 import { ScoutbotIconButton, ScoutVoiceSetupPanel } from "./ScoutbotControls.tsx";
 import { ScoutbotSettingsPanel } from "./ScoutbotSettingsPanel.tsx";
+import {
+  DEFAULT_SCOUTBOT_CUSTOM_SPEECH,
+  DEFAULT_SCOUTBOT_SPEECH_PROFILE_ID,
+  isScoutbotSpeechSelectionId,
+  resolveScoutbotSpeechVoice,
+} from "./scoutbot-voice-profiles.ts";
 import {
   SCOUTBOT_REALTIME_REPLY_EVENT,
   SCOUTBOT_SESSION_CHANGED_EVENT,
@@ -73,10 +80,14 @@ export function ScoutbotPanel({
   height,
   forceExpanded = false,
   fill = false,
+  presentation = "chat",
+  onOpenLive,
 }: {
   height?: number;
   forceExpanded?: boolean;
   fill?: boolean;
+  presentation?: "chat" | "direct-voice";
+  onOpenLive?: () => void;
 } = {}) {
   const {
     applyScoutbotUiAction,
@@ -85,7 +96,7 @@ export function ScoutbotPanel({
     onlineCount,
   } = useScout();
   const publisher = useScoutbotStatePublisher();
-  const realtimeVoiceFlag = useOptionalFlag(SCOUT_REALTIME_VOICE_FLAG, false);
+  const realtimeVoiceFlag = useOptionalFlag(SCOUT_REALTIME_VOICE_FLAG, true);
   const realtimeVoice = useScoutbotRealtimeVoice();
   const realtimeLive = realtimeVoiceFlag
     && (realtimeVoice.state === "connecting" || realtimeVoice.state === "live");
@@ -100,10 +111,27 @@ export function ScoutbotPanel({
   const [voiceReplies, setVoiceReplies] = usePersistentBoolean("openscout.scoutbot.voiceReplies", false);
   const [voiceSpeed, setVoiceSpeed] = usePersistentNumber("openscout.scoutbot.voiceSpeed", DEFAULT_SCOUTBOT_VOICE_SPEED);
   const [voicePresetId, setVoicePresetId] = usePersistentString("openscout.scoutbot.voicePresetId", DEFAULT_SCOUTBOT_VOICE_PRESET_ID);
+  const [storedSpeechSelectionId, setStoredSpeechSelectionId] = usePersistentString(
+    "openscout.scoutbot.speechProfileId",
+    DEFAULT_SCOUTBOT_SPEECH_PROFILE_ID,
+  );
+  const [customSpeechModelId, setCustomSpeechModelId] = usePersistentString(
+    "openscout.scoutbot.customSpeechModelId",
+    DEFAULT_SCOUTBOT_CUSTOM_SPEECH.modelId,
+  );
+  const [customSpeechVoiceId, setCustomSpeechVoiceId] = usePersistentString(
+    "openscout.scoutbot.customSpeechVoiceId",
+    DEFAULT_SCOUTBOT_CUSTOM_SPEECH.voiceId,
+  );
+  const [customSpeechInstructions, setCustomSpeechInstructions] = usePersistentString(
+    "openscout.scoutbot.customSpeechInstructions",
+    DEFAULT_SCOUTBOT_CUSTOM_SPEECH.instructions,
+  );
   const [recording, setRecording] = useState(false);
   const [voiceState, setVoiceState] = useState<ScoutVoiceSessionState | null>(null);
   const [partial, setPartial] = useState("");
   const [speaking, setSpeaking] = useState(false);
+  const [voiceInputSource, setVoiceInputSource] = useState<string | null>(null);
   const [lastAsk, setLastAsk] = useState<string | null>(null);
   const [lastReply, setLastReply] = useState<string | null>(null);
   const [askStatus, setAskStatus] = useState<string | null>(null);
@@ -123,12 +151,43 @@ export function ScoutbotPanel({
   const [composeFocusNonce, setComposeFocusNonce] = useState(0);
   const [sessionPickerOpen, setSessionPickerOpen] = useState(false);
   const [switchingSessionId, setSwitchingSessionId] = useState<string | null>(null);
+  const speechSelectionId = isScoutbotSpeechSelectionId(storedSpeechSelectionId)
+    ? storedSpeechSelectionId
+    : DEFAULT_SCOUTBOT_SPEECH_PROFILE_ID;
+  const speechVoice = useMemo(
+    () => resolveScoutbotSpeechVoice(speechSelectionId, {
+      modelId: customSpeechModelId,
+      voiceId: customSpeechVoiceId,
+      instructions: customSpeechInstructions,
+    }),
+    [customSpeechInstructions, customSpeechModelId, customSpeechVoiceId, speechSelectionId],
+  );
   const clientRef = useRef(getSharedScoutVoiceClient());
+  const mountedRef = useRef(false);
   const liveRef = useRef<ScoutVoiceLiveHandle | null>(null);
   const liveCancelReasonRef = useRef<ScoutVoiceCancelReason | null>(null);
-  const speechRef = useRef<ScoutSpeechHandle | null>(null);
+  const speechRef = useRef<{ promise: Promise<unknown>; stop: () => void } | null>(null);
   const voiceRepliesRef = useRef(voiceReplies);
   voiceRepliesRef.current = voiceReplies;
+
+  useEffect(() => {
+    if (presentation !== "direct-voice") return;
+    voiceRepliesRef.current = true;
+    setVoiceReplies(true);
+  }, [presentation, setVoiceReplies]);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      liveCancelReasonRef.current = "discard";
+      const live = liveRef.current;
+      liveRef.current = null;
+      if (live) void releaseScoutVoiceLive(live, { allowCurrentSession: true });
+      speechRef.current?.stop();
+      speechRef.current = null;
+    };
+  }, []);
 
   const stopSpeech = useCallback(() => {
     speechRef.current?.stop();
@@ -139,11 +198,19 @@ export function ScoutbotPanel({
   const runSpeech = useCallback((text: string) => {
     if (!text) return;
     stopSpeech();
-    const speech = startScoutSpeechWithEffects(toSpokenScoutText(text), {
-      speed: voiceSpeed,
-      presetId: voicePresetId,
-      params: resolveScoutbotFxParams(voicePresetId, onlineCount),
-    });
+    const spokenText = toSpokenScoutText(text);
+    const speech = presentation === "direct-voice"
+      ? startScoutSpeech(spokenText, {
+          speed: voiceSpeed,
+          modelId: speechVoice.modelId,
+          voiceId: speechVoice.voiceId,
+          instructions: speechVoice.instructions,
+        })
+      : startScoutSpeechWithEffects(spokenText, {
+          speed: voiceSpeed,
+          presetId: voicePresetId,
+          params: resolveScoutbotFxParams(voicePresetId, onlineCount),
+        });
     speechRef.current = speech;
     setSpeaking(true);
     void speech.promise
@@ -158,7 +225,7 @@ export function ScoutbotPanel({
           setSpeaking(false);
         }
       });
-  }, [stopSpeech, voiceSpeed, onlineCount, voicePresetId]);
+  }, [stopSpeech, voiceSpeed, speechVoice, onlineCount, presentation, voicePresetId]);
 
   const speakScoutbotText = useCallback((text: string) => {
     if (!voiceRepliesRef.current) return;
@@ -409,6 +476,7 @@ export function ScoutbotPanel({
 
   const applyProbeState = useCallback((client: ReturnType<typeof getSharedScoutVoiceClient>, ok: boolean) => {
     setVoiceAvailable(ok);
+    setVoiceInputSource(client.activeInputDeviceName);
     setVoiceIssue(ok ? null : client.lastUnavailableReason ?? "Scout voice service is not reachable.");
     setVoiceProbeState("idle");
   }, []);
@@ -427,6 +495,7 @@ export function ScoutbotPanel({
     const client = clientRef.current;
     const unsubscribe = subscribeScoutVoiceProbe((snapshot) => {
       setVoiceAvailable(snapshot.ok);
+      setVoiceInputSource(snapshot.inputDeviceName);
       setVoiceIssue(snapshot.ok ? null : snapshot.reason);
       setVoiceProbeState("idle");
     });
@@ -560,14 +629,22 @@ export function ScoutbotPanel({
     };
 
     try {
-      live = await client.startLive({
-        onState: setVoiceState,
-        onPartial: setPartial,
-      });
+      live = await client.startLive(
+        {
+          onState: setVoiceState,
+          onPartial: setPartial,
+        },
+        { surface: presentation === "direct-voice" ? "direct-voice" : "chat-composer" },
+      );
+      if (!mountedRef.current) {
+        await releaseScoutVoiceLive(live, { allowCurrentSession: true });
+        return;
+      }
       liveRef.current = live;
       setRecording(true);
       const final = await live.result;
       await cleanupLive();
+      if (!mountedRef.current) return;
       setRecording(false);
       setPartial("");
       if (liveCancelReasonRef.current) {
@@ -579,6 +656,7 @@ export function ScoutbotPanel({
       }
     } catch (err) {
       const cancelReason = liveCancelReasonRef.current;
+      if (!mountedRef.current) return;
       const wasCancellation = Boolean(cancelReason) || isScoutVoiceCancellation(err);
       await cleanupLive();
       setRecording(false);
@@ -591,10 +669,10 @@ export function ScoutbotPanel({
         setError(err instanceof Error ? err.message : "Scout voice recording failed.");
       }
     } finally {
-      await cleanupLive();
+      if (mountedRef.current) await cleanupLive();
       liveCancelReasonRef.current = null;
     }
-  }, [askScoutbot, probeVoice, recording, voiceAvailable]);
+  }, [askScoutbot, presentation, probeVoice, recording, voiceAvailable]);
 
   const stopVoice = useCallback(async () => {
     const live = liveRef.current;
@@ -773,6 +851,86 @@ export function ScoutbotPanel({
   const isEmptyChat = sessionState !== null
     && sessionState.session.messages.length === 0
     && !sending;
+  if (presentation === "direct-voice") {
+    return (
+      <DirectVoicePanel
+        messages={sessionState?.session.messages ?? []}
+        pendingAsk={sending ? lastAsk : null}
+        partial={partial}
+        error={error}
+        status={askStatus}
+        recording={recording}
+        sending={sending}
+        speaking={speaking}
+        voiceAvailable={voiceAvailable}
+        voiceInputSource={voiceInputSource}
+        voiceProbeState={voiceProbeState}
+        voiceState={voiceState}
+        voiceReplies={voiceReplies}
+        settingsOpen={settingsOpen}
+        assistantModel={sessionState?.session.model ?? sessionState?.config.model ?? null}
+        setupPanel={voiceAvailable === false ? (
+          <ScoutVoiceSetupPanel
+            issue={voiceIssue}
+            probeState={voiceProbeState}
+            onLaunch={launchScoutVoice}
+            onRetry={() => void probeVoice(true)}
+            onSettings={() => setSettingsOpen(true)}
+            onDismiss={() => setVoiceSetupOpen(false)}
+          />
+        ) : null}
+        settingsPanel={(
+          <ScoutbotSettingsPanel
+            presentation="direct-voice"
+            voicePresetId={voicePresetId}
+            onVoicePresetId={setVoicePresetId}
+            speechSelectionId={speechSelectionId}
+            onSpeechSelectionId={setStoredSpeechSelectionId}
+            customSpeechModelId={customSpeechModelId}
+            onCustomSpeechModelId={setCustomSpeechModelId}
+            customSpeechVoiceId={customSpeechVoiceId}
+            onCustomSpeechVoiceId={setCustomSpeechVoiceId}
+            customSpeechInstructions={customSpeechInstructions}
+            onCustomSpeechInstructions={setCustomSpeechInstructions}
+            voiceDefaults={voiceDefaults}
+            modelDraft={modelDraft}
+            onModelDraft={setModelDraft}
+            promptDraft={promptDraft}
+            onPromptDraft={setPromptDraft}
+            configLoading={configLoading}
+            configSaving={configSaving}
+            configError={configError}
+            configStatus={configStatus}
+            onSave={() => void saveScoutbotConfig()}
+            onReload={() => void loadScoutbotConfig()}
+          />
+        )}
+        onPrimaryAction={() => {
+          if (speaking) {
+            stopSpeech();
+          } else if (recording) {
+            void stopVoice();
+          } else if (voiceAvailable === false) {
+            void probeVoice(true);
+          } else {
+            void startVoice();
+          }
+        }}
+        onToggleVoiceReplies={() => {
+          const next = !voiceReplies;
+          voiceRepliesRef.current = next;
+          setVoiceReplies(next);
+          if (!next) stopSpeech();
+        }}
+        onToggleSettings={() => setSettingsOpen((open) => !open)}
+        onNewChat={() => {
+          if (!resettingSession) void resetScoutbotSession();
+        }}
+        onOpenLive={onOpenLive}
+      />
+    );
+  }
+
   if (collapsed && !forceExpanded) {
     return (
       <div className="flex shrink-0 items-center border-t border-[var(--scout-chrome-border-soft)] px-3 py-1.5">
@@ -826,8 +984,17 @@ export function ScoutbotPanel({
 
       {settingsOpen && (
         <ScoutbotSettingsPanel
+          presentation="chat"
           voicePresetId={voicePresetId}
           onVoicePresetId={setVoicePresetId}
+          speechSelectionId={speechSelectionId}
+          onSpeechSelectionId={setStoredSpeechSelectionId}
+          customSpeechModelId={customSpeechModelId}
+          onCustomSpeechModelId={setCustomSpeechModelId}
+          customSpeechVoiceId={customSpeechVoiceId}
+          onCustomSpeechVoiceId={setCustomSpeechVoiceId}
+          customSpeechInstructions={customSpeechInstructions}
+          onCustomSpeechInstructions={setCustomSpeechInstructions}
           voiceDefaults={voiceDefaults}
           modelDraft={modelDraft}
           onModelDraft={setModelDraft}

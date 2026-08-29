@@ -18,8 +18,8 @@ const brokerAskPrompt =
 
 describe("tmux prompt delivery", () => {
   test("quotes launch scripts with spaces", () => {
-    expect(buildTmuxLaunchShellCommand("/Users/example/Library/Application Support/OpenScout/runtime/agents/spectator/launch.sh"))
-      .toBe('exec bash "/Users/example/Library/Application Support/OpenScout/runtime/agents/spectator/launch.sh"');
+    expect(buildTmuxLaunchShellCommand("/Users/arach/Library/Application Support/OpenScout/runtime/agents/spectator/launch.sh"))
+      .toBe('exec bash "/Users/arach/Library/Application Support/OpenScout/runtime/agents/spectator/launch.sh"');
   });
 
   test("pastes prompts as bracketed raw input before sending one submit key", () => {
@@ -302,7 +302,7 @@ describe("tmux prompt-fragment detection", () => {
         "  New broker ask from operator. Task: please refactor the dispatch",
         "  path so it submits the prompt.",
         "",
-        "⏺ Read(/Users/example/dev/openscout/packages/runtime/src/local-agents.ts)",
+        "⏺ Read(/Users/arach/dev/openscout/packages/runtime/src/local-agents.ts)",
         "  ⎿  Read 30 lines",
         "",
         "───────────────────────────── openscout-review-relay-agent ──",

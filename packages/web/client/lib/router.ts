@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useSyncExternalStore } from "react";
 import { isOpsEnabled } from "./feature-flags.ts";
+import { beginNavTiming } from "./perf.ts";
 import {
   parseScopeRouteFromUrl,
   preserveLocationSearch,
@@ -72,8 +73,10 @@ function parseOpsMode(value: string | undefined): OpsMode | undefined {
     case "conduct":
     case "conductor":
       return "mission";
+    // Legacy `/ops/plan` slug — this surface has always been the Host Advisor.
     case "plan":
-      return "plan";
+    case "advisor":
+      return "advisor";
     case "issues":
     case "errors":
     case "warnings":
@@ -703,7 +706,7 @@ export function routeFromUrl(urlLike: string | URL): Route {
       return scoped({ view: "inbox" });
     }
     const tailQuery = mode === "tail" ? url.searchParams.get("q")?.trim() : "";
-    const planDocumentId = mode === "plan" ? url.searchParams.get("plan")?.trim() : "";
+    const planDocumentId = mode === "advisor" ? url.searchParams.get("plan")?.trim() : "";
     const flightId = url.searchParams.get("flightId")?.trim();
     const invocationId = url.searchParams.get("invocationId")?.trim();
     const conversationId = url.searchParams.get("conversationId")?.trim();
@@ -883,10 +886,10 @@ export function routePath(r: Route, pathname?: string): string {
       return `/settings/${r.section}`;
     case "ops":
       if (!r.mode) return "/ops";
-      if (r.mode === "tail" || r.mode === "plan") {
+      if (r.mode === "tail" || r.mode === "advisor") {
         const params = new URLSearchParams();
         if (r.mode === "tail" && r.tailQuery) params.set("q", r.tailQuery);
-        if (r.mode === "plan" && r.planDocumentId) params.set("plan", r.planDocumentId);
+        if (r.mode === "advisor" && r.planDocumentId) params.set("plan", r.planDocumentId);
         if (r.flightId) params.set("flightId", r.flightId);
         if (r.invocationId) params.set("invocationId", r.invocationId);
         if (r.conversationId) params.set("conversationId", r.conversationId);
@@ -974,7 +977,7 @@ export function routeKey(r: Route): string {
     case "work":
       return `work:${r.workId}${scope}`;
     case "ops":
-      return `ops:${r.mode ?? "plan"}:${r.tailQuery ?? ""}:${r.planDocumentId ?? ""}:${r.flightId ?? ""}:${r.invocationId ?? ""}:${r.workId ?? ""}:${r.conversationId ?? ""}:${r.sessionId ?? ""}:${r.targetAgentId ?? ""}`;
+      return `ops:${r.mode ?? "advisor"}:${r.tailQuery ?? ""}:${r.planDocumentId ?? ""}:${r.flightId ?? ""}:${r.invocationId ?? ""}:${r.workId ?? ""}:${r.conversationId ?? ""}:${r.sessionId ?? ""}:${r.targetAgentId ?? ""}`;
     case "search":
       return `search:${r.mode ?? "knowledge"}:${r.hitId ?? ""}`;
     case "broker":
@@ -1082,6 +1085,7 @@ export function createBrowserLocationStore(env: BrowserLocationEnv): BrowserLoca
       };
     },
     navigateTo(href, options = {}) {
+      const from = snapshot.pathname;
       const state = options.state === undefined ? snapshot.state : options.state;
       if (options.replace) {
         env.replace(href, state);
@@ -1089,6 +1093,9 @@ export function createBrowserLocationStore(env: BrowserLocationEnv): BrowserLoca
         env.push(href, state);
       }
       syncFromEnv();
+      if (snapshot.pathname !== from) {
+        beginNavTiming(from, snapshot.pathname);
+      }
     },
   };
 }

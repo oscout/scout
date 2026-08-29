@@ -11,6 +11,10 @@ type UseAgentLanesKeyboardInput = {
   inspectedLaneId: string | null;
   onInspect: (lane: AgentLane) => void;
   onHorizonChange: (horizon: AgentLaneHorizonKey) => void;
+  /// Pin / unpin the focused lane. The deck-level handler is responsible
+  /// for keeping its pinned state coherent; the keyboard hook just routes
+  /// the press when a lane is focused and the detail sheet is closed.
+  onTogglePin?: (lane: AgentLane) => void;
 };
 
 export function useAgentLanesKeyboard({
@@ -18,6 +22,7 @@ export function useAgentLanesKeyboard({
   inspectedLaneId,
   onInspect,
   onHorizonChange,
+  onTogglePin,
 }: UseAgentLanesKeyboardInput) {
   const [focusedIndex, setFocusedIndex] = useState(-1);
   const laneRefs = useRef<Map<string, HTMLElement>>(new Map());
@@ -96,12 +101,24 @@ export function useAgentLanesKeyboard({
         event.preventDefault();
         setFocusedIndex(index);
         onInspect(lane);
+        return;
+      }
+      // "p" / "P" — pin / unpin the focused lane. The detail sheet has its
+      // own "p" binding (agent profile), but the hook returns early when
+      // `inspectedLaneId` is set, so the two never collide at runtime.
+      if (event.key.toLowerCase() === "p" && onTogglePin) {
+        const index = focusedIndex < 0 ? 0 : focusedIndex;
+        const lane = lanes[index];
+        if (!lane) return;
+        event.preventDefault();
+        setFocusedIndex(index);
+        onTogglePin(lane);
       }
     };
 
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [focusedIndex, inspectedLaneId, lanes, onHorizonChange, onInspect]);
+  }, [focusedIndex, inspectedLaneId, lanes, onHorizonChange, onInspect, onTogglePin]);
 
   const getLaneFocusProps = useCallback((index: number, laneId: string) => ({
     "data-cursor": focusedIndex === index ? true : undefined,

@@ -44,6 +44,8 @@ export type BrokerHomePayload = {
   updatedAt: number;
   agents: BrokerHomeAgent[];
   activity: BrokerHomeActivity[];
+  activitySource: "sqlite_projection" | "runtime_snapshot";
+  activityState: "ready" | "warming" | "degraded" | "disabled";
 };
 
 // /api/agents caps its roster at 100. Keep the compact broker home projection
@@ -55,6 +57,10 @@ const BROKER_HOME_AGENT_LIMIT = 100;
 type BrokerHomeServiceDeps = {
   runtimeSnapshot: () => RuntimeRegistrySnapshot;
   listActivityItems: (options: { limit: number }) => Promise<ActivityItem[]>;
+  projectionStatus?: () => {
+    state: BrokerHomePayload["activityState"];
+    detail: string | null;
+  };
   actorDisplayName: (snapshot: RuntimeRegistrySnapshot, actorId: string) => string;
   operatorActorId: string;
   now?: () => number;
@@ -69,10 +75,16 @@ export class BrokerHomeService {
 
   async read(): Promise<BrokerHomePayload> {
     const snapshot = this.#deps.runtimeSnapshot();
+    const projectionStatus = this.#deps.projectionStatus?.() ?? { state: "ready" as const };
+    const projectionReady = projectionStatus.state === "ready";
     return {
       updatedAt: this.#now(),
       agents: this.#agents(snapshot),
-      activity: this.#activity(snapshot, await this.#deps.listActivityItems({ limit: 96 })),
+      activity: projectionReady
+        ? this.#activity(snapshot, await this.#deps.listActivityItems({ limit: 96 }))
+        : this.#runtimeActivity(snapshot),
+      activitySource: projectionReady ? "sqlite_projection" : "runtime_snapshot",
+      activityState: projectionStatus.state,
     };
   }
 
@@ -127,6 +139,28 @@ export class BrokerHomeService {
           conversationId: item.conversationId ?? null,
           channel: brokerConversationChannel(snapshot, item.conversationId),
           timestamp: item.ts,
+        };
+      });
+  }
+
+  #runtimeActivity(snapshot: RuntimeRegistrySnapshot): BrokerHomeActivity[] {
+    return Object.values(snapshot.messages)
+      .sort((left, right) => right.createdAt - left.createdAt || right.id.localeCompare(left.id))
+      .slice(0, 24)
+      .map((message) => {
+        const actorName = this.#deps.actorDisplayName(snapshot, message.actorId);
+        return {
+          id: message.id,
+          kind: message.class === "system" || message.class === "status" || message.class === "log"
+            ? "system"
+            : "message",
+          actorId: message.actorId,
+          actorName,
+          title: actorName,
+          detail: message.body || null,
+          conversationId: message.conversationId,
+          channel: brokerConversationChannel(snapshot, message.conversationId),
+          timestamp: message.createdAt,
         };
       });
   }

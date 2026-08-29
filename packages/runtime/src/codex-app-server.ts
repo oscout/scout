@@ -15,10 +15,12 @@ import { CodexObservedTopologyTracker } from "@openscout/agent-sessions/adapters
 import { OBSERVED_HARNESS_TOPOLOGY_META_KEY } from "@openscout/agent-sessions/protocol/primitives";
 import {
   CodexAppServerExitError,
+  CodexThreadHeldExternallyError,
   ensureCodexAppServerLocalAgentOnline,
   interruptCodexAppServerLocalAgent,
   invokeCodexAppServerLocalAgent,
   isCodexAppServerExitError,
+  isCodexThreadHeldExternallyError,
   isCodexAppServerLocalAgentAlive,
   normalizeCodexAppServerLaunchArgs,
   readCodexAppServerModelFromLaunchArgs,
@@ -44,7 +46,9 @@ export {
 
 export {
   CodexAppServerExitError,
+  CodexThreadHeldExternallyError,
   isCodexAppServerExitError,
+  isCodexThreadHeldExternallyError,
   normalizeCodexAppServerLaunchArgs,
   readCodexAppServerModelFromLaunchArgs,
   readCodexAppServerReasoningEffortFromLaunchArgs,
@@ -1147,7 +1151,10 @@ async function withPreparedManagedCodexEnvironment<T extends SessionRequestOptio
   return withManagedCodexEnvironment(options);
 }
 
-export async function ensureCodexAppServerAgentOnline(options: SessionRequestOptions): Promise<{ threadId: string }> {
+export async function ensureCodexAppServerAgentOnline(options: SessionRequestOptions): Promise<{
+  threadId: string;
+  durableThreadId: string | null;
+}> {
   return ensureCodexAppServerLocalAgentOnline(await withPreparedManagedCodexEnvironment(options));
 }
 

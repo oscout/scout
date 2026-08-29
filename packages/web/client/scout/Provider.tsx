@@ -20,6 +20,7 @@ import { friendlyApiError, isOfflineApiError } from "../lib/api-errors.ts";
 import { useBrokerEvents } from "../lib/sse.ts";
 import { isScoutSurfaceActive, onScoutSurfaceActivated } from "../lib/surface-activity.ts";
 import { isAgentOnline } from "../lib/agent-state.ts";
+import { readCachedOperatorName, writeCachedOperatorName } from "../lib/operator-identity.ts";
 import {
   forwardScoutbotUiActionToNativeHost,
   resolveScoutbotAgent,
@@ -35,6 +36,7 @@ import type { Agent, BrokerRouteAttempt, Route } from "../lib/types.ts";
 import type { ScoutAppearanceDetails, ScoutTheme } from "../lib/theme.ts";
 import {
   applyScoutThemeToDocument,
+  migrateLegacyAgentCharacters,
   SCOUT_THEME_STORAGE_KEY,
   resolveScoutStartupAppearanceDetails,
   resolveScoutNativeThemeVars,
@@ -73,6 +75,7 @@ export interface OnboardingState {
   operatorNameSuggestion: string | null;
   brokerReachable?: boolean;
   hasReadyRuntime?: boolean;
+  readyRuntimeCount?: number;
   skippedAt?: number | null;
   completedAt?: number | null;
   needed?: boolean;
@@ -95,6 +98,9 @@ export interface ScoutContextValue {
   reload: () => Promise<void>;
 
   onboarding: OnboardingState | null;
+  /** The operator's name, seeded from the last visit so it is never blank on
+   *  the first frame. `null` only on a genuine first load. */
+  operatorName: string | null;
   refreshOnboarding: () => Promise<void>;
   onboardingSkipped: boolean;
   skipOnboarding: () => void;
@@ -178,16 +184,16 @@ function keepPreviousIfJsonEqual<T>(previous: T, next: T): T {
 // Exported for the design-sync lightweight preview provider (client/_ds/) — it
 // reuses these vars so cards render on the real dark theme. No behavior change.
 export const DARK_THEME_VARS: ThemeVars = {
-  "--hud-bg": "oklch(0.132 0.004 260)",
-  "--hud-surface": "oklch(0.178 0.005 260)",
-  "--hud-ink": "oklch(0.965 0.006 260)",
-  "--hud-muted": "oklch(0.72 0.008 260)",
-  "--hud-dim": "oklch(0.57 0.007 260)",
-  "--hud-border": "oklch(0.965 0.006 260 / 0.04)",
+  "--hud-bg": "oklch(0.118 0.004 260)",
+  "--hud-surface": "oklch(0.205 0.005 260)",
+  "--hud-ink": "oklch(0.975 0.006 260)",
+  "--hud-muted": "oklch(0.80 0.008 260)",
+  "--hud-dim": "oklch(0.70 0.007 260)",
+  "--hud-border": "oklch(0.975 0.006 260 / 0.08)",
   "--hud-accent": "oklch(0.86 0.17 125)",
   "--hud-accent-soft": "oklch(0.86 0.17 125 / 0.08)",
   "--hud-shadow-soft": "oklch(0.08 0.004 260 / 0.42)",
-  "--hud-chrome-border": "oklch(0.965 0.006 260 / 0.012)",
+  "--hud-chrome-border": "oklch(0.975 0.006 260 / 0.04)",
   "--hud-shadow-panel": "0 12px 34px oklch(0.08 0.004 260 / 0.45)",
   "--hud-shadow-panel-hover": "0 14px 38px oklch(0.08 0.004 260 / 0.52)",
   "--hud-shadow-bar": "0 -10px 28px oklch(0.08 0.004 260 / 0.38)",
@@ -221,15 +227,15 @@ export const DARK_THEME_VARS: ThemeVars = {
   "--cat-gold": "#d7a978",
   "--cat-purple": "#c58cff",
   "--cat-sky": "#38bdf8",
-  "--scout-chrome-ink-strong": "color-mix(in srgb, var(--hud-ink) 92%, transparent)",
-  "--scout-chrome-ink": "color-mix(in srgb, var(--hud-ink) 78%, transparent)",
-  "--scout-chrome-ink-soft": "color-mix(in srgb, var(--hud-ink) 58%, transparent)",
-  /* SCO-085: raise secondary text from ~35% to ~55–60% for sidebar/rail/lanes. */
-  "--scout-chrome-ink-faint": "color-mix(in srgb, var(--hud-ink) 55%, transparent)",
-  "--scout-chrome-ink-ghost": "color-mix(in srgb, var(--hud-ink) 48%, transparent)",
-  "--scout-chrome-hover": "color-mix(in srgb, var(--hud-ink) 4%, transparent)",
-  "--scout-chrome-active": "color-mix(in srgb, var(--hud-ink) 8%, transparent)",
-  "--scout-chrome-border-soft": "color-mix(in srgb, var(--hud-ink) 4%, transparent)",
+  "--scout-chrome-ink-strong": "color-mix(in srgb, var(--hud-ink) 94%, transparent)",
+  "--scout-chrome-ink": "color-mix(in srgb, var(--hud-ink) 84%, transparent)",
+  "--scout-chrome-ink-soft": "color-mix(in srgb, var(--hud-ink) 68%, transparent)",
+  /* Secondary chrome text: keep hierarchy, but stay readable on near-black. */
+  "--scout-chrome-ink-faint": "color-mix(in srgb, var(--hud-ink) 64%, transparent)",
+  "--scout-chrome-ink-ghost": "color-mix(in srgb, var(--hud-ink) 56%, transparent)",
+  "--scout-chrome-hover": "color-mix(in srgb, var(--hud-ink) 5%, transparent)",
+  "--scout-chrome-active": "color-mix(in srgb, var(--hud-ink) 9%, transparent)",
+  "--scout-chrome-border-soft": "color-mix(in srgb, var(--hud-ink) 8%, transparent)",
   "--scout-chrome-avatar-ink": "#111111",
   "--hud-font-sans": "'Inter', ui-sans-serif, system-ui, sans-serif",
   "--hud-font-mono": "'JetBrains Mono', ui-monospace, Menlo, monospace",
@@ -315,6 +321,10 @@ function scoutThemeAugmentVars(theme: ScoutTheme): ThemeVars {
   ) as ThemeVars;
 }
 
+export function useOptionalScout() {
+  return useContext(ScoutContext);
+}
+
 export function useScout() {
   const ctx = useContext(ScoutContext);
   if (!ctx) throw new Error("useScout must be used inside ScoutProvider");
@@ -330,7 +340,7 @@ export function ScoutProvider({
 }) {
   const { route, navigate, navigateBack, canNavigateBack } = useRouter();
   const hudsonTheme = useOptionalTheme();
-  const realtimeVoiceEnabled = useOptionalFlag(SCOUT_REALTIME_VOICE_FLAG, false);
+  const realtimeVoiceEnabled = useOptionalFlag(SCOUT_REALTIME_VOICE_FLAG, true);
   const [agents, setAgents] = useState<Agent[]>([]);
   const [agentsLoaded, setAgentsLoaded] = useState(false);
   const [apiConnection, setApiConnection] = useState<ApiConnectionState>({
@@ -342,6 +352,17 @@ export function ScoutProvider({
     resolveScoutStartupAppearanceDetails,
   );
   const [onboarding, setOnboarding] = useState<OnboardingState | null>(null);
+  /** True while `onboarding` holds the unreachable-API placeholder. */
+  const onboardingStaleRef = useRef(false);
+  /**
+   * Who you are, available on the first frame.
+   *
+   * Kept beside `onboarding` rather than inside it on purpose: seeding the
+   * onboarding record itself would mean guessing `hasOperatorName`, and a
+   * wrong guess there suppresses the setup flow for someone who still needs
+   * it. A name is safe to be optimistic about; a completed-setup claim is not.
+   */
+  const [operatorName, setOperatorName] = useState<string | null>(readCachedOperatorName);
   const [onboardingSkipped, setOnboardingSkipped] = useState(false);
   // Selection objects are cached for immediate inspector payload; the URL is
   // the durable source of truth for attempt/hit/session ids (SCO-082 Phase B).
@@ -471,6 +492,16 @@ export function ScoutProvider({
   }, []);
 
   useEffect(() => {
+    if (!agentsLoaded || agents.length === 0) return;
+    setAppearanceDetails((current) => {
+      const agentCharacters = migrateLegacyAgentCharacters(current.agentCharacters, agents);
+      return agentCharacters === current.agentCharacters
+        ? current
+        : { ...current, agentCharacters };
+    });
+  }, [agents, agentsLoaded]);
+
+  useEffect(() => {
     applyScoutThemeToDocument(resolvedTheme, activeTemplate, appearanceDetails);
     writeScoutAppearanceDetails(appearanceDetails);
   }, [activeTemplate, appearanceDetails, resolvedTheme]);
@@ -541,10 +572,20 @@ export function ScoutProvider({
   const refreshOnboarding = useCallback(async () => {
     try {
       const state = await api<OnboardingState>("/api/onboarding/state");
+      onboardingStaleRef.current = false;
       setOnboarding(state);
+      const resolved = state.operatorName?.trim() || state.operatorNameSuggestion?.trim() || null;
+      setOperatorName(resolved);
+      writeCachedOperatorName(resolved);
       markApiOnline();
     } catch (cause) {
       markApiFailure(cause);
+      // Placeholder while the API is unreachable. `needed: false` is load-
+      // bearing: without it the takeover treats the synthesized state as an
+      // armed first-run and parks every tab that loads during a broker
+      // restart on "Finish setup". The stale flag re-fetches the real state
+      // from the poll loop once the API answers again.
+      onboardingStaleRef.current = true;
       setOnboarding({
         hasLocalConfig: true,
         hasProjectConfig: true,
@@ -554,6 +595,7 @@ export function ScoutProvider({
         currentDirectory: null,
         operatorName: null,
         operatorNameSuggestion: null,
+        needed: false,
       });
     }
   }, [markApiFailure, markApiOnline]);
@@ -574,6 +616,7 @@ export function ScoutProvider({
     const refreshIfVisible = () => {
       if (!isScoutSurfaceActive()) return;
       void reload();
+      if (onboardingStaleRef.current) void refreshOnboarding();
     };
 
     const interval = window.setInterval(refreshIfVisible, AGENT_REFRESH_POLL_MS);
@@ -582,7 +625,7 @@ export function ScoutProvider({
       window.clearInterval(interval);
       stopActivationListener();
     };
-  }, [reload]);
+  }, [reload, refreshOnboarding]);
 
   const onlineCount = useMemo(
     () => agents.filter((a) => isAgentOnline(a.state)).length,
@@ -692,7 +735,7 @@ export function ScoutProvider({
       route, navigate, navigateBack, canNavigateBack,
       agents, agentsLoaded, onlineCount, apiConnection, reload,
       appearanceDetails, updateAppearanceDetails,
-      onboarding, refreshOnboarding, onboardingSkipped, skipOnboarding,
+      onboarding, operatorName, refreshOnboarding, onboardingSkipped, skipOnboarding,
       settingsOpen, openSettings, closeSettings,
       scoutbotAgentId, scoutbotConversationId: scoutbotDmConversationId, applyScoutbotUiAction,
       selectedBrokerAttempt, inspectBrokerAttempt, clearBrokerAttempt,
@@ -705,7 +748,7 @@ export function ScoutProvider({
       route, navigate, navigateBack, canNavigateBack,
       agents, agentsLoaded, onlineCount, apiConnection, reload,
       appearanceDetails, updateAppearanceDetails,
-      onboarding, refreshOnboarding, onboardingSkipped, skipOnboarding,
+      onboarding, operatorName, refreshOnboarding, onboardingSkipped, skipOnboarding,
       settingsOpen, openSettings, closeSettings,
       scoutbotAgentId, scoutbotDmConversationId, applyScoutbotUiAction,
       selectedBrokerAttempt, inspectBrokerAttempt, clearBrokerAttempt,
@@ -736,6 +779,7 @@ export function ScoutProvider({
         data-scout-contrast={appearanceDetails.contrast}
         data-scout-accent={appearanceDetails.accent}
         data-scout-shell={appearanceDetails.shell}
+        data-scout-avatar-style={appearanceDetails.avatarStyle}
         data-hudson-theme={resolvedTheme}
         data-hudson-template={activeTemplate}
         style={{

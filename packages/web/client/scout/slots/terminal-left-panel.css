@@ -55,6 +55,40 @@
   padding: var(--space-md) var(--space-lg);
 }
 
+.terminal-nav-modes {
+  flex: none;
+  display: flex;
+  gap: 1px;
+  margin: var(--space-sm) var(--space-lg) 0;
+  padding: var(--space-3xs);
+  background: color-mix(in srgb, var(--ink) 4%, transparent);
+  border: 1px solid color-mix(in srgb, var(--border) 40%, transparent);
+  border-radius: var(--radius-md);
+}
+
+.terminal-nav-mode {
+  flex: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-2xs, 3px) 0;
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: background 0.1s, color 0.1s;
+}
+
+.terminal-nav-mode:hover {
+  color: var(--ink);
+}
+
+.terminal-nav-mode--active {
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  color: var(--accent);
+}
+
 .terminal-nav-error {
   flex: none;
   padding: 0 var(--space-lg) var(--space-sm);

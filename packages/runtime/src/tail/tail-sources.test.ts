@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -93,7 +93,7 @@ afterEach(() => {
 
 describe("tail transcript sources", () => {
   test("discovers and parses Claude transcript files without process discovery", () => {
-    const projectDir = join(process.env.OPENSCOUT_TAIL_CLAUDE_PROJECTS_ROOT!, "-Users-example-dev-project");
+    const projectDir = join(process.env.OPENSCOUT_TAIL_CLAUDE_PROJECTS_ROOT!, "-Users-arach-dev-openscout");
     mkdirSync(projectDir, { recursive: true });
     const transcriptPath = join(projectDir, "claude-session.jsonl");
     writeFileSync(
@@ -103,7 +103,7 @@ describe("tail transcript sources", () => {
           type: "system",
           timestamp: "2026-04-27T15:00:00.000Z",
           session_id: "claude-session",
-          cwd: "/Users/example/dev/openscout",
+          cwd: "/Users/arach/dev/openscout",
         }),
         JSON.stringify({
           type: "assistant",
@@ -116,7 +116,7 @@ describe("tail transcript sources", () => {
 
     const transcripts = ClaudeSource.discoverTranscripts([]);
     expect(transcripts).toHaveLength(1);
-    expect(transcripts[0]?.cwd).toBe("/Users/example/dev/openscout");
+    expect(transcripts[0]?.cwd).toBe("/Users/arach/dev/openscout");
     expect(transcripts[0]?.sessionId).toBe("claude-session");
     expect(transcripts[0]?.lastEventAt).toBe(Date.parse("2026-04-27T15:00:01.000Z"));
     expect(transcripts[0]?.mtimeMs).toBeGreaterThan(transcripts[0]?.lastEventAt ?? 0);
@@ -140,7 +140,7 @@ describe("tail transcript sources", () => {
       source: "claude" as const,
       transcriptPath: "/tmp/claude/no-ts.jsonl",
       sessionId: "claude-no-ts",
-      cwd: "/Users/example/dev/openscout",
+      cwd: "/Users/arach/dev/openscout",
       project: "openscout",
       harness: "unattributed" as const,
       mtimeMs: Date.now(),
@@ -160,7 +160,7 @@ describe("tail transcript sources", () => {
       sessionId: "worker123",
       parentSessionId: "claude-parent",
       subagentId: "worker123",
-      cwd: "/Users/example/dev/openscout",
+      cwd: "/Users/arach/dev/openscout",
       project: "openscout",
       harness: "unattributed",
       mtimeMs: 1_700_000_000_000,
@@ -185,7 +185,7 @@ describe("tail transcript sources", () => {
   });
 
   test("discovers active Claude child-agent transcripts separately from their parent session", () => {
-    const projectDir = join(process.env.OPENSCOUT_TAIL_CLAUDE_PROJECTS_ROOT!, "-Users-example-dev-project");
+    const projectDir = join(process.env.OPENSCOUT_TAIL_CLAUDE_PROJECTS_ROOT!, "-Users-arach-dev-openscout");
     const subagentsDir = join(projectDir, "claude-session", "subagents");
     const workflowDir = join(subagentsDir, "workflows", "wf_fixture");
     mkdirSync(workflowDir, { recursive: true });
@@ -196,7 +196,7 @@ describe("tail transcript sources", () => {
         type: "system",
         timestamp: "2026-04-27T15:00:00.000Z",
         session_id: "claude-session",
-        cwd: "/Users/example/dev/openscout",
+        cwd: "/Users/arach/dev/openscout",
       }) + "\n",
       "utf8",
     );
@@ -225,7 +225,7 @@ describe("tail transcript sources", () => {
       sessionId: "worker123",
       parentSessionId: "claude-session",
       subagentId: "worker123",
-      cwd: "/Users/example/dev/openscout",
+      cwd: "/Users/arach/dev/openscout",
     }));
     expect(transcripts.some((transcript) => transcript.transcriptPath.endsWith("journal.jsonl"))).toBe(false);
   });
@@ -238,7 +238,7 @@ describe("tail transcript sources", () => {
     mkdirSync(mainDir, { recursive: true });
     mkdirSync(subagentDir, { recursive: true });
     writeFileSync(join(sessionDir, "state.json"), JSON.stringify({
-      workDir: "/Users/example/dev/openscout",
+      workDir: "/Users/arach/dev/openscout",
       title: "Review the project",
       createdAt: "2026-07-16T12:00:00.000Z",
       updatedAt: "2026-07-16T12:00:05.000Z",
@@ -273,7 +273,7 @@ describe("tail transcript sources", () => {
           uuid: "tool-call-event-1",
           toolCallId: "tool-1",
           name: "Read",
-          args: { path: "/Users/example/dev/openscout/packages/runtime/src/tail/service.ts" },
+          args: { path: "/Users/arach/dev/openscout/packages/runtime/src/tail/service.ts" },
         },
       }),
       JSON.stringify({
@@ -312,7 +312,7 @@ describe("tail transcript sources", () => {
     expect(main).toEqual(expect.objectContaining({
       source: "kimi",
       sessionId,
-      cwd: "/Users/example/dev/openscout",
+      cwd: "/Users/arach/dev/openscout",
       project: "openscout",
     }));
     expect(subagent?.sessionId).toBe(`${sessionId}:agent-0`);
@@ -346,7 +346,7 @@ describe("tail transcript sources", () => {
     writeFileSync(join(sessionDir, "state.json"), JSON.stringify({
       id: sessionId,
       version: 2,
-      cwd: "/Users/example/dev/openscout",
+      cwd: "/Users/arach/dev/openscout",
       title: "Review the project",
     }), "utf8");
     writeFileSync(join(sessionDir, "agents", "main", "wire.jsonl"), JSON.stringify({
@@ -358,7 +358,7 @@ describe("tail transcript sources", () => {
 
     expect(KimiSource.discoverTranscripts([])[0]).toEqual(expect.objectContaining({
       sessionId,
-      cwd: "/Users/example/dev/openscout",
+      cwd: "/Users/arach/dev/openscout",
       project: "openscout",
     }));
   });
@@ -384,10 +384,10 @@ describe("tail transcript sources", () => {
 
     writeFileSync(join(sessionDir, "state.json"), JSON.stringify({
       version: 2,
-      cwd: "/Users/example/dev/openscout",
+      cwd: "/Users/arach/dev/openscout",
     }), "utf8");
     expect(KimiSource.discoverTranscripts([])[0]).toEqual(expect.objectContaining({
-      cwd: "/Users/example/dev/openscout",
+      cwd: "/Users/arach/dev/openscout",
       project: "openscout",
     }));
   });
@@ -397,7 +397,7 @@ describe("tail transcript sources", () => {
       source: "kimi",
       transcriptPath: "/tmp/kimi/session_1/agents/main/wire.jsonl",
       sessionId: "session_1",
-      cwd: "/Users/example/dev/openscout",
+      cwd: "/Users/arach/dev/openscout",
       project: "openscout",
       harness: "unattributed",
       mtimeMs: Date.now(),
@@ -433,7 +433,7 @@ describe("tail transcript sources", () => {
           type: "session_meta",
           payload: {
             id: "019dcf82-3383-71c1-a23d-49947b6b4b04",
-            cwd: "/Users/example/dev/openscout",
+            cwd: "/Users/arach/dev/openscout",
           },
         }),
         JSON.stringify({
@@ -451,7 +451,7 @@ describe("tail transcript sources", () => {
 
     const transcripts = CodexSource.discoverTranscripts([]);
     expect(transcripts).toHaveLength(1);
-    expect(transcripts[0]?.cwd).toBe("/Users/example/dev/openscout");
+    expect(transcripts[0]?.cwd).toBe("/Users/arach/dev/openscout");
     expect(transcripts[0]?.sessionId).toBe("019dcf82-3383-71c1-a23d-49947b6b4b04");
 
     const event = CodexSource.parseLine(
@@ -476,7 +476,7 @@ describe("tail transcript sources", () => {
       source: "codex" as const,
       transcriptPath: "/tmp/codex/rollout-019dcf82-tool-join.jsonl",
       sessionId: "019dcf82-tool-join",
-      cwd: "/Users/example/dev/openscout",
+      cwd: "/Users/arach/dev/openscout",
       project: "openscout",
       harness: "unattributed" as const,
       mtimeMs: Date.now(),
@@ -496,7 +496,7 @@ describe("tail transcript sources", () => {
           name: "exec_command",
           arguments: JSON.stringify({
             cmd: "sed -n '1,70p' crates/scoutd/src/main.rs",
-            workdir: "/Users/example/dev/openscout",
+            workdir: "/Users/arach/dev/openscout",
           }),
           call_id: "call-sed-main",
         },
@@ -538,7 +538,7 @@ describe("tail transcript sources", () => {
       source: "codex" as const,
       transcriptPath: "/tmp/codex/rollout-019dcf82-stable-id.jsonl",
       sessionId: "019dcf82-stable-id",
-      cwd: "/Users/example/dev/openscout",
+      cwd: "/Users/arach/dev/openscout",
       project: "openscout",
       harness: "unattributed" as const,
       mtimeMs: Date.now(),
@@ -573,7 +573,7 @@ describe("tail transcript sources", () => {
       source: "codex" as const,
       transcriptPath: "/tmp/codex/rollout-019dcf82-tool-miss.jsonl",
       sessionId: "019dcf82-tool-miss",
-      cwd: "/Users/example/dev/openscout",
+      cwd: "/Users/arach/dev/openscout",
       project: "openscout",
       harness: "unattributed" as const,
       mtimeMs: Date.now(),
@@ -601,7 +601,7 @@ describe("tail transcript sources", () => {
   test("discovers and parses Grok event logs without process discovery", () => {
     const projectDir = join(
       process.env.OPENSCOUT_TAIL_GROK_SESSIONS_ROOT!,
-      encodeURIComponent("/Users/example/dev/openscout"),
+      encodeURIComponent("/Users/art/dev/openscout"),
     );
     const sessionDir = join(projectDir, "019edd6b-fc26-7a53-a4a0-dd36c5378515");
     mkdirSync(sessionDir, { recursive: true });
@@ -611,7 +611,7 @@ describe("tail transcript sources", () => {
       JSON.stringify({
         info: {
           id: "019edd6b-fc26-7a53-a4a0-dd36c5378515",
-          cwd: "/Users/example/dev/openscout",
+          cwd: "/Users/art/dev/openscout",
         },
         current_model_id: "grok-composer-2.5-fast",
       }),
@@ -640,7 +640,7 @@ describe("tail transcript sources", () => {
     const transcripts = GrokSource.discoverTranscripts([]);
     expect(transcripts).toHaveLength(1);
     expect(transcripts[0]?.source).toBe("grok");
-    expect(transcripts[0]?.cwd).toBe("/Users/example/dev/openscout");
+    expect(transcripts[0]?.cwd).toBe("/Users/art/dev/openscout");
     expect(transcripts[0]?.sessionId).toBe("019edd6b-fc26-7a53-a4a0-dd36c5378515");
 
     const event = GrokSource.parseLine(
@@ -673,7 +673,7 @@ describe("tail transcript sources", () => {
   test("enriches Grok shell tool events with commands from updates.jsonl", () => {
     const projectDir = join(
       process.env.OPENSCOUT_TAIL_GROK_SESSIONS_ROOT!,
-      encodeURIComponent("/Users/example/dev/openscout"),
+      encodeURIComponent("/Users/art/dev/openscout"),
     );
     const sessionDir = join(projectDir, "019edd6b-shell-enrich");
     mkdirSync(sessionDir, { recursive: true });
@@ -684,7 +684,7 @@ describe("tail transcript sources", () => {
       JSON.stringify({
         info: {
           id: "019edd6b-shell-enrich",
-          cwd: "/Users/example/dev/openscout",
+          cwd: "/Users/art/dev/openscout",
         },
       }),
       "utf8",
@@ -758,7 +758,7 @@ describe("tail transcript sources", () => {
   test("enriches Grok StrReplace tool events with old/new edit previews", () => {
     const projectDir = join(
       process.env.OPENSCOUT_TAIL_GROK_SESSIONS_ROOT!,
-      encodeURIComponent("/Users/example/dev/openscout"),
+      encodeURIComponent("/Users/art/dev/openscout"),
     );
     const sessionDir = join(projectDir, "019edd6b-strreplace-enrich");
     mkdirSync(sessionDir, { recursive: true });
@@ -769,7 +769,7 @@ describe("tail transcript sources", () => {
       JSON.stringify({
         info: {
           id: "019edd6b-strreplace-enrich",
-          cwd: "/Users/example/dev/openscout",
+          cwd: "/Users/art/dev/openscout",
         },
       }),
       "utf8",
@@ -862,7 +862,7 @@ describe("tail transcript sources", () => {
       sessionPath,
       JSON.stringify({
         id: "ses_fixture",
-        directory: "/Users/example/dev/openscout",
+        directory: "/Users/art/dev/openscout",
         title: "OpenScout fixture",
         time: { created: 1771000000000, updated: 1771000002000 },
       }, null, 2),
@@ -897,7 +897,7 @@ describe("tail transcript sources", () => {
         sessionID: "ses_fixture",
         role: "assistant",
         time: { created: 1771000001000, completed: 1771000002000 },
-        path: { cwd: "/Users/example/dev/openscout", root: "/Users/example/dev/openscout" },
+        path: { cwd: "/Users/art/dev/openscout", root: "/Users/art/dev/openscout" },
         modelID: "minimax-m2.5-free",
       }, null, 2),
       "utf8",
@@ -917,7 +917,7 @@ describe("tail transcript sources", () => {
     const transcripts = OpenCodeSource.discoverTranscripts([]);
     expect(transcripts).toHaveLength(1);
     expect(transcripts[0]?.source).toBe("opencode");
-    expect(transcripts[0]?.cwd).toBe("/Users/example/dev/openscout");
+    expect(transcripts[0]?.cwd).toBe("/Users/art/dev/openscout");
     expect(transcripts[0]?.sessionId).toBe("ses_fixture");
 
     const parsed = OpenCodeSource.parseFile?.(
@@ -930,6 +930,26 @@ describe("tail transcript sources", () => {
     expect(events[0]?.summary).toBe("Check the repo status");
     expect(events[1]?.kind).toBe("assistant");
     expect(events[1]?.summary).toBe("Repo is clean enough to proceed");
+
+    const initialFingerprint = transcripts[0]!;
+    const followupPart = join(assistantPartDir, "prt_followup.json");
+    writeFileSync(
+      followupPart,
+      JSON.stringify({
+        id: "prt_followup",
+        sessionID: "ses_fixture",
+        messageID: "msg_assistant",
+        type: "text",
+        text: "A later sibling part",
+      }),
+      "utf8",
+    );
+    const dependencyTime = new Date(Date.now() + 1_000);
+    utimesSync(followupPart, dependencyTime, dependencyTime);
+
+    const rediscovered = OpenCodeSource.discoverTranscripts([])[0]!;
+    expect(rediscovered.mtimeMs).toBeGreaterThan(initialFingerprint.mtimeMs);
+    expect(rediscovered.size).toBeGreaterThan(initialFingerprint.size);
   });
 
   test("discovers and parses Pi transcript files without process discovery", () => {
@@ -947,7 +967,7 @@ describe("tail transcript sources", () => {
           version: 3,
           id: "019f0eec-3a70-79c9-b643-ae82a445891b",
           timestamp: "2026-06-28T15:49:50.320Z",
-          cwd: "/Users/example/dev/openscout",
+          cwd: "/Users/art/dev/openscout",
         }),
         JSON.stringify({
           type: "message",
@@ -994,7 +1014,7 @@ describe("tail transcript sources", () => {
     expect(transcripts).toHaveLength(1);
     expect(transcripts[0]?.source).toBe("pi");
     expect(transcripts[0]?.sessionId).toBe("019f0eec-3a70-79c9-b643-ae82a445891b");
-    expect(transcripts[0]?.cwd).toBe("/Users/example/dev/openscout");
+    expect(transcripts[0]?.cwd).toBe("/Users/art/dev/openscout");
     expect(transcripts[0]?.project).toBe("openscout");
 
     const userLine = JSON.stringify({
@@ -1093,7 +1113,7 @@ describe("textless thinking blocks", () => {
     source: "claude" as const,
     transcriptPath: "/tmp/claude/thinking.jsonl",
     sessionId: "claude-thinking",
-    cwd: "/Users/example/dev/openscout",
+    cwd: "/Users/arach/dev/openscout",
     project: "openscout",
     harness: "unattributed" as const,
     mtimeMs: Date.now(),

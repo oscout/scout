@@ -15,7 +15,7 @@ function ask(text: string, overrides: Partial<ObserveEvent> = {}): ObserveEvent 
 
 describe("lane ask display", () => {
   test("uses the task after injected AGENTS instructions as the compact title", () => {
-    const event = ask(`# AGENTS.md instructions for /Users/example/dev/hudson
+    const event = ask(`# AGENTS.md instructions for /Users/art/dev/hudson
 
 <INSTRUCTIONS>
 # Global Codex Build Hygiene
@@ -46,7 +46,7 @@ Extra context follows here.`);
   test("skips a generic leading Ask label before injected instructions", () => {
     const event = ask(`Ask
 
-# AGENTS.md instructions for /Users/example/dev/openscout
+# AGENTS.md instructions for /Users/art/dev/openscout
 
 <INSTRUCTIONS>
 Do not put DerivedData under /tmp.
@@ -82,7 +82,7 @@ Ship the message-card design pass.`);
   });
 
   test("prefers the explicit user request over attachments and project instructions", () => {
-    const model = buildLaneAskDisplay(ask(`# AGENTS.md instructions for /Users/example/dev/openscout
+    const model = buildLaneAskDisplay(ask(`# AGENTS.md instructions for /Users/art/dev/openscout
 
 <INSTRUCTIONS>
 # Global Codex Build Hygiene
@@ -92,7 +92,7 @@ Do not put DerivedData under /tmp.
 
 # Files mentioned by the user:
 
-## Talkie Capture.png: /Users/example/Library/Application Support/Talkie/Screenshots/Talkie Capture.png
+## Talkie Capture.png: /Users/art/Library/Application Support/Talkie/Screenshots/Talkie Capture.png
 
 ## My request for Codex:
 ask claude to come up with a much nicer user message presentation

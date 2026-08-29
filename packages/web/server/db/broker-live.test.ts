@@ -108,6 +108,19 @@ describe("live broker dispatch diagnostics", () => {
     });
   });
 
+  test("distinguishes an online broker with a warming message feed", () => {
+    const result = markBrokerDiagnosticsLiveUnavailable(diagnostics(), {
+      brokerReachable: true,
+    });
+
+    expect(result.source).toMatchObject({
+      mode: "sqlite_projection",
+      status: "degraded",
+      brokerReachable: true,
+      detail: expect.stringContaining("broker is online"),
+    });
+  });
+
   test("requests a complete snapshot when a capped live feed leaves a projection gap", () => {
     const projection = diagnostics({ windowMs: 100 });
     const recent = message("recent", 750);

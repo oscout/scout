@@ -3,7 +3,7 @@ import { randomBytes } from "node:crypto";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ensureProviderTelemetryBootstrap } from "@openscout/runtime";
-import { resolveWebPort } from "@openscout/runtime/local-config";
+import { resolveWebAuthToken, resolveWebPort } from "@openscout/runtime/local-config";
 import { resolveOpenScoutSetupContextRoot } from "@openscout/runtime/setup";
 import { resolveOpenScoutWebRoutes } from "../shared/runtime-config.js";
 import {
@@ -40,8 +40,7 @@ const port = Number.parseInt(
   10,
 );
 const hostname = resolveScoutWebBindHost(process.env);
-const webAuthToken = process.env.OPENSCOUT_WEB_AUTH_TOKEN?.trim()
-  || randomBytes(32).toString("base64url");
+const webAuthToken = resolveWebAuthToken(process.env);
 const currentDirectory = resolveOpenScoutSetupContextRoot({
   env: process.env,
   fallbackDirectory: process.cwd(),

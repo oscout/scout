@@ -1,6 +1,8 @@
 import { useState, useCallback, useMemo } from "react";
 import { useMeshViewStore, setMeshSelection, setMeshSnapshot } from "../../lib/mesh-view-store.ts";
 import { useLocalAgents } from "../../lib/local-agents.ts";
+import { filterMeshRosterAgents } from "../../lib/mesh-roster.ts";
+import { hasJoinedMesh } from "../../lib/mesh-membership.ts";
 import { agentStateCssToken, normalizeAgentState, isAgentBusy } from "../../lib/agent-state.ts";
 import { api } from "../../lib/api.ts";
 import { timeAgo } from "../../lib/time.ts";
@@ -8,19 +10,18 @@ import type { Agent, MeshStatus } from "../../lib/types.ts";
 import "../system-surfaces-redesign.css";
 import "./mesh-screen.css";
 
-type ReachState = "discoverable" | "local-only" | "tailnet-stopped" | "unavailable" | "loopback";
 type MeshActionMessage = {
   tone: "info" | "success" | "warning" | "error";
   text: string;
 };
 
-function reachState(mesh: MeshStatus): ReachState {
-  if (mesh.issues.some((i) => i.code === "mesh_loopback")) return "loopback";
-  if (mesh.identity.discoverable) return "discoverable";
-  if (!mesh.tailscale.available) return "unavailable";
-  if (!mesh.tailscale.running) return "tailnet-stopped";
-  return "local-only";
-}
+type MeshJoinStatus = MeshStatus & {
+  discovery: {
+    discoveredCount: number;
+    probes: string[];
+    error: string | null;
+  };
+};
 
 function harnessBreakdown(agents: Agent[]): Array<{ label: string; total: number; working: number }> {
   const acc = new Map<string, { total: number; working: number }>();
@@ -89,79 +90,72 @@ function firstActionableIssue(mesh: MeshStatus): string | null {
 export function MeshInspectorPanel() {
   const { meshSnapshot, selectedId, selectedType, probeCache } = useMeshViewStore();
   const { agents } = useLocalAgents();
-  const [announcing, setAnnouncing] = useState(false);
-  const [tailscaleBusy, setTailscaleBusy] = useState(false);
+  const rosterAgents = useMemo(() => filterMeshRosterAgents(agents), [agents]);
+  const [meshBusy, setMeshBusy] = useState(false);
   const [actionMessage, setActionMessage] = useState<MeshActionMessage | null>(null);
 
-  const handleAnnounce = useCallback(async () => {
-    setAnnouncing(true);
-    setActionMessage({ tone: "info", text: "Restarting broker with mesh discovery enabled..." });
+  const handleJoin = useCallback(async () => {
+    setMeshBusy(true);
+    setActionMessage({ tone: "info", text: "Joining mesh — announcing broker and syncing peers…" });
     try {
-      const data = await api<MeshStatus>("/api/mesh/announce", { method: "POST", body: "{}" });
+      const data = await api<MeshJoinStatus>("/api/mesh/join", { method: "POST", body: "{}" });
       setMeshSnapshot(data);
       const final = data.identity.discoverable
         ? data
         : await pollMeshStatus((mesh) => mesh.identity.discoverable, { attempts: 6, intervalMs: 750 });
       if (final.identity.discoverable) {
-        setActionMessage({
-          tone: "success",
-          text: `Discoverable at ${shortHost(final.identity.announceUrl ?? final.brokerUrl)}.`,
-        });
+        const discovery = data.discovery;
+        const peerNote = discovery?.discoveredCount != null
+          ? ` Found ${discovery.discoveredCount} peer node${discovery.discoveredCount === 1 ? "" : "s"}.`
+          : "";
+        setActionMessage(discovery.error
+          ? {
+              tone: "warning",
+              text: `On mesh, but the initial peer sync failed: ${discovery.error}`,
+            }
+          : {
+              tone: "success",
+              text: `On mesh at ${shortHost(final.identity.announceUrl ?? final.brokerUrl)}.${peerNote}`,
+            });
       } else {
         setActionMessage({
           tone: "warning",
-          text: firstActionableIssue(final) ?? "Scout restarted the broker, but it is not discoverable yet.",
+          text: firstActionableIssue(final) ?? "Joined, but this broker is not peer-reachable yet.",
         });
       }
     } catch (error) {
       setActionMessage({ tone: "error", text: error instanceof Error ? error.message : String(error) });
     } finally {
-      setAnnouncing(false);
+      setMeshBusy(false);
     }
   }, []);
 
-  const handleStartTailscale = useCallback(async () => {
-    setTailscaleBusy(true);
-    setActionMessage({ tone: "info", text: "Opening Tailscale and waiting for the backend..." });
+  const handleLeave = useCallback(async () => {
+    setMeshBusy(true);
+    setActionMessage({ tone: "info", text: "Leaving mesh…" });
     try {
-      const data = await api<MeshStatus>("/api/mesh/tailscale", {
-        method: "POST",
-        body: JSON.stringify({ action: "open_app" }),
-      });
+      const data = await api<MeshStatus>("/api/mesh/leave", { method: "POST", body: "{}" });
       setMeshSnapshot(data);
-      const final = data.tailscale.running
-        ? data
-        : await pollMeshStatus((mesh) => mesh.tailscale.running, { attempts: 12, intervalMs: 1000 });
-      if (final.tailscale.running) {
-        setActionMessage({
-          tone: "success",
-          text: `Tailscale is running with ${final.tailscale.onlineCount} online peer${final.tailscale.onlineCount === 1 ? "" : "s"}.`,
-        });
-      } else {
-        setActionMessage({
-          tone: "warning",
-          text: `Tailscale opened, but the backend is still ${final.tailscale.backendState ?? "not running"}. Finish startup or sign-in in Tailscale.app.`,
-        });
-      }
+      setActionMessage({ tone: "success", text: "Local only — peers will no longer discover this broker." });
     } catch (error) {
       setActionMessage({ tone: "error", text: error instanceof Error ? error.message : String(error) });
     } finally {
-      setTailscaleBusy(false);
+      setMeshBusy(false);
     }
   }, []);
 
   const totals = useMemo(() => {
-    const acc = { total: agents.length, working: 0, ready: 0, notReady: 0 };
-    for (const a of agents) {
+    const acc = { total: rosterAgents.length, working: 0, ready: 0, notReady: 0 };
+    for (const a of rosterAgents) {
       const state = normalizeAgentState(a.state);
       if (state === "in_turn" || state === "in_flight") acc.working += 1;
       else if (state === "callable") acc.ready += 1;
       else acc.notReady += 1;
     }
     return acc;
-  }, [agents]);
+  }, [rosterAgents]);
 
-  const harness = useMemo(() => harnessBreakdown(agents), [agents]);
+  const harness = useMemo(() => harnessBreakdown(rosterAgents), [rosterAgents]);
 
   if (!meshSnapshot) {
     return (
@@ -379,7 +373,6 @@ export function MeshInspectorPanel() {
 
   // ── Default: machine summary ──
   const mesh = meshSnapshot;
-  const reach = reachState(mesh);
   const peerCount = Object.values(mesh.nodes).filter((n) => n.id !== mesh.localNode?.id).length;
   const tailnetOnline = mesh.tailscale.onlineCount ?? 0;
   const hostLabel = mesh.localNode?.hostName?.split(".")[0] ?? mesh.localNode?.name ?? mesh.identity.name ?? "this broker";
@@ -448,14 +441,13 @@ export function MeshInspectorPanel() {
       </section>
 
       <section className="mesh-summary-section mesh-summary-reach">
-        <div className="sys-inspector-section-label">Reach</div>
-        <MeshReachControl
-          state={reach}
+        <div className="sys-inspector-section-label">Mesh</div>
+        <MeshJoinToggle
+          joined={hasJoinedMesh(mesh)}
+          busy={meshBusy}
           tailscaleAvailable={mesh.tailscale.available}
-          announcing={announcing}
-          tailscaleBusy={tailscaleBusy}
-          onAnnounce={() => void handleAnnounce()}
-          onStartTailscale={() => void handleStartTailscale()}
+          onJoin={() => void handleJoin()}
+          onLeave={() => void handleLeave()}
         />
         {actionMessage && (
           <div className={`sys-banner mesh-action-message sys-banner-${actionMessage.tone}`}>
@@ -467,82 +459,41 @@ export function MeshInspectorPanel() {
   );
 }
 
-function MeshReachControl({
-  state,
+function MeshJoinToggle({
+  joined,
+  busy,
   tailscaleAvailable,
-  announcing,
-  tailscaleBusy,
-  onAnnounce,
-  onStartTailscale,
+  onJoin,
+  onLeave,
 }: {
-  state: ReachState;
+  joined: boolean;
+  busy: boolean;
   tailscaleAvailable: boolean;
-  announcing: boolean;
-  tailscaleBusy: boolean;
-  onAnnounce: () => void;
-  onStartTailscale: () => void;
+  onJoin: () => void;
+  onLeave: () => void;
 }) {
-  if (state === "discoverable") {
-    return (
-      <div className="mesh-reach mesh-reach--on">
-        <span className="mesh-reach-dot" />
-        <span className="mesh-reach-label">Discoverable on mesh</span>
-      </div>
-    );
-  }
-
-  if (state === "tailnet-stopped") {
-    return (
-      <div className="mesh-reach">
-        <div className="mesh-reach-row">
-          <span className="mesh-reach-dot mesh-reach-dot--off" />
-          <span className="mesh-reach-label">Tailscale stopped</span>
-        </div>
-        <button type="button" className="s-btn mesh-reach-action" disabled={tailscaleBusy} onClick={onStartTailscale}>
-          {tailscaleBusy ? "Opening…" : "Start Tailscale"}
-        </button>
-      </div>
-    );
-  }
-
-  if (state === "loopback") {
-    return (
-      <div className="mesh-reach">
-        <div className="mesh-reach-row">
-          <span className="mesh-reach-dot mesh-reach-dot--off" />
-          <span className="mesh-reach-label">Announcement broken</span>
-        </div>
-        <button type="button" className="s-btn mesh-reach-action" disabled={announcing} onClick={onAnnounce}>
-          {announcing ? "Fixing…" : "Fix announcement"}
-        </button>
-      </div>
-    );
-  }
-
-  if (state === "unavailable") {
-    return (
-      <div className="mesh-reach mesh-reach--neutral">
-        <span className="mesh-reach-dot mesh-reach-dot--off" />
-        <span className="mesh-reach-label">Local only — no tailnet on this host</span>
-      </div>
-    );
-  }
-
-  // local-only with tailscale running
   return (
     <div className="mesh-reach">
-      <div className="mesh-reach-row">
-        <span className="mesh-reach-dot mesh-reach-dot--off" />
-        <span className="mesh-reach-label">Local only</span>
-      </div>
-      <button
-        type="button"
-        className="s-btn s-btn-primary mesh-reach-action"
-        disabled={announcing || !tailscaleAvailable}
-        onClick={onAnnounce}
-      >
-        {announcing ? "Announcing…" : "Make discoverable"}
-      </button>
+      <label className="mesh-join-toggle">
+        <input
+          type="checkbox"
+          checked={joined}
+          disabled={busy}
+          onChange={() => {
+            if (joined) onLeave();
+            else onJoin();
+          }}
+        />
+        <span className="mesh-join-toggle-copy">
+          {busy ? "Working…" : joined ? "On mesh" : "Join mesh"}
+        </span>
+      </label>
+      {!tailscaleAvailable && !joined && (
+        <p className="mesh-join-hint">Tailscale can add automatic discovery; explicit seeds and LAN peers still work.</p>
+      )}
+      {joined && (
+        <p className="mesh-join-hint">Mesh membership is on. Reachability is reported separately above.</p>
+      )}
     </div>
   );
 }

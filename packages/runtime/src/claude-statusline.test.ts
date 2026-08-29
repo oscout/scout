@@ -39,7 +39,7 @@ describe("Claude statusline capture", () => {
     const capturedAt = Date.UTC(2026, 5, 19, 12, 0, 0);
     const result = await captureClaudeStatuslineSnapshot(JSON.stringify({
       model: { id: "claude-opus-4-8", display_name: "Opus 4.8" },
-      workspace: { current_dir: "/Users/example/dev/openscout" },
+      workspace: { current_dir: "/Users/art/dev/openscout" },
       context_window: { used_percentage: 31 },
       rate_limits: {
         five_hour: { used_percentage: 12 },
@@ -52,7 +52,7 @@ describe("Claude statusline capture", () => {
     const history = readFileSync(resolveClaudeStatuslineHistoryPath(), "utf8").trim().split("\n");
 
     expect(latest).toEqual(expect.objectContaining({
-      cwd: "/Users/example/dev/openscout",
+      cwd: "/Users/art/dev/openscout",
       openscoutCapturedAt: capturedAt,
     }));
     expect(history).toHaveLength(1);

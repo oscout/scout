@@ -39,7 +39,12 @@ function emit() {
 
 export async function loadConversationList(options: { force?: boolean } = {}): Promise<SessionEntry[]> {
   if (cache && !options.force) return cache;
-  if (inflight && !options.force) return inflight;
+  if (inflight) {
+    // Coalesce: a forced reload during an active fetch queues exactly one
+    // trailing refetch instead of racing a duplicate multi-MB request.
+    if (options.force) pendingForce = true;
+    return inflight;
+  }
 
   const run = api<SessionEntry[]>("/api/conversations")
     .then((data) => {
@@ -55,10 +60,30 @@ export async function loadConversationList(options: { force?: boolean } = {}): P
     })
     .finally(() => {
       inflight = null;
+      if (pendingForce) {
+        pendingForce = false;
+        void loadConversationList({ force: true }).catch(() => null);
+      }
     });
 
   inflight = run;
   return run;
+}
+
+const REFRESH_DEBOUNCE_MS = 250;
+let refreshTimer: ReturnType<typeof setTimeout> | null = null;
+let pendingForce = false;
+
+/**
+ * Debounced forced refresh for broker-event storms: a burst of
+ * message.posted events collapses into one refetch per debounce window.
+ */
+export function scheduleConversationListRefresh(): void {
+  if (refreshTimer) return;
+  refreshTimer = setTimeout(() => {
+    refreshTimer = null;
+    void loadConversationList({ force: true }).catch(() => null);
+  }, REFRESH_DEBOUNCE_MS);
 }
 
 /** Test helper */
@@ -66,4 +91,9 @@ export function __resetConversationListCache() {
   cache = null;
   inflight = null;
   lastError = null;
+  pendingForce = false;
+  if (refreshTimer) {
+    clearTimeout(refreshTimer);
+    refreshTimer = null;
+  }
 }

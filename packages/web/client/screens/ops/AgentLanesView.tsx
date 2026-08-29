@@ -12,7 +12,7 @@ import {
   type PointerEvent as ReactPointerEvent,
   type UIEvent as ReactUIEvent,
 } from "react";
-import { useTailFeed } from "../../lib/use-tail-feed.ts";
+import { tailFeedFailure, useTailFeed } from "../../lib/use-tail-feed.ts";
 import type { TailFeedLoadState } from "../../lib/use-tail-feed.ts";
 import { useObservePolling } from "../../lib/observe.ts";
 import type { ObserveCache } from "../../lib/observe.ts";
@@ -43,6 +43,7 @@ import {
 import { AgentLaneChrome } from "./AgentLaneChrome.tsx";
 import { AgentLaneCard } from "./AgentLaneCard.tsx";
 import { agentLaneToCardModel } from "./agent-lane-card-model.ts";
+import { laneProjectPath } from "./agent-lane-detail.ts";
 import { AgentLaneDetailSheet } from "./AgentLaneDetailSheet.tsx";
 import {
   LaneTraceDetailSheet,
@@ -75,6 +76,7 @@ import {
 import {
   hasAttentionLane,
   hasHarnessLane,
+  hasProjectLane,
   type ResolvedLaneColumn,
 } from "./lane-deck-layout.ts";
 import {
@@ -275,13 +277,18 @@ function AgentLanesUnavailableState({
     loadState.discovery === "error" ? "session discovery" : "",
     loadState.recent === "error" ? "recent history" : "",
   ].filter(Boolean).join(" and ");
+  // Headline the channel that failed. "Recent activity" is wrong when recent
+  // history loaded fine and it was the session scan that fell over.
+  const title = loadState.recent === "error"
+    ? "Recent activity could not be loaded"
+    : "Session discovery could not be completed";
   return (
     <div className="s-agent-lanes-empty s-agent-lanes-empty--degraded" role="alert">
       <div className="s-agent-lanes-empty-card">
         <div className="s-agent-lanes-empty-rail" aria-hidden="true"><span /><span /><span /></div>
         <div className="s-agent-lanes-empty-copy">
           <span className="s-agent-lanes-empty-kicker">Tail incomplete</span>
-          <h2>Recent activity could not be loaded</h2>
+          <h2>{title}</h2>
           <p>Scout could not finish {failures || "the tail scan"}, so this is not being treated as a quiet interval.</p>
           <p className="s-agent-lanes-empty-secondary">Live events can still arrive while Scout retries.</p>
         </div>
@@ -303,6 +310,8 @@ function AgentLanesEmptyState({
   onAddCodexLane,
   sourceCount,
   eventCount,
+  degraded = false,
+  onRetry,
 }: {
   activeFilterLabel: string;
   horizon: AgentLaneHorizonKey;
@@ -313,6 +322,8 @@ function AgentLanesEmptyState({
   onAddCodexLane: () => void;
   sourceCount: number;
   eventCount: number;
+  degraded?: boolean;
+  onRetry?: () => void;
 }) {
   const filtered = Boolean(activeFilterLabel);
   const title = filtered
@@ -325,9 +336,11 @@ function AgentLanesEmptyState({
     : showAutoLanes
       ? `Scout checked ${sourceCount.toLocaleString()} session source${sourceCount === 1 ? "" : "s"} and ${eventCount.toLocaleString()} recent tail event${eventCount === 1 ? "" : "s"}; nothing is active in this interval.`
       : "Automatic lanes are off, and this deck has no pinned sessions.";
-  const secondary = showAutoLanes
-    ? "Scout will keep listening. New turns and tool output will appear here automatically."
-    : "Pin a session lane or turn automatic lanes back on to populate the deck.";
+  const secondary = degraded
+    ? "The last tail refresh failed, so this reading is from the previous scan and may be behind."
+    : showAutoLanes
+      ? "Scout will keep listening. New turns and tool output will appear here automatically."
+      : "Pin a session lane or turn automatic lanes back on to populate the deck.";
   const nextHorizon: AgentLaneHorizonKey | null = horizon === "5m"
     ? "30m"
     : horizon === "24h"
@@ -343,12 +356,17 @@ function AgentLanesEmptyState({
           <span />
         </div>
         <div className="s-agent-lanes-empty-copy">
-          <span className="s-agent-lanes-empty-kicker">{filtered ? "Filter checked" : showAutoLanes ? "Tail scanned" : "Lane deck ready"}</span>
+          <span className="s-agent-lanes-empty-kicker">{degraded ? "Tail refresh behind" : filtered ? "Filter checked" : showAutoLanes ? "Tail scanned" : "Lane deck ready"}</span>
           <h2>{title}</h2>
           <p>{detail}</p>
           <p className="s-agent-lanes-empty-secondary">{secondary}</p>
         </div>
         <div className="s-agent-lanes-empty-actions">
+          {degraded && onRetry ? (
+            <button type="button" onClick={onRetry}>
+              Retry tail scan
+            </button>
+          ) : null}
           {nextHorizon ? (
             <button type="button" onClick={() => onHorizonChange(nextHorizon)}>
               Look back {agentLaneHorizonLabel(nextHorizon)}
@@ -483,6 +501,33 @@ function AgentLaneColumn({
 
   // The agent lane: the studio-design card (identity header + resizable cockpit
   // overlay) above the live SessionObserve trace.
+
+  // Card model + trace element are the column's two heaviest children.
+  // `agentLaneToCardModel` filters the event log, builds popovers, and derives
+  // gauges; `renderTrace` instantiates the SessionObserve tree. Memoizing
+  // both with a stable dep set means a sibling-column re-render (resize,
+  // hover, deck-menu open, grid-column toggle) skips the full subtree even
+  // though the parent re-rendered. `nowMs` still ticks every 10s — that's
+  // intentional (label & time freshness) — but most other re-renders don't
+  // touch the same deps and now reuse the prior work.
+  const cardModel = useMemo(
+    () => agentLaneToCardModel(lane, { isLive, nowMs }),
+    [lane, isLive, nowMs],
+  );
+  const traceElement = useMemo(renderTrace, [
+    hasTrace,
+    observe,
+    lane.source,
+    agent.id,
+    agent.harnessSessionId,
+    nowMs,
+    traceWindowMs,
+    traceWindowLabel,
+    collapseTechnicalEvents,
+    operatorName,
+    onTraceEventSelect,
+    lane,
+  ]);
   return (
     <article
       ref={laneRef}
@@ -505,7 +550,7 @@ function AgentLaneColumn({
         widthControls={!grid}
       />
       <AgentLaneCard
-        model={agentLaneToCardModel(lane, { isLive, nowMs })}
+        model={cardModel}
         avatar={(
           <AgentAvatar agent={agent} placement="row" size={44} presence={false} tile={false} />
         )}
@@ -521,7 +566,7 @@ function AgentLaneColumn({
           active={summaryResizing}
         />
       )}
-      {renderTrace()}
+      {traceElement}
     </article>
   );
 }
@@ -669,12 +714,18 @@ export function AgentLanesView({
   });
   const observeCache = data?.observeCache ?? browserObserveCache;
   const tailLoading = loadState.discovery === "loading" || loadState.recent === "loading";
-  const tailUnavailable = loadState.discovery === "error" || loadState.recent === "error";
+  // A failed refresh on top of a good scan is not an outage. Only a channel
+  // that has never answered earns the full-region failure card; otherwise the
+  // quiet-interval reading stands and is marked as behind, matching how the
+  // rest of the app gates its error states (`error && !data`).
+  const tailFailure = tailFeedFailure(loadState);
+  const tailBlank = tailFailure === "blank";
+  const tailDegraded = tailFailure === "degraded";
   const tailSourceCount = discovery?.totals.transcripts ?? discovery?.transcripts?.length ?? 0;
   // The status sheet outlives the load by its retract, so the exit plays over
   // the finished deck instead of vanishing on unmount. A failed scan gets no
   // exit animation — the unavailable card should take the region immediately.
-  const laneBoot = useLaneBootVisibility(tailLoading, tailUnavailable ? 0 : LANE_BOOT_EXIT_MS);
+  const laneBoot = useLaneBootVisibility(tailLoading, tailBlank ? 0 : LANE_BOOT_EXIT_MS);
 
   useEffect(() => {
     if (newLaneIds.size === 0) return;
@@ -750,6 +801,7 @@ export function AgentLanesView({
     setLaneWidth,
     addHarnessLane,
     addAttentionLane,
+    addProjectLane,
     clearPins,
     isPinned,
   } = useLaneDeck(profileId, defaultWidthTier, filteredLanes);
@@ -758,8 +810,15 @@ export function AgentLanesView({
     () => embedFilterLabel({ harnessFilter, projectFilter }),
     [harnessFilter, projectFilter],
   );
-  const visibleColumns = layout.flat;
-  const pinnedCount = layout.pinnedLeft.length + layout.pinnedRight.length;
+  // Project path + pinned state for the detail sheet's "Pin project" CTA —
+  // derived here so the sheet stays a pure presentational component and the
+  // deck hook stays the single owner of deck mutations.
+  const inspectedProjectPath = useMemo(() => {
+    return inspectedLane ? laneProjectPath(inspectedLane) : null;
+  }, [inspectedLane]);
+  const inspectedProjectPinned = useMemo(() => (
+    inspectedProjectPath ? hasProjectLane(deck, inspectedProjectPath) : false
+  ), [deck, inspectedProjectPath]);
   const laneScrollRestoreSignature = useMemo(() => (
     [
       layout.pinnedLeft,
@@ -786,6 +845,9 @@ export function AgentLanesView({
   const handlePinnedRightScroll = useCallback((event: ReactUIEvent<HTMLDivElement>) => {
     handleLaneScroll("pinned-right", event);
   }, [handleLaneScroll]);
+
+  const visibleColumns = layout.flat;
+  const pinnedCount = layout.pinnedLeft.length + layout.pinnedRight.length;
 
   // Publish the roster the deck actually rendered — `layout.flat` is exactly the
   // column order on screen (pinned-left → main → pinned-right, with hidden auto
@@ -822,15 +884,19 @@ export function AgentLanesView({
     const event = lane.observe?.events.at(-1);
     if (event) setTraceSheetTarget({ lane, event });
   }, []);
+  const toggleLanePin = useCallback((lane: AgentLane) => {
+    if (isPinned(lane.id)) unpinLane(lane.id);
+    else pinLane(lane);
+  }, [isPinned, pinLane, unpinLane]);
   const { getLaneFocusProps } = useAgentLanesKeyboard({
     lanes: visibleColumns.map((column) => column.lane),
     inspectedLaneId,
     onInspect: inspectLane,
     onHorizonChange: setHorizon,
+    onTogglePin: toggleLanePin,
   });
   const [deckMenuOpen, setDeckMenuOpen] = useState(false);
   const deckMenuRef = useRef<HTMLDivElement | null>(null);
-
   useEffect(() => {
     if (!deckMenuOpen) return;
     const onPointerDown = (event: MouseEvent) => {
@@ -1089,7 +1155,7 @@ export function AgentLanesView({
             laneWidthPx={resolveLaneWidthPx(deck.defaultLaneWidth, deck.defaultLaneWidth)}
             matchTranscript={matchPreflightTranscript}
           />
-        ) : tailUnavailable ? (
+        ) : tailBlank ? (
           <AgentLanesUnavailableState
             loadState={loadState}
             onRetry={() => void retryInitialLoad()}
@@ -1105,6 +1171,8 @@ export function AgentLanesView({
             onAddCodexLane={() => addHarnessLane("codex", "Codex sessions")}
             sourceCount={tailSourceCount}
             eventCount={tailEvents.length}
+            degraded={tailDegraded}
+            onRetry={() => void retryInitialLoad()}
           />
         )
       ) : floorMode ? (
@@ -1184,10 +1252,10 @@ export function AgentLanesView({
           lane={inspectedLane}
           navigate={navigate}
           returnRoute={returnRoute}
-          // Adapter-backed embeds have no browser routes, so hide route-jumping
-          // controls rather than rendering inert buttons.
           navigationEnabled={data == null}
           onClose={() => setInspectedLaneId(null)}
+          onPinProject={addProjectLane}
+          projectPinned={inspectedProjectPinned}
         />
       )}
       {traceSheetTarget && (

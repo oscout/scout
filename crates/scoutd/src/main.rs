@@ -3764,7 +3764,7 @@ mod tests {
     #[test]
     fn command_invokes_scoutd_daemon_only_matches_daemon_commands() {
         assert!(command_invokes_scoutd_daemon(
-            "/Users/example/dev/openscout/target/debug/scoutd supervise"
+            "/Users/arach/dev/openscout/target/debug/scoutd supervise"
         ));
         assert!(!command_invokes_scoutd_daemon(
             "target/debug/scoutd doctor --json"

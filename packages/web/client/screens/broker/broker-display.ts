@@ -2,9 +2,6 @@ import { brokerAttemptTone } from "../../lib/status-tone.ts";
 import { SCOUTBOT_SUBMIT_EVENT } from "../../lib/scoutbot.ts";
 import type { Agent, BrokerRouteAttempt } from "../../lib/types.ts";
 
-const FAILURE_DETAIL_CHARS = 220;
-const SUCCESS_DETAIL_CHARS = 92;
-
 function isScalar(value: unknown): value is string | number | boolean | null {
   return value === null || ["string", "number", "boolean"].includes(typeof value);
 }
@@ -106,6 +103,13 @@ function rawDeliveryMetadata(attempt: BrokerRouteAttempt): Record<string, unknow
   return readRecord(delivery?.metadata);
 }
 
+/**
+ * Clip prose to a character budget. Only for places that have no column to
+ * truncate against — the aftermath reply snippets. The Dispatch ledger row
+ * deliberately does NOT use this: a fixed budget stopped the message hundreds
+ * of pixels short of a wide column, so the row truncates in CSS at the real
+ * edge instead.
+ */
 export function clippedText(value: string, maxChars: number): string {
   if (value.length <= maxChars) return value;
   return `${value.slice(0, Math.max(0, maxChars - 3)).trimEnd()}...`;
@@ -198,10 +202,6 @@ export function brokerMessageFeedRows(attempts: BrokerRouteAttempt[]): BrokerRou
   }
 
   return rows.sort((left, right) => right.ts - left.ts || left.id.localeCompare(right.id));
-}
-
-export function brokerAttemptDetailLimit(attempt: BrokerRouteAttempt): number {
-  return brokerAttemptIsFailure(attempt) ? FAILURE_DETAIL_CHARS : SUCCESS_DETAIL_CHARS;
 }
 
 export function brokerAttemptErrorSummary(attempt: BrokerRouteAttempt): string | null {

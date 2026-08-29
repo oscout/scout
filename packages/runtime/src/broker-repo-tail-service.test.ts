@@ -13,6 +13,7 @@ import {
 import type {
   DiscoverySnapshot,
   TailEvent,
+  TailEventKind,
 } from "./tail/index.js";
 
 type BrokerSnapshot = {
@@ -73,12 +74,21 @@ function createHarness(input: {
   transcriptEvents?: TailEvent[];
   repoWatchReject?: Error;
   now?: number;
+  tailRecentServeCacheTtlMs?: number;
+  transcriptGate?: Promise<unknown>;
 } = {}) {
   const repoWatchCalls: RepoWatchSnapshotOptions[] = [];
   const warnings: string[] = [];
   let repoSnapshotIndex = 0;
   let liveLimit: number | null = null;
-  let transcriptRequest: { limit: number; perTranscriptLineLimit?: number } | null = null;
+  let liveKinds: TailEventKind[] | undefined;
+  let transcriptRequest: {
+    limit: number;
+    perTranscriptLineLimit?: number;
+    kinds?: TailEventKind[];
+  } | null = null;
+  let transcriptCallCount = 0;
+  let nowValue = input.now ?? 100_000;
   const service = new BrokerRepoTailService<BrokerSnapshot>({
     readBrokerSnapshot: async () => ({ id: "snapshot-1" }),
     async getRepoWatchSnapshot(options = {}) {
@@ -100,29 +110,49 @@ function createHarness(input: {
       sessionId: "session-1",
     }],
     getTailDiscovery: async () => discoverySnapshot(),
-    readRecentLiveEvents: async (limit) => {
+    readRecentLiveEvents: async (limit, options) => {
       liveLimit = limit;
-      return input.liveEvents ?? [];
+      liveKinds = options?.kinds;
+      const kinds = options?.kinds ? new Set(options.kinds) : null;
+      return (input.liveEvents ?? [])
+        .filter((event) => !kinds || kinds.has(event.kind))
+        .slice(-limit);
     },
     readRecentTranscriptEvents: async (limit, options) => {
       transcriptRequest = {
         limit,
         perTranscriptLineLimit: options?.perTranscriptLineLimit,
+        ...(options?.kinds ? { kinds: options.kinds } : {}),
       };
-      return input.transcriptEvents ?? [];
+      if (input.transcriptGate) await input.transcriptGate;
+      transcriptCallCount++;
+      const kinds = options?.kinds ? new Set(options.kinds) : null;
+      return (input.transcriptEvents ?? [])
+        .filter((event) => !kinds || kinds.has(event.kind))
+        .slice(0, limit);
     },
     repoWatchServeCacheTtlMs: 60_000,
     repoWatchRehydrateAfterMs: 30_000,
+    tailRecentServeCacheTtlMs: input.tailRecentServeCacheTtlMs ?? 0,
     warn: (message) => warnings.push(message),
-    now: () => input.now ?? 100_000,
+    now: () => nowValue,
   });
 
   return {
     get liveLimit() {
       return liveLimit;
     },
+    get liveKinds() {
+      return liveKinds;
+    },
     get transcriptRequest() {
       return transcriptRequest;
+    },
+    get transcriptCallCount() {
+      return transcriptCallCount;
+    },
+    setNow: (value: number) => {
+      nowValue = value;
     },
     repoWatchCalls,
     service,
@@ -245,6 +275,62 @@ describe("BrokerRepoTailService", () => {
     });
   });
 
+  test("filters assistant replies before the final limit despite newer technical events", async () => {
+    const technicalEvents = Array.from({ length: 12_000 }, (_, index) => tailEvent({
+      id: `tool-${index}`,
+      ts: index + 2,
+      kind: "tool",
+      summary: `technical event ${index}`,
+    }));
+    const harness = createHarness({
+      liveEvents: [
+        tailEvent({
+          id: "reply-that-must-survive",
+          ts: 1,
+          kind: "assistant",
+          summary: "The requested work is ready.",
+        }),
+        ...technicalEvents,
+      ],
+      now: 42_000,
+    });
+
+    const payload = await harness.service.readTailRecentPayload(
+      new URL("http://test/v1/tail/recent?limit=1&mode=assistant-replies"),
+    );
+
+    expect(harness.liveLimit).toBe(1);
+    expect(harness.liveKinds).toEqual(["assistant"]);
+    expect(payload.events).toEqual([
+      expect.objectContaining({
+        id: "reply-that-must-survive",
+        summary: "The requested work is ready.",
+      }),
+    ]);
+  });
+
+  test("assistant reply mode keeps only the latest reply per source and session", async () => {
+    const harness = createHarness({
+      liveEvents: [
+        tailEvent({ id: "codex-old", ts: 10, summary: "old Codex reply" }),
+        tailEvent({ id: "codex-new", ts: 20, summary: "new Codex reply" }),
+        tailEvent({
+          id: "claude-new",
+          ts: 30,
+          source: "claude",
+          summary: "new Claude reply",
+        }),
+      ],
+      now: 42_000,
+    });
+
+    const payload = await harness.service.readTailRecentPayload(
+      new URL("http://test/v1/tail/recent?limit=10&mode=assistant-replies"),
+    );
+
+    expect(payload.events.map((event) => event.id)).toEqual(["codex-new", "claude-new"]);
+  });
+
   test("keeps Cursor process samples out of the presented tail only", async () => {
     const harness = createHarness({
       liveEvents: [
@@ -272,5 +358,66 @@ describe("BrokerRepoTailService", () => {
     );
 
     expect(payload.events.map((event) => event.id)).toEqual(["cursor-activity"]);
+  });
+});
+
+describe("BrokerRepoTailService tail/recent serve-cache", () => {
+  const replayUrl = new URL("http://test/v1/tail/recent?limit=500&transcripts=true");
+
+  test("with TTL=0 every call re-reads transcripts", async () => {
+    const harness = createHarness({
+      transcriptEvents: [tailEvent({ id: "t1", ts: 1 })],
+    });
+
+    await harness.service.readTailRecentPayloadWithTiming(replayUrl);
+    await harness.service.readTailRecentPayloadWithTiming(replayUrl);
+
+    expect(harness.transcriptCallCount).toBe(2);
+  });
+
+  test("with TTL>0 a second call within the window serves the cached payload", async () => {
+    const harness = createHarness({
+      tailRecentServeCacheTtlMs: 5_000,
+      transcriptEvents: [tailEvent({ id: "t1", ts: 1 })],
+    });
+
+    const first = await harness.service.readTailRecentPayloadWithTiming(replayUrl);
+    const second = await harness.service.readTailRecentPayloadWithTiming(replayUrl);
+
+    expect(harness.transcriptCallCount).toBe(1);
+    expect(second.payload.events).toEqual(first.payload.events);
+    expect(second.payload.events).not.toBe(first.payload.events);
+    expect(second.timings.find((metric) => metric.name === "tail-serve-cache")).toBeDefined();
+  });
+
+  test("after the TTL expires the next call recomputes", async () => {
+    const harness = createHarness({
+      tailRecentServeCacheTtlMs: 5_000,
+      transcriptEvents: [tailEvent({ id: "t1", ts: 1 })],
+    });
+
+    await harness.service.readTailRecentPayloadWithTiming(replayUrl);
+    harness.setNow(106_000);
+    await harness.service.readTailRecentPayloadWithTiming(replayUrl);
+
+    expect(harness.transcriptCallCount).toBe(2);
+  });
+
+  test("concurrent in-flight requests share one underlying call", async () => {
+    const gate = Promise.withResolvers<void>();
+    const harness = createHarness({
+      tailRecentServeCacheTtlMs: 5_000,
+      transcriptEvents: [tailEvent({ id: "t1", ts: 1 })],
+      transcriptGate: gate.promise,
+    });
+
+    const first = harness.service.readTailRecentPayloadWithTiming(replayUrl);
+    const second = harness.service.readTailRecentPayloadWithTiming(replayUrl);
+    expect(harness.transcriptCallCount).toBe(0);
+    gate.resolve();
+    const [a, b] = await Promise.all([first, second]);
+
+    expect(harness.transcriptCallCount).toBe(1);
+    expect(b.payload.events).toEqual(a.payload.events);
   });
 });

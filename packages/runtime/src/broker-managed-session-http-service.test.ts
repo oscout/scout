@@ -41,6 +41,7 @@ function createHarness(input: {
   snapshot?: RuntimeRegistrySnapshot;
   sessions?: PairingSession[];
   processCwd?: string;
+  onlineSession?: { externalSessionId?: string | null; metadata?: Record<string, unknown> };
 } = {}) {
   const snapshot = input.snapshot ?? createRuntimeRegistrySnapshot();
   const persistedEndpoints: AgentEndpoint[] = [];
@@ -90,7 +91,7 @@ function createHarness(input: {
     },
     async ensureLocalSessionEndpointOnline(nextEndpoint) {
       ensuredEndpoints.push(nextEndpoint);
-      return { externalSessionId: "session-new" };
+      return input.onlineSession ?? { externalSessionId: "session-new" };
     },
     async persistEndpoint(nextEndpoint) {
       persistedEndpoints.push(nextEndpoint);
@@ -208,6 +209,34 @@ describe("BrokerManagedSessionHttpService", () => {
     });
     expect(harness.ensuredEndpoints).toEqual([currentEndpoint]);
     expect(harness.persistedEndpoints).toHaveLength(1);
+  });
+
+  test("keeps a provisional Codex provider session pending after warmup", async () => {
+    const currentEndpoint = endpoint({
+      metadata: {
+        sessionBacked: true,
+        pendingExternalSession: true,
+      },
+    });
+    const harness = createHarness({
+      snapshot: createRuntimeRegistrySnapshot({
+        endpoints: { [currentEndpoint.id]: currentEndpoint },
+      }),
+      onlineSession: { externalSessionId: null },
+    });
+
+    const result = await harness.service.ensureLocalSession({
+      endpointId: currentEndpoint.id,
+    });
+
+    expect(result.externalSessionId).toBeNull();
+    expect(result.endpoint.metadata).toEqual(expect.objectContaining({
+      sessionBacked: true,
+      pendingExternalSession: true,
+      lastEnsuredAt: 1_000,
+    }));
+    expect(result.endpoint.metadata?.externalSessionId).toBeUndefined();
+    expect(result.endpoint.metadata?.threadId).toBeUndefined();
   });
 
   test("ensures by agent id and preserves Claude thread metadata", async () => {

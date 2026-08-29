@@ -63,15 +63,15 @@
 .ctx-panel-search-input {
   width: 100%;
   box-sizing: border-box;
-  background: color-mix(in srgb, var(--bg) 80%, transparent);
-  border: 1px solid color-mix(in srgb, var(--border) 50%, transparent);
+  background: color-mix(in srgb, var(--bg) 88%, transparent);
+  border: 1px solid color-mix(in srgb, var(--border) 60%, transparent);
   border-radius: var(--radius-md);
   padding: var(--space-xs) var(--space-md);
   font-size: var(--text-sm);
   color: var(--ink);
   outline: none;
   font-family: var(--font-sans);
-  transition: border-color 0.15s;
+  transition: border-color 0.15s, box-shadow 0.15s;
 }
 
 .ctx-panel-search-input::placeholder {
@@ -79,7 +79,8 @@
 }
 
 .ctx-panel-search-input:focus {
-  border-color: color-mix(in srgb, var(--accent) 40%, var(--border));
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 35%, transparent);
 }
 
 .ctx-panel-sort {
@@ -141,7 +142,7 @@
   font-weight: 700;
   letter-spacing: var(--tracking-xl);
   text-transform: uppercase;
-  color: var(--dim);
+  color: color-mix(in srgb, var(--ink) 65%, transparent);
   user-select: none;
 }
 
@@ -186,8 +187,9 @@
   font-family: var(--font-mono);
   font-size: var(--text-2xs);
   font-weight: 700;
-  color: var(--muted);
-  background: color-mix(in srgb, var(--border) 50%, transparent);
+  color: color-mix(in srgb, var(--ink) 70%, transparent);
+  background: color-mix(in srgb, var(--ink) 8%, transparent);
+  border: 1px solid color-mix(in srgb, var(--border) 40%, transparent);
   padding: 1px var(--space-xs);
   border-radius: var(--radius-sm);
   letter-spacing: 0;
@@ -2516,4 +2518,98 @@
   font-size: 9px;
   line-height: 1;
   color: var(--dim);
+}
+
+/* ── Ops inspector: contrast + rhythm ──
+ *
+ * Scoped to `--ops-inspector` on purpose. The base rail is shared with Chat,
+ * Agents and Terminal; what follows is the ops reading of it, where the panel
+ * sits beside a dense monospace wall and has to hold its own against it.
+ *
+ * The recurring light-mode failure in here is `color-mix(… var(--bg) …)` for a
+ * well: on paper --bg IS near-white, so a "recessed" card computes to the same
+ * value as the panel behind it and the whole rail flattens. Wells are mixed off
+ * --ink instead, which reads as a lift in dark and a recess in light.
+ */
+
+.ctx-panel--ops-inspector .ctx-panel-section {
+  border-bottom-color: color-mix(in srgb, var(--ink) 10%, transparent);
+}
+
+.ctx-panel--ops-inspector .ctx-panel-section-label {
+  color: color-mix(in srgb, var(--ink) 80%, transparent);
+}
+
+.ctx-panel--ops-inspector .ctx-panel-count {
+  color: var(--ink);
+  background: color-mix(in srgb, var(--ink) 9%, transparent);
+  border-color: color-mix(in srgb, var(--ink) 16%, transparent);
+}
+
+/* Stat wells: a real tonal step in both themes, and the label demoted so the
+   number is what the eye lands on first. */
+.ctx-panel--ops-inspector .ctx-panel-stat {
+  border-color: color-mix(in srgb, var(--ink) 13%, transparent);
+  background: color-mix(in srgb, var(--ink) 4%, transparent);
+}
+
+.ctx-panel--ops-inspector .ctx-panel-stat span {
+  color: color-mix(in srgb, var(--ink) 62%, transparent);
+}
+
+.ctx-panel--ops-inspector .ctx-panel-stat--ok {
+  border-color: color-mix(in srgb, var(--green) 38%, transparent);
+}
+
+.ctx-panel--ops-inspector .ctx-panel-stat--warn {
+  border-color: color-mix(in srgb, var(--amber) 55%, transparent);
+  background: color-mix(in srgb, var(--amber) 12%, transparent);
+}
+
+.ctx-panel--ops-inspector .ctx-panel-ops-mode-card {
+  border-color: color-mix(in srgb, var(--accent) 34%, transparent);
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+}
+
+/* Queue and Runs rows: the rail's own rhythm, one notch tighter than the Chat
+   rail's conversation rows, with a separator that is actually visible on paper.
+   Three cues fit above the fold instead of two and a half. */
+.ctx-panel--ops-inspector .ctx-panel-item {
+  gap: var(--space-md);
+  padding: var(--space-md) var(--space-lg);
+  border-bottom-color: color-mix(in srgb, var(--ink) 8%, transparent);
+}
+
+.ctx-panel--ops-inspector .ctx-panel-name {
+  font-size: var(--text-md);
+}
+
+.ctx-panel--ops-inspector .ctx-panel-sub,
+.ctx-panel--ops-inspector .ctx-panel-preview {
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  letter-spacing: var(--tracking-xs);
+  color: color-mix(in srgb, var(--ink) 60%, transparent);
+}
+
+.ctx-panel--ops-inspector .ctx-panel-empty {
+  color: color-mix(in srgb, var(--ink) 55%, transparent);
+}
+
+/* Recent activity: name and state share one baseline grid, so the column of
+   states reads as a column instead of drifting with each name's length. */
+.ctx-panel--ops-inspector .ctx-panel-pulse-row {
+  border-bottom-color: color-mix(in srgb, var(--ink) 7%, transparent);
+}
+
+.ctx-panel--ops-inspector .ctx-panel-pulse-row:hover {
+  background: color-mix(in srgb, var(--ink) 5%, transparent);
+}
+
+.ctx-panel--ops-inspector .ctx-panel-pulse-row span:not(.ctx-panel-pulse-dot) {
+  color: var(--ink);
+}
+
+.ctx-panel--ops-inspector .ctx-panel-pulse-row small {
+  color: color-mix(in srgb, var(--ink) 58%, transparent);
 }
