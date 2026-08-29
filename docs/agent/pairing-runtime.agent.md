@@ -231,7 +231,7 @@ Prefer `runtime.json` for cross-process UI; use events only inside one Node proc
 | Relay client | `**/pairing/runtime/bridge/relay-client.ts` |
 | Managed relay | `**/pairing/runtime/relay-runtime.ts` |
 | Identity/QR | `**/pairing/runtime/security/identity.ts` |
-| macOS shell | `apps/macos/.../PairingService.swift` |
+| Native pairing shell | private OpenScout product app; not in this repository |
 
 ## Verification
 
@@ -239,9 +239,7 @@ Prefer `runtime.json` for cross-process UI; use events only inside one Node proc
 # unit contract for durable intent, singleton claim, and stale-owner recovery
 bun test packages/runtime/src/pairing-supervisor.test.ts
 
-# build/restart the canonical suite, then verify ownership and readiness
-bun run scout:up --no-ios
-bun run scout:verify
+# process-tree verify (scout:up / scout:verify) lives in the private product checkout
 ```
 
 Expect one `pairing-runtime-controller` owned by `scout-base`. Controller crashes

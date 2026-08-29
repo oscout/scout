@@ -23,8 +23,6 @@ Purpose: dense context for coding agents working in this repo.
 |---|---|
 | Transitional desktop/CLI source | `apps/desktop` |
 | Web UI/server | `packages/web` |
-| Native macOS Scout app + HUD + thin menu helper | `apps/macos` |
-| iOS app | `apps/ios` |
 | Broker/runtime | `packages/runtime` |
 | Shared protocol | `packages/protocol` |
 | Public CLI package | `packages/cli` |
@@ -43,7 +41,6 @@ Start at [`INDEX.agent.md`](./INDEX.agent.md) for subsystem specs written for ag
 | Harness sessions | `docs/agent/runtime-sessions.agent.md` |
 | Pairing / mobile bridge | `docs/agent/pairing-runtime.agent.md` |
 | scoutd / local services | `docs/agent/scoutd.agent.md` |
-| Native macOS app (Scout + HUD + menu helper) | `docs/agent/macos.agent.md` |
 
 ## Must-Read Docs
 

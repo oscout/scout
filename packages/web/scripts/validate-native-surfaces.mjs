@@ -12,7 +12,11 @@ function fail(message) {
   process.exit(1);
 }
 
-if (!existsSync(manifestPath)) fail(`missing ${manifestPath}; run bun run build:native-surfaces in packages/web`);
+if (!existsSync(manifestPath)) {
+  fail(
+    `missing ${manifestPath}. Native surfaces live in the private iOS app and are not a public oscout/scout check surface; run bun run build:native-surfaces only from the private product checkout.`,
+  );
+}
 
 let manifest;
 try {
