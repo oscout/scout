@@ -70,6 +70,20 @@
     "owner": "desktop"
   },
   {
+    "path": "apps/desktop/src/cli/commands/tui.test.ts",
+    "symbol": "spawnSync",
+    "category": "test",
+    "reason": "injects a fake spawnSync to assert scout-tui launch argv without starting the binary",
+    "owner": "desktop"
+  },
+  {
+    "path": "apps/desktop/src/cli/commands/tui.ts",
+    "symbol": "spawnSync",
+    "category": "cli",
+    "reason": "scout tui launches the ratatui binary as a one-shot inherited process",
+    "owner": "desktop"
+  },
+  {
     "path": "apps/desktop/src/cli/main.ts",
     "symbol": "spawnSync",
     "category": "cli",
@@ -138,41 +152,6 @@
     "category": "boot",
     "reason": "setup dependency probe runs during explicit setup/doctor flow",
     "owner": "desktop"
-  },
-  {
-    "path": "apps/ios/hkit.ts",
-    "symbol": "spawnSync",
-    "category": "build-script",
-    "reason": "iOS helper script runs foreground build/deploy commands",
-    "owner": "ios"
-  },
-  {
-    "path": "apps/macos/bin/openscout-menu.ts",
-    "symbol": "execFileSync",
-    "category": "build-script",
-    "reason": "macOS packaging/dev helper one-shot commands",
-    "owner": "macos"
-  },
-  {
-    "path": "apps/macos/bin/openscout-menu.ts",
-    "symbol": "execSync",
-    "category": "build-script",
-    "reason": "macOS packaging/dev helper one-shot commands",
-    "owner": "macos"
-  },
-  {
-    "path": "apps/macos/bin/openscout-menu.ts",
-    "symbol": "spawnSync",
-    "category": "process-lifecycle",
-    "reason": "reads the ps process table to scope menu-helper liveness and shutdown to this checkout's bundle path, replacing a name-matched pkill that reached into every other checkout",
-    "owner": "macos"
-  },
-  {
-    "path": "apps/macos/bin/scout-app.ts",
-    "symbol": "execSync",
-    "category": "build-script",
-    "reason": "macOS Scout build/launch helper one-shot commands",
-    "owner": "macos"
   },
   {
     "path": "packages/agent-sessions/src/adapters/opencode-acp/adapter.test.ts",
