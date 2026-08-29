@@ -2,10 +2,11 @@
 
 import { execFileSync } from "node:child_process";
 import fs from "node:fs/promises";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { gunzipSync } from "node:zlib";
 
 const DEPENDENCY_SECTIONS = [
   "dependencies",
@@ -65,27 +66,108 @@ function findWorkspaceLeaks(pkg) {
 const REQUIRED_PACKED_FILES = {
   "@openscout/scout": [
     "package/bin/scoutd",
-    "package/dist/client/crew/milo-bust.webp",
-    "package/dist/client/crew/milo-chip-id.webp",
-    "package/dist/client/crew/sheets/eye-plate-v1/rest.webp",
+    "package/dist/scout-control-plane-web.mjs",
+    "package/dist/scout-web-server.mjs",
+    "package/dist/client/index.html",
   ],
 };
 
 const FORBIDDEN_PACKED_PREFIXES = {
-  "@openscout/scout": [
-    "package/dist/client/crew/_runs/",
-    "package/dist/client/crew/_qa/",
-    "package/dist/client/crew/pixel-astronauts/",
-    "package/dist/client/crew/poses/",
-    "package/dist/client/crew/crew-",
-    "package/dist/client/crew/house-reference.png",
-    "package/dist/client/crew/pack.json",
-  ],
+  "@openscout/scout": ["package/dist/client/crew/"],
 };
 
-export function findForbiddenPackedFiles(packageName, entries) {
-  const prefixes = FORBIDDEN_PACKED_PREFIXES[packageName] ?? [];
-  return entries.filter((entry) => prefixes.some((prefix) => entry.startsWith(prefix)));
+// Calibrated against the reviewed 0.2.92 candidate (about 8.08 MB packed,
+// 36.97 MB unpacked, 445 files). The previous release's duplicated
+// 3.45 MB web-server bundle exceeds both byte ceilings. Raising a ceiling is a
+// deliberate release-review decision, not an incidental side effect of npm
+// packaging.
+const PACKED_FOOTPRINT_BUDGETS = {
+  "@openscout/scout": {
+    maxPackedBytes: 8_500_000,
+    maxUnpackedBytes: 38_000_000,
+    maxFileCount: 450,
+  },
+};
+
+// The old entry name remains as a compatibility import only. Keeping its own
+// small ceiling prevents the full server graph from being duplicated again
+// even if unrelated package files later shrink enough to fit the total budget.
+const PACKED_FILE_BUDGETS = {
+  "@openscout/scout": {
+    "package/dist/scout-web-server.mjs": 1_024,
+  },
+};
+
+function parseTarOctal(field, label) {
+  const value = field.toString("ascii").replace(/\0.*$/s, "").trim();
+  if (!value) return 0;
+  if (!/^[0-7]+$/.test(value)) {
+    throw new Error(`Unsupported tar ${label}: ${JSON.stringify(value)}`);
+  }
+  return Number.parseInt(value, 8);
+}
+
+export function readTarballFootprint(tarballPath) {
+  const archive = gunzipSync(readFileSync(tarballPath));
+  const fileSizes = new Map();
+  let unpackedBytes = 0;
+  let fileCount = 0;
+  let offset = 0;
+
+  while (offset + 512 <= archive.length) {
+    const header = archive.subarray(offset, offset + 512);
+    if (header.every((byte) => byte === 0)) break;
+
+    const name = header.subarray(0, 100).toString("utf8").replace(/\0.*$/s, "");
+    const prefix = header.subarray(345, 500).toString("utf8").replace(/\0.*$/s, "");
+    const entryPath = prefix ? `${prefix}/${name}` : name;
+    const size = parseTarOctal(header.subarray(124, 136), `size for ${entryPath}`);
+    const type = header[156];
+    if (type === 0 || type === 48) {
+      fileCount += 1;
+      unpackedBytes += size;
+      fileSizes.set(entryPath, size);
+    }
+
+    offset += 512 + Math.ceil(size / 512) * 512;
+  }
+
+  return {
+    packedBytes: statSync(tarballPath).size,
+    unpackedBytes,
+    fileCount,
+    fileSizes,
+  };
+}
+
+export function findFootprintFailures(packageName, footprint) {
+  const failures = [];
+  const budget = PACKED_FOOTPRINT_BUDGETS[packageName];
+  if (budget) {
+    if (footprint.packedBytes > budget.maxPackedBytes) {
+      failures.push(
+        `packed size ${footprint.packedBytes.toLocaleString("en-US")} exceeds ${budget.maxPackedBytes.toLocaleString("en-US")} bytes`,
+      );
+    }
+    if (footprint.unpackedBytes > budget.maxUnpackedBytes) {
+      failures.push(
+        `unpacked size ${footprint.unpackedBytes.toLocaleString("en-US")} exceeds ${budget.maxUnpackedBytes.toLocaleString("en-US")} bytes`,
+      );
+    }
+    if (footprint.fileCount > budget.maxFileCount) {
+      failures.push(`file count ${footprint.fileCount} exceeds ${budget.maxFileCount}`);
+    }
+  }
+
+  for (const [entryPath, maxBytes] of Object.entries(PACKED_FILE_BUDGETS[packageName] ?? {})) {
+    const observedBytes = footprint.fileSizes.get(entryPath);
+    if (observedBytes !== undefined && observedBytes > maxBytes) {
+      failures.push(
+        `${entryPath} is ${observedBytes.toLocaleString("en-US")} bytes; compatibility entry must not exceed ${maxBytes.toLocaleString("en-US")} bytes`,
+      );
+    }
+  }
+  return failures;
 }
 
 function listTarballEntries(tarballPath, packageDir) {
@@ -96,6 +178,36 @@ function listTarballEntries(tarballPath, packageDir) {
     .split("\n")
     .map((line) => line.trim())
     .filter(Boolean);
+}
+
+function auditTarball(tarballPath, packageDir = repoRoot) {
+  const packedManifestText = execFileSync(
+    "tar",
+    ["-xOf", tarballPath, "package/package.json"],
+    {
+      cwd: packageDir,
+      encoding: "utf8",
+    },
+  );
+  const pkg = JSON.parse(packedManifestText);
+  const entries = listTarballEntries(tarballPath, packageDir);
+  const footprint = readTarballFootprint(tarballPath);
+  const missingFiles = (REQUIRED_PACKED_FILES[pkg.name] ?? []).filter(
+    (required) => !entries.includes(required),
+  );
+  const forbiddenFiles = entries.filter((entry) =>
+    (FORBIDDEN_PACKED_PREFIXES[pkg.name] ?? []).some((prefix) => entry.startsWith(prefix)),
+  );
+
+  return {
+    name: pkg.name,
+    leaks: findWorkspaceLeaks(pkg),
+    missingFiles,
+    forbiddenFiles,
+    footprint,
+    footprintFailures: findFootprintFailures(pkg.name, footprint),
+    tarballPath,
+  };
 }
 
 async function inspectPackedManifest(packageDir, tempDir) {
@@ -113,64 +225,68 @@ async function inspectPackedManifest(packageDir, tempDir) {
     stdio: "inherit",
   });
 
-  const packedManifestText = execFileSync(
-    "tar",
-    ["-xOf", tarballPath, "package/package.json"],
-    {
-      cwd: packageDir,
-      encoding: "utf8",
-    },
-  );
+  return auditTarball(tarballPath, packageDir);
+}
 
-  const entries = listTarballEntries(tarballPath, packageDir);
-  const missingFiles = (REQUIRED_PACKED_FILES[pkg.name] ?? []).filter(
-    (required) => !entries.includes(required),
+function reportFailures(results) {
+  const failures = results.filter((result) =>
+    result.leaks.length > 0
+    || result.missingFiles.length > 0
+    || result.forbiddenFiles.length > 0
+    || result.footprintFailures.length > 0
   );
-  const forbiddenFiles = findForbiddenPackedFiles(pkg.name, entries);
-
-  return {
-    name: pkg.name,
-    leaks: findWorkspaceLeaks(JSON.parse(packedManifestText)),
-    missingFiles,
-    forbiddenFiles,
-    tarballPath,
-  };
+  for (const result of results) {
+    if (PACKED_FOOTPRINT_BUDGETS[result.name]) {
+      console.log(
+        `${result.name} footprint: ${result.footprint.packedBytes.toLocaleString("en-US")} packed bytes, ${result.footprint.unpackedBytes.toLocaleString("en-US")} unpacked bytes, ${result.footprint.fileCount} files`,
+      );
+    }
+  }
+  for (const failure of failures) {
+    if (failure.leaks.length > 0) {
+      console.error(`${failure.name} packed with workspace dependencies:`);
+      for (const leak of failure.leaks) console.error(`  - ${leak}`);
+    }
+    if (failure.missingFiles.length > 0) {
+      console.error(`${failure.name} is missing required packed files:`);
+      for (const missing of failure.missingFiles) console.error(`  - ${missing}`);
+    }
+    if (failure.forbiddenFiles.length > 0) {
+      console.error(`${failure.name} contains private product assets:`);
+      for (const forbidden of failure.forbiddenFiles) console.error(`  - ${forbidden}`);
+    }
+    if (failure.footprintFailures.length > 0) {
+      console.error(`${failure.name} exceeds its reviewed package footprint:`);
+      for (const footprintFailure of failure.footprintFailures) {
+        console.error(`  - ${footprintFailure}`);
+      }
+    }
+  }
+  return failures.length;
 }
 
 async function main() {
+  if (process.argv[2] === "--tarball") {
+    const tarballs = process.argv.slice(3).map((value) => path.resolve(value));
+    if (tarballs.length === 0) {
+      throw new Error("--tarball requires at least one exact candidate path");
+    }
+    process.exitCode = reportFailures(tarballs.map((tarball) => auditTarball(tarball))) > 0
+      ? 1
+      : 0;
+    return;
+  }
+
   const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "openscout-pack-check-"));
 
   try {
-    const failures = [];
+    const results = [];
 
     for (const packageDir of findWorkspaceDirs()) {
-      const result = await inspectPackedManifest(packageDir, tempDir);
-      if (result.leaks.length > 0 || result.missingFiles.length > 0 || result.forbiddenFiles.length > 0) {
-        failures.push(result);
-      }
+      results.push(await inspectPackedManifest(packageDir, tempDir));
     }
 
-    if (failures.length > 0) {
-      for (const failure of failures) {
-        if (failure.leaks.length > 0) {
-          console.error(`${failure.name} packed with workspace dependencies:`);
-          for (const leak of failure.leaks) {
-            console.error(`  - ${leak}`);
-          }
-        }
-        if (failure.missingFiles.length > 0) {
-          console.error(`${failure.name} is missing required packed files:`);
-          for (const missing of failure.missingFiles) {
-            console.error(`  - ${missing}`);
-          }
-        }
-        if (failure.forbiddenFiles.length > 0) {
-          console.error(`${failure.name} packed files forbidden from public redistribution:`);
-          for (const forbidden of failure.forbiddenFiles) {
-            console.error(`  - ${forbidden}`);
-          }
-        }
-      }
+    if (reportFailures(results) > 0) {
       process.exitCode = 1;
       return;
     }
