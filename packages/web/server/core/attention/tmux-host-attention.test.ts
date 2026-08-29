@@ -6,19 +6,19 @@ import {
   detectClaudeTmuxHostAttention,
 } from "./tmux-host-attention.ts";
 
-const SESSION_ID = "relay-paper-screen-fable-work-hud-013-voice-settings-scout-mac-mini-local-claude";
+const SESSION_ID = "relay-paper-screen-fable-work-hud-013-voice-settings-arachs-mac-mini-local-claude";
 
 function agent(overrides: Partial<WebAgent> = {}): WebAgent {
   return {
-    id: "paper-screen-fable.work-hud-013-voice-settings.scout-mac-mini-local",
+    id: "paper-screen-fable.work-hud-013-voice-settings.arachs-mac-mini-local",
     definitionId: "paper-screen-fable",
     name: "Paper Screen Fable",
     handle: "paper-screen-fable",
     agentClass: "general",
     harness: "claude",
     state: "working",
-    projectRoot: "/Users/example/dev/hudson",
-    cwd: "/Users/example/dev/hudson",
+    projectRoot: "/Users/arach/dev/hudson",
+    cwd: "/Users/arach/dev/hudson",
     updatedAt: 1,
     createdAt: 1,
     transport: "tmux",
@@ -130,12 +130,12 @@ describe("Claude tmux host attention", () => {
     }, { now: 1_700_000_000_000 });
 
     expect(captures).toEqual([
-      "paper-screen-fable.work-hud-013-voice-settings.scout-mac-mini-local",
+      "paper-screen-fable.work-hud-013-voice-settings.arachs-mac-mini-local",
       "idle",
     ]);
     expect(items).toEqual([
       expect.objectContaining({
-        agentId: "paper-screen-fable.work-hud-013-voice-settings.scout-mac-mini-local",
+        agentId: "paper-screen-fable.work-hud-013-voice-settings.arachs-mac-mini-local",
         title: "Claude needs permission",
       }),
       expect.objectContaining({

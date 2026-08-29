@@ -26,17 +26,6 @@ import type { ObservedActivity, ObservedStatusPhase } from "./observed-status.js
 export const PRESENCE_STALE_AFTER_MS = 45_000;
 
 /**
- * Maximum steady-state gap between freshness-bearing presence updates.
- *
- * A renderer only knows the `staleAt` carried by the last beat it received.
- * The broker therefore republishes an otherwise unchanged beat before that
- * deadline while newer liveness evidence keeps arriving. This remains bounded
- * (two events per minute at the defaults) without letting a continuously
- * heartbeating agent expire in a connected client.
- */
-export const PRESENCE_REFRESH_INTERVAL_MS = 30_000;
-
-/**
  * How long a stale beat lingers before it is dropped entirely.
  *
  * This window is load-bearing, not a grace period. "The observer went quiet —

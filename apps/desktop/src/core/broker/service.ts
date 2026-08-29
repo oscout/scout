@@ -214,6 +214,8 @@ export type ScoutBrokerHomePayload = {
   updatedAt: number;
   agents: ScoutBrokerHomeAgentRecord[];
   activity: ScoutBrokerHomeActivityRecord[];
+  activitySource: "sqlite_projection" | "runtime_snapshot";
+  activityState: "ready" | "warming" | "degraded" | "disabled";
 };
 
 export type ScoutMentionTarget = {

@@ -1,5 +1,13 @@
 import { describe, expect, test } from "bun:test";
-import type { Agent, FleetAsk, FleetAttentionItem, FleetState, SessionEntry, TailDiscoverySnapshot } from "../../lib/types.ts";
+import type {
+  Agent,
+  FleetAsk,
+  FleetAttentionItem,
+  FleetState,
+  SessionEntry,
+  TailDiscoverySnapshot,
+  TailEvent,
+} from "../../lib/types.ts";
 import {
   buildProjectsInboxModel,
   groupThreads,
@@ -7,8 +15,11 @@ import {
   isSessionSelected,
   isThreadSelected,
   sessionOpenRoute,
+  sessionRouteRef,
   sessionSelectRoute,
   threadOpenRoute,
+  threadObserveRoute,
+  threadRouteRef,
   threadSelectRoute,
   threadsForProject,
   type BuildInboxInput,
@@ -340,6 +351,225 @@ describe("project aggregation + dormancy", () => {
     expect(arc?.lastActivityAt).toBe(STALE);
     expect(arc && isDormantProject(arc, NOW)).toBe(true);
   });
+
+  test("projects the latest observed assistant reply onto its exact harness session", () => {
+    const sessionId = "01a045dd-783e-7660-b714-0e7d83f9dc67";
+    const discovery: TailDiscoverySnapshot = {
+      generatedAt: NOW,
+      processes: [],
+      transcripts: [{
+        source: "codex",
+        transcriptPath: `/Users/test/.codex/sessions/rollout-${sessionId}.jsonl`,
+        sessionId,
+        cwd: "/Users/test/dev/openscout",
+        project: "openscout",
+        harness: "unattributed",
+        lastEventAt: NOW - 2_000,
+        mtimeMs: NOW - 1_000,
+        size: 42_000,
+      }],
+      issues: [],
+      totals: {
+        total: 0,
+        scoutManaged: 0,
+        hudsonManaged: 0,
+        unattributed: 0,
+        transcripts: 1,
+      },
+    };
+    const recentEvents: TailEvent[] = [
+      {
+        id: "codex:assistant:latest",
+        ts: NOW - 2_000,
+        source: "codex",
+        sessionId,
+        pid: -1,
+        parentPid: null,
+        project: "openscout",
+        cwd: "/Users/test/dev/openscout",
+        harness: "unattributed",
+        kind: "assistant",
+        summary: "No bribes. The title bar and anchored controls are fixed.",
+      },
+      {
+        id: "codex:user:newer-but-not-a-reply",
+        ts: NOW - 1_000,
+        source: "codex",
+        sessionId,
+        pid: -1,
+        parentPid: null,
+        project: "openscout",
+        cwd: "/Users/test/dev/openscout",
+        harness: "unattributed",
+        kind: "user",
+        summary: "Can I steer this?",
+      },
+      {
+        id: "codex:developer:not-a-reply",
+        ts: NOW,
+        source: "codex",
+        sessionId,
+        pid: -1,
+        parentPid: null,
+        project: "openscout",
+        cwd: "/Users/test/dev/openscout",
+        harness: "unattributed",
+        kind: "assistant",
+        summary: "Follow the workspace approval policy.",
+        raw: { type: "response_item", payload: { type: "message", role: "developer" } },
+      },
+      {
+        id: "codex:approval-review:not-a-reply",
+        ts: NOW + 1,
+        source: "codex",
+        sessionId,
+        pid: -1,
+        parentPid: null,
+        project: "openscout",
+        cwd: "/Users/test/dev/openscout",
+        harness: "unattributed",
+        kind: "assistant",
+        summary: JSON.stringify({
+          risk_level: "low",
+          user_authorization: "medium",
+          outcome: "allow",
+          rationale: "Read-only local verification.",
+        }),
+        raw: { type: "response_item", payload: { type: "message", role: "assistant" } },
+      },
+    ];
+
+    const model = buildProjectsInboxModel({
+      ...baseInput([], null, false, [], discovery),
+      recentEvents,
+    });
+    const session = model.sessions[0]!;
+
+    expect(session.latestReplyAt).toBe(NOW - 2_000);
+    expect(session.latestReplyPreview).toBe("No bribes. The title bar and anchored controls are fixed.");
+    expect(session.sessionId).toBe(sessionId);
+    expect(sessionOpenRoute(session, { view: "agents-v2", projectSlug: session.projectSlug })).toEqual({
+      view: "agents-v2",
+      projectSlug: "openscout",
+      indexView: "sessions",
+      sessionId: `session:codex:${sessionId}`,
+      selectedAgentId: undefined,
+    });
+  });
+
+  test("keeps same-id replies scoped to their source harness", () => {
+    const sharedSessionId = "shared-session";
+    const discovery: TailDiscoverySnapshot = {
+      generatedAt: NOW,
+      processes: [],
+      transcripts: [
+        {
+          source: "codex",
+          transcriptPath: "/Users/test/.codex/sessions/shared-session.jsonl",
+          sessionId: sharedSessionId,
+          cwd: "/Users/test/dev/openscout",
+          project: "openscout",
+          harness: "unattributed",
+          lastEventAt: NOW - 2_000,
+          mtimeMs: NOW - 2_000,
+          size: 42_000,
+        },
+        {
+          source: "claude",
+          transcriptPath: "/Users/test/.claude/projects/blink/shared-session.jsonl",
+          sessionId: sharedSessionId,
+          cwd: "/Users/test/dev/blink",
+          project: "blink",
+          harness: "unattributed",
+          lastEventAt: NOW - 1_000,
+          mtimeMs: NOW - 1_000,
+          size: 24_000,
+        },
+      ],
+      issues: [],
+      totals: {
+        total: 0,
+        scoutManaged: 0,
+        hudsonManaged: 0,
+        unattributed: 0,
+        transcripts: 2,
+      },
+    };
+    const recentEvents: TailEvent[] = [
+      {
+        id: "codex:shared-session:reply",
+        ts: NOW - 2_000,
+        source: "codex",
+        sessionId: sharedSessionId,
+        pid: -1,
+        parentPid: null,
+        project: "openscout",
+        cwd: "/Users/test/dev/openscout",
+        harness: "unattributed",
+        kind: "assistant",
+        summary: "Codex response",
+      },
+      {
+        id: "claude:shared-session:reply",
+        ts: NOW - 1_000,
+        source: "claude",
+        sessionId: sharedSessionId,
+        pid: -1,
+        parentPid: null,
+        project: "blink",
+        cwd: "/Users/test/dev/blink",
+        harness: "unattributed",
+        kind: "assistant",
+        summary: "Claude response",
+      },
+    ];
+
+    const model = buildProjectsInboxModel({
+      ...baseInput([], null, false, [], discovery),
+      recentEvents,
+    });
+    const codex = model.sessions.find((session) => session.harness === "codex");
+    const claude = model.sessions.find((session) => session.harness === "claude");
+
+    expect(codex?.latestReplyPreview).toBe("Codex response");
+    expect(codex?.latestReplyAt).toBe(NOW - 2_000);
+    expect(claude?.latestReplyPreview).toBe("Claude response");
+    expect(claude?.latestReplyAt).toBe(NOW - 1_000);
+    expect(sessionRouteRef(codex!)).toBe("session:codex:shared-session");
+    expect(sessionRouteRef(claude!)).toBe("session:claude:shared-session");
+    const bareRoute = { view: "agents-v2" as const, sessionId: sharedSessionId };
+    expect(isSessionSelected(codex!, bareRoute, model.sessions)).toBe(false);
+    expect(isSessionSelected(claude!, bareRoute, model.sessions)).toBe(false);
+    const legacyPrefixedRoute = { view: "agents-v2" as const, sessionId: `session:${sharedSessionId}` };
+    expect(isSessionSelected(codex!, legacyPrefixedRoute, model.sessions)).toBe(false);
+    expect(isSessionSelected(claude!, legacyPrefixedRoute, model.sessions)).toBe(false);
+    expect(isSessionSelected(
+      codex!,
+      { view: "agents-v2", sessionId: "session:codex:shared-session" },
+      model.sessions,
+    )).toBe(true);
+
+    const codexThread = model.threads.find((thread) => thread.kind === "native" && thread.harness === "codex")!;
+    const claudeThread = model.threads.find((thread) => thread.kind === "native" && thread.harness === "claude")!;
+    expect(threadRouteRef(codexThread)).toBe("session:codex:shared-session");
+    expect(threadRouteRef(claudeThread)).toBe("session:claude:shared-session");
+    expect(isThreadSelected(codexThread, bareRoute, model.threads)).toBe(false);
+    expect(isThreadSelected(claudeThread, bareRoute, model.threads)).toBe(false);
+    expect(isThreadSelected(codexThread, legacyPrefixedRoute, model.threads)).toBe(false);
+    expect(isThreadSelected(claudeThread, legacyPrefixedRoute, model.threads)).toBe(false);
+    const codexThreadRoute = threadSelectRoute(codexThread, { view: "agents-v2" });
+    expect(codexThreadRoute.sessionId).toBe("session:codex:shared-session");
+    expect(isThreadSelected(codexThread, codexThreadRoute, model.threads)).toBe(true);
+    expect(isThreadSelected(claudeThread, codexThreadRoute, model.threads)).toBe(false);
+    expect(threadOpenRoute(codexThread, { view: "agents-v2" })).toEqual({
+      view: "sessions",
+      sessionId: "session:codex:shared-session",
+    });
+    expect(threadObserveRoute(codexThread, { view: "agents-v2" })).toEqual({
+      view: "sessions",
+      sessionId: "session:codex:shared-session",
+    });
+  });
 });
 
 describe("filters + routing", () => {
@@ -369,7 +599,7 @@ describe("filters + routing", () => {
 
     const select = threadSelectRoute(thread, route);
     expect(select.selectedAgentId).toBe("scout.a");
-    expect(isThreadSelected(thread, select)).toBe(true);
+    expect(isThreadSelected(thread, select, model.threads)).toBe(true);
 
     const open = threadOpenRoute(thread, route);
     expect(open).toEqual({ view: "conversation", conversationId: "conv-1" });
@@ -382,7 +612,12 @@ describe("filters + routing", () => {
     expect(session.sessionId).toBeTruthy();
     const canonicalSessionId = session.sessionId!;
     const select = { view: "agents-v2" as const, projectSlug: session.projectSlug, sessionId: session.sessionId ?? undefined };
-    expect(isSessionSelected(session, select)).toBe(true);
+    expect(isSessionSelected(session, select, model.sessions)).toBe(true);
+    expect(isSessionSelected(
+      session,
+      { ...select, sessionId: `session:${canonicalSessionId}` },
+      model.sessions,
+    )).toBe(true);
     expect(sessionSelectRoute(session, { view: "agents-v2", projectSlug: session.projectSlug }).selectedAgentId).toBeUndefined();
     expect(sessionOpenRoute(session, { view: "agents-v2", projectSlug: session.projectSlug })).toEqual({
       view: "agents-v2",
@@ -396,12 +631,12 @@ describe("filters + routing", () => {
     const conversationSelect = sessionSelectRoute(conversationBacked, { view: "agents-v2", projectSlug: conversationBacked.projectSlug });
     expect(conversationSelect.sessionId).toBe("c.scout.a");
     expect(conversationSelect.selectedAgentId).toBeUndefined();
-    expect(isSessionSelected(conversationBacked, { view: "agents-v2", sessionId: "c.scout.a" })).toBe(true);
+    expect(isSessionSelected(conversationBacked, { view: "agents-v2", sessionId: "c.scout.a" }, [conversationBacked])).toBe(true);
 
     const liveProcess = { ...session, sessionId: null, conversationId: null, route: null };
     const liveSelect = sessionSelectRoute(liveProcess, { view: "agents-v2", projectSlug: liveProcess.projectSlug });
     expect(liveSelect).toEqual({ view: "agents-v2", projectSlug: liveProcess.projectSlug });
-    expect(isSessionSelected(liveProcess, { view: "agents-v2", sessionId: "scout:c.scout.a" })).toBe(false);
+    expect(isSessionSelected(liveProcess, { view: "agents-v2", sessionId: "scout:c.scout.a" }, [liveProcess])).toBe(false);
 
     expect(sessionOpenRoute(liveProcess, { view: "agents-v2", projectSlug: liveProcess.projectSlug })).toEqual({
       view: "agents-v2",

@@ -16,11 +16,21 @@ import {
   getLocalAgentEndpointSessionSnapshot,
   getLocalAgentSessionSnapshot,
 } from "@openscout/runtime/local-agents";
-import { getTailDiscovery, readTailEventsForSession } from "@openscout/runtime/tail";
+import {
+  getTailDiscovery,
+  readTailEventsForSession,
+  refreshTailDiscovery,
+  type DiscoverySnapshot,
+} from "@openscout/runtime/tail";
 import { epochMs, flightSessionTrace, type AgentEndpoint } from "@openscout/protocol";
 
+import {
+  canonicalSessionHarness,
+  parseSessionRouteRef,
+  sessionHarnessMatches,
+} from "../../../shared/session-route-ref.ts";
 import type { WebAgent } from "../../db-queries.ts";
-import { queryAgents } from "../../db-queries.ts";
+import { queryAgentById, queryAgents } from "../../db-queries.ts";
 import { getScoutWebPairingSessionSnapshot } from "../../pairing.ts";
 import {
   endpointMetadataRecord,
@@ -219,6 +229,7 @@ type SessionRefLookupCache = {
 };
 
 let sessionRefLookupCache: SessionRefLookupCache | null = null;
+const AMBIGUOUS_TAIL_SESSION_REF = Symbol("ambiguous-tail-session-ref");
 
 export type SessionRefObservePayload =
   | {
@@ -359,6 +370,30 @@ function normalizeSessionRefId(value: string | null | undefined): string | null 
   return leaf.endsWith(".jsonl") ? leaf.slice(0, -".jsonl".length) : leaf;
 }
 
+function tailSessionRefTranscripts(
+  discovery: Awaited<ReturnType<typeof getTailDiscovery>>,
+  normalizedRef: string,
+  harness: string | null,
+) {
+  return discovery.transcripts.filter((transcript) => {
+    if (!sessionHarnessMatches(harness, transcript.source)) return false;
+    const refs = [
+      normalizeSessionRefId(transcript.sessionId),
+      normalizeSessionRefId(transcript.transcriptPath),
+    ].filter((candidate): candidate is string => Boolean(candidate));
+    return refs.includes(normalizedRef);
+  });
+}
+
+function hasAmbiguousTailHarness(
+  transcripts: Awaited<ReturnType<typeof getTailDiscovery>>["transcripts"],
+): boolean {
+  const sources = new Set(transcripts.map((transcript) => (
+    canonicalSessionHarness(transcript.source) ?? transcript.source.trim().toLowerCase()
+  )));
+  return sources.size > 1;
+}
+
 function addSessionRefLookupEntry(
   entries: Map<string, SessionRefLookupEntry>,
   entry: SessionRefLookupEntry,
@@ -437,34 +472,32 @@ function adapterTypeFromTailSource(source: string): "claude-code" | "codex" | "p
 
 async function findTailSessionRefLookupEntry(
   normalizedRef: string,
-): Promise<SessionRefLookupEntry | null> {
+  harness: string | null = null,
+): Promise<SessionRefLookupEntry | null | typeof AMBIGUOUS_TAIL_SESSION_REF> {
   const discovery = await getTailDiscovery().catch(() => null);
   if (!discovery?.transcripts.length) {
     return null;
   }
 
-  for (const transcript of discovery.transcripts) {
+  const transcripts = tailSessionRefTranscripts(discovery, normalizedRef, harness);
+  if (!harness && hasAmbiguousTailHarness(transcripts)) return AMBIGUOUS_TAIL_SESSION_REF;
+  const matches: SessionRefLookupEntry[] = [];
+  for (const transcript of transcripts) {
     const adapterType = adapterTypeFromTailSource(transcript.source);
     if (!adapterType || !supportsHistorySessionSnapshotForPath(transcript.transcriptPath, adapterType)) {
       continue;
     }
-    const refs = [
-      normalizeSessionRefId(transcript.sessionId),
-      normalizeSessionRefId(transcript.transcriptPath),
-    ].filter((ref): ref is string => Boolean(ref));
-    if (!refs.includes(normalizedRef)) {
-      continue;
-    }
-    return {
+    matches.push({
       refId: normalizedRef,
       historyPath: transcript.transcriptPath,
       adapterType,
       mtimeMs: transcript.mtimeMs,
       size: transcript.size,
-    };
+    });
   }
 
-  return null;
+  if (matches.length === 0) return null;
+  return matches.sort((left, right) => right.mtimeMs - left.mtimeMs)[0] ?? null;
 }
 
 function historyAdapterAlias(
@@ -1836,6 +1869,23 @@ function endpointMatchesBrokerPresentationRef(
   return Boolean(handle && handle.toLowerCase() === normalizedRef.toLowerCase());
 }
 
+/** All broker endpoints that claim a session ref, before presentation ranking. */
+function brokerSessionRefMatchingEndpoints(
+  snapshot: { endpoints?: Record<string, AgentEndpoint> },
+  normalizedRef: string,
+  harness: string | null = null,
+): AgentEndpoint[] {
+  const targetRef = normalizeSessionRefId(normalizedRef);
+  if (!targetRef) return [];
+  const matches = Object.values(snapshot.endpoints ?? {})
+    .filter((endpoint) => sessionHarnessMatches(harness, endpoint.harness))
+    .filter((endpoint) => (
+      endpointMatchesBrokerPresentationRef(endpoint, targetRef)
+      || endpointOpaqueRefAliases(endpoint).includes(targetRef)
+    ));
+  return [...new Map(matches.map((endpoint) => [endpoint.id, endpoint])).values()];
+}
+
 function isEndpointPresentationRef(endpoint: AgentEndpoint, value: string): boolean {
   const normalized = normalizeSessionRefId(value);
   if (!normalized) {
@@ -1853,15 +1903,31 @@ const AMBIGUOUS_BROKER_SESSION_REF = Symbol("ambiguous-broker-session-ref");
 function selectBrokerSessionRefEndpoint(
   snapshot: { endpoints?: Record<string, AgentEndpoint> },
   normalizedRef: string,
+  harness: string | null = null,
 ): AgentEndpoint | null | typeof AMBIGUOUS_BROKER_SESSION_REF {
   const targetRef = normalizeSessionRefId(normalizedRef);
   if (!targetRef) {
     return null;
   }
-  const endpoints = Object.values(snapshot.endpoints ?? {});
-  const presentationCandidates = endpoints.filter((endpoint) => (
-    endpointMatchesBrokerPresentationRef(endpoint, targetRef)
+  const endpoints = Object.values(snapshot.endpoints ?? {})
+    .filter((endpoint) => sessionHarnessMatches(harness, endpoint.harness));
+  const actorCandidates = endpoints.filter((endpoint) => (
+    normalizeSessionRefId(endpoint.agentId) === targetRef
   ));
+  const handleCandidates = endpoints.filter((endpoint) => {
+    const handle = normalizeSessionRefId(metadataString(endpointMetadataRecord(endpoint), "handle"));
+    return Boolean(handle && handle.toLowerCase() === targetRef.toLowerCase());
+  });
+  // Actor ids are canonical presentation addresses. A different actor may
+  // legitimately have a colliding friendly handle, but it must never outrank
+  // the exact actor id. Handles are usable only when they identify one owner.
+  const presentationCandidates = actorCandidates.length > 0
+    ? actorCandidates
+    : handleCandidates;
+  if (actorCandidates.length === 0 && handleCandidates.length > 0) {
+    const handleOwners = new Set(handleCandidates.map((endpoint) => endpoint.agentId));
+    if (handleOwners.size > 1) return AMBIGUOUS_BROKER_SESSION_REF;
+  }
   const candidates = presentationCandidates.length > 0
     ? presentationCandidates
     : endpoints.filter((endpoint) => endpointOpaqueRefAliases(endpoint).includes(targetRef));
@@ -2032,8 +2098,10 @@ async function readExactEndpointHistory(
     if (!normalizedProviderRef) {
       continue;
     }
-    const lookup = sessionRefLookup().get(normalizedProviderRef)
-      ?? await findTailSessionRefLookupEntry(normalizedProviderRef);
+    const tailLookup = await findTailSessionRefLookupEntry(normalizedProviderRef, endpoint.harness);
+    const lookup = tailLookup === AMBIGUOUS_TAIL_SESSION_REF
+      ? null
+      : tailLookup ?? sessionRefLookup().get(normalizedProviderRef) ?? null;
     if (!lookup || lookup.adapterType !== adapterType) {
       continue;
     }
@@ -2052,20 +2120,43 @@ async function readExactEndpointTail(
   endpoint: AgentEndpoint,
   providerRefs: string[],
 ): Promise<Awaited<ReturnType<typeof readTailEventsForSession>>> {
-  const adapterType = historyAdapterForEndpoint(endpoint);
-  for (const providerRef of providerRefs) {
-    let tail = await readTailEventsForSession(providerRef).catch(() => null);
-    if (!tail) {
-      tail = await readTailEventsForSession(providerRef, { forceDiscovery: true }).catch(() => null);
-    }
-    if (
-      tail
-      && (!adapterType || adapterTypeFromTailSource(tail.transcript.source) === adapterType)
-    ) {
-      return tail;
-    }
+  const endpointHarness = canonicalSessionHarness(endpoint.harness);
+  const expectedTailSource = endpointHarness === "grok-acp" ? "grok" : endpointHarness;
+  if (!expectedTailSource || !["grok", "kimi", "opencode", "cursor"].includes(expectedTailSource)) {
+    return null;
   }
-  return null;
+
+  const readFromDiscovery = async (discovery: DiscoverySnapshot) => {
+    for (const providerRef of providerRefs) {
+      const normalizedProviderRef = normalizeSessionRefId(providerRef);
+      if (!normalizedProviderRef) continue;
+      const transcripts = tailSessionRefTranscripts(
+        discovery,
+        normalizedProviderRef,
+        expectedTailSource,
+      );
+      if (transcripts.length === 0) continue;
+      const tail = await readTailEventsForSession(providerRef, {
+        discovery: { ...discovery, transcripts },
+      }).catch(() => null);
+      if (!tail) continue;
+      const actualTailSource = canonicalSessionHarness(tail.transcript.source)
+        ?? tail.transcript.source.trim().toLowerCase();
+      if (actualTailSource === expectedTailSource) return tail;
+    }
+    return null;
+  };
+
+  const discovery = await getTailDiscovery().catch(() => null);
+  if (discovery) {
+    const tail = await readFromDiscovery(discovery);
+    if (tail) return tail;
+  }
+
+  // A cached discovery can predate a newly attached native transcript. Refresh
+  // the full inventory, but preserve the same endpoint-source scope on retry.
+  const refreshed = await refreshTailDiscovery("deep").catch(() => null);
+  return refreshed ? readFromDiscovery(refreshed) : null;
 }
 
 function snapshotHasTraceActivity(snapshot: SessionState | null): snapshot is SessionState {
@@ -2145,23 +2236,66 @@ function brokerSessionObserveData(input: {
 
 async function loadBrokerSessionRefObservePayload(
   refId: string,
+  harness: string | null = null,
+  brokerContext?: ObserveBrokerContext | null,
 ): Promise<SessionRefObservePayload | null | typeof AMBIGUOUS_BROKER_SESSION_REF> {
   const normalizedRef = normalizeSessionRefId(refId);
   if (!normalizedRef) {
     return null;
   }
-  const broker = await loadScoutBrokerContext().catch(() => null);
+  const broker = brokerContext === undefined
+    ? await loadScoutBrokerContext().catch(() => null)
+    : brokerContext;
   if (!broker) {
     return null;
   }
-  const endpoint = selectBrokerSessionRefEndpoint(broker.snapshot, normalizedRef);
+  const endpoint = selectBrokerSessionRefEndpoint(broker.snapshot, normalizedRef, harness);
   if (endpoint === AMBIGUOUS_BROKER_SESSION_REF) {
     return AMBIGUOUS_BROKER_SESSION_REF;
   }
   if (!endpoint) {
     return null;
   }
-  const actor = broker.snapshot.actors[endpoint.agentId];
+
+  // A Scout session id is the stable handle for the work, while Claude/Codex
+  // may write the actual turn stream under a harness-owned session id. Reuse
+  // the agent observe path when the catalog already has this agent, but keep
+  // cardless endpoints on the exact endpoint path below so cwd heuristics
+  // cannot attach another session's transcript.
+  const storedAgent = queryAgentById(endpoint.agentId);
+  const actor = broker.snapshot.actors?.[endpoint.agentId];
+  const endpointRoot = endpoint.projectRoot ?? endpoint.cwd ?? null;
+  if (storedAgent) {
+    const agent: WebAgent = {
+      ...storedAgent,
+      // The broker endpoint is the authoritative runtime attachment. Never let
+      // stale projected cwd/session fields prevent native history discovery.
+      harness: endpoint.harness,
+      state: endpoint.state,
+      projectRoot: endpointRoot,
+      cwd: endpoint.cwd ?? endpointRoot,
+      transport: endpoint.transport,
+      harnessSessionId: endpoint.sessionId?.trim() || normalizedRef,
+      project: endpointRoot ? basename(endpointRoot) : storedAgent.project,
+    };
+    const observed = await buildAgentObservePayload(agent, broker, {
+      sessionId: endpoint.sessionId?.trim() || normalizedRef,
+    }).catch(() => null);
+    if (observed && observed.source !== "unavailable") {
+      return {
+        kind: "agent",
+        refId: normalizedRef,
+        agentId: endpoint.agentId,
+        source: observed.source,
+        fidelity: observed.fidelity,
+        historyPath: observed.historyPath,
+        sessionId: observed.sessionId,
+        updatedAt: observed.updatedAt,
+        data: observed.data,
+      };
+    }
+  }
+
   const metadata = endpointMetadataRecord(endpoint);
   const liveSnapshot = await readEndpointSessionSnapshot(endpoint).catch(() => null);
   const providerRefs = endpointProviderSessionRefs(normalizedRef, endpoint, liveSnapshot);
@@ -2254,14 +2388,67 @@ async function loadBrokerSessionRefObservePayload(
 export async function loadSessionRefObservePayload(
   refId: string,
 ): Promise<SessionRefObservePayload | null> {
-  const normalizedRef = normalizeSessionRefId(refId);
+  const parsedRef = parseSessionRouteRef(refId);
+  const normalizedRef = parsedRef?.refId ?? null;
+  const requestedHarness = parsedRef?.harness ?? null;
   if (!normalizedRef) {
     return null;
   }
 
-  const matchedAgent = queryAgents(200).find(
-    (agent) => normalizeSessionRefId(agent.harnessSessionId) === normalizedRef,
-  );
+  let [discovery, brokerContext] = await Promise.all([
+    getTailDiscovery().catch(() => null),
+    loadScoutBrokerContext().catch(() => null),
+  ]);
+  let matchingTranscripts = discovery
+    ? tailSessionRefTranscripts(discovery, normalizedRef, requestedHarness)
+    : [];
+  const cachedHistoryEntry = (!requestedHarness || requestedHarness === "claude")
+    ? sessionRefLookup().get(normalizedRef) ?? null
+    : null;
+  const matchingAgents = queryAgents(200).filter((agent) => (
+    normalizeSessionRefId(agent.harnessSessionId) === normalizedRef
+    && sessionHarnessMatches(requestedHarness, agent.harness)
+  ));
+  const matchingAgentOwners = new Set(matchingAgents.map((agent) => agent.id));
+  if (matchingAgentOwners.size > 1) return null;
+  const matchingBrokerEndpoints = brokerContext
+    ? brokerSessionRefMatchingEndpoints(brokerContext.snapshot, normalizedRef, requestedHarness)
+    : [];
+  const brokerHasPresentationMatch = matchingBrokerEndpoints.some((endpoint) => (
+    isEndpointPresentationRef(endpoint, normalizedRef)
+  ));
+  if (!brokerHasPresentationMatch) {
+    const providerOwnerScopes = new Set([
+      ...matchingAgents.map((agent) => (
+        `${agent.id}\u0000${canonicalSessionHarness(agent.harness) ?? agent.harness?.trim().toLowerCase() ?? ""}`
+      )),
+      ...matchingBrokerEndpoints.map((endpoint) => (
+        `${endpoint.agentId}\u0000${canonicalSessionHarness(endpoint.harness) ?? endpoint.harness?.trim().toLowerCase() ?? ""}`
+      )),
+    ]);
+    if (providerOwnerScopes.size > 1) return null;
+  }
+  const brokerSelection = brokerContext
+    ? selectBrokerSessionRefEndpoint(brokerContext.snapshot, normalizedRef, requestedHarness)
+    : null;
+  if (brokerSelection === AMBIGUOUS_BROKER_SESSION_REF) return null;
+  const knownHarnesses = new Set<string>();
+  for (const agent of matchingAgents) {
+    const harness = canonicalSessionHarness(agent.harness);
+    if (harness) knownHarnesses.add(harness);
+  }
+  for (const transcript of matchingTranscripts) {
+    knownHarnesses.add(canonicalSessionHarness(transcript.source) ?? transcript.source.trim().toLowerCase());
+  }
+  for (const endpoint of matchingBrokerEndpoints) {
+    const harness = canonicalSessionHarness(endpoint.harness);
+    if (harness) knownHarnesses.add(harness);
+  }
+  if (cachedHistoryEntry) knownHarnesses.add("claude");
+  if (!requestedHarness && knownHarnesses.size > 1) return null;
+  // Broker actor ids and handles are presentation refs. They outrank an
+  // unrelated database row whose opaque provider id happens to collide.
+  const matchedAgent = brokerHasPresentationMatch ? undefined : matchingAgents[0];
   if (matchedAgent) {
     const payload = await loadAgentObservePayload(matchedAgent.id);
     if (payload) {
@@ -2279,18 +2466,30 @@ export async function loadSessionRefObservePayload(
     }
   }
 
-  const brokerPayload = await loadBrokerSessionRefObservePayload(normalizedRef);
+  const brokerPayload = await loadBrokerSessionRefObservePayload(
+    normalizedRef,
+    requestedHarness,
+    brokerContext,
+  );
   if (brokerPayload === AMBIGUOUS_BROKER_SESSION_REF) {
     return null;
   }
   if (brokerPayload) {
+    if (!requestedHarness && knownHarnesses.size > 0) {
+      const brokerHarness = canonicalSessionHarness(brokerPayload.data.metadata?.session?.adapterType);
+      if (!brokerHarness || !knownHarnesses.has(brokerHarness)) return null;
+    }
     return brokerPayload;
   }
 
-  let historyEntry = sessionRefLookup().get(normalizedRef) ?? null;
-  if (!historyEntry) {
-    historyEntry = await findTailSessionRefLookupEntry(normalizedRef);
-  }
+  if (!requestedHarness && hasAmbiguousTailHarness(matchingTranscripts)) return null;
+  const tailHistoryEntry = await findTailSessionRefLookupEntry(normalizedRef, requestedHarness);
+  if (tailHistoryEntry === AMBIGUOUS_TAIL_SESSION_REF) return null;
+  const historyEntry = tailHistoryEntry ?? (
+    (requestedHarness === "claude" || (!requestedHarness && (!discovery || matchingTranscripts.length === 0)))
+      ? cachedHistoryEntry
+      : null
+  );
   const historySnapshot = historyEntry
     ? readHistorySnapshot({
         path: historyEntry.historyPath,
@@ -2315,9 +2514,16 @@ export async function loadSessionRefObservePayload(
     };
   }
 
-  let nativeTail = await readTailEventsForSession(normalizedRef).catch(() => null);
+  if (!discovery) return null;
+  let scopedDiscovery = { ...discovery, transcripts: matchingTranscripts };
+  let nativeTail = await readTailEventsForSession(normalizedRef, { discovery: scopedDiscovery }).catch(() => null);
   if (!nativeTail) {
-    nativeTail = await readTailEventsForSession(normalizedRef, { forceDiscovery: true }).catch(() => null);
+    discovery = await getTailDiscovery(true).catch(() => null);
+    if (!discovery) return null;
+    matchingTranscripts = tailSessionRefTranscripts(discovery, normalizedRef, requestedHarness);
+    if (!requestedHarness && hasAmbiguousTailHarness(matchingTranscripts)) return null;
+    scopedDiscovery = { ...discovery, transcripts: matchingTranscripts };
+    nativeTail = await readTailEventsForSession(normalizedRef, { discovery: scopedDiscovery }).catch(() => null);
   }
   if (!nativeTail) {
     return null;

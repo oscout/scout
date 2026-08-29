@@ -16,7 +16,7 @@ export function ScoutbotRealtimeVoice({
 }: {
   dictationActive: boolean;
 }) {
-  const enabled = useOptionalFlag(SCOUT_REALTIME_VOICE_FLAG, false);
+  const enabled = useOptionalFlag(SCOUT_REALTIME_VOICE_FLAG, true);
   // The chip owns the trigger and the popover shell; call state and controls
   // live in ScoutbotRealtimeVoiceCall, shared with the macOS embed.
   const { open, setOpen, state } = useScoutbotRealtimeVoice();

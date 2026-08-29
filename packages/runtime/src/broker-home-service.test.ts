@@ -105,6 +105,7 @@ function activity(input: Partial<ActivityItem> = {}): ActivityItem {
 function createService(input: {
   snapshot: RuntimeRegistrySnapshot;
   activityItems?: ActivityItem[];
+  projectionState?: "ready" | "warming" | "degraded" | "disabled";
   operatorDisplayName?: string;
   now?: number;
 }) {
@@ -115,6 +116,10 @@ function createService(input: {
       listActivityCalls.push(options);
       return input.activityItems ?? [];
     },
+    projectionStatus: () => ({
+      state: input.projectionState ?? "ready",
+      detail: null,
+    }),
     actorDisplayName: (snapshot, actorId) => brokerActorDisplayName(snapshot, actorId, {
       operatorActorId: "operator",
       operatorDisplayName: input.operatorDisplayName ?? "Operator",
@@ -177,6 +182,8 @@ describe("broker home service", () => {
     const home = await service.read();
 
     expect(home.updatedAt).toBe(10_000);
+    expect(home.activitySource).toBe("sqlite_projection");
+    expect(home.activityState).toBe("ready");
     expect(home.agents.map((agentCard) => agentCard.id)).toEqual([
       "worker",
       "helper",
@@ -341,5 +348,59 @@ describe("broker home service", () => {
         timestamp: 2_000,
       },
     ]);
+  });
+
+  test("returns runtime message activity without waiting for a warming projection", async () => {
+    const snapshot = createRuntimeRegistrySnapshot({
+      actors: {
+        operator: actor({ displayName: "Configured Operator" }),
+      },
+      conversations: {
+        "channel.shared": conversation(),
+      },
+      messages: {
+        older: {
+          id: "older",
+          conversationId: "channel.shared",
+          actorId: "operator",
+          originNodeId: "node-local",
+          class: "agent",
+          body: "Earlier update",
+          visibility: "workspace",
+          policy: "durable",
+          createdAt: 1_000,
+        },
+        newer: {
+          id: "newer",
+          conversationId: "channel.shared",
+          actorId: "operator",
+          originNodeId: "node-local",
+          class: "status",
+          body: "Restoring recent activity",
+          visibility: "workspace",
+          policy: "durable",
+          createdAt: 2_000,
+        },
+      },
+    });
+    const { service, listActivityCalls } = createService({
+      snapshot,
+      projectionState: "warming",
+      activityItems: [activity()],
+      operatorDisplayName: "Arach",
+    });
+
+    const home = await service.read();
+
+    expect(listActivityCalls).toEqual([]);
+    expect(home.activitySource).toBe("runtime_snapshot");
+    expect(home.activityState).toBe("warming");
+    expect(home.activity.map((item) => item.id)).toEqual(["newer", "older"]);
+    expect(home.activity[0]).toEqual(expect.objectContaining({
+      kind: "system",
+      actorName: "Arach",
+      channel: "shared",
+      detail: "Restoring recent activity",
+    }));
   });
 });

@@ -55,6 +55,9 @@ describe("scout voice native sessions", () => {
           { kind: "speechRecognition", status: "authorized", granted: true, canRequest: false },
         ],
       },
+      devices: [
+        { id: "mic-1", name: "ATR2500x", isDefault: true },
+      ],
     });
 
     const seen: string[] = [];
@@ -73,6 +76,8 @@ describe("scout voice native sessions", () => {
         type: "session.start",
         sessionId,
         surface: "chat-composer",
+        inputDeviceId: "mic-1",
+        inputDeviceName: "ATR2500x",
       },
     });
 
@@ -112,6 +117,7 @@ describe("scout voice native sessions", () => {
       ok: true,
       capture: "native",
       microphoneGranted: true,
+      inputDevice: { id: "mic-1", name: "ATR2500x" },
       host: { hostId: "scout-menu" },
     });
 

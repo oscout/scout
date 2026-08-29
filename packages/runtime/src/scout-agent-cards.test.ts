@@ -31,7 +31,7 @@ describe("buildScoutAgentCard", () => {
         advertiseScope: "local",
         metadata: {
           project: "Dewey",
-          projectRoot: "/Users/example/dev/dewey",
+          projectRoot: "/Users/arach/dev/dewey",
           branch: "main",
           description: "General coding assistant for the Dewey workspace.",
           version: "2026.04",
@@ -53,14 +53,14 @@ describe("buildScoutAgentCard", () => {
         harness: "claude",
         transport: "claude_stream_json",
         state: "idle",
-        cwd: "/Users/example/dev/dewey",
-        projectRoot: "/Users/example/dev/dewey",
+        cwd: "/Users/arach/dev/dewey",
+        projectRoot: "/Users/arach/dev/dewey",
         sessionId: "relay-dewey-claude",
       },
     };
 
     const card = buildScoutAgentCard(binding, {
-      currentDirectory: "/Users/example/dev/dewey/worktrees/feature-x",
+      currentDirectory: "/Users/arach/dev/dewey/worktrees/feature-x",
       createdById: "arc.node.workspace",
       brokerRegistered: true,
       inboxConversationId: "dm.arc.node.workspace.dewey.node.workspace",
@@ -68,7 +68,7 @@ describe("buildScoutAgentCard", () => {
 
     expect(card.agentId).toBe("dewey.node.workspace");
     expect(card.handle).toBe("dewey");
-    expect(card.currentDirectory).toBe("/Users/example/dev/dewey/worktrees/feature-x");
+    expect(card.currentDirectory).toBe("/Users/arach/dev/dewey/worktrees/feature-x");
     expect(card.inboxConversationId).toBe("dm.arc.node.workspace.dewey.node.workspace");
     expect(card.returnAddress.selector).toBe("@dewey.node.workspace");
     expect(card.returnAddress.conversationId).toBe("dm.arc.node.workspace.dewey.node.workspace");

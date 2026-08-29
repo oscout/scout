@@ -39,6 +39,7 @@ import {
   machineScopedAgentIds,
 } from "../../lib/machine-scope.ts";
 import { routeMachineId } from "../../lib/router.ts";
+import { conversationalMessagePreview } from "../../lib/message-visibility.ts";
 import { RailRow } from "../../scout/slots/RailRow.tsx";
 import type { Agent, FleetAsk, SessionEntry } from "../../lib/types.ts";
 
@@ -608,7 +609,7 @@ function SessionRailRow({
   const unread = !channel && !observed && ask?.status === "needs_attention";
   const identifier = threadIdentifier(s, agent);
   const baseSub = channel
-    ? `${s.participantIds.length} members`
+    ? `${s.participantCount ?? s.participantIds.length} members`
     : identifier.toLowerCase() === title.toLowerCase()
       ? undefined
       : identifier;
@@ -629,6 +630,7 @@ function SessionRailRow({
               ? normalizeAgentState(agent.state)
               : "dm"
       }
+      agent={channel ? undefined : agent}
       avatarName={depth === 1 ? (agent?.name ?? conversationChildLabel(s, agent, ask)) : title}
       avatarKind={channel ? "channel" : "user"}
       active={active}
@@ -883,7 +885,7 @@ function conversationChildTooltip(
 ): string | undefined {
   const parts: string[] = [];
   if (ask) parts.push(`task: ${ask.task}`);
-  if (s.preview) parts.push(`preview: ${s.preview}`);
+  if (s.preview) parts.push(`preview: ${conversationalMessagePreview(s.preview)}`);
   if (s.currentBranch ?? agent?.branch) parts.push(`branch: ${s.currentBranch ?? agent?.branch}`);
   if (agent?.harness) parts.push(`harness: ${agent.harness}`);
   return parts.length > 0 ? parts.join("\n") : undefined;
@@ -901,7 +903,7 @@ function threadIdentifier(s: SessionEntry, agent: Agent | undefined): string {
 
 function trimPreview(preview: string | null): string | null {
   if (!preview) return null;
-  const collapsed = preview.replace(/\s+/g, " ").trim();
+  const collapsed = conversationalMessagePreview(preview).replace(/\s+/g, " ").trim();
   if (!collapsed) return null;
   return collapsed.length > 60 ? `${collapsed.slice(0, 57)}…` : collapsed;
 }

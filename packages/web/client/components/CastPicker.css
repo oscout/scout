@@ -1,0 +1,64 @@
+.s-settings-cast-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
+  gap: var(--space-sm);
+  margin-top: var(--space-sm);
+}
+
+.s-settings-cast-choice {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-xs);
+  padding: var(--space-md) var(--space-sm);
+  border: 1px solid var(--hud-border);
+  border-radius: var(--hud-radius);
+  background: var(--hud-surface);
+  cursor: pointer;
+  transition: all 150ms ease;
+  position: relative;
+}
+
+.s-settings-cast-choice:hover {
+  border-color: color-mix(in srgb, var(--hud-border) 60%, white 40%);
+  background: color-mix(in srgb, var(--hud-surface) 85%, white 15%);
+}
+
+.s-settings-cast-choice[data-active] {
+  border-color: color-mix(in srgb, var(--hud-border) 35%, white 65%);
+  background: color-mix(in srgb, var(--hud-surface) 80%, white 20%);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--hud-border) 35%, white 65%), 0 2px 8px rgba(0, 0, 0, 0.25);
+}
+
+.s-settings-cast-name {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.s-settings-cast-title {
+  font-family: var(--font-sans);
+  font-size: var(--text-2xs);
+  color: var(--muted);
+  text-align: center;
+  line-height: 1.2;
+}
+
+.s-settings-cast-check {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  color: var(--hud-ink);
+}
+
+.s-cast-picker-coverage {
+  grid-column: 1 / -1;
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  color: var(--muted);
+}
+
+.agent-config-cast {
+  margin-top: var(--space-md);
+}

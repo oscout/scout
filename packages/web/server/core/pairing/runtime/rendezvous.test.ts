@@ -9,7 +9,7 @@ describe("pairing runtime OSN rendezvous", () => {
       env: {
         OPENSCOUT_MESH_ID: "openscout",
         OPENSCOUT_NODE_ID: "mac-mini-openscout",
-        OPENSCOUT_NODE_NAME: "Scout Mac mini",
+        OPENSCOUT_NODE_NAME: "Arach's Mac mini",
       },
       now: 30_000,
     });
@@ -17,7 +17,7 @@ describe("pairing runtime OSN rendezvous", () => {
     expect(node).toMatchObject({
       id: "mac-mini-openscout",
       meshId: "openscout",
-      name: "Scout Mac mini",
+      name: "Arach's Mac mini",
       advertiseScope: "mesh",
       lastSeenAt: 30_000,
     });

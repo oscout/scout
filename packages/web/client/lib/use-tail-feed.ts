@@ -5,18 +5,15 @@ import { useTailEvents } from "./tail-events.ts";
 import { appendLiveTailEvent, mergeHydratedTailEvents } from "./tail-event-merge.ts";
 import { isScoutSurfaceActive, onScoutSurfaceActivated } from "./surface-activity.ts";
 import type { TailDiscoverySnapshot, TailEvent } from "./types.ts";
+import type { TailFeedLoadPhase, TailFeedLoadState } from "./tail-feed-state.ts";
+
+export { tailFeedFailure } from "./tail-feed-state.ts";
+export type { TailFeedLoadPhase, TailFeedLoadState } from "./tail-feed-state.ts";
 
 const DEFAULT_RECENT_LIMIT = 500;
 const DEFAULT_DISCOVERY_INTERVAL_MS = 30_000;
 
 type TailDiscoveryScope = "hot" | "shallow" | "deep";
-
-export type TailFeedLoadPhase = "loading" | "ready" | "error";
-
-export type TailFeedLoadState = {
-  discovery: TailFeedLoadPhase;
-  recent: TailFeedLoadPhase;
-};
 
 function emptyTailDiscoverySnapshot(): TailDiscoverySnapshot {
   return {
@@ -87,7 +84,10 @@ export function useTailFeed(options?: {
   const [loadState, setLoadState] = useState<TailFeedLoadState>({
     discovery: "loading",
     recent: "loading",
+    discoveryLoaded: false,
+    recentLoaded: false,
   });
+  const recentPhaseRef = useRef<TailFeedLoadPhase>("loading");
   const recentRequestRef = useRef<{ key: string; promise: Promise<void> } | null>(null);
   const recentRequestSequenceRef = useRef(0);
 
@@ -99,6 +99,7 @@ export function useTailFeed(options?: {
     if (!enabled) return Promise.resolve();
     if (pauseWhenHidden && !isScoutSurfaceActive()) return Promise.resolve();
     if (showLoading) {
+      recentPhaseRef.current = "loading";
       setLoadState((previous) => ({ ...previous, recent: "loading" }));
     }
     const requestKey = `${recentLimit}:${includeTranscriptReplay ? "replay" : "live"}`;
@@ -111,11 +112,13 @@ export function useTailFeed(options?: {
       .then((hydrated) => {
         setEvents((previous) => mergeHydratedTailEvents(previous, hydrated, recentLimit));
         if (sequence === recentRequestSequenceRef.current) {
-          setLoadState((previous) => ({ ...previous, recent: "ready" }));
+          recentPhaseRef.current = "ready";
+          setLoadState((previous) => ({ ...previous, recent: "ready", recentLoaded: true }));
         }
       })
       .catch(() => {
         if (sequence === recentRequestSequenceRef.current) {
+          recentPhaseRef.current = "error";
           setLoadState((previous) => ({ ...previous, recent: "error" }));
         }
       })
@@ -137,8 +140,13 @@ export function useTailFeed(options?: {
     try {
       const snap = await api<TailDiscoverySnapshot>(tailDiscoveryPath(discoveryScope, discoveryLimit));
       setDiscovery(snap);
-      setLoadState((previous) => ({ ...previous, discovery: "ready" }));
-      if (hydrateOnDiscovery && ((snap.transcripts?.length ?? 0) > 0 || snap.processes.length > 0)) {
+      setLoadState((previous) => ({ ...previous, discovery: "ready", discoveryLoaded: true }));
+      const hasSources = (snap.transcripts?.length ?? 0) > 0 || snap.processes.length > 0;
+      // A failed recent scan re-runs on this poll even when there is nothing to
+      // hydrate from. Otherwise the retry that clears the error only fires once
+      // the fleet gets busy again, so a quiet fleet — the one case where the
+      // surface has no lanes to fall back on — pins the failure state forever.
+      if ((hydrateOnDiscovery && hasSources) || recentPhaseRef.current === "error") {
         void refreshRecent();
       }
     } catch {

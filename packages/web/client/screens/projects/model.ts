@@ -573,7 +573,7 @@ export function conversationForCatalogSession(
 function compactSurfaceLabel(surfaceSessionId: string): string {
   return surfaceSessionId
     .replace(/^relay-/u, "")
-    .replace(/-dev-mac-mini-local-(claude|codex)$/iu, "");
+    .replace(/-arts-mac-mini-local-(claude|codex)$/iu, "");
 }
 
 export function peekSessionTitle(

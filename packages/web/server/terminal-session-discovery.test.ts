@@ -14,16 +14,16 @@ import {
 
 describe("terminal session discovery", () => {
   test("parses tmux session inventory", () => {
-    expect(parseTmuxSessionList("relay-claude|1|0|claude|/Users/example/dev/openscout\nlattices-c36f74\t2\t1\tzsh\t/Users/example\n")).toEqual([
-      { name: "relay-claude", windows: 1, attached: 0, currentCommand: "claude", currentPath: "/Users/example/dev/openscout" },
-      { name: "lattices-c36f74", windows: 2, attached: 1, currentCommand: "zsh", currentPath: "/Users/example" },
+    expect(parseTmuxSessionList("relay-claude|1|0|claude|/Users/art/dev/openscout\nlattices-c36f74\t2\t1\tzsh\t/Users/art\n")).toEqual([
+      { name: "relay-claude", windows: 1, attached: 0, currentCommand: "claude", currentPath: "/Users/art/dev/openscout" },
+      { name: "lattices-c36f74", windows: 2, attached: 1, currentCommand: "zsh", currentPath: "/Users/art" },
     ]);
   });
 
 
   test("keeps delimiters inside tmux current paths", () => {
-    expect(parseTmuxSessionList("dev|2|1|zsh|/Users/example/dev/foo|bar\n")).toEqual([
-      { name: "dev", windows: 2, attached: 1, currentCommand: "zsh", currentPath: "/Users/example/dev/foo|bar" },
+    expect(parseTmuxSessionList("dev|2|1|zsh|/Users/art/dev/foo|bar\n")).toEqual([
+      { name: "dev", windows: 2, attached: 1, currentCommand: "zsh", currentPath: "/Users/art/dev/foo|bar" },
     ]);
   });
 

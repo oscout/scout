@@ -55,7 +55,7 @@ if (!runScoutdConformance) {
 
 test("tmux session parser preserves host-reported last activity", () => {
   expect(parseTmuxSessionList(
-    "alpha|2|1|1710000000|1710003600|zsh|/Users/example/dev/alpha\n",
+    "alpha|2|1|1710000000|1710003600|zsh|/Users/art/dev/alpha\n",
   )).toEqual([{
     name: "alpha",
     windows: 2,
@@ -63,7 +63,7 @@ test("tmux session parser preserves host-reported last activity", () => {
     createdAt: 1710000000,
     activityAt: 1710003600,
     currentCommand: "zsh",
-    currentPath: "/Users/example/dev/alpha",
+    currentPath: "/Users/art/dev/alpha",
   }]);
 });
 
@@ -1270,14 +1270,14 @@ if [ "$1" = "-axo" ] && [ "$2" = "pid=,ppid=,pgid=,tty=,command=" ]; then
   fi
   cat <<'ROWS'
 101 1 101 ttys001 /bin/zsh -l
-202 101 101 ?? /usr/bin/node /Users/example/dev/app.js
+202 101 101 ?? /usr/bin/node /Users/art/dev/app.js
 ROWS
   exit 0
 fi
 if [ "$1" = "-axww" ] && [ "$2" = "-o" ] && [ "$3" = "pid=,ppid=,etime=,command=" ]; then
   cat <<'ROWS'
 101 1 00:01 /bin/zsh -l
-202 101 00:02 /usr/bin/node /Users/example/dev/app.js
+202 101 00:02 /usr/bin/node /Users/art/dev/app.js
 303 202 00:03 claude --dangerously-skip-permissions
 404 202 00:04 /bin/sh -c echo hello
 505 202 00:05 /usr/bin/python3 worker.py
@@ -1295,7 +1295,7 @@ exit 64
     writeFileSync(script, `#!/bin/sh
 if [ "$1" = "-a" ] && [ "$2" = "-p" ] && [ "$4" = "-d" ] && [ "$5" = "cwd" ] && [ "$6" = "-Fn" ]; then
   printf 'p%s\\n' "$3"
-  printf 'n/Users/example/dev/openscout\\n'
+  printf 'n/Users/art/dev/openscout\\n'
   exit 0
 fi
 if [ "$1" = "-nP" ] && [ "$3" = "-sTCP:LISTEN" ] && [ "$4" = "-Fp" ]; then
@@ -1317,13 +1317,13 @@ if [ "$1" = "-S" ]; then
 fi
 if [ "$1" = "list-sessions" ]; then
   cat <<'ROWS'
-alpha|2|1|1710000000|1710003600|zsh|/Users/example/dev/alpha
+alpha|2|1|1710000000|1710003600|zsh|/Users/art/dev/alpha
 beta|1|0|||node|
 ROWS
   exit 0
 fi
 if [ "$1" = "display-message" ]; then
-  printf '123\\t/dev/ttys003\\t/Users/example/dev/project\\n'
+  printf '123\\t/dev/ttys003\\t/Users/art/dev/project\\n'
   exit 0
 fi
 if [ "$1" = "capture-pane" ]; then
@@ -2022,7 +2022,7 @@ exit 64
     ]);
 
     expect(daemon).toEqual(local);
-    expect(daemon.value).toBe("/Users/example/dev/openscout");
+    expect(daemon.value).toBe("/Users/art/dev/openscout");
   }, SCOUTD_CONFORMANCE_TIMEOUT_MS);
 
   test("net.listeners fixture matches between scoutd and the TS local twin", async () => {
@@ -2075,7 +2075,7 @@ exit 64
         createdAt: 1710000000,
         activityAt: 1710003600,
         currentCommand: "zsh",
-        currentPath: "/Users/example/dev/alpha",
+        currentPath: "/Users/art/dev/alpha",
       },
       {
         name: "beta",
@@ -2104,7 +2104,7 @@ exit 64
     expect(daemon.value).toEqual({
       panePid: 123,
       paneTty: "ttys003",
-      paneCurrentPath: "/Users/example/dev/project",
+      paneCurrentPath: "/Users/art/dev/project",
     });
   }, SCOUTD_CONFORMANCE_TIMEOUT_MS);
 

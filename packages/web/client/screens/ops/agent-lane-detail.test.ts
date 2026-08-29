@@ -5,6 +5,7 @@ import {
   buildLaneSessionStats,
   buildLaneTouchedFiles,
   docExcerpt,
+  laneProjectPath,
   relatedLaneDocs,
   relatedLanePlans,
   relatedLaneSessionDocuments,
@@ -46,7 +47,7 @@ function makePlanDocument(overrides: Partial<PlanDocument> = {}): PlanDocument {
     status: "active",
     confidence: "native",
     path: "docs/agent-lanes-plan.md",
-    workspacePath: "/Users/example/dev/openscout",
+    workspacePath: "/Users/art/dev/openscout",
     workspaceName: "openscout",
     agentId: null,
     agentName: null,
@@ -56,7 +57,7 @@ function makePlanDocument(overrides: Partial<PlanDocument> = {}): PlanDocument {
     steps: [{ id: "s1", order: 0, text: "Add inspect sheet", status: "in_progress", rawMarker: ">" }],
     createdAt: 1,
     updatedAt: 2,
-    provenance: { root: "/Users/example/dev/openscout", rootKind: "workspace", relativePath: "docs/agent-lanes-plan.md" },
+    provenance: { root: "/Users/art/dev/openscout", rootKind: "workspace", relativePath: "docs/agent-lanes-plan.md" },
     ...overrides,
   };
 }
@@ -77,7 +78,7 @@ describe("buildLaneSessionStats", () => {
         session: {
           model: "grok-3",
           gitBranch: "main",
-          cwd: "/Users/example/dev/openscout",
+          cwd: "/Users/art/dev/openscout",
           externalSessionId: "sess-abc",
         },
         usage: { inputTokens: 1200, outputTokens: 340, totalTokens: 1540 },
@@ -94,9 +95,26 @@ describe("buildLaneSessionStats", () => {
     expect(stats.model).toBe("grok-3");
     expect(stats.branch).toBe("main");
     expect(stats.harness).toBe("grok");
-    expect(stats.cwd).toBe("/Users/example/dev/openscout");
+    expect(stats.cwd).toBe("/Users/art/dev/openscout");
     expect(stats.sessionId).toBe("sess-abc");
     expect(stats.usage?.totalTokens).toBe(1540);
+  });
+
+  test("uses one observed project path for both pin state and mutation", () => {
+    const lane = makeLane({
+      events: [],
+      files: [],
+      metadata: { session: { cwd: "/work/observed" } },
+    }, {
+      agent: makeAgent({ cwd: "/work/agent", projectRoot: "/work/root" }),
+      facts: {
+        cwd: "/work/event-derived",
+        touchedFiles: [],
+        turn: { phase: "idle" },
+      },
+    });
+
+    expect(laneProjectPath(lane)).toBe("/work/observed");
   });
 });
 

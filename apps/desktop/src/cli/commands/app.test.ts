@@ -90,22 +90,22 @@ describe("selectInstalledAppBundle", () => {
     const installed = "/Applications/OpenScout.app";
     const existing = new Set([
       installed,
-      "/Users/example/dev/openscout/apps/macos/dist/Scout.app",
+      "/Users/art/dev/openscout/apps/macos/dist/Scout.app",
     ]);
 
     expect(selectInstalledAppBundle(
       [...existing].reverse(),
-      "/Users/example",
+      "/Users/art",
       (path) => existing.has(path),
     )).toBe(installed);
   });
 
   test("never treats a repo-built Scout.app as an installed fallback", () => {
-    const worktreeBuild = "/Users/example/dev/openscout/apps/macos/dist/Scout.app";
+    const worktreeBuild = "/Users/art/dev/openscout/apps/macos/dist/Scout.app";
 
     expect(selectInstalledAppBundle(
       [worktreeBuild],
-      "/Users/example",
+      "/Users/art",
       (path) => path === worktreeBuild,
     )).toBeNull();
   });
@@ -115,7 +115,7 @@ describe("selectInstalledAppBundle", () => {
 
     expect(selectInstalledAppBundle(
       [relocated],
-      "/Users/example",
+      "/Users/art",
       (path) => path === relocated,
     )).toBe(relocated);
   });

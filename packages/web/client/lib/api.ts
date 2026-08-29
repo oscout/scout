@@ -1,3 +1,5 @@
+import { recordApiTiming } from "./perf.ts";
+
 type ApiTextResponse = {
   text: string;
   contentType: string | null;
@@ -5,7 +7,38 @@ type ApiTextResponse = {
 
 const inFlightGets = new Map<string, Promise<ApiTextResponse>>();
 const settledGets = new Map<string, { response: ApiTextResponse; receivedAt: number }>();
-const MAX_SETTLED_GETS = 32;
+const MAX_SETTLED_GETS = 128;
+
+let inFlightAuthRefresh: Promise<boolean> | null = null;
+
+function resolveBootstrapPath(): string {
+  const custom = (globalThis as unknown as {
+    __OPENSCOUT_WEB_BOOTSTRAP__?: { routes?: { bootstrapScriptPath?: string } };
+  })?.__OPENSCOUT_WEB_BOOTSTRAP__?.routes?.bootstrapScriptPath;
+  return custom?.trim() || "/api/bootstrap.js";
+}
+
+export async function refreshSessionAuth(): Promise<boolean> {
+  if (inFlightAuthRefresh) {
+    return inFlightAuthRefresh;
+  }
+  const bootstrapPath = resolveBootstrapPath();
+  inFlightAuthRefresh = (async () => {
+    try {
+      const res = await fetch(bootstrapPath, {
+        method: "GET",
+        credentials: "include",
+        cache: "no-store",
+      });
+      return res.ok;
+    } catch {
+      return false;
+    } finally {
+      inFlightAuthRefresh = null;
+    }
+  })();
+  return inFlightAuthRefresh;
+}
 
 function formatResponsePreview(text: string): string {
   const normalized = text.replace(/\s+/g, " ").trim();
@@ -34,15 +67,28 @@ function requestKey(path: string, init?: RequestInit): string {
 }
 
 async function fetchApiText(path: string, init?: RequestInit): Promise<ApiTextResponse> {
-  const res = await fetch(path, {
-    ...init,
-    headers: {
-      ...(init?.headers ?? {}),
-      ...(init?.body ? { "content-type": "application/json" } : {}),
-    },
-  });
+  const method = (init?.method ?? "GET").toUpperCase();
+  const startedAt = performance.now();
+  const performFetch = async () =>
+    fetch(path, {
+      ...init,
+      headers: {
+        ...(init?.headers ?? {}),
+        ...(init?.body ? { "content-type": "application/json" } : {}),
+      },
+    });
+
+  let res = await performFetch();
+  if (res.status === 401 && !path.includes("/bootstrap.js")) {
+    const refreshed = await refreshSessionAuth();
+    if (refreshed) {
+      res = await performFetch();
+    }
+  }
+
   if (!res.ok) {
     const text = await res.text();
+    recordApiTiming({ method, path, ms: performance.now() - startedAt, bytes: text.length, ok: false });
     let message = text || `HTTP ${res.status}`;
     try {
       const body = JSON.parse(text);
@@ -52,8 +98,10 @@ async function fetchApiText(path: string, init?: RequestInit): Promise<ApiTextRe
     }
     throw new Error(message);
   }
+  const text = await res.text();
+  recordApiTiming({ method, path, ms: performance.now() - startedAt, bytes: text.length, ok: true });
   return {
-    text: await res.text(),
+    text,
     contentType: res.headers.get("content-type"),
   };
 }

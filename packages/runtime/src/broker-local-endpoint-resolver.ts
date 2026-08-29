@@ -7,6 +7,7 @@ import type {
 } from "@openscout/protocol";
 
 import { isA2AHttpEndpoint } from "./a2a-http-endpoint.js";
+import { isCodexThreadHeldExternallyError } from "./codex-app-server.js";
 import {
   compareLocalEndpointPreference,
   endpointMatchesTargetSession,
@@ -221,6 +222,12 @@ export class BrokerLocalEndpointResolver {
           const revived = await this.reviveExactSessionEndpoint(endpoint);
           if (revived) return revived;
         } catch (error) {
+          if (isCodexThreadHeldExternallyError(error)) {
+            // The thread is open in another app, not dead — surface the truth
+            // so the caller parks delivery instead of latching this endpoint
+            // offline as if the session were gone.
+            throw error;
+          }
           await this.options.persistEndpoint({
             ...endpoint,
             state: "offline",

@@ -28,6 +28,12 @@ export interface RuntimeRegistrySnapshot {
 
 export interface RuntimeRegistrySnapshotQuery {
   since?: number | null;
+  /**
+   * Keep only records needed to render conversation lists and transcripts.
+   * This avoids serializing thousands of unrelated historical agent
+   * registrations on the latency-sensitive app startup path.
+   */
+  scope?: "conversations";
 }
 
 export function createRuntimeRegistrySnapshot(
@@ -111,21 +117,23 @@ export function queryRuntimeRegistrySnapshot(
   query: RuntimeRegistrySnapshotQuery = {},
 ): RuntimeRegistrySnapshot {
   const since = finiteTimestamp(query.since);
-  if (since === null) {
+  const conversationScoped = query.scope === "conversations";
+  if (since === null && !conversationScoped) {
     return snapshot;
   }
+  const cutoff = since ?? 0;
 
   const messages = Object.values(snapshot.messages)
-    .filter((message) => message.createdAt >= since);
+    .filter((message) => message.createdAt >= cutoff);
   const recentInvocationIds = new Set(
     Object.values(snapshot.invocations)
-      .filter((invocation) => invocation.createdAt >= since)
+      .filter((invocation) => invocation.createdAt >= cutoff)
       .map((invocation) => invocation.id),
   );
   const flights = Object.values(snapshot.flights)
     .filter((flight) =>
       ACTIVE_FLIGHT_STATES.has(flight.state)
-      || recordTimestamp(flight) >= since
+      || recordTimestamp(flight) >= cutoff
       || recentInvocationIds.has(flight.invocationId)
     );
   const retainedInvocationIds = new Set([
@@ -135,7 +143,7 @@ export function queryRuntimeRegistrySnapshot(
   const invocations = Object.values(snapshot.invocations)
     .filter((invocation) => retainedInvocationIds.has(invocation.id));
   const collaborationRecords = Object.values(snapshot.collaborationRecords)
-    .filter((record) => activeCollaboration(record) || record.updatedAt >= since);
+    .filter((record) => activeCollaboration(record) || record.updatedAt >= cutoff);
 
   const conversationIds = new Set<string>();
   for (const message of messages) conversationIds.add(message.conversationId);
@@ -150,7 +158,7 @@ export function queryRuntimeRegistrySnapshot(
     // all; treating them as "unknown age" keeps them visible instead of
     // silently dropping them from every incremental snapshot.
     const timestamp = recordTimestamp(conversation);
-    if (timestamp === 0 || timestamp >= since) conversationIds.add(conversation.id);
+    if (timestamp === 0 || timestamp >= cutoff) conversationIds.add(conversation.id);
   }
 
   const conversations: ConversationDefinition[] = [];
@@ -166,20 +174,66 @@ export function queryRuntimeRegistrySnapshot(
     }
   }
 
+  let scopedInvocations = invocations;
+  let scopedFlights = flights;
+  if (conversationScoped) {
+    const activeFlightInvocationIds = new Set(
+      flights
+        .filter((flight) => ACTIVE_FLIGHT_STATES.has(flight.state))
+        .map((flight) => flight.invocationId),
+    );
+    const newestByConversation = new Map<string, InvocationRequest[]>();
+    for (const invocation of invocations) {
+      const conversationId = invocation.conversationId;
+      if (!conversationId || !conversationIds.has(conversationId)) continue;
+      const bucket = newestByConversation.get(conversationId) ?? [];
+      bucket.push(invocation);
+      newestByConversation.set(conversationId, bucket);
+    }
+    scopedInvocations = [...newestByConversation.values()].flatMap((bucket) => {
+      const sorted = bucket.sort((left, right) => right.createdAt - left.createdAt);
+      const selected = sorted.slice(0, 12);
+      const selectedIds = new Set(selected.map((invocation) => invocation.id));
+      for (const invocation of sorted) {
+        if (activeFlightInvocationIds.has(invocation.id) && !selectedIds.has(invocation.id)) {
+          selected.push(invocation);
+          selectedIds.add(invocation.id);
+        }
+      }
+      return selected;
+    });
+    const scopedInvocationIds = new Set(scopedInvocations.map((invocation) => invocation.id));
+    scopedFlights = flights.filter((flight) => scopedInvocationIds.has(flight.invocationId));
+  }
+
   const actorIds = new Set<string>();
   const agentIds = new Set<string>();
-  for (const agent of Object.values(snapshot.agents)) {
-    if (currentAgent(agent)) agentIds.add(agent.id);
+  const currentEndpointAgentIds = new Set(
+    Object.values(snapshot.endpoints)
+      .filter((endpoint) => currentOrRecentEndpoint(endpoint, cutoff))
+      .map((endpoint) => endpoint.agentId),
+  );
+  for (const conversation of conversations) {
+    const keepWholeRoster = !conversationScoped
+      || conversation.kind === "direct"
+      || conversation.kind === "group_direct";
+    for (const [index, participantId] of conversation.participantIds.entries()) {
+      if (
+        keepWholeRoster
+        || index < 32
+        || snapshot.actors[participantId]?.kind === "person"
+        || currentEndpointAgentIds.has(participantId)
+      ) {
+        actorIds.add(participantId);
+      }
+    }
   }
-  const endpoints = Object.values(snapshot.endpoints)
-    .filter((endpoint) => currentOrRecentEndpoint(endpoint, since));
-  for (const endpoint of endpoints) agentIds.add(endpoint.agentId);
   for (const message of messages) actorIds.add(message.actorId);
-  for (const invocation of invocations) {
+  for (const invocation of scopedInvocations) {
     actorIds.add(invocation.requesterId);
     agentIds.add(invocation.targetAgentId);
   }
-  for (const flight of flights) {
+  for (const flight of scopedFlights) {
     actorIds.add(flight.requesterId);
     agentIds.add(flight.targetAgentId);
   }
@@ -188,9 +242,22 @@ export function queryRuntimeRegistrySnapshot(
     if (record.ownerId) actorIds.add(record.ownerId);
     if (record.nextMoveOwnerId) actorIds.add(record.nextMoveOwnerId);
   }
-  for (const conversation of conversations) {
-    for (const participantId of conversation.participantIds) actorIds.add(participantId);
+
+  if (!conversationScoped) {
+    for (const agent of Object.values(snapshot.agents)) {
+      if (currentAgent(agent)) agentIds.add(agent.id);
+    }
   }
+  for (const actorId of actorIds) {
+    if (snapshot.agents[actorId]) agentIds.add(actorId);
+  }
+
+  const endpoints = Object.values(snapshot.endpoints)
+    .filter((endpoint) =>
+      currentOrRecentEndpoint(endpoint, cutoff)
+      && (!conversationScoped || agentIds.has(endpoint.agentId) || actorIds.has(endpoint.agentId))
+    );
+  for (const endpoint of endpoints) agentIds.add(endpoint.agentId);
   for (const agentId of agentIds) actorIds.add(agentId);
 
   const agents = Object.values(snapshot.agents)
@@ -215,8 +282,8 @@ export function queryRuntimeRegistrySnapshot(
       Object.entries(snapshot.readCursors)
         .filter(([, cursor]) => conversationIds.has(cursor.conversationId)),
     ),
-    invocations: recordById(invocations),
-    flights: recordById(flights),
+    invocations: recordById(scopedInvocations),
+    flights: recordById(scopedFlights),
     collaborationRecords: recordById(collaborationRecords),
   });
 }

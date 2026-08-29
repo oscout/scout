@@ -216,7 +216,7 @@ export function terminalSessionProjectLabel(session: TerminalSessionRecord, surf
   if (rootLeaf) return rootLeaf;
 
   const relayName = surface?.sessionName ?? session.sourceSessionId;
-  const relayMatch = /^relay-(.+?)-(?:dev-mac-mini-local-)?(?:claude|codex)$/iu.exec(relayName);
+  const relayMatch = /^relay-(.+?)-(?:arts-mac-mini-local-)?(?:claude|codex)$/iu.exec(relayName);
   if (relayMatch?.[1]) return relayMatch[1];
 
   return isDiscoveredTerminalSession(session) ? "backend-only" : "unscoped";
@@ -289,11 +289,14 @@ export function terminalListItems(sessions: TerminalSessionRecord[]): TerminalLi
 }
 
 /**
- * Split picker items into "managed" sessions — herdr layouts and multi-window
- * tmux sessions, where the host owns the layout — and the regular flat list of
- * single-pane terminals. Managed sessions collapse to one row per session
- * (herdr by session name, tmux by session id): pane-level surfaces of one
- * managed layout are a single thing to open, not many rows.
+ * Split picker items by interaction model. Multiplexer hosts (herdr, tmux, and
+ * zellij) own a durable session outside Scout, so they belong in the managed
+ * picker even when their current layout happens to contain one pane. Plain PTY
+ * sessions stay in the regular list.
+ *
+ * Each multiplexer session collapses to one row. Pane-level surfaces remain
+ * available on the underlying session record, but repeating them in the picker
+ * would make the host layout look like a pile of unrelated terminals.
  */
 export function partitionTerminalListItems(items: TerminalListItem[]): {
   managed: TerminalListItem[];
@@ -301,20 +304,14 @@ export function partitionTerminalListItems(items: TerminalListItem[]): {
 } {
   const managed: TerminalListItem[] = [];
   const regular: TerminalListItem[] = [];
-  const seenHerdrNames = new Set<string>();
-  const seenManagedTmuxSessions = new Set<string>();
+  const seenMultiplexerSessions = new Set<string>();
   for (const item of items) {
-    if (item.surface.backend === "herdr") {
-      if (!seenHerdrNames.has(item.surface.sessionName)) {
-        seenHerdrNames.add(item.surface.sessionName);
-        managed.push(item);
-      }
-      continue;
-    }
-    const windows = item.session.metadata?.windows;
-    if (item.surface.backend === "tmux" && typeof windows === "number" && windows > 1) {
-      if (!seenManagedTmuxSessions.has(item.session.id)) {
-        seenManagedTmuxSessions.add(item.session.id);
+    if (item.surface.backend === "herdr" || item.surface.backend === "tmux" || item.surface.backend === "zellij") {
+      const identity = item.surface.backend === "herdr"
+        ? `${item.surface.backend}:${item.surface.sessionName}`
+        : `${item.surface.backend}:${item.session.id}`;
+      if (!seenMultiplexerSessions.has(identity)) {
+        seenMultiplexerSessions.add(identity);
         managed.push(item);
       }
       continue;
@@ -327,7 +324,7 @@ export function partitionTerminalListItems(items: TerminalListItem[]): {
 export function compactTerminalName(sessionName: string): string {
   return sessionName
     .replace(/^relay-/u, "")
-    .replace(/-dev-mac-mini-local-(claude|codex)$/u, "")
+    .replace(/-arts-mac-mini-local-(claude|codex)$/u, "")
     .replace(/^(claude|codex|tmux)-/u, "$1 · ");
 }
 

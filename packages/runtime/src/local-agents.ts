@@ -92,7 +92,7 @@ import {
   type RelayHarnessProfiles,
   type RelayAgentCardLifecycle,
   type RelayRuntimeTransport,
-  writeRelayAgentOverrides,
+  writeRelayAgentOverrides as writeRelayAgentOverridesToDisk,
   type RelayAgentOverride,
   type ResolvedRelayAgentConfig,
 } from "./setup.js";
@@ -910,6 +910,25 @@ async function readLocalAgentRegistry(): Promise<Record<string, LocalAgentRecord
       localAgentRecordFromRelayAgentOverride(agentId, override),
     ]),
   );
+}
+
+/**
+ * Memo for the parsed archived-id list, keyed by the registry file's identity
+ * (path + mtimeMs + size). relay-agents.json runs to hundreds of KB and the
+ * list is read on every /api/agents request; the stat is cheap, the parse is
+ * not. External writers (the broker writes through setup.ts directly) are
+ * caught by the stat key; writes from this module also invalidate explicitly.
+ */
+let archivedLocalAgentIdsCache: { key: string; ids: string[] } | null = null;
+
+function invalidateArchivedLocalAgentIdsCache(): void {
+  archivedLocalAgentIdsCache = null;
+}
+
+/** Every registry write in this module flows through here so the archived-id memo stays honest. */
+async function writeRelayAgentOverrides(overrides: Record<string, RelayAgentOverride>): Promise<void> {
+  await writeRelayAgentOverridesToDisk(overrides);
+  invalidateArchivedLocalAgentIdsCache();
 }
 
 async function writeLocalAgentRegistry(registry: Record<string, LocalAgentRecord>): Promise<void> {
@@ -2076,7 +2095,11 @@ export async function ensureLocalSessionEndpointOnline(endpoint: AgentEndpoint):
 }> {
   if (endpoint.transport === "codex_app_server") {
     const result = await ensureCodexAppServerAgentOnline(buildCodexEndpointSessionOptions(endpoint));
-    return { externalSessionId: result.threadId };
+    // thread/start returns an in-memory id before Codex creates its rollout.
+    // Keep that provisional id private to the live app-server client so the
+    // first real turn reuses the client instead of rebuilding it and trying
+    // thread/resume against history that does not exist yet.
+    return { externalSessionId: result.durableThreadId };
   }
 
   if (endpoint.transport === "claude_stream_json") {
@@ -2282,16 +2305,31 @@ export async function setLocalAgentArchived(
 export async function listArchivedLocalAgentIds(): Promise<string[]> {
   // This list is read on the hot roster path and only needs one raw flag.
   // Avoid normalizing every relay-agent override (including harness profiles,
-  // runtime policy, and generated identities) just to inspect archivedAt.
+  // runtime policy, and generated identities) just to inspect archivedAt —
+  // and avoid re-parsing the (large) registry at all while it is unchanged.
   try {
     const path = resolveOpenScoutSupportPaths().relayAgentsRegistryPath;
-    const parsed = JSON.parse(await readFile(path, "utf8")) as {
-      agents?: Record<string, { archivedAt?: unknown }>;
-    };
-    return Object.entries(parsed.agents ?? {})
-      .filter(([, override]) => typeof override?.archivedAt === "number")
-      .map(([agentId]) => agentId);
+    const stats = await stat(path);
+    // ino catches replace-by-rename writers even when mtime and size match.
+    const key = `${path}:${stats.ino}:${stats.mtimeMs}:${stats.size}`;
+    let cached = archivedLocalAgentIdsCache;
+    if (cached?.key !== key) {
+      const parsed = JSON.parse(await readFile(path, "utf8")) as {
+        agents?: Record<string, { archivedAt?: unknown }>;
+      };
+      cached = {
+        key,
+        ids: Object.entries(parsed.agents ?? {})
+          .filter(([, override]) => typeof override?.archivedAt === "number")
+          .map(([agentId]) => agentId),
+      };
+      archivedLocalAgentIdsCache = cached;
+    }
+    return [...cached.ids];
   } catch {
+    // Stat failure means the registry is missing; parse failure means it is
+    // unreadable. Either way the pre-memo behavior was an empty list.
+    invalidateArchivedLocalAgentIdsCache();
     return [];
   }
 }
@@ -2735,7 +2773,11 @@ export function buildCodexEndpointSessionOptions(endpoint: AgentEndpoint): Codex
     logsDirectory: relayAgentLogsDirectory(agentName),
     env: {
       CODEX_HOME: codexHomeForEndpoint(endpoint),
-      ...(endpoint.metadata?.placement === "background" ? {
+      // Seed auth only into the Scout-owned background store; when an
+      // external-thread resume routes a background endpoint to the operator
+      // home, copying the operator's auth onto itself is not a thing.
+      ...(endpoint.metadata?.placement === "background"
+        && codexHomeForEndpoint(endpoint) !== operatorCodexHome() ? {
         OPENSCOUT_CODEX_AUTH_SOURCE: join(operatorCodexHome(), "auth.json"),
       } : {}),
     },
@@ -2753,6 +2795,22 @@ export function buildCodexEndpointSessionOptions(endpoint: AgentEndpoint): Codex
  * therefore appear as top-level tasks in the normal Codex app.
  */
 export function codexHomeForEndpoint(endpoint: AgentEndpoint): string {
+  // SCO-098: a thread Scout did not create lives in the operator store, no
+  // matter where this endpoint is placed — resuming it through the background
+  // home cannot find its rollout ("no rollout found for thread id").
+  // Conversely, Scout-created background sessions retain their provider
+  // thread id after the first turn and keep that rollout in the background
+  // home. Their explicit Scout source is the ownership stamp.
+  const source = endpointMetadataString(endpoint, "source");
+  const scoutOwnsThread = source === "scoutbot" || source?.startsWith("scout-") === true;
+  const externalThreadId = scoutOwnsThread
+    ? undefined
+    : endpointMetadataString(endpoint, "threadId")
+      ?? endpointMetadataString(endpoint, "externalSessionId");
+  if (externalThreadId) {
+    return operatorCodexHome();
+  }
+
   // Unstamped endpoints predate placement and retain the historical operator
   // home behavior so exact-session resumes do not look in the wrong store.
   const placement = endpoint.metadata?.placement === "background"
@@ -4664,9 +4722,9 @@ export async function startLocalAgent(input: StartLocalAgentInput): Promise<Scou
     throw new Error(`Invalid agent name "${input.agentName}".`);
   }
 
-  // Fast path: read the relay-agents compatibility overrides directly. The broker
-  // remains authoritative for live registry state; this file is configuration input
-  // for local definitions. A matching projectPath lets us skip the expensive
+  // Fast path: operate directly on the relay-agents override file. No filesystem walk,
+  // no project-config sync. The override file is the single source of truth for
+  // registered agents; if a match exists for this projectPath we skip the expensive
   // ensureProjectConfigForDirectory (which reads every ~/.claude/projects/<slug>/*.jsonl).
   const overrides = await readRelayAgentOverrides();
 

@@ -1,8 +1,11 @@
 import { spawn } from "node:child_process";
 import {
+  closeSync,
   existsSync,
   mkdirSync,
+  openSync,
   readFileSync,
+  readSync,
   statSync,
   unlinkSync,
   writeFileSync,
@@ -19,13 +22,17 @@ import {
 } from "@openscout/agent-sessions";
 import { findNearestProjectRoot } from "@openscout/runtime/setup";
 import {
-  readLiveScoutPairingRuntimeOwner,
+  isScoutPairingProcessRunning as isLivePairingProcess,
+  readLiveScoutPairingSupervisorPid,
+  readScoutPairingProcessPid as readSupervisedPairingProcessPid,
+  readScoutPairingSupervisorIntent,
   resolveScoutPairingSupervisorPaths,
-  signalScoutPairingRuntimeOwner,
-  type ScoutPairingRuntimeOwner,
+  updateScoutPairingSupervisorIntent,
 } from "@openscout/runtime/pairing-supervisor";
 import { loadLocalConfig } from "@openscout/runtime/local-config";
 import { resolveBunExecutable as resolveResolvedBunExecutable } from "@openscout/runtime/tool-resolution";
+
+import { coalesce } from "./server-core.ts";
 
 export const SCOUT_PAIRING_HOME_DIRECTORY = ".scout/pairing";
 export const SCOUT_PAIRING_CONFIG_FILE = "config.json";
@@ -38,6 +45,7 @@ export const SCOUT_PAIRING_DEFAULT_PORT = 7_888;
 export const SCOUT_PAIRING_LOG_TAIL_LINE_LIMIT = 160;
 export const SCOUT_PAIRING_RUNTIME_BOOTSTRAP_DELAY_MS = 350;
 export const SCOUT_PAIRING_PROCESS_EXIT_TIMEOUT_MS = 5_000;
+export const SCOUT_PAIRING_SUPERVISOR_ACTION_TIMEOUT_MS = 8_000;
 export const SCOUT_PAIRING_PROCESS_EXIT_POLL_MS = 100;
 export const SCOUT_PAIRING_COMMAND_LABEL = "openscout-web pair";
 export const SCOUT_PAIRING_RUNTIME_VERSION = 1 as const;
@@ -677,7 +685,11 @@ export function removeScoutPairingTrustedPeer(fingerprint: string): boolean {
   }
 }
 
-function readScoutPairingLogTail(logPath: string): ScoutPairingLogTail {
+/** How many trailing bytes of the bridge log are ever read for the tail view. */
+export const SCOUT_PAIRING_LOG_TAIL_WINDOW_BYTES = 256 * 1024;
+
+/** Exported for tests. */
+export function readScoutPairingLogTail(logPath: string): ScoutPairingLogTail {
   if (!existsSync(logPath)) {
     return {
       body: "",
@@ -687,15 +699,47 @@ function readScoutPairingLogTail(logPath: string): ScoutPairingLogTail {
     };
   }
 
-  const body = readFileSync(logPath, "utf8");
-  const lines = body.split(/\r?\n/g);
-  const visibleLines = lines.slice(-SCOUT_PAIRING_LOG_TAIL_LINE_LIMIT);
+  // The bridge log grows without rotation (hundreds of MB in the wild), so
+  // never read the whole file: stat for size, read only the trailing window,
+  // and drop the leading partial line the window boundary may have cut. One
+  // sentinel byte before the window tells whether the window starts exactly
+  // at a line boundary — then the first line is complete and must be kept.
   const stats = statSync(logPath);
+  const windowBytes = Math.min(stats.size, SCOUT_PAIRING_LOG_TAIL_WINDOW_BYTES);
+  const windowed = stats.size > windowBytes;
+  const readStart = windowed ? stats.size - windowBytes - 1 : 0;
+  const readLength = windowed ? windowBytes + 1 : windowBytes;
+  const buffer = Buffer.alloc(readLength);
+  const fd = openSync(logPath, "r");
+  let bytesRead = 0;
+  try {
+    bytesRead = readSync(fd, buffer, 0, readLength, readStart);
+  } finally {
+    closeSync(fd);
+  }
+
+  let windowText: string;
+  if (windowed) {
+    // The sentinel is a raw byte, so check it before UTF-8 decoding; if it is
+    // not "\n" the window began mid-line and that partial line gets dropped
+    // (any multi-byte character the boundary split goes with it).
+    const startsAtLineBoundary = buffer[0] === 0x0a;
+    windowText = buffer.subarray(1, bytesRead).toString("utf8");
+    if (!startsAtLineBoundary) {
+      const firstNewline = windowText.indexOf("\n");
+      windowText = firstNewline === -1 ? "" : windowText.slice(firstNewline + 1);
+    }
+  } else {
+    windowText = buffer.subarray(0, bytesRead).toString("utf8");
+  }
+
+  const lines = windowText.split(/\r?\n/g);
+  const visibleLines = lines.slice(-SCOUT_PAIRING_LOG_TAIL_LINE_LIMIT);
   return {
     body: visibleLines.join("\n").trim(),
     updatedAtLabel: formatScoutPairingLogTimestamp(stats.mtime),
     missing: false,
-    truncated: lines.length > visibleLines.length,
+    truncated: windowed || lines.length > visibleLines.length,
   };
 }
 
@@ -900,11 +944,10 @@ async function ensureDefaultScoutPairingWorkspaceConfig(currentDirectory?: strin
   });
 }
 
-async function waitForScoutPairingProcessExit(owner: ScoutPairingRuntimeOwner): Promise<void> {
-  const ownerPath = resolveScoutPairingSupervisorPaths().runtimeOwnerPath;
+async function waitForScoutPairingProcessExit(pid: number): Promise<void> {
   const startedAt = Date.now();
   while (Date.now() - startedAt < SCOUT_PAIRING_PROCESS_EXIT_TIMEOUT_MS) {
-    if (!readLiveScoutPairingRuntimeOwner(ownerPath, { expectedToken: owner.token })) {
+    if (!isScoutPairingProcessRunning(pid)) {
       return;
     }
     await sleep(SCOUT_PAIRING_PROCESS_EXIT_POLL_MS);
@@ -934,13 +977,10 @@ async function startScoutPairingRuntime(): Promise<void> {
 }
 
 async function stopScoutPairingRuntime(): Promise<void> {
-  const supervisorPaths = resolveScoutPairingSupervisorPaths();
   const pid = readScoutPairingRuntimePid();
-  const owner = readLiveScoutPairingRuntimeOwner(supervisorPaths.runtimeOwnerPath);
-  if (pid && owner?.pid === pid && signalScoutPairingRuntimeOwner(owner, "SIGTERM", {
-    ownerPath: supervisorPaths.runtimeOwnerPath,
-  })) {
-    await waitForScoutPairingProcessExit(owner);
+  if (pid && isScoutPairingProcessRunning(pid)) {
+    process.kill(pid, "SIGTERM");
+    await waitForScoutPairingProcessExit(pid);
   }
 }
 
@@ -955,6 +995,27 @@ async function ensureScoutPairingRuntimeStarted(): Promise<void> {
   }
   await startScoutPairingRuntime();
 }
+async function requestPairingActionFromSupervisor(
+  action: ScoutPairingControlAction,
+): Promise<boolean> {
+  const paths = resolveScoutPairingSupervisorPaths();
+  const previousPid = readSupervisedPairingProcessPid(paths.runtimePidPath);
+  updateScoutPairingSupervisorIntent(action, paths.intentPath);
+  const supervisorPid = readLiveScoutPairingSupervisorPid(paths.supervisorPidPath);
+  if (!supervisorPid) return false;
+  const deadline = Date.now() + SCOUT_PAIRING_SUPERVISOR_ACTION_TIMEOUT_MS;
+  while (Date.now() < deadline) {
+    const currentPid = readSupervisedPairingProcessPid(paths.runtimePidPath);
+    const running = isLivePairingProcess(currentPid);
+    if (action === "stop" ? !running : running && (action !== "restart" || currentPid !== previousPid)) {
+      return true;
+    }
+    await sleep(SCOUT_PAIRING_PROCESS_EXIT_POLL_MS);
+  }
+  throw new Error(
+    `Scout pairing supervisor ${supervisorPid} did not complete ${action} within ${SCOUT_PAIRING_SUPERVISOR_ACTION_TIMEOUT_MS}ms.`,
+  );
+}
 
 // Serializes all mutations to the pairing runtime controller process (start/stop/restart)
 // so that concurrent /api/pairing/control requests cannot race on the check-then-spawn
@@ -967,12 +1028,39 @@ function serializePairingMutation<T>(fn: () => Promise<T>): Promise<T> {
   return next;
 }
 
+// Every plain /api/pairing-state read used to open a fresh WebSocket to the
+// pairing bridge. Coalesce those reads (one reader per directory key) behind a
+// short TTL; `?refresh` still forces a live read and re-primes the memo, and
+// pairing mutations drop the memo so a follow-up read never sees pre-mutation
+// state.
+const SCOUT_PAIRING_STATE_CACHE_TTL_MS = 3_000;
+
+const coalescedPairingStateReads = new Map<string, () => Promise<ScoutPairingState>>();
+
+function coalescedPairingStateReader(currentDirectory?: string): () => Promise<ScoutPairingState> {
+  const key = currentDirectory ?? "";
+  let reader = coalescedPairingStateReads.get(key);
+  if (!reader) {
+    reader = coalesce(
+      () => readScoutPairingState(currentDirectory),
+      SCOUT_PAIRING_STATE_CACHE_TTL_MS,
+    );
+    coalescedPairingStateReads.set(key, reader);
+  }
+  return reader;
+}
+
+function invalidateScoutWebPairingStateCache(): void {
+  coalescedPairingStateReads.clear();
+}
+
 export async function getScoutWebPairingState(currentDirectory?: string): Promise<ScoutPairingState> {
-  return readScoutPairingState(currentDirectory);
+  return coalescedPairingStateReader(currentDirectory)();
 }
 
 export async function refreshScoutWebPairingState(currentDirectory?: string): Promise<ScoutPairingState> {
-  return readScoutPairingState(currentDirectory);
+  coalescedPairingStateReads.delete(currentDirectory ?? "");
+  return coalescedPairingStateReader(currentDirectory)();
 }
 
 export async function getScoutWebPairingSessionSnapshot(
@@ -1009,18 +1097,25 @@ export async function controlScoutWebPairingService(
     switch (action) {
       case "start":
         await ensureDefaultScoutPairingWorkspaceConfig(currentDirectory);
-        await ensureScoutPairingRuntimeStarted();
+        if (!await requestPairingActionFromSupervisor(action)) {
+          await ensureScoutPairingRuntimeStarted();
+        }
         break;
       case "stop":
-        await stopScoutPairingRuntime();
+        if (!await requestPairingActionFromSupervisor(action)) {
+          await stopScoutPairingRuntime();
+        }
         break;
       case "restart":
         await ensureDefaultScoutPairingWorkspaceConfig(currentDirectory);
-        await restartScoutPairingRuntime();
+        if (!await requestPairingActionFromSupervisor(action)) {
+          await restartScoutPairingRuntime();
+        }
         break;
     }
 
-    return readScoutPairingState(currentDirectory);
+    invalidateScoutWebPairingStateCache();
+    return coalescedPairingStateReader(currentDirectory)();
   });
 }
 
@@ -1030,10 +1125,15 @@ export async function updateScoutWebPairingConfig(
 ): Promise<ScoutPairingState> {
   await updateScoutPairingConfig(input, currentDirectory);
   return serializePairingMutation(async () => {
-    if (isScoutPairingRuntimeRunning()) {
-      await restartScoutPairingRuntime();
+    const supervisorPaths = resolveScoutPairingSupervisorPaths();
+    const desiredRunning = readScoutPairingSupervisorIntent(supervisorPaths.intentPath).desiredState === "running";
+    if (desiredRunning || isScoutPairingRuntimeRunning()) {
+      if (!await requestPairingActionFromSupervisor("restart")) {
+        await restartScoutPairingRuntime();
+      }
     }
-    return readScoutPairingState(currentDirectory);
+    invalidateScoutWebPairingStateCache();
+    return coalescedPairingStateReader(currentDirectory)();
   });
 }
 
@@ -1052,5 +1152,6 @@ export async function decideScoutWebPairingApproval(
       ...(input.reason?.trim() ? { reason: input.reason.trim() } : {}),
     });
   });
-  return readScoutPairingState(currentDirectory);
+  invalidateScoutWebPairingStateCache();
+  return coalescedPairingStateReader(currentDirectory)();
 }

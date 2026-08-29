@@ -20,6 +20,7 @@ mock.module("motion/react", () => ({
 }));
 mock.module(new URL("../../scout/Provider.tsx", import.meta.url).pathname, () => ({
   useScout: () => ({ route: { view: "inbox" }, navigate: () => undefined }),
+  useOptionalScout: () => ({ route: { view: "inbox" }, navigate: () => undefined }),
 }));
 
 const { createElement } = React;

@@ -6,22 +6,22 @@
 
 [data-scout-theme-mode="dark"][data-scout-palette="scout"] {
   color-scheme: dark;
-  --background: 0.132 0.004 260;
-  --foreground: 0.965 0.006 260;
-  --card: 0.178 0.005 260;
-  --card-foreground: 0.965 0.006 260;
-  --popover: 0.16 0.005 260;
-  --popover-foreground: 0.965 0.006 260;
-  --primary: 0.965 0.006 260;
-  --primary-foreground: 0.132 0.004 260;
-  --secondary: 0.22 0.006 260;
-  --secondary-foreground: 0.94 0.006 260;
-  --muted: 0.205 0.005 260;
-  --muted-foreground: 0.72 0.008 260;
+  --background: 0.118 0.004 260;
+  --foreground: 0.975 0.006 260;
+  --card: 0.205 0.005 260;
+  --card-foreground: 0.975 0.006 260;
+  --popover: 0.185 0.005 260;
+  --popover-foreground: 0.975 0.006 260;
+  --primary: 0.975 0.006 260;
+  --primary-foreground: 0.118 0.004 260;
+  --secondary: 0.25 0.006 260;
+  --secondary-foreground: 0.95 0.006 260;
+  --muted: 0.23 0.005 260;
+  --muted-foreground: 0.80 0.008 260;
   --accent: 0.86 0.17 125;
   --accent-foreground: 0.14 0.02 125;
-  --border: 0.32 0.007 260;
-  --input: 0.36 0.008 260;
+  --border: 0.40 0.007 260;
+  --input: 0.44 0.008 260;
   --ring: 0.86 0.17 125;
 }
 
@@ -48,22 +48,22 @@
 
 [data-scout-theme-mode="dark"][data-scout-palette="graphite"] {
   color-scheme: dark;
-  --background: 0.15 0.0021 286.1;
-  --foreground: 0.9464 0.0013 286.4;
-  --card: 0.2099 0.0039 286.1;
-  --card-foreground: 0.9464 0.0013 286.4;
-  --popover: 0.19 0.003 286;
-  --popover-foreground: 0.9464 0.0013 286.4;
-  --primary: 0.9464 0.0013 286.4;
-  --primary-foreground: 0.15 0.0021 286.1;
-  --secondary: 0.27 0.006 286;
-  --secondary-foreground: 0.92 0.002 286;
-  --muted: 0.25 0.006 286;
-  --muted-foreground: 0.7118 0.0129 286.1;
+  --background: 0.14 0.0021 286.1;
+  --foreground: 0.96 0.0013 286.4;
+  --card: 0.235 0.0039 286.1;
+  --card-foreground: 0.96 0.0013 286.4;
+  --popover: 0.21 0.003 286;
+  --popover-foreground: 0.96 0.0013 286.4;
+  --primary: 0.96 0.0013 286.4;
+  --primary-foreground: 0.14 0.0021 286.1;
+  --secondary: 0.29 0.006 286;
+  --secondary-foreground: 0.94 0.002 286;
+  --muted: 0.27 0.006 286;
+  --muted-foreground: 0.79 0.0129 286.1;
   --accent: 0.6372 0.0325 243.7;
-  --accent-foreground: 0.15 0.0021 286.1;
-  --border: 0.3703 0.0119 285.8;
-  --input: 0.43 0.014 286;
+  --accent-foreground: 0.14 0.0021 286.1;
+  --border: 0.43 0.0119 285.8;
+  --input: 0.48 0.014 286;
   --ring: 0.6372 0.0325 243.7;
 }
 
@@ -103,7 +103,7 @@
   --secondary: 0.418 0.034 265;
   --secondary-foreground: 0.93 0.01 261;
   --muted: 0.395 0.03 265;
-  --muted-foreground: 0.7671 0.0255 259.8;
+  --muted-foreground: 0.83 0.0255 259.8;
   --accent: 0.7746 0.0622 217.5;
   --accent-foreground: 0.28 0.025 264;
   --border: 0.4523 0.0352 264.1;
@@ -137,17 +137,17 @@
 [data-scout-theme-mode="dark"][data-scout-palette="solar"] {
   color-scheme: dark;
   --background: 0.2673 0.0486 219.8;
-  --foreground: 0.6979 0.0159 196.8;
-  --card: 0.3092 0.0518 219.7;
-  --card-foreground: 0.6979 0.0159 196.8;
-  --popover: 0.292 0.05 220;
-  --popover-foreground: 0.6979 0.0159 196.8;
-  --primary: 0.6979 0.0159 196.8;
+  --foreground: 0.80 0.0159 196.8;
+  --card: 0.32 0.0518 219.7;
+  --card-foreground: 0.80 0.0159 196.8;
+  --popover: 0.30 0.05 220;
+  --popover-foreground: 0.80 0.0159 196.8;
+  --primary: 0.80 0.0159 196.8;
   --primary-foreground: 0.2673 0.0486 219.8;
-  --secondary: 0.35 0.049 219;
-  --secondary-foreground: 0.72 0.016 197;
-  --muted: 0.33 0.047 220;
-  --muted-foreground: 0.6537 0.0197 205.3;
+  --secondary: 0.36 0.049 219;
+  --secondary-foreground: 0.82 0.016 197;
+  --muted: 0.34 0.047 220;
+  --muted-foreground: 0.74 0.0197 205.3;
   --accent: 0.6437 0.1019 187.4;
   --accent-foreground: 0.22 0.045 220;
   --border: 0.523 0.0283 219.1;
@@ -244,28 +244,35 @@
   --ring: 0.68 0.16 75;
 }
 
+/* Hudson maps --hud-dim to muted-foreground at 78% alpha, which drops
+ * timestamps and captions below readable contrast on near-black canvases.
+ * Keep dim below muted, but stop short of transparent gray soup. */
+[data-scout-theme-mode="dark"][data-scout-palette] {
+  --hud-dim: oklch(var(--muted-foreground) / 0.92);
+}
+
 /* Contrast changes only structural separation. It does not brighten text or
  * repurpose the accent, so it remains safe to compare across palettes. */
 [data-scout-contrast="soft"] {
-  --hud-border: color-mix(in srgb, var(--hud-ink) 6%, transparent);
-  --hud-chrome-border: color-mix(in srgb, var(--hud-ink) 8%, transparent);
-  --hud-chrome-border-subtle: color-mix(in srgb, var(--hud-ink) 4%, transparent);
-  --hud-line: color-mix(in srgb, var(--hud-ink) 8%, transparent);
-  --hud-line-strong: color-mix(in srgb, var(--hud-ink) 12%, transparent);
+  --hud-border: color-mix(in srgb, var(--hud-ink) 8%, transparent);
+  --hud-chrome-border: color-mix(in srgb, var(--hud-ink) 10%, transparent);
+  --hud-chrome-border-subtle: color-mix(in srgb, var(--hud-ink) 6%, transparent);
+  --hud-line: color-mix(in srgb, var(--hud-ink) 10%, transparent);
+  --hud-line-strong: color-mix(in srgb, var(--hud-ink) 14%, transparent);
 }
 
 [data-scout-contrast="balanced"] {
-  --hud-border: color-mix(in srgb, var(--hud-ink) 10%, transparent);
-  --hud-chrome-border: color-mix(in srgb, var(--hud-ink) 14%, transparent);
-  --hud-chrome-border-subtle: color-mix(in srgb, var(--hud-ink) 7%, transparent);
-  --hud-line: color-mix(in srgb, var(--hud-ink) 12%, transparent);
-  --hud-line-strong: color-mix(in srgb, var(--hud-ink) 18%, transparent);
+  --hud-border: color-mix(in srgb, var(--hud-ink) 14%, transparent);
+  --hud-chrome-border: color-mix(in srgb, var(--hud-ink) 18%, transparent);
+  --hud-chrome-border-subtle: color-mix(in srgb, var(--hud-ink) 10%, transparent);
+  --hud-line: color-mix(in srgb, var(--hud-ink) 16%, transparent);
+  --hud-line-strong: color-mix(in srgb, var(--hud-ink) 22%, transparent);
 }
 
 [data-scout-contrast="strong"] {
-  --hud-border: color-mix(in srgb, var(--hud-ink) 16%, transparent);
-  --hud-chrome-border: color-mix(in srgb, var(--hud-ink) 24%, transparent);
-  --hud-chrome-border-subtle: color-mix(in srgb, var(--hud-ink) 12%, transparent);
-  --hud-line: color-mix(in srgb, var(--hud-ink) 20%, transparent);
-  --hud-line-strong: color-mix(in srgb, var(--hud-ink) 28%, transparent);
+  --hud-border: color-mix(in srgb, var(--hud-ink) 20%, transparent);
+  --hud-chrome-border: color-mix(in srgb, var(--hud-ink) 28%, transparent);
+  --hud-chrome-border-subtle: color-mix(in srgb, var(--hud-ink) 16%, transparent);
+  --hud-line: color-mix(in srgb, var(--hud-ink) 24%, transparent);
+  --hud-line-strong: color-mix(in srgb, var(--hud-ink) 32%, transparent);
 }

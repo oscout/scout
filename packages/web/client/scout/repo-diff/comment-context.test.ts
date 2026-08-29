@@ -12,7 +12,7 @@ function snapshot(overrides: Partial<ScoutRepoDiffSnapshot> = {}): ScoutRepoDiff
   return {
     schema: "openscout.repo.diff/v1",
     generatedAt: 1_780_000_000_000,
-    worktreePath: "/Users/example/dev/openscout",
+    worktreePath: "/Users/art/dev/openscout",
     coverage: {
       requestedLayers: 2,
       emittedLayers: 2,
@@ -70,7 +70,7 @@ function snapshot(overrides: Partial<ScoutRepoDiffSnapshot> = {}): ScoutRepoDiff
         { id: "agent-active", name: "Active Agent", state: "active", harness: "claude" },
       ],
       sessions: [{ id: "session-active", source: "codex", harness: "codex" }],
-      hints: [{ path: "/Users/example/dev/openscout", source: "endpoint", agentId: "agent-idle" }],
+      hints: [{ path: "/Users/art/dev/openscout", source: "endpoint", agentId: "agent-idle" }],
     },
     render: {
       renderKey: "render-key",
@@ -88,7 +88,7 @@ describe("repo diff comment context", () => {
       scope: {
         kind: "session",
         label: "Codex session",
-        worktreePath: "/Users/example/dev/openscout",
+        worktreePath: "/Users/art/dev/openscout",
         refId: null,
         agentId: "agent-idle",
         sessionId: "session-idle",
@@ -115,7 +115,7 @@ describe("repo diff comment context", () => {
 
     expect(body).toContain("Operator comment on repo diff:");
     expect(body).toContain("Please check whether this state change is the right fix.");
-    expect(body).toContain("- Worktree: /Users/example/dev/openscout");
+    expect(body).toContain("- Worktree: /Users/art/dev/openscout");
     expect(body).toContain("- Active layer: unstaged");
     expect(body).toContain("- Selected file: modified: packages/web/client/App.tsx (+12 -3)");
     expect(body).toContain("- Layers: unstaged: 1 file, +12 -3; staged: 0 files, +0 -0");
@@ -127,7 +127,7 @@ describe("repo diff comment context", () => {
       scope: {
         kind: "session",
         label: "Codex session",
-        worktreePath: "/Users/example/dev/openscout",
+        worktreePath: "/Users/art/dev/openscout",
         refId: "ref-1",
         agentId: "agent-active",
         sessionId: "session-active",

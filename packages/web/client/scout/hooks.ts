@@ -25,7 +25,6 @@ import { SystemMenu } from "./nav-system-menu.tsx";
 
 export type ScoutStatusBarState = {
   status: { label: string; color: StatusColor };
-  activeAgents: { label: string; count: number };
   mesh: { label: string; value: string; color: StatusColor };
   build: { label: string; title: string };
 };
@@ -156,9 +155,24 @@ export function useScoutStatusBarState(): ScoutStatusBarState {
   }, [loadMesh]);
 
   useEffect(() => {
-    api<BuildInfo>("/api/build")
-      .then(setBuild)
-      .catch(() => setBuild(null));
+    let cancelled = false;
+    void (async () => {
+      try {
+        const info = await api<BuildInfo>("/api/build");
+        if (cancelled) return;
+        if (!info.branch && !info.commit) {
+          const refreshed = await api<BuildInfo>("/api/build?refresh=1");
+          if (!cancelled) setBuild(refreshed);
+          return;
+        }
+        setBuild(info);
+      } catch {
+        if (!cancelled) setBuild(null);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   const buildLabel = (() => {
@@ -188,10 +202,6 @@ export function useScoutStatusBarState(): ScoutStatusBarState {
       : mesh.health.reachable
         ? { label: "Broker: UP", color: "emerald" }
         : { label: "Broker: DOWN", color: "red" },
-    activeAgents: {
-      label: "Registered",
-      count: onlineCount,
-    },
     mesh: (() => {
       const label = localMachineLabel(mesh);
       if (apiConnection.status === "offline") {

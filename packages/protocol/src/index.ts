@@ -12,6 +12,7 @@ export * from "./channel-identity.js";
 export * from "./collaboration.js";
 export * from "./assigned-roles.js";
 export * from "./orchestrator-prompt.js";
+export * from "./orchestration-provider-map.js";
 export * from "./messages.js";
 export * from "./read-receipts.js";
 export * from "./invocations.js";

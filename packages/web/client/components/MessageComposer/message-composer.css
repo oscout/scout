@@ -137,15 +137,18 @@
   position: absolute;
   left: 0;
   right: 0;
-  bottom: calc(100% + 6px);
-  max-height: 260px;
-  overflow-y: auto;
+  bottom: calc(100% + 8px);
+  max-height: 290px;
+  display: flex;
+  flex-direction: column;
   padding: var(--space-2xs);
-  background: var(--surface);
-  border: 1px solid color-mix(in srgb, var(--border) 80%, transparent);
+  background: color-mix(in srgb, var(--surface) 98%, transparent);
+  border: 1px solid color-mix(in srgb, var(--border) 90%, transparent);
   border-radius: var(--radius-xl);
-  box-shadow: 0 12px 32px color-mix(in srgb, var(--ink) 22%, transparent);
-  z-index: 20;
+  box-shadow: 0 16px 36px color-mix(in srgb, var(--ink) 24%, transparent);
+  backdrop-filter: blur(12px);
+  z-index: 30;
+  overflow: hidden;
 }
 
 /* A modal composer has room inside its writing field but not above it. Keep the
@@ -161,8 +164,17 @@
   box-shadow: 0 14px 28px -18px color-mix(in srgb, var(--ink) 48%, transparent);
 }
 
-.s-msg-compose-suggest-label {
+.s-msg-compose-suggest-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
   padding: var(--space-xs) var(--space-md) var(--space-2xs);
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 40%, transparent);
+  margin-bottom: var(--space-2xs);
+}
+
+.s-msg-compose-suggest-label {
+  padding: 0;
   font-family: var(--font-mono);
   font-size: var(--text-2xs);
   font-weight: 600;
@@ -171,30 +183,61 @@
   color: var(--dim);
 }
 
+.s-msg-compose-suggest-count {
+  font-family: var(--font-mono);
+  font-size: var(--text-3xs);
+  color: var(--dim);
+}
+
+.s-msg-compose-suggest-list {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  overflow-y: auto;
+  max-height: 220px;
+}
+
 .s-msg-compose-suggest-item {
+  position: relative;
   display: flex;
   align-items: center;
   gap: var(--space-md);
   width: 100%;
   padding: var(--space-xs) var(--space-md);
   border: none;
-  border-radius: var(--radius-lg);
+  border-radius: var(--radius-md);
   background: transparent;
   color: var(--ink);
   text-align: left;
   cursor: pointer;
   font-family: inherit;
+  transition: all 120ms ease;
 }
 
 .s-msg-compose-suggest-item:hover,
 .s-msg-compose-suggest-item--active {
-  background: color-mix(in srgb, var(--accent) 8%, transparent);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+}
+
+.s-msg-compose-suggest-active-indicator {
+  position: absolute;
+  left: 2px;
+  top: 6px;
+  bottom: 6px;
+  width: 2px;
+  background: var(--accent);
+  border-radius: 1px;
 }
 
 .s-msg-compose-suggest-token {
   font-family: var(--font-mono);
   font-size: var(--text-md);
+  font-weight: 600;
   color: var(--ink);
+}
+
+.s-msg-compose-suggest-item--active .s-msg-compose-suggest-token {
+  color: var(--accent);
 }
 
 .s-msg-compose-suggest-desc {
@@ -207,8 +250,29 @@
   white-space: nowrap;
 }
 
-.s-msg-compose-suggest-avatar {
+.s-msg-compose-suggest-avatar,
+.s-msg-compose-suggest-avatar-node {
   flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  overflow: hidden;
+}
+
+.s-msg-compose-suggest-pick-hint {
+  display: flex;
+  align-items: center;
+  margin-left: auto;
+  color: var(--accent);
+}
+
+.s-msg-compose-suggest-footer {
+  padding: var(--space-2xs) var(--space-md);
+  border-top: 1px solid color-mix(in srgb, var(--border) 35%, transparent);
+  margin-top: var(--space-2xs);
 }
 
 /* Voice strip lives in the body (not the toolbar) so model pickers /
@@ -546,12 +610,18 @@
 
 .s-msg-compose-attachment {
   position: relative;
-  width: 56px;
-  height: 56px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
+  width: 76px;
+  height: 70px;
+  border: 1px solid color-mix(in srgb, var(--border) 80%, transparent);
+  border-radius: var(--radius-md);
   overflow: hidden;
-  background: var(--surface-2);
+  background: color-mix(in srgb, var(--surface) 80%, var(--bg));
+  transition: all 140ms ease;
+}
+
+.s-msg-compose-attachment:hover {
+  border-color: color-mix(in srgb, var(--accent) 40%, var(--border));
+  box-shadow: 0 2px 8px color-mix(in srgb, var(--ink) 12%, transparent);
 }
 
 .s-msg-compose-attachment img,
@@ -571,37 +641,62 @@
   width: 100%;
   height: 100%;
   padding: var(--space-2xs);
-  color: var(--text-2);
+  color: var(--ink);
+  text-align: center;
 }
 
-.s-msg-compose-attachment-file span {
+.s-msg-compose-attachment-file-icon {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  color: var(--muted);
+}
+
+.s-msg-compose-attachment-ext {
+  font-family: var(--font-mono);
+  font-size: var(--text-3xs);
+  font-weight: 700;
+  color: var(--accent);
+}
+
+.s-msg-compose-attachment-name {
+  font-family: var(--font-mono);
   font-size: var(--text-2xs);
   line-height: 1.1;
   max-width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  color: var(--muted);
+}
+
+.s-msg-compose-attachment-size {
+  font-family: var(--font-mono);
+  font-size: var(--text-3xs);
+  color: var(--dim);
 }
 
 .s-msg-compose-attachment-remove {
   position: absolute;
-  top: 2px;
-  right: 2px;
-  width: 16px;
-  height: 16px;
+  top: 3px;
+  right: 3px;
+  width: 18px;
+  height: 18px;
   display: grid;
   place-items: center;
-  border: none;
+  border: 1px solid color-mix(in srgb, var(--border) 80%, transparent);
   border-radius: 50%;
-  background: color-mix(in srgb, var(--surface-0) 78%, transparent);
-  color: var(--text-1);
-  font-size: var(--text-md);
+  background: color-mix(in srgb, var(--surface) 90%, transparent);
+  color: var(--ink);
+  font-size: var(--text-sm);
   line-height: 1;
   cursor: pointer;
+  transition: all 120ms ease;
 }
 
 .s-msg-compose-attachment-remove:hover {
-  background: var(--surface-0);
+  background: var(--ink);
+  color: var(--bg);
 }
 
 .s-msg-compose-attach-note {
@@ -719,7 +814,7 @@
   align-items: center;
   gap: var(--space-sm);
   min-width: 0;
-  padding-bottom: 2px;
+  padding-bottom: var(--space-2xs);
 }
 
 .s-msg-compose-queue-kicker {
@@ -727,9 +822,9 @@
   font-family: var(--font-mono);
   font-size: var(--text-2xs);
   font-weight: 600;
-  letter-spacing: 0.12em;
+  letter-spacing: var(--tracking-lg);
   text-transform: uppercase;
-  color: var(--dim);
+  color: var(--accent);
 }
 
 .s-msg-compose-queue-hint {
@@ -738,7 +833,7 @@
   text-overflow: ellipsis;
   white-space: nowrap;
   font-size: var(--text-xs);
-  color: var(--text-3);
+  color: var(--muted);
 }
 
 .s-msg-compose-queue-head .s-msg-compose-steer {
@@ -751,12 +846,21 @@
   align-items: center;
   gap: var(--space-xs);
   min-width: 0;
-  min-height: 24px;
-  padding: 2px var(--space-2xs) 2px 0;
-  border-left: 2px solid color-mix(in srgb, var(--scout-accent) 55%, transparent);
+  min-height: 26px;
+  padding: 2px var(--space-xs) 2px 0;
+  border-left: 2px solid color-mix(in srgb, var(--accent) 70%, transparent);
   padding-left: var(--space-xs);
   border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
-  background: color-mix(in srgb, var(--ink) 4%, transparent);
+  background: color-mix(in srgb, var(--surface) 60%, var(--bg));
+  border-top: 1px solid color-mix(in srgb, var(--border) 20%, transparent);
+  border-right: 1px solid color-mix(in srgb, var(--border) 20%, transparent);
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 20%, transparent);
+  transition: all 120ms ease;
+}
+
+.s-msg-compose-queue-row:hover {
+  background: color-mix(in srgb, var(--surface) 90%, var(--bg));
+  border-left-color: var(--accent);
 }
 
 .s-msg-compose-queue-index {
@@ -773,7 +877,7 @@
   text-overflow: ellipsis;
   white-space: nowrap;
   font-size: var(--text-xs);
-  color: var(--text-2);
+  color: var(--ink);
 }
 
 .s-msg-compose-queue-clip {
@@ -787,22 +891,28 @@
 .s-msg-compose-queue-now,
 .s-msg-compose-queue-drop {
   flex-shrink: 0;
-  border: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  border: 1px solid transparent;
   background: transparent;
-  color: var(--text-3);
+  color: var(--muted);
   font-size: var(--text-xs);
+  padding: 1px 4px;
+  border-radius: var(--radius-xs);
   line-height: 1;
   cursor: pointer;
   opacity: 0;
-  transition: opacity 0.12s ease, color 0.12s ease;
+  transition: opacity 0.12s ease, color 0.12s ease, background 0.12s ease;
 }
 
 .s-msg-compose-queue-drop {
-  width: 16px;
-  height: 16px;
+  width: 18px;
+  height: 18px;
   display: grid;
   place-items: center;
   border-radius: 50%;
+  padding: 0;
 }
 
 .s-msg-compose-queue-row:hover .s-msg-compose-queue-edit,
@@ -817,20 +927,23 @@
 .s-msg-compose-queue-edit:hover,
 .s-msg-compose-queue-now:hover,
 .s-msg-compose-queue-drop:hover {
-  color: var(--text-1);
+  color: var(--ink);
+  background: color-mix(in srgb, var(--ink) 8%, transparent);
+  border-color: color-mix(in srgb, var(--border) 40%, transparent);
 }
 
 .s-msg-compose-queue-edit:disabled,
 .s-msg-compose-queue-now:disabled,
 .s-msg-compose-queue-drop:disabled {
-  opacity: 0.4;
+  opacity: 0.3;
   cursor: default;
 }
 
 /* The row currently pulled back into the input box for editing. */
 .s-msg-compose-queue-row[data-editing="true"] {
-  border-left-color: var(--scout-accent);
-  background: color-mix(in srgb, var(--scout-accent) 10%, transparent);
+  border-left-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 10%, var(--surface));
+  border-color: color-mix(in srgb, var(--accent) 30%, var(--border));
 }
 
 /* Files carried into the box by a queue rewrite (already uploaded). */

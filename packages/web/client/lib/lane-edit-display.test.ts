@@ -35,7 +35,7 @@ describe("strReplaceFromGrokSummary", () => {
 
 describe("laneDisplayPath", () => {
   test("shortens absolute home paths for lane display", () => {
-    expect(laneDisplayPath("/Users/example/dev/openscout/packages/web/client/lib/foo.ts"))
+    expect(laneDisplayPath("/Users/art/dev/openscout/packages/web/client/lib/foo.ts"))
       .toBe("~/dev/openscout/packages/web/client/lib/foo.ts");
   });
 });

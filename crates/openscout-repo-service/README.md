@@ -18,7 +18,7 @@ Scan input:
 
 ```json
 {
-  "hints": [{ "path": "/Users/example/dev/openscout", "source": "endpoint" }],
+  "hints": [{ "path": "/Users/art/dev/openscout", "source": "endpoint" }],
   "limits": {
     "includeDiff": true,
     "includeLastCommit": true,

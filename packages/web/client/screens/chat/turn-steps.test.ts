@@ -1,10 +1,14 @@
 import { describe, expect, test } from "bun:test";
 import {
   buildTurnStepScope,
+  classifyTurnStepPhase,
   describeTurnLaunchPhase,
+  deriveStepStatus,
+  formatStepDuration,
   latestStepSummary,
   mergeTurnStepEvents,
   observeTurnSteps,
+  summarizeTurnPhases,
   summarizeTurnSteps,
   tailEventMatchesTurn,
   toTurnSteps,
@@ -19,7 +23,7 @@ function tailEvent(overrides: Partial<TailEvent> & { id: string }): TailEvent {
     pid: 1,
     parentPid: null,
     project: "openscout",
-    cwd: "/Users/example/dev/openscout",
+    cwd: "/Users/art/dev/openscout",
     harness: "claude",
     kind: "tool",
     summary: "Bash(bun test)",
@@ -266,5 +270,44 @@ describe("step row hygiene", () => {
     ]);
     expect(latestStepSummary(steps)).toBe("Read · src/app.ts");
     expect(latestStepSummary([])).toBeNull();
+  });
+});
+
+describe("turn execution phase classification and telemetry", () => {
+  test("classifies tool operations into structured phases", () => {
+    expect(classifyTurnStepPhase({ kind: "think", text: "Analyzing options" })).toBe("planning");
+    expect(classifyTurnStepPhase({ kind: "tool", tool: "Read", arg: "src/main.ts" })).toBe("inspection");
+    expect(classifyTurnStepPhase({ kind: "tool", tool: "Grep", arg: "pattern" })).toBe("inspection");
+    expect(classifyTurnStepPhase({ kind: "tool", tool: "Write", arg: "src/app.tsx" })).toBe("mutation");
+    expect(classifyTurnStepPhase({ kind: "tool", tool: "StrReplace", arg: "index.html" })).toBe("mutation");
+    expect(classifyTurnStepPhase({ kind: "tool", tool: "Bash", arg: "bun test" })).toBe("verification");
+    expect(classifyTurnStepPhase({ kind: "tool", tool: "Bash", arg: "cargo check" })).toBe("verification");
+    expect(classifyTurnStepPhase({ kind: "tool", tool: "Bash", arg: "git push origin main" })).toBe("execution");
+    expect(classifyTurnStepPhase({ kind: "ask", text: "Need your input" })).toBe("coordination");
+  });
+
+  test("derives status and durations", () => {
+    expect(deriveStepStatus({ outcome: "ok" })).toBe("success");
+    expect(deriveStepStatus({ outcome: "exit 1: command failed" })).toBe("error");
+    expect(deriveStepStatus({ outcome: "warn: 2 skipped" })).toBe("warning");
+    expect(deriveStepStatus({ isActive: true, isLatest: true })).toBe("working");
+
+    expect(formatStepDuration(350)).toBe("350ms");
+    expect(formatStepDuration(2400)).toBe("2.4s");
+    expect(formatStepDuration(65000)).toBe("1m 5s");
+  });
+
+  test("summarizes phases across turn steps", () => {
+    const steps = toTurnSteps([
+      tailEvent({ id: "e1", ts: 1_000, source: "kimi", kind: "system", summary: "[thinking] analyzing problem" }),
+      tailEvent({ id: "e2", ts: 2_000, kind: "tool", summary: "Read src/app.ts" }),
+      tailEvent({ id: "e3", ts: 3_000, kind: "tool", summary: "Write src/app.ts" }),
+      tailEvent({ id: "e4", ts: 4_000, kind: "tool", summary: "Bash bun test" }),
+    ]);
+
+    const phases = summarizeTurnPhases(steps);
+    expect(phases).toHaveLength(4);
+    expect(phases.map((p) => p.phase)).toEqual(["planning", "inspection", "mutation", "verification"]);
+    expect(phases.find((p) => p.phase === "verification")?.active).toBe(true);
   });
 });

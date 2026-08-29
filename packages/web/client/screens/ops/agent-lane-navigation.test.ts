@@ -17,8 +17,8 @@ function agent(overrides: Partial<Agent> = {}): Agent {
     agentClass: "general",
     harness: "grok",
     state: "working",
-    projectRoot: "/Users/example/dev/openscout",
-    cwd: "/Users/example/dev/openscout",
+    projectRoot: "/Users/art/dev/openscout",
+    cwd: "/Users/art/dev/openscout",
     updatedAt: Date.now(),
     createdAt: null,
     transport: null,
@@ -58,7 +58,7 @@ function lane(overrides: Partial<AgentLane> & { agent: Agent }): AgentLane {
       metadata: {
         session: {
           externalSessionId: "sess-live-1",
-          cwd: "/Users/example/dev/openscout",
+          cwd: "/Users/art/dev/openscout",
           model: "grok",
           adapterType: "grok",
           gitBranch: undefined,
@@ -102,7 +102,7 @@ describe("agent lane navigation", () => {
         metadata: {
           session: {
             externalSessionId: sessionId,
-            cwd: "/Users/example/dev/openscout",
+            cwd: "/Users/art/dev/openscout",
             model: "claude",
             adapterType: "claude",
             gitBranch: undefined,
@@ -134,7 +134,7 @@ describe("agent lane navigation", () => {
         metadata: {
           session: {
             externalSessionId: sessionId,
-            cwd: "/Users/example/dev/openscout",
+            cwd: "/Users/art/dev/openscout",
             model: "claude",
             adapterType: "claude",
             gitBranch: undefined,

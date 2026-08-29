@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { Database } from "bun:sqlite";
 
 import { namedChannelNaturalKey } from "@openscout/protocol";
 
@@ -10,6 +11,87 @@ import { createBrokerDaemonTestHarness } from "./test-helpers/broker-daemon-harn
 const broker = createBrokerDaemonTestHarness();
 
 describe("broker daemon durability routes", () => {
+  test("keeps projection-backed reads behind the startup boundary", async () => {
+    const harness = await broker.startBroker({
+      waitForMutationReady: false,
+      env: {
+        OPENSCOUT_TEST_STARTUP_BOUNDARY_DELAY_MS: "1500",
+      },
+    });
+
+    const restoringActivity = await fetch(`${harness.baseUrl}/v1/activity?limit=1`);
+    expect(restoringActivity.status).toBe(503);
+    expect(await restoringActivity.json()).toEqual(expect.objectContaining({
+      error: "broker_restoring",
+      retryable: true,
+    }));
+
+    await broker.waitFor(
+      async () => broker.getJson<{
+        projection?: { state?: string };
+      }>(harness.baseUrl, "/health"),
+      (health) => health.projection?.state === "ready",
+      { attempts: 50, intervalMs: 100 },
+    );
+
+    const liveNode = await broker.getJson<{
+      id: string;
+      meshId: string;
+      name: string;
+      hostName?: string;
+      advertiseScope: string;
+      brokerUrl?: string;
+      lastSeenAt?: number;
+      registeredAt: number;
+    }>(harness.baseUrl, "/v1/node");
+    const database = new Database(join(harness.controlHome, "control-plane.sqlite"), {
+      readonly: true,
+    });
+    try {
+      const finalJournalNode = readFileSync(
+        join(harness.controlHome, "broker-journal.jsonl"),
+        "utf8",
+      )
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line) as {
+          kind?: string;
+          node?: typeof liveNode;
+        })
+        .reverse()
+        .find((entry) => entry.kind === "node.upsert" && entry.node?.id === harness.nodeId)
+        ?.node;
+      expect(finalJournalNode).toBeDefined();
+      expect(database.query(`
+        SELECT
+          id,
+          mesh_id AS meshId,
+          name,
+          host_name AS hostName,
+          advertise_scope AS advertiseScope,
+          broker_url AS brokerUrl,
+          last_seen_at AS lastSeenAt,
+          registered_at AS registeredAt
+        FROM nodes
+        WHERE id = ?
+      `).get(harness.nodeId)).toEqual({
+        id: finalJournalNode?.id,
+        meshId: finalJournalNode?.meshId,
+        name: finalJournalNode?.name,
+        hostName: finalJournalNode?.hostName ?? null,
+        advertiseScope: finalJournalNode?.advertiseScope,
+        brokerUrl: finalJournalNode?.brokerUrl ?? null,
+        lastSeenAt: finalJournalNode?.lastSeenAt ?? null,
+        registeredAt: finalJournalNode?.registeredAt,
+      });
+      expect(finalJournalNode?.brokerUrl).toBe(liveNode.brokerUrl);
+      expect(finalJournalNode?.advertiseScope).toBe(liveNode.advertiseScope);
+      expect(database.query("SELECT id FROM actors WHERE id = 'system'").get()).toBeDefined();
+    } finally {
+      database.close();
+    }
+  }, 15_000);
+
   test("keeps route-alias authority stable when the live hostname suffix changes", async () => {
     const controlHome = mkdtempSync(join(tmpdir(), "openscout-stable-authority-test-"));
     const projectRoot = "/work/studio";
@@ -17,12 +99,12 @@ describe("broker daemon durability routes", () => {
       controlHome,
       env: {
         OPENSCOUT_NODE_ID: undefined,
-        OPENSCOUT_NODE_NAME: "Test-Workstation-372.local",
+        OPENSCOUT_NODE_NAME: "Arts-Mac-mini-372.local",
       },
     });
-    expect(first.nodeId).toBe("test-workstation-372-local-openscout");
+    expect(first.nodeId).toBe("arts-mac-mini-local-openscout");
 
-    const studioAgentId = "studio.main.test-workstation-372-local";
+    const studioAgentId = "studio.main.arts-mac-mini-372-local";
     await broker.postJson(first.baseUrl, "/v1/agents", {
       id: studioAgentId,
       definitionId: "studio",
@@ -53,7 +135,7 @@ describe("broker daemon durability routes", () => {
       controlHome,
       env: {
         OPENSCOUT_NODE_ID: undefined,
-        OPENSCOUT_NODE_NAME: "Test-Workstation-419.local",
+        OPENSCOUT_NODE_NAME: "Arts-Mac-mini-419.local",
       },
     });
     expect(restarted.nodeId).toBe(first.nodeId);

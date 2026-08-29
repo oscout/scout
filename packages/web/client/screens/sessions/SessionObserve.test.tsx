@@ -23,6 +23,7 @@ mock.module("../../lib/api.ts", () => ({
 mock.module("../../lib/sse.ts", () => ({ useBrokerEvents: () => undefined }));
 mock.module("../../scout/Provider.tsx", () => ({
   useScout: () => ({ navigate: () => undefined }),
+  useOptionalScout: () => ({ navigate: () => undefined }),
 }));
 const { createElement } = React;
 const { renderToStaticMarkup } = ReactDomServer;

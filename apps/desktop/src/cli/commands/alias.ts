@@ -28,7 +28,7 @@ export function renderAliasCommandHelp(): string {
     "Bare native agent names keep precedence; use alias:<name> for explicit alias routing.",
     "",
     "Examples:",
-    "  scout alias set review --to scope.main.dev-mac-mini-local",
+    "  scout alias set review --to scope.main.arts-mac-mini-local",
     "  scout alias set patch --to session:019eff52-9347-7470-ba5c-6bfe99d8dd83",
     "  scout alias repoint patch --to session:<new-id> --if-revision 4",
     "  scout ask --to alias:review \"take a fresh pass\"",

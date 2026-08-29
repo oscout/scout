@@ -268,7 +268,7 @@ describe("broker delivery routing", () => {
       execution: { harness: "codex" },
     }, {
       requesterId: "operator",
-      currentDirectory: "/Users/example/dev/blink",
+      currentDirectory: "/Users/art/dev/blink",
       reason: "blink incident guard",
     });
 
@@ -307,8 +307,8 @@ describe("broker delivery routing", () => {
           harness: "codex",
           transport: "codex_app_server",
           state: "idle",
-          cwd: "/Users/example/dev/blink",
-          projectRoot: "/Users/example/dev/blink",
+          cwd: "/Users/art/dev/blink",
+          projectRoot: "/Users/art/dev/blink",
           sessionId: scoutSessionId,
           metadata: {
             cardless: true,
@@ -330,7 +330,7 @@ describe("broker delivery routing", () => {
       },
     }, {
       requesterId: "operator",
-      currentDirectory: "/Users/example/dev/blink",
+      currentDirectory: "/Users/art/dev/blink",
       reason: "wake resume",
     });
 

@@ -38,8 +38,13 @@ import type { PairingInvocationResult } from "./pairing-session-agents.js";
 import type { RuntimeSnapshot } from "./scout-dispatcher.js";
 import { isRequesterWaitTimeoutError } from "./requester-timeout.js";
 import { isDispatchStalledError } from "./dispatch-stalled.js";
-import { isCodexAppServerExitError } from "./codex-app-server.js";
+import { isCodexAppServerExitError, isCodexThreadHeldExternallyError } from "./codex-app-server.js";
 import { sessionAliasAckSummary } from "./session-alias.js";
+
+// How long a thread_held_externally park waits before the recovery sweep may
+// retry the resume. Bounds the resume-attempt cadence while an external app
+// (e.g. the Codex desktop app) holds the thread's writer lock.
+const HELD_THREAD_RETRY_DELAY_MS = 30_000;
 
 type LocalInvocationRuntime = {
   actor(actorId: string): ActorIdentity | undefined;
@@ -159,6 +164,7 @@ export type BrokerLocalInvocationServiceOptions = {
     patch: InvocationStatusPatch,
   ) => Promise<FlightRecord>;
   persistEndpoint: (endpoint: AgentEndpoint) => Promise<void>;
+  deferInvocationRetry?: (invocationId: string, notBeforeTs: number) => void;
   postInvocationStatusMessage: (
     invocation: InvocationRequest,
     flight: { id?: string; summary?: string; error?: string },
@@ -241,6 +247,26 @@ export class BrokerLocalInvocationService {
         endpoint = await this.options.endpointResolver.prepareLocalEndpointForInvocation(endpoint);
       }
     } catch (error) {
+      if (isCodexThreadHeldExternallyError(error)) {
+        // Wake found the session's thread open in another app (single-writer
+        // rule). Park the delivery instead of failing it — the retry sweep
+        // redispatches once the deferral elapses.
+        const checkedAt = this.now();
+        await this.options.transitionInvocation(invocation.id, {
+          state: "queued",
+          summary: `${target.displayName}'s Codex thread is open in another app. Message stored; will deliver when the thread is released.`,
+          metadata: {
+            dispatchOutcome: {
+              status: "queued_until_online",
+              reason: "thread_held_externally",
+              checkedAt,
+            },
+            heldThreadId: error.threadId,
+          },
+        });
+        this.options.deferInvocationRetry?.(invocation.id, checkedAt + HELD_THREAD_RETRY_DELAY_MS);
+        return;
+      }
       const message = error instanceof Error ? error.message : String(error);
       const failedFlight = await this.options.transitionInvocation(invocation.id, {
         state: "failed",
@@ -671,6 +697,43 @@ export class BrokerLocalInvocationService {
       if (interruptedFlight) {
         await this.options.postInvocationStatusMessage(invocation, interruptedFlight);
       }
+      return;
+    }
+
+    if (isCodexThreadHeldExternallyError(error)) {
+      const checkedAt = this.now();
+      if (!this.currentFlightIsTerminal(invocation.id)) {
+        await this.options.transitionInvocation(invocation.id, {
+          state: "queued",
+          summary: `${target.displayName}'s Codex thread is open in another app. Message stored; will deliver when the thread is released.`,
+          error: undefined,
+          completedAt: undefined,
+          metadata: {
+            dispatchOutcome: {
+              status: "queued_until_online",
+              reason: "thread_held_externally",
+              checkedAt,
+            },
+            heldThreadId: error.threadId,
+          },
+        });
+      }
+      // Defer BEFORE persisting: restoring an online endpoint state fires the
+      // queued-flight recovery hook, and without the deferral that hook would
+      // redispatch this invocation immediately in a hot loop.
+      this.options.deferInvocationRetry?.(invocation.id, checkedAt + HELD_THREAD_RETRY_DELAY_MS);
+      // The session is not offline — it is open in another application. Keep
+      // the endpoint at its pre-invocation state so future sends queue against
+      // it instead of being refused, and record the true condition.
+      await this.options.persistEndpoint({
+        ...runningEndpoint,
+        state: priorEndpointState,
+        metadata: {
+          ...(runningEndpoint.metadata ?? {}),
+          lastNotice: message,
+          threadHeldExternallyAt: checkedAt,
+        },
+      });
       return;
     }
 

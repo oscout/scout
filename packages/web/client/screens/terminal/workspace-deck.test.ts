@@ -218,7 +218,7 @@ describe("server workspace projections", () => {
         id: "ts.1",
         harness: "claude",
         sourceSessionId: "abc",
-        cwd: "/Users/example/dev/openscout",
+        cwd: "/Users/art/dev/openscout",
         resumeCommand: "claude --resume abc",
         surfaces: [],
         createdAt: 1,
@@ -229,7 +229,7 @@ describe("server workspace projections", () => {
     expect(input.cells?.[0]?.intent).toEqual({
       hostId: "tmux",
       sessionName: "relay-main",
-      cwd: "/Users/example/dev/openscout",
+      cwd: "/Users/art/dev/openscout",
       harness: "claude",
       resumeCommand: "claude --resume abc",
     });

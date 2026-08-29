@@ -3,5 +3,6 @@ members = [
   "crates/openscout-voice-core",
   "crates/openscout-repo-service",
   "crates/scoutd",
+  "crates/scout-tui",
 ]
 resolver = "2"

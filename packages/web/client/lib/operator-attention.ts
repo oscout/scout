@@ -47,6 +47,14 @@ export type OperatorAttentionDismissTarget =
     }
   | {
       flightId: string;
+      conversationId?: string;
+      messageId?: string;
+      itemUpdatedAt: number;
+    }
+  | {
+      conversationId: string;
+      messageId: string;
+      flightId?: string;
       itemUpdatedAt: number;
     };
 

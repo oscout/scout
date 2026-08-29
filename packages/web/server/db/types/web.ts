@@ -156,6 +156,7 @@ export type WebBrokerHistoryKey = "attempts" | "failedQueries" | "failedDeliveri
 export type WebBrokerDiagnosticsSource = {
   mode: "live_broker" | "sqlite_projection";
   status: "current" | "degraded" | "unknown";
+  brokerReachable?: boolean | null;
   latestMessageAt: number | null;
   projectionLatestMessageAt: number | null;
   liveMessageCount: number | null;

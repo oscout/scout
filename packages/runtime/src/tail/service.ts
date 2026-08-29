@@ -1,5 +1,6 @@
 import { basename } from "node:path";
 import { open, stat, type FileHandle } from "node:fs/promises";
+import type { Stats } from "node:fs";
 
 import { redactSecrets, redactSecretsDeep } from "@openscout/agent-sessions/secret-redaction";
 
@@ -19,6 +20,8 @@ import type {
   TailDiscoveryScope,
   TailDiscoveryIssue,
   TailEvent,
+  TailEventKind,
+  TailContext,
   TranscriptSource,
 } from "./types.js";
 
@@ -37,6 +40,9 @@ const SHALLOW_DISCOVERY_INTERVAL_MS = readPositiveIntEnv("OPENSCOUT_TAIL_SHALLOW
 const DEEP_DISCOVERY_INTERVAL_MS = readPositiveIntEnv("OPENSCOUT_TAIL_DEEP_DISCOVERY_INTERVAL_MS", 60 * 60_000);
 const PER_SESSION_BUFFER_LIMIT = 2_000;
 const AGGREGATE_BUFFER_LIMIT = 10_000;
+// Assistant output drives the operator inbox. Keep it in an independent ring
+// so a tool-heavy fleet cannot evict a completed reply from the generic tail.
+const ASSISTANT_BUFFER_LIMIT = 10_000;
 const QUIET_EVENT_COALESCE_WINDOW_MS = readPositiveIntEnv("OPENSCOUT_TAIL_QUIET_EVENT_COALESCE_WINDOW_MS", 5_000);
 const QUIET_EVENT_COALESCE_MAX_KEYS = readPositiveIntEnv("OPENSCOUT_TAIL_QUIET_EVENT_COALESCE_MAX_KEYS", 2_000);
 const RAW_MAX_DEPTH = 5;
@@ -45,9 +51,32 @@ const RAW_MAX_ARRAY_ITEMS = 25;
 const RAW_MAX_OBJECT_KEYS = 50;
 const RECENT_TRANSCRIPT_READ_BYTES = 512 * 1024;
 const SESSION_TRANSCRIPT_READ_BYTES = 8 * 1024 * 1024;
+// A completed reply can precede thousands of verbose tool-result records.
+// Keep the cold inbox scan bounded, but large enough for 12k ~1 KiB records.
+const RECENT_TRANSCRIPT_KIND_SCAN_READ_BYTES = 32 * 1024 * 1024;
 const RECENT_TRANSCRIPT_LINES_PER_FILE = 200;
+const RECENT_TRANSCRIPT_KIND_SCAN_MAX_LINES = 65_536;
 const RECENT_TRANSCRIPT_MAX_FILES = readPositiveIntEnv("OPENSCOUT_TAIL_RECENT_TRANSCRIPT_MAX_FILES", 24);
 const NATIVE_TAIL_SOURCES = new Set<TranscriptSource["name"]>(["grok", "kimi", "opencode", "cursor"]);
+const TRANSCRIPT_REPLAY_MEMO_MAX_ENTRIES = readPositiveIntEnv("OPENSCOUT_TAIL_REPLAY_MEMO_MAX_ENTRIES", 256);
+const TRANSCRIPT_REPLAY_ACTIVE_GRACE_MS = readPositiveIntEnv("OPENSCOUT_TAIL_REPLAY_MEMO_ACTIVE_GRACE_MS", 2_000);
+
+type TranscriptReplayMemo = {
+  events: TailEvent[];
+  fingerprint: string;
+  staleSinceMs?: number;
+};
+type TranscriptReplayDependencyFingerprint = {
+  size: number;
+  mtimeMs: number;
+};
+const transcriptReplayMemo = new Map<string, TranscriptReplayMemo>();
+const transcriptReplayInFlight = new Map<string, Promise<TailEvent[]>>();
+
+function resetTranscriptReplayMemo(): void {
+  transcriptReplayMemo.clear();
+  transcriptReplayInFlight.clear();
+}
 
 type Subscriber = (event: TailEvent) => void;
 
@@ -67,6 +96,7 @@ const sources: TranscriptSource[] = [GrokSource, KimiSource, ClaudeSource, Codex
 
 const watchers = new Map<string, Watcher>(); // key = `${source}:${transcriptPath}` (one watcher per file, regardless of how many processes share it)
 const aggregateBuffer: TailEvent[] = [];
+const assistantBuffer: TailEvent[] = [];
 const perSessionBuffer = new Map<string, TailEvent[]>();
 const subscribers = new Set<Subscriber>();
 const knownTranscripts = new Map<string, DiscoveredTranscript>();
@@ -280,6 +310,12 @@ function pushEvent(rawEvent: TailEvent): void {
   aggregateBuffer.push(event);
   if (aggregateBuffer.length > AGGREGATE_BUFFER_LIMIT) {
     aggregateBuffer.splice(0, aggregateBuffer.length - AGGREGATE_BUFFER_LIMIT);
+  }
+  if (event.kind === "assistant") {
+    assistantBuffer.push(event);
+    if (assistantBuffer.length > ASSISTANT_BUFFER_LIMIT) {
+      assistantBuffer.splice(0, assistantBuffer.length - ASSISTANT_BUFFER_LIMIT);
+    }
   }
   let bucket = perSessionBuffer.get(event.sessionId);
   if (!bucket) {
@@ -667,16 +703,38 @@ export const __testing = {
   quietTailEventKey,
   resetQuietTailCoalescer: () => quietEventLastSeen.clear(),
   shouldCoalesceQuietTailEvent,
+  transcriptReplayMemoSize: () => transcriptReplayMemo.size,
+  resetTranscriptReplayMemo,
+  memoizedTranscriptReplay,
+  resetTailEventBuffers: () => {
+    aggregateBuffer.length = 0;
+    assistantBuffer.length = 0;
+    perSessionBuffer.clear();
+  },
+  setSessionBuffer: (sessionId: string, events: TailEvent[]) => {
+    perSessionBuffer.set(sessionId, [...events]);
+  },
+  pushEvent,
+  snapshotSessionEvents,
 };
 
-export async function readRecentLiveEvents(limit = 500): Promise<TailEvent[]> {
+export async function readRecentLiveEvents(
+  limit = 500,
+  options?: { kinds?: TailEventKind[] },
+): Promise<TailEvent[]> {
   if (watchers.size === 0) {
     scheduleDiscovery("shallow", { pruneMissing: true });
   } else if (!lastDiscovery || Date.now() - lastDiscovery.generatedAt > DISCOVERY_CACHE_MAX_AGE_MS) {
     scheduleDiscovery("hot", { pruneMissing: false });
   }
   void pumpAllWatchers();
-  return snapshotRecentEvents(limit);
+  const kinds = options?.kinds?.length ? new Set(options.kinds) : null;
+  const source = kinds?.size === 1 && kinds.has("assistant")
+    ? assistantBuffer
+    : aggregateBuffer;
+  return kinds
+    ? source.filter((event) => kinds.has(event.kind)).slice(-limit)
+    : snapshotRecentEvents(limit);
 }
 
 async function readRecentTranscriptLines(
@@ -705,6 +763,60 @@ async function readRecentTranscriptLines(
   }
 }
 
+async function parseRecentTranscriptLineEvents(input: {
+  source: TranscriptSource;
+  transcriptPath: string;
+  context: TailContext;
+  lineLimit: number;
+  initialReadBytes: number;
+  maxReadBytes: number;
+  kinds?: Set<TailEventKind> | null;
+  kindQuota?: number;
+}): Promise<TailEvent[]> {
+  let fileSize = 0;
+  try {
+    fileSize = (await stat(input.transcriptPath)).size;
+  } catch {
+    return [];
+  }
+  let lineLimit = Math.max(1, input.lineLimit);
+  let readBytes = Math.max(1, Math.min(input.initialReadBytes, input.maxReadBytes));
+  const kindQuota = input.kinds?.size
+    ? Math.max(1, input.kindQuota ?? 1)
+    : null;
+  const maxLines = kindQuota
+    ? Math.max(lineLimit, RECENT_TRANSCRIPT_KIND_SCAN_MAX_LINES)
+    : lineLimit;
+
+  while (true) {
+    const lines = await readRecentTranscriptLines(input.transcriptPath, lineLimit, readBytes);
+    const parseState: Record<string, unknown> = {};
+    const parsed: TailEvent[] = [];
+    let index = 0;
+    for (const line of lines) {
+      const event = input.source.parseLine(line, {
+        ...input.context,
+        lineOffset: index,
+        state: parseState,
+      });
+      index++;
+      if (event) parsed.push(compactEvent(event));
+    }
+
+    const matchingCount = kindQuota
+      ? parsed.reduce((count, event) => count + (input.kinds!.has(event.kind) ? 1 : 0), 0)
+      : 0;
+    const exhaustedFile = readBytes >= fileSize && lines.length < lineLimit;
+    if (!kindQuota || matchingCount >= kindQuota || exhaustedFile) return parsed;
+
+    const nextLineLimit = Math.min(maxLines, lineLimit * 2);
+    const nextReadBytes = Math.min(input.maxReadBytes, readBytes * 2);
+    if (nextLineLimit === lineLimit && nextReadBytes === readBytes) return parsed;
+    lineLimit = nextLineLimit;
+    readBytes = nextReadBytes;
+  }
+}
+
 function rememberTranscriptEvent(
   events: TailEvent[],
   seenEvents: Set<string>,
@@ -718,52 +830,142 @@ function rememberTranscriptEvent(
   events.push(compacted);
 }
 
+/**
+ * Replay a transcript into events, memoising the parse keyed by path, parse
+ * shape, primary-file stat, and any multi-file dependency fingerprint.
+ * `variant` separates the bounded recent replay from
+ * the larger session replay (and their line budgets), so a cheap list read can
+ * never truncate a later detail view. Files touched within the active-grace
+ * window fall back to the prior memo so a hot file does not trigger a re-read
+ * on every poll; concurrent callers share one load. The replay path is the bulk
+ * cost of `/v1/tail/recent` and used to repeat the whole read+parse per request.
+ */
+async function memoizedTranscriptReplay(
+  transcriptPath: string,
+  variant: string,
+  load: () => Promise<TailEvent[]>,
+  dependency?: TranscriptReplayDependencyFingerprint,
+): Promise<TailEvent[]> {
+  const cacheKey = `${transcriptPath}\u0000${variant}`;
+  const inFlight = transcriptReplayInFlight.get(cacheKey);
+  if (inFlight) return [...await inFlight];
+  let stats: Stats;
+  try {
+    stats = await stat(transcriptPath);
+  } catch {
+    transcriptReplayMemo.delete(cacheKey);
+    return [];
+  }
+  const fingerprint = [
+    stats.size,
+    stats.mtimeMs,
+    dependency?.size ?? "",
+    dependency?.mtimeMs ?? "",
+  ].join(":");
+  const effectiveMtimeMs = Math.max(stats.mtimeMs, dependency?.mtimeMs ?? 0);
+  const cached = transcriptReplayMemo.get(cacheKey);
+  const unchanged = cached && cached.fingerprint === fingerprint;
+  if (unchanged) {
+    cached.staleSinceMs = undefined;
+    return [...cached.events];
+  }
+  const now = Date.now();
+  if (cached && now - effectiveMtimeMs < TRANSCRIPT_REPLAY_ACTIVE_GRACE_MS) {
+    cached.staleSinceMs ??= now;
+    if (now - cached.staleSinceMs < TRANSCRIPT_REPLAY_ACTIVE_GRACE_MS) {
+      return [...cached.events];
+    }
+  }
+  const promise = (async () => {
+    const events = await load();
+    transcriptReplayMemo.delete(cacheKey);
+    transcriptReplayMemo.set(cacheKey, {
+      events: [...events],
+      fingerprint,
+    });
+    while (transcriptReplayMemo.size > TRANSCRIPT_REPLAY_MEMO_MAX_ENTRIES) {
+      const oldest = transcriptReplayMemo.keys().next().value;
+      if (typeof oldest !== "string") break;
+      transcriptReplayMemo.delete(oldest);
+    }
+    return events;
+  })().finally(() => transcriptReplayInFlight.delete(cacheKey));
+  transcriptReplayInFlight.set(cacheKey, promise);
+  return [...await promise];
+}
+
 async function appendWatcherTranscriptEvents(
   events: TailEvent[],
   seenEvents: Set<string>,
   watcher: Watcher,
-  perTranscriptLineLimit?: number,
+  options?: {
+    perTranscriptLineLimit?: number;
+    kinds?: Set<TailEventKind> | null;
+    kindQuota?: number;
+  },
 ): Promise<void> {
   const { source, transcript, process, transcriptPath } = watcher;
   if (source.parseFile) {
-    const text = await readTranscriptText(transcriptPath);
-    if (!text) return;
-    const parsed = parsedEventsToArray(source.parseFile(text, {
-      process,
-      transcript,
+    const readBytes = options?.kinds?.size
+      ? RECENT_TRANSCRIPT_KIND_SCAN_READ_BYTES
+      : RECENT_TRANSCRIPT_READ_BYTES;
+    const parsed = await memoizedTranscriptReplay(
       transcriptPath,
-      lineOffset: 0,
-      state: {},
-    }));
+      `recent:file:${source.name}:${sessionRegistryKey(transcript)}:${readBytes}:${[...(options?.kinds ?? [])].sort().join(",")}`,
+      async () => {
+        const text = await readTranscriptText(transcriptPath, readBytes);
+        if (!text) return [];
+        return parsedEventsToArray(source.parseFile!(text, {
+          process,
+          transcript,
+          transcriptPath,
+          lineOffset: 0,
+          state: {},
+        }));
+      },
+      { size: transcript.size, mtimeMs: transcript.mtimeMs },
+    );
     for (const event of parsed) {
+      if (options?.kinds?.size && !options.kinds.has(event.kind)) continue;
       rememberTranscriptEvent(events, seenEvents, event);
     }
     return;
   }
 
-  const lines = await readRecentTranscriptLines(
+  const lineLimit = options?.perTranscriptLineLimit ?? RECENT_TRANSCRIPT_LINES_PER_FILE;
+  const kindKey = [...(options?.kinds ?? [])].sort().join(",");
+  const parsed = await memoizedTranscriptReplay(
     transcriptPath,
-    perTranscriptLineLimit,
-  );
-  const parseState: Record<string, unknown> = {};
-  lines.forEach((line, index) => {
-    const event = source.parseLine(line, {
-      process,
-      transcript,
+    `recent:lines:${source.name}:${sessionRegistryKey(transcript)}:${lineLimit}:${RECENT_TRANSCRIPT_READ_BYTES}:${kindKey}:${options?.kindQuota ?? ""}`,
+    () => parseRecentTranscriptLineEvents({
+      source,
       transcriptPath,
-      lineOffset: index,
-      state: parseState,
-    });
-    if (!event) return;
-    const compacted = compactEvent(event);
+      context: {
+        process,
+        transcript,
+        transcriptPath,
+        lineOffset: 0,
+        state: {},
+      },
+      lineLimit,
+      initialReadBytes: RECENT_TRANSCRIPT_READ_BYTES,
+      maxReadBytes: options?.kinds?.size
+        ? RECENT_TRANSCRIPT_KIND_SCAN_READ_BYTES
+        : RECENT_TRANSCRIPT_READ_BYTES,
+      kinds: options?.kinds,
+      kindQuota: options?.kindQuota,
+    }),
+  );
+  for (const event of parsed) {
+    if (options?.kinds?.size && !options.kinds.has(event.kind)) continue;
     const eventKey = [
-      compacted.source,
-      compacted.sessionId,
-      compacted.kind,
-      compacted.summary,
+      event.source,
+      event.sessionId,
+      event.kind,
+      event.summary,
     ].join("\u0000");
     rememberTranscriptEvent(events, seenEvents, event, eventKey);
-  });
+  }
 }
 
 export async function readRecentTranscriptEvents(
@@ -771,6 +973,8 @@ export async function readRecentTranscriptEvents(
   options?: {
     discovery?: DiscoverySnapshot | null;
     perTranscriptLineLimit?: number;
+    kinds?: TailEventKind[];
+    perTranscriptKindLimit?: number;
   },
 ): Promise<TailEvent[]> {
   if (watchers.size === 0) {
@@ -788,13 +992,21 @@ export async function readRecentTranscriptEvents(
 
   const transcriptReadLimit = Math.min(RECENT_TRANSCRIPT_MAX_FILES, Math.max(12, limit));
   const lineLimit = options?.perTranscriptLineLimit ?? RECENT_TRANSCRIPT_LINES_PER_FILE;
+  const kinds = options?.kinds?.length ? new Set(options.kinds) : null;
+  const kindQuota = kinds
+    ? Math.max(1, options?.perTranscriptKindLimit ?? limit)
+    : undefined;
   const activeWatchers = [...watchers.values()]
     .sort((left, right) => right.transcript.mtimeMs - left.transcript.mtimeMs)
     .slice(0, transcriptReadLimit);
 
   for (const watcher of activeWatchers) {
     seenTranscriptPaths.add(watcher.transcriptPath);
-    await appendWatcherTranscriptEvents(events, seenEvents, watcher, lineLimit);
+    await appendWatcherTranscriptEvents(events, seenEvents, watcher, {
+      perTranscriptLineLimit: lineLimit,
+      kinds,
+      kindQuota,
+    });
   }
 
   // Replay discovered transcripts that are not actively watched — Claude/Codex
@@ -810,6 +1022,11 @@ export async function readRecentTranscriptEvents(
         transcript,
         options.discovery.processes,
         lineLimit,
+        {
+          kinds,
+          kindQuota,
+          initialReadBytes: RECENT_TRANSCRIPT_READ_BYTES,
+        },
       );
       for (const event of parsed) {
         rememberTranscriptEvent(events, seenEvents, event);
@@ -819,6 +1036,7 @@ export async function readRecentTranscriptEvents(
   }
 
   return events
+    .filter((event) => !kinds || kinds.has(event.kind))
     .sort((left, right) => right.ts - left.ts)
     .slice(0, limit);
 }
@@ -841,13 +1059,18 @@ function transcriptMatchesSessionRef(
   return refs.includes(normalizedRef);
 }
 
-function snapshotSessionEvents(sessionId: string, limit: number): TailEvent[] {
+function snapshotSessionEvents(
+  sessionId: string,
+  source: string,
+  limit: number,
+): TailEvent[] {
   const bucket = perSessionBuffer.get(sessionId);
   if (bucket?.length) {
-    return bucket.slice(-limit);
+    const sourceEvents = bucket.filter((event) => event.source === source);
+    if (sourceEvents.length > 0) return sourceEvents.slice(-limit);
   }
   return aggregateBuffer
-    .filter((event) => event.sessionId === sessionId)
+    .filter((event) => event.sessionId === sessionId && event.source === source)
     .slice(-limit);
 }
 
@@ -855,6 +1078,11 @@ async function parseTranscriptSessionEvents(
   transcript: DiscoveredTranscript,
   processes: DiscoveredProcess[],
   limit: number,
+  options?: {
+    kinds?: Set<TailEventKind> | null;
+    kindQuota?: number;
+    initialReadBytes?: number;
+  },
 ): Promise<TailEvent[]> {
   const source = sources.find((candidate) => candidate.name === transcript.source);
   if (!source) return [];
@@ -867,33 +1095,36 @@ async function parseTranscriptSessionEvents(
     lineOffset: 0,
     state: {} as Record<string, unknown>,
   };
-
-  if (source.parseFile) {
-    const text = await readTranscriptText(transcript.transcriptPath, SESSION_TRANSCRIPT_READ_BYTES);
-    if (!text) return [];
-    return parsedEventsToArray(source.parseFile(text, ctxBase))
-      .map(redactTailEvent)
-      .sort((left, right) => left.ts - right.ts)
-      .slice(-limit);
-  }
-
   const lineBudget = Math.max(limit, RECENT_TRANSCRIPT_LINES_PER_FILE);
-  const lines = await readRecentTranscriptLines(
-    transcript.transcriptPath,
-    lineBudget,
-    SESSION_TRANSCRIPT_READ_BYTES,
-  );
-  const events: TailEvent[] = [];
-  lines.forEach((line, index) => {
-    const event = source.parseLine(line, {
-      ...ctxBase,
-      lineOffset: index,
-    });
-    if (event) {
-      events.push(compactEvent(event));
+  const kindKey = [...(options?.kinds ?? [])].sort().join(",");
+  const maxReadBytes = options?.kinds?.size
+    ? RECENT_TRANSCRIPT_KIND_SCAN_READ_BYTES
+    : SESSION_TRANSCRIPT_READ_BYTES;
+  const replayVariant = source.parseFile
+    ? `session:file:${source.name}:${sessionRegistryKey(transcript)}:${maxReadBytes}:${kindKey}`
+    : `session:lines:${source.name}:${sessionRegistryKey(transcript)}:${lineBudget}:${maxReadBytes}:${kindKey}:${options?.kindQuota ?? ""}`;
+
+  const parsed = await memoizedTranscriptReplay(transcript.transcriptPath, replayVariant, async () => {
+    if (source.parseFile) {
+      const text = await readTranscriptText(transcript.transcriptPath, maxReadBytes);
+      if (!text) return [];
+      return parsedEventsToArray(source.parseFile(text, ctxBase))
+        .map(redactTailEvent);
     }
-  });
-  return events
+    return parseRecentTranscriptLineEvents({
+      source,
+      transcriptPath: transcript.transcriptPath,
+      context: ctxBase,
+      lineLimit: lineBudget,
+      initialReadBytes: options?.initialReadBytes ?? SESSION_TRANSCRIPT_READ_BYTES,
+      maxReadBytes,
+      kinds: options?.kinds,
+      kindQuota: options?.kindQuota,
+    });
+  }, source.parseFile ? { size: transcript.size, mtimeMs: transcript.mtimeMs } : undefined);
+
+  return parsed
+    .filter((event) => !options?.kinds?.size || options.kinds.has(event.kind))
     .sort((left, right) => left.ts - right.ts)
     .slice(-limit);
 }
@@ -919,7 +1150,7 @@ export async function readTailEventsForSession(
 
   const limit = options?.limit ?? 2_000;
   const sessionId = transcript.sessionId?.trim() || normalizedRef;
-  let events = snapshotSessionEvents(sessionId, limit);
+  let events = snapshotSessionEvents(sessionId, transcript.source, limit);
   if (events.length === 0) {
     events = await parseTranscriptSessionEvents(transcript, discovery.processes, limit);
   }

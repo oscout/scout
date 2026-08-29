@@ -21,7 +21,7 @@ function tailEvent(overrides: Partial<TailEvent> & { sessionId: string; ts: numb
     pid: 100,
     parentPid: null,
     project: "openscout",
-    cwd: "/Users/example/dev/openscout",
+    cwd: "/Users/art/dev/openscout",
     harness: "unattributed",
     kind: "tool",
     summary: "bash ls",
@@ -35,7 +35,7 @@ function transcript(
   return {
     source: "claude",
     transcriptPath: `/logs/${overrides.sessionId}.jsonl`,
-    cwd: "/Users/example/dev/openscout",
+    cwd: "/Users/art/dev/openscout",
     project: "openscout",
     harness: "unattributed",
     mtimeMs: 1_000,

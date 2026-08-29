@@ -69,6 +69,21 @@ export interface Palette {
   sclera: string;
   glow: string;
   soft: string;
+  /**
+   * The numeric lightness/chroma behind `body` and `accent`.
+   *
+   * Presentation only — nothing here feeds the hash, the seed, or a trait, and
+   * the cell grid is identical with or without it. It exists so a renderer can
+   * shade the creature as ONE lit form (a light that crosses the whole
+   * silhouette) instead of a mosaic of individually flat tiles. Rebuilding
+   * those numbers by parsing the oklch strings back out would be the same
+   * values, arrived at worse.
+   */
+  bodyL: number;
+  bodyC: number;
+  accentL: number;
+  accentC: number;
+  accentHue: number;
 }
 
 /** Tone — the "color range" knob (lightness + chroma), driven by state. */
@@ -93,6 +108,11 @@ export function paletteFromHue(hue: number, tone: Tone = {}): Palette {
     sclera: `oklch(0.96 0.02 ${h})`,
     glow: `oklch(${l} ${c} ${h} / 0.45)`,
     soft: `oklch(${l} ${c} ${h} / 0.12)`,
+    bodyL: l,
+    bodyC: c,
+    accentL: lift,
+    accentC: c + 0.01,
+    accentHue,
   };
 }
 
@@ -118,6 +138,8 @@ export const HARNESS_HUE: Record<string, number> = {
   kimi: 238,
   grok: 266,
   "grok-acp": 266,
+  opencode: 160,
+  oc: 160,
 };
 
 function pickHue(rng: Rng, spectrum = false): number {

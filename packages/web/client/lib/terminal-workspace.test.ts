@@ -171,8 +171,8 @@ describe("resolveTerminalProjectDestinations", () => {
   test("keeps configured projects canonical and ranks active roots first", () => {
     const destinations = resolveTerminalProjectDestinations(
       [
-        { id: "alpha", title: "Alpha", root: "/Users/example/dev/alpha" },
-        { id: "scout", title: "OpenScout", root: "/Users/example/dev/openscout/" },
+        { id: "alpha", title: "Alpha", root: "/Users/art/dev/alpha" },
+        { id: "scout", title: "OpenScout", root: "/Users/art/dev/openscout/" },
       ],
       [
         {
@@ -190,13 +190,13 @@ describe("resolveTerminalProjectDestinations", () => {
       {
         id: "configured:scout",
         label: "OpenScout",
-        path: "/Users/example/dev/openscout",
+        path: "/Users/art/dev/openscout",
         source: "configured",
       },
       {
         id: "configured:alpha",
         label: "Alpha",
-        path: "/Users/example/dev/alpha",
+        path: "/Users/art/dev/alpha",
         source: "configured",
       },
     ]);
@@ -208,7 +208,7 @@ describe("resolveTerminalProjectDestinations", () => {
         id: "older",
         name: "Older",
         project: null,
-        projectRoot: "/Users/example/dev/older",
+        projectRoot: "/Users/art/dev/older",
         cwd: null,
         updatedAt: 10,
       },
@@ -216,7 +216,7 @@ describe("resolveTerminalProjectDestinations", () => {
         id: "unsafe",
         name: "Unsafe",
         project: "Unsafe",
-        projectRoot: "/Users/example/dev/unsafe\nrm -rf ~",
+        projectRoot: "/Users/art/dev/unsafe\nrm -rf ~",
         cwd: null,
         updatedAt: 30,
       },
@@ -225,22 +225,22 @@ describe("resolveTerminalProjectDestinations", () => {
         name: "Newer",
         project: "Newest",
         projectRoot: null,
-        cwd: "/Users/example/dev/newer",
+        cwd: "/Users/art/dev/newer",
         updatedAt: 20,
       },
     ]);
 
     expect(destinations.map(({ label, path }) => ({ label, path }))).toEqual([
-      { label: "Newest", path: "/Users/example/dev/newer" },
-      { label: "older", path: "/Users/example/dev/older" },
+      { label: "Newest", path: "/Users/art/dev/newer" },
+      { label: "older", path: "/Users/art/dev/older" },
     ]);
   });
 });
 
 describe("terminalProjectCdCommand", () => {
   test("quotes spaces and embedded single quotes for the shell", () => {
-    expect(terminalProjectCdCommand("/Users/example/dev/My Project's app"))
-      .toBe("cd -- '/Users/example/dev/My Project'\\''s app'");
+    expect(terminalProjectCdCommand("/Users/art/dev/My Project's app"))
+      .toBe("cd -- '/Users/art/dev/My Project'\\''s app'");
   });
 
   test("keeps the home shortcut expandable", () => {

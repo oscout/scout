@@ -11,7 +11,7 @@ export const ROUTE_VIEW_LABELS: Record<string, string> = {
   inbox: "Home",
   conversation: "Conversation",
   "agent-info": "Agent",
-  "agents-v2": "Projects",
+  "agents-v2": "Crew & Workspaces",
   messages: "Messages",
   sessions: "Sessions",
   terminal: "Terminals",
@@ -63,7 +63,7 @@ export function routeBreadcrumbForRoute(route: Route): string | null {
       if (route.mode === "tail") return "Live Activity";
       if (route.mode === "lanes") return "Agent Lanes";
       if (route.mode === "atop") return "Runtime Monitor";
-      if (route.mode === "plan") return "Plans";
+      if (route.mode === "advisor") return "Host Advisor";
       if (route.mode === "mission" || route.mode === "issues" || route.mode === undefined) {
         return "Mission Control";
       }

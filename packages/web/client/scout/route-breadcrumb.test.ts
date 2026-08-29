@@ -10,6 +10,12 @@ describe("route breadcrumbs (SCO-083)", () => {
     expect(routeBreadcrumbForRoute({ view: "search" })).toBeNull();
   });
 
+  test("uses agent-first labels for Crew workspace routes", () => {
+    expect(ROUTE_VIEW_LABELS["agents-v2"]).toBe("Crew & Workspaces");
+    expect(ROUTE_VIEW_LABELS.code).toBe("Code Browser");
+    expect(ROUTE_VIEW_LABELS.repos).toBe("Repositories");
+  });
+
   test("labels detail and ops surfaces", () => {
     expect(routeBreadcrumbForRoute({ view: "conversation", conversationId: "c1" })).toBe(
       "Conversation",
@@ -22,6 +28,7 @@ describe("route breadcrumbs (SCO-083)", () => {
     expect(routeBreadcrumbForRoute({ view: "ops" })).toBe("Mission Control");
     expect(routeBreadcrumbForRoute({ view: "ops", mode: "tail" })).toBe("Live Activity");
     expect(routeBreadcrumbForRoute({ view: "ops", mode: "lanes" })).toBe("Agent Lanes");
+    expect(routeBreadcrumbForRoute({ view: "repos" })).toBe("Repositories");
     expect(routeBreadcrumbForRoute({ view: "code" })).toBe("Code Browser");
     expect(routeBreadcrumbForRoute({ view: "repo-diff", path: "/tmp/x" })).toBe("Diff");
   });

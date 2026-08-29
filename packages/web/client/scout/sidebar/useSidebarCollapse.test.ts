@@ -1,8 +1,17 @@
 import { describe, expect, test } from "bun:test";
 import {
+  RAIL_BAND_INSET,
   RAIL_COLLAPSED_WIDTH,
   RAIL_DRAG_COLLAPSE_MARGIN,
   RAIL_DRAG_EXPAND_TRAVEL,
+  RAIL_HEADER_HEIGHT,
+  RAIL_SLOT_CELL,
+  RAIL_SLOT_GAP,
+  RAIL_SLOT_ROW,
+  RAIL_SLOT_TOP,
+  RAIL_TOGGLE_HEADER_TOP,
+  RAIL_TOGGLE_HEIGHT,
+  RAIL_TOGGLE_WIDTH,
   SIDEBAR_AUTO_COLLAPSE_MAX_WIDTH,
   SIDEBAR_COLLAPSED_WIDTH,
   SIDEBAR_EXPANDED_WIDTH,
@@ -20,6 +29,7 @@ import {
   resolveRailDragCommit,
   resolveRailDragGhostWidth,
   resolveSidebarWidth,
+  railToggleOffset,
   type SidebarCollapseSnapshot,
 } from "./sidebar-collapse-state.ts";
 
@@ -30,6 +40,64 @@ describe("sidebar collapse constants (SCO-083 / SCO-086)", () => {
     expect(960).toBeGreaterThan(SIDEBAR_AUTO_COLLAPSE_MAX_WIDTH);
     // The expanded sidebar plus ~600px of content still fits at the boundary.
     expect(SIDEBAR_AUTO_COLLAPSE_MAX_WIDTH).toBeGreaterThanOrEqual(SIDEBAR_EXPANDED_WIDTH + 600);
+  });
+
+  test("collapsed slot grid is one shared pitch for every rail", () => {
+    expect(RAIL_SLOT_CELL).toBe(32);
+    expect(RAIL_SLOT_GAP).toBe(6);
+    expect(RAIL_SLOT_ROW).toBe(38);
+    expect(RAIL_SLOT_TOP).toBe(8);
+    // Slot N starts at TOP + N * ROW — same formula for primary, context, inspector.
+    expect(RAIL_SLOT_TOP + 0 * RAIL_SLOT_ROW).toBe(8);
+    expect(RAIL_SLOT_TOP + 1 * RAIL_SLOT_ROW).toBe(46);
+    expect(RAIL_SLOT_TOP + 2 * RAIL_SLOT_ROW).toBe(84);
+  });
+
+  test("the toggle centres in the 44px header band", () => {
+    expect(RAIL_HEADER_HEIGHT).toBe(44);
+    expect(RAIL_TOGGLE_WIDTH).toBe(22);
+    expect(RAIL_TOGGLE_HEIGHT).toBe(28);
+    expect(RAIL_TOGGLE_HEADER_TOP).toBe(8);
+    expect(RAIL_TOGGLE_HEADER_TOP * 2 + RAIL_TOGGLE_HEIGHT).toBe(RAIL_HEADER_HEIGHT);
+  });
+
+  describe("railToggleOffset — one cell, both states", () => {
+    test("expanded, the toggle tucks inside the column's inner edge", () => {
+      // Never on the seam: the far edge of the control clears the boundary by
+      // exactly the band inset.
+      expect(railToggleOffset(260, false)).toBe(260 - RAIL_BAND_INSET - RAIL_TOGGLE_WIDTH);
+      expect(railToggleOffset(260, false) + RAIL_TOGGLE_WIDTH).toBe(260 - RAIL_BAND_INSET);
+      expect(railToggleOffset(260, false)).toBe(230);
+    });
+
+    test("collapsed, the toggle centres in the rail", () => {
+      expect(railToggleOffset(RAIL_COLLAPSED_WIDTH, true)).toBe(13);
+      const offset = railToggleOffset(RAIL_COLLAPSED_WIDTH, true);
+      expect(offset + RAIL_TOGGLE_WIDTH + offset).toBe(RAIL_COLLAPSED_WIDTH);
+    });
+
+    test("collapsed width is a parameter, so the 56px Slack rail centres too", () => {
+      const offset = railToggleOffset(
+        SLACK_SIDEBAR_COLLAPSED_WIDTH,
+        true,
+        SLACK_SIDEBAR_COLLAPSED_WIDTH,
+      );
+      expect(offset).toBe(17);
+      expect(offset + RAIL_TOGGLE_WIDTH + offset).toBe(SLACK_SIDEBAR_COLLAPSED_WIDTH);
+    });
+
+    test("a column narrower than the control still keeps it inside", () => {
+      // Degenerate widths clamp to the inset rather than going negative and
+      // hanging the control off the outer edge.
+      expect(railToggleOffset(20, false)).toBe(RAIL_BAND_INSET);
+      expect(railToggleOffset(Number.NaN, false)).toBe(RAIL_BAND_INSET);
+    });
+
+    test("the collapsed offset does not depend on the remembered width", () => {
+      // Collapse must land the control in the same cell no matter how wide the
+      // column was — that is the whole point of the in-place toggle.
+      expect(railToggleOffset(360, true)).toBe(railToggleOffset(200, true));
+    });
   });
 
   test("expanded and icon-rail widths match the anatomy", () => {

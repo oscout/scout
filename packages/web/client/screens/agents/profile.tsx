@@ -71,7 +71,7 @@ function shortSessionLabel(id: string): string {
 function compactSurfaceSessionLabel(id: string): string {
   return id
     .replace(/^relay-/u, "")
-    .replace(/-dev-mac-mini-local-(claude|codex)$/u, "");
+    .replace(/-arts-mac-mini-local-(claude|codex)$/u, "");
 }
 
 function fmtTokens(n: number): string {

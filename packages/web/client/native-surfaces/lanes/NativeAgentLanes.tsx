@@ -40,6 +40,12 @@ export function NativeAgentLanes({ bootstrap, client }: NativeAgentLanesProps) {
   }, [scopeKey]);
   const [snapshot, setSnapshot] = useState<NativeLaneSnapshot>(() => emptyNativeLaneSnapshot());
   const [loading, setLoading] = useState(true);
+  // Two different facts, kept apart on purpose. `poll` is how the most recent
+  // attempt went; `loaded` is whether the channel has ever answered. A refresh
+  // that fails on top of a good snapshot is a blip, not an outage, and the lane
+  // deck renders the two very differently — see TailFeedLoadState.
+  const [poll, setPoll] = useState({ agents: false, tail: false });
+  const [loaded, setLoaded] = useState({ agents: false, tail: false });
 
   const refresh = useCallback(async (showLoading = false) => {
     if (!scope) return;
@@ -65,7 +71,20 @@ export function NativeAgentLanes({ bootstrap, client }: NativeAgentLanesProps) {
     const observe = bootstrap.capabilities?.includes("agents.observe") && observedAgentIds.length > 0
       ? await client.agents.observe(scope, [...new Set(observedAgentIds)]).catch(() => null)
       : null;
-    setSnapshot(buildNativeLaneSnapshot(agents, tail, observe, bootstrap));
+    const next = buildNativeLaneSnapshot(agents, tail, observe, bootstrap);
+    setPoll({ agents: next.agentReady, tail: next.tailReady });
+    setLoaded((previous) => (
+      (next.agentReady && !previous.agents) || (next.tailReady && !previous.tail)
+        ? { agents: previous.agents || next.agentReady, tail: previous.tail || next.tailReady }
+        : previous
+    ));
+    // Keep the last good snapshot when a poll fails. Replacing it with the
+    // empty one would blank the deck every time a host blinks, on a 15s timer.
+    setSnapshot((previous) => (
+      !next.agentReady && !next.tailReady && (previous.agentReady || previous.tailReady)
+        ? previous
+        : next
+    ));
     setLoading(false);
   }, [bootstrap, client, scope]);
 
@@ -95,11 +114,13 @@ export function NativeAgentLanes({ bootstrap, client }: NativeAgentLanesProps) {
     observeCache: snapshot.observeCache,
     terminalSessions: [],
     loadState: {
-      discovery: loading ? "loading" : snapshot.agentReady ? "ready" : "error",
-      recent: loading ? "loading" : snapshot.tailReady ? "ready" : "error",
+      discovery: loading ? "loading" : poll.agents ? "ready" : "error",
+      recent: loading ? "loading" : poll.tail ? "ready" : "error",
+      discoveryLoaded: loaded.agents,
+      recentLoaded: loaded.tail,
     },
     retryInitialLoad: () => refresh(true),
-  }), [loading, refresh, snapshot]);
+  }), [loaded, loading, poll, refresh, snapshot]);
 
   // AgentLanesView is adapter-backed, but some of its canonical descendants
   // (file links, detail sheets, session headers) consume ScoutContext for UI
@@ -122,6 +143,7 @@ export function NativeAgentLanes({ bootstrap, client }: NativeAgentLanesProps) {
     updateAppearanceDetails: noOp,
     reload: () => refresh(true),
     onboarding: null,
+    operatorName: null,
     refreshOnboarding: noOpAsync,
     onboardingSkipped: false,
     skipOnboarding: noOp,

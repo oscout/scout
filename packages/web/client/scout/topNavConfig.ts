@@ -12,7 +12,7 @@ import {
 export type { TopNavItem, TopNavKey };
 export { ROUTE_VIEW_LABELS, routeBreadcrumbForRoute };
 
-// Single-personality nav (Model B · Work nouns): Home · Projects · Sessions ·
+// Single-personality nav (Model B · Work nouns): Home · Crew · Sessions ·
 // Chat. The ops/retrieval cluster (Search, Terminals, Tail, Dispatch, and the
 // ops surfaces) lives one level down in the System dropdown
 // (nav-system-menu.tsx). There is no lean/full switch — `nav.clean` is gone.
@@ -32,13 +32,11 @@ export const TOP_NAV_VIEW_LABELS: Record<string, string> = {
 const SYSTEM_VIEWS = new Set<Route["view"]>([
   "ops",
   "broker",
-  "repos",
   "harnesses",
   "mesh",
   "mesh-ops",
   "terminal",
   "search",
-  "code",
   "work",
   "follow",
   "settings",
@@ -47,7 +45,7 @@ const SYSTEM_VIEWS = new Set<Route["view"]>([
 
 /** True for the chrome/ops surfaces that live under the System dropdown. */
 export function isSystemRoute(route: Route): boolean {
-  // Agent config lives under the Projects tab, not System.
+  // Agent config lives under the Crew tab, not System.
   if (route.view === "settings" && route.section === "agents") return false;
   return SYSTEM_VIEWS.has(route.view);
 }
@@ -63,6 +61,9 @@ export function topNavKeyForRoute(route: Route): TopNavKey {
   switch (route.view) {
     case "agents-v2":
     case "agent-info":
+    case "repos":
+    case "repo-diff":
+    case "code":
       return "agents";
     case "sessions":
       return "sessions";
@@ -71,13 +72,11 @@ export function topNavKeyForRoute(route: Route): TopNavKey {
       return "chat";
     case "ops":
     case "broker":
-    case "repos":
     case "harnesses":
     case "mesh":
     case "mesh-ops":
     case "terminal":
     case "search":
-    case "code":
     case "work":
     case "follow":
     case "settings":

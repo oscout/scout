@@ -1,4 +1,5 @@
 import type { TerminalListItem } from "../../lib/terminal-sessions.ts";
+import { timeAgoWithSuffix } from "../../lib/time.ts";
 
 /**
  * Columns the session picker's table view can sort by. Every column sorts —
@@ -162,4 +163,50 @@ export function toggleTerminalSessionSort(
   }
   const initial = TERMINAL_SESSION_COLUMNS.find((candidate) => candidate.id === column)?.initialDirection ?? "asc";
   return { column, direction: initial };
+}
+
+/**
+ * Last-known layout a host persisted before going quiet (herdr's session.json
+ * today). Read defensively: the host owns the shape, and anything unexpected
+ * is simply absent.
+ */
+function lastKnownLayout(item: TerminalListItem): {
+  savedAt: number | null;
+  panes: number | null;
+  agents: string[];
+} | null {
+  const value = item.session.metadata?.lastKnownLayout;
+  if (!value || typeof value !== "object") return null;
+  const record = value as Record<string, unknown>;
+  const savedAt = typeof record.savedAt === "number" && Number.isFinite(record.savedAt) && record.savedAt > 0
+    ? record.savedAt
+    : null;
+  const panes = typeof record.panes === "number" && Number.isFinite(record.panes) && record.panes > 0
+    ? record.panes
+    : null;
+  const agents = Array.isArray(record.agents)
+    ? record.agents.filter((agent): agent is string => typeof agent === "string" && Boolean(agent.trim()))
+    : [];
+  return { savedAt, panes, agents };
+}
+
+/**
+ * The detail line for a row that has gone quiet. A live row's cwd subtitle
+ * answers "where is this"; an inactive row instead answers "what was this, and
+ * how stale is it" — last activity first, then the shape of the session (pane
+ * count, resident agents), then the place. Also used for detached herdr rows
+ * whose lifecycle is still "current": the server is down, so the live
+ * cwd/condition detail is already stale and the persisted layout is the
+ * honest answer.
+ */
+export function inactiveTerminalItemDetail(item: TerminalListItem, now = Date.now()): string {
+  const lastKnown = lastKnownLayout(item);
+  const parts: string[] = [];
+  const activityAt = terminalSessionActivityAt(item) ?? lastKnown?.savedAt ?? null;
+  if (activityAt !== null) parts.push(`last active ${timeAgoWithSuffix(activityAt, now)}`);
+  const paneCount = item.session.surfaces.length > 1 ? item.session.surfaces.length : lastKnown?.panes ?? null;
+  if (paneCount !== null) parts.push(paneCount === 1 ? "1 pane" : `${paneCount} panes`);
+  if (lastKnown && lastKnown.agents.length > 0) parts.push(lastKnown.agents.slice(0, 3).join(", "));
+  if (item.cwdLabel) parts.push(item.cwdLabel);
+  return parts.join(" · ") || item.detail || item.session.sourceSessionId;
 }

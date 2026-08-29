@@ -230,6 +230,9 @@ export type OpenScoutSettings = {
     quickHits: string[];
     preparedAt: number | null;
   };
+  voice: {
+    realtimeEnabled: boolean;
+  };
   ui: {
     scenes: Scene[];
     activeSceneIdBySurface: Partial<Record<SceneSurface, string | null>>;
@@ -365,6 +368,7 @@ export type UpdateOpenScoutSettingsInput = {
     openScoutNetwork?: Partial<OpenScoutSettings["network"]["openScoutNetwork"]>;
   };
   phone?: Partial<OpenScoutSettings["phone"]>;
+  voice?: Partial<OpenScoutSettings["voice"]>;
 };
 
 type LegacyRelayConfig = {
@@ -1242,6 +1246,9 @@ function defaultSettings(): OpenScoutSettings {
       quickHits: [],
       preparedAt: null,
     },
+    voice: {
+      realtimeEnabled: false,
+    },
     ui: {
       scenes: [],
       activeSceneIdBySurface: {},
@@ -1703,6 +1710,7 @@ async function normalizeSettingsRecord(
   const telegram = typeof bridges.telegram === "object" && bridges.telegram ? bridges.telegram as Record<string, unknown> : {};
   const network = typeof candidate.network === "object" && candidate.network ? candidate.network as Record<string, unknown> : {};
   const phone = typeof candidate.phone === "object" && candidate.phone ? candidate.phone as Record<string, unknown> : {};
+  const voice = typeof candidate.voice === "object" && candidate.voice ? candidate.voice as Record<string, unknown> : {};
   const ui = typeof candidate.ui === "object" && candidate.ui ? candidate.ui as Record<string, unknown> : {};
   const oldOperatorName = typeof candidate.operatorName === "string" ? candidate.operatorName : undefined;
 
@@ -1796,6 +1804,11 @@ async function normalizeSettingsRecord(
       favorites: normalizeStringList(phone.favorites),
       quickHits: normalizeStringList(phone.quickHits),
       preparedAt: normalizeOptionalTimestamp(phone.preparedAt),
+    },
+    voice: {
+      realtimeEnabled: typeof voice.realtimeEnabled === "boolean"
+        ? voice.realtimeEnabled
+        : base.voice.realtimeEnabled,
     },
     ui: normalizeUi(ui),
   };
@@ -1981,6 +1994,10 @@ export async function writeOpenScoutSettings(settings: UpdateOpenScoutSettingsIn
     phone: {
       ...current.phone,
       ...(settings.phone ?? {}),
+    },
+    voice: {
+      ...current.voice,
+      ...(settings.voice ?? {}),
     },
     ui: {
       ...current.ui,

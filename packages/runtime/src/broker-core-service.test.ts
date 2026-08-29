@@ -8,6 +8,7 @@ import type { ActivityItem } from "./sqlite-store.js";
 function createReadOnlyBrokerCoreService(
   snapshot: RuntimeRegistrySnapshot,
   projectionStatus?: ScoutBrokerProjectionStatus,
+  startupStatus?: { state: "restoring" | "ready"; mutationsAdmitted: boolean },
 ) {
   return createBrokerCoreService({
     baseUrl: "http://broker.test",
@@ -70,6 +71,9 @@ function createReadOnlyBrokerCoreService(
     ...(projectionStatus
       ? { readProjectionStatus: () => projectionStatus }
       : {}),
+    ...(startupStatus
+      ? { readStartupStatus: () => startupStatus }
+      : {}),
     executeCommand: async () => ({ ok: true }),
   });
 }
@@ -88,6 +92,22 @@ describe("createBrokerCoreService", () => {
 
     expect(health.ok).toBe(true);
     expect(health.projection).toEqual(projection);
+  });
+
+  test("reports whether startup recovery still gates normal traffic", async () => {
+    const startup = {
+      state: "restoring",
+      mutationsAdmitted: false,
+    } as const;
+
+    const health = await createReadOnlyBrokerCoreService(
+      createRuntimeRegistrySnapshot(),
+      undefined,
+      startup,
+    ).readHealth();
+
+    expect(health.ok).toBe(true);
+    expect(health.startup).toEqual(startup);
   });
 
   test("builds broker reads around runtime state and delegates writes", async () => {

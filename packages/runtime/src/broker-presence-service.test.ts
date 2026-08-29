@@ -2,7 +2,7 @@ import { EventEmitter } from "node:events";
 
 import { describe, expect, test } from "bun:test";
 
-import { PRESENCE_REFRESH_INTERVAL_MS, presenceLifecycle } from "@openscout/protocol";
+import { presenceLifecycle } from "@openscout/protocol";
 import type {
   AgentDefinition,
   AgentEndpoint,
@@ -17,11 +17,9 @@ import {
   publishControlEvent,
   publishEphemeralControlEvent,
   replaceControlEventBacklog,
-  setPresenceSnapshotSource,
   snapshotRecentControlEvents,
   subscribeControlEvents,
 } from "./broker-control-events.js";
-import { brokerRouter } from "./broker-trpc-router.js";
 
 const T0 = 1_700_000_000_000;
 
@@ -84,26 +82,6 @@ function snapshotWith(overrides: Partial<PresenceProjectionSnapshot> = {}): Pres
   } as PresenceProjectionSnapshot;
 }
 
-function presenceEvent(id: string): PresenceUpdatedEvent {
-  return {
-    id,
-    kind: "presence.updated",
-    ts: T0,
-    actorId: "node-1",
-    payload: {
-      beat: {
-        agentId: "agent-1",
-        activity: "executing",
-        phase: "running",
-        transitionAt: T0,
-        updatedAt: T0,
-        staleAt: T0 + 45_000,
-        confidence: 0.9,
-      },
-    },
-  };
-}
-
 function createService(initial: PresenceProjectionSnapshot) {
   let snapshot = initial;
   const published: PresenceUpdatedEvent[] = [];
@@ -138,7 +116,7 @@ describe("BrokerPresenceService", () => {
     expect(published[0]!.payload.beat.displayName).toBe("hopper");
   });
 
-  test("steady state refreshes freshness at a bounded cadence", () => {
+  test("steady state puts nothing on the wire", () => {
     const { published, service, setSnapshot } = createService(snapshotWith({
       endpoints: { "endpoint-1": heartbeat(T0) },
     }));
@@ -146,17 +124,14 @@ describe("BrokerPresenceService", () => {
     service.sample(T0);
     published.length = 0;
 
-    // Nine minutes of heartbeats, unchanged activity. Refresh the transport
-    // claim before its staleAt expires, but do not turn every heartbeat into an
-    // event. Time-in-state still ages from T0.
+    // Nine minutes of heartbeats, unchanged activity. The renderers keep
+    // ageing the display from timestamps they already hold.
     for (let i = 1; i <= 36; i++) {
       const at = T0 + i * 15_000;
       setSnapshot(snapshotWith({ endpoints: { "endpoint-1": heartbeat(at) } }));
-      const expected = at % PRESENCE_REFRESH_INTERVAL_MS === T0 % PRESENCE_REFRESH_INTERVAL_MS ? 1 : 0;
-      expect(service.sample(at)).toBe(expected);
+      expect(service.sample(at)).toBe(0);
     }
-    expect(published).toHaveLength(18);
-    expect(published.every((event) => event.payload.previousActivity === undefined)).toBe(true);
+    expect(published).toHaveLength(0);
 
     const beat = service.presence.get("agent-1")!;
     expect(beat.transitionAt).toBe(T0);
@@ -230,7 +205,7 @@ describe("BrokerPresenceService", () => {
     for (let i = 1; i <= 36; i++) {
       const at = T0 + i * 15_000;
       setSnapshot(live(at));
-      service.sample(at);
+      expect(service.sample(at)).toBe(0);
     }
 
     const at = T0 + 9 * 60_000;
@@ -240,7 +215,7 @@ describe("BrokerPresenceService", () => {
     expect(beat!.activity).toBe("working");
     expect(presenceLifecycle(beat!, at)).toBe("fresh");
     expect(at - beat!.transitionAt).toBe(9 * 60_000);
-    expect(published).toHaveLength(18);
+    expect(published).toHaveLength(0);
     expect(service.sweep(at)).toEqual([]);
   });
 
@@ -318,6 +293,26 @@ describe("BrokerPresenceService", () => {
 });
 
 describe("presence creates zero durable records", () => {
+  function presenceEvent(id: string): PresenceUpdatedEvent {
+    return {
+      id,
+      kind: "presence.updated",
+      ts: T0,
+      actorId: "node-1",
+      payload: {
+        beat: {
+          agentId: "agent-1",
+          activity: "executing",
+          phase: "running",
+          transitionAt: T0,
+          updatedAt: T0,
+          staleAt: T0 + 45_000,
+          confidence: 0.9,
+        },
+      },
+    };
+  }
+
   test("streamEvent refuses to enqueue a presence event but still fans it out", () => {
     const enqueued: ControlEvent[] = [];
     const service = new BrokerControlStreamService({
@@ -375,98 +370,6 @@ describe("presence creates zero durable records", () => {
     try {
       expect(snapshotRecentControlEvents().map((event) => event.id)).toEqual(["evt-real"]);
     } finally {
-      replaceControlEventBacklog([], 500);
-    }
-  });
-});
-
-describe("presence transport continuity", () => {
-  test("sustained heartbeats refresh connected SSE and tRPC clients", async () => {
-    replaceControlEventBacklog([], 500);
-    const initial = snapshotWith({ endpoints: { "endpoint-1": heartbeat(T0) } });
-    let current = initial;
-    let sequence = 0;
-    let presence!: BrokerPresenceService;
-    const streamService = new BrokerControlStreamService({
-      enqueueEvent: () => {
-        throw new Error("presence must not enqueue");
-      },
-      findDeliveryById: () => undefined,
-      listDeliveries: () => [],
-      messageById: () => undefined,
-      invocationById: () => undefined,
-      presenceSnapshot: () => presence.snapshotEvents(T0),
-    });
-    presence = new BrokerPresenceService({
-      snapshot: () => current,
-      publish: (event) => {
-        streamService.streamEphemeralEvent(event);
-        publishEphemeralControlEvent(event);
-      },
-      createId: () => `presence-${++sequence}`,
-      actorId: "node-1",
-      nodeId: "node-1",
-    });
-
-    presence.sample(T0);
-    setPresenceSnapshotSource(() => presence.snapshotEvents(T0));
-    const sse = new FakeResponse();
-    streamService.addEventStream({
-      request: new FakeRequest() as never,
-      response: sse as never,
-      hello: {},
-    });
-    const subscription = await brokerRouter.createCaller({}).control.events({
-      kinds: ["presence.updated"],
-    });
-    const iterator = subscription[Symbol.asyncIterator]();
-
-    try {
-      const first = await iterator.next();
-      expect(first.value?.[1].payload.beat.updatedAt).toBe(T0);
-
-      const nextEvent = iterator.next();
-      current = snapshotWith({
-        endpoints: { "endpoint-1": heartbeat(T0 + PRESENCE_REFRESH_INTERVAL_MS) },
-      });
-      expect(presence.sample(T0 + PRESENCE_REFRESH_INTERVAL_MS)).toBe(1);
-
-      const refreshed = await nextEvent;
-      const refreshedBeat = refreshed.value?.[1].payload.beat;
-      expect(refreshedBeat.updatedAt).toBe(T0 + PRESENCE_REFRESH_INTERVAL_MS);
-      expect(presenceLifecycle(refreshedBeat, T0 + 60_000)).toBe("fresh");
-      expect(sse.body().split("event: presence.updated").length - 1).toBe(2);
-      expect(sse.body()).toContain(`\"updatedAt\":${T0 + PRESENCE_REFRESH_INTERVAL_MS}`);
-    } finally {
-      await iterator.return?.();
-      setPresenceSnapshotSource(null);
-      replaceControlEventBacklog([], 500);
-      streamService.closeAll();
-    }
-  });
-
-  test("tRPC subscribes before yielding the presence snapshot", async () => {
-    replaceControlEventBacklog([], 500);
-    const snapshotEvent = presenceEvent("presence-snapshot");
-    snapshotEvent.id = "presence-snapshot";
-    const duringHandoff = presenceEvent("presence-transition");
-    duringHandoff.id = "presence-transition";
-    setPresenceSnapshotSource(() => [snapshotEvent]);
-
-    const subscription = await brokerRouter.createCaller({}).control.events({
-      kinds: ["presence.updated"],
-    });
-    const iterator = subscription[Symbol.asyncIterator]();
-    try {
-      expect((await iterator.next()).value?.[1].id).toBe("presence-snapshot");
-      // The async generator is now paused at the snapshot yield. The live
-      // listener must already exist or this transition disappears before the
-      // caller asks for its next item.
-      publishEphemeralControlEvent(duringHandoff);
-      expect((await iterator.next()).value?.[1].id).toBe("presence-transition");
-    } finally {
-      await iterator.return?.();
-      setPresenceSnapshotSource(null);
       replaceControlEventBacklog([], 500);
     }
   });

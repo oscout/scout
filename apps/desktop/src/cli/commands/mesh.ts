@@ -3,6 +3,8 @@ import {
   loadMeshStatus,
   loadMeshDoctorReport,
   runMeshDiscover,
+  runMeshJoin,
+  runMeshLeave,
   runMeshPing,
   loadMeshNodes,
 } from "../../core/mesh/service.ts";
@@ -10,6 +12,7 @@ import {
   renderMeshStatus,
   renderMeshDoctor,
   renderMeshDiscover,
+  renderMeshJoin,
   renderMeshPing,
   renderMeshNodes,
 } from "../../ui/terminal/mesh.ts";
@@ -31,10 +34,14 @@ Subcommands:
   scout mesh discover     Probe for remote mesh nodes
   scout mesh ping <node>  Ping a specific node by ID, name, or URL
 
+Join / leave:
+  scout mesh join         Announce, discover peers, and sync their agents
+  scout mesh leave        Withdraw mesh announcement (stay local-only)
+  scout mesh announce     Alias for join
+
 Presence (docs/proposals/mesh-trust-cone.md §11.5):
-  scout mesh announce     Open mesh TLS + mDNS (restart-free bind flip)
-  scout mesh bind mesh    Same as announce
-  scout mesh bind local   Withdraw mesh announcement (TLS/mDNS stand down)
+  scout mesh bind mesh    Same as join
+  scout mesh bind local   Same as leave
 
 MCP gateway (docs/eng/sco-095-remote-mcp-gateway.md):
   scout mesh bridge       Hold the outbound MCP relay connection (spike harness)
@@ -88,49 +95,37 @@ export async function runMeshCommand(context: ScoutCommandContext, args: string[
       return;
     }
 
+    case "join": {
+      const report = await runMeshJoin();
+      context.output.writeValue(report, renderMeshJoin);
+      return;
+    }
+
+    case "leave": {
+      const report = await runMeshLeave();
+      context.output.writeValue(report, renderMeshStatus);
+      return;
+    }
+
     case "announce": {
-      const { requestScoutBrokerJson } = await import("@openscout/runtime/broker-api");
-      const { resolveScoutBrokerControlUrl } = await import("@openscout/runtime/broker-process-manager");
-      const controlUrl = resolveScoutBrokerControlUrl();
-      const result = await requestScoutBrokerJson<{ bind: unknown }>(controlUrl, "/v1/mesh/bind", {
-        method: "POST",
-        headers: { "content-type": "application/json", accept: "application/json" },
-        // requestScoutBrokerJson serializes `body` itself — stringifying here
-        // sends a JSON *string*, so the broker reads `scope` as undefined.
-        body: { scope: "mesh" },
-      });
-      context.output.writeValue(result, (value) => {
-        const bind = (value as { bind?: { scope?: string; brokerUrl?: string; tlsAddresses?: string[] } }).bind;
-        return [
-          "Mesh announced (restart-free).",
-          `  Scope: ${bind?.scope ?? "mesh"}`,
-          `  Broker URL: ${bind?.brokerUrl ?? "—"}`,
-          `  TLS addresses: ${(bind?.tlsAddresses ?? []).join(", ") || "(none — no LAN/Tailscale IPv4)"}`,
-        ].join("\n");
-      });
+      const report = await runMeshJoin();
+      context.output.writeValue(report, renderMeshJoin);
       return;
     }
 
     case "bind": {
       const scope = args[1]?.trim().toLowerCase();
-      if (scope !== "mesh" && scope !== "local") {
-        context.stderr("Usage: scout mesh bind <mesh|local>");
+      if (scope === "mesh") {
+        const report = await runMeshJoin();
+        context.output.writeValue(report, renderMeshJoin);
         return;
       }
-      const { requestScoutBrokerJson } = await import("@openscout/runtime/broker-api");
-      const { resolveScoutBrokerControlUrl } = await import("@openscout/runtime/broker-process-manager");
-      const controlUrl = resolveScoutBrokerControlUrl();
-      const result = await requestScoutBrokerJson<{ bind: unknown }>(controlUrl, "/v1/mesh/bind", {
-        method: "POST",
-        headers: { "content-type": "application/json", accept: "application/json" },
-        body: { scope },
-      });
-      context.output.writeValue(result, (value) => {
-        const bind = (value as { bind?: { scope?: string; brokerUrl?: string } }).bind;
-        return scope === "mesh"
-          ? `Mesh bind applied. Scope=${bind?.scope ?? scope} url=${bind?.brokerUrl ?? "—"}`
-          : `Mesh bind withdrawn. Scope=${bind?.scope ?? scope}`;
-      });
+      if (scope === "local") {
+        const report = await runMeshLeave();
+        context.output.writeValue(report, renderMeshStatus);
+        return;
+      }
+      context.stderr("Usage: scout mesh bind <mesh|local>");
       return;
     }
 

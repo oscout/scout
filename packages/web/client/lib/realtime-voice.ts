@@ -7,6 +7,7 @@ import {
   SCOUT_REALTIME_VOICE_NEAR_FIELD_INPUT,
 } from "../../shared/realtime-voice.ts";
 import { extractScoutbotUiActions, stripScoutbotUiFences } from "./scoutbot.ts";
+import { fetchScoutRealtimeVoiceSettings } from "./realtime-voice-settings.ts";
 
 const REALTIME_VOICE_HEARTBEAT_MS = 25_000;
 
@@ -67,6 +68,15 @@ export async function startScoutRealtimeVoiceCall(callbacks: {
   if (!globalThis.RTCPeerConnection || !navigator.mediaDevices?.getUserMedia) {
     throw new Error("This browser does not support realtime audio calls.");
   }
+
+  // Resolve the host gate before asking for microphone access. Settings can
+  // change in another window, and a stale footer must never flash the privacy
+  // indicator merely to discover that calls are disabled server-side.
+  const settings = await fetchScoutRealtimeVoiceSettings(callbacks.signal);
+  if (!settings.enabled) {
+    throw new Error("Live voice is off. Turn it on in Settings → Voice before starting a call.");
+  }
+  throwIfAborted(callbacks.signal);
 
   callbacks.onState?.("connecting");
   const peerConnection = new RTCPeerConnection();

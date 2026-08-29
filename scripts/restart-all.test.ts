@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   legacyScoutServiceLabels,
+  pairingRelayRuntimeReady,
   parseArgs,
   waitForWeb,
 } from "./restart-all.mjs";
@@ -27,6 +28,15 @@ describe("scout:up", () => {
     expect(legacyScoutServiceLabels("dev")).toEqual(["dev.openscout", "com.openscout"]);
     expect(legacyScoutServiceLabels("prod")).toEqual(["dev.openscout", "com.openscout"]);
     expect(legacyScoutServiceLabels("custom")).toEqual(["com.openscout.custom"]);
+  });
+
+  test("requires a live pairing runtime with a configured relay", () => {
+    const alive = (pid: number) => pid === 42;
+    expect(pairingRelayRuntimeReady({ pid: 42, childPid: null, relay: "ws://127.0.0.1:43131" }, alive)).toBe(true);
+    expect(pairingRelayRuntimeReady({ pid: 41, childPid: 42, relay: "wss://mesh.oscout.net/v1/relay" }, alive)).toBe(true);
+    expect(pairingRelayRuntimeReady({ pid: 41, childPid: null, relay: "ws://127.0.0.1:43131" }, alive)).toBe(false);
+    expect(pairingRelayRuntimeReady({ pid: 42, childPid: null, relay: "  " }, alive)).toBe(false);
+    expect(pairingRelayRuntimeReady(null, alive)).toBe(false);
   });
 
   test("claims the local web credential before probing protected routes", async () => {

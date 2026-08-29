@@ -4,7 +4,7 @@ import {
   projectOpsSecondaryNav,
 } from "./nav-destinations.ts";
 
-// Agents is a top-level tab (Projects); its only remaining sub-page is the
+// Agents is the top-level Crew tab; its only remaining sub-page is the
 // configuration surface. Directory (.deprecated) and Sessions left the subnav —
 // the route stays alive, the nav entry does not. SCO-083 moves agent config into
 // the Settings area; this strip remains until Settings Dialog conversion lands.

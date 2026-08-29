@@ -1,4 +1,10 @@
 import { describe, expect, test } from "bun:test";
+import {
+  buildOrchestrationAskArguments,
+  orchestrationRuntimeRouteKey,
+  renderOrchestrationAskCommand,
+  type OrchestrationRuntimeRoute,
+} from "@openscout/protocol";
 
 import {
   parseAskCommandOptions,
@@ -114,6 +120,69 @@ describe("parseSendCommandOptions", () => {
 });
 
 describe("parseAskCommandOptions", () => {
+  test("round-trips orchestration advisor routes through supported ask flags", () => {
+    const routes: OrchestrationRuntimeRoute[] = [
+      {
+        providerId: "claude",
+        harness: "claude",
+        model: "claude-fable-5",
+        effort: "max",
+        profile: "Fable",
+      },
+      {
+        providerId: "codex",
+        harness: "codex",
+        model: "gpt-5.6-sol",
+        effort: "xhigh",
+        profile: null,
+      },
+      {
+        providerId: "opencode",
+        harness: "opencode",
+        model: "opencode-go/glm-5.2",
+        effort: null,
+        profile: "OpenCode",
+      },
+    ];
+
+    const parsed = routes.map((route) => parseAskCommandOptions(
+      buildOrchestrationAskArguments(route, "review this"),
+      "/tmp/openscout",
+    ));
+
+    expect(parsed[0]).toEqual(expect.objectContaining({
+      runtimeProfile: "fable",
+      reasoningEffort: "max",
+      message: "review this",
+    }));
+    expect(parsed[1]).toEqual(expect.objectContaining({
+      harness: "codex",
+      model: "gpt-5.6-sol",
+      reasoningEffort: "xhigh",
+      message: "review this",
+    }));
+    expect(parsed[2]).toEqual(expect.objectContaining({
+      harness: "opencode",
+      model: "opencode-go/glm-5.2",
+      message: "review this",
+    }));
+    expect(renderOrchestrationAskCommand(routes[0]!)).toBe(
+      "scout ask --profile Fable --effort max '<request>'",
+    );
+    expect(renderOrchestrationAskCommand(routes[2]!)).toBe(
+      "scout ask --harness opencode --model opencode-go/glm-5.2 '<request>'",
+    );
+    expect(new Set(routes.map(orchestrationRuntimeRouteKey)).size).toBe(routes.length);
+    const openCodeVariants = ["glm-5.2", "minimax-m3", "deepseek-v4-pro"].map((model) => ({
+      providerId: "opencode",
+      harness: "opencode",
+      model: `opencode-go/${model}`,
+      effort: null,
+      profile: "OpenCode",
+    } satisfies OrchestrationRuntimeRoute));
+    expect(new Set(openCodeVariants.map(orchestrationRuntimeRouteKey)).size).toBe(3);
+  });
+
   test("keeps direct --to routing as an existing target even for a reserved profile name", () => {
     const options = parseAskCommandOptions(
       ["--to", "Fable", "review", "this"],

@@ -61,7 +61,7 @@ export type NavDestinationId =
   | "code"
   | "providers"
   | "runtime"
-  | "plans"
+  | "advisor"
   | "agent-config";
 
 export type NavDestination = {
@@ -96,7 +96,7 @@ export const NAV_DESTINATIONS: readonly NavDestination[] = [
   },
   {
     id: "projects",
-    label: "Projects",
+    label: "Crew & Workspaces",
     route: { view: "agents-v2" },
     active: (route) =>
       route.view === "agents-v2" ||
@@ -199,10 +199,10 @@ export const NAV_DESTINATIONS: readonly NavDestination[] = [
     capability: "ops.control",
   },
   {
-    id: "plans",
-    label: "Plans",
-    route: { view: "ops", mode: "plan" },
-    active: (route) => route.view === "ops" && route.mode === "plan",
+    id: "advisor",
+    label: "Host Advisor",
+    route: { view: "ops", mode: "advisor" },
+    active: (route) => route.view === "ops" && route.mode === "advisor",
   },
   {
     id: "agent-config",
@@ -260,7 +260,7 @@ type TopTabProjection = {
 
 const TOP_TAB_PROJECTION: readonly TopTabProjection[] = [
   { destinationId: "home", key: "home" },
-  { destinationId: "projects", key: "agents", label: "Projects" },
+  { destinationId: "projects", key: "agents", label: "Crew" },
   { destinationId: "sessions", key: "sessions" },
   { destinationId: "chat", key: "chat", label: "Messages" },
 ];
@@ -303,13 +303,11 @@ const CORE_SYSTEM_MENU_PROJECTION: readonly SystemMenuProjection[] = [
 const OPS_SYSTEM_MENU_PROJECTION: readonly SystemMenuProjection[] = [
   { destinationId: "mission-control", key: "control" },
   { destinationId: "lanes", key: "lanes" },
-  { destinationId: "repos", key: "repos" },
-  { destinationId: "code", key: "code" },
   { destinationId: "providers", key: "providers" },
   { destinationId: "mesh", key: "mesh" },
   { destinationId: "mesh-ops", key: "mesh-ops" },
   { destinationId: "runtime", key: "runtime" },
-  { destinationId: "plans", key: "plans" },
+  { destinationId: "advisor", key: "advisor" },
 ];
 
 function projectSystemMenuEntry(entry: SystemMenuProjection): SystemMenuEntry {
@@ -393,7 +391,7 @@ export function projectSearchSecondaryNav(): SecondaryNavGroup[] {
 /**
  * Ops cluster secondary strip — Ops-area destinations only (SCO-083).
  * Dispatch, Repos, and Code moved out of Ops (Dispatch is top-level; Repos/Code
- * are Projects). Do not re-add them here or the sidebar active area will
+ * are Crew workspace tools). Do not re-add them here or the sidebar active area will
  * disagree with the in-content strip.
  */
 export function projectOpsSecondaryNav(): SecondaryNavGroup[] {
@@ -405,7 +403,7 @@ export function projectOpsSecondaryNav(): SecondaryNavGroup[] {
       { destinationId: "mesh", id: "mesh" },
       { destinationId: "tail", id: "tail" },
       { destinationId: "runtime", id: "runtime" },
-      { destinationId: "plans", id: "plans" },
+      { destinationId: "advisor", id: "advisor" },
     ]),
   ];
 }
@@ -428,7 +426,7 @@ export const GO_SHORTCUT_PROJECTION: readonly GoShortcutProjection[] = [
   { key: "h", label: "Go home", destinationId: "home" },
   { key: "i", label: "Go to messages", destinationId: "chat" },
   { key: "c", label: "Go to messages", destinationId: "chat" },
-  { key: "p", label: "Go to projects", destinationId: "projects" },
+  { key: "p", label: "Go to crew", destinationId: "projects" },
   { key: "s", label: "Go to sessions", destinationId: "sessions" },
   { key: "t", label: "Go to terminals", destinationId: "terminals" },
   { key: "r", label: "Go to repositories", destinationId: "repos" },
@@ -545,7 +543,7 @@ type PaletteNavProjection = {
  */
 const PALETTE_NAV_PROJECTION: readonly PaletteNavProjection[] = [
   { id: "nav:home", label: "Go to Home", destinationId: "home", shortcut: "Cmd+1" },
-  { id: "nav:agents", label: "Go to Projects", destinationId: "projects", shortcut: "Cmd+2" },
+  { id: "nav:agents", label: "Go to Crew", destinationId: "projects", shortcut: "Cmd+2" },
   { id: "nav:messages", label: "Go to Chat", destinationId: "chat", shortcut: "Cmd+3" },
   { id: "nav:sessions", label: "Open Sessions", destinationId: "sessions" },
   { id: "nav:terminals", label: "Open Terminals", destinationId: "terminals" },
@@ -553,7 +551,7 @@ const PALETTE_NAV_PROJECTION: readonly PaletteNavProjection[] = [
   { id: "nav:activity", label: "Open Activity", destinationId: "activity" },
   { id: "nav:mesh", label: "Open Mesh", destinationId: "mesh" },
   { id: "nav:dispatch", label: "Open Dispatch", destinationId: "dispatch" },
-  { id: "nav:repos", label: "Open Repos", destinationId: "repos" },
+  { id: "nav:repos", label: "Open Repositories", destinationId: "repos" },
   { id: "nav:code", label: "Open Code Browser", destinationId: "code" },
   { id: "nav:harnesses", label: "Open Providers", destinationId: "providers" },
   { id: "nav:ops-lanes", label: "Open Agent Lanes", destinationId: "lanes" },
@@ -642,7 +640,7 @@ const AREA_SUB_NAV_PROJECTION: Record<
   readonly AreaSubNavProjection[]
 > = {
   projects: [
-    { destinationId: "projects", id: "projects", label: "Projects" },
+    { destinationId: "projects", id: "projects" },
     { destinationId: "repos", id: "repos" },
     { destinationId: "code", id: "code" },
   ],
@@ -732,7 +730,7 @@ const SIDEBAR_SUB_NAV_PROJECTION: Record<
     { destinationId: "runtime", id: "runtime", label: "Runtime" },
     { destinationId: "mesh", id: "mesh" },
     { destinationId: "tail", id: "tail" },
-    { destinationId: "plans", id: "plans" },
+    { destinationId: "advisor", id: "advisor" },
   ],
 };
 
@@ -812,7 +810,7 @@ export function allProjectedDestinationIds(): NavDestinationId[] {
     "mesh",
     "tail",
     "runtime",
-    "plans",
+    "advisor",
   ] as const) {
     ids.add(id);
   }

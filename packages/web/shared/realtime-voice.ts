@@ -1,9 +1,22 @@
 // Kept shared so the browser request and Hono route stay on the same contract.
 export const SCOUT_REALTIME_VOICE_CALL_PATH = "/api/voice/realtime/call";
 export const SCOUT_REALTIME_VOICE_LEASE_PATH = "/api/voice/realtime/lease";
+export const SCOUT_REALTIME_VOICE_SETTINGS_PATH = "/api/voice/realtime/settings";
 export const SCOUT_REALTIME_VOICE_LEASE_HEADER = "x-openscout-realtime-voice-lease";
 export const SCOUT_REALTIME_VOICE_FLAG = "surface.realtime-voice";
 export const SCOUT_REALTIME_VOICE_STOP_EVENT = "scout:realtime-voice-stop";
+export const SCOUT_REALTIME_VOICE_SETTINGS_EVENT = "scout:realtime-voice-settings";
+
+export type ScoutRealtimeVoiceSettings = {
+  /** Effective state after applying an optional environment override. */
+  enabled: boolean;
+  /** The operator's persisted preference. */
+  configuredEnabled: boolean;
+  /** Where the effective state came from. */
+  source: "settings" | "environment";
+  /** Environment-controlled states cannot be changed from Settings. */
+  locked: boolean;
+};
 
 export const SCOUT_REALTIME_VOICE_FAR_FIELD_INPUT = {
   noise_reduction: { type: "far_field" },

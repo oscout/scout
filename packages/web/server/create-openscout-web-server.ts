@@ -68,6 +68,7 @@ import {
 } from "./pairing-pair-requests.ts";
 import { startScoutPairLanBeacon } from "./pairing-lan-beacon.ts";
 import {
+  coalesce,
   createCachedSnapshot,
   installScoutApiMiddleware,
   relayEventStream,
@@ -95,8 +96,8 @@ import {
 import {
   describeTerminalHosts,
   isKnownTerminalHost,
+  preferredTerminalHost,
   relayCarriedTerminalBackend,
-  resolvePreferredTerminalHost,
   resolveTerminalHostAdapter,
   terminalHostAdapter,
   terminalHostSupportsControl,
@@ -131,6 +132,7 @@ import {
   brokerDiagnosticsNeedsFullSnapshot,
   markBrokerDiagnosticsLiveUnavailable,
   mergeBrokerDiagnosticsWithLiveSnapshot,
+  type BrokerDiagnosticsSnapshot,
 } from "./db/broker-live.ts";
 import { queryAgentIdsByEndpointSessionId } from "./db/agents.ts";
 import { queryOperatorAttentionRows } from "./db/fleet.ts";
@@ -169,6 +171,7 @@ import {
   readScoutBrokerHome,
   readScoutBrokerHealth,
   readScoutBrokerMessages,
+  readScoutBrokerNodeId,
   readScoutBrokerSnapshot,
   resolveScoutBrokerUrl,
   type OutgoingAttachmentInput,
@@ -219,6 +222,7 @@ import {
   type SessionAttentionItem,
 } from "@openscout/runtime";
 import { buildHarnessResumeCommand, findHarnessEntry, loadHarnessCatalogSnapshot } from "@openscout/runtime/harness-catalog";
+import { currentMeshPeerNodeIds } from "@openscout/runtime/mesh-peer-filter";
 import {
   loadRevealObservePayload,
   observedRevealPathSet,
@@ -243,6 +247,8 @@ import {
 import {
   announceMeshVisibility,
   controlTailscale,
+  joinMesh,
+  leaveMesh,
   loadMeshStatus,
   type TailscaleControlAction,
 } from "./core/mesh/service.ts";
@@ -294,6 +300,7 @@ import {
 } from "./scout-services-deeplink.ts";
 import {
   loadUserConfig,
+  loadUserConfigFresh,
   saveUserConfig,
   resolveOperatorName,
 } from "@openscout/runtime/user-config";
@@ -337,8 +344,10 @@ import {
   DEFAULT_MESSAGE_PAGE_LIMIT,
   MessageCursorError,
   clampMessagePageLimit,
+  encodeMessageHistoryCursor,
   parseMessageHistoryCursor,
 } from "../shared/message-pagination.ts";
+import { parseSessionRouteRef, sessionHarnessMatches } from "../shared/session-route-ref.ts";
 
 function parseConversationKinds(value: string | undefined): ConversationKind[] | undefined {
   const trimmed = value?.trim();
@@ -1334,21 +1343,23 @@ function firstMetadataString(...values: Array<unknown>): string | null {
  * observations: a session discovered here carries no node in its handle, and
  * only this node's cells may be proven live by it. Without the id a cell scoped
  * to any node at all would bind to a same-named local session — which is how
- * two machines' workspaces both reported one session Running. The broker
- * context is cached, so this costs no extra round trip in practice, and a
- * broker that is down means the id is unknown, which reconciliation reads as
- * "cannot prove it" rather than "matches anything".
+ * two machines' workspaces both reported one session Running. The id is a
+ * node-only broker read — identity is all this needs, never the registry
+ * snapshot — and a broker that is down means the id is unknown, which
+ * reconciliation reads as "cannot prove it" rather than "matches anything".
  */
 async function resolveTerminalWorkspaces(
   workspaces: readonly TerminalWorkspaceRecord[],
 ): Promise<TerminalWorkspaceResolution[]> {
   if (workspaces.length === 0) return [];
-  const [sessions, hosts, preferred, broker] = await Promise.all([
+  const [sessions, hosts, localNodeId] = await Promise.all([
     queryDiscoveredTerminalSessions({ limit: 500 }),
     describeTerminalHosts(),
-    resolvePreferredTerminalHost(),
-    loadScoutBrokerContext().catch(() => null),
+    readScoutBrokerNodeId(),
   ]);
+  // Derived from the one probe above; a second resolve would probe every host
+  // again for an answer this list already holds.
+  const preferred = preferredTerminalHost(hosts);
   const registered = queryTerminalSessions({ limit: 500 });
   const hostStates = hosts.map((host) => ({
     id: host.id,
@@ -1359,7 +1370,7 @@ async function resolveTerminalWorkspaces(
     sessions: [...registered, ...sessions],
     hosts: hostStates,
     defaultHostId: preferred?.id ?? null,
-    localNodeId: broker?.node.id ?? null,
+    localNodeId,
   }));
 }
 
@@ -2414,6 +2425,55 @@ function mostRecentAgents(agents: WebAgent[], limit: number | undefined): WebAge
     .slice(0, limit);
 }
 
+function localBrokerNodeId(broker: ScoutBrokerContext): string | null {
+  return broker.node.id ?? null;
+}
+
+/** Match /api/mesh node filtering — only pin agents on peers the mesh view still lists. */
+function pinnedMeshPeerNodeIds(broker: ScoutBrokerContext): Set<string> {
+  const localNodeId = localBrokerNodeId(broker);
+  if (!localNodeId) return new Set();
+  return currentMeshPeerNodeIds({
+    nodes: broker.snapshot.nodes ?? {},
+    localNodeId,
+    meshId: broker.node.meshId ?? null,
+  });
+}
+
+/** Mesh peer agents must survive the /api/agents cap — otherwise remote nodes
+ *  show zero in the mesh view even when the broker snapshot has them. */
+function withPinnedMeshPeerAgents(
+  agents: WebAgent[],
+  broker: ScoutBrokerContext | null,
+  limit: number | undefined,
+): WebAgent[] {
+  if (!broker) return mostRecentAgents(agents, limit);
+  const localNodeId = localBrokerNodeId(broker);
+  if (!localNodeId) return mostRecentAgents(agents, limit);
+
+  const peerNodeIds = pinnedMeshPeerNodeIds(broker);
+  const peerAgents = brokerCardAgentsForWeb(broker).filter(
+    (agent) => agent.homeNodeId && peerNodeIds.has(agent.homeNodeId),
+  );
+  if (peerAgents.length === 0) return mostRecentAgents(agents, limit);
+
+  const byId = new Map(agents.map((agent) => [agent.id, agent]));
+  for (const peer of peerAgents) {
+    byId.set(peer.id, peer);
+  }
+  const merged = [...byId.values()];
+  if (limit === undefined) return merged;
+
+  const limited = mostRecentAgents(merged, limit);
+  const included = new Set(limited.map((agent) => agent.id));
+  for (const peer of peerAgents) {
+    if (!included.has(peer.id)) {
+      limited.push(peer);
+    }
+  }
+  return limited;
+}
+
 function agentListSummary(agent: WebAgent) {
   return {
     id: agent.id,
@@ -2580,10 +2640,12 @@ async function queryAgentsIncludingBrokerCards(
     const brokerById = new Map(brokerAgents.map((agent) => [agent.id, agent]));
     const mergedAgents = agents.map((agent) => mergeBrokerAgentProjection(agent, brokerById.get(agent.id)));
     const existingIds = new Set(mergedAgents.map((agent) => agent.id));
-    return withAgentRepoKeys(mostRecentAgents([
+    const broker = await loadBrokerContext();
+    const roster = withPinnedMeshPeerAgents([
       ...mergedAgents,
       ...brokerAgents.filter((agent) => !existingIds.has(agent.id)),
-    ], limit));
+    ], broker, limit);
+    return withAgentRepoKeys(roster);
   }
   const broker = await loadBrokerContext();
   // The HUD's first page is deliberately a summary read. The full attention
@@ -2607,10 +2669,11 @@ async function queryAgentsIncludingBrokerCards(
     ))
     .map((agent) => mergeBrokerAgentProjection(agent, brokerById.get(agent.id)));
   const existingIds = new Set(mergedAgents.map((agent) => agent.id));
-  return withAgentRepoKeys(mostRecentAgents(applyAgentAttention([
+  const roster = withPinnedMeshPeerAgents(applyAgentAttention([
     ...mergedAgents,
     ...brokerAgents.filter((agent) => !existingIds.has(agent.id)),
-  ], attention), limit));
+  ], attention), broker, limit);
+  return withAgentRepoKeys(roster);
 }
 
 function mergeBrokerAgentProjection(local: WebAgent, broker: WebAgent | undefined): WebAgent {
@@ -3561,7 +3624,7 @@ function brokerDispatchReviewPrompt(input: {
     "Review this from first principles, then inspect the relevant implementation.",
     "",
     "Topic: OpenScout failed dispatch / failed delivery",
-    "Workspace: /Users/example/dev/openscout",
+    "Workspace: /Users/art/dev/openscout",
     "",
     "User goal:",
     "- Diagnose this failed dispatch from the Dispatch screen.",
@@ -3719,7 +3782,18 @@ async function dismissFlightAttention(input: {
   flightId: string;
   itemUpdatedAt: number;
 }): Promise<void> {
-  const flight = queryFlightRecordById(input.flightId);
+  let flight = null;
+  try {
+    flight = queryFlightRecordById(input.flightId);
+  } catch {
+    // The live broker can be ahead of the read-only SQLite projection. Fall
+    // through to the canonical broker snapshot instead of making a freshly
+    // failed flight impossible to acknowledge.
+  }
+  if (!flight) {
+    const broker = await loadScoutBrokerContext().catch(() => null);
+    flight = broker?.snapshot.flights?.[input.flightId] ?? null;
+  }
   if (!flight) {
     throw new Error("flight not found");
   }
@@ -3727,6 +3801,28 @@ async function dismissFlightAttention(input: {
     ...flight,
     metadata: {
       ...(flight.metadata ?? {}),
+      operatorAttentionDismissedAt: Date.now(),
+      operatorAttentionItemUpdatedAt: input.itemUpdatedAt,
+      operatorAttentionDismissedBy: "operator",
+    },
+  });
+}
+
+async function dismissConversationFailureAttention(input: {
+  conversationId: string;
+  messageId: string;
+  itemUpdatedAt: number;
+}): Promise<void> {
+  const broker = await loadScoutBrokerContext().catch(() => null);
+  const conversation = broker?.snapshot.conversations?.[input.conversationId];
+  if (!conversation) {
+    throw new Error("conversation not found");
+  }
+  await upsertScoutConversation({
+    ...conversation,
+    metadata: {
+      ...(conversation.metadata ?? {}),
+      operatorAttentionDismissedMessageId: input.messageId,
       operatorAttentionDismissedAt: Date.now(),
       operatorAttentionItemUpdatedAt: input.itemUpdatedAt,
       operatorAttentionDismissedBy: "operator",
@@ -3784,6 +3880,13 @@ async function refreshOpenScoutBuildInfo(currentDirectory: string): Promise<Open
   probe.invalidate("operator requested build refresh");
   const snapshot = await probe.fresh({ maxAgeMs: 0 });
   return openScoutBuildInfoFromGit(snapshot.value);
+}
+
+async function resolveOpenScoutBuildInfo(currentDirectory: string, refresh: boolean): Promise<OpenScoutBuildInfo> {
+  if (refresh) return refreshOpenScoutBuildInfo(currentDirectory);
+  const cached = gitBuildInfoProbe.for(currentDirectory).read();
+  if (cached.value) return openScoutBuildInfoFromGit(cached.value);
+  return warmOpenScoutBuildInfo(currentDirectory);
 }
 
 
@@ -5034,7 +5137,7 @@ export async function createOpenScoutWebServer(
   );
   const agentBrokerContextReader = createAgentBrokerContextReader();
   const agentBrokerHomeReader = createAgentBrokerHomeReader();
-  const dispatchBrokerSnapshotCache = createCachedSnapshot(async () => {
+  const dispatchBrokerSnapshotCache = createCachedSnapshot<BrokerDiagnosticsSnapshot | null>(async () => {
     const baseUrl = resolveScoutBrokerUrl();
     const signal = AbortSignal.timeout(2_000);
     const [messages, health, home] = await Promise.all([
@@ -5058,6 +5161,14 @@ export async function createOpenScoutWebServer(
       { signal: AbortSignal.timeout(5_000) },
     ),
     0,
+  );
+  // Local fallback for /api/topology/snapshot when the broker cannot answer.
+  // The observer walks every harness home on disk with force=true, so the
+  // fallback holds one 30s snapshot instead of constructing a fresh observer
+  // and rescanning per request. `?force=1` refreshes it through `get({force})`.
+  const localTopologySnapshotCache = createCachedSnapshot(
+    () => readLocalHarnessTopologySnapshot(),
+    30_000,
   );
   const tailRuntime: WebTailRuntime = {
     getTailDiscovery,
@@ -5138,10 +5249,7 @@ export async function createOpenScoutWebServer(
     }),
   );
   app.get("/api/build", async (c) => {
-    const buildInfo = c.req.query("refresh") === "1"
-      ? await refreshOpenScoutBuildInfo(currentDirectory)
-      : loadOpenScoutBuildInfo(currentDirectory);
-    return c.json(buildInfo);
+    return c.json(await resolveOpenScoutBuildInfo(currentDirectory, c.req.query("refresh") === "1"));
   });
 
   app.get("/api/knowledge/status", (c) => {
@@ -5681,6 +5789,8 @@ export async function createOpenScoutWebServer(
       recordKind?: unknown;
       recordId?: unknown;
       flightId?: unknown;
+      conversationId?: unknown;
+      messageId?: unknown;
       itemUpdatedAt?: unknown;
     };
     const recordKind = body.recordKind === "work_item" || body.recordKind === "question"
@@ -5688,15 +5798,25 @@ export async function createOpenScoutWebServer(
       : null;
     const recordId = typeof body.recordId === "string" ? body.recordId.trim() : "";
     const flightId = typeof body.flightId === "string" ? body.flightId.trim() : "";
+    const conversationId = typeof body.conversationId === "string" ? body.conversationId.trim() : "";
+    const messageId = typeof body.messageId === "string" ? body.messageId.trim() : "";
     const itemUpdatedAt = typeof body.itemUpdatedAt === "number" && Number.isFinite(body.itemUpdatedAt)
       ? body.itemUpdatedAt
       : 0;
-    if (itemUpdatedAt <= 0 || (!flightId && (!recordKind || !recordId))) {
-      return c.json({ error: "recordKind and recordId, or flightId, plus itemUpdatedAt are required" }, 400);
+    if (
+      itemUpdatedAt <= 0
+      || (!flightId && (!recordKind || !recordId) && (!conversationId || !messageId))
+    ) {
+      return c.json({
+        error: "recordKind and recordId, flightId, or conversationId and messageId, plus itemUpdatedAt are required",
+      }, 400);
     }
     if (flightId) {
       await dismissFlightAttention({ flightId, itemUpdatedAt });
-    } else if (recordKind && recordId) {
+    }
+    if (conversationId && messageId) {
+      await dismissConversationFailureAttention({ conversationId, messageId, itemUpdatedAt });
+    } else if (!flightId && recordKind && recordId) {
       await dismissCollaborationAttention({ recordKind, recordId, itemUpdatedAt });
     }
     return c.json(await buildOperatorAttentionState(
@@ -5744,19 +5864,38 @@ export async function createOpenScoutWebServer(
       projectRoot: c.req.query("projectRoot") || currentDirectory,
     }));
   });
+  // The roster SQL behind /api/agents costs about a second of synchronous
+  // event-loop block per read, and several surfaces poll it. A short coalesce
+  // per distinct (limit, detail, attention) shape means a polling burst pays
+  // for one read; the key space is bounded (limit is clamped to 100) and
+  // capped besides. The DB layer stays untouched — this is route-level only.
+  const agentsResponseCache = new Map<string, () => Promise<WebAgent[]>>();
+  const readAgentsResponse = (limit: number, summary: boolean, attentionRequested: boolean) => {
+    const key = `${limit}|${summary ? 1 : 0}|${attentionRequested ? 1 : 0}`;
+    let entry = agentsResponseCache.get(key);
+    if (!entry) {
+      if (agentsResponseCache.size >= 32) agentsResponseCache.clear();
+      entry = coalesce(
+        () => queryAgentsIncludingBrokerCards(
+          limit,
+          !summary || attentionRequested,
+          attentionRequested,
+          options.captureTmuxPane ?? defaultCaptureTmuxPane,
+          agentBrokerContextReader,
+          agentBrokerHomeReader,
+        ),
+        3_000,
+      );
+      agentsResponseCache.set(key, entry);
+    }
+    return entry();
+  };
   app.get("/api/agents", async (c) => {
     const requestedLimit = parseOptionalPositiveInt(c.req.query("limit"));
     const limit = Math.min(requestedLimit ?? 100, 100);
     const summary = c.req.query("detail") === "summary";
     const attentionRequested = c.req.query("attention") === "1";
-    const agents = await queryAgentsIncludingBrokerCards(
-      limit,
-      !summary || attentionRequested,
-      attentionRequested,
-      options.captureTmuxPane ?? defaultCaptureTmuxPane,
-      agentBrokerContextReader,
-      agentBrokerHomeReader,
-    );
+    const agents = await readAgentsResponse(limit, summary, attentionRequested);
     return c.json(summary ? agents.map(agentListSummary) : agents);
   });
   // What each terminal host can do, and whether it is installed here. Clients
@@ -5764,7 +5903,7 @@ export async function createOpenScoutWebServer(
   // something never gets a button that 400s.
   app.get("/api/terminal-hosts", async (c) => {
     const hosts = await describeTerminalHosts();
-    const preferred = await resolvePreferredTerminalHost();
+    const preferred = preferredTerminalHost(hosts);
     return c.json({
       ok: true,
       count: hosts.length,
@@ -6300,11 +6439,63 @@ export async function createOpenScoutWebServer(
       .filter((value) => value.length > 0);
     return c.json(await loadAgentObserveSummaries(ids));
   });
+  // The in-thread live-turn strip and the Observe sidecar both poll this
+  // route for the same actor on ~1.2s cadences. Coalesce identical requests
+  // through one short-lived build so concurrent and back-to-back polls share
+  // a single computation instead of each queueing a full observe scan.
+  const observeResponseCache = new Map<
+    string,
+    { at: number; promise: Promise<{ body: unknown; status: 200 | 404 }> }
+  >();
+  const OBSERVE_RESPONSE_TTL_MS = 900;
+  const OBSERVE_RESPONSE_CACHE_LIMIT = 32;
   app.get("/api/agents/:id/observe", async (c) => {
-    const payload = await loadAgentObservePayload(c.req.param("id"), {
-      sessionId: c.req.query("sessionId") ?? null,
-    });
-    return payload ? c.json(payload) : c.json({ error: "not found" }, 404);
+    const id = c.req.param("id");
+    const sessionId = c.req.query("sessionId") ?? null;
+    const cacheKey = `${id}\u0000${sessionId ?? ""}`;
+    const now = Date.now();
+    let entry = observeResponseCache.get(cacheKey);
+    if (!entry || now - entry.at > OBSERVE_RESPONSE_TTL_MS) {
+      for (const [key, cached] of observeResponseCache) {
+        if (now - cached.at > OBSERVE_RESPONSE_TTL_MS) observeResponseCache.delete(key);
+      }
+      while (observeResponseCache.size >= OBSERVE_RESPONSE_CACHE_LIMIT) {
+        const oldestKey = observeResponseCache.keys().next().value;
+        if (typeof oldestKey !== "string") break;
+        observeResponseCache.delete(oldestKey);
+      }
+      entry = {
+        at: now,
+        promise: (async (): Promise<{ body: unknown; status: 200 | 404 }> => {
+          const payload = await loadAgentObservePayload(id, { sessionId });
+          if (payload) {
+            return { body: payload, status: 200 };
+          }
+          // A conversation's counterpart can be a per-session actor rather
+          // than a roster agent. Resolve it through the session-ref loader
+          // instead of burning a slow scan into a 404. The session-ref
+          // payload's agentId may be null; the native decoder requires a
+          // string, so echo the requested id back.
+          for (const ref of [sessionId, id]) {
+            if (!ref?.trim()) continue;
+            const fallback = await loadSessionRefObservePayload(ref);
+            if (fallback) {
+              return { body: { ...fallback, agentId: fallback.agentId ?? id }, status: 200 };
+            }
+          }
+          return { body: { error: "not found" }, status: 404 };
+        })(),
+      };
+      observeResponseCache.set(cacheKey, entry);
+      const failed = entry;
+      entry.promise.catch(() => {
+        if (observeResponseCache.get(cacheKey) === failed) {
+          observeResponseCache.delete(cacheKey);
+        }
+      });
+    }
+    const result = await entry.promise;
+    return c.json(result.body as Record<string, unknown>, result.status);
   });
   app.get("/api/agents/:agentId/config", async (c) => {
     const agentId = c.req.param("agentId");
@@ -6350,6 +6541,7 @@ export async function createOpenScoutWebServer(
       restarted = Boolean(restartedRecord);
     }
     shellStateCache.invalidate();
+    agentsResponseCache.clear();
     const config = await getLocalAgentConfig(agentId);
     return c.json({ config: config ?? nextConfig, restarted });
   });
@@ -6474,28 +6666,35 @@ export async function createOpenScoutWebServer(
   app.get("/api/topology/snapshot", async (c) => {
     const sessionId = c.req.query("sessionId")?.trim() || null;
     if (sessionId) {
+      // Session-scoped reads stay uncached: each session id is its own scan.
       const localSnapshot = await readLocalHarnessTopologySnapshot({ claudeSessionId: sessionId });
       if (localSnapshot) return c.json(localSnapshot);
     }
 
+    const force = c.req.query("force") === "1";
     const url = new URL(scoutBrokerPaths.v1.topologySnapshot, resolveScoutBrokerUrl());
-    if (c.req.query("force") === "1") {
+    if (force) {
       url.searchParams.set("force", "1");
     }
+    const localFallback = () => localTopologySnapshotCache.get({ force }).catch(() => null);
     try {
-      const res = await fetch(url);
+      // A broker mid-rebuild can sit on this for a long time; an unbounded
+      // fetch left the route hanging with it. Past the deadline the local
+      // observer answers instead.
+      const res = await fetch(url, { signal: AbortSignal.timeout(10_000) });
       if (res.ok) {
         const brokerSnapshot = await res.json();
         if (brokerSnapshot?.totals?.sources > 0) {
+          // The broker answered with substance — never rescan locally on top.
           return c.json(brokerSnapshot);
         }
-        const localSnapshot = await readLocalHarnessTopologySnapshot();
+        const localSnapshot = await localFallback();
         return c.json(localSnapshot?.totals.sources ? localSnapshot : brokerSnapshot);
       }
     } catch {
       /* Fall through to the local read-only observer. */
     }
-    const localSnapshot = await readLocalHarnessTopologySnapshot();
+    const localSnapshot = await localFallback();
     if (localSnapshot) return c.json(localSnapshot);
     return c.json({ error: "broker topology unavailable" }, 502);
   });
@@ -6521,10 +6720,17 @@ export async function createOpenScoutWebServer(
           }
         : { ...broker, messageCoverageIncomplete: true };
     }
+    const brokerHealth = broker
+      ? null
+      : await readScoutBrokerHealth(resolveScoutBrokerUrl(), {
+          signal: AbortSignal.timeout(1_000),
+        });
     return c.json(
       broker
         ? mergeBrokerDiagnosticsWithLiveSnapshot(diagnostics, broker, cursor)
-        : markBrokerDiagnosticsLiveUnavailable(diagnostics),
+        : markBrokerDiagnosticsLiveUnavailable(diagnostics, {
+            brokerReachable: brokerHealth?.reachable === true && brokerHealth.ok,
+          }),
     );
   });
   app.post("/api/broker/dispatch-review", async (c) => {
@@ -6642,9 +6848,30 @@ export async function createOpenScoutWebServer(
       return c.json({ error: error instanceof Error ? error.message : "Dashboard import failed." }, 400);
     }
   });
-  app.get("/api/fleet", (c) =>
+  // /api/fleet is polled from dozens of client sites at 10-15s intervals, and
+  // every poll re-ran the same SQL assembly. A short coalesce window means one
+  // assembly serves the burst. The result varies with the query params, so each
+  // distinct param set gets its own window; the param space is a handful of
+  // fixed client call sites, with a cap so hand-crafted queries cannot grow the
+  // map without bound.
+  const fleetResponseCache = new Map<string, () => Promise<ReturnType<typeof queryFleet>>>();
+  const readFleetResponse = (opts: {
+    limit?: number;
+    activityLimit?: number;
+    activityLookbackMs?: number;
+  }) => {
+    const key = `${opts.limit ?? ""}|${opts.activityLimit ?? ""}|${opts.activityLookbackMs ?? ""}`;
+    let entry = fleetResponseCache.get(key);
+    if (!entry) {
+      if (fleetResponseCache.size >= 32) fleetResponseCache.clear();
+      entry = coalesce(async () => queryFleet(opts), 1_500);
+      fleetResponseCache.set(key, entry);
+    }
+    return entry();
+  };
+  app.get("/api/fleet", async (c) =>
     c.json(
-      queryFleet({
+      await readFleetResponse({
         limit: parseOptionalPositiveInt(c.req.query("limit")),
         activityLimit: parseOptionalPositiveInt(c.req.query("activityLimit")),
         activityLookbackMs: parseOptionalPositiveInt(c.req.query("activityLookbackMs")),
@@ -6675,10 +6902,30 @@ export async function createOpenScoutWebServer(
       const brokerMessages = cId
         ? await getScoutConversationMessages(cId, limit, beforeMessageId)
         : null;
-      messages = brokerMessages ?? queryRecentMessages(
-        limit,
-        { conversationId: cId, beforeMessageId },
-      );
+      if (cId && brokerMessages && brokerMessages.length > 0 && brokerMessages.length < limit) {
+        // The broker snapshot is a rolling window: a short page means the
+        // window starts mid-transcript, not that the transcript starts there.
+        // An aged conversation re-minted live by new traffic would otherwise
+        // serve only the new tail while SQLite still holds the history, so
+        // extend the page below the window from the durable projection.
+        const oldest = brokerMessages[0];
+        const seen = new Set(brokerMessages.map((message) => message.id));
+        const older = queryRecentMessages(limit - brokerMessages.length, {
+          conversationId: cId,
+          beforeMessageId: encodeMessageHistoryCursor({
+            createdAt: oldest.createdAt,
+            id: oldest.id,
+          }),
+        }).filter((message) => !seen.has(message.id));
+        // Projection pages are newest-first; flip them under the broker's
+        // ascending page so the merge reads as one transcript.
+        messages = [...older.reverse(), ...brokerMessages];
+      } else {
+        messages = brokerMessages ?? queryRecentMessages(
+          limit,
+          { conversationId: cId, beforeMessageId },
+        );
+      }
     } catch (cause) {
       // An unreadable cursor is a client error, not the end of the transcript.
       // Answering [] here is what strands history behind a deleted anchor.
@@ -7100,16 +7347,53 @@ export async function createOpenScoutWebServer(
   const readCommsList = async (c: Context) => {
     const rawLimit = Number(c.req.query("limit"));
     const rawKinds = c.req.query("kinds")?.trim();
-    return getScoutConversations({
+    const filters = {
       query: c.req.query("query") || undefined,
       limit: Number.isFinite(rawLimit) ? Math.min(250, Math.max(1, Math.floor(rawLimit))) : undefined,
       kinds: parseConversationKinds(rawKinds),
       machineId: c.req.query("machineId") || undefined,
+    };
+    const broker = await loadScoutBrokerContext(
+      undefined,
+      filters.machineId ? {} : { scope: "conversations" },
+    ).catch(() => null);
+    if (broker) {
+      // A concrete broker snapshot makes an empty result authoritative for this
+      // request. Search/machine/kind filters, hidden system records, and bounded
+      // history can all legitimately produce zero visible rows even when the
+      // canonical store itself is nonempty.
+      const items = await getScoutConversations(filters, broker);
+      return { items, listReady: true };
+    }
+
+    // With no readable broker context, an empty array is not a valid recovery
+    // fallback. Only expose a genuinely empty store after broker startup and
+    // canonical counts independently agree. SQLite is not a prerequisite: the
+    // conversation source is the broker registry, and its projection may be
+    // intentionally disabled.
+    const health = await readScoutBrokerHealth(resolveScoutBrokerUrl(), {
+      signal: AbortSignal.timeout(2_000),
     });
+    const listReady = health.reachable
+      && health.ok
+      && health.startup?.state === "ready"
+      && health.startup.mutationsAdmitted === true
+      && health.counts?.conversations === 0
+      && health.counts.messages === 0;
+    return { items: [], listReady };
   };
 
+  const unavailableConversationList = (c: Context) => c.json({
+    error: "conversation_list_restoring",
+    detail: "Scout has not confirmed an empty conversation store. Existing conversations are still restoring.",
+    retryable: true,
+  }, 503);
+
   app.get("/api/comms", async (c) => {
-    const items = await readCommsList(c);
+    const { items, listReady } = await readCommsList(c);
+    if (!listReady) {
+      return unavailableConversationList(c);
+    }
     return c.json(items.map((item) => ({
       ...item,
       chatId: item.id,
@@ -7118,7 +7402,10 @@ export async function createOpenScoutWebServer(
   });
 
   app.get("/api/conversations", async (c) => {
-    return c.json(await readCommsList(c));
+    const { items, listReady } = await readCommsList(c);
+    return listReady
+      ? c.json(items)
+      : unavailableConversationList(c);
   });
 
   app.post("/api/conversations/direct", async (c) => {
@@ -7342,29 +7629,22 @@ export async function createOpenScoutWebServer(
       });
     }
 
-    const harnessSession = querySessions(200).find((session) =>
-      session.harnessSessionId === refId
-      || (session.harnessSessionId?.endsWith(".jsonl") === true
-        && session.harnessSessionId.slice(0, -".jsonl".length) === refId)
-    );
-    if (harnessSession?.agentId) {
-      const payload = await loadSessionRefObservePayload(refId);
-      if (payload) {
-        return c.json({
-          kind: "observe",
-          refId,
-          session: harnessSession,
-          observe: payload,
-        });
-      }
-    }
-
+    const parsedRef = parseSessionRouteRef(refId);
+    const harnessSession = parsedRef
+      ? querySessions(200).find((session) =>
+          sessionHarnessMatches(parsedRef.harness, session.harness)
+          && parseSessionRouteRef(session.harnessSessionId)?.refId === parsedRef.refId
+        )
+      : null;
     const payload = await loadSessionRefObservePayload(refId);
     if (payload) {
       return c.json({
         kind: "observe",
         refId,
-        session: null,
+        // A provider id can collide with an explicit broker actor/handle ref.
+        // Only expose a writable Scout conversation when both projections
+        // resolve to the same owner; observe-only remains safe otherwise.
+        session: harnessSession?.agentId === payload.agentId ? harnessSession : null,
         observe: payload,
       });
     }
@@ -7407,6 +7687,22 @@ export async function createOpenScoutWebServer(
   app.post("/api/mesh/announce", async (c) => {
     try {
       return c.json(await announceMeshVisibility());
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      return c.json({ error: message }, 500);
+    }
+  });
+  app.post("/api/mesh/join", async (c) => {
+    try {
+      return c.json(await joinMesh());
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      return c.json({ error: message }, 500);
+    }
+  });
+  app.post("/api/mesh/leave", async (c) => {
+    try {
+      return c.json(await leaveMesh());
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       return c.json({ error: message }, 500);
@@ -7466,6 +7762,7 @@ export async function createOpenScoutWebServer(
       pronouns: config.pronouns ?? "",
       hue: config.hue ?? 195,
       monogram: config.monogram ?? "",
+      avatar: config.avatar ?? "",
       bio: config.bio ?? "",
       timezone: config.timezone ?? Intl.DateTimeFormat().resolvedOptions().timeZone,
       workingHours: config.workingHours ?? "08:00 – 18:00",
@@ -7598,10 +7895,12 @@ export async function createOpenScoutWebServer(
 
   app.post("/api/user", async (c) => {
     const body = (await c.req.json()) as Record<string, unknown>;
-    const config = loadUserConfig();
+    // Fresh read: this is a read-modify-write, and a memoized copy here would
+    // overwrite whatever another process (CLI, broker) saved since the memo.
+    const config = loadUserConfigFresh();
 
     const stringFields = [
-      "name", "handle", "pronouns", "monogram", "bio", "timezone",
+      "name", "handle", "pronouns", "monogram", "avatar", "bio", "timezone",
       "workingHours", "interruptThreshold", "channel",
       "verbosity", "tone", "quietHours",
     ] as const;
@@ -7637,6 +7936,7 @@ export async function createOpenScoutWebServer(
       pronouns: config.pronouns ?? "",
       hue: config.hue ?? 195,
       monogram: config.monogram ?? "",
+      avatar: config.avatar ?? "",
       bio: config.bio ?? "",
       timezone: config.timezone ?? Intl.DateTimeFormat().resolvedOptions().timeZone,
       workingHours: config.workingHours ?? "08:00 – 18:00",
@@ -7805,6 +8105,9 @@ export async function createOpenScoutWebServer(
       return c.json({ error: "agent config not found" }, 404);
     }
     shellStateCache.invalidate();
+    // The client reloads /api/agents immediately after this returns; a
+    // coalesced pre-archive read must not answer that reload.
+    agentsResponseCache.clear();
     return c.json({ ok: true, agentId, archived });
   });
 
@@ -7968,9 +8271,6 @@ export async function createOpenScoutWebServer(
 
     const isOperatorDirectConversation =
       semanticSession.kind === "direct" && sessionIncludesOperatorParticipant(semanticSession);
-    const directTargetAgentId = isOperatorDirectConversation
-      ? inferDirectTargetAgentId(input.chatId, semanticSession, senderId)
-      : null;
     const isSharedChat =
       routeSession.kind === "channel"
       || routeSession.kind === "group_direct"
@@ -8043,23 +8343,13 @@ export async function createOpenScoutWebServer(
           currentDirectory,
           source: "scout-web",
         })
-      : sendMode === "invoke" && directTargetAgentId
-        ? {
-            usedBroker: true as const,
-            ...await sendScoutDirectMessage({
-              agentId: directTargetAgentId,
-              body: input.body,
-              attachments: input.attachments,
-              currentDirectory,
-              clientMessageId: input.clientMessageId,
-              replyToMessageId: input.replyToMessageId,
-              executionHarness,
-              executionModel,
-              source: "scout-web",
-            }),
-            invokedTargets: [directTargetAgentId],
-            unresolvedTargets: [],
-          }
+      // A send into an existing Chat never leaves that Chat. The former
+      // invoke shortcut through sendScoutDirectMessage let the broker derive
+      // a (requester ↔ target) conversation and forced execution.session
+      // "new", so an in-place reply could mint a sibling Chat and a fresh
+      // harness session. The steer path posts into this conversation and its
+      // invocations continue the participant's live session; pair-derived
+      // delivery remains only for sends that arrive with no Chat at all.
       : await sendScoutConversationSteer({
           conversationId: routedConversationId,
           senderId,
@@ -8381,7 +8671,16 @@ export async function createOpenScoutWebServer(
     return c.json(result);
   });
 
-  mountScoutVoiceRoutes(app, { resolveOpenAIApiKey: scoutbot.resolveOpenAIApiKey });
+  mountScoutVoiceRoutes(app, {
+    resolveOpenAIApiKey: scoutbot.resolveOpenAIApiKey,
+    readRealtimeVoiceEnabled: async () => (
+      await readOpenScoutSettings({ currentDirectory })
+    ).voice.realtimeEnabled,
+    writeRealtimeVoiceEnabled: async (enabled) => (
+      await writeOpenScoutSettings({ voice: { realtimeEnabled: enabled } }, { currentDirectory })
+    ).voice.realtimeEnabled,
+    realtimeVoiceEnvironment: process.env,
+  });
 
   // Dev-only: serve generated Scoutbot FX fixtures for /dev/scoutbot-fx lab.
   // Fixtures are produced by packages/web/scripts/generate-scoutbot-fx-fixtures.mjs
@@ -8523,12 +8822,16 @@ export async function createOpenScoutWebServer(
   app.get("/api/tail/recent", async (c) => {
     const limitParam = parseOptionalPositiveInt(c.req.query("limit"), 500) ?? 500;
     const includeTranscripts = c.req.query("transcripts") === "true" || c.req.query("transcripts") === "1";
+    const mode = c.req.query("mode") === "assistant-replies" ? "assistant-replies" : null;
     const url = new URL(scoutBrokerPaths.v1.tailRecent, resolveScoutBrokerUrl());
     url.searchParams.set("limit", String(limitParam));
     if (includeTranscripts) {
       url.searchParams.set("transcripts", "true");
     }
-    const cacheKey = `limit=${limitParam};transcripts=${includeTranscripts ? "1" : "0"}`;
+    if (mode) {
+      url.searchParams.set("mode", mode);
+    }
+    const cacheKey = `limit=${limitParam};transcripts=${includeTranscripts ? "1" : "0"};mode=${mode ?? "all"}`;
     let cache = tailRecentCaches.get(cacheKey);
     if (!cache) {
       cache = createBrokerJsonCache<TailRecentPayload>();

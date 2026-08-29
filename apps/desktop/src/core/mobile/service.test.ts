@@ -39,9 +39,9 @@ test("mobile runtime capabilities hide the duplicate Grok harness", async () => 
 
 describe("getScoutMobileSessionSnapshot", () => {
   test("rebases stale macOS account paths onto the current Scout home", () => {
-    expect(rehomeScoutMobileWorkspacePath("/Users/example/dev/dewey", "/Users/example"))
-      .toBe("/Users/example/dev/dewey");
-    expect(rehomeScoutMobileWorkspacePath("/opt/projects/dewey", "/Users/example"))
+    expect(rehomeScoutMobileWorkspacePath("/Users/arach/dev/dewey", "/Users/art"))
+      .toBe("/Users/art/dev/dewey");
+    expect(rehomeScoutMobileWorkspacePath("/opt/projects/dewey", "/Users/art"))
       .toBe(null);
   });
 
@@ -246,7 +246,7 @@ describe("getScoutMobileSessionSnapshot", () => {
       harness: "claude",
       transport: "claude_session",
       state: "active",
-      projectRoot: "/Users/example/dev/openscout",
+      projectRoot: "/Users/art/dev/openscout",
       metadata: { lastSeenAt: 20_000 },
     };
     installBrokerSnapshot(brokerSnapshot);
@@ -254,7 +254,7 @@ describe("getScoutMobileSessionSnapshot", () => {
     const [agent] = await getScoutMobileAgents({ limit: 1 });
 
     expect(agent?.harness).toBe("claude");
-    expect(agent?.workspaceRoot).toBe("/Users/example/dev/openscout");
+    expect(agent?.workspaceRoot).toBe("/Users/art/dev/openscout");
     expect(agent?.state).toBe("available");
     expect(agent?.lastActiveAt).toBe(20_000_000);
   });

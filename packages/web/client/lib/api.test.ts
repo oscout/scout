@@ -97,4 +97,55 @@ describe("api GET dedupe", () => {
       "Expected JSON from /api/mesh/announce but received text/html; charset=utf-8",
     );
   });
+
+  test("transparently refreshes session on 401 and retries the request", async () => {
+    const urls: string[] = [];
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : (input as Request).url;
+      urls.push(url);
+      if (url === "/api/bootstrap.js") {
+        return new Response("window.__OPENSCOUT_WEB_BOOTSTRAP__ = {};", {
+          status: 200,
+          headers: { "content-type": "application/javascript" },
+        });
+      }
+      if (url === "/api/fleet") {
+        if (urls.filter((u) => u === "/api/fleet").length === 1) {
+          return new Response(JSON.stringify({ error: "unauthorized" }), {
+            status: 401,
+            headers: { "content-type": "application/json" },
+          });
+        }
+        return new Response(JSON.stringify({ value: 99 }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      return new Response("{}", { status: 200 });
+    }) as unknown as typeof fetch;
+
+    const result = await api<{ value: number }>("/api/fleet");
+    expect(result).toEqual({ value: 99 });
+    expect(urls).toEqual(["/api/fleet", "/api/bootstrap.js", "/api/fleet"]);
+  });
+
+  test("fails closed if 401 persists after session refresh attempt", async () => {
+    const urls: string[] = [];
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : (input as Request).url;
+      urls.push(url);
+      if (url === "/api/bootstrap.js") {
+        return new Response("{}", {
+          status: 401,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      return new Response(JSON.stringify({ error: "unauthorized" }), {
+        status: 401,
+        headers: { "content-type": "application/json" },
+      });
+    }) as unknown as typeof fetch;
+
+    await expect(api("/api/fleet")).rejects.toThrow("unauthorized");
+  });
 });

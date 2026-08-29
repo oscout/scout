@@ -108,7 +108,12 @@
   border-bottom-color: transparent !important;
 }
 
-[data-scout-theme] button[title^="Expand "] {
+/* HudsonKit's own floating expand affordance — a plate that has to lift off the
+   content it overlays. The rail band toggle is excluded by name: it sits INSIDE
+   its column's header band, where an elevated plate reads as a foreign object
+   (and this blunt title-prefix selector was silently re-adding the very chrome
+   the band treatment removes). */
+[data-scout-theme] button[title^="Expand "]:not([data-scout-rail-toggle]) {
   border-color: transparent !important;
   box-shadow:
     0 10px 26px oklch(0.08 0.006 75 / 0.42),
@@ -427,7 +432,8 @@ body { margin: 0; }
   opacity: 0.48;
 }
 
-.scout-terminal-focus-toggle {
+.scout-terminal-focus-toggle,
+.scout-top-row-panel-toggle {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -441,21 +447,39 @@ body { margin: 0; }
   cursor: pointer;
 }
 
-.scout-terminal-focus-toggle:hover {
+.scout-terminal-focus-toggle:hover,
+.scout-top-row-panel-toggle:hover {
   border-color: color-mix(in srgb, var(--hud-ink) 10%, transparent);
   background: color-mix(in srgb, var(--hud-ink) 7%, transparent);
   color: var(--scout-chrome-ink);
 }
 
-.scout-terminal-focus-toggle:focus-visible {
+.scout-terminal-focus-toggle:focus-visible,
+.scout-top-row-panel-toggle:focus-visible {
   outline: 2px solid var(--hud-accent);
   outline-offset: 1px;
 }
 
-.scout-terminal-focus-toggle--active {
+.scout-terminal-focus-toggle--active,
+.scout-top-row-panel-toggle--active {
   border-color: color-mix(in srgb, var(--hud-accent) 34%, transparent);
   background: color-mix(in srgb, var(--hud-accent) 10%, transparent);
   color: var(--hud-accent);
+}
+
+.scout-top-row-panel-toggle:disabled {
+  border-color: transparent;
+  background: transparent;
+  color: var(--scout-chrome-ink-ghost);
+  cursor: default;
+  opacity: 0.46;
+}
+
+.scout-top-row-panel-toggles {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  margin-left: 2px;
 }
 
 .scout-center-pane-header--top-row .scout-center-pane-header-utility {
@@ -490,7 +514,12 @@ body { margin: 0; }
 .scout-top-row-identity {
   display: flex;
   align-items: center;
-  gap: 12px;
+  /* Two steps on the scale, not one: `docs` and the operator are separate
+     things (--space-lg between them), while the coin and the handle are one
+     thing (--space-xs inside). A single gap for both made the coin read as
+     equidistant between a link and a name — a third item in a row rather than
+     the face attached to that name. */
+  gap: var(--space-lg);
   min-width: 0;
   font-family: var(--hud-font-mono);
   font-size: var(--text-sm);
@@ -498,11 +527,62 @@ body { margin: 0; }
 }
 
 .scout-top-row-operator {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-xs);
   min-width: 0;
+  /* The handle is who you are, and it is the outermost thing in the frame —
+     one step brighter than the `docs` way-out beside it, which is chrome you
+     use once. Both stay under the section name; nothing in this row competes
+     with the screen below it. */
   color: var(--scout-chrome-ink-soft);
+}
+
+.scout-top-row-operator .xc-avatar-root {
+  /* Separation from the bar is NOT set here. Every coin gets its rim from
+     .xc-avatar-shell in crew-avatar.css — this row is just one of the surfaces
+     that needed it, and a hairline pinned to this selector would have to be
+     re-cut for the next surface that shows the same seam. */
+  flex: none;
+}
+
+.scout-top-row-handle {
+  min-width: 0;
   overflow: hidden;
-  text-overflow: ellipsis;
   white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* The handle before the name has travelled. Nothing is drawn — a skeleton bar
+   for a single short word is more furniture than the word it stands in for,
+   and the coin beside it already says the row is yours. */
+.scout-top-row-handle[data-arriving] {
+  width: 0;
+}
+
+/* ...and the way it lands, ONCE, on a first visit only. Every later load reads
+   the name from the local cache and paints it in frame one, where animating
+   would be the pop-in wearing a nicer coat. Short and small: this is a word
+   catching up to a row that already settled, not an event. */
+.scout-top-row-handle[data-arrived] {
+  animation: scout-handle-arrive 260ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+
+@keyframes scout-handle-arrive {
+  from {
+    opacity: 0;
+    transform: translateX(-3px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .scout-top-row-handle[data-arrived] {
+    animation: none;
+  }
 }
 
 .scout-top-row-docs {
@@ -589,8 +669,9 @@ html[data-scout-sidebar-chrome] [data-slot="sidebar-group-label"][data-sidebar-h
   color: var(--hud-muted);
 }
 
-/* Collapsed, the label is invisible (opacity-0) and exists only as a spacer on
-   the 38px rail grid — drop the band so it cannot add a border pixel to that row. */
+/* Collapsed, the column header IS the reserved 44px band (the label itself is
+   removed below) — belt and braces so no stray border pixel can survive into
+   the icon rail if the display rule is ever overridden. */
 html[data-scout-sidebar-chrome]
   .group[data-collapsible="icon"]
   [data-slot="sidebar-group-label"][data-sidebar-head] {
@@ -639,6 +720,22 @@ html[data-scout-sidebar-chrome] .group[data-collapsible="icon"] [data-slot="side
   display: none;
 }
 
+/*
+ * Shared collapsed-rail slot grid (all columns: primary, context, inspector).
+ * Slot N baseline = --scout-rail-top + N * --scout-rail-row
+ * Cell 32 · gap 6 · row 38 · top 8 — keep in sync with sidebar-collapse-state.ts.
+ */
+html[data-scout-sidebar-chrome] {
+  --scout-rail-slot: 32px;
+  --scout-rail-gap: 6px;
+  --scout-rail-row: 38px;
+  --scout-rail-top: 8px;
+  /* The header band, reserved on every column in BOTH states (see
+     sidebar-collapse-state.ts). Collapsed rails start slot 0 below it, which is
+     what lands all three columns' first row on one baseline. */
+  --scout-rail-band: 44px;
+}
+
 /* The collapsed 48px icon rail is the PRIMARY navigation column, so its cells
    must not read smaller than the collapsed context rail's 32px identity chips
    sitting right next to them. shadcn sizes these in rem (size-8 + p-2) against
@@ -654,8 +751,8 @@ html[data-scout-sidebar-chrome] .group[data-collapsible="icon"] [data-slot="side
    still clamped up by min-width, so this lands the 32px box without either an
    !important arms race or a cascade-layer detour. */
 html[data-scout-sidebar-chrome] .group[data-collapsible="icon"] [data-slot="sidebar-menu-button"] {
-  min-width: 32px;
-  min-height: 32px;
+  min-width: var(--scout-rail-slot);
+  min-height: var(--scout-rail-slot);
   margin-inline: auto;
   padding: 0;
   justify-content: center;
@@ -673,21 +770,28 @@ html[data-scout-sidebar-chrome] .group[data-collapsible="icon"] [data-slot="side
    two columns started together and drifted a row apart within six items. The
    chip side of the same grid lives in scout/sidebar/collapsed-strip.css. */
 html[data-scout-sidebar-chrome] .group[data-collapsible="icon"] [data-slot="sidebar-menu"] {
-  gap: 6px;
+  gap: var(--scout-rail-gap);
 }
 
-/* …and the grid has to survive a group boundary. Collapsed, a group label is
-   invisible, so its band is pure spacing — pin it (and the group's own block
-   padding) to exactly one row + one gap. The first destination then clears the
-   chevron band on its own, and every later group re-enters on the same lines
-   instead of landing 5px high off rem-rounded padding. */
+/* Collapsed, the nav reserves the SAME 44px band the context rail and inspector
+   keep, so its first icon sits on their first chip's baseline instead of on a
+   spacer that only approximated it. The band is empty here — the shell paints
+   the toggle into it. Group labels are REMOVED, not zeroed: a zero-height flex
+   child still earns its `gap`, which pushed everything below a group boundary
+   off the shared 38px pitch. */
+html[data-scout-sidebar-chrome] .group[data-collapsible="icon"] [data-slot="sidebar-content"] {
+  /* Band, then the shared top pad — the same two terms the collapsed rail body
+     applies, so nav slot 0 and context slot 0 land on ONE baseline. */
+  padding-top: calc(var(--scout-rail-band) + var(--scout-rail-top));
+  gap: 0;
+}
+
 html[data-scout-sidebar-chrome] .group[data-collapsible="icon"] [data-slot="sidebar-group"] {
-  padding-block: 0 6px;
+  padding-block: 0;
 }
 
 html[data-scout-sidebar-chrome] .group[data-collapsible="icon"] [data-slot="sidebar-group-label"] {
-  height: 38px;
-  margin: 0;
+  display: none;
 }
 
 /* The brand mark stays one step above the nav glyphs so it reads as identity,
@@ -697,26 +801,28 @@ html[data-scout-sidebar-chrome] .group[data-collapsible="icon"] [data-sidebar="b
   height: 24px;
 }
 
-/* SCO-086: unified edge chevron for all rails. The control reads as a deliberate
-   seam in the shell: quiet surface at rest, clear edge contrast, and one optical
-   SVG mark across platforms. */
+/* The rail collapse/expand control — ONE control, six positions (three columns
+   x open/shut). It lives in each column's 44px header band and occupies the same
+   cell whether the column is open or shut: the glyph flips, nothing moves. The
+   earlier placements (bordered plate straddling the seam, and a slot pinned to
+   the rail FOOT that made the control travel the height of the window on every
+   toggle) are gone; `--band` is the only placement class. */
 .scout-rail-toggle {
   appearance: none;
   position: relative;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 26px;
-  height: 32px;
+  width: 22px;
+  height: 28px;
   padding: 0;
   margin: 0;
-  border: 1px solid color-mix(in srgb, var(--hud-ink) 13%, var(--hud-border, transparent));
-  border-radius: min(7px, var(--hud-radius, 7px));
-  background: color-mix(in srgb, var(--hud-surface) 92%, var(--hud-bg));
-  box-shadow:
-    0 1px 2px color-mix(in srgb, var(--hud-ink) 9%, transparent),
-    inset 0 1px 0 color-mix(in srgb, var(--hud-bg) 72%, transparent);
-  color: color-mix(in srgb, var(--hud-ink) 66%, transparent);
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  box-shadow: none;
+  /* Quiet at rest — it is chrome, not a destination. */
+  color: color-mix(in srgb, var(--hud-ink) 38%, transparent);
   cursor: pointer;
   pointer-events: auto;
   z-index: 45;
@@ -731,13 +837,21 @@ html[data-scout-sidebar-chrome] .group[data-collapsible="icon"] [data-sidebar="b
     box-shadow 120ms ease;
 }
 
+/* Reveal on COLUMN hover, not just on its own 22px hit box. This is the whole
+   discoverability argument: reaching the rail is enough to surface the control,
+   so nobody has to already know where it lives. */
+html[data-scout-sidebar-chrome]:has([data-slot="sidebar-container"]:hover) .scout-rail-toggle,
+html[data-scout-sidebar-chrome]:has([data-scout-collapsed-rail]:hover) .scout-rail-toggle,
+html[data-scout-sidebar-chrome]:has([data-pane="side-rail"]:hover) .scout-rail-toggle,
+html[data-scout-sidebar-chrome]:has([data-pane="right"]:hover) .scout-rail-toggle,
+.scout-rail-toggle:focus-visible {
+  color: color-mix(in srgb, var(--hud-ink) 66%, transparent);
+}
+
 .scout-rail-toggle:hover {
   color: var(--scout-chrome-ink, var(--hud-ink));
-  background: color-mix(in srgb, var(--hud-accent) 7%, var(--hud-surface));
-  border-color: color-mix(in srgb, var(--hud-accent) 46%, var(--hud-border));
-  box-shadow:
-    0 2px 5px color-mix(in srgb, var(--hud-ink) 12%, transparent),
-    inset 0 1px 0 color-mix(in srgb, var(--hud-bg) 78%, transparent);
+  background: color-mix(in srgb, var(--hud-ink) 7%, transparent);
+  border-color: color-mix(in srgb, var(--hud-accent) 26%, transparent);
 }
 
 .scout-rail-toggle:focus-visible {
@@ -747,8 +861,8 @@ html[data-scout-sidebar-chrome] .group[data-collapsible="icon"] [data-sidebar="b
 
 .scout-rail-toggle-glyph {
   display: block;
-  width: 14px;
-  height: 14px;
+  width: 12px;
+  height: 12px;
   transition: transform 120ms ease;
 }
 
@@ -761,13 +875,13 @@ html[data-scout-sidebar-chrome] .group[data-collapsible="icon"] [data-sidebar="b
 }
 
 .scout-rail-toggle:active .scout-rail-toggle-glyph {
-  transform: scale(0.88);
+  transform: scale(0.9);
 }
 
-/* SCO-087: sidebar edge chevron — shell-rendered fixed element on the sidebar
-   boundary, in the panel-header band (aligned with the side rail / inspector
-   chevrons). Position/left ride is set inline so it tracks the ghost edge. */
-.scout-rail-toggle--sidebar-edge {
+/* Band placement — the only one. Shell-rendered fixed elements whose left/right
+   comes from railToggleOffset(), so the control tracks the committed column edge
+   in both states without ever leaving the header band. */
+.scout-rail-toggle--band {
   z-index: 46;
 }
 
@@ -792,13 +906,15 @@ html[data-scout-sidebar-chrome] .group[data-collapsible="icon"] [data-sidebar="b
   to { opacity: 0; }
 }
 
-/* Collapsed OpenScout rails (side rail + inspector). */
+/* Collapsed OpenScout rails (side rail + inspector): header band, top pad, then
+   slot 0…N — the primary column's grid exactly. `position: fixed` is set inline,
+   which already gives ::before its containing block. */
 .scout-collapsed-rail {
   display: flex;
   flex-direction: column;
-  align-items: center;
-  gap: 8px;
-  padding: 8px 0;
+  align-items: stretch;
+  gap: 0;
+  padding: 0;
   box-sizing: border-box;
   background: color-mix(in srgb, var(--hud-surface) 96%, transparent);
   border-color: color-mix(in srgb, var(--hud-ink) 8%, transparent);
@@ -842,26 +958,23 @@ html[data-scout-double-rail] .scout-collapsed-rail[data-side="left"] {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 100%;
+  width: var(--scout-rail-slot, 32px);
+  height: var(--scout-rail-slot, 32px);
+  flex: none;
   color: var(--scout-chrome-ink-faint, color-mix(in srgb, var(--hud-ink) 45%, transparent));
   font-family: var(--hud-font-mono, ui-monospace, monospace);
   font-size: var(--text-xs);
 }
 
-/* Rich collapsed rail (chat avatar stack, etc.): leave room for the chevron.
-   Double-rail mode overrides padding-top so the area label lines up with the
-   primary icon rail content (see collapsed-strip.css). */
+/* Rich collapsed rail (chat avatar stack, etc.). The band reservation lives on
+   .scout-collapsed-rail-body and is the same for rich and bare rails, so this
+   variant only has to opt out of the enter animation: keep-alive mounts the
+   collapsed host even while expanded, and a settle on first paint would fire
+   with the rail invisible. */
 .scout-collapsed-rail--rich {
   align-items: stretch;
-  padding-top: 40px;
+  padding: 0;
   gap: 0;
-  /* No overflow clip here. The chevron is centered ON the rail's boundary line
-     (CollapsedRail.tsx: right:0 + translateX(50%)), so half of it lives outside
-     the 48px strip by design — clipping the rail sliced the plate down its
-     middle. Content scrolling is already contained by .scout-collapsed-rail-body
-     (overflow-x: hidden / overflow-y: auto). */
-  /* Keep-alive mounts collapse host even when expanded; skip enter animation
-     on first paint so collapse swap is a pure visibility toggle. */
   animation: none;
 }
 
@@ -885,7 +998,29 @@ html[data-scout-double-rail] .scout-collapsed-rail--rich,
   display: flex;
   flex-direction: column;
   align-items: center;
+  gap: var(--scout-rail-gap, 6px);
+  /* Reserve the 44px header band, then slot 0. Collapsing a column used to
+     delete its band entirely: content jumped up 44px and the header hairline
+     that runs NAVIGATE -> HOME -> CONTEXT stopped dead at the collapsed column. */
+  padding-top: calc(
+    var(--scout-rail-band, 44px) +
+      max(var(--scout-rail-top, 8px), env(safe-area-inset-top, 0px))
+  );
+  padding-bottom: var(--scout-rail-top, 8px);
   scrollbar-width: none;
+}
+
+/* The band's own hairline, matching the expanded panel headers so the line is
+   continuous in every combination of open and shut columns. */
+.scout-collapsed-rail::before {
+  content: "";
+  position: absolute;
+  top: var(--scout-rail-band, 44px);
+  left: 0;
+  right: 0;
+  height: 0;
+  border-bottom: 1px dashed color-mix(in srgb, var(--hud-chrome-border) 74%, transparent);
+  pointer-events: none;
 }
 
 .scout-collapsed-rail-body::-webkit-scrollbar {
@@ -4219,17 +4354,17 @@ html[data-scout-shell="slack"] .scout-top-row-identity[data-presentation="slack"
   color: color-mix(in srgb, var(--scout-slack-ink) 76%, transparent);
 }
 
+/* The coin is the whole cell in the Slack top row: no tile behind it, and a box
+   that matches the avatar rather than cropping it. The tinted 25px square with
+   an initial that used to live here was Slack's monogram idiom, kept after the
+   avatar moved in — it painted a second identity behind the first and clipped
+   28px of coin into 25px of chip. */
 html[data-scout-shell="slack"] .scout-top-row-identity[data-presentation="slack"] .scout-top-row-operator {
   display: grid;
-  width: 25px;
-  height: 25px;
+  width: 28px;
+  height: 28px;
   place-items: center;
-  border-radius: 6px;
-  background: oklch(0.75 0.14 190);
-  color: oklch(0.22 0.04 190);
-  font-family: var(--font-sans, Inter, ui-sans-serif, system-ui, sans-serif);
-  font-size: 11px;
-  font-weight: 720;
+  gap: 0;
 }
 
 html[data-scout-shell="slack"] [data-slot="sidebar-container"] {

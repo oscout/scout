@@ -1,8 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { Bot, Cpu, KeyRound, RefreshCw, Save, Server, Settings, Wrench } from "lucide-react";
 import { EmptyState } from "../../components/EmptyState.tsx";
+import { CastPicker } from "../../components/CastPicker.tsx";
 import { api } from "../../lib/api.ts";
 import { ensureAgentChat } from "../../lib/agent-chat.ts";
+import {
+  migrateLegacyAgentCharacters,
+  resolveAgentCharacterAssignment,
+} from "../../lib/theme.ts";
 import { formatClockTimestamp } from "../../lib/time.ts";
 import type {
   AgentConfigurationAgent,
@@ -154,15 +159,24 @@ function applyConfigDrafts(
 
 function SelectedAgentPanel({
   agent,
+  agents,
   navigate,
   onConfigSaved,
 }: {
   agent: AgentConfigurationAgent | null;
+  agents: readonly AgentConfigurationAgent[];
   navigate: (r: Route) => void;
   onConfigSaved?: () => void;
 }) {
-  const { route } = useScout();
+  const { route, appearanceDetails, updateAppearanceDetails } = useScout();
   const agentId = agent?.id ?? null;
+  const assignedCharacter = agent
+    ? resolveAgentCharacterAssignment(
+        appearanceDetails.agentCharacters,
+        agent,
+        agents,
+      )
+    : undefined;
   const [config, setConfig] = useState<LocalAgentConfigState | null>(null);
   const [configLoading, setConfigLoading] = useState(false);
   const [configError, setConfigError] = useState<string | null>(null);
@@ -332,6 +346,30 @@ function SelectedAgentPanel({
           <span className="agent-config-label">Capabilities</span>
           <span className="agent-config-selectable">{displayCapabilities(agent.capabilities)}</span>
         </div>
+        <div className="agent-config-detail-wide">
+          <span className="agent-config-label">Character</span>
+          {assignedCharacter
+            ? <span className="sys-chip sys-chip-neutral">{assignedCharacter}</span>
+            : <span className="agent-config-selectable">Generative sprite</span>}
+        </div>
+      </div>
+
+      <div className="agent-config-cast">
+        <CastPicker
+          selectedSlug={assignedCharacter}
+          onSelect={(castSlug) => {
+            const current = migrateLegacyAgentCharacters(
+              appearanceDetails.agentCharacters,
+              agents,
+            );
+            const byId = { ...current.byId };
+            if (byId[agent.id] === castSlug) delete byId[agent.id];
+            else byId[agent.id] = castSlug;
+            updateAppearanceDetails({
+              agentCharacters: { ...current, byId },
+            });
+          }}
+        />
       </div>
 
       {configLoading && (
@@ -586,6 +624,7 @@ export function AgentConfigurationScreen({
 
             <SelectedAgentPanel
               agent={selectedAgent}
+              agents={snapshot.agents}
               navigate={navigate}
               onConfigSaved={() => void load("manual")}
             />

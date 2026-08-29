@@ -1,6 +1,6 @@
 {
   "name": "@openscout/runtime",
-  "version": "0.2.92",
+  "version": "0.2.94",
   "description": "Local runtime foundation for the OpenScout control plane",
   "type": "module",
   "bin": {
@@ -72,6 +72,18 @@
       "types": "./dist/mesh-dial-order.d.ts",
       "import": "./dist/mesh-dial-order.js",
       "default": "./dist/mesh-dial-order.js"
+    },
+    "./mesh-peer-filter": {
+      "bun": "./src/mesh-peer-filter.ts",
+      "types": "./dist/mesh-peer-filter.d.ts",
+      "import": "./dist/mesh-peer-filter.js",
+      "default": "./dist/mesh-peer-filter.js"
+    },
+    "./mesh-join": {
+      "bun": "./src/mesh-join.ts",
+      "types": "./dist/mesh-join.d.ts",
+      "import": "./dist/mesh-join.js",
+      "default": "./dist/mesh-join.js"
     },
     "./broker-api": {
       "bun": "./src/broker-api.ts",

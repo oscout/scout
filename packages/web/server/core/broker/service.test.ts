@@ -209,6 +209,87 @@ describe("loadScoutBrokerContext", () => {
     expect(snapshotRequests).toBe(1);
   });
 
+  test("can bypass a primed context cache after an out-of-band broker mutation", async () => {
+    useIsolatedOpenScoutHome();
+    let advertiseScope: "local" | "mesh" = "local";
+    let snapshotRequests = 0;
+    globalThis.fetch = (async (input, init) => {
+      const request = input instanceof Request ? input : new Request(input, init);
+      const url = new URL(request.url);
+      if (url.pathname === "/health") {
+        return jsonResponse({ ok: true, nodeId: "node-1", meshId: "mesh-1" });
+      }
+      if (url.pathname === "/v1/node") {
+        return jsonResponse({ id: "node-1", advertiseScope });
+      }
+      if (url.pathname === "/v1/snapshot") {
+        snapshotRequests += 1;
+        return jsonResponse({
+          nodes: {},
+          actors: {},
+          agents: {},
+          endpoints: {},
+          conversations: {},
+          bindings: {},
+          messages: {},
+          readCursors: {},
+          invocations: {},
+          flights: {},
+          collaborationRecords: {},
+        });
+      }
+      return jsonResponse({ error: "unexpected request" }, 404);
+    }) as unknown as typeof fetch;
+
+    expect((await loadScoutBrokerContext(undefined, { since: 4321 }))?.node.advertiseScope).toBe("local");
+    advertiseScope = "mesh";
+    expect((await loadScoutBrokerContext(undefined, { since: 4321 }))?.node.advertiseScope).toBe("local");
+    expect((await loadScoutBrokerContext(undefined, { since: 4321, force: true }))?.node.advertiseScope).toBe("mesh");
+    expect((await loadScoutBrokerContext(undefined, { since: 4321 }))?.node.advertiseScope).toBe("mesh");
+    expect(snapshotRequests).toBe(2);
+  });
+
+  test("keeps conversation-scoped snapshots separate from the default cache", async () => {
+    useIsolatedOpenScoutHome();
+    const snapshotQueries: string[] = [];
+    globalThis.fetch = (async (input, init) => {
+      const request = input instanceof Request ? input : new Request(input, init);
+      const url = new URL(request.url);
+      if (url.pathname === "/health") {
+        return jsonResponse({ ok: true, nodeId: "node-1", meshId: "mesh-1" });
+      }
+      if (url.pathname === "/v1/node") {
+        return jsonResponse({ id: "node-1" });
+      }
+      if (url.pathname === "/v1/snapshot") {
+        snapshotQueries.push(url.search);
+        return jsonResponse({
+          nodes: {},
+          actors: {},
+          agents: {},
+          endpoints: {},
+          conversations: {},
+          bindings: {},
+          messages: {},
+          readCursors: {},
+          invocations: {},
+          flights: {},
+          collaborationRecords: {},
+        });
+      }
+      return jsonResponse({ error: "unexpected request" }, 404);
+    }) as unknown as typeof fetch;
+
+    await Promise.all([
+      loadScoutBrokerContext(undefined, { since: 1234 }),
+      loadScoutBrokerContext(undefined, { since: 1234, scope: "conversations" }),
+    ]);
+
+    expect(snapshotQueries).toHaveLength(2);
+    expect(snapshotQueries).toContain("?since=1234");
+    expect(snapshotQueries).toContain("?since=1234&scope=conversations");
+  });
+
   test("invalidates cached snapshots after a successful broker write", async () => {
     const home = useIsolatedOpenScoutHome();
     let snapshotRequests = 0;
@@ -1420,7 +1501,7 @@ describe("sendScoutConversationSteer", () => {
               metadata: {
                 cardless: true,
                 handle: "project-schubert",
-                projectRoot: "/Users/example/dev/lattices",
+                projectRoot: "/Users/art/dev/lattices",
               },
             },
           },
@@ -1434,8 +1515,8 @@ describe("sendScoutConversationSteer", () => {
               transport: "codex_app_server",
               state: "offline",
               sessionId: "session-lattices",
-              projectRoot: "/Users/example/dev/lattices",
-              cwd: "/Users/example/dev/lattices",
+              projectRoot: "/Users/art/dev/lattices",
+              cwd: "/Users/art/dev/lattices",
               metadata: {
                 cardless: true,
                 handle: "project-schubert",

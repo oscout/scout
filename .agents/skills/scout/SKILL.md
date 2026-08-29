@@ -60,7 +60,7 @@ When the project is known but the concrete agent is not, use `scout ask --projec
 
 Default routing ladder:
 
-1. **Capability request:** project path + harness/capability, e.g. `scout ask --project /Users/example/dev/talkie --harness claude "Review the spec."`
+1. **Capability request:** project path + harness/capability, e.g. `scout ask --project /Users/art/dev/talkie --harness claude "Review the spec."`
 2. **Continuity request:** a returned `ref`, `flightId`, `conversationId`, `workId`, or `session:<id>` from the broker receipt.
 3. **Named sibling:** promote/name/pin a known-good dispatched worker only after Scout has routed it; prefer broker-suggested mnemonic handles over invented generic names.
 
@@ -113,7 +113,7 @@ scout env --json
 If `scout` is not on `PATH`, or the installed `scout` on `PATH` is stale for this checkout, use:
 
 ```bash
-bun /Users/example/dev/openscout/packages/cli/bin/scout.mjs env --json
+bun /Users/arach/dev/openscout/packages/cli/bin/scout.mjs env --json
 ```
 
 ## Fast path

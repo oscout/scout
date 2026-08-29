@@ -33,11 +33,12 @@ import {
   type LastViewedMap,
 } from "../../lib/sessionRead.ts";
 import { useConversationList } from "../../lib/use-conversation-list.ts";
+import { useFleetActiveAsks } from "../../lib/use-fleet-active-asks.ts";
 import { useScout } from "../../scout/Provider.tsx";
-import type { Route, SessionEntry } from "../../lib/types.ts";
-import { actorColor } from "../../lib/colors.ts";
+import type { Agent, Route, SessionEntry } from "../../lib/types.ts";
+import { isAgentOnline } from "../../lib/agent-state.ts";
+import { AgentAvatar } from "../../components/AgentAvatar.tsx";
 import {
-  chipInitial,
   CollapsedChip,
   CollapsedStrip,
   CollapsedStripRule,
@@ -58,9 +59,10 @@ function recencySort(list: SessionEntry[], lastViewed: LastViewedMap): SessionEn
   });
 }
 
-export function ChatCollapsedStrip() {
+export function ChatCollapsedStrip({ onExpand }: { onExpand?: () => void }) {
   const { route, navigate, agents } = useScout();
   const { sessions } = useConversationList();
+  const asksByAgent = useFleetActiveAsks();
   const [prefs, setPrefs] = useState<ConversationPrefs>(() => loadConversationPrefs());
   const [lastViewed, setLastViewed] = useState<LastViewedMap>(() => loadLastViewedMap());
   const machineId = routeMachineId(route);
@@ -68,6 +70,14 @@ export function ChatCollapsedStrip() {
     () => machineScopedAgentIds(agents, machineId),
     [agents, machineId],
   );
+
+  const agentById = useMemo(() => {
+    const map = new Map<string, Agent>();
+    for (const agent of agents) {
+      map.set(agent.id, agent);
+    }
+    return map;
+  }, [agents]);
 
   const activeId =
     route.view === "messages" ? route.conversationId :
@@ -127,16 +137,35 @@ export function ChatCollapsedStrip() {
     const title = conversationDisplayTitle(s);
     const channel = isChannelConversation(s);
     const unread = isUnread(s.lastMessageAt, s.id, lastViewed);
+    const peer = channel ? undefined : peerLabel(s, title);
+    const identity = peer ?? title;
+    const agent = s.agentId ? agentById.get(s.agentId) : undefined;
+    const ask = s.agentId ? asksByAgent.get(s.agentId) : undefined;
+    const hasAttention = ask?.status === "needs_attention";
+    const isWorking = ask?.status === "working";
+    const isOnline = agent ? isAgentOnline(agent.state) : false;
+
+    const dot = hasAttention ? "attention" : unread ? "unread" : isWorking || isOnline ? "live" : null;
+
     return (
       <CollapsedChip
         key={s.id}
-        title={pinned ? `${title} · pinned` : title}
+        title={pinned ? `${title} · pinned` : peer ? `${title} · ${peer}` : title}
         active={s.id === activeId}
-        tone={channel ? "channel" : unread ? "unread" : "default"}
-        ava={channel ? undefined : chipInitial(s.agentName ?? title)}
-        avaColor={channel ? undefined : actorColor(s.agentName ?? title)}
-        glyph={channel ? "#" : undefined}
-        dot={unread ? "unread" : null}
+        tone={channel ? "channel" : hasAttention ? "attention" : unread ? "unread" : "default"}
+        avatarNode={
+          channel ? undefined : (
+            <AgentAvatar
+              agent={agent}
+              name={identity}
+              size={28}
+              tile
+              presence={false}
+            />
+          )
+        }
+        glyph={channel ? channelMark(title) : undefined}
+        dot={dot}
         pinned={pinned}
         onClick={() => open(s)}
       />
@@ -146,28 +175,28 @@ export function ChatCollapsedStrip() {
   const sections: ReactNode[] = [];
   if (bands.pinned.length) {
     sections.push(
-      <CollapsedStripSection key="pin" mark="Pin" count={bands.totals.pinned}>
+      <CollapsedStripSection key="pin" mark="Pin" count={bands.totals.pinned} showMark={sections.length > 0}>
         {bands.pinned.map((s) => renderChip(s, true))}
       </CollapsedStripSection>,
     );
   }
   if (bands.channels.length) {
     sections.push(
-      <CollapsedStripSection key="ch" mark="#" count={bands.totals.channels}>
+      <CollapsedStripSection key="ch" mark="#" count={bands.totals.channels} showMark={sections.length > 0}>
         {bands.channels.map((s) => renderChip(s))}
       </CollapsedStripSection>,
     );
   }
   if (bands.dms.length) {
     sections.push(
-      <CollapsedStripSection key="dm" mark="DM" count={bands.totals.dms}>
+      <CollapsedStripSection key="dm" mark="DM" count={bands.totals.dms} showMark={sections.length > 0}>
         {bands.dms.map((s) => renderChip(s))}
       </CollapsedStripSection>,
     );
   }
   if (bands.observed.length) {
     sections.push(
-      <CollapsedStripSection key="obs" mark="Obs" count={bands.totals.observed}>
+      <CollapsedStripSection key="obs" mark="Obs" count={bands.totals.observed} showMark={sections.length > 0}>
         {bands.observed.map((s) => renderChip(s))}
       </CollapsedStripSection>,
     );
@@ -179,32 +208,60 @@ export function ChatCollapsedStrip() {
       emptyMark="#"
       labelTone={unreadCount > 0 ? "accent" : "default"}
       labelCount={unreadCount > 0 ? unreadCount : allShown.length || undefined}
+      onLabelClick={onExpand}
     >
-      {sections.flatMap((node, i) =>
-        i === 0 ? [node] : [<CollapsedStripRule key={`rule-${i}`} />, node],
-      )}
+      {sections}
     </CollapsedStrip>
   );
+}
+
+/** "#s" for #spatial-agent-updates — styled channel badge. */
+function channelMark(title: string): ReactNode {
+  const raw = title.replace(/^#+/, "");
+  const letter = raw.match(/[a-z0-9]/i)?.[0]?.toLowerCase() ?? "?";
+  return (
+    <span className="collapsed-chip-channel-badge">
+      <span className="collapsed-chip-channel-hash" aria-hidden>#</span>
+      <span className="collapsed-chip-channel-text">{letter}</span>
+    </span>
+  );
+}
+
+/**
+ * The participant that is NOT the display title — for "Blink" DMs the session
+ * on the other side (openscout-pauli-3), i.e. the identity the chip stands for.
+ */
+function peerLabel(s: SessionEntry, title: string): string | undefined {
+  const wanted = title.toLowerCase();
+  for (const p of s.participants ?? []) {
+    const name = p.displayName || p.label;
+    if (name && name.toLowerCase() !== wanted) return name;
+  }
+  return undefined;
 }
 
 /** Mini band header inside the collapsed chat stack (# / DM / Obs). */
 function CollapsedStripSection({
   mark,
   count,
+  showMark = true,
   children,
 }: {
   mark: string;
   count?: number;
+  showMark?: boolean;
   children: ReactNode;
 }) {
   return (
     <div className="collapsed-strip-section" role="group" aria-label={mark}>
-      <div className="collapsed-strip-section-mark" title={count != null ? `${mark} · ${count}` : mark}>
-        <span className="collapsed-strip-section-mark-text">{mark}</span>
-        {count != null && count > 0 ? (
-          <span className="collapsed-strip-section-mark-count">{count > 99 ? "99+" : count}</span>
-        ) : null}
-      </div>
+      {showMark ? (
+        <div className="collapsed-strip-section-mark" title={count != null ? `${mark} · ${count}` : mark}>
+          <span className="collapsed-strip-section-mark-text">{mark}</span>
+          {count != null && count > 0 ? (
+            <span className="collapsed-strip-section-mark-count">{count > 99 ? "99+" : count}</span>
+          ) : null}
+        </div>
+      ) : null}
       {children}
     </div>
   );

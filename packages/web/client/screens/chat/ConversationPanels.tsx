@@ -1,5 +1,5 @@
-import { useMemo, type CSSProperties } from "react";
-import { Activity, MessageCircle, Terminal } from "lucide-react";
+import { useMemo, useState, useCallback, type CSSProperties } from "react";
+import { Activity, ChevronDown, ChevronRight, MessageCircle, Terminal } from "lucide-react";
 import {
   LazyMotion,
   m,
@@ -28,10 +28,12 @@ import type {
   Route,
   SessionEntry,
 } from "../../lib/types.ts";
-import type {
-  TurnLaunchPhase,
-  TurnStep,
-  TurnStepKind,
+import {
+  formatStepDuration,
+  summarizeTurnPhases,
+  type TurnLaunchPhase,
+  type TurnStep,
+  type TurnStepKind,
 } from "./turn-steps.ts";
 import {
   activityKindLabel,
@@ -140,50 +142,168 @@ export function WorkingTurnSteps({
   limit?: number;
   compact?: boolean;
 }) {
+  const [expandedStepIds, setExpandedStepIds] = useState<Set<string>>(() => new Set());
+  const toggleStep = useCallback((id: string) => {
+    setExpandedStepIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }, []);
+
+  const phaseSummaries = useMemo(() => summarizeTurnPhases(steps), [steps]);
   const visibleSteps = steps.slice(-limit);
   const hiddenCount = steps.length - visibleSteps.length;
 
   if (visibleSteps.length === 0) {
     if (!phase) return null;
     return (
-      <div className="s-thread-steps-phase">
-        <span>{phase.label}</span>
-        <strong>{phase.detail}</strong>
+      <div className="s-thread-steps-phase surface-card surface-card--inset">
+        <div className="s-thread-steps-phase-header">
+          <span className="dot dot--sm dot--working dot--pulse dot--glow" aria-hidden="true" />
+          <span className="label-xs text-muted">{phase.label}</span>
+        </div>
+        <strong className="s-thread-steps-phase-detail">{phase.detail}</strong>
       </div>
     );
   }
 
   return (
     <div className={`s-thread-steps${compact ? " s-thread-steps--compact" : ""}`}>
+      {phaseSummaries.length > 0 && (
+        <div className="s-thread-turn-phases-ribbon" role="status" aria-label="Execution phases">
+          {phaseSummaries.map((p) => (
+            <span
+              key={p.phase}
+              className={`s-thread-turn-phase-chip chip chip--sm chip--mono ${
+                p.active ? "chip--working s-thread-turn-phase-chip--active" : "chip--neutral"
+              }`}
+            >
+              {p.active && <span className="dot dot--sm dot--working dot--pulse dot--glow" aria-hidden="true" />}
+              <span className="s-thread-turn-phase-name">{p.label}</span>
+              <span className="s-thread-turn-phase-count">{p.count}</span>
+            </span>
+          ))}
+        </div>
+      )}
+
       {hiddenCount > 0 && (
-        <div className="s-thread-steps-elided">
+        <div className="s-thread-steps-elided label-xs">
           {hiddenCount} earlier step{hiddenCount === 1 ? "" : "s"}
         </div>
       )}
-      <ol aria-label="Live steps in this turn">
-        {visibleSteps.map((step) => (
-          <li key={step.id} data-kind={step.kind}>
-            <span className="s-thread-step-mark" aria-hidden="true" />
-            <span className="s-thread-step-kind">{TURN_STEP_LABEL[step.kind]}</span>
-            <span className="s-thread-step-body">
-              {step.tool ? (
-                <>
-                  <span className="s-thread-step-tool">{step.tool}</span>
-                  {step.arg && <span className="s-thread-step-arg">{step.arg}</span>}
-                </>
-              ) : (
-                <span className="s-thread-step-text">{step.text}</span>
+
+      <ol className="s-thread-steps-list" aria-label="Live steps in this turn">
+        {visibleSteps.map((step, idx) => {
+          const isLatest = idx === visibleSteps.length - 1;
+          const isExpanded = expandedStepIds.has(step.id);
+          const hasDetails = Boolean((step.arg && step.arg.length > 30) || step.outcome || step.text.length > 50);
+
+          return (
+            <li
+              key={step.id}
+              className={`s-thread-step-card s-thread-step-card--${step.status}${
+                isLatest ? " s-thread-step-card--latest" : ""
+              }${isExpanded ? " s-thread-step-card--expanded" : ""}`}
+              data-kind={step.kind}
+              data-phase={step.phase}
+              data-status={step.status}
+            >
+              <div className="s-thread-step-header">
+                <span className="s-thread-step-mark s-thread-step-indicator" aria-hidden="true">
+                  {step.status === "working" || (isLatest && !step.outcome) ? (
+                    <span className="dot dot--sm dot--working dot--pulse dot--glow" />
+                  ) : step.status === "error" ? (
+                    <span className="dot dot--sm dot--danger" />
+                  ) : step.status === "warning" ? (
+                    <span className="dot dot--sm dot--warning" />
+                  ) : (
+                    <span className="dot dot--sm dot--success" />
+                  )}
+                </span>
+
+                <span className="s-thread-step-kind chip chip--sm chip--mono chip--ghost">
+                  {step.tool ? step.tool : TURN_STEP_LABEL[step.kind]}
+                </span>
+
+                <div className="s-thread-step-body">
+                  {step.tool ? (
+                    <span className="s-thread-step-tool-arg">
+                      {step.arg ? (
+                        <code className="s-thread-step-arg-code">{step.arg}</code>
+                      ) : (
+                        <span className="s-thread-step-tool">{step.tool}</span>
+                      )}
+                    </span>
+                  ) : (
+                    <span className="s-thread-step-text">{step.text}</span>
+                  )}
+                  {step.repeatCount > 1 && (
+                    <span className="s-thread-step-repeat chip chip--sm chip--mono chip--neutral">
+                      ×{step.repeatCount}
+                    </span>
+                  )}
+                </div>
+
+                <div className="s-thread-step-meta">
+                  {step.outcome && (
+                    <span
+                      className={`s-thread-step-outcome chip chip--sm chip--mono ${
+                        step.outcome.includes("+")
+                          ? "chip--success"
+                          : step.status === "error"
+                            ? "chip--danger"
+                            : "chip--neutral"
+                      }`}
+                    >
+                      {step.outcome}
+                    </span>
+                  )}
+                  {step.durationMs ? (
+                    <span className="s-thread-step-duration label-xs">
+                      {formatStepDuration(step.durationMs)}
+                    </span>
+                  ) : null}
+                  <time className="label-xs" title={formatAbsoluteTimestamp(step.ts)}>
+                    {timeAgo(step.ts)}
+                  </time>
+                  {hasDetails && (
+                    <button
+                      type="button"
+                      className="s-thread-step-toggle btn btn--ghost btn--icon"
+                      aria-expanded={isExpanded}
+                      onClick={() => toggleStep(step.id)}
+                      title={isExpanded ? "Collapse output" : "Expand output"}
+                    >
+                      {isExpanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              {isExpanded && (
+                <div className="s-thread-step-output surface-card surface-card--inset">
+                  <div className="s-thread-step-output-header">
+                    <span className="label-xs text-muted">Telemetry Detail</span>
+                    <span className="label-xs text-dim">
+                      {step.phase.toUpperCase()} · {step.status.toUpperCase()}
+                    </span>
+                  </div>
+                  <pre className="s-thread-step-output-code">
+                    <code>
+                      {step.tool ? `tool: ${step.tool}\n` : ""}
+                      {step.arg ? `args: ${step.arg}\n` : ""}
+                      {step.outcome ? `outcome: ${step.outcome}\n` : ""}
+                      {step.text ? `text: ${step.text}\n` : ""}
+                      {`timestamp: ${formatAbsoluteTimestamp(step.ts)}`}
+                    </code>
+                  </pre>
+                </div>
               )}
-              {step.repeatCount > 1 && (
-                <span className="s-thread-step-repeat">×{step.repeatCount}</span>
-              )}
-              {step.outcome && (
-                <span className="s-thread-step-outcome">{step.outcome}</span>
-              )}
-            </span>
-            <time title={formatAbsoluteTimestamp(step.ts)}>{timeAgo(step.ts)}</time>
-          </li>
-        ))}
+            </li>
+          );
+        })}
       </ol>
     </div>
   );
@@ -206,15 +326,22 @@ export function WorkingTurnActivityPreview({
       className={`s-thread-motion-events${compact ? " s-thread-motion-events--compact" : ""}`}
       aria-label="Latest run activity"
     >
-      {visibleEvents.map((event) => (
-        <li key={event.id}>
-          <span className="s-thread-motion-event-kind">
+      {visibleEvents.map((event, idx) => (
+        <li key={event.id} className="s-thread-motion-event-card">
+          <span className="s-thread-motion-event-dot">
+            <span
+              className={`dot dot--sm ${
+                idx === 0 ? "dot--working dot--pulse dot--glow" : "dot--neutral"
+              }`}
+            />
+          </span>
+          <span className="s-thread-motion-event-kind chip chip--sm chip--mono chip--ghost">
             {activityKindLabel(event.kind)}
           </span>
           <span className="s-thread-motion-event-summary">
             {turnActivityText(event) ?? "Activity recorded"}
           </span>
-          <time title={formatAbsoluteTimestamp(event.ts)}>
+          <time className="label-xs" title={formatAbsoluteTimestamp(event.ts)}>
             {timeAgo(event.ts)}
           </time>
         </li>

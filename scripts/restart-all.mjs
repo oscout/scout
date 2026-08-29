@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 
 import { spawnSync } from "node:child_process";
-import { existsSync, rmSync } from "node:fs";
+import { existsSync, readFileSync, rmSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -373,10 +373,13 @@ function readBrokerStatus(_bunBin) {
  * script, and the menu command all consult — so this file is left with what is
  * genuinely dev-only: build flags, package builds, and the iOS push.
  */
-function scoutApp(verb, { required = true } = {}) {
+function scoutApp(verb, { required = true, allowSharedServiceRepoint = false } = {}) {
   const cli = resolve(repoRoot, "apps", "desktop", "src", "cli", "main.ts");
   const result = spawnSync(resolveBunBin(), [cli, "app", verb, "--json"], {
     cwd: repoRoot,
+    env: allowSharedServiceRepoint
+      ? { ...process.env, OPENSCOUT_ALLOW_SHARED_SERVICE_REPOINT: "1" }
+      : process.env,
     encoding: "utf8",
   });
 
@@ -421,6 +424,32 @@ export function legacyScoutServiceLabels(mode) {
     : ["dev.openscout", "com.openscout"];
 }
 
+function processIsAlive(pid) {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export function pairingRelayRuntimeReady(snapshot, isAlive = processIsAlive) {
+  if (!snapshot || typeof snapshot !== "object") return false;
+  const relay = typeof snapshot.relay === "string" ? snapshot.relay.trim() : "";
+  if (!relay) return false;
+  return [snapshot.pid, snapshot.childPid].some((pid) => Number.isInteger(pid) && pid > 0 && isAlive(pid));
+}
+
+function readPairingRuntimeSnapshot() {
+  const path = join(homedir(), ".scout", "pairing", "runtime.json");
+  try {
+    return { path, snapshot: JSON.parse(readFileSync(path, "utf8")) };
+  } catch {
+    return { path, snapshot: null };
+  }
+}
+
 async function verifySuite(bunBin, options) {
   const status = await waitForBrokerReady(bunBin);
   const webUrl = managedWebUrlFromStatus(status, options);
@@ -437,6 +466,11 @@ async function verifySuite(bunBin, options) {
     throw new Error(`Process ownership is wrong:\n  ${tree.problems.join("\n  ")}`);
   }
 
+  const pairingRuntime = readPairingRuntimeSnapshot();
+  if (!pairingRelayRuntimeReady(pairingRuntime.snapshot)) {
+    throw new Error(`Pairing relay runtime is not ready at ${pairingRuntime.path}.`);
+  }
+
   const agents = await fetch(new URL("/api/agents?detail=summary&limit=1", webUrl), {
     headers: {
       accept: "application/json",
@@ -445,13 +479,14 @@ async function verifySuite(bunBin, options) {
     signal: AbortSignal.timeout(30_000),
   });
   if (!agents.ok) throw new Error(`Web agents summary failed verification with HTTP ${agents.status}.`);
-  return { status, tree, webUrl };
+  return { status, tree, webUrl, pairingRuntime: pairingRuntime.snapshot };
 }
 
 function describeTree(tree) {
   const pid = (layer) => tree.layers.find((entry) => entry.layer === layer)?.pids.join(",") || "none";
   return {
     ownership: `launchd -> scoutd ${pid("scoutd")} -> base ${pid("base")} -> broker ${pid("broker")} -> web ${pid("web")}`,
+    relay: `pairing ${pid("pairing")}`,
     apps: `Scout ${pid("app")}; embedded ScoutMenu ${pid("menu")}`,
   };
 }
@@ -470,6 +505,7 @@ async function main() {
     const verified = await verifySuite(bunBin, options);
     const described = describeTree(verified.tree);
     console.log(`suite verified: ${described.ownership}`);
+    console.log(`relay verified: ${described.relay}`);
     console.log(`apps verified: ${described.apps}`);
     console.log(`web ready: ${verified.webUrl}`);
     return;
@@ -484,7 +520,7 @@ async function main() {
   runStep("Build packages", bunBin, ["run", "build"]);
   runStep("Build Scout and embedded menu helper", bunBin, ["apps/macos/bin/scout-app.ts", "dev-build"]);
 
-  reportLifecycle("Start OpenScout", scoutApp("start"));
+  reportLifecycle("Start OpenScout", scoutApp("start", { allowSharedServiceRepoint: true }));
 
   console.log("\n==> Start broker-managed web app");
   const brokerReadyStatus = await waitForBrokerReady(bunBin);
@@ -514,6 +550,7 @@ async function main() {
   console.log(`broker: ${brokerHealth}`);
   console.log(`web: ${web.url} (log ${web.logPath})`);
   console.log(`ownership: ${described.ownership}`);
+  console.log(`relay: ${described.relay}`);
   console.log(`macOS: ${described.apps}`);
   console.log(`iOS: ${iosStatus}`);
 }

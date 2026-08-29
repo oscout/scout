@@ -101,7 +101,7 @@ describe("ClaudeCodeAdapter", () => {
     const adapter = createAdapter({
       sessionId: `claude-test-${crypto.randomUUID()}`,
       name: "Claude Test",
-      cwd: "/Users/example/dev/openscout",
+      cwd: "/Users/arach/dev/openscout",
       options: {
         resume: resumeId,
       },

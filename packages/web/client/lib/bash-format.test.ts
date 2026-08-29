@@ -53,7 +53,7 @@ describe("bashDisplaySpans", () => {
   });
 
   test("a cd destination gets the thoughtful dir tier (not buried as plumbing)", () => {
-    expect(shape("cd /Users/example/dev/x && bun run build")).toBe(
+    expect(shape("cd /Users/art/dev/x && bun run build")).toBe(
       "·cd· {~/dev/x} ·&&· [bun] run build",
     );
   });
@@ -61,7 +61,7 @@ describe("bashDisplaySpans", () => {
 
 describe("splitCdPrefix", () => {
   test("pulls a leading cd …&& into a tilde-shortened dir + the rest", () => {
-    expect(splitCdPrefix("cd /Users/example/dev/x && bun run build")).toEqual({
+    expect(splitCdPrefix("cd /Users/art/dev/x && bun run build")).toEqual({
       dir: "~/dev/x",
       rest: "bun run build",
     });
@@ -77,7 +77,7 @@ describe("splitCdPrefix", () => {
 });
 
 describe("formatBashLine — powerline modes", () => {
-  const CMD = "cd /Users/example/dev/x && bun bin/app.ts 2>&1 | tail -5";
+  const CMD = "cd /Users/art/dev/x && bun bin/app.ts 2>&1 | tail -5";
 
   test("default (off): no powerline, cd reads inline with the dir tier", () => {
     const line = formatBashLine(CMD);
@@ -95,20 +95,20 @@ describe("formatBashLine — powerline modes", () => {
   });
 
   test("smart: a redundant cd back to the cwd is dropped, no segment", () => {
-    const line = formatBashLine(CMD, { powerline: "smart", cwd: "/Users/example/dev/x" });
+    const line = formatBashLine(CMD, { powerline: "smart", cwd: "/Users/art/dev/x" });
     expect(line.dir).toBe(null);
     expect(line.spans[0]).toMatchObject({ text: "bun", tier: "prog" });
     expect(line.spans.some((s) => s.text === "cd")).toBe(false);
   });
 
   test("smart: a cd to a DIFFERENT directory keeps the segment", () => {
-    const line = formatBashLine(CMD, { powerline: "smart", cwd: "/Users/example/other" });
+    const line = formatBashLine(CMD, { powerline: "smart", cwd: "/Users/art/other" });
     expect(line.dir).toBe("~/dev/x");
   });
 });
 
 describe("tildeShortenPath", () => {
   test("collapses the home prefix to ~", () => {
-    expect(tildeShortenPath("/Users/example/dev/openscout/x")).toBe("~/dev/openscout/x");
+    expect(tildeShortenPath("/Users/art/dev/openscout/x")).toBe("~/dev/openscout/x");
   });
 });

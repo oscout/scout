@@ -112,7 +112,7 @@ export function workspaceRootFromObservedPath(path: string | null | undefined): 
 
 // Canonicalize an absolute home path to its "~"-relative form so the SAME repo
 // reported two ways — a session's absolute `workspaceRoot`
-// ("/Users/example/dev/openscout") and an agent's "~"-relative `projectRoot`
+// ("/Users/art/dev/openscout") and an agent's "~"-relative `projectRoot`
 // ("~/dev/openscout") — resolves to ONE root instead of splitting into two
 // project tiles. Pure string transform (no env/home lookup), so it stays
 // browser-safe; machine-scope already keeps distinct machines from colliding.
@@ -154,7 +154,7 @@ export function projectSlug(value: string | null | undefined): string {
 }
 
 // Short, URL-facing project identifier. Stable + human-readable so the agents
-// URL reads `?project=talkie` instead of `?project=root%3A%2FUsers%2Fexample%2Fdev…`.
+// URL reads `?project=talkie` instead of `?project=root%3A%2FUsers%2Fart%2Fdev…`.
 // Kebab-cased from the repo basename, with a trailing node/number qualifier
 // stripped to mirror how projectSlug collapses "openscout-185" → "openscout".
 export function slugifyProjectName(value: string | null | undefined): string {

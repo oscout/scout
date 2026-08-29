@@ -26,7 +26,7 @@ describe("normalizeGitRemoteUrl", () => {
   });
 
   test("rejects local paths and empty input", () => {
-    expect(normalizeGitRemoteUrl("/Users/example/dev/openscout")).toBeNull();
+    expect(normalizeGitRemoteUrl("/Users/art/dev/openscout")).toBeNull();
     expect(normalizeGitRemoteUrl("../relative/clone")).toBeNull();
     expect(normalizeGitRemoteUrl("")).toBeNull();
     expect(normalizeGitRemoteUrl(null)).toBeNull();

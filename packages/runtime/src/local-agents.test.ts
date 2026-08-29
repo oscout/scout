@@ -22,6 +22,7 @@ import {
   areHarnessBinariesAvailable,
   brokerSnapshotMessages,
   invokeLocalAgentEndpoint,
+  listArchivedLocalAgentIds,
   loadRegisteredLocalAgentBindings,
   normalizeClaudeRuntimeLaunchArgs,
   normalizeGrokRuntimeLaunchArgs,
@@ -214,6 +215,34 @@ describe("local agent prompts", () => {
       ...baseEndpoint,
       metadata: { placement: "background" },
     }).env?.CODEX_HOME).toBe(backgroundHome);
+
+    // SCO-098: a thread Scout did not create lives in the operator store, so
+    // an external-thread resume overrides background placement — the rollout
+    // is not in the background home ("no rollout found" otherwise).
+    const externalThreadOptions = buildCodexEndpointSessionOptions({
+      ...baseEndpoint,
+      metadata: { placement: "background", threadId: "external-thread-1" },
+    });
+    expect(externalThreadOptions.env?.CODEX_HOME).toBe(operatorCodexHome);
+    expect(externalThreadOptions.env?.OPENSCOUT_CODEX_AUTH_SOURCE).toBeUndefined();
+
+    for (const source of [
+      "scout-cardless-session",
+      "scout-isolated-agent-session",
+      "scout-cli",
+    ]) {
+      const scoutBackgroundOptions = buildCodexEndpointSessionOptions({
+        ...baseEndpoint,
+        metadata: {
+          placement: "background",
+          source,
+          threadId: `scout-thread-${source}`,
+        },
+      });
+      expect(scoutBackgroundOptions.env?.CODEX_HOME).toBe(backgroundHome);
+      expect(scoutBackgroundOptions.env?.OPENSCOUT_CODEX_AUTH_SOURCE)
+        .toBe(join(operatorCodexHome, "auth.json"));
+    }
   });
 
   test("applies an attached endpoint's explicit Codex permission boundary", () => {
@@ -426,15 +455,15 @@ describe("local agent prompts", () => {
   });
 
   test("system prompt composes shared base, project context, and broker-backed protocol", () => {
-    process.env.OPENSCOUT_PROJECTS_ROOT = "/Users/example/dev";
-    process.env.OPENSCOUT_RELAY_HUB = "/Users/example/.openscout/relay";
+    process.env.OPENSCOUT_PROJECTS_ROOT = "/Users/arach/dev";
+    process.env.OPENSCOUT_RELAY_HUB = "/Users/arach/.openscout/relay";
 
-    const prompt = buildLocalAgentSystemPrompt("shaper", "shaper", "/Users/example/dev/shaper");
+    const prompt = buildLocalAgentSystemPrompt("shaper", "shaper", "/Users/arach/dev/shaper");
 
     expect(prompt).toContain('You are "shaper", a relay agent for the shaper project.');
     expect(prompt).toContain("Project context:");
-    expect(prompt).toContain("Codebase root: /Users/example/dev/shaper");
-    expect(prompt).toContain("Projects root: /Users/example/dev");
+    expect(prompt).toContain("Codebase root: /Users/arach/dev/shaper");
+    expect(prompt).toContain("Projects root: /Users/arach/dev");
     expect(prompt).toContain(`${scoutCli} inbox --as shaper --latest 20 --json`);
     expect(prompt).toContain(`${scoutCli} channel <name> --latest 20 --json`);
     expect(prompt).toContain(`${scoutCli} send --to <agent> --as shaper "your message"`);
@@ -465,29 +494,29 @@ describe("local agent prompts", () => {
         agentId: "shaper",
         displayName: "Shaper",
         projectName: "shaper",
-        projectPath: "/Users/example/dev/shaper",
+        projectPath: "/Users/arach/dev/shaper",
         brokerUrl: DEFAULT_BROKER_URL,
         relayCommand: `node ${JSON.stringify(join(repoRoot, "packages", "cli", "bin", "scout.mjs"))}`,
-        projectsRoot: "/Users/example/dev",
-        relayHub: "/Users/example/.openscout/relay",
+        projectsRoot: "/Users/arach/dev",
+        relayHub: "/Users/arach/.openscout/relay",
         openscoutRoot: repoRoot,
         scoutSkill: scoutSkillPath,
       },
     );
 
     expect(
-      normalizeLocalAgentSystemPrompt("shaper", "shaper", "/Users/example/dev/shaper", legacyPrompt),
+      normalizeLocalAgentSystemPrompt("shaper", "shaper", "/Users/arach/dev/shaper", legacyPrompt),
     ).toBeUndefined();
   });
 
   test("direct claude runtime prompt forbids reply tools for final-response capture", () => {
-    process.env.OPENSCOUT_PROJECTS_ROOT = "/Users/example/dev";
-    process.env.OPENSCOUT_RELAY_HUB = "/Users/example/.openscout/relay";
+    process.env.OPENSCOUT_PROJECTS_ROOT = "/Users/arach/dev";
+    process.env.OPENSCOUT_RELAY_HUB = "/Users/arach/.openscout/relay";
 
     const prompt = buildLocalAgentSystemPrompt(
       "shaper",
       "shaper",
-      "/Users/example/dev/shaper",
+      "/Users/arach/dev/shaper",
       { transport: "claude_stream_json" },
     );
 
@@ -497,13 +526,13 @@ describe("local agent prompts", () => {
   });
 
   test("direct Pi RPC runtime prompt captures final responses through the broker", () => {
-    process.env.OPENSCOUT_PROJECTS_ROOT = "/Users/example/dev";
-    process.env.OPENSCOUT_RELAY_HUB = "/Users/example/.openscout/relay";
+    process.env.OPENSCOUT_PROJECTS_ROOT = "/Users/arach/dev";
+    process.env.OPENSCOUT_RELAY_HUB = "/Users/arach/.openscout/relay";
 
     const prompt = buildLocalAgentSystemPrompt(
       "minimax",
       "openscout",
-      "/Users/example/dev/openscout",
+      "/Users/arach/dev/openscout",
       { transport: "pi_rpc" },
     );
 
@@ -513,13 +542,13 @@ describe("local agent prompts", () => {
   });
 
   test("tmux claude runtime remains the default local agent context", () => {
-    process.env.OPENSCOUT_PROJECTS_ROOT = "/Users/example/dev";
-    process.env.OPENSCOUT_RELAY_HUB = "/Users/example/.openscout/relay";
+    process.env.OPENSCOUT_PROJECTS_ROOT = "/Users/arach/dev";
+    process.env.OPENSCOUT_RELAY_HUB = "/Users/arach/.openscout/relay";
 
     const prompt = buildLocalAgentSystemPrompt(
       "shaper",
       "shaper",
-      "/Users/example/dev/shaper",
+      "/Users/arach/dev/shaper",
     );
 
     expect(prompt).toContain("Relay protocol:");
@@ -529,25 +558,25 @@ describe("local agent prompts", () => {
   });
 
   test("explicit tmux generated prompts normalize away as current defaults", () => {
-    process.env.OPENSCOUT_PROJECTS_ROOT = "/Users/example/dev";
-    process.env.OPENSCOUT_RELAY_HUB = "/Users/example/.openscout/relay";
+    process.env.OPENSCOUT_PROJECTS_ROOT = "/Users/arach/dev";
+    process.env.OPENSCOUT_RELAY_HUB = "/Users/arach/.openscout/relay";
 
     const prompt = buildLocalAgentSystemPrompt(
       "shaper",
       "shaper",
-      "/Users/example/dev/shaper",
+      "/Users/arach/dev/shaper",
       { transport: "tmux" },
     );
 
     expect(
-      normalizeLocalAgentSystemPrompt("shaper", "shaper", "/Users/example/dev/shaper", prompt),
+      normalizeLocalAgentSystemPrompt("shaper", "shaper", "/Users/arach/dev/shaper", prompt),
     ).toBeUndefined();
   });
 
   test("system prompt template renders shared fragments, path aliases, and env variables at wake time", () => {
     process.env.OPENSCOUT_TEST_PROMPT_VAR = "broker-ready";
-    process.env.OPENSCOUT_PROJECTS_ROOT = "/Users/example/dev";
-    process.env.OPENSCOUT_RELAY_HUB = "/Users/example/.openscout/relay";
+    process.env.OPENSCOUT_PROJECTS_ROOT = "/Users/arach/dev";
+    process.env.OPENSCOUT_RELAY_HUB = "/Users/arach/.openscout/relay";
 
     const prompt = renderLocalAgentSystemPromptTemplate(
       [
@@ -563,21 +592,21 @@ describe("local agent prompts", () => {
         agentId: "shaper",
         displayName: "Shaper",
         projectName: "shaper",
-        projectPath: "/Users/example/dev/shaper",
+        projectPath: "/Users/arach/dev/shaper",
         brokerUrl: DEFAULT_BROKER_URL,
         relayCommand: "bun relay",
-        projectsRoot: "/Users/example/dev",
-        relayHub: "/Users/example/.openscout/relay",
+        projectsRoot: "/Users/arach/dev",
+        relayHub: "/Users/arach/.openscout/relay",
         openscoutRoot: repoRoot,
         scoutSkill: scoutSkillPath,
       },
     );
 
     expect(prompt).toContain('You are "shaper", a relay agent for the shaper project.');
-    expect(prompt).toContain("Codebase root: /Users/example/dev/shaper");
-    expect(prompt).toContain("Projects root: /Users/example/dev");
-    expect(prompt).toContain("Base path: /Users/example/dev");
-    expect(prompt).toContain("Workspace root: /Users/example/dev/shaper");
+    expect(prompt).toContain("Codebase root: /Users/arach/dev/shaper");
+    expect(prompt).toContain("Projects root: /Users/arach/dev");
+    expect(prompt).toContain("Base path: /Users/arach/dev");
+    expect(prompt).toContain("Workspace root: /Users/arach/dev/shaper");
     expect(prompt).not.toContain(`Broker URL: ${DEFAULT_BROKER_URL}`);
     expect(prompt).toContain("Use the Scout CLI for broker reads and writes");
     expect(prompt).toContain("bun relay inbox --as shaper --latest 20 --json");
@@ -930,12 +959,12 @@ describe("local agent prompts", () => {
     useTestOperatorIdentity("Arach", "arach");
 
     const prompt = buildLocalAgentDirectInvocationPrompt(
-      "openscout-codex.main.scout-mac-mini-local",
+      "openscout-codex.main.arachs-mac-mini-local",
       {
         id: "inv-wake-08vm",
         requesterId: "operator",
         requesterNodeId: "node-1",
-        targetAgentId: "openscout-codex.main.scout-mac-mini-local",
+        targetAgentId: "openscout-codex.main.arachs-mac-mini-local",
         action: "wake",
         task: "hello?",
         messageId: "msg-wake-08vm",
@@ -952,7 +981,7 @@ describe("local agent prompts", () => {
     );
 
     expect(prompt).toBe([
-      "⌖ Arach (@arach) → @openscout-codex.main.scout-mac-mini-local · wake:08vm › hello?",
+      "⌖ Arach (@arach) → @openscout-codex.main.arachs-mac-mini-local · wake:08vm › hello?",
       "delivery: routed · session: continuing session",
       "",
       "Treat this as a message/update, not a reply-required ask. Continue your current work and reply only if useful.",
@@ -1187,5 +1216,43 @@ describe("local agent broker snapshots", () => {
         createdAt: 123,
       },
     ]);
+  });
+});
+
+describe("listArchivedLocalAgentIds", () => {
+  function useIsolatedSupportDirectory(): string {
+    const dir = mkdtempSync(join(tmpdir(), "openscout-support-"));
+    tempPaths.add(dir);
+    process.env.OPENSCOUT_SUPPORT_DIRECTORY = dir;
+    return dir;
+  }
+
+  test("returns an empty list when the registry is missing", async () => {
+    useIsolatedSupportDirectory();
+    expect(await listArchivedLocalAgentIds()).toEqual([]);
+  });
+
+  test("lists archived ids and sees registry rewrites through the memo", async () => {
+    const dir = useIsolatedSupportDirectory();
+    const registryPath = join(dir, "relay-agents.json");
+    writeFileSync(registryPath, JSON.stringify({
+      agents: {
+        "alpha.node": { archivedAt: 1_700_000_000_000 },
+        "bravo.node": {},
+      },
+    }), "utf8");
+
+    expect(await listArchivedLocalAgentIds()).toEqual(["alpha.node"]);
+    // Warm the memo, then rewrite the registry: the stat key (mtime + size)
+    // must drop the cached parse so the new flags are seen.
+    expect(await listArchivedLocalAgentIds()).toEqual(["alpha.node"]);
+    writeFileSync(registryPath, JSON.stringify({
+      agents: {
+        "alpha.node": {},
+        "bravo.node": { archivedAt: 1_700_000_000_001 },
+        "charlie.node": { archivedAt: "not-a-number" },
+      },
+    }), "utf8");
+    expect(await listArchivedLocalAgentIds()).toEqual(["bravo.node"]);
   });
 });

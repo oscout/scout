@@ -66,10 +66,10 @@ describe("Scout composer route operator", () => {
       ref: "8kj4pd",
       value: "ref:8kj4pd",
     });
-    expect(parseScoutComposerRouteTarget("project:/Users/example/dev/talkie")).toEqual({
+    expect(parseScoutComposerRouteTarget("project:/Users/arach/dev/talkie")).toEqual({
       kind: "project_path",
-      projectPath: "/Users/example/dev/talkie",
-      value: "project:/Users/example/dev/talkie",
+      projectPath: "/Users/arach/dev/talkie",
+      value: "project:/Users/arach/dev/talkie",
     });
     expect(parseScoutComposerRouteTarget("id:agent-123")).toEqual({
       kind: "agent_id",

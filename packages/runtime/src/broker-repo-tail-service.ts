@@ -10,6 +10,7 @@ import {
   filterTailEventsForDisplay,
   type DiscoverySnapshot,
   type TailEvent,
+  type TailEventKind,
 } from "./tail/index.js";
 
 export type BrokerRepoWatchReadOptions = {
@@ -43,16 +44,28 @@ export type BrokerRepoTailServiceOptions<TBrokerSnapshot> = {
   repoWatchHintsFromBrokerSnapshot: (snapshot: TBrokerSnapshot) => RepoWatchPathHint[];
   repoWatchHintsFromTailDiscovery: (discovery: DiscoverySnapshot | null | undefined) => RepoWatchPathHint[];
   getTailDiscovery: (force?: boolean) => Promise<DiscoverySnapshot>;
-  readRecentLiveEvents: (limit: number) => Promise<TailEvent[]>;
+  readRecentLiveEvents: (
+    limit: number,
+    options?: { kinds?: TailEventKind[] },
+  ) => Promise<TailEvent[]>;
   readRecentTranscriptEvents: (
     limit: number,
     options?: {
       discovery?: DiscoverySnapshot | null;
       perTranscriptLineLimit?: number;
+      kinds?: TailEventKind[];
+      perTranscriptKindLimit?: number;
     },
   ) => Promise<TailEvent[]>;
   repoWatchServeCacheTtlMs: number;
   repoWatchRehydrateAfterMs: number;
+  /**
+   * Serve-cache TTL for `/v1/tail/recent?transcripts=1`. The transcript replay
+   * phase re-reads up to dozens of transcripts per call and can take seconds on
+   * a busy machine; without a TTL every poll pays that cost again and the
+   * requests queue behind each other. 0 disables caching (test default).
+   */
+  tailRecentServeCacheTtlMs?: number;
   warn?: (message: string) => void;
   now?: () => number;
 };
@@ -69,13 +82,88 @@ export function parsePositiveIntParam(url: URL, key: string, cap: number): numbe
   return Math.min(value, cap);
 }
 
+const TAIL_RECENT_ASSISTANT_REPLIES_MODE = "assistant-replies";
+
+function isAssistantRepliesMode(url: URL): boolean {
+  return url.searchParams.get("mode") === TAIL_RECENT_ASSISTANT_REPLIES_MODE;
+}
+
+function tailEventMessageRole(event: TailEvent): string | null {
+  if (!event.raw || typeof event.raw !== "object" || Array.isArray(event.raw)) return null;
+  const payload = (event.raw as Record<string, unknown>).payload;
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return null;
+  const role = (payload as Record<string, unknown>).role;
+  return typeof role === "string" ? role.trim().toLowerCase() : null;
+}
+
+function isApprovalReviewerDecision(summary: string): boolean {
+  const trimmed = summary.trim();
+  if (!trimmed.startsWith("{")) return false;
+  if (
+    trimmed.startsWith('{"risk_level":')
+    && trimmed.includes('"user_authorization":')
+    && trimmed.includes('"outcome":')
+    && trimmed.includes('"rationale":')
+  ) {
+    return true;
+  }
+  try {
+    const parsed = JSON.parse(trimmed) as Record<string, unknown>;
+    return typeof parsed.risk_level === "string"
+      && typeof parsed.user_authorization === "string"
+      && typeof parsed.outcome === "string"
+      && typeof parsed.rationale === "string";
+  } catch {
+    return false;
+  }
+}
+
+/** Keep only user-facing harness output for the Projects control-plane inbox. */
+function isAssistantReply(event: TailEvent): boolean {
+  if (event.kind !== "assistant") return false;
+  const summary = event.summary.trim();
+  if (!summary || /^\[(?:assistant|message)\]$/iu.test(summary)) return false;
+  const role = tailEventMessageRole(event);
+  if (role && role !== "assistant") return false;
+  return !isApprovalReviewerDecision(summary);
+}
+
+function assistantReplySessionKey(event: TailEvent): string {
+  const source = event.source.trim().toLowerCase();
+  const sessionId = event.sessionId.trim();
+  return source && sessionId ? `${source}\u0000${sessionId}` : `event\u0000${event.id}`;
+}
+
+/** Collapse streaming fragments/history to the latest reply per harness session. */
+function latestAssistantReplies(events: Iterable<TailEvent>): TailEvent[] {
+  const latestBySession = new Map<string, TailEvent>();
+  for (const event of events) {
+    if (!isAssistantReply(event)) continue;
+    const key = assistantReplySessionKey(event);
+    const current = latestBySession.get(key);
+    if (
+      !current
+      || event.ts > current.ts
+      || (event.ts === current.ts && event.id.localeCompare(current.id) > 0)
+    ) {
+      latestBySession.set(key, event);
+    }
+  }
+  return [...latestBySession.values()];
+}
+
 function booleanQuery(url: URL, key: string): boolean {
   return url.searchParams.get(key) === "1" || url.searchParams.get(key) === "true";
 }
 
 export class BrokerRepoTailService<TBrokerSnapshot> {
   private repoWatchWarmInFlight: Promise<unknown> | null = null;
-
+  private tailRecentCache: {
+    key: string;
+    result: TimedTailRecentPayload;
+    expiresAtMs: number;
+  } | null = null;
+  private tailRecentInFlight: { key: string; promise: Promise<TimedTailRecentPayload> } | null = null;
   constructor(private readonly options: BrokerRepoTailServiceOptions<TBrokerSnapshot>) {}
 
   async readRepoWatchSnapshot(
@@ -174,6 +262,49 @@ export class BrokerRepoTailService<TBrokerSnapshot> {
   }
 
   async readTailRecentPayloadWithTiming(url: URL): Promise<TimedTailRecentPayload> {
+    const cacheTtlMs = this.options.tailRecentServeCacheTtlMs ?? 0;
+    const cacheKey = `${parseTailLimit(url)}:${url.searchParams.get("transcripts") === "true"
+      || url.searchParams.get("transcripts") === "1"}:${isAssistantRepliesMode(url) ? TAIL_RECENT_ASSISTANT_REPLIES_MODE : "all"}`;
+    const now = this.now();
+    if (cacheTtlMs > 0 && this.tailRecentCache?.key === cacheKey && this.tailRecentCache.expiresAtMs > now) {
+      const cached = this.tailRecentCache;
+      return {
+        payload: {
+          ...cached.result.payload,
+          events: [...cached.result.payload.events],
+        },
+        timings: [
+          ...cached.result.timings,
+          { name: "tail-serve-cache", dur: Math.max(0, now - (cached.expiresAtMs - cacheTtlMs)) },
+        ],
+      };
+    }
+    const inFlight = this.tailRecentInFlight;
+    if (cacheTtlMs > 0 && inFlight && inFlight.key === cacheKey) return inFlight.promise;
+
+    const request = (async () => {
+      const result = await this.computeTailRecentPayloadWithTiming(url);
+      if (cacheTtlMs > 0) {
+        this.tailRecentCache = {
+          key: cacheKey,
+          result,
+          expiresAtMs: this.now() + cacheTtlMs,
+        };
+      }
+      return result;
+    })();
+    if (cacheTtlMs > 0) {
+      this.tailRecentInFlight = { key: cacheKey, promise: request };
+      try {
+        return await request;
+      } finally {
+        if (this.tailRecentInFlight?.promise === request) this.tailRecentInFlight = null;
+      }
+    }
+    return request;
+  }
+
+  private async computeTailRecentPayloadWithTiming(url: URL): Promise<TimedTailRecentPayload> {
     const timings: ServerTimingMetric[] = [];
     const measure = async <T>(name: string, fn: () => Promise<T>): Promise<T> => {
       const start = performance.now();
@@ -184,6 +315,8 @@ export class BrokerRepoTailService<TBrokerSnapshot> {
       }
     };
     const limit = parseTailLimit(url);
+    const assistantRepliesOnly = isAssistantRepliesMode(url);
+    const kinds: TailEventKind[] | undefined = assistantRepliesOnly ? ["assistant"] : undefined;
     const includeTranscripts = url.searchParams.get("transcripts") === "true"
       || url.searchParams.get("transcripts") === "1";
     const eventsById = new Map<string, TailEvent>();
@@ -196,6 +329,8 @@ export class BrokerRepoTailService<TBrokerSnapshot> {
           {
             discovery,
             perTranscriptLineLimit: Math.min(200, Math.max(50, limit)),
+            kinds,
+            ...(assistantRepliesOnly ? { perTranscriptKindLimit: 1 } : {}),
           },
         )),
       );
@@ -206,13 +341,16 @@ export class BrokerRepoTailService<TBrokerSnapshot> {
 
     const mergeStart = performance.now();
     const bufferedEvents = filterTailEventsForDisplay(
-      await measure("tail-live", () => this.options.readRecentLiveEvents(limit)),
+      await measure("tail-live", () => this.options.readRecentLiveEvents(limit, { kinds })),
     );
     for (const event of bufferedEvents) {
       eventsById.set(event.id, event);
     }
 
-    const events = [...eventsById.values()]
+    const candidates = assistantRepliesOnly
+      ? latestAssistantReplies(eventsById.values())
+      : [...eventsById.values()];
+    const events = candidates
       .sort((left, right) => {
         if (left.ts === right.ts) return left.id.localeCompare(right.id);
         return left.ts - right.ts;
@@ -231,11 +369,12 @@ export class BrokerRepoTailService<TBrokerSnapshot> {
     };
   }
 
+  private now(): number {
+    return (this.options.now ?? Date.now)();
+  }
+
   async readTailRecentPayload(url: URL): Promise<TailRecentPayload> {
     return (await this.readTailRecentPayloadWithTiming(url)).payload;
   }
 
-  private now(): number {
-    return (this.options.now ?? Date.now)();
-  }
 }

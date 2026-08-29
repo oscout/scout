@@ -33,6 +33,7 @@ import {
 import type { Agent, FleetState, Route } from "../../lib/types.ts";
 import { useScout } from "../Provider.tsx";
 import { openAgent } from "../slots/openAgent.ts";
+import { AgentAvatar } from "../../components/AgentAvatar.tsx";
 import { ChatCollapsedStrip } from "../../screens/chat/ChatCollapsedStrip.tsx";
 import {
   chipInitial,
@@ -43,34 +44,41 @@ import {
 
 const LIMIT = 10;
 
-export function SideRailCollapsedBody({ route }: { route: Route }) {
+export function SideRailCollapsedBody({
+  route,
+  onExpand,
+}: {
+  route: Route;
+  /** Clicking the strip's section label pill expands the rail. */
+  onExpand?: () => void;
+}) {
   switch (route.view) {
     case "messages":
     case "conversation":
-      return <ChatCollapsedStrip />;
+      return <ChatCollapsedStrip onExpand={onExpand} />;
     case "inbox":
     case "activity":
     case "briefings":
-      return <HomeCollapsedStrip />;
+      return <HomeCollapsedStrip onExpand={onExpand} />;
     case "agents-v2":
     case "agent-info":
-      return <ProjectsCollapsedStrip />;
+      return <ProjectsCollapsedStrip onExpand={onExpand} />;
     case "terminal":
-      return <TerminalCollapsedStrip />;
+      return <TerminalCollapsedStrip onExpand={onExpand} />;
     case "ops":
-      return <OpsCollapsedStrip />;
+      return <OpsCollapsedStrip onExpand={onExpand} />;
     case "mesh":
-      return <MeshCollapsedStrip />;
+      return <MeshCollapsedStrip onExpand={onExpand} />;
     default:
       return (
-        <CollapsedStrip label="Context" emptyMark="·">
+        <CollapsedStrip label="Context" emptyMark="·" onLabelClick={onExpand}>
           {null}
         </CollapsedStrip>
       );
   }
 }
 
-function HomeCollapsedStrip() {
+function HomeCollapsedStrip({ onExpand }: { onExpand?: () => void }) {
   const { agents, navigate, route } = useScout();
   const [fleet, setFleet] = useState<FleetState | null>(null);
   const machineId = routeMachineId(route);
@@ -133,7 +141,12 @@ function HomeCollapsedStrip() {
       label="Home"
       emptyMark="H"
       labelTone={attentionAgents.length > 0 ? "attention" : "default"}
-      labelCount={attentionAgents.length > 0 ? attentionAgents.length : undefined}
+      labelCount={
+        attentionAgents.length > 0
+          ? attentionAgents.length
+          : scopedAgents.length || undefined
+      }
+      onLabelClick={onExpand}
     >
       {attentionAgents.map((agent) => (
         <AgentChip
@@ -155,7 +168,7 @@ function HomeCollapsedStrip() {
   );
 }
 
-function ProjectsCollapsedStrip() {
+function ProjectsCollapsedStrip({ onExpand }: { onExpand?: () => void }) {
   const { agents, navigate, route } = useScout();
   const machineId = routeMachineId(route);
   const scoped = useMemo(
@@ -187,10 +200,11 @@ function ProjectsCollapsedStrip() {
 
   return (
     <CollapsedStrip
-      label="Projects"
-      emptyMark="P"
+      label="Crew"
+      emptyMark="C"
       labelTone={needsTotal > 0 ? "attention" : "default"}
       labelCount={needsTotal > 0 ? needsTotal : projects.length || undefined}
+      onLabelClick={onExpand}
     >
       {projects.map((p) => (
         <CollapsedChip
@@ -212,7 +226,7 @@ function ProjectsCollapsedStrip() {
   );
 }
 
-function TerminalCollapsedStrip() {
+function TerminalCollapsedStrip({ onExpand }: { onExpand?: () => void }) {
   const { route, navigate } = useScout();
   const [sessions, setSessions] = useState<Awaited<ReturnType<typeof fetchTerminalSessions>>>([]);
 
@@ -231,6 +245,7 @@ function TerminalCollapsedStrip() {
       emptyMark="T"
       labelTone={items.length > 0 ? "live" : "default"}
       labelCount={items.length || undefined}
+      onLabelClick={onExpand}
     >
       {items.map((item) => (
         <CollapsedChip
@@ -253,18 +268,18 @@ function TerminalCollapsedStrip() {
   );
 }
 
-function OpsCollapsedStrip() {
+function OpsCollapsedStrip({ onExpand }: { onExpand?: () => void }) {
   const { route, navigate } = useScout();
   const mode = route.view === "ops" ? route.mode : undefined;
   const items = [
     { id: "mission" as const, title: "Mission", glyph: <ListTodo size={13} strokeWidth={1.7} aria-hidden /> },
     { id: "agents" as const, title: "Agents", glyph: <Users size={13} strokeWidth={1.7} aria-hidden /> },
     { id: "lanes" as const, title: "Agent Lanes", glyph: <LayoutGrid size={13} strokeWidth={1.7} aria-hidden /> },
-    { id: "plan" as const, title: "Plan", glyph: <Activity size={13} strokeWidth={1.7} aria-hidden /> },
+    { id: "advisor" as const, title: "Host Advisor", glyph: <Activity size={13} strokeWidth={1.7} aria-hidden /> },
   ];
 
   return (
-    <CollapsedStrip label="Operations" emptyMark="O" labelTone="default">
+    <CollapsedStrip label="Operations" emptyMark="O" labelTone="default" onLabelClick={onExpand}>
       {items.map((item) => (
         <CollapsedChip
           key={item.id}
@@ -279,7 +294,7 @@ function OpsCollapsedStrip() {
   );
 }
 
-function MeshCollapsedStrip() {
+function MeshCollapsedStrip({ onExpand }: { onExpand?: () => void }) {
   const { agents, navigate } = useScout();
   const { meshSnapshot } = useMeshViewStore();
   const buckets = useMemo(
@@ -303,6 +318,7 @@ function MeshCollapsedStrip() {
       emptyMark="M"
       labelTone={onlineCount > 0 ? "live" : "default"}
       labelCount={top.length || undefined}
+      onLabelClick={onExpand}
     >
       {top.map((b) => (
         <CollapsedChip
@@ -334,8 +350,15 @@ function AgentChip({
     <CollapsedChip
       title={attention ? `${name} · needs you` : name}
       tone={attention ? "attention" : "default"}
-      ava={chipInitial(name)}
-      avaColor={actorColor(name)}
+      avatarNode={
+        <AgentAvatar
+          agent={agent}
+          name={name}
+          size={28}
+          tile
+          presence={false}
+        />
+      }
       dot={attention ? "attention" : online ? "live" : null}
       onClick={onClick}
     />

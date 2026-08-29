@@ -13,6 +13,7 @@
 import { useEffect, useRef } from "react";
 import { CircleHelp } from "lucide-react";
 import { useScout } from "../Provider.tsx";
+import { AgentAvatar } from "../../components/AgentAvatar.tsx";
 
 const DOCS_URL = "https://openscout.app/docs";
 
@@ -21,11 +22,23 @@ export function TopRowIdentity({
 }: {
   presentation?: "scout" | "slack";
 }) {
-  const { onboarding, refreshOnboarding } = useScout();
+  const { onboarding, operatorName, refreshOnboarding } = useScout();
   const operator =
-    onboarding?.operatorName?.trim()
+    operatorName
+    || onboarding?.operatorName?.trim()
     || onboarding?.operatorNameSuggestion?.trim()
     || null;
+
+  /**
+   * Did the name have to travel to get here?
+   *
+   * Captured on the first render and never updated: a name that was already in
+   * the local cache is present in frame one and must not animate — motion on
+   * something that was never missing is the pop-in again, just prettier. Only
+   * the genuine first load, where the handle really does appear after the row
+   * has settled, gets the entrance.
+   */
+  const arrivedLate = useRef(operator == null);
 
   // The provider fetches onboarding once on mount. A request that loses the
   // startup race falls back to a record with no name, and nothing asks again —
@@ -55,17 +68,34 @@ export function TopRowIdentity({
           <CircleHelp size={16} strokeWidth={1.8} aria-hidden />
         ) : "docs"}
       </a>
-      {operator ? (
-        <span
-          className="scout-top-row-operator"
-          title={operator}
-          aria-label={`Operator ${operator}`}
-        >
-          {presentation === "slack"
-            ? operator.slice(0, 1).toUpperCase()
-            : `@${operator.toLowerCase()}`}
-        </span>
-      ) : null}
+      {/* The face IS the identity here, so the Slack presentation shows the
+          coin alone. It used to draw Slack's monogram tile — a teal rounded
+          square with an initial — with the avatar added on top of it later:
+          two portraits of the same person in a 25px box, one of them clipped
+          by it.
+
+          The coin renders unconditionally, before any name is known, because
+          it does not need one: the chosen character lives in the local
+          appearance record and is available on the first frame. Only the
+          handle waits, and only on a first visit. Gating the whole block on
+          the name meant your own face was the last thing to load in your own
+          workspace. */}
+      <span
+        className="scout-top-row-operator"
+        title={operator ?? undefined}
+        aria-label={operator ? `Operator ${operator}` : "Operator"}
+      >
+        <AgentAvatar name={operator ?? "operator"} size={28} presence={false} scaleWithPreference={false} />
+        {presentation === "slack" ? null : (
+          <span
+            className="scout-top-row-handle"
+            data-arriving={operator == null || undefined}
+            data-arrived={operator != null && arrivedLate.current ? "" : undefined}
+          >
+            {operator ? `@${operator.toLowerCase()}` : null}
+          </span>
+        )}
+      </span>
     </div>
   );
 }

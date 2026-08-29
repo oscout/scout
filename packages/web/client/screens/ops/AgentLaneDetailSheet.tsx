@@ -29,6 +29,7 @@ import {
   buildLaneSessionStats,
   buildLaneTouchedFiles,
   docExcerpt,
+  laneProjectPath,
   laneRecentCommands,
   relatedLaneSessionDocuments,
   type LaneCommand,
@@ -521,6 +522,8 @@ export function AgentLaneDetailSheet({
   returnRoute,
   onClose,
   navigationEnabled = true,
+  onPinProject,
+  projectPinned = false,
 }: {
   lane: AgentLane;
   navigate: (route: Route) => void;
@@ -530,6 +533,14 @@ export function AgentLaneDetailSheet({
   /// adapter-backed native embeds, which pass an inert navigate. When false,
   /// route-jumping affordances are hidden instead of dead-clicking.
   navigationEnabled?: boolean;
+  /// Optional deck-pin handler for the lane's working directory. Threaded
+  /// from the view so the detail sheet can promote the project to a pinned
+  /// filter lane without leaving the sheet — same affordance surface as the
+  /// session/profile/trace buttons.
+  onPinProject?: (projectPath: string) => void;
+  /// True when a project lane already covers this path. Disables the button
+  /// and lets the label show "Project pinned" so the state is visible.
+  projectPinned?: boolean;
 }) {
   const { agent, observe, source, lastActiveAt } = lane;
   const { openFilePreview } = useScout();
@@ -596,6 +607,10 @@ export function AgentLaneDetailSheet({
   // finished turn should read "last action", not "executing now". Fall back to
   // `working` only when there's no turn phase signal at all.
   const isLive = facts?.turn?.phase ? facts.turn.phase === "started" : working;
+  // Project the lane is running in — feeds the "Pin project" CTA. The same
+  // facts the runtime disclosure shows, so the button always lands on the
+  // path the operator is staring at.
+  const projectPath = laneProjectPath(lane);
 
   // The complete touched-file inventory (no arbitrary cap) enriched with the
   // per-file +adds/−dels summed from the trace's tool diffs, then split into the
@@ -791,7 +806,7 @@ export function AgentLaneDetailSheet({
   const openDocument = useCallback(
     (documentId: string) => {
       if (!navigationEnabled) return;
-      navigate({ view: "ops", mode: "plan", planDocumentId: documentId });
+      navigate({ view: "ops", mode: "advisor", planDocumentId: documentId });
       onClose();
     },
     [navigate, navigationEnabled, onClose],
@@ -925,6 +940,20 @@ export function AgentLaneDetailSheet({
                 Traces
               </SheetGhost>
             </>
+          ) : null}
+          {/* Pin project — deck action, not a route jump; stays visible in
+              native embeds too (local-storage mutation is independent of the
+              route surface). Label flips to "Project pinned" once the same
+              project lane is already present so the state isn't a silent no-op. */}
+          {projectPath ? (
+            <SheetGhost
+              onClick={() => onPinProject?.(projectPath)}
+              disabled={projectPinned || !onPinProject}
+            >
+              <span title={projectPath}>
+                {projectPinned ? "Project pinned" : "Pin project"}
+              </span>
+            </SheetGhost>
           ) : null}
         </div>
         <button type="button" className="s-slide-close" onClick={onClose} aria-label="Close">

@@ -63,7 +63,7 @@ beforeAll(() => {
   writeFileSync(join(repo, "README.md"), "fixture\n");
   shell("git", ["add", "README.md"], repo);
   shell("git", ["commit", "-m", "🧪 Add release train fixture"], repo);
-  shell("git", ["remote", "add", "origin", "https://github.com/oscout/scout.git"], repo);
+  shell("git", ["remote", "add", "origin", "https://github.com/arach/openscout.git"], repo);
   shell("git", ["update-ref", "refs/remotes/origin/main", "HEAD"], repo);
 });
 
@@ -102,8 +102,8 @@ describe("release-train workflow", () => {
     runner("advance", ["--to", "S10", "--write", "--run-id", runId]);
     expect(runner("advance", ["--to", "S20", "--write", "--run-id", runId], false).stderr).toContain("typed output");
 
-    const readyLane = computeLaneId("https://github.com/oscout/scout", join(sandbox, "ready"), "codex/ready");
-    const holdLane = computeLaneId("https://github.com/oscout/scout", join(sandbox, "hold"), "codex/hold");
+    const readyLane = computeLaneId("https://github.com/arach/openscout", join(sandbox, "ready"), "codex/ready");
+    const holdLane = computeLaneId("https://github.com/arach/openscout", join(sandbox, "hold"), "codex/hold");
     const s10 = artifact("s10.json", {
       type: "SourceOwnershipLedger",
       lanes: [
@@ -159,7 +159,7 @@ describe("release-train workflow", () => {
     runner("record-stage", ["--stage", "S50", "--artifact", s50Pass, "--write", "--run-id", runId]);
     runner("advance", ["--to", "S60", "--write", "--run-id", runId]);
 
-    const s60 = artifact("s60.json", { type: "PullRequestReceiptSet", prs: [{ laneIds: [readyLane], number: 711, url: "https://github.com/oscout/scout/pull/711", headSha: "c".repeat(40), base: "main", action: "OPENED", idempotencyKey: "sha256:pr" }] });
+    const s60 = artifact("s60.json", { type: "PullRequestReceiptSet", prs: [{ laneIds: [readyLane], number: 711, url: "https://github.com/arach/openscout/pull/711", headSha: "c".repeat(40), base: "main", action: "OPENED", idempotencyKey: "sha256:pr" }] });
     runner("record-stage", ["--stage", "S60", "--artifact", s60, "--write", "--run-id", runId]);
     runner("advance", ["--to", "S70", "--write", "--run-id", runId]);
     const s70Changes = artifact("s70-changes.json", { type: "ReviewDecisionSet", decisions: [{ pr: 711, risk: "medium", mode: "INDEPENDENT", verdict: "CHANGES", findings: [{ class: "must_fix", summary: "fix" }], reviewerRef: "flight:review" }] });
@@ -207,7 +207,7 @@ describe("release-train workflow", () => {
   }, 120_000);
 
   test("validate fails visibly for a corrupt matching checkpoint", () => {
-    const repoHash = sha256("https://github.com/oscout/scout").slice(0, 8);
+    const repoHash = sha256("https://github.com/arach/openscout").slice(0, 8);
     const corruptDirectory = join(state, "runs", `rt-20260812-17-${repoHash}`);
     mkdirSync(corruptDirectory, { recursive: true });
     writeFileSync(join(corruptDirectory, "checkpoint.json"), "{truncated");
@@ -232,7 +232,7 @@ describe("release-train workflow", () => {
 
   test("stray run directories are ignored", () => {
     const isolatedState = join(sandbox, "stray-directory-state");
-    const repoHash = sha256("https://github.com/oscout/scout").slice(0, 8);
+    const repoHash = sha256("https://github.com/arach/openscout").slice(0, 8);
     mkdirSync(join(isolatedState, "runs", `junk-${repoHash}`), { recursive: true });
     expect(JSON.parse(runner("init", [], true, isolatedState).stdout).action).toBe("would_create");
   });
@@ -353,8 +353,8 @@ describe("release-train workflow", () => {
     const created = JSON.parse(runner("init", ["--write"], true, isolatedState).stdout);
     const runId = created.checkpoint.runId as string;
     runner("advance", ["--to", "S10", "--write", "--run-id", runId], true, isolatedState);
-    const blockedLane = computeLaneId("https://github.com/oscout/scout", join(sandbox, "late-block"), "codex/late-block");
-    const safeLane = computeLaneId("https://github.com/oscout/scout", join(sandbox, "safe"), "codex/safe");
+    const blockedLane = computeLaneId("https://github.com/arach/openscout", join(sandbox, "late-block"), "codex/late-block");
+    const safeLane = computeLaneId("https://github.com/arach/openscout", join(sandbox, "safe"), "codex/safe");
     const s10 = artifact("quarantine-s10.json", { type: "SourceOwnershipLedger", lanes: [
       { laneId: blockedLane, owner: "agent:block", checkout: join(sandbox, "late-block"), branch: "codex/late-block", headSha: "1".repeat(40), commits: [], pr: null, status: "clean" },
       { laneId: safeLane, owner: "agent:safe", checkout: join(sandbox, "safe"), branch: "codex/safe", headSha: "2".repeat(40), commits: [], pr: null, status: "clean" },

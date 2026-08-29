@@ -229,27 +229,49 @@ function walkRecentMessageSessionFiles(root: string, scope: TailDiscoveryScope):
   for (const sessionId of sessionDirs) {
     const dir = join(messageRoot, sessionId);
     let entries: string[] = [];
+    let messageDirectoryMtime = 0;
     try {
       const stats = statSync(dir);
       if (!stats.isDirectory()) continue;
+      messageDirectoryMtime = stats.mtimeMs;
       entries = readdirSync(dir);
     } catch {
       continue;
     }
 
-    let latestMessageMtime = 0;
+    let latestDependencyMtime = messageDirectoryMtime;
+    let dependencySize = entries.length;
     for (const entry of entries) {
       if (!entry.endsWith(".json")) continue;
       try {
         const stats = statSync(join(dir, entry));
-        if (stats.isFile() && stats.mtimeMs >= cutoff && stats.mtimeMs > latestMessageMtime) {
-          latestMessageMtime = stats.mtimeMs;
+        if (!stats.isFile()) continue;
+        latestDependencyMtime = Math.max(latestDependencyMtime, stats.mtimeMs);
+        dependencySize += stats.size;
+
+        const messageId = entry.replace(/\.json$/u, "");
+        const partDir = join(root, "part", messageId);
+        const partDirStats = statSync(partDir);
+        if (!partDirStats.isDirectory()) continue;
+        latestDependencyMtime = Math.max(latestDependencyMtime, partDirStats.mtimeMs);
+        const partEntries = readdirSync(partDir);
+        dependencySize += partEntries.length;
+        for (const partEntry of partEntries) {
+          if (!partEntry.endsWith(".json")) continue;
+          try {
+            const partStats = statSync(join(partDir, partEntry));
+            if (!partStats.isFile()) continue;
+            latestDependencyMtime = Math.max(latestDependencyMtime, partStats.mtimeMs);
+            dependencySize += partStats.size;
+          } catch {
+            continue;
+          }
         }
       } catch {
         continue;
       }
     }
-    if (latestMessageMtime <= 0) continue;
+    if (latestDependencyMtime < cutoff) continue;
 
     const sessionPath = join(root, "session", "global", `${sessionId}.json`);
     try {
@@ -257,8 +279,8 @@ function walkRecentMessageSessionFiles(root: string, scope: TailDiscoveryScope):
       if (!sessionStats.isFile()) continue;
       found.set(sessionPath, {
         path: sessionPath,
-        mtimeMs: Math.max(sessionStats.mtimeMs, latestMessageMtime),
-        size: sessionStats.size,
+        mtimeMs: Math.max(sessionStats.mtimeMs, latestDependencyMtime),
+        size: sessionStats.size + dependencySize,
       });
     } catch {
       continue;
@@ -286,7 +308,15 @@ function discoverOpenCodeTranscripts(scope: TailDiscoveryScope): DiscoveredTrans
       ...walkRecentMessageSessionFiles(root, scope),
     ]) {
       const existing = byPath.get(file.path);
-      if (!existing || file.mtimeMs > existing.mtimeMs) byPath.set(file.path, file);
+      if (!existing) {
+        byPath.set(file.path, file);
+      } else {
+        byPath.set(file.path, {
+          path: file.path,
+          mtimeMs: Math.max(existing.mtimeMs, file.mtimeMs),
+          size: Math.max(existing.size, file.size),
+        });
+      }
     }
   }
   return [...byPath.values()]

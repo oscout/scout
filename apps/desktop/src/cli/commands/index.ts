@@ -25,6 +25,7 @@ export type ScoutCommandName =
   | "mcp"
   | "menu"
   | "mesh"
+  | "monitor"
   | "need"
   | "pair"
   | "ps"
@@ -93,6 +94,8 @@ export async function loadScoutCommandHandler(name: ScoutCommandName): Promise<S
       return (await import("./menu.ts")).runMenuCommand;
     case "mesh":
       return (await import("./mesh.ts")).runMeshCommand;
+    case "monitor":
+      return (await import("./monitor.ts")).runMonitorCommand;
     case "pair":
       return (await import("./pair.ts")).runPairCommand;
     case "ps":

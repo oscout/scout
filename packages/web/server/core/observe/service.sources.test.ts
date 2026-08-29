@@ -43,9 +43,14 @@ let tailDiscoveryResult: {
     transcripts: number;
   };
 } | null = null;
+type TailDiscoveryStub = NonNullable<typeof tailDiscoveryResult>;
+let tailRefreshDiscoveryResult: TailDiscoveryStub | null = null;
 
 mock.module("../../db-queries.ts", () => ({
   queryAgents: () => queryAgentsResult,
+  queryAgentById: (agentId: string) => (
+    queryAgentsResult.find((agent) => agent.id === agentId) ?? null
+  ),
 }));
 
 mock.module("../broker/service.ts", () => ({
@@ -74,13 +79,29 @@ mock.module("@openscout/runtime/tail", () => ({
       transcripts: 0,
     },
   },
-  readTailEventsForSession: async (sessionRef: string) => {
+  refreshTailDiscovery: async () => tailRefreshDiscoveryResult ?? tailDiscoveryResult ?? {
+    generatedAt: Date.now(),
+    processes: [],
+    transcripts: [],
+    totals: {
+      total: 0,
+      scoutManaged: 0,
+      hudsonManaged: 0,
+      unattributed: 0,
+      transcripts: 0,
+    },
+  },
+  readTailEventsForSession: async (
+    sessionRef: string,
+    options?: { discovery?: TailDiscoveryStub },
+  ) => {
     const normalizedRef = sessionRef.trim().replace(/\.jsonl$/u, "");
-    const transcript = tailDiscoveryResult?.transcripts.find((entry) => {
+    const discovery = options?.discovery ?? tailDiscoveryResult;
+    const transcript = discovery?.transcripts.find((entry) => {
       const sessionId = entry.sessionId?.trim().replace(/\.jsonl$/u, "");
       return sessionId === normalizedRef || entry.transcriptPath.includes(normalizedRef);
     });
-    if (!transcript || !["grok", "opencode", "cursor"].includes(transcript.source)) {
+    if (!transcript || !["grok", "kimi", "opencode", "cursor"].includes(transcript.source)) {
       return null;
     }
     return {
@@ -135,8 +156,8 @@ function makeAgent(overrides: Partial<WebAgent> = {}): WebAgent {
     agentClass: "general",
     harness: "claude",
     state: "working",
-    projectRoot: "/Users/example/dev/openscout",
-    cwd: "/Users/example/dev/openscout",
+    projectRoot: "/Users/arach/dev/openscout",
+    cwd: "/Users/arach/dev/openscout",
     updatedAt: Date.now(),
     transport: "claude_stream_json",
     selector: null,
@@ -176,7 +197,7 @@ function writeClaudeHistory(
       subtype: "init",
       timestamp: "2026-04-22T12:00:00.000Z",
       session_id: options.sessionId ?? "claude-upstream-session",
-      cwd: options.cwd ?? "/Users/example/dev/openscout",
+      cwd: options.cwd ?? "/Users/arach/dev/openscout",
       model: "claude-sonnet-test",
     }),
     JSON.stringify({
@@ -208,7 +229,7 @@ function writeActiveClaudeHistory(path: string, assistantText: string): void {
       subtype: "init",
       timestamp: "2026-04-22T12:00:00.000Z",
       session_id: "claude-upstream-session",
-      cwd: "/Users/example/dev/openscout",
+      cwd: "/Users/arach/dev/openscout",
       model: "claude-sonnet-test",
     }),
     JSON.stringify({
@@ -285,6 +306,7 @@ beforeEach(() => {
   localAgentSnapshotResult = null;
   pairingSnapshotResult = null;
   tailDiscoveryResult = null;
+  tailRefreshDiscoveryResult = null;
 });
 
 afterEach(() => {
@@ -437,7 +459,7 @@ describe("loadAgentObservePayload", () => {
         name: "Live Claude Session",
         adapterType: "claude-code",
         status: "active",
-        cwd: "/Users/example/dev/openscout",
+        cwd: "/Users/arach/dev/openscout",
         providerMeta: {
           resumeSessionPath: historyPath,
         },
@@ -480,7 +502,7 @@ describe("loadAgentObservePayload", () => {
             sessionId: "relay-parent",
             harness: "claude",
             transport: "tmux",
-            cwd: "/Users/example/dev/openscout",
+            cwd: "/Users/arach/dev/openscout",
           },
           "endpoint-child-bare": {
             id: "endpoint-child-bare",
@@ -489,7 +511,7 @@ describe("loadAgentObservePayload", () => {
             sessionId: "runtime-child-session",
             harness: "claude",
             transport: "tmux",
-            cwd: "/Users/example/dev/openscout",
+            cwd: "/Users/arach/dev/openscout",
             metadata: { startedAt: sessionStart - 500 },
           },
           "endpoint-child-qualified": {
@@ -499,7 +521,7 @@ describe("loadAgentObservePayload", () => {
             sessionId: "runtime-child-session",
             harness: "claude",
             transport: "tmux",
-            cwd: "/Users/example/dev/openscout",
+            cwd: "/Users/arach/dev/openscout",
             metadata: { startedAt: Math.floor((sessionStart - 500) / 1_000) },
           },
         },
@@ -587,7 +609,7 @@ describe("loadAgentObservePayload", () => {
         name: "Observed child history",
         adapterType: "claude-code",
         status: "active",
-        cwd: "/Users/example/dev/openscout",
+        cwd: "/Users/arach/dev/openscout",
         providerMeta: { resumeSessionPath: historyPath },
       },
       turns: [],
@@ -657,7 +679,7 @@ describe("loadAgentObservePayload", () => {
         name: "Live Claude Session",
         adapterType: "claude-code",
         status: "active",
-        cwd: "/Users/example/dev/openscout",
+        cwd: "/Users/arach/dev/openscout",
       },
       turns: [],
     };
@@ -770,7 +792,7 @@ describe("loadAgentObservePayload", () => {
         name: "Live Claude Session",
         adapterType: "claude-code",
         status: "active",
-        cwd: "/Users/example/dev/openscout",
+        cwd: "/Users/arach/dev/openscout",
         providerMeta: {
           resumeSessionPath: historyPath,
         },
@@ -834,7 +856,7 @@ describe("loadAgentObservePayload", () => {
         name: "Idle Claude Session",
         adapterType: "claude-code",
         status: "idle",
-        cwd: "/Users/example/dev/openscout",
+        cwd: "/Users/arach/dev/openscout",
         providerMeta: {
           resumeSessionPath: historyPath,
         },
@@ -854,7 +876,7 @@ describe("loadAgentObservePayload", () => {
   test("falls back to the live snapshot when the hinted history file is not replayable", async () => {
     const tempRoot = makeTempDir("openscout-observe-live-");
     const historyPath = join(tempRoot, "codex-history.jsonl");
-    writeFileSync(historyPath, `${JSON.stringify({ cwd: "/Users/example/dev/openscout" })}\n`, "utf8");
+    writeFileSync(historyPath, `${JSON.stringify({ cwd: "/Users/arach/dev/openscout" })}\n`, "utf8");
 
     queryAgentsResult = [
       makeAgent({
@@ -881,7 +903,7 @@ describe("loadAgentObservePayload", () => {
         name: "Live Codex Session",
         adapterType: "codex",
         status: "active",
-        cwd: "/Users/example/dev/openscout",
+        cwd: "/Users/arach/dev/openscout",
         providerMeta: {
           resumeSessionPath: historyPath,
         },
@@ -951,7 +973,7 @@ describe("loadAgentObservePayload", () => {
         name: "talkie-codex",
         adapterType: "codex",
         status: "idle",
-        cwd: "/Users/example/dev/openscout",
+        cwd: "/Users/arach/dev/openscout",
       },
       turns: [],
     };
@@ -961,7 +983,7 @@ describe("loadAgentObservePayload", () => {
         name: "talkie-codex.feat-design-tokens-reimagined.mini",
         adapterType: "codex",
         status: "active",
-        cwd: "/Users/example/dev/talkie",
+        cwd: "/Users/arach/dev/talkie",
       },
       turns: [
         {
@@ -991,7 +1013,7 @@ describe("loadAgentObservePayload", () => {
     expect(payload).not.toBeNull();
     expect(payload?.source).toBe("live");
     expect(payload?.sessionId).toBe("relay-talkie-codex-feat-design-tokens-reimagined-mini-codex");
-    expect(payload?.data.metadata?.session?.cwd).toBe("/Users/example/dev/talkie");
+    expect(payload?.data.metadata?.session?.cwd).toBe("/Users/arach/dev/talkie");
     expect(payload?.data.events.some((event) => event.text.includes("configured full instance snapshot"))).toBe(true);
   });
 
@@ -1005,8 +1027,8 @@ describe("loadAgentObservePayload", () => {
       makeAgent({
         harness: "claude",
         transport: "tmux",
-        cwd: "/Users/example/dev/talkie",
-        projectRoot: "/Users/example/dev/talkie",
+        cwd: "/Users/arach/dev/talkie",
+        projectRoot: "/Users/arach/dev/talkie",
         project: "talkie",
         harnessSessionId: "relay-talkie-claude",
       }),
@@ -1022,8 +1044,8 @@ describe("loadAgentObservePayload", () => {
             transport: "codex_app_server",
             state: "active",
             sessionId: "019ead09-5750-7862-99c3-78c804b34c84",
-            cwd: "/Users/example/dev/talkie",
-            projectRoot: "/Users/example/dev/talkie",
+            cwd: "/Users/arach/dev/talkie",
+            projectRoot: "/Users/arach/dev/talkie",
             metadata: {
               threadId: "019ead09-5750-7862-99c3-78c804b34c84",
               runtimeInstanceId: "relay-talkie-codex",
@@ -1038,8 +1060,8 @@ describe("loadAgentObservePayload", () => {
             transport: "tmux",
             state: "idle",
             sessionId: "relay-talkie-claude",
-            cwd: "/Users/example/dev/talkie",
-            projectRoot: "/Users/example/dev/talkie",
+            cwd: "/Users/arach/dev/talkie",
+            projectRoot: "/Users/arach/dev/talkie",
             metadata: {
               runtimeInstanceId: "relay-talkie-claude",
               tmuxSession: "relay-talkie-claude",
@@ -1057,7 +1079,7 @@ describe("loadAgentObservePayload", () => {
           source: "claude",
           transcriptPath: historyPath,
           sessionId: "claude-upstream-session",
-          cwd: "/Users/example/dev/talkie",
+          cwd: "/Users/arach/dev/talkie",
           project: "talkie",
           harness: "unattributed",
           mtimeMs: Date.now(),
@@ -1087,17 +1109,17 @@ describe("loadAgentObservePayload", () => {
     const historyPath = join(tempRoot, "wrong-codex-session.jsonl");
     writeCodexHistory(historyPath, {
       sessionId: "wrong-codex-session",
-      cwd: "/Users/example/dev/scope",
+      cwd: "/Users/arach/dev/scope",
       assistantText: "wrong raw codex history",
     });
 
     queryAgentsResult = [
       makeAgent({
-        id: "scope.main.dev-mac-mini-local",
+        id: "scope.main.arts-mac-mini-local",
         harness: "codex",
         transport: "codex_app_server",
-        cwd: "/Users/example/dev/scope",
-        projectRoot: "/Users/example/dev/scope",
+        cwd: "/Users/arach/dev/scope",
+        projectRoot: "/Users/arach/dev/scope",
         project: "scope",
         harnessSessionId: "relay-scope-codex",
       }),
@@ -1107,14 +1129,14 @@ describe("loadAgentObservePayload", () => {
         endpoints: {
           "endpoint-scope-codex": {
             id: "endpoint-scope-codex",
-            agentId: "scope.main.dev-mac-mini-local",
+            agentId: "scope.main.arts-mac-mini-local",
             nodeId: "node-1",
             harness: "codex",
             transport: "codex_app_server",
             state: "waiting",
             sessionId: "relay-scope-codex",
-            cwd: "/Users/example/dev/scope",
-            projectRoot: "/Users/example/dev/scope",
+            cwd: "/Users/arach/dev/scope",
+            projectRoot: "/Users/arach/dev/scope",
             metadata: {
               runtimeInstanceId: "relay-scope-codex",
               runtimeMode: "direct_session",
@@ -1131,7 +1153,7 @@ describe("loadAgentObservePayload", () => {
           source: "codex",
           transcriptPath: historyPath,
           sessionId: "wrong-codex-session",
-          cwd: "/Users/example/dev/scope",
+          cwd: "/Users/arach/dev/scope",
           project: "scope",
           harness: "unattributed",
           mtimeMs: Date.now(),
@@ -1147,7 +1169,7 @@ describe("loadAgentObservePayload", () => {
       },
     };
 
-    const payload = await loadAgentObservePayload("scope.main.dev-mac-mini-local");
+    const payload = await loadAgentObservePayload("scope.main.arts-mac-mini-local");
 
     expect(payload).not.toBeNull();
     expect(payload?.source).toBe("unavailable");
@@ -1161,17 +1183,17 @@ describe("loadAgentObservePayload", () => {
     const historyPath = join(tempRoot, "relay-scope-codex.jsonl");
     writeCodexHistory(historyPath, {
       sessionId: "relay-scope-codex",
-      cwd: "/Users/example/dev/scope",
+      cwd: "/Users/arach/dev/scope",
       assistantText: "matched direct codex history",
     });
 
     queryAgentsResult = [
       makeAgent({
-        id: "scope.main.dev-mac-mini-local",
+        id: "scope.main.arts-mac-mini-local",
         harness: "codex",
         transport: "codex_app_server",
-        cwd: "/Users/example/dev/scope",
-        projectRoot: "/Users/example/dev/scope",
+        cwd: "/Users/arach/dev/scope",
+        projectRoot: "/Users/arach/dev/scope",
         project: "scope",
         harnessSessionId: "relay-scope-codex",
       }),
@@ -1181,14 +1203,14 @@ describe("loadAgentObservePayload", () => {
         endpoints: {
           "endpoint-scope-codex": {
             id: "endpoint-scope-codex",
-            agentId: "scope.main.dev-mac-mini-local",
+            agentId: "scope.main.arts-mac-mini-local",
             nodeId: "node-1",
             harness: "codex",
             transport: "codex_app_server",
             state: "waiting",
             sessionId: "relay-scope-codex",
-            cwd: "/Users/example/dev/scope",
-            projectRoot: "/Users/example/dev/scope",
+            cwd: "/Users/arach/dev/scope",
+            projectRoot: "/Users/arach/dev/scope",
             metadata: {
               runtimeInstanceId: "relay-scope-codex",
               runtimeMode: "direct_session",
@@ -1205,7 +1227,7 @@ describe("loadAgentObservePayload", () => {
           source: "codex",
           transcriptPath: historyPath,
           sessionId: "relay-scope-codex",
-          cwd: "/Users/example/dev/scope",
+          cwd: "/Users/arach/dev/scope",
           project: "scope",
           harness: "unattributed",
           mtimeMs: Date.now(),
@@ -1221,7 +1243,7 @@ describe("loadAgentObservePayload", () => {
       },
     };
 
-    const payload = await loadAgentObservePayload("scope.main.dev-mac-mini-local");
+    const payload = await loadAgentObservePayload("scope.main.arts-mac-mini-local");
 
     expect(payload).not.toBeNull();
     expect(payload?.source).toBe("history");
@@ -1235,17 +1257,17 @@ describe("loadAgentObservePayload", () => {
     const historyPath = join(tempRoot, "relay-scope-codex.jsonl");
     writeCodexHistory(historyPath, {
       sessionId: "relay-scope-codex",
-      cwd: "/Users/example/dev/scope",
+      cwd: "/Users/arach/dev/scope",
       assistantText: "routed direct codex history",
     });
 
     queryAgentsResult = [
       makeAgent({
-        id: "scope.main.dev-mac-mini-local",
+        id: "scope.main.arts-mac-mini-local",
         harness: "codex",
         transport: "codex_app_server",
-        cwd: "/Users/example/dev/scope",
-        projectRoot: "/Users/example/dev/scope",
+        cwd: "/Users/arach/dev/scope",
+        projectRoot: "/Users/arach/dev/scope",
         project: "scope",
         harnessSessionId: null,
       }),
@@ -1255,14 +1277,14 @@ describe("loadAgentObservePayload", () => {
         endpoints: {
           "endpoint-scope-codex": {
             id: "endpoint-scope-codex",
-            agentId: "scope.main.dev-mac-mini-local",
+            agentId: "scope.main.arts-mac-mini-local",
             nodeId: "node-1",
             harness: "codex",
             transport: "codex_app_server",
             state: "waiting",
             sessionId: "relay-scope-codex",
-            cwd: "/Users/example/dev/scope",
-            projectRoot: "/Users/example/dev/scope",
+            cwd: "/Users/arach/dev/scope",
+            projectRoot: "/Users/arach/dev/scope",
             metadata: {
               runtimeInstanceId: "relay-scope-codex",
               runtimeMode: "direct_session",
@@ -1279,7 +1301,7 @@ describe("loadAgentObservePayload", () => {
           source: "codex",
           transcriptPath: historyPath,
           sessionId: "relay-scope-codex",
-          cwd: "/Users/example/dev/scope",
+          cwd: "/Users/arach/dev/scope",
           project: "scope",
           harness: "unattributed",
           mtimeMs: Date.now(),
@@ -1295,7 +1317,7 @@ describe("loadAgentObservePayload", () => {
       },
     };
 
-    const payload = await loadAgentObservePayload("scope.main.dev-mac-mini-local", {
+    const payload = await loadAgentObservePayload("scope.main.arts-mac-mini-local", {
       sessionId: "relay-scope-codex",
     });
 
@@ -1309,7 +1331,7 @@ describe("loadAgentObservePayload", () => {
   test("maps a Claude session ref id directly to its history file", async () => {
     const home = makeTempDir("openscout-observe-home-");
     process.env.HOME = home;
-    const projectDir = join(home, ".claude", "projects", "-Users-example-dev-openscout");
+    const projectDir = join(home, ".claude", "projects", "-Users-arach-dev-openscout");
     process.env.OPENSCOUT_CLAUDE_PROJECTS_ROOT = join(home, ".claude", "projects");
     mkdirSync(projectDir, { recursive: true });
     const historyPath = join(projectDir, "3b0fcaa9-024a-4e67-88f7-08a72d75fbbb.jsonl");
@@ -1338,7 +1360,7 @@ describe("loadAgentObservePayload", () => {
           source: "claude",
           transcriptPath: historyPath,
           sessionId: "tail-session",
-          cwd: "/Users/example/dev/openscout",
+          cwd: "/Users/arach/dev/openscout",
           project: "openscout",
           harness: "unattributed",
           mtimeMs: Date.now(),
@@ -1365,7 +1387,7 @@ describe("loadAgentObservePayload", () => {
   });
 
   test("maps a native Grok session ref to tail observe data", async () => {
-    const transcriptPath = "/Users/example/.grok/sessions/openscout/019edd6b/events.jsonl";
+    const transcriptPath = "/Users/art/.grok/sessions/openscout/019edd6b/events.jsonl";
     tailDiscoveryResult = {
       generatedAt: Date.now(),
       processes: [],
@@ -1374,7 +1396,7 @@ describe("loadAgentObservePayload", () => {
           source: "grok",
           transcriptPath,
           sessionId: "019edd6b-fc26-7a53-a4a0-dd36c5378515",
-          cwd: "/Users/example/dev/openscout",
+          cwd: "/Users/art/dev/openscout",
           project: "openscout",
           harness: "unattributed",
           mtimeMs: Date.now(),
@@ -1402,11 +1424,270 @@ describe("loadAgentObservePayload", () => {
 });
 
 describe("loadSessionRefObservePayload", () => {
+  test("uses harness-qualified refs and rejects a colliding bare native id", async () => {
+    const sharedSessionId = "shared-native-session";
+    const tempRoot = makeTempDir("openscout-observe-qualified-session-");
+    process.env.OPENSCOUT_CLAUDE_PROJECTS_ROOT = join(tempRoot, "empty-projects");
+    const codexPath = join(tempRoot, "codex-shared.jsonl");
+    const claudePath = join(tempRoot, "claude-shared.jsonl");
+    writeCodexHistory(codexPath, {
+      sessionId: sharedSessionId,
+      cwd: "/Users/art/dev/openscout",
+      assistantText: "exact Codex response",
+    });
+    writeClaudeHistory(claudePath, "exact Claude response", {
+      sessionId: sharedSessionId,
+      cwd: "/Users/art/dev/openscout",
+    });
+    tailDiscoveryResult = {
+      generatedAt: Date.now(),
+      processes: [],
+      transcripts: [
+        {
+          source: "codex",
+          transcriptPath: codexPath,
+          sessionId: sharedSessionId,
+          cwd: "/Users/art/dev/openscout",
+          project: "openscout",
+          harness: "unattributed",
+          mtimeMs: Date.now(),
+          size: 100,
+        },
+        {
+          source: "claude",
+          transcriptPath: claudePath,
+          sessionId: sharedSessionId,
+          cwd: "/Users/art/dev/openscout",
+          project: "openscout",
+          harness: "unattributed",
+          mtimeMs: Date.now() + 1,
+          size: 100,
+        },
+      ],
+      totals: {
+        total: 0,
+        scoutManaged: 0,
+        hudsonManaged: 0,
+        unattributed: 0,
+        transcripts: 2,
+      },
+    };
+
+    const codexPayload = await loadSessionRefObservePayload(`session:codex:${sharedSessionId}`);
+    const claudePayload = await loadSessionRefObservePayload(`session:claude:${sharedSessionId}`);
+
+    expect(codexPayload?.historyPath).toBe(codexPath);
+    expect(codexPayload?.data.events.some((event) => event.text.includes("exact Codex response"))).toBe(true);
+    expect(claudePayload?.historyPath).toBe(claudePath);
+    expect(claudePayload?.data.events.some((event) => event.text.includes("exact Claude response"))).toBe(true);
+    await expect(loadSessionRefObservePayload(sharedSessionId)).resolves.toBeNull();
+
+    tailDiscoveryResult.transcripts = [tailDiscoveryResult.transcripts[1]!];
+    tailDiscoveryResult.totals.transcripts = 1;
+    queryAgentsResult = [makeAgent({
+      id: "registered-codex-owner",
+      harness: "codex",
+      harnessSessionId: sharedSessionId,
+    })];
+    await expect(loadSessionRefObservePayload(sharedSessionId)).resolves.toBeNull();
+
+    queryAgentsResult = [];
+    brokerContextResult = {
+      snapshot: {
+        endpoints: {
+          "endpoint-codex-owner": {
+            id: "endpoint-codex-owner",
+            agentId: "broker-codex-owner",
+            nodeId: "node-1",
+            harness: "codex",
+            state: "waiting",
+            sessionId: "runtime-codex-owner",
+            transport: "codex_app_server",
+            cwd: "/Users/art/dev/openscout",
+            projectRoot: "/Users/art/dev/openscout",
+            metadata: {
+              externalSessionId: sharedSessionId,
+              threadId: sharedSessionId,
+            },
+          },
+        },
+      },
+    };
+    await expect(loadSessionRefObservePayload(sharedSessionId)).resolves.toBeNull();
+  });
+
+  test("scopes broker endpoint tail reads across same-id Kimi, OpenCode, and Grok transcripts", async () => {
+    const sharedSessionId = "shared-acp-native-session";
+    const grokPath = `/tmp/grok/${sharedSessionId}/events.jsonl`;
+    const opencodePath = `/tmp/opencode/${sharedSessionId}.jsonl`;
+    const kimiPath = `/tmp/kimi/${sharedSessionId}.jsonl`;
+    const collidingDiscovery: TailDiscoveryStub = {
+      generatedAt: Date.now(),
+      processes: [],
+      transcripts: [
+        {
+          source: "grok",
+          transcriptPath: grokPath,
+          sessionId: sharedSessionId,
+          cwd: "/Users/art/dev/openscout",
+          project: "openscout",
+          harness: "unattributed",
+          mtimeMs: Date.now() + 3,
+          size: 300,
+        },
+        {
+          source: "opencode",
+          transcriptPath: opencodePath,
+          sessionId: sharedSessionId,
+          cwd: "/Users/art/dev/openscout",
+          project: "openscout",
+          harness: "unattributed",
+          mtimeMs: Date.now() + 2,
+          size: 200,
+        },
+        {
+          source: "kimi",
+          transcriptPath: kimiPath,
+          sessionId: sharedSessionId,
+          cwd: "/Users/art/dev/openscout",
+          project: "openscout",
+          harness: "unattributed",
+          mtimeMs: Date.now() + 1,
+          size: 100,
+        },
+      ],
+      totals: {
+        total: 0,
+        scoutManaged: 0,
+        hudsonManaged: 0,
+        unattributed: 0,
+        transcripts: 3,
+      },
+    };
+    // The cached inventory sees only the wrong-source collision. The exact
+    // endpoint transcript appears on the forced deep refresh.
+    tailDiscoveryResult = {
+      ...collidingDiscovery,
+      transcripts: [collidingDiscovery.transcripts[0]!],
+      totals: { ...collidingDiscovery.totals, transcripts: 1 },
+    };
+    tailRefreshDiscoveryResult = collidingDiscovery;
+    brokerContextResult = {
+      snapshot: {
+        endpoints: Object.fromEntries([
+          ["grok", "grok_acp"],
+          ["opencode", "opencode_acp"],
+          ["kimi", "kimi_acp"],
+        ].map(([harness, transport]) => [
+          `endpoint-${harness}`,
+          {
+            id: `endpoint-${harness}`,
+            agentId: `owner-${harness}`,
+            nodeId: "node-1",
+            harness,
+            state: "idle",
+            sessionId: `runtime-${harness}`,
+            transport,
+            metadata: { externalSessionId: sharedSessionId },
+          },
+        ])),
+      },
+    };
+
+    const expectedPaths = new Map([
+      ["grok", grokPath],
+      ["opencode", opencodePath],
+      ["kimi", kimiPath],
+    ]);
+    for (const [harness, expectedPath] of expectedPaths) {
+      const payload = await loadSessionRefObservePayload(
+        `session:${harness}:${sharedSessionId}`,
+      );
+
+      expect(payload?.kind).toBe("broker");
+      expect(payload?.agentId).toBe(`owner-${harness}`);
+      expect(payload?.historyPath).toBe(expectedPath);
+      expect(payload?.data.metadata?.session?.adapterType).toBe(harness);
+    }
+  });
+
+  test("attaches discovered native history to a broker session ref", async () => {
+    const tempRoot = makeTempDir("openscout-observe-broker-native-");
+    process.env.OPENSCOUT_CLAUDE_PROJECTS_ROOT = join(tempRoot, "empty-projects");
+    const historyPath = join(tempRoot, "claude-upstream-session.jsonl");
+    writeClaudeHistory(historyPath, "live work from the native Claude session");
+
+    queryAgentsResult = [
+      makeAgent({
+        id: "session-broker-1",
+        harness: "claude",
+        transport: "tmux",
+        cwd: "/Users/arach/dev/stale-checkout",
+        projectRoot: "/Users/arach/dev/stale-checkout",
+        harnessSessionId: null,
+      }),
+    ];
+    brokerContextResult = {
+      snapshot: {
+        endpoints: {
+          "endpoint-1": {
+            id: "endpoint-1",
+            agentId: "session-broker-1",
+            nodeId: "node-1",
+            harness: "claude",
+            state: "active",
+            sessionId: "session-broker-1",
+            transport: "tmux",
+            cwd: "/Users/arach/dev/openscout",
+            projectRoot: "/Users/arach/dev/openscout",
+            metadata: {
+              pendingExternalSession: true,
+            },
+          },
+        },
+      },
+    };
+    tailDiscoveryResult = {
+      generatedAt: Date.now(),
+      processes: [],
+      transcripts: [
+        {
+          source: "claude",
+          transcriptPath: historyPath,
+          sessionId: "claude-upstream-session",
+          cwd: "/Users/arach/dev/openscout",
+          project: "openscout",
+          harness: "unattributed",
+          mtimeMs: Date.now(),
+          size: 100,
+        },
+      ],
+      totals: {
+        total: 0,
+        scoutManaged: 0,
+        hudsonManaged: 0,
+        unattributed: 0,
+        transcripts: 1,
+      },
+    };
+
+    const payload = await loadSessionRefObservePayload("session-broker-1");
+
+    expect(payload?.kind).toBe("agent");
+    expect(payload?.agentId).toBe("session-broker-1");
+    expect(payload?.source).toBe("history");
+    expect(payload?.historyPath).toBe(historyPath);
+    expect(payload?.sessionId).toBe("claude-upstream-session");
+    expect(payload?.data.events.some((event) => (
+      event.text.includes("live work from the native Claude session")
+    ))).toBe(true);
+  });
+
   test("attaches pending tmux history only after a concrete native session id is known", async () => {
     const actorId = "session-pending-tmux";
     const providerSessionId = "claude-native-owned";
     const decoySessionId = "claude-native-decoy";
-    const cwd = "/Users/example/dev/shared-flight-project";
+    const cwd = "/Users/art/dev/shared-flight-project";
     const tempRoot = makeTempDir("openscout-observe-pending-tmux-");
     const historyPath = join(tempRoot, `${providerSessionId}.jsonl`);
     const decoyPath = join(tempRoot, `${decoySessionId}.jsonl`);
@@ -1507,12 +1788,12 @@ describe("loadSessionRefObservePayload", () => {
     const aliasDecoyPath = join(tempRoot, `${actorAlias}.jsonl`);
     writeCodexHistory(actorDecoyPath, {
       sessionId: actorId,
-      cwd: "/Users/example/dev/shared-project",
+      cwd: "/Users/art/dev/shared-project",
       assistantText: "actor-id transcript decoy",
     });
     writeCodexHistory(aliasDecoyPath, {
       sessionId: actorAlias,
-      cwd: "/Users/example/dev/shared-project",
+      cwd: "/Users/art/dev/shared-project",
       assistantText: "actor-alias transcript decoy",
     });
     brokerContextResult = {
@@ -1615,7 +1896,7 @@ describe("loadSessionRefObservePayload", () => {
           source: "codex",
           transcriptPath: actorDecoyPath,
           sessionId: actorId,
-          cwd: "/Users/example/dev/shared-project",
+          cwd: "/Users/art/dev/shared-project",
           project: "shared-project",
           harness: "scout-managed",
           mtimeMs: Date.now(),
@@ -1625,7 +1906,7 @@ describe("loadSessionRefObservePayload", () => {
           source: "codex",
           transcriptPath: aliasDecoyPath,
           sessionId: actorAlias,
-          cwd: "/Users/example/dev/shared-project",
+          cwd: "/Users/art/dev/shared-project",
           project: "shared-project",
           harness: "scout-managed",
           mtimeMs: Date.now(),
@@ -1834,6 +2115,135 @@ describe("loadSessionRefObservePayload", () => {
     expect(claudePayload?.agentId).toBe("agent-claude");
   });
 
+  test("fails closed when a broker handle identifies multiple owners", async () => {
+    const sharedHandle = "duplicate-friendly-handle";
+    brokerContextResult = {
+      snapshot: {
+        endpoints: Object.fromEntries(["owner-a", "owner-b"].map((agentId, index) => [
+          `endpoint-${agentId}`,
+          {
+            id: `endpoint-${agentId}`,
+            agentId,
+            nodeId: "node-1",
+            harness: "codex",
+            state: index === 0 ? "active" : "idle",
+            sessionId: `runtime-${agentId}`,
+            transport: "codex_app_server",
+            metadata: { handle: sharedHandle },
+          },
+        ])),
+      },
+    };
+
+    await expect(
+      loadSessionRefObservePayload(`session:codex:${sharedHandle}`),
+    ).resolves.toBeNull();
+  });
+
+  test("prefers an exact broker actor id over another owner's colliding handle", async () => {
+    const exactActorId = "canonical-actor-id";
+    brokerContextResult = {
+      snapshot: {
+        actors: {
+          [exactActorId]: { displayName: "Canonical actor" },
+          "handle-owner": { displayName: "Handle owner" },
+        },
+        endpoints: {
+          "endpoint-exact-actor": {
+            id: "endpoint-exact-actor",
+            agentId: exactActorId,
+            nodeId: "node-1",
+            harness: "codex",
+            state: "idle",
+            sessionId: "runtime-exact-actor",
+            transport: "codex_app_server",
+            metadata: { handle: "canonical-owner" },
+          },
+          "endpoint-colliding-handle": {
+            id: "endpoint-colliding-handle",
+            agentId: "handle-owner",
+            nodeId: "node-1",
+            harness: "codex",
+            state: "active",
+            sessionId: "runtime-handle-owner",
+            transport: "codex_app_server",
+            metadata: { handle: exactActorId },
+          },
+        },
+      },
+    };
+
+    const payload = await loadSessionRefObservePayload(`session:codex:${exactActorId}`);
+
+    expect(payload?.kind).toBe("broker");
+    expect(payload?.agentId).toBe(exactActorId);
+  });
+
+  test("fails closed when database and broker owners claim the same qualified provider id", async () => {
+    const sharedProviderId = "Native-Session-Cross-Source";
+    queryAgentsResult = [makeAgent({
+      id: "database-owner",
+      harness: "codex",
+      harnessSessionId: sharedProviderId,
+    })];
+    brokerContextResult = {
+      snapshot: {
+        endpoints: {
+          "endpoint-broker-owner": {
+            id: "endpoint-broker-owner",
+            agentId: "broker-owner",
+            nodeId: "node-1",
+            harness: "codex",
+            state: "active",
+            sessionId: "runtime-broker-owner",
+            transport: "codex_app_server",
+            metadata: {
+              externalSessionId: sharedProviderId,
+              threadId: sharedProviderId,
+            },
+          },
+        },
+      },
+    };
+
+    await expect(loadSessionRefObservePayload(`session:codex:${sharedProviderId}`)).resolves.toBeNull();
+  });
+
+  test("keeps an explicit broker presentation ref ahead of a colliding database provider id", async () => {
+    const brokerOwner = "broker-presentation-owner";
+    queryAgentsResult = [makeAgent({
+      id: "database-owner",
+      harness: "codex",
+      harnessSessionId: brokerOwner,
+    })];
+    brokerContextResult = {
+      snapshot: {
+        actors: {
+          [brokerOwner]: { displayName: "Broker presentation owner" },
+        },
+        endpoints: {
+          "endpoint-broker-presentation": {
+            id: "endpoint-broker-presentation",
+            agentId: brokerOwner,
+            nodeId: "node-1",
+            harness: "codex",
+            state: "waiting",
+            sessionId: "runtime-broker-presentation",
+            transport: "codex_app_server",
+            metadata: {
+              threadId: "native-broker-presentation",
+            },
+          },
+        },
+      },
+    };
+
+    const payload = await loadSessionRefObservePayload(`session:codex:${brokerOwner}`);
+
+    expect(payload?.kind).toBe("broker");
+    expect(payload?.agentId).toBe(brokerOwner);
+  });
+
   test("reads an exact provider transcript for cardless actor and provider refs without cwd guessing", async () => {
     const actorId = "session-cardless-history";
     const routingSessionId = "runtime-cardless-history";
@@ -1845,17 +2255,17 @@ describe("loadSessionRefObservePayload", () => {
     const decoyPath = join(tempRoot, `${decoySessionId}.jsonl`);
     writeCodexHistory(historyPath, {
       sessionId: providerSessionId,
-      cwd: "/Users/example/dev/shared-project",
+      cwd: "/Users/art/dev/shared-project",
       assistantText: "exact provider transcript event",
     });
     writeCodexHistory(routingDecoyPath, {
       sessionId: routingSessionId,
-      cwd: "/Users/example/dev/shared-project",
+      cwd: "/Users/art/dev/shared-project",
       assistantText: "routing session transcript decoy",
     });
     writeCodexHistory(decoyPath, {
       sessionId: decoySessionId,
-      cwd: "/Users/example/dev/shared-project",
+      cwd: "/Users/art/dev/shared-project",
       assistantText: "newer same-cwd decoy event",
     });
 
@@ -1873,7 +2283,7 @@ describe("loadSessionRefObservePayload", () => {
             state: "active",
             sessionId: routingSessionId,
             transport: "codex_app_server",
-            cwd: "/Users/example/dev/shared-project",
+            cwd: "/Users/art/dev/shared-project",
             metadata: {
               cardless: true,
               pendingExternalSession: false,
@@ -1891,7 +2301,7 @@ describe("loadSessionRefObservePayload", () => {
         name: "Current cardless session",
         adapterType: "codex_app_server",
         status: "active",
-        cwd: "/Users/example/dev/shared-project",
+        cwd: "/Users/art/dev/shared-project",
         providerMeta: { threadId: providerSessionId },
       },
       turns: [],
@@ -1904,7 +2314,7 @@ describe("loadSessionRefObservePayload", () => {
           source: "codex",
           transcriptPath: routingDecoyPath,
           sessionId: routingSessionId,
-          cwd: "/Users/example/dev/shared-project",
+          cwd: "/Users/art/dev/shared-project",
           project: "shared-project",
           harness: "scout-managed",
           mtimeMs: Date.now() + 2_000,
@@ -1914,7 +2324,7 @@ describe("loadSessionRefObservePayload", () => {
           source: "codex",
           transcriptPath: decoyPath,
           sessionId: decoySessionId,
-          cwd: "/Users/example/dev/shared-project",
+          cwd: "/Users/art/dev/shared-project",
           project: "shared-project",
           harness: "scout-managed",
           mtimeMs: Date.now() + 1_000,
@@ -1924,7 +2334,7 @@ describe("loadSessionRefObservePayload", () => {
           source: "codex",
           transcriptPath: historyPath,
           sessionId: providerSessionId,
-          cwd: "/Users/example/dev/shared-project",
+          cwd: "/Users/art/dev/shared-project",
           project: "shared-project",
           harness: "scout-managed",
           mtimeMs: Date.now(),

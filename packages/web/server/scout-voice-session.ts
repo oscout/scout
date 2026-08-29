@@ -67,6 +67,7 @@ export type ScoutVoiceHealthSnapshot = {
   detail: string | null;
   microphoneGranted?: boolean;
   microphoneCanRequest?: boolean;
+  inputDevice: { id: string; name: string } | null;
   host?: {
     hostId: string;
     platform: string;
@@ -503,10 +504,12 @@ export function getScoutVoiceHealthSnapshot(now = Date.now()): ScoutVoiceHealthS
       adapter: "hudson-dictation",
       capture: "native",
       detail: "Scout voice host is not running. Launch Scout Menu and try again.",
+      inputDevice: null,
       host: null,
     };
   }
 
+  const inputDevice = resolveSessionInputDevice(host);
   const micPermission = host.settings.permissions?.find((entry) => entry.kind === "microphone");
   const microphoneGranted = micPermission?.granted ?? false;
   const microphoneCanRequest = micPermission?.canRequest ?? false;
@@ -523,6 +526,7 @@ export function getScoutVoiceHealthSnapshot(now = Date.now()): ScoutVoiceHealthS
       capture: "native",
       detail,
       microphoneGranted: false,
+      inputDevice,
       microphoneCanRequest,
       host: {
         hostId: host.hostId,
@@ -540,6 +544,7 @@ export function getScoutVoiceHealthSnapshot(now = Date.now()): ScoutVoiceHealthS
     detail: null,
     microphoneGranted: true,
     microphoneCanRequest: false,
+    inputDevice,
     host: {
       hostId: host.hostId,
       platform: host.platform,

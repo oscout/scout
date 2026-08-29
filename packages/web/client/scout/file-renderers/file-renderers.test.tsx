@@ -22,11 +22,11 @@ describe("fileRenderers", () => {
       kind: "file" as const,
       previewable: true as const,
       path: ".data/report.html",
-      realPath: "/Users/example/dev/openscout/.data/report.html",
-      rootPath: "/Users/example/dev/openscout",
+      realPath: "/Users/art/dev/openscout/.data/report.html",
+      rootPath: "/Users/art/dev/openscout",
       title: "report.html",
       mediaType: "text/html",
-      rawUrl: "/api/file/raw/Users/example/dev/openscout/.data/report.html",
+      rawUrl: "/api/file/raw/Users/art/dev/openscout/.data/report.html",
       content: "<!doctype html><title>Report</title>",
       sizeBytes: 128,
       truncated: false,
@@ -38,7 +38,7 @@ describe("fileRenderers", () => {
 
     expect(renderer?.id).toBe("html");
     expect(html).toContain("s-file-preview-html-frame");
-    expect(html).toContain("src=\"/api/file/raw/Users/example/dev/openscout/.data/report.html\"");
+    expect(html).toContain("src=\"/api/file/raw/Users/art/dev/openscout/.data/report.html\"");
     expect(html).toContain("sandbox=\"allow-forms allow-popups allow-popups-to-escape-sandbox allow-scripts\"");
   });
 });

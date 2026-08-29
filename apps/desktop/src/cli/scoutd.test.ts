@@ -23,7 +23,7 @@ describe("native scoutd doctor helpers", () => {
           loaded: true,
           pid: 42,
           reachable: false,
-          brokerSocketPath: "/Users/example/Library/Application Support/OpenScout/runtime/broker.sock",
+          brokerSocketPath: "/Users/art/Library/Application Support/OpenScout/runtime/broker.sock",
           health: {
             ok: false,
             transport: "unix_socket",

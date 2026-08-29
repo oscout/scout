@@ -35,7 +35,7 @@ describe("locateHarnessSession", () => {
         payload: {
           id: sessionId,
           session_id: sessionId,
-          cwd: "/Users/example/dev/blink",
+          cwd: "/Users/art/dev/blink",
         },
       })}\n`,
     );
@@ -51,7 +51,7 @@ describe("locateHarnessSession", () => {
     if (!result.ok) return;
     expect(result.session.harness).toBe("codex");
     expect(result.session.nativeSessionId).toBe(sessionId);
-    expect(result.session.cwd).toBe("/Users/example/dev/blink");
+    expect(result.session.cwd).toBe("/Users/art/dev/blink");
     expect(result.session.path).toBe(path);
   });
 
@@ -64,14 +64,14 @@ describe("locateHarnessSession", () => {
       join(day, `rollout-${sessionId}.jsonl`),
       `${JSON.stringify({
         type: "session_meta",
-        payload: { id: sessionId, cwd: "/Users/example/dev/blink" },
+        payload: { id: sessionId, cwd: "/Users/art/dev/blink" },
       })}\n`,
     );
 
     const result = locateHarnessSession({
       nativeSessionId: sessionId,
       harness: "codex",
-      projectPath: "/Users/example/dev/openscout",
+      projectPath: "/Users/art/dev/openscout",
       codexSessionsRoot: codexRoot,
       claudeProjectsRoot: makeRoot("claude-empty-2"),
     });
@@ -103,12 +103,12 @@ describe("locateHarnessSession", () => {
     const withProject = locateHarnessSession({
       nativeSessionId: sessionId,
       harness: "codex",
-      projectPath: "/Users/example/dev/blink",
+      projectPath: "/Users/art/dev/blink",
       codexSessionsRoot: codexRoot,
       claudeProjectsRoot: makeRoot("claude-empty-4"),
     });
     expect(withProject.ok).toBe(true);
-    if (withProject.ok) expect(withProject.session.cwd).toBe("/Users/example/dev/blink");
+    if (withProject.ok) expect(withProject.session.cwd).toBe("/Users/art/dev/blink");
   });
 
   test("returns session_unknown when absent", () => {
@@ -131,7 +131,7 @@ describe("locateHarnessSession", () => {
       join(day, `rollout-2026-08-01T15-57-28-${sessionId}.jsonl`),
       `${JSON.stringify({
         type: "session_meta",
-        payload: { id: sessionId, cwd: "/Users/example/dev/blink" },
+        payload: { id: sessionId, cwd: "/Users/art/dev/blink" },
       })}\n`,
     );
 

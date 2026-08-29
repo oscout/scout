@@ -319,24 +319,31 @@ export function coalesce<T>(fn: () => Promise<T>, ttlMs = 2000): () => Promise<T
 export function createCachedSnapshot<T>(load: () => Promise<T>, ttlMs: number) {
   let inflight: Promise<T> | null = null;
   let cached: { value: T; expiresAt: number } | null = null;
+  // Bumped by refresh() and invalidate() so a load that started earlier can
+  // never (re)populate the cache with pre-refresh state. Without this, a
+  // mutation's refresh() could join a GET's in-flight load and cache data
+  // read before the mutation for a full TTL.
+  let generation = 0;
 
   const refresh = async () => {
-    if (inflight) {
-      return inflight;
-    }
-
-    inflight = load()
+    const gen = ++generation;
+    const attempt = load()
       .then((value) => {
-        cached = { value, expiresAt: Date.now() + ttlMs };
-        inflight = null;
+        if (gen === generation) {
+          cached = { value, expiresAt: Date.now() + ttlMs };
+          inflight = null;
+        }
         return value;
       })
       .catch((error) => {
-        inflight = null;
+        if (gen === generation) {
+          inflight = null;
+        }
         throw error;
       });
 
-    return inflight;
+    inflight = attempt;
+    return attempt;
   };
 
   const get = async (options?: { force?: boolean }) => {
@@ -349,7 +356,9 @@ export function createCachedSnapshot<T>(load: () => Promise<T>, ttlMs: number) {
       return cached.value;
     }
 
-    if (!force && inflight) {
+    // Any in-flight load is fresh enough for a read path (forced or not) —
+    // only refresh() itself must start over.
+    if (inflight) {
       return inflight;
     }
 
@@ -358,6 +367,8 @@ export function createCachedSnapshot<T>(load: () => Promise<T>, ttlMs: number) {
 
   const invalidate = () => {
     cached = null;
+    generation += 1;
+    inflight = null;
   };
 
   return {
@@ -366,6 +377,69 @@ export function createCachedSnapshot<T>(load: () => Promise<T>, ttlMs: number) {
     invalidate,
     peek: () => cached?.value ?? null,
   };
+}
+
+export type ScoutApiTiming = {
+  method: string;
+  /** Request path with the query string stripped. */
+  path: string;
+  status: number;
+  ms: number;
+  /** Wall-clock completion time (epoch ms). */
+  at: number;
+};
+
+export type ScoutApiPathAggregate = {
+  path: string;
+  count: number;
+  avgMs: number;
+  maxMs: number;
+};
+
+const SCOUT_API_TIMING_BUFFER_LIMIT = 500;
+const SCOUT_API_SLOW_THRESHOLD_MS = 500;
+// SCOUT_PERF_LOG_API=1 turns the slow-only warning into a full access log:
+// one "[scout-perf] api" line per /api/* call. Off by default so SSE and
+// polling traffic don't flood the supervised log.
+const SCOUT_API_LOG_ALL = process.env.SCOUT_PERF_LOG_API === "1";
+const scoutApiTimings: ScoutApiTiming[] = [];
+
+function recordScoutApiTiming(entry: ScoutApiTiming): void {
+  scoutApiTimings.push(entry);
+  if (scoutApiTimings.length > SCOUT_API_TIMING_BUFFER_LIMIT) {
+    scoutApiTimings.splice(0, scoutApiTimings.length - SCOUT_API_TIMING_BUFFER_LIMIT);
+  }
+}
+
+function roundMs(ms: number): number {
+  return Math.round(ms * 10) / 10;
+}
+
+/**
+ * The last {@link SCOUT_API_TIMING_BUFFER_LIMIT} API request timings plus
+ * per-path aggregates. Served by GET /api/perf/recent.
+ */
+export function scoutApiPerfReport(): {
+  recent: ScoutApiTiming[];
+  paths: ScoutApiPathAggregate[];
+} {
+  const byPath = new Map<string, { count: number; totalMs: number; maxMs: number }>();
+  for (const entry of scoutApiTimings) {
+    const aggregate = byPath.get(entry.path) ?? { count: 0, totalMs: 0, maxMs: 0 };
+    aggregate.count += 1;
+    aggregate.totalMs += entry.ms;
+    aggregate.maxMs = Math.max(aggregate.maxMs, entry.ms);
+    byPath.set(entry.path, aggregate);
+  }
+  const paths = [...byPath.entries()]
+    .map(([path, aggregate]) => ({
+      path,
+      count: aggregate.count,
+      avgMs: roundMs(aggregate.totalMs / aggregate.count),
+      maxMs: roundMs(aggregate.maxMs),
+    }))
+    .sort((a, b) => b.maxMs - a.maxMs);
+  return { recent: [...scoutApiTimings], paths };
 }
 
 export function installScoutApiMiddleware(
@@ -386,14 +460,45 @@ export function installScoutApiMiddleware(
     c.header("Cross-Origin-Resource-Policy", "same-origin");
     c.header("X-Content-Type-Options", "nosniff");
 
+    const startedAt = performance.now();
+    const finish = (status: number): number => {
+      const ms = performance.now() - startedAt;
+      recordScoutApiTiming({
+        method: c.req.method,
+        path: c.req.path,
+        status,
+        ms: roundMs(ms),
+        at: Date.now(),
+      });
+      if (ms > SCOUT_API_SLOW_THRESHOLD_MS) {
+        console.warn("[scout-perf] slow api", c.req.method, c.req.path, status, `${Math.round(ms)}ms`);
+      } else if (SCOUT_API_LOG_ALL) {
+        console.log("[scout-perf] api", c.req.method, c.req.path, status, `${Math.round(ms)}ms`);
+      }
+      return ms;
+    };
+
     try {
       await next();
+      const ms = finish(c.res.status);
+      try {
+        // Append to route-set Server-Timing metrics rather than clobbering them.
+        const existing = c.res.headers.get("Server-Timing");
+        const appTiming = `app;dur=${ms.toFixed(1)}`;
+        c.header("Server-Timing", existing ? `${existing}, ${appTiming}` : appTiming);
+      } catch {
+        /* Streamed/proxied responses may carry immutable headers; skip silently. */
+      }
     } catch (error) {
+      finish(500);
       const message = error instanceof Error ? error.message : String(error);
       console.error(`[${label}] ${c.req.method} ${c.req.path} failed:`, message);
       return c.json({ error: message }, 500);
     }
   });
+
+  // Registered after the /api/* middleware above so the same trust/auth gates apply.
+  app.get("/api/perf/recent", (c) => c.json(scoutApiPerfReport()));
 }
 
 export async function registerScoutWebAssets(

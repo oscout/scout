@@ -148,7 +148,7 @@ describe("resolveAgentLabel", () => {
           id: "endpoint-talkie",
           agentId: talkie.id,
           harness: "claude",
-          projectRoot: "/Users/example/dev/talkie",
+          projectRoot: "/Users/art/dev/talkie",
         }),
       ],
     );
@@ -172,7 +172,7 @@ describe("resolveAgentLabel", () => {
           id: "endpoint-chopin",
           agentId: sessionId,
           harness: "codex",
-          projectRoot: "/Users/example/dev/scope",
+          projectRoot: "/Users/art/dev/scope",
           metadata: { cardless: true, handle: "project-chopin" },
         }),
       ],
@@ -201,7 +201,7 @@ describe("resolveAgentLabel", () => {
           id: "endpoint-mw-talkie",
           agentId: sessionId,
           harness: "codex",
-          projectRoot: "/Users/example/dev/talkie",
+          projectRoot: "/Users/art/dev/talkie",
           metadata: { cardless: true, handle: "project-mw-talkie" },
         }),
       ],
@@ -236,7 +236,7 @@ describe("resolveAgentLabel", () => {
           id: "endpoint-mw-talkie",
           agentId: sessionId,
           harness: "codex",
-          projectRoot: "/Users/example/dev/talkie",
+          projectRoot: "/Users/art/dev/talkie",
           metadata: { cardless: true, handle: "project-mw-talkie" },
         }),
       ],
@@ -289,7 +289,7 @@ describe("resolveAgentLabel", () => {
           agentId: olderSessionId,
           harness: "codex",
           sessionId: olderSessionId,
-          projectRoot: "/Users/example/dev/scope",
+          projectRoot: "/Users/art/dev/scope",
           metadata: {
             cardless: true,
             handle: "project-chopin",
@@ -301,7 +301,7 @@ describe("resolveAgentLabel", () => {
           agentId: newerSessionId,
           harness: "codex",
           sessionId: newerSessionId,
-          projectRoot: "/Users/example/dev/scope",
+          projectRoot: "/Users/art/dev/scope",
           metadata: {
             cardless: true,
             handle: "project-chopin",
@@ -415,17 +415,17 @@ describe("resolveAgentLabel", () => {
     const snapshot = makeSnapshot(
       [
         makeAgent({
-          id: "openscout.feat-web-design-system.test-workstation-local",
+          id: "openscout.feat-web-design-system.arts-mac-mini-local",
           definitionId: "openscout",
-          nodeQualifier: "test-workstation-local",
+          nodeQualifier: "arts-mac-mini-local",
           workspaceQualifier: "feat-web-design-system",
-          selector: "@openscout.feat-web-design-system.node:test-workstation-local",
+          selector: "@openscout.feat-web-design-system.node:arts-mac-mini-local",
         }),
       ],
       [
         makeEndpoint({
           id: "endpoint.openscout.codex",
-          agentId: "openscout.feat-web-design-system.test-workstation-local",
+          agentId: "openscout.feat-web-design-system.arts-mac-mini-local",
           harness: "codex",
           state: "waiting",
         }),
@@ -434,22 +434,22 @@ describe("resolveAgentLabel", () => {
 
     const qualified = resolveAgentLabel(
       snapshot,
-      "@openscout.feat-web-design-system.node:test-workstation-local",
+      "@openscout.feat-web-design-system.node:arts-mac-mini-local",
       { helpers },
     );
     expect(qualified.kind).toBe("resolved");
     if (qualified.kind === "resolved") {
-      expect(qualified.agent.id).toBe("openscout.feat-web-design-system.test-workstation-local");
+      expect(qualified.agent.id).toBe("openscout.feat-web-design-system.arts-mac-mini-local");
     }
 
     const codex = resolveAgentLabel(
       snapshot,
-      "@openscout.feat-web-design-system.test-workstation-local#codex",
+      "@openscout.feat-web-design-system.arts-mac-mini-local#codex",
       { helpers },
     );
     expect(codex.kind).toBe("resolved");
     if (codex.kind === "resolved") {
-      expect(codex.agent.id).toBe("openscout.feat-web-design-system.test-workstation-local");
+      expect(codex.agent.id).toBe("openscout.feat-web-design-system.arts-mac-mini-local");
     }
   });
 
@@ -1118,7 +1118,7 @@ describe("resolveBrokerRouteTarget", () => {
           agentId: sessionId,
           harness: "codex",
           sessionId,
-          projectRoot: "/Users/example/dev/scope",
+          projectRoot: "/Users/art/dev/scope",
           metadata: { cardless: true, handle: "project-chopin" },
         }),
       ],
@@ -1424,7 +1424,7 @@ describe("buildDispatchEnvelope", () => {
       id: "endpoint-talkie",
       agentId: talkie.id,
       harness: "claude",
-      projectRoot: "/Users/example/dev/talkie",
+      projectRoot: "/Users/art/dev/talkie",
     });
     const envelope = buildDispatchEnvelope(
       {

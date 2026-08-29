@@ -18,7 +18,6 @@ import type {
   Agent,
   FleetAsk,
   FleetState,
-  HarnessTopologySnapshot,
   Route,
   SessionEntry,
   TailDiscoverySnapshot,
@@ -74,7 +73,6 @@ export function AgentsLibrary({
   sessions: SessionEntry[];
   discovery: TailDiscoverySnapshot | null;
   loading: boolean;
-  topologySnapshot: HarnessTopologySnapshot | null;
   navigate: (r: Route) => void;
   // The route-selected agent, so the table can highlight the active row while
   // the REAL inspector renders its card + sessions.

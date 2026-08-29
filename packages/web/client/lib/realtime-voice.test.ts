@@ -4,6 +4,7 @@ import { startScoutRealtimeVoiceCall } from "./realtime-voice.ts";
 import {
   SCOUT_REALTIME_VOICE_LEASE_HEADER,
   SCOUT_REALTIME_VOICE_LEASE_PATH,
+  SCOUT_REALTIME_VOICE_SETTINGS_PATH,
 } from "../../shared/realtime-voice.ts";
 
 const originalFetch = globalThis.fetch;
@@ -86,6 +87,7 @@ describe("Scout Realtime voice client", () => {
     const replies: string[] = [];
     const trace: string[] = [];
     globalThis.fetch = (async (url, init) => {
+      if (String(url) === SCOUT_REALTIME_VOICE_SETTINGS_PATH) return enabledSettingsResponse();
       fetchCalls.push({ url: String(url), init });
       if (String(url) === "/api/voice/realtime/call") {
         return new Response("v=0\r\nanswer\r\n", {
@@ -226,6 +228,7 @@ describe("Scout Realtime voice client", () => {
     });
     const errors: string[] = [];
     globalThis.fetch = (async (url) => {
+      if (String(url) === SCOUT_REALTIME_VOICE_SETTINGS_PATH) return enabledSettingsResponse();
       if (String(url) === "/api/voice/realtime/call") {
         return new Response("v=0\r\nanswer\r\n", {
           status: 200,
@@ -294,6 +297,7 @@ describe("Scout Realtime voice client", () => {
     });
     const states: string[] = [];
     globalThis.fetch = (async (url, init) => {
+      if (String(url) === SCOUT_REALTIME_VOICE_SETTINGS_PATH) return enabledSettingsResponse();
       if (String(url) === "/api/voice/realtime/call") {
         return new Response("v=0\r\nanswer\r\n", {
           status: 200,
@@ -332,6 +336,7 @@ describe("Scout Realtime voice client", () => {
   test("opens the selected speech input with echo suppression", async () => {
     const captureConstraints: MediaStreamConstraints[] = [];
     globalThis.fetch = (async (url) => {
+      if (String(url) === SCOUT_REALTIME_VOICE_SETTINGS_PATH) return enabledSettingsResponse();
       if (String(url) === "/api/voice/realtime/call") {
         return new Response("v=0\r\nanswer\r\n", {
           status: 200,
@@ -379,6 +384,7 @@ describe("Scout Realtime voice client", () => {
 
   test("uses close-talk noise reduction for a headset while preserving interruption", async () => {
     globalThis.fetch = (async (url) => {
+      if (String(url) === SCOUT_REALTIME_VOICE_SETTINGS_PATH) return enabledSettingsResponse();
       if (String(url) === "/api/voice/realtime/call") {
         return new Response("v=0\r\nanswer\r\n", {
           status: 200,
@@ -419,6 +425,38 @@ describe("Scout Realtime voice client", () => {
     await call.stop();
   });
 
+  test("checks the host setting before opening the microphone", async () => {
+    let mediaRequests = 0;
+    globalThis.fetch = (async (url) => {
+      if (String(url) === SCOUT_REALTIME_VOICE_SETTINGS_PATH) {
+        return Response.json({
+          enabled: false,
+          configuredEnabled: false,
+          source: "settings",
+          locked: false,
+        });
+      }
+      return new Response("unexpected", { status: 500 });
+    }) as typeof fetch;
+    Object.defineProperty(globalThis, "RTCPeerConnection", { configurable: true, value: FakePeerConnection });
+    Object.defineProperty(globalThis, "Audio", { configurable: true, value: FakeAudio });
+    Object.defineProperty(globalThis, "navigator", {
+      configurable: true,
+      value: {
+        mediaDevices: {
+          getUserMedia: async () => {
+            mediaRequests += 1;
+            return { getTracks: () => [] };
+          },
+        },
+      },
+    });
+
+    await expect(startScoutRealtimeVoiceCall()).rejects.toThrow("Settings → Voice");
+    expect(mediaRequests).toBe(0);
+    expect(FakePeerConnection.latest).toBeNull();
+  });
+
   test("cancels promptly while microphone permission is still resolving", async () => {
     let resolveMedia!: (stream: MediaStream) => void;
     const mediaPromise = new Promise<MediaStream>((resolve) => {
@@ -426,7 +464,9 @@ describe("Scout Realtime voice client", () => {
     });
     let trackStops = 0;
     let fetchCalls = 0;
-    globalThis.fetch = (async () => {
+    let mediaRequested = false;
+    globalThis.fetch = (async (url: string | URL | Request) => {
+      if (String(url) === SCOUT_REALTIME_VOICE_SETTINGS_PATH) return enabledSettingsResponse();
       fetchCalls += 1;
       return new Response("unexpected");
     }) as unknown as typeof fetch;
@@ -434,11 +474,14 @@ describe("Scout Realtime voice client", () => {
     Object.defineProperty(globalThis, "Audio", { configurable: true, value: FakeAudio });
     Object.defineProperty(globalThis, "navigator", {
       configurable: true,
-      value: { mediaDevices: { getUserMedia: () => mediaPromise } },
+      value: { mediaDevices: { getUserMedia: () => {
+        mediaRequested = true;
+        return mediaPromise;
+      } } },
     });
     const controller = new AbortController();
     const callPromise = startScoutRealtimeVoiceCall({ signal: controller.signal });
-    await Promise.resolve();
+    await waitFor(() => mediaRequested);
 
     controller.abort();
     await expect(callPromise).rejects.toEqual(expect.objectContaining({ name: "AbortError" }));
@@ -454,7 +497,8 @@ describe("Scout Realtime voice client", () => {
   test("aborts the SDP request and cleans up microphone tracks", async () => {
     let trackStops = 0;
     let requestSignal: AbortSignal | undefined;
-    globalThis.fetch = (async (_url, init) => {
+    globalThis.fetch = (async (url, init) => {
+      if (String(url) === SCOUT_REALTIME_VOICE_SETTINGS_PATH) return enabledSettingsResponse();
       requestSignal = init?.signal ?? undefined;
       return new Promise<Response>((_resolve, reject) => {
         requestSignal?.addEventListener("abort", () => reject(requestSignal?.reason), { once: true });
@@ -491,6 +535,7 @@ describe("Scout Realtime voice client", () => {
     let released = false;
     let trackStops = 0;
     globalThis.fetch = (async (url, init) => {
+      if (String(url) === SCOUT_REALTIME_VOICE_SETTINGS_PATH) return enabledSettingsResponse();
       if (String(url).startsWith(SCOUT_REALTIME_VOICE_LEASE_PATH) && init?.method === "DELETE") {
         released = true;
         return new Response(null, { status: 204 });
@@ -527,6 +572,15 @@ describe("Scout Realtime voice client", () => {
     expect(FakePeerConnection.latest?.closed).toBe(true);
   });
 });
+
+function enabledSettingsResponse(): Response {
+  return Response.json({
+    enabled: true,
+    configuredEnabled: true,
+    source: "settings",
+    locked: false,
+  });
+}
 
 async function waitFor(predicate: () => boolean): Promise<void> {
   for (let attempt = 0; attempt < 20; attempt += 1) {

@@ -5,6 +5,7 @@ import {
   DEFAULT_TERMINAL_SESSION_SORT,
   TERMINAL_SESSION_INACTIVE_AFTER_MS,
   TERMINAL_SESSION_REVIEW_AFTER_MS,
+  inactiveTerminalItemDetail,
   sortTerminalSessionItems,
   terminalSessionActivityAt,
   terminalSessionLifecycle,
@@ -23,7 +24,19 @@ function item(input: {
   startedAt?: number;
   activityAt?: number;
   updatedAt?: number;
+  panes?: number;
+  cwdLabel?: string;
+  lastKnown?: { savedAt?: number; panes?: number; agents?: string[] };
 }): TerminalListItem {
+  const surfaces = Array.from({ length: input.panes ?? 0 }, (_, index) => ({
+    backend: input.backend,
+    sessionName: input.title,
+    paneId: index === 0 ? null : `%${index}`,
+    attachCommand: [],
+    observeCommand: null,
+    relay: { backend: input.backend, sessionName: input.title },
+    state: input.state ?? ("live" as const),
+  }));
   return {
     id: input.title,
     key: input.title,
@@ -32,11 +45,11 @@ function item(input: {
     project: input.project ?? "unscoped",
     contextKind: "source",
     contextValue: input.title,
-    cwdLabel: "",
+    cwdLabel: input.cwdLabel ?? "",
     origin: input.origin ?? "scout",
     condition: "",
     searchable: input.title,
-    surface: {
+    surface: surfaces[0] ?? {
       backend: input.backend,
       sessionName: input.title,
       paneId: null,
@@ -51,13 +64,14 @@ function item(input: {
       sourceSessionId: input.title,
       cwd: "",
       resumeCommand: "",
-      surfaces: [],
+      surfaces,
       createdAt: 0,
       updatedAt: input.updatedAt ?? 0,
       metadata: {
         ...(input.attached === undefined ? {} : { attachedClients: input.attached }),
         ...(input.startedAt === undefined ? {} : { startedAt: input.startedAt }),
         ...(input.activityAt === undefined ? {} : { activityAt: input.activityAt }),
+        ...(input.lastKnown === undefined ? {} : { lastKnownLayout: input.lastKnown }),
       },
     },
   } as TerminalListItem;
@@ -186,5 +200,61 @@ describe("toggleTerminalSessionSort", () => {
       .toEqual({ column: "activity", direction: "desc" });
     expect(toggleTerminalSessionSort({ column: "name", direction: "asc" }, "project"))
       .toEqual({ column: "project", direction: "asc" });
+  });
+});
+
+describe("inactiveTerminalItemDetail", () => {
+  // A realistic epoch — normalizeTimestampMs treats small values as legacy
+  // seconds, so a synthetic "now" like 100 days would misread as 1970.
+  const now = 1_800_000_000_000;
+  const DAY = 24 * 60 * 60 * 1_000;
+
+  test("answers what the session was and how stale it is", () => {
+    expect(inactiveTerminalItemDetail(item({
+      title: "blink",
+      backend: "herdr",
+      activityAt: now - 10 * DAY,
+      panes: 4,
+      cwdLabel: "dev/openscout",
+    }), now)).toBe("last active 10d ago · 4 panes · dev/openscout");
+  });
+
+  test("omits unknown activity and single-pane counts", () => {
+    expect(inactiveTerminalItemDetail(item({
+      title: "quiet",
+      backend: "tmux",
+      origin: "backend",
+      updatedAt: now - DAY,
+      panes: 1,
+      cwdLabel: "dev/hudson",
+    }), now)).toBe("dev/hudson");
+  });
+
+  test("falls back to the record identity when nothing else is known", () => {
+    expect(inactiveTerminalItemDetail(item({ title: "mystery", backend: "tmux", origin: "backend" }), now))
+      .toBe("mystery");
+  });
+
+  test("a stopped herdr session still answers from its persisted layout", () => {
+    // The server is down, so there is no live activity and one discovered
+    // surface; session.json on disk is the only honest source of "what was in
+    // it" — its mtime stands in for last activity.
+    expect(inactiveTerminalItemDetail(item({
+      title: "scout-local-1",
+      backend: "herdr",
+      origin: "backend",
+      state: "detached",
+      cwdLabel: "dev/talkie",
+      lastKnown: { savedAt: now - 23 * DAY, panes: 1, agents: ["claude"] },
+    }), now)).toBe("last active 23d ago · 1 pane · claude · dev/talkie");
+  });
+
+  test("live activity outranks the persisted layout's saved-at", () => {
+    expect(inactiveTerminalItemDetail(item({
+      title: "blink",
+      backend: "herdr",
+      activityAt: now - 2 * DAY,
+      lastKnown: { savedAt: now - 23 * DAY, panes: 6, agents: ["codex"] },
+    }), now)).toBe("last active 2d ago · 6 panes · codex");
   });
 });

@@ -78,6 +78,7 @@ export type ServiceQuotaWindowGauge = {
   capLabel: string;
   unitLabel: string;
   resetAt: number;
+  windowMs?: number;
   capturedAt?: number;
   source?: string;
   history?: ServiceQuotaHistoryPoint[];
@@ -827,6 +828,7 @@ function storedQuotaWindowGauge(
     label: formatStoredQuotaWindowLabel(row),
     ...usage,
     resetAt,
+    ...(windowMs === undefined ? {} : { windowMs }),
     capturedAt: row.capturedAt,
     source: quotaSnapshotSourceLabel(row),
     ...(history.length === 0 ? {} : { history }),

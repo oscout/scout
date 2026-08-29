@@ -15,6 +15,11 @@ import type {
 import { BackToPicker } from "../../scout/slots/BackToPicker.tsx";
 import { ConversationScreen } from "../chat/ConversationScreen.tsx";
 import { SessionObserve, SessionObserveContextRail } from "./SessionObserve.tsx";
+import {
+  activeSessionRefLookupState,
+  createSessionRefLookupCoordinator,
+  type SessionRefLookupState,
+} from "./session-ref-lookup-state.ts";
 import "../chat/inbox-thread-redesign.css";
 
 export type SessionRefObservePayload =
@@ -82,30 +87,64 @@ function isNativeProcessRef(value: string): boolean {
 }
 
 function useSessionRefLookup(sessionRef: string) {
-  const [lookup, setLookup] = useState<SessionRefLookup | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const [state, setState] = useState<SessionRefLookupState<SessionRefLookup>>(() => ({
+    sessionRef,
+    lookup: null,
+    loading: true,
+    error: null,
+  }));
   const refreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const coordinatorRef = useRef<ReturnType<typeof createSessionRefLookupCoordinator<SessionRefLookup>> | null>(null);
+
+  if (!coordinatorRef.current) {
+    coordinatorRef.current = createSessionRefLookupCoordinator(
+      (requestedRef) => api<SessionRefLookup>(
+        `/api/session-ref/${encodeURIComponent(requestedRef)}`,
+      ),
+      ({ sessionRef: completedRef, result }) => {
+        if (result.ok) {
+          setState({
+            sessionRef: completedRef,
+            lookup: result.lookup,
+            loading: false,
+            error: null,
+          });
+          return;
+        }
+        setState({
+          sessionRef: completedRef,
+          lookup: null,
+          loading: false,
+          error: result.error instanceof Error ? result.error.message : String(result.error),
+        });
+      },
+    );
+  }
 
   const load = useCallback(async () => {
-    setError(null);
-    try {
-      const result = await api<SessionRefLookup>(
-        `/api/session-ref/${encodeURIComponent(sessionRef)}`,
-      );
-      setLookup(result);
-    } catch (e) {
-      setLookup(null);
-      setError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setLoading(false);
-    }
+    await coordinatorRef.current!.request(sessionRef);
   }, [sessionRef]);
 
   useEffect(() => {
-    setLoading(true);
+    setState({
+      sessionRef,
+      lookup: null,
+      loading: true,
+      error: null,
+    });
     void load();
-  }, [load]);
+    return () => {
+      coordinatorRef.current?.invalidate();
+      if (refreshTimerRef.current) {
+        clearTimeout(refreshTimerRef.current);
+        refreshTimerRef.current = null;
+      }
+    };
+  }, [load, sessionRef]);
+
+  // Effects run after render. Guard by ref here so the previous session cannot
+  // remain visible (or writable) for even one paint while the new lookup starts.
+  const { lookup, loading, error } = activeSessionRefLookupState(state, sessionRef);
 
   const scheduleRefresh = useCallback(() => {
     if (refreshTimerRef.current) {

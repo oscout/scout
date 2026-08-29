@@ -187,7 +187,7 @@ export function parseElapsedSeconds(value: string): number {
 
 /**
  * `comm` is deliberately absent from the column list. Darwin truncates it to 16
- * characters, so it reports `/Users/example/dev/o` for a bundle path and is useless
+ * characters, so it reports `/Users/art/dev/o` for a bundle path and is useless
  * for identity; worse, a truncated path can end mid-space and there is then no
  * way to tell where the column stops and `args` begins. `args` alone is
  * unambiguous because it is the last column.

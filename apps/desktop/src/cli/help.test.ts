@@ -25,6 +25,7 @@ describe("renderScoutHelp", () => {
     expect(help).toContain("Doctor flags:");
     expect(help).toContain("scout doctor --fix --yes");
     expect(help).toContain("scout providers usage");
+    expect(help).toContain("scout providers map");
     expect(help).toContain("MCP parity:");
     expect(help).toContain("scout card create");
   });

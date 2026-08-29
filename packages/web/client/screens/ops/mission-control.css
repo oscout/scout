@@ -7,15 +7,54 @@
  */
 
 .s-wall {
+  /* A local tonal ladder, because the theme's own step runs in opposite
+     directions: --surface sits ABOVE --bg in dark and BELOW it in light, so a
+     single "lift the pane off the canvas" mix computes to nothing on paper and
+     the wall goes white-on-white. Dark lifts the panes; light sinks the floor
+     under them. Every pane, band, rule and log ink below reads these, so the
+     two themes differ in one block instead of at thirty call sites. */
+  --wall-floor: var(--bg);
+  --wall-pane: color-mix(in srgb, var(--surface) 34%, var(--bg));
+  --wall-head: color-mix(in srgb, var(--ink) 5%, var(--wall-pane));
+  --wall-panel: color-mix(in srgb, var(--surface) 92%, var(--bg));
+  --wall-rule: color-mix(in srgb, var(--ink) 10%, transparent);
+  --wall-rule-strong: color-mix(in srgb, var(--ink) 20%, transparent);
+  --wall-zebra: color-mix(in srgb, var(--ink) 2.5%, transparent);
+  --wall-eyebrow: var(--muted);
+  --wall-time: var(--dim);
+  --wall-glyph: var(--dim);
+  /* Lime at L 0.72 on paper is a 2.4:1 whisper. Tool lines keep the accent hue
+     but borrow ink's darkness in light mode so the busiest row kind stays the
+     most readable one. */
+  --wall-tool: var(--accent);
+  /* How far the wall recedes behind the rail. Paper needs a shallower dip:
+     white at 0.5 over a light floor loses the text before it loses the pane. */
+  --wall-dim: 0.5;
+
   position: relative;
   display: flex;
   flex-direction: column;
   height: 100%;
   min-height: 0;
-  background: var(--bg);
+  background: var(--wall-floor);
   font-family: var(--font-mono);
   color: var(--ink);
   overflow: hidden;
+}
+
+[data-scout-theme-mode="light"] .s-wall {
+  --wall-floor: color-mix(in srgb, var(--ink) 7%, var(--bg));
+  --wall-pane: var(--surface);
+  --wall-head: color-mix(in srgb, var(--ink) 7%, var(--surface));
+  --wall-panel: var(--surface);
+  --wall-rule: color-mix(in srgb, var(--ink) 16%, transparent);
+  --wall-rule-strong: color-mix(in srgb, var(--ink) 30%, transparent);
+  --wall-zebra: color-mix(in srgb, var(--ink) 4%, transparent);
+  --wall-eyebrow: color-mix(in srgb, var(--ink) 72%, transparent);
+  --wall-time: color-mix(in srgb, var(--ink) 62%, transparent);
+  --wall-glyph: color-mix(in srgb, var(--ink) 55%, transparent);
+  --wall-tool: color-mix(in srgb, var(--accent) 55%, var(--ink));
+  --wall-dim: 0.65;
 }
 
 /* ── Wall status line ── */
@@ -27,37 +66,39 @@
   gap: var(--space-sm);
   min-height: 26px;
   padding: 0 var(--space-lg);
-  border-bottom: 1px solid var(--border);
-  background: color-mix(in srgb, var(--surface) 18%, var(--bg));
-  font-size: var(--text-2xs);
+  border-bottom: 1px solid var(--wall-rule);
+  background: var(--wall-pane);
+  font-size: var(--text-xs);
   letter-spacing: 0.04em;
 }
 
 .s-wall-status-key {
-  color: var(--dim);
+  color: var(--wall-eyebrow);
   text-transform: lowercase;
 }
 
 .s-wall-status-value {
-  color: var(--muted);
+  color: var(--ink);
+  font-weight: 600;
   font-variant-numeric: tabular-nums;
   margin-right: var(--space-md);
 }
 
 .s-wall-status-hidden {
-  color: var(--dim);
+  color: var(--wall-time);
   font-variant-numeric: tabular-nums;
 }
 
 .s-wall-status-keys {
   margin-left: auto;
-  color: var(--dim);
+  color: var(--wall-time);
   white-space: nowrap;
 }
 
 .s-wall-status-keys kbd {
   font: inherit;
-  color: var(--muted);
+  font-weight: 600;
+  color: var(--ink);
 }
 
 .s-wall-status-pin {
@@ -96,20 +137,28 @@
   contain: layout paint;
   min-width: 0;
   min-height: 0;
-  border: 1px solid var(--border);
+  border: 1px solid var(--wall-rule);
   border-radius: var(--radius-xs);
-  background: color-mix(in srgb, var(--surface) 34%, var(--bg));
+  background: var(--wall-pane);
   overflow: hidden;
   cursor: pointer;
   transition: border-color 0.12s;
 }
 
 .s-wall-pane:hover {
-  border-color: color-mix(in srgb, var(--muted) 45%, var(--border));
+  border-color: var(--wall-rule-strong);
 }
 
+/* Live vs quiet is said three ways — border, header wash, pulsing dot — so a
+   pane that is producing output is findable in peripheral vision across a
+   4×4 wall without any pane needing to shout. */
 .s-wall-pane--live {
-  border-color: color-mix(in srgb, var(--green) 30%, var(--border));
+  border-color: color-mix(in srgb, var(--green) 42%, var(--wall-rule));
+}
+
+.s-wall-pane--live .s-wall-pane-head {
+  background: color-mix(in srgb, var(--green) 8%, var(--wall-head));
+  border-bottom-color: color-mix(in srgb, var(--green) 28%, var(--wall-rule));
 }
 
 .s-wall-pane--selected,
@@ -123,7 +172,7 @@
    erasing what those already say. */
 .s-wall-pane--cursor,
 .s-wall-pane--cursor:hover {
-  border-color: color-mix(in srgb, var(--accent) 70%, var(--border));
+  border-color: color-mix(in srgb, var(--accent) 70%, var(--wall-rule));
   outline: 1px solid var(--accent);
   outline-offset: -1px;
 }
@@ -164,9 +213,9 @@
   gap: var(--space-xs);
   min-height: 22px;
   padding: 0 var(--space-sm);
-  border-bottom: 1px solid var(--border);
-  background: color-mix(in srgb, var(--ink) 3%, transparent);
-  font-size: var(--text-2xs);
+  border-bottom: 1px solid var(--wall-rule);
+  background: var(--wall-head);
+  font-size: var(--text-xs);
   letter-spacing: 0.02em;
   white-space: nowrap;
   overflow: hidden;
@@ -212,7 +261,7 @@
 .s-wall-pane-where {
   flex: 0 1 auto;
   min-width: 0;
-  color: var(--dim);
+  color: var(--wall-eyebrow);
   overflow: hidden;
   text-overflow: ellipsis;
 }
@@ -224,6 +273,7 @@
 .s-wall-pane-live {
   flex: none;
   color: var(--green);
+  font-weight: 600;
   text-transform: uppercase;
   letter-spacing: var(--tracking-md);
 }
@@ -234,7 +284,7 @@
   padding: 0;
   border: 0;
   background: none;
-  color: var(--dim);
+  color: var(--wall-time);
   font: inherit;
   letter-spacing: inherit;
   overflow: hidden;
@@ -256,7 +306,7 @@
   overflow-x: hidden;
   padding: 2px 0 4px;
   scrollbar-width: thin;
-  scrollbar-color: color-mix(in srgb, var(--border) 80%, transparent) transparent;
+  scrollbar-color: var(--wall-rule-strong) transparent;
 }
 
 .s-wall-pane-body::-webkit-scrollbar {
@@ -264,13 +314,13 @@
 }
 
 .s-wall-pane-body::-webkit-scrollbar-thumb {
-  background: color-mix(in srgb, var(--border) 80%, transparent);
+  background: var(--wall-rule-strong);
 }
 
 .s-wall-pane-idle {
   padding: var(--space-sm) var(--space-md);
-  color: var(--dim);
-  font-size: var(--text-2xs);
+  color: var(--wall-time);
+  font-size: var(--text-xs);
   letter-spacing: var(--tracking-sm);
 }
 
@@ -284,22 +334,26 @@
   contain-intrinsic-size: auto 15px;
   gap: var(--space-xs);
   padding: 0 var(--space-sm);
-  font-size: var(--text-2xs);
+  /* 9px → 10px on an unchanged 15px row: the rows-per-pane count is identical,
+     the type is legible on paper. Density is not spent here. */
+  font-size: var(--text-xs);
   line-height: 15px;
   color: var(--muted);
 }
 
 .s-wall-line:nth-child(even) {
-  background: color-mix(in srgb, var(--ink) 2.5%, transparent);
+  background: var(--wall-zebra);
 }
 
 .s-wall-line-time {
-  color: var(--dim);
+  color: var(--wall-time);
   font-variant-numeric: tabular-nums;
 }
 
+/* The glyph carries the row kind, so it is the one column that earns color —
+   the text stays readable ink and the wall stays scannable by column. */
 .s-wall-line-glyph {
-  color: var(--dim);
+  color: var(--wall-glyph);
 }
 
 .s-wall-line-text {
@@ -309,7 +363,7 @@
 }
 
 .s-wall-line-repeat {
-  color: var(--dim);
+  color: var(--wall-time);
   font-variant-numeric: tabular-nums;
 }
 
@@ -317,17 +371,43 @@
   color: var(--ink);
 }
 
+.s-wall-line--user .s-wall-line-glyph {
+  color: var(--ink);
+}
+
 .s-wall-line--assistant .s-wall-line-text {
   color: color-mix(in srgb, var(--ink) 80%, transparent);
 }
 
-.s-wall-line--tool .s-wall-line-text {
-  color: var(--accent);
+.s-wall-line--tool .s-wall-line-text,
+.s-wall-line--tool .s-wall-line-glyph {
+  color: var(--wall-tool);
 }
 
 .s-wall-line--system .s-wall-line-text,
 .s-wall-line--other .s-wall-line-text {
-  color: var(--dim);
+  color: var(--wall-time);
+}
+
+/* Tool results carry a real outcome (observeToolFieldsFromTailEvent, the same
+   read session-observe uses) — so the outcome is stated, not decorated. A
+   success tints only its glyph, because a wall of green ticks says nothing;
+   a failure earns the row. */
+.s-wall-line--result-ok .s-wall-line-glyph {
+  color: var(--green);
+}
+
+/* Doubled class so the row wash outranks the :nth-child zebra. */
+.s-wall-line.s-wall-line--result-error {
+  background: color-mix(in srgb, var(--red) 9%, transparent);
+}
+
+.s-wall-line--result-error .s-wall-line-glyph {
+  color: var(--red);
+}
+
+.s-wall-line--result-error .s-wall-line-text {
+  color: color-mix(in srgb, var(--red) 45%, var(--ink));
 }
 
 /* Newest line settles in, matching /ops/tail. */
@@ -360,7 +440,7 @@
  */
 
 .s-wall-grid--railed .s-wall-pane:not(.s-wall-pane--cursor) {
-  opacity: 0.5;
+  opacity: var(--wall-dim);
   transition: opacity 0.12s;
 }
 
@@ -373,10 +453,10 @@
   width: min(400px, 46vw);
   display: flex;
   flex-direction: column;
-  border-left: 1px solid var(--border);
-  background: color-mix(in srgb, var(--surface) 92%, var(--bg));
+  border-left: 1px solid var(--wall-rule-strong);
+  background: var(--wall-panel);
   box-shadow: -12px 0 28px -18px rgb(0 0 0 / 65%);
-  font-size: var(--text-2xs);
+  font-size: var(--text-xs);
   letter-spacing: 0.02em;
   overflow: hidden;
 }
@@ -388,7 +468,8 @@
   gap: var(--space-xs);
   min-height: 34px;
   padding: 0 var(--space-sm);
-  border-bottom: 1px solid var(--border);
+  border-bottom: 1px solid var(--wall-rule);
+  background: var(--wall-head);
 }
 
 .s-wall-rail-dot {
@@ -418,7 +499,7 @@
 }
 
 .s-wall-rail-sub {
-  color: var(--dim);
+  color: var(--wall-time);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -429,7 +510,7 @@
   padding: 0 var(--space-2xs);
   border: 0;
   background: none;
-  color: var(--dim);
+  color: var(--wall-time);
   font: inherit;
   cursor: pointer;
 }
@@ -445,11 +526,16 @@
   overflow-x: hidden;
   padding: var(--space-sm);
   scrollbar-width: thin;
-  scrollbar-color: color-mix(in srgb, var(--border) 80%, transparent) transparent;
+  scrollbar-color: var(--wall-rule-strong) transparent;
 }
 
+/* Sections are separated by air plus a ruled eyebrow rather than by boxes —
+   the rail stays one column of reading, but the eye can find where LAST ACTION
+   ends and RUNTIME begins without counting rows. */
 .s-wall-rail-sec + .s-wall-rail-sec {
-  margin-top: var(--space-md);
+  margin-top: var(--space-lg);
+  padding-top: var(--space-lg);
+  border-top: 1px solid var(--wall-rule);
 }
 
 .s-wall-rail-sechead {
@@ -457,13 +543,16 @@
   align-items: center;
   gap: var(--space-xs);
   margin-bottom: var(--space-xs);
-  color: var(--dim);
+  color: var(--wall-eyebrow);
+  font-size: var(--text-2xs);
+  font-weight: 600;
   text-transform: uppercase;
-  letter-spacing: var(--tracking-md);
+  letter-spacing: var(--tracking-lg);
 }
 
 .s-wall-rail-seccount {
-  color: var(--muted);
+  color: var(--ink);
+  font-weight: 600;
   text-transform: none;
   letter-spacing: 0.02em;
   font-variant-numeric: tabular-nums;
@@ -472,13 +561,14 @@
 .s-wall-rail-secrule {
   flex: 1 1 auto;
   height: 1px;
-  background: var(--border);
+  background: var(--wall-rule);
 }
 
 /* ── Now ── */
 
 .s-wall-rail-headline {
   color: var(--ink);
+  font-size: var(--text-sm);
   line-height: 1.45;
   display: -webkit-box;
   -webkit-line-clamp: 3;
@@ -488,22 +578,27 @@
 
 .s-wall-rail-detail {
   margin-top: 2px;
-  color: var(--dim);
+  color: var(--wall-time);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .s-wall-rail-empty {
-  color: var(--dim);
+  color: var(--wall-time);
   line-height: 1.45;
 }
 
+/* Flat readouts on a ruled band, not five little cards: the numbers are the
+   instrument, and boxing each one adds five borders for no added meaning. */
 .s-wall-rail-stats {
   display: flex;
   flex-wrap: wrap;
-  gap: var(--space-md);
+  gap: var(--space-lg);
   margin: var(--space-sm) 0 0;
+  padding: var(--space-xs) 0;
+  border-top: 1px solid var(--wall-rule);
+  border-bottom: 1px solid var(--wall-rule);
 }
 
 .s-wall-rail-stat {
@@ -513,14 +608,18 @@
 }
 
 .s-wall-rail-stat-label {
-  color: var(--dim);
+  color: var(--wall-eyebrow);
+  font-size: var(--text-2xs);
+  letter-spacing: var(--tracking-lg);
   text-transform: uppercase;
-  letter-spacing: var(--tracking-md);
 }
 
 .s-wall-rail-stat-value {
   margin: 0;
   color: var(--ink);
+  font-size: var(--text-md);
+  font-weight: 600;
+  line-height: 1.2;
   font-variant-numeric: tabular-nums;
 }
 
@@ -538,13 +637,14 @@
 }
 
 .s-wall-rail-gauge-label {
-  color: var(--dim);
+  color: var(--wall-eyebrow);
+  font-size: var(--text-2xs);
   text-transform: uppercase;
-  letter-spacing: var(--tracking-md);
+  letter-spacing: var(--tracking-lg);
 }
 
 .s-wall-rail-gauge-of {
-  color: var(--dim);
+  color: var(--wall-time);
 }
 
 .s-wall-rail-gauge-pct {
@@ -561,14 +661,14 @@
   height: 3px;
   margin-top: 4px;
   border-radius: 2px;
-  background: color-mix(in srgb, var(--border) 70%, transparent);
+  background: var(--wall-rule);
   overflow: hidden;
 }
 
 .s-wall-rail-gauge-fill {
   display: block;
   height: 100%;
-  background: color-mix(in srgb, var(--muted) 70%, transparent);
+  background: var(--muted);
 }
 
 .s-wall-rail-gauge--over .s-wall-rail-gauge-fill {
@@ -591,14 +691,16 @@
 }
 
 .s-wall-rail-fact-label {
-  color: var(--dim);
-  letter-spacing: var(--tracking-md);
+  color: var(--wall-eyebrow);
+  font-size: var(--text-2xs);
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-lg);
 }
 
 .s-wall-rail-fact-value {
   margin: 0;
   min-width: 0;
-  color: var(--muted);
+  color: var(--ink);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -628,13 +730,13 @@
 }
 
 .s-wall-rail-frow:hover {
-  background: color-mix(in srgb, var(--ink) 5%, transparent);
+  background: color-mix(in srgb, var(--ink) 7%, transparent);
 }
 
 .s-wall-rail-fstate {
   flex: none;
   width: 8px;
-  color: var(--dim);
+  color: var(--wall-glyph);
 }
 
 .s-wall-rail-fstate--created,
@@ -650,7 +752,7 @@
 }
 
 .s-wall-rail-fdir {
-  color: var(--dim);
+  color: var(--wall-time);
 }
 
 .s-wall-rail-fbase {
@@ -674,7 +776,7 @@
 
 .s-wall-rail-cmark {
   flex: none;
-  color: var(--dim);
+  color: var(--wall-tool);
 }
 
 .s-wall-rail-ctext {
@@ -685,11 +787,12 @@
 }
 
 .s-wall-rail-bash-dir {
-  color: var(--dim);
+  color: var(--wall-time);
 }
 
 .s-wall-rail-bash-prog {
   color: var(--ink);
+  font-weight: 600;
 }
 
 .s-wall-rail-bash-arg {
@@ -697,17 +800,17 @@
 }
 
 .s-wall-rail-bash-dim {
-  color: var(--dim);
+  color: var(--wall-time);
 }
 
 .s-wall-rail-bash-flag {
-  color: var(--dim);
+  color: var(--wall-time);
 }
 
 .s-wall-rail-cresult {
   flex: none;
   margin-left: auto;
-  color: var(--dim);
+  color: var(--wall-time);
   font-variant-numeric: tabular-nums;
 }
 
@@ -720,7 +823,8 @@
   gap: var(--space-sm);
   min-height: 28px;
   padding: 0 var(--space-sm);
-  border-top: 1px solid var(--border);
+  border-top: 1px solid var(--wall-rule);
+  background: var(--wall-head);
 }
 
 .s-wall-rail-act {
@@ -740,13 +844,14 @@
 
 .s-wall-rail-keys {
   margin-left: auto;
-  color: var(--dim);
+  color: var(--wall-time);
   white-space: nowrap;
 }
 
 .s-wall-rail-keys kbd {
   font: inherit;
-  color: var(--muted);
+  font-weight: 600;
+  color: var(--ink);
 }
 
 /* ── Empty wall ── */
@@ -770,7 +875,7 @@
 
 .s-wall-empty-sub {
   font-size: var(--text-sm);
-  color: var(--dim);
+  color: var(--wall-time);
   letter-spacing: var(--tracking-sm);
 }
 

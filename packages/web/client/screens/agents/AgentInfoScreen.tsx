@@ -188,7 +188,12 @@ export function AgentInfoScreen({
 }) {
   const { agents, route } = useScout();
   const [session, setSession] = useState<SessionEntry | null>(null);
+  // The session → agent resolution is a two-stage waterfall; track how far it
+  // has settled so the screen shows a loading state — not "Agent not found" —
+  // while either fetch is still in flight.
+  const [sessionResolved, setSessionResolved] = useState(false);
   const [agentDetail, setAgentDetail] = useState<Agent | null>(null);
+  const [agentDetailSettledFor, setAgentDetailSettledFor] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
@@ -201,10 +206,13 @@ export function AgentInfoScreen({
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
       setSession(null);
+    } finally {
+      setSessionResolved(true);
     }
   }, [conversationId]);
 
   useEffect(() => {
+    setSessionResolved(false);
     void load();
   }, [load]);
   useBrokerEvents(() => {
@@ -225,6 +233,9 @@ export function AgentInfoScreen({
       })
       .catch(() => {
         if (!cancelled) setAgentDetail(null);
+      })
+      .finally(() => {
+        if (!cancelled) setAgentDetailSettledFor(resolvedAgentId);
       });
 
     return () => {
@@ -241,6 +252,20 @@ export function AgentInfoScreen({
   );
 
   if (!agent) {
+    const resolving = !sessionResolved
+      || (resolvedAgentId !== null && agentDetailSettledFor !== resolvedAgentId);
+    if (resolving) {
+      return (
+        <div>
+          <BackToPicker
+            slot="agent-info"
+            fallback={{ view: "conversation", conversationId }}
+            navigate={navigate}
+          />
+          <div className="s-empty"><p>Loading…</p></div>
+        </div>
+      );
+    }
     return (
       <div>
         <BackToPicker

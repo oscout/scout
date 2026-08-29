@@ -21,6 +21,9 @@ mock.module(new URL("../scout/Provider.tsx", import.meta.url).pathname, () => ({
   useScout: () => ({
     openFilePreview: () => {},
   }),
+  useOptionalScout: () => ({
+    openFilePreview: () => {},
+  }),
 }));
 
 const { MessageMarkup } = await import("./message-markup.tsx");

@@ -16,7 +16,19 @@ import type {
 } from "./types.js";
 
 const DEFAULT_POLL_INTERVAL_MS = readPositiveIntEnv("OPENSCOUT_TOPOLOGY_POLL_INTERVAL_MS", 10_000);
+const DEFAULT_MIN_SCAN_INTERVAL_MS = 15_000;
 const EVENT_BUFFER_LIMIT = 500;
+
+/**
+ * Minimum wall-clock interval between actual topology scans. scanNow() is a
+ * fully synchronous readFileSync+JSON.parse walk over transcript files and can
+ * block the broker's event loop for seconds, so even forced refreshes are
+ * throttled. Set SCOUT_TOPOLOGY_MIN_SCAN_INTERVAL_MS=0 to disable the guard.
+ */
+function minScanIntervalMs(): number {
+  const raw = Number.parseInt(process.env.SCOUT_TOPOLOGY_MIN_SCAN_INTERVAL_MS ?? "", 10);
+  return Number.isFinite(raw) && raw >= 0 ? raw : DEFAULT_MIN_SCAN_INTERVAL_MS;
+}
 
 type Subscriber = (event: HarnessTopologyEvent) => void;
 
@@ -136,11 +148,14 @@ export class HarnessTopologyObserver {
   private scanInFlight: Promise<HarnessTopologySnapshot> | null = null;
   private eventCounter = 0;
   private lastSnapshot: HarnessTopologySnapshot | null = null;
+  /** Wall-clock (Date.now) time the last scan completed; independent of the injected `now` clock. */
+  private lastScanCompletedAt = 0;
 
   constructor(options: HarnessTopologyObserverOptions = {}) {
     this.options = options;
   }
 
+  /** Runs a scan unconditionally (coalescing concurrent callers). Prefer getSnapshot(). */
   async scan(): Promise<HarnessTopologySnapshot> {
     if (this.scanInFlight) return this.scanInFlight;
     this.scanInFlight = Promise.resolve()
@@ -151,9 +166,33 @@ export class HarnessTopologyObserver {
     return this.scanInFlight;
   }
 
+  /**
+   * Scan unless one completed within the minimum interval, in which case the
+   * cached snapshot is returned. Forced callers (getSnapshot(true), nudges)
+   * bypass this and go straight to scan(). See minScanIntervalMs().
+   */
+  private scanThrottled(): Promise<HarnessTopologySnapshot> {
+    if (this.scanInFlight) return this.scanInFlight;
+    const interval = minScanIntervalMs();
+    if (
+      this.lastSnapshot
+      && interval > 0
+      && Date.now() - this.lastScanCompletedAt < interval
+    ) {
+      return Promise.resolve(this.lastSnapshot);
+    }
+    return this.scan();
+  }
+
   async getSnapshot(force = false): Promise<HarnessTopologySnapshot> {
-    if (force || !this.lastSnapshot) {
+    // A forced call is event-driven ("something just changed, rescan") and
+    // rare — it skips the interval throttle, coalescing only with a scan
+    // already in flight. The throttle protects the steady-state pollers.
+    if (force) {
       return this.scan();
+    }
+    if (!this.lastSnapshot) {
+      return this.scanThrottled();
     }
     return this.lastSnapshot;
   }
@@ -161,7 +200,7 @@ export class HarnessTopologyObserver {
   subscribe(handler: Subscriber): () => void {
     this.subscribers.add(handler);
     this.ensureLoopRunning();
-    void this.scan();
+    void this.scanThrottled();
     return () => {
       this.subscribers.delete(handler);
       if (this.subscribers.size === 0) {
@@ -213,6 +252,7 @@ export class HarnessTopologyObserver {
     }
 
     this.lastSnapshot = this.buildSnapshot(nowMs);
+    this.lastScanCompletedAt = Date.now();
     return this.lastSnapshot;
   }
 
@@ -266,7 +306,9 @@ export class HarnessTopologyObserver {
   private ensureLoopRunning(): void {
     if (this.timer) return;
     this.timer = setInterval(() => {
-      void this.scan();
+      // The poll loop also respects the minimum scan interval; ticks that land
+      // inside it are no-ops rather than event-loop-blocking rescans.
+      void this.scanThrottled();
     }, this.options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS);
   }
 
@@ -292,5 +334,8 @@ export function snapshotRecentHarnessTopologyEvents(limit = EVENT_BUFFER_LIMIT):
 }
 
 export function nudgeHarnessTopologyScan(): Promise<HarnessTopologySnapshot> {
-  return defaultObserver.scan();
+  // A nudge is event-driven, so it really rescans — bypassing both the
+  // lastSnapshot cache and the minimum-interval guard, coalescing only with
+  // a scan already in flight.
+  return defaultObserver.getSnapshot(true);
 }

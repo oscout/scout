@@ -4,7 +4,7 @@ import { createPortal } from "react-dom";
 import { DictationMic } from "../../components/DictationMic.tsx";
 import { EmptyState } from "../../components/EmptyState.tsx";
 import { RuntimePicker } from "../../components/MessageComposer/index.ts";
-import { api } from "../../lib/api.ts";
+import { api, peekApiGet } from "../../lib/api.ts";
 import { copyTextToClipboard } from "../../lib/clipboard.ts";
 import { isRoutableMediaFile, uploadMediaFiles } from "../../lib/media-blobs.ts";
 import { useBrokerEvents } from "../../lib/sse.ts";
@@ -21,7 +21,6 @@ import {
 import { effortsFor, type RuntimeValue } from "../../lib/runtime-catalog.ts";
 
 import {
-  brokerAttemptDetailLimit,
   brokerAttemptErrorSummary,
   brokerAttemptFailureTitle,
   brokerAttemptIsFailure,
@@ -30,7 +29,6 @@ import {
   brokerDispatchReviewRequest,
   brokerMessageFeedRows,
   brokerMetadataJson,
-  clippedText,
 } from "./broker-display.ts";
 import { BrokerMetadataPanel } from "./BrokerMetadataPanel.tsx";
 import { DispatchAftermath } from "./DispatchAftermath.tsx";
@@ -43,6 +41,8 @@ import "../system-surfaces-redesign.css";
 type BrokerTab = DispatchFilter;
 
 const BROKER_TABS: BrokerTab[] = ["all", "delivered", "failed"];
+
+const ROUTE_CACHE_MAX_AGE_MS = 30_000;
 
 const TAB_LABELS: Record<BrokerTab, string> = {
   all: "All",
@@ -67,7 +67,11 @@ function brokerAttemptReference(attempt: BrokerRouteAttempt): string {
   return attempt.messageId ?? attempt.deliveryId ?? attempt.invocationId ?? attempt.id;
 }
 
-/** Dispatch-wire status word: the dot carries the color, the word stays terse. */
+/**
+ * Dispatch status word. The ledger row no longer shows it — colour on the row
+ * carries state for sighted operators — so this now feeds the row's accessible
+ * name, the pending chip, and the inspector header beside the tone dot.
+ */
 function dispatchStateLabel(attempt: BrokerRouteAttempt): string {
   const tone = brokerAttemptTone(attempt.kind, attempt.status);
   switch (tone) {
@@ -95,7 +99,7 @@ function dispatchActorInitials(name: string | null): string {
   return name.trim().slice(0, 2).toUpperCase();
 }
 
-/** Wall-clock stamp (e.g. "12:20 AM") to sit under the relative time. */
+/** Wall-clock stamp (e.g. "12:20 AM"); the day grouping supplies the date. */
 function dispatchClock(ts: number): string {
   const ms = normalizeTimestampMs(ts) ?? 0;
   return new Date(ms).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
@@ -211,79 +215,122 @@ function dispatchEndpointAgent(agents: Agent[], value: string | null): Agent | n
   ].some((candidate) => candidate?.trim().replace(/^@/, "").toLowerCase() === needle)) ?? null;
 }
 
-function dispatchEndpointFields(
-  attempt: BrokerRouteAttempt,
-  side: "from" | "to",
-  agent: Agent | null,
-): Array<{ label: string; value: string }> {
-  const machine = agent?.authorityNodeName
-    ?? agent?.homeNodeName
-    ?? agent?.authorityNodeId
-    ?? agent?.homeNodeId
-    ?? metadataText(attempt, "machine", "machineName", "nodeName");
-  const fields = agent
-    ? [
-        { label: "Status", value: agent.state },
-        { label: "Handle", value: agent.handle ? `@${agent.handle.replace(/^@/, "")}` : null },
-        { label: "Project", value: agent.project },
-        { label: "Branch", value: agent.branch },
-        {
-          label: "Runtime",
-          value: [agent.harness, agent.model, agent.reasoningEffort].filter(Boolean).join(" · ") || null,
-        },
-        { label: "Machine", value: machine },
-        { label: "Working dir", value: agent.cwd ?? agent.projectRoot },
-        { label: "Session", value: agent.harnessSessionId },
-        { label: "Conversation", value: agent.conversationId ?? attempt.conversationId },
-      ]
-    : [
-        { label: "Kind", value: side === "to" && attempt.conversationId ? "Session route" : dispatchPartyKind(attempt, side) },
-        { label: "Channel", value: dispatchChannelLabel(attempt.route) },
-        { label: "Session", value: side === "to" ? attempt.target : metadataText(attempt, "sessionId", "harnessSessionId") },
-        { label: "Conversation", value: attempt.conversationId },
-        { label: "Harness", value: metadataText(attempt, "harness") },
-        { label: "Model", value: metadataText(attempt, "model") },
-        { label: "Project", value: metadataText(attempt, "project", "projectName") },
-        { label: "Branch", value: metadataText(attempt, "branch") },
-        { label: "Machine", value: machine },
-      ];
-  return fields.filter((field): field is { label: string; value: string } => Boolean(field.value));
-}
+type DispatchParty = {
+  /** Display name for this end of the edge. */
+  label: string;
+  /** What kind of thing it is (Agent, Operator, Session route, Channel…). */
+  kind: string;
+  agent: Agent | null;
+};
 
-function DispatchEndpoint({
-  attempt,
-  agents,
-  side,
-}: {
-  attempt: BrokerRouteAttempt;
-  agents: Agent[];
-  side: "from" | "to";
-}) {
+function dispatchParty(
+  attempt: BrokerRouteAttempt,
+  agents: Agent[],
+  side: "from" | "to",
+): DispatchParty {
   const rawValue = side === "from" ? attempt.actorName : attempt.target;
   const agent = dispatchEndpointAgent(agents, rawValue);
   const label = agent?.name ?? rawValue ?? (side === "from" ? "Unknown" : "No target");
-  const kind = agent ? "Agent" : side === "to" && attempt.conversationId ? "Session" : dispatchPartyKind(attempt, side);
-  const fields = dispatchEndpointFields(attempt, side, agent);
-  const descriptionId = `dispatch-endpoint-${attempt.id}-${side}`;
+  const kind = agent
+    ? "Agent"
+    : side === "to" && attempt.conversationId
+      ? "Session route"
+      : dispatchPartyKind(attempt, side);
+  return { label, kind, agent };
+}
+
+/**
+ * From and To describe one relationship, so they hover as one card. The fields
+ * name the edge — who, to what kind of thing, at which address, over which
+ * channel — instead of repeating an endpoint dossier twice per row.
+ *
+ * Where the edge lands on a known agent we also carry branch, runtime and
+ * machine: the inspector does not list them, so hover is the only place in
+ * Dispatch they exist. The target's context wins over the sender's — the
+ * target is the half the operator is scanning for.
+ */
+function dispatchRouteFields(
+  attempt: BrokerRouteAttempt,
+  from: DispatchParty,
+  to: DispatchParty,
+): Array<{ label: string; value: string }> {
+  const context = to.agent ?? from.agent;
+  return [
+    { label: "From", value: from.kind },
+    { label: "To", value: to.kind },
+    { label: "Target", value: attempt.target ?? to.label },
+    { label: "Channel", value: dispatchChannelLabel(attempt.route) },
+    {
+      label: "Project",
+      value: context?.project ?? metadataText(attempt, "project", "projectName"),
+    },
+    { label: "Branch", value: context?.branch ?? metadataText(attempt, "branch") },
+    {
+      label: "Runtime",
+      value: context
+        ? [context.harness, context.model, context.reasoningEffort].filter(Boolean).join(" · ") || null
+        : [metadataText(attempt, "harness"), metadataText(attempt, "model")].filter(Boolean).join(" · ") || null,
+    },
+    {
+      label: "Machine",
+      value: context?.authorityNodeName
+        ?? context?.homeNodeName
+        ?? context?.authorityNodeId
+        ?? context?.homeNodeId
+        ?? metadataText(attempt, "machine", "machineName", "nodeName"),
+    },
+  ].filter((field): field is { label: string; value: string } => Boolean(field.value));
+}
+
+function DispatchRouteFace({
+  party,
+  route,
+  side,
+}: {
+  party: DispatchParty;
+  route: string | null;
+  side: "from" | "to";
+}) {
+  return (
+    <span className={`sys-broker-route-end sys-broker-route-end--${side}`}>
+      <span className="sys-broker-avatar sys-broker-endpoint-avatar" aria-hidden="true">
+        {party.agent || side === "from"
+          ? dispatchActorInitials(party.label)
+          : <RouteGlyph route={route} />}
+      </span>
+      <span className="sys-broker-endpoint-name" title={party.label}>{party.label}</span>
+    </span>
+  );
+}
+
+/**
+ * The route: one composite cell, one hover card, one truncation budget. The
+ * sender recedes and gives up width first — the target is the half that varies
+ * and the half the operator is scanning for.
+ */
+function DispatchRoute({ attempt, agents }: { attempt: BrokerRouteAttempt; agents: Agent[] }) {
+  const from = dispatchParty(attempt, agents, "from");
+  const to = dispatchParty(attempt, agents, "to");
+  const fields = dispatchRouteFields(attempt, from, to);
+  const descriptionId = `dispatch-route-${attempt.id}`;
 
   return (
-    <span
-      className={`sys-broker-endpoint sys-broker-endpoint--${side}`}
-      tabIndex={0}
-      aria-describedby={descriptionId}
-    >
-      <span className="sys-broker-avatar sys-broker-endpoint-avatar" aria-hidden="true">
-        {agent || side === "from" ? dispatchActorInitials(label) : <RouteGlyph route={attempt.route} />}
-      </span>
-      <span className="sys-broker-endpoint-name" title={label}>{label}</span>
+    <span className="sys-broker-route" tabIndex={0} aria-describedby={descriptionId}>
+      <DispatchRouteFace party={from} route={attempt.route} side="from" />
+      <ArrowRight className="sys-broker-route-arrow" size={11} aria-hidden="true" />
+      <DispatchRouteFace party={to} route={attempt.route} side="to" />
       <span className="sys-broker-endpoint-card" id={descriptionId} role="tooltip">
         <span className="sys-broker-endpoint-card-head">
-          <span className="sys-broker-avatar" aria-hidden="true">
-            {agent || side === "from" ? dispatchActorInitials(label) : <RouteGlyph route={attempt.route} />}
-          </span>
-          <span>
-            <strong>{label}</strong>
-            <small>{kind}</small>
+          <span className="sys-broker-endpoint-card-edge">
+            <span className="sys-broker-avatar sys-broker-endpoint-avatar" aria-hidden="true">
+              {dispatchActorInitials(from.label)}
+            </span>
+            <strong>{from.label}</strong>
+            <ArrowRight className="sys-broker-route-arrow" size={11} aria-hidden="true" />
+            <span className="sys-broker-avatar sys-broker-endpoint-avatar" aria-hidden="true">
+              {to.agent ? dispatchActorInitials(to.label) : <RouteGlyph route={attempt.route} />}
+            </span>
+            <strong>{to.label}</strong>
           </span>
         </span>
         <span className="sys-broker-endpoint-card-body">
@@ -359,13 +406,18 @@ export function BrokerScreen({
   initialAttemptId?: string;
 }) {
   const { route, agents, selectedBrokerAttempt, inspectBrokerAttempt, clearBrokerAttempt } = useScout();
-  const [broker, setBroker] = useState<BrokerDiagnostics | null>(null);
+  // Warm start: paint the last diagnostics page on remount while the mount
+  // effect's load("initial") refreshes it in the background.
+  const [initialBroker] = useState(() =>
+    peekApiGet<BrokerDiagnostics>(brokerDiagnosticsUrl(), ROUTE_CACHE_MAX_AGE_MS),
+  );
+  const [broker, setBroker] = useState<BrokerDiagnostics | null>(initialBroker);
   const activeTab: BrokerTab = route.view === "broker" ? route.filter ?? "all" : "all";
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(initialBroker === null);
   const [refreshing, setRefreshing] = useState(false);
   const [loadingOlder, setLoadingOlder] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const brokerRef = useRef<BrokerDiagnostics | null>(null);
+  const brokerRef = useRef<BrokerDiagnostics | null>(initialBroker);
   const requestIdRef = useRef(0);
   const refreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -690,8 +742,16 @@ export function BrokerScreen({
               title={broker.source.detail}
             >
               <span className="sys-broker-source-dot" aria-hidden="true" />
-              <strong>Dispatch may be out of date</strong>
-              <span>Live broker unavailable; showing saved dispatch history.</span>
+              <strong>
+                {broker.source.brokerReachable
+                  ? "Dispatch history is loading"
+                  : "Dispatch may be out of date"}
+              </strong>
+              <span>
+                {broker.source.brokerReachable
+                  ? "Broker online; showing saved dispatch history while live messages load."
+                  : "Live broker unavailable; showing saved dispatch history."}
+              </span>
             </div>
           )}
 
@@ -796,9 +856,7 @@ function BrokerAttemptList({
   return (
     <div className="sys-broker-wire" aria-label="Dispatch ledger">
       <div className="sys-broker-wire-head" aria-hidden="true">
-        <span className="sys-broker-col sys-broker-col--status">Status</span>
-        <span className="sys-broker-col sys-broker-col--from">From</span>
-        <span className="sys-broker-col sys-broker-col--to">To</span>
+        <span className="sys-broker-col sys-broker-col--route">Route</span>
         <span className="sys-broker-col sys-broker-col--msg">Message</span>
         <span className="sys-broker-col sys-broker-col--time">Time</span>
       </div>
@@ -812,9 +870,13 @@ function BrokerAttemptList({
             {group.attempts.map(({ attempt, index }) => {
               const tone = brokerAttemptTone(attempt.kind, attempt.status);
               const isFailure = brokerAttemptIsFailure(attempt);
+              const isPending = !isFailure && (tone === "working" || tone === "warning");
               const errorSummary = brokerAttemptErrorSummary(attempt);
-              const detailSnippet = clippedText(attempt.detail, brokerAttemptDetailLimit(attempt));
               const stateLabel = dispatchStateLabel(attempt);
+              // Delivered is the unmarked norm: the row itself carries state in
+              // colour, and the chip only speaks when the dispatch did not just
+              // work. The state word survives for screen readers in aria-label.
+              const chipText = isFailure ? errorSummary : isPending ? stateLabel : null;
               const inspect = () => {
                 onInspect(attempt);
                 window.dispatchEvent(new CustomEvent("scout:set-inspector-width", {
@@ -825,31 +887,32 @@ function BrokerAttemptList({
                 <div
                   key={attempt.id}
                   role="listitem"
-                  className={`sys-broker-wire-row${isFailure ? " sys-broker-wire-row--failure" : ""}${selectedAttemptId === attempt.id ? " sys-broker-wire-row--selected" : ""}`}
-                  aria-label={`Inspect ${attempt.detail}`}
+                  className={`sys-broker-wire-row${isFailure ? " sys-broker-wire-row--failure" : isPending ? " sys-broker-wire-row--pending" : ""}${selectedAttemptId === attempt.id ? " sys-broker-wire-row--selected" : ""}`}
+                  aria-label={`${stateLabel}. Inspect ${attempt.detail}`}
                   onClick={inspect}
                   {...getRowFocusProps(index)}
                 >
-                  <div className="sys-broker-cell sys-broker-col--status">
-                    <span className={`sys-broker-dot sys-broker-dot--${tone}`} aria-hidden="true" />
-                    <span className={`sys-broker-state sys-broker-state--${tone}`}>{stateLabel}</span>
-                  </div>
-                  <div className="sys-broker-cell sys-broker-col--from">
-                    <DispatchEndpoint attempt={attempt} agents={agents} side="from" />
-                  </div>
-                  <div className="sys-broker-cell sys-broker-col--to">
-                    <ArrowRight className="sys-broker-route-arrow" size={13} aria-hidden="true" />
-                    <DispatchEndpoint attempt={attempt} agents={agents} side="to" />
+                  <div className="sys-broker-cell sys-broker-col--route">
+                    <DispatchRoute attempt={attempt} agents={agents} />
                   </div>
                   <div className="sys-broker-cell sys-broker-col--msg">
-                    <span className="sys-broker-msg" title={attempt.detail}>{detailSnippet}</span>
-                    {isFailure && errorSummary && (
-                      <span className="sys-broker-msg-error" title={errorSummary}>{errorSummary}</span>
+                    <span className="sys-broker-msg" title={attempt.detail}>{attempt.detail}</span>
+                    {chipText && (
+                      <span
+                        className={`sys-broker-msg-error sys-broker-msg-error--${isFailure ? "danger" : "warning"}`}
+                        title={chipText}
+                      >
+                        {chipText}
+                      </span>
                     )}
                   </div>
                   <div className="sys-broker-cell sys-broker-col--time">
-                    <time className="sys-broker-time-rel" title={fullTimestamp(attempt.ts)}>{timeAgo(attempt.ts)}</time>
-                    <span className="sys-broker-time-abs">{dispatchClock(attempt.ts)}</span>
+                    <time
+                      className="sys-broker-time-abs"
+                      title={`${timeAgo(attempt.ts)} · ${fullTimestamp(attempt.ts)}`}
+                    >
+                      {dispatchClock(attempt.ts)}
+                    </time>
                   </div>
                 </div>
               );

@@ -151,6 +151,14 @@ describe("conversation composer product model", () => {
 
     expect(props.treatment).toBe("familiar");
   });
+
+  test("passes a native recovery draft into the shared composer", () => {
+    const props = resolveThreadEmbedProps(
+      new URLSearchParams("conversationId=c-1&composeDraft=Help+me+recover"),
+    );
+
+    expect(props.initialDraft).toBe("Help me recover");
+  });
 });
 
 describe("conversation feed rows", () => {

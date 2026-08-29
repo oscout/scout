@@ -339,7 +339,7 @@ describe("isAgentLaneWorking", () => {
           t: 0,
           kind: "boot",
           text: "Session started · gpt-5.5",
-          detail: "workspace: /Users/example/dev/atelier · turns: 0 · status: idle",
+          detail: "workspace: /Users/art/dev/atelier · turns: 0 · status: idle",
         }],
         files: [],
         live: true,
@@ -387,7 +387,7 @@ describe("isAgentLaneWorking", () => {
         source: "claude",
         transcriptPath: "/tmp/rollout.jsonl",
         sessionId,
-        cwd: "/Users/example/dev/openscout",
+        cwd: "/Users/art/dev/openscout",
         project: "openscout",
         harness: "unattributed",
         mtimeMs: NOW - 20_000,
@@ -418,7 +418,7 @@ describe("isAgentLaneWorking", () => {
         source: "claude",
         transcriptPath: "/tmp/rollout.jsonl",
         sessionId,
-        cwd: "/Users/example/dev/openscout",
+        cwd: "/Users/art/dev/openscout",
         project: "openscout",
         harness: "unattributed",
         mtimeMs: NOW - 20_000,
@@ -442,7 +442,7 @@ describe("isAgentLaneWorking", () => {
         source: "codex",
         transcriptPath: "/tmp/rollout.jsonl",
         sessionId: "019edd5a-ad7c-7563-8b28-a9d34699a369",
-        cwd: "/Users/example/dev/openscout",
+        cwd: "/Users/art/dev/openscout",
         project: "openscout",
         harness: "unattributed",
         mtimeMs: NOW - 20_000,
@@ -463,9 +463,9 @@ describe("isAgentLaneWorking", () => {
     const { lanes } = buildAgentLanes({
       transcripts: [{
         source: "kimi",
-        transcriptPath: `/Users/example/.kimi-code/sessions/wd_openscout/session/${sessionId}/agents/main/wire.jsonl`,
+        transcriptPath: `/Users/art/.kimi-code/sessions/wd_openscout/session/${sessionId}/agents/main/wire.jsonl`,
         sessionId,
-        cwd: "/Users/example/dev/openscout",
+        cwd: "/Users/art/dev/openscout",
         project: "openscout",
         harness: "unattributed",
         mtimeMs: NOW - 20_000,
@@ -493,7 +493,7 @@ describe("isAgentLaneWorking", () => {
         source: "codex",
         transcriptPath: "/tmp/rollout.jsonl",
         sessionId: "019ede3a-7fef-7750-a51c-0f2428f8dcee",
-        cwd: "/Users/example/dev/openscout",
+        cwd: "/Users/art/dev/openscout",
         project: "openscout",
         harness: "unattributed",
         mtimeMs: NOW - 20_000,
@@ -504,7 +504,7 @@ describe("isAgentLaneWorking", () => {
         ppid: 1,
         command: "codex app-server",
         etime: "01:00",
-        cwd: "/Users/example/dev/openscout",
+        cwd: "/Users/art/dev/openscout",
         harness: "scout-managed",
         parentChain: [],
         source: "codex",
@@ -528,9 +528,9 @@ describe("isAgentLaneWorking", () => {
     const { lanes } = buildAgentLanes({
       transcripts: [{
         source: "grok",
-        transcriptPath: "/Users/example/.grok/sessions/%2FUsers%2Fexample%2Fdev%2Fopenscout/sess-grok/events.jsonl",
+        transcriptPath: "/Users/art/.grok/sessions/%2FUsers%2Fart%2Fdev%2Fopenscout/sess-grok/events.jsonl",
         sessionId: "sess-grok",
-        cwd: "/Users/example/dev/openscout",
+        cwd: "/Users/art/dev/openscout",
         project: "openscout",
         harness: "unattributed",
         mtimeMs: NOW - 20_000,
@@ -553,9 +553,9 @@ describe("isAgentLaneWorking", () => {
     const { lanes } = buildAgentLanes({
       transcripts: [{
         source: "grok",
-        transcriptPath: "/Users/example/.grok/sessions/%2FUsers%2Fexample%2Fdev%2Fopenscout/sess-grok/events.jsonl",
+        transcriptPath: "/Users/art/.grok/sessions/%2FUsers%2Fart%2Fdev%2Fopenscout/sess-grok/events.jsonl",
         sessionId: "sess-grok",
-        cwd: "/Users/example/dev/openscout",
+        cwd: "/Users/art/dev/openscout",
         project: "openscout",
         harness: "unattributed",
         mtimeMs: NOW - 20_000,
@@ -580,9 +580,9 @@ describe("isAgentLaneWorking", () => {
     const { lanes } = buildAgentLanes({
       transcripts: [{
         source: "grok",
-        transcriptPath: "/Users/example/.grok/sessions/%2FUsers%2Fexample%2Fdev%2Fopenscout/sess-grok/events.jsonl",
+        transcriptPath: "/Users/art/.grok/sessions/%2FUsers%2Fart%2Fdev%2Fopenscout/sess-grok/events.jsonl",
         sessionId: "sess-grok",
-        cwd: "/Users/example/dev/openscout",
+        cwd: "/Users/art/dev/openscout",
         project: "openscout",
         harness: "unattributed",
         mtimeMs: NOW - 20_000,
@@ -593,7 +593,7 @@ describe("isAgentLaneWorking", () => {
         ppid: 1,
         command: "codex app-server",
         etime: "01:00",
-        cwd: "/Users/example/dev/openscout",
+        cwd: "/Users/art/dev/openscout",
         harness: "scout-managed",
         parentChain: [],
         source: "codex",
@@ -618,7 +618,7 @@ describe("isAgentLaneWorking", () => {
         source: "codex",
         transcriptPath: "/tmp/rollout.jsonl",
         sessionId: "sess-codex-live",
-        cwd: "/Users/example/dev/openscout",
+        cwd: "/Users/art/dev/openscout",
         project: "openscout",
         harness: "unattributed",
         mtimeMs: NOW - 15_000,
@@ -629,7 +629,7 @@ describe("isAgentLaneWorking", () => {
         ppid: 1,
         command: "codex app-server",
         etime: "01:00",
-        cwd: "/Users/example/dev/openscout",
+        cwd: "/Users/art/dev/openscout",
         harness: "scout-managed",
         parentChain: [],
         source: "codex",
@@ -646,7 +646,7 @@ describe("isAgentLaneWorking", () => {
       source: "codex",
       transcriptPath: "/tmp/rollout.jsonl",
       sessionId: "sess-codex-live",
-      cwd: "/Users/example/dev/openscout",
+      cwd: "/Users/art/dev/openscout",
       project: "openscout",
       harness: "unattributed",
       mtimeMs: NOW,
@@ -656,7 +656,7 @@ describe("isAgentLaneWorking", () => {
       ppid: 1,
       command: "codex app-server",
       etime: "01:00",
-      cwd: "/Users/example/dev/openscout",
+      cwd: "/Users/art/dev/openscout",
       harness: "scout-managed",
       parentChain: [],
       source: "codex",
@@ -675,7 +675,7 @@ describe("isAgentLaneWorking", () => {
         source: "codex",
         transcriptPath: "/tmp/rollout.jsonl",
         sessionId: "sess-codex-live",
-        cwd: "/Users/example/dev/openscout",
+        cwd: "/Users/art/dev/openscout",
         project: "openscout",
         harness: "unattributed",
         mtimeMs: NOW - 15_000,
@@ -686,7 +686,7 @@ describe("isAgentLaneWorking", () => {
         ppid: 1,
         command: "codex app-server",
         etime: "01:00",
-        cwd: "/Users/example/dev/openscout",
+        cwd: "/Users/art/dev/openscout",
         harness: "scout-managed",
         parentChain: [],
         source: "codex",
@@ -713,7 +713,7 @@ describe("isAgentLaneWorking", () => {
         source: "codex",
         transcriptPath: "/tmp/rollout.jsonl",
         sessionId: "sess-codex-live",
-        cwd: "/Users/example/dev/openscout",
+        cwd: "/Users/art/dev/openscout",
         project: "openscout",
         harness: "unattributed",
         mtimeMs: NOW - 10_000,
@@ -724,7 +724,7 @@ describe("isAgentLaneWorking", () => {
         ppid: 1,
         command: "codex app-server",
         etime: "01:00",
-        cwd: "/Users/example/dev/openscout",
+        cwd: "/Users/art/dev/openscout",
         harness: "scout-managed",
         parentChain: [],
         source: "codex",
@@ -1389,7 +1389,7 @@ describe("buildAgentLanes roster", () => {
         source: "claude",
         transcriptPath: "/tmp/claude/live.jsonl",
         sessionId: "claude-sess-live",
-        cwd: "/Users/example/dev/openscout",
+        cwd: "/Users/art/dev/openscout",
         project: "openscout",
         harness: "unattributed",
         mtimeMs: NOW - 10_000,
@@ -1425,8 +1425,8 @@ describe("buildAgentLanes roster", () => {
       const agent = stubAgent(`relay-card-${suffix}`);
       agent.harness = "claude";
       agent.project = "openscout";
-      agent.projectRoot = "/Users/example/dev/openscout";
-      agent.cwd = "/Users/example/dev/openscout";
+      agent.projectRoot = "/Users/art/dev/openscout";
+      agent.cwd = "/Users/art/dev/openscout";
       // Server resolves relay-* placeholders to the live Claude session id.
       agent.harnessSessionId = "claude-sess-live";
       agent.harnessLogPath = "/tmp/claude/live.jsonl";
@@ -1439,7 +1439,7 @@ describe("buildAgentLanes roster", () => {
         source: "claude",
         transcriptPath: "/tmp/claude/live.jsonl",
         sessionId: "claude-sess-live",
-        cwd: "/Users/example/dev/openscout",
+        cwd: "/Users/art/dev/openscout",
         project: "openscout",
         harness: "unattributed",
         mtimeMs: NOW - 10_000,
@@ -1506,7 +1506,7 @@ describe("buildAgentLanes roster", () => {
         source: "claude",
         transcriptPath: "/tmp/claude/shared.jsonl",
         sessionId: "claude-sess-shared",
-        cwd: "/Users/example/dev/openscout",
+        cwd: "/Users/art/dev/openscout",
         project: "openscout",
         harness: "unattributed",
         mtimeMs: NOW - 10_000,
@@ -1547,7 +1547,7 @@ describe("buildAgentLanes roster", () => {
               t: 0,
               kind: "boot",
               text: "Session started · gpt-5.5",
-              detail: "workspace: /Users/example/dev/atelier · turns: 0 · status: idle",
+              detail: "workspace: /Users/art/dev/atelier · turns: 0 · status: idle",
             }],
             files: [],
             live: true,
@@ -1608,7 +1608,7 @@ describe("buildAgentLanes roster", () => {
     agent.state = "idle";
     agent.harnessSessionId = "lattices-pi-codex";
     agent.project = "lattices";
-    agent.cwd = "/Users/example/dev/lattices";
+    agent.cwd = "/Users/art/dev/lattices";
     agent.updatedAt = NOW - 6_000;
 
     const { lanes, issues } = buildAgentLanes({
@@ -1631,7 +1631,7 @@ describe("buildAgentLanes roster", () => {
       id: "ts.codex-live",
       harness: "codex",
       sourceSessionId: "codex-native-session",
-      cwd: "/Users/example/dev/lattices",
+      cwd: "/Users/art/dev/lattices",
       resumeCommand: "codex resume codex-native-session",
       surfaces: [{
         backend: "tmux",
@@ -1846,7 +1846,7 @@ describe("roster issues", () => {
     const transcripts = [
       {
         source: "cursor" as const,
-        transcriptPath: "/Users/example/Library/Application Support/Cursor/process-monitor/1783270000.log",
+        transcriptPath: "/Users/art/Library/Application Support/Cursor/process-monitor/1783270000.log",
         sessionId: sharedSessionId,
         cwd: null,
         project: "openscout",
@@ -1856,7 +1856,7 @@ describe("roster issues", () => {
       },
       {
         source: "cursor" as const,
-        transcriptPath: "/Users/example/Library/Application Support/Cursor/process-monitor/1783271000.log",
+        transcriptPath: "/Users/art/Library/Application Support/Cursor/process-monitor/1783271000.log",
         sessionId: sharedSessionId,
         cwd: null,
         project: "openscout",
@@ -1891,7 +1891,7 @@ function stubTailEvent(
     pid: 1,
     parentPid: null,
     project: "openscout",
-    cwd: "/Users/example/dev/openscout",
+    cwd: "/Users/art/dev/openscout",
     harness: "unattributed",
     kind,
     summary: "grep foo",

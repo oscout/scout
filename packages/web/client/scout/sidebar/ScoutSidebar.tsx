@@ -65,39 +65,7 @@ import {
 } from "../nav-destinations.ts";
 import { useOptionalFlag } from "hudsonkit/flags";
 import { useSidebarModel } from "./useSidebarModel.ts";
-
-function ScoutMark({ className = "" }: { className?: string }) {
-  return (
-    /* The artwork only occupied the middle ~half of a 0 0 20 20 box (outer
-       hexagon spans x 5.2–14.8), so at 22px the visible mark was ~10.6px wide —
-       narrower than the 16px nav icons beside it, which is why the brand read
-       as the smallest thing in the rail. Cropping the box to the artwork (plus
-       a half-stroke of 0.95) makes the rendered size mean what it says, so the
-       mark grows without the row growing. */
-    <svg
-      viewBox="3.35 3.35 13.3 13.3"
-      aria-hidden="true"
-      className={className}
-      fill="none"
-      stroke="currentColor"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-    >
-      <polygon
-        points="10,4.3 14.8,7.1 14.8,12.9 10,15.7 5.2,12.9 5.2,7.1"
-        strokeWidth="1.9"
-        fill="currentColor"
-        fillOpacity="0.12"
-      />
-      <polygon
-        points="10,7 12.4,8.4 12.4,10.6 10,12 7.6,10.6 7.6,8.4"
-        strokeWidth="0.9"
-        fill="currentColor"
-        fillOpacity="0.9"
-      />
-    </svg>
-  );
-}
+import { ScoutMark } from "../../components/ScoutMark.tsx";
 
 const ACTIVE_MENU_CLASS =
   "data-active:bg-sidebar-accent data-active:font-medium data-active:text-sidebar-accent-foreground data-active:shadow-[inset_2px_0_0_0_var(--sidebar-primary,var(--hud-accent,oklch(0.86_0.17_125)))]";
@@ -273,7 +241,7 @@ export function ScoutSidebar({
                   presentation === "slack" ? "font-sans" : "font-mono",
                 )}
               >
-                <ScoutMark className="size-[20px] shrink-0" />
+                <ScoutMark className="size-[22px] shrink-0" />
                 <span className={cn(
                   "truncate text-sm font-bold",
                   presentation === "slack" ? "tracking-[-0.01em]" : "tracking-[0.08em] uppercase",

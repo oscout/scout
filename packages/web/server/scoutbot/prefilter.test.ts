@@ -30,7 +30,7 @@ describe("scoutbot prefilter", () => {
           nodeId: "node-1",
           transport: "codex_app_server",
           state: "idle",
-          projectRoot: "/Users/example/dev/openscout",
+          projectRoot: "/Users/art/dev/openscout",
         },
       },
       conversations: {},

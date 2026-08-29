@@ -108,7 +108,7 @@ export function ScoutInspector() {
     : scoutbotHeight;
   // Dispatch owns its own bottom-anchored forwarding composer. Mounting the
   // global Scout panel here would create a second competing composer.
-  const showScoutbot = scoutbotEnabled && route.view !== "broker";
+  const showScoutbot = scoutbotEnabled && route.view !== "broker" && route.view !== "voice";
 
   return (
     <div ref={containerRef} className="flex h-full flex-col overflow-hidden">

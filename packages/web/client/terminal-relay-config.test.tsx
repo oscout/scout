@@ -20,6 +20,7 @@ const { renderToStaticMarkup } = ReactDomServer;
 mock.module("react", () => React);
 mock.module("react/jsx-runtime", () => ReactJsxRuntime);
 mock.module("react/jsx-dev-runtime", () => ReactJsxDevRuntime);
+mock.module("react-dom", () => ({ createPortal: (children: unknown) => children }));
 mock.module("react-dom/server", () => ReactDomServer);
 
 type TerminalRelayCapture = {
@@ -59,6 +60,9 @@ mock.module("hudsonkit/terminal", () => ({
 
 mock.module(new URL("./scout/Provider.tsx", import.meta.url).pathname, () => ({
   useScout: () => ({
+    agents: scoutAgents,
+  }),
+  useOptionalScout: () => ({
     agents: scoutAgents,
   }),
 }));

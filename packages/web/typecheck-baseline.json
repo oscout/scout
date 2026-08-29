@@ -1,6 +1,6 @@
 {
   "note": "Known packages/web type errors that predate the typecheck gate. Never add to this file by hand: fix the error instead. The gate rewrites it downward on its own whenever an error is fixed; `node scripts/typecheck.mjs --update` refuses any change that would grow it.",
-  "total": 81,
+  "total": 79,
   "errors": [
     {
       "file": "client/lib/conversation-groups.ts",
@@ -85,12 +85,6 @@
       "code": "TS2739",
       "message": "Type '{ kind: \"tool\"; tool: string; arg: string; }' is missing the following properties from type 'ObserveEvent': id, t, text",
       "count": 7
-    },
-    {
-      "file": "client/screens/home/home-moving-signal.tsx",
-      "code": "TS2345",
-      "message": "Argument of type 'KeyboardEvent<Element>' is not assignable to parameter of type 'KeyboardEvent<HTMLElement>'.",
-      "count": 1
     },
     {
       "file": "client/screens/home/home-moving.test.ts",
@@ -222,12 +216,6 @@
       "file": "server/create-openscout-web-server.ts",
       "code": "TS2339",
       "message": "Property 'postOperatorMessage' does not exist on type 'never'.",
-      "count": 1
-    },
-    {
-      "file": "server/create-openscout-web-server.ts",
-      "code": "TS2353",
-      "message": "Object literal may only specify known properties, and 'messageCoverageIncomplete' does not exist in type '{ actors: { [k: string]: { displayName: string; }; }; messages: { [k: string]: MessageRecord; }; totalMessageCount: number | null; projectionStatus: \"ready\" | \"disabled\" | \"degraded\" | null; }'.",
       "count": 1
     },
     {

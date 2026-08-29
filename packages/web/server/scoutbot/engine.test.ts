@@ -16,7 +16,7 @@ function makeInput(): ScoutbotSituationInput {
       createdAt: now,
     },
     generatedAt: now,
-    currentDirectory: "/Users/example/dev/openscout",
+    currentDirectory: "/Users/arach/dev/openscout",
     currentRoute: { view: "ops", mode: "tail" },
     broker: {
       reachable: true,
@@ -32,14 +32,14 @@ function makeInput(): ScoutbotSituationInput {
       brokerReachable: true,
       projects: [
         {
-          projectRoot: "/Users/example/dev/openscout",
+          projectRoot: "/Users/arach/dev/openscout",
           projectName: "openscout",
           status: "needs_attention",
           score: 70,
           reasons: ["work item waiting"],
           lastActivityAt: now - 10_000,
           git: {
-            projectRoot: "/Users/example/dev/openscout",
+            projectRoot: "/Users/arach/dev/openscout",
             branch: "codex/scoutbot-engine-comparison",
             upstream: "origin/main",
             ahead: 1,
@@ -70,9 +70,9 @@ function makeInput(): ScoutbotSituationInput {
     worktrees: [
       {
         id: "wt-openscout",
-        path: "/Users/example/dev/openscout",
+        path: "/Users/arach/dev/openscout",
         projectName: "openscout",
-        projectRoot: "/Users/example/dev/openscout",
+        projectRoot: "/Users/arach/dev/openscout",
         branch: "codex/scoutbot-engine-comparison",
         upstream: "origin/main",
         ahead: 1,
@@ -90,7 +90,7 @@ function makeInput(): ScoutbotSituationInput {
       {
         id: "work-ios-tail",
         title: "Improve iOS mobile liveness and pairing",
-        projectRoot: "/Users/example/dev/openscout",
+        projectRoot: "/Users/arach/dev/openscout",
         status: "completed",
         summary: "PR checks passed, but operator review is still useful.",
         completedAt: now - 30_000,

@@ -1,10 +1,12 @@
 import type { NodeDefinition } from "@openscout/protocol";
 import { meshPeerFetch } from "@openscout/runtime";
+import { requestScoutBrokerJson } from "@openscout/runtime/broker-api";
 import { httpMeshUrlsForNode, orderMeshDialUrls } from "@openscout/runtime/mesh-dial-order";
+import { joinBrokerMesh, leaveBrokerMesh } from "@openscout/runtime/mesh-join";
 import {
   type TailscalePeerCandidate,
 } from "@openscout/runtime/mesh/tailscale";
-import { tailscaleStatusProbe } from "@openscout/runtime/system-probes";
+import { execSystemFile, tailscaleStatusProbe } from "@openscout/runtime/system-probes";
 
 import {
   readScoutBrokerHealth,
@@ -74,6 +76,14 @@ export type TailscaleStatus = {
   onlineCount: number;
 };
 
+export type MeshJoinReport = MeshStatusReport & {
+  discovery: {
+    discoveredCount: number;
+    probes: string[];
+    error: string | null;
+  };
+};
+
 export type MeshEnvVars = {
   meshId: string | null;
   meshSeeds: string | null;
@@ -140,7 +150,7 @@ function computeWarnings(
   if (localNode?.advertiseScope === "local") {
     warnings.push(
       "Node advertise scope is `local` — peers will not discover this broker. " +
-      "Run `scout mesh announce` to open mesh TLS + mDNS (no restart needed; persists across reboots).",
+      "Run `scout mesh join` to announce, discover peers, and sync their agents.",
     );
   } else if (localNode?.advertiseScope === "mesh" && localNode.brokerUrl && isLoopbackBrokerUrl(localNode.brokerUrl)) {
     warnings.push(
@@ -234,23 +244,71 @@ export async function runMeshDiscover(): Promise<MeshDiscoverReport> {
   const brokerUrl = resolveScoutBrokerUrl();
   const tailscalePeers = tailscaleStatusProbe.read().value?.peers ?? [];
 
-  const response = await fetch(new URL("/v1/mesh/discover", brokerUrl), {
-    method: "POST",
-    headers: { "content-type": "application/json", accept: "application/json" },
-    body: JSON.stringify({}),
-  });
+  const result = await requestScoutBrokerJson<{ discovered: NodeDefinition[]; probes?: string[] }>(
+    brokerUrl,
+    "/v1/mesh/discover",
+    {
+      method: "POST",
+      headers: { "content-type": "application/json", accept: "application/json" },
+      body: {},
+      signal: AbortSignal.timeout(60_000),
+    },
+  );
 
-  if (!response.ok) {
-    throw new Error(`Mesh discover failed: ${response.status} ${await response.text()}`);
-  }
-
-  const result = await response.json() as { discovered: NodeDefinition[]; probes?: string[] };
   return {
     brokerUrl,
-    discovered: result.discovered,
+    discovered: result.discovered ?? [],
     probes: result.probes ?? [],
     tailscalePeers,
   };
+}
+
+async function waitForTailscaleRunning(timeoutMs = 12_000): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const status = await readTailscaleStatus();
+    if (status.running) return true;
+    await new Promise((resolve) => setTimeout(resolve, 1_000));
+    tailscaleStatusProbe.invalidate("mesh.join");
+  }
+  return false;
+}
+
+async function openTailscaleApp(): Promise<void> {
+  if (process.platform !== "darwin") return;
+  await execSystemFile("open", ["-a", "Tailscale"], { timeoutMs: 1_500 });
+  tailscaleStatusProbe.invalidate("tailscale.start");
+}
+
+export async function runMeshJoin(): Promise<MeshJoinReport> {
+  const brokerUrl = resolveScoutBrokerUrl();
+  const tailscale = await readTailscaleStatus();
+  if (tailscale.available && !tailscale.running) {
+    try {
+      await openTailscaleApp();
+      await waitForTailscaleRunning();
+    } catch {
+      // Tailscale is a discovery path, not a prerequisite for an explicit
+      // seed or LAN mesh. The status report below keeps its stopped warning.
+    }
+  }
+
+  const discovery = await joinBrokerMesh(brokerUrl);
+  const status = await loadMeshStatus();
+  return {
+    ...status,
+    discovery: {
+      discoveredCount: discovery.discovered.length,
+      probes: discovery.probes,
+      error: discovery.error,
+    },
+  };
+}
+
+export async function runMeshLeave(): Promise<MeshStatusReport> {
+  const brokerUrl = resolveScoutBrokerUrl();
+  await leaveBrokerMesh(brokerUrl);
+  return loadMeshStatus();
 }
 
 export async function runMeshPing(target: string): Promise<MeshPingReport> {

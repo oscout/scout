@@ -45,6 +45,12 @@ import {
   type SearchTimeWindow,
 } from "../../lib/knowledge-search.ts";
 import type { SearchPrimitivesResponse } from "./search-primitives.ts";
+import {
+  getKnowledgeSearchSnapshot,
+  KNOWLEDGE_SEARCH_REINDEX_TTL_MS,
+  knowledgeSearchFilterKey,
+  updateKnowledgeSearchSnapshot,
+} from "./knowledge-search-store.ts";
 
 function formatCount(value: number): string {
   return new Intl.NumberFormat("en-US").format(value || 0);
@@ -197,15 +203,24 @@ export function KnowledgeSearchScreen({
     return parseSearchFiltersFromUrl(window.location.search);
   }, [routeFilters]);
 
-  const [status, setStatus] = useState<KnowledgeStatus | null>(null);
-  const [primitives, setPrimitives] = useState<SearchPrimitivesResponse | null>(null);
+  // Warm start: seed from the module-level session snapshot so a remount
+  // paints the last status/results/facets instantly. The mount effect below
+  // still refreshes status in the background.
+  const [storeSeed] = useState(() => getKnowledgeSearchSnapshot());
+  const [status, setStatus] = useState<KnowledgeStatus | null>(storeSeed.status);
+  const [primitives, setPrimitives] = useState<SearchPrimitivesResponse | null>(storeSeed.facets);
   const [filters, setFilters] = useState<SearchFilters>(initialFilters);
-  const [hits, setHits] = useState<KnowledgeHit[]>([]);
+  const [hits, setHits] = useState<KnowledgeHit[]>(() => (
+    storeSeed.lastFilterKey
+      && storeSeed.lastFilterKey === knowledgeSearchFilterKey(initialFilters)
+      ? storeSeed.results
+      : []
+  ));
   const [searching, setSearching] = useState(false);
   const [indexing, setIndexing] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [statusLoaded, setStatusLoaded] = useState(false);
-  const [primitivesLoaded, setPrimitivesLoaded] = useState(false);
+  const [statusLoaded, setStatusLoaded] = useState(storeSeed.status !== null);
+  const [primitivesLoaded, setPrimitivesLoaded] = useState(storeSeed.facets !== null);
   const filtersRef = useRef(filters);
   filtersRef.current = filters;
 
@@ -234,6 +249,11 @@ export function KnowledgeSearchScreen({
     (next: SearchFilters, response: SearchResponse) => {
       setHits(response.hits);
       setStatus(response.status);
+      updateKnowledgeSearchSnapshot({
+        results: response.hits,
+        status: response.status,
+        lastFilterKey: knowledgeSearchFilterKey(next),
+      });
       const deepLinked = hitId
         ? response.hits.find((entry) => entry.id === hitId)
         : undefined;
@@ -275,6 +295,7 @@ export function KnowledgeSearchScreen({
       const response = await indexSessions(force);
       setStatus(response.status);
       setStatusLoaded(true);
+      updateKnowledgeSearchSnapshot({ status: response.status, indexedAt: Date.now() });
       const live = filtersRef.current;
       if (response.status.chunks > 0 && live.query.trim()) {
         applySearchResponse(live, await searchKnowledge(live.query.trim(), live));
@@ -291,17 +312,30 @@ export function KnowledgeSearchScreen({
     let cancelled = false;
 
     void (async () => {
+      let freshStatus: KnowledgeStatus | null = null;
       try {
         const next = await fetchStatus();
         if (cancelled) return;
+        freshStatus = next;
         setStatus(next);
         setStatusLoaded(true);
+        updateKnowledgeSearchSnapshot({ status: next });
         setError(null);
       } catch {
         // Indexing below will surface a hard failure if status is also unavailable.
       }
 
       if (cancelled) return;
+      // Skip the POST re-index when this session indexed recently and the
+      // live status still reports an indexed corpus; keep re-indexing when
+      // the recency window lapsed (new transcripts must become searchable),
+      // the index is missing, or the fresh status could not confirm it.
+      const { indexedAt } = getKnowledgeSearchSnapshot();
+      const recentlyIndexed = indexedAt !== null
+        && Date.now() - indexedAt < KNOWLEDGE_SEARCH_REINDEX_TTL_MS;
+      if (recentlyIndexed && (freshStatus?.chunks ?? 0) > 0) {
+        return;
+      }
       setIndexing(true);
       try {
         setError(null);
@@ -309,6 +343,7 @@ export function KnowledgeSearchScreen({
         if (cancelled) return;
         setStatus(response.status);
         setStatusLoaded(true);
+        updateKnowledgeSearchSnapshot({ status: response.status, indexedAt: Date.now() });
         const live = filtersRef.current;
         if (response.status.chunks > 0 && live.query.trim()) {
           applySearchResponse(live, await searchKnowledge(live.query.trim(), live));
@@ -338,6 +373,7 @@ export function KnowledgeSearchScreen({
         if (!cancelled) {
           setPrimitives(next);
           setPrimitivesLoaded(true);
+          updateKnowledgeSearchSnapshot({ facets: next });
         }
       } catch {
         if (!cancelled) setPrimitivesLoaded(true); // fall back to "no facets" quietly

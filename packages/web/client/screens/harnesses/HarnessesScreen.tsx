@@ -1,8 +1,27 @@
 import { ClipboardPaste, ExternalLink, RefreshCw } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
+import {
+  buildOrchestrationProviderMap,
+  isQuotaSafe,
+  orchestrationRuntimeRouteKey,
+  orchestrationRuntimeRouteLabel,
+  renderOrchestrationAskCommand,
+} from "@openscout/protocol";
+import type {
+  OrchestrationModelGuidance,
+  OrchestrationModelGuidanceStatus,
+  OrchestrationProviderMap,
+  OrchestrationRoleId,
+  OrchestrationRoutingBias,
+  OrchestrationRuntimeAssignment,
+  OrchestrationRuntimeRoute,
+  ProviderPacingSummary,
+  ProviderUsageForMapping,
+  QuotaPacingStatus,
+} from "@openscout/protocol";
 
 import { HarnessMark, harnessLabel as sharedHarnessLabel } from "../../components/HarnessMark.tsx";
-import { api } from "../../lib/api.ts";
+import { api, peekApiGet } from "../../lib/api.ts";
 import { routeMachineId } from "../../lib/router.ts";
 import {
   formatAbsoluteTimestamp,
@@ -19,6 +38,17 @@ import "./harnesses-screen.css";
 type QuotaGauge = Extract<ServiceGauge, { kind: "quota" }>;
 type QuotaWindow = NonNullable<QuotaGauge["windows"]>[number];
 type BudgetHistoryPoint = NonNullable<QuotaWindow["history"]>[number];
+type ProviderView = "budget" | "routing";
+type RoutingAngle = "tasks" | "models" | "cascades";
+const ROUTE_CACHE_MAX_AGE_MS = 30_000;
+const ROUTING_BIASES: Array<{
+  value: OrchestrationRoutingBias;
+  label: string;
+}> = [
+  { value: "capability", label: "Capability" },
+  { value: "balanced", label: "Balanced" },
+  { value: "quota", label: "Quota" },
+];
 
 type CloudAccount = {
   id: "cloudflare" | "vercel" | "exe";
@@ -408,6 +438,714 @@ function SubscriptionLoadingState() {
   );
 }
 
+function orchestrationMapInput(
+  gauges: ServiceGauge[],
+  generatedAt: number,
+  now: number,
+): ProviderUsageForMapping {
+  const providers = gauges.flatMap((gauge) => {
+    if (gauge.kind !== "quota") return [];
+    const windows = quotaWindows(gauge).map((window) => {
+      const capturedAt = normalizeTimestampMs(window.capturedAt ?? gauge.capturedAt);
+      const usedPercent = Math.round(Math.max(0, Math.min(1, window.fill)) * 1_000) / 10;
+      return {
+        label: window.label,
+        usedPercent,
+        percentRemaining: Math.round((100 - usedPercent) * 10) / 10,
+        windowMs: window.windowMs ?? null,
+        resetAt: normalizeTimestampMs(window.resetAt),
+        resetIn: Number.isFinite(window.resetAt) ? formatResetRelative(window.resetAt) : "",
+        freshness: {
+          ageMs: capturedAt ? Math.max(0, now - capturedAt) : null,
+          label: capturedAt ? timeAgo(capturedAt) || "now" : "unknown",
+        },
+      };
+    });
+    return [{
+      id: canonicalHarnessId(gauge.id),
+      label: harnessLabel(canonicalHarnessId(gauge.id)),
+      plan: gauge.plan ?? null,
+      windows,
+    }];
+  });
+  return {
+    generatedAt,
+    generatedAtLocal: formatAbsoluteTimestamp(generatedAt) || "now",
+    providers,
+  };
+}
+
+function advisorPacingLabel(status: QuotaPacingStatus): string {
+  switch (status) {
+    case "underused": return "usage trails elapsed time";
+    case "on_track": return "usage tracks elapsed time";
+    case "ahead": return "usage exceeds elapsed time";
+    default: return "pace unknown";
+  }
+}
+
+function advisorAvailabilityTone(summary: ProviderPacingSummary): "ok" | "warn" | "err" | "dim" {
+  if (summary.availability === "constrained") return "err";
+  if (summary.availability === "guarded") return "warn";
+  if (summary.availability === "unknown") return "dim";
+  return "ok";
+}
+
+function advisorPacingTone(status: QuotaPacingStatus): "ok" | "warn" | "dim" {
+  if (status === "ahead") return "warn";
+  if (status === "unknown") return "dim";
+  return "ok";
+}
+
+function advisorConfidenceTone(confidence: ProviderPacingSummary["confidence"]): "ok" | "warn" | "dim" {
+  if (confidence === "stale") return "warn";
+  if (confidence === "unknown") return "dim";
+  return "ok";
+}
+
+function advisorRouteLabel(route: OrchestrationRuntimeRoute): string {
+  return orchestrationRuntimeRouteLabel(route);
+}
+
+function CopyButton({ text, label = "Copy rule" }: { text: string; label?: string }) {
+  const [copyState, setCopyState] = useState<"idle" | "copied" | "failed">("idle");
+  useEffect(() => {
+    if (copyState === "idle") return;
+    const timeout = window.setTimeout(() => setCopyState("idle"), 1800);
+    return () => window.clearTimeout(timeout);
+  }, [copyState]);
+  const onCopy = useCallback(async () => {
+    if (typeof navigator === "undefined" || !navigator.clipboard) {
+      setCopyState("failed");
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopyState("copied");
+    } catch {
+      setCopyState("failed");
+    }
+  }, [text]);
+
+  return (
+    <button
+      type="button"
+      className="hs-advisor-dispatch-copy"
+      onClick={() => void onCopy()}
+      aria-live="polite"
+      aria-atomic="true"
+    >
+      {copyState === "copied" ? "Copied!" : copyState === "failed" ? "Copy failed" : label}
+    </button>
+  );
+}
+
+function isQuotaSafeFallback(
+  primary: { route: OrchestrationRuntimeRoute; quotaRisk: boolean },
+  alternative: {
+    route: OrchestrationRuntimeRoute;
+    quotaRisk: boolean;
+    quota: ProviderPacingSummary;
+  } | undefined,
+): boolean {
+  return Boolean(
+    primary.quotaRisk
+    && alternative
+    && !alternative.quotaRisk
+    && isQuotaSafe(alternative.quota)
+    && alternative.route.providerId !== primary.route.providerId,
+  );
+}
+
+function advisorRemainingLabel(summary: ProviderPacingSummary): string {
+  return summary.minimumRemainingPercent === null
+    ? "quota unknown"
+    : `${summary.minimumRemainingPercent}% minimum remaining`;
+}
+
+function modelGuidanceLabel(status: OrchestrationModelGuidanceStatus): string {
+  switch (status) {
+    case "use_now": return "Use now";
+    case "available": return "Available";
+    case "use_deliberately": return "Use deliberately";
+    case "probe_first": return "Probe first";
+    case "conserve": return "Conserve";
+  }
+}
+
+function modelGuidanceTone(status: OrchestrationModelGuidanceStatus): "ok" | "warn" | "err" {
+  if (status === "conserve") return "err";
+  if (status === "probe_first" || status === "use_deliberately") return "warn";
+  return "ok";
+}
+
+
+
+
+function AdvisorQuotaWindows({
+  providerLabel,
+  quota,
+}: {
+  providerLabel: string;
+  quota: ProviderPacingSummary;
+}) {
+  if (quota.windows.length === 0) {
+    return (
+      <div className="hs-advisor-no-quota">
+        <strong>No quota telemetry</strong>
+        <span>Use one bounded ask as a canary before scaling this route.</span>
+      </div>
+    );
+  }
+  return (
+    <div className="hs-advisor-windows">
+      {quota.windows.map((window) => {
+        const used = Math.max(0, Math.min(100, window.usedPercent));
+        const elapsed = window.elapsedPercent === null ? null : Math.max(0, Math.min(100, window.elapsedPercent));
+        const elapsedText = elapsed === null ? "elapsed time unavailable" : `${elapsed}% of the window elapsed`;
+        const projectionText = window.projectedUsedPercent === null
+          ? "projection unavailable"
+          : `${window.projectedUsedPercent}% projected at reset`;
+        return (
+          <div key={window.label} className="hs-advisor-window">
+            <div className="hs-advisor-window-head">
+              <strong>{window.label}</strong>
+              <span>{window.usedPercent}% used</span>
+              <span>{advisorPacingLabel(window.status)}</span>
+            </div>
+            <div
+              className="hs-advisor-window-meter"
+              role="progressbar"
+              aria-label={`${providerLabel} ${window.label} usage`}
+              aria-valuemin={0}
+              aria-valuemax={100}
+              aria-valuenow={Math.round(used)}
+              aria-valuetext={`${window.usedPercent}% used; ${elapsedText}; ${projectionText}; ${advisorPacingLabel(window.status)}`}
+            >
+              <span className={`hs-advisor-window-fill hs-advisor-window-fill--${window.status}`} style={{ width: `${used}%` }} />
+              {elapsed !== null ? (
+                <span
+                  className="hs-advisor-window-now"
+                  style={{ left: `${elapsed}%` }}
+                  title={`${elapsed}% of the window has elapsed`}
+                  aria-hidden="true"
+                />
+              ) : null}
+            </div>
+            <div className="hs-advisor-window-meta">
+              <span>{window.percentRemaining}% available</span>
+              <span>{projectionText}</span>
+              <span>{window.resetIn ? `resets in ${window.resetIn}` : "reset unknown"}</span>
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function AdvisorRoleRow({
+  assignment,
+  selected,
+  onSelect,
+}: {
+  assignment: OrchestrationRuntimeAssignment;
+  selected: boolean;
+  onSelect: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      className="hs-advisor-role"
+      data-selected={selected ? "true" : undefined}
+      onClick={onSelect}
+      aria-pressed={selected}
+    >
+      <span className="hs-advisor-role-mark">
+        <HarnessMark harness={assignment.route.harness} size={25} title={null} />
+      </span>
+      <span className="hs-advisor-role-copy">
+        <strong>{assignment.roleLabel}</strong>
+        <span>{assignment.modelLabel}</span>
+        <small>
+          {assignment.route.profile ? `profile ${assignment.route.profile}` : assignment.route.harness} · Fit ${assignment.fit}
+        </small>
+      </span>
+      <span className={`hs-advisor-role-tag ${assignment.quotaRisk ? "hs-advisor-role-tag--risk" : ""}`}>
+        {assignment.quotaRisk
+          ? `⚠️ ${assignment.quota.minimumRemainingPercent !== null ? `${assignment.quota.minimumRemainingPercent}%` : "Risk"}`
+          : (assignment.fit >= 100 ? "Primary" : `Fit ${assignment.fit}`)}
+      </span>
+    </button>
+  );
+}
+
+function TaskMappingAngle({ map }: { map: OrchestrationProviderMap }) {
+  const [selectedRole, setSelectedRole] = useState<OrchestrationRoleId>("implementation");
+  const selected = map.assignments.find((assignment) => assignment.role === selectedRole)
+    ?? map.assignments[0];
+
+  if (!selected) return null;
+  const dispatchCommand = renderOrchestrationAskCommand(selected.route);
+  const recommendedFallback = selected.alternatives.find((alternative) => (
+    isQuotaSafeFallback(selected, alternative)
+  ));
+
+  return (
+    <div className="hs-advisor-layout">
+      <nav className="hs-advisor-roles" aria-label="Work roles">
+        {map.assignments.map((assignment) => (
+          <AdvisorRoleRow
+            key={assignment.role}
+            assignment={assignment}
+            selected={assignment.role === selected.role}
+            onSelect={() => setSelectedRole(assignment.role)}
+          />
+        ))}
+      </nav>
+
+      <article className="hs-advisor-detail" aria-live="polite">
+        <header className="hs-advisor-detail-head">
+          <div className="hs-advisor-model">
+            <HarnessMark harness={selected.route.harness} size={26} title={null} />
+            <div>
+              <span>{selected.roleLabel} · Role Routing</span>
+              <h4>{selected.modelLabel}</h4>
+              <code>{advisorRouteLabel(selected.route)}</code>
+            </div>
+          </div>
+          <span className={`hs-advisor-fit-badge ${selected.quotaRisk ? "hs-advisor-role-tag--risk" : ""}`}>
+            {selected.quotaRisk ? "⚠️ Quota Risk · Failover Active" : `Primary Route · Fit ${selected.fit}`}
+          </span>
+        </header>
+
+        {selected.quotaRisk ? (
+          <div className="hs-advisor-quota-alert" role="alert">
+            <div className="hs-advisor-quota-alert-head">
+              <span className="hs-advisor-quota-alert-badge">⚠️ Quota Risk</span>
+              <div>
+                <strong>Quota Exhaustion Imminent · Elevated to Primary Concern</strong>
+                <p>{selected.quotaRiskMessage ?? `${selected.quota.providerLabel} quota is near capacity.`}</p>
+              </div>
+            </div>
+            <div className="hs-advisor-quota-alert-action">
+              {recommendedFallback ? (
+                <span>Failover to <strong>{recommendedFallback.label}</strong> to move work off the constrained provider.</span>
+              ) : (
+                <span>No quota-safe cross-provider fallback is currently available; keep the task bounded or wait for reset.</span>
+              )}
+            </div>
+          </div>
+        ) : null}
+
+        <div className="hs-advisor-task-hero">
+          <div className="hs-advisor-task-hero-head">
+            <h5>Task Objective</h5>
+            <span>Cognitive Strategy</span>
+          </div>
+          <p>{selected.objective}</p>
+          <small><strong>Execution Rationale:</strong> {selected.taskRationale}</small>
+        </div>
+
+        <div className="hs-advisor-assessment">
+          <section>
+            <h5>Strengths for this task</h5>
+            <p>{selected.capability}</p>
+          </section>
+          <section>
+            <h5>Watchouts & Guardrails</h5>
+            <p>{selected.caution}</p>
+          </section>
+        </div>
+
+        <section className="hs-advisor-dispatch">
+          <h5>Dispatch rule</h5>
+          <div className="hs-advisor-dispatch-snippet">
+            <code>{dispatchCommand}</code>
+            <CopyButton text={dispatchCommand} label="Copy rule" />
+          </div>
+        </section>
+
+        <section className="hs-advisor-ladder">
+          <h5>Failover ladder</h5>
+          <div className="hs-advisor-ladder-nodes">
+            <div className={`hs-advisor-ladder-node ${selected.quotaRisk ? "hs-advisor-ladder-node--primary hs-advisor-ladder-node--risk" : "hs-advisor-ladder-node--primary"}`}>
+              <span className="hs-advisor-ladder-badge">{selected.quotaRisk ? "⚠️ Primary (Quota Risk)" : "Primary"}</span>
+              <div className="hs-advisor-ladder-body">
+                <strong>{selected.modelLabel}</strong>
+                <code>{advisorRouteLabel(selected.route)}</code>
+                <small>
+                  {selected.quotaRisk
+                    ? `Exhaustion risk (${selected.quota.minimumRemainingPercent}% remaining) · ${selected.taskRationale}`
+                    : `Initial execution target · ${selected.taskRationale}`}
+                </small>
+              </div>
+            </div>
+            {selected.alternatives.map((alt, idx) => {
+              const quotaSafe = isQuotaSafeFallback(selected, alt);
+              return (
+                <div
+                  key={orchestrationRuntimeRouteKey(alt.route)}
+                  className={`hs-advisor-ladder-node ${quotaSafe ? "hs-advisor-ladder-node--fallback-rec" : ""}`}
+                >
+                  <span className="hs-advisor-ladder-badge">
+                    {quotaSafe ? "⭐️ Quota-safe fallback" : (idx === 0 ? "Secondary" : "Tertiary")}
+                  </span>
+                  <div className="hs-advisor-ladder-body">
+                    <strong>{alt.label}</strong>
+                    <code>{advisorRouteLabel(alt.route)}</code>
+                    <small>
+                      {quotaSafe
+                        ? `Moves work off ${selected.quota.providerLabel} · ${alt.taskRationale}`
+                        : alt.quotaRisk
+                          ? `Also quota constrained; use only if operationally necessary · ${alt.taskRationale}`
+                          : `Fallback if ${selected.modelLabel} encounters rate limits or errors · ${alt.taskRationale}`}
+                    </small>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </section>
+
+        <section className="hs-advisor-quota-secondary">
+          <div className="hs-advisor-quota-secondary-head">
+            <h5>Provider Telemetry {selected.quotaRisk ? "(Active Constraint)" : "(Secondary)"}</h5>
+            <span>{selected.quota.providerLabel}{selected.quota.plan ? ` · ${selected.quota.plan}` : ""}</span>
+          </div>
+          <div className="hs-advisor-quota-compact-bar">
+            <span>Allowance: <strong>{advisorRemainingLabel(selected.quota)}</strong></span>
+            <span>Pacing: <strong>{advisorPacingLabel(selected.quota.pacing)}</strong></span>
+            <span>Telemetry: <strong>{selected.quota.confidence}</strong></span>
+            {selected.quota.nextResetIn ? <span>Next reset: <strong>{selected.quota.nextResetIn}</strong></span> : null}
+          </div>
+          {selected.quotaRisk ? (
+            <div style={{ marginTop: "var(--space-sm)" }}>
+              <AdvisorQuotaWindows providerLabel={selected.quota.providerLabel} quota={selected.quota} />
+            </div>
+          ) : null}
+        </section>
+      </article>
+    </div>
+  );
+}
+
+function ModelGuideAngle({ models }: { models: OrchestrationModelGuidance[] }) {
+  const defaultModel = models.find((model) => model.modelLabel === "GPT-5.6 Sol") ?? models[0];
+  const [selectedRoute, setSelectedRoute] = useState(() => defaultModel ? orchestrationRuntimeRouteKey(defaultModel.route) : "");
+  const selected = models.find((model) => orchestrationRuntimeRouteKey(model.route) === selectedRoute) ?? defaultModel;
+  if (!selected) return null;
+  const dispatchCommand = renderOrchestrationAskCommand(selected.route);
+
+  return (
+    <div className="hs-model-guide-layout">
+      <nav className="hs-model-guide-list" aria-label="Model Fleet">
+        {models.map((model) => {
+          const route = orchestrationRuntimeRouteKey(model.route);
+          return (
+            <button
+              key={route}
+              type="button"
+              className="hs-model-guide-item"
+              data-selected={route === orchestrationRuntimeRouteKey(selected.route) ? "true" : undefined}
+              aria-pressed={route === orchestrationRuntimeRouteKey(selected.route)}
+              onClick={() => setSelectedRoute(route)}
+            >
+              <span className="hs-model-guide-mark">
+                <HarnessMark harness={model.route.harness} size={23} title={null} />
+              </span>
+              <span className="hs-model-guide-item-copy">
+                <strong>{model.modelLabel}</strong>
+                <span>{model.quota.providerLabel} · {model.route.profile ? `profile ${model.route.profile}` : model.route.harness}</span>
+              </span>
+              <span className={`hs-advisor-role-tag ${model.quotaRisk ? "hs-advisor-role-tag--risk" : ""}`}>
+                {model.quotaRisk ? "⚠️ Conserve" : modelGuidanceLabel(model.guidance)}
+              </span>
+            </button>
+          );
+        })}
+      </nav>
+
+      <article className="hs-model-guide-detail" aria-live="polite">
+        <header className="hs-advisor-detail-head">
+          <div className="hs-advisor-model">
+            <HarnessMark harness={selected.route.harness} size={25} title={null} />
+            <div>
+              <span>{selected.quota.providerLabel}{selected.quota.plan ? ` · ${selected.quota.plan}` : ""}</span>
+              <h4>{selected.modelLabel}</h4>
+              <code>{advisorRouteLabel(selected.route)}</code>
+            </div>
+          </div>
+          <span className={`hs-advisor-fit-badge ${selected.quotaRisk ? "hs-advisor-role-tag--risk" : ""}`}>
+            {selected.quotaRisk ? "⚠️ Quota Risk · Conserve" : (selected.roles.length > 0 ? `${selected.roles.length} Assigned Roles` : "Model Fleet")}
+          </span>
+        </header>
+
+        {selected.quotaRisk ? (
+          <div className="hs-advisor-quota-alert" role="alert">
+            <div className="hs-advisor-quota-alert-head">
+              <span className="hs-advisor-quota-alert-badge">⚠️ Quota Risk</span>
+              <div>
+                <strong>High Quota Depletion · Conserve Model</strong>
+                <p>{selected.quota.providerLabel} allowance is near capacity ({selected.quota.minimumRemainingPercent}% remaining). Conserve this model for essential high-fit tasks.</p>
+              </div>
+            </div>
+          </div>
+        ) : null}
+
+        <div className="hs-model-guide-roles">
+          <strong>Assigned task roles</strong>
+          <div className="hs-model-guide-role-chips">
+            {selected.roles.map((role) => (
+              <span key={role.role} className="hs-model-guide-role-chip">
+                {role.label}
+              </span>
+            ))}
+          </div>
+        </div>
+
+        <div className="hs-advisor-assessment">
+          <section>
+            <h5>Strengths & Cognitive Profile</h5>
+            <p>{selected.strengths.join(" ")}</p>
+          </section>
+          <section>
+            <h5>Watchouts & Guardrails</h5>
+            <p>{selected.cautions.join(" ")}</p>
+          </section>
+        </div>
+
+        <section className="hs-advisor-dispatch">
+          <h5>Direct dispatch</h5>
+          <div className="hs-advisor-dispatch-snippet">
+            <code>{dispatchCommand}</code>
+            <CopyButton text={dispatchCommand} label="Copy command" />
+          </div>
+        </section>
+
+        <section className="hs-advisor-quota-secondary">
+          <div className="hs-advisor-quota-secondary-head">
+            <h5>Provider Telemetry {selected.quotaRisk ? "(Active Constraint)" : "(Secondary)"}</h5>
+            <span>{selected.quota.providerLabel}{selected.quota.plan ? ` · ${selected.quota.plan}` : ""}</span>
+          </div>
+          <div className="hs-advisor-quota-compact-bar">
+            <span>Allowance: <strong>{advisorRemainingLabel(selected.quota)}</strong></span>
+            <span>Pacing: <strong>{advisorPacingLabel(selected.quota.pacing)}</strong></span>
+            <span>Telemetry: <strong>{selected.quota.confidence}</strong></span>
+            {selected.quota.nextResetIn ? <span>Next reset: <strong>{selected.quota.nextResetIn}</strong></span> : null}
+          </div>
+          {selected.quotaRisk ? (
+            <div style={{ marginTop: "var(--space-sm)" }}>
+              <AdvisorQuotaWindows providerLabel={selected.quota.providerLabel} quota={selected.quota} />
+            </div>
+          ) : null}
+        </section>
+      </article>
+    </div>
+  );
+}
+
+function CascadesAngle({ assignments }: { assignments: OrchestrationRuntimeAssignment[] }) {
+  const [selectedRole, setSelectedRole] = useState<OrchestrationRoleId>("implementation");
+  const [customOrders, setCustomOrders] = useState<Partial<Record<OrchestrationRoleId, string[]>>>({});
+  const selected = assignments.find((assignment) => assignment.role === selectedRole) ?? assignments[0];
+  if (!selected) return null;
+
+  const baseSteps = [
+    {
+      label: selected.modelLabel,
+      route: selected.route,
+      capability: selected.capability,
+      taskRationale: selected.taskRationale,
+      quota: selected.quota,
+      quotaRisk: selected.quotaRisk,
+    },
+    ...selected.alternatives.map((alternative) => ({
+      label: alternative.label,
+      route: alternative.route,
+      capability: alternative.capability,
+      taskRationale: alternative.taskRationale,
+      quota: alternative.quota,
+      quotaRisk: alternative.quotaRisk,
+    })),
+  ];
+  const customOrder = customOrders[selected.role];
+  const orderedSteps = customOrder
+    ? customOrder.flatMap((route) => {
+        const step = baseSteps.find((candidate) => orchestrationRuntimeRouteKey(candidate.route) === route);
+        return step ? [step] : [];
+      })
+    : baseSteps;
+  const promote = (route: string) => {
+    const routes = orderedSteps.map((step) => orchestrationRuntimeRouteKey(step.route));
+    setCustomOrders((current) => ({
+      ...current,
+      [selected.role]: [route, ...routes.filter((candidate) => candidate !== route)],
+    }));
+  };
+
+  const cascadeCommand = renderOrchestrationAskCommand(orderedSteps[0].route);
+
+  return (
+    <div className="hs-cascade-layout">
+      <nav className="hs-advisor-roles" aria-label="Cascade roles">
+        {assignments.map((assignment) => (
+          <AdvisorRoleRow
+            key={assignment.role}
+            assignment={assignment}
+            selected={assignment.role === selected.role}
+            onSelect={() => setSelectedRole(assignment.role)}
+          />
+        ))}
+      </nav>
+
+      <article className="hs-cascade-editor">
+        <header>
+          <div>
+            <span>{selected.roleLabel} · Failover Hierarchy</span>
+            <h4>Task Escalation Sequence</h4>
+            <p>Hierarchical fallback sequence when models encounter rate limits, timeouts, or task complexity thresholds.</p>
+          </div>
+          {customOrder ? (
+            <button
+              type="button"
+              onClick={() => setCustomOrders((current) => {
+                const next = { ...current };
+                delete next[selected.role];
+                return next;
+              })}
+            >
+              Reset suggested order
+            </button>
+          ) : (
+            <span>Default policy</span>
+          )}
+        </header>
+
+        <ol className="hs-cascade-workflow">
+          {orderedSteps.map((step, index) => {
+            const route = orchestrationRuntimeRouteKey(step.route);
+            const quotaSafe = index > 0 && isQuotaSafeFallback(orderedSteps[0], step);
+            const rank = index === 0 ? "Primary Route" : index === 1 ? "Secondary Fallback" : "Tertiary Fallback";
+            const condition = index === 0
+              ? (step.quotaRisk
+                  ? `Initial target (⚠️ Quota Risk: ${step.quota.minimumRemainingPercent}% remaining) · ${step.taskRationale}`
+                  : `Initial execution target · ${step.taskRationale}`)
+              : index === 1
+                ? (quotaSafe
+                    ? `⭐️ Quota-safe route off ${orderedSteps[0].quota.providerLabel} · ${step.taskRationale}`
+                    : `Triggered if primary encounters rate limits, errors, or complexity threshold · ${step.taskRationale}`)
+                : `Emergency baseline fallback · ${step.taskRationale}`;
+            return (
+              <li key={`${selected.role}:${route}`} className="hs-cascade-node">
+                <span className="hs-cascade-node-index">{index + 1}</span>
+                <div className="hs-cascade-node-main">
+                  <span>{rank}</span>
+                  <strong>{step.label}</strong>
+                  <code>{advisorRouteLabel(step.route)}</code>
+                  <p>{step.capability}</p>
+                  <small>{condition}</small>
+                </div>
+                <div className="hs-cascade-node-side">
+                  <em className={step.quotaRisk ? "hs-advisor-tone--warn" : ""}>
+                    {step.quota.minimumRemainingPercent === null
+                      ? "quota unknown"
+                      : `${step.quota.minimumRemainingPercent}% quota remaining`}
+                  </em>
+                  {index > 0 ? (
+                    <button type="button" onClick={() => promote(route)}>Make primary</button>
+                  ) : null}
+                </div>
+              </li>
+            );
+          })}
+        </ol>
+
+        <section className="hs-advisor-dispatch">
+          <h5>Primary dispatch command</h5>
+          <div className="hs-advisor-dispatch-snippet">
+            <code>{cascadeCommand}</code>
+            <CopyButton text={cascadeCommand} label="Copy primary command" />
+          </div>
+        </section>
+      </article>
+    </div>
+  );
+}
+
+function OrchestratorMap({
+  map,
+  loading,
+  bias,
+  onBiasChange,
+}: {
+  map: OrchestrationProviderMap;
+  loading: boolean;
+  bias: OrchestrationRoutingBias;
+  onBiasChange: (bias: OrchestrationRoutingBias) => void;
+}) {
+  const [angle, setAngle] = useState<RoutingAngle>("tasks");
+  const angleCopy: Record<RoutingAngle, string> = {
+    tasks: "Task-first model routing: Map each role to the optimal cognitive profile and failover ladder.",
+    models: "Model fleet inventory: Inspect cognitive strengths, guardrails, and assigned roles across all models.",
+    cascades: "Failover & escalation rules: Review and customize the task escalation sequence for each role.",
+  };
+
+  return (
+    <section className="hs-advisor" aria-labelledby="hs-orchestrator-map-title" aria-busy={loading}>
+      <div className="hs-section-head hs-advisor-head">
+        <div>
+          <h3 id="hs-orchestrator-map-title">Orchestrator map</h3>
+          <p>{angleCopy[angle]}</p>
+        </div>
+        <div className="hs-advisor-head-tools">
+          <span className="hs-section-meta">{loading ? "refreshing inputs" : "advisory · no dispatch"}</span>
+          <label className="hs-routing-bias">
+            <span>Routing bias</span>
+            <input
+              type="range"
+              min={0}
+              max={ROUTING_BIASES.length - 1}
+              step={1}
+              value={ROUTING_BIASES.findIndex((option) => option.value === bias)}
+              aria-valuetext={ROUTING_BIASES.find((option) => option.value === bias)?.label}
+              onChange={(event) => {
+                const option = ROUTING_BIASES[Number(event.target.value)];
+                if (option) onBiasChange(option.value);
+              }}
+            />
+            <small aria-hidden="true">
+              {ROUTING_BIASES.map((option) => (
+                <i key={option.value} data-active={option.value === bias ? "true" : undefined}>{option.label}</i>
+              ))}
+            </small>
+          </label>
+        </div>
+      </div>
+
+      <div className="hs-routing-angles" role="group" aria-label="Orchestrator map angle">
+        {([
+          ["tasks", "Task map"],
+          ["models", "Model fleet"],
+          ["cascades", "Cascades"],
+        ] as const).map(([value, label]) => (
+          <button
+            key={value}
+            type="button"
+            aria-pressed={angle === value}
+            onClick={() => setAngle(value)}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+
+      {angle === "tasks" ? <TaskMappingAngle map={map} /> : null}
+      {angle === "models" ? <ModelGuideAngle models={map.models} /> : null}
+      {angle === "cascades" ? <CascadesAngle assignments={map.assignments} /> : null}
+    </section>
+  );
+}
 function SubscriptionSection({ rows, loading, onImported }: { rows: HarnessRow[]; loading: boolean; onImported: () => Promise<void> }) {
   const subscriptions = SUBSCRIPTION_PROVIDERS.map((provider) => ({
     provider,
@@ -578,25 +1316,41 @@ function CloudAccountsSection({ accounts, loading }: { accounts: CloudAccount[];
 export function HarnessesScreen({ navigate }: { navigate: (r: Route) => void }) {
   const { route } = useScout();
   const machineId = routeMachineId(route);
-  const [serviceGauges, setServiceGauges] = useState<ServiceGauge[]>([]);
-  const [cloudAccounts, setCloudAccounts] = useState<CloudAccount[]>([]);
-  const [loading, setLoading] = useState(true);
+  // Warm start: paint the last budgets response on remount; the mount effect
+  // still refetches (and then forces ?refresh=1) in the background.
+  const [initialBudgets] = useState(() =>
+    peekApiGet<{ generatedAt?: number; gauges: ServiceGauge[]; cloudAccounts?: CloudAccount[] }>(
+      "/api/service-budgets",
+      ROUTE_CACHE_MAX_AGE_MS,
+    ),
+  );
+  const [serviceGauges, setServiceGauges] = useState<ServiceGauge[]>(initialBudgets?.gauges ?? []);
+  const [cloudAccounts, setCloudAccounts] = useState<CloudAccount[]>(initialBudgets?.cloudAccounts ?? []);
+  const [providerView, setProviderView] = useState<ProviderView>("budget");
+  const [budgetGeneratedAt, setBudgetGeneratedAt] = useState(
+    () => normalizeTimestampMs(initialBudgets?.generatedAt) ?? Date.now(),
+  );
+  const [routingBias, setRoutingBias] = useState<OrchestrationRoutingBias>("balanced");
+  const [loading, setLoading] = useState(initialBudgets === null);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const requestIdRef = useRef(0);
+  const hasBudgetsRef = useRef(initialBudgets !== null);
 
   const load = useCallback(async (force = false, initial = false) => {
     const requestId = ++requestIdRef.current;
-    if (initial) setLoading(true);
+    if (initial && !hasBudgetsRef.current) setLoading(true);
     setRefreshing(true);
     setError(null);
 
     try {
-      const response = await api<{ gauges: ServiceGauge[]; cloudAccounts?: CloudAccount[] }>(
+      const response = await api<{ generatedAt?: number; gauges: ServiceGauge[]; cloudAccounts?: CloudAccount[] }>(
         `/api/service-budgets${force ? "?refresh=1" : ""}`,
       );
       if (requestId !== requestIdRef.current) return;
+      hasBudgetsRef.current = true;
       setServiceGauges(response.gauges ?? []);
+      setBudgetGeneratedAt(normalizeTimestampMs(response.generatedAt) ?? Date.now());
       setCloudAccounts(response.cloudAccounts ?? []);
     } catch (cause) {
       if (requestId === requestIdRef.current) {
@@ -629,6 +1383,13 @@ export function HarnessesScreen({ navigate }: { navigate: (r: Route) => void }) 
   }, [load]);
 
   const rows = useMemo(() => buildHarnessRows(serviceGauges), [serviceGauges]);
+  const orchestrationMap = useMemo(() => {
+    const now = Date.now();
+    return buildOrchestrationProviderMap(
+      orchestrationMapInput(serviceGauges, budgetGeneratedAt, now),
+      { now, bias: routingBias },
+    );
+  }, [budgetGeneratedAt, routingBias, serviceGauges]);
 
   const contentOwnsSecondaryNav = useContentOwnsSecondaryNav();
 
@@ -645,22 +1406,57 @@ export function HarnessesScreen({ navigate }: { navigate: (r: Route) => void }) 
             <div className="hs-title-group">
               <span className="hs-kicker">ops / provider central</span>
               <h2>Agent Providers</h2>
-              <p>See what you pay for, how much remains, and where to use it.</p>
+              <p>
+                {providerView === "budget"
+                  ? "See what you pay for, how much remains, and where to use it."
+                  : "Map each kind of work to a model and provider route using live quota posture."}
+              </p>
             </div>
-            <button
-              type="button"
-              className="hs-refresh"
-              disabled={refreshing}
-              onClick={() => void load(true)}
-            >
-              <RefreshCw size={14} className={refreshing ? "hs-refresh-icon-spinning" : ""} aria-hidden="true" />
-              <span>{refreshing ? "Refreshing" : "Refresh"}</span>
-            </button>
+            <div className="hs-page-actions">
+              <div className="hs-view-switch" role="group" aria-label="Provider view">
+                <button
+                  type="button"
+                  aria-pressed={providerView === "budget"}
+                  onClick={() => setProviderView("budget")}
+                >
+                  Budget
+                </button>
+                <button
+                  type="button"
+                  aria-pressed={providerView === "routing"}
+                  onClick={() => setProviderView("routing")}
+                >
+                  Routing
+                </button>
+              </div>
+              <button
+                type="button"
+                className="hs-refresh"
+                disabled={refreshing}
+                onClick={() => void load(true)}
+              >
+                <RefreshCw size={14} className={refreshing ? "hs-refresh-icon-spinning" : ""} aria-hidden="true" />
+                <span>{refreshing ? "Refreshing" : "Refresh"}</span>
+              </button>
+            </div>
           </header>
 
           {error && <div className="hs-error" role="status" aria-live="polite">refresh: {error}</div>}
-          <SubscriptionSection rows={rows} loading={loading} onImported={() => load(false)} />
-          <CloudAccountsSection accounts={cloudAccounts} loading={loading} />
+          {providerView === "budget" ? (
+            <div id="hs-budget-view" className="hs-provider-view">
+              <SubscriptionSection rows={rows} loading={loading} onImported={() => load(false)} />
+              <CloudAccountsSection accounts={cloudAccounts} loading={loading} />
+            </div>
+          ) : (
+            <div id="hs-routing-view" className="hs-provider-view">
+              <OrchestratorMap
+                map={orchestrationMap}
+                loading={loading}
+                bias={routingBias}
+                onBiasChange={setRoutingBias}
+              />
+            </div>
+          )}
         </div>
       </div>
     </div>

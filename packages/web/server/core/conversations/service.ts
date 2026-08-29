@@ -19,6 +19,7 @@ import { configuredOperatorActorIds } from "@openscout/runtime/conversations/leg
 
 import {
   loadScoutBrokerContext,
+  type ScoutBrokerContext,
   type ScoutBrokerSnapshot,
 } from "../broker/service.ts";
 import {
@@ -80,8 +81,11 @@ export type ScoutConversationSummary = {
   title: string;
   alias?: string | null;
   naturalKey?: string | null;
+  /// May be capped for large non-direct rosters; `participantCount` is the truth.
   participantIds: string[];
   participants: ScoutConversationParticipant[];
+  /// True total participant count, even when the arrays above are capped.
+  participantCount: number;
   authorityNodeId: string | null;
   authorityNodeName: string | null;
   agentId: string | null;
@@ -197,6 +201,14 @@ function metadataString(
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
 }
 
+function metadataTimestampMs(
+  metadata: Record<string, unknown> | null | undefined,
+  key: string,
+): number | null {
+  const value = metadata?.[key];
+  return typeof value === "number" ? normalizeTimestampMs(value) : null;
+}
+
 function metadataObject(
   metadata: Record<string, unknown> | undefined,
   key: string,
@@ -306,6 +318,24 @@ function normalizeQuery(value: string | undefined): string {
   return value?.trim().toLowerCase() ?? "";
 }
 
+/// List previews are teasers, not transcripts: the web client trims to 60
+/// chars and the widest consumer shows a couple of lines. Full bodies remain
+/// available from the message endpoints.
+const PREVIEW_MAX_CHARS = 240;
+
+function truncatedPreview(body: string | null | undefined): string | null {
+  if (body == null) return null;
+  if (body.length <= PREVIEW_MAX_CHARS) return body;
+  let sliced = body.slice(0, PREVIEW_MAX_CHARS);
+  // Never split a surrogate pair: a lone high surrogate is invalid JSON text
+  // for strict decoders (the native comms client reads this same payload).
+  const lastCode = sliced.charCodeAt(sliced.length - 1);
+  if (lastCode >= 0xd800 && lastCode <= 0xdbff) {
+    sliced = sliced.slice(0, -1);
+  }
+  return sliced;
+}
+
 function latestMessageByConversation(snapshot: ScoutBrokerSnapshot): Map<string, MessageRecord[]> {
   const buckets = new Map<string, MessageRecord[]>();
   for (const message of Object.values(snapshot.messages)) {
@@ -337,6 +367,8 @@ function messageActorName(snapshot: ScoutBrokerSnapshot, actorId: string): strin
 
 function threadSummaryForMessage(
   snapshot: ScoutBrokerSnapshot,
+  endpoints: AgentEndpointIndex,
+  operatorIds: ReadonlySet<string>,
   messagesByConversation: Map<string, MessageRecord[]>,
   message: MessageRecord,
 ): ScoutConversationMessage["threadSummary"] {
@@ -351,6 +383,8 @@ function threadSummaryForMessage(
   for (const conversation of childConversations) {
     for (const participant of buildScopedParticipants(
       snapshot,
+      endpoints,
+      operatorIds,
       conversation.id,
       conversation.participantIds,
     )) {
@@ -424,6 +458,7 @@ function conversationTurn(input: {
   invocations: InvocationRequest[];
   flights: FlightRecord[];
   operatorIds: Set<string>;
+  conversationMetadata?: Record<string, unknown>;
 }): ScoutConversationTurn | undefined {
   const messagesById = new Map(input.messages.map((message) => [message.id, message]));
   const candidates = new Map<string, {
@@ -503,6 +538,36 @@ function conversationTurn(input: {
   }
 
   const terminalReply = failureReply ?? agentReply;
+  const updatedAt = normalizeTimestampMs(
+    terminalReply?.createdAt
+      ?? flight?.completedAt
+      ?? flight?.startedAt
+      ?? latest.invocation?.createdAt
+      ?? latest.message.createdAt,
+  ) ?? 0;
+  const failureDismissedAt = metadataTimestampMs(
+    flight?.metadata,
+    "operatorAttentionDismissedAt",
+  );
+  if (state === "failed" && failureDismissedAt !== null && failureDismissedAt >= updatedAt) {
+    return undefined;
+  }
+  const dismissedMessageId = metadataString(
+    input.conversationMetadata,
+    "operatorAttentionDismissedMessageId",
+  );
+  const conversationDismissedAt = metadataTimestampMs(
+    input.conversationMetadata,
+    "operatorAttentionDismissedAt",
+  );
+  if (
+    state === "failed"
+    && dismissedMessageId === latest.message.id
+    && conversationDismissedAt !== null
+    && conversationDismissedAt >= updatedAt
+  ) {
+    return undefined;
+  }
   return {
     messageId: latest.message.id,
     invocationId: latest.invocation?.id ?? null,
@@ -511,13 +576,7 @@ function conversationTurn(input: {
     text: latest.message.body,
     state,
     nextMoveOwner,
-    updatedAt: normalizeTimestampMs(
-      terminalReply?.createdAt
-        ?? flight?.completedAt
-        ?? flight?.startedAt
-        ?? latest.invocation?.createdAt
-        ?? latest.message.createdAt,
-    ) ?? 0,
+    updatedAt,
   };
 }
 
@@ -543,19 +602,45 @@ function latestConversationSessionId(input: {
   return null;
 }
 
-function endpointForAgent(snapshot: ScoutBrokerSnapshot, agentId: string): AgentEndpoint | null {
-  return Object.values(snapshot.endpoints)
-    .filter((endpoint) => endpoint.agentId === agentId)
-    .sort((left, right) =>
-      endpointStateRank(right) - endpointStateRank(left)
-      || endpointStartedAt(right) - endpointStartedAt(left)
-      || endpointActivity(right) - endpointActivity(left)
-      || right.id.localeCompare(left.id)
-    )[0] ?? null;
+/// Best-endpoint-per-agent lookup, built once per request. Replaces the former
+/// per-participant scan+sort over the whole endpoint table.
+type AgentEndpointIndex = ReadonlyMap<string, AgentEndpoint>;
+
+/// The exact preference order the former per-agent `filter(...).sort(...)[0]`
+/// applied: highest state rank, then most recent start, then most recent
+/// activity, then greatest endpoint id.
+function compareEndpointPreference(left: AgentEndpoint, right: AgentEndpoint): number {
+  return endpointStateRank(right) - endpointStateRank(left)
+    || endpointStartedAt(right) - endpointStartedAt(left)
+    || endpointActivity(right) - endpointActivity(left)
+    || right.id.localeCompare(left.id);
 }
 
-function agentDisplayName(snapshot: ScoutBrokerSnapshot, agentId: string): string {
-  const endpoint = endpointForAgent(snapshot, agentId);
+/// One pass over the endpoint table keeping, per agent, the endpoint the
+/// preference order ranks first. The comparator is a strict total order
+/// (endpoint ids are unique), so the single-pass minimum is the same endpoint
+/// the previous sort-then-take-first selected.
+function bestEndpointByAgent(snapshot: ScoutBrokerSnapshot): AgentEndpointIndex {
+  const best = new Map<string, AgentEndpoint>();
+  for (const endpoint of Object.values(snapshot.endpoints)) {
+    const incumbent = best.get(endpoint.agentId);
+    if (!incumbent || compareEndpointPreference(endpoint, incumbent) < 0) {
+      best.set(endpoint.agentId, endpoint);
+    }
+  }
+  return best;
+}
+
+function endpointForAgent(endpoints: AgentEndpointIndex, agentId: string): AgentEndpoint | null {
+  return endpoints.get(agentId) ?? null;
+}
+
+function agentDisplayName(
+  snapshot: ScoutBrokerSnapshot,
+  endpoints: AgentEndpointIndex,
+  agentId: string,
+): string {
+  const endpoint = endpointForAgent(endpoints, agentId);
   const workspaceTitle = humanizeWorkspaceName(endpoint?.projectRoot ?? endpoint?.cwd ?? null);
   if (workspaceTitle) {
     return workspaceTitle;
@@ -605,16 +690,21 @@ function cleanParticipantDisplayName(value: string): string {
 }
 
 function participantEndpoint(
-  snapshot: ScoutBrokerSnapshot,
+  endpoints: AgentEndpointIndex,
   participantId: string,
 ): AgentEndpoint | null {
-  return endpointForAgent(snapshot, participantId);
+  return endpointForAgent(endpoints, participantId);
 }
 
-function participantBaseName(snapshot: ScoutBrokerSnapshot, participantId: string): string {
-  if (configuredOperatorActorIds().includes(participantId)) return "Operator";
+function participantBaseName(
+  snapshot: ScoutBrokerSnapshot,
+  endpoints: AgentEndpointIndex,
+  operatorIds: ReadonlySet<string>,
+  participantId: string,
+): string {
+  if (operatorIds.has(participantId)) return "Operator";
   if (snapshot.agents[participantId]) {
-    return cleanParticipantDisplayName(agentDisplayName(snapshot, participantId));
+    return cleanParticipantDisplayName(agentDisplayName(snapshot, endpoints, participantId));
   }
   return cleanParticipantDisplayName(
     snapshot.actors[participantId]?.displayName
@@ -624,6 +714,8 @@ function participantBaseName(snapshot: ScoutBrokerSnapshot, participantId: strin
 
 function buildScopedParticipants(
   snapshot: ScoutBrokerSnapshot,
+  endpoints: AgentEndpointIndex,
+  operatorIds: ReadonlySet<string>,
   conversationId: string,
   participantIds: string[],
 ): ScoutConversationParticipant[] {
@@ -631,18 +723,17 @@ function buildScopedParticipants(
   const bases = new Map<string, string>();
   const baseCounts = new Map<string, number>();
   for (const participantId of uniqueParticipantIds) {
-    const base = participantBaseName(snapshot, participantId);
+    const base = participantBaseName(snapshot, endpoints, operatorIds, participantId);
     bases.set(participantId, base);
     const key = base.toLowerCase();
     baseCounts.set(key, (baseCounts.get(key) ?? 0) + 1);
   }
 
   const usedAliases = new Set<string>();
-  const operatorIds = new Set(configuredOperatorActorIds());
   return uniqueParticipantIds.map((participantId) => {
     const actor = snapshot.actors[participantId];
     const agent = snapshot.agents[participantId] ?? null;
-    const endpoint = participantEndpoint(snapshot, participantId);
+    const endpoint = participantEndpoint(endpoints, participantId);
     const kind: ActorKind = actor?.kind ?? agent?.kind ?? "agent";
     const displayName = bases.get(participantId) ?? participantId;
     const scopedAlias = operatorIds.has(participantId)
@@ -679,9 +770,10 @@ function buildScopedParticipants(
 
 function directConversationAgent(
   snapshot: ScoutBrokerSnapshot,
+  endpoints: AgentEndpointIndex,
+  operatorActorIds: ReadonlySet<string>,
   participantIds: string[],
 ): { agentId: string | null; actor: ActorIdentity | null; agent: AgentDefinition | null; endpoint: AgentEndpoint | null } {
-  const operatorActorIds = new Set(configuredOperatorActorIds());
   const agentId =
     participantIds.find((participantId) =>
       !operatorActorIds.has(participantId) && Boolean(snapshot.agents[participantId])
@@ -691,7 +783,7 @@ function directConversationAgent(
     ?? null;
   const actor = agentId ? snapshot.actors[agentId] ?? null : null;
   const agent = agentId ? snapshot.agents[agentId] ?? null : null;
-  const endpoint = agentId ? endpointForAgent(snapshot, agentId) : null;
+  const endpoint = agentId ? endpointForAgent(endpoints, agentId) : null;
   return { agentId, actor, agent, endpoint };
 }
 
@@ -723,8 +815,10 @@ function includeConversation(
 /// configured name/handle), so we keep the *max* `lastReadAt`. `MessageRecord`
 /// has no monotonic `seq`, so — like mobile — we count by `createdAt`, which the
 /// broker stamps and the cursor's `lastReadAt` is expressed in.
-function operatorReadAtByConversation(snapshot: ScoutBrokerSnapshot): Map<string, number> {
-  const operatorIds = new Set(configuredOperatorActorIds());
+function operatorReadAtByConversation(
+  snapshot: ScoutBrokerSnapshot,
+  operatorIds: ReadonlySet<string>,
+): Map<string, number> {
   const readAt = new Map<string, number>();
   for (const cursor of Object.values(snapshot.readCursors ?? {})) {
     if (!operatorIds.has(cursor.actorId)) continue;
@@ -772,6 +866,8 @@ function equivalentNamedConversationIds(
 function coalesceDuplicateNamedChannels(
   summaries: ScoutConversationSummary[],
   snapshot: ScoutBrokerSnapshot,
+  endpoints: AgentEndpointIndex,
+  operatorIds: ReadonlySet<string>,
   preferredId?: string | null,
 ): ScoutConversationSummary[] {
   const groups = new Map<string, ScoutConversationSummary[]>();
@@ -808,7 +904,14 @@ function coalesceDuplicateNamedChannels(
         group.flatMap((summary) => summary.equivalentConversationIds),
       )].sort(),
       participantIds,
-      participants: buildScopedParticipants(snapshot, canonical.id, participantIds),
+      participantCount: participantIds.length,
+      participants: buildScopedParticipants(
+        snapshot,
+        endpoints,
+        operatorIds,
+        canonical.id,
+        participantIds,
+      ),
       preview: latest.preview,
       lastMessageAt: latest.lastMessageAt,
       sessionId: latest.sessionId ?? canonical.sessionId,
@@ -833,8 +936,12 @@ function conversationMatchesMachine(
 
 export async function getScoutConversations(
   filters: ScoutConversationListFilters = {},
+  brokerContext?: ScoutBrokerContext,
 ): Promise<ScoutConversationSummary[]> {
-  const broker = await loadScoutBrokerContext();
+  const broker = brokerContext ?? await loadScoutBrokerContext(
+    undefined,
+    filters.machineId ? {} : { scope: "conversations" },
+  );
   if (!broker) {
     return [];
   }
@@ -847,7 +954,8 @@ export async function getScoutConversations(
   const allowedKinds = new Set(filters.kinds ?? DEFAULT_CONVERSATION_KINDS);
   const query = normalizeQuery(filters.query);
   const operatorIds = new Set(configuredOperatorActorIds());
-  const readAtByConversation = operatorReadAtByConversation(snapshot);
+  const endpointsByAgent = bestEndpointByAgent(snapshot);
+  const readAtByConversation = operatorReadAtByConversation(snapshot, operatorIds);
 
   const conversationIdFilter = filters.conversationId?.trim() || null;
   const conversationIdFilterIds = conversationIdFilter
@@ -904,15 +1012,23 @@ export async function getScoutConversations(
         invocations,
         flights,
         operatorIds,
+        conversationMetadata: conversation.metadata,
       });
       const participants = buildScopedParticipants(
         snapshot,
+        endpointsByAgent,
+        operatorIds,
         conversation.id,
         participantIds,
       );
 
       if (conversation.kind === "direct") {
-        const { agentId, actor, agent, endpoint } = directConversationAgent(snapshot, participantIds);
+        const { agentId, actor, agent, endpoint } = directConversationAgent(
+          snapshot,
+          endpointsByAgent,
+          operatorIds,
+          participantIds,
+        );
         if (
           !agentId
           || (!agent && !actor)
@@ -923,7 +1039,7 @@ export async function getScoutConversations(
         ) {
           return [];
         }
-        const title = agentDisplayName(snapshot, agentId);
+        const title = agentDisplayName(snapshot, endpointsByAgent, agentId);
         const identityFields = conversationIdentityFields(conversation);
         return [{
           id: conversation.id,
@@ -934,6 +1050,7 @@ export async function getScoutConversations(
           ...identityFields,
           participantIds,
           participants,
+          participantCount: participantIds.length,
           authorityNodeId: conversation.authorityNodeId ?? null,
           authorityNodeName: snapshot.nodes?.[conversation.authorityNodeId]?.name ?? null,
           agentId,
@@ -947,7 +1064,7 @@ export async function getScoutConversations(
             ?? metadataString(agent?.metadata, "workspaceQualifier"),
           parentConversationId: conversation.parentConversationId ?? null,
           anchorMessageId: conversation.messageId ?? null,
-          preview: latestMessage?.body ?? null,
+          preview: truncatedPreview(latestMessage?.body),
           messageCount,
           lastMessageAt: normalizeTimestampMs(latestMessage?.createdAt),
           workspaceRoot: endpoint?.projectRoot ?? endpoint?.cwd ?? null,
@@ -981,6 +1098,7 @@ export async function getScoutConversations(
         ...identityFields,
         participantIds,
         participants,
+        participantCount: participantIds.length,
         authorityNodeId: conversation.authorityNodeId ?? null,
         authorityNodeName: snapshot.nodes?.[conversation.authorityNodeId]?.name ?? null,
         agentId: null,
@@ -990,7 +1108,7 @@ export async function getScoutConversations(
         currentBranch: null,
         parentConversationId: conversation.parentConversationId ?? null,
         anchorMessageId: conversation.messageId ?? null,
-        preview: latestMessage?.body ?? null,
+        preview: truncatedPreview(latestMessage?.body),
         messageCount,
         lastMessageAt: normalizeTimestampMs(latestMessage?.createdAt),
         workspaceRoot: null,
@@ -1010,6 +1128,8 @@ export async function getScoutConversations(
   const coalesced = coalesceDuplicateNamedChannels(
     summaries,
     snapshot,
+    endpointsByAgent,
+    operatorIds,
     conversationIdFilter,
   ).filter((summary) =>
     !machineId || conversationMatchesMachine(snapshot, summary, machineId)
@@ -1021,7 +1141,49 @@ export async function getScoutConversations(
   const limit = typeof filters.limit === "number" && filters.limit > 0
     ? Math.floor(filters.limit)
     : null;
-  return limit ? coalesced.slice(0, limit) : coalesced;
+  const page = limit ? coalesced.slice(0, limit) : coalesced;
+  // Cap only what ships: query/machine filters above ran on full rosters.
+  return page.map((summary) => capSummaryRoster(summary, operatorIds, endpointsByAgent));
+}
+
+/// Non-direct rosters can be huge (a broadcast channel carries thousands of
+/// participants, mostly historic sessions) and their rich entries were the
+/// bulk of the list payload. `participantIds` always ships COMPLETE — bare
+/// ids are cheap, and consumers use them for membership checks (machine
+/// scoping, deep links) that must see every member. Only the rich
+/// `participants` array is capped, and the kept set always includes the
+/// operator's own entries plus every member with a live endpoint
+/// (session→channel resolution scans rich entries, and live endpoints are
+/// bounded by actual running sessions), so capping only ever drops members
+/// with no current endpoint. Kept ids are moved to the front of
+/// `participantIds` so consumers that zip `participants[i]` with
+/// `participantIds[i]` stay aligned. `participantCount` carries the real
+/// total. Direct/group_direct rosters are tiny and name the conversation, so
+/// they stay complete.
+const CHANNEL_ROSTER_CAP = 32;
+
+function capSummaryRoster(
+  summary: ScoutConversationSummary,
+  operatorIds: ReadonlySet<string>,
+  endpoints: AgentEndpointIndex,
+): ScoutConversationSummary {
+  if (summary.kind === "direct" || summary.kind === "group_direct") return summary;
+  if (summary.participantIds.length <= CHANNEL_ROSTER_CAP) return summary;
+  const keep = new Set<string>();
+  for (const id of summary.participantIds) {
+    if (operatorIds.has(id) || participantEndpoint(endpoints, id)) keep.add(id);
+  }
+  for (const id of summary.participantIds) {
+    if (keep.size >= CHANNEL_ROSTER_CAP) break;
+    keep.add(id);
+  }
+  const keptIds = summary.participantIds.filter((id) => keep.has(id));
+  const droppedIds = summary.participantIds.filter((id) => !keep.has(id));
+  return {
+    ...summary,
+    participantIds: [...keptIds, ...droppedIds],
+    participants: summary.participants.filter((participant) => keep.has(participant.actorId)),
+  };
 }
 
 /// Read a conversation transcript from the same broker snapshot that powers
@@ -1037,7 +1199,7 @@ export async function getScoutConversationMessages(
     return [];
   }
 
-  const broker = await loadScoutBrokerContext();
+  const broker = await loadScoutBrokerContext(undefined, { scope: "conversations" });
   if (!broker) return null;
 
   const snapshot = broker.snapshot;
@@ -1075,8 +1237,16 @@ export async function getScoutConversationMessages(
   // window continues the same scrollback rather than reading as its end.
   if (visibleMessages.length === 0) return null;
 
+  const endpointsByAgent = bestEndpointByAgent(snapshot);
+  const operatorIds = new Set(configuredOperatorActorIds());
   return visibleMessages.map((message) => {
-    const threadSummary = threadSummaryForMessage(snapshot, messagesByConversation, message);
+    const threadSummary = threadSummaryForMessage(
+      snapshot,
+      endpointsByAgent,
+      operatorIds,
+      messagesByConversation,
+      message,
+    );
     return {
       id: message.id,
       conversationId: normalizedId,

@@ -83,7 +83,6 @@ const SURFACE_FLAG_KEYS = [
   "surface.follow",
   "surface.mesh-ops",
   "surface.scoutbot",
-  "surface.realtime-voice",
   "surface.workflows",
 ] as const;
 
@@ -221,8 +220,10 @@ export const scoutFlags = createFlagRegistry({
   "surface.realtime-voice": {
     label: "Surface · Realtime voice",
     description:
-      "Live WebRTC voice conversations with Scoutbot through OpenAI Realtime.",
-    defaultEnabled: false,
+      "Live WebRTC voice conversations with Scoutbot through OpenAI Realtime. Operator enablement lives in Settings → Voice; this flag is a build-level kill switch.",
+    // The Settings toggle is the everyday control. Keep the surface mounted in
+    // both bundles so an operator can turn it on without finding a dev flag.
+    defaultEnabled: true,
     tier: "everyone",
     owner: "scout-web",
     tags: ["surface", "assistant", "voice"],

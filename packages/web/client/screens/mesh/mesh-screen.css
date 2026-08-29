@@ -1643,6 +1643,33 @@
   align-self: stretch;
 }
 
+.mesh-join-toggle {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  cursor: pointer;
+  user-select: none;
+}
+
+.mesh-join-toggle input {
+  width: 14px;
+  height: 14px;
+  margin: 0;
+  accent-color: var(--acc, #3b82f6);
+}
+
+.mesh-join-toggle-copy {
+  font-size: var(--text-sm);
+  color: var(--ink);
+}
+
+.mesh-join-hint {
+  margin: var(--space-xs) 0 0;
+  font-size: var(--text-xs);
+  line-height: var(--leading-tight);
+  color: var(--muted);
+}
+
 .mesh-action-message {
   padding: var(--space-sm) var(--space-md);
   font-size: var(--text-sm);

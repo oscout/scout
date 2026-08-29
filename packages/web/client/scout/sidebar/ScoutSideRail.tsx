@@ -7,8 +7,8 @@
  *
  * SCO-086: collapsed state is an OpenScout CollapsedRail at RAIL_COLLAPSED_WIDTH
  * (HudsonKit SidePanel collapses to a 0px floating button — not a rail).
- * Expanded panel omits onToggleCollapse; the shared RailToggle is rendered
- * externally on the panel's trailing edge.
+ * Expanded panel omits onToggleCollapse; ONE shared RailToggle is rendered
+ * outside both hosts, in the column's 44px header band, in both states.
  *
  * Keep-alive: the expanded SidePanel (and its context body, e.g. ChatLeft) stays
  * mounted while collapsed — only hidden with CSS — so expand does not remount
@@ -25,6 +25,11 @@ import { useScout } from "../Provider.tsx";
 import { primaryAreaForRoute, PRIMARY_AREAS } from "../primary-areas.ts";
 import { resolveSidebarContext } from "../../screens/resolve-sidebar-context.tsx";
 import { CollapsedRail } from "./CollapsedRail.tsx";
+import {
+  RAIL_COLLAPSED_WIDTH,
+  RAIL_TOGGLE_HEADER_TOP,
+  railToggleOffset,
+} from "./sidebar-collapse-state.ts";
 import { SideRailCollapsedBody } from "./SideRailCollapsedBody.tsx";
 import { useSidebarModel } from "./useSidebarModel.ts";
 
@@ -105,7 +110,13 @@ export function ScoutSideRail({
   // HudsonKit (that drove a live, per-frame width update). SCO-088c (Codex
   // blocker 1): the chevron stays pinned at the committed edge during a drag (the
   // ghost line is the live preview) — no per-frame layout animation.
-  const chevronEdge = navRailWidth + width;
+  //
+  // ONE toggle, rendered in both states, in the column's own 44px header band:
+  // expanded it tucks against the inner edge, collapsed it centres in the 48px
+  // rail. Same band, same y — the control never migrates to the rail foot and
+  // never straddles the seam (the seam belongs to resize).
+  const railWidth = isCollapsed ? RAIL_COLLAPSED_WIDTH : width;
+  const toggleLeft = navRailWidth + railToggleOffset(railWidth, isCollapsed);
 
   return (
     <>
@@ -135,20 +146,6 @@ export function ScoutSideRail({
             {context.body}
           </div>
         </SidePanel>
-        <RailToggle
-          side="left"
-          collapsed={false}
-          label={title}
-          onToggle={onToggleCollapse}
-          className="scout-rail-toggle--panel scout-rail-toggle--side-rail"
-          style={{
-            position: "fixed",
-            left: chevronEdge,
-            top: top + 6,
-            zIndex: 45,
-            transform: "translateX(-50%)",
-          }}
-        />
       </div>
 
       <div
@@ -166,9 +163,27 @@ export function ScoutSideRail({
           edgeOffset={navRailWidth}
           top={top}
           style={style}
-          body={<SideRailCollapsedBody route={route} />}
+          body={<SideRailCollapsedBody route={route} onExpand={onToggleCollapse} />}
         />
       </div>
+
+      {/* Outside both hosts: one control, one DOM node, alive in both states —
+          so collapsing cannot swap it for a different-looking widget somewhere
+          else on the column. */}
+      <RailToggle
+        side="left"
+        collapsed={isCollapsed}
+        label={title}
+        onToggle={onToggleCollapse}
+        onMouseDown={(e) => e.stopPropagation()}
+        className="scout-rail-toggle--band"
+        style={{
+          position: "fixed",
+          left: toggleLeft,
+          top: top + RAIL_TOGGLE_HEADER_TOP,
+          zIndex: 45,
+        }}
+      />
     </>
   );
 }

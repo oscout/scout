@@ -171,7 +171,7 @@ function extractClaudeMeta(path: string): { ids: string[]; cwd?: string } {
   // Claude stores under ~/.claude/projects/<slug>/<id>.jsonl — slug encodes cwd.
   const parent = basename(resolve(path, ".."));
   if (parent.startsWith("-")) {
-    // e.g. -Users-art-dev-openscout → /Users/example/dev/openscout (best-effort)
+    // e.g. -Users-art-dev-openscout → /Users/art/dev/openscout (best-effort)
     const guessed = parent.replace(/^-/, "/").replace(/-/g, "/");
     if (guessed.startsWith("/") && guessed.length > 1) {
       cwd = cwd ?? guessed;

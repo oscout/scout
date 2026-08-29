@@ -6,11 +6,11 @@ import type {
   WebBrokerRouteAttempt,
 } from "./types/web.ts";
 
-type BrokerDiagnosticsSnapshot = {
+export type BrokerDiagnosticsSnapshot = {
   actors: Record<string, { displayName?: string | null } | undefined>;
   messages: Record<string, MessageRecord | undefined>;
   totalMessageCount?: number | null;
-  projectionStatus?: "ready" | "degraded" | "disabled" | null;
+  projectionStatus?: "ready" | "warming" | "degraded" | "disabled" | null;
   messageCoverageIncomplete?: boolean;
 };
 
@@ -194,19 +194,24 @@ function dedupeRows<T extends { id: string }>(rows: T[]): T[] {
 
 export function markBrokerDiagnosticsLiveUnavailable(
   projection: WebBrokerDiagnostics,
+  options: { brokerReachable?: boolean } = {},
 ): WebBrokerDiagnostics {
+  const brokerReachable = options.brokerReachable === true;
   return {
     ...projection,
     source: {
       mode: "sqlite_projection",
       status: "degraded",
+      brokerReachable,
       latestMessageAt: projection.source?.latestMessageAt ?? projection.dialogue[0]?.ts ?? null,
       projectionLatestMessageAt: projection.source?.projectionLatestMessageAt
         ?? projection.dialogue[0]?.ts
         ?? null,
       liveMessageCount: null,
       projectionMessageCount: projection.source?.projectionMessageCount ?? null,
-      detail: "The live broker message feed is unavailable. Showing SQLite projection data, which may be stale.",
+      detail: brokerReachable
+        ? "The broker is online, but its live message feed is still loading. Showing SQLite projection data, which may be stale."
+        : "The live broker message feed is unavailable. Showing SQLite projection data, which may be stale.",
     },
   };
 }
@@ -320,6 +325,7 @@ export function mergeBrokerDiagnosticsWithLiveSnapshot(
     source: {
       mode: "live_broker",
       status: projectionBehind ? "degraded" : "current",
+      brokerReachable: true,
       latestMessageAt,
       projectionLatestMessageAt,
       liveMessageCount,

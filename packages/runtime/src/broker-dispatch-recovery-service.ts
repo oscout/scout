@@ -33,8 +33,29 @@ export type BrokerDispatchRecoveryServiceDeps = {
 
 export class BrokerDispatchRecoveryService {
   readonly #recoveringInvocationIds = new Set<string>();
+  readonly #deferredInvocations = new Map<string, number>();
 
   constructor(private readonly deps: BrokerDispatchRecoveryServiceDeps) {}
+
+  /**
+   * Suppress recovery redispatch for one invocation until `notBeforeTs`.
+   * Used by thread_held_externally parks: restoring the endpoint's online
+   * state fires this service via the persist hook, and without the deferral
+   * the parked flight would redispatch (and re-fail) in a hot loop.
+   */
+  deferInvocation(invocationId: string, notBeforeTs: number): void {
+    this.#deferredInvocations.set(invocationId, notBeforeTs);
+  }
+
+  #isDeferred(invocationId: string, now: number): boolean {
+    const notBefore = this.#deferredInvocations.get(invocationId);
+    if (notBefore === undefined) return false;
+    if (now >= notBefore) {
+      this.#deferredInvocations.delete(invocationId);
+      return false;
+    }
+    return true;
+  }
 
   async recoverQueuedFlights(input: {
     reason: string;
@@ -44,12 +65,14 @@ export class BrokerDispatchRecoveryService {
     const jobs = this.deps.dispatchJobs()
       .filter((job) => isInvocationDispatchJobDue(job, now, { includeRunning: true }))
       .filter((job) => !input.agentId || job.targetAgentId === input.agentId)
+      .filter((job) => !this.#isDeferred(job.invocationId, now))
       .sort((left, right) => left.createdAt - right.createdAt);
     const jobInvocationIds = new Set(jobs.map((job) => job.invocationId));
     const queued = Object.values(this.deps.runtimeSnapshot().flights)
       .filter((flight) => flight.state === "queued" || flight.state === "waking")
       .filter((flight) => !input.agentId || flight.targetAgentId === input.agentId)
       .filter((flight) => !jobInvocationIds.has(flight.invocationId))
+      .filter((flight) => !this.#isDeferred(flight.invocationId, now))
       .sort((left, right) => flightSortTime(left) - flightSortTime(right));
     const result: BrokerDispatchRecoveryResult = {
       considered: jobs.length + queued.length,

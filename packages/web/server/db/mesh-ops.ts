@@ -456,7 +456,7 @@ type MeshOpsSessionRow = {
   node_host_name: string | null;
 };
 
-/** "scope.main.dev-mac-mini-local" → "scope.main" when the qualifier is known. */
+/** "scope.main.arts-mac-mini-local" → "scope.main" when the qualifier is known. */
 function sessionAgentLabel(agentId: string, nodeQualifier: string | null): string {
   if (nodeQualifier && agentId.endsWith(`.${nodeQualifier}`)) {
     return agentId.slice(0, -(nodeQualifier.length + 1));

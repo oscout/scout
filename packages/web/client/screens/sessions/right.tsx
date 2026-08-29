@@ -122,8 +122,11 @@ export function SessionsInspector() {
         {selected.lastMessageAt && (
           <Row label="Last" value={timeAgo(selected.lastMessageAt)} />
         )}
-        {selected.participantIds.length > 0 && (
-          <Row label="Participants" value={`${selected.participantIds.length}`} />
+        {(selected.participantCount ?? selected.participantIds.length) > 0 && (
+          <Row
+            label="Participants"
+            value={`${selected.participantCount ?? selected.participantIds.length}`}
+          />
         )}
       </Section>
 

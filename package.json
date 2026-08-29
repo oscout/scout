@@ -1,6 +1,6 @@
 {
   "name": "openscout",
-  "version": "0.2.92",
+  "version": "0.2.94",
   "description": "Your personal agent cloud: a local control plane and mesh network for coding agents",
   "private": true,
   "packageManager": "bun@1.3.13",
@@ -80,7 +80,10 @@
     "ship:npm": "bash scripts/ship-npm.sh",
     "ship:release": "node scripts/ship-release.mjs",
     "ship": "node scripts/ship-release.mjs",
-    "bump": "node scripts/bump-version.mjs"
+    "bump": "node scripts/bump-version.mjs",
+    "scout:tui:check": "bash scripts/cargo.sh check --manifest-path crates/scout-tui/Cargo.toml",
+    "scout:tui:build": "bash scripts/cargo.sh build --release --manifest-path crates/scout-tui/Cargo.toml",
+    "scout:tui:install": "bash scripts/cargo.sh install --locked --path crates/scout-tui"
   },
   "ignoreScripts": [
     "sharp",

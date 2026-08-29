@@ -74,7 +74,7 @@ const BLOB_PATH_PATTERN = /^\/api\/blobs\/[^/]+$/u;
 /**
  * Blob URLs are minted with the server's configured public origin (for example
  * `http://scout.local`), but the page is served from whichever hostname the
- * browser used (`http://dev-mac-mini.scout.local`). Loading the image from the
+ * browser used (`http://arts-mac-mini.scout.local`). Loading the image from the
  * minted origin fails twice over: the web auth cookie is host-only, so the
  * request is 401, and `/api/*` answers with `Cross-Origin-Resource-Policy:
  * same-origin`, which blocks the load even when a cookie is present. Both

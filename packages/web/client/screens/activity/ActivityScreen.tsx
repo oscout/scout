@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { api } from "../../lib/api.ts";
+import { api, peekApiGet } from "../../lib/api.ts";
 import { copyTextToClipboard } from "../../lib/clipboard.ts";
 import { useBrokerEvents } from "../../lib/sse.ts";
 import { actorColor } from "../../lib/colors.ts";
@@ -15,6 +15,8 @@ import { EmptyState } from "../../components/EmptyState.tsx";
 import { useScout } from "../../scout/Provider.tsx";
 import type { ActivityItem, Route } from "../../lib/types.ts";
 import "../system-surfaces-redesign.css";
+
+const ROUTE_CACHE_MAX_AGE_MS = 30_000;
 
 const KIND_LABELS: Record<string, string> = {
   "agent.registered": "registered",
@@ -98,14 +100,19 @@ function fallbackSummary(item: ActivityItem): string {
 
 export function ActivityScreen({ navigate }: { navigate: (r: Route) => void }) {
   const { agents, route } = useScout();
-  const [activity, setActivity] = useState<ActivityItem[]>([]);
+  // Warm start: paint the last activity feed on remount while the mount
+  // effect's load("initial") refreshes it in the background.
+  const [initialActivity] = useState(() =>
+    peekApiGet<ActivityItem[]>("/api/activity", ROUTE_CACHE_MAX_AGE_MS),
+  );
+  const [activity, setActivity] = useState<ActivityItem[]>(initialActivity ?? []);
   const [expandedId, setExpandedId] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(initialActivity === null);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [lastLoadedAt, setLastLoadedAt] = useState<number | null>(null);
 
-  const activityRef = useRef<ActivityItem[]>([]);
+  const activityRef = useRef<ActivityItem[]>(initialActivity ?? []);
   const requestIdRef = useRef(0);
   const refreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const showContextMenu = useContextMenu();

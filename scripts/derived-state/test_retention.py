@@ -61,9 +61,9 @@ class RetentionPolicyTests(unittest.TestCase):
         self.assertEqual(explain_safety(record)[0], "keep:leased")
 
     def test_remote_normalization(self):
-        expected = "github.com/oscout/scout"
-        self.assertEqual(normalize_remote("git@github.com:oscout/scout.git"), expected)
-        self.assertEqual(normalize_remote("https://github.com/oscout/scout.git"), expected)
+        expected = "github.com/arach/openscout"
+        self.assertEqual(normalize_remote("git@github.com:arach/openscout.git"), expected)
+        self.assertEqual(normalize_remote("https://github.com/arach/openscout.git"), expected)
 
     def test_only_known_derived_ignored_paths_are_allowlisted(self):
         self.assertTrue(ignored_path_is_derived("design/studio/.next/cache/file"))

@@ -40,7 +40,6 @@ import {
   type BrokerRouteTargetInput,
   type RuntimeSnapshot,
 } from "./scout-dispatcher.js";
-import { describeUnavailableSessionEndpoint } from "./broker-endpoint-selection.js";
 import { sessionActorAlias } from "./session-alias.js";
 
 type EnsureBrokerDeliveryConversationInput = {
@@ -886,13 +885,19 @@ export class BrokerDeliveryAcceptanceService {
       ?? (aliasResolution?.target.kind === "session" ? aliasResolution.target.sessionId : undefined)
       ?? (resolved.kind === "resolved_session" ? resolved.session.sessionId : undefined);
 
+    // SCO-098: a resolved session endpoint is never refused for being
+    // offline right now. The resolver already dropped terminal/stale
+    // endpoints, so "unavailable" here means the harness exited — exactly the
+    // store-and-forward case: record the message, dispatch, and let the
+    // invocation path wake the session or park the flight as
+    // queued_until_online until an attach/retry trigger delivers it.
     const unavailable = resolved.kind === "resolved"
       ? this.options.describeUnavailableDeliveryTarget(
           this.options.runtimeSnapshot(),
           resolved.agent,
           requestedTargetSessionId,
         )
-      : describeUnavailableSessionEndpoint(resolved.session.endpoint);
+      : null;
     if (unavailable) {
       const targetLabel = askedLabel || target.label;
       const { record } = await this.options.recordScoutDispatch(

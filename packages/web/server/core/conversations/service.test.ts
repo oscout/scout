@@ -65,7 +65,7 @@ function baseSnapshot(overrides: Record<string, unknown> = {}) {
         harness: "claude",
         transport: "claude_stream_json",
         state: "offline",
-        projectRoot: "/Users/example/dev/hudson",
+        projectRoot: "/Users/arach/dev/hudson",
         metadata: {
           staleLocalRegistration: true,
           branch: "main",
@@ -291,7 +291,7 @@ describe("getScoutConversations", () => {
           harness: session.harness,
           transport: session.transport,
           sessionId: session.id,
-          projectRoot: "/Users/example/dev/openscout",
+          projectRoot: "/Users/arach/dev/openscout",
         },
       };
     }
@@ -342,10 +342,91 @@ describe("getScoutConversations", () => {
         sessionId: session.id,
         harness: session.harness,
         transport: session.transport,
-        workspaceRoot: "/Users/example/dev/openscout",
+        workspaceRoot: "/Users/arach/dev/openscout",
       });
       expect(participant?.label).toContain(participant?.scopedAlias ?? "");
     }
+  });
+
+  test("caps huge channel rosters, keeps the operator, and truncates previews", async () => {
+    const snapshot = baseSnapshot();
+    const channelId = stableChannelId(namedChannelNaturalKey("shared"));
+    // First 10 members have live endpoints; the rest are historic roster
+    // entries — the only kind the rich-participant cap may drop.
+    const memberIds = Array.from({ length: 60 }, (_, index) => {
+      const id = `session-member-${String(index).padStart(3, "0")}`;
+      snapshot.actors[id] = {
+        id,
+        kind: "session",
+        displayName: `member-${index}`,
+        metadata: { sessionId: id },
+      };
+      if (index < 10) {
+        snapshot.endpoints[`ep-${id}`] = {
+          id: `ep-${id}`,
+          agentId: id,
+          nodeId: "node-1",
+          harness: "claude",
+          transport: "claude_stream_json",
+          state: "active",
+          sessionId: id,
+        };
+      }
+      return id;
+    });
+    snapshot.conversations[channelId] = {
+      id: channelId,
+      kind: "channel",
+      title: "shared",
+      visibility: "workspace",
+      shareMode: "local",
+      authorityNodeId: "node-1",
+      // Sorted roster puts "operator" past the cap boundary on its own.
+      participantIds: [...memberIds, "operator"],
+      metadata: {
+        naturalKey: namedChannelNaturalKey("shared"),
+        channel: "shared",
+      },
+    };
+    snapshot.messages["msg-shared-long"] = {
+      id: "msg-shared-long",
+      conversationId: channelId,
+      actorId: memberIds[0]!,
+      originNodeId: "node-1",
+      class: "agent",
+      body: "x".repeat(1_000),
+      visibility: "workspace",
+      policy: "durable",
+      createdAt: 1_779_461_900_000,
+    };
+    brokerContextResult = brokerContext(snapshot);
+
+    const conversations = await getScoutConversations();
+    const channel = conversations.find((entry) => entry.id === channelId);
+    expect(channel?.participantCount).toBe(61);
+    // Bare ids always ship complete — membership checks (machine scoping,
+    // deep links) must see every member, dormant or not.
+    expect(channel?.participantIds).toHaveLength(61);
+    expect(channel?.participantIds).toContain("operator");
+    expect(channel?.participantIds).toContain("session-member-059");
+    // Only the rich array is capped, and it never drops the operator or a
+    // member with a live endpoint.
+    expect(channel?.participants).toHaveLength(32);
+    expect(channel?.participants.some((participant) => participant.actorId === "operator")).toBe(true);
+    for (let index = 0; index < 10; index += 1) {
+      const liveId = `session-member-${String(index).padStart(3, "0")}`;
+      expect(channel?.participants.some((participant) => participant.actorId === liveId)).toBe(true);
+    }
+    // Kept ids lead the id list so participants[i] pairs with
+    // participantIds[i] for consumers that zip the two arrays by index.
+    expect(
+      channel?.participants.map((participant) => participant.actorId),
+    ).toEqual(channel?.participantIds.slice(0, channel.participants.length));
+    expect(channel?.preview).toBe("x".repeat(240));
+
+    const direct = conversations.find((entry) => entry.id === "chat_hudson-main");
+    expect(direct?.participantCount).toBe(2);
+    expect(direct?.participantIds).toEqual(["hudson.main.mini", "operator"]);
   });
 
   test("omits legacy structural conversation ids from the live list", async () => {
@@ -668,7 +749,7 @@ describe("getScoutConversations", () => {
       harness: "claude",
       transport: "tmux",
       state: "idle",
-      projectRoot: "/Users/example/dev/openscout",
+      projectRoot: "/Users/arach/dev/openscout",
       sessionId: "relay-openscout-a",
     };
     snapshot.endpoints["ep-openscout-b"] = {
@@ -678,7 +759,7 @@ describe("getScoutConversations", () => {
       harness: "claude",
       transport: "claude_stream_json",
       state: "idle",
-      projectRoot: "/Users/example/dev/openscout",
+      projectRoot: "/Users/arach/dev/openscout",
       sessionId: "relay-openscout-b",
     };
     snapshot.conversations["chat_openscout_pair"] = {
@@ -769,7 +850,7 @@ describe("getScoutConversations", () => {
       harness: "codex",
       transport: "codex_app_server",
       state: "offline",
-      projectRoot: "/Users/example/dev/hudson",
+      projectRoot: "/Users/arach/dev/hudson",
       metadata: {
         startedAt: "1778552408",
         lastFailedAt: "1779461710087",
@@ -882,7 +963,7 @@ describe("getScoutConversations", () => {
         source: "scout-cardless-session",
         sessionBacked: true,
         cardless: true,
-        projectRoot: "/Users/example/dev/openscout",
+        projectRoot: "/Users/arach/dev/openscout",
       },
     };
     snapshot.endpoints["endpoint-session"] = {
@@ -892,8 +973,8 @@ describe("getScoutConversations", () => {
       harness: "codex",
       transport: "codex_app_server",
       state: "idle",
-      cwd: "/Users/example/dev/openscout",
-      projectRoot: "/Users/example/dev/openscout",
+      cwd: "/Users/arach/dev/openscout",
+      projectRoot: "/Users/arach/dev/openscout",
       sessionId: sessionActorId,
       metadata: {
         source: "scout-cardless-session",
@@ -955,7 +1036,7 @@ describe("getScoutConversations", () => {
         agentName: "Openscout",
         harness: "codex",
         sessionId: sessionActorId,
-        workspaceRoot: "/Users/example/dev/openscout",
+        workspaceRoot: "/Users/arach/dev/openscout",
         preview: "ok",
         messageCount: 2,
       }),
@@ -996,11 +1077,11 @@ describe("getScoutConversations", () => {
       harness: "codex",
       transport: "codex_app_server",
       state: "offline",
-      projectRoot: "/Users/example/dev/openscout",
+      projectRoot: "/Users/arach/dev/openscout",
       metadata: {
         cardless: true,
         pendingExternalSession: true,
-        lastError: "Codex app-server cwd does not exist: /Users/example/dev/openscout/packages/runtime/~/dev/openscout",
+        lastError: "Codex app-server cwd does not exist: /Users/arach/dev/openscout/packages/runtime/~/dev/openscout",
         lastFailedAt: "1779461800000",
       },
     };
@@ -1168,6 +1249,71 @@ describe("getScoutConversations", () => {
       state: "failed",
       nextMoveOwner: "none",
     }));
+  });
+
+  test("clears a failed turn after the operator dismisses its attention", async () => {
+    const snapshot = baseSnapshot();
+    snapshot.messages["msg-1"].metadata = { replyExpectation: "required" };
+    snapshot.messages["msg-failed"] = {
+      id: "msg-failed",
+      conversationId: "chat_hudson-main",
+      actorId: "system",
+      originNodeId: "node-1",
+      class: "status",
+      body: "Hudson failed to respond.",
+      replyToMessageId: "msg-1",
+      visibility: "private",
+      policy: "durable",
+      createdAt: 1_779_461_700_300,
+      metadata: { source: "broker", routingState: "failed" },
+    };
+    snapshot.invocations = {
+      "inv-failed": {
+        id: "inv-failed",
+        requesterId: "operator",
+        requesterNodeId: "node-1",
+        targetAgentId: "hudson.main.mini",
+        action: "consult",
+        task: "hello",
+        conversationId: "chat_hudson-main",
+        messageId: "msg-1",
+        ensureAwake: true,
+        stream: false,
+        createdAt: 1_779_461_700_100,
+      },
+    };
+    snapshot.flights = {
+      "flt-failed": {
+        id: "flt-failed",
+        invocationId: "inv-failed",
+        requesterId: "operator",
+        targetAgentId: "hudson.main.mini",
+        state: "failed",
+        startedAt: 1_779_461_700_200,
+        completedAt: 1_779_461_700_300,
+        metadata: { operatorAttentionDismissedAt: 1_779_461_700_400 },
+      },
+    };
+    brokerContextResult = brokerContext(snapshot);
+
+    const dm = (await getScoutConversations()).find((entry) => entry.id === "chat_hudson-main");
+    expect(dm?.turn).toBeUndefined();
+  });
+
+  test("clears a failed turn acknowledged on a broker conversation without a projected flight", async () => {
+    const snapshot = baseSnapshot();
+    snapshot.conversations["chat_hudson-main"].metadata = {
+      operatorAttentionDismissedMessageId: "msg-1",
+      operatorAttentionDismissedAt: 1_779_461_700_400,
+    };
+    snapshot.messages["msg-1"].metadata = {
+      replyExpectation: "required",
+      routingState: "failed",
+    };
+    brokerContextResult = brokerContext(snapshot);
+
+    const dm = (await getScoutConversations()).find((entry) => entry.id === "chat_hudson-main");
+    expect(dm?.turn).toBeUndefined();
   });
 
   test("counts agent messages after the operator read cursor as unread", async () => {

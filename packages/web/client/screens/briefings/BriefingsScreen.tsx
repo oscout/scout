@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { EmptyState } from "../../components/EmptyState.tsx";
-import { api } from "../../lib/api.ts";
+import { api, peekApiGet } from "../../lib/api.ts";
 import { timeAgo } from "../../lib/time.ts";
 import type { Route } from "../../lib/types.ts";
 import "../system-surfaces-redesign.css";
@@ -25,8 +25,15 @@ const KIND_LABEL: Record<BriefingKind, string> = {
   tour: "tour",
 };
 
+const BRIEFINGS_PATH = "/api/briefings?limit=50";
+const ROUTE_CACHE_MAX_AGE_MS = 30_000;
+
 export function BriefingsScreen({ navigate }: { navigate: (r: Route) => void }) {
-  const [items, setItems] = useState<BriefingSummary[] | null>(null);
+  // Warm start: paint the last briefings list on remount while the mount
+  // effect's load() refreshes it in the background.
+  const [items, setItems] = useState<BriefingSummary[] | null>(
+    () => peekApiGet<{ briefings: BriefingSummary[] }>(BRIEFINGS_PATH, ROUTE_CACHE_MAX_AGE_MS)?.briefings ?? null,
+  );
   const [error, setError] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
 
@@ -34,7 +41,7 @@ export function BriefingsScreen({ navigate }: { navigate: (r: Route) => void }) 
     setRefreshing(true);
     try {
       const response = await api<{ briefings: BriefingSummary[] }>(
-        "/api/briefings?limit=50",
+        BRIEFINGS_PATH,
       );
       setItems(response.briefings);
       setError(null);

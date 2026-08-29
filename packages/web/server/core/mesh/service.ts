@@ -7,6 +7,8 @@
 
 import type { NodeDefinition } from "@openscout/protocol";
 import { requestScoutBrokerJson } from "@openscout/runtime/broker-api";
+import { joinBrokerMesh } from "@openscout/runtime/mesh-join";
+import { collectCurrentMeshPeerNodes } from "@openscout/runtime/mesh-peer-filter";
 import {
   type TailscalePeerCandidate,
 } from "@openscout/runtime/mesh/tailscale";
@@ -20,6 +22,7 @@ import {
   type ScoutBrokerHealthState,
   type ScoutBrokerNodeRecord,
 } from "../broker/service.ts";
+import { createCachedSnapshot } from "../../server-core.ts";
 
 /* ── Types ── */
 
@@ -158,8 +161,8 @@ function computeIssues(
       severity: "warning",
       title: "Not announced to peers",
       summary: "This broker is healthy on this machine, but it is still local-only, so peer brokers will not discover it.",
-      action: "Use Announce on mesh if this machine should participate in peer discovery.",
-      actionCommand: null,
+      action: "Use Join mesh if this machine should participate in peer discovery.",
+      actionCommand: "scout mesh join",
     });
   } else if (localNode?.advertiseScope === "mesh" && !isPeerReachableBrokerUrl(localNode.brokerUrl)) {
     issues.push({
@@ -167,8 +170,8 @@ function computeIssues(
       severity: "warning",
       title: "Announced with the wrong address",
       summary: "This broker is in mesh mode, but the address it announces is not peer-reachable, so other brokers still cannot connect to it.",
-      action: "Announce it again with a peer-reachable address.",
-      actionCommand: null,
+      action: "Join mesh again with a peer-reachable address.",
+      actionCommand: "scout mesh join",
     });
   }
 
@@ -261,9 +264,15 @@ function computeIdentitySummary(
   };
 }
 
-/* ── Public API ── */
+export type MeshJoinReport = MeshStatusReport & {
+  discovery: {
+    discoveredCount: number;
+    probes: string[];
+    error: string | null;
+  };
+};
 
-const STALE_NODE_MS = 24 * 60 * 60 * 1000; // 24h
+/* ── Public API ── */
 
 function filterCurrentMeshNodes(
   allNodes: Record<string, NodeDefinition>,
@@ -272,25 +281,32 @@ function filterCurrentMeshNodes(
   now: number,
 ): Record<string, NodeDefinition> {
   const filtered: Record<string, NodeDefinition> = {};
-  for (const [id, node] of Object.entries(allNodes)) {
-    if (id === localNodeId) {
-      filtered[id] = node;
-      continue;
-    }
-    if (meshId && node.meshId && node.meshId !== meshId) continue;
-    const lastSeen = node.lastSeenAt ?? node.registeredAt ?? 0;
-    if (lastSeen > 0 && now - lastSeen > STALE_NODE_MS) continue;
-    filtered[id] = node;
+  if (localNodeId && allNodes[localNodeId]) {
+    filtered[localNodeId] = allNodes[localNodeId];
+  }
+  for (const node of collectCurrentMeshPeerNodes({
+    nodes: allNodes,
+    localNodeId: localNodeId ?? "",
+    meshId,
+    now,
+  })) {
+    filtered[node.id] = node;
   }
   return filtered;
 }
 
-export async function loadMeshStatus(): Promise<MeshStatusReport> {
+async function readMeshStatus(options: { forceBrokerContext?: boolean } = {}): Promise<MeshStatusReport> {
   const controlUrl = resolveScoutBrokerUrl();
   const advertiseUrl = resolveScoutBrokerAdvertiseUrl();
+  // `loadScoutBrokerContext` probes /health again internally before it loads
+  // the snapshot, so `health` is fetched twice per refresh. Folding the two
+  // into one read would mean changing `loadScoutBrokerContext`'s return shape
+  // (it does not expose the health it read, and a context-cache hit performs
+  // no health fetch at all), so the tiny duplicate /health read stays — and
+  // now happens at most once per snapshot window instead of once per request.
   const [health, context, tailscale] = await Promise.all([
     readScoutBrokerHealth(controlUrl),
-    loadScoutBrokerContext(controlUrl),
+    loadScoutBrokerContext(controlUrl, { force: options.forceBrokerContext }),
     readTailscaleStatus(),
   ]);
 
@@ -306,18 +322,86 @@ export async function loadMeshStatus(): Promise<MeshStatusReport> {
 }
 
 /**
+ * One 15s snapshot serves every /api/mesh poller. Half a dozen client
+ * surfaces poll mesh status at 10-15s intervals, and each uncached read cost
+ * a broker health probe, a full broker context load, and a Tailscale status
+ * probe. The mutating flows (`announceMeshVisibility`, `withdrawMeshVisibility`,
+ * `controlTailscale`) refresh the snapshot so a post-mutation read reflects
+ * the mutation rather than the memory.
+ */
+const meshStatusSnapshot = createCachedSnapshot(readMeshStatus, 15_000);
+
+async function refreshMeshStatusAfterMutation(): Promise<MeshStatusReport> {
+  // The bind endpoint is called through the runtime helper rather than this
+  // package's brokerPostJson wrapper, so invalidate the outer snapshot and
+  // explicitly bypass the broker-context cache after every scope mutation.
+  meshStatusSnapshot.invalidate();
+  return readMeshStatus({ forceBrokerContext: true });
+}
+
+export async function loadMeshStatus(): Promise<MeshStatusReport> {
+  return meshStatusSnapshot.get();
+}
+
+async function waitForTailscaleRunning(timeoutMs = 12_000): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const status = await readTailscaleStatus();
+    if (status.running) return true;
+    await new Promise((resolve) => setTimeout(resolve, 1_000));
+    tailscaleStatusProbe.invalidate("mesh.join");
+  }
+  return false;
+}
+
+/**
+ * One action to participate in the mesh: announce, discover peers, sync their agents.
+ * Opens Tailscale on macOS when it is installed but stopped.
+ */
+export async function joinMesh(): Promise<MeshJoinReport> {
+  const controlUrl = resolveScoutBrokerUrl();
+  const tailscale = await readTailscaleStatus();
+  if (tailscale.available && !tailscale.running && process.platform === "darwin") {
+    try {
+      await openTailscaleApp();
+      tailscaleStatusProbe.invalidate("tailscale.start");
+      await waitForTailscaleRunning();
+    } catch {
+      // Explicit seeds and LAN discovery still work without Tailscale. The
+      // refreshed status below keeps the actionable Tailscale warning.
+    }
+  }
+
+  const discovery = await joinBrokerMesh(controlUrl);
+  const status = await refreshMeshStatusAfterMutation();
+  return {
+    ...status,
+    discovery: {
+      discoveredCount: discovery.discovered.length,
+      probes: discovery.probes,
+      error: discovery.error,
+    },
+  };
+}
+
+/** Leave the mesh — broker stays up, but peers stop discovering it. */
+export async function leaveMesh(): Promise<MeshStatusReport> {
+  return applyMeshBindScope("local");
+}
+
+/**
  * P1.5 restart-free announce (§11.5): call the live broker bind controller
  * instead of writing service config and restarting. The broker opens TLS
  * listeners + mDNS without process restart and persists desired scope for
  * reboot restore.
  */
 export async function announceMeshVisibility(): Promise<MeshStatusReport> {
-  return applyMeshBindScope("mesh");
+  return joinMesh();
 }
 
 /** Withdraw mesh announcement (TLS/mDNS stand down) without restart. */
 export async function withdrawMeshVisibility(): Promise<MeshStatusReport> {
-  return applyMeshBindScope("local");
+  return leaveMesh();
 }
 
 async function applyMeshBindScope(scope: "mesh" | "local"): Promise<MeshStatusReport> {
@@ -336,7 +420,8 @@ async function applyMeshBindScope(scope: "mesh" | "local"): Promise<MeshStatusRe
       `Could not flip mesh bind to ${scope}: ${detail}. Is the broker running?`,
     );
   }
-  return loadMeshStatus();
+  // The bind just changed; a cached pre-mutation report must not answer.
+  return refreshMeshStatusAfterMutation();
 }
 
 async function openTailscaleApp(): Promise<void> {
@@ -362,7 +447,8 @@ export async function controlTailscale(
   if (action === "open_app") {
     await openTailscaleApp();
     tailscaleStatusProbe.invalidate("tailscale.start");
-    return loadMeshStatus();
+    // Same rule as the bind flip: re-read, don't serve the pre-action report.
+    return meshStatusSnapshot.refresh();
   }
 
   throw new Error(`Unsupported Tailscale action: ${action}`);

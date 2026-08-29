@@ -3,7 +3,7 @@ import { OpsAgentsLeft } from "./left-agents.tsx";
 import { OpsDefaultLeft } from "./left-default.tsx";
 import { OpsLanesLeft } from "./left-lanes.tsx";
 import { OpsMissionLeft } from "./left-mission.tsx";
-import { OpsPlanLeft } from "./left-plan.tsx";
+import { OpsAdvisorLeft } from "./left-advisor.tsx";
 
 export function OpsLeft() {
   const { route } = useScout();
@@ -14,8 +14,8 @@ export function OpsLeft() {
       return <OpsMissionLeft />;
     case "agents":
       return <OpsAgentsLeft />;
-    case "plan":
-      return <OpsPlanLeft />;
+    case "advisor":
+      return <OpsAdvisorLeft />;
     case "lanes":
       return <OpsLanesLeft />;
     default:

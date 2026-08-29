@@ -70,11 +70,11 @@ describe("setup inventory", () => {
     writeFileSync(join(projectRoot, ".git", "HEAD"), "ref: refs/heads/main\n", "utf8");
     process.env.OPENSCOUT_SUPPORT_DIRECTORY = supportDirectory;
 
-    loadOrCreateStableNodeQualifier("Test-Workstation-372.local", supportDirectory);
+    loadOrCreateStableNodeQualifier("Arts-Mac-mini-372.local", supportDirectory);
 
     expect(buildRelayAgentInstance("studio", projectRoot)).toMatchObject({
-      id: "studio.main.test-workstation-372-local",
-      nodeQualifier: "test-workstation-372-local",
+      id: "studio.main.arts-mac-mini-local",
+      nodeQualifier: "arts-mac-mini-local",
     });
   });
 
@@ -127,9 +127,29 @@ describe("setup inventory", () => {
     const settings = await readOpenScoutSettings();
 
     expect(settings.profile.operatorName).toBe("Existing Operator");
+    expect(settings.voice.realtimeEnabled).toBe(false);
     expect(existsSync(join(controlHome, "keep.txt"))).toBe(true);
     expect(existsSync(join(relayHub, "keep.txt"))).toBe(true);
     expect(existsSync(join(supportDirectory, "rpc-runtime-cutover-v1"))).toBe(false);
+  });
+
+  test("persists the operator live voice preference", async () => {
+    const home = join(tmpdir(), `openscout-voice-settings-test-${Date.now()}-${Math.random().toString(16).slice(2)}`);
+
+    testDirectories.add(home);
+    process.env.HOME = home;
+    process.env.OPENSCOUT_SUPPORT_DIRECTORY = join(home, "Library", "Application Support", "OpenScout");
+    process.env.OPENSCOUT_CONTROL_HOME = join(home, ".openscout", "control-plane");
+    process.env.OPENSCOUT_RELAY_HUB = join(home, ".openscout", "relay");
+
+    const defaults = await readOpenScoutSettings();
+    expect(defaults.voice.realtimeEnabled).toBe(false);
+
+    const updated = await writeOpenScoutSettings({
+      voice: { realtimeEnabled: true },
+    });
+    expect(updated.voice.realtimeEnabled).toBe(true);
+    expect((await readOpenScoutSettings()).voice.realtimeEnabled).toBe(true);
   });
 
   test("persists OpenScout Network discovery settings", async () => {

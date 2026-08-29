@@ -201,6 +201,24 @@ describe("forwardScoutbotUiActionToNativeHost", () => {
     expect(messages).toEqual([{ kind: "ui-action", action }]);
   });
 
+  test("hands a matching failure dismissal to native conversation chrome", () => {
+    const messages: unknown[] = [];
+    const action = {
+      type: "dismiss-conversation-failure",
+      conversationId: "c-1",
+      messageId: "msg-1",
+    } as const;
+
+    expect(forwardScoutbotUiActionToNativeHost(action, {
+      webkit: {
+        messageHandlers: {
+          scoutNativeUI: { postMessage: (message) => messages.push(message) },
+        },
+      },
+    })).toBe(true);
+    expect(messages).toEqual([{ kind: "ui-action", action }]);
+  });
+
   test("keeps the realtime-voice handler as a compatibility fallback", () => {
     const messages: unknown[] = [];
     const action = {

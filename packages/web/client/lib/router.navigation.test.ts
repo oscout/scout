@@ -421,6 +421,18 @@ describe("browser location store", () => {
     expect(seen).toEqual(["/sessions", "/mesh", "/sessions", "/mesh"]);
   });
 
+  test("back/forward search changes publish embed parameters on the same path", () => {
+    const { env, emitExternal } = createFakeEnv("/embed/thread?conversationId=c.one");
+    const store = createBrowserLocationStore(env);
+    const seen: string[] = [];
+    store.subscribe(() => seen.push(store.getSnapshot().searchStr));
+
+    emitExternal("/embed/thread?conversationId=c.two");
+
+    expect(seen).toEqual(["?conversationId=c.two"]);
+    expect(store.getSnapshot().pathname).toBe("/embed/thread");
+  });
+
   test("identical locations do not republish", () => {
     const { env, emitExternal } = createFakeEnv("/");
     const store = createBrowserLocationStore(env);

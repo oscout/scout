@@ -64,5 +64,7 @@ describe("buildObserveDataFromTail Kimi mapping", () => {
         result: { outcome: "success" },
       }),
     ]);
+    expect(data.metadata?.session?.adapterType).toBe("kimi");
+    expect(data.metadata?.session?.externalSessionId).toBe("session_123");
   });
 });

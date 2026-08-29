@@ -18,6 +18,7 @@ import { BrokerDurableStore } from "./broker-durable-store.js";
 function createTestRecordStore() {
   const runtime = createInMemoryControlRuntime({}, { localNodeId: "node-1" });
   const appended: BrokerJournalEntry[][] = [];
+  const projected: BrokerJournalEntry[][] = [];
   const durableStore = new BrokerDurableStore({
     journal: {
       async appendEntries(entries) {
@@ -26,7 +27,8 @@ function createTestRecordStore() {
       },
     },
     projection: {
-      async applyEntries() {
+      async applyEntries(entries) {
+        projected.push(entries);
         return [];
       },
     },
@@ -44,6 +46,7 @@ function createTestRecordStore() {
   return {
     runtime,
     appended,
+    projected,
     knownInvocations,
     records,
   };
@@ -141,6 +144,22 @@ function testInvocation(input: Partial<InvocationRequest> = {}): InvocationReque
 }
 
 describe("BrokerDurableRecordStore", () => {
+  test("can defer projection only for explicit bootstrap node and actor writes", async () => {
+    const { appended, projected, records, runtime } = createTestRecordStore();
+    const actor = testAgent();
+
+    await records.upsertNode(testNode(), { enqueueProjection: false });
+    await records.upsertActor(actor, { enqueueProjection: false });
+
+    expect(appended.map((entries) => entries[0]?.kind)).toEqual([
+      "node.upsert",
+      "actor.upsert",
+    ]);
+    expect(projected).toEqual([]);
+    expect(runtime.snapshot().nodes["node-1"]).toBeDefined();
+    expect(runtime.snapshot().actors["agent-1"]).toBeDefined();
+  });
+
   test("detects endpoint last-seen-only heartbeats", () => {
     const previous = testEndpoint({ metadata: { source: "test", lastSeenAt: 1 } });
     const next = testEndpoint({ metadata: { source: "test", lastSeenAt: 2 } });

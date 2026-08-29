@@ -1,6 +1,13 @@
 import type { ScoutCommandContext } from "../context.ts";
 import { ScoutCliError } from "../errors.ts";
 import { readScoutWebJson } from "../web-api.ts";
+import {
+  buildOrchestrationProviderMap,
+  isOrchestrationRoleId,
+  ORCHESTRATION_ROLE_IDS,
+  renderOrchestrationProviderMap,
+} from "@openscout/protocol";
+import type { OrchestrationRoleId } from "@openscout/protocol";
 
 const HELP_FLAGS = new Set(["--help", "-h", "help"]);
 const PROVIDER_LABELS: Record<string, string> = {
@@ -20,6 +27,7 @@ type ServiceQuotaWindowPayload = {
   capLabel?: unknown;
   unitLabel?: unknown;
   resetAt?: unknown;
+  windowMs?: unknown;
   capturedAt?: unknown;
   source?: unknown;
 };
@@ -55,6 +63,7 @@ export type ProviderUsageWindow = {
   label: string;
   usedPercent: number;
   percentRemaining: number;
+  windowMs: number | null;
   resetAt: number | null;
   resetAtIso: string | null;
   resetAtLocal: string;
@@ -79,7 +88,8 @@ export type ProviderUsageReport = {
 
 export type ProvidersCommandOptions =
   | { command: "help" }
-  | { command: "usage"; forceRefresh: boolean };
+  | { command: "usage"; forceRefresh: boolean }
+  | { command: "map"; forceRefresh: boolean; role: OrchestrationRoleId | null };
 
 export type ProviderUsageFormatOptions = {
   now?: number;
@@ -95,52 +105,72 @@ export function renderProvidersCommandHelp(): string {
   return [
     "Usage:",
     "  scout providers usage [--refresh | --cached] [--json]",
+    "  scout providers map [--refresh | --cached] [--role <role>] [--json]",
     "",
-    "Show every provider quota window available to Scout.",
+    "Show provider quota windows or build a quota-aware orchestration map.",
     "",
-    "The default view refreshes the shared service-budget pipeline, then prints",
-    "percent used, percent remaining, local reset time, source, and freshness for",
-    "each window. Use --cached to allow a recent server snapshot instead of forcing",
-    "another provider refresh.",
+    "The usage view prints percent used, percent remaining, local reset time,",
+    "source, and freshness for every provider quota window. The map combines",
+    "those windows with a small role/model/provider policy; it recommends dispatches",
+    "but does not create durable `scout role` assignments.",
+    "",
+    `Map roles: ${ORCHESTRATION_ROLE_IDS.join(", ")}`,
     "",
     "Options:",
-    "  --refresh   Force live provider reads (default).",
-    "  --cached    Allow the service-budget cache; do not force a refresh.",
-    "  --json      Emit structured JSON (global Scout flag).",
+    "  --refresh       Force live provider reads (default).",
+    "  --cached        Allow the service-budget cache; do not force a refresh.",
+    "  --role <role>   Limit the orchestration map to one role.",
+    "  --json          Emit structured JSON (global Scout flag).",
     "",
     "Examples:",
     "  scout providers usage",
-    "  scout providers usage --cached",
-    "  scout providers usage --json",
+    "  scout providers map",
+    "  scout providers map --role implementation --cached",
   ].join("\n");
 }
 
 export function parseProvidersCommandOptions(args: string[]): ProvidersCommandOptions {
   const action = args[0];
   if (!action || HELP_FLAGS.has(action)) return { command: "help" };
-  if (action !== "usage") {
-    throw new ScoutCliError(`unknown providers action: ${action} (try: scout providers usage)`);
+  if (action !== "usage" && action !== "map") {
+    throw new ScoutCliError(`unknown providers action: ${action} (try: scout providers usage or scout providers map)`);
   }
   if (args.slice(1).some((arg) => HELP_FLAGS.has(arg))) return { command: "help" };
 
   let forceRefresh = true;
   let refreshMode: "refresh" | "cached" | null = null;
-  for (const arg of args.slice(1)) {
+  let role: OrchestrationRoleId | null = null;
+  for (let index = 1; index < args.length; index += 1) {
+    const arg = args[index]!;
     if (arg === "--refresh" || arg === "--cached") {
       const nextMode = arg === "--refresh" ? "refresh" : "cached";
       if (refreshMode && refreshMode !== nextMode) {
-        throw new ScoutCliError("providers usage accepts only one of --refresh or --cached");
+        throw new ScoutCliError(`providers ${action} accepts only one of --refresh or --cached`);
       }
       refreshMode = nextMode;
       forceRefresh = nextMode === "refresh";
       continue;
     }
-    if (arg.startsWith("-")) {
-      throw new ScoutCliError(`unknown providers usage option: ${arg}`);
+    if (arg === "--role") {
+      if (action !== "map") {
+        throw new ScoutCliError("providers usage does not accept --role");
+      }
+      const nextRole = args[index + 1];
+      if (!nextRole || !isOrchestrationRoleId(nextRole)) {
+        throw new ScoutCliError(`providers map --role must be one of: ${ORCHESTRATION_ROLE_IDS.join(", ")}`);
+      }
+      role = nextRole;
+      index += 1;
+      continue;
     }
-    throw new ScoutCliError(`unexpected providers usage argument: ${arg}`);
+    if (arg.startsWith("-")) {
+      throw new ScoutCliError(`unknown providers ${action} option: ${arg}`);
+    }
+    throw new ScoutCliError(`unexpected providers ${action} argument: ${arg}`);
   }
-  return { command: "usage", forceRefresh };
+  return action === "usage"
+    ? { command: "usage", forceRefresh }
+    : { command: "map", forceRefresh, role };
 }
 
 export async function runProvidersCommand(
@@ -157,7 +187,15 @@ export async function runProvidersCommand(
   const path = `/api/service-budgets${options.forceRefresh ? "?refresh=1" : ""}`;
   const payload = await (dependencies.readJson ?? readScoutWebJson)<ServiceBudgetsPayload>(context, path);
   const report = buildProviderUsageReport(payload, dependencies);
-  context.output.writeValue(report, renderProviderUsageReport);
+  if (options.command === "usage") {
+    context.output.writeValue(report, renderProviderUsageReport);
+    return;
+  }
+  const map = buildOrchestrationProviderMap(report, {
+    now: finiteNumber(dependencies.now) ?? undefined,
+    role: options.role,
+  });
+  context.output.writeValue(map, renderOrchestrationProviderMap);
 }
 
 export function buildProviderUsageReport(
@@ -261,6 +299,7 @@ function usageWindowFromPayload(
     label: stringValue(window.label) ?? legacyWindowLabel(stringValue(window.unitLabel)),
     usedPercent,
     percentRemaining: roundPercent(100 - usedPercent),
+    windowMs: finiteNumber(window.windowMs),
     resetAt,
     resetAtIso: resetAt === null ? null : new Date(resetAt).toISOString(),
     resetAtLocal: resetAt === null ? "unknown" : formatLocalTimestamp(resetAt, now, options),

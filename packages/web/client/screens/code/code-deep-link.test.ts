@@ -23,16 +23,16 @@ describe("parseScoutCodeDeepLink", () => {
   });
 
   test("parses absolute scout:///path", () => {
-    expect(parseScoutCodeDeepLink("scout:///Users/example/dev/openscout/foo.ts")).toEqual({
-      root: "/Users/example/dev/openscout/foo.ts",
-      file: "/Users/example/dev/openscout/foo.ts",
+    expect(parseScoutCodeDeepLink("scout:///Users/art/dev/openscout/foo.ts")).toEqual({
+      root: "/Users/art/dev/openscout/foo.ts",
+      file: "/Users/art/dev/openscout/foo.ts",
     });
   });
 
   test("parses scout://file/ absolute form", () => {
-    expect(parseScoutCodeDeepLink("scout://file/Users/example/dev/openscout/foo.ts?line=3")).toEqual({
-      root: "/Users/example/dev/openscout/foo.ts",
-      file: "/Users/example/dev/openscout/foo.ts",
+    expect(parseScoutCodeDeepLink("scout://file/Users/art/dev/openscout/foo.ts?line=3")).toEqual({
+      root: "/Users/art/dev/openscout/foo.ts",
+      file: "/Users/art/dev/openscout/foo.ts",
       line: 3,
     });
   });
@@ -49,9 +49,9 @@ describe("parseScoutCodeDeepLink", () => {
   });
 
   test("accepts bare absolute and home paths", () => {
-    expect(parseScoutCodeDeepLink("/Users/example/dev/openscout")).toEqual({
-      root: "/Users/example/dev/openscout",
-      file: "/Users/example/dev/openscout",
+    expect(parseScoutCodeDeepLink("/Users/art/dev/openscout")).toEqual({
+      root: "/Users/art/dev/openscout",
+      file: "/Users/art/dev/openscout",
     });
     expect(parseScoutCodeDeepLink("~/dev/openscout/foo.ts")).toEqual({
       root: "~/dev/openscout/foo.ts",
@@ -77,8 +77,8 @@ describe("formatScoutCodeDeepLink", () => {
 
   test("formats absolute file links", () => {
     expect(formatScoutCodeDeepLink({
-      file: "/Users/example/dev/openscout/foo.ts",
-    })).toBe("scout:///Users/example/dev/openscout/foo.ts");
+      file: "/Users/art/dev/openscout/foo.ts",
+    })).toBe("scout:///Users/art/dev/openscout/foo.ts");
   });
 
   test("round-trips project form", () => {
@@ -95,24 +95,24 @@ describe("formatScoutCodeDeepLink", () => {
 
 describe("matchRootForAbsolutePath", () => {
   const roots = [
-    "/Users/example/dev/openscout",
-    "/Users/example/dev/openscout-worktrees/comms",
-    "/Users/example/dev/talkie",
+    "/Users/art/dev/openscout",
+    "/Users/art/dev/openscout-worktrees/comms",
+    "/Users/art/dev/talkie",
   ];
 
   test("picks the longest matching root", () => {
     expect(matchRootForAbsolutePath(
-      "/Users/example/dev/openscout-worktrees/comms/Sources/App.swift",
+      "/Users/art/dev/openscout-worktrees/comms/Sources/App.swift",
       roots,
     )).toEqual({
-      root: "/Users/example/dev/openscout-worktrees/comms",
-      file: "/Users/example/dev/openscout-worktrees/comms/Sources/App.swift",
+      root: "/Users/art/dev/openscout-worktrees/comms",
+      file: "/Users/art/dev/openscout-worktrees/comms/Sources/App.swift",
     });
   });
 
   test("returns null file when the path is exactly a root", () => {
-    expect(matchRootForAbsolutePath("/Users/example/dev/talkie", roots)).toEqual({
-      root: "/Users/example/dev/talkie",
+    expect(matchRootForAbsolutePath("/Users/art/dev/talkie", roots)).toEqual({
+      root: "/Users/art/dev/talkie",
       file: null,
     });
   });

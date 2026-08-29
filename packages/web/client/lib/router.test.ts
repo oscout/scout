@@ -147,32 +147,32 @@ describe("agents route parsing", () => {
 
   test("project agent session resource routes preserve session focus", () => {
     const route = routeFromUrl(
-      "http://127.0.0.1:43120/projects/scope/agents/scope.main.dev-mac-mini-local/sessions/019efa89-4392-72f1-af6c-860951059bcb",
+      "http://127.0.0.1:43120/projects/scope/agents/scope.main.arts-mac-mini-local/sessions/019efa89-4392-72f1-af6c-860951059bcb",
     );
 
     expect(route).toEqual({
       view: "agents-v2",
-      agentId: "scope.main.dev-mac-mini-local",
+      agentId: "scope.main.arts-mac-mini-local",
       projectSlug: "scope",
       sessionId: "019efa89-4392-72f1-af6c-860951059bcb",
     });
     expect(routePath(route)).toBe(
-      "/projects/scope/agents/scope.main.dev-mac-mini-local/sessions/019efa89-4392-72f1-af6c-860951059bcb",
+      "/projects/scope/agents/scope.main.arts-mac-mini-local/sessions/019efa89-4392-72f1-af6c-860951059bcb",
     );
   });
 
   test("deprecated agents-v2 message hash routes open the message tab and serialize canonically", () => {
     const route = routeFromUrl(
-      "http://127.0.0.1:43120/agents-v2/scope.main.dev-mac-mini-local#msg-msg-mqtjmvqd-n734dq",
+      "http://127.0.0.1:43120/agents-v2/scope.main.arts-mac-mini-local#msg-msg-mqtjmvqd-n734dq",
     );
 
     expect(route).toEqual({
       view: "agents-v2",
-      agentId: "scope.main.dev-mac-mini-local",
+      agentId: "scope.main.arts-mac-mini-local",
       tab: "message",
     });
     expect(routePath(route)).toBe(
-      "/agents/scope.main.dev-mac-mini-local?tab=message",
+      "/agents/scope.main.arts-mac-mini-local?tab=message",
     );
   });
 
@@ -390,16 +390,16 @@ describe("agents route parsing", () => {
 
   test("terminal routes support backend/session path deep links", () => {
     const route = routeFromUrl(
-      "http://127.0.0.1:43120/terminal/tmux/relay-atelier-card-w-eury8m-master-dev-mac-mini-local-claude?mode=takeover",
+      "http://127.0.0.1:43120/terminal/tmux/relay-atelier-card-w-eury8m-master-arts-mac-mini-local-claude?mode=takeover",
     );
 
     expect(route).toEqual({
       view: "terminal",
-      terminalSurfaceKey: surfaceId("tmux", "relay-atelier-card-w-eury8m-master-dev-mac-mini-local-claude"),
+      terminalSurfaceKey: surfaceId("tmux", "relay-atelier-card-w-eury8m-master-arts-mac-mini-local-claude"),
       mode: "takeover",
     });
     expect(routePath(route)).toBe(
-      "/terminal/tmux/relay-atelier-card-w-eury8m-master-dev-mac-mini-local-claude?mode=takeover",
+      "/terminal/tmux/relay-atelier-card-w-eury8m-master-arts-mac-mini-local-claude?mode=takeover",
     );
   });
 
@@ -422,10 +422,16 @@ describe("agents route parsing", () => {
   });
 
   test("ops issues route accepts error-oriented aliases", () => {
+    expect(routeFromUrl("http://127.0.0.1:43120/ops/advisor")).toEqual({
+      view: "ops",
+      mode: "advisor",
+    });
+    // Legacy slug — the surface was never a plan reader.
     expect(routeFromUrl("http://127.0.0.1:43120/ops/plan")).toEqual({
       view: "ops",
-      mode: "plan",
+      mode: "advisor",
     });
+    expect(routePath({ view: "ops", mode: "advisor" })).toBe("/ops/advisor");
     expect(routeFromUrl("http://127.0.0.1:43120/ops/issues")).toEqual({
       view: "ops",
       mode: "issues",
@@ -826,18 +832,18 @@ describe("session catalog selection", () => {
     {
       id: "scope-catalog-session",
       startedAt: 150,
-      cwd: "/Users/example/dev/scope",
+      cwd: "/Users/art/dev/scope",
       harness: "codex",
-      surfaceSessionId: "relay-scope-live-dev-mac-mini-local-codex",
+      surfaceSessionId: "relay-scope-live-arts-mac-mini-local-codex",
       harnessSessionId: "relay-scope-codex",
       runtimeSessionId: "runtime-scope-codex",
     },
     {
       id: "scope-claude-session",
       startedAt: 125,
-      cwd: "/Users/example/dev/scope",
+      cwd: "/Users/art/dev/scope",
       harness: "claude",
-      surfaceSessionId: "relay-scope-live-dev-mac-mini-local-claude",
+      surfaceSessionId: "relay-scope-live-arts-mac-mini-local-claude",
     },
     {
       id: "focused-session",

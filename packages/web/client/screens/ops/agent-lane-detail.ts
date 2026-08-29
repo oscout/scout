@@ -55,6 +55,13 @@ export function buildLaneSessionStats(lane: AgentLane): LaneSessionStats {
   };
 }
 
+/** The one project identity used by the lane sheet's pin action and state. */
+export function laneProjectPath(lane: AgentLane): string | null {
+  const stats = buildLaneSessionStats(lane);
+  const path = (stats.cwd ?? lane.facts?.cwd ?? lane.agent.projectRoot ?? "").trim();
+  return path || null;
+}
+
 export function buildLaneTouchedFiles(
   observe: ObserveData | null | undefined,
   limit = 10,

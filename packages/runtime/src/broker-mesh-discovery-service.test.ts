@@ -18,8 +18,8 @@ function node(input: Partial<NodeDefinition> = {}): NodeDefinition {
     advertiseScope: "mesh",
     brokerUrl: "http://peer.test",
     capabilities: ["broker"],
-    registeredAt: 1,
-    lastSeenAt: 1,
+    registeredAt: Date.now(),
+    lastSeenAt: Date.now(),
     ...input,
   };
 }
@@ -212,5 +212,37 @@ describe("broker mesh discovery helpers", () => {
     });
     expect(harness.upsertedNodes).toEqual([peerNode]);
     expect(harness.upsertedAgents).toEqual([]);
+  });
+
+  test("skips stale snapshot peers when syncing agents", async () => {
+    const peerNode = node({ id: "node-peer", brokerUrl: "http://peer.test" });
+    const staleNode = node({
+      id: "node-stale",
+      brokerUrl: "http://stale.test",
+      lastSeenAt: 1,
+      registeredAt: 1,
+    });
+    const harness = createHarness({
+      snapshot: createRuntimeRegistrySnapshot({
+        nodes: {
+          "node-local": node({ id: "node-local", brokerUrl: "http://local.test" }),
+          [staleNode.id]: staleNode,
+        },
+      }),
+      discovered: [peerNode],
+      peerAgents: {
+        "http://peer.test": [
+          agent({ id: "agent-peer", homeNodeId: "node-peer", authorityNodeId: "node-peer" }),
+        ],
+        "http://stale.test": [
+          agent({ id: "agent-stale", homeNodeId: "node-stale", authorityNodeId: "node-stale" }),
+        ],
+      },
+    });
+
+    await harness.service.discoverPeers();
+
+    expect(harness.fetchCalls).toEqual(["http://peer.test"]);
+    expect(harness.upsertedAgents.map((nextAgent) => nextAgent.id)).toEqual(["agent-peer"]);
   });
 });

@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { existsSync, readFileSync, statSync, writeFileSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { assertTestIsolatedUserData, resolveOpenScoutSupportPaths } from "./support-paths.js";
@@ -29,6 +29,11 @@ export type OpenScoutUserConfig = {
   hue?: number;
   /** Avatar monogram override. Empty/absent derives initials from `name`. */
   monogram?: string;
+  /**
+   * Crew face slug worn as the avatar. Empty/absent falls back to the monogram
+   * coin, so a profile saved before this field existed keeps rendering.
+   */
+  avatar?: string;
   bio?: string;
   timezone?: string;
   workingHours?: string;
@@ -52,14 +57,72 @@ function userConfigPath(): string {
   return join(process.env.OPENSCOUT_HOME ?? join(homedir(), ".openscout"), "user.json");
 }
 
-export function loadUserConfig(): OpenScoutUserConfig {
-  const configPath = userConfigPath();
-  if (!existsSync(configPath)) return {};
+/**
+ * Memoized against the file's stat identity: hot request paths resolve the
+ * operator name/handle tens of thousands of times per request, and each
+ * uncached call is an existsSync + readFileSync + JSON.parse. The stat itself
+ * is throttled to {@link USER_CONFIG_STAT_INTERVAL_MS} so those bursts pay
+ * for at most one stat, while another process's write (CLI, broker) is
+ * noticed within that interval rather than being served stale for a fixed
+ * TTL. `saveUserConfig` drops the memo so an in-process edit is visible
+ * immediately; the path key drops it whenever `OPENSCOUT_HOME` changes
+ * (test fixtures do this).
+ */
+let userConfigCache: {
+  path: string;
+  value: OpenScoutUserConfig;
+  /** `ino:mtimeMs:size` of the file the memo parsed, or "missing". */
+  fileKey: string;
+  statCheckedAt: number;
+} | null = null;
+
+const USER_CONFIG_STAT_INTERVAL_MS = 100;
+
+function userConfigFileKey(configPath: string): string {
   try {
-    return JSON.parse(readFileSync(configPath, "utf8")) as OpenScoutUserConfig;
+    const stats = statSync(configPath);
+    return `${stats.ino}:${stats.mtimeMs}:${stats.size}`;
   } catch {
-    return {};
+    return "missing";
   }
+}
+
+function readUserConfigFromDisk(configPath: string, now: number): OpenScoutUserConfig {
+  const fileKey = userConfigFileKey(configPath);
+  let value: OpenScoutUserConfig = {};
+  if (existsSync(configPath)) {
+    try {
+      value = JSON.parse(readFileSync(configPath, "utf8")) as OpenScoutUserConfig;
+    } catch {
+      value = {};
+    }
+  }
+  userConfigCache = { path: configPath, value, fileKey, statCheckedAt: now };
+  return { ...value };
+}
+
+export function loadUserConfig(now = Date.now()): OpenScoutUserConfig {
+  const configPath = userConfigPath();
+  if (userConfigCache && userConfigCache.path === configPath) {
+    if (now - userConfigCache.statCheckedAt < USER_CONFIG_STAT_INTERVAL_MS) {
+      // Shallow copy: callers mutate the returned object before saving it back.
+      return { ...userConfigCache.value };
+    }
+    if (userConfigFileKey(configPath) === userConfigCache.fileKey) {
+      userConfigCache.statCheckedAt = now;
+      return { ...userConfigCache.value };
+    }
+  }
+  return readUserConfigFromDisk(configPath, now);
+}
+
+/**
+ * Always reads disk, bypassing the memo entirely. Use this for
+ * read-modify-write flows: reading a memoized copy there can silently
+ * overwrite a concurrent writer's update when saving the mutated result.
+ */
+export function loadUserConfigFresh(): OpenScoutUserConfig {
+  return readUserConfigFromDisk(userConfigPath(), Date.now());
 }
 
 export function saveUserConfig(config: OpenScoutUserConfig): void {
@@ -67,6 +130,12 @@ export function saveUserConfig(config: OpenScoutUserConfig): void {
   const configPath = userConfigPath();
   mkdirSync(dirname(configPath), { recursive: true });
   writeFileSync(configPath, JSON.stringify(config, null, 2) + "\n", "utf8");
+  userConfigCache = null;
+}
+
+/** Test seam — drops the memo so a fixture's direct user.json write is seen at once. */
+export function resetUserConfigCache(): void {
+  userConfigCache = null;
 }
 
 function readSettingsOperatorName(): string {
@@ -139,7 +208,8 @@ export function resolveTailThinkingMode(now = Date.now()): TailThinkingMode {
   return value;
 }
 
-/** Test seam — drops the memo so a fixture's config/env change is seen at once. */
+/** Test seam — drops the memos so a fixture's config/env change is seen at once. */
 export function resetTailThinkingModeCache(): void {
   tailThinkingCache = null;
+  userConfigCache = null;
 }

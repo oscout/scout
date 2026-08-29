@@ -43,7 +43,7 @@ function writeKimiWireFixture(sessionsRoot: string): string {
     join(sessionsRoot, "wd_openscout_test", sessionId, "state.json"),
     JSON.stringify({
       version: 2,
-      cwd: "/Users/example/dev/openscout",
+      cwd: "/Users/art/dev/openscout",
       title: "iOS navigation slice",
     }),
     "utf8",
@@ -126,7 +126,7 @@ describe("session knowledge indexer (kimi)", () => {
         "state.json",
       ),
       JSON.stringify({
-        workDir: "/Users/example/dev/openscout",
+        workDir: "/Users/art/dev/openscout",
         title: "iOS navigation slice",
       }),
       "utf8",

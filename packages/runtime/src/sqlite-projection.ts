@@ -9,7 +9,11 @@ import type {
   ThreadSnapshot,
 } from "@openscout/protocol";
 
-import { FileBackedBrokerJournal, type BrokerJournalEntry } from "./broker-journal.js";
+import {
+  FileBackedBrokerJournal,
+  type BrokerJournalEntry,
+  type BrokerJournalReplayBoundary,
+} from "./broker-journal.js";
 import { SQLiteControlPlaneStore, type ActivityItem } from "./sqlite-store.js";
 
 type ActivityQuery = Parameters<SQLiteControlPlaneStore["listActivityItems"]>[0];
@@ -23,7 +27,7 @@ type RecoverableSQLiteProjectionOptions = {
 const DEFAULT_REPLAY_YIELD_EVERY = 256;
 
 export type SQLiteProjectionStatusSnapshot = {
-  state: "ready" | "degraded" | "disabled";
+  state: "ready" | "warming" | "degraded" | "disabled";
   detail: string | null;
 };
 
@@ -365,6 +369,14 @@ export class RecoverableSQLiteProjection {
 
   private lastUnavailableReason: string | null = null;
 
+  private warming = false;
+
+  private warmBoundaryReady: Promise<void> | null = null;
+
+  private startupRecoveryInitiated = false;
+
+  private deferredStartupEvents: ControlEvent[] = [];
+
   constructor(
     private readonly dbPath: string,
     private readonly journal: FileBackedBrokerJournal,
@@ -381,6 +393,12 @@ export class RecoverableSQLiteProjection {
     if (this.store) {
       return { state: "ready", detail: null };
     }
+    if (this.warming) {
+      return {
+        state: "warming",
+        detail: "SQLite activity projection is rebuilding from the broker journal.",
+      };
+    }
     return {
       state: "degraded",
       detail: this.lastUnavailableReason
@@ -388,15 +406,49 @@ export class RecoverableSQLiteProjection {
     };
   }
 
-  warm(): void {
-    this.enqueue(async () => {
-      await this.ensureStore();
+  warm(): Promise<void> {
+    if (this.options.disabled || this.closed || this.store || this.warming) {
+      return this.warmBoundaryReady ?? Promise.resolve();
+    }
+    this.startupRecoveryInitiated = true;
+    const deferredStartupEvents = this.deferredStartupEvents.splice(0);
+    this.warming = true;
+    let resolveBoundary: () => void = () => {};
+    let rejectBoundary: (error: unknown) => void = () => {};
+    let boundaryCaptured = false;
+    this.warmBoundaryReady = new Promise<void>((resolve, reject) => {
+      resolveBoundary = resolve;
+      rejectBoundary = reject;
     });
+    this.enqueue(async () => {
+      try {
+        await this.ensureStore(() => {
+          boundaryCaptured = true;
+          resolveBoundary();
+        });
+      } finally {
+        this.warming = false;
+        if (!boundaryCaptured) {
+          rejectBoundary(new Error(
+            this.lastUnavailableReason ?? "SQLite projection replay boundary could not be established.",
+          ));
+        }
+      }
+    });
+    for (const event of deferredStartupEvents) {
+      this.enqueueEvent(event);
+    }
+    return this.warmBoundaryReady;
   }
 
   enqueueEntries(entriesInput: BrokerJournalEntry | BrokerJournalEntry[]): void {
     const entries = normalizeEntries(entriesInput);
     if (entries.length === 0 || this.options.disabled || this.closed) {
+      return;
+    }
+    // Before explicit recovery starts, durable entries are already present in
+    // the journal and will be included by warm()'s later fixed boundary.
+    if (!this.startupRecoveryInitiated) {
       return;
     }
 
@@ -423,6 +475,13 @@ export class RecoverableSQLiteProjection {
 
   enqueueEvent(event: ControlEvent): void {
     if (this.options.disabled || this.closed) {
+      return;
+    }
+    // Runtime priming emits control events before the daemon begins recovery.
+    // Preserve those events without allowing this incidental path to choose
+    // the authoritative journal replay boundary.
+    if (!this.startupRecoveryInitiated) {
+      this.deferredStartupEvents.push(event);
       return;
     }
 
@@ -646,6 +705,7 @@ export class RecoverableSQLiteProjection {
 
   private async replayJournal(
     visitor: (entry: BrokerJournalEntry) => void | Promise<void>,
+    boundary: BrokerJournalReplayBoundary,
   ): Promise<void> {
     const configuredBatchSize = this.options.replayYieldEvery ?? DEFAULT_REPLAY_YIELD_EVERY;
     const batchSize = Math.max(1, Math.floor(configuredBatchSize));
@@ -656,11 +716,14 @@ export class RecoverableSQLiteProjection {
       if (visited % batchSize === 0) {
         await new Promise<void>((resolve) => setImmediate(resolve));
       }
-    });
+    }, boundary);
   }
 
-  private async ensureStore(): Promise<SQLiteControlPlaneStore | null> {
+  private async ensureStore(onReplayBoundaryCaptured?: () => void): Promise<SQLiteControlPlaneStore | null> {
     if (this.options.disabled || this.closed) {
+      return null;
+    }
+    if (!this.startupRecoveryInitiated) {
       return null;
     }
     if (this.store) {
@@ -668,6 +731,8 @@ export class RecoverableSQLiteProjection {
     }
 
     try {
+      const replayBoundary = await this.journal.captureReplayBoundary();
+      onReplayBoundaryCaptured?.();
       const createStore = this.options.createStore ?? ((dbPath: string) => new SQLiteControlPlaneStore(dbPath));
       const store = createStore(this.dbPath);
       // First pass retains only the latest FK parents and referenced IDs. The
@@ -676,7 +741,7 @@ export class RecoverableSQLiteProjection {
       const parents = createReplayParentScan();
       await this.replayJournal((entry) => {
         collectReplayParents(parents, entry);
-      });
+      }, replayBoundary);
       prepareReplayParents(store, parents);
       await this.replayJournal((entry) => {
         try {
@@ -690,7 +755,7 @@ export class RecoverableSQLiteProjection {
           }
           reportSkippedEntry(entry, error);
         }
-      });
+      }, replayBoundary);
       this.store = store;
       this.lastUnavailableReason = null;
       return store;

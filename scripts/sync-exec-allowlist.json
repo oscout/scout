@@ -140,6 +140,41 @@
     "owner": "desktop"
   },
   {
+    "path": "apps/ios/hkit.ts",
+    "symbol": "spawnSync",
+    "category": "build-script",
+    "reason": "iOS helper script runs foreground build/deploy commands",
+    "owner": "ios"
+  },
+  {
+    "path": "apps/macos/bin/openscout-menu.ts",
+    "symbol": "execFileSync",
+    "category": "build-script",
+    "reason": "macOS packaging/dev helper one-shot commands",
+    "owner": "macos"
+  },
+  {
+    "path": "apps/macos/bin/openscout-menu.ts",
+    "symbol": "execSync",
+    "category": "build-script",
+    "reason": "macOS packaging/dev helper one-shot commands",
+    "owner": "macos"
+  },
+  {
+    "path": "apps/macos/bin/openscout-menu.ts",
+    "symbol": "spawnSync",
+    "category": "process-lifecycle",
+    "reason": "reads the ps process table to scope menu-helper liveness and shutdown to this checkout's bundle path, replacing a name-matched pkill that reached into every other checkout",
+    "owner": "macos"
+  },
+  {
+    "path": "apps/macos/bin/scout-app.ts",
+    "symbol": "execSync",
+    "category": "build-script",
+    "reason": "macOS Scout build/launch helper one-shot commands",
+    "owner": "macos"
+  },
+  {
     "path": "packages/agent-sessions/src/adapters/opencode-acp/adapter.test.ts",
     "symbol": "spawnSync",
     "category": "test",
@@ -312,20 +347,6 @@
     "symbol": "node:child_process",
     "category": "imperative",
     "reason": "explicit SSH enrollment owns a bounded argv-only ssh child process",
-    "owner": "runtime"
-  },
-  {
-    "path": "packages/runtime/src/pairing-supervisor.ts",
-    "symbol": "execFileSync",
-    "category": "process-lifecycle",
-    "reason": "pairs a runtime ownership nonce with one-shot ps birth and command identity reads before process signals",
-    "owner": "runtime"
-  },
-  {
-    "path": "packages/runtime/src/pairing-supervisor.ts",
-    "symbol": "node:child_process",
-    "category": "process-lifecycle",
-    "reason": "uses bounded argv-only ps reads to prevent signaling a recycled pairing runtime PID",
     "owner": "runtime"
   },
   {

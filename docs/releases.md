@@ -14,9 +14,18 @@ Do not complete or manually promote the `0.2.88` or `0.2.90` candidates. Do not
 publish public packages from a private product checkout or from a commit that
 is not public `oscout/scout` `main`.
 
+## Current source
+
+This tree is `0.2.94`. CLI, runtime, protocol, session packages, desktop
+command surface, baseline web, and `crates/scout-tui` are kept current by an
+allowlisted overlay from the private OpenScout workspace. Native apps, hosted
+services, and Slack stay out. After this source is on `main`, tag `v0.2.94`
+and dispatch `release-package-npm.yml` so npm `latest` matches the tagged
+public commit.
+
 ## Current publication set
 
-The `0.2.92` public release publishes:
+The last registry cut from this repository, `0.2.92`, publishes:
 
 - `@openscout/protocol`
 - `@openscout/scout`
