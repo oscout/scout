@@ -6,8 +6,8 @@ import { join } from "node:path";
 import type { ScoutCommandContext } from "../context.ts";
 import { ScoutCliError } from "../errors.ts";
 
-const GITHUB_OWNER = "arach";
-const GITHUB_REPO = "openscout";
+export const OPENSCOUT_RELEASE_OWNER = "oscout";
+export const OPENSCOUT_RELEASE_REPOSITORY = "scout";
 
 const APP_NAME = "OpenScout.app";
 const APP_PATH = `/Applications/${APP_NAME}`;
@@ -138,7 +138,7 @@ function getInstalledVersion(): string | null {
 }
 
 async function fetchRelease(version: string | null): Promise<GithubRelease> {
-  const base = `https://api.github.com/repos/${GITHUB_OWNER}/${GITHUB_REPO}/releases`;
+  const base = `https://api.github.com/repos/${OPENSCOUT_RELEASE_OWNER}/${OPENSCOUT_RELEASE_REPOSITORY}/releases`;
   const apiUrl = version ? `${base}/tags/${version}` : `${base}/latest`;
 
   // Unauthenticated fetch first (60 req/hr is plenty for an install).
@@ -155,8 +155,8 @@ async function fetchRelease(version: string | null): Promise<GithubRelease> {
 
   // Fallback: gh CLI, which uses the user's token and higher rate limits.
   const apiPath = version
-    ? `repos/${GITHUB_OWNER}/${GITHUB_REPO}/releases/tags/${version}`
-    : `repos/${GITHUB_OWNER}/${GITHUB_REPO}/releases/latest`;
+    ? `repos/${OPENSCOUT_RELEASE_OWNER}/${OPENSCOUT_RELEASE_REPOSITORY}/releases/tags/${version}`
+    : `repos/${OPENSCOUT_RELEASE_OWNER}/${OPENSCOUT_RELEASE_REPOSITORY}/releases/latest`;
   const gh = spawnSync("gh", ["api", apiPath], { encoding: "utf8" });
   if ((gh.status ?? 1) === 0 && gh.stdout.trim()) {
     return JSON.parse(gh.stdout) as GithubRelease;
@@ -164,8 +164,8 @@ async function fetchRelease(version: string | null): Promise<GithubRelease> {
 
   throw new ScoutCliError(
     version
-      ? `release "${version}" not found on GitHub (${GITHUB_OWNER}/${GITHUB_REPO})`
-      : `could not fetch the latest OpenScout release from GitHub (${GITHUB_OWNER}/${GITHUB_REPO})`,
+      ? `release "${version}" not found on GitHub (${OPENSCOUT_RELEASE_OWNER}/${OPENSCOUT_RELEASE_REPOSITORY})`
+      : `could not fetch the latest OpenScout release from GitHub (${OPENSCOUT_RELEASE_OWNER}/${OPENSCOUT_RELEASE_REPOSITORY})`,
   );
 }
 

@@ -1,6 +1,12 @@
 import { describe, expect, test } from "bun:test";
 
-import { findAppDmgAsset, parseInstallArgs, renderInstallCommandHelp } from "./install.ts";
+import {
+  findAppDmgAsset,
+  OPENSCOUT_RELEASE_OWNER,
+  OPENSCOUT_RELEASE_REPOSITORY,
+  parseInstallArgs,
+  renderInstallCommandHelp,
+} from "./install.ts";
 
 describe("install command helpers", () => {
   test("documents the install flow", () => {
@@ -8,6 +14,12 @@ describe("install command helpers", () => {
     expect(help).toContain("scout install");
     expect(help).toContain("--check");
     expect(help).toContain("signed + notarized");
+  });
+
+  test("downloads releases from the canonical public repository", () => {
+    expect(`${OPENSCOUT_RELEASE_OWNER}/${OPENSCOUT_RELEASE_REPOSITORY}`).toBe(
+      "oscout/scout",
+    );
   });
 
   test("defaults to a latest install that relaunches", () => {
