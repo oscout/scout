@@ -922,14 +922,14 @@ function SessionProfileCenter({
         <AgentAvatar agent={agent} size={48} tile presence={false} />
         <div className="ap-profileIdent">
           <div className="ap-profileTop">
-            <h1 className="ap-profileName" title={profileTitle}>
-              {profileTitle}
-            </h1>
             {agent.harness ? (
               <span className="ap-rowMark" aria-hidden>
                 <HarnessMark harness={agent.harness} size={13} />
               </span>
             ) : null}
+            <h1 className="ap-profileName" title={profileTitle}>
+              {profileTitle}
+            </h1>
           </div>
           <span className="ap-profileSub" title={profileSubtitle}>
             {profileSubtitle || cwdShort || "—"}

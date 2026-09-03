@@ -804,7 +804,8 @@
   white-space: nowrap;
 }
 .ap-rowName[data-idle] { color: var(--s-dim); font-weight: 540; }
-.ap-rowMark { display: inline-flex; color: var(--s-muted); flex: none; margin-left: -3px; }
+.ap-rowMark { display: inline-flex; color: var(--s-ink); flex: none; }
+.ap-rowMark[data-idle] { color: var(--s-dim); }
 .ap-needsWord {
   flex: none;
   font-size: var(--text-xs);

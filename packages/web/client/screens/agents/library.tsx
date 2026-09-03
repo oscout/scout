@@ -285,11 +285,11 @@ function AgentRow({
         <div className="ap-rowBody">
           <div className="ap-rowTop">
             <Dot tone={tone} />
+            <span className="ap-rowMark" data-idle={tone === "idle" || undefined} aria-hidden>
+              <HarnessMark harness={harnessOf(g.harness)} size={11} />
+            </span>
             <span className="ap-rowName" data-idle={tone === "idle" || undefined}>
               <span className="ap-sigil" aria-hidden>@</span>{handle}
-            </span>
-            <span className="ap-rowMark" aria-hidden>
-              <HarnessMark harness={harnessOf(g.harness)} size={11} />
             </span>
             {g.needs ? (
               <span className="ap-needsWord">needs you</span>

@@ -35,6 +35,8 @@ export * from "./scout-dispatch.js";
 export * from "./runtime-profiles.js";
 export * from "./runtime-execution.js";
 export * from "./runtime-catalog.js";
+export * from "./scout-baseline-runtime.js";
+export * from "./session-title.js";
 export * from "./reserved-vocabulary.js";
 export * from "./route-aliases.js";
 export * from "./scout-delivery.js";
