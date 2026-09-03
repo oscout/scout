@@ -105,6 +105,12 @@ type VoiceHost = {
 
 type SessionSubscriber = (event: ScoutVoiceSessionEvent) => void;
 
+type VoiceHostCommandWaiter = {
+  pollId: number;
+  instanceId: string | null;
+  finish: (command: ScoutVoiceHostCommand | null) => void;
+};
+
 const HOST_STALE_MS = 45_000;
 const SESSION_TTL_MS = 10 * 60_000;
 const MAX_EVENTS_PER_SESSION = 200;
@@ -112,6 +118,7 @@ const MAX_EVENTS_PER_SESSION = 200;
 const sessions = new Map<string, VoiceSession>();
 const hosts = new Map<string, VoiceHost>();
 const sessionSubscribers = new Map<string, Set<SessionSubscriber>>();
+const hostCommandWaiters = new Map<string, VoiceHostCommandWaiter>();
 let nextHostPollId = 1;
 
 const DEFAULT_VOICE_SETTINGS: ScoutVoiceSettings = {
@@ -121,6 +128,10 @@ const DEFAULT_VOICE_SETTINGS: ScoutVoiceSettings = {
 };
 
 export function resetScoutVoiceSessionStateForTests(): void {
+  for (const waiter of [...hostCommandWaiters.values()]) {
+    waiter.finish(null);
+  }
+  hostCommandWaiters.clear();
   sessions.clear();
   hosts.clear();
   sessionSubscribers.clear();
@@ -143,6 +154,9 @@ export function registerScoutVoiceHost(input: {
   const now = Date.now();
   const previous = hosts.get(hostId);
   const instanceId = input.instanceId?.trim() || null;
+  if (previous && previous.instanceId !== instanceId) {
+    finishScoutVoiceHostCommandWaiter(hostId, null);
+  }
   const settings = mergeVoiceSettings(previous?.settings ?? DEFAULT_VOICE_SETTINGS, input.settings);
   hosts.set(hostId, {
     hostId,
@@ -269,6 +283,9 @@ export function awaitScoutVoiceHostCommand(
   // URLSession can abandon a long poll while its server-side promise remains
   // alive. The replacement poll from the same helper process supersedes that
   // abandoned request so only the newest connection may dequeue a command.
+  // Resolve the old waiter directly instead of waiting for a polling interval
+  // to discover that it lost ownership.
+  finishScoutVoiceHostCommandWaiter(normalizedHostId, null);
   const pollId = nextHostPollId++;
   host.activePollId = pollId;
 
@@ -287,38 +304,40 @@ export function awaitScoutVoiceHostCommand(
   }
 
   return new Promise((resolve) => {
-    const startedAt = Date.now();
     let settled = false;
+    let timeout: ReturnType<typeof setTimeout> | null = null;
     const finish = (command: ScoutVoiceHostCommand | null) => {
       if (settled) return;
       settled = true;
-      clearInterval(timer);
+      if (timeout) clearTimeout(timeout);
       signal?.removeEventListener("abort", abort);
+      const waiter = hostCommandWaiters.get(normalizedHostId);
+      if (waiter?.pollId === pollId) hostCommandWaiters.delete(normalizedHostId);
       const current = hosts.get(normalizedHostId);
       if (current?.activePollId === pollId) current.activePollId = null;
       resolve({ command });
     };
     const abort = () => finish(null);
-    const timer = setInterval(() => {
+
+    hostCommandWaiters.set(normalizedHostId, {
+      pollId,
+      instanceId: normalizedInstanceId,
+      finish,
+    });
+    timeout = setTimeout(() => {
       const current = hosts.get(normalizedHostId);
-      if (!current) {
-        finish(null);
-        return;
+      if (
+        current
+        && current.instanceId === normalizedInstanceId
+        && current.activePollId === pollId
+      ) {
+        // A completed long poll is itself a host heartbeat. Preserve the old
+        // liveness semantics without waking the event loop every 100ms.
+        current.lastSeenAt = Date.now();
       }
-      if (current.instanceId !== normalizedInstanceId || current.activePollId !== pollId) {
-        finish(null);
-        return;
-      }
-      current.lastSeenAt = Date.now();
-      if (current.pendingCommands.length > 0) {
-        const command = current.pendingCommands.shift() ?? null;
-        finish(command);
-        return;
-      }
-      if (Date.now() - startedAt >= timeoutMs) {
-        finish(null);
-      }
-    }, 100);
+      finish(null);
+    }, timeoutMs);
+    timeout.unref?.();
     signal?.addEventListener("abort", abort, { once: true });
     // Close the narrow race where cancellation lands after the preflight
     // check but before the listener is attached. AbortSignal does not replay
@@ -600,6 +619,25 @@ function queueHostCommand(hostId: string, command: ScoutVoiceHostCommand): void 
   }
   host.pendingCommands.push(command);
   host.lastSeenAt = Date.now();
+  deliverPendingScoutVoiceHostCommand(host);
+}
+
+function finishScoutVoiceHostCommandWaiter(
+  hostId: string,
+  command: ScoutVoiceHostCommand | null,
+): void {
+  hostCommandWaiters.get(hostId)?.finish(command);
+}
+
+function deliverPendingScoutVoiceHostCommand(host: VoiceHost): void {
+  const waiter = hostCommandWaiters.get(host.hostId);
+  if (!waiter) return;
+  if (waiter.instanceId !== host.instanceId || waiter.pollId !== host.activePollId) {
+    waiter.finish(null);
+    return;
+  }
+  const command = host.pendingCommands.shift();
+  if (command) waiter.finish(command);
 }
 
 function dispatchSessionCommand(session: VoiceSession, command: ScoutVoiceHostCommand): void {

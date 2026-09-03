@@ -83,10 +83,10 @@ diagnostic with candidates.
 
 ### 3. Runtime Session
 
-A session is a concrete harness conversation/process/thread that can receive
-work. Use **session** as the public noun across CLI, MCP, docs, and skills. Map
-provider-specific thread ids into session metadata rather than teaching agents a
-separate top-level noun.
+A session is an opaque broker handle that resolves to one concrete harness
+conversation/process/thread. Use **session** as the public noun across CLI, MCP,
+docs, and skills. Keep provider-specific thread ids as resolver aliases rather
+than public identity or a separate top-level noun.
 
 Session invariants:
 
@@ -95,22 +95,20 @@ Session invariants:
   reverse, unless an explicit adapter exists
 - `card create` creates identity and return-address metadata; it does not imply
   a running session unless a command explicitly starts one
-- short-lived agent-created cards should be one-time reply addresses by
-  default, with expiry and cleanup metadata, instead of permanent directory
-  identities
+- starting or observing a session must not create an agent, actor, profile, or
+  directory entry; legacy one-time/session-shaped cards are compatibility data
 - exact session asks should route work by `targetSessionId` to continue context;
   asks without a target session may route by agent/project and create the
   lightest usable fresh session/card
 - forked asks should route work to a new execution session seeded from
   `forkFromStateId` or `forkFromSessionId`; the source session is context, not
   the work target
-- project-path asks do not require a caller-created card first; if no card
-  resolves for that project, the broker can create a one-time card as part of
-  accepting the work
+- project-path asks do not require a caller-created card first; the broker
+  resolves durable project/agent/profile data and creates a session mapping
 - when the sender needs a concrete live reply destination, carry
   `replyToSessionId` rather than minting another card
 - `up` / wake behavior must resolve to start or attach semantics and report the
-  chosen session id
+  canonical opaque `sess.*` handle
 - incompatible, missing, or failed sessions must produce specific diagnostics
   and remediation, not silent hangs
 

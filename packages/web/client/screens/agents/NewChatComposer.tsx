@@ -21,7 +21,7 @@ import {
   type RuntimeValue,
 } from "../../components/MessageComposer/index.ts";
 import { compactAgentId } from "../../lib/agent-labels.ts";
-import { api } from "../../lib/api.ts";
+import { api, peekApiGet } from "../../lib/api.ts";
 import { actorColor } from "../../lib/colors.ts";
 import {
   clampComposerFrame,
@@ -151,7 +151,7 @@ const FALLBACK_EFFORTS: RunnerEffortOption[] = RUNTIME_CAPABILITY_SEED.efforts.m
   ...(entry.models ? { models: [...entry.models] } : {}),
 }));
 
-/** Cold-start catalog: two harnesses, no models, the default ladder. */
+/** Cold-start catalog: the bundled runtime catalog is immediately usable. */
 const FALLBACK_RUNNER_OPTIONS: RunnerOptionsState = {
   defaults: {
     harness: RUNTIME_CAPABILITY_SEED.defaults?.harness ?? "claude",
@@ -172,6 +172,8 @@ const FALLBACK_RUNNER_OPTIONS: RunnerOptionsState = {
  * on close.
  */
 let cachedRunnerOptions: RunnerOptionsState | null = null;
+const RUNNER_OPTIONS_PATH = "/api/runner/options";
+const RUNNER_OPTIONS_CACHE_MAX_AGE_MS = 5 * 60_000;
 
 /** Rows the standing project list keeps on screen; the rest live behind the foot. */
 const PROJECT_STANDING_ROWS = 5;
@@ -319,7 +321,10 @@ export function NewChatComposer({
   const routeAgent = sorted.find((candidate) => candidate.id === routeAgentId) ?? null;
   const preferredProjectRoot = routeAgent?.projectRoot ?? routeAgent?.cwd ?? null;
   const [configuration, setConfiguration] = useState<AgentConfigurationState | null>(null);
-  const [runnerOptions, setRunnerOptions] = useState<RunnerOptionsState | null>(cachedRunnerOptions);
+  const [runnerOptions, setRunnerOptions] = useState<RunnerOptionsState | null>(() => (
+    cachedRunnerOptions
+    ?? peekApiGet<RunnerOptionsState>(RUNNER_OPTIONS_PATH, RUNNER_OPTIONS_CACHE_MAX_AGE_MS)
+  ));
   const [projectLoadError, setProjectLoadError] = useState<string | null>(null);
   const [runnerLoadError, setRunnerLoadError] = useState<string | null>(null);
   const [projectPath, setProjectPath] = useState(() => initialProjectPath || preferredProjectRoot || "");
@@ -575,7 +580,6 @@ export function NewChatComposer({
   }, [selectedProject, sorted]);
   const harnesses = runnerOptions?.harnesses ?? FALLBACK_HARNESSES;
   const selectedHarness = harnesses.find((candidate) => candidate.id === harness) ?? null;
-  const runnerLoading = !runnerOptions && !runnerLoadError;
   // The picker runs on a nested catalog — harnesses with their models and
   // effort ladders folded in, unready harnesses listed but unselectable. A
   // harness the catalog doesn't know (route agent pinned to something
@@ -634,7 +638,9 @@ export function NewChatComposer({
   const canUseExistingChat = projectMatchesRouteAgent
     && Boolean(routeAgent?.conversationId || routeConversationId);
   const usesNewWorker = !hasAttachments || !canUseExistingChat || mode === "new-session";
-  const runtimeBlocked = usesNewWorker && (runnerLoading || selectedHarness?.ready === false);
+  // The bundled catalog is a complete launchable baseline. Live readiness is
+  // enrichment, so a slow probe must not disable the picker or Start action.
+  const runtimeBlocked = usesNewWorker && selectedHarness?.ready === false;
   const title = isForwarding ? "Forward to new task" : hasAttachments ? "Route capture" : "New task";
   // Forwarding states its source turns; a plain new task states its origin
   // route. Both describe where the work came from, so they never stack.
@@ -663,7 +669,7 @@ export function NewChatComposer({
       : `Starting a project-routed chat in /${selectedProject?.title ?? routeAgent?.name ?? "project"}.`;
   const showDeliveryMode = hasAttachments && canUseExistingChat;
   const showRuntimeStatus = usesNewWorker
-    && (runnerLoading || Boolean(runnerLoadError) || selectedHarness?.ready === false);
+    && (Boolean(runnerLoadError) || selectedHarness?.ready === false);
   const showConfig = showDeliveryMode || (!isForwarding && showRuntimeStatus);
   const filteredSlashCommands = useMemo(() => {
     if (!slashState.open) return [];
@@ -875,7 +881,7 @@ export function NewChatComposer({
     textRef.current?.focus();
   }, []);
 
-  useEffect(() => {
+  const loadConfiguration = useCallback(() => {
     let cancelled = false;
     void api<AgentConfigurationState>("/api/agent-config/snapshot")
       .then((snapshot) => {
@@ -892,9 +898,17 @@ export function NewChatComposer({
     };
   }, []);
 
+  // The canonical project inventory is expensive on a large workstation.
+  // Agent-derived and current-project rows already make the closed picker
+  // useful, so only enrich the list when the operator asks to browse it.
+  useEffect(() => {
+    if (!projectPickerOpen || configuration) return;
+    return loadConfiguration();
+  }, [configuration, loadConfiguration, projectPickerOpen]);
+
   // Callable so the picker's error state can offer a real retry.
   const loadRunnerOptions = useCallback(() => {
-    void api<RunnerOptionsState>("/api/runner/options")
+    void api<RunnerOptionsState>(RUNNER_OPTIONS_PATH)
       .then((snapshot) => {
         cachedRunnerOptions = snapshot;
         setRunnerOptions(snapshot);
@@ -905,7 +919,7 @@ export function NewChatComposer({
         // revalidation changes nothing the operator can act on — the error
         // state is reserved for having no catalog at all.
         if (!cachedRunnerOptions) {
-          setRunnerLoadError("Model catalog unavailable. Harness defaults are still available.");
+          setRunnerLoadError("Live model availability is unavailable. Using the bundled catalog.");
         }
       });
   }, []);
@@ -1467,18 +1481,11 @@ export function NewChatComposer({
                       catalog={runtimeCatalog}
                       value={{ harness, model, effort: reasoningEffort }}
                       onChange={handleRuntimeChange}
-                      status={runnerLoading ? "loading" : runnerLoadError ? "error" : "ready"}
-                      statusMessage={runnerLoadError ?? undefined}
-                      onRetry={loadRunnerOptions}
+                      status="ready"
                       disabled={isStarting || !usesNewWorker}
                     />
                   </div>
-                  {usesNewWorker && runnerLoading ? (
-                    <p className="s-newchat-runtime-note" data-pending="true" role="status">
-                      <Loader2 size={11} className="s-newchat-runtime-note-spinner" aria-hidden="true" />
-                      Loading the model catalog…
-                    </p>
-                  ) : usesNewWorker && (runnerLoadError || selectedHarness?.ready === false) ? (
+                  {usesNewWorker && (runnerLoadError || selectedHarness?.ready === false) ? (
                     <p className="s-newchat-runtime-note" role="alert">
                       {selectedHarness?.ready === false
                         ? (selectedHarness.detail || `${selectedHarness.label} is unavailable.`)
@@ -1642,9 +1649,7 @@ export function NewChatComposer({
                   catalog={runtimeCatalog}
                   value={{ harness, model, effort: reasoningEffort }}
                   onChange={handleRuntimeChange}
-                  status={runnerLoading ? "loading" : runnerLoadError ? "error" : "ready"}
-                  statusMessage={runnerLoadError ?? undefined}
-                  onRetry={loadRunnerOptions}
+                  status="ready"
                   disabled={isStarting || !usesNewWorker}
                 />
               )}
@@ -1707,12 +1712,7 @@ export function NewChatComposer({
                 </div>
               ) : null}
 
-              {usesNewWorker && runnerLoading ? (
-                <p className="s-newchat-runtime-note" data-pending="true" role="status">
-                  <Loader2 size={11} className="s-newchat-runtime-note-spinner" aria-hidden="true" />
-                  Loading the model catalog…
-                </p>
-              ) : usesNewWorker && (runnerLoadError || selectedHarness?.ready === false) ? (
+              {usesNewWorker && (runnerLoadError || selectedHarness?.ready === false) ? (
                 <p className="s-newchat-runtime-note" role="alert">
                   {selectedHarness?.ready === false
                     ? (selectedHarness.detail || `${selectedHarness.label} is unavailable.`)

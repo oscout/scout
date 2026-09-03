@@ -8,6 +8,7 @@ export const scoutBrokerPaths = {
     home: "/v1/home",
     node: "/v1/node",
     snapshot: "/v1/snapshot",
+    conversationProjection: "/v1/conversation-projection",
     capabilities: "/v1/capabilities",
     runtimeCatalog: "/v1/runtime-catalog",
     topologySnapshot: "/v1/topology/snapshot",

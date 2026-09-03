@@ -1,0 +1,4 @@
+CREATE INDEX `idx_conversation_projection_engaged` ON `conversation_projection_items` (`visibility_state`,"last_engaged_at" desc,"last_activity_at" desc,`feed_id`);--> statement-breakpoint
+CREATE INDEX `idx_conversation_projection_source_fresh` ON `conversation_projection_items` (`visibility_state`,"source_fresh_at" desc);--> statement-breakpoint
+CREATE INDEX `idx_conversation_projection_runtime_session` ON `conversation_projection_items` (`entity_kind`,`runtime_session_id`);--> statement-breakpoint
+CREATE INDEX `idx_conversation_projection_source_session` ON `conversation_projection_items` (`entity_kind`,`source_session_id`);

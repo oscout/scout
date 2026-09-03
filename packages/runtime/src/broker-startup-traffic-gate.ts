@@ -3,6 +3,11 @@ const RESTORING_READ_PATHS = new Set([
   "/v1/home",
   "/v1/node",
   "/v1/snapshot",
+  "/v1/web/status",
+]);
+
+const RESTORING_PROCESS_CONTROL_ROUTES = new Set([
+  "POST /v1/web/start",
 ]);
 
 export type BrokerStartupTrafficGateSnapshot = {
@@ -22,13 +27,19 @@ export class BrokerStartupTrafficGate {
       return true;
     }
     const normalizedMethod = (method ?? "GET").toUpperCase();
+    const path = requestTarget.split("?", 1)[0] || "/";
     if (normalizedMethod === "OPTIONS") {
+      return true;
+    }
+    // Starting the broker-owned web child changes process state, not the
+    // canonical control plane. Let the supervisor overlap that startup with
+    // projection recovery while canonical writes remain behind this gate.
+    if (RESTORING_PROCESS_CONTROL_ROUTES.has(`${normalizedMethod} ${path}`)) {
       return true;
     }
     if (normalizedMethod !== "GET" && normalizedMethod !== "HEAD") {
       return false;
     }
-    const path = requestTarget.split("?", 1)[0] || "/";
     return RESTORING_READ_PATHS.has(path);
   }
 

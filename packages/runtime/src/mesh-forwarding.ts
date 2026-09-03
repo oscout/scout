@@ -32,6 +32,31 @@ import {
 import { httpMeshUrlsForNode, orderMeshDialUrls } from "./mesh-dial-order.js";
 import type { RuntimeRegistrySnapshot } from "./registry.js";
 
+/**
+ * Peer discovery should carry only an agent roster. The current local roster is
+ * well below 1 MiB; 2 MiB leaves ample growth room while preventing a legacy
+ * peer from making us buffer and parse its complete registry snapshot.
+ */
+export const MAX_PEER_AGENT_SNAPSHOT_BYTES = 2 * 1024 * 1024;
+
+/**
+ * A peer returned something other than the bounded agent-roster projection.
+ * Discovery treats this differently from ordinary reachability failures so a
+ * legacy peer cannot make every sweep download the full response up to the
+ * local byte ceiling.
+ */
+export class PeerAgentSnapshotTooLargeError extends Error {
+  override readonly name = "PeerAgentSnapshotTooLargeError";
+
+  constructor(
+    readonly brokerUrl: string,
+    readonly observedBytes: number,
+    readonly maxBytes = MAX_PEER_AGENT_SNAPSHOT_BYTES,
+  ) {
+    super(`peer agent snapshot from ${brokerUrl} exceeds ${maxBytes} bytes`);
+  }
+}
+
 export interface MeshMessageBundle {
   originNode: NodeDefinition;
   conversation: ConversationDefinition;
@@ -521,25 +546,98 @@ export async function forwardMeshCollaborationEvent(
   return forwardMeshEnvelope(target, "collaboration/events", "/v1/mesh/collaboration/events", bundle, options);
 }
 
+/**
+ * A fully read, under-cap, 2xx body with a JSON object `agents` field is
+ * authoritative — including `{}`. Missing/malformed `agents`, non-2xx, and
+ * parse failures never authorize retraction.
+ */
+export type PeerAgentRoster = {
+  authoritative: boolean;
+  agents: AgentDefinition[];
+};
+
+function isJsonObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function unusablePeerAgentRoster(): PeerAgentRoster {
+  return { authoritative: false, agents: [] };
+}
+
 export async function fetchPeerAgents(
   brokerUrl: string,
   peerFetch: MeshPeerFetch = meshPeerFetch,
-): Promise<AgentDefinition[]> {
+): Promise<PeerAgentRoster> {
   // Remote-tier snapshot (mesh trust cone §4): /v1/snapshot is local-tier and
   // unreachable to peers in enforce mode, so discovery reads the narrow
   // /v1/mesh/snapshot equivalent. Pre-trust-cone peers lack it — fall back to
   // the legacy local path on 404.
-  let response = await peerFetch(brokerUrl, "/v1/mesh/snapshot", {
+  let response = await peerFetch(brokerUrl, "/v1/mesh/snapshot?scope=agents", {
     headers: { accept: "application/json" },
     signal: AbortSignal.timeout(5_000),
   });
   if (response.status === 404) {
-    response = await peerFetch(brokerUrl, "/v1/snapshot", {
+    response = await peerFetch(brokerUrl, "/v1/snapshot?scope=agents", {
       headers: { accept: "application/json" },
       signal: AbortSignal.timeout(5_000),
     });
   }
-  if (!response.ok) return [];
-  const snapshot = await response.json() as { agents?: Record<string, AgentDefinition> };
-  return Object.values(snapshot.agents ?? {});
+  if (!response.ok) return unusablePeerAgentRoster();
+
+  let parsed: unknown;
+  try {
+    parsed = await readBoundedPeerAgentSnapshot(response, brokerUrl);
+  } catch (error) {
+    if (error instanceof PeerAgentSnapshotTooLargeError) throw error;
+    return unusablePeerAgentRoster();
+  }
+  if (!isJsonObject(parsed) || !isJsonObject(parsed.agents)) {
+    return unusablePeerAgentRoster();
+  }
+  return {
+    authoritative: true,
+    agents: Object.values(parsed.agents) as AgentDefinition[],
+  };
+}
+
+async function readBoundedPeerAgentSnapshot(
+  response: Response,
+  brokerUrl: string,
+): Promise<unknown> {
+  const declaredLength = Number(response.headers.get("content-length"));
+  if (Number.isFinite(declaredLength) && declaredLength > MAX_PEER_AGENT_SNAPSHOT_BYTES) {
+    await response.body?.cancel().catch(() => undefined);
+    throw new PeerAgentSnapshotTooLargeError(brokerUrl, declaredLength);
+  }
+
+  if (!response.body) {
+    const text = await response.text();
+    const size = new TextEncoder().encode(text).byteLength;
+    if (size > MAX_PEER_AGENT_SNAPSHOT_BYTES) {
+      throw new PeerAgentSnapshotTooLargeError(brokerUrl, size);
+    }
+    return JSON.parse(text) as unknown;
+  }
+
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    size += value.byteLength;
+    if (size > MAX_PEER_AGENT_SNAPSHOT_BYTES) {
+      await reader.cancel().catch(() => undefined);
+      throw new PeerAgentSnapshotTooLargeError(brokerUrl, size);
+    }
+    chunks.push(value);
+  }
+
+  const body = new Uint8Array(size);
+  let offset = 0;
+  for (const chunk of chunks) {
+    body.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return JSON.parse(new TextDecoder().decode(body)) as unknown;
 }

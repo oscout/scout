@@ -50,6 +50,8 @@ describe("active broker service helpers", () => {
       | undefined;
     let lifecycleQuery: { invocationId: string } | undefined;
     let capabilitiesQuery: { force?: boolean } | undefined;
+    let conversationProjectionQuery: { limit?: number } | undefined;
+    let snapshotQuery: unknown;
     let availabilityQuery:
       | { capabilityId: string; methodName?: string; requireReady?: boolean; force?: boolean }
       | undefined;
@@ -78,7 +80,25 @@ describe("active broker service helpers", () => {
         registeredAt: 1,
         lastSeenAt: 1,
       }),
-      readSnapshot: async () => snapshot,
+      readSnapshot: async (query) => {
+        snapshotQuery = query;
+        return snapshot;
+      },
+      readConversationProjection: async (query) => {
+        conversationProjectionQuery = query;
+        return {
+          projectionId: "projection-1",
+          projectionVersion: 1,
+          sequence: 4,
+          generatedAt: 100,
+          sourceFreshAt: null,
+          items: [],
+          total: 0,
+          hasMore: false,
+          engagedFeedId: null,
+          identityRedirects: [],
+        };
+      },
       readMessages: async () => Object.values(snapshot.messages),
       readAgentBrokerFeed: async (query) => {
         feedQuery = query;
@@ -134,6 +154,14 @@ describe("active broker service helpers", () => {
     const messages = await maybeReadJsonFromActiveScoutBrokerService<
       MessageRecord[]
     >("http://broker.test", "/v1/messages?limit=20");
+    const agentsSnapshot = await maybeReadJsonFromActiveScoutBrokerService(
+      "http://broker.test",
+      "/v1/snapshot?scope=agents",
+    );
+    const conversationProjection = await maybeReadJsonFromActiveScoutBrokerService<{
+      projectionId: string;
+      sequence: number;
+    }>("http://broker.test", "/v1/conversation-projection?limit=160");
     const capabilitiesSnapshot: ScoutCapabilityMatrixSnapshot = {
       generatedAt: 123,
       sources: [],
@@ -189,6 +217,13 @@ describe("active broker service helpers", () => {
     });
     expect(messages.handled).toBe(true);
     expect(messages.handled && messages.value[0]?.id).toBe("msg-1");
+    expect(agentsSnapshot.handled).toBe(true);
+    expect(snapshotQuery).toEqual({ since: null, scope: "agents" });
+    expect(conversationProjection).toEqual({
+      handled: true,
+      value: expect.objectContaining({ projectionId: "projection-1", sequence: 4 }),
+    });
+    expect(conversationProjectionQuery).toEqual({ limit: 160 });
     expect(capabilities).toEqual({
       handled: true,
       value: capabilitiesSnapshot,

@@ -66,7 +66,7 @@ Start at [`INDEX.agent.md`](./INDEX.agent.md) for subsystem specs written for ag
 | Record | Meaning |
 |---|---|
 | `message` | durable conversation record |
-| `session` | concrete harness conversation/process attached to an agent endpoint |
+| `session` | opaque broker `sess.*` handle resolving to a harness context and endpoint |
 | `invocation` | explicit request for work |
 | `flight` | execution lifecycle for an invocation |
 | `delivery` | planned transport-specific fan-out |

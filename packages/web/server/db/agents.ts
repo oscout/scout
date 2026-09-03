@@ -20,6 +20,7 @@ import {
   LATEST_AGENT_ENDPOINT_JOIN,
   activeAgentMetadataPredicate,
   queryAgentFlightPhases,
+  sqlTimestampMsCoalesceExpression,
   sqlTimestampMsExpression,
   summarizeAgentState,
   type AgentFlightPhase,
@@ -83,6 +84,131 @@ type AgentQueryRow = {
   updated_at: number | null;
 };
 
+const actorCreatedAtExpression = sqlTimestampMsExpression("ac.created_at");
+const endpointUpdatedAtExpression = sqlTimestampMsExpression("ep.updated_at");
+const AGENT_ROW_SELECT = `SELECT
+  a.id,
+  a.definition_id,
+  a.node_qualifier,
+  a.workspace_qualifier,
+  a.selector,
+  ac.display_name AS name,
+  ac.handle,
+  ${actorCreatedAtExpression} AS actor_created_at,
+  a.agent_class,
+  a.default_selector,
+  a.wake_policy,
+  a.capabilities_json,
+  a.metadata_json,
+  a.authority_node_id,
+  an.name AS authority_node_name,
+  a.home_node_id,
+  hn.name AS home_node_name,
+  a.owner_id,
+  oa.display_name AS owner_name,
+  oa.handle AS owner_handle,
+  ep.harness,
+  ep.transport,
+  ep.state,
+  ep.project_root,
+  ep.cwd,
+  ep.session_id,
+  ep.metadata_json AS endpoint_metadata_json,
+  ${endpointUpdatedAtExpression} AS updated_at
+FROM agents a
+JOIN actors ac ON ac.id = a.id
+LEFT JOIN nodes an ON an.id = a.authority_node_id
+LEFT JOIN nodes hn ON hn.id = a.home_node_id
+LEFT JOIN actors oa ON oa.id = a.owner_id
+${LATEST_AGENT_ENDPOINT_JOIN}`;
+
+/**
+ * The bounded roster starts with endpoint-backed agents because every valid
+ * endpoint timestamp sorts ahead of the no-endpoint fallback. The matching
+ * expression index lets SQLite stop after the requested page instead of
+ * evaluating the latest-endpoint subquery for every historical agent.
+ *
+ * Exported only so the query-plan regression test can explain the exact SQL
+ * used in production.
+ */
+const RECENT_ENDPOINT_AGENT_IDS_WITHOUT_INDEX_SQL = (() => {
+  const endpointUpdatedAtExpression = sqlTimestampMsExpression("ep.updated_at");
+  const latestEndpointUpdatedAtExpression = sqlTimestampMsCoalesceExpression("ep2.updated_at");
+  return `SELECT a.id
+    FROM agent_endpoints ep
+    JOIN agents a ON a.id = ep.agent_id
+    JOIN actors ac ON ac.id = a.id
+    WHERE ep.id = (
+      SELECT ep2.id
+      FROM agent_endpoints ep2
+      WHERE ep2.agent_id = a.id
+      ORDER BY ${latestEndpointUpdatedAtExpression} DESC
+      LIMIT 1
+    )
+      AND ${endpointUpdatedAtExpression} > 0
+      AND ${activeAgentMetadataPredicate("a")}
+    ORDER BY ${endpointUpdatedAtExpression} DESC, ac.display_name ASC
+    LIMIT ?`;
+})();
+
+export const RECENT_ENDPOINT_AGENT_IDS_SQL = RECENT_ENDPOINT_AGENT_IDS_WITHOUT_INDEX_SQL.replace(
+  "FROM agent_endpoints ep",
+  "FROM agent_endpoints ep INDEXED BY idx_agent_endpoints_roster_recency",
+);
+
+function queryAgentIdsForBoundedRoster(limit: number): string[] {
+  const database = db();
+  let recentIds: Array<{ id: string }>;
+  try {
+    recentIds = database.prepare(RECENT_ENDPOINT_AGENT_IDS_SQL).all(limit) as Array<{ id: string }>;
+  } catch (error) {
+    // The web listener can become available while a lazily warmed broker is
+    // still applying this additive index. Stay correct during that brief
+    // mixed-version window; the next request takes the indexed path.
+    if (!(error instanceof Error) || !error.message.includes("idx_agent_endpoints_roster_recency")) {
+      throw error;
+    }
+    recentIds = database
+      .prepare(RECENT_ENDPOINT_AGENT_IDS_WITHOUT_INDEX_SQL)
+      .all(limit) as Array<{ id: string }>;
+  }
+  if (recentIds.length >= limit) {
+    return recentIds.map((row) => row.id);
+  }
+
+  // Endpoints use positive epoch timestamps (including legacy seconds). Only
+  // databases with fewer endpoint-backed agents than the page size reach this
+  // path. Keep the full COALESCE ordering here so zero/negative legacy rows
+  // still interleave with agents that have no endpoint exactly as before.
+  const endpointUpdatedAtExpression = sqlTimestampMsExpression("ep.updated_at");
+  const fallbackIds = database
+    .prepare(
+      `SELECT a.id
+       FROM agents a
+       JOIN actors ac ON ac.id = a.id
+       ${LATEST_AGENT_ENDPOINT_JOIN}
+       WHERE ${activeAgentMetadataPredicate("a")}
+         AND COALESCE(${endpointUpdatedAtExpression}, 0) <= 0
+       ORDER BY COALESCE(${endpointUpdatedAtExpression}, 0) DESC, ac.display_name ASC
+       LIMIT ?`,
+    )
+    .all(limit - recentIds.length) as Array<{ id: string }>;
+  return [...recentIds, ...fallbackIds].map((row) => row.id);
+}
+
+function queryAgentRowsByIds(agentIds: string[]): AgentQueryRow[] {
+  if (agentIds.length === 0) return [];
+
+  return db()
+    .prepare(
+      `${AGENT_ROW_SELECT}
+       WHERE a.id IN (SELECT value FROM json_each(?))
+         AND ${activeAgentMetadataPredicate("a")}
+       ORDER BY COALESCE(${endpointUpdatedAtExpression}, 0) DESC, ac.display_name ASC`,
+    )
+    .all(JSON.stringify(agentIds)) as AgentQueryRow[];
+}
+
 /**
  * Latest endpoint session id → agent id, for joining pairing-session
  * attention items (which only know their session) to fleet agents.
@@ -115,50 +241,22 @@ export function queryAgentIdsByEndpointSessionId(): Map<string, string> {
 
 export function queryAgents(limit = 500): WebAgent[] {
   const flightPhases = queryAgentFlightPhases();
-  const actorCreatedAtExpression = sqlTimestampMsExpression("ac.created_at");
-  const endpointUpdatedAtExpression = sqlTimestampMsExpression("ep.updated_at");
-  const rows = db()
-    .prepare(
-      `SELECT
-         a.id,
-         a.definition_id,
-         a.node_qualifier,
-         a.workspace_qualifier,
-         a.selector,
-         ac.display_name AS name,
-         ac.handle,
-         ${actorCreatedAtExpression} AS actor_created_at,
-         a.agent_class,
-         a.default_selector,
-         a.wake_policy,
-         a.capabilities_json,
-         a.metadata_json,
-         a.authority_node_id,
-         an.name AS authority_node_name,
-         a.home_node_id,
-         hn.name AS home_node_name,
-         a.owner_id,
-         oa.display_name AS owner_name,
-         oa.handle AS owner_handle,
-         ep.harness,
-         ep.transport,
-         ep.state,
-         ep.project_root,
-         ep.cwd,
-         ep.session_id,
-         ep.metadata_json AS endpoint_metadata_json,
-         ${endpointUpdatedAtExpression} AS updated_at
-       FROM agents a
-       JOIN actors ac ON ac.id = a.id
-       LEFT JOIN nodes an ON an.id = a.authority_node_id
-       LEFT JOIN nodes hn ON hn.id = a.home_node_id
-       LEFT JOIN actors oa ON oa.id = a.owner_id
-       ${LATEST_AGENT_ENDPOINT_JOIN}
-       WHERE ${activeAgentMetadataPredicate("a")}
-       ORDER BY COALESCE(${endpointUpdatedAtExpression}, 0) DESC, ac.display_name ASC
-       LIMIT ?`,
-    )
-    .all(limit) as AgentQueryRow[];
+  // SQLite's negative LIMIT means "all rows". Retain that uncommon caller
+  // contract with the canonical full scan; normal bounded roster reads take
+  // the indexed early-stop path.
+  let rows: AgentQueryRow[];
+  if (limit < 0) {
+    rows = db()
+      .prepare(
+        `${AGENT_ROW_SELECT}
+         WHERE ${activeAgentMetadataPredicate("a")}
+         ORDER BY COALESCE(${endpointUpdatedAtExpression}, 0) DESC, ac.display_name ASC
+         LIMIT ?`,
+      )
+      .all(limit) as AgentQueryRow[];
+  } else {
+    rows = queryAgentRowsByIds(queryAgentIdsForBoundedRoster(limit));
+  }
 
   return mapAgentRows(
     rows,
@@ -169,45 +267,9 @@ export function queryAgents(limit = 500): WebAgent[] {
 
 export function queryAgentById(agentId: string): WebAgent | null {
   const flightPhases = queryAgentFlightPhases();
-  const actorCreatedAtExpression = sqlTimestampMsExpression("ac.created_at");
-  const endpointUpdatedAtExpression = sqlTimestampMsExpression("ep.updated_at");
   const row = db()
     .prepare(
-      `SELECT
-         a.id,
-         a.definition_id,
-         a.node_qualifier,
-         a.workspace_qualifier,
-         a.selector,
-         ac.display_name AS name,
-         ac.handle,
-         ${actorCreatedAtExpression} AS actor_created_at,
-         a.agent_class,
-         a.default_selector,
-         a.wake_policy,
-         a.capabilities_json,
-         a.metadata_json,
-         a.authority_node_id,
-         an.name AS authority_node_name,
-         a.home_node_id,
-         hn.name AS home_node_name,
-         a.owner_id,
-         oa.display_name AS owner_name,
-         oa.handle AS owner_handle,
-         ep.harness,
-         ep.transport,
-         ep.state,
-         ep.project_root,
-         ep.cwd,
-         ep.session_id,
-         ep.metadata_json AS endpoint_metadata_json,
-         ${endpointUpdatedAtExpression} AS updated_at
-       FROM agents a
-       JOIN actors ac ON ac.id = a.id
-       LEFT JOIN nodes an ON an.id = a.authority_node_id
-       LEFT JOIN nodes hn ON hn.id = a.home_node_id
-       LEFT JOIN actors oa ON oa.id = a.owner_id
-       ${LATEST_AGENT_ENDPOINT_JOIN}
+      `${AGENT_ROW_SELECT}
        WHERE a.id = ?
          AND ${activeAgentMetadataPredicate("a")}
        LIMIT 1`,

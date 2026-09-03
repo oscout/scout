@@ -11,6 +11,7 @@ import {
 
 import { BrokerHomeService } from "./broker-home-service.js";
 import { brokerActorDisplayName } from "./broker-conversation-helpers.js";
+import { homeEndpointForAgent } from "./broker-endpoint-selection.js";
 import { createRuntimeRegistrySnapshot, type RuntimeRegistrySnapshot } from "./registry.js";
 import type { ActivityItem } from "./sqlite-store.js";
 
@@ -268,6 +269,115 @@ describe("broker home service", () => {
 
     expect(home.agents).toHaveLength(30);
     expect(home.agents.every((entry) => entry.state === "available")).toBe(true);
+  });
+
+  test("preserves canonical home endpoint preference while indexing the roster", async () => {
+    const snapshot = createRuntimeRegistrySnapshot({
+      agents: {
+        preferred: agent({ id: "preferred", displayName: "Preferred" }),
+        state: agent({ id: "state", displayName: "State" }),
+        lifecycle: agent({ id: "lifecycle", displayName: "Lifecycle" }),
+      },
+      endpoints: {
+        "preferred-stale": endpoint({
+          id: "preferred-stale",
+          agentId: "preferred",
+          preferred: true,
+          state: "active",
+          projectRoot: "/wrong-stale",
+          metadata: { staleLocalRegistration: true, lastStartedAt: 50_000 },
+        }),
+        "preferred-offline": endpoint({
+          id: "preferred-offline",
+          agentId: "preferred",
+          preferred: true,
+          state: "offline",
+          projectRoot: "/preferred",
+          metadata: { lastCompletedAt: 1_000 },
+        }),
+        "preferred-active": endpoint({
+          id: "preferred-active",
+          agentId: "preferred",
+          state: "active",
+          projectRoot: "/wrong-active",
+          metadata: { lastStartedAt: 40_000 },
+        }),
+        "state-active": endpoint({
+          id: "state-active",
+          agentId: "state",
+          state: "active",
+          projectRoot: "/state",
+          metadata: { lastStartedAt: 1_000 },
+        }),
+        "state-idle": endpoint({
+          id: "state-idle",
+          agentId: "state",
+          state: "idle",
+          projectRoot: "/wrong-idle",
+          metadata: { lastStartedAt: 40_000 },
+        }),
+        "lifecycle-old": endpoint({
+          id: "lifecycle-old",
+          agentId: "lifecycle",
+          state: "idle",
+          projectRoot: "/wrong-old",
+          metadata: { lastStartedAt: 1_000 },
+        }),
+        "lifecycle-new": endpoint({
+          id: "lifecycle-new",
+          agentId: "lifecycle",
+          state: "idle",
+          projectRoot: "/lifecycle",
+          metadata: { lastStartedAt: 2_000 },
+        }),
+      },
+    });
+    const canonicalEndpointIds = Object.keys(snapshot.agents).map((agentId) =>
+      homeEndpointForAgent(snapshot, agentId)?.id
+    );
+    const { service } = createService({ snapshot });
+
+    const home = await service.read();
+
+    expect(canonicalEndpointIds).toEqual([
+      "preferred-offline",
+      "state-active",
+      "lifecycle-new",
+    ]);
+    expect(Object.fromEntries(home.agents.map((entry) => [entry.id, entry.projectRoot]))).toEqual({
+      preferred: "/preferred",
+      state: "/state",
+      lifecycle: "/lifecycle",
+    });
+  });
+
+  test("enumerates the endpoint registry once for a multi-agent home read", async () => {
+    const agents = Object.fromEntries(
+      Array.from({ length: 40 }, (_, index) => {
+        const id = `agent-${index}`;
+        return [id, agent({ id, displayName: `Agent ${index}` })];
+      }),
+    );
+    const snapshot = createRuntimeRegistrySnapshot({
+      agents,
+      endpoints: Object.fromEntries(Object.keys(agents).map((agentId) => [
+        `${agentId}-endpoint`,
+        endpoint({ id: `${agentId}-endpoint`, agentId }),
+      ])),
+    });
+    let endpointEnumerations = 0;
+    snapshot.endpoints = new Proxy(snapshot.endpoints, {
+      ownKeys(target) {
+        endpointEnumerations += 1;
+        return Reflect.ownKeys(target);
+      },
+    });
+    const { service } = createService({ snapshot });
+
+    const home = await service.read();
+
+    expect(home.agents).toHaveLength(40);
+    expect(endpointEnumerations).toBe(1);
   });
 
   test("shapes recent message activity and filters non-home rows", async () => {

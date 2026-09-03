@@ -15,6 +15,7 @@ import {
   preferredConversationWithNaturalKey,
   type ConversationBinding,
   type ConversationDefinition,
+  type ConversationProjectionSnapshot,
   type ControlEvent,
   type CollaborationEvent,
   type CollaborationRecord,
@@ -72,6 +73,7 @@ import {
   type LocalAgentBinding,
 } from "@openscout/runtime/local-agents";
 import type { RuntimeRegistrySnapshot } from "@openscout/runtime/registry";
+import type { DiscoverySnapshot } from "@openscout/runtime/tail";
 import { resolveOpenScoutSupportPaths } from "@openscout/runtime/support-paths";
 
 import { configuredOperatorActorIds } from "@openscout/runtime/conversations/legacy-ids";
@@ -98,11 +100,14 @@ export type ScoutBrokerSnapshot = RuntimeRegistrySnapshot;
 
 const DEFAULT_SCOUT_BROKER_SNAPSHOT_WINDOW_MS = 24 * 60 * 60 * 1_000;
 const DEFAULT_SCOUT_BROKER_SNAPSHOT_BUCKET_MS = 60 * 1_000;
-const SCOUT_BROKER_CONTEXT_CACHE_TTL_MS = 5_000;
+const SCOUT_BROKER_CONTEXT_CACHE_TTL_MS = 30_000;
+const SCOUT_BROKER_CONTEXT_STALE_RETENTION_MS = 60_000;
 
 type ScoutBrokerContextCacheEntry = {
   expiresAt: number;
-  promise: Promise<ScoutBrokerContext | null>;
+  value: ScoutBrokerContext | null;
+  hasValue: boolean;
+  inFlight: Promise<ScoutBrokerContext | null> | null;
 };
 
 const scoutBrokerContextCache = new Map<string, ScoutBrokerContextCacheEntry>();
@@ -828,7 +833,7 @@ async function brokerPostJson<T>(
     socketPath: resolveBrokerSocketPathForBaseUrl(baseUrl),
   });
   // A successful broker mutation makes every bounded snapshot for this broker
-  // stale immediately. Leaving the old promise cached for five seconds caused
+  // stale immediately. Leaving the old promise cached after a send caused
   // the destination Chat to remount against a pre-send snapshot: the optimistic
   // message disappeared, then reappeared only after the TTL expired.
   invalidateScoutBrokerContextCache(baseUrl);
@@ -1035,6 +1040,31 @@ export async function readScoutBrokerHome(
   }
 }
 
+export async function readScoutConversationProjection(
+  limit = 160,
+  baseUrl = resolveScoutBrokerUrl(),
+  options: { signal?: AbortSignal } = {},
+): Promise<ConversationProjectionSnapshot | null> {
+  const query = new URLSearchParams({
+    limit: String(Math.min(160, Math.max(1, Math.floor(limit)))),
+  });
+  try {
+    return await brokerReadJson<ConversationProjectionSnapshot>(
+      baseUrl,
+      `${scoutBrokerPaths.v1.conversationProjection}?${query}`,
+      {
+        ...options,
+        // This endpoint is only a first-paint cache lookup. It must lose quickly
+        // to the local compatibility view rather than inherit the generic 30s
+        // broker timeout when a daemon is wedged or rebuilding its projection.
+        signal: options.signal ?? AbortSignal.timeout(450),
+      },
+    );
+  } catch {
+    return null;
+  }
+}
+
 export async function readScoutBrokerRuntimeCatalog(
   baseUrl = resolveScoutBrokerUrl(),
 ): Promise<{ catalog: ScoutOwnedRuntimeCatalog; warnings: string[] } | null> {
@@ -1104,6 +1134,21 @@ export async function readScoutBrokerTailRecent(
     }));
   } catch {
     return [];
+  }
+}
+
+/** Read the broker's already-materialized Tail inventory without starting a
+ * second process/transcript discovery pass in the web process. */
+export async function readScoutBrokerTailDiscovery(
+  baseUrl = resolveScoutBrokerUrl(),
+): Promise<DiscoverySnapshot | null> {
+  try {
+    return await brokerReadJson<DiscoverySnapshot>(
+      baseUrl,
+      scoutBrokerPaths.v1.tailDiscover,
+    );
+  } catch {
+    return null;
   }
 }
 
@@ -1202,10 +1247,19 @@ export async function loadScoutBrokerContext(
     signal?: AbortSignal;
     since?: number | null;
     force?: boolean;
-    scope?: "conversations";
+    scope?: "conversations" | "agents";
+    /**
+     * Cold UI reads can paint from the durable projection while this large
+     * snapshot warms. Once a value exists, callers still receive it
+     * immediately and stale-while-revalidate continues to apply.
+     */
+    waitForInitial?: boolean;
+    /** Delay a non-blocking cold refresh so the first browser paint wins. */
+    initialRefreshDelayMs?: number;
   } = {},
 ): Promise<ScoutBrokerContext | null> {
-  const since = options.since === undefined
+  const usesRollingWindow = options.since === undefined;
+  const since = usesRollingWindow
     ? Math.floor(
         (Date.now() - DEFAULT_SCOUT_BROKER_SNAPSHOT_WINDOW_MS)
         / DEFAULT_SCOUT_BROKER_SNAPSHOT_BUCKET_MS,
@@ -1223,19 +1277,21 @@ export async function loadScoutBrokerContext(
     : [
         baseUrl,
         resolveBrokerSocketPathForBaseUrl(baseUrl) ?? "http",
-        since ?? "full",
+        usesRollingWindow ? "rolling-24h" : since ?? "full",
         options.scope ?? "default",
       ].join("\u0000");
   const now = Date.now();
   for (const [key, entry] of scoutBrokerContextCache) {
-    if (entry.expiresAt <= now) scoutBrokerContextCache.delete(key);
-  }
-  const cached = cacheKey ? scoutBrokerContextCache.get(cacheKey) : null;
-  if (cached && cached.expiresAt > now) {
-    return cached.promise;
+    if (
+      key !== cacheKey
+      && !entry.inFlight
+      && entry.expiresAt + SCOUT_BROKER_CONTEXT_STALE_RETENTION_MS <= now
+    ) {
+      scoutBrokerContextCache.delete(key);
+    }
   }
 
-  const promise = (async () => {
+  const readContext = async (): Promise<ScoutBrokerContext | null> => {
     const health = await readScoutBrokerHealth(baseUrl, { signal: options.signal });
     if (!health.reachable || !health.ok) {
       return null;
@@ -1259,20 +1315,72 @@ export async function loadScoutBrokerContext(
     } catch {
       return null;
     }
-  })();
+  };
 
-  if (cacheKey) {
-    scoutBrokerContextCache.set(cacheKey, {
-      expiresAt: now + SCOUT_BROKER_CONTEXT_CACHE_TTL_MS,
-      promise,
-    });
-    void promise.then((context) => {
-      if (!context && scoutBrokerContextCache.get(cacheKey)?.promise === promise) {
-        scoutBrokerContextCache.delete(cacheKey);
-      }
-    });
+  if (!cacheKey) {
+    return readContext();
   }
-  return promise;
+
+  const refresh = (entry: ScoutBrokerContextCacheEntry, delayMs = 0) => {
+    if (entry.inFlight) return entry.inFlight;
+    const attempt = (delayMs > 0
+      ? new Promise<void>((resolve) => setTimeout(resolve, delayMs))
+      : Promise.resolve())
+      .then(readContext)
+      .then((context) => {
+        if (scoutBrokerContextCache.get(cacheKey) !== entry) return context;
+        if (context) {
+          entry.value = context;
+          entry.hasValue = true;
+          entry.expiresAt = Date.now() + SCOUT_BROKER_CONTEXT_CACHE_TTL_MS;
+        } else if (!entry.hasValue) {
+          scoutBrokerContextCache.delete(cacheKey);
+        } else {
+          // Keep the last good snapshot through a transient broker miss, but
+          // bound retry pressure so one outage does not refresh per caller.
+          entry.expiresAt = Date.now() + SCOUT_BROKER_CONTEXT_CACHE_TTL_MS;
+        }
+        return context;
+      })
+      .finally(() => {
+        if (scoutBrokerContextCache.get(cacheKey) === entry) {
+          entry.inFlight = null;
+        }
+      });
+    entry.inFlight = attempt;
+    return attempt;
+  };
+
+  const cached = scoutBrokerContextCache.get(cacheKey);
+  if (cached) {
+    if (cached.hasValue) {
+      if (cached.expiresAt <= now && !cached.inFlight) {
+        // Stale-while-revalidate: broker writes explicitly invalidate this
+        // snapshot, so a 30-second fallback is enough to catch out-of-band
+        // mutations without repeatedly serializing a large idle registry.
+        void refresh(cached);
+      }
+      return cached.value;
+    }
+    if (options.waitForInitial === false) {
+      void refresh(cached, options.initialRefreshDelayMs);
+      return null;
+    }
+    return refresh(cached);
+  }
+
+  const entry: ScoutBrokerContextCacheEntry = {
+    expiresAt: now + SCOUT_BROKER_CONTEXT_CACHE_TTL_MS,
+    value: null,
+    hasValue: false,
+    inFlight: null,
+  };
+  scoutBrokerContextCache.set(cacheKey, entry);
+  if (options.waitForInitial === false) {
+    void refresh(entry, options.initialRefreshDelayMs);
+    return null;
+  }
+  return refresh(entry);
 }
 
 export async function requireScoutBrokerContext(baseUrl = resolveScoutBrokerUrl()): Promise<ScoutBrokerContext> {
@@ -2798,14 +2906,14 @@ export async function markScoutConversationRead(input: {
   cursor: ScoutBrokerReadCursorRecord;
   acknowledgedDeliveries: number;
 }> {
-  const broker = await loadScoutBrokerContext(input.baseUrl);
-  if (!broker) {
-    throw new Error("broker unreachable");
-  }
+  const baseUrl = input.baseUrl ?? resolveScoutBrokerUrl();
   const path = `/v1/conversations/${encodeURIComponent(input.conversationId)}/read-cursors`;
-  return brokerPostJson(broker.baseUrl, path, {
+  // The broker supplies its local node id when readerNodeId is omitted. A read
+  // acknowledgement must not first load the multi-megabyte broker snapshot;
+  // doing that put a best-effort UI write behind 30-second snapshot timeouts.
+  return brokerPostJson(baseUrl, path, {
     actorId: input.actorId,
-    readerNodeId: input.readerNodeId ?? broker.node.id,
+    readerNodeId: input.readerNodeId,
     lastReadMessageId: input.lastReadMessageId,
     lastReadSeq: input.lastReadSeq,
     lastReadAt: input.lastReadAt,

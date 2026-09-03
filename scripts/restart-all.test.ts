@@ -1,8 +1,11 @@
 import { describe, expect, test } from "bun:test";
 import {
+  assertSharedServiceRepointRoot,
+  freshGeneratedPaths,
   legacyScoutServiceLabels,
   pairingRelayRuntimeReady,
   parseArgs,
+  primaryCheckoutRootFromGitCommonDir,
   waitForWeb,
 } from "./restart-all.mjs";
 
@@ -11,6 +14,12 @@ import {
 // apps/desktop/src/cli/app-lifecycle.ts and are tested alongside it. What stays
 // here is what this script still owns: its own dev-only flags.
 describe("scout:up", () => {
+  test("fresh rebuilds preserve the Scout app bundle identity", () => {
+    const paths = freshGeneratedPaths();
+    expect(paths.some((path) => path.endsWith("/apps/macos/dist/Scout.app/Contents"))).toBe(true);
+    expect(paths.some((path) => path.endsWith("/apps/macos/dist/Scout.app"))).toBe(false);
+  });
+
   test("parses canonical lifecycle options", () => {
     expect(parseArgs(["bun", "restart-all.mjs", "--fresh", "--no-ios", "--web-port", "44000"])).toMatchObject({
       fresh: true,
@@ -28,6 +37,31 @@ describe("scout:up", () => {
     expect(legacyScoutServiceLabels("dev")).toEqual(["dev.openscout", "com.openscout"]);
     expect(legacyScoutServiceLabels("prod")).toEqual(["dev.openscout", "com.openscout"]);
     expect(legacyScoutServiceLabels("custom")).toEqual(["com.openscout.custom"]);
+  });
+
+  test("resolves the shared service owner to the primary checkout", () => {
+    const checkedPaths: string[] = [];
+    expect(primaryCheckoutRootFromGitCommonDir(
+      "/Users/art/dev/openscout",
+      "/Users/art/dev/openscout/.git",
+      (path) => {
+        checkedPaths.push(path);
+        return true;
+      },
+    )).toBe("/Users/art/dev/openscout");
+    expect(primaryCheckoutRootFromGitCommonDir(
+      "/Users/art/.codex/worktrees/abcd/openscout",
+      "/Users/art/dev/openscout/.git",
+      () => true,
+    )).toBe("/Users/art/dev/openscout");
+    expect(checkedPaths).toEqual(["/Users/art/dev/openscout/packages/cli/package.json"]);
+  });
+
+  test("refuses to repoint the shared service from a linked worktree", () => {
+    expect(() => assertSharedServiceRepointRoot(
+      "/Users/art/.codex/worktrees/abcd/openscout",
+      "/Users/art/dev/openscout",
+    )).toThrow("Refusing to repoint the shared Scout service");
   });
 
   test("requires a live pairing runtime with a configured relay", () => {

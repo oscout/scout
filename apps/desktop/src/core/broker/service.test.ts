@@ -2797,6 +2797,7 @@ describe("sendScoutMessage", () => {
   test("uses explicit send target as route intent and leaves body mentions as text", async () => {
     useIsolatedOpenScoutHome();
 
+    const requests: string[] = [];
     const captured = {
       delivery: null as {
         id?: string;
@@ -2818,6 +2819,7 @@ describe("sendScoutMessage", () => {
       const request =
         input instanceof Request ? input : new Request(input, init);
       const url = new URL(request.url);
+      requests.push(`${request.method} ${url.pathname}`);
 
       if (request.method === "GET" && url.pathname === "/health") {
         return jsonResponse({ ok: true, nodeId: "node-1", meshId: "mesh-1" });
@@ -2906,6 +2908,11 @@ describe("sendScoutMessage", () => {
       nodeId: "node-1",
       currentDirectory: "/worktree/project",
     });
+    expect(requests).toEqual([
+      "GET /health",
+      "POST /v1/actors",
+      "POST /v1/deliver",
+    ]);
   }, 15000);
 
   test("uses target handles as typed send route intent", async () => {

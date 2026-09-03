@@ -75,6 +75,8 @@ const DEFAULT_EXEC_JOB_QUEUE: usize = 32;
 const DEFAULT_CONNECTION_WORKERS: usize = 32;
 const DEFAULT_CONNECTION_QUEUE: usize = 64;
 const DEFAULT_CONNECTION_IO_TIMEOUT: Duration = Duration::from_millis(5_000);
+const DEFAULT_NATIVE_READ_SUBSCRIPTION_WORKERS: usize = 16;
+const DEFAULT_NATIVE_READ_POLL_INTERVAL: Duration = Duration::from_secs(1);
 const NATIVE_READ_PEER_CHECK_INTERVAL: Duration = Duration::from_millis(250);
 const NATIVE_READ_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(15);
 const REQUEST_READ_CAP_BYTES: u64 = 8 * 1024 * 1024;
@@ -126,7 +128,10 @@ pub struct ProbeServerOptions {
     pub native_read_enabled: bool,
     pub native_read_journal_path: PathBuf,
     pub native_read_cache_path: PathBuf,
+    pub native_read_feed_artifact_path: PathBuf,
+    pub native_read_thread_artifact_directory: PathBuf,
     pub native_read_poll_interval: Duration,
+    pub native_read_subscription_workers: usize,
 }
 
 impl ProbeServerOptions {
@@ -194,8 +199,21 @@ impl ProbeServerOptions {
             native_read_cache_path: env_nonempty("OPENSCOUT_NATIVE_READ_CACHE")
                 .map(PathBuf::from)
                 .unwrap_or_else(|| control_home.join("native-read-agents-v1.json")),
+            native_read_feed_artifact_path: env_nonempty("OPENSCOUT_NATIVE_READ_FEED_ARTIFACT")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| control_home.join("native-read-feed-v1.json")),
+            native_read_thread_artifact_directory: env_nonempty(
+                "OPENSCOUT_NATIVE_READ_THREAD_ARTIFACT_DIRECTORY",
+            )
+            .map(PathBuf::from)
+            .unwrap_or_else(|| control_home.join("native-read-threads-v1")),
             native_read_poll_interval: env_duration_ms("OPENSCOUT_NATIVE_READ_POLL_MS")
-                .unwrap_or(Duration::from_millis(250)),
+                .unwrap_or(DEFAULT_NATIVE_READ_POLL_INTERVAL),
+            native_read_subscription_workers: env_usize(
+                "OPENSCOUT_NATIVE_READ_SUBSCRIPTION_WORKERS",
+            )
+            .unwrap_or(DEFAULT_NATIVE_READ_SUBSCRIPTION_WORKERS)
+            .max(1),
         }
     }
 }
@@ -556,6 +574,7 @@ struct ProbeEngine {
     state: Arc<(Mutex<ProbeEngineState>, Condvar)>,
     repo_jobs: JobLimiter,
     exec_jobs: JobLimiter,
+    native_subscription_jobs: JobLimiter,
     native_reads: Option<NativeReadService>,
 }
 
@@ -565,10 +584,20 @@ impl ProbeEngine {
             JobLimiter::new("repo job", options.repo_job_workers, options.repo_job_queue);
         let exec_jobs =
             JobLimiter::new("exec job", options.exec_job_workers, options.exec_job_queue);
+        // Long-lived native subscriptions must never occupy the general probe
+        // connection pool. This class is intentionally fail-fast (no queue),
+        // leaving snapshot/probe/repo/exec requests independently available.
+        let native_subscription_jobs = JobLimiter::new(
+            "native read subscription",
+            options.native_read_subscription_workers,
+            0,
+        );
         let native_reads = options.native_read_enabled.then(|| {
             NativeReadService::start(
                 options.native_read_journal_path.clone(),
                 options.native_read_cache_path.clone(),
+                options.native_read_feed_artifact_path.clone(),
+                options.native_read_thread_artifact_directory.clone(),
                 options.native_read_poll_interval,
             )
         });
@@ -577,6 +606,7 @@ impl ProbeEngine {
             state: Arc::new((Mutex::new(ProbeEngineState::default()), Condvar::new())),
             repo_jobs,
             exec_jobs,
+            native_subscription_jobs,
             native_reads,
         }
     }
@@ -1676,8 +1706,7 @@ pub fn serve(options: ProbeServerOptions) -> Result<(), String> {
                 };
                 let engine = engine.clone();
                 thread::spawn(move || {
-                    let _permit = permit;
-                    if let Err(error) = handle_connection(stream, engine) {
+                    if let Err(error) = handle_connection(stream, engine, permit) {
                         eprintln!("[scoutd probes] connection failed: {error}");
                     }
                 });
@@ -1752,7 +1781,11 @@ fn request_capabilities(
     Ok((daemon_version, families))
 }
 
-fn handle_connection(mut stream: UnixStream, engine: ProbeEngine) -> Result<(), String> {
+fn handle_connection(
+    mut stream: UnixStream,
+    engine: ProbeEngine,
+    connection_permit: JobPermit,
+) -> Result<(), String> {
     let timeout = engine.options.connection_io_timeout;
     stream
         .set_read_timeout(Some(timeout))
@@ -1799,6 +1832,27 @@ fn handle_connection(mut stream: UnixStream, engine: ProbeEngine) -> Result<(), 
                 }
             }
             Ok(ParsedRequest::NativeRead(request)) => {
+                if request.mode == NativeReadMode::Subscribe
+                    && matches!(request.resource.as_str(), "agents" | "feed" | "thread")
+                {
+                    let native_permit = match engine.native_subscription_jobs.acquire() {
+                        Ok(permit) => permit,
+                        Err(error) => {
+                            return write_json_line(
+                                &mut stream,
+                                &error_response(&error.code, &error.message),
+                                engine.options.repo_job_response_cap_bytes,
+                            );
+                        }
+                    };
+                    // Parsing and admission occur under the general connection
+                    // permit. Once admitted, the dedicated native permit owns
+                    // the long-lived stream and the global pool is released.
+                    drop(connection_permit);
+                    let result = handle_native_read_connection(&mut stream, &engine, request);
+                    drop(native_permit);
+                    return result;
+                }
                 return handle_native_read_connection(&mut stream, &engine, request);
             }
             Err(error) => error_response(&error.code, &error.message),
@@ -1818,16 +1872,6 @@ fn handle_native_read_connection(
     engine: &ProbeEngine,
     request: NativeReadRequest,
 ) -> Result<(), String> {
-    if request.resource != "agents" {
-        return write_json_line(
-            stream,
-            &error_response(
-                "unsupported_resource",
-                &format!("unsupported native read resource: {}", request.resource),
-            ),
-            engine.options.repo_job_response_cap_bytes,
-        );
-    }
     let Some(service) = engine.native_reads.as_ref() else {
         return write_json_line(
             stream,
@@ -1839,7 +1883,28 @@ fn handle_native_read_connection(
         );
     };
 
-    let initial = service.snapshot(&request);
+    match request.resource.as_str() {
+        "agents" => handle_native_agents_connection(stream, engine, service, &request),
+        "feed" => handle_native_feed_connection(stream, engine, service, &request),
+        "thread" => handle_native_thread_connection(stream, engine, service, &request),
+        _ => write_json_line(
+            stream,
+            &error_response(
+                "unsupported_resource",
+                &format!("unsupported native read resource: {}", request.resource),
+            ),
+            engine.options.repo_job_response_cap_bytes,
+        ),
+    }
+}
+
+fn handle_native_agents_connection(
+    stream: &mut UnixStream,
+    engine: &ProbeEngine,
+    service: &NativeReadService,
+    request: &NativeReadRequest,
+) -> Result<(), String> {
+    let initial = service.snapshot(request);
     write_json_line(
         stream,
         &serde_json::to_value(&initial).map_err(|error| error.to_string())?,
@@ -1858,7 +1923,7 @@ fn handle_native_read_connection(
             return Ok(());
         }
         if let Some(snapshot) =
-            service.wait_for_change(&request, sequence, NATIVE_READ_PEER_CHECK_INTERVAL)
+            service.wait_for_change(request, sequence, NATIVE_READ_PEER_CHECK_INTERVAL)
         {
             sequence = snapshot.sequence;
             write_json_line(
@@ -1869,10 +1934,163 @@ fn handle_native_read_connection(
         } else if last_heartbeat.elapsed() >= NATIVE_READ_HEARTBEAT_INTERVAL {
             write_json_line(
                 stream,
-                &serde_json::to_value(service.heartbeat(&request))
+                &serde_json::to_value(service.heartbeat(request))
                     .map_err(|error| error.to_string())?,
                 engine.options.repo_job_response_cap_bytes,
             )?;
+            last_heartbeat = Instant::now();
+        }
+    }
+}
+
+fn handle_native_feed_connection(
+    stream: &mut UnixStream,
+    engine: &ProbeEngine,
+    service: &NativeReadService,
+    request: &NativeReadRequest,
+) -> Result<(), String> {
+    let Some((mut revision, initial)) = service.feed_snapshot(request) else {
+        return write_json_line(
+            stream,
+            &error_response(
+                "native_read_unavailable",
+                "native feed artifact is unavailable",
+            ),
+            engine.options.repo_job_response_cap_bytes,
+        );
+    };
+    write_json_line(
+        stream,
+        &serde_json::to_value(&initial).map_err(|error| error.to_string())?,
+        engine.options.repo_job_response_cap_bytes,
+    )?;
+    if request.mode != NativeReadMode::Subscribe {
+        return Ok(());
+    }
+
+    let mut last_heartbeat = Instant::now();
+    loop {
+        if native_read_peer_closed(stream)? {
+            return Ok(());
+        }
+        if let Some((next_revision, snapshot)) =
+            service.wait_for_feed_change(request, revision, NATIVE_READ_PEER_CHECK_INTERVAL)
+        {
+            revision = next_revision;
+            write_json_line(
+                stream,
+                &serde_json::to_value(snapshot).map_err(|error| error.to_string())?,
+                engine.options.repo_job_response_cap_bytes,
+            )?;
+        } else if last_heartbeat.elapsed() >= NATIVE_READ_HEARTBEAT_INTERVAL {
+            if let Some(heartbeat) = service.feed_heartbeat(request) {
+                write_json_line(
+                    stream,
+                    &serde_json::to_value(heartbeat).map_err(|error| error.to_string())?,
+                    engine.options.repo_job_response_cap_bytes,
+                )?;
+            }
+            last_heartbeat = Instant::now();
+        }
+    }
+}
+
+fn handle_native_thread_connection(
+    stream: &mut UnixStream,
+    engine: &ProbeEngine,
+    service: &NativeReadService,
+    request: &NativeReadRequest,
+) -> Result<(), String> {
+    let Some(feed_id) = request
+        .feed_id
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+    else {
+        return write_json_line(
+            stream,
+            &error_response("invalid_request", "thread reads require an explicit feedId"),
+            engine.options.repo_job_response_cap_bytes,
+        );
+    };
+    if feed_id.starts_with("obs:") {
+        return write_json_line(
+            stream,
+            &error_response(
+                "thread_not_available",
+                "observed sessions use the native session/tail detail path",
+            ),
+            engine.options.repo_job_response_cap_bytes,
+        );
+    }
+    let Some(expected_conversation_id) = feed_id
+        .strip_prefix("conv:")
+        .filter(|value| !value.is_empty())
+    else {
+        return write_json_line(
+            stream,
+            &error_response(
+                "invalid_request",
+                "thread feedId must identify a Scout conversation",
+            ),
+            engine.options.repo_job_response_cap_bytes,
+        );
+    };
+    if request
+        .conversation_id
+        .as_deref()
+        .is_some_and(|conversation_id| conversation_id != expected_conversation_id)
+    {
+        return write_json_line(
+            stream,
+            &error_response(
+                "invalid_request",
+                "thread feedId and conversationId do not match",
+            ),
+            engine.options.repo_job_response_cap_bytes,
+        );
+    }
+
+    let Some((mut revision, initial)) = service.thread_snapshot(request) else {
+        return write_json_line(
+            stream,
+            &error_response(
+                "thread_not_available",
+                "native thread artifact is unavailable for this Scout conversation",
+            ),
+            engine.options.repo_job_response_cap_bytes,
+        );
+    };
+    write_json_line(
+        stream,
+        &serde_json::to_value(&initial).map_err(|error| error.to_string())?,
+        engine.options.repo_job_response_cap_bytes,
+    )?;
+    if request.mode != NativeReadMode::Subscribe {
+        return Ok(());
+    }
+
+    let mut last_heartbeat = Instant::now();
+    loop {
+        if native_read_peer_closed(stream)? {
+            return Ok(());
+        }
+        if let Some((next_revision, snapshot)) =
+            service.wait_for_thread_change(request, revision, NATIVE_READ_PEER_CHECK_INTERVAL)
+        {
+            revision = next_revision;
+            write_json_line(
+                stream,
+                &serde_json::to_value(snapshot).map_err(|error| error.to_string())?,
+                engine.options.repo_job_response_cap_bytes,
+            )?;
+        } else if last_heartbeat.elapsed() >= NATIVE_READ_HEARTBEAT_INTERVAL {
+            if let Some(heartbeat) = service.thread_heartbeat(request) {
+                write_json_line(
+                    stream,
+                    &serde_json::to_value(heartbeat).map_err(|error| error.to_string())?,
+                    engine.options.repo_job_response_cap_bytes,
+                )?;
+            }
             last_heartbeat = Instant::now();
         }
     }
@@ -3861,7 +4079,8 @@ fn env_usize(name: &str) -> Option<usize> {
 mod tests {
     use super::{
         serialize_response_with_cap, serve, ProbeCacheKey, ProbeEngine, ProbeServerOptions,
-        CAPABILITIES_SCHEMA, ERROR_SCHEMA, PS_CWD_ID, SNAPSHOT_SCHEMA, TEST_PANIC_PROBE_ID,
+        CAPABILITIES_SCHEMA, DEFAULT_NATIVE_READ_POLL_INTERVAL, ERROR_SCHEMA, PS_CWD_ID,
+        SNAPSHOT_SCHEMA, TEST_PANIC_PROBE_ID,
     };
     use scoutd::repo_service;
     use serde_json::json;
@@ -3890,6 +4109,76 @@ mod tests {
         let mut permissions = fs::metadata(path).unwrap().permissions();
         permissions.set_mode(0o755);
         fs::set_permissions(path, permissions).unwrap();
+    }
+
+    fn native_feed_artifact(projection_id: &str, sequence: u64, item_count: usize) -> Value {
+        json!({
+            "schema": "openscout.native.read.feed-cache/v1",
+            "version": 1,
+            "projectionId": projection_id,
+            "projectionVersion": 1,
+            "sequence": sequence,
+            "generatedAt": 1_700_000_000_000_u64 + sequence,
+            "sourceFreshAt": 1_700_000_000_000_u64 + sequence,
+            "items": (0..item_count).map(|index| json!({
+                "feedId": format!("conv:{projection_id}:{sequence}:{index}"),
+                "entityKind": "scout_conversation",
+                "conversationId": format!("conversation-{index}"),
+                "title": format!("Conversation {index}"),
+                "lastActivityAt": 1_700_000_000_000_u64 + index as u64,
+            })).collect::<Vec<_>>(),
+            "total": item_count,
+            "hasMore": false,
+            "engagedFeedId": format!("conv:{projection_id}:{sequence}:0"),
+            "identityRedirects": [],
+        })
+    }
+
+    fn replace_native_feed_artifact(path: &Path, artifact: &Value) {
+        let temporary = path.with_extension(format!("tmp-{}", std::process::id()));
+        fs::write(&temporary, serde_json::to_vec(artifact).unwrap()).unwrap();
+        fs::rename(temporary, path).unwrap();
+    }
+
+    fn native_thread_artifact(
+        projection_id: &str,
+        sequence: u64,
+        conversation_id: &str,
+        message_count: usize,
+    ) -> Value {
+        json!({
+            "schema": "openscout.native.read.thread-cache/v1",
+            "version": 1,
+            "projectionId": projection_id,
+            "projectionVersion": 1,
+            "sequence": sequence,
+            "feedId": format!("conv:{conversation_id}"),
+            "entityKind": "scout_conversation",
+            "conversationId": conversation_id,
+            "cursor": (message_count > 0).then(|| "message-0"),
+            "hasEarlier": false,
+            "generatedAt": 1_700_000_000_000_u64 + sequence,
+            "messages": (0..message_count).map(|index| json!({
+                "id": format!("message-{index}"),
+                "actorId": "agent-1",
+                "actorName": "Agent One",
+                "body": format!("message {index}"),
+                "class": "agent",
+                "createdAt": 1_700_000_000_000_u64 + index as u64,
+            })).collect::<Vec<_>>(),
+        })
+    }
+
+    fn replace_native_thread_artifact(directory: &Path, artifact: &Value) -> PathBuf {
+        fs::create_dir_all(directory).unwrap();
+        let path = directory.join("native-read-thread-test.json");
+        let temporary = directory.join(format!(
+            "native-read-thread-test.tmp-{}",
+            std::process::id()
+        ));
+        fs::write(&temporary, serde_json::to_vec(artifact).unwrap()).unwrap();
+        fs::rename(temporary, &path).unwrap();
+        path
     }
 
     fn start_test_server(options: ProbeServerOptions) {
@@ -3946,8 +4235,18 @@ mod tests {
             native_read_enabled: false,
             native_read_journal_path: PathBuf::from("/nonexistent/broker-journal.jsonl"),
             native_read_cache_path: PathBuf::from("/nonexistent/native-read-agents-v1.json"),
+            native_read_feed_artifact_path: PathBuf::from("/nonexistent/native-read-feed-v1.json"),
+            native_read_thread_artifact_directory: PathBuf::from(
+                "/nonexistent/native-read-threads-v1",
+            ),
             native_read_poll_interval: Duration::from_millis(50),
+            native_read_subscription_workers: 16,
         }
+    }
+
+    #[test]
+    fn native_read_artifact_polling_defaults_to_one_second() {
+        assert_eq!(DEFAULT_NATIVE_READ_POLL_INTERVAL, Duration::from_secs(1));
     }
 
     #[test]
@@ -4246,6 +4545,286 @@ mod tests {
             Some(CAPABILITIES_SCHEMA)
         );
 
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn native_feed_subscription_streams_atomic_artifact_replacements_across_lineages() {
+        let dir = unique_temp_dir("scoutd-native-feed-stream");
+        let socket_path = dir.join("probes.sock");
+        let artifact_path = dir.join("native-read-feed-v1.json");
+        replace_native_feed_artifact(&artifact_path, &native_feed_artifact("lineage-a", 7, 3));
+
+        let mut options = base_options(socket_path.clone());
+        options.native_read_enabled = true;
+        options.native_read_feed_artifact_path = artifact_path.clone();
+        options.native_read_poll_interval = Duration::from_millis(10);
+        start_test_server(options);
+
+        let mut stream = UnixStream::connect(&socket_path).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        stream
+            .write_all(
+                br#"{"schema":"openscout.native.read.request/v1","requestId":"feed-1","resource":"feed","mode":"subscribe","limit":2}"#,
+            )
+            .unwrap();
+        stream.write_all(b"\n").unwrap();
+        let mut reader = BufReader::new(stream);
+
+        let mut first = String::new();
+        reader.read_line(&mut first).unwrap();
+        let first: Value = serde_json::from_str(&first).unwrap();
+        assert_eq!(
+            first.get("schema").and_then(Value::as_str),
+            Some("openscout.native.read.snapshot/v1")
+        );
+        assert_eq!(
+            first.get("type").and_then(Value::as_str),
+            Some("feed.snapshot")
+        );
+        assert_eq!(
+            first.get("projectionId").and_then(Value::as_str),
+            Some("lineage-a")
+        );
+        assert_eq!(first.get("sequence").and_then(Value::as_u64), Some(7));
+        assert_eq!(
+            first.get("items").and_then(Value::as_array).map(Vec::len),
+            Some(2)
+        );
+        assert_eq!(first.get("total").and_then(Value::as_u64), Some(3));
+        assert_eq!(first.get("hasMore").and_then(Value::as_bool), Some(true));
+
+        replace_native_feed_artifact(&artifact_path, &native_feed_artifact("lineage-a", 8, 3));
+        let mut same_lineage = String::new();
+        reader.read_line(&mut same_lineage).unwrap();
+        let same_lineage: Value = serde_json::from_str(&same_lineage).unwrap();
+        assert_eq!(
+            same_lineage.get("projectionId").and_then(Value::as_str),
+            Some("lineage-a")
+        );
+        assert_eq!(
+            same_lineage.get("sequence").and_then(Value::as_u64),
+            Some(8)
+        );
+
+        // A corrupt atomic replacement is rejected without clearing the last
+        // valid in-memory feed. The same-lineage monotonic rule likewise
+        // rejects a later-published lower sequence.
+        let corrupt = artifact_path.with_extension("corrupt-tmp");
+        fs::write(&corrupt, b"not-json\n").unwrap();
+        fs::rename(corrupt, &artifact_path).unwrap();
+        thread::sleep(Duration::from_millis(75));
+        let after_corruption = request(
+            &socket_path,
+            r#"{"schema":"openscout.native.read.request/v1","requestId":"after-corrupt","resource":"feed","mode":"snapshot","limit":2}"#,
+        );
+        assert_eq!(
+            after_corruption.get("projectionId").and_then(Value::as_str),
+            Some("lineage-a")
+        );
+        assert_eq!(
+            after_corruption.get("sequence").and_then(Value::as_u64),
+            Some(8)
+        );
+
+        replace_native_feed_artifact(&artifact_path, &native_feed_artifact("lineage-a", 7, 3));
+        thread::sleep(Duration::from_millis(75));
+        let after_regression = request(
+            &socket_path,
+            r#"{"schema":"openscout.native.read.request/v1","requestId":"after-regression","resource":"feed","mode":"snapshot","limit":2}"#,
+        );
+        assert_eq!(
+            after_regression.get("sequence").and_then(Value::as_u64),
+            Some(8)
+        );
+
+        // A fresh projection lineage may legitimately restart its sequence.
+        // The subscriber must wake on the scoutd-local revision, not compare
+        // the broker sequence across lineages.
+        replace_native_feed_artifact(&artifact_path, &native_feed_artifact("lineage-b", 1, 1));
+        let mut new_lineage = String::new();
+        reader.read_line(&mut new_lineage).unwrap();
+        let new_lineage: Value = serde_json::from_str(&new_lineage).unwrap();
+        assert_eq!(
+            new_lineage.get("projectionId").and_then(Value::as_str),
+            Some("lineage-b")
+        );
+        assert_eq!(new_lineage.get("sequence").and_then(Value::as_u64), Some(1));
+        assert_eq!(
+            new_lineage
+                .pointer("/items/0/feedId")
+                .and_then(Value::as_str),
+            Some("conv:lineage-b:1:0")
+        );
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn native_thread_snapshot_requires_explicit_scout_identity_and_returns_newest_page() {
+        let dir = unique_temp_dir("scoutd-native-thread-snapshot");
+        let socket_path = dir.join("probes.sock");
+        let artifact_directory = dir.join("native-read-threads-v1");
+        replace_native_thread_artifact(
+            &artifact_directory,
+            &native_thread_artifact("lineage-a", 7, "conversation-1", 3),
+        );
+
+        let mut options = base_options(socket_path.clone());
+        options.native_read_enabled = true;
+        options.native_read_thread_artifact_directory = artifact_directory;
+        options.native_read_poll_interval = Duration::from_millis(10);
+        start_test_server(options);
+
+        let response = request(
+            &socket_path,
+            r#"{"schema":"openscout.native.read.request/v1","requestId":"thread-1","resource":"thread","mode":"snapshot","feedId":"conv:conversation-1","conversationId":"conversation-1","limit":2}"#,
+        );
+        assert_eq!(
+            response.get("type").and_then(Value::as_str),
+            Some("thread.snapshot")
+        );
+        assert_eq!(
+            response.get("feedId").and_then(Value::as_str),
+            Some("conv:conversation-1")
+        );
+        assert_eq!(
+            response.get("conversationId").and_then(Value::as_str),
+            Some("conversation-1")
+        );
+        assert_eq!(
+            response.get("cursor").and_then(Value::as_str),
+            Some("message-1")
+        );
+        assert_eq!(
+            response.get("hasEarlier").and_then(Value::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            response
+                .get("messages")
+                .and_then(Value::as_array)
+                .map(|messages| messages.len()),
+            Some(2)
+        );
+
+        for (payload, expected_code) in [
+            (
+                r#"{"schema":"openscout.native.read.request/v1","resource":"thread","mode":"snapshot","limit":2}"#,
+                "invalid_request",
+            ),
+            (
+                r#"{"schema":"openscout.native.read.request/v1","resource":"thread","mode":"snapshot","feedId":"obs:codex:session-1","limit":2}"#,
+                "thread_not_available",
+            ),
+            (
+                r#"{"schema":"openscout.native.read.request/v1","resource":"thread","mode":"snapshot","feedId":"conv:conversation-1","conversationId":"other","limit":2}"#,
+                "invalid_request",
+            ),
+        ] {
+            let rejected = request(&socket_path, payload);
+            assert_eq!(
+                rejected.pointer("/error/code").and_then(Value::as_str),
+                Some(expected_code)
+            );
+        }
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn native_subscription_capacity_isolated_from_general_probe_connections() {
+        let dir = unique_temp_dir("scoutd-native-feed-permits");
+        let socket_path = dir.join("probes.sock");
+        let artifact_directory = dir.join("native-read-threads-v1");
+        replace_native_thread_artifact(
+            &artifact_directory,
+            &native_thread_artifact("lineage-a", 1, "conversation-1", 1),
+        );
+
+        let mut options = base_options(socket_path.clone());
+        options.native_read_enabled = true;
+        options.native_read_thread_artifact_directory = artifact_directory;
+        options.native_read_poll_interval = Duration::from_millis(10);
+        options.connection_workers = 1;
+        options.connection_queue = 0;
+        options.native_read_subscription_workers = 1;
+        start_test_server(options);
+        // Let the readiness connection used by start_test_server release the
+        // intentionally single global permit before opening the held stream.
+        thread::sleep(Duration::from_millis(25));
+
+        let mut subscribed = UnixStream::connect(&socket_path).unwrap();
+        subscribed
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        subscribed
+            .write_all(
+                br#"{"schema":"openscout.native.read.request/v1","requestId":"held","resource":"thread","mode":"subscribe","feedId":"conv:conversation-1","conversationId":"conversation-1","limit":1}"#,
+            )
+            .unwrap();
+        subscribed.write_all(b"\n").unwrap();
+        let mut subscribed_reader = BufReader::new(subscribed);
+        let mut initial = String::new();
+        subscribed_reader.read_line(&mut initial).unwrap();
+        let initial: Value = serde_json::from_str(&initial).unwrap();
+        assert_eq!(
+            initial.get("type").and_then(Value::as_str),
+            Some("thread.snapshot")
+        );
+
+        // The single global permit is already released even while the native
+        // stream remains open.
+        let capabilities = request(
+            &socket_path,
+            r#"{"schema":"openscout.probe.capabilities/v1"}"#,
+        );
+        assert_eq!(
+            capabilities.get("schema").and_then(Value::as_str),
+            Some(CAPABILITIES_SCHEMA)
+        );
+
+        // Saturating the dedicated class fails only another subscription.
+        let busy = request(
+            &socket_path,
+            r#"{"schema":"openscout.native.read.request/v1","requestId":"busy","resource":"feed","mode":"subscribe","limit":1}"#,
+        );
+        assert_eq!(
+            busy.get("schema").and_then(Value::as_str),
+            Some(ERROR_SCHEMA)
+        );
+        assert_eq!(
+            busy.pointer("/error/code").and_then(Value::as_str),
+            Some("busy")
+        );
+
+        drop(subscribed_reader);
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn native_feed_snapshot_reports_unavailable_without_a_valid_artifact() {
+        let dir = unique_temp_dir("scoutd-native-feed-unavailable");
+        let socket_path = dir.join("probes.sock");
+        let mut options = base_options(socket_path.clone());
+        options.native_read_enabled = true;
+        options.native_read_feed_artifact_path = dir.join("missing-feed.json");
+        start_test_server(options);
+
+        let response = request(
+            &socket_path,
+            r#"{"schema":"openscout.native.read.request/v1","requestId":"missing","resource":"feed","mode":"snapshot","limit":160}"#,
+        );
+        assert_eq!(
+            response.get("schema").and_then(Value::as_str),
+            Some(ERROR_SCHEMA)
+        );
+        assert_eq!(
+            response.pointer("/error/code").and_then(Value::as_str),
+            Some("native_read_unavailable")
+        );
         let _ = fs::remove_dir_all(dir);
     }
 

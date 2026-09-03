@@ -24,6 +24,23 @@ import {
   pathBasename,
   type ConversationGroup,
 } from "../../lib/conversation-groups.ts";
+import {
+  bestFleetAskForAgentIds,
+  fleetAskForSession,
+  type FleetActiveAskIndex,
+} from "../../lib/fleet-active-asks.ts";
+import {
+  loadMessagesRailPrefs,
+  saveMessagesRailPrefs,
+  type MessagesRailPrefs,
+  type SessionsGroupKey,
+} from "../../lib/messages-rail-prefs.ts";
+import {
+  groupQueueSessions,
+  NO_PROJECT_LABEL,
+  projectLabelForAgent,
+  taskThreadTitle,
+} from "../../lib/sessions-view.ts";
 import { useContextMenu, type MenuItem } from "../../components/ContextMenu.tsx";
 import { timeAgo } from "../../lib/time.ts";
 import {
@@ -42,6 +59,10 @@ import { routeMachineId } from "../../lib/router.ts";
 import { conversationalMessagePreview } from "../../lib/message-visibility.ts";
 import { RailRow } from "../../scout/slots/RailRow.tsx";
 import type { Agent, FleetAsk, SessionEntry } from "../../lib/types.ts";
+import {
+  agentIdentityGroupKey,
+  canonicalAgentForIdentity,
+} from "./agent-master-model.ts";
 
 /** How many observed groups show before "+N more" (keeps the rail scannable). */
 const OBSERVED_PREVIEW_LIMIT = 12;
@@ -61,6 +82,28 @@ type RailNav = {
 };
 
 /**
+ * One Agents-view row: a durable definition within one project and machine.
+ */
+type AgentRailEntry = {
+  /** Deterministic canonical agent id — the navigation anchor. */
+  agentId: string;
+  agent: Agent | undefined;
+  name: string;
+  /** Every agent id folded into this identity, for ask lookups. */
+  memberAgentIds: string[];
+  /** Most recent DM — carries the row's meta and ask subtitle context. */
+  latest: SessionEntry;
+  count: number;
+};
+
+const GROUP_CHIPS: Array<[SessionsGroupKey, string]> = [
+  ["project", "Project"],
+  ["agent", "Agent"],
+  ["day", "Day"],
+  ["state", "State"],
+];
+
+/**
  * The chat rail (D1/D3/D4/D5 of docs/design/comms-channel-navigation.md).
  *
  * One list, fixed sections, no switchers: Needs you · Pinned · Agents ·
@@ -78,6 +121,14 @@ export function ChatLeft() {
   const [observedOpen, setObservedOpen] = useState(false);
   const [showAllObserved, setShowAllObserved] = useState(false);
   const [showArchived, setShowArchived] = useState(false);
+  const [railPrefs, setRailPrefs] = useState<MessagesRailPrefs>(() => loadMessagesRailPrefs());
+  const view = railPrefs.view;
+  const setView = useCallback((next: MessagesRailPrefs["view"]) => {
+    setRailPrefs((prev) => saveMessagesRailPrefs({ ...prev, view: next }));
+  }, []);
+  const setGroupBy = useCallback((next: SessionsGroupKey) => {
+    setRailPrefs((prev) => saveMessagesRailPrefs({ ...prev, groupBy: next }));
+  }, []);
   const asksByAgent = useFleetActiveAsks();
   const machineId = routeMachineId(route);
   const scopedAgentIds = useMemo(
@@ -102,6 +153,8 @@ export function ChatLeft() {
     route.view === "agent-info" ? route.conversationId :
     route.view === "agents-v2" ? route.conversationId :
     undefined;
+  /** Agent master view open in the center (Agents view rows highlight on it). */
+  const activeAgentId = route.view === "messages" ? route.agentId : undefined;
 
   // Keep the observed stratum tight when the query changes under it.
   useEffect(() => {
@@ -125,12 +178,12 @@ export function ChatLeft() {
    */
   const needsYouAll = useMemo(() => {
     const askUpdatedAt = (s: SessionEntry) =>
-      (s.agentId ? asksByAgent.get(s.agentId)?.updatedAt : undefined) ?? 0;
+      fleetAskForSession(asksByAgent, s)?.updatedAt ?? 0;
     return machineScoped
       .filter((s) => {
         if (isArchived(s.id, prefs)) return false;
         if (!isOperatorDm(s)) return false;
-        const ask = s.agentId ? asksByAgent.get(s.agentId) : undefined;
+        const ask = fleetAskForSession(asksByAgent, s);
         return ask?.status === "needs_attention";
       })
       .sort((a, b) => askUpdatedAt(b) - askUpdatedAt(a));
@@ -161,11 +214,89 @@ export function ChatLeft() {
     return {
       pinned,
       channels: sortByRecency(channels),
-      agents: buildConversationGroups(sortByRecency(dms), agentById, lastViewed, "recent"),
+      dms: sortByRecency(dms),
       observed: buildConversationGroups(sortByRecency(observed), agentById, lastViewed, "recent"),
       archived,
     };
   }, [scoped, agentById, lastViewed, prefs]);
+
+  /**
+   * Agents view — the map. One row per agent (not per conversation), grouped
+   * by project, ordered alphabetically so nothing reorders on message events.
+   * DMs without a resolvable agent keep plain conversation rows below.
+   */
+  const agentsRail = useMemo(() => {
+    const byIdentity = new Map<string, AgentRailEntry>();
+    const unassigned: SessionEntry[] = [];
+    for (const s of sections.dms) {
+      if (!s.agentId) {
+        unassigned.push(s);
+        continue;
+      }
+      const agent = agentById.get(s.agentId);
+      const identity = agentIdentityGroupKey(agent, s.agentId);
+      const identityAgents = agent
+        ? [...agentById.values()].filter(
+            (candidate) => agentIdentityGroupKey(candidate, candidate.id) === identity,
+          )
+        : [];
+      const canonical = canonicalAgentForIdentity(identityAgents) ?? agent;
+      const name = canonical?.name ?? s.agentName ?? s.agentId.split(".")[0] ?? s.agentId;
+      const existing = byIdentity.get(identity);
+      if (existing) {
+        existing.count += 1;
+        if (!existing.memberAgentIds.includes(s.agentId)) {
+          existing.memberAgentIds.push(s.agentId);
+        }
+        const canonical = canonicalAgentForIdentity(
+          [existing.agent, agent].filter((item): item is Agent => Boolean(item)),
+        );
+        existing.agent = canonical;
+        existing.agentId = canonical?.id
+          ?? [...existing.memberAgentIds].sort()[0]!;
+        existing.name = canonical?.name ?? existing.name;
+        continue;
+      }
+      byIdentity.set(identity, {
+        agentId: canonical?.id ?? s.agentId,
+        agent: canonical,
+        name,
+        memberAgentIds: identityAgents.length > 0
+          ? identityAgents.map((item) => item.id).sort()
+          : [s.agentId],
+        latest: s,
+        count: 1,
+      });
+    }
+    const byProject = new Map<string, AgentRailEntry[]>();
+    for (const entry of byIdentity.values()) {
+      const label = projectLabelForAgent(entry.agent);
+      const bucket = byProject.get(label);
+      if (bucket) bucket.push(entry);
+      else byProject.set(label, [entry]);
+    }
+    for (const bucket of byProject.values()) {
+      bucket.sort((a, b) => a.name.localeCompare(b.name));
+    }
+    const labels = [...byProject.keys()].sort((a, b) => {
+      if (a === NO_PROJECT_LABEL) return 1;
+      if (b === NO_PROJECT_LABEL) return -1;
+      return a.localeCompare(b);
+    });
+    return {
+      projects: labels.map((label) => ({ label, entries: byProject.get(label)! })),
+      unassigned,
+    };
+  }, [sections.dms, agentById]);
+
+  /** Sessions view — the queue. Allowed to move; grouping is switchable. */
+  const queueGroups = useMemo(
+    () =>
+      view === "sessions"
+        ? groupQueueSessions(sections.dms, railPrefs.groupBy, agentById, asksByAgent, Date.now())
+        : [],
+    [view, sections.dms, railPrefs.groupBy, agentById, asksByAgent],
+  );
 
   const showContextMenu = useContextMenu();
 
@@ -180,8 +311,43 @@ export function ChatLeft() {
   const onSelect = useCallback((s: SessionEntry) => {
     setLastViewed(saveLastViewed(s.id));
     // One conversation route for every kind — channels included (D1).
-    navigate({ view: "messages", conversationId: s.id });
-  }, [navigate]);
+    navigate({
+      view: "messages",
+      conversationId: s.id,
+      ...(machineId ? { machineId } : {}),
+    });
+  }, [navigate, machineId]);
+
+  const onSelectAgent = useCallback((agentId: string) => {
+    navigate({
+      view: "messages",
+      agentId,
+      ...(machineId ? { machineId } : {}),
+    });
+  }, [navigate, machineId]);
+
+  /**
+   * Queue rows land in the agent master view with the session raised as a
+   * thread — same destination as the Agents view, entered through the queue.
+   * The master screen folds threadId onto the master DM when they coincide.
+   */
+  const onSelectQueue = useCallback((s: SessionEntry) => {
+    setLastViewed(saveLastViewed(s.id));
+    if (s.agentId) {
+      navigate({
+        view: "messages",
+        agentId: s.agentId,
+        threadId: s.id,
+        ...(machineId ? { machineId } : {}),
+      });
+      return;
+    }
+    navigate({
+      view: "messages",
+      conversationId: s.id,
+      ...(machineId ? { machineId } : {}),
+    });
+  }, [navigate, machineId]);
 
   const openConversationMenu = useCallback(
     (event: MouseEvent, s: SessionEntry) => {
@@ -239,7 +405,9 @@ export function ChatLeft() {
 
   const pinnedCount = sections.pinned.length;
   const channelCount = sections.channels.length;
-  const agentCount = sections.agents.reduce((n, g) => n + g.conversations.length, 0);
+  const agentCount = view === "agents"
+    ? agentsRail.projects.reduce((n, p) => n + p.entries.length, 0) + agentsRail.unassigned.length
+    : queueGroups.reduce((n, g) => n + g.sessions.length, 0);
   const observedCount = sections.observed.reduce((n, g) => n + g.conversations.length, 0);
   const archivedCount = sections.archived.length;
   // Needs-you rows are mirrors of rows counted below — never counted twice.
@@ -252,18 +420,47 @@ export function ChatLeft() {
     const out: Array<{ rowId: string; id: string }> = [];
     for (const s of needsYou) out.push({ rowId: `ny-${s.id}`, id: s.id });
     for (const s of sections.pinned) out.push({ rowId: `pin-${s.id}`, id: s.id });
-    for (const g of sections.agents) for (const c of g.conversations) out.push({ rowId: c.id, id: c.id });
+    if (view === "agents") {
+      for (const p of agentsRail.projects) {
+        for (const e of p.entries) out.push({ rowId: `agent-${e.agentId}`, id: `agent-${e.agentId}` });
+      }
+      for (const s of agentsRail.unassigned) out.push({ rowId: s.id, id: s.id });
+    } else {
+      for (const g of queueGroups) for (const s of g.sessions) out.push({ rowId: s.id, id: s.id });
+    }
     for (const s of sections.channels) out.push({ rowId: s.id, id: s.id });
     for (const g of sections.observed) for (const c of g.conversations) out.push({ rowId: c.id, id: c.id });
     for (const s of sections.archived) out.push({ rowId: `arch-${s.id}`, id: s.id });
     return out;
-  }, [needsYou, sections]);
+  }, [needsYou, sections, view, agentsRail, queueGroups]);
+
+  // Agent rows key into the same roving-tabindex system through a pseudo-id
+  // that can never collide with a conversation id. In the queue, a raised
+  // thread highlights its own row; in the map, its agent row highlights.
+  const activeThreadId = route.view === "messages" ? route.threadId : undefined;
+  // The route may name any fan-out sibling; the rail row keys on the merged
+  // identity's anchor, so resolve membership before matching.
+  const activeAgentAnchor = useMemo(() => {
+    if (!activeAgentId) return undefined;
+    for (const p of agentsRail.projects) {
+      for (const e of p.entries) {
+        if (e.agentId === activeAgentId || e.memberAgentIds.includes(activeAgentId)) {
+          return e.agentId;
+        }
+      }
+    }
+    return activeAgentId;
+  }, [activeAgentId, agentsRail]);
+  const activeRailId =
+    activeId
+    ?? (view === "sessions" ? activeThreadId : undefined)
+    ?? (activeAgentAnchor ? `agent-${activeAgentAnchor}` : undefined);
 
   const nav: RailNav = useMemo(() => ({
-    activeId,
-    activeRowId: activeId ? railRows.find((r) => r.id === activeId)?.rowId : undefined,
+    activeId: activeRailId,
+    activeRowId: activeRailId ? railRows.find((r) => r.id === activeRailId)?.rowId : undefined,
     firstRowId: railRows[0]?.rowId,
-  }), [activeId, railRows]);
+  }), [activeRailId, railRows]);
 
   // The preview limit lives INSIDE the expanded stratum (D5).
   const observedShown = showAllObserved || query
@@ -305,6 +502,29 @@ export function ChatLeft() {
             {needsReplyLabel(needsYouAll.length)}
           </span>
         )}
+      </div>
+
+      {/* Two views over one substrate: Agents is the map (stable, per-agent),
+          Sessions is the queue (per-task, allowed to move). */}
+      <div className="ctx-panel-viewtoggle" role="tablist" aria-label="Rail view">
+        <button
+          type="button"
+          role="tab"
+          aria-selected={view === "agents"}
+          className={`ctx-panel-viewtab${view === "agents" ? " ctx-panel-viewtab--on" : ""}`}
+          onClick={() => setView("agents")}
+        >
+          Agents
+        </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={view === "sessions"}
+          className={`ctx-panel-viewtab${view === "sessions" ? " ctx-panel-viewtab--on" : ""}`}
+          onClick={() => setView("sessions")}
+        >
+          Sessions
+        </button>
       </div>
 
       <div
@@ -372,26 +592,82 @@ export function ChatLeft() {
               </RailSection>
             )}
 
-            {agentCount > 0 && (
-              <RailSection label="Agents" count={agentCount}>
-                {sections.agents.map((group) => (
-                  <GroupOrRow
-                    key={group.key}
-                    group={group}
-                    isOpen={isGroupOpen(group)}
+            {view === "agents" && agentsRail.projects.map((project) => (
+              <RailSection
+                key={project.label}
+                label={project.label}
+                count={project.entries.length}
+              >
+                {project.entries.map((entry) => (
+                  <AgentRailEntryRow
+                    key={entry.agentId}
+                    entry={entry}
+                    nav={nav}
+                    ask={bestFleetAskForAgentIds(asksByAgent, entry.memberAgentIds)}
+                    onSelect={onSelectAgent}
+                  />
+                ))}
+              </RailSection>
+            ))}
+
+            {view === "agents" && agentsRail.unassigned.length > 0 && (
+              <RailSection
+                label="Direct"
+                count={agentsRail.unassigned.length}
+                hint="Conversations without a resolved agent"
+              >
+                {agentsRail.unassigned.map((s) => (
+                  <SessionRailRow
+                    key={s.id}
+                    rowId={s.id}
+                    session={s}
                     nav={nav}
                     agentById={agentById}
                     asksByAgent={asksByAgent}
-                    prefs={prefs}
-                    onToggle={() => toggleGroup(group.key)}
+                    actions={rowActions(s)}
                     onSelect={onSelect}
-                    onTogglePin={onTogglePin}
-                    onToggleArchive={onToggleArchive}
                     onContextMenu={openConversationMenu}
                   />
                 ))}
               </RailSection>
             )}
+
+            {view === "sessions" && (
+              <div className="ctx-panel-groupbar" role="radiogroup" aria-label="Group sessions by">
+                <span className="ctx-panel-groupbar-label">Group</span>
+                {GROUP_CHIPS.map(([key, label]) => (
+                  <button
+                    key={key}
+                    type="button"
+                    role="radio"
+                    aria-checked={railPrefs.groupBy === key}
+                    className={`ctx-panel-groupchip${railPrefs.groupBy === key ? " ctx-panel-groupchip--on" : ""}`}
+                    onClick={() => setGroupBy(key)}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+            )}
+
+            {view === "sessions" && queueGroups.map((group) => (
+              <RailSection key={group.label} label={group.label} count={group.sessions.length}>
+                {group.sessions.map((s) => (
+                  <SessionRailRow
+                    key={s.id}
+                    rowId={s.id}
+                    session={s}
+                    nav={nav}
+                    agentById={agentById}
+                    asksByAgent={asksByAgent}
+                    taskTitled
+                    actions={rowActions(s)}
+                    onSelect={onSelectQueue}
+                    onContextMenu={openConversationMenu}
+                  />
+                ))}
+              </RailSection>
+            ))}
 
             {channelCount > 0 && (
               <RailSection label="Channels" count={channelCount}>
@@ -579,6 +855,7 @@ function SessionRailRow({
   depth,
   actions,
   worktreeLabel,
+  taskTitled,
   onSelect,
   onContextMenu,
 }: {
@@ -587,33 +864,40 @@ function SessionRailRow({
   rowId: string;
   nav: RailNav;
   agentById: Map<string, Agent>;
-  asksByAgent: Map<string, FleetAsk>;
+  asksByAgent: FleetActiveAskIndex;
   pinned?: boolean;
   depth?: 0 | 1;
   actions?: ReactNode;
   /** Side-checkout name shown as a worktree glyph (merged repo groups). */
   worktreeLabel?: string | null;
+  /** Queue rows lead with the TASK (preview/branch), agent identity as sub —
+   *  a list of same-agent tasks all display-titled by agent name says nothing. */
+  taskTitled?: boolean;
   onSelect: (s: SessionEntry) => void;
   onContextMenu?: (event: MouseEvent, s: SessionEntry) => void;
 }) {
   const active = s.id === nav.activeId;
-  const title = conversationDisplayTitle(s);
+  const title = taskTitled ? taskThreadTitle(s) : conversationDisplayTitle(s);
   const channel = isChannelConversation(s);
   const observed = isObservedDirect(s);
   const agent = s.agentId ? agentById.get(s.agentId) : undefined;
-  const ask = s.agentId ? asksByAgent.get(s.agentId) : undefined;
+  const ask = fleetAskForSession(asksByAgent, s);
   // D4 — emphasis is ADDRESSED-ONLY: an ask waiting on you, never recency.
   // Channel rows carry none because there is no addressed-mention (@you)
   // backend yet; until mentions land, channels order by recency only.
   // D5 — Observed has no unread state at all; its count is inventory.
   const unread = !channel && !observed && ask?.status === "needs_attention";
   const identifier = threadIdentifier(s, agent);
+  const agentLabel = agent?.name ?? s.agentName ?? undefined;
   const baseSub = channel
     ? `${s.participantCount ?? s.participantIds.length} members`
-    : identifier.toLowerCase() === title.toLowerCase()
-      ? undefined
-      : identifier;
-  const sub = !channel && ask ? activeAskSubtitle(s, agent, ask) : baseSub;
+    : taskTitled
+      ? (agentLabel?.toLowerCase() === title.toLowerCase() ? undefined : agentLabel)
+      : identifier.toLowerCase() === title.toLowerCase()
+        ? undefined
+        : identifier;
+  const sub =
+    !channel && !taskTitled && ask ? activeAskSubtitle(s, agent, ask) : baseSub;
 
   return (
     <RailRow
@@ -631,7 +915,13 @@ function SessionRailRow({
               : "dm"
       }
       agent={channel ? undefined : agent}
-      avatarName={depth === 1 ? (agent?.name ?? conversationChildLabel(s, agent, ask)) : title}
+      avatarName={
+        depth === 1
+          ? (agent?.name ?? conversationChildLabel(s, agent, ask))
+          : taskTitled
+            ? (agentLabel ?? title)
+            : title
+      }
       avatarKind={channel ? "channel" : "user"}
       active={active}
       unread={unread}
@@ -648,6 +938,51 @@ function SessionRailRow({
       )}
       onClick={() => onSelect(s)}
       onContextMenu={onContextMenu ? (e) => onContextMenu(e, s) : undefined}
+    />
+  );
+}
+
+/**
+ * Agents-view row: identity + activity, never inventory pressure. The map
+ * stays still — position comes from project + name, not recency.
+ */
+function AgentRailEntryRow({
+  entry,
+  nav,
+  ask,
+  onSelect,
+}: {
+  entry: AgentRailEntry;
+  nav: RailNav;
+  ask: FleetAsk | undefined;
+  onSelect: (agentId: string) => void;
+}) {
+  const rowId = `agent-${entry.agentId}`;
+  const agent = entry.agent;
+  const time = ask
+    ? timeAgo(ask.updatedAt)
+    : entry.latest.lastMessageAt
+      ? timeAgo(entry.latest.lastMessageAt)
+      : undefined;
+  return (
+    <RailRow
+      name={entry.name}
+      sub={ask ? activeAskSubtitle(entry.latest, agent, ask) : undefined}
+      meta={entry.count > 1 ? (time ? `${entry.count} · ${time}` : `${entry.count}`) : time}
+      tone={ask ? askRowTone(agent, ask) : agent ? normalizeAgentState(agent.state) : "dm"}
+      agent={agent}
+      avatarName={entry.name}
+      avatarKind="user"
+      active={rowId === nav.activeId}
+      unread={ask?.status === "needs_attention"}
+      activityLabel={ask ? askActivityLabel(ask) : undefined}
+      activityTone={ask ? askActivityTone(ask) : undefined}
+      tabIndex={rovingTabIndex(
+        rowId === nav.activeRowId,
+        nav.activeRowId !== undefined,
+        rowId === nav.firstRowId,
+      )}
+      onClick={() => onSelect(entry.agentId)}
     />
   );
 }
@@ -670,7 +1005,7 @@ function GroupOrRow({
   isOpen: boolean;
   nav: RailNav;
   agentById: Map<string, Agent>;
-  asksByAgent: Map<string, FleetAsk>;
+  asksByAgent: FleetActiveAskIndex;
   prefs: ConversationPrefs;
   /** Observed stratum — no unread state anywhere in it (D5). */
   observed?: boolean;
@@ -705,7 +1040,7 @@ function GroupOrRow({
   }
 
   const groupAsks = group.conversations
-    .map((candidate) => candidate.agentId ? asksByAgent.get(candidate.agentId) : undefined)
+    .map((candidate) => fleetAskForSession(asksByAgent, candidate))
     .filter((ask): ask is FleetAsk => Boolean(ask));
   const activeAskCount = groupAsks.length;
   const workingAskCount = groupAsks.filter((ask) => ask.status === "working").length;

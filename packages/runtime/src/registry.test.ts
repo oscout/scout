@@ -114,6 +114,31 @@ function flight(
 }
 
 describe("queryRuntimeRegistrySnapshot", () => {
+  test("returns only agents for mesh roster synchronization", () => {
+    const snapshot = createRuntimeRegistrySnapshot({
+      actors: { participant: actor("participant") },
+      agents: { participant: agent("participant") },
+      endpoints: {
+        "endpoint-participant": endpoint("endpoint-participant", "participant", "active"),
+      },
+      conversations: {
+        recent: conversation("recent", ["participant"], 10),
+      },
+      messages: {
+        recent: message("recent", "recent", "participant", 10),
+      },
+    });
+
+    const result = queryRuntimeRegistrySnapshot(snapshot, { scope: "agents" });
+
+    expect(result.agents).toEqual(snapshot.agents);
+    expect(result.agents).not.toBe(snapshot.agents);
+    expect(result.actors).toEqual({});
+    expect(result.endpoints).toEqual({});
+    expect(result.conversations).toEqual({});
+    expect(result.messages).toEqual({});
+  });
+
   test("conversation scope omits unrelated current agent registrations", () => {
     const snapshot = createRuntimeRegistrySnapshot({
       actors: {

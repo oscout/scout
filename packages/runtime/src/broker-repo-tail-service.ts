@@ -55,6 +55,7 @@ export type BrokerRepoTailServiceOptions<TBrokerSnapshot> = {
       perTranscriptLineLimit?: number;
       kinds?: TailEventKind[];
       perTranscriptKindLimit?: number;
+      since?: number;
     },
   ) => Promise<TailEvent[]>;
   repoWatchServeCacheTtlMs: number;
@@ -81,6 +82,8 @@ export function parsePositiveIntParam(url: URL, key: string, cap: number): numbe
   if (!Number.isFinite(value) || value <= 0) return undefined;
   return Math.min(value, cap);
 }
+
+const MAX_TAIL_RECENT_WINDOW_MS = 24 * 60 * 60 * 1_000;
 
 const TAIL_RECENT_ASSISTANT_REPLIES_MODE = "assistant-replies";
 
@@ -264,7 +267,7 @@ export class BrokerRepoTailService<TBrokerSnapshot> {
   async readTailRecentPayloadWithTiming(url: URL): Promise<TimedTailRecentPayload> {
     const cacheTtlMs = this.options.tailRecentServeCacheTtlMs ?? 0;
     const cacheKey = `${parseTailLimit(url)}:${url.searchParams.get("transcripts") === "true"
-      || url.searchParams.get("transcripts") === "1"}:${isAssistantRepliesMode(url) ? TAIL_RECENT_ASSISTANT_REPLIES_MODE : "all"}`;
+      || url.searchParams.get("transcripts") === "1"}:${isAssistantRepliesMode(url) ? TAIL_RECENT_ASSISTANT_REPLIES_MODE : "all"}:${parsePositiveIntParam(url, "windowMs", MAX_TAIL_RECENT_WINDOW_MS) ?? "all"}`;
     const now = this.now();
     if (cacheTtlMs > 0 && this.tailRecentCache?.key === cacheKey && this.tailRecentCache.expiresAtMs > now) {
       const cached = this.tailRecentCache;
@@ -319,6 +322,8 @@ export class BrokerRepoTailService<TBrokerSnapshot> {
     const kinds: TailEventKind[] | undefined = assistantRepliesOnly ? ["assistant"] : undefined;
     const includeTranscripts = url.searchParams.get("transcripts") === "true"
       || url.searchParams.get("transcripts") === "1";
+    const windowMs = parsePositiveIntParam(url, "windowMs", MAX_TAIL_RECENT_WINDOW_MS);
+    const since = windowMs === undefined ? undefined : this.now() - windowMs;
     const eventsById = new Map<string, TailEvent>();
 
     if (includeTranscripts) {
@@ -330,6 +335,7 @@ export class BrokerRepoTailService<TBrokerSnapshot> {
             discovery,
             perTranscriptLineLimit: Math.min(200, Math.max(50, limit)),
             kinds,
+            ...(since !== undefined ? { since } : {}),
             ...(assistantRepliesOnly ? { perTranscriptKindLimit: 1 } : {}),
           },
         )),
@@ -351,6 +357,7 @@ export class BrokerRepoTailService<TBrokerSnapshot> {
       ? latestAssistantReplies(eventsById.values())
       : [...eventsById.values()];
     const events = candidates
+      .filter((event) => since === undefined || event.ts >= since)
       .sort((left, right) => {
         if (left.ts === right.ts) return left.id.localeCompare(right.id);
         return left.ts - right.ts;

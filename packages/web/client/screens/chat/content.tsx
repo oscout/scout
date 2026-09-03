@@ -11,6 +11,7 @@ export function ChatContent({ route, navigate }: { route: Route; navigate: Navig
     case "conversation":
       return (
         <ConversationScreen
+          key={route.conversationId}
           conversationId={route.conversationId}
           initialDraft={route.composeDraft}
           navigate={navigate}
@@ -22,6 +23,9 @@ export function ChatContent({ route, navigate }: { route: Route; navigate: Navig
       return (
         <MessagesScreen
           conversationId={route.conversationId}
+          agentId={route.agentId}
+          threadId={route.threadId}
+          machineId={route.machineId}
           navigate={navigate}
         />
       );

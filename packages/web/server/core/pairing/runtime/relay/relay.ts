@@ -9,6 +9,7 @@
 // encryption is added, the relay sees only ciphertext.
 
 import type { ServerWebSocket } from "bun";
+import { resolveWebPort } from "@openscout/runtime/local-config";
 
 interface Room {
   bridge: ServerWebSocket<SocketData> | null;
@@ -44,6 +45,12 @@ export interface RelayOptions {
     cert: string;  // path to .crt file
     key: string;   // path to .key file
   };
+  /**
+   * Loopback origin of Scout web's GET /pair. The relay is LAN-reachable; web
+   * is loopback-only. Phone PAIR knocks here, then allow/deny on the Mac.
+   * Set to empty to disable (tests).
+   */
+  pairHttpOrigin?: string | null;
 }
 
 export function startRelay(port: number, options: RelayOptions = {}): { stop: () => void } {
@@ -64,6 +71,12 @@ export function startRelay(port: number, options: RelayOptions = {}): { stop: ()
       : {}),
     fetch(req, server) {
       const url = new URL(req.url);
+
+      // GET /pair is the LAN phone knock (Connect → PAIR). The websocket
+      // upgrade below would otherwise 400 it as a missing room/role.
+      if (url.pathname === "/pair" && req.method === "GET") {
+        return proxyPairHttp(req, url, options.pairHttpOrigin, server.requestIP(req)?.address);
+      }
 
       // -- HTTP resolve endpoint ----------------------------------------------
       // POST /resolve  { "bridgePublicKey": "hex..." }
@@ -240,6 +253,55 @@ export function startRelay(port: number, options: RelayOptions = {}): { stop: ()
       server.stop();
     },
   };
+}
+
+async function proxyPairHttp(
+  req: Request,
+  url: URL,
+  pairHttpOrigin: string | null | undefined,
+  clientIp?: string | null,
+): Promise<Response> {
+  const origin = pairHttpOrigin === undefined
+    ? `http://127.0.0.1:${resolveWebPort()}`
+    : pairHttpOrigin?.trim() || null;
+  if (!origin) {
+    return new Response("Pairing HTTP is not configured", { status: 503 });
+  }
+  const target = new URL("/pair", origin);
+  target.search = url.search;
+  const headers = new Headers();
+  for (const name of ["accept", "user-agent", "x-scout-client", "x-scout-device-name"]) {
+    const value = req.headers.get(name);
+    if (value) headers.set(name, value);
+  }
+  // Loopback web uses this trusted edge marker to distinguish a relayed LAN
+  // knock from a same-Mac browser request. Always overwrite the client value.
+  headers.set("x-scout-pair-relay", "1");
+  // This relay is the network edge for /pair. Forwarding headers supplied by
+  // the LAN client are untrusted: preserving them would let one device mint
+  // distinct approval rows and spoof the address shown to the operator.
+  if (clientIp) {
+    headers.set("x-forwarded-for", clientIp);
+    headers.set("x-real-ip", clientIp);
+  }
+  try {
+    const response = await fetch(target, {
+      method: "GET",
+      headers,
+      redirect: "manual",
+      signal: AbortSignal.timeout(3_000),
+    });
+    const out = new Headers();
+    const location = response.headers.get("location");
+    if (location) out.set("location", location);
+    const cacheControl = response.headers.get("cache-control");
+    if (cacheControl) out.set("cache-control", cacheControl);
+    const contentType = response.headers.get("content-type");
+    if (contentType) out.set("content-type", contentType);
+    return new Response(response.body, { status: response.status, headers: out });
+  } catch {
+    return new Response("Pairing service unreachable", { status: 502 });
+  }
 }
 
 // ---------------------------------------------------------------------------

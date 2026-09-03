@@ -11,6 +11,7 @@ export type RouteAliasTarget =
   | { kind: "agent"; agentId: ScoutId; nodeId: ScoutId }
   | {
       kind: "session";
+      /** Opaque broker handle; the remaining fields are a pinned resolution receipt, not session identity. */
       sessionId: ScoutId;
       agentId: ScoutId;
       endpointId: ScoutId;

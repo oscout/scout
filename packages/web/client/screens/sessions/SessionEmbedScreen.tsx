@@ -16,17 +16,25 @@
  * ObserveEmbedScreen + RepoDiffEmbedScreen.
  */
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import { api } from "../../lib/api.ts";
 import { describeObserveEvidence } from "../../lib/observe-fidelity.ts";
 import { useBrokerEvents } from "../../lib/sse.ts";
+import { useTailEvents } from "../../lib/tail-events.ts";
 import { ConversationScreen } from "../chat/ConversationScreen.tsx";
 import { SessionObserve } from "./SessionObserve.tsx";
 import { SessionObserveEmbedStatus } from "./SessionObserveEvidence.tsx";
 import type { SessionRefLookup } from "./SessionRefScreen.tsx";
+import {
+  brokerEventMayAffectSessionRef,
+  sessionRefRefreshDelayMs,
+  sessionRefsMatch,
+} from "./session-ref-lookup-state.ts";
 
-const EMBED_REFRESH_INTERVAL_MS = 2_500;
+const EMBED_REFRESH_INTERVAL_MS = 60_000;
+const EMBED_EVENT_REFRESH_DEBOUNCE_MS = 1_000;
+const EMBED_EVENT_REFRESH_MIN_INTERVAL_MS = 10_000;
 
 function EmbedShell({ children }: { children: React.ReactNode }) {
   return <div className="s-observe-embed-page">{children}</div>;
@@ -87,6 +95,8 @@ export function SessionEmbedScreen() {
   const [lookup, setLookup] = useState<SessionRefLookup | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const refreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastRefreshAtRef = useRef<number | null>(null);
 
   const load = useCallback(
     async (background = false) => {
@@ -94,6 +104,7 @@ export function SessionEmbedScreen() {
         setLoading(false);
         return;
       }
+      lastRefreshAtRef.current = Date.now();
       if (!background) setLoading(true);
       setError(null);
       try {
@@ -112,15 +123,56 @@ export function SessionEmbedScreen() {
   );
 
   useEffect(() => {
+    lastRefreshAtRef.current = null;
     void load();
     const interval = window.setInterval(() => {
       void load(true);
     }, EMBED_REFRESH_INTERVAL_MS);
-    return () => window.clearInterval(interval);
+    return () => {
+      window.clearInterval(interval);
+      if (refreshTimerRef.current) {
+        clearTimeout(refreshTimerRef.current);
+        refreshTimerRef.current = null;
+      }
+    };
   }, [load]);
 
-  useBrokerEvents(() => {
-    void load(true);
+  const scheduleRefresh = useCallback(() => {
+    if (refreshTimerRef.current) return;
+    const delayMs = sessionRefRefreshDelayMs({
+      nowMs: Date.now(),
+      lastRefreshAtMs: lastRefreshAtRef.current,
+      debounceMs: EMBED_EVENT_REFRESH_DEBOUNCE_MS,
+      minimumIntervalMs: EMBED_EVENT_REFRESH_MIN_INTERVAL_MS,
+    });
+    refreshTimerRef.current = setTimeout(() => {
+      refreshTimerRef.current = null;
+      void load(true);
+    }, delayMs);
+  }, [load]);
+
+  useBrokerEvents((event) => {
+    const refs = [
+      ref,
+      lookup?.refId,
+      lookup?.kind === "conversation" ? lookup.conversationId : null,
+      lookup?.session?.agentId,
+      lookup?.kind === "observe" ? lookup.observe.agentId : null,
+      lookup?.kind === "observe" ? lookup.observe.sessionId : null,
+    ];
+    if (brokerEventMayAffectSessionRef(event, refs)) scheduleRefresh();
+  });
+
+  useTailEvents((event) => {
+    const refs = [
+      ref,
+      lookup?.refId,
+      lookup?.kind === "observe" ? lookup.observe.sessionId : null,
+      lookup?.kind === "observe" ? lookup.observe.data.metadata?.session?.externalSessionId : null,
+    ];
+    if (refs.some((candidate) => sessionRefsMatch(event.sessionId, candidate))) {
+      scheduleRefresh();
+    }
   });
 
   if (!ref) {

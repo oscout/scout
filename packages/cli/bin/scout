@@ -6,19 +6,35 @@
 #
 # Latency: this is on the statusline hot path (invoked per prompt). `command -v`
 # is a shell builtin (no fork). We only fork `readlink` when the CLI is reached
-# through a bin symlink and the fast sibling lookup misses.
+# through a bin symlink and the fast sibling lookup misses. Global installs can
+# be two or more hops (for example ~/.local/bin/scout -> ~/.bun/bin/scout ->
+# the package bin/scout), so follow a bounded POSIX chain. Keep relative
+# targets relative to the current hop; do not canonicalize with pwd.
 self="$0"
 dir="${self%/*}"
-if [ ! -f "$dir/scout.mjs" ]; then
-  link=$(readlink "$self" 2>/dev/null) || link=""
-  if [ -n "$link" ]; then
-    case "$link" in
-      /*) self="$link" ;;
-      *) self="$dir/$link" ;;
-    esac
-    dir="${self%/*}"
-  fi
+if [ "$dir" = "$self" ]; then
+  dir="."
 fi
+
+hops=0
+while [ ! -f "$dir/scout.mjs" ]; do
+  hops=$((hops + 1))
+  if [ "$hops" -gt 32 ]; then
+    break
+  fi
+  link=$(readlink "$self" 2>/dev/null) || break
+  if [ -z "$link" ]; then
+    break
+  fi
+  case "$link" in
+    /*) self="$link" ;;
+    *) self="$dir/$link" ;;
+  esac
+  dir="${self%/*}"
+  if [ "$dir" = "$self" ]; then
+    dir="."
+  fi
+done
 
 if command -v bun >/dev/null 2>&1; then
   exec bun "$dir/scout.mjs" "$@"

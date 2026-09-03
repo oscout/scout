@@ -43,7 +43,11 @@ export function queryRecentMessages(
     transientBrokerWorkingStatusPredicate("m"),
     conversationIds.length > 0
       ? `m.conversation_id IN (${sqlPlaceholders(conversationIds.length)})`
-      : "m.conversation_id LIKE 'c.%' AND length(m.conversation_id) > 2",
+      : `(
+          (m.conversation_id LIKE 'chn-%' AND length(m.conversation_id) > 4)
+          OR (substr(m.conversation_id, 1, 5) = 'chat_' AND length(m.conversation_id) > 5)
+          OR (m.conversation_id LIKE 'c.%' AND length(m.conversation_id) > 2)
+        )`,
     beforeMessage
       ? `(
           ${messageCreatedAtExpression} < ?

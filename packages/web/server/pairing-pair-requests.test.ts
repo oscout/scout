@@ -16,9 +16,12 @@ import { dirname, join } from "node:path";
 import {
   createPendingPairRequestStore,
   latestPairRequestGeneration,
+  PairRequestCapacityError,
   type PairRequest,
   pairRequestGenerationPath,
   pairRequestStatePath,
+  pairRequesterDisplay,
+  parseScoutPairClient,
 } from "./pairing-pair-requests.ts";
 
 // Every store below writes real files. The store refuses to write shared
@@ -104,12 +107,31 @@ function fixedClock(start = 1_000_000) {
 }
 
 describe("pending pair request store", () => {
+  test("parseScoutPairClient prefers the explicit client header", () => {
+    expect(parseScoutPairClient("scout-ios", "Mozilla/5.0")).toBe("scout-ios");
+    expect(parseScoutPairClient("SCOUT-IOS")).toBe("scout-ios");
+    expect(parseScoutPairClient("not a client")).toBeNull();
+    expect(parseScoutPairClient(null, "Scout/1.2 (iPhone; iOS 18)")).toBe("scout-ios");
+  });
+
+  test("pairRequesterDisplay names the app for the allow/deny prompt", () => {
+    expect(pairRequesterDisplay({ requesterLabel: "Art’s iPhone", requesterApp: "scout-ios" }))
+      .toBe("Art’s iPhone · Scout iOS");
+    expect(pairRequesterDisplay({ requesterApp: "scout-ios" })).toBe("Scout iOS");
+    expect(pairRequesterDisplay({})).toBe("A device");
+  });
+
   test("create registers a pending request with a token", () => {
     const store = createPendingPairRequestStore();
-    const req = store.create({ requesterIp: "192.168.1.5", requesterLabel: "iPhone" });
+    const req = store.create({
+      requesterIp: "192.168.1.5",
+      requesterLabel: "iPhone",
+      requesterApp: "scout-ios",
+    });
     expect(req.status).toBe("pending");
     expect(req.token).toBeTruthy();
     expect(req.requesterLabel).toBe("iPhone");
+    expect(req.requesterApp).toBe("scout-ios");
     expect(store.get(req.token)?.token).toBe(req.token);
     store.dispose();
   });
@@ -142,6 +164,17 @@ describe("pending pair request store", () => {
     const b = store.create({ requesterIp: "10.0.0.3" });
     expect(store.decide(b.token, "deny")?.status).toBe("denied");
     expect(store.decide("nope", "approve")).toBeNull();
+    store.dispose();
+  });
+
+  test("a denied source reuses its live denial instead of minting notification spam", () => {
+    const store = createPendingPairRequestStore();
+    const request = store.create({ requesterIp: "10.0.0.31" });
+    store.decide(request.token, "deny");
+    const retry = store.create({ requesterIp: "10.0.0.31", requesterLabel: "changed" });
+    expect(retry.token).toBe(request.token);
+    expect(retry.status).toBe("denied");
+    expect(store.list()).toHaveLength(1);
     store.dispose();
   });
 
@@ -185,6 +218,63 @@ describe("pending pair request store", () => {
     expect(store.get(a.token)).toBeNull();
     store.dispose();
   });
+
+  test("fulfill can atomically require operator approval", () => {
+    const store = createPendingPairRequestStore();
+    const pending = store.create({ requesterIp: "10.0.0.8" });
+    expect(store.fulfill(pending.token, "approved")).toBeNull();
+    expect(store.get(pending.token)?.status).toBe("pending");
+    store.decide(pending.token, "deny");
+    expect(store.fulfill(pending.token, "approved")).toBeNull();
+    expect(store.get(pending.token)?.status).toBe("denied");
+
+    const approved = store.create({ requesterIp: "10.0.0.9" });
+    store.decide(approved.token, "approve");
+    expect(store.fulfill(approved.token, "approved")?.token).toBe(approved.token);
+    expect(store.get(approved.token)).toBeNull();
+    store.dispose();
+  });
+
+  test("bounds live rows while still reusing a source at capacity", () => {
+    const clock = fixedClock();
+    const store = createPendingPairRequestStore({
+      ttlMs: 1_000,
+      now: clock.now,
+      maxLiveRequests: 2,
+    });
+    const first = store.create({ requesterIp: "10.0.0.10" });
+    store.create({ requesterIp: "10.0.0.11" });
+    expect(store.create({ requesterIp: "10.0.0.10" }).token).toBe(first.token);
+    expect(() => store.create({ requesterIp: "10.0.0.12" }))
+      .toThrow(PairRequestCapacityError);
+    try {
+      store.create({ requesterIp: "10.0.0.12" });
+    } catch (error) {
+      expect(error).toBeInstanceOf(PairRequestCapacityError);
+      expect((error as PairRequestCapacityError).retryAfterMs).toBe(1_000);
+    }
+    expect(store.list()).toHaveLength(2);
+
+    clock.advance(1_001);
+    expect(store.create({ requesterIp: "10.0.0.12" }).requesterIp).toBe("10.0.0.12");
+    expect(store.list()).toHaveLength(1);
+    store.dispose();
+  });
+
+  test("bounds attacker-controlled pairing metadata", () => {
+    const store = createPendingPairRequestStore();
+    const request = store.create({
+      requesterIp: "1".repeat(200),
+      requesterLabel: "l".repeat(200),
+      requesterApp: "a".repeat(200),
+      route: "r".repeat(200),
+    });
+    expect(request.requesterIp).toHaveLength(64);
+    expect(request.requesterLabel).toHaveLength(96);
+    expect(request.requesterApp).toHaveLength(32);
+    expect(request.route).toHaveLength(16);
+    store.dispose();
+  });
 });
 
 // The bug these cover: two OpenScout instances on one Mac share the pairing
@@ -195,6 +285,24 @@ describe("pending pair request store", () => {
 // see. Each test below drives TWO stores over ONE state file, which is exactly
 // two instances over one `~/.openscout`.
 describe("pending pair request store shared across instances", () => {
+  test("enforces the live-row cap through the shared CAS state", () => {
+    const statePath = pairRequestStatePath(tempConfigHome());
+    const first = createPendingPairRequestStore({ statePath, maxLiveRequests: 1 });
+    const second = createPendingPairRequestStore({ statePath, maxLiveRequests: 1 });
+    const request = first.create({ requesterIp: "192.168.1.30" });
+    const generation = latestPairRequestGeneration(statePath);
+
+    expect(() => second.create({ requesterIp: "192.168.1.31" }))
+      .toThrow(PairRequestCapacityError);
+    expect(latestPairRequestGeneration(statePath)).toBe(generation);
+    expect(second.list()).toHaveLength(1);
+
+    expect(first.fulfill(request.token)?.token).toBe(request.token);
+    expect(second.create({ requesterIp: "192.168.1.31" }).requesterIp).toBe("192.168.1.31");
+    first.dispose();
+    second.dispose();
+  });
+
   test("a request created on one instance is approved on another and seen by the first", () => {
     const statePath = pairRequestStatePath(tempConfigHome());
     const phoneFacing = createPendingPairRequestStore({ statePath });
@@ -403,15 +511,23 @@ describe("pending pair request store shared across instances", () => {
 // lose roughly half the decisions; the bar here is zero.
 describe("pending pair request store under multi-process contention", () => {
   const RACE_ROUNDS = 2_000;
+  const DOUBLE_FULFIL_ROUNDS = 100;
   const RACE_TIMEOUT_MS = 120_000;
 
   interface RaceResult {
-    decider: { lost: number; resurrected: number; delivered: number; rounds: number };
-    poller: { touched: number; extended: number; lost: number };
+    decider: {
+      lost: number;
+      resurrected: number;
+      delivered: number;
+      exclusiveDeliveryViolations: number;
+      rounds: number;
+    };
+    poller: { touched: number; extended: number; lost: number; delivered: number };
   }
 
   async function race(
-    scenario: "approve" | "deny" | "expire" | "sweep" | "fulfil",
+    scenario: "approve" | "deny" | "expire" | "sweep" | "fulfil" | "double-fulfil",
+    rounds = RACE_ROUNDS,
   ): Promise<RaceResult> {
     const home = tempConfigHome();
     const statePath = pairRequestStatePath(home);
@@ -426,7 +542,7 @@ describe("pending pair request store under multi-process contention", () => {
           worker,
           `--role=${role}`,
           `--scenario=${scenario}`,
-          `--rounds=${RACE_ROUNDS}`,
+          `--rounds=${rounds}`,
           `--state=${statePath}`,
           `--signals=${signals}`,
         ],
@@ -527,6 +643,18 @@ describe("pending pair request store under multi-process contention", () => {
     },
     RACE_TIMEOUT_MS,
   );
+
+  test(
+    "two simultaneous approved fulfils produce exactly one delivery",
+    async () => {
+      const result = await race("double-fulfil", DOUBLE_FULFIL_ROUNDS);
+      expect(result.decider.rounds).toBe(DOUBLE_FULFIL_ROUNDS);
+      expect(result.decider.exclusiveDeliveryViolations).toBe(0);
+      expect(result.decider.delivered + result.poller.delivered).toBe(DOUBLE_FULFIL_ROUNDS);
+      expect(result.decider.resurrected).toBe(0);
+    },
+    RACE_TIMEOUT_MS,
+  );
 });
 
 // Publishing is a compare-and-swap: a temp file hard-linked to the name of the
@@ -534,6 +662,26 @@ describe("pending pair request store under multi-process contention", () => {
 // These cover the layer itself — that it advances, collects after itself, and
 // picks up state the single-file store left behind.
 describe("pending pair request store generations", () => {
+  test("polls renew only inside the bounded renewal window", () => {
+    const statePath = pairRequestStatePath(tempConfigHome());
+    const clock = fixedClock();
+    const store = createPendingPairRequestStore({ statePath, ttlMs: 1_000, now: clock.now });
+    const request = store.create({ requesterIp: "192.168.1.53" });
+    expect(latestPairRequestGeneration(statePath)).toBe(1);
+
+    clock.advance(100);
+    store.touch(request.token);
+    store.create({ requesterIp: "192.168.1.53", requesterLabel: "ignored until renewal" });
+    expect(latestPairRequestGeneration(statePath)).toBe(1);
+
+    clock.advance(401);
+    store.touch(request.token);
+    expect(latestPairRequestGeneration(statePath)).toBe(2);
+    store.touch(request.token);
+    expect(latestPairRequestGeneration(statePath)).toBe(2);
+    store.dispose();
+  });
+
   test("every mutation publishes a new generation", () => {
     const statePath = pairRequestStatePath(tempConfigHome());
     const store = createPendingPairRequestStore({ statePath });
@@ -679,7 +827,12 @@ describe("pending pair request store with a suspended instance", () => {
     const home = tempConfigHome();
     const statePath = pairRequestStatePath(home);
     const pausedSignal = join(home, "paused.json");
-    const peerStore = createPendingPairRequestStore({ statePath, ttlMs: 60_000 });
+    const peerStore = createPendingPairRequestStore({
+      statePath,
+      ttlMs: 60_000,
+      maxLiveRequests: 256,
+      renewalWindowMs: 60_000,
+    });
     const token = peerStore.create({ requesterIp: "192.168.1.70", requesterLabel: "iPhone" }).token;
 
     const child = Bun.spawn({
@@ -1056,14 +1209,24 @@ describe("pending pair request store with an unwritable home", () => {
     const clock = fixedClock();
     const ttlMs = 1_000;
 
-    const writable = createPendingPairRequestStore({ statePath, ttlMs, now: clock.now });
+    const writable = createPendingPairRequestStore({
+      statePath,
+      ttlMs,
+      renewalWindowMs: ttlMs,
+      now: clock.now,
+    });
     const req = writable.create({ requesterIp: "192.168.1.70" });
     expect(latestPairRequestGeneration(statePath)).toBe(1);
 
     // The phone is polling THIS instance, which read the row out of the shared
     // file — so the row has been seen there, and its later absence is something
     // that has to be explained rather than assumed.
-    const degraded = createPendingPairRequestStore({ statePath, ttlMs, now: clock.now });
+    const degraded = createPendingPairRequestStore({
+      statePath,
+      ttlMs,
+      renewalWindowMs: ttlMs,
+      now: clock.now,
+    });
     expect(degraded.get(req.token)?.token).toBe(req.token);
 
     // A read-only window in which the device keeps polling. The extension is
@@ -1137,10 +1300,10 @@ describe("pending pair request store with an unwritable home", () => {
     writable.dispose();
   });
 
-  // The terminal marker is a write like any other, so it has to survive a home
-  // that will not take it — otherwise the instance that delivered the payload
-  // is the one instance that forgets it did.
-  test.skipIf(runsAsRoot)("keeps a fulfil it could not publish buried", () => {
+  // A process-local marker cannot make a shared consume exclusive. If the CAS
+  // cannot be published, no payload is reported delivered and the row remains
+  // available for a safe retry once the home is writable again.
+  test.skipIf(runsAsRoot)("refuses a fulfil it cannot publish without burying the row", () => {
     const home = tempConfigHome();
     const statePath = pairRequestStatePath(home);
     const runDirectory = dirname(statePath);
@@ -1148,17 +1311,27 @@ describe("pending pair request store with an unwritable home", () => {
     const clock = fixedClock();
     const ttlMs = 10_000;
 
-    const writable = createPendingPairRequestStore({ statePath, ttlMs, now: clock.now });
+    const writable = createPendingPairRequestStore({
+      statePath,
+      ttlMs,
+      renewalWindowMs: ttlMs,
+      now: clock.now,
+    });
     const req = writable.create({ requesterIp: "192.168.1.85" });
 
-    const degraded = createPendingPairRequestStore({ statePath, ttlMs, now: clock.now });
+    const degraded = createPendingPairRequestStore({
+      statePath,
+      ttlMs,
+      renewalWindowMs: ttlMs,
+      now: clock.now,
+    });
     expect(degraded.get(req.token)?.token).toBe(req.token);
 
-    // Pair mode is up on THIS instance, so it is the one that hands the payload
-    // over — and its home has gone read-only, so nobody else can see that yet.
+    // Pair mode is up on THIS instance, but its home has gone read-only. It
+    // cannot prove an exclusive consume, so it must not hand the payload over.
     chmodSync(runDirectory, 0o500);
-    degraded.fulfill(req.token);
-    expect(degraded.get(req.token)).toBeNull();
+    expect(degraded.fulfill(req.token)).toBeNull();
+    expect(degraded.get(req.token)?.token).toBe(req.token);
     expect(latestPairRequestGeneration(statePath)).toBe(1);
 
     // The device polls the other instance, which knows nothing about the
@@ -1169,11 +1342,11 @@ describe("pending pair request store with an unwritable home", () => {
     expect(latestPairRequestGeneration(statePath)).toBe(2);
     expect(freshRead(statePath, req.token, clock.now)?.token).toBe(req.token);
 
-    // The stacked terminal outcome outlives that and lands when it can.
+    // Once writes recover, a fresh consume wins the shared CAS and only then
+    // reports the payload delivered.
     clock.advance(1_000);
-    expect(degraded.list()).toEqual([]);
-    expect(degraded.get(req.token)).toBeNull();
-    degraded.touch(req.token);
+    expect(degraded.list().map((request) => request.token)).toContain(req.token);
+    expect(degraded.fulfill(req.token)?.token).toBe(req.token);
     expect(latestPairRequestGeneration(statePath)).toBe(3);
     expect(freshRead(statePath, req.token, clock.now)).toBeNull();
 
@@ -1281,13 +1454,10 @@ describe("pending pair request store with an unwritable home", () => {
     writable.dispose();
   });
 
-  // A marker exists to outlive every copy of the row it buries, and the horizon
-  // it is minted with is only a bound on the copies it can see. An instance
-  // that delivered a payload while its home was unwritable holds the only
-  // record of it, so the peers still holding the row keep extending it — and
-  // they can push it past that horizon. Collecting the marker there hands the
-  // next reload a live row and no reason to disbelieve it.
-  test.skipIf(runsAsRoot)("keeps an unpublished marker while peers keep extending the row", () => {
+  // Failed publication must roll its tentative marker back too. A peer remains
+  // free to extend the undelivered row, and the eventual retry mints the only
+  // terminal claim that reaches shared state.
+  test.skipIf(runsAsRoot)("rolls back an unpublished fulfil claim before retry", () => {
     const home = tempConfigHome();
     const statePath = pairRequestStatePath(home);
     const runDirectory = dirname(statePath);
@@ -1301,33 +1471,24 @@ describe("pending pair request store with an unwritable home", () => {
     const degraded = createPendingPairRequestStore({ statePath, ttlMs, now: clock.now });
     expect(degraded.get(req.token)?.token).toBe(req.token);
 
-    // Pair mode is up on THIS instance, so it is the one that hands the payload
-    // over — and its home has just gone read-only, so the marker saying so
-    // exists nowhere but in this process.
+    // The home goes read-only before the consume claim can be published.
     chmodSync(runDirectory, 0o500);
-    degraded.fulfill(req.token);
-    expect(degraded.get(req.token)).toBeNull();
+    expect(degraded.fulfill(req.token)).toBeNull();
+    expect(degraded.get(req.token)?.token).toBe(req.token);
     expect(latestPairRequestGeneration(statePath)).toBe(1);
-    const mintedHorizon = req.expiresAt + ttlMs;
 
-    // The peer knows nothing of the delivery, and the device is still polling
-    // it, so the row is extended again and again — every extension legal, and
-    // every one of them pushing the row's life past the horizon the marker was
-    // minted with.
+    // No delivery happened, so the peer may legally keep extending the row.
     chmodSync(runDirectory, 0o700);
     for (let poll = 0; poll < 4; poll += 1) {
       clock.advance(900);
       writable.touch(req.token);
-      // The instance that delivered the payload must go on saying so at every
-      // point in that sequence, not just up to the horizon.
-      expect(degraded.get(req.token)).toBeNull();
+      expect(degraded.get(req.token)?.token).toBe(req.token);
     }
-    expect(clock.now()).toBeGreaterThan(mintedHorizon);
     expect(freshRead(statePath, req.token, clock.now)?.token).toBe(req.token);
+    expect(markerTokens(statePath)).not.toContain(req.token);
 
-    // Then the marker lands on the next write this instance makes, and the
-    // spent row dies everywhere — including for a store that has never held it.
-    degraded.touch(req.token);
+    // A later consume can now prove it won and publishes the terminal claim.
+    expect(degraded.fulfill(req.token)?.token).toBe(req.token);
     expect(markerTokens(statePath)).toContain(req.token);
     expect(freshRead(statePath, req.token, clock.now)).toBeNull();
     expect(writable.get(req.token)).toBeNull();
@@ -1352,7 +1513,11 @@ describe("pending pair request store with an unwritable home", () => {
       const req = writable.create({ requesterIp: "192.168.1.74" });
       expect(latestPairRequestGeneration(statePath)).toBe(1);
 
-      const degraded = createPendingPairRequestStore({ statePath, now: clock.now });
+      const degraded = createPendingPairRequestStore({
+        statePath,
+        renewalWindowMs: 120_000,
+        now: clock.now,
+      });
       expect(degraded.get(req.token)?.token).toBe(req.token);
       writable.dispose();
 
@@ -1396,7 +1561,11 @@ describe("pending pair request store with an unwritable home", () => {
       writable.create({ requesterIp: "192.168.1.78" });
       expect(latestPairRequestGeneration(statePath)).toBe(3);
 
-      const degraded = createPendingPairRequestStore({ statePath, now: clock.now });
+      const degraded = createPendingPairRequestStore({
+        statePath,
+        renewalWindowMs: 120_000,
+        now: clock.now,
+      });
       expect(degraded.get(req.token)?.token).toBe(req.token);
       writable.dispose();
 

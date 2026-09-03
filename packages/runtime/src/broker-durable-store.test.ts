@@ -94,10 +94,11 @@ describe("BrokerDurableStore", () => {
     expect(order).toEqual(["first:start", "first:end", "second"]);
   });
 
-  test("commits journal entries before applying runtime and projection effects", async () => {
+  test("acknowledges journal and runtime before background projection effects", async () => {
     const entry = nodeEntry("node-1");
     const publishedEvent = threadEvent("thread-event-1");
     const order: string[] = [];
+    const projectionGate = Promise.withResolvers<void>();
     const store = new BrokerDurableStore({
       journal: {
         async appendEntries(entries) {
@@ -108,6 +109,7 @@ describe("BrokerDurableStore", () => {
       projection: {
         async applyEntries(entries) {
           order.push(`projection:${entries[0]?.kind}`);
+          await projectionGate.promise;
           return [publishedEvent];
         },
       },
@@ -123,6 +125,14 @@ describe("BrokerDurableStore", () => {
     });
 
     expect(committed).toEqual([entry]);
+    expect(order).toEqual([
+      "journal:node.upsert",
+      "runtime:node.upsert",
+      "projection:node.upsert",
+    ]);
+
+    projectionGate.resolve();
+    await store.flushProjectedEntries();
     expect(order).toEqual([
       "journal:node.upsert",
       "runtime:node.upsert",
@@ -159,5 +169,44 @@ describe("BrokerDurableStore", () => {
     }, { enqueueProjection: false });
 
     expect(order).toEqual(["journal", "runtime"]);
+  });
+
+  test("abandons a never-resolving derived projection without blocking shutdown", async () => {
+    const entry = nodeEntry("node-1");
+    let projectionCalls = 0;
+    let published = false;
+    const store = new BrokerDurableStore({
+      journal: {
+        async appendEntries(entries) {
+          return entries;
+        },
+      },
+      projection: {
+        async applyEntries() {
+          projectionCalls++;
+          return await new Promise<ThreadEventEnvelope[]>(() => {});
+        },
+      },
+      threadEvents: {
+        publish() {
+          published = true;
+        },
+      },
+    });
+
+    await store.applyProjectedEntries(entry);
+    await Bun.sleep(0);
+    expect(projectionCalls).toBe(1);
+
+    store.abandonProjectedEntries();
+    await expect(Promise.race([
+      store.flushProjectedEntries().then(() => "flushed"),
+      Bun.sleep(50).then(() => "timed-out"),
+    ])).resolves.toBe("flushed");
+
+    await store.applyProjectedEntries(nodeEntry("node-2"));
+    await Bun.sleep(0);
+    expect(projectionCalls).toBe(1);
+    expect(published).toBe(false);
   });
 });

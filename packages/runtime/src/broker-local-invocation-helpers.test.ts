@@ -33,6 +33,7 @@ import {
   staleWorkingFlightReason,
   shouldNotifyInvocationRequester,
 } from "./broker-local-invocation-helpers.js";
+import { runtimeSessionHandleForEndpoint } from "./runtime-session-handle.js";
 
 function testAgent(input: Partial<AgentDefinition> = {}): AgentDefinition {
   return {
@@ -253,7 +254,10 @@ describe("broker local invocation helpers", () => {
       },
     });
 
+    const handle = runtimeSessionHandleForEndpoint(endpoint);
+    expect(handle).toMatch(/^sess\.[a-f0-9]{20}$/);
     expect(endpointSessionAliasValues(endpoint)).toEqual([
+      handle,
       "endpoint-codex",
       "session-direct",
       "external-1",

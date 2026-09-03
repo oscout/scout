@@ -18,6 +18,7 @@ import {
   localEndpointPreferenceRank,
 } from "./broker-endpoint-selection.js";
 import { createRuntimeRegistrySnapshot } from "./registry.js";
+import { runtimeSessionHandleForEndpoint } from "./runtime-session-handle.js";
 
 function agent(input: Partial<AgentDefinition> = {}): AgentDefinition {
   return {
@@ -86,7 +87,10 @@ describe("broker endpoint selection", () => {
       },
     });
 
+    const handle = runtimeSessionHandleForEndpoint(target);
+    expect(handle).toMatch(/^sess\.[a-f0-9]{20}$/);
     expect(endpointSessionAliasValues(target)).toEqual([
+      handle,
       "endpoint-codex",
       "session-direct",
       "external-1",
@@ -97,8 +101,26 @@ describe("broker endpoint selection", () => {
       "pairing-1",
     ]);
     expect(endpointMatchesTargetSession(target, "thread-1")).toBe(true);
+    expect(endpointMatchesTargetSession(target, handle!)).toBe(true);
     expect(endpointMatchesTargetSession(target, " missing ")).toBe(false);
     expect(endpointMatchesTargetSession(target, "   ")).toBe(false);
+  });
+
+  test("gives projections of one native context the same opaque handle", () => {
+    const first = endpoint({
+      id: "endpoint-first",
+      agentId: "legacy-session-agent-first",
+      transport: "codex_app_server",
+      metadata: { nativeSessionId: "native-context-1" },
+    });
+    const second = endpoint({
+      id: "endpoint-second",
+      agentId: "legacy-session-agent-second",
+      transport: "tmux",
+      metadata: { nativeSessionId: "native-context-1" },
+    });
+
+    expect(runtimeSessionHandleForEndpoint(first)).toBe(runtimeSessionHandleForEndpoint(second));
   });
 
   test("selects home and latest endpoints while excluding stale registrations", () => {

@@ -34,6 +34,10 @@ export type MobileSessionSummary = {
   agentId: string | null;
   agentName: string | null;
   harness: string | null;
+  model: string | null;
+  reasoningEffort: string | null;
+  transport: string | null;
+  sessionId: string | null;
   harnessSessionId: string | null;
   harnessLogPath: string | null;
   currentBranch: string | null;

@@ -469,6 +469,20 @@
     "owner": "web"
   },
   {
+    "path": "packages/web/server/core/repo-identity.test.ts",
+    "symbol": "execFileSync",
+    "category": "test",
+    "reason": "git fixture setup",
+    "owner": "tests"
+  },
+  {
+    "path": "packages/web/server/core/repo-identity.test.ts",
+    "symbol": "node:child_process",
+    "category": "test",
+    "reason": "test subprocess fixture or git fixture setup",
+    "owner": "tests"
+  },
+  {
     "path": "packages/web/server/create-openscout-web-server.test.ts",
     "symbol": "execFileSync",
     "category": "test",

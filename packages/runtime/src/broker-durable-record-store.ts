@@ -14,6 +14,7 @@ import {
   type MessageRecord,
   type NodeDefinition,
 } from "@openscout/protocol";
+import { isDeepStrictEqual } from "node:util";
 
 import type { BrokerJournalEntry } from "./broker-journal.js";
 import type { BrokerInvocationDispatchJob } from "./broker-dispatch-job.js";
@@ -33,6 +34,8 @@ type DurableStore = {
 
 type RuntimeRecordStore = {
   peek(): {
+    actors: Record<string, ActorIdentity>;
+    agents: Record<string, AgentDefinition>;
     endpoints: Record<string, AgentEndpoint>;
   };
   upsertNode(node: NodeDefinition): Promise<void>;
@@ -115,6 +118,25 @@ export function isEndpointLastSeenHeartbeat(
     === JSON.stringify(comparableEndpointWithoutHeartbeatMetadata(next));
 }
 
+function actorIdentityForAgent(agent: AgentDefinition): ActorIdentity {
+  return {
+    id: agent.id,
+    kind: agent.kind,
+    displayName: agent.displayName,
+    handle: agent.handle,
+    labels: agent.labels,
+    metadata: agent.metadata,
+  };
+}
+
+function isCurrentAgentRecord(
+  snapshot: ReturnType<RuntimeRecordStore["peek"]>,
+  agent: AgentDefinition,
+): boolean {
+  return isDeepStrictEqual(snapshot.agents[agent.id], agent)
+    && isDeepStrictEqual(snapshot.actors[agent.id], actorIdentityForAgent(agent));
+}
+
 export class BrokerDurableRecordStore {
   constructor(private readonly options: BrokerDurableRecordStoreOptions) {}
 
@@ -149,7 +171,15 @@ export class BrokerDurableRecordStore {
   };
 
   readonly upsertAgent = async (agent: AgentDefinition): Promise<void> => {
+    if (isCurrentAgentRecord(this.options.runtime.peek(), agent)) {
+      return;
+    }
+
     await this.options.durableStore.runWrite(async () => {
+      if (isCurrentAgentRecord(this.options.runtime.peek(), agent)) {
+        return;
+      }
+
       await this.options.durableStore.commitEntries(
         [
           { kind: "actor.upsert", actor: agent },
@@ -169,12 +199,24 @@ export class BrokerDurableRecordStore {
 
   readonly upsertEndpoint = async (endpoint: AgentEndpoint): Promise<void> => {
     const previous = this.options.runtime.peek().endpoints[endpoint.id];
+    if (isDeepStrictEqual(previous, endpoint)) {
+      return;
+    }
     if (isEndpointLastSeenHeartbeat(previous, endpoint)) {
       this.options.runtime.refreshEndpointSilently(endpoint);
       return;
     }
 
     await this.options.durableStore.runWrite(async () => {
+      const current = this.options.runtime.peek().endpoints[endpoint.id];
+      if (isDeepStrictEqual(current, endpoint)) {
+        return;
+      }
+      if (isEndpointLastSeenHeartbeat(current, endpoint)) {
+        this.options.runtime.refreshEndpointSilently(endpoint);
+        return;
+      }
+
       await this.options.durableStore.commitEntries(
         { kind: "agent.endpoint.upsert", endpoint },
         async () => {

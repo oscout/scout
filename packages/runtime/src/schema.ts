@@ -42,6 +42,8 @@ CREATE INDEX IF NOT EXISTS idx_runtime_sessions_agent_last_seen
   ON runtime_sessions (agent_id, last_seen_at DESC);
 CREATE INDEX IF NOT EXISTS idx_runtime_sessions_endpoint_last_seen
   ON runtime_sessions (endpoint_id, last_seen_at DESC);
+CREATE INDEX IF NOT EXISTS idx_runtime_sessions_node_id
+  ON runtime_sessions (node_id);
 CREATE INDEX IF NOT EXISTS idx_runtime_sessions_external
   ON runtime_sessions (external_session_id);
 CREATE INDEX IF NOT EXISTS idx_runtime_sessions_expires
@@ -51,6 +53,10 @@ CREATE INDEX IF NOT EXISTS idx_runtime_session_aliases_alias
   ON runtime_session_aliases (alias, last_seen_at DESC);
 CREATE INDEX IF NOT EXISTS idx_runtime_session_aliases_session
   ON runtime_session_aliases (session_id);
+CREATE INDEX IF NOT EXISTS idx_runtime_session_aliases_endpoint
+  ON runtime_session_aliases (endpoint_id);
+CREATE INDEX IF NOT EXISTS idx_runtime_session_aliases_node_id
+  ON runtime_session_aliases (node_id);
 CREATE INDEX IF NOT EXISTS idx_runtime_session_aliases_expires
   ON runtime_session_aliases (expires_at)
   WHERE expires_at IS NOT NULL;
@@ -332,6 +338,93 @@ CREATE TABLE IF NOT EXISTS conversation_read_cursors (
   updated_at INTEGER NOT NULL,
   metadata_json TEXT,
   PRIMARY KEY (conversation_id, actor_id)
+);
+
+CREATE TABLE IF NOT EXISTS broker_journal_projection_checkpoints (
+  projection_id TEXT PRIMARY KEY,
+  projection_version INTEGER NOT NULL,
+  barrier_id TEXT NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS conversation_projection_meta (
+  singleton INTEGER PRIMARY KEY,
+  projection_id TEXT NOT NULL,
+  projection_version INTEGER NOT NULL,
+  head_seq INTEGER NOT NULL,
+  min_replayable_seq INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  CONSTRAINT conversation_projection_meta_singleton_check CHECK (singleton = 1)
+);
+
+CREATE TABLE IF NOT EXISTS conversation_projection_items (
+  feed_id TEXT PRIMARY KEY,
+  entity_kind TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  conversation_id TEXT,
+  runtime_session_id TEXT,
+  source TEXT,
+  source_session_id TEXT,
+  title TEXT,
+  alias TEXT,
+  natural_key TEXT,
+  project_root TEXT,
+  harness TEXT,
+  model TEXT,
+  effort TEXT,
+  agent_id TEXT,
+  agent_name TEXT,
+  current_branch TEXT,
+  authority_node_id TEXT,
+  authority_node_name TEXT,
+  parent_conversation_id TEXT,
+  anchor_message_id TEXT,
+  activity_state TEXT NOT NULL,
+  last_message_id TEXT,
+  last_message_at INTEGER,
+  last_activity_at INTEGER NOT NULL,
+  message_count INTEGER NOT NULL DEFAULT 0,
+  unread_count INTEGER NOT NULL DEFAULT 0,
+  participant_count INTEGER NOT NULL DEFAULT 0,
+  preview TEXT,
+  last_engaged_at INTEGER,
+  source_fresh_at INTEGER,
+  visibility_state TEXT NOT NULL DEFAULT 'visible',
+  updated_seq INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  CONSTRAINT conversation_projection_items_entity_kind_check
+    CHECK (entity_kind IN ('scout_conversation', 'observed_session')),
+  CONSTRAINT conversation_projection_items_visibility_check
+    CHECK (visibility_state IN ('visible', 'hidden'))
+);
+
+CREATE TABLE IF NOT EXISTS conversation_projection_message_facts (
+  message_id TEXT PRIMARY KEY REFERENCES messages(id) ON DELETE CASCADE,
+  conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+  created_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS conversation_projection_message_stats (
+  conversation_id TEXT PRIMARY KEY REFERENCES conversations(id) ON DELETE CASCADE,
+  message_count INTEGER NOT NULL DEFAULT 0,
+  latest_message_id TEXT,
+  latest_message_at INTEGER
+);
+
+CREATE TABLE IF NOT EXISTS conversation_projection_sources (
+  source TEXT NOT NULL,
+  source_session_id TEXT NOT NULL,
+  feed_id TEXT NOT NULL REFERENCES conversation_projection_items(feed_id) ON DELETE CASCADE,
+  first_seen_at INTEGER NOT NULL,
+  last_seen_at INTEGER NOT NULL,
+  PRIMARY KEY (source, source_session_id)
+);
+
+CREATE TABLE IF NOT EXISTS conversation_projection_events (
+  seq INTEGER PRIMARY KEY AUTOINCREMENT,
+  projection_id TEXT NOT NULL,
+  ts INTEGER NOT NULL,
+  payload_json TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS invocations (
@@ -741,18 +834,74 @@ CREATE INDEX IF NOT EXISTS idx_peer_nonces_seen_at
   ON peer_nonces (seen_at);
 CREATE INDEX IF NOT EXISTS idx_agent_endpoints_agent_updated_at
   ON agent_endpoints (agent_id, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_agent_endpoints_roster_recency
+  ON agent_endpoints (
+    CASE
+      WHEN updated_at IS NULL THEN NULL
+      WHEN CAST(updated_at AS REAL) < 1000000000000
+        THEN CAST(CAST(updated_at AS REAL) * 1000 AS INTEGER)
+      ELSE CAST(updated_at AS INTEGER)
+    END DESC,
+    agent_id
+  );
+CREATE INDEX IF NOT EXISTS idx_agents_home_node_id
+  ON agents (home_node_id);
+CREATE INDEX IF NOT EXISTS idx_agents_authority_node_id
+  ON agents (authority_node_id);
+CREATE INDEX IF NOT EXISTS idx_agent_endpoints_node_id
+  ON agent_endpoints (node_id);
+CREATE INDEX IF NOT EXISTS idx_conversation_members_actor
+  ON conversation_members (actor_id, conversation_id);
 CREATE INDEX IF NOT EXISTS idx_messages_conversation_created_at
   ON messages (conversation_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_messages_created_at
   ON messages (created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_messages_actor_created_at
   ON messages (actor_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_messages_origin_node_id
+  ON messages (origin_node_id);
 CREATE INDEX IF NOT EXISTS idx_read_cursors_conversation_updated_at
   ON conversation_read_cursors (conversation_id, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_read_cursors_reader_node_id
+  ON conversation_read_cursors (reader_node_id);
+CREATE INDEX IF NOT EXISTS idx_conversation_projection_recent
+  ON conversation_projection_items (visibility_state, last_activity_at DESC, feed_id);
+CREATE INDEX IF NOT EXISTS idx_conversation_projection_project_recent
+  ON conversation_projection_items (project_root, visibility_state, last_activity_at DESC);
+CREATE INDEX IF NOT EXISTS idx_conversation_projection_message_facts_conversation
+  ON conversation_projection_message_facts (conversation_id, created_at, message_id);
+CREATE INDEX IF NOT EXISTS idx_conversation_projection_engaged
+  ON conversation_projection_items (
+    visibility_state,
+    last_engaged_at DESC,
+    last_activity_at DESC,
+    feed_id
+  );
+CREATE INDEX IF NOT EXISTS idx_conversation_projection_source_fresh
+  ON conversation_projection_items (visibility_state, source_fresh_at DESC);
+CREATE INDEX IF NOT EXISTS idx_conversation_projection_runtime_session
+  ON conversation_projection_items (entity_kind, runtime_session_id);
+CREATE INDEX IF NOT EXISTS idx_conversation_projection_source_session
+  ON conversation_projection_items (entity_kind, source_session_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_conversation_projection_conversation
+  ON conversation_projection_items (conversation_id)
+  WHERE conversation_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_conversation_projection_sources_feed
+  ON conversation_projection_sources (feed_id);
+CREATE INDEX IF NOT EXISTS idx_conversation_projection_events_projection_seq
+  ON conversation_projection_events (projection_id, seq);
+CREATE INDEX IF NOT EXISTS idx_conversation_projection_events_ts
+  ON conversation_projection_events (ts);
 CREATE INDEX IF NOT EXISTS idx_invocations_target_created_at
   ON invocations (target_agent_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_invocations_requester_created_at
   ON invocations (requester_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_invocations_conversation_created_at
+  ON invocations (conversation_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_invocations_requester_node_id
+  ON invocations (requester_node_id);
+CREATE INDEX IF NOT EXISTS idx_invocations_target_node_id
+  ON invocations (target_node_id);
 CREATE INDEX IF NOT EXISTS idx_flights_target_state
   ON flights (target_agent_id, state);
 CREATE INDEX IF NOT EXISTS idx_flights_invocation_id
@@ -761,6 +910,8 @@ CREATE INDEX IF NOT EXISTS idx_deliveries_status_transport
   ON deliveries (status, transport);
 CREATE INDEX IF NOT EXISTS idx_deliveries_created_at
   ON deliveries (created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_deliveries_target_node_id
+  ON deliveries (target_node_id);
 CREATE INDEX IF NOT EXISTS idx_delivery_attempts_created_at
   ON delivery_attempts (created_at DESC);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_durable_actions_idempotency_key
@@ -807,6 +958,10 @@ CREATE INDEX IF NOT EXISTS idx_thread_events_conversation_seq
   ON thread_events (conversation_id, seq DESC);
 CREATE INDEX IF NOT EXISTS idx_thread_events_conversation_ts
   ON thread_events (conversation_id, ts DESC);
+CREATE INDEX IF NOT EXISTS idx_thread_events_authority_node_id
+  ON thread_events (authority_node_id);
+CREATE INDEX IF NOT EXISTS idx_thread_cursors_authority_node_id
+  ON thread_cursors (authority_node_id);
 CREATE INDEX IF NOT EXISTS idx_activity_items_agent_ts
   ON activity_items (agent_id, ts DESC);
 CREATE INDEX IF NOT EXISTS idx_activity_items_actor_ts

@@ -179,6 +179,40 @@ describe("BrokerDurableRecordStore", () => {
     expect(runtime.peek().endpoints["endpoint-1"]?.metadata?.lastSeenAt).toBe(2);
   });
 
+  test("skips exact duplicate agent and endpoint upserts", async () => {
+    const { appended, records } = createTestRecordStore();
+    const agent = testAgent();
+    const endpoint = testEndpoint();
+
+    await records.upsertAgent(agent);
+    await records.upsertAgent({ ...agent, metadata: { source: "test" } });
+    await records.upsertEndpoint(endpoint);
+    await records.upsertEndpoint({ ...endpoint, metadata: { source: "test", lastSeenAt: 1 } });
+
+    expect(appended.map((entries) => entries.map((entry) => entry.kind))).toEqual([
+      ["actor.upsert", "agent.upsert"],
+      ["agent.endpoint.upsert"],
+    ]);
+  });
+
+  test("persists meaningful agent and endpoint changes", async () => {
+    const { appended, records } = createTestRecordStore();
+    const agent = testAgent();
+    const endpoint = testEndpoint();
+
+    await records.upsertAgent(agent);
+    await records.upsertAgent({ ...agent, displayName: "Agent One Updated" });
+    await records.upsertEndpoint(endpoint);
+    await records.upsertEndpoint({ ...endpoint, state: "idle" });
+
+    expect(appended.map((entries) => entries.map((entry) => entry.kind))).toEqual([
+      ["actor.upsert", "agent.upsert"],
+      ["actor.upsert", "agent.upsert"],
+      ["agent.endpoint.upsert"],
+      ["agent.endpoint.upsert"],
+    ]);
+  });
+
   test("deletes endpoints through the durable journal", async () => {
     const { runtime, appended, records } = createTestRecordStore();
     await runtime.upsertEndpoint(testEndpoint());

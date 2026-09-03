@@ -37,7 +37,10 @@ import {
   endpointSessionAliases,
   selectPreferredAgentEndpoint,
 } from "../agent-endpoints.ts";
-import { loadScoutBrokerContext } from "../broker/service.ts";
+import {
+  loadScoutBrokerContext,
+  readScoutBrokerTailDiscovery,
+} from "../broker/service.ts";
 import { buildObserveDataFromTail } from "./tail-observe.ts";
 
 export type ObserveEventKind =
@@ -213,7 +216,11 @@ type HistorySnapshotCacheEntry = HistorySnapshotResult & {
 const HISTORY_SNAPSHOT_CACHE_LIMIT = 128;
 const historySnapshotCache = new Map<string, HistorySnapshotCacheEntry>();
 const OBSERVE_SUMMARY_TAIL_SIZE = 8;
-const SESSION_REF_LOOKUP_TTL_MS = 10_000;
+// Tail discovery is the normal, materialized session index. This filesystem
+// lookup only covers cold/legacy Claude refs that are absent from that index,
+// so rebuilding it more often than discovery itself just restats thousands of
+// unchanged transcript descriptors on the request path.
+const SESSION_REF_LOOKUP_TTL_MS = 60_000;
 
 type SessionRefLookupEntry = {
   refId: string;
@@ -385,6 +392,27 @@ function tailSessionRefTranscripts(
   });
 }
 
+function bestTailSessionRefLookupEntry(
+  transcripts: DiscoverySnapshot["transcripts"],
+  normalizedRef: string,
+): SessionRefLookupEntry | null {
+  const matches: SessionRefLookupEntry[] = [];
+  for (const transcript of transcripts) {
+    const adapterType = adapterTypeFromTailSource(transcript.source);
+    if (!adapterType || !supportsHistorySessionSnapshotForPath(transcript.transcriptPath, adapterType)) {
+      continue;
+    }
+    matches.push({
+      refId: normalizedRef,
+      historyPath: transcript.transcriptPath,
+      adapterType,
+      mtimeMs: transcript.mtimeMs,
+      size: transcript.size,
+    });
+  }
+  return matches.sort((left, right) => right.mtimeMs - left.mtimeMs)[0] ?? null;
+}
+
 function hasAmbiguousTailHarness(
   transcripts: Awaited<ReturnType<typeof getTailDiscovery>>["transcripts"],
 ): boolean {
@@ -481,23 +509,7 @@ async function findTailSessionRefLookupEntry(
 
   const transcripts = tailSessionRefTranscripts(discovery, normalizedRef, harness);
   if (!harness && hasAmbiguousTailHarness(transcripts)) return AMBIGUOUS_TAIL_SESSION_REF;
-  const matches: SessionRefLookupEntry[] = [];
-  for (const transcript of transcripts) {
-    const adapterType = adapterTypeFromTailSource(transcript.source);
-    if (!adapterType || !supportsHistorySessionSnapshotForPath(transcript.transcriptPath, adapterType)) {
-      continue;
-    }
-    matches.push({
-      refId: normalizedRef,
-      historyPath: transcript.transcriptPath,
-      adapterType,
-      mtimeMs: transcript.mtimeMs,
-      size: transcript.size,
-    });
-  }
-
-  if (matches.length === 0) return null;
-  return matches.sort((left, right) => right.mtimeMs - left.mtimeMs)[0] ?? null;
+  return bestTailSessionRefLookupEntry(transcripts, normalizedRef);
 }
 
 function historyAdapterAlias(
@@ -2396,13 +2408,22 @@ export async function loadSessionRefObservePayload(
   }
 
   let [discovery, brokerContext] = await Promise.all([
-    getTailDiscovery().catch(() => null),
+    // The broker owns and continuously materializes Tail discovery. Reading
+    // that compact inventory avoids launching a duplicate process/transcript
+    // scan in the latency-sensitive web request.
+    readScoutBrokerTailDiscovery().catch(() => null),
     loadScoutBrokerContext().catch(() => null),
   ]);
   let matchingTranscripts = discovery
     ? tailSessionRefTranscripts(discovery, normalizedRef, requestedHarness)
     : [];
-  const cachedHistoryEntry = (!requestedHarness || requestedHarness === "claude")
+  const discoveredHistoryEntry = bestTailSessionRefLookupEntry(matchingTranscripts, normalizedRef);
+  // Do not walk every Claude project directory when the materialized Tail
+  // inventory already names the exact transcript. The legacy scan remains a
+  // bounded-age fallback for refs not yet represented in discovery.
+  const cachedHistoryEntry = !discoveredHistoryEntry
+    && matchingTranscripts.length === 0
+    && (!requestedHarness || requestedHarness === "claude")
     ? sessionRefLookup().get(normalizedRef) ?? null
     : null;
   const matchingAgents = queryAgents(200).filter((agent) => (
@@ -2483,7 +2504,8 @@ export async function loadSessionRefObservePayload(
   }
 
   if (!requestedHarness && hasAmbiguousTailHarness(matchingTranscripts)) return null;
-  const tailHistoryEntry = await findTailSessionRefLookupEntry(normalizedRef, requestedHarness);
+  const tailHistoryEntry = discoveredHistoryEntry
+    ?? await findTailSessionRefLookupEntry(normalizedRef, requestedHarness);
   if (tailHistoryEntry === AMBIGUOUS_TAIL_SESSION_REF) return null;
   const historyEntry = tailHistoryEntry ?? (
     (requestedHarness === "claude" || (!requestedHarness && (!discovery || matchingTranscripts.length === 0)))

@@ -25,6 +25,7 @@ import {
   queryWorkItemById,
   queryWorkItems,
 } from "./db-queries.ts";
+import { RECENT_ENDPOINT_AGENT_IDS_SQL } from "./db/agents.ts";
 import { SQLiteControlPlaneStore } from "../../runtime/src/sqlite-store.ts";
 import { directChannelNaturalKey } from "../../protocol/src/channel-identity.ts";
 import {
@@ -1541,6 +1542,186 @@ describe("web db query agents", () => {
     }
   });
 
+  test("keeps bounded roster ordering equivalent to the canonical full scan", () => {
+    const store = createSeededStore();
+
+    try {
+      const addAgent = (
+        id: string,
+        displayName: string,
+        metadata?: Record<string, unknown>,
+      ) => {
+        store.upsertActor({ id, kind: "agent", displayName });
+        store.upsertAgent({
+          id,
+          kind: "agent",
+          definitionId: id,
+          displayName,
+          agentClass: "general",
+          capabilities: ["chat"],
+          wakePolicy: "on_demand",
+          homeNodeId: "node-1",
+          authorityNodeId: "node-1",
+          advertiseScope: "local",
+          metadata,
+        });
+      };
+      const addEndpoint = (agentId: string, id: string, harness: "claude" | "codex") => {
+        store.upsertEndpoint({
+          id,
+          agentId,
+          nodeId: "node-1",
+          harness,
+          transport: harness === "codex" ? "codex_app_server" : "claude_stream_json",
+          state: "idle",
+        });
+      };
+
+      addAgent("agent-active", "Active");
+      addEndpoint("agent-active", "active-old-ms", "claude");
+      addEndpoint("agent-active", "active-new-seconds", "codex");
+      addAgent("agent-second", "Second");
+      addEndpoint("agent-second", "second-ms", "codex");
+      addAgent("agent-tie-z", "Zulu Tie");
+      addEndpoint("agent-tie-z", "tie-z", "codex");
+      addAgent("agent-tie-a", "Alpha Tie");
+      addEndpoint("agent-tie-a", "tie-a", "claude");
+      addAgent("agent-retired", "Retired", { retiredFromFleet: true });
+      addEndpoint("agent-retired", "retired-newest", "codex");
+      addAgent("agent-stale", "Stale", { staleLocalRegistration: true });
+      addEndpoint("agent-stale", "stale-newest", "codex");
+      addAgent("agent-zero", "Aaron Zero");
+      addEndpoint("agent-zero", "zero", "claude");
+      addAgent("agent-none", "Bravo None");
+      addAgent("agent-negative", "Negative");
+      addEndpoint("agent-negative", "negative", "claude");
+
+      const rawDb = new Database(join(process.env.OPENSCOUT_CONTROL_HOME!, "control-plane.sqlite"));
+      try {
+        const setUpdatedAt = rawDb.query("UPDATE agent_endpoints SET updated_at = ?1 WHERE id = ?2");
+        // The newest endpoint for agent-active is encoded in legacy seconds;
+        // raw integer ordering would incorrectly choose the older ms row.
+        setUpdatedAt.run(1_800_000_000_000, "active-old-ms");
+        setUpdatedAt.run(1_900_000_000, "active-new-seconds");
+        setUpdatedAt.run(1_850_000_000_000, "second-ms");
+        setUpdatedAt.run(1_840_000_000_000, "tie-z");
+        setUpdatedAt.run(1_840_000_000_000, "tie-a");
+        setUpdatedAt.run(2_100_000_000_000, "retired-newest");
+        setUpdatedAt.run(2_000_000_000_000, "stale-newest");
+        setUpdatedAt.run(0, "zero");
+        setUpdatedAt.run(-10, "negative");
+
+        const normalizedUpdatedAt = `CASE
+          WHEN ep.updated_at IS NULL THEN NULL
+          WHEN CAST(ep.updated_at AS REAL) < 1000000000000
+            THEN CAST(CAST(ep.updated_at AS REAL) * 1000 AS INTEGER)
+          ELSE CAST(ep.updated_at AS INTEGER)
+        END`;
+        const canonicalIds = (limit: number) => (
+          rawDb.query(
+            `SELECT a.id
+             FROM agents a
+             JOIN actors ac ON ac.id = a.id
+             LEFT JOIN agent_endpoints ep ON ep.id = (
+               SELECT ep2.id
+               FROM agent_endpoints ep2
+               WHERE ep2.agent_id = a.id
+               ORDER BY COALESCE(CASE
+                 WHEN ep2.updated_at IS NULL THEN NULL
+                 WHEN CAST(ep2.updated_at AS REAL) < 1000000000000
+                   THEN CAST(CAST(ep2.updated_at AS REAL) * 1000 AS INTEGER)
+                 ELSE CAST(ep2.updated_at AS INTEGER)
+               END, 0) DESC
+               LIMIT 1
+             )
+             WHERE COALESCE(json_extract(a.metadata_json, '$.retiredFromFleet'), 0) != 1
+               AND COALESCE(json_extract(a.metadata_json, '$.staleLocalRegistration'), 0) != 1
+             ORDER BY COALESCE(${normalizedUpdatedAt}, 0) DESC, ac.display_name ASC
+             LIMIT ?1`,
+          ).all(limit) as Array<{ id: string }>
+        ).map((row) => row.id);
+
+        for (const limit of [1, 2, 3, 4, 5, 10, -1]) {
+          expect(queryAgents(limit).map((agent) => agent.id)).toEqual(canonicalIds(limit));
+        }
+        expect(queryAgents(4).map((agent) => agent.id)).toEqual([
+          "agent-active",
+          "agent-second",
+          "agent-tie-a",
+          "agent-tie-z",
+        ]);
+        expect(queryAgents(1)[0]).toMatchObject({
+          id: "agent-active",
+          harness: "codex",
+          updatedAt: 1_900_000_000_000,
+        });
+      } finally {
+        rawDb.close();
+      }
+    } finally {
+      store.close();
+    }
+  });
+
+  test("walks the normalized endpoint-recency index for a bounded roster", () => {
+    const store = createSeededStore();
+
+    try {
+      store.upsertEndpoint({
+        id: "agent-1-endpoint",
+        agentId: "agent-1",
+        nodeId: "node-1",
+        harness: "codex",
+        transport: "codex_app_server",
+        state: "idle",
+      });
+      const rawDb = new Database(
+        join(process.env.OPENSCOUT_CONTROL_HOME!, "control-plane.sqlite"),
+        { readonly: true },
+      );
+      try {
+        const plan = rawDb.query(
+          `EXPLAIN QUERY PLAN ${RECENT_ENDPOINT_AGENT_IDS_SQL}`,
+        ).all(20) as Array<{ detail?: string }>;
+        const details = plan.map((row) => String(row.detail ?? ""));
+
+        expect(details.some((detail) => (
+          detail.includes("SCAN ep USING INDEX idx_agent_endpoints_roster_recency")
+        ))).toBe(true);
+        expect(details.some((detail) => detail === "SCAN a")).toBe(false);
+      } finally {
+        rawDb.close();
+      }
+    } finally {
+      store.close();
+    }
+  });
+
+  test("serves a bounded roster while the recency-index migration is still warming", () => {
+    const store = createSeededStore();
+
+    try {
+      store.upsertEndpoint({
+        id: "agent-1-endpoint",
+        agentId: "agent-1",
+        nodeId: "node-1",
+        harness: "codex",
+        transport: "codex_app_server",
+        state: "idle",
+      });
+      const rawDb = new Database(join(process.env.OPENSCOUT_CONTROL_HOME!, "control-plane.sqlite"));
+      try {
+        rawDb.exec("DROP INDEX idx_agent_endpoints_roster_recency");
+      } finally {
+        rawDb.close();
+      }
+
+      expect(queryAgents(20).map((agent) => agent.id)).toEqual(["agent-1"]);
+    } finally {
+      store.close();
+    }
+  });
+
   test("does not synthesize a direct session for an agent before a chat exists", () => {
     const store = createSeededStore();
 
@@ -1746,6 +1927,44 @@ describe("web db query agents", () => {
     }
   });
 
+  test("includes current opaque chat ids in durable session and recent-message reads", () => {
+    const store = createSeededStore();
+    const conversationId = "chn-0123456789abcdef0123456789abcdef";
+
+    try {
+      store.upsertConversation({
+        id: conversationId,
+        kind: "channel",
+        title: "Current opaque chat",
+        visibility: "private",
+        shareMode: "local",
+        authorityNodeId: "node-1",
+        participantIds: ["operator", "agent-1"],
+      });
+      store.recordMessage({
+        id: "opaque-chat-message",
+        conversationId,
+        actorId: "agent-1",
+        originNodeId: "node-1",
+        class: "agent",
+        body: "Visible during cold start.",
+        visibility: "private",
+        policy: "durable",
+        createdAt: 20_000,
+      });
+
+      expect(querySessions(20)).toContainEqual(expect.objectContaining({
+        id: conversationId,
+        preview: "Visible during cold start.",
+      }));
+      expect(queryRecentMessages(20).map((message) => message.id)).toContain(
+        "opaque-chat-message",
+      );
+    } finally {
+      store.close();
+    }
+  });
+
   test("looks up an exact session id without depending on the capped session list", () => {
     const store = createSeededStore();
 
@@ -1926,6 +2145,84 @@ describe("web db query agents", () => {
       expect(session?.harnessLogPath).toBe(
         join(homedir(), ".scout", "pairing", "codex", "pairing-019d9762", "logs", "stdout.log"),
       );
+    } finally {
+      store.close();
+    }
+  });
+
+  test("keeps cold-start session runtime scoped to its invocation instead of the agent's newest endpoint", () => {
+    const store = createSeededStore();
+
+    try {
+      store.upsertEndpoint({
+        id: "agent-1-newer-claude",
+        agentId: "agent-1",
+        nodeId: "node-1",
+        harness: "claude",
+        transport: "claude_stream_json",
+        state: "idle",
+        sessionId: "newer-claude-session",
+        projectRoot: "/tmp/agent-1-claude",
+        lastSeenAt: 500,
+        metadata: {
+          externalSessionId: "newer-claude-session",
+          observedModel: "claude-opus-4-1",
+          observedReasoningEffort: "max",
+        },
+      });
+      store.recordInvocation({
+        id: "inv-runtime-codex",
+        requesterId: "operator",
+        requesterNodeId: "node-1",
+        targetAgentId: "agent-1",
+        action: "consult",
+        task: "Keep the conversation's original Codex runtime",
+        conversationId: "c.conv-1",
+        execution: {
+          harness: "codex",
+          model: "gpt-5.6-terra",
+          reasoningEffort: "high",
+        },
+        executionResolution: {
+          schemaVersion: "openscout.execution-resolution.v1",
+          harness: {
+            requested: "codex",
+            resolved: "codex",
+            observed: "codex",
+            source: "flag",
+            drift: "match",
+          },
+          model: {
+            requested: "gpt-5.6-terra",
+            resolved: "gpt-5.6-terra",
+            observed: "gpt-5.6-sol",
+            source: "flag",
+            drift: "mismatch",
+          },
+          reasoningEffort: {
+            requested: "high",
+            resolved: "high",
+            observed: "xhigh",
+            source: "flag",
+            drift: "mismatch",
+          },
+          sessionId: "codex-thread-for-conversation",
+          resolvedAt: 300,
+          observedAt: 301,
+        },
+        ensureAwake: true,
+        stream: false,
+        createdAt: 300,
+      });
+
+      const session = querySessions(10).find((entry) => entry.id === "c.conv-1");
+
+      expect(session).toEqual(expect.objectContaining({
+        harness: "codex",
+        model: "gpt-5.6-sol",
+        reasoningEffort: "xhigh",
+        sessionId: "codex-thread-for-conversation",
+      }));
     } finally {
       store.close();
     }
@@ -2589,7 +2886,7 @@ describe("web db query fleet", () => {
         summary: "This completed work still needs an acceptance decision.",
         createdById: "operator",
         ownerId: "agent-3",
-        nextMoveOwnerId: "agent-3",
+        nextMoveOwnerId: "operator",
         conversationId: "conv-3",
         state: "review",
         acceptanceState: "pending",
@@ -2738,6 +3035,373 @@ describe("web db query fleet", () => {
       expect(fleet.activity.map((item) => item.ts)).toEqual([...fleet.activity.map((item) => item.ts)].sort((a, b) => b - a));
       expect(fleet.recentCompleted.some((ask) => ask.agentId === "agent-4")).toBe(false);
       expect(fleet.activity.some((item) => item.id === "activity:flight:flight-4")).toBe(false);
+    } finally {
+      store.close();
+    }
+  });
+
+  test("uses explicit collaboration transitions for operator attention", () => {
+    const store = createSeededStore();
+    const now = Date.now();
+
+    const seedAgent = (agentId: string, conversationId: string, displayName: string) => {
+      store.upsertActor({ id: agentId, kind: "agent", displayName });
+      store.upsertAgent({
+        id: agentId,
+        kind: "agent",
+        definitionId: agentId,
+        displayName,
+        agentClass: "general",
+        capabilities: ["chat"],
+        wakePolicy: "on_demand",
+        homeNodeId: "node-1",
+        authorityNodeId: "node-1",
+        advertiseScope: "local",
+      });
+      store.upsertConversation({
+        id: conversationId,
+        kind: "direct",
+        title: displayName,
+        visibility: "private",
+        shareMode: "local",
+        authorityNodeId: "node-1",
+        participantIds: [agentId, "operator"],
+      });
+    };
+
+    try {
+      // A dispatched work item remains explicitly agent-owned while it runs;
+      // pending acceptance alone must not manufacture operator attention.
+      seedAgent("agent-5", "conv-5", "Agent Five");
+      store.recordCollaborationRecord({
+        id: "work-born-pending",
+        kind: "work_item",
+        title: "Dispatched work still agent-owned",
+        createdById: "operator",
+        ownerId: "agent-5",
+        nextMoveOwnerId: "agent-5",
+        conversationId: "conv-5",
+        state: "working",
+        acceptanceState: "pending",
+        requestedById: "operator",
+        createdAt: now - 50_000,
+        updatedAt: now - 45_000,
+      });
+      store.recordInvocation({
+        id: "inv-born-pending",
+        requesterId: "operator",
+        requesterNodeId: "node-1",
+        targetAgentId: "agent-5",
+        action: "consult",
+        task: "Born-pending dispatch",
+        collaborationRecordId: "work-born-pending",
+        conversationId: "conv-5",
+        ensureAwake: true,
+        stream: false,
+        createdAt: now - 50_000,
+      });
+      store.recordFlight({
+        id: "flight-born-pending",
+        invocationId: "inv-born-pending",
+        requesterId: "operator",
+        targetAgentId: "agent-5",
+        state: "completed",
+        summary: "Agent Five replied.",
+        startedAt: now - 49_000,
+        completedAt: now - 48_000,
+      });
+
+      // A later unrelated dispatch in the same conversation does not resolve
+      // an explicit review handback. The collaboration record stays canonical.
+      seedAgent("agent-6", "conv-6", "Agent Six");
+      store.recordCollaborationRecord({
+        id: "work-review-superseded",
+        kind: "work_item",
+        title: "Handback the operator moved past",
+        createdById: "operator",
+        ownerId: "agent-6",
+        nextMoveOwnerId: "operator",
+        conversationId: "conv-6",
+        state: "review",
+        acceptanceState: "pending",
+        requestedById: "operator",
+        createdAt: now - 44_000,
+        updatedAt: now - 35_000,
+      });
+      store.recordInvocation({
+        id: "inv-superseded",
+        requesterId: "operator",
+        requesterNodeId: "node-1",
+        targetAgentId: "agent-6",
+        action: "consult",
+        task: "First dispatch",
+        collaborationRecordId: "work-review-superseded",
+        conversationId: "conv-6",
+        ensureAwake: true,
+        stream: false,
+        createdAt: now - 44_000,
+      });
+      store.recordFlight({
+        id: "flight-superseded",
+        invocationId: "inv-superseded",
+        requesterId: "operator",
+        targetAgentId: "agent-6",
+        state: "completed",
+        summary: "Agent Six handed the work back.",
+        startedAt: now - 43_000,
+        completedAt: now - 40_000,
+      });
+      store.recordInvocation({
+        id: "inv-failed-redispatch",
+        requesterId: "operator",
+        requesterNodeId: "node-1",
+        targetAgentId: "agent-6",
+        action: "consult",
+        task: "Second dispatch",
+        conversationId: "conv-6",
+        ensureAwake: true,
+        stream: false,
+        createdAt: now - 30_000,
+      });
+      store.recordFlight({
+        id: "flight-failed-redispatch",
+        invocationId: "inv-failed-redispatch",
+        requesterId: "operator",
+        targetAgentId: "agent-6",
+        state: "failed",
+        summary: "Agent Six failed to respond.",
+        error: "Local agent turn was interrupted.",
+        startedAt: now - 29_000,
+        completedAt: now - 28_000,
+      });
+
+      // A genuine, unanswered review handback keeps its claim.
+      seedAgent("agent-7", "conv-7", "Agent Seven");
+      store.recordCollaborationRecord({
+        id: "work-review-live",
+        kind: "work_item",
+        title: "Handback awaiting the operator",
+        createdById: "operator",
+        ownerId: "agent-7",
+        nextMoveOwnerId: "operator",
+        conversationId: "conv-7",
+        state: "review",
+        acceptanceState: "pending",
+        requestedById: "operator",
+        createdAt: now - 26_000,
+        updatedAt: now - 20_000,
+      });
+      store.recordInvocation({
+        id: "inv-review-live",
+        requesterId: "operator",
+        requesterNodeId: "node-1",
+        targetAgentId: "agent-7",
+        action: "consult",
+        task: "Review-worthy dispatch",
+        collaborationRecordId: "work-review-live",
+        conversationId: "conv-7",
+        ensureAwake: true,
+        stream: false,
+        createdAt: now - 26_000,
+      });
+      store.recordFlight({
+        id: "flight-review-live",
+        invocationId: "inv-review-live",
+        requesterId: "operator",
+        targetAgentId: "agent-7",
+        state: "completed",
+        summary: "Agent Seven asks for review.",
+        startedAt: now - 25_000,
+        completedAt: now - 24_000,
+      });
+
+      // Reading a handback is not a workflow transition and must not silently
+      // accept or reassign the collaboration record.
+      seedAgent("agent-8", "conv-8", "Agent Eight");
+      store.recordCollaborationRecord({
+        id: "work-review-read",
+        kind: "work_item",
+        title: "Handback the operator already read",
+        createdById: "operator",
+        ownerId: "agent-8",
+        nextMoveOwnerId: "operator",
+        conversationId: "conv-8",
+        state: "review",
+        acceptanceState: "pending",
+        requestedById: "operator",
+        createdAt: now - 18_000,
+        updatedAt: now - 15_000,
+      });
+      store.recordInvocation({
+        id: "inv-review-read",
+        requesterId: "operator",
+        requesterNodeId: "node-1",
+        targetAgentId: "agent-8",
+        action: "consult",
+        task: "Read-review dispatch",
+        collaborationRecordId: "work-review-read",
+        conversationId: "conv-8",
+        ensureAwake: true,
+        stream: false,
+        createdAt: now - 18_000,
+      });
+      store.recordFlight({
+        id: "flight-review-read",
+        invocationId: "inv-review-read",
+        requesterId: "operator",
+        targetAgentId: "agent-8",
+        state: "completed",
+        summary: "Agent Eight handed the work back.",
+        startedAt: now - 17_000,
+        completedAt: now - 15_000,
+      });
+      store.recordMessage({
+        id: "msg-review-read-handback",
+        conversationId: "conv-8",
+        actorId: "agent-8",
+        originNodeId: "node-1",
+        class: "agent",
+        body: "Here is the review you asked for.",
+        visibility: "private",
+        policy: "durable",
+        createdAt: now - 14_500,
+      });
+      store.upsertReadCursor({
+        conversationId: "conv-8",
+        actorId: "operator",
+        lastReadMessageId: "msg-review-read-handback",
+        lastReadAt: now - 10_000,
+        updatedAt: now - 10_000,
+      });
+
+      // Creation provenance is not ownership. Even when the operator created
+      // a record, an eligible state explicitly assigned back to the operator
+      // is attention until that next move changes.
+      seedAgent("agent-9", "conv-9", "Agent Nine");
+      store.recordCollaborationRecord({
+        id: "work-creator-awaiting",
+        kind: "work_item",
+        title: "Operator-created work explicitly returned",
+        createdById: "operator",
+        ownerId: "agent-9",
+        nextMoveOwnerId: "operator",
+        conversationId: "conv-9",
+        state: "waiting",
+        acceptanceState: "pending",
+        requestedById: "operator",
+        createdAt: now - 14_000,
+        updatedAt: now - 12_000,
+      });
+      store.recordInvocation({
+        id: "inv-creator-awaiting",
+        requesterId: "operator",
+        requesterNodeId: "node-1",
+        targetAgentId: "agent-9",
+        action: "consult",
+        task: "Operator-created explicit handback",
+        collaborationRecordId: "work-creator-awaiting",
+        conversationId: "conv-9",
+        ensureAwake: true,
+        stream: false,
+        createdAt: now - 14_000,
+      });
+      store.recordFlight({
+        id: "flight-creator-awaiting",
+        invocationId: "inv-creator-awaiting",
+        requesterId: "operator",
+        targetAgentId: "agent-9",
+        state: "completed",
+        summary: "Agent Nine explicitly returned the next move.",
+        startedAt: now - 13_500,
+        completedAt: now - 13_000,
+      });
+
+      const fleet = queryFleet({ limit: 10, activityLimit: 5 });
+
+      const needsAttentionAsks = fleet.activeAsks.filter(
+        (ask) => ask.status === "needs_attention",
+      );
+      expect(needsAttentionAsks.map((ask) => ask.invocationId)).toEqual([
+        "inv-creator-awaiting",
+        "inv-review-read",
+        "inv-review-live",
+        "inv-superseded",
+      ]);
+
+      const byInvocationId = new Map(
+        [...fleet.activeAsks, ...fleet.recentCompleted].map((ask) => [ask.invocationId, ask]),
+      );
+      expect(byInvocationId.get("inv-born-pending")?.status).toBe("completed");
+      expect(byInvocationId.get("inv-superseded")?.status).toBe("needs_attention");
+      expect(byInvocationId.get("inv-failed-redispatch")?.status).toBe("failed");
+      expect(byInvocationId.get("inv-review-read")?.status).toBe("needs_attention");
+      expect(byInvocationId.get("inv-creator-awaiting")?.status).toBe("needs_attention");
+
+      expect(fleet.needsAttention.map((item) => item.recordId)).toEqual([
+        "work-creator-awaiting",
+        "work-review-read",
+        "work-review-live",
+        "work-review-superseded",
+      ]);
+
+      // Only explicit state/next-move changes resolve the claims. Reassign one
+      // review and complete the other while keeping its old next-move value to
+      // prove that both explicit dimensions are honored.
+      store.recordCollaborationRecord({
+        id: "work-review-superseded",
+        kind: "work_item",
+        title: "Handback reassigned to the agent",
+        createdById: "operator",
+        ownerId: "agent-6",
+        nextMoveOwnerId: "agent-6",
+        conversationId: "conv-6",
+        state: "review",
+        acceptanceState: "pending",
+        requestedById: "operator",
+        createdAt: now - 44_000,
+        updatedAt: now - 2_000,
+      });
+      store.recordCollaborationRecord({
+        id: "work-review-read",
+        kind: "work_item",
+        title: "Handback explicitly accepted",
+        createdById: "operator",
+        ownerId: "agent-8",
+        nextMoveOwnerId: "operator",
+        conversationId: "conv-8",
+        state: "done",
+        acceptanceState: "accepted",
+        requestedById: "operator",
+        createdAt: now - 18_000,
+        updatedAt: now - 1_000,
+        completedAt: now - 1_000,
+      });
+      store.recordCollaborationRecord({
+        id: "work-creator-awaiting",
+        kind: "work_item",
+        title: "Operator-created work reassigned",
+        createdById: "operator",
+        ownerId: "agent-9",
+        nextMoveOwnerId: "agent-9",
+        conversationId: "conv-9",
+        state: "waiting",
+        acceptanceState: "pending",
+        requestedById: "operator",
+        createdAt: now - 14_000,
+        updatedAt: now - 500,
+      });
+
+      const afterTransitions = queryFleet({ limit: 10, activityLimit: 5 });
+      expect(afterTransitions.needsAttention.map((item) => item.recordId)).toEqual([
+        "work-review-live",
+      ]);
+      const afterByInvocationId = new Map(
+        [...afterTransitions.activeAsks, ...afterTransitions.recentCompleted]
+          .map((ask) => [ask.invocationId, ask]),
+      );
+      expect(afterByInvocationId.get("inv-superseded")?.status).toBe("completed");
+      expect(afterByInvocationId.get("inv-review-read")?.status).toBe("completed");
+      expect(afterByInvocationId.get("inv-creator-awaiting")?.status).toBe("completed");
     } finally {
       store.close();
     }

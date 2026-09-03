@@ -9,6 +9,7 @@ import type {
 import { isA2AHttpEndpoint } from "./a2a-http-endpoint.js";
 import { isBrokerRunnableLocalAgentTransport } from "./local-agent-transports.js";
 import type { RuntimeRegistrySnapshot } from "./registry.js";
+import { runtimeSessionHandleForEndpoint } from "./runtime-session-handle.js";
 
 export const ENDPOINT_SESSION_ALIAS_METADATA_KEYS = [
   "sessionId",
@@ -231,6 +232,7 @@ export function homeEndpointForAgent(
 
 export function endpointSessionAliasValues(endpoint: AgentEndpoint): string[] {
   const values = [
+    runtimeSessionHandleForEndpoint(endpoint),
     endpoint.id,
     endpoint.sessionId,
     ...ENDPOINT_SESSION_ALIAS_METADATA_KEYS.map((key) => metadataStringValue(endpoint.metadata, key)),
@@ -292,7 +294,7 @@ function homeEndpointStateRank(state: EndpointStateLike): number {
   }
 }
 
-function compareHomeEndpointPreference(left: AgentEndpoint, right: AgentEndpoint): number {
+export function compareHomeEndpointPreference(left: AgentEndpoint, right: AgentEndpoint): number {
   if (left.preferred !== right.preferred) {
     return left.preferred ? -1 : 1;
   }

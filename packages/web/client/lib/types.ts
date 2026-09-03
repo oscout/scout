@@ -1420,6 +1420,10 @@ export type Route =
   | ({
       view: "messages";
       conversationId?: string;
+      /** Agent master view — the agent's DM with its sessions as threads. */
+      agentId?: string;
+      /** Session conversation raised in the master view's thread side panel. */
+      threadId?: string;
     } & MachineScopedRoute)
   | ({
       view: "sessions";

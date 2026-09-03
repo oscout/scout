@@ -9,6 +9,7 @@ import {
   filterSessionsByMachineScope,
   machineScopedAgentIds,
 } from "../../lib/machine-scope.ts";
+import { fleetAskForSession } from "../../lib/fleet-active-asks.ts";
 import { routeMachineId } from "../../lib/router.ts";
 import {
   isUnread,
@@ -20,16 +21,34 @@ import type { Route, SessionEntry } from "../../lib/types.ts";
 import { useConversationList } from "../../lib/use-conversation-list.ts";
 import { useFleetActiveAsks } from "../../lib/use-fleet-active-asks.ts";
 import { useScout } from "../../scout/Provider.tsx";
+import { AgentMasterScreen } from "./AgentMasterScreen.tsx";
 import { ConversationScreen } from "./ConversationScreen.tsx";
 import "./conversation-screen.css";
 
 export function MessagesScreen({
   conversationId,
+  agentId,
+  threadId,
+  machineId,
   navigate,
 }: {
   conversationId?: string;
+  agentId?: string;
+  threadId?: string;
+  machineId?: string;
   navigate: (route: Route) => void;
 }) {
+  // /messages/agent/<id> — the agent master view (DM + session threads).
+  if (agentId) {
+    return (
+      <AgentMasterScreen
+        agentId={agentId}
+        threadId={threadId}
+        machineId={machineId}
+        navigate={navigate}
+      />
+    );
+  }
   // One conversation route (D6): ConversationScreen renders every kind —
   // channels included. The old channels route wrapped the same component,
   // and the Chat secondary strip died with the DM/Channels split.
@@ -38,6 +57,7 @@ export function MessagesScreen({
   }
   return (
     <ConversationScreen
+      key={conversationId}
       conversationId={conversationId}
       navigate={navigate}
       showBackNav={false}
@@ -57,7 +77,7 @@ function MessagesLander() {
     useScout();
   const { sessions, loading, loadError } = useConversationList();
   const [lastViewed] = useState<LastViewedMap>(() => loadLastViewedMap());
-  const asksByAgent = useFleetActiveAsks();
+  const activeAsks = useFleetActiveAsks();
   const apiOffline = apiConnection.status === "offline";
   const machineId = routeMachineId(route);
   const landedRef = useRef(false);
@@ -71,12 +91,11 @@ function MessagesLander() {
   const landingTarget = useMemo(() => {
     const participant = scopedConversations.filter((s) => !isObservedDirect(s));
     const unseenNeedsYou = participant.find((s) => {
-      if (!s.agentId) return false;
-      const ask = asksByAgent.get(s.agentId);
+      const ask = fleetAskForSession(activeAsks, s);
       return ask?.status === "needs_attention" && isUnread(s.lastMessageAt, s.id, lastViewed);
     });
     return unseenNeedsYou ?? participant[0];
-  }, [scopedConversations, asksByAgent, lastViewed]);
+  }, [scopedConversations, activeAsks, lastViewed]);
 
   useEffect(() => {
     if (landedRef.current) return;

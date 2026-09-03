@@ -14,6 +14,7 @@ import { db } from "./internal/db.ts";
 import {
   channelNaturalKeyFromMetadata,
   isOpaqueChannelId,
+  type ScoutExecutionResolution,
 } from "@openscout/protocol";
 import {
   configuredOperatorActorIds,
@@ -168,6 +169,69 @@ function metadataString(
     : null;
 }
 
+function executionResolutionDimension(
+  resolution: ScoutExecutionResolution | null,
+  dimension: "harness" | "model" | "reasoningEffort",
+): string | null {
+  const value = resolution?.[dimension];
+  return value?.observed?.trim()
+    || value?.resolved?.trim()
+    || value?.requested?.trim()
+    || null;
+}
+
+type DurableConversationRuntime = {
+  targetAgentId: string | null;
+  harness: string | null;
+  model: string | null;
+  reasoningEffort: string | null;
+  transport: string | null;
+  sessionId: string | null;
+};
+
+function durableConversationRuntime(row: {
+  target_agent_id: string | null;
+  execution_json: string | null;
+  execution_resolution_json: string | null;
+  flight_metadata_json: string | null;
+} | null): DurableConversationRuntime | null {
+  if (!row) return null;
+  const execution = parseMetadataJson(row.execution_json);
+  const rawResolution = parseMetadataJson(row.execution_resolution_json);
+  const resolution = rawResolution.schemaVersion === "openscout.execution-resolution.v1"
+    ? rawResolution as unknown as ScoutExecutionResolution
+    : null;
+  const flightMetadata = parseMetadataJson(row.flight_metadata_json);
+  const trace = Array.isArray(flightMetadata.sessionTrace)
+    ? [...flightMetadata.sessionTrace].reverse().find((entry) =>
+      entry && typeof entry === "object" && !Array.isArray(entry)
+    ) as Record<string, unknown> | undefined
+    : undefined;
+  const traceResolutionRaw = trace?.executionResolution;
+  const traceResolution = traceResolutionRaw
+    && typeof traceResolutionRaw === "object"
+    && !Array.isArray(traceResolutionRaw)
+    && (traceResolutionRaw as Record<string, unknown>).schemaVersion === "openscout.execution-resolution.v1"
+    ? traceResolutionRaw as unknown as ScoutExecutionResolution
+    : null;
+  const effectiveResolution = traceResolution ?? resolution;
+
+  return {
+    targetAgentId: row.target_agent_id,
+    harness: executionResolutionDimension(effectiveResolution, "harness")
+      ?? metadataString(trace ?? {}, "harness")
+      ?? metadataString(execution, "harness"),
+    model: executionResolutionDimension(effectiveResolution, "model")
+      ?? metadataString(execution, "model"),
+    reasoningEffort: executionResolutionDimension(effectiveResolution, "reasoningEffort")
+      ?? metadataString(execution, "reasoningEffort"),
+    transport: metadataString(trace ?? {}, "transport"),
+    sessionId: metadataString(trace ?? {}, "sessionId")
+      ?? resolution?.sessionId?.trim()
+      ?? metadataString(execution, "targetSessionId"),
+  };
+}
+
 function formatChannelAlias(value: string): string {
   const trimmed = value.trim();
   if (!trimmed) return "";
@@ -241,6 +305,13 @@ function projectSessionConversationRows(
      ORDER BY ${messageCreatedAtExpression} DESC
      LIMIT 1`,
   );
+  const runtimeStmt = db().prepare(
+    `SELECT target_agent_id, execution_json, execution_resolution_json, flight_metadata_json
+     FROM invocations
+     WHERE conversation_id = ?
+     ORDER BY ${sqlTimestampMsExpression("created_at")} DESC, id DESC
+     LIMIT 1`,
+  );
 
   const summaries = rows.flatMap((r) => {
     const conversationMetadata = parseMetadataJson(r.metadata_json);
@@ -256,8 +327,19 @@ function projectSessionConversationRows(
       endpoint_metadata_json: string | null;
       metadata_json: string | null;
     }>;
+    const runtime = durableConversationRuntime(runtimeStmt.get(r.id) as {
+      target_agent_id: string | null;
+      execution_json: string | null;
+      execution_resolution_json: string | null;
+      flight_metadata_json: string | null;
+    } | null);
+    const runtimeTargetAgentId = runtime?.targetAgentId
+      && agentParticipants.some((entry) => entry.agent_id === runtime.targetAgentId)
+      ? runtime.targetAgentId
+      : null;
     const primaryAgentId = r.kind === "direct"
-      ? pickDirectConversationAgentId(participants, agentParticipants.map((entry) => entry.agent_id))
+      ? runtimeTargetAgentId
+        ?? pickDirectConversationAgentId(participants, agentParticipants.map((entry) => entry.agent_id))
       : (agentParticipants.length === 1 ? agentParticipants[0]?.agent_id ?? null : null);
     const primaryAgent = primaryAgentId
       ? agentParticipants.find((entry) => entry.agent_id === primaryAgentId) ?? null
@@ -265,7 +347,11 @@ function projectSessionConversationRows(
     const agentId = primaryAgent?.agent_id ?? null;
 
     let agentName: string | null = null;
-    let harness: string | null = null;
+    let harness: string | null = runtime?.harness ?? null;
+    let model: string | null = runtime?.model ?? null;
+    let reasoningEffort: string | null = runtime?.reasoningEffort ?? null;
+    let transport: string | null = runtime?.transport ?? null;
+    let sessionId: string | null = runtime?.sessionId ?? null;
     let harnessSessionId: string | null = null;
     let harnessLogPath: string | null = null;
     let branch: string | null = null;
@@ -273,7 +359,8 @@ function projectSessionConversationRows(
 
     if (primaryAgent) {
       agentName = primaryAgent.display_name;
-      harness = primaryAgent.harness;
+      harness = harness ?? primaryAgent.harness;
+      transport = transport ?? primaryAgent.transport;
       workspaceRoot = compact(primaryAgent.project_root);
       try {
         const meta = primaryAgent.metadata_json ? JSON.parse(primaryAgent.metadata_json) : {};
@@ -281,6 +368,8 @@ function projectSessionConversationRows(
           return [];
         }
         branch = (meta.branch as string) ?? (meta.workspaceQualifier as string) ?? null;
+        model = model ?? metadataString(meta, "model");
+        reasoningEffort = reasoningEffort ?? metadataString(meta, "reasoningEffort");
       } catch {}
       try {
         const endpointMeta = primaryAgent.endpoint_metadata_json
@@ -291,6 +380,13 @@ function projectSessionConversationRows(
           primaryAgent.session_id,
           endpointMeta,
         );
+        sessionId = sessionId ?? harnessSessionId;
+        model = model
+          ?? metadataString(endpointMeta, "observedModel")
+          ?? metadataString(endpointMeta, "model");
+        reasoningEffort = reasoningEffort
+          ?? metadataString(endpointMeta, "observedReasoningEffort")
+          ?? metadataString(endpointMeta, "reasoningEffort");
         harnessLogPath = resolveHarnessLogPath(
           primaryAgent.agent_id,
           primaryAgent.transport,
@@ -303,6 +399,7 @@ function projectSessionConversationRows(
           primaryAgent.session_id,
           undefined,
         );
+        sessionId = sessionId ?? harnessSessionId;
         harnessLogPath = resolveHarnessLogPath(
           primaryAgent.agent_id,
           primaryAgent.transport,
@@ -324,6 +421,10 @@ function projectSessionConversationRows(
       agentId,
       agentName,
       harness,
+      model,
+      reasoningEffort,
+      transport,
+      sessionId,
       harnessSessionId,
       harnessLogPath,
       currentBranch: branch,
@@ -391,7 +492,9 @@ export function querySessions(limit = 80): MobileSessionSummary[] {
        FROM messages
        GROUP BY conversation_id
      ) ms ON ms.conversation_id = c.id
-     WHERE c.id LIKE 'c.%' AND length(c.id) > 2
+     WHERE (c.id LIKE 'chn-%' AND length(c.id) > 4)
+        OR (substr(c.id, 1, 5) = 'chat_' AND length(c.id) > 5)
+        OR (c.id LIKE 'c.%' AND length(c.id) > 2)
      ORDER BY COALESCE(ms.last_message_at, ${conversationCreatedAtExpression}, 0) DESC, ${conversationCreatedAtExpression} DESC, c.id ASC
      LIMIT ?`,
   ).all(limit) as SessionConversationRow[];
@@ -429,6 +532,7 @@ function querySessionFallbackFromMessages(conversationId: string): MobileSession
        m.actor_id AS agent_id,
        ac.display_name,
        ep.harness,
+       ep.transport,
        ep.project_root,
        ep.session_id,
        ep.metadata_json AS endpoint_metadata_json
@@ -444,6 +548,7 @@ function querySessionFallbackFromMessages(conversationId: string): MobileSession
     agent_id: string;
     display_name: string;
     harness: string | null;
+    transport: string | null;
     project_root: string | null;
     session_id: string | null;
     endpoint_metadata_json: string | null;
@@ -460,9 +565,23 @@ function querySessionFallbackFromMessages(conversationId: string): MobileSession
     agentId: agentRow?.agent_id ?? null,
     agentName: agentRow?.display_name ?? null,
     harness: agentRow?.harness ?? null,
-    harnessSessionId: resolveHarnessSessionId(agentRow?.session_id, endpointMetadata),
+    model: metadataString(endpointMetadata, "observedModel")
+      ?? metadataString(endpointMetadata, "model"),
+    reasoningEffort: metadataString(endpointMetadata, "observedReasoningEffort")
+      ?? metadataString(endpointMetadata, "reasoningEffort"),
+    transport: agentRow?.transport ?? null,
+    sessionId: resolveHarnessSessionId(
+      agentRow?.transport ?? null,
+      agentRow?.session_id ?? null,
+      endpointMetadata,
+    ),
+    harnessSessionId: resolveHarnessSessionId(
+      agentRow?.transport ?? null,
+      agentRow?.session_id ?? null,
+      endpointMetadata,
+    ),
     harnessLogPath: agentRow?.agent_id
-      ? resolveHarnessLogPath(agentRow.agent_id, agentRow.harness, agentRow.session_id, endpointMetadata)
+      ? resolveHarnessLogPath(agentRow.agent_id, agentRow.transport, agentRow.session_id, endpointMetadata)
       : null,
     currentBranch: metadataString(endpointMetadata, "branch"),
     preview: previewRow?.body?.trim() || null,

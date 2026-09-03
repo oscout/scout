@@ -96,6 +96,19 @@ import { assertIsolatedPairingRunStateWrite } from "./pairing-run-state.ts";
 
 export type PairRequestStatus = "pending" | "approved" | "denied";
 
+export const SCOUT_PAIR_CLIENT_HEADER = "x-scout-client";
+export const SCOUT_PAIR_RELAY_HEADER = "x-scout-pair-relay";
+
+export class PairRequestCapacityError extends Error {
+  readonly retryAfterMs: number;
+
+  constructor(retryAfterMs: number) {
+    super("Too many live pairing requests");
+    this.name = "PairRequestCapacityError";
+    this.retryAfterMs = retryAfterMs;
+  }
+}
+
 export interface PairRequest {
   /** Opaque polling token handed to the requesting device. */
   token: string;
@@ -103,6 +116,11 @@ export interface PairRequest {
   /** Best-effort requester identity for the approval prompt. */
   requesterIp: string | null;
   requesterLabel: string | null;
+  /**
+   * Connecting application family (`scout-ios`, `talkie-ios`, …).
+   * Identity for the allow/deny prompt — not an operator credential.
+   */
+  requesterApp: string | null;
   /** Route the phone asked for (lan/tailnet/default) — surfaced for context. */
   route: string | null;
   createdAt: number;
@@ -113,6 +131,47 @@ export interface PairRequest {
 /** Public view of a request, minus nothing sensitive (there is nothing). */
 export type PairRequestView = PairRequest;
 
+const PAIR_CLIENT_ID_PATTERN = /^[a-z0-9][a-z0-9-]{0,31}$/;
+
+const PAIR_CLIENT_LABELS: Record<string, string> = {
+  "scout-ios": "Scout iOS",
+  "scout-macos": "Scout macOS",
+  "talkie-ios": "Talkie iOS",
+  "talkie-macos": "Talkie macOS",
+};
+
+/**
+ * `/pair` is allow/deny, not operator login. The connecting app names itself
+ * so the Mac prompt can say what is knocking.
+ */
+export function parseScoutPairClient(
+  headerValue: string | null | undefined,
+  userAgent?: string | null,
+): string | null {
+  const raw = headerValue?.trim().toLowerCase() ?? "";
+  if (PAIR_CLIENT_ID_PATTERN.test(raw)) return raw;
+  const ua = userAgent ?? "";
+  if (/Scout/i.test(ua) && /iPhone|iPad|iOS/i.test(ua)) return "scout-ios";
+  if (/Talkie/i.test(ua) && /iPhone|iPad|iOS/i.test(ua)) return "talkie-ios";
+  return null;
+}
+
+export function formatScoutPairClient(app: string | null | undefined): string | null {
+  const id = app?.trim() || null;
+  if (!id) return null;
+  return PAIR_CLIENT_LABELS[id] ?? id;
+}
+
+export function pairRequesterDisplay(req: {
+  requesterLabel?: string | null;
+  requesterApp?: string | null;
+}): string {
+  const label = req.requesterLabel?.trim() || null;
+  const app = formatScoutPairClient(req.requesterApp);
+  if (label && app) return `${label} · ${app}`;
+  return label || app || "A device";
+}
+
 export interface PendingPairRequestStore {
   /**
    * Register (or reuse) a pending request for a requester. Repeated taps/polls
@@ -121,6 +180,7 @@ export interface PendingPairRequestStore {
   create(input: {
     requesterIp?: string | null;
     requesterLabel?: string | null;
+    requesterApp?: string | null;
     route?: string | null;
   }): PairRequest;
   get(token: string): PairRequest | null;
@@ -140,12 +200,18 @@ export interface PendingPairRequestStore {
    * store takes the decision, on state it can actually see, and null means
    * nothing was handed over and nothing was buried.
    */
-  fulfill(token: string): PairRequest | null;
+  fulfill(token: string, requiredStatus?: PairRequestStatus): PairRequest | null;
   dispose(): void;
 }
 
 const DEFAULT_TTL_MS = 2 * 60 * 1000; // 2 minutes — matches the pairing QR TTL ballpark
+const DEFAULT_MAX_LIVE_REQUESTS = 32;
 const SWEEP_INTERVAL_MS = 30 * 1000;
+
+function boundedMetadata(value: string | null | undefined, maxLength: number): string | null {
+  const trimmed = value?.trim() || null;
+  return trimmed ? trimmed.slice(0, maxLength) : null;
+}
 
 /**
  * How many generations a losing writer will chase before keeping its change in
@@ -259,6 +325,7 @@ function isPairRequest(value: unknown): value is PairRequest {
     // nullable fields too rather than only the ones we sort and expire on.
     isNullableString(r.requesterIp) &&
     isNullableString(r.requesterLabel) &&
+    (r.requesterApp === undefined || isNullableString(r.requesterApp)) &&
     isNullableString(r.route) &&
     typeof r.createdAt === "number" &&
     typeof r.updatedAt === "number" &&
@@ -319,6 +386,13 @@ interface TerminalMarker {
   token: string;
   /** The instant after which the marker can be collected. */
   collectAfter: number;
+  /** Unique proof that one particular fulfil call won publication. */
+  claimId?: string;
+}
+
+interface TerminalClaim {
+  token: string;
+  claimId: string;
 }
 
 /**
@@ -333,10 +407,16 @@ function parseTerminalMarkers(value: unknown): TerminalMarker[] {
   const markers: TerminalMarker[] = [];
   for (const entry of value) {
     if (!entry || typeof entry !== "object") continue;
-    const marker = entry as { token?: unknown; collectAfter?: unknown };
+    const marker = entry as { token?: unknown; collectAfter?: unknown; claimId?: unknown };
     if (typeof marker.token !== "string" || marker.token.length === 0) continue;
     if (typeof marker.collectAfter !== "number" || !Number.isFinite(marker.collectAfter)) continue;
-    markers.push({ token: marker.token, collectAfter: marker.collectAfter });
+    markers.push({
+      token: marker.token,
+      collectAfter: marker.collectAfter,
+      ...(typeof marker.claimId === "string" && marker.claimId.length > 0
+        ? { claimId: marker.claimId }
+        : {}),
+    });
   }
   return markers;
 }
@@ -358,11 +438,26 @@ function readFileOrNull(path: string): string | null {
 }
 
 export function createPendingPairRequestStore(
-  options: { ttlMs?: number; now?: () => number; statePath?: string } = {},
+  options: {
+    ttlMs?: number;
+    now?: () => number;
+    statePath?: string;
+    maxLiveRequests?: number;
+    /** Renew only inside this remaining-lifetime window. Overridable by race tests. */
+    renewalWindowMs?: number;
+  } = {},
 ): PendingPairRequestStore {
   const ttlMs = options.ttlMs ?? DEFAULT_TTL_MS;
   const now = options.now ?? (() => Date.now());
   const statePath = options.statePath;
+  const maxLiveRequests = Math.max(
+    1,
+    Math.floor(options.maxLiveRequests ?? DEFAULT_MAX_LIVE_REQUESTS),
+  );
+  const renewalWindowMs = Math.max(
+    0,
+    options.renewalWindowMs ?? Math.floor(ttlMs / 2),
+  );
   const byToken = new Map<string, PairRequest>();
   /** The generation our map was loaded from, its fingerprint, and its chain. */
   let loadedGeneration: number | null = null;
@@ -413,10 +508,12 @@ export function createPendingPairRequestStore(
    * would only make a spent token resurrectable by deleting a directory.
    */
   const fulfilledMarkers = new Map<string, number>();
+  /** Winning fulfil claim per marker; absent only for state from older builds. */
+  const fulfilledClaims = new Map<string, string>();
   /**
-   * Markers minted here that have not reached the shared file yet — the same
-   * bookkeeping unpersisted row changes get, so a terminal outcome survives a
-   * failed publish and is retried on the next operation.
+   * Tentative markers staged by the current fulfil attempt. They suppress the
+   * row while its generation is being built, then are cleared on a winning
+   * publication or rolled back when exclusive publication cannot be proved.
    */
   const unpublishedFulfilled = new Set<string>();
   /**
@@ -464,6 +561,20 @@ export function createPendingPairRequestStore(
    */
   function latestGeneration(): number | null {
     return statePath ? latestPairRequestGeneration(statePath) : null;
+  }
+
+  /** Does a published generation prove that this exact fulfil claim landed? */
+  function generationHasTerminalClaim(generation: number, claim: TerminalClaim): boolean {
+    const raw = readFileOrNull(generationPath(generation));
+    if (raw === null) return false;
+    try {
+      const parsed = JSON.parse(raw) as { fulfilled?: unknown };
+      return parseTerminalMarkers(parsed.fulfilled).some(
+        (marker) => marker.token === claim.token && marker.claimId === claim.claimId,
+      );
+    } catch {
+      return false;
+    }
   }
 
   /**
@@ -517,11 +628,12 @@ export function createPendingPairRequestStore(
     return Math.max(expiresAt, now()) + ttlMs;
   }
 
-  /** Record that a row's payload was handed over, and bury the row. */
-  function markFulfilled(request: PairRequest): void {
+  /** Stage the marker that will authorize handing a row's payload over. */
+  function markFulfilled(request: PairRequest, claimId: string): void {
     const horizon = terminalMarkerHorizon(request.expiresAt);
     const known = fulfilledMarkers.get(request.token);
     fulfilledMarkers.set(request.token, known === undefined ? horizon : Math.max(known, horizon));
+    fulfilledClaims.set(request.token, claimId);
     // Only a store with a shared file can have a marker nobody else has seen.
     // Without one there are no peers to tell, nothing for the marker to ride,
     // and nothing anywhere that could bring the row back.
@@ -533,17 +645,16 @@ export function createPendingPairRequestStore(
    *
    * Two things keep a marker past the horizon it was minted with.
    *
-   * A marker that has never ridden a publish is not collected at all. The
+   * A marker that has not yet ridden a publish is not collected at all. The
    * horizon's whole argument is "no copy of this row can still be live", and
    * that only holds for a marker every peer has had the chance to read. While
    * it exists nowhere but here, the peers that cannot see it are free to go on
    * extending the very row it buries — legally, because to them the token is
    * simply still open — and collecting it would hand our next reload a live row
    * and no reason to disbelieve it. Once it has landed in a published
-   * generation the ordinary horizon applies again. The boundary this leaves is
-   * the one the whole degraded mode already has: if the process dies while its
-   * home is unwritable, everything it could not publish dies with it, and the
-   * marker is no different from the rows beside it.
+   * generation the ordinary horizon applies again. A strict fulfil rolls this
+   * tentative state back if publication fails, so it never authorizes delivery
+   * from process-local memory alone.
    *
    * And the horizon moves. `adopt` raises it every time the shared state still
    * shows the marked token, so peers extending a row can never outrun the
@@ -555,7 +666,10 @@ export function createPendingPairRequestStore(
       if (unpublishedFulfilled.has(token)) continue;
       // Strictly after: at the horizon itself a copy extended to exactly that
       // instant is still live by the store's own `expiresAt > now` rule.
-      if (collectAfter < t) fulfilledMarkers.delete(token);
+      if (collectAfter < t) {
+        fulfilledMarkers.delete(token);
+        fulfilledClaims.delete(token);
+      }
     }
   }
 
@@ -696,6 +810,7 @@ export function createPendingPairRequestStore(
         marker.token,
         known === undefined ? marker.collectAfter : Math.max(known, marker.collectAfter),
       );
+      if (marker.claimId !== undefined) fulfilledClaims.set(marker.token, marker.claimId);
     }
     // A marker's horizon is monotonic against the extensions we can see. It was
     // minted from one reading of the row's expiry, and an instance that has not
@@ -791,7 +906,13 @@ export function createPendingPairRequestStore(
       }
       loadedEpoch = epoch;
       loadedHasTerminalLedger = hasLedger;
-      adopt(rows.filter(isPairRequest), markers);
+      adopt(
+        rows.filter(isPairRequest).map((row) => ({
+          ...row,
+          requesterApp: row.requesterApp ?? null,
+        })),
+        markers,
+      );
       return;
     }
   }
@@ -816,7 +937,11 @@ export function createPendingPairRequestStore(
    * we merely happened to be holding — republishing those would resurrect
    * another instance's decisions.
    */
-  function publish(touched: readonly string[], expired: readonly string[]): PublishOutcome {
+  function publish(
+    touched: readonly string[],
+    expired: readonly string[],
+    terminalClaim?: TerminalClaim,
+  ): PublishOutcome {
     if (!statePath || !tempPath) return "won";
     // Nothing changed and nothing is owed: stay off the writer set entirely.
     // Anything outstanding, though, is a write that failed and still has to
@@ -857,7 +982,11 @@ export function createPendingPairRequestStore(
       epoch,
       requests: [...byToken.values()],
       fulfilled: [...fulfilledMarkers].map(
-        ([token, collectAfter]) => ({ token, collectAfter }) satisfies TerminalMarker,
+        ([token, collectAfter]) => ({
+          token,
+          collectAfter,
+          ...(fulfilledClaims.has(token) ? { claimId: fulfilledClaims.get(token) } : {}),
+        }) satisfies TerminalMarker,
       ),
     });
     try {
@@ -896,11 +1025,18 @@ export function createPendingPairRequestStore(
     // that nobody derived from it. The frontier is therefore checked once more,
     // and only a link that IS the frontier counts as published.
     //
-    // A peer that legitimately publishes on top of ours in the moment between
-    // the link and this check reads as a loss too. That is harmless: our write
-    // is inside the generation they derived from it, and re-applying a
-    // transition that already landed is the same transition.
-    if (latestGeneration() !== next) {
+    // A peer can legitimately publish on top of ours between the link and this
+    // check. Generation order and epoch are not enough to prove ancestry: a
+    // suspended writer can link into a collected hole beneath the frontier.
+    // For `fulfill`, however, a later frontier carrying this call's unique
+    // terminal claim could only have learned it by deriving from our link. That
+    // is the proof required before the bearer payload may leave this process.
+    const frontier = latestGeneration();
+    const inheritedClaim = terminalClaim !== undefined
+      && frontier !== null
+      && frontier > next
+      && generationHasTerminalClaim(frontier, terminalClaim);
+    if (frontier !== next && !inheritedClaim) {
       // A generation nobody derived from is nobody's parent. Leaving it behind
       // would only mislead a store that later found it as the newest thing in a
       // half-cleared directory.
@@ -926,7 +1062,7 @@ export function createPendingPairRequestStore(
     const sighting: SharedSighting = { epoch, generation: next, signature };
     for (const token of byToken.keys()) lastSeenInShared.set(token, sighting);
     forgetSightingsWeNoLongerHold();
-    collectSuperseded(next);
+    collectSuperseded(frontier ?? next);
     return "won";
   }
 
@@ -999,7 +1135,17 @@ export function createPendingPairRequestStore(
    * is not a compromise — it is what "extend the window of the request that is
    * now approved" means.
    */
-  function commit<T>(apply: () => Applied<T>): T {
+  function commit<T>(
+    apply: () => Applied<T>,
+    options: {
+      /** Restore an attempt's local mutations before a reload or refusal. */
+      rollback?: () => void;
+      /** Security-sensitive operations can refuse instead of degrading locally. */
+      failClosed?: () => T;
+      /** Proof propagated by descendants of a security-sensitive publication. */
+      terminalClaim?: TerminalClaim;
+    } = {},
+  ): T {
     if (!statePath) {
       pruneExpired();
       collectTerminalMarkers();
@@ -1010,9 +1156,14 @@ export function createPendingPairRequestStore(
       const expired = pruneExpired();
       collectTerminalMarkers();
       const { value, touched } = apply();
-      const outcome = publish(touched, expired);
+      const outcome = publish(touched, expired, options.terminalClaim);
       if (outcome === "won") return value;
+      if (outcome === "lost") options.rollback?.();
       if (outcome === "failed" || attempt >= MAX_PUBLISH_ATTEMPTS) {
+        if (options.failClosed) {
+          if (outcome === "failed") options.rollback?.();
+          return options.failClosed();
+        }
         // A read-only home, or a peer we cannot get a word in edgeways with.
         // Either way this instance keeps serving the change out of its own
         // memory — the per-process behaviour this store replaced — and retries
@@ -1057,8 +1208,7 @@ export function createPendingPairRequestStore(
     for (const req of byToken.values()) {
       if (
         req.requesterIp === requesterIp &&
-        req.expiresAt > t &&
-        (req.status === "pending" || req.status === "approved")
+        req.expiresAt > t
       ) {
         return req;
       }
@@ -1068,24 +1218,45 @@ export function createPendingPairRequestStore(
 
   return {
     create(input) {
-      const requesterIp = input.requesterIp?.trim() || null;
-      const label = input.requesterLabel?.trim() || null;
+      const requesterIp = boundedMetadata(input.requesterIp, 64);
+      const label = boundedMetadata(input.requesterLabel, 96);
+      const app = boundedMetadata(input.requesterApp, 32);
+      const route = boundedMetadata(input.route, 16);
       // Minted once, outside the retry loop: a swap we lose must not cost the
       // Mac a second row for one tap.
       const token = crypto.randomUUID();
-      return commit(() => {
+      const result = commit<PairRequest | { capacity: true; retryAfterMs: number }>(() => {
         // Re-evaluated per attempt, so a peer that registered this device while
         // we were losing the swap collapses the prompt rather than duplicating
         // it — which is the same reasoning as reusing within one instance.
         const existing = findReusable(requesterIp);
         if (existing) {
-          // Refresh metadata + extend the window so an actively-polling device
-          // doesn't time out mid-approval.
-          existing.updatedAt = now();
-          existing.expiresAt = now() + ttlMs;
-          if (input.route) existing.route = input.route;
-          if (label) existing.requesterLabel = label;
-          return { value: existing, touched: [existing.token] };
+          // One authoritative source gets at most one live row. A denied row is
+          // also reused until it expires so repeated knocks cannot turn a deny
+          // click into notification spam. Polls outside the renewal window are
+          // read-only, bounding shared-state writes from a single source.
+          const t = now();
+          const renew = existing.status !== "denied"
+            && existing.expiresAt - t <= renewalWindowMs;
+          if (renew) {
+            existing.updatedAt = t;
+            existing.expiresAt = t + ttlMs;
+            if (route) existing.route = route;
+            if (label) existing.requesterLabel = label;
+            if (app) existing.requesterApp = app;
+          }
+          return { value: existing, touched: renew ? [existing.token] : [] };
+        }
+        if (byToken.size >= maxLiveRequests) {
+          const t = now();
+          const earliestExpiry = Math.min(...[...byToken.values()].map((request) => request.expiresAt));
+          return {
+            value: {
+              capacity: true,
+              retryAfterMs: Math.max(1_000, earliestExpiry - t),
+            },
+            touched: [],
+          };
         }
         const t = now();
         const request: PairRequest = {
@@ -1093,7 +1264,8 @@ export function createPendingPairRequestStore(
           status: "pending",
           requesterIp,
           requesterLabel: label,
-          route: input.route ?? null,
+          requesterApp: app,
+          route,
           createdAt: t,
           updatedAt: t,
           expiresAt: t + ttlMs,
@@ -1101,6 +1273,10 @@ export function createPendingPairRequestStore(
         byToken.set(token, request);
         return { value: request, touched: [token] };
       });
+      if ("capacity" in result) {
+        throw new PairRequestCapacityError(result.retryAfterMs);
+      }
+      return result;
     },
 
     // Reads write nothing. The polling device hits this constantly and has no
@@ -1117,12 +1293,14 @@ export function createPendingPairRequestStore(
     touch(token) {
       commit(() => {
         const req = byToken.get(token);
-        const extended = now() + ttlMs;
+        const t = now();
+        const extended = t + ttlMs;
         // A request that already expired was dropped by pruneExpired, so a
         // touch cannot resurrect one. Denied requests are not extended either.
         const extend =
           req !== undefined
           && (req.status === "pending" || req.status === "approved")
+          && req.expiresAt - t <= renewalWindowMs
           && extended > req.expiresAt;
         if (extend && req) req.expiresAt = extended;
         return { value: undefined, touched: extend ? [token] : [] };
@@ -1140,8 +1318,10 @@ export function createPendingPairRequestStore(
         if (!req) return { value: null, touched: [] };
         req.status = decision === "approve" ? "approved" : "denied";
         req.updatedAt = now();
-        // Give an approved request a fresh window to be polled + fulfilled.
-        if (decision === "approve") req.expiresAt = now() + ttlMs;
+        // Give every human decision a fresh window: approvals need time to be
+        // polled + fulfilled, and denials must suppress immediate prompt churn
+        // from the same source for the same bounded period.
+        req.expiresAt = now() + ttlMs;
         // Published immediately: the instance the phone is polling is very
         // often NOT the instance the human just approved on. That is the whole
         // point.
@@ -1149,47 +1329,77 @@ export function createPendingPairRequestStore(
       });
     },
 
-    fulfill(token) {
-      // Taken once, on the first attempt that sees the shared state, and
-      // carried through the retries. A lost swap reloads — and by then the
-      // marker this call minted has emptied the row out of everything it can
-      // reload, so deciding again there would report a refusal for a payload
-      // that has already gone to the device.
-      let delivered: PairRequest | null = null;
+    fulfill(token, requiredStatus) {
+      // Every lost CAS attempt is rolled back before reloading. That makes the
+      // status check below a fresh decision on the winner's state: another
+      // fulfiller's terminal marker yields null, and a concurrent denial stays
+      // denied. The payload is returned only after our deletion is durably the
+      // frontier (or its unique claim appears in a later frontier).
+      let proposal: PairRequest | null = null;
+      const claim: TerminalClaim = { token, claimId: crypto.randomUUID() };
+      let previousMarker: number | undefined;
+      let previousClaim: string | undefined;
+      let previouslyUnpublished = false;
+      let previouslyUnpersisted = false;
+      const rollback = () => {
+        if (proposal === null) return;
+        if (previousMarker === undefined) fulfilledMarkers.delete(token);
+        else fulfilledMarkers.set(token, previousMarker);
+        if (previousClaim === undefined) fulfilledClaims.delete(token);
+        else fulfilledClaims.set(token, previousClaim);
+        if (!previouslyUnpublished) unpublishedFulfilled.delete(token);
+        byToken.set(token, proposal);
+        if (previouslyUnpersisted) unpersistedUpserts.add(token);
+        else unpersistedUpserts.delete(token);
+        proposal = null;
+      };
       return commit<PairRequest | null>(() => {
-        if (delivered === null) {
-          const request = byToken.get(token);
-          // Only a row this instance can see LIVE is one it may act on. An
-          // expired copy is not a delivery it is entitled to make: a peer that
-          // could not publish may be holding a legal extension of that very
-          // row, and burying the token here would take the extension with it —
-          // the row would leave the file with no marker, which reads as a
-          // sweep, and the phone would be sent back to a peer republishing a
-          // token whose payload had already gone out. Refusing costs the device
-          // a retry against the instance that can still see the row. It is
-          // availability, not a lost decision.
-          //
-          // Only a row we are actually holding is marked, for the same reason
-          // in the other direction. A token we do not have is one a peer has
-          // already removed — if they fulfilled it their marker is in the file
-          // we just loaded, and if they swept it there is nothing to bury.
-          // Marking regardless would turn an unauthenticated LAN endpoint into
-          // a way to plant markers for arbitrary strings.
-          if (!request || !isLive(request)) return { value: null, touched: [] };
-          // The snapshot handed over IS what the marker is minted from, taken
-          // at the moment of the decision. Nothing between here and the write
-          // looks the row up a second time, so no prune can come between the
-          // handover and the marker.
-          delivered = { ...request };
+        const request = byToken.get(token);
+        // Only a row this instance can see LIVE is one it may act on. An
+        // expired copy is not a delivery it is entitled to make: a peer that
+        // could not publish may be holding a legal extension of that very
+        // row, and burying the token here would take the extension with it —
+        // the row would leave the file with no marker, which reads as a
+        // sweep, and the phone would be sent back to a peer republishing a
+        // token whose payload had already gone out. Refusing costs the device
+        // a retry against the instance that can still see the row. It is
+        // availability, not a lost decision.
+        //
+        // Only a row we are actually holding is marked, for the same reason
+        // in the other direction. A token we do not have is one a peer has
+        // already removed — if they fulfilled it their marker is in the file
+        // we just loaded, and if they swept it there is nothing to bury.
+        // Marking regardless would turn an unauthenticated LAN endpoint into
+        // a way to plant markers for arbitrary strings.
+        if (
+          !request
+          || !isLive(request)
+          || (requiredStatus !== undefined && request.status !== requiredStatus)
+        ) {
+          return { value: null, touched: [] };
         }
+        // This snapshot is what the marker is minted from. Nothing between
+        // here and publication looks the row up a second time, so no prune can
+        // come between the proposed handover and its terminal claim.
+        proposal = { ...request };
+        previousMarker = fulfilledMarkers.get(token);
+        previousClaim = fulfilledClaims.get(token);
+        previouslyUnpublished = unpublishedFulfilled.has(token);
+        previouslyUnpersisted = unpersistedUpserts.has(token);
         // Terminal, and said out loud rather than left to be inferred from the
-        // row's absence: the payload behind this token has been handed to the
-        // device, and no instance may bring it back. The marker is what stacks
-        // if this write cannot land, so the row stays buried either way.
-        markFulfilled(delivered);
+        // row's absence: once this claim wins, the payload behind this token
+        // may be handed to the device and no instance may bring the row back.
+        markFulfilled(proposal, claim.claimId);
         byToken.delete(token);
         unpersistedUpserts.delete(token);
-        return { value: delivered, touched: [] };
+        return { value: proposal, touched: [] };
+      }, {
+        rollback,
+        terminalClaim: claim,
+        // A per-process marker cannot make one-time delivery true when the
+        // shared CAS is unwritable or permanently contended. Preserve the row
+        // locally and refuse the payload so another poll can retry safely.
+        failClosed: () => null,
       });
     },
 
@@ -1201,6 +1411,7 @@ export function createPendingPairRequestStore(
       unpersistedExpiries.clear();
       unpublishedFulfilled.clear();
       fulfilledMarkers.clear();
+      fulfilledClaims.clear();
       lastSeenInShared.clear();
     },
   };

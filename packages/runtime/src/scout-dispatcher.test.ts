@@ -15,6 +15,7 @@ import {
   resolveAgentLabel,
   type RuntimeSnapshot,
 } from "./scout-dispatcher.js";
+import { runtimeSessionHandleForEndpoint } from "./runtime-session-handle.js";
 
 function makeAgent(input: {
   id: string;
@@ -784,19 +785,20 @@ describe("resolveBrokerRouteTarget", () => {
 
   test("resolves exact session targets through native endpoint aliases", () => {
     const target = makeAgent({ id: "talkie.main", definitionId: "talkie" });
+    const targetEndpoint = makeEndpoint({
+      id: "endpoint.talkie.main.local.codex_app_server",
+      agentId: target.id,
+      harness: "codex",
+      sessionId: "relay-talkie-codex",
+      metadata: {
+        externalSessionId: "codex-thread-talkie",
+        threadId: "codex-thread-talkie",
+        runtimeInstanceId: "relay-talkie-codex",
+      },
+    });
     const snapshot = makeSnapshot(
       [target],
-      [makeEndpoint({
-        id: "endpoint.talkie.main.local.codex_app_server",
-        agentId: target.id,
-        harness: "codex",
-        sessionId: "relay-talkie-codex",
-        metadata: {
-          externalSessionId: "codex-thread-talkie",
-          threadId: "codex-thread-talkie",
-          runtimeInstanceId: "relay-talkie-codex",
-        },
-      })],
+      [targetEndpoint],
     );
 
     const result = resolveBrokerRouteTarget(
@@ -809,6 +811,15 @@ describe("resolveBrokerRouteTarget", () => {
     if (result.kind === "resolved") {
       expect(result.agent.id).toBe(target.id);
     }
+
+    const handle = runtimeSessionHandleForEndpoint(targetEndpoint);
+    expect(handle).not.toBeNull();
+    const canonical = resolveBrokerRouteTarget(
+      snapshot,
+      { target: { kind: "session_id", sessionId: handle! } },
+      { helpers },
+    );
+    expect(canonical.kind).toBe("resolved");
   });
 
   test("collapses same-harness agent projections for one native session", () => {

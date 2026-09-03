@@ -91,21 +91,20 @@ session, and coordination state around it, not necessarily its definition. An
 agent is a stable identity, distinct from any one running session — the
 identity persists across restarts, harness changes, and machines.
 
-**Base Agent And Instance.** The base agent is the vanilla project or workspace
-identity — the thing a caller usually means by "the agent for this project."
-Harness, model, profile, node, and session are constraints that pin down a
-concrete instance of that base identity, not different agents. This is a concept
-split, not two record types; the full address grammar that expresses it lives
-in [`architecture.md`](./architecture.md). The routing consequence is that
-callers should target the base agent or project and only add instance
-constraints when the capability actually matters.
+**Base Agent And Execution Resolution.** The base agent is durable domain data
+for the project/workspace. Profile, harness, model, node, endpoint, and session
+are inputs or outputs of routing; they do not create another agent identity.
+The full address grammar lives in [`architecture.md`](./architecture.md). The
+routing consequence is that callers target the durable agent/project/profile
+and only add execution constraints when the capability matters.
 
-**Session.** A session is a concrete runtime context — a harness conversation,
-process, or thread — which may or may not be live right now. It is where
-execution actually happens, and it is deliberately separate from the agent: one
-durable agent can be backed by different sessions over time. Commands that start
-or attach a harness use "session" as their public noun and fail loudly when a
-requested harness cannot be backed by a compatible session.
+**Session.** A session is an opaque broker handle (`sess.*`) that resolves to one
+concrete harness conversation, process, or thread. It is a short-URL-style
+pointer, not an identity or directory member. The mapping links to the durable
+project/agent/profile/runtime data plus current endpoint state and may expire
+after the context is terminal. Native harness session ids remain resolver
+aliases. Commands that start or attach a harness use "session" as their public
+noun and fail loudly when a requested context cannot be resolved.
 
 **RuntimeSpec.** A RuntimeSpec is an exact launch selector with fixed-position
 grammar `<harness>[/<model>[/<effort>]]`, such as

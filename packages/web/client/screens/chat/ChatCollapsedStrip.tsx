@@ -25,6 +25,7 @@ import {
   filterSessionsByMachineScope,
   machineScopedAgentIds,
 } from "../../lib/machine-scope.ts";
+import { fleetAskForSession } from "../../lib/fleet-active-asks.ts";
 import { routeMachineId } from "../../lib/router.ts";
 import {
   isUnread,
@@ -62,7 +63,7 @@ function recencySort(list: SessionEntry[], lastViewed: LastViewedMap): SessionEn
 export function ChatCollapsedStrip({ onExpand }: { onExpand?: () => void }) {
   const { route, navigate, agents } = useScout();
   const { sessions } = useConversationList();
-  const asksByAgent = useFleetActiveAsks();
+  const activeAsks = useFleetActiveAsks();
   const [prefs, setPrefs] = useState<ConversationPrefs>(() => loadConversationPrefs());
   const [lastViewed, setLastViewed] = useState<LastViewedMap>(() => loadLastViewedMap());
   const machineId = routeMachineId(route);
@@ -140,7 +141,7 @@ export function ChatCollapsedStrip({ onExpand }: { onExpand?: () => void }) {
     const peer = channel ? undefined : peerLabel(s, title);
     const identity = peer ?? title;
     const agent = s.agentId ? agentById.get(s.agentId) : undefined;
-    const ask = s.agentId ? asksByAgent.get(s.agentId) : undefined;
+    const ask = fleetAskForSession(activeAsks, s);
     const hasAttention = ask?.status === "needs_attention";
     const isWorking = ask?.status === "working";
     const isOnline = agent ? isAgentOnline(agent.state) : false;

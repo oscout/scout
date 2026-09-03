@@ -4,7 +4,7 @@ Source: `docs/scout-comms.md`.
 
 Status: current v0 integration guidance, not frozen public API.
 
-Verified: 2026-06-10
+Verified: 2026-09-02
 
 ## Mental Model
 
@@ -30,7 +30,7 @@ transcripts.
 |---|---|
 | conversation | `ConversationDefinition` |
 | message | `MessageRecord` |
-| session | concrete harness conversation/process/thread attached through an endpoint |
+| session | opaque broker `sess.*` handle resolving to a harness context and endpoint |
 | delivery | `ScoutDeliverRequest`, `ScoutDeliveryReceipt`, `DeliveryIntent` |
 | invocation | `InvocationRequest` |
 | flight | `FlightRecord` |
@@ -50,7 +50,7 @@ transcripts.
 | project/capability-routed ask | project known, concrete agent/session unknown | `scout ask --project --harness`, `ask({ projectPath, harness })` |
 | exact runtime ask | exact harness/model/effort required; creates an isolated session | `scout ask --project ../x --runtime codex/gpt-5.6-sol/xhigh`, or separate `--harness --model --effort` fields |
 | situated target follow-up | saved project/profile/harness situation | `scout ask --to target:<name>`, compact `⌖name` in agent/UI text |
-| exact session ask | continue one concrete prior harness session | `scout ask --to session:<id>`, `scout ask --to session:<harness>:<native-id>`, `ask({ targetSessionId })` |
+| exact session ask | continue one concrete prior harness session | canonical `scout ask --to session:sess.<token>` or `ask({ targetSessionId })`; native-id forms are compatibility inputs |
 | reserved runtime profile | fresh current-project session with broker-owned harness/model defaults | `scout ask Fable to review this`, `scout ask --profile fable "review this"` |
 | exact natural existing handle | one already-known live agent/session; no locality/fuzzy tiebreak | `scout ask agent Composer Review to fix this` → exact `@composer-review` |
 | threaded reply | continue an existing broker conversation or ask reply context | final response or `messages_reply` depending on `replyPath` |
@@ -100,7 +100,7 @@ handoff.
 ## Runtime Sessions
 
 - agent = stable addressable identity
-- session = concrete Claude, Codex, or future harness conversation/process
+- session = opaque pointer to one concrete Claude, Codex, or future harness context
 - endpoint = routable attachment between an agent and a session
 - card = identity and return address, not necessarily a live session
 - card/label/id targets create fresh sessions for new work; only

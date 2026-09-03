@@ -1,12 +1,9 @@
 /* Projects · Inbox — the foundational model.
 
-   A project is a place where work happens. The unit of triage is the work
-   THREAD (a harness conversation/session): its title is the WORK, the agent is
-   attribution — like a sender on an email. Agents are collapsed per
-   (project · name) so the ~149 ID-proliferation records never masquerade as a
-   fleet; the recognizable agent leads, phantom mirrors fold away. Attention is
-   the only sort: your-turn › working › recent › dormant. Counts are truthful —
-   we surface "3 moving · 1 waiting on you", never "149 agents".
+   A project is a durable place where work happens. Runtime sessions and
+   harness endpoints are activity inside that place, not additional agent
+   identities. The roster projection therefore excludes session-backed actors;
+   each project contributes one base project agent to directory counts.
 
    Pure + dependency-light so the whole thing stays unit-testable. All live
    fetching + sharing lives in useProjectsInbox.ts. */
@@ -21,10 +18,12 @@ import type {
   TailEvent,
 } from "../../lib/types.ts";
 import {
+  canonicalSessionHarness,
   formatSessionRouteRef,
   parseSessionRouteRef,
 } from "../../../shared/session-route-ref.ts";
 import { filterAgentsByMachineScope } from "../../lib/machine-scope.ts";
+import { isMeshRosterAgent, isSessionStyleAgent } from "../../lib/mesh-roster.ts";
 import {
   buildDirProjects,
   buildNativeSessionRows,
@@ -46,6 +45,18 @@ import {
 } from "./model.ts";
 
 const DAY_MS = 24 * 60 * 60_000;
+
+/** Keep polling cheap without hiding changes to either model-relevant slice. */
+export function reuseFleetIfUnchanged(
+  previous: FleetState | null,
+  next: FleetState,
+): FleetState {
+  const modelSlice = (fleet: FleetState) =>
+    JSON.stringify([fleet.activeAsks, fleet.needsAttention]);
+  return previous && modelSlice(previous) === modelSlice(next)
+    ? previous
+    : next;
+}
 
 /** The three attention buckets the inbox groups by (plumbing like harness never groups). */
 export type ThreadGroup = "needs" | "working" | "recent";
@@ -136,6 +147,8 @@ export type ProjectsInboxModel = {
   projects: InboxProject[];
   threads: InboxThread[];
   sessions: InboxSession[];
+  /** Removed derived-worktree slug -> surviving canonical project slug. */
+  projectAliases: Record<string, string>;
 };
 
 export type BuildInboxInput = {
@@ -181,18 +194,6 @@ function attentionByAgentId(fleet: FleetState | null): Map<string, InboxAttentio
       summary: item.summary,
       conversationId: item.conversationId,
       updatedAt: item.updatedAt,
-    });
-  }
-
-  // Older fleet projections included this state in activeAsks. Keep accepting
-  // it without confusing ordinary queued/working asks with human attention.
-  for (const ask of fleet?.activeAsks ?? []) {
-    if (ask.status !== "needs_attention") continue;
-    add(ask.agentId, {
-      title: ask.task,
-      summary: ask.summary,
-      conversationId: ask.conversationId,
-      updatedAt: ask.updatedAt,
     });
   }
 
@@ -354,7 +355,8 @@ function observedSessionKey(source: string, value: string | null | undefined): s
   // Harness session ids are not globally unique. Keep the same source-scoped
   // identity boundary as the runtime tail registry so one provider's reply can
   // never label or reorder another provider's session.
-  return `${source.trim().toLowerCase()}\u0000${ref}`;
+  const harness = canonicalSessionHarness(source) ?? source.trim().toLowerCase();
+  return `${harness}\u0000${ref}`;
 }
 
 function observedMessageRole(event: TailEvent): string | null {
@@ -443,7 +445,69 @@ function projectSessions(
       repliesBySession.get(observedSessionKey(node.harness, sessionRouteId(node.route)) ?? "") ?? null,
     ));
   }
+
   return sessions.sort((a, b) => b.lastActivityAt - a.lastActivityAt || a.agentName.localeCompare(b.agentName));
+}
+
+/**
+ * Discovery and broker conversations are eventually consistent. After all
+ * authoritative rows are projected, keep a session-style registration visible
+ * during that gap when it already carries an openable harness session ref.
+ */
+function appendSessionActorFallbacks(
+  projects: DirProject[],
+  sessions: InboxSession[],
+  nowMs: number,
+  repliesBySession: Map<string, TailEvent>,
+): void {
+  const represented = new Set<string>();
+  for (const session of sessions) {
+    const key = observedSessionKey(session.source ?? session.harness, session.sessionId);
+    if (key) represented.add(key);
+  }
+
+  // A correlated conversation-backed child is authoritative even though its
+  // route uses a conversation id rather than the harness session ref.
+  for (const project of projects) {
+    for (const agentNode of project.agents) {
+      if (!agentNode.sessions.some(canOpenProjectSessionNode)) continue;
+      const agent = agentNode.row.agent;
+      const key = observedSessionKey(agent.harness ?? agentNode.row.harness, agent.harnessSessionId);
+      if (key) represented.add(key);
+    }
+  }
+
+  for (const project of projects) {
+    for (const agentNode of project.agents) {
+      const agent = agentNode.row.agent;
+      if (!isSessionStyleAgent(agent)) continue;
+      const source = agent.harness?.trim() || agentNode.row.harness;
+      const refId = normalizedSessionRef(agent.harnessSessionId);
+      const key = observedSessionKey(source, refId);
+      if (!refId || !key || represented.has(key)) continue;
+      represented.add(key);
+      const working = isAgentRowWorking(agentNode.row);
+      const node: ProjectTreeSessionNode = {
+        key: `fallback:${agent.id}`,
+        kind: "native",
+        status: working ? "active" : "idle",
+        harness: source,
+        label: agent.name,
+        detail: agentNode.row.activeTask ?? agent.harnessLogPath ?? refId,
+        lastActivityAt: agentNode.row.lastActivityAt ?? agent.createdAt ?? nowMs,
+        route: { view: "sessions", sessionId: refId },
+      };
+      sessions.push(projectSession(
+        project,
+        node,
+        nowMs,
+        agent,
+        agentNode.row.branch,
+        repliesBySession.get(key) ?? null,
+      ));
+    }
+  }
+  sessions.sort((left, right) => right.lastActivityAt - left.lastActivityAt || left.agentName.localeCompare(right.agentName));
 }
 
 function projectWorktreeInventory(project: DirProject): InboxProjectWorktree[] {
@@ -495,7 +559,8 @@ export function buildProjectsInboxModel(input: BuildInboxInput): ProjectsInboxMo
   );
   const native = buildNativeSessionRows(input.discovery, nowMs);
   const dirProjects = buildDirProjects(rows, input.sessions, native);
-  const registryAgents = buildRegistryAgents(dirProjects, showEphemeral);
+  const registryAgents = buildRegistryAgents(dirProjects, showEphemeral)
+    .filter((entry) => isMeshRosterAgent(entry.leadAgent));
   const repliesBySession = latestAssistantEventsBySession(input.recentEvents ?? []);
 
   const threads: InboxThread[] = registryAgents.map((entry) =>
@@ -515,6 +580,7 @@ export function buildProjectsInboxModel(input: BuildInboxInput): ProjectsInboxMo
   threads.sort((a, b) => threadRank(b, nowMs) - threadRank(a, nowMs) || b.lastActivityAt - a.lastActivityAt);
 
   const sessions = dirProjects.flatMap((project) => projectSessions(project, nowMs, repliesBySession));
+  appendSessionActorFallbacks(dirProjects, sessions, nowMs, repliesBySession);
 
   const threadsBySlug = new Map<string, InboxThread[]>();
   for (const thread of threads) {
@@ -528,11 +594,6 @@ export function buildProjectsInboxModel(input: BuildInboxInput): ProjectsInboxMo
     list.push(session);
     sessionsBySlug.set(session.projectSlug, list);
   }
-  const agentCountBySlug = new Map<string, number>();
-  for (const entry of registryAgents) {
-    agentCountBySlug.set(entry.projectSlug, (agentCountBySlug.get(entry.projectSlug) ?? 0) + 1);
-  }
-
   const projects: InboxProject[] = dirProjects.map((project) => {
     const list = threadsBySlug.get(project.slice.slug) ?? [];
     const projectSessionList = sessionsBySlug.get(project.slice.slug) ?? [];
@@ -548,7 +609,9 @@ export function buildProjectsInboxModel(input: BuildInboxInput): ProjectsInboxMo
       slug: project.slice.slug,
       title: project.slice.title,
       root: project.slice.root,
-      agentCount: agentCountBySlug.get(project.slice.slug) ?? 0,
+      // The project is the stable base coding identity. Claude/Codex endpoints
+      // and their concrete sessions must not inflate this count.
+      agentCount: 1,
       sessionCount: projectSessionList.length,
       liveSessionCount: projectSessionList.filter((session) => session.working).length,
       worktreeCount: worktrees.length,
@@ -564,13 +627,161 @@ export function buildProjectsInboxModel(input: BuildInboxInput): ProjectsInboxMo
     (a, b) => projectRank(b) - projectRank(a) || b.lastActivityAt - a.lastActivityAt || a.title.localeCompare(b.title),
   );
 
-  return { projects, threads, sessions };
+  return collapseDerivedWorktreeProjects({ projects, threads, sessions, projectAliases: {} });
 }
 
 function projectRank(project: InboxProject): number {
   if (project.needs > 0) return 2;
   if (project.working > 0) return 1;
   return 0;
+}
+
+function isDerivedWorktreeRoot(root: string | null): boolean {
+  if (!root) return false;
+  return /\/(?:\.codex|\.claude|\.agents?)\/worktrees\/[^/]+\//iu.test(root)
+    || /\/\.worktrees\/[^/]+/iu.test(root);
+}
+
+function comparableRoot(root: string): string {
+  return root
+    .replace(/^\/Users\/[^/]+(?=\/)/u, "~")
+    .replace(/\/+$/u, "");
+}
+
+function mergeWorktrees(projects: InboxProject[]): InboxProjectWorktree[] {
+  const merged = new Map<string, InboxProjectWorktree>();
+  for (const project of projects) {
+    for (const worktree of project.worktrees) {
+      const current = merged.get(worktree.root);
+      if (!current) {
+        merged.set(worktree.root, { ...worktree });
+        continue;
+      }
+      current.branch ??= worktree.branch;
+      current.working ||= worktree.working;
+      current.lastActivityAt = Math.max(current.lastActivityAt, worktree.lastActivityAt);
+    }
+  }
+  return [...merged.values()].sort((left, right) =>
+    Number(right.working) - Number(left.working)
+    || right.lastActivityAt - left.lastActivityAt
+    || left.root.localeCompare(right.root),
+  );
+}
+
+/**
+ * Agent registrations rooted in ~/.codex/worktrees/... can arrive as their own
+ * DirProject even when the canonical repository already owns that worktree.
+ * Collapse only when ownership is explicit: the canonical project must already
+ * inventory the exact derived worktree root. A matching basename is not repo
+ * provenance and must never merge independent clones.
+ */
+function collapseDerivedWorktreeProjects(model: ProjectsInboxModel): ProjectsInboxModel {
+  const alias = new Map<string, string>();
+  for (const project of model.projects) {
+    if (!project.root || !isDerivedWorktreeRoot(project.root)) continue;
+
+    const explicitOwners = model.projects.filter((candidate) =>
+      candidate.slug !== project.slug
+      && !isDerivedWorktreeRoot(candidate.root)
+      && candidate.worktrees.some((worktree) => comparableRoot(worktree.root) === comparableRoot(project.root!)),
+    );
+    if (explicitOwners.length === 1) {
+      alias.set(project.slug, explicitOwners[0]!.slug);
+    }
+  }
+  if (alias.size === 0) return model;
+
+  const projectBySlug = new Map(model.projects.map((project) => [project.slug, project]));
+  const remapThread = (thread: InboxThread): InboxThread => {
+    const targetSlug = alias.get(thread.projectSlug);
+    if (!targetSlug) return thread;
+    const target = projectBySlug.get(targetSlug)!;
+    return {
+      ...thread,
+      projectSlug: target.slug,
+      projectTitle: target.title,
+      projectRoot: target.root,
+    };
+  };
+  const remapSession = (session: InboxSession): InboxSession => {
+    const targetSlug = alias.get(session.projectSlug);
+    if (!targetSlug) return session;
+    const target = projectBySlug.get(targetSlug)!;
+    return {
+      ...session,
+      projectSlug: target.slug,
+      projectTitle: target.title,
+      projectRoot: target.root,
+    };
+  };
+
+  const threads = model.threads.map(remapThread);
+  const sessions = model.sessions.map(remapSession);
+  const sourcesBySlug = new Map<string, InboxProject[]>();
+  for (const project of model.projects) {
+    const targetSlug = alias.get(project.slug) ?? project.slug;
+    const sources = sourcesBySlug.get(targetSlug) ?? [];
+    sources.push(project);
+    sourcesBySlug.set(targetSlug, sources);
+  }
+
+  const projects = [...sourcesBySlug.entries()].map(([slug, sources]): InboxProject => {
+    const canonical = projectBySlug.get(slug)!;
+    const projectThreads = threads.filter((thread) => thread.projectSlug === slug);
+    const projectSessions = sessions.filter((session) => session.projectSlug === slug);
+    const worktrees = mergeWorktrees(sources);
+    return {
+      ...canonical,
+      agentCount: 1,
+      sessionCount: projectSessions.length,
+      liveSessionCount: projectSessions.filter((session) => session.working).length,
+      worktreeCount: worktrees.length,
+      worktrees,
+      needs: projectThreads.filter((thread) => thread.needs).length,
+      working: projectThreads.filter((thread) => thread.working).length,
+      threadCount: projectThreads.length,
+      lastActivityAt: Math.max(...sources.map((project) => project.lastActivityAt)),
+      branches: [...new Set(sources.flatMap((project) => project.branches))],
+    };
+  });
+  projects.sort(
+    (left, right) => projectRank(right) - projectRank(left)
+      || right.lastActivityAt - left.lastActivityAt
+      || left.title.localeCompare(right.title),
+  );
+
+  const projectAliases = { ...model.projectAliases };
+  for (const [derivedSlug, canonicalSlug] of alias) projectAliases[derivedSlug] = canonicalSlug;
+  return { projects, threads, sessions, projectAliases };
+}
+
+/** Resolve one historical derived-worktree slug without guessing by title. */
+export function resolveProjectSlug(model: ProjectsInboxModel, slug: string): string | null {
+  if (model.projects.some((project) => project.slug === slug)) return slug;
+  let current = slug;
+  const seen = new Set<string>();
+  while (Object.hasOwn(model.projectAliases, current)) {
+    if (seen.has(current)) return null;
+    seen.add(current);
+    current = model.projectAliases[current]!;
+  }
+  return model.projects.some((project) => project.slug === current) ? current : null;
+}
+
+/** Keep historical folded slugs while their canonical target remains visible. */
+export function retainProjectAliases(
+  previous: Readonly<Record<string, string>> | undefined,
+  next: Readonly<Record<string, string>>,
+  projects: ReadonlyArray<{ slug: string }>,
+): Record<string, string> {
+  const directSlugs = new Set(projects.map((project) => project.slug));
+  const retained = { ...next };
+  for (const [alias, target] of Object.entries(previous ?? {})) {
+    if (directSlugs.has(alias) || !directSlugs.has(target) || retained[alias]) continue;
+    retained[alias] = target;
+  }
+  return retained;
 }
 
 /** A dormant project has nothing live and no activity in a day — folds behind disclosure. */

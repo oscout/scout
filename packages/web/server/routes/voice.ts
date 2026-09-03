@@ -26,6 +26,11 @@ import {
   type ScoutRealtimeVoiceSettings,
 } from "../../shared/realtime-voice.ts";
 import { synthesizeOpenAISpeech } from "../openai-speech.ts";
+import {
+  isNvidiaMagpieSpeechModel,
+  resolveNvidiaApiKey,
+  synthesizeNvidiaMagpieSpeech,
+} from "../nvidia-speech.ts";
 import { engageScoutVoiceDictation } from "../scout-voice-engage.ts";
 import {
   ScoutVoiceSessionError,
@@ -232,10 +237,13 @@ export function mountScoutVoiceRoutes(app: Hono, deps: ScoutVoiceRouteDeps = {})
       await deps.resolveOpenAIApiKey?.().catch(() => undefined)
         ?? process.env.OPENAI_API_KEY?.trim(),
     );
+    const directNvidiaApiKey = resolveNvidiaApiKey();
     return c.json(await getScoutSpeechCatalog({
       modelId: c.req.query("modelId"),
       signal: c.req.raw.signal,
       directOpenAIAvailable,
+      directNvidiaAvailable: Boolean(directNvidiaApiKey),
+      directNvidiaApiKey,
     }));
   });
 
@@ -521,6 +529,29 @@ export function mountScoutVoiceRoutes(app: Hono, deps: ScoutVoiceRouteDeps = {})
       return c.json({ error: "speechTiming is invalid" }, 400);
     }
 
+    const defaults = resolveScoutSpeechDefaults();
+    const requestedModelId = body.modelId ?? defaults.modelId;
+    if (isNvidiaMagpieSpeechModel(requestedModelId)) {
+      const nvidiaApiKey = resolveNvidiaApiKey();
+      if (!nvidiaApiKey) {
+        return c.json({ error: "NV_API_KEY is required for hosted NVIDIA Developer Inference." }, 503);
+      }
+      try {
+        return c.json({
+          ...await synthesizeNvidiaMagpieSpeech({
+            text,
+            apiKey: nvidiaApiKey,
+            voiceId: body.voiceId,
+            signal: c.req.raw.signal,
+          }),
+          route: "nvidia-developer-inference",
+        });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "NVIDIA Magpie speech failed";
+        return c.json({ error: message }, 503);
+      }
+    }
+
     try {
       return c.json(await synthesizeScoutSpeech({
         text,
@@ -535,19 +566,18 @@ export function mountScoutVoiceRoutes(app: Hono, deps: ScoutVoiceRouteDeps = {})
       }));
     } catch (error) {
       // Vox is a separate app; when its daemon is down every request here
-      // fails and callers drop to the on-device system voice. Reach OpenAI
-      // with the key Scout already holds instead — a chosen voice shouldn't
-      // silently become the robot one because another process isn't running.
+      // fails and callers drop to the on-device system voice. Reach the chosen
+      // direct cloud provider instead — a selected voice shouldn't silently
+      // become the robot one because another process isn't running.
       const apiKey = await deps.resolveOpenAIApiKey?.().catch(() => undefined)
         ?? process.env.OPENAI_API_KEY?.trim();
       if (apiKey && !c.req.raw.signal.aborted) {
-        const defaults = resolveScoutSpeechDefaults();
         try {
           return c.json({
             ...await synthesizeOpenAISpeech({
               text,
               apiKey,
-              modelId: body.modelId ?? defaults.modelId,
+              modelId: requestedModelId,
               voiceId: body.voiceId ?? defaults.voiceId,
               speed: body.speed,
               instructions: optionalString(body.instructions),

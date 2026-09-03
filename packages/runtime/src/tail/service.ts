@@ -1,6 +1,7 @@
 import { basename } from "node:path";
 import { open, stat, type FileHandle } from "node:fs/promises";
 import type { Stats } from "node:fs";
+import { StringDecoder } from "node:string_decoder";
 
 import { redactSecrets, redactSecretsDeep } from "@openscout/agent-sessions/secret-redaction";
 
@@ -30,8 +31,16 @@ function readPositiveIntEnv(name: string, fallback: number): number {
   return Number.isFinite(raw) && raw > 0 ? raw : fallback;
 }
 
-const TAIL_POLL_INTERVAL_MS = readPositiveIntEnv("OPENSCOUT_TAIL_POLL_INTERVAL_MS", 500);
-const HOT_DISCOVERY_INTERVAL_MS = readPositiveIntEnv("OPENSCOUT_TAIL_HOT_DISCOVERY_INTERVAL_MS", 30_000);
+const DEFAULT_TAIL_POLL_INTERVAL_MS = 10_000;
+const DEFAULT_HOT_DISCOVERY_INTERVAL_MS = 60_000;
+const TAIL_POLL_INTERVAL_MS = readPositiveIntEnv(
+  "OPENSCOUT_TAIL_POLL_INTERVAL_MS",
+  DEFAULT_TAIL_POLL_INTERVAL_MS,
+);
+const HOT_DISCOVERY_INTERVAL_MS = readPositiveIntEnv(
+  "OPENSCOUT_TAIL_HOT_DISCOVERY_INTERVAL_MS",
+  DEFAULT_HOT_DISCOVERY_INTERVAL_MS,
+);
 const DISCOVERY_CACHE_MAX_AGE_MS = readPositiveIntEnv(
   "OPENSCOUT_TAIL_DISCOVERY_CACHE_MAX_AGE_MS",
   HOT_DISCOVERY_INTERVAL_MS,
@@ -50,6 +59,18 @@ const RAW_MAX_STRING_LEN = 1_000;
 const RAW_MAX_ARRAY_ITEMS = 25;
 const RAW_MAX_OBJECT_KEYS = 50;
 const RECENT_TRANSCRIPT_READ_BYTES = 512 * 1024;
+const WATCHER_READ_BYTES = readPositiveIntEnv(
+  "OPENSCOUT_TAIL_WATCHER_READ_BYTES",
+  512 * 1024,
+);
+const WATCHER_DRAIN_BYTES = Math.max(
+  WATCHER_READ_BYTES,
+  readPositiveIntEnv("OPENSCOUT_TAIL_WATCHER_DRAIN_BYTES", 4 * 1024 * 1024),
+);
+const WATCHER_PUMP_CONCURRENCY = readPositiveIntEnv(
+  "OPENSCOUT_TAIL_WATCHER_PUMP_CONCURRENCY",
+  16,
+);
 const SESSION_TRANSCRIPT_READ_BYTES = 8 * 1024 * 1024;
 // A completed reply can precede thousands of verbose tool-result records.
 // Keep the cold inbox scan bounded, but large enough for 12k ~1 KiB records.
@@ -57,6 +78,47 @@ const RECENT_TRANSCRIPT_KIND_SCAN_READ_BYTES = 32 * 1024 * 1024;
 const RECENT_TRANSCRIPT_LINES_PER_FILE = 200;
 const RECENT_TRANSCRIPT_KIND_SCAN_MAX_LINES = 65_536;
 const RECENT_TRANSCRIPT_MAX_FILES = readPositiveIntEnv("OPENSCOUT_TAIL_RECENT_TRANSCRIPT_MAX_FILES", 24);
+// The broker's projection reducer needs a bounded catch-up after restart, but
+// the public firehose must retain its live-only startup semantics. Reconcile a
+// small newest-first slice per source directly to internal subscribers.
+const INTERNAL_RECONCILE_SESSIONS_PER_SOURCE = readPositiveIntEnv(
+  "OPENSCOUT_TAIL_INTERNAL_RECONCILE_SESSIONS_PER_SOURCE",
+  12,
+);
+const INTERNAL_RECONCILE_LINES_PER_SESSION = readPositiveIntEnv(
+  "OPENSCOUT_TAIL_INTERNAL_RECONCILE_LINES_PER_SESSION",
+  128,
+);
+const INTERNAL_RECONCILE_READ_BYTES = readPositiveIntEnv(
+  "OPENSCOUT_TAIL_INTERNAL_RECONCILE_READ_BYTES",
+  256 * 1024,
+);
+// Internal materialization does not justify stat'ing every cold transcript at
+// firehose cadence forever. Recently changing watchers stay hot; cold watchers
+// are sampled in a bounded round-robin batch. Public subscribers retain the
+// broad live view, but at the relaxed Tail cadence rather than a UI-frame pace.
+const INTERNAL_HOT_WATCHER_WINDOW_MS = readPositiveIntEnv(
+  "OPENSCOUT_TAIL_INTERNAL_HOT_WATCHER_WINDOW_MS",
+  60_000,
+);
+const INTERNAL_IDLE_WATCHER_INTERVAL_MS = readPositiveIntEnv(
+  "OPENSCOUT_TAIL_INTERNAL_IDLE_WATCHER_INTERVAL_MS",
+  15_000,
+);
+const INTERNAL_IDLE_WATCHER_BATCH_SIZE = readPositiveIntEnv(
+  "OPENSCOUT_TAIL_INTERNAL_IDLE_WATCHER_BATCH_SIZE",
+  32,
+);
+const INTERNAL_ACTIVE_STALE_AFTER_MS = readPositiveIntEnv(
+  "OPENSCOUT_TAIL_INTERNAL_ACTIVE_STALE_AFTER_MS",
+  30 * 60_000,
+);
+const INTERNAL_STALE_CONFIRMATION_COUNT = 2;
+const AUTHORITATIVE_MISSING_CONFIRMATION_COUNT = 2;
+const INTERNAL_PERSISTED_OBSERVED_SEED_LIMIT = readPositiveIntEnv(
+  "OPENSCOUT_TAIL_PERSISTED_OBSERVED_SEED_LIMIT",
+  4_096,
+);
 const NATIVE_TAIL_SOURCES = new Set<TranscriptSource["name"]>(["grok", "kimi", "opencode", "cursor"]);
 const TRANSCRIPT_REPLAY_MEMO_MAX_ENTRIES = readPositiveIntEnv("OPENSCOUT_TAIL_REPLAY_MEMO_MAX_ENTRIES", 256);
 const TRANSCRIPT_REPLAY_ACTIVE_GRACE_MS = readPositiveIntEnv("OPENSCOUT_TAIL_REPLAY_MEMO_ACTIVE_GRACE_MS", 2_000);
@@ -79,6 +141,39 @@ function resetTranscriptReplayMemo(): void {
 }
 
 type Subscriber = (event: TailEvent) => void;
+type InternalSubscriber = (event: TailEvent) => void;
+
+/** @internal Marker consumed only by the observed-session reducer. */
+export const INTERNAL_TAIL_SESSION_OFFLINE_SUMMARY = "session lifecycle · confirmed offline";
+/** @internal Marker consumed only by the observed-session reducer. */
+export const INTERNAL_TAIL_SESSION_STALLED_SUMMARY = "session lifecycle · confirmed stale";
+
+/**
+ * Broker-projection identity used to restore lifecycle authority after a
+ * runtime restart. Callers must supply the complete bounded set of persisted
+ * transient-active observed rows, newest first or with `lastActivityAt` set.
+ *
+ * @internal This is projection reconciliation metadata, not a public tail API.
+ */
+export type PersistedActiveObservedSessionSeed = {
+  source: string;
+  sourceSessionId: string;
+  lastActivityAt: number;
+  project?: string | null;
+  projectRoot?: string | null;
+  cwd?: string | null;
+};
+
+export type PersistedObservedSessionSeedResult = {
+  seeded: number;
+  dropped: number;
+};
+
+type PersistedObservedSessionLifecycle = {
+  seed: PersistedActiveObservedSessionSeed;
+  missingAuthoritativePasses: number;
+  lifecycleNotification: "none" | "stalled" | "offline";
+};
 
 type Watcher = {
   source: TranscriptSource;
@@ -88,8 +183,19 @@ type Watcher = {
   offset: number;
   lineCounter: number;
   carry: string;
+  decoder: StringDecoder;
   emittedEventIds: Set<string>;
   state: Record<string, unknown>;
+  lastPumpAt: number;
+  lastObservedChangeAt: number;
+  lastKnownSize: number;
+  lastKnownMtimeMs: number;
+  missingAuthoritativePasses: number;
+  staleObservations: number;
+  lifecycleNotification: "none" | "stalled" | "offline";
+  internalObserved: boolean;
+  lastInternalEvent: TailEvent | null;
+  pumpInFlight: Promise<void> | null;
 };
 
 const sources: TranscriptSource[] = [GrokSource, KimiSource, ClaudeSource, CodexSource, CursorSource, OpenCodeSource, PiSource];
@@ -99,7 +205,18 @@ const aggregateBuffer: TailEvent[] = [];
 const assistantBuffer: TailEvent[] = [];
 const perSessionBuffer = new Map<string, TailEvent[]>();
 const subscribers = new Set<Subscriber>();
+// Broker-owned reducers consume the normalized stream independently of the
+// demand-driven public firehose. Keep this listener set private to the runtime
+// implementation: internal consumers must not affect public subscription
+// counts, and public idle teardown must not stop their tail loop.
+const internalSubscribers = new Set<InternalSubscriber>();
+const watcherPumpQueue: Array<() => void> = [];
+let activeWatcherPumps = 0;
 const knownTranscripts = new Map<string, DiscoveredTranscript>();
+// This registry is deliberately distinct from `watchers`: it is restored from
+// SQLite projection rows and therefore retains lifecycle authority for a
+// session whose transcript disappeared while the broker was offline.
+const persistedObservedSessions = new Map<string, PersistedObservedSessionLifecycle>();
 const quietEventLastSeen = new Map<string, number>();
 let pollTimer: ReturnType<typeof setInterval> | null = null;
 let hotDiscoveryTimer: ReturnType<typeof setInterval> | null = null;
@@ -304,9 +421,24 @@ function shouldCoalesceQuietTailEvent(event: TailEvent): boolean {
   return false;
 }
 
-function pushEvent(rawEvent: TailEvent): void {
+function pushInternalEvent(rawEvent: TailEvent): TailEvent {
   const event = compactEvent(rawEvent);
-  if (shouldCoalesceQuietTailEvent(event)) return;
+  for (const subscriber of [...internalSubscribers]) {
+    try {
+      subscriber(event);
+    } catch {
+      /* isolate internal consumer failures from transcript tailing */
+    }
+  }
+  return event;
+}
+
+function pushEvent(rawEvent: TailEvent): TailEvent {
+  // Internal consumers receive every normalized, redacted event before the
+  // presentation-oriented quiet-event coalescer. Their own bounded reducer is
+  // responsible for deciding whether an observation changes material state.
+  const event = pushInternalEvent(rawEvent);
+  if (shouldCoalesceQuietTailEvent(event)) return event;
   aggregateBuffer.push(event);
   if (aggregateBuffer.length > AGGREGATE_BUFFER_LIMIT) {
     aggregateBuffer.splice(0, aggregateBuffer.length - AGGREGATE_BUFFER_LIMIT);
@@ -333,20 +465,205 @@ function pushEvent(rawEvent: TailEvent): void {
       /* swallow subscriber errors */
     }
   }
+  return event;
+}
+
+function rememberWatcherEvent(
+  watcher: Watcher,
+  rawEvent: TailEvent,
+  delivery: "all" | "internal",
+): void {
+  if (watcher.emittedEventIds.has(rawEvent.id)) return;
+  watcher.emittedEventIds.add(rawEvent.id);
+  const event = delivery === "all"
+    ? pushEvent(rawEvent)
+    : pushInternalEvent(rawEvent);
+  watcher.internalObserved = true;
+  watcher.lastInternalEvent = event;
+  watcher.staleObservations = 0;
+  watcher.lifecycleNotification = "none";
+  const lifecycle = persistedObservedSessions.get(
+    observedSessionLifecycleKey(watcher.source.name, event.sessionId),
+  );
+  if (lifecycle) {
+    lifecycle.missingAuthoritativePasses = 0;
+    lifecycle.lifecycleNotification = "none";
+  }
+}
+
+function observedSessionLifecycleKey(source: string, sourceSessionId: string): string {
+  return `${source.trim()}\u0000${sourceSessionId.trim()}`;
+}
+
+function persistedSeedEvent(seed: PersistedActiveObservedSessionSeed): TailEvent {
+  const source = seed.source.trim();
+  const sourceSessionId = seed.sourceSessionId.trim();
+  const timestamp = Number.isFinite(seed.lastActivityAt) && seed.lastActivityAt > 0
+    ? seed.lastActivityAt
+    : 0;
+  return {
+    id: `tail-persisted-seed:${source}:${sourceSessionId}:${timestamp}`,
+    ts: timestamp,
+    source,
+    sessionId: sourceSessionId,
+    pid: virtualPidForPath(`${source}:${sourceSessionId}`),
+    parentPid: null,
+    project: seed.project?.trim() ?? "",
+    cwd: seed.cwd?.trim() || seed.projectRoot?.trim() || "",
+    harness: "unattributed",
+    kind: "system",
+    summary: "session lifecycle · restored persisted active identity",
+    raw: { reason: "persisted_active_seed" },
+  };
+}
+
+function applyPersistedObservedSeedToWatcher(watcher: Watcher): void {
+  if (watcher.internalObserved) return;
+  const sessionId = watcher.transcript.sessionId?.trim();
+  if (!sessionId) return;
+  const lifecycle = persistedObservedSessions.get(
+    observedSessionLifecycleKey(watcher.source.name, sessionId),
+  );
+  if (!lifecycle) return;
+  watcher.internalObserved = true;
+  watcher.lastInternalEvent = persistedSeedEvent(lifecycle.seed);
+  watcher.missingAuthoritativePasses = lifecycle.missingAuthoritativePasses;
+  watcher.lifecycleNotification = lifecycle.lifecycleNotification;
+}
+
+/**
+ * Replace the restart lifecycle seed set with the broker projection's complete
+ * bounded set of transient-active observed rows.
+ *
+ * The seed is metadata-only: it does not replay a synthetic event or touch the
+ * public firehose. It makes current and future watchers lifecycle-eligible and
+ * lets successful inventories expire identities whose files vanished while
+ * the process was down.
+ *
+ * @internal
+ */
+export function replacePersistedActiveObservedSessionSeeds(
+  seeds: readonly PersistedActiveObservedSessionSeed[],
+): PersistedObservedSessionSeedResult {
+  const byKey = new Map<string, PersistedActiveObservedSessionSeed>();
+  for (const candidate of seeds) {
+    const source = candidate.source.trim();
+    const sourceSessionId = candidate.sourceSessionId.trim();
+    if (!source || !sourceSessionId) continue;
+    const lastActivityAt = Number.isFinite(candidate.lastActivityAt)
+      ? Math.max(0, candidate.lastActivityAt)
+      : 0;
+    const seed = { ...candidate, source, sourceSessionId, lastActivityAt };
+    const key = observedSessionLifecycleKey(source, sourceSessionId);
+    const current = byKey.get(key);
+    if (!current || seed.lastActivityAt > current.lastActivityAt) {
+      byKey.set(key, seed);
+    }
+  }
+
+  const retained = [...byKey.entries()]
+    .sort((left, right) => (
+      right[1].lastActivityAt - left[1].lastActivityAt
+      || left[0].localeCompare(right[0])
+    ))
+    .slice(0, INTERNAL_PERSISTED_OBSERVED_SEED_LIMIT);
+  const next = new Map<string, PersistedObservedSessionLifecycle>();
+  for (const [key, seed] of retained) {
+    const current = persistedObservedSessions.get(key);
+    const refreshed = current && seed.lastActivityAt > current.seed.lastActivityAt;
+    next.set(key, {
+      seed,
+      missingAuthoritativePasses: refreshed ? 0 : current?.missingAuthoritativePasses ?? 0,
+      lifecycleNotification: refreshed ? "none" : current?.lifecycleNotification ?? "none",
+    });
+  }
+  persistedObservedSessions.clear();
+  for (const [key, lifecycle] of next) persistedObservedSessions.set(key, lifecycle);
+  for (const watcher of watchers.values()) applyPersistedObservedSeedToWatcher(watcher);
+  return {
+    seeded: persistedObservedSessions.size,
+    dropped: Math.max(0, byKey.size - persistedObservedSessions.size),
+  };
+}
+
+function watcherSessionId(watcher: Watcher): string | null {
+  return watcher.lastInternalEvent?.sessionId.trim()
+    || watcher.transcript.sessionId?.trim()
+    || null;
+}
+
+function notifyWatcherLifecycle(
+  watcher: Watcher,
+  reason: "missing" | "stale",
+  observedAt: number,
+): void {
+  const nextNotification = reason === "missing" ? "offline" : "stalled";
+  const sessionId = watcherSessionId(watcher);
+  if (!sessionId) return;
+  const lifecycleKey = observedSessionLifecycleKey(watcher.source.name, sessionId);
+  const persistedLifecycle = persistedObservedSessions.get(lifecycleKey);
+  if (
+    !watcher.internalObserved
+    || watcher.lifecycleNotification === nextNotification
+    || watcher.lifecycleNotification === "offline"
+    || persistedLifecycle?.lifecycleNotification === nextNotification
+    || persistedLifecycle?.lifecycleNotification === "offline"
+  ) return;
+  watcher.lifecycleNotification = nextNotification;
+  if (persistedLifecycle) {
+    persistedLifecycle.lifecycleNotification = nextNotification;
+  }
+  pushInternalEvent({
+    id: `tail-lifecycle:${watcher.source.name}:${sessionId}:${nextNotification}:${observedAt}`,
+    ts: observedAt,
+    source: watcher.source.name,
+    sessionId,
+    pid: watcher.process.pid,
+    parentPid: watcher.process.ppid || null,
+    project: watcher.transcript.project,
+    cwd: watcher.transcript.cwd ?? watcher.process.cwd ?? "",
+    harness: watcher.transcript.harness,
+    kind: "system",
+    summary: reason === "missing"
+      ? INTERNAL_TAIL_SESSION_OFFLINE_SUMMARY
+      : INTERNAL_TAIL_SESSION_STALLED_SUMMARY,
+    raw: { reason },
+  });
+  if (nextNotification === "offline") {
+    persistedObservedSessions.delete(lifecycleKey);
+  }
+}
+
+function observeWatcherStaleness(watcher: Watcher, observedAt: number): void {
+  if (
+    watcher.lifecycleNotification !== "none"
+    || !watcher.internalObserved
+    || observedAt - watcher.lastObservedChangeAt < INTERNAL_ACTIVE_STALE_AFTER_MS
+  ) {
+    watcher.staleObservations = 0;
+    return;
+  }
+  watcher.staleObservations++;
+  if (watcher.staleObservations >= INTERNAL_STALE_CONFIRMATION_COUNT) {
+    notifyWatcherLifecycle(watcher, "stale", observedAt);
+  }
 }
 
 async function readNew(
   handle: FileHandle,
   fromOffset: number,
   fileSize: number,
-): Promise<{ text: string; nextOffset: number }> {
+): Promise<{ bytes: Buffer; nextOffset: number }> {
   if (fileSize <= fromOffset) {
-    return { text: "", nextOffset: fromOffset };
+    return { bytes: Buffer.alloc(0), nextOffset: fromOffset };
   }
-  const length = fileSize - fromOffset;
-  const buffer = Buffer.alloc(length);
-  await handle.read(buffer, 0, length, fromOffset);
-  return { text: buffer.toString("utf8"), nextOffset: fileSize };
+  const length = Math.min(fileSize - fromOffset, WATCHER_READ_BYTES);
+  const buffer = Buffer.allocUnsafe(length);
+  const { bytesRead } = await handle.read(buffer, 0, length, fromOffset);
+  return {
+    bytes: buffer.subarray(0, bytesRead),
+    nextOffset: fromOffset + bytesRead,
+  };
 }
 
 async function readTranscriptText(path: string, maxBytes = RECENT_TRANSCRIPT_READ_BYTES): Promise<string> {
@@ -367,17 +684,31 @@ async function readTranscriptText(path: string, maxBytes = RECENT_TRANSCRIPT_REA
   }
 }
 
-async function pumpWatcher(watcher: Watcher): Promise<void> {
+async function runWatcherPump(watcher: Watcher, observedAt: number): Promise<void> {
   let handle: FileHandle | null = null;
+  watcher.lastPumpAt = observedAt;
   try {
     const stats = await stat(watcher.transcriptPath);
+    const changed = stats.size !== watcher.lastKnownSize
+      || stats.mtimeMs !== watcher.lastKnownMtimeMs;
+    watcher.lastKnownSize = stats.size;
+    watcher.lastKnownMtimeMs = stats.mtimeMs;
+    if (changed) {
+      watcher.lastObservedChangeAt = observedAt;
+      watcher.staleObservations = 0;
+      watcher.lifecycleNotification = "none";
+    }
     if (stats.size < watcher.offset) {
       // File was rotated/truncated; reset.
       watcher.offset = 0;
       watcher.carry = "";
+      watcher.decoder = new StringDecoder("utf8");
       watcher.emittedEventIds.clear();
     }
-    if (stats.size <= watcher.offset) return;
+    if (stats.size <= watcher.offset) {
+      observeWatcherStaleness(watcher, observedAt);
+      return;
+    }
     if (watcher.source.parseFile) {
       const text = await readTranscriptText(watcher.transcriptPath);
       watcher.offset = stats.size;
@@ -391,34 +722,43 @@ async function pumpWatcher(watcher: Watcher): Promise<void> {
       }));
       watcher.lineCounter += Math.max(1, events.length);
       for (const event of events) {
-        if (watcher.emittedEventIds.has(event.id)) continue;
-        watcher.emittedEventIds.add(event.id);
-        pushEvent(event);
+        rememberWatcherEvent(watcher, event, "all");
       }
       return;
     }
-    handle = await open(watcher.transcriptPath, "r");
-    const { text, nextOffset } = await readNew(handle, watcher.offset, stats.size);
-    watcher.offset = nextOffset;
-    if (!text) return;
-    const combined = watcher.carry + text;
-    const lines = combined.split("\n");
-    watcher.carry = lines.pop() ?? "";
-    for (const line of lines) {
-      if (!line) continue;
-      const event = watcher.source.parseLine(line, {
-        process: watcher.process,
-        transcript: watcher.transcript,
-        transcriptPath: watcher.transcriptPath,
-        lineOffset: watcher.lineCounter,
-        state: watcher.state,
-      });
-      watcher.lineCounter++;
-      if (event) {
-        if (watcher.emittedEventIds.has(event.id)) continue;
-        watcher.emittedEventIds.add(event.id);
-        pushEvent(event);
+    const drainEnd = Math.min(stats.size, watcher.offset + WATCHER_DRAIN_BYTES);
+    while (watcher.offset < drainEnd) {
+      handle = await open(watcher.transcriptPath, "r");
+      const { bytes, nextOffset } = await readNew(handle, watcher.offset, drainEnd);
+      await handle.close();
+      handle = null;
+      if (nextOffset <= watcher.offset) break;
+      watcher.offset = nextOffset;
+      const text = watcher.decoder.write(bytes);
+      if (!text) continue;
+      const combined = watcher.carry + text;
+      const lines = combined.split("\n");
+      watcher.carry = lines.pop() ?? "";
+      for (const line of lines) {
+        if (!line) continue;
+        const event = watcher.source.parseLine(line, {
+          process: watcher.process,
+          transcript: watcher.transcript,
+          transcriptPath: watcher.transcriptPath,
+          lineOffset: watcher.lineCounter,
+          state: watcher.state,
+        });
+        watcher.lineCounter++;
+        if (event) {
+          rememberWatcherEvent(watcher, event, "all");
+        }
       }
+    }
+    if (stats.size > watcher.offset) {
+      const continuation = setTimeout(() => {
+        void pumpWatcher(watcher);
+      }, 0);
+      continuation.unref?.();
     }
   } catch {
     // File may be missing momentarily — skip this tick.
@@ -427,30 +767,192 @@ async function pumpWatcher(watcher: Watcher): Promise<void> {
   }
 }
 
-async function pumpAllWatchers(): Promise<void> {
-  await Promise.allSettled([...watchers.values()].map(pumpWatcher));
+function scheduleWatcherPump(run: () => Promise<void>): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    const start = () => {
+      activeWatcherPumps++;
+      void Promise.resolve().then(run).then(resolve, reject).finally(() => {
+        activeWatcherPumps--;
+        watcherPumpQueue.shift()?.();
+      });
+    };
+    if (activeWatcherPumps < WATCHER_PUMP_CONCURRENCY) {
+      start();
+    } else {
+      watcherPumpQueue.push(start);
+    }
+  });
 }
 
-async function seedTail(watcher: Watcher): Promise<void> {
+function pumpWatcher(watcher: Watcher, observedAt = Date.now()): Promise<void> {
+  if (watcher.pumpInFlight) {
+    return watcher.pumpInFlight;
+  }
+
+  const request = scheduleWatcherPump(() => runWatcherPump(watcher, observedAt));
+  watcher.pumpInFlight = request;
+  void request.finally(() => {
+    if (watcher.pumpInFlight === request) {
+      watcher.pumpInFlight = null;
+    }
+  }).catch(() => {});
+  return request;
+}
+
+function selectWatchersForCurrentDemand(now = Date.now()): Watcher[] {
+  const all = [...watchers.values()];
+  if (subscribers.size > 0) return all;
+  if (internalSubscribers.size === 0) return [];
+
+  const hot: Watcher[] = [];
+  const coldDue: Watcher[] = [];
+  for (const watcher of all) {
+    if (now - watcher.lastObservedChangeAt <= INTERNAL_HOT_WATCHER_WINDOW_MS) {
+      hot.push(watcher);
+    } else if (now - watcher.lastPumpAt >= INTERNAL_IDLE_WATCHER_INTERVAL_MS) {
+      coldDue.push(watcher);
+    }
+  }
+  coldDue.sort((left, right) => left.lastPumpAt - right.lastPumpAt);
+  return [...hot, ...coldDue.slice(0, INTERNAL_IDLE_WATCHER_BATCH_SIZE)];
+}
+
+async function pumpWatchersForCurrentDemand(now = Date.now()): Promise<void> {
+  const selected = selectWatchersForCurrentDemand(now);
+  await Promise.allSettled(selected.map((watcher) => pumpWatcher(watcher, now)));
+}
+
+async function seedTail(
+  watcher: Watcher,
+  options: { reconcileInternal: boolean } = { reconcileInternal: false },
+): Promise<void> {
   // Seed the offset to the current end of the file so we don't replay a giant
-  // historical transcript. We'll start tailing from "now".
+  // historical transcript to public clients. Internal materialization may
+  // replay only the bounded newest tail requested by the caller.
+  let stats: Stats;
   try {
-    const stats = await stat(watcher.transcriptPath);
-    watcher.offset = watcher.source.parseFile ? 0 : stats.size;
-    if (!watcher.source.parseFile && watcher.source.name === "codex") {
-      const lines = await readRecentTranscriptLines(watcher.transcriptPath, RECENT_TRANSCRIPT_LINES_PER_FILE);
+    stats = await stat(watcher.transcriptPath);
+  } catch {
+    watcher.offset = 0;
+    return;
+  }
+
+  const seededAt = Date.now();
+  watcher.offset = options.reconcileInternal || !watcher.source.parseFile
+    ? stats.size
+    : 0;
+  watcher.lastPumpAt = seededAt;
+  watcher.lastKnownSize = stats.size;
+  watcher.lastKnownMtimeMs = stats.mtimeMs;
+  watcher.lastObservedChangeAt = Math.max(
+    watcher.transcript.lastEventAt ?? 0,
+    watcher.transcript.mtimeMs,
+    stats.mtimeMs,
+  );
+
+  try {
+    if (options.reconcileInternal && watcher.source.parseFile) {
+      const text = await readTranscriptText(
+        watcher.transcriptPath,
+        INTERNAL_RECONCILE_READ_BYTES,
+      );
+      if (!text) return;
+      const events = parsedEventsToArray(watcher.source.parseFile(text, {
+        process: watcher.process,
+        transcript: watcher.transcript,
+        transcriptPath: watcher.transcriptPath,
+        lineOffset: 0,
+        state: watcher.state,
+      }));
+      watcher.lineCounter = Math.max(1, events.length);
+      for (const event of events) rememberWatcherEvent(watcher, event, "internal");
+      return;
+    }
+
+    if (!watcher.source.parseFile && (options.reconcileInternal || watcher.source.name === "codex")) {
+      const lines = await readRecentTranscriptLines(
+        watcher.transcriptPath,
+        options.reconcileInternal
+          ? INTERNAL_RECONCILE_LINES_PER_SESSION
+          : RECENT_TRANSCRIPT_LINES_PER_FILE,
+        options.reconcileInternal
+          ? INTERNAL_RECONCILE_READ_BYTES
+          : RECENT_TRANSCRIPT_READ_BYTES,
+      );
       lines.forEach((line, index) => {
-        watcher.source.parseLine(line, {
+        const parsed = watcher.source.parseLine(line, {
           process: watcher.process,
           transcript: watcher.transcript,
           transcriptPath: watcher.transcriptPath,
           lineOffset: index,
           state: watcher.state,
         });
+        if (options.reconcileInternal && parsed) {
+          rememberWatcherEvent(watcher, parsed, "internal");
+        }
       });
+      watcher.lineCounter = lines.length;
     }
   } catch {
-    watcher.offset = 0;
+    // Recent-history priming is best-effort. Retain the successfully seeded
+    // offset so one malformed historical record cannot trigger a full replay.
+  }
+}
+
+function reconcileMissingWatchers(
+  seenSessionKeys: ReadonlySet<string>,
+  successfullyScannedSources: ReadonlySet<string>,
+  observedAt: number,
+): void {
+  for (const [sessionKey, watcher] of watchers) {
+    if (seenSessionKeys.has(sessionKey)) {
+      watcher.missingAuthoritativePasses = 0;
+      continue;
+    }
+    // A source discovery failure is not evidence that all of its sessions
+    // disappeared. Only successful shallow/deep inventories count.
+    if (!successfullyScannedSources.has(watcher.source.name)) continue;
+    watcher.missingAuthoritativePasses++;
+    if (watcher.missingAuthoritativePasses < AUTHORITATIVE_MISSING_CONFIRMATION_COUNT) {
+      continue;
+    }
+    notifyWatcherLifecycle(watcher, "missing", observedAt);
+    watchers.delete(sessionKey);
+    knownTranscripts.delete(sessionKey);
+  }
+}
+
+function reconcilePersistedObservedSessions(
+  seenLifecycleKeys: ReadonlySet<string>,
+  successfullyScannedSources: ReadonlySet<string>,
+  observedAt: number,
+): void {
+  for (const [lifecycleKey, lifecycle] of persistedObservedSessions) {
+    if (seenLifecycleKeys.has(lifecycleKey)) {
+      lifecycle.missingAuthoritativePasses = 0;
+      continue;
+    }
+    if (!successfullyScannedSources.has(lifecycle.seed.source)) continue;
+    lifecycle.missingAuthoritativePasses++;
+    if (
+      lifecycle.missingAuthoritativePasses < AUTHORITATIVE_MISSING_CONFIRMATION_COUNT
+      || lifecycle.lifecycleNotification === "offline"
+    ) {
+      continue;
+    }
+    lifecycle.lifecycleNotification = "offline";
+    const seedEvent = persistedSeedEvent(lifecycle.seed);
+    pushInternalEvent({
+      ...seedEvent,
+      id: `tail-lifecycle:${lifecycle.seed.source}:${lifecycle.seed.sourceSessionId}:offline:${observedAt}`,
+      ts: observedAt,
+      summary: INTERNAL_TAIL_SESSION_OFFLINE_SUMMARY,
+      raw: { reason: "missing" },
+    });
+    // The projection transition is non-destructive. This process-local seed is
+    // retired only to prevent repeated offline notifications; the row remains
+    // broker-owned and may be seeded again if it becomes transient-active.
+    persistedObservedSessions.delete(lifecycleKey);
   }
 }
 
@@ -461,10 +963,15 @@ async function refreshDiscovery(
   const allProcesses: DiscoveredProcess[] = [];
   const cachedProcesses = lastDiscovery?.processes ?? [];
   const seenSessionKeys = new Set<string>();
+  const seenObservedLifecycleKeys = new Set<string>();
+  const successfullyScannedSources = new Set<string>();
   const discoveryIssues: TailDiscoveryIssue[] = [];
   const discoveryIssueKeys = new Set<string>();
 
   for (const source of sources) {
+    let remainingInternalReconciliations = internalSubscribers.size > 0
+      ? INTERNAL_RECONCILE_SESSIONS_PER_SOURCE
+      : 0;
     let processes: DiscoveredProcess[] = [];
     if (scope === "hot" && cachedProcesses.length > 0) {
       processes = cachedProcesses.filter((proc) => proc.source === source.name);
@@ -480,15 +987,22 @@ async function refreshDiscovery(
     let transcripts: DiscoveredTranscript[] = [];
     try {
       transcripts = await source.discoverTranscripts(processes, scope);
+      successfullyScannedSources.add(source.name);
     } catch {
       transcripts = [];
     }
 
-    for (const transcript of transcripts) {
+    for (const transcript of [...transcripts].sort((left, right) => right.mtimeMs - left.mtimeMs)) {
       const primary = processForTranscript(transcript, processes);
       const transcriptPath = transcript.transcriptPath;
       const sessionKey = sessionRegistryKey(transcript);
       seenSessionKeys.add(sessionKey);
+      const sourceSessionId = transcript.sessionId?.trim();
+      if (sourceSessionId) {
+        seenObservedLifecycleKeys.add(
+          observedSessionLifecycleKey(source.name, sourceSessionId),
+        );
+      }
 
       const prior = knownTranscripts.get(sessionKey);
       if (
@@ -522,10 +1036,24 @@ async function refreshDiscovery(
           offset: 0,
           lineCounter: 0,
           carry: "",
+          decoder: new StringDecoder("utf8"),
           emittedEventIds: new Set(),
           state: {},
+          lastPumpAt: 0,
+          lastObservedChangeAt: Math.max(transcript.lastEventAt ?? 0, transcript.mtimeMs),
+          lastKnownSize: transcript.size,
+          lastKnownMtimeMs: transcript.mtimeMs,
+          missingAuthoritativePasses: 0,
+          staleObservations: 0,
+          lifecycleNotification: "none",
+          internalObserved: false,
+          lastInternalEvent: null,
+          pumpInFlight: null,
         };
-        await seedTail(watcher);
+        const reconcileInternal = remainingInternalReconciliations > 0;
+        if (reconcileInternal) remainingInternalReconciliations--;
+        await seedTail(watcher, { reconcileInternal });
+        applyPersistedObservedSeedToWatcher(watcher);
         watchers.set(sessionKey, watcher);
         continue;
       }
@@ -534,22 +1062,43 @@ async function refreshDiscovery(
         watcher.transcriptPath = transcriptPath;
         watcher.lineCounter = 0;
         watcher.carry = "";
+        watcher.decoder = new StringDecoder("utf8");
         watcher.emittedEventIds = new Set();
         watcher.state = {};
-        await seedTail(watcher);
+        watcher.internalObserved = false;
+        watcher.lastInternalEvent = null;
+        const reconcileInternal = remainingInternalReconciliations > 0;
+        if (reconcileInternal) remainingInternalReconciliations--;
+        await seedTail(watcher, { reconcileInternal });
+      }
+      applyPersistedObservedSeedToWatcher(watcher);
+      if (transcript.mtimeMs > watcher.transcript.mtimeMs) {
+        watcher.lastObservedChangeAt = Date.now();
+        watcher.staleObservations = 0;
+        watcher.lifecycleNotification = "none";
+        // Whole-file sources may use a primary metadata file as a dependency
+        // root while discovery's mtime includes sibling message/part files.
+        // Force one bounded reparse when that aggregate fingerprint advances.
+        if (watcher.source.parseFile) watcher.offset = 0;
       }
       watcher.process = primary;
       watcher.transcript = transcript;
+      watcher.missingAuthoritativePasses = 0;
     }
   }
 
   if (options.pruneMissing) {
-    for (const sessionKey of [...watchers.keys()]) {
-      if (!seenSessionKeys.has(sessionKey)) {
-        watchers.delete(sessionKey);
-        knownTranscripts.delete(sessionKey);
-      }
-    }
+    const observedAt = Date.now();
+    reconcileMissingWatchers(
+      seenSessionKeys,
+      successfullyScannedSources,
+      observedAt,
+    );
+    reconcilePersistedObservedSessions(
+      seenObservedLifecycleKeys,
+      successfullyScannedSources,
+      observedAt,
+    );
   }
 
   const allTranscripts = [...knownTranscripts.values()]
@@ -603,7 +1152,7 @@ function scheduleDiscovery(
 function ensureLoopRunning(): void {
   if (!pollTimer) {
     pollTimer = setInterval(() => {
-      void pumpAllWatchers();
+      void pumpWatchersForCurrentDemand();
     }, TAIL_POLL_INTERVAL_MS);
   }
   if (!hotDiscoveryTimer) {
@@ -624,7 +1173,7 @@ function ensureLoopRunning(): void {
 }
 
 function stopLoopIfIdle(): void {
-  if (subscribers.size > 0) return;
+  if (subscribers.size > 0 || internalSubscribers.size > 0) return;
   if (pollTimer) {
     clearInterval(pollTimer);
     pollTimer = null;
@@ -642,6 +1191,7 @@ function stopLoopIfIdle(): void {
     deepDiscoveryTimer = null;
   }
   watchers.clear();
+  persistedObservedSessions.clear();
 }
 
 function normalizeTailDiscoveryOptions(
@@ -677,26 +1227,83 @@ export async function refreshTailDiscovery(
 
 export function subscribeTail(handler: Subscriber): () => void {
   subscribers.add(handler);
+  startTailLoopForSubscriber();
+  return () => {
+    subscribers.delete(handler);
+    stopLoopIfIdle();
+  };
+}
+
+function startTailLoopForSubscriber(): void {
   ensureLoopRunning();
   // Kick one moderate inventory pass immediately so the new subscriber is live;
   // after that, slower timers discover new movers.
   if (watchers.size === 0) {
     void runDiscovery("shallow", { pruneMissing: true })
-      .then(() => pumpAllWatchers())
+      .then(() => pumpWatchersForCurrentDemand())
       .catch(() => {});
   } else {
-    void pumpAllWatchers();
+    void pumpWatchersForCurrentDemand();
   }
+}
+
+/**
+ * Register a broker-internal consumer of normalized tail events.
+ *
+ * @internal This deliberately is not re-exported from `@openscout/runtime/tail`.
+ * Internal listeners run before public quiet-event coalescing and keep the
+ * singleton discovery/tailing loop alive even when no firehose client exists.
+ */
+export function subscribeTailInternal(handler: InternalSubscriber): () => void {
+  internalSubscribers.add(handler);
+  startTailLoopForSubscriber();
   return () => {
-    subscribers.delete(handler);
-    if (subscribers.size === 0) {
-      stopLoopIfIdle();
-    }
+    internalSubscribers.delete(handler);
+    stopLoopIfIdle();
   };
 }
 
 export function snapshotRecentEvents(limit = 500): TailEvent[] {
   return aggregateBuffer.slice(-limit);
+}
+
+async function installWatcherForTest(input: {
+  source: TranscriptSource;
+  process: DiscoveredProcess;
+  transcript: DiscoveredTranscript;
+  reconcileInternal?: boolean;
+}): Promise<string> {
+  const sessionKey = sessionRegistryKey(input.transcript);
+  const watcher: Watcher = {
+    source: input.source,
+    process: input.process,
+    transcript: input.transcript,
+    transcriptPath: input.transcript.transcriptPath,
+    offset: 0,
+    lineCounter: 0,
+    carry: "",
+    decoder: new StringDecoder("utf8"),
+    emittedEventIds: new Set(),
+    state: {},
+    lastPumpAt: 0,
+    lastObservedChangeAt: Math.max(
+      input.transcript.lastEventAt ?? 0,
+      input.transcript.mtimeMs,
+    ),
+    lastKnownSize: input.transcript.size,
+    lastKnownMtimeMs: input.transcript.mtimeMs,
+    missingAuthoritativePasses: 0,
+    staleObservations: 0,
+    lifecycleNotification: "none",
+    internalObserved: false,
+    lastInternalEvent: null,
+    pumpInFlight: null,
+  };
+  await seedTail(watcher, { reconcileInternal: input.reconcileInternal === true });
+  applyPersistedObservedSeedToWatcher(watcher);
+  watchers.set(sessionKey, watcher);
+  knownTranscripts.set(sessionKey, input.transcript);
+  return sessionKey;
 }
 
 export const __testing = {
@@ -715,19 +1322,84 @@ export const __testing = {
     perSessionBuffer.set(sessionId, [...events]);
   },
   pushEvent,
+  pushInternalEvent,
   snapshotSessionEvents,
+  observedSessionLifecycleKey,
+  installWatcher: installWatcherForTest,
+  pumpWatcher: (sessionKey: string, observedAt?: number) => {
+    const watcher = watchers.get(sessionKey);
+    return watcher ? pumpWatcher(watcher, observedAt) : Promise.resolve();
+  },
+  watcherOffset: (sessionKey: string) => watchers.get(sessionKey)?.offset,
+  watcherLastPumpAt: (sessionKey: string) => watchers.get(sessionKey)?.lastPumpAt,
+  watcherReadBytes: WATCHER_READ_BYTES,
+  watcherDrainBytes: WATCHER_DRAIN_BYTES,
+  watcherPumpConcurrency: WATCHER_PUMP_CONCURRENCY,
+  scheduleWatcherPump,
+  watcherPumpSchedulerState: () => ({
+    active: activeWatcherPumps,
+    queued: watcherPumpQueue.length,
+  }),
+  reconcileMissingWatchers,
+  reconcilePersistedObservedSessions,
+  observeWatcherStaleness: (sessionKey: string, observedAt: number) => {
+    const watcher = watchers.get(sessionKey);
+    if (watcher) observeWatcherStaleness(watcher, observedAt);
+  },
+  setWatcherCadence: (
+    sessionKey: string,
+    cadence: Partial<Pick<Watcher, "lastPumpAt" | "lastObservedChangeAt">>,
+  ) => {
+    const watcher = watchers.get(sessionKey);
+    if (watcher) Object.assign(watcher, cadence);
+  },
+  pumpWatchersForCurrentDemand,
+  selectWatchersForCurrentDemand: (now?: number) => (
+    selectWatchersForCurrentDemand(now).map((watcher) => sessionRegistryKey(watcher.transcript))
+  ),
+  addInternalSubscriberWithoutLoop: (handler: InternalSubscriber) => {
+    internalSubscribers.add(handler);
+    return () => internalSubscribers.delete(handler);
+  },
+  addPublicSubscriberWithoutLoop: (handler: Subscriber) => {
+    subscribers.add(handler);
+    return () => subscribers.delete(handler);
+  },
+  clearWatchers: () => {
+    watchers.clear();
+    knownTranscripts.clear();
+    persistedObservedSessions.clear();
+  },
+  watcherCount: () => watchers.size,
+  watcherInternalObserved: (sessionKey: string) => watchers.get(sessionKey)?.internalObserved,
+  persistedObservedSessionCount: () => persistedObservedSessions.size,
+  persistedObservedSeedLimit: INTERNAL_PERSISTED_OBSERVED_SEED_LIMIT,
+  cadence: {
+    hotWindowMs: INTERNAL_HOT_WATCHER_WINDOW_MS,
+    idleIntervalMs: INTERNAL_IDLE_WATCHER_INTERVAL_MS,
+    idleBatchSize: INTERNAL_IDLE_WATCHER_BATCH_SIZE,
+    staleAfterMs: INTERNAL_ACTIVE_STALE_AFTER_MS,
+  },
+  defaultLoopCadence: {
+    pumpIntervalMs: DEFAULT_TAIL_POLL_INTERVAL_MS,
+    hotDiscoveryIntervalMs: DEFAULT_HOT_DISCOVERY_INTERVAL_MS,
+  },
+  tailLoopState: () => ({
+    running: pollTimer !== null,
+    publicSubscriberCount: subscribers.size,
+    internalSubscriberCount: internalSubscribers.size,
+  }),
 };
 
 export async function readRecentLiveEvents(
   limit = 500,
   options?: { kinds?: TailEventKind[] },
 ): Promise<TailEvent[]> {
-  if (watchers.size === 0) {
-    scheduleDiscovery("shallow", { pruneMissing: true });
-  } else if (!lastDiscovery || Date.now() - lastDiscovery.generatedAt > DISCOVERY_CACHE_MAX_AGE_MS) {
-    scheduleDiscovery("hot", { pruneMissing: false });
-  }
-  void pumpAllWatchers();
+  // This is a snapshot read, not an ingestion trigger. The subscriber-owned
+  // watcher loop keeps the event rings current through the bounded demand
+  // selector, while getTailDiscovery/refreshTailDiscovery retain explicit
+  // inventory-refresh semantics. Coupling every HTTP read to watcher pumping
+  // made one `/tail/recent` request stat every retained transcript.
   const kinds = options?.kinds?.length ? new Set(options.kinds) : null;
   const source = kinds?.size === 1 && kinds.has("assistant")
     ? assistantBuffer
@@ -975,6 +1647,7 @@ export async function readRecentTranscriptEvents(
     perTranscriptLineLimit?: number;
     kinds?: TailEventKind[];
     perTranscriptKindLimit?: number;
+    since?: number;
   },
 ): Promise<TailEvent[]> {
   if (watchers.size === 0) {
@@ -997,6 +1670,7 @@ export async function readRecentTranscriptEvents(
     ? Math.max(1, options?.perTranscriptKindLimit ?? limit)
     : undefined;
   const activeWatchers = [...watchers.values()]
+    .filter((watcher) => options?.since === undefined || watcher.transcript.mtimeMs >= options.since)
     .sort((left, right) => right.transcript.mtimeMs - left.transcript.mtimeMs)
     .slice(0, transcriptReadLimit);
 
@@ -1013,9 +1687,12 @@ export async function readRecentTranscriptEvents(
   // archives often have no live watcher while Grok floods the firehose buffer.
   if (options?.discovery?.transcripts?.length) {
     const discoveryTranscripts = [...options.discovery.transcripts]
-      .filter((transcript) => !seenTranscriptPaths.has(transcript.transcriptPath))
+      .filter((transcript) => (
+        !seenTranscriptPaths.has(transcript.transcriptPath)
+        && (options.since === undefined || transcript.mtimeMs >= options.since)
+      ))
       .sort((left, right) => right.mtimeMs - left.mtimeMs)
-      .slice(0, transcriptReadLimit);
+      .slice(0, Math.max(0, transcriptReadLimit - activeWatchers.length));
 
     for (const transcript of discoveryTranscripts) {
       const parsed = await parseTranscriptSessionEvents(
@@ -1036,7 +1713,10 @@ export async function readRecentTranscriptEvents(
   }
 
   return events
-    .filter((event) => !kinds || kinds.has(event.kind))
+    .filter((event) => (
+      (!kinds || kinds.has(event.kind))
+      && (options?.since === undefined || event.ts >= options.since)
+    ))
     .sort((left, right) => right.ts - left.ts)
     .slice(0, limit);
 }

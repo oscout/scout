@@ -1,4 +1,7 @@
 import type {
+  ConversationProjectionCursor,
+  ConversationProjectionEvent,
+  ConversationProjectionSnapshot,
   ActorIdentity,
   AgentDefinition,
   ConversationDefinition,
@@ -9,27 +12,134 @@ import type {
   ThreadSnapshot,
 } from "@openscout/protocol";
 
+import { randomUUID } from "node:crypto";
+import { dirname, join } from "node:path";
+
 import {
   FileBackedBrokerJournal,
   type BrokerJournalEntry,
+  type BrokerJournalReplayBarrier,
   type BrokerJournalReplayBoundary,
+  type BrokerJournalReplayOptions,
+  type BrokerJournalReplayReport,
 } from "./broker-journal.js";
 import { SQLiteControlPlaneStore, type ActivityItem } from "./sqlite-store.js";
+import {
+  ConversationProjectionStore,
+  type ConversationProjectionEventPage,
+} from "./conversation-projection-store.js";
+import type { ObservedSessionProjectionUpdate } from "./observed-session-reducer.js";
+import {
+  ConversationFeedArtifactPublisher,
+  NATIVE_READ_FEED_ARTIFACT_FILENAME,
+} from "./conversation-feed-artifact.js";
+import {
+  ConversationThreadArtifactPublisher,
+  NATIVE_READ_THREAD_ARTIFACT_DIRECTORY,
+} from "./conversation-thread-artifact.js";
+import type { ControlPlaneSqliteTransactionalDatabase } from "./sqlite-adapter.js";
 
 type ActivityQuery = Parameters<SQLiteControlPlaneStore["listActivityItems"]>[0];
 
 type RecoverableSQLiteProjectionOptions = {
   disabled?: boolean;
   createStore?: (dbPath: string) => SQLiteControlPlaneStore;
+  createConversationProjection?: (
+    store: SQLiteControlPlaneStore,
+  ) => Pick<
+    ConversationProjectionStore,
+    "applyBrokerBatch" | "applyObservedSessionBatch" | "eventsSince" | "meta" | "persistedActiveObservedSessionUpdates" | "reconcileAll" | "snapshot"
+  >;
+  createConversationFeedPublisher?: (
+    outputPath: string,
+  ) => Pick<ConversationFeedArtifactPublisher, "publish">;
+  createConversationThreadPublisher?: (
+    outputDirectory: string,
+  ) => Pick<ConversationThreadArtifactPublisher, "publish">;
+  conversationFeedArtifactPath?: string;
+  conversationThreadArtifactDirectory?: string;
+  conversationFeedPublishDelayMs?: number;
+  conversationThreadPublishDelayMs?: number;
   replayYieldEvery?: number;
+  busyRetryAttempts?: number;
+  busyRetryDelayMs?: number;
+  sleep?: (milliseconds: number) => Promise<void>;
 };
 
-const DEFAULT_REPLAY_YIELD_EVERY = 256;
+const DEFAULT_CONVERSATION_FEED_PUBLISH_DELAY_MS = 50;
+const DEFAULT_CONVERSATION_THREAD_PUBLISH_DELAY_MS = 75;
+
+// Replay writes are synchronous, but grouping them in a transaction removes
+// the far larger per-entry commit cost. Keep batches bounded so broker HTTP
+// still gets a timer turn throughout a large startup recovery.
+const DEFAULT_REPLAY_YIELD_EVERY = 128;
+const REPLAY_ENDPOINT_UPSERT_WORK = 16;
+const DEFAULT_BUSY_RETRY_ATTEMPTS = 3;
+const DEFAULT_BUSY_RETRY_DELAY_MS = 10;
+const SQLITE_PROJECTION_ID = "control-plane";
+// Bump whenever journal-to-SQLite reducer semantics change incompatibly. A
+// version mismatch deliberately forces one complete replay before checkpointing.
+const SQLITE_PROJECTION_VERSION = 1;
 
 export type SQLiteProjectionStatusSnapshot = {
   state: "ready" | "warming" | "degraded" | "disabled";
   detail: string | null;
 };
+
+type SQLiteProjectionCheckpointRow = {
+  projection_version: number;
+  barrier_id: string;
+};
+
+function replayBarrierForCheckpoint(
+  row: SQLiteProjectionCheckpointRow | null,
+): BrokerJournalReplayOptions["afterBarrier"] {
+  if (
+    !row
+    || row.projection_version !== SQLITE_PROJECTION_VERSION
+    || typeof row.barrier_id !== "string"
+    || row.barrier_id.length === 0
+  ) {
+    return undefined;
+  }
+  return {
+    id: row.barrier_id,
+    projectionId: SQLITE_PROJECTION_ID,
+    projectionVersion: SQLITE_PROJECTION_VERSION,
+  };
+}
+
+function readReplayCheckpoint(
+  store: SQLiteControlPlaneStore,
+): BrokerJournalReplayOptions["afterBarrier"] {
+  const row = store.readerDb.query(
+    `SELECT projection_version, barrier_id
+     FROM broker_journal_projection_checkpoints
+     WHERE projection_id = ?1
+     LIMIT 1`,
+  ).get(SQLITE_PROJECTION_ID) as SQLiteProjectionCheckpointRow | null;
+  return replayBarrierForCheckpoint(row);
+}
+
+function writeReplayCheckpoint(
+  store: SQLiteControlPlaneStore,
+  barrier: BrokerJournalReplayBarrier,
+): void {
+  store.writerDb.query(
+    `INSERT INTO broker_journal_projection_checkpoints (
+       projection_id, projection_version, barrier_id, updated_at
+     ) VALUES (?1, ?2, ?3, ?4)
+     ON CONFLICT(projection_id) DO UPDATE SET
+       projection_version = excluded.projection_version,
+       barrier_id = excluded.barrier_id,
+       updated_at = excluded.updated_at`,
+  ).run(
+    SQLITE_PROJECTION_ID,
+    SQLITE_PROJECTION_VERSION,
+    barrier.id,
+    Date.now(),
+  );
+}
 
 function normalizeEntries(
   entriesInput: BrokerJournalEntry | BrokerJournalEntry[],
@@ -46,6 +156,12 @@ type ReplayParentScan = {
   referencedActors: Set<string>;
   referencedConversations: Set<string>;
 };
+
+type ReplayParentWrite =
+  | { kind: "node"; value: NodeDefinition; insertIfMissing: boolean }
+  | { kind: "actor"; value: ActorIdentity; insertIfMissing: boolean }
+  | { kind: "agent"; value: AgentDefinition; insertIfMissing: false }
+  | { kind: "conversation"; value: ConversationDefinition; insertIfMissing: boolean };
 
 function createReplayParentScan(): ReplayParentScan {
   return {
@@ -91,6 +207,7 @@ function collectReplayParents(scan: ReplayParentScan, entry: BrokerJournalEntry)
       break;
     case "agent.endpoint.delete":
     case "invocation.dispatch_job.record":
+    case "journal.replay_barrier":
       break;
     case "conversation.upsert":
       scan.providedConversations.set(entry.conversation.id, entry.conversation);
@@ -138,64 +255,122 @@ function collectReplayParents(scan: ReplayParentScan, entry: BrokerJournalEntry)
   }
 }
 
-function prepareReplayParents(
-  store: SQLiteControlPlaneStore,
-  scan: ReplayParentScan,
-): void {
+function* replayParentWrites(scan: ReplayParentScan): Generator<ReplayParentWrite> {
   const now = Date.now();
 
   const nodeIds = new Set([...scan.providedNodes.keys(), ...scan.referencedNodes]);
   for (const id of nodeIds) {
-    store.upsertNode(scan.providedNodes.get(id) ?? {
-      id,
-      meshId: "unknown",
-      name: id,
-      advertiseScope: "local",
-      registeredAt: now,
-    } as NodeDefinition);
+    const provided = scan.providedNodes.get(id);
+    yield {
+      kind: "node",
+      value: provided ?? {
+        id,
+        meshId: "unknown",
+        name: id,
+        advertiseScope: "local",
+        registeredAt: now,
+      } as NodeDefinition,
+      insertIfMissing: !provided,
+    };
   }
 
   const actorIds = new Set([...scan.providedActors.keys(), ...scan.referencedActors]);
   for (const id of actorIds) {
-    store.upsertActor(
-      scan.providedActors.get(id) ?? { id, kind: "agent", displayName: id } as ActorIdentity,
-    );
+    const provided = scan.providedActors.get(id);
+    yield {
+      kind: "actor",
+      value: provided ?? { id, kind: "agent", displayName: id } as ActorIdentity,
+      insertIfMissing: !provided,
+    };
   }
   for (const agent of scan.providedAgents.values()) {
-    store.upsertAgent(agent);
+    yield { kind: "agent", value: agent, insertIfMissing: false };
   }
 
   const anyNodeId =
     nodeIds.values().next().value ??
     "unknown";
   if (nodeIds.size === 0 && scan.referencedConversations.size > 0) {
-    store.upsertNode({
-      id: anyNodeId,
-      meshId: "unknown",
-      name: anyNodeId,
-      advertiseScope: "local",
-      registeredAt: now,
-    } as NodeDefinition);
+    yield {
+      kind: "node",
+      value: {
+        id: anyNodeId,
+        meshId: "unknown",
+        name: anyNodeId,
+        advertiseScope: "local",
+        registeredAt: now,
+      } as NodeDefinition,
+      insertIfMissing: true,
+    };
   }
   const conversationIds = new Set([
     ...scan.providedConversations.keys(),
     ...scan.referencedConversations,
   ]);
   for (const id of conversationIds) {
-    store.upsertConversation({
-      id,
-      kind: "direct",
-      title: id,
-      visibility: "private",
-      shareMode: "local",
-      authorityNodeId: anyNodeId,
-      participantIds: [],
-    } as ConversationDefinition);
+    yield {
+      kind: "conversation",
+      value: {
+        id,
+        kind: "direct",
+        title: id,
+        visibility: "private",
+        shareMode: "local",
+        authorityNodeId: anyNodeId,
+        participantIds: [],
+      } as ConversationDefinition,
+      insertIfMissing: true,
+    };
   }
   // Every conversation ID now exists, so parent references are safe regardless
   // of the order in which compacted definitions appear in the journal.
   for (const conversation of scan.providedConversations.values()) {
-    store.upsertConversation(conversation);
+    yield { kind: "conversation", value: conversation, insertIfMissing: false };
+  }
+}
+
+function replayParentExists(
+  store: SQLiteControlPlaneStore,
+  write: ReplayParentWrite,
+): boolean {
+  if (!write.insertIfMissing) return false;
+  const table = write.kind === "node"
+    ? "nodes"
+    : write.kind === "actor"
+      ? "actors"
+      : write.kind === "conversation"
+        ? "conversations"
+        : "agents";
+  return store.writerDb.query(
+    `SELECT 1 AS found FROM ${table} WHERE id = ?1 LIMIT 1`,
+  ).get(write.value.id) !== null;
+}
+
+function applyReplayParentWrite(
+  store: SQLiteControlPlaneStore,
+  write: ReplayParentWrite,
+): void {
+  // Incremental suffixes often reference rich parents defined before their
+  // checkpoint. Synthetic FK stubs may fill genuine holes, but must never
+  // overwrite those retained definitions (or clear conversation membership).
+  if (replayParentExists(store, write)) return;
+  switch (write.kind) {
+    case "node":
+      store.upsertNode(write.value);
+      return;
+    case "actor":
+      store.upsertActor(write.value);
+      return;
+    case "agent":
+      store.upsertAgent(write.value);
+      return;
+    case "conversation":
+      store.upsertConversation(write.value);
+      return;
+    default: {
+      const exhaustive: never = write;
+      return exhaustive;
+    }
   }
 }
 
@@ -276,6 +451,8 @@ function applyJournalEntryToStore(
         leaseOwner: undefined,
         leaseGeneration: undefined,
       });
+      return [];
+    case "journal.replay_barrier":
       return [];
     case "scout.dispatch.record":
       store.recordScoutDispatch(entry.dispatch);
@@ -363,6 +540,33 @@ function isFatalStoreError(error: unknown): boolean {
 export class RecoverableSQLiteProjection {
   private store: SQLiteControlPlaneStore | null = null;
 
+  private conversationProjection: Pick<
+    ConversationProjectionStore,
+    "applyBrokerBatch" | "applyObservedSessionBatch" | "eventsSince" | "meta" | "persistedActiveObservedSessionUpdates" | "reconcileAll" | "snapshot"
+  > | null = null;
+
+  private conversationFeedPublisher: Pick<ConversationFeedArtifactPublisher, "publish"> | null = null;
+
+  private conversationThreadPublisher: Pick<ConversationThreadArtifactPublisher, "publish"> | null = null;
+
+  private pendingConversationFeedSnapshot: ConversationProjectionSnapshot | null = null;
+
+  private conversationFeedPublishTimer: ReturnType<typeof setTimeout> | null = null;
+
+  private readonly conversationFeedPublishDelayMs: number;
+
+  private readonly pendingConversationThreadIds = new Set<string>();
+
+  private conversationThreadPublishTimer: ReturnType<typeof setTimeout> | null = null;
+
+  private readonly conversationThreadPublishDelayMs: number;
+
+  private readonly busyRetryAttempts: number;
+
+  private readonly busyRetryDelayMs: number;
+
+  private readonly sleep: (milliseconds: number) => Promise<void>;
+
   private queue: Promise<void> = Promise.resolve();
 
   private closed = false;
@@ -381,7 +585,34 @@ export class RecoverableSQLiteProjection {
     private readonly dbPath: string,
     private readonly journal: FileBackedBrokerJournal,
     private readonly options: RecoverableSQLiteProjectionOptions = {},
-  ) {}
+  ) {
+    const configuredDelay = options.conversationFeedPublishDelayMs;
+    this.conversationFeedPublishDelayMs = typeof configuredDelay === "number"
+      && Number.isFinite(configuredDelay)
+      && configuredDelay >= 0
+      ? Math.floor(configuredDelay)
+      : DEFAULT_CONVERSATION_FEED_PUBLISH_DELAY_MS;
+    const configuredThreadDelay = options.conversationThreadPublishDelayMs;
+    this.conversationThreadPublishDelayMs = typeof configuredThreadDelay === "number"
+      && Number.isFinite(configuredThreadDelay)
+      && configuredThreadDelay >= 0
+      ? Math.floor(configuredThreadDelay)
+      : DEFAULT_CONVERSATION_THREAD_PUBLISH_DELAY_MS;
+    const configuredBusyRetryAttempts = options.busyRetryAttempts;
+    this.busyRetryAttempts = typeof configuredBusyRetryAttempts === "number"
+      && Number.isFinite(configuredBusyRetryAttempts)
+      && configuredBusyRetryAttempts > 0
+      ? Math.max(1, Math.floor(configuredBusyRetryAttempts))
+      : DEFAULT_BUSY_RETRY_ATTEMPTS;
+    const configuredBusyRetryDelayMs = options.busyRetryDelayMs;
+    this.busyRetryDelayMs = typeof configuredBusyRetryDelayMs === "number"
+      && Number.isFinite(configuredBusyRetryDelayMs)
+      && configuredBusyRetryDelayMs >= 0
+      ? Math.floor(configuredBusyRetryDelayMs)
+      : DEFAULT_BUSY_RETRY_DELAY_MS;
+    this.sleep = options.sleep
+      ?? ((milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)));
+  }
 
   statusSnapshot(): SQLiteProjectionStatusSnapshot {
     if (this.options.disabled) {
@@ -390,14 +621,14 @@ export class RecoverableSQLiteProjection {
         detail: "SQLite projection is disabled by configuration.",
       };
     }
-    if (this.store) {
-      return { state: "ready", detail: null };
-    }
     if (this.warming) {
       return {
         state: "warming",
-        detail: "SQLite activity projection is rebuilding from the broker journal.",
+        detail: "SQLite projections are reconciling from the broker journal; prior launch views remain readable.",
       };
+    }
+    if (this.store) {
+      return { state: "ready", detail: null };
     }
     return {
       state: "degraded",
@@ -459,9 +690,13 @@ export class RecoverableSQLiteProjection {
       }
 
       try {
-        applyJournalEntriesToStore(store, entries, reportSkippedEntry);
+        await this.withBusyRetry(() => {
+          applyJournalEntriesToStore(store, entries, reportSkippedEntry);
+          this.applyConversationProjectionBatch(store, entries);
+        });
       } catch (error) {
         if (isTransientStoreBusyError(error)) {
+          await this.rebuildAfterExhaustedBusy(error);
           return;
         }
         if (isFatalStoreError(error)) {
@@ -492,7 +727,7 @@ export class RecoverableSQLiteProjection {
       }
 
       try {
-        store.recordEvent(event);
+        await this.withBusyRetry(() => store.recordEvent(event));
       } catch (error) {
         if (isTransientStoreBusyError(error)) {
           return;
@@ -567,9 +802,14 @@ export class RecoverableSQLiteProjection {
       }
 
       try {
-        return applyJournalEntriesToStore(store, entries, reportSkippedEntry);
+        return await this.withBusyRetry(() => {
+          const threadEvents = applyJournalEntriesToStore(store, entries, reportSkippedEntry);
+          this.applyConversationProjectionBatch(store, entries);
+          return threadEvents;
+        });
       } catch (error) {
         if (isTransientStoreBusyError(error)) {
+          await this.rebuildAfterExhaustedBusy(error);
           return [];
         }
         if (isFatalStoreError(error)) {
@@ -578,6 +818,37 @@ export class RecoverableSQLiteProjection {
           reportSkippedEntry({ kind: "unknown" } as never, error);
         }
         return [];
+      }
+    });
+  }
+
+  /**
+   * Serialized sink for the keyed transcript reducer. Observed summaries share
+   * the broker projection cursor and artifact publisher, but never enter the
+   * canonical Scout message tables.
+   */
+  async applyObservedSessionBatch(
+    updates: readonly ObservedSessionProjectionUpdate[],
+  ): Promise<void> {
+    if (updates.length === 0 || this.options.disabled || this.closed) return;
+    await this.enqueueResult(async () => {
+      const store = await this.ensureStore();
+      if (!store) return;
+      try {
+        await this.withBusyRetry(() => {
+          const conversationProjection = this.ensureConversationProjection(store);
+          const event = conversationProjection.applyObservedSessionBatch(updates);
+          if (event) {
+            this.publishConversationFeed(conversationProjection);
+          }
+        });
+      } catch (error) {
+        if (isFatalStoreError(error)) {
+          this.invalidateStore(error);
+        } else if (!isTransientStoreBusyError(error)) {
+          console.warn(`[broker] observed session projection skipped batch: ${formatError(error)}`);
+        }
+        throw error;
       }
     });
   }
@@ -674,10 +945,90 @@ export class RecoverableSQLiteProjection {
     }
   }
 
+  async conversationSnapshot(limit?: number): Promise<ConversationProjectionSnapshot | null> {
+    if (this.options.disabled || this.closed) {
+      return null;
+    }
+
+    // Unlike canonical/thread reads, the launch view is explicitly allowed to
+    // serve its prior committed sequence while startup reconciliation runs.
+    // Waiting on the projection queue here would put journal replay back on the
+    // first-paint path this materialized view exists to remove.
+    const store = this.store;
+    if (!store) {
+      // A launch read is a cache lookup, never a recovery barrier. If the
+      // replaceable projection is unavailable, start one shared rebuild in the
+      // background and let the caller use its bounded compatibility fallback.
+      // Awaiting ensureStore() here used to inherit a full two-pass journal
+      // replay (and the broker request's 30 second timeout) on first paint.
+      if (!this.warming) void this.warm().catch(() => {});
+      return null;
+    }
+
+    try {
+      return this.ensureConversationProjection(store).snapshot(limit);
+    } catch (error) {
+      if (isTransientStoreBusyError(error)) {
+        return null;
+      }
+      this.invalidateStore(error);
+      return null;
+    }
+  }
+
+  async persistedActiveObservedSessionUpdates(
+    limit?: number,
+  ): Promise<ObservedSessionProjectionUpdate[] | null> {
+    if (this.options.disabled || this.closed) return null;
+    // Startup hydration reads the last committed projection exactly like the
+    // launch snapshot. Waiting for the recovery queue here would turn a
+    // five-minute journal rebuild into a broker-startup dependency.
+    const store = this.store;
+    if (!store) return null;
+    try {
+      return await this.withBusyRetry(() => (
+        this.ensureConversationProjection(store).persistedActiveObservedSessionUpdates(limit)
+      ));
+    } catch (error) {
+      if (!isTransientStoreBusyError(error)) this.invalidateStore(error);
+      return null;
+    }
+  }
+
+  async conversationEvents(
+    cursor: ConversationProjectionCursor,
+    limit?: number,
+  ): Promise<ConversationProjectionEventPage | null> {
+    if (this.options.disabled || this.closed) {
+      return null;
+    }
+
+    await this.flush();
+    const store = await this.ensureStore();
+    if (!store) {
+      return null;
+    }
+
+    try {
+      return this.ensureConversationProjection(store).eventsSince(cursor, limit);
+    } catch (error) {
+      if (isTransientStoreBusyError(error)) {
+        return null;
+      }
+      this.invalidateStore(error);
+      return null;
+    }
+  }
+
   close(): void {
     this.closed = true;
+    this.flushPendingConversationFeed();
+    this.flushPendingConversationThreads();
     const current = this.store;
     this.store = null;
+    this.conversationProjection = null;
+    this.conversationFeedPublisher = null;
+    this.conversationThreadPublisher = null;
     current?.close();
   }
 
@@ -703,20 +1054,153 @@ export class RecoverableSQLiteProjection {
     return next;
   }
 
-  private async replayJournal(
-    visitor: (entry: BrokerJournalEntry) => void | Promise<void>,
-    boundary: BrokerJournalReplayBoundary,
-  ): Promise<void> {
-    const configuredBatchSize = this.options.replayYieldEvery ?? DEFAULT_REPLAY_YIELD_EVERY;
-    const batchSize = Math.max(1, Math.floor(configuredBatchSize));
-    let visited = 0;
-    await this.journal.replay(async (entry) => {
-      await visitor(entry);
-      visited += 1;
-      if (visited % batchSize === 0) {
-        await new Promise<void>((resolve) => setImmediate(resolve));
+  private async withBusyRetry<T>(operation: () => T | Promise<T>): Promise<T> {
+    for (let attempt = 1; attempt <= this.busyRetryAttempts; attempt += 1) {
+      try {
+        return await operation();
+      } catch (error) {
+        if (!isTransientStoreBusyError(error) || attempt >= this.busyRetryAttempts) {
+          throw error;
+        }
+        await this.sleep(this.busyRetryDelayMs * attempt);
       }
-    }, boundary);
+    }
+    throw new Error("unreachable SQLite busy retry state");
+  }
+
+  private discardCurrentStoreForRetry(): void {
+    this.clearPendingConversationThreads();
+    const current = this.store;
+    this.store = null;
+    this.conversationProjection = null;
+    current?.close();
+  }
+
+  private async rebuildAfterExhaustedBusy(error: unknown): Promise<void> {
+    this.invalidateStore(error);
+    if (!this.closed) {
+      await this.ensureStore();
+    }
+  }
+
+  private replayBatchSize(): number {
+    const configuredBatchSize = this.options.replayYieldEvery ?? DEFAULT_REPLAY_YIELD_EVERY;
+    return Number.isFinite(configuredBatchSize)
+      ? Math.max(1, Math.floor(configuredBatchSize))
+      : DEFAULT_REPLAY_YIELD_EVERY;
+  }
+
+  private async yieldReplayTurn(): Promise<void> {
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+  }
+
+  private async forEachReplayBatch<T>(
+    values: Iterable<T>,
+    visitor: (batch: readonly T[]) => void | Promise<void>,
+  ): Promise<void> {
+    const batchSize = this.replayBatchSize();
+    let batch: T[] = [];
+    for (const value of values) {
+      if (batch.length === batchSize) {
+        await visitor(batch);
+        batch = [];
+        await this.yieldReplayTurn();
+      }
+      batch.push(value);
+    }
+    if (batch.length > 0) {
+      await visitor(batch);
+    }
+  }
+
+  private async replayJournalInBatches(
+    visitor: (batch: readonly BrokerJournalEntry[]) => void | Promise<void>,
+    boundary: BrokerJournalReplayBoundary,
+    options: BrokerJournalReplayOptions = {},
+  ): Promise<BrokerJournalReplayReport> {
+    const batchSize = this.replayBatchSize();
+    let batch: BrokerJournalEntry[] = [];
+    let batchWork = 0;
+    const flushForMoreWork = async (): Promise<void> => {
+      await visitor(batch);
+      batch = [];
+      batchWork = 0;
+      await this.yieldReplayTurn();
+    };
+    const replayReport = await this.journal.replay(async (entry) => {
+      if (entry.kind !== "deliveries.record" || entry.deliveries.length === 0) {
+        // Endpoint projection derives session aliases and budget observations,
+        // so it is materially heavier than a scalar record upsert. Account for
+        // that work while preserving journal order; with the default 128-unit
+        // budget, at most eight endpoint upserts monopolize one event-loop turn.
+        const entryWork = entry.kind === "agent.endpoint.upsert"
+          ? Math.min(REPLAY_ENDPOINT_UPSERT_WORK, batchSize)
+          : 1;
+        if (batchWork > 0 && batchWork + entryWork > batchSize) {
+          await flushForMoreWork();
+        }
+        batch.push(entry);
+        batchWork += entryWork;
+        return;
+      }
+
+      let offset = 0;
+      while (offset < entry.deliveries.length) {
+        if (batchWork === batchSize) await flushForMoreWork();
+        const chunkSize = Math.min(batchSize - batchWork, entry.deliveries.length - offset);
+        batch.push({
+          kind: "deliveries.record",
+          deliveries: entry.deliveries.slice(offset, offset + chunkSize),
+        });
+        batchWork += chunkSize;
+        offset += chunkSize;
+      }
+    }, boundary, options);
+    if (batchWork > 0) {
+      await visitor(batch);
+    }
+    return replayReport ?? {
+      afterBarrierFound: options.afterBarrier === undefined,
+      visitedEntries: 0,
+    };
+  }
+
+  private async prepareReplayParents(
+    store: SQLiteControlPlaneStore,
+    scan: ReplayParentScan,
+  ): Promise<void> {
+    await this.forEachReplayBatch(replayParentWrites(scan), (batch) => {
+      store.runReplayTransaction(() => {
+        for (const write of batch) {
+          applyReplayParentWrite(store, write);
+        }
+      });
+    });
+  }
+
+  private async applyReplayJournal(
+    store: SQLiteControlPlaneStore,
+    boundary: BrokerJournalReplayBoundary,
+    options: BrokerJournalReplayOptions = {},
+  ): Promise<BrokerJournalReplayReport> {
+    const applyBatch = (batch: readonly BrokerJournalEntry[]): void => {
+      store.runReplayTransaction(() => {
+        for (const entry of batch) {
+          try {
+            applyJournalEntryToStore(store, entry);
+          } catch (error) {
+            if (isTransientStoreBusyError(error)) {
+              throw error;
+            }
+            if (isFatalStoreError(error)) {
+              throw error;
+            }
+            reportSkippedEntry(entry, error);
+          }
+        }
+      });
+    };
+    return this.replayJournalInBatches(applyBatch, boundary, options);
   }
 
   private async ensureStore(onReplayBoundaryCaptured?: () => void): Promise<SQLiteControlPlaneStore | null> {
@@ -730,42 +1214,100 @@ export class RecoverableSQLiteProjection {
       return this.store;
     }
 
+    let replayBoundary: BrokerJournalReplayBoundary;
     try {
-      const replayBoundary = await this.journal.captureReplayBoundary();
+      replayBoundary = await this.withBusyRetry(() => this.journal.captureReplayBoundary({
+        barrier: {
+          id: randomUUID(),
+          projectionId: SQLITE_PROJECTION_ID,
+          projectionVersion: SQLITE_PROJECTION_VERSION,
+          createdAt: Date.now(),
+        },
+      }));
       onReplayBoundaryCaptured?.();
-      const createStore = this.options.createStore ?? ((dbPath: string) => new SQLiteControlPlaneStore(dbPath));
-      const store = createStore(this.dbPath);
-      // First pass retains only the latest FK parents and referenced IDs. The
-      // second pass applies the journal in order. Memory is bounded by current
-      // entity cardinality instead of historical journal entry count.
-      const parents = createReplayParentScan();
-      await this.replayJournal((entry) => {
-        collectReplayParents(parents, entry);
-      }, replayBoundary);
-      prepareReplayParents(store, parents);
-      await this.replayJournal((entry) => {
-        try {
-          applyJournalEntryToStore(store, entry);
-        } catch (error) {
-          if (isTransientStoreBusyError(error)) {
-            throw error;
-          }
-          if (isFatalStoreError(error)) {
-            throw error;
-          }
-          reportSkippedEntry(entry, error);
-        }
-      }, replayBoundary);
-      this.store = store;
-      this.lastUnavailableReason = null;
-      return store;
+      // Let the daemon's listener-ready continuation run before synchronous
+      // SQLite construction/migrations begin. Resolving the warm boundary and
+      // immediately opening here would keep the same microtask occupied, so a
+      // large database could still make already-bound listeners appear dead.
+      await this.yieldReplayTurn();
     } catch (error) {
-      if (isTransientStoreBusyError(error)) {
-        return null;
-      }
       this.invalidateStore(error);
       return null;
     }
+
+    const createStore = this.options.createStore
+      ?? ((dbPath: string) => new SQLiteControlPlaneStore(dbPath));
+    for (let attempt = 1; attempt <= this.busyRetryAttempts; attempt += 1) {
+      try {
+        const store = createStore(this.dbPath);
+        this.store = store;
+        const conversationProjection = this.ensureConversationProjection(store);
+        // Make the last committed launch view readable immediately. Durable
+        // writes remain queued behind this recovery task, so the canonical store
+        // still cannot race the fixed journal boundary.
+        this.lastUnavailableReason = null;
+        const priorSnapshot = conversationProjection.snapshot(160);
+        if (priorSnapshot.total > 0) {
+          this.publishConversationFeed(conversationProjection);
+          this.publishConversationThreads(store, conversationProjection);
+        }
+        // A checkpoint is trusted only when the exact opaque marker still
+        // exists in this journal. Compaction preserves marker ordering but can
+        // change every byte offset, so marker identity — never an offset — is
+        // the durable resume contract. Missing/foreign/version-old markers
+        // fall back to the complete replay path.
+        let replayAfter = replayBoundary.barrier
+          ? readReplayCheckpoint(store)
+          : undefined;
+        let parents = createReplayParentScan();
+        const parentReport = await this.replayJournalInBatches((batch) => {
+          for (const entry of batch) collectReplayParents(parents, entry);
+        }, replayBoundary, { afterBarrier: replayAfter });
+        if (replayAfter && !parentReport.afterBarrierFound) {
+          replayAfter = undefined;
+          parents = createReplayParentScan();
+          await this.replayJournalInBatches((batch) => {
+            for (const entry of batch) collectReplayParents(parents, entry);
+          }, replayBoundary);
+        }
+        await this.prepareReplayParents(store, parents);
+        const replayReport = await this.applyReplayJournal(
+          store,
+          replayBoundary,
+          { afterBarrier: replayAfter },
+        );
+        if (replayAfter && !replayReport.afterBarrierFound) {
+          throw new Error("SQLite projection replay barrier disappeared during fixed-boundary recovery.");
+        }
+        conversationProjection.reconcileAll();
+        // This autocommit is deliberately last among durable projection writes.
+        // A crash before it leaves the old checkpoint in place, making the next
+        // boot idempotently replay the suffix again. A committed new checkpoint
+        // therefore proves every journal fact through its barrier committed.
+        if (replayBoundary.barrier) {
+          writeReplayCheckpoint(store, replayBoundary.barrier);
+        }
+        this.publishConversationFeed(conversationProjection);
+        this.publishConversationThreads(store, conversationProjection);
+        return store;
+      } catch (error) {
+        if (isTransientStoreBusyError(error)) {
+          // The store becomes readable before replay yields so launch reads can
+          // use the prior projection. A later BUSY must revoke that candidate;
+          // otherwise warm() would report ready around a partially replayed DB.
+          this.discardCurrentStoreForRetry();
+          if (attempt < this.busyRetryAttempts) {
+            await this.sleep(this.busyRetryDelayMs * attempt);
+            continue;
+          }
+          this.invalidateStore(error);
+          return null;
+        }
+        this.invalidateStore(error);
+        return null;
+      }
+    }
+    return null;
   }
 
   private invalidateStore(error: unknown): void {
@@ -775,8 +1317,207 @@ export class RecoverableSQLiteProjection {
       this.lastUnavailableReason = reason;
     }
 
+    this.flushPendingConversationFeed();
+    this.clearPendingConversationThreads();
     const current = this.store;
     this.store = null;
+    this.conversationProjection = null;
+    this.conversationFeedPublisher = null;
+    this.conversationThreadPublisher = null;
     current?.close();
+  }
+
+  private ensureConversationProjection(
+    store: SQLiteControlPlaneStore,
+  ): Pick<
+    ConversationProjectionStore,
+    "applyBrokerBatch" | "applyObservedSessionBatch" | "eventsSince" | "meta" | "persistedActiveObservedSessionUpdates" | "reconcileAll" | "snapshot"
+  > {
+    if (!this.conversationProjection) {
+      this.conversationProjection = this.options.createConversationProjection?.(store)
+        ?? new ConversationProjectionStore(
+          store.writerDb as ControlPlaneSqliteTransactionalDatabase,
+        );
+    }
+    return this.conversationProjection;
+  }
+
+  private ensureConversationFeedPublisher(): Pick<ConversationFeedArtifactPublisher, "publish"> {
+    if (!this.conversationFeedPublisher) {
+      const outputPath = this.options.conversationFeedArtifactPath
+        ?? join(dirname(this.dbPath), NATIVE_READ_FEED_ARTIFACT_FILENAME);
+      this.conversationFeedPublisher = this.options.createConversationFeedPublisher?.(outputPath)
+        ?? new ConversationFeedArtifactPublisher(outputPath);
+    }
+    return this.conversationFeedPublisher;
+  }
+
+  private ensureConversationThreadPublisher(): Pick<ConversationThreadArtifactPublisher, "publish"> {
+    if (!this.conversationThreadPublisher) {
+      const outputDirectory = this.options.conversationThreadArtifactDirectory
+        ?? join(dirname(this.dbPath), NATIVE_READ_THREAD_ARTIFACT_DIRECTORY);
+      this.conversationThreadPublisher = this.options.createConversationThreadPublisher?.(
+        outputDirectory,
+      ) ?? new ConversationThreadArtifactPublisher(outputDirectory);
+    }
+    return this.conversationThreadPublisher;
+  }
+
+  private applyConversationProjectionBatch(
+    store: SQLiteControlPlaneStore,
+    entries: readonly BrokerJournalEntry[],
+  ): void {
+    const projection = this.ensureConversationProjection(store);
+    const event = projection.applyBrokerBatch(entries);
+    if (event) {
+      this.publishConversationFeed(projection);
+    }
+
+    // Thread content has a distinct revision domain from the feed list. In
+    // particular, correcting a retained non-latest message can leave the list
+    // item semantically unchanged (and therefore produce no projection event),
+    // but the native selected-thread page must still be replaced. Include the
+    // entry identities unconditionally and any prior conversation surfaced by
+    // a move correction in the material list delta.
+    const changedConversationIds = new Set(
+      entries
+        .filter((entry): entry is Extract<BrokerJournalEntry, { kind: "message.record" }> => (
+          entry.kind === "message.record"
+        ))
+        .map((entry) => entry.message.conversationId)
+        .filter(Boolean),
+    );
+    if (event && changedConversationIds.size > 0) {
+      for (const item of event.delta.upserted) {
+        if (item.entityKind === "scout_conversation" && item.conversationId) {
+          changedConversationIds.add(item.conversationId);
+        }
+      }
+    }
+    if (changedConversationIds.size > 0) {
+      this.publishConversationThreads(store, projection, [...changedConversationIds]);
+    }
+  }
+
+  private publishConversationFeed(
+    projection: Pick<ConversationProjectionStore, "snapshot">,
+  ): void {
+    const snapshot = projection.snapshot(160);
+    if (this.conversationFeedPublishDelayMs === 0) {
+      this.writeConversationFeed(snapshot);
+      return;
+    }
+
+    this.pendingConversationFeedSnapshot = snapshot;
+    if (this.conversationFeedPublishTimer) return;
+    this.conversationFeedPublishTimer = setTimeout(() => {
+      this.conversationFeedPublishTimer = null;
+      const pending = this.pendingConversationFeedSnapshot;
+      this.pendingConversationFeedSnapshot = null;
+      if (pending) this.writeConversationFeed(pending);
+    }, this.conversationFeedPublishDelayMs);
+    this.conversationFeedPublishTimer.unref?.();
+  }
+
+  private writeConversationFeed(snapshot: ConversationProjectionSnapshot): void {
+    try {
+      this.ensureConversationFeedPublisher().publish(snapshot);
+    } catch (error) {
+      // The artifact is a replaceable delivery cache. A serialization or disk
+      // failure must never invalidate the authoritative SQLite projection or
+      // reject the durable broker write that already committed.
+      console.warn(`[broker] native conversation feed publish failed: ${formatError(error)}`);
+    }
+  }
+
+  private flushPendingConversationFeed(): void {
+    if (this.conversationFeedPublishTimer) {
+      clearTimeout(this.conversationFeedPublishTimer);
+      this.conversationFeedPublishTimer = null;
+    }
+    const pending = this.pendingConversationFeedSnapshot;
+    this.pendingConversationFeedSnapshot = null;
+    if (pending) this.writeConversationFeed(pending);
+  }
+
+  private publishConversationThreads(
+    store: SQLiteControlPlaneStore,
+    projection: Pick<ConversationProjectionStore, "meta" | "snapshot">,
+    conversationIds?: readonly string[],
+  ): void {
+    const ids = new Set(
+      (conversationIds ?? [])
+        .map((conversationId) => conversationId.trim())
+        .filter(Boolean),
+    );
+    if (conversationIds === undefined) {
+      const launch = projection.snapshot(160);
+      if (launch.engagedFeedId?.startsWith("conv:")) {
+        ids.add(launch.engagedFeedId.slice("conv:".length));
+      }
+      for (const item of launch.items) {
+        if (ids.size >= 4) break;
+        if (item.entityKind === "scout_conversation" && item.conversationId) {
+          ids.add(item.conversationId);
+        }
+      }
+    }
+    if (ids.size === 0) return;
+    for (const conversationId of ids) this.pendingConversationThreadIds.add(conversationId);
+
+    if (this.conversationThreadPublishDelayMs === 0) {
+      this.flushPendingConversationThreads(store, projection);
+      return;
+    }
+    if (this.conversationThreadPublishTimer) return;
+    this.conversationThreadPublishTimer = setTimeout(() => {
+      this.conversationThreadPublishTimer = null;
+      this.flushPendingConversationThreads(store, projection);
+    }, this.conversationThreadPublishDelayMs);
+    this.conversationThreadPublishTimer.unref?.();
+  }
+
+  private flushPendingConversationThreads(
+    expectedStore: SQLiteControlPlaneStore | null = this.store,
+    expectedProjection: Pick<ConversationProjectionStore, "meta" | "snapshot"> | null = this.conversationProjection,
+  ): void {
+    if (this.conversationThreadPublishTimer) {
+      clearTimeout(this.conversationThreadPublishTimer);
+      this.conversationThreadPublishTimer = null;
+    }
+    const conversationIds = [...this.pendingConversationThreadIds];
+    this.pendingConversationThreadIds.clear();
+    if (
+      conversationIds.length === 0
+      || !expectedStore
+      || !expectedProjection
+      || expectedStore !== this.store
+      || expectedProjection !== this.conversationProjection
+    ) return;
+    try {
+      const meta = expectedProjection.meta();
+      for (const conversationId of conversationIds) {
+        const snapshot = expectedStore.getConversationThreadLaunchSnapshot({
+          conversationId,
+          projectionId: meta.projectionId,
+          projectionVersion: meta.projectionVersion,
+          sequence: meta.headSeq,
+          limit: 64,
+        });
+        if (snapshot) this.ensureConversationThreadPublisher().publish(snapshot);
+      }
+    } catch (error) {
+      // Like the feed artifact, retained thread pages are disposable delivery
+      // caches. A failure cannot reject the durable write or invalidate SQLite.
+      console.warn(`[broker] native conversation thread publish failed: ${formatError(error)}`);
+    }
+  }
+
+  private clearPendingConversationThreads(): void {
+    if (this.conversationThreadPublishTimer) {
+      clearTimeout(this.conversationThreadPublishTimer);
+      this.conversationThreadPublishTimer = null;
+    }
+    this.pendingConversationThreadIds.clear();
   }
 }

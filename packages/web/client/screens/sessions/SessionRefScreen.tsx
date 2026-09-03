@@ -17,7 +17,9 @@ import { ConversationScreen } from "../chat/ConversationScreen.tsx";
 import { SessionObserve, SessionObserveContextRail } from "./SessionObserve.tsx";
 import {
   activeSessionRefLookupState,
+  brokerEventMayAffectSessionRef,
   createSessionRefLookupCoordinator,
+  sessionRefsMatch,
   type SessionRefLookupState,
 } from "./session-ref-lookup-state.ts";
 import "../chat/inbox-thread-redesign.css";
@@ -147,18 +149,24 @@ function useSessionRefLookup(sessionRef: string) {
   const { lookup, loading, error } = activeSessionRefLookupState(state, sessionRef);
 
   const scheduleRefresh = useCallback(() => {
-    if (refreshTimerRef.current) {
-      clearTimeout(refreshTimerRef.current);
-    }
+    if (refreshTimerRef.current) return;
     refreshTimerRef.current = setTimeout(() => {
       refreshTimerRef.current = null;
       void load();
-    }, 150);
+    }, 1_000);
   }, [load]);
 
-  // Same 150ms debounce as the tail-event path — broker control events arrive
-  // in bursts and must not force a full session-ref reload per event.
-  useBrokerEvents(scheduleRefresh);
+  useBrokerEvents((event) => {
+    const refs = [
+      sessionRef,
+      lookup?.refId,
+      lookup?.kind === "conversation" ? lookup.conversationId : null,
+      lookup?.session?.agentId,
+      lookup?.kind === "observe" ? lookup.observe.agentId : null,
+      lookup?.kind === "observe" ? lookup.observe.sessionId : null,
+    ];
+    if (brokerEventMayAffectSessionRef(event, refs)) scheduleRefresh();
+  });
 
   useTailEvents((event) => {
     const eventRef = normalizeSessionRef(event.sessionId);
@@ -170,9 +178,9 @@ function useSessionRefLookup(sessionRef: string) {
       ? normalizeSessionRef(lookup.observe.data.metadata?.session?.externalSessionId)
       : "";
     if (
-      eventRef !== routeRef
-      && (!observeRef || eventRef !== observeRef)
-      && (!externalRef || eventRef !== externalRef)
+      !sessionRefsMatch(eventRef, routeRef)
+      && (!observeRef || !sessionRefsMatch(eventRef, observeRef))
+      && (!externalRef || !sessionRefsMatch(eventRef, externalRef))
     ) {
       return;
     }

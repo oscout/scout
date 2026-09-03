@@ -15,6 +15,7 @@ import {
   isRunning,
   LAUNCH_SERVICES_LAYERS,
   layerProcesses,
+  ownedSweepSurvivorPids,
   planStop,
   readProcessTable,
   resolveAppBundlePaths,
@@ -34,6 +35,13 @@ const HELP_FLAGS = new Set(["help", "--help", "-h"]);
 const INSTALLED_APP_BUNDLE_ID = "app.openscout.scout";
 const INSTALLED_APP_BUNDLE_NAME = "OpenScout.app";
 const READY_TIMEOUT_MS = 30_000;
+// `scoutd start` historically waited this long for broker health before the
+// lifecycle command performed its final app/tree check. Opening Scout earlier
+// must not shorten that complete supervised-tree reporting window.
+const SUPERVISED_READY_TIMEOUT_MS = 120_000;
+// scoutd gives its child tree 18 seconds to drain. Let that ownership contract
+// run before directly signalling only the still-owned pre-bootout survivors.
+const SUPERVISED_DRAIN_TIMEOUT_MS = 20_000;
 const POLL_MS = 250;
 
 type ScoutAppCommand = {
@@ -216,6 +224,14 @@ async function waitFor(
   return tree;
 }
 
+export function startTreeReady(tree: LifecycleTree, scope: StopScope): boolean {
+  const appsReady = tree.layers.app.length > 0 && tree.layers.menu.length > 0;
+  if (!appsReady || scope === "apps") {
+    return appsReady;
+  }
+  return SUPERVISED_LAYERS.every((layer) => tree.layers[layer].length > 0);
+}
+
 async function stopSuite(paths: AppBundlePaths, steps: string[], scope: StopScope): Promise<LifecycleTree> {
   const tree = readTree(paths);
   const uid = process.getuid?.() ?? 0;
@@ -229,7 +245,17 @@ async function stopSuite(paths: AppBundlePaths, steps: string[], scope: StopScop
       continue;
     }
 
-    const { escalated, survivors } = await terminateProcesses(step.pids);
+    let pids = step.pids;
+    if (step.kind === "sweep") {
+      const drainedTree = await waitFor(
+        paths,
+        (candidate) => ownedSweepSurvivorPids(step, candidate).length === 0,
+        SUPERVISED_DRAIN_TIMEOUT_MS,
+      );
+      pids = ownedSweepSurvivorPids(step, drainedTree);
+    }
+
+    const { escalated, survivors } = await terminateProcesses(pids);
     const notes: string[] = [];
     if (escalated.length > 0) notes.push(`escalated to SIGKILL: ${escalated.join(", ")}`);
     if (survivors.length > 0) notes.push(`still alive: ${survivors.join(", ")}`);
@@ -250,6 +276,7 @@ async function startSuite(
   options: { restart?: boolean } = {},
 ): Promise<LifecycleTree> {
   const uid = process.getuid?.() ?? 0;
+  let supervisedReadiness: Promise<LifecycleTree> | null = null;
 
   // `--apps-only` has to scope the start as well as the stop. Scoping only half
   // of a restart is worse than not scoping it: the stop leaves the services up,
@@ -262,30 +289,42 @@ async function startSuite(
     const launched = startLaunchdJob(label, uid, homedir(), {
       restart: options.restart,
       serviceRoot: paths.serviceRoot,
+      // `startSuite` owns the complete-tree readiness wait below. Asking
+      // scoutd to perform the same broker-health wait here would keep this
+      // synchronous call between the launchd kick and opening native Scout.
+      waitForHealth: false,
     });
     steps.push(launched.ok
       ? `${launched.method} ${label}`
       : `${launched.method} ${label} — failed: ${launched.detail || "unknown error"}`);
 
-    const supervised = await waitFor(
+    supervisedReadiness = waitFor(
       paths,
       (tree) => SUPERVISED_LAYERS.every((layer) => tree.layers[layer].length > 0),
-      READY_TIMEOUT_MS,
+      SUPERVISED_READY_TIMEOUT_MS,
     );
-    const missing = SUPERVISED_LAYERS.filter((layer) => supervised.layers[layer].length === 0);
-    steps.push(missing.length === 0
-      ? "supervised tree ready"
-      : `supervised tree incomplete — missing ${missing.join(", ")}`);
   }
 
+  // The native Messages surface is backed by the last materialized snapshot,
+  // so opening the app does not need to wait for broker projection recovery or
+  // the web child. Keep the readiness promise running in parallel and still
+  // report the complete supervised result before this command returns.
   const open = spawnSync("open", [paths.appBundlePath], { encoding: "utf8" });
   steps.push((open.status ?? 1) === 0
     ? `open ${paths.appBundlePath}`
     : `open ${paths.appBundlePath} — failed: ${(open.stderr ?? "").trim() || "unknown error"}`);
 
+  if (supervisedReadiness) {
+    const supervised = await supervisedReadiness;
+    const missing = SUPERVISED_LAYERS.filter((layer) => supervised.layers[layer].length === 0);
+    steps.push(missing.length === 0
+      ? "supervised tree ready"
+      : `supervised tree still starting — missing ${missing.join(", ")}`);
+  }
+
   const tree = await waitFor(
     paths,
-    (candidate) => candidate.layers.app.length > 0 && candidate.layers.menu.length > 0,
+    (candidate) => startTreeReady(candidate, scope),
     READY_TIMEOUT_MS,
   );
   const appsMissing = LAUNCH_SERVICES_LAYERS.filter(

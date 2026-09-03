@@ -15,7 +15,7 @@ import { openContent } from "../../scout/slots/openContent.ts";
 import { pathLeaf } from "../agents/model.ts";
 import { SessionRefScreen, type SessionRefLookup } from "../sessions/SessionRefScreen.tsx";
 import { AddProjectForm } from "./AddProjectForm.tsx";
-import { CrewWorkspaces } from "./CrewWorkspaces.tsx";
+import { CrewWorkspaces, ProjectAgentDirectory } from "./CrewWorkspaces.tsx";
 import { shortHomePath } from "./project-overview-helpers.ts";
 import {
   nativeTerminalDeepLink,
@@ -31,6 +31,7 @@ import {
   sessionOpenRoute,
   findInboxSession,
   sessionSelectRoute,
+  resolveProjectSlug,
   sessionsForProject,
   threadOpenRoute,
   threadSelectRoute,
@@ -215,10 +216,15 @@ function ProjectScopeHeader({
   const agentThreads = projectThreads.filter((thread) => thread.kind === "agent");
   const title = project?.title ?? slug;
   const root = project?.root ?? null;
-  const showAgentFacet = (project?.agentCount ?? agentThreads.length) > 1;
+  const showAgentFacet = (project?.agentCount ?? agentThreads.length) > 0;
   const machineScope = route.machineId ? { machineId: route.machineId } : {};
   const baseRoute = { view: "agents-v2" as const, projectSlug: slug, ...machineScope };
-  const digest = digestLine(project?.needs ?? 0, project?.working ?? 0, projectThreads.length);
+  const digest = projectDigest(
+    project?.needs ?? 0,
+    Math.max(project?.working ?? 0, project?.liveSessionCount ?? 0),
+    project?.agentCount ?? (agentThreads.length > 0 ? 1 : 0),
+    project?.sessionCount ?? 0,
+  );
 
   const worktreeCount = repoProject?.worktrees.length ?? project?.worktreeCount ?? 0;
 
@@ -289,12 +295,12 @@ function ProjectScopeHeader({
   );
 }
 
-function digestLine(needs: number, working: number, total: number): ReactNode {
-  if (total === 0) return <span>No conversations yet.</span>;
+function projectDigest(needs: number, active: number, agents: number, sessions: number): ReactNode {
   const parts: ReactNode[] = [];
-  if (working > 0) parts.push(<b key="w">{working} moving</b>);
+  if (active > 0) parts.push(<b key="w">{active} active</b>);
   if (needs > 0) parts.push(<b key="n">{needs} needs you</b>);
-  parts.push(<span key="t">{total} conversation{total === 1 ? "" : "s"}</span>);
+  parts.push(<span key="a">{agents} agent{agents === 1 ? "" : "s"}</span>);
+  parts.push(<span key="s">{sessions} session{sessions === 1 ? "" : "s"}</span>);
   return parts.reduce<ReactNode[]>((result, node, index) => {
     if (index > 0) result.push(<span key={`sep${index}`}> · </span>);
     result.push(node);
@@ -1657,9 +1663,9 @@ function ProjectOverviewMain({
           </div>
           {sessionCount > 0 || agentCount > 0 || workCount > 0 ? (
             <div className="pi-projectRepositoryStats" aria-label="Repository activity">
-              {sessionCount > 0 ? <span><b>{compactNumber(sessionCount)}</b> sessions</span> : null}
-              {agentCount > 0 ? <span><b>{compactNumber(agentCount)}</b> agents</span> : null}
-              {workCount > 0 ? <span><b>{compactNumber(workCount)}</b> threads</span> : null}
+              {sessionCount > 0 ? <span><b>{compactNumber(sessionCount)}</b> {sessionCount === 1 ? "session" : "sessions"}</span> : null}
+              {agentCount > 0 ? <span><b>{compactNumber(agentCount)}</b> {agentCount === 1 ? "agent" : "agents"}</span> : null}
+              {workCount > 0 ? <span><b>{compactNumber(workCount)}</b> {workCount === 1 ? "thread" : "threads"}</span> : null}
             </div>
           ) : null}
         </div>
@@ -1829,11 +1835,17 @@ export function ProjectsInbox({
 }) {
   const { model, nowMs, loading, error, agents = EMPTY_AGENTS } = useProjectsInbox(route);
   const scoped = Boolean(route.projectSlug);
+  const canonicalProjectSlug = route.projectSlug
+    ? resolveProjectSlug(model, route.projectSlug) ?? route.projectSlug
+    : null;
+  const effectiveRoute: Extract<Route, { view: "agents-v2" }> = canonicalProjectSlug && canonicalProjectSlug !== route.projectSlug
+    ? { ...route, projectSlug: canonicalProjectSlug }
+    : route;
   const selectedSessionRef =
     scoped && !isSyntheticProcessSessionRef(route.sessionId) ? route.sessionId ?? null : null;
   const selectedSession = useMemo(
-    () => selectedSessionRef ? findSelectedSession(model.sessions, route) : null,
-    [model.sessions, route, selectedSessionRef],
+    () => selectedSessionRef ? findSelectedSession(model.sessions, effectiveRoute) : null,
+    [effectiveRoute, model.sessions, selectedSessionRef],
   );
   const mode: ProjectMode = !scoped
     ? "overview"
@@ -1843,22 +1855,22 @@ export function ProjectsInbox({
         ? "sessions"
         : "overview";
   const scopedProject = scoped
-    ? model.projects.find((project) => project.slug === route.projectSlug) ?? null
+    ? model.projects.find((project) => project.slug === canonicalProjectSlug) ?? null
     : null;
 
   const items = useMemo<Array<InboxThread | InboxSession>>(
     () => {
       if (zeroPreview) return [];
       if (!scoped) return [];
-      const slug = route.projectSlug!;
+      const slug = canonicalProjectSlug!;
       const projectThreads = threadsForProject(model.threads, slug);
       const projectSessions = sessionsForProject(model.sessions, slug);
       if (mode === "overview") return [];
-      if (mode === "agents") return projectThreads.filter((thread) => thread.kind === "agent");
+      if (mode === "agents") return [];
       if (projectSessions.length > 0) return projectSessions;
       return projectThreads;
     },
-    [model.sessions, model.threads, mode, route.projectSlug, scoped, zeroPreview],
+    [canonicalProjectSlug, model.sessions, model.threads, mode, scoped, zeroPreview],
   );
   const sections = useMemo(() => groupItems(items), [items]);
   const flat = useMemo(() => sections.flatMap((section) => section.items), [sections]);
@@ -1867,8 +1879,8 @@ export function ProjectsInbox({
   const waiting = loading && !zeroPreview;
   const showProjectZeroState =
     !scoped && !waiting && (zeroPreview || (model.projects.length === 0 && items.length === 0));
-  // Mount the crew-first landing with the first wave — do not wait for
-  // hasModelData, so the toolbar/filters render immediately over an empty grid.
+  // Mount the project directory with the first wave — do not wait for model
+  // data, so the toolbar and filters render immediately over an empty list.
   const showMeta = !scoped && !showProjectZeroState;
 
   const [cursor, setCursor] = useState(-1);
@@ -1877,16 +1889,16 @@ export function ProjectsInbox({
   useEffect(() => {
     if (!scoped || !route.sessionId || !isSyntheticProcessSessionRef(route.sessionId)) return;
     navigate({
-      ...route,
+      ...effectiveRoute,
       indexView: "sessions",
       sessionId: undefined,
       selectedAgentId: undefined,
     });
-  }, [navigate, route, scoped]);
+  }, [effectiveRoute, navigate, route.sessionId, scoped]);
 
   useEffect(() => {
     setCursor(-1);
-  }, [route.projectSlug]);
+  }, [canonicalProjectSlug]);
 
   useEffect(() => {
     function onKey(event: KeyboardEvent) {
@@ -1905,13 +1917,13 @@ export function ProjectsInbox({
         const target = flat[cursor < 0 ? 0 : cursor];
         if (target) {
           event.preventDefault();
-          navigate(target.kind === "session" ? sessionOpenRoute(target, route) : threadOpenRoute(target, route));
+          navigate(target.kind === "session" ? sessionOpenRoute(target, effectiveRoute) : threadOpenRoute(target, effectiveRoute));
         }
       }
     }
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
-  }, [cursor, flat, navigate, route]);
+  }, [cursor, effectiveRoute, flat, navigate]);
 
   useEffect(() => {
     if (cursor < 0) return;
@@ -1924,9 +1936,9 @@ export function ProjectsInbox({
     <div className="s-pi s-pi-inbox" aria-busy={loading || undefined} data-loading={loading || undefined}>
       {scoped ? (
         <ProjectScopeHeader
-          route={route}
+          route={effectiveRoute}
           navigate={navigate}
-          slug={route.projectSlug!}
+          slug={canonicalProjectSlug!}
           model={model}
           mode={mode}
           repoProject={null}
@@ -1944,17 +1956,25 @@ export function ProjectsInbox({
         <SelectedSessionMain
           session={selectedSession}
           sessionRef={selectedSessionRef}
-          threads={threadsForProject(model.threads, route.projectSlug!)}
-          route={route}
+          threads={threadsForProject(model.threads, canonicalProjectSlug!)}
+          route={effectiveRoute}
           navigate={navigate}
           nowMs={nowMs}
         />
       ) : scoped && mode === "overview" ? (
         <ProjectOverviewWithRepository
           project={scopedProject}
-          threads={threadsForProject(model.threads, route.projectSlug!)}
-          sessions={sessionsForProject(model.sessions, route.projectSlug!)}
-          route={route}
+          threads={threadsForProject(model.threads, canonicalProjectSlug!)}
+          sessions={sessionsForProject(model.sessions, canonicalProjectSlug!)}
+          route={effectiveRoute}
+          navigate={navigate}
+          nowMs={nowMs}
+        />
+      ) : scoped && mode === "agents" && scopedProject ? (
+        <ProjectAgentDirectory
+          project={scopedProject}
+          threads={threadsForProject(model.threads, canonicalProjectSlug!)}
+          route={effectiveRoute}
           navigate={navigate}
           nowMs={nowMs}
         />
@@ -1984,17 +2004,17 @@ export function ProjectsInbox({
                       thread={thread}
                       crossProject={!scoped}
                       selected={thread.kind === "session"
-                        ? isSessionSelected(thread, route, model.sessions)
-                        : isThreadSelected(thread, route, model.threads)}
+                        ? isSessionSelected(thread, effectiveRoute, model.sessions)
+                        : isThreadSelected(thread, effectiveRoute, model.threads)}
                       cursor={cursor === index}
                       nowMs={nowMs}
                       onSelect={() => {
                         const destination = thread.kind === "session"
-                          ? sessionSelectRoute(thread, route)
-                          : threadSelectRoute(thread, route);
+                          ? sessionSelectRoute(thread, effectiveRoute)
+                          : threadSelectRoute(thread, effectiveRoute);
                         navigate(destination);
                       }}
-                      onOpen={() => navigate(thread.kind === "session" ? sessionOpenRoute(thread, route) : threadOpenRoute(thread, route))}
+                      onOpen={() => navigate(thread.kind === "session" ? sessionOpenRoute(thread, effectiveRoute) : threadOpenRoute(thread, effectiveRoute))}
                       rowRef={(el) => {
                         if (el) rowRefs.current.set(thread.id, el);
                         else rowRefs.current.delete(thread.id);

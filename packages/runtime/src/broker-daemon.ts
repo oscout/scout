@@ -1,6 +1,6 @@
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { createServer, type IncomingMessage } from "node:http";
-import { mkdir, readFile, rename, stat, unlink, writeFile } from "node:fs/promises";
+import { mkdir, rename, unlink, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { hostname } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
@@ -57,6 +57,7 @@ import { BrokerRepoTailService } from "./broker-repo-tail-service.js";
 import { BrokerRendezvousService } from "./broker-rendezvous-service.js";
 import { BrokerOperatorAttentionService } from "./broker-operator-attention-service.js";
 import { BrokerLocalAgentSyncService } from "./broker-local-agent-sync-service.js";
+import { createRelayAgentRegistrySignatureReader } from "./relay-agent-registry-signature.js";
 import {
   DEFAULT_CARDLESS_SESSION_IDLE_TTL_MS,
   idleCardlessSessionExpiryCandidates,
@@ -104,6 +105,11 @@ import {
 } from "./pairing-session-agents.js";
 import { normalizeCodexAppServerLaunchArgs } from "./codex-app-server.js";
 import { RecoverableSQLiteProjection } from "./sqlite-projection.js";
+import {
+  ObservedSessionReducer,
+  subscribeObservedSessionReducer,
+} from "./observed-session-reducer.js";
+import { replacePersistedActiveObservedSessionSeeds } from "./tail/service.js";
 import { ThreadEventPlane } from "./thread-events.js";
 import { invokeA2AHttpEndpoint } from "./a2a-http-endpoint.js";
 import { ensureOpenScoutCleanSlateSync, resolveOpenScoutSupportPaths } from "./support-paths.js";
@@ -219,14 +225,7 @@ import { BrokerHomeService } from "./broker-home-service.js";
 import { BrokerUnavailableTargetService } from "./broker-unavailable-target-service.js";
 import { BrokerRouteAliasStore } from "./broker-route-alias-store.js";
 import { BrokerRouteAliasError, BrokerRouteAliasService } from "./broker-route-alias-service.js";
-import {
-  openControlPlaneSqliteDatabase,
-  type ControlPlaneSqliteTransactionalDatabase,
-} from "./sqlite-adapter.js";
-import {
-  configureControlPlaneDatabase,
-  migrateControlPlaneDatabaseSchema,
-} from "./control-plane-migrations.js";
+import { LazyControlPlaneStore } from "./lazy-control-plane-store.js";
 import {
   buildSignedNodeCard,
   loadOrCreateNodeIdentity,
@@ -319,7 +318,7 @@ const configuredCoreAgentIds = (process.env.OPENSCOUT_CORE_AGENTS ?? "")
   .filter(Boolean);
 const discoveryIntervalMs = Number.parseInt(process.env.OPENSCOUT_MESH_DISCOVERY_INTERVAL_MS ?? "60000", 10);
 const parentPid = Number.parseInt(process.env.OPENSCOUT_PARENT_PID ?? "0", 10);
-const localAgentSyncIntervalMs = Number.parseInt(process.env.OPENSCOUT_LOCAL_AGENT_SYNC_INTERVAL_MS ?? "5000", 10);
+const localAgentSyncIntervalMs = Number.parseInt(process.env.OPENSCOUT_LOCAL_AGENT_SYNC_INTERVAL_MS ?? "30000", 10);
 const cardlessSessionSweepIntervalMs = Number.parseInt(
   process.env.OPENSCOUT_CARDLESS_SESSION_SWEEP_INTERVAL_MS ?? "300000",
   10,
@@ -377,18 +376,22 @@ replaceControlEventBacklog(runtime.recentEvents(500), 500);
 if (!sqliteDisabled) {
   await mkdir(dirname(dbPath), { recursive: true });
 }
-const projection = new RecoverableSQLiteProjection(dbPath, journal, { disabled: sqliteDisabled });
+const sharedControlPlaneStore = sqliteDisabled
+  ? null
+  : new LazyControlPlaneStore(() => new SQLiteControlPlaneStore(dbPath));
+const projection = new RecoverableSQLiteProjection(dbPath, journal, {
+  disabled: sqliteDisabled,
+  ...(sharedControlPlaneStore
+    ? { createStore: sharedControlPlaneStore.createProjectionStore }
+    : {}),
+});
+let observedSessionReducer: ObservedSessionReducer | null = null;
+let unsubscribeObservedSessionReducer: (() => void) | null = null;
 let projectionWarmStarted = false;
 const bootstrapProjectionOptions = () => (
   projectionWarmStarted ? undefined : { enqueueProjection: false as const }
 );
-const routeAliasDatabase = sqliteDisabled
-  ? null
-  : openControlPlaneSqliteDatabase(dbPath, { create: true }) as ControlPlaneSqliteTransactionalDatabase;
-if (routeAliasDatabase) {
-  configureControlPlaneDatabase(routeAliasDatabase);
-  migrateControlPlaneDatabaseSchema(routeAliasDatabase);
-}
+const routeAliasDatabase = sharedControlPlaneStore?.routeAliasDatabase ?? null;
 const routeAliasService = routeAliasDatabase
   ? new BrokerRouteAliasService({
       store: new BrokerRouteAliasStore(routeAliasDatabase),
@@ -408,7 +411,7 @@ const nodeIdentity = loadOrCreateNodeIdentity();
 const nodeIdentityKeyId = nodeKeyId(nodeIdentity.publicKey);
 const nodeIdentityFingerprint = nodeFingerprint(nodeIdentity.publicKey);
 const brokerBootedAt = Date.now();
-const trustedPeerStore = sqliteDisabled ? null : new SQLiteControlPlaneStore(dbPath);
+const trustedPeerStore = sharedControlPlaneStore;
 // Bind controller is assigned after the HTTP server stack is built; the gate
 // reads forceRemoteEnforce via this ref so §11.6 can key off live listeners.
 let meshBindController: MeshBindController | null = null;
@@ -572,6 +575,9 @@ const meshDiscoveryService = new BrokerMeshDiscoveryService({
   upsertNode: upsertNodeDurably,
   upsertAgent: upsertAgentDurably,
   notifyPeerOnline: (peerNodeId) => peerDelivery.notifyPeerOnline(peerNodeId),
+  trustedPeerNodeIds: () => new Set(
+    trustedPeerStore?.listTrustedPeers().flatMap((peer) => peer.nodeId ? [peer.nodeId] : []) ?? [],
+  ),
   fetchPeerAgents: (peerBrokerUrl) => fetchPeerAgents(peerBrokerUrl, daemonMeshPeerFetch),
   log: (message) => console.log(message),
 });
@@ -856,9 +862,13 @@ let shuttingDown = false;
 const sseKeepAliveIntervalMs = Number.parseInt(process.env.OPENSCOUT_SSE_KEEPALIVE_MS ?? "15000", 10);
 // Presence observation cadence. The TTL is sized at three missed samples, so a
 // dropped sample never flaps an agent out of freshness.
-const presenceSampleIntervalMs = Number.parseInt(process.env.OPENSCOUT_PRESENCE_SAMPLE_MS ?? "15000", 10);
+const presenceSampleIntervalMs = Number.parseInt(process.env.OPENSCOUT_PRESENCE_SAMPLE_MS ?? "30000", 10);
+const presenceStaleAfterMs = Number.isFinite(presenceSampleIntervalMs) && presenceSampleIntervalMs > 0
+  ? Math.max(90_000, presenceSampleIntervalMs * 3)
+  : 90_000;
 let meshRendezvousPublisher: MeshRendezvousPublisher | null = null;
 let parentWatcher: ReturnType<typeof setInterval> | null = null;
+let routeAliasSweepTimer: ReturnType<typeof setInterval> | null = null;
 
 type LegacyRelayMessage = {
   id: string;
@@ -889,17 +899,24 @@ const presenceService = new BrokerPresenceService({
   createId: createRuntimeId,
   actorId: nodeId,
   nodeId,
+  map: { staleAfterMs: presenceStaleAfterMs },
 });
 setPresenceSnapshotSource(() => presenceService.snapshotEvents());
-if (presenceSampleIntervalMs > 0) {
-  presenceService.sample();
-  setInterval(() => {
-    try {
-      presenceService.sample();
-    } catch (error) {
-      console.warn("[openscout-runtime] presence sample failed:", error);
-    }
-  }, presenceSampleIntervalMs).unref();
+
+function samplePresenceSafely(): void {
+  try {
+    presenceService.sample();
+  } catch (error) {
+    console.warn("[openscout-runtime] presence sample failed:", error);
+  }
+}
+
+function startPresenceSampling(): void {
+  if (!Number.isFinite(presenceSampleIntervalMs) || presenceSampleIntervalMs <= 0) return;
+  // Yield once after both listeners bind so even an unexpectedly expensive
+  // initial projection can never delay the broker's health boundary.
+  setTimeout(samplePresenceSafely, 0).unref();
+  setInterval(samplePresenceSafely, presenceSampleIntervalMs).unref();
 }
 
 if (sseKeepAliveIntervalMs > 0) {
@@ -1005,25 +1022,9 @@ async function migrateUnqualifiedRelayAgentKeys(): Promise<void> {
   await writeRelayAgentOverrides(canonical);
 }
 
-async function readRelayAgentRegistrySignature(): Promise<string | null> {
-  try {
-    const registryPath = resolveOpenScoutSupportPaths().relayAgentsRegistryPath;
-    const info = await stat(registryPath);
-    const contents = await readFile(registryPath);
-    const hash = createHash("sha256").update(contents).digest("base64url");
-    return `${info.mtimeMs}:${info.size}:${hash}`;
-  } catch (error) {
-    if (
-      error
-      && typeof error === "object"
-      && "code" in error
-      && (error as { code?: string }).code === "ENOENT"
-    ) {
-      return null;
-    }
-    throw error;
-  }
-}
+const readRelayAgentRegistrySignature = createRelayAgentRegistrySignatureReader({
+  resolvePath: () => resolveOpenScoutSupportPaths().relayAgentsRegistryPath,
+});
 
 async function syncRegisteredLocalAgentsIfChanged(reason: string): Promise<void> {
   await localAgentSyncService.syncIfChanged(reason);
@@ -2215,7 +2216,35 @@ try {
   await bootstrapIdentityWrite;
   projectionWarmStarted = true;
   await projection.warm();
+  if (!sqliteDisabled) {
+    observedSessionReducer = new ObservedSessionReducer(projection);
+    const persistedObservedSessions = await projection.persistedActiveObservedSessionUpdates();
+    if (persistedObservedSessions !== null) {
+      const hydration = observedSessionReducer.hydratePersistedActiveSessions(
+        persistedObservedSessions,
+      );
+      const lifecycleSeeds = replacePersistedActiveObservedSessionSeeds(
+        persistedObservedSessions.map((update) => ({
+          source: update.source,
+          sourceSessionId: update.sourceSessionId,
+          lastActivityAt: update.lastActivityAt,
+          project: update.project,
+          projectRoot: update.projectRoot,
+          cwd: update.cwd,
+        })),
+      );
+      if (hydration.dropped > 0 || lifecycleSeeds.dropped > 0) {
+        console.warn(
+          `[openscout-runtime] bounded observed-session restart seed: `
+          + `${hydration.hydrated} reducer rows, ${lifecycleSeeds.seeded} lifecycle rows, `
+          + `${hydration.dropped + lifecycleSeeds.dropped} dropped`,
+        );
+      }
+    }
+    unsubscribeObservedSessionReducer = subscribeObservedSessionReducer(observedSessionReducer);
+  }
   startupTrafficGate.admitMutations();
+  startPresenceSampling();
   registerActiveScoutBrokerService(brokerService);
   peerDelivery.start();
   console.log(`[openscout-runtime] broker listening on 127.0.0.1:${port} (scope: ${advertiseScope}, url: ${brokerUrl})`);
@@ -2355,9 +2384,10 @@ setInterval(() => {
 }, 60_000).unref();
 
 if (routeAliasService) {
-  setInterval(() => {
+  routeAliasSweepTimer = setInterval(() => {
     routeAliasService.sweepExpired();
-  }, 60_000).unref();
+  }, 60_000);
+  routeAliasSweepTimer.unref();
 }
 
 async function shutdownBroker(exitCode = 0): Promise<void> {
@@ -2369,6 +2399,10 @@ async function shutdownBroker(exitCode = 0): Promise<void> {
     clearInterval(parentWatcher);
     parentWatcher = null;
   }
+  if (routeAliasSweepTimer) {
+    clearInterval(routeAliasSweepTimer);
+    routeAliasSweepTimer = null;
+  }
   await webControl.stop();
   peerDelivery.stop();
   meshRendezvousPublisher?.stop();
@@ -2376,9 +2410,19 @@ async function shutdownBroker(exitCode = 0): Promise<void> {
   irohBridgeService?.stop();
   controlStreams.closeAll();
   trpcHandler.broadcastReconnectNotification();
+  unsubscribeObservedSessionReducer?.();
+  unsubscribeObservedSessionReducer = null;
+  await observedSessionReducer?.close({ flush: false }).catch((error) => {
+    console.warn("[openscout-runtime] observed session reducer shutdown failed:", error);
+  });
+  observedSessionReducer = null;
+  // The journal and harness transcripts are authoritative. The SQLite/native
+  // views are rebuildable and may still be queued behind startup replay, so a
+  // process stop must abandon that derived work instead of waiting without a
+  // bound and forcing the supervisor to SIGKILL the broker.
+  durableStore.abandonProjectedEntries();
   projection.close();
-  trustedPeerStore?.close();
-  routeAliasDatabase?.close?.();
+  sharedControlPlaneStore?.close();
   await Promise.all([closeServer(socketServer), closeServer(server)]);
   await unlink(brokerSocketPath).catch(() => undefined);
   await unlink(resolveOpenScoutSupportPaths().hostInfoPath).catch(() => undefined);

@@ -9,6 +9,7 @@ function createReadOnlyBrokerCoreService(
   snapshot: RuntimeRegistrySnapshot,
   projectionStatus?: ScoutBrokerProjectionStatus,
   startupStatus?: { state: "restoring" | "ready"; mutationsAdmitted: boolean },
+  runtimeCalls?: string[],
 ) {
   return createBrokerCoreService({
     baseUrl: "http://broker.test",
@@ -23,7 +24,14 @@ function createReadOnlyBrokerCoreService(
       lastSeenAt: 1,
     },
     runtime: {
-      snapshot: () => snapshot,
+      snapshot: () => {
+        runtimeCalls?.push("snapshot");
+        return snapshot;
+      },
+      peek: () => {
+        runtimeCalls?.push("peek");
+        return snapshot;
+      },
     },
     projection: {
       listActivityItems: async () => [],
@@ -79,6 +87,88 @@ function createReadOnlyBrokerCoreService(
 }
 
 describe("createBrokerCoreService", () => {
+  test("serves only current locally authoritative agents without cloning the full registry", async () => {
+    const calls: string[] = [];
+    const snapshot = createRuntimeRegistrySnapshot({
+      agents: {
+        "agent-1": {
+          id: "agent-1",
+          kind: "agent",
+          definitionId: "agent-1",
+          displayName: "Agent One",
+          agentClass: "general",
+          capabilities: ["chat"],
+          wakePolicy: "on_demand",
+          homeNodeId: "node-1",
+          authorityNodeId: "node-1",
+          advertiseScope: "local",
+        },
+        "agent-local-stale": {
+          id: "agent-local-stale",
+          kind: "agent",
+          definitionId: "agent-local-stale",
+          displayName: "Stale Local Agent",
+          agentClass: "general",
+          capabilities: ["chat"],
+          wakePolicy: "on_demand",
+          homeNodeId: "node-1",
+          authorityNodeId: "node-1",
+          advertiseScope: "local",
+          metadata: { staleLocalRegistration: true },
+        },
+        "agent-local-retired": {
+          id: "agent-local-retired",
+          kind: "agent",
+          definitionId: "agent-local-retired",
+          displayName: "Retired Local Agent",
+          agentClass: "general",
+          capabilities: ["chat"],
+          wakePolicy: "on_demand",
+          homeNodeId: "node-1",
+          authorityNodeId: "node-1",
+          advertiseScope: "local",
+          metadata: { retiredFromFleet: true },
+        },
+        "agent-transitive": {
+          id: "agent-transitive",
+          kind: "agent",
+          definitionId: "agent-transitive",
+          displayName: "Transitive Peer Agent",
+          agentClass: "general",
+          capabilities: ["chat"],
+          wakePolicy: "on_demand",
+          homeNodeId: "node-2",
+          authorityNodeId: "node-2",
+          advertiseScope: "mesh",
+        },
+      },
+      messages: {
+        "message-1": {
+          id: "message-1",
+          conversationId: "conversation-1",
+          actorId: "agent-1",
+          originNodeId: "node-1",
+          class: "agent",
+          body: "large history that must stay out of peer discovery",
+          visibility: "private",
+          policy: "durable",
+          createdAt: 1,
+        },
+      },
+    });
+
+    const result = await createReadOnlyBrokerCoreService(
+      snapshot,
+      undefined,
+      undefined,
+      calls,
+    ).readSnapshot({ scope: "agents" });
+
+    expect(calls).toEqual(["peek"]);
+    expect(Object.keys(result.agents)).toEqual(["agent-1"]);
+    expect(result.messages).toEqual({});
+  });
+
   test("includes projection status in broker health without changing broker readiness", async () => {
     const projection = {
       state: "degraded",
@@ -171,6 +261,7 @@ describe("createBrokerCoreService", () => {
       },
       runtime: {
         snapshot: () => snapshot,
+        peek: () => snapshot,
       },
       projection: {
         listActivityItems: async () => activityItems,
@@ -658,6 +749,7 @@ describe("createBrokerCoreService", () => {
       },
       runtime: {
         snapshot: () => snapshot,
+        peek: () => snapshot,
       },
       projection: {
         listActivityItems: async () => [

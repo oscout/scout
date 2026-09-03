@@ -16,6 +16,11 @@ import {
   type VoxSpeechTimingRequest,
   type VoxSpeechVoice,
 } from "./vox.ts";
+import {
+  NVIDIA_MAGPIE_DEFAULT_VOICE,
+  NVIDIA_MAGPIE_MODEL,
+  listNvidiaMagpieVoices,
+} from "./nvidia-speech.ts";
 
 export type ScoutVoiceHealth = ScoutVoiceHealthSnapshot;
 
@@ -37,7 +42,7 @@ export type ScoutSpeechCatalog = {
   defaultVoiceId?: string;
   models: ScoutSpeechModel[];
   voices: ScoutSpeechVoice[];
-  source: "vox" | "fallback";
+  source: "vox" | "nvidia-developer-inference" | "fallback";
 };
 
 const SCOUT_VOICE_CLIENT_ID = "openscout-web";
@@ -101,21 +106,25 @@ export async function getScoutSpeechCatalog(input: {
   modelId?: string;
   signal?: AbortSignal;
   directOpenAIAvailable?: boolean;
+  directNvidiaAvailable?: boolean;
+  directNvidiaApiKey?: string;
 } = {}): Promise<ScoutSpeechCatalog> {
   const defaults = resolveScoutSpeechDefaults();
   const requestedModelId = input.modelId?.trim() || defaults.modelId;
   let models: ScoutSpeechModel[] = [];
   let voices: ScoutSpeechVoice[] = [];
   let source: ScoutSpeechCatalog["source"] = "fallback";
-  try {
-    [models, voices] = await Promise.all([
-      listVoxSpeechModels(input.signal),
-      listVoxSpeechVoices(requestedModelId, input.signal),
-    ]);
-    if (models.length > 0) source = "vox";
-  } catch {
-    // Vox is optional. The same fallback catalog drives Scout's direct OpenAI
-    // route and the in-process native provider path when its daemon is absent.
+  if (requestedModelId !== NVIDIA_MAGPIE_MODEL) {
+    try {
+      [models, voices] = await Promise.all([
+        listVoxSpeechModels(input.signal),
+        listVoxSpeechVoices(requestedModelId, input.signal),
+      ]);
+      if (models.length > 0) source = "vox";
+    } catch {
+      // Vox is optional. The same fallback catalog drives Scout's direct OpenAI
+      // route and the in-process native provider path when its daemon is absent.
+    }
   }
   const fallback = fallbackScoutSpeechCatalog(requestedModelId, defaults);
   for (const model of fallback.models) {
@@ -129,6 +138,28 @@ export async function getScoutSpeechCatalog(input: {
   if (input.directOpenAIAvailable) {
     models = models.map((model) => model.provider === "openai" ? { ...model, available: true } : model);
     voices = voices.map((voice) => voice.provider === "openai" ? { ...voice, available: true } : voice);
+  }
+  if (input.directNvidiaAvailable || input.directNvidiaApiKey) {
+    models = models.map((model) => model.provider === "nvidia" ? { ...model, available: true } : model);
+    voices = voices.map((voice) => voice.provider === "nvidia" ? { ...voice, available: true } : voice);
+  }
+  if (input.directNvidiaApiKey && requestedModelId === NVIDIA_MAGPIE_MODEL) {
+    try {
+      const discovered = await listNvidiaMagpieVoices({
+        apiKey: input.directNvidiaApiKey,
+        signal: input.signal,
+      });
+      voices = discovered.map((voice) => ({
+        ...voice,
+        provider: "nvidia",
+        modelId: NVIDIA_MAGPIE_MODEL,
+        available: true,
+      }));
+      source = "nvidia-developer-inference";
+    } catch {
+      // The deterministic Aria entry remains as an explicit fallback only
+      // when hosted NVIDIA Developer Inference discovery is unavailable.
+    }
   }
   return {
     defaultModelId: defaults.modelId,
@@ -146,6 +177,7 @@ export function fallbackScoutSpeechCatalog(
   const models: ScoutSpeechModel[] = [
     { id: "gpt-4o-mini-tts", name: "GPT-4o mini TTS", provider: "openai", available: true },
     { id: "eleven_multilingual_v2", name: "Eleven Multilingual v2", provider: "elevenlabs", available: true },
+    { id: NVIDIA_MAGPIE_MODEL, name: "Magpie TTS Multilingual", provider: "nvidia", available: true },
   ];
   const openAIVoices = ["alloy", "ash", "ballad", "cedar", "coral", "echo", "fable", "marin", "nova", "onyx", "sage", "shimmer", "verse"]
     .map((id) => ({
@@ -164,11 +196,24 @@ export function fallbackScoutSpeechCatalog(
     available: true,
     isDefault: true,
   }];
+  const nvidiaVoices: ScoutSpeechVoice[] = [{
+    id: NVIDIA_MAGPIE_DEFAULT_VOICE,
+    name: "Aria",
+    language: "en-US",
+    provider: "nvidia",
+    modelId: NVIDIA_MAGPIE_MODEL,
+    available: true,
+    isDefault: true,
+  }];
   return {
     defaultModelId: defaults.modelId,
     ...(defaults.voiceId ? { defaultVoiceId: defaults.voiceId } : {}),
     models,
-    voices: modelId === "eleven_multilingual_v2" ? elevenLabsVoices : openAIVoices,
+    voices: modelId === "eleven_multilingual_v2"
+      ? elevenLabsVoices
+      : modelId === NVIDIA_MAGPIE_MODEL
+        ? nvidiaVoices
+        : openAIVoices,
     source: "fallback",
   };
 }

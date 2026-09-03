@@ -537,9 +537,24 @@ export class BrokerWebControlService {
       ...this.tailnetWebHosts,
       context.trustedHost,
     ]);
+    // The supervised service owns the always-on Bonjour `/pair` ingress. Its
+    // default listener is reachable on the LAN, but the web socket boundary
+    // admits only exact GET /pair from non-loopback peers. An operator-provided
+    // bind host remains an explicit configuration and must carry its own LAN
+    // opt-in when non-loopback.
+    const configuredBindHost = this.env.OPENSCOUT_WEB_HOST?.trim()
+      || this.env.SCOUT_WEB_HOST?.trim()
+      || null;
+    const brokerPairingIngress = configuredBindHost === null;
     const env = {
       ...this.env,
-      OPENSCOUT_WEB_HOST: this.env.OPENSCOUT_WEB_HOST?.trim() || "127.0.0.1",
+      OPENSCOUT_WEB_HOST: configuredBindHost ?? "0.0.0.0",
+      ...(brokerPairingIngress
+        ? {
+            OPENSCOUT_WEB_ALLOW_LAN: "1",
+            OPENSCOUT_WEB_LAN_SCOPE: this.env.OPENSCOUT_WEB_LAN_SCOPE?.trim() || "pairing",
+          }
+        : {}),
       OPENSCOUT_WEB_PORT: String(this.port()),
       OPENSCOUT_WEB_BUN_URL: this.url(),
       OPENSCOUT_WEB_AUTH_TOKEN: this.webAuthToken,

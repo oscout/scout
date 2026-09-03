@@ -87,7 +87,7 @@ export type ScoutSpeechCatalog = {
   defaultVoiceId?: string;
   models: ScoutSpeechCatalogModel[];
   voices: ScoutSpeechCatalogVoice[];
-  source: "vox" | "fallback";
+  source: "vox" | "nvidia-developer-inference" | "fallback";
 };
 
 export type ScoutSpeechTimingCueRequest = {

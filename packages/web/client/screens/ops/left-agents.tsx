@@ -40,7 +40,7 @@ function basename(path: string | null): string | null {
 export function OpsAgentsLeft() {
   const { agents, navigate } = useScout();
   const [sessions, setSessions] = useState<SessionEntry[]>([]);
-  const asksByAgent = useFleetActiveAsks();
+  const activeAsks = useFleetActiveAsks();
 
   const loadSessions = useCallback(async () => {
     const data = await api<SessionEntry[]>("/api/conversations").catch(() => [] as SessionEntry[]);
@@ -59,11 +59,11 @@ export function OpsAgentsLeft() {
   const online = useMemo(() => agents.filter((a) => isAgentOnline(a.state)).length, [agents]);
   const errored = useMemo(() => {
     let count = 0;
-    for (const ask of asksByAgent.values()) {
+    for (const ask of activeAsks.asks) {
       if (ask.status === "failed" || ask.status === "needs_attention") count += 1;
     }
     return count;
-  }, [asksByAgent]);
+  }, [activeAsks]);
 
   const teams = useMemo(() => {
     const counts = new Map<string, number>();

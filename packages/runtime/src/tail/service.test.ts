@@ -3,8 +3,22 @@ import { appendFile, mkdtemp, rm, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { __testing, readRecentLiveEvents, readRecentTranscriptEvents } from "./service.js";
-import type { TailEvent } from "./types.js";
+import {
+  __testing,
+  INTERNAL_TAIL_SESSION_OFFLINE_SUMMARY,
+  INTERNAL_TAIL_SESSION_STALLED_SUMMARY,
+  readRecentLiveEvents,
+  readRecentTranscriptEvents,
+  replacePersistedActiveObservedSessionSeeds,
+  subscribeTail,
+  subscribeTailInternal,
+} from "./service.js";
+import type {
+  DiscoveredProcess,
+  DiscoveredTranscript,
+  TailEvent,
+  TranscriptSource,
+} from "./types.js";
 
 const testDirectories = new Set<string>();
 
@@ -35,13 +49,55 @@ function event(overrides: Partial<TailEvent>): TailEvent {
   };
 }
 
+const testProcess: DiscoveredProcess = {
+  pid: 123,
+  ppid: 1,
+  command: "test harness",
+  etime: "1",
+  cwd: "/repo",
+  harness: "unattributed",
+  parentChain: [],
+  source: "test",
+};
+
+function testSource(): TranscriptSource {
+  return {
+    name: "test",
+    discoverProcesses: () => [],
+    discoverTranscripts: () => [],
+    parseLine(line) {
+      return JSON.parse(line) as TailEvent;
+    },
+  };
+}
+
+function testTranscript(
+  transcriptPath: string,
+  sessionId: string,
+  overrides: Partial<DiscoveredTranscript> = {},
+): DiscoveredTranscript {
+  return {
+    source: "test",
+    transcriptPath,
+    sessionId,
+    cwd: "/repo",
+    project: "project",
+    harness: "unattributed",
+    mtimeMs: Date.now(),
+    size: 0,
+    ...overrides,
+  };
+}
+
 beforeEach(() => {
   __testing.resetQuietTailCoalescer();
   __testing.resetTranscriptReplayMemo();
   __testing.resetTailEventBuffers();
+  __testing.clearWatchers();
 });
 
 afterEach(async () => {
+  __testing.clearWatchers();
   await Promise.all([...testDirectories].map((directory) => rm(directory, { recursive: true, force: true })));
   testDirectories.clear();
 });
@@ -96,6 +152,505 @@ describe("tail quiet event coalescing", () => {
     expect(__testing.shouldCoalesceQuietTailEvent(first)).toBe(false);
     expect(__testing.shouldCoalesceQuietTailEvent(second)).toBe(true);
     expect(__testing.shouldCoalesceQuietTailEvent(taskStarted)).toBe(false);
+  });
+});
+
+describe("internal tail subscribers", () => {
+  test("uses relaxed background defaults without changing tiered watcher cadence", () => {
+    expect(__testing.defaultLoopCadence).toEqual({
+      pumpIntervalMs: 10_000,
+      hotDiscoveryIntervalMs: 60_000,
+    });
+    expect(__testing.cadence).toEqual(expect.objectContaining({
+      idleIntervalMs: 15_000,
+      staleAfterMs: 30 * 60_000,
+    }));
+  });
+
+  test("receive pre-coalesced events and keep tailing alive without a public subscriber", () => {
+    const internalEvents: TailEvent[] = [];
+    const publicEvents: TailEvent[] = [];
+    const unsubscribeInternal = subscribeTailInternal((entry) => internalEvents.push(entry));
+    const unsubscribePublic = subscribeTail((entry) => publicEvents.push(entry));
+
+    try {
+      __testing.pushEvent(event({ id: "first", ts: 1_000 }));
+      __testing.pushEvent(event({ id: "second", ts: 1_250 }));
+
+      expect(internalEvents.map((entry) => entry.id)).toEqual(["first", "second"]);
+      expect(publicEvents.map((entry) => entry.id)).toEqual(["first"]);
+
+      unsubscribePublic();
+      expect(__testing.tailLoopState()).toEqual({
+        running: true,
+        publicSubscriberCount: 0,
+        internalSubscriberCount: 1,
+      });
+    } finally {
+      unsubscribePublic();
+      unsubscribeInternal();
+    }
+
+    expect(__testing.tailLoopState()).toEqual({
+      running: false,
+      publicSubscriberCount: 0,
+      internalSubscriberCount: 0,
+    });
+  });
+
+  test("reconciles a bounded existing tail after restart and continues at EOF", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "openscout-tail-restart-"));
+    testDirectories.add(directory);
+    const transcriptPath = join(directory, "session.jsonl");
+    const historical = Array.from({ length: 160 }, (_, index) => event({
+      id: `existing-${index}`,
+      source: "test",
+      sessionId: "restart-session",
+      ts: 1_000 + index,
+      summary: `existing ${index}`,
+    }));
+    const body = `${historical.map((entry) => JSON.stringify(entry)).join("\n")}\n`;
+    await writeFile(transcriptPath, body, "utf8");
+
+    const internalEvents: TailEvent[] = [];
+    const removeInternal = __testing.addInternalSubscriberWithoutLoop((entry) => {
+      internalEvents.push(entry);
+    });
+    try {
+      const sessionKey = await __testing.installWatcher({
+        source: testSource(),
+        process: testProcess,
+        transcript: testTranscript(transcriptPath, "restart-session", {
+          size: Buffer.byteLength(body),
+        }),
+        reconcileInternal: true,
+      });
+
+      expect(internalEvents).toHaveLength(128);
+      expect(internalEvents[0]?.id).toBe("existing-32");
+      expect(internalEvents.at(-1)?.id).toBe("existing-159");
+
+      const live = event({
+        id: "written-during-downtime-boundary",
+        source: "test",
+        sessionId: "restart-session",
+        ts: 2_000,
+        summary: "new after restart",
+      });
+      await appendFile(transcriptPath, `${JSON.stringify(live)}\n`, "utf8");
+      await __testing.pumpWatcher(sessionKey);
+
+      expect(internalEvents.filter((entry) => entry.id === "existing-159")).toHaveLength(1);
+      expect(internalEvents.at(-1)?.id).toBe("written-during-downtime-boundary");
+    } finally {
+      removeInternal();
+    }
+  });
+
+  test("coalesces overlapping pumps for the same watcher", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "openscout-tail-single-flight-"));
+    testDirectories.add(directory);
+    const transcriptPath = join(directory, "session.jsonl");
+    await writeFile(transcriptPath, "", "utf8");
+    const sessionKey = await __testing.installWatcher({
+      source: testSource(),
+      process: testProcess,
+      transcript: testTranscript(transcriptPath, "single-flight-session"),
+    });
+    const nextEvent = event({
+      id: "single-flight-event",
+      source: "test",
+      sessionId: "single-flight-session",
+      summary: "one read",
+    });
+    await appendFile(transcriptPath, `${JSON.stringify(nextEvent)}\n`, "utf8");
+
+    const first = __testing.pumpWatcher(sessionKey);
+    const second = __testing.pumpWatcher(sessionKey);
+
+    expect(second).toBe(first);
+    await Promise.all([first, second]);
+    expect(__testing.snapshotSessionEvents("single-flight-session", "test", 10)).toEqual([nextEvent]);
+  });
+
+  test("globally bounds concurrent watcher work", async () => {
+    const limit = __testing.watcherPumpConcurrency;
+    let active = 0;
+    let peak = 0;
+    let release: (() => void) | undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const tasks = Array.from({ length: limit * 2 }, () => (
+      __testing.scheduleWatcherPump(async () => {
+        active++;
+        peak = Math.max(peak, active);
+        await gate;
+        active--;
+      })
+    ));
+
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    expect(peak).toBe(limit);
+    expect(__testing.watcherPumpSchedulerState()).toEqual({
+      active: limit,
+      queued: limit,
+    });
+
+    release?.();
+    await Promise.all(tasks);
+    expect(__testing.watcherPumpSchedulerState()).toEqual({ active: 0, queued: 0 });
+  });
+
+  test("drains growing transcripts in bounded ordered chunks", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "openscout-tail-bounded-read-"));
+    testDirectories.add(directory);
+    const transcriptPath = join(directory, "session.jsonl");
+    await writeFile(transcriptPath, "", "utf8");
+    const sessionKey = await __testing.installWatcher({
+      source: testSource(),
+      process: testProcess,
+      transcript: testTranscript(transcriptPath, "bounded-read-session"),
+    });
+    const payload = "é".repeat(900);
+    const events = Array.from({ length: 3_000 }, (_, index) => event({
+      id: `bounded-${index}`,
+      source: "test",
+      sessionId: "bounded-read-session",
+      ts: index,
+      summary: `${index}:${payload}`,
+    }));
+    const body = `${events.map((entry) => JSON.stringify(entry)).join("\n")}\n`;
+    await appendFile(transcriptPath, body, "utf8");
+
+    const offsets = [__testing.watcherOffset(sessionKey) ?? 0];
+    await __testing.pumpWatcher(sessionKey);
+    offsets.push(__testing.watcherOffset(sessionKey) ?? 0);
+    expect(offsets[1]! - offsets[0]!).toBeGreaterThan(__testing.watcherReadBytes);
+    expect(offsets[1]! - offsets[0]!).toBeLessThanOrEqual(__testing.watcherDrainBytes);
+    while ((offsets.at(-1) ?? 0) < Buffer.byteLength(body)) {
+      await __testing.pumpWatcher(sessionKey);
+      offsets.push(__testing.watcherOffset(sessionKey) ?? 0);
+    }
+
+    expect(offsets.slice(1).every((offset, index) => (
+      offset - offsets[index]! <= __testing.watcherDrainBytes
+    ))).toBe(true);
+    const emitted = __testing.snapshotSessionEvents("bounded-read-session", "test", events.length);
+    expect(emitted).toHaveLength(2_000);
+    expect(emitted[0]?.id).toBe("bounded-1000");
+    expect(emitted.at(-1)?.id).toBe("bounded-2999");
+    expect(emitted.every((entry) => !entry.summary.includes("�"))).toBe(true);
+  });
+
+  test("keeps the seeded offset when best-effort history parsing fails", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "openscout-tail-seed-failure-"));
+    testDirectories.add(directory);
+    const transcriptPath = join(directory, "session.jsonl");
+    const body = "malformed historical record\n";
+    await writeFile(transcriptPath, body, "utf8");
+
+    const sessionKey = await __testing.installWatcher({
+      source: testSource(),
+      process: testProcess,
+      transcript: testTranscript(transcriptPath, "seed-failure-session"),
+      reconcileInternal: true,
+    });
+
+    expect(__testing.watcherOffset(sessionKey)).toBe(Buffer.byteLength(body));
+  });
+
+  test("requires two successful inventories before expiring a missing watcher", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "openscout-tail-missing-"));
+    testDirectories.add(directory);
+    const transcriptPath = join(directory, "session.jsonl");
+    const existing = event({
+      id: "existing-active",
+      source: "test",
+      sessionId: "missing-session",
+      kind: "tool",
+      summary: "Shell · build",
+    });
+    const body = `${JSON.stringify(existing)}\n`;
+    await writeFile(transcriptPath, body, "utf8");
+
+    const internalEvents: TailEvent[] = [];
+    const removeInternal = __testing.addInternalSubscriberWithoutLoop((entry) => {
+      internalEvents.push(entry);
+    });
+    try {
+      await __testing.installWatcher({
+        source: testSource(),
+        process: testProcess,
+        transcript: testTranscript(transcriptPath, "missing-session", {
+          size: Buffer.byteLength(body),
+        }),
+        reconcileInternal: true,
+      });
+      const successfulSources = new Set(["test"]);
+      __testing.reconcileMissingWatchers(new Set(), successfulSources, 10_000);
+
+      expect(__testing.watcherCount()).toBe(1);
+      expect(internalEvents.some((entry) => (
+        entry.summary === INTERNAL_TAIL_SESSION_OFFLINE_SUMMARY
+      ))).toBe(false);
+
+      // A failed source inventory supplies no negative evidence.
+      __testing.reconcileMissingWatchers(new Set(), new Set(), 10_500);
+      expect(__testing.watcherCount()).toBe(1);
+
+      __testing.reconcileMissingWatchers(new Set(), successfulSources, 11_000);
+      expect(__testing.watcherCount()).toBe(0);
+      expect(internalEvents.at(-1)).toEqual(expect.objectContaining({
+        source: "test",
+        sessionId: "missing-session",
+        summary: INTERNAL_TAIL_SESSION_OFFLINE_SUMMARY,
+        raw: { reason: "missing" },
+      }));
+    } finally {
+      removeInternal();
+    }
+  });
+
+  test("reconciles a persisted active identity deleted during downtime after two successful inventories", () => {
+    const internalEvents: TailEvent[] = [];
+    const removeInternal = __testing.addInternalSubscriberWithoutLoop((entry) => {
+      internalEvents.push(entry);
+    });
+    try {
+      expect(replacePersistedActiveObservedSessionSeeds([{
+        source: "test",
+        sourceSessionId: "persisted-missing",
+        lastActivityAt: 9_000,
+        project: "project",
+        projectRoot: "/repo",
+      }])).toEqual({ seeded: 1, dropped: 0 });
+
+      const successfulSources = new Set(["test"]);
+      __testing.reconcilePersistedObservedSessions(new Set(), successfulSources, 10_000);
+      expect(__testing.persistedObservedSessionCount()).toBe(1);
+      expect(internalEvents).toHaveLength(0);
+
+      // A failed inventory is not negative evidence and cannot advance expiry.
+      __testing.reconcilePersistedObservedSessions(new Set(), new Set(), 10_500);
+      expect(__testing.persistedObservedSessionCount()).toBe(1);
+      expect(internalEvents).toHaveLength(0);
+
+      // Seeing the identity again resets the first negative observation.
+      const seen = new Set([
+        __testing.observedSessionLifecycleKey("test", "persisted-missing"),
+      ]);
+      __testing.reconcilePersistedObservedSessions(seen, successfulSources, 10_750);
+      __testing.reconcilePersistedObservedSessions(new Set(), successfulSources, 11_000);
+      expect(internalEvents).toHaveLength(0);
+
+      __testing.reconcilePersistedObservedSessions(new Set(), successfulSources, 12_000);
+      expect(__testing.persistedObservedSessionCount()).toBe(0);
+      expect(internalEvents).toEqual([
+        expect.objectContaining({
+          source: "test",
+          sessionId: "persisted-missing",
+          project: "project",
+          cwd: "/repo",
+          summary: INTERNAL_TAIL_SESSION_OFFLINE_SUMMARY,
+          raw: { reason: "missing" },
+        }),
+      ]);
+    } finally {
+      removeInternal();
+    }
+  });
+
+  test("makes a present quiet watcher outside bounded replay lifecycle-eligible from persistence", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "openscout-tail-persisted-quiet-"));
+    testDirectories.add(directory);
+    const transcriptPath = join(directory, "session.jsonl");
+    await writeFile(transcriptPath, "", "utf8");
+    const internalEvents: TailEvent[] = [];
+    const removeInternal = __testing.addInternalSubscriberWithoutLoop((entry) => {
+      internalEvents.push(entry);
+    });
+    try {
+      replacePersistedActiveObservedSessionSeeds([{
+        source: "test",
+        sourceSessionId: "persisted-quiet",
+        lastActivityAt: 1_000,
+        projectRoot: "/repo",
+      }]);
+      const sessionKey = await __testing.installWatcher({
+        source: testSource(),
+        process: testProcess,
+        transcript: testTranscript(transcriptPath, "persisted-quiet", {
+          mtimeMs: 1_000,
+          lastEventAt: 1_000,
+        }),
+        // This models a present transcript beyond the newest-12 internal replay
+        // allowance: no historical event is replayed into this watcher.
+        reconcileInternal: false,
+      });
+
+      expect(__testing.watcherInternalObserved(sessionKey)).toBe(true);
+      expect(internalEvents).toHaveLength(0);
+      __testing.setWatcherCadence(sessionKey, { lastObservedChangeAt: 1_000 });
+      const staleAt = 1_000 + __testing.cadence.staleAfterMs + 1;
+      __testing.observeWatcherStaleness(sessionKey, staleAt);
+      expect(internalEvents).toHaveLength(0);
+      __testing.observeWatcherStaleness(sessionKey, staleAt + 1);
+      expect(internalEvents).toEqual([
+        expect.objectContaining({
+          source: "test",
+          sessionId: "persisted-quiet",
+          summary: INTERNAL_TAIL_SESSION_STALLED_SUMMARY,
+          raw: { reason: "stale" },
+        }),
+      ]);
+    } finally {
+      removeInternal();
+    }
+  });
+
+  test("bounds persisted observed lifecycle seeds newest-first", () => {
+    const seeds = Array.from(
+      { length: __testing.persistedObservedSeedLimit + 3 },
+      (_, index) => ({
+        source: "test",
+        sourceSessionId: `persisted-${index}`,
+        lastActivityAt: index,
+      }),
+    );
+    expect(replacePersistedActiveObservedSessionSeeds(seeds)).toEqual({
+      seeded: __testing.persistedObservedSeedLimit,
+      dropped: 3,
+    });
+    expect(__testing.persistedObservedSessionCount())
+      .toBe(__testing.persistedObservedSeedLimit);
+  });
+
+  test("confirms stagnant watchers twice before emitting a stalled transition", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "openscout-tail-stale-"));
+    testDirectories.add(directory);
+    const transcriptPath = join(directory, "session.jsonl");
+    const existing = event({
+      id: "existing-working",
+      source: "test",
+      sessionId: "stale-session",
+      kind: "user",
+      summary: "Keep working",
+    });
+    const body = `${JSON.stringify(existing)}\n`;
+    await writeFile(transcriptPath, body, "utf8");
+
+    const internalEvents: TailEvent[] = [];
+    const removeInternal = __testing.addInternalSubscriberWithoutLoop((entry) => {
+      internalEvents.push(entry);
+    });
+    try {
+      const sessionKey = await __testing.installWatcher({
+        source: testSource(),
+        process: testProcess,
+        transcript: testTranscript(transcriptPath, "stale-session", {
+          mtimeMs: 1_000,
+          lastEventAt: 1_000,
+          size: Buffer.byteLength(body),
+        }),
+        reconcileInternal: true,
+      });
+      __testing.setWatcherCadence(sessionKey, { lastObservedChangeAt: 1_000 });
+      const staleAt = 1_000 + __testing.cadence.staleAfterMs + 1;
+      __testing.observeWatcherStaleness(sessionKey, staleAt);
+      expect(internalEvents.at(-1)?.summary).not.toBe(INTERNAL_TAIL_SESSION_STALLED_SUMMARY);
+
+      __testing.observeWatcherStaleness(sessionKey, staleAt + 1);
+      expect(internalEvents.at(-1)).toEqual(expect.objectContaining({
+        summary: INTERNAL_TAIL_SESSION_STALLED_SUMMARY,
+        raw: { reason: "stale" },
+      }));
+    } finally {
+      removeInternal();
+    }
+  });
+
+  test("tiers cold internal polling while keeping public polling exhaustive", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "openscout-tail-cadence-"));
+    testDirectories.add(directory);
+    const transcriptPath = join(directory, "session.jsonl");
+    await writeFile(transcriptPath, "", "utf8");
+    const now = __testing.cadence.hotWindowMs + 50_000;
+    const sessionKeys: string[] = [];
+    const removeInternal = __testing.addInternalSubscriberWithoutLoop(() => {});
+    try {
+      for (let index = 0; index < __testing.cadence.idleBatchSize + 8; index++) {
+        const sessionKey = await __testing.installWatcher({
+          source: testSource(),
+          process: testProcess,
+          transcript: testTranscript(transcriptPath, `cadence-${index}`, {
+            mtimeMs: 1,
+          }),
+        });
+        __testing.setWatcherCadence(sessionKey, {
+          lastObservedChangeAt: 1,
+          lastPumpAt: now,
+        });
+        sessionKeys.push(sessionKey);
+      }
+
+      expect(__testing.selectWatchersForCurrentDemand(now)).toEqual([]);
+      const coldDue = __testing.selectWatchersForCurrentDemand(
+        now + __testing.cadence.idleIntervalMs,
+      );
+      expect(coldDue).toHaveLength(__testing.cadence.idleBatchSize);
+
+      __testing.setWatcherCadence(sessionKeys.at(-1)!, {
+        lastObservedChangeAt: now + __testing.cadence.idleIntervalMs,
+      });
+      expect(__testing.selectWatchersForCurrentDemand(
+        now + __testing.cadence.idleIntervalMs,
+      )).toHaveLength(__testing.cadence.idleBatchSize + 1);
+
+      const removePublic = __testing.addPublicSubscriberWithoutLoop(() => {});
+      try {
+        expect(__testing.selectWatchersForCurrentDemand(now)).toHaveLength(sessionKeys.length);
+      } finally {
+        removePublic();
+      }
+    } finally {
+      removeInternal();
+    }
+  });
+
+  test("reads the recent ring without pumping transcript watchers", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "openscout-tail-snapshot-read-"));
+    testDirectories.add(directory);
+    const transcriptPath = join(directory, "session.jsonl");
+    await writeFile(transcriptPath, "", "utf8");
+    const sessionKey = await __testing.installWatcher({
+      source: testSource(),
+      process: testProcess,
+      transcript: testTranscript(transcriptPath, "snapshot-read-session"),
+    });
+    const nextEvent = event({
+      id: "event-after-snapshot",
+      source: "test",
+      sessionId: "snapshot-read-session",
+      summary: "arrived through watcher loop",
+    });
+    await appendFile(transcriptPath, `${JSON.stringify(nextEvent)}\n`, "utf8");
+    __testing.setWatcherCadence(sessionKey, { lastPumpAt: 1 });
+    const removeInternal = __testing.addInternalSubscriberWithoutLoop(() => {});
+
+    try {
+      await expect(readRecentLiveEvents(10)).resolves.toEqual([]);
+      await Promise.resolve();
+      expect(__testing.watcherLastPumpAt(sessionKey)).toBe(1);
+      expect(__testing.watcherOffset(sessionKey)).toBe(0);
+
+      const loopTickAt = Date.now() + 1;
+      await __testing.pumpWatchersForCurrentDemand(loopTickAt);
+      expect(__testing.watcherLastPumpAt(sessionKey)).toBe(loopTickAt);
+      await expect(readRecentLiveEvents(10)).resolves.toEqual([nextEvent]);
+    } finally {
+      removeInternal();
+    }
   });
 });
 

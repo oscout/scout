@@ -7,11 +7,13 @@ import {
 import { SCOUT_RUNTIME_CATALOG } from "./runtime-execution.js";
 
 describe("runtime catalog", () => {
-  test("accepts the bundled catalog and exposes Grok 4.6", () => {
+  test("accepts the bundled catalog and exposes Fable 5 and Grok 4.6", () => {
     const parsed = parseScoutRuntimeCatalog(SCOUT_RUNTIME_CATALOG);
     expect(parsed.ok).toBe(true);
     if (!parsed.ok) return;
-    expect(parsed.catalog.revision).toBe("2026-08-18.1");
+    expect(parsed.catalog.revision).toBe("2026-09-01.1");
+    expect(parsed.catalog.harnesses.find((entry) => entry.id === "claude")?.models)
+      .toContainEqual(expect.objectContaining({ id: "claude-fable-5", label: "Fable 5" }));
     expect(parsed.catalog.harnesses.find((entry) => entry.id === "grok")?.models[0]?.id)
       .toBe("grok-4.6");
     expect(parsed.catalog.harnesses.find((entry) => entry.id === "grok")?.models[0]?.contextWindowTokens)

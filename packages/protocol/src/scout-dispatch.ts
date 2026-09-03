@@ -43,7 +43,13 @@ export type ScoutRouteTarget =
     }
   | { kind: "route_alias"; alias: string; scope?: RouteAliasScope; bindingId?: ScoutId; value?: string }
   | { kind: "target_handle"; handle: string; value?: string }
-  | { kind: "session_id"; sessionId: ScoutId; harness?: AgentHarness; value?: string }
+  | {
+      kind: "session_id";
+      /** Canonical writes use a broker `sess.*` handle. Native ids are legacy resolver inputs only. */
+      sessionId: ScoutId;
+      harness?: AgentHarness;
+      value?: string;
+    }
   | { kind: "binding_ref"; ref: string; value?: string }
   | { kind: "project_path"; projectPath: string; value?: string }
   | { kind: "channel"; channel: string; value?: string }

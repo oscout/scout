@@ -102,7 +102,10 @@ export const agentsTable = sqliteTable("agents", {
   advertiseScope: text("advertise_scope").notNull(),
   ownerId: text("owner_id"),
   metadataJson: text("metadata_json"),
-});
+}, (table) => [
+  index("idx_agents_home_node_id").on(table.homeNodeId),
+  index("idx_agents_authority_node_id").on(table.authorityNodeId),
+]);
 
 // -- agent_endpoints ---------------------------------------------------------
 export const agentEndpointsTable = sqliteTable("agent_endpoints", {
@@ -121,6 +124,16 @@ export const agentEndpointsTable = sqliteTable("agent_endpoints", {
   updatedAt: integer("updated_at").notNull().default(epochMsNow),
 }, (table) => [
   index("idx_agent_endpoints_agent_updated_at").on(table.agentId, desc(table.updatedAt)),
+  index("idx_agent_endpoints_roster_recency").on(
+    desc(sql`CASE
+      WHEN ${table.updatedAt} IS NULL THEN NULL
+      WHEN CAST(${table.updatedAt} AS REAL) < 1000000000000
+        THEN CAST(CAST(${table.updatedAt} AS REAL) * 1000 AS INTEGER)
+      ELSE CAST(${table.updatedAt} AS INTEGER)
+    END`),
+    table.agentId,
+  ),
+  index("idx_agent_endpoints_node_id").on(table.nodeId),
 ]);
 
 // -- runtime_sessions --------------------------------------------------------
@@ -146,6 +159,7 @@ export const runtimeSessionsTable = sqliteTable("runtime_sessions", {
 }, (table) => [
   index("idx_runtime_sessions_agent_last_seen").on(table.agentId, desc(table.lastSeenAt)),
   index("idx_runtime_sessions_endpoint_last_seen").on(table.endpointId, desc(table.lastSeenAt)),
+  index("idx_runtime_sessions_node_id").on(table.nodeId),
   index("idx_runtime_sessions_external").on(table.externalSessionId),
   index("idx_runtime_sessions_expires").on(table.expiresAt).where(sql`expires_at IS NOT NULL`),
 ]);
@@ -167,6 +181,8 @@ export const runtimeSessionAliasesTable = sqliteTable("runtime_session_aliases",
   primaryKey({ columns: [table.alias, table.sessionId] }),
   index("idx_runtime_session_aliases_alias").on(table.alias, desc(table.lastSeenAt)),
   index("idx_runtime_session_aliases_session").on(table.sessionId),
+  index("idx_runtime_session_aliases_endpoint").on(table.endpointId),
+  index("idx_runtime_session_aliases_node_id").on(table.nodeId),
   index("idx_runtime_session_aliases_expires").on(table.expiresAt).where(sql`expires_at IS NOT NULL`),
 ]);
 
@@ -255,6 +271,10 @@ export const conversationsTable = sqliteTable("conversations", {
   createdAt: integer("created_at").notNull().default(epochMsNow),
 }, (table) => [
   index("idx_conversations_created_at").on(desc(table.createdAt)),
+  // idx_conversations_authority_node_id lives only in the imperative
+  // migration array. The raw schema exec cannot conditionally create an
+  // index, so declaring it here would generate unsafe DDL for legacy pilot
+  // databases whose conversations table predates authority_node_id.
 ]);
 
 // -- conversation_members ----------------------------------------------------
@@ -264,6 +284,7 @@ export const conversationMembersTable = sqliteTable("conversation_members", {
   role: text("role"),
 }, (table) => [
   primaryKey({ columns: [table.conversationId, table.actorId] }),
+  index("idx_conversation_members_actor").on(table.actorId, table.conversationId),
 ]);
 
 // -- messages ----------------------------------------------------------------
@@ -286,6 +307,7 @@ export const messagesTable = sqliteTable("messages", {
   index("idx_messages_conversation_created_at").on(table.conversationId, table.createdAt),
   index("idx_messages_created_at").on(desc(table.createdAt)),
   index("idx_messages_actor_created_at").on(table.actorId, desc(table.createdAt)),
+  index("idx_messages_origin_node_id").on(table.originNodeId),
 ]);
 
 // -- message_mentions --------------------------------------------------------
@@ -321,6 +343,151 @@ export const conversationReadCursorsTable = sqliteTable("conversation_read_curso
 }, (table) => [
   primaryKey({ columns: [table.conversationId, table.actorId] }),
   index("idx_read_cursors_conversation_updated_at").on(table.conversationId, desc(table.updatedAt)),
+  index("idx_read_cursors_reader_node_id").on(table.readerNodeId),
+]);
+
+// -- broker_journal_projection_checkpoints ---------------------------------
+// Opaque journal barrier retained after a complete SQLite projection replay.
+// It is recovery metadata, not broker domain state.
+export const brokerJournalProjectionCheckpointsTable = sqliteTable("broker_journal_projection_checkpoints", {
+  projectionId: text("projection_id").primaryKey(),
+  projectionVersion: integer("projection_version").notNull(),
+  barrierId: text("barrier_id").notNull(),
+  updatedAt: integer("updated_at").notNull(),
+});
+
+// -- conversation_projection_* ---------------------------------------------
+// Shared V6/SCO-102 conversation list projection. These tables are a
+// rebuildable read model; canonical conversations/messages remain above.
+export const conversationProjectionMetaTable = sqliteTable("conversation_projection_meta", {
+  singleton: integer("singleton").primaryKey(),
+  projectionId: text("projection_id").notNull(),
+  projectionVersion: integer("projection_version").notNull(),
+  headSeq: integer("head_seq").notNull(),
+  minReplayableSeq: integer("min_replayable_seq").notNull(),
+  updatedAt: integer("updated_at").notNull(),
+}, (table) => [
+  check("conversation_projection_meta_singleton_check", sql`${table.singleton} = 1`),
+]);
+
+export const conversationProjectionItemsTable = sqliteTable("conversation_projection_items", {
+  feedId: text("feed_id").primaryKey(),
+  entityKind: text("entity_kind").notNull(),
+  kind: text("kind").notNull(),
+  conversationId: text("conversation_id"),
+  runtimeSessionId: text("runtime_session_id"),
+  source: text("source"),
+  sourceSessionId: text("source_session_id"),
+  title: text("title"),
+  alias: text("alias"),
+  naturalKey: text("natural_key"),
+  projectRoot: text("project_root"),
+  harness: text("harness"),
+  model: text("model"),
+  effort: text("effort"),
+  agentId: text("agent_id"),
+  agentName: text("agent_name"),
+  currentBranch: text("current_branch"),
+  authorityNodeId: text("authority_node_id"),
+  authorityNodeName: text("authority_node_name"),
+  parentConversationId: text("parent_conversation_id"),
+  anchorMessageId: text("anchor_message_id"),
+  activityState: text("activity_state").notNull(),
+  lastMessageId: text("last_message_id"),
+  lastMessageAt: integer("last_message_at"),
+  lastActivityAt: integer("last_activity_at").notNull(),
+  messageCount: integer("message_count").notNull().default(0),
+  unreadCount: integer("unread_count").notNull().default(0),
+  participantCount: integer("participant_count").notNull().default(0),
+  preview: text("preview"),
+  lastEngagedAt: integer("last_engaged_at"),
+  sourceFreshAt: integer("source_fresh_at"),
+  visibilityState: text("visibility_state").notNull().default("visible"),
+  updatedSeq: integer("updated_seq").notNull(),
+  updatedAt: integer("updated_at").notNull(),
+}, (table) => [
+  check(
+    "conversation_projection_items_entity_kind_check",
+    sql`${table.entityKind} IN ('scout_conversation', 'observed_session')`,
+  ),
+  check(
+    "conversation_projection_items_visibility_check",
+    sql`${table.visibilityState} IN ('visible', 'hidden')`,
+  ),
+  index("idx_conversation_projection_recent").on(
+    table.visibilityState,
+    desc(table.lastActivityAt),
+    table.feedId,
+  ),
+  index("idx_conversation_projection_project_recent").on(
+    table.projectRoot,
+    table.visibilityState,
+    desc(table.lastActivityAt),
+  ),
+  index("idx_conversation_projection_engaged").on(
+    table.visibilityState,
+    desc(table.lastEngagedAt),
+    desc(table.lastActivityAt),
+    table.feedId,
+  ),
+  index("idx_conversation_projection_source_fresh").on(
+    table.visibilityState,
+    desc(table.sourceFreshAt),
+  ),
+  index("idx_conversation_projection_runtime_session").on(
+    table.entityKind,
+    table.runtimeSessionId,
+  ),
+  index("idx_conversation_projection_source_session").on(
+    table.entityKind,
+    table.sourceSessionId,
+  ),
+  uniqueIndex("idx_conversation_projection_conversation")
+    .on(table.conversationId)
+    .where(sql`conversation_id IS NOT NULL`),
+]);
+
+// Incremental message aggregates backing the summary rows. Facts make journal
+// re-delivery idempotent; stats keep the hot message path O(batch) instead of
+// recounting an arbitrarily long transcript after every append.
+export const conversationProjectionMessageFactsTable = sqliteTable("conversation_projection_message_facts", {
+  messageId: text("message_id").primaryKey().references(() => messagesTable.id, { onDelete: "cascade" }),
+  conversationId: text("conversation_id").notNull().references(() => conversationsTable.id, { onDelete: "cascade" }),
+  createdAt: integer("created_at").notNull(),
+}, (table) => [
+  index("idx_conversation_projection_message_facts_conversation").on(
+    table.conversationId,
+    table.createdAt,
+    table.messageId,
+  ),
+]);
+
+export const conversationProjectionMessageStatsTable = sqliteTable("conversation_projection_message_stats", {
+  conversationId: text("conversation_id").primaryKey().references(() => conversationsTable.id, { onDelete: "cascade" }),
+  messageCount: integer("message_count").notNull().default(0),
+  latestMessageId: text("latest_message_id"),
+  latestMessageAt: integer("latest_message_at"),
+});
+
+export const conversationProjectionSourcesTable = sqliteTable("conversation_projection_sources", {
+  source: text("source").notNull(),
+  sourceSessionId: text("source_session_id").notNull(),
+  feedId: text("feed_id").notNull().references(() => conversationProjectionItemsTable.feedId, { onDelete: "cascade" }),
+  firstSeenAt: integer("first_seen_at").notNull(),
+  lastSeenAt: integer("last_seen_at").notNull(),
+}, (table) => [
+  primaryKey({ columns: [table.source, table.sourceSessionId] }),
+  index("idx_conversation_projection_sources_feed").on(table.feedId),
+]);
+
+export const conversationProjectionEventsTable = sqliteTable("conversation_projection_events", {
+  seq: integer("seq").primaryKey({ autoIncrement: true }),
+  projectionId: text("projection_id").notNull(),
+  ts: integer("ts").notNull(),
+  payloadJson: text("payload_json").notNull(),
+}, (table) => [
+  index("idx_conversation_projection_events_projection_seq").on(table.projectionId, table.seq),
+  index("idx_conversation_projection_events_ts").on(table.ts),
 ]);
 
 // -- invocations -------------------------------------------------------------
@@ -361,6 +528,9 @@ export const invocationsTable = sqliteTable("invocations", {
 }, (table) => [
   index("idx_invocations_target_created_at").on(table.targetAgentId, table.createdAt),
   index("idx_invocations_requester_created_at").on(table.requesterId, desc(table.createdAt)),
+  index("idx_invocations_conversation_created_at").on(table.conversationId, desc(table.createdAt)),
+  index("idx_invocations_requester_node_id").on(table.requesterNodeId),
+  index("idx_invocations_target_node_id").on(table.targetNodeId),
   // idx_invocations_flight_id lives only in the imperative migration array
   // (like idx_invocations_collaboration_record_id_created_at): the raw schema
   // exec runs before the imperative column-adds, so an index here would crash
@@ -419,6 +589,7 @@ export const deliveriesTable = sqliteTable("deliveries", {
 }, (table) => [
   index("idx_deliveries_status_transport").on(table.status, table.transport),
   index("idx_deliveries_created_at").on(desc(table.createdAt)),
+  index("idx_deliveries_target_node_id").on(table.targetNodeId),
 ]);
 
 // -- delivery_attempts -------------------------------------------------------
@@ -650,6 +821,7 @@ export const threadEventsTable = sqliteTable("thread_events", {
   unique().on(table.conversationId, table.seq),
   index("idx_thread_events_conversation_seq").on(table.conversationId, desc(table.seq)),
   index("idx_thread_events_conversation_ts").on(table.conversationId, desc(table.ts)),
+  index("idx_thread_events_authority_node_id").on(table.authorityNodeId),
 ]);
 
 // -- thread_cursors ----------------------------------------------------------
@@ -660,6 +832,7 @@ export const threadCursorsTable = sqliteTable("thread_cursors", {
   updatedAt: integer("updated_at").notNull(),
 }, (table) => [
   primaryKey({ columns: [table.conversationId, table.authorityNodeId] }),
+  index("idx_thread_cursors_authority_node_id").on(table.authorityNodeId),
 ]);
 
 // -- scout_dispatches --------------------------------------------------------
@@ -896,6 +1069,13 @@ export const controlPlaneDrizzleSchema = {
   messageMentions: messageMentionsTable,
   messageAttachments: messageAttachmentsTable,
   conversationReadCursors: conversationReadCursorsTable,
+  brokerJournalProjectionCheckpoints: brokerJournalProjectionCheckpointsTable,
+  conversationProjectionMeta: conversationProjectionMetaTable,
+  conversationProjectionItems: conversationProjectionItemsTable,
+  conversationProjectionMessageFacts: conversationProjectionMessageFactsTable,
+  conversationProjectionMessageStats: conversationProjectionMessageStatsTable,
+  conversationProjectionSources: conversationProjectionSourcesTable,
+  conversationProjectionEvents: conversationProjectionEventsTable,
   invocations: invocationsTable,
   flights: flightsTable,
   bindings: bindingsTable,

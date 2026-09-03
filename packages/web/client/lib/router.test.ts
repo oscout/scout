@@ -582,6 +582,24 @@ describe("agents route parsing", () => {
     expect(routePath({ view: "messages", conversationId: "c.font-studio" })).toBe(
       "/messages/c.font-studio",
     );
+    expect(
+      routeFromUrl(
+        "http://127.0.0.1:43120/messages/agent/worker%2Fmain?thread=conv%2Fthread&machineId=node-a",
+      ),
+    ).toEqual({
+      view: "messages",
+      agentId: "worker/main",
+      threadId: "conv/thread",
+      machineId: "node-a",
+    });
+    expect(routePath({
+      view: "messages",
+      agentId: "worker/main",
+      threadId: "conv/thread",
+      machineId: "node-a",
+    })).toBe(
+      "/messages/agent/worker%2Fmain?thread=conv%2Fthread&machineId=node-a",
+    );
 
     // Conversation detail (/c/{id}) and agent-info (/agent/{id}).
     expect(routeFromUrl("http://127.0.0.1:43120/c/c.hudson-chat")).toEqual({

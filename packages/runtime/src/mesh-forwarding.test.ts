@@ -10,9 +10,15 @@ import {
   DEFAULT_MESH_FORWARD_TIMEOUT_MS,
   fetchPeerAgents,
   forwardMeshMessage,
+  MAX_PEER_AGENT_SNAPSHOT_BYTES,
+  PeerAgentSnapshotTooLargeError,
   type MeshMessageBundle,
   PeerUnreachableError,
 } from "./mesh-forwarding.js";
+
+test("peer agent snapshots use a 2 MiB wire ceiling", () => {
+  expect(MAX_PEER_AGENT_SNAPSHOT_BYTES).toBe(2 * 1024 * 1024);
+});
 
 test("fetchPeerAgents uses the broker-scoped authenticated peer client", async () => {
   const calls: string[] = [];
@@ -38,8 +44,118 @@ test("fetchPeerAgents uses the broker-scoped authenticated peer client", async (
     return Response.json({ agents: { [remoteAgent.id]: remoteAgent } });
   };
 
-  await expect(fetchPeerAgents("https://ocean-iron:43110", peerFetch)).resolves.toEqual([remoteAgent]);
-  expect(calls).toEqual(["https://ocean-iron:43110/v1/mesh/snapshot"]);
+  await expect(fetchPeerAgents("https://ocean-iron:43110", peerFetch)).resolves.toEqual({
+    authoritative: true,
+    agents: [remoteAgent],
+  });
+  expect(calls).toEqual(["https://ocean-iron:43110/v1/mesh/snapshot?scope=agents"]);
+});
+
+test("fetchPeerAgents treats a 2xx empty agents object as authoritative", async () => {
+  const peerFetch = async (): Promise<Response> => Response.json({ agents: {} });
+  await expect(fetchPeerAgents("https://ocean-iron:43110", peerFetch)).resolves.toEqual({
+    authoritative: true,
+    agents: [],
+  });
+});
+
+test("fetchPeerAgents falls back to the legacy snapshot path on 404", async () => {
+  const calls: string[] = [];
+  const peerFetch = async (baseUrl: string, path: string): Promise<Response> => {
+    calls.push(`${baseUrl}${path}`);
+    if (path.startsWith("/v1/mesh/snapshot")) {
+      return new Response("missing", { status: 404 });
+    }
+    return Response.json({ agents: {} });
+  };
+  await expect(fetchPeerAgents("https://legacy-peer:43110", peerFetch)).resolves.toEqual({
+    authoritative: true,
+    agents: [],
+  });
+  expect(calls).toEqual([
+    "https://legacy-peer:43110/v1/mesh/snapshot?scope=agents",
+    "https://legacy-peer:43110/v1/snapshot?scope=agents",
+  ]);
+});
+
+test("fetchPeerAgents never treats non-2xx, missing, or malformed agents as authoritative", async () => {
+  const cases: Array<{ label: string; response: Response }> = [
+    { label: "http 503", response: new Response("nope", { status: 503 }) },
+    { label: "missing agents", response: Response.json({ nodes: {} }) },
+    { label: "null agents", response: Response.json({ agents: null }) },
+    { label: "array agents", response: Response.json({ agents: [] }) },
+    { label: "string agents", response: Response.json({ agents: "agents" }) },
+    { label: "non-object body", response: Response.json([]) },
+  ];
+  for (const testCase of cases) {
+    const peerFetch = async (): Promise<Response> => testCase.response.clone();
+    await expect(fetchPeerAgents("https://peer:43110", peerFetch)).resolves.toEqual({
+      authoritative: false,
+      agents: [],
+    });
+  }
+});
+
+test("fetchPeerAgents treats unparseable 2xx bodies as non-authoritative", async () => {
+  const peerFetch = async (): Promise<Response> => new Response("not-json", {
+    status: 200,
+    headers: { "content-type": "application/json" },
+  });
+  await expect(fetchPeerAgents("https://peer:43110", peerFetch)).resolves.toEqual({
+    authoritative: false,
+    agents: [],
+  });
+});
+
+test("fetchPeerAgents rejects a declared full-registry-sized response before parsing it", async () => {
+  let cancelled = false;
+  const body = new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(new TextEncoder().encode("{}"));
+    },
+    cancel() {
+      cancelled = true;
+    },
+  });
+  const peerFetch = async (): Promise<Response> => new Response(body, {
+    headers: {
+      "content-length": String(MAX_PEER_AGENT_SNAPSHOT_BYTES + 1),
+      "content-type": "application/json",
+    },
+  });
+
+  const error = await fetchPeerAgents("https://legacy-peer:43110", peerFetch)
+    .then(() => null, (cause: unknown) => cause);
+  expect(error).toBeInstanceOf(PeerAgentSnapshotTooLargeError);
+  expect(error).toMatchObject({
+    brokerUrl: "https://legacy-peer:43110",
+    observedBytes: MAX_PEER_AGENT_SNAPSHOT_BYTES + 1,
+    maxBytes: MAX_PEER_AGENT_SNAPSHOT_BYTES,
+  });
+  expect(cancelled).toBe(true);
+});
+
+test("fetchPeerAgents stops an undeclared oversized response while streaming", async () => {
+  let cancelled = false;
+  let emitted = 0;
+  const chunkSize = 1024 * 1024;
+  const body = new ReadableStream<Uint8Array>({
+    pull(controller) {
+      emitted += 1;
+      controller.enqueue(new Uint8Array(chunkSize));
+    },
+    cancel() {
+      cancelled = true;
+    },
+  });
+  const peerFetch = async (): Promise<Response> => new Response(body, {
+    headers: { "content-type": "application/json" },
+  });
+
+  await expect(fetchPeerAgents("https://legacy-peer:43110", peerFetch))
+    .rejects.toBeInstanceOf(PeerAgentSnapshotTooLargeError);
+  expect(emitted).toBeLessThanOrEqual((MAX_PEER_AGENT_SNAPSHOT_BYTES / chunkSize) + 2);
+  expect(cancelled).toBe(true);
 });
 
 test("forwardMeshMessage uses the injected signed and pinned peer client", async () => {

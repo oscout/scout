@@ -87,7 +87,10 @@ import {
   SUPPORTED_SCOUT_HARNESSES,
   type LocalAgentBinding,
 } from "@openscout/runtime/local-agents";
-import type { RuntimeRegistrySnapshot } from "@openscout/runtime/registry";
+import {
+  createRuntimeRegistrySnapshot,
+  type RuntimeRegistrySnapshot,
+} from "@openscout/runtime/registry";
 import { resolveOpenScoutSupportPaths } from "@openscout/runtime/support-paths";
 import { resolveOperatorName } from "@openscout/runtime/user-config";
 
@@ -3104,11 +3107,6 @@ export async function sendScoutMessage(input: {
   operatorSignal?: ScoutDeliverRequest["operatorSignal"];
   aliasScope?: RouteAliasScope;
 }): Promise<ScoutMessagePostResult> {
-  const broker = await loadScoutBrokerContext();
-  if (!broker) {
-    return { usedBroker: false, invokedTargets: [], unresolvedTargets: [] };
-  }
-
   const currentDirectory = input.currentDirectory ?? process.cwd();
   const source = input.source?.trim() || "scout-cli";
   const wake = input.wake ?? false;
@@ -3125,26 +3123,33 @@ export async function sendScoutMessage(input: {
         sourceIntent: "tell_wake",
       }
     : undefined;
-  const senderId = await resolveConversationActorId(
-    broker.baseUrl,
-    broker.snapshot,
-    broker.node.id,
-    input.senderId,
-    currentDirectory,
-  );
 
   const requestedTargetLabel = input.targetLabel?.trim();
   const requestedTargetRef = input.targetRef?.trim();
   if (requestedTargetLabel || requestedTargetRef) {
+    // Explicit routes are already complete broker commands. Do not fetch and
+    // clone the global registry just to post one delivery; the broker owns
+    // target resolution and only the caller identity needs local enrichment.
+    const health = await readScoutBrokerHealth();
+    if (!health.reachable || !health.ok || !health.nodeId) {
+      return { usedBroker: false, invokedTargets: [], unresolvedTargets: [] };
+    }
+    const senderId = await resolveConversationActorId(
+      health.baseUrl,
+      createRuntimeRegistrySnapshot(),
+      health.nodeId,
+      input.senderId,
+      currentDirectory,
+    );
     const { target, renderedTarget, isBindingRef } = routeTargetForTargetLabel(
       requestedTargetLabel ?? "",
       requestedTargetRef,
       input.aliasScope,
     );
-    const delivery = await brokerPostDeliver(broker.baseUrl, {
+    const delivery = await brokerPostDeliver(health.baseUrl, {
       caller: {
         actorId: senderId,
-        nodeId: broker.node.id,
+        nodeId: health.nodeId,
         currentDirectory,
         metadata: { source },
       },
@@ -3189,6 +3194,19 @@ export async function sendScoutMessage(input: {
       routeKind: delivery.routeKind,
     };
   }
+
+  const broker = await loadScoutBrokerContext();
+  if (!broker) {
+    return { usedBroker: false, invokedTargets: [], unresolvedTargets: [] };
+  }
+
+  const senderId = await resolveConversationActorId(
+    broker.baseUrl,
+    broker.snapshot,
+    broker.node.id,
+    input.senderId,
+    currentDirectory,
+  );
 
   const mentionResolution = await resolveMentionTargets(
     broker.snapshot,

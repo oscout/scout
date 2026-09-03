@@ -59,10 +59,10 @@ Protocol source files live in `packages/protocol/src`.
 
 ## Runtime Sessions
 
-Scout is also a harness runtime surface. A Scout **agent** is a stable
-addressable identity; a **session** is a concrete Claude, Codex, or future
-harness conversation/process/thread; an **endpoint** attaches an agent identity
-to one reachable session.
+Scout is also a harness runtime surface. A Scout **agent** is durable domain
+identity; a **session** is an opaque `sess.*` handle resolving to a concrete
+Claude, Codex, or future harness context; an **endpoint** is the current route
+to that context.
 
 Cards are identity and return-address records. They do not by themselves mean a
 harness session is alive. Treat card creation, registration, and explicit
@@ -344,9 +344,9 @@ Questions answer information. Work items carry ownership.
 
 - One explicit target means DM.
 - The default target should be the base agent or project identity. Harness,
-  model, profile, node, and session details are instance constraints, not a
-  different base agent, unless the caller explicitly asks for a specialized
-  profile.
+  profiles are durable launch policy, while harness, model, node, endpoint, and
+  session details constrain or record execution rather than creating another
+  agent.
 - If no concrete agent/session is known, route work by project path instead of
   running discovery just to invent a target.
 - Group coordination requires an explicit channel.

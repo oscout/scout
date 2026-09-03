@@ -38,6 +38,16 @@ export type MeshRendezvousNodeSource = NodeDefinition | (() => NodeDefinition);
 const DEFAULT_RENDEZVOUS_TTL_MS = 60_000;
 const DEFAULT_RENDEZVOUS_INTERVAL_MS = 30_000;
 
+class MeshRendezvousPublishError extends Error {
+  constructor(
+    readonly status: number,
+    message: string,
+  ) {
+    super(message);
+    this.name = "MeshRendezvousPublishError";
+  }
+}
+
 export function resolveMeshRendezvousPublishConfig(
   env: RuntimeEnv = process.env,
   options: { includeSettings?: boolean } = {},
@@ -55,6 +65,10 @@ export function resolveMeshRendezvousPublishConfig(
 
   const token = env.OPENSCOUT_MESH_RENDEZVOUS_TOKEN?.trim() || undefined;
   const sessionToken = env.OPENSCOUT_MESH_RENDEZVOUS_SESSION?.trim() || undefined;
+  const allowAnonymous = readBooleanFlag(env.OPENSCOUT_MESH_RENDEZVOUS_ALLOW_ANONYMOUS);
+  if (!token && !sessionToken && !allowAnonymous) {
+    return undefined;
+  }
 
   return {
     url: rawUrl.replace(/\/$/, ""),
@@ -108,7 +122,10 @@ export async function publishMeshRendezvousPresence(
 
   if (!response.ok) {
     const detail = await response.text().catch(() => "");
-    throw new Error(`rendezvous publish failed: ${response.status} ${response.statusText}${detail ? ` ${detail}` : ""}`);
+    throw new MeshRendezvousPublishError(
+      response.status,
+      `rendezvous publish failed: ${response.status} ${response.statusText}${detail ? ` ${detail}` : ""}`,
+    );
   }
 
   return true;
@@ -119,10 +136,11 @@ export function startMeshRendezvousPublisher(
   options: MeshRendezvousPublisherOptions,
 ): MeshRendezvousPublisher {
   let stopped = false;
+  let suspendedForAuth = false;
   let inFlight: Promise<void> | null = null;
 
   const publishNow = async () => {
-    if (stopped) return;
+    if (stopped || suspendedForAuth) return;
     if (inFlight) {
       await inFlight;
       return;
@@ -134,6 +152,16 @@ export function startMeshRendezvousPublisher(
         }
       })
       .catch((error) => {
+        if (
+          error instanceof MeshRendezvousPublishError
+          && (error.status === 401 || error.status === 403)
+        ) {
+          suspendedForAuth = true;
+          options.logger?.warn(
+            `[openscout-runtime] mesh rendezvous authentication rejected; publishing is suspended until restart: ${error.message}`,
+          );
+          return;
+        }
         options.logger?.warn(`[openscout-runtime] mesh rendezvous publish failed: ${error instanceof Error ? error.message : String(error)}`);
       })
       .finally(() => {
@@ -253,6 +281,10 @@ function isReachableHttpUrl(value: string): boolean {
 function readPositiveInteger(value: string | undefined, fallback: number): number {
   const parsed = Number.parseInt(value ?? "", 10);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function readBooleanFlag(value: string | undefined): boolean {
+  return ["1", "true", "yes", "on"].includes(value?.trim().toLowerCase() ?? "");
 }
 
 function readFallbackRelays(pairing: Record<string, unknown>): string[] {

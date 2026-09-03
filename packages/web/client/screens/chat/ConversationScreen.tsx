@@ -540,19 +540,19 @@ export function ConversationScreen({
       const shouldRefreshTail = messageMode === "refresh"
         || messageMode === "initial";
 
-      const [conversationMessages, activeFlights, fleet] = await Promise.all([
-        shouldLoadHistory
-          ? loadConversationHistory(canonicalConversationId)
-          : shouldRefreshTail
-            ? loadConversationTail(canonicalConversationId, { refresh: true })
-            : Promise.resolve(cachedMessages),
+      const secondaryState = Promise.all([
         api<Flight[]>(
           `/api/flights?conversationId=${encodeURIComponent(canonicalConversationId)}`,
-        ),
+        ).catch(() => []),
         api<FleetState>("/api/fleet?limit=24&activityLimit=160").catch(() =>
           emptyFleetState(),
         ),
       ]);
+      const conversationMessages = await (shouldLoadHistory
+        ? loadConversationHistory(canonicalConversationId)
+        : shouldRefreshTail
+          ? loadConversationTail(canonicalConversationId, { refresh: true })
+          : Promise.resolve(cachedMessages));
 
       if (activeConversationIdRef.current !== conversationId) return;
 
@@ -583,6 +583,11 @@ export function ConversationScreen({
           }
         });
       }
+      // Transcript arrival is the user-visible ready point. Flights and fleet
+      // decorate the live-turn rail; a slow roster scan must never hold the
+      // history skeleton or composer geometry on screen.
+      const [activeFlights, fleet] = await secondaryState;
+      if (activeConversationIdRef.current !== conversationId) return;
       const projectedCurrentFlight = selectCurrentFlight(activeFlights);
       const stagedCurrentFlight = pendingConversationFlight(canonicalConversationId);
       const nextCurrentFlight = projectedCurrentFlight ?? stagedCurrentFlight;
@@ -1455,14 +1460,21 @@ export function ConversationScreen({
   const previousShowTypingRef = useRef(false);
   const initialScrollDoneRef = useRef(false);
   const scrollToTail = useCallback((behavior: "instant" | "smooth") => {
-    const bottom = bottomRef.current;
-    if (!bottom) return;
+    const feed = feedRef.current;
+    if (!feed) return;
 
     autoScrollActiveRef.current = true;
     if (autoScrollTimeoutRef.current !== null) {
       clearTimeout(autoScrollTimeoutRef.current);
     }
-    bottom.scrollIntoView({ behavior });
+    // Keep arrival scrolling inside the feed. `scrollIntoView()` also scrolls
+    // eligible ancestors, which can move the entire web surface—and with it
+    // the composer—when a route's skeleton is replaced by real history.
+    if (behavior === "instant") {
+      feed.scrollTop = feed.scrollHeight;
+    } else {
+      feed.scrollTo({ top: feed.scrollHeight, behavior: "smooth" });
+    }
     autoScrollTimeoutRef.current = setTimeout(() => {
       autoScrollActiveRef.current = false;
       autoScrollTimeoutRef.current = null;
@@ -2311,7 +2323,12 @@ export function ConversationScreen({
 
         {error && <p className="s-thread-error">{error}</p>}
 
-        <div className="s-thread-feed" ref={feedRef} onScroll={handleFeedScroll}>
+        <div
+          className="s-thread-feed"
+          data-conversation-id={conversationId}
+          ref={feedRef}
+          onScroll={handleFeedScroll}
+        >
           {!showThreadSkeleton && messages.length > 0 && canLoadEarlierMessages && (
             <div className="s-thread-history-control">
               <button

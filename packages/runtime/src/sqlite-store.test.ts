@@ -84,7 +84,127 @@ function countRows(db: Database, table: string, where: string, value: string): n
   return row?.count ?? 0;
 }
 
+function testControlEvent(id: string, ts: number) {
+  return {
+    id,
+    kind: "node.upserted",
+    actorId: "node-1",
+    nodeId: "node-1",
+    ts,
+    payload: {
+      node: {
+        id: "node-1",
+        name: "Node One",
+        kind: "local",
+        lastSeenAt: ts,
+        capabilities: [],
+        metadata: {},
+      },
+    },
+  } as const;
+}
+
+async function expectPromptResolution(promise: Promise<void>): Promise<void> {
+  await Promise.race([
+    promise,
+    new Promise<never>((_, reject) => {
+      setTimeout(() => reject(new Error("timed out waiting for pending event flush")), 500).unref?.();
+    }),
+  ]);
+}
+
 describe("SQLiteControlPlaneStore", () => {
+  test("restores its normal reader when a replay transaction throws", () => {
+    const store = createStore();
+    const normalReader = store.readerDb;
+
+    try {
+      expect(() => store.runReplayTransaction(() => {
+        expect(store.readerDb).toBe(store.writerDb);
+        throw new Error("reject replay batch");
+      })).toThrow("reject replay batch");
+      expect(store.readerDb).toBe(normalReader);
+      expect(store.readerDb).not.toBe(store.writerDb);
+    } finally {
+      store.close();
+    }
+  });
+
+  test("retries busy pending-event batches without losing order", async () => {
+    const store = createStore();
+    const internals = store as unknown as {
+      persistEventsBatch: (events: Array<{ id: string }>) => void;
+    };
+    const persistEventsBatch = internals.persistEventsBatch;
+    const attempts: string[][] = [];
+    let firstAttemptResolved: (() => void) | undefined;
+    let persistedResolved: (() => void) | undefined;
+    const firstAttempt = new Promise<void>((resolve) => {
+      firstAttemptResolved = resolve;
+    });
+    const persisted = new Promise<void>((resolve) => {
+      persistedResolved = resolve;
+    });
+    let rejectOnce = true;
+
+    internals.persistEventsBatch = (events) => {
+      attempts.push(events.map((event) => event.id));
+      if (rejectOnce) {
+        rejectOnce = false;
+        firstAttemptResolved?.();
+        throw Object.assign(new Error("database is locked"), { code: "SQLITE_BUSY" });
+      }
+      persistEventsBatch(events);
+      persistedResolved?.();
+    };
+
+    try {
+      store.recordEvent(testControlEvent("evt-1", 1));
+      await expectPromptResolution(firstAttempt);
+      store.recordEvent(testControlEvent("evt-2", 2));
+      await expectPromptResolution(persisted);
+
+      expect(attempts).toEqual([["evt-1"], ["evt-1", "evt-2"]]);
+      expect(store.recentEvents(10).map((event) => event.id)).toEqual(["evt-1", "evt-2"]);
+    } finally {
+      internals.persistEventsBatch = persistEventsBatch;
+      store.close();
+    }
+  });
+
+  test("keeps a busy close retryable instead of closing under queued events", async () => {
+    const store = createStore();
+    const internals = store as unknown as {
+      persistEventsBatch: (events: Array<{ id: string }>) => void;
+    };
+    const persistEventsBatch = internals.persistEventsBatch;
+    const attempts: string[][] = [];
+    let persistedResolved: (() => void) | undefined;
+    const persisted = new Promise<void>((resolve) => {
+      persistedResolved = resolve;
+    });
+    let busy = true;
+
+    internals.persistEventsBatch = (events) => {
+      attempts.push(events.map((event) => event.id));
+      if (busy) {
+        throw Object.assign(new Error("database is locked"), { code: "SQLITE_BUSY" });
+      }
+      persistEventsBatch(events);
+      persistedResolved?.();
+    };
+
+    store.recordEvent(testControlEvent("evt-close", 1));
+    expect(() => store.close()).toThrow("database is locked");
+    busy = false;
+    await expectPromptResolution(persisted);
+
+    expect(attempts).toEqual([["evt-close"], ["evt-close"]]);
+    expect(store.recentEvents(10).map((event) => event.id)).toEqual(["evt-close"]);
+    internals.persistEventsBatch = persistEventsBatch;
+    store.close();
+  });
+
   test("persists execution resolution on invocation receipts", () => {
     const store = createStore();
     try {
@@ -260,6 +380,84 @@ describe("SQLiteControlPlaneStore", () => {
     }
   });
 
+  test("reads a bounded newest native thread page without scanning a whole registry snapshot", () => {
+    const store = createStore();
+
+    try {
+      seedAgent(store);
+      store.upsertActor({ id: "operator", kind: "person", displayName: "Operator" });
+      store.upsertConversation({
+        id: "conv-launch",
+        kind: "direct",
+        title: "Launch thread",
+        visibility: "private",
+        shareMode: "local",
+        authorityNodeId: "node-1",
+        participantIds: ["agent-1", "operator"],
+      });
+      for (let index = 0; index < 4; index += 1) {
+        store.recordMessage({
+          id: `msg-${index}`,
+          conversationId: "conv-launch",
+          actorId: index % 2 === 0 ? "operator" : "agent-1",
+          originNodeId: "node-1",
+          class: "agent",
+          body: `message ${index}`,
+          visibility: "private",
+          policy: "durable",
+          createdAt: 1_800_000_000_000 + index,
+        });
+      }
+
+      const snapshot = store.getConversationThreadLaunchSnapshot({
+        conversationId: "conv-launch",
+        projectionId: "projection-a",
+        projectionVersion: 1,
+        sequence: 9,
+        limit: 2,
+        generatedAt: 2_000,
+      });
+
+      expect(snapshot).toEqual({
+        projectionId: "projection-a",
+        projectionVersion: 1,
+        sequence: 9,
+        feedId: "conv:conv-launch",
+        entityKind: "scout_conversation",
+        conversationId: "conv-launch",
+        cursor: "msg-2",
+        hasEarlier: true,
+        generatedAt: 2_000,
+        messages: [
+          {
+            id: "msg-2",
+            actorId: "operator",
+            actorName: "Operator",
+            body: "message 2",
+            class: "agent",
+            createdAt: 1_800_000_000_002,
+          },
+          {
+            id: "msg-3",
+            actorId: "agent-1",
+            actorName: "Agent One",
+            body: "message 3",
+            class: "agent",
+            createdAt: 1_800_000_000_003,
+          },
+        ],
+      });
+      expect(store.getConversationThreadLaunchSnapshot({
+        conversationId: "missing",
+        projectionId: "projection-a",
+        projectionVersion: 1,
+        sequence: 9,
+      })).toBeNull();
+    } finally {
+      store.close();
+    }
+  });
+
   test("indexes latest endpoint lookups used by activity projection", () => {
     const { store, dbPath } = createStoreWithPath();
     const db = new Database(dbPath, { readonly: true });
@@ -365,6 +563,31 @@ describe("SQLiteControlPlaneStore", () => {
       expect(indexNames).toContain("idx_runtime_sessions_external");
       expect(indexNames).toContain("idx_runtime_session_aliases_alias");
       expect(indexNames).toContain("idx_runtime_session_aliases_session");
+      expect(indexNames).toContain("idx_runtime_session_aliases_endpoint");
+    } finally {
+      db.close();
+      store.close();
+    }
+  });
+
+  test("indexes endpoint alias expiration updates used by runtime session projection", () => {
+    const { store, dbPath } = createStoreWithPath();
+    const db = new Database(dbPath, { readonly: true });
+
+    try {
+      const plan = db.query(
+        `EXPLAIN QUERY PLAN
+        UPDATE runtime_session_aliases
+        SET expires_at = COALESCE(expires_at, ?1),
+            last_seen_at = CASE WHEN last_seen_at > ?2 THEN last_seen_at ELSE ?2 END
+        WHERE endpoint_id = ?3 AND session_id != ?4`,
+      ).all(2_000, 1_000, "endpoint-1", "session-1") as Array<{ detail?: string }>;
+
+      expect(plan.some((row) =>
+        String(row.detail ?? "").includes(
+          "idx_runtime_session_aliases_endpoint (endpoint_id=?)",
+        )
+      )).toBe(true);
     } finally {
       db.close();
       store.close();
@@ -1171,6 +1394,7 @@ describe("SQLiteControlPlaneStore", () => {
       expect(indexNames).toContain("idx_runtime_sessions_expires");
       expect(indexNames).toContain("idx_runtime_session_aliases_alias");
       expect(indexNames).toContain("idx_runtime_session_aliases_session");
+      expect(indexNames).toContain("idx_runtime_session_aliases_endpoint");
       expect(indexNames).toContain("idx_runtime_session_aliases_expires");
     } finally {
       db.close();
@@ -1207,6 +1431,94 @@ describe("SQLiteControlPlaneStore", () => {
       expect(version?.user_version).toBe(CONTROL_PLANE_SCHEMA_VERSION);
     } finally {
       db.close();
+      store.close();
+    }
+  });
+
+  test("reuses delivery upsert preparation and source timestamps while preserving conflict updates", () => {
+    const store = createStore();
+    const db = getWritableDb(store);
+    const internals = store as unknown as {
+      deliveryCreatedAt: (
+        delivery: Parameters<SQLiteControlPlaneStore["recordDeliveries"]>[0][number],
+      ) => number;
+    };
+    const deliveryCreatedAt = internals.deliveryCreatedAt;
+    let createdAtLookups = 0;
+
+    try {
+      seedAgent(store);
+      store.upsertActor({ id: "operator", kind: "person", displayName: "Operator" });
+      store.recordInvocation({
+        id: "inv-delivery",
+        requesterId: "operator",
+        requesterNodeId: "node-1",
+        targetAgentId: "agent-1",
+        action: "consult",
+        task: "Deliver this",
+        ensureAwake: true,
+        stream: false,
+        createdAt: 100,
+      });
+      internals.deliveryCreatedAt = (delivery) => {
+        createdAtLookups += 1;
+        return deliveryCreatedAt.call(store, delivery);
+      };
+
+      const first = {
+        id: "delivery-upsert-1",
+        invocationId: "inv-delivery",
+        targetId: "agent-1",
+        targetNodeId: "node-1",
+        targetKind: "agent" as const,
+        transport: "peer_broker" as const,
+        reason: "invocation" as const,
+        policy: "must_ack" as const,
+        status: "accepted" as const,
+        metadata: { version: 1 },
+      };
+      store.recordDeliveries([
+        first,
+        { ...first, id: "delivery-upsert-2" },
+      ]);
+      expect(createdAtLookups).toBe(1);
+
+      store.recordDeliveries([{
+        ...first,
+        targetId: "agent-updated",
+        transport: "local_socket",
+        policy: "durable",
+        status: "deferred",
+        leaseOwner: "worker-1",
+        leaseExpiresAt: 500,
+        metadata: { version: 2, nextAttemptAt: 400 },
+      }]);
+      expect(createdAtLookups).toBe(2);
+      expect(store.listDeliveries().find((delivery) => delivery.id === first.id)).toEqual({
+        id: "delivery-upsert-1",
+        invocationId: "inv-delivery",
+        targetId: "agent-updated",
+        targetNodeId: "node-1",
+        targetKind: "agent",
+        transport: "local_socket",
+        reason: "invocation",
+        policy: "durable",
+        status: "deferred",
+        leaseOwner: "worker-1",
+        leaseExpiresAt: 500,
+        metadata: { version: 2, nextAttemptAt: 400 },
+      });
+      expect((db.query(
+        "SELECT created_at FROM deliveries WHERE id = ?1",
+      ).get(first.id) as { created_at: number }).created_at).toBe(100_000);
+
+      expect(() => store.recordDeliveries([
+        { ...first, id: "delivery-atomic-valid" },
+        { ...first, id: "delivery-atomic-invalid", invocationId: "missing-invocation" },
+      ])).toThrow();
+      expect(countRows(db, "deliveries", "id", "delivery-atomic-valid")).toBe(0);
+    } finally {
+      internals.deliveryCreatedAt = deliveryCreatedAt;
       store.close();
     }
   });
@@ -1690,6 +2002,64 @@ describe("invocation flight-status shadow columns", () => {
     }
   });
 
+  test("recordFlight updates a flight without deleting referencing activity", () => {
+    const store = createStore();
+    try {
+      seedInvocation(store);
+      store.recordFlight({
+        id: "flight-status-1",
+        invocationId: "inv-status-1",
+        requesterId: "operator",
+        targetAgentId: "agent-1",
+        state: "running",
+        startedAt: 120,
+      });
+
+      const db = getWritableDb(store);
+      db.query(
+        `INSERT INTO activity_items (id, kind, ts, invocation_id, flight_id, title)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)`,
+      ).run(
+        "activity:flight:auxiliary",
+        "flight_updated",
+        121,
+        "inv-status-1",
+        "flight-status-1",
+        "Independent flight activity",
+      );
+
+      store.recordFlight({
+        id: "flight-status-1",
+        invocationId: "inv-status-1",
+        requesterId: "operator",
+        targetAgentId: "agent-1",
+        state: "completed",
+        summary: "Done",
+        output: "All good",
+        startedAt: 120,
+        completedAt: 180,
+      });
+
+      expect(db.query(
+        "SELECT title FROM activity_items WHERE id = ?1",
+      ).get("activity:flight:auxiliary")).toEqual({
+        title: "Independent flight activity",
+      });
+      expect(db.query(
+        `SELECT state, summary, output, started_at, completed_at
+         FROM flights WHERE id = ?1`,
+      ).get("flight-status-1")).toEqual({
+        state: "completed",
+        summary: "Done",
+        output: "All good",
+        started_at: 120,
+        completed_at: 180,
+      });
+    } finally {
+      store.close();
+    }
+  });
+
   test("an out-of-order write of an older sibling flight does not regress the shadow", () => {
     // Reproduced by adversarial review on #295: without the freshness guard,
     // last-writer-wins let a stale sibling flight overwrite a newer one.
@@ -1741,8 +2111,8 @@ describe("invocation flight-status shadow columns", () => {
         startedAt: 120,
         completedAt: 180,
       });
-      // Reconciliation rewriting the same flight must follow the flights row
-      // (INSERT OR REPLACE semantics), not be blocked by the freshness guard.
+      // Reconciliation rewriting the same flight must follow the flights row,
+      // not be blocked by the invocation-shadow freshness guard.
       store.recordFlight({
         id: "flight-status-1",
         invocationId: "inv-status-1",
@@ -1897,16 +2267,16 @@ describe("invocation flight-status shadow columns", () => {
     }
   });
 
-  test("equal-timestamp sibling flights: the most recent write is the current status, and the reconcile agrees", () => {
+  test("equal-timestamp flight rewrites survive activity references and remain latest after reconcile", () => {
     // Equal timestamps resolve by write order: the most recent statement
-    // about an invocation's status stands. Both layers implement it — the
-    // dual-write guard accepts `>=`, and the reconcile's rowid tiebreak IS
-    // write order because INSERT OR REPLACE always assigns a fresh rowid.
+    // about an invocation's status stands. Both layers implement it: the live
+    // guard accepts `>=`, while inserts and conflict updates advance rowid for
+    // the boot-time reconcile without deleting the flight's child activity.
     const store = createStore();
     try {
       seedInvocation(store);
       store.recordFlight({
-        id: "flight-tie-z",
+        id: "flight-tie-a",
         invocationId: "inv-status-1",
         requesterId: "operator",
         targetAgentId: "agent-1",
@@ -1916,7 +2286,7 @@ describe("invocation flight-status shadow columns", () => {
         completedAt: 520,
       });
       store.recordFlight({
-        id: "flight-tie-a",
+        id: "flight-tie-b",
         invocationId: "inv-status-1",
         requesterId: "operator",
         targetAgentId: "agent-1",
@@ -1927,14 +2297,50 @@ describe("invocation flight-status shadow columns", () => {
       });
 
       const db = getWritableDb(store);
-      expect(shadowRow(db).flight_id).toBe("flight-tie-a");
+      expect(shadowRow(db).flight_id).toBe("flight-tie-b");
       expect(shadowRow(db).state).toBe("failed");
+      db.query(
+        `INSERT INTO activity_items (id, kind, ts, invocation_id, flight_id, title)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)`,
+      ).run(
+        "activity:flight:tie-a-auxiliary",
+        "flight_updated",
+        521,
+        "inv-status-1",
+        "flight-tie-a",
+        "Retained tie activity",
+      );
+
+      store.recordFlight({
+        id: "flight-tie-a",
+        invocationId: "inv-status-1",
+        requesterId: "operator",
+        targetAgentId: "agent-1",
+        state: "completed",
+        summary: "Third write",
+        output: "Rewritten A",
+        startedAt: 500,
+        completedAt: 520,
+      });
+
+      expect(shadowRow(db).flight_id).toBe("flight-tie-a");
+      expect(shadowRow(db).summary).toBe("Third write");
+      expect(db.query(
+        "SELECT title FROM activity_items WHERE id = ?1",
+      ).get("activity:flight:tie-a-auxiliary")).toEqual({
+        title: "Retained tie activity",
+      });
 
       // The boot-time reconcile computes the same winner, so a restart cannot
-      // flip the tie back.
+      // flip the tie back to sibling B.
       applyControlPlaneSchemaMigrations(db);
       expect(shadowRow(db).flight_id).toBe("flight-tie-a");
-      expect(shadowRow(db).state).toBe("failed");
+      expect(shadowRow(db).summary).toBe("Third write");
+      expect(db.query(
+        "SELECT title FROM activity_items WHERE id = ?1",
+      ).get("activity:flight:tie-a-auxiliary")).toEqual({
+        title: "Retained tie activity",
+      });
     } finally {
       store.close();
     }

@@ -5,6 +5,7 @@ import {
   preflightCellTitle,
   preflightSessionLabel,
   PREFLIGHT_BLIND_CELLS,
+  shouldBlockLaneDeckStartup,
 } from "./lanes-preflight.ts";
 import type { TailDiscoverySnapshot, TailDiscoveredTranscript } from "../../lib/types.ts";
 
@@ -41,6 +42,22 @@ function snapshot(transcripts: TailDiscoveredTranscript[]): TailDiscoverySnapsho
 }
 
 describe("lane pre-flight deck", () => {
+  it("hands off as soon as useful lanes exist even while enrichment continues", () => {
+    expect(shouldBlockLaneDeckStartup({
+      discovery: "loading",
+      recent: "loading",
+      discoveryLoaded: false,
+      recentLoaded: false,
+    }, 1)).toBe(false);
+
+    expect(shouldBlockLaneDeckStartup({
+      discovery: "loading",
+      recent: "loading",
+      discoveryLoaded: false,
+      recentLoaded: false,
+    }, 0)).toBe(true);
+  });
+
   it("draws a small anonymous deck while discovery is still in flight", () => {
     const deck = buildLanePreflightDeck({
       discovery: null,

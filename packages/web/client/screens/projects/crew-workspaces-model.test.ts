@@ -3,29 +3,46 @@ import type { Agent } from "../../lib/types.ts";
 import type { InboxProject, InboxThread } from "./projects-inbox-model.ts";
 import {
   buildCrewMembers,
-  buildRuntimeLens,
-  buildWorkspaceLens,
-  crewHarnesses,
-  memberMatchesHarness,
   memberMatchesQuery,
   memberMatchesStatus,
+  projectMatchesQuery,
+  projectMatchesStatus,
 } from "./crew-workspaces-model.ts";
 
 const NOW = 1_700_000_000_000;
 
-function mkThread(partial: Partial<InboxThread> & { id: string; agentName: string; projectSlug: string }): InboxThread {
+function mkProject(partial: Partial<InboxProject> & { slug: string }): InboxProject {
+  return {
+    title: partial.slug,
+    root: `/work/${partial.slug}`,
+    agentCount: 1,
+    sessionCount: 0,
+    liveSessionCount: 0,
+    worktreeCount: 1,
+    worktrees: [],
+    needs: 0,
+    working: 0,
+    threadCount: 0,
+    lastActivityAt: NOW,
+    branches: [],
+    ...partial,
+  };
+}
+
+function mkThread(partial: Partial<InboxThread> & { id: string; projectSlug: string }): InboxThread {
   return {
     kind: "agent",
     projectTitle: partial.projectSlug,
     projectRoot: `/work/${partial.projectSlug}`,
     workspaceRoot: `/work/${partial.projectSlug}`,
-    agentId: `agent:${partial.agentName.toLowerCase()}`,
+    agentId: null,
+    agentName: "Project endpoint",
     harness: "claude",
     branch: "main",
     work: "Reviewing the migration diff",
-    group: "working",
+    group: "recent",
     needs: false,
-    working: true,
+    working: false,
     lastActivityAt: NOW,
     sessionCount: 1,
     contextPct: null,
@@ -37,12 +54,12 @@ function mkThread(partial: Partial<InboxThread> & { id: string; agentName: strin
 
 function mkAgent(partial: Partial<Agent> & { id: string; name: string }): Agent {
   return {
-    definitionId: `${partial.id}-def`,
+    definitionId: `${partial.id}-definition`,
     handle: null,
     agentClass: "agent",
     harness: "claude",
     state: "callable",
-    projectRoot: "/work",
+    projectRoot: null,
     cwd: "/work",
     updatedAt: NOW,
     createdAt: NOW,
@@ -74,134 +91,229 @@ function mkAgent(partial: Partial<Agent> & { id: string; name: string }): Agent 
 }
 
 describe("buildCrewMembers", () => {
-  test("re-collapses per-project agent threads into one card per crew identity", () => {
+  test("emits one durable project agent across Claude and Codex endpoints", () => {
+    const project = mkProject({
+      slug: "openscout",
+      title: "OpenScout",
+      sessionCount: 12,
+      liveSessionCount: 2,
+      working: 2,
+    });
     const threads = [
-      mkThread({ id: "openscout:agent:1", agentName: "Milo", projectSlug: "openscout", agentId: "agent:milo", working: true }),
-      mkThread({ id: "talkie:agent:1", agentName: "Milo", projectSlug: "talkie", agentId: "agent:milo", working: false, lastActivityAt: NOW - 60_000 }),
-      mkThread({ id: "openscout:agent:2", agentName: "Brik", projectSlug: "openscout", agentId: "agent:brik", needs: true, working: false }),
+      mkThread({
+        id: "openscout:claude",
+        projectSlug: "openscout",
+        agentId: "claude-endpoint",
+        harness: "claude",
+        working: true,
+      }),
+      mkThread({
+        id: "openscout:codex",
+        projectSlug: "openscout",
+        agentId: "codex-endpoint",
+        harness: "codex",
+        working: true,
+      }),
     ];
-    const agentsById = new Map<string, Agent>([
-      ["agent:milo", mkAgent({ id: "agent:milo", name: "Milo", role: "Reviewer" })],
-      ["agent:brik", mkAgent({ id: "agent:brik", name: "Brik" })],
-    ]);
-
-    const members = buildCrewMembers(threads, agentsById);
-    expect(members).toHaveLength(2);
-
-    const milo = members.find((member) => member.name === "Milo");
-    expect(milo?.substrates).toHaveLength(2);
-    expect(milo?.substrates.map((substrate) => substrate.projectSlug)).toEqual(["openscout", "talkie"]);
-    expect(milo?.working).toBe(true);
-    expect(milo?.status).toBe("working");
-    expect(milo?.headline).toBe("Reviewer");
-
-    // Needs-attention crew ranks first.
-    expect(members[0]!.name).toBe("Brik");
-    expect(members[0]!.status).toBe("needs");
-  });
-
-  test("falls back to a name+harness identity when agentId is missing", () => {
-    const threads = [
-      mkThread({ id: "a:1", agentName: "Codex session", projectSlug: "a", agentId: null, harness: "codex" }),
+    const agents = [
+      mkAgent({ id: "claude-endpoint", name: "Claude endpoint", projectRoot: "/work/openscout" }),
+      mkAgent({ id: "codex-endpoint", name: "Codex endpoint", projectRoot: "/work/openscout", harness: "codex" }),
     ];
-    const members = buildCrewMembers(threads, new Map());
+
+    const members = buildCrewMembers([project], threads, agents);
+
     expect(members).toHaveLength(1);
-    expect(members[0]!.key).toBe("named:codex:codex session");
+    expect(members[0]!.key).toBe("project:openscout");
+    expect(members[0]!.kind).toBe("project");
+    expect(members[0]!.agentId).toBeNull();
+    expect(members[0]!.harnesses).toEqual(["claude", "codex"]);
+    expect(members[0]!.sessionCount).toBe(12);
   });
 
-  test("ignores native (unattributed) threads — crew cards need an agent thread", () => {
-    const threads = [mkThread({ id: "a:1", agentName: "Codex session", projectSlug: "a", kind: "native" })];
-    expect(buildCrewMembers(threads, new Map())).toHaveLength(0);
-  });
-});
+  test("never promotes a Session Mt actor into the durable roster", () => {
+    const sessionActor = mkAgent({
+      id: "session-mt4jt8j7-gkg9xg",
+      name: "Session Mt4jt8j7 Gkg9xg",
+      definitionId: "session-mt4jt8j7-gkg9xg",
+      handle: "session-mt4jt8j7-gkg9xg",
+    });
 
-describe("buildWorkspaceLens", () => {
-  test("inverts the crew roster into per-project stations", () => {
-    const threads = [
-      mkThread({ id: "openscout:agent:1", agentName: "Milo", projectSlug: "openscout", agentId: "agent:milo" }),
-      mkThread({ id: "talkie:agent:1", agentName: "Milo", projectSlug: "talkie", agentId: "agent:milo" }),
-      mkThread({ id: "openscout:agent:2", agentName: "Brik", projectSlug: "openscout", agentId: "agent:brik" }),
+    const members = buildCrewMembers([mkProject({ slug: "openscout" })], [], [sessionActor]);
+
+    expect(members).toHaveLength(1);
+    expect(members[0]!.kind).toBe("project");
+    expect(members.some((member) => member.name.startsWith("Session Mt"))).toBe(false);
+  });
+
+  test("deduplicates horizontal role endpoints by durable definition", () => {
+    const agents = [
+      mkAgent({
+        id: "reviewer-claude",
+        name: "Release reviewer",
+        definitionId: "release-reviewer",
+        handle: "release-reviewer",
+        role: "Reviewer",
+        cwd: null,
+      }),
+      mkAgent({
+        id: "reviewer-codex",
+        name: "Release reviewer",
+        definitionId: "release-reviewer",
+        handle: "release-reviewer",
+        role: "Reviewer",
+        harness: "codex",
+        cwd: null,
+        updatedAt: NOW - 1,
+      }),
     ];
-    const members = buildCrewMembers(threads, new Map());
-    const projects: InboxProject[] = ["openscout", "talkie"].map((slug) => ({
-      slug,
-      title: slug,
-      root: `/work/${slug}`,
-      agentCount: 0,
-      sessionCount: 0,
-      liveSessionCount: 0,
-      worktreeCount: 0,
-      worktrees: [],
-      needs: 0,
-      working: 1,
-      threadCount: 0,
-      lastActivityAt: NOW,
-      branches: [],
-    }));
-
-    const workspaces = buildWorkspaceLens(members, projects);
-    const openscout = workspaces.find((workspace) => workspace.slug === "openscout");
-    const talkie = workspaces.find((workspace) => workspace.slug === "talkie");
-    expect(openscout?.crew).toHaveLength(2);
-    expect(talkie?.crew).toHaveLength(1);
-    expect(talkie?.crew[0]!.member.name).toBe("Milo");
-  });
-});
-
-describe("buildRuntimeLens", () => {
-  test("groups crew members by runtime engine with honest counts", () => {
     const threads = [
-      mkThread({ id: "openscout:agent:1", agentName: "Milo", projectSlug: "openscout", agentId: "agent:milo", harness: "claude", working: true }),
-      mkThread({ id: "talkie:agent:1", agentName: "Lulu", projectSlug: "talkie", agentId: "agent:lulu", harness: "claude", needs: true }),
-      mkThread({ id: "openscout:agent:2", agentName: "Brik", projectSlug: "openscout", agentId: "agent:brik", harness: "codex", working: false }),
+      mkThread({ id: "review:a", projectSlug: "openscout", agentId: "reviewer-claude", working: true }),
+      mkThread({ id: "review:b", projectSlug: "talkie", agentId: "reviewer-codex", harness: "codex" }),
     ];
-    const members = buildCrewMembers(threads, new Map());
-    const runtimes = buildRuntimeLens(members);
 
-    expect(runtimes).toHaveLength(2);
-    const claude = runtimes.find((r) => r.harness === "claude");
-    const codex = runtimes.find((r) => r.harness === "codex");
+    const members = buildCrewMembers(
+      [mkProject({ slug: "openscout" }), mkProject({ slug: "talkie" })],
+      threads,
+      agents,
+    );
+    const roles = members.filter((member) => member.kind === "role");
 
-    expect(claude?.crew).toHaveLength(2);
-    expect(claude?.needs).toBe(1);
-    expect(claude?.working).toBe(1);
-    expect(claude?.title).toBe("Claude");
+    expect(roles).toHaveLength(1);
+    expect(roles[0]!.key).toBe("role:release-reviewer");
+    expect(roles[0]!.harnesses).toEqual(["claude", "codex"]);
+    expect(roles[0]!.substrates.map((substrate) => substrate.projectSlug)).toEqual(["openscout", "talkie"]);
+  });
 
-    expect(codex?.crew).toHaveLength(1);
-    expect(codex?.needs).toBe(0);
-    expect(codex?.title).toBe("Codex");
+  test("keeps a durable role when its coding endpoints span multiple projects", () => {
+    const agents = [
+      mkAgent({
+        id: "reviewer-openscout",
+        name: "Release reviewer",
+        definitionId: "release-reviewer",
+        role: "Reviewer",
+        project: "openscout",
+        projectRoot: "/work/openscout",
+        cwd: "/work/openscout",
+      }),
+      mkAgent({
+        id: "reviewer-talkie",
+        name: "Release reviewer",
+        definitionId: "release-reviewer",
+        role: "Reviewer",
+        project: "talkie",
+        projectRoot: "/work/talkie",
+        cwd: "/work/talkie",
+      }),
+    ];
+    const threads = [
+      mkThread({ id: "review:openscout", projectSlug: "openscout", agentId: "reviewer-openscout" }),
+      mkThread({ id: "review:talkie", projectSlug: "talkie", agentId: "reviewer-talkie" }),
+    ];
+
+    const members = buildCrewMembers(
+      [mkProject({ slug: "openscout" }), mkProject({ slug: "talkie" })],
+      threads,
+      agents,
+    );
+
+    expect(members.filter((member) => member.kind === "role").map((member) => member.key))
+      .toEqual(["role:release-reviewer"]);
+  });
+
+  test("does not misclassify a project-bound named definition as horizontal", () => {
+    const endpoint = mkAgent({
+      id: "project-reviewer",
+      name: "Project reviewer",
+      definitionId: "project-reviewer",
+      role: "Reviewer",
+      projectRoot: "/work/openscout",
+    });
+
+    const members = buildCrewMembers([mkProject({ slug: "openscout" })], [], [endpoint]);
+    expect(members.filter((member) => member.kind === "role")).toHaveLength(0);
+    expect(members.filter((member) => member.kind === "project")).toHaveLength(1);
+  });
+
+  test("treats workspace-qualified and cwd-owned registrations as project endpoints", () => {
+    const project = mkProject({ slug: "openscout" });
+    const workspaceQualified = mkAgent({
+      id: "workspace-endpoint",
+      name: "Workspace endpoint",
+      handle: "workspace-endpoint",
+      workspaceQualifier: "openscout",
+    });
+    const cwdOwned = mkAgent({
+      id: "cwd-endpoint",
+      name: "Cwd endpoint",
+      handle: "cwd-endpoint",
+      cwd: "/work/openscout",
+    });
+    const unrelatedCwd = mkAgent({
+      id: "unrelated-cwd-endpoint",
+      name: "Unrelated cwd endpoint",
+      handle: "unrelated-cwd-endpoint",
+      cwd: "/some/other/repo/packages/web",
+    });
+    const threads = [
+      mkThread({ id: "cwd-thread", projectSlug: "openscout", agentId: cwdOwned.id }),
+    ];
+
+    const members = buildCrewMembers([project], threads, [workspaceQualified, cwdOwned, unrelatedCwd]);
+
+    expect(members.filter((member) => member.kind === "role")).toHaveLength(0);
+    expect(members.filter((member) => member.kind === "project")).toHaveLength(1);
+  });
+
+  test("scopes horizontal role identities to the selected machine", () => {
+    const local = mkAgent({
+      id: "local-reviewer",
+      name: "Local reviewer",
+      definitionId: "shared-reviewer",
+      handle: "local-reviewer",
+      homeNodeId: "local",
+      cwd: null,
+    });
+    const remote = mkAgent({
+      id: "remote-reviewer",
+      name: "Remote reviewer",
+      definitionId: "shared-reviewer",
+      handle: "remote-reviewer",
+      homeNodeId: "remote",
+      cwd: null,
+      updatedAt: NOW + 1,
+    });
+
+    const members = buildCrewMembers([mkProject({ slug: "openscout" })], [], [local, remote], "local");
+    const roles = members.filter((member) => member.kind === "role");
+
+    expect(roles.map((member) => ({ name: member.name, agentId: member.agentId })))
+      .toEqual([{ name: "Local reviewer", agentId: "local-reviewer" }]);
+  });
+
+  test("keeps a quiet project visible as a base identity", () => {
+    const members = buildCrewMembers([mkProject({ slug: "quiet", lastActivityAt: 0 })], [], []);
+    expect(members).toHaveLength(1);
+    expect(members[0]!.status).toBe("idle");
+    expect(members[0]!.work).toBe("No active work");
   });
 });
 
-describe("crew filters", () => {
-  const threads = [
-    mkThread({ id: "a:1", agentName: "Milo", projectSlug: "a", agentId: "agent:milo", harness: "claude", needs: true, working: false, work: "Fixing the release train" }),
-    mkThread({ id: "b:1", agentName: "Brik", projectSlug: "b", agentId: "agent:brik", harness: "codex", needs: false, working: false }),
-  ];
-  const members = buildCrewMembers(threads, new Map());
-  const milo = members.find((member) => member.name === "Milo")!;
-  const brik = members.find((member) => member.name === "Brik")!;
+describe("directory filters", () => {
+  const needsProject = mkProject({ slug: "openscout", title: "OpenScout", needs: 1 });
+  const idleProject = mkProject({ slug: "talkie", title: "Talkie", lastActivityAt: 0 });
+  const [needsMember, idleMember] = buildCrewMembers([needsProject, idleProject], [], []);
 
-  test("memberMatchesStatus buckets needs / active / idle", () => {
-    expect(memberMatchesStatus(milo, "needs")).toBe(true);
-    expect(memberMatchesStatus(milo, "idle")).toBe(false);
-    expect(memberMatchesStatus(brik, "idle")).toBe(true);
-    expect(memberMatchesStatus(brik, "active")).toBe(false);
+  test("status filters preserve needs and idle buckets", () => {
+    expect(memberMatchesStatus(needsMember!, "needs")).toBe(true);
+    expect(memberMatchesStatus(idleMember!, "idle")).toBe(true);
+    expect(projectMatchesStatus(needsProject, "needs")).toBe(true);
+    expect(projectMatchesStatus(idleProject, "idle")).toBe(true);
   });
 
-  test("memberMatchesHarness is case-insensitive and 'all' passes everything", () => {
-    expect(memberMatchesHarness(milo, "claude")).toBe(true);
-    expect(memberMatchesHarness(milo, "CODEX")).toBe(false);
-    expect(memberMatchesHarness(brik, "all")).toBe(true);
-  });
-
-  test("memberMatchesQuery matches name, role, project, and work text", () => {
-    expect(memberMatchesQuery(milo, "release train")).toBe(true);
-    expect(memberMatchesQuery(milo, "brik")).toBe(false);
-    expect(memberMatchesQuery(milo, "")).toBe(true);
-  });
-
-  test("crewHarnesses lists distinct lowercase runtimes", () => {
-    expect(crewHarnesses(members)).toEqual(["claude", "codex"]);
+  test("query matches durable identity and project path", () => {
+    expect(memberMatchesQuery(needsMember!, "openscout")).toBe(true);
+    expect(memberMatchesQuery(needsMember!, "/work/openscout")).toBe(true);
+    expect(memberMatchesQuery(needsMember!, "talkie")).toBe(false);
+    expect(projectMatchesQuery(idleProject, "/work/talkie")).toBe(true);
   });
 });

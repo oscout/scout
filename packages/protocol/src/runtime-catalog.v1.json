@@ -1,6 +1,6 @@
 {
   "schemaVersion": "openscout.runtime-catalog.v1",
-  "revision": "2026-08-18.1",
+  "revision": "2026-09-01.1",
   "harnesses": [
     {
       "id": "claude",
@@ -11,6 +11,7 @@
       "defaultReasoningEffort": "medium",
       "models": [
         { "id": "claude-opus-5", "label": "Opus 5", "enabled": true, "default": true, "family": "Opus", "version": "5" },
+        { "id": "claude-fable-5", "label": "Fable 5", "enabled": true, "family": "Fable", "version": "5" },
         { "id": "claude-sonnet-4-6", "label": "Sonnet 4.6", "enabled": true, "family": "Sonnet", "version": "4.6" },
         { "id": "claude-haiku-4-5", "label": "Haiku 4.5", "enabled": true, "family": "Haiku", "version": "4.5" },
         { "id": "claude-opus-4-8", "label": "Opus 4.8", "enabled": true, "family": "Opus", "version": "4.8" },

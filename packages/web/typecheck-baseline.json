@@ -1,6 +1,6 @@
 {
   "note": "Known packages/web type errors that predate the typecheck gate. Never add to this file by hand: fix the error instead. The gate rewrites it downward on its own whenever an error is fixed; `node scripts/typecheck.mjs --update` refuses any change that would grow it.",
-  "total": 79,
+  "total": 78,
   "errors": [
     {
       "file": "client/lib/conversation-groups.ts",
@@ -234,12 +234,6 @@
       "file": "server/db/sessions.ts",
       "code": "TS2345",
       "message": "Argument of type 'string | null | undefined' is not assignable to parameter of type 'string | null'.",
-      "count": 1
-    },
-    {
-      "file": "server/db/sessions.ts",
-      "code": "TS2554",
-      "message": "Expected 3 arguments, but got 2.",
       "count": 1
     },
     {

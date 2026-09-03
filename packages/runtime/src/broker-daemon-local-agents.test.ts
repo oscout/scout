@@ -1030,7 +1030,25 @@ for await (const line of rl) {
     const supportDirectory = join(controlHome, "support");
     const projectRoot = join(controlHome, "projects", "talkie");
     mkdirSync(projectRoot, { recursive: true });
-    broker.writeRelayAgentRegistry(supportDirectory, {});
+    broker.writeRelayAgentRegistry(supportDirectory, {
+      talkie: {
+        agentId: "talkie",
+        definitionId: "talkie",
+        displayName: "Talkie",
+        projectName: "Talkie",
+        projectRoot,
+        source: "manual",
+        defaultHarness: "codex",
+        runtime: {
+          cwd: projectRoot,
+          harness: "codex",
+          transport: "codex_app_server",
+          sessionId: "relay-talkie-codex",
+          wakePolicy: "on_demand",
+        },
+        capabilities: ["chat", "invoke", "deliver"],
+      },
+    });
 
     const harness = await broker.startBroker({
       controlHome,

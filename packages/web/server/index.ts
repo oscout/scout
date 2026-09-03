@@ -13,7 +13,10 @@ import { resolveScoutBrokerUrl } from "./core/broker/service.ts";
 import {
   isAuthenticatedScoutRequest,
   isAuthorizedScoutWebSocketRequest,
+  isScoutWebRequestAllowedFromPeer,
   isTrustedScoutApiRequest,
+  createScoutRequestPeerAddressRegistry,
+  resolveScoutWebLanAccessScope,
   resolveScoutWebBindHost,
   scoutWebAuthCookie,
   shouldIssueLocalScoutWebCredential,
@@ -40,6 +43,7 @@ const port = Number.parseInt(
   10,
 );
 const hostname = resolveScoutWebBindHost(process.env);
+const lanAccessScope = resolveScoutWebLanAccessScope(process.env);
 const webAuthToken = resolveWebAuthToken(process.env);
 const currentDirectory = resolveOpenScoutSetupContextRoot({
   env: process.env,
@@ -51,6 +55,7 @@ const providerTelemetryBootstrapEnabled =
 const startupWarmupEnabled =
   process.env.OPENSCOUT_WEB_STARTUP_WARMUP?.trim() === "1";
 const routes = resolveOpenScoutWebRoutes(process.env);
+const requestPeerAddresses = createScoutRequestPeerAddressRegistry();
 
 function resolveStaticRoot(): string | undefined {
   if (process.env.OPENSCOUT_WEB_STATIC_ROOT?.trim()) {
@@ -156,6 +161,7 @@ const web = await createOpenScoutWebServer({
   trustedHosts: applicationServerIdentity.trustedHosts,
   trustedOrigins: applicationServerIdentity.trustedOrigins,
   authToken: webAuthToken,
+  resolvePeerAddress: requestPeerAddresses.resolve,
   runTerminalCommand: async (request) => {
     const relay = await ensureTerminalRelay();
     if (!relay) {
@@ -198,6 +204,10 @@ try {
     async fetch(req, server) {
       const url = new URL(req.url);
       const peerAddress = server.requestIP(req)?.address;
+
+      if (!isScoutWebRequestAllowedFromPeer(req, peerAddress, lanAccessScope)) {
+        return new Response("Not Found", { status: 404 });
+      }
 
       if (req.headers.get("upgrade")?.toLowerCase() === "websocket") {
         let upstreamUrl: string | null = null;
@@ -282,6 +292,7 @@ try {
             })(),
           })
         : req;
+      requestPeerAddresses.remember(honoRequest, peerAddress);
       const response = await honoFetch(honoRequest, server);
       if (!bootstrapEligible) return response;
 
