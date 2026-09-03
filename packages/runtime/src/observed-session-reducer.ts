@@ -1,4 +1,5 @@
 import {
+  logicalSessionTitle,
   observedSessionFeedId,
   type ObservedActivity,
 } from "@openscout/protocol";
@@ -148,9 +149,7 @@ function fallbackTitle(event: TailEvent): string {
 
 function contentTitle(event: TailEvent): string | null {
   if (event.kind !== "user") return null;
-  const summary = compactOptional(event.summary, TITLE_MAX_CHARS);
-  if (!summary || summary.toLowerCase() === "[user]") return null;
-  return summary;
+  return logicalSessionTitle(event.summary);
 }
 
 function previewForEvent(event: TailEvent): string | null {

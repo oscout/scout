@@ -228,6 +228,14 @@
   gap: 8px;
   min-width: 0;
 }
+.cw-cardHarness {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--pi-ink);
+}
+.cw-cardHarness[data-idle] { color: var(--pi-dim); }
 .cw-cardNameRow b {
   min-width: 0;
   overflow: hidden;
@@ -451,9 +459,23 @@
 .cw-workspaceMeta b[data-tone="live"] { color: color-mix(in srgb, var(--pi-accent) 82%, var(--pi-ink)); }
 .cw-workspaceMeta time { font-family: var(--pi-mono); }
 
+.cw-showMore {
+  align-self: flex-start;
+  height: 28px;
+  padding: 0 10px;
+  border: none;
+  background: transparent;
+  color: var(--pi-dim);
+  font-size: var(--text-xs);
+  font-weight: 600;
+  cursor: pointer;
+}
+.cw-showMore:hover { color: var(--pi-ink); }
+
 .cw-modeToggle button:focus-visible,
 .cw-filters button:focus-visible,
 .cw-addProject:focus-visible,
+.cw-showMore:focus-visible,
 .cw-workspaceHead:focus-visible,
 .cw-substrateChip:focus-visible,
 .cw-cardActions button:focus-visible {

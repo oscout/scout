@@ -27,6 +27,7 @@ import {
   parseGithubAssetDigest,
   parseInstallArgs,
   processIdsForInstalledApp,
+  processIdsForMenuOutsideApp,
   renderInstallCommandHelp,
   runInstallCommand,
   verifyDownloadedAsset,
@@ -167,6 +168,7 @@ function createHarness(
     invalidBundlePaths?: string[];
     psFailuresAt?: number[];
     termStops?: boolean;
+    staleMenuRunning?: boolean;
     lock?: ScoutInstallCommandResult;
     open?: ScoutInstallCommandResult;
     ditto?: (source: string, destination: string, count: number) => ScoutInstallCommandResult;
@@ -175,6 +177,7 @@ function createHarness(
   } = {},
 ): ScoutInstallDependencies {
   let running = input.running ?? false;
+  let staleMenuRunning = input.staleMenuRunning ?? false;
   let dittoCount = 0;
   let deepVerifyCount = 0;
   let psCount = 0;
@@ -266,11 +269,28 @@ function createHarness(
       if (command === "ps") {
         psCount += 1;
         if (input.psFailuresAt?.includes(psCount)) return failed("ps unavailable");
-        if (!running) return ok("");
-        return ok(`  123 ${world.appPath}/Contents/MacOS/Scout\n`);
+        const lines: string[] = [];
+        if (running) {
+          lines.push(`  123 ${world.appPath}/Contents/MacOS/Scout\n`);
+        }
+        if (staleMenuRunning) {
+          lines.push(
+            "  456 /Users/dev/openscout/apps/macos/dist/Scout.app/Contents/Library/LoginItems/ScoutMenu.app/Contents/MacOS/ScoutMenu\n",
+          );
+        }
+        if (lines.length === 0) return ok("");
+        return ok(lines.join(""));
       }
       if (command === "kill") {
-        if (args[0] === "-9" || termStops) running = false;
+        if (args[0] === "-9" || termStops) {
+          if (args[0] === "-9") {
+            if (args[1] === "123") running = false;
+            if (args[1] === "456") staleMenuRunning = false;
+          } else {
+            if (args[0] === "123") running = false;
+            if (args[0] === "456") staleMenuRunning = false;
+          }
+        }
         return ok();
       }
       if (command === "open") return input.open ?? ok();
@@ -640,6 +660,19 @@ describe("processIdsForInstalledApp", () => {
   });
 });
 
+
+describe("processIdsForMenuOutsideApp", () => {
+  test("matches only ScoutMenu helpers outside the installed app path", () => {
+    const appPath = "/Applications/OpenScout.app";
+    const output = [
+      "  111 /Applications/OpenScout.app/Contents/MacOS/Scout",
+      "  222 /Applications/OpenScout.app/Contents/Library/LoginItems/ScoutMenu.app/Contents/MacOS/ScoutMenu",
+      "  333 /Users/dev/openscout/apps/macos/dist/Scout.app/Contents/Library/LoginItems/ScoutMenu.app/Contents/MacOS/ScoutMenu",
+      "  444 /opt/homebrew/bin/Scout",
+    ].join("\n");
+    expect(processIdsForMenuOutsideApp(output, appPath)).toEqual([333]);
+  });
+});
 describe("runInstallCommand", () => {
   test("rejects non-macOS hosts", async () => {
     const { context } = captureContext();
@@ -894,6 +927,34 @@ describe("runInstallCommand", () => {
     expect(verifyIndex).toBeGreaterThanOrEqual(0);
     expect(termIndex).toBeGreaterThan(verifyIndex);
   });
+
+  test("stops stale menu helpers outside the installed app before replacing it", async () => {
+    const world = createWorld({ installed: true });
+    const { context, stdout } = captureContext();
+    await runInstallCommand(
+      context,
+      [],
+      createHarness(world, { staleMenuRunning: true }),
+    );
+    expect(world.calls.some((call) => call.command === "kill" && call.args[0] === "456")).toBe(true);
+    expect(world.calls.some((call) => call.command === "open")).toBe(false);
+    expect(parseJsonOutput(stdout).message).not.toContain("(relaunched)");
+  });
+
+  test("stops stale menu helpers alongside a running installed app", async () => {
+    const world = createWorld({ installed: true });
+    const { context, stdout } = captureContext();
+    await runInstallCommand(
+      context,
+      [],
+      createHarness(world, { running: true, staleMenuRunning: true }),
+    );
+    expect(world.calls.some((call) => call.command === "kill" && call.args[0] === "123")).toBe(true);
+    expect(world.calls.some((call) => call.command === "kill" && call.args[0] === "456")).toBe(true);
+    expect(parseJsonOutput(stdout).message).toContain("(relaunched)");
+  });
+
+
 
   test("force-stops remaining processes by installed-app pid, not process name", async () => {
     const world = createWorld({ installed: true });

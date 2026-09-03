@@ -7,6 +7,7 @@
 import { useMemo, useState } from "react";
 import { Folder, FolderOpen, FolderPlus, MessageSquare, Rows3, Search, SlidersHorizontal, Telescope, Users } from "lucide-react";
 import { AgentAvatar } from "../../components/AgentAvatar.tsx";
+import { HarnessMark } from "../../components/HarnessMark.tsx";
 import { timeAgo } from "../../lib/time.ts";
 import type { Agent, Route } from "../../lib/types.ts";
 import { AddProjectForm } from "./AddProjectForm.tsx";
@@ -247,6 +248,8 @@ export function ProjectAgentDirectory({
   );
 }
 
+const PROJECT_ROW_CAP = 5;
+
 function ProjectList({
   projects,
   route,
@@ -260,15 +263,28 @@ function ProjectList({
   nowMs: number;
   allEmpty: boolean;
 }) {
+  const [showAll, setShowAll] = useState(false);
   if (projects.length === 0) {
     return <div className="cw-empty">{allEmpty ? "No projects are tracked yet." : "No projects match these filters."}</div>;
   }
 
+  const visible = showAll ? projects : projects.slice(0, PROJECT_ROW_CAP);
+  const hidden = Math.max(0, projects.length - PROJECT_ROW_CAP);
+
   return (
     <div className="cw-workspaceList">
-      {projects.map((project) => (
+      {visible.map((project) => (
         <ProjectRow key={project.slug} project={project} route={route} navigate={navigate} nowMs={nowMs} />
       ))}
+      {hidden > 0 ? (
+        <button
+          type="button"
+          className="cw-showMore"
+          onClick={() => setShowAll((open) => !open)}
+        >
+          {showAll ? "Show fewer projects" : `Show ${hidden} more`}
+        </button>
+      ) : null}
     </div>
   );
 }
@@ -389,6 +405,17 @@ function AgentCard({
         />
         <div className="cw-cardIdentity">
           <div className="cw-cardNameRow">
+            {member.harnesses.length > 0 ? (
+              <span
+                className="cw-cardHarness"
+                data-idle={member.status === "idle" || undefined}
+                aria-hidden
+              >
+                {member.harnesses.map((harness) => (
+                  <HarnessMark key={harness} harness={harness} size={13} />
+                ))}
+              </span>
+            ) : null}
             <b title={member.name}>{member.name}</b>
             <span className="cw-statusPill" data-status={member.status}>
               {crewStatusLabel(member.status)}

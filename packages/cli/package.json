@@ -1,6 +1,6 @@
 {
   "name": "@openscout/scout",
-  "version": "0.2.96",
+  "version": "0.2.97",
   "description": "Local-first control plane for discovering, messaging, and coordinating AI agents across Claude Code, Codex, and more",
   "keywords": [
     "openscout",

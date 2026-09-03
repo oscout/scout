@@ -32,6 +32,7 @@ const INSTALL_LOCK_SUFFIX = ".openscout-install.lock";
 const SHLOCK_PATH = "/usr/bin/shlock";
 const STOP_POLL_ATTEMPTS = 50;
 const STOP_POLL_MS = 100;
+const MENU_PROCESS_EXECUTABLE = "ScoutMenu";
 const HELP_FLAGS = new Set(["help", "--help", "-h"]);
 
 export type ScoutInstallOptions = {
@@ -140,7 +141,8 @@ export function renderInstallCommandHelp(): string {
     "  then codesign and Gatekeeper-assess the DMG before mounting. OpenScout.app",
     "  must match the pinned bundle id and Team ID, pass codesign --deep --strict,",
     "  and pass Gatekeeper execute after staging. A running copy of the installed",
-    "  app is stopped first; replacement is staged and rolled back on failure.",
+    "  app and any stale ScoutMenu helpers from other checkouts are stopped first;",
+    "  replacement is staged and rolled back on failure.",
     "  Quarantine attributes are not cleared.",
     "",
     "  The app uses the local scout CLI for the bundled runtime. Install the CLI",
@@ -746,37 +748,76 @@ export function processIdsForInstalledApp(psOutput: string, appPath: string): nu
   return pids;
 }
 
-function listInstalledAppPids(deps: ResolvedInstallDependencies): number[] {
+/**
+ * ScoutMenu helpers from repo builds and sibling checkouts share a bundle id
+ * with the installed helper. Install must reap them by executable path, not by
+ * name, so a dev checkout cannot keep serving a stale menu bar after update.
+ */
+export function processIdsForMenuOutsideApp(psOutput: string, appPath: string): number[] {
+  const pids: number[] = [];
+  for (const rawLine of psOutput.split("\n")) {
+    const line = rawLine.trim();
+    if (!line) continue;
+    const match = line.match(/^(\d+)\s+(\S+)/);
+    if (!match) continue;
+    const pid = Number(match[1]);
+    const executable = match[2];
+    if (!Number.isInteger(pid) || pid <= 0) continue;
+    if (
+      executable !== MENU_PROCESS_EXECUTABLE
+      && !executable.endsWith(`/${MENU_PROCESS_EXECUTABLE}`)
+    ) {
+      continue;
+    }
+    if (executableIsInsideApp(executable, appPath)) continue;
+    pids.push(pid);
+  }
+  return pids;
+}
+
+function inspectInstallProcessIds(
+  deps: ResolvedInstallDependencies,
+): { installed: number[]; staleMenus: number[] } {
   const result = deps.run("ps", ["-axo", "pid=,args="]);
   requireSuccess(result, "could not inspect running OpenScout processes");
-  return processIdsForInstalledApp(result.stdout, deps.appPath);
+  return {
+    installed: processIdsForInstalledApp(result.stdout, deps.appPath),
+    staleMenus: processIdsForMenuOutsideApp(result.stdout, deps.appPath),
+  };
 }
 
-function isAppRunning(deps: ResolvedInstallDependencies): boolean {
-  return listInstalledAppPids(deps).length > 0;
+function listPidsBlockingInstall(deps: ResolvedInstallDependencies): number[] {
+  const { installed, staleMenus } = inspectInstallProcessIds(deps);
+  return [...new Set([...installed, ...staleMenus])];
 }
 
-function waitUntilStopped(deps: ResolvedInstallDependencies, attempts: number): boolean {
+function isInstallBlocked(deps: ResolvedInstallDependencies): boolean {
+  return listPidsBlockingInstall(deps).length > 0;
+}
+
+function waitUntilInstallUnblocked(deps: ResolvedInstallDependencies, attempts: number): boolean {
   for (let index = 0; index < attempts; index += 1) {
-    if (!isAppRunning(deps)) return true;
+    if (!isInstallBlocked(deps)) return true;
     if (index + 1 < attempts) deps.sleep(STOP_POLL_MS);
   }
-  return !isAppRunning(deps);
+  return !isInstallBlocked(deps);
 }
 
 function stopRunningApp(deps: ResolvedInstallDependencies): boolean {
-  const initialPids = listInstalledAppPids(deps);
+  const { installed, staleMenus } = inspectInstallProcessIds(deps);
+  const hadInstalledRunning = installed.length > 0;
+  const initialPids = [...new Set([...installed, ...staleMenus])];
   if (initialPids.length === 0) return false;
 
   for (const pid of initialPids) {
     deps.run("kill", [String(pid)]);
   }
-  if (waitUntilStopped(deps, STOP_POLL_ATTEMPTS)) return true;
+  if (waitUntilInstallUnblocked(deps, STOP_POLL_ATTEMPTS)) return hadInstalledRunning;
 
-  for (const pid of listInstalledAppPids(deps)) {
+  for (const pid of listPidsBlockingInstall(deps)) {
     deps.run("kill", ["-9", String(pid)]);
   }
-  if (waitUntilStopped(deps, STOP_POLL_ATTEMPTS)) return true;
+  if (waitUntilInstallUnblocked(deps, STOP_POLL_ATTEMPTS)) return hadInstalledRunning;
 
   throw new ScoutCliError("could not stop OpenScout before replacing it");
 }

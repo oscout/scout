@@ -60,9 +60,9 @@ export function renderMenuCommandHelp(): string {
     "",
     "Behavior:",
     "  On macOS, `scout menu` loads the menu bar app from the installed OpenScout.app",
-    "  (the menu ships as an embedded helper). If OpenScout.app is not installed, it",
-    "  points you to `scout install`. Inside an OpenScout repo checkout it prefers",
-    "  `apps/macos/bin/openscout-menu.ts` so launch/build/restart reuse the repo helper.",
+    "  (the menu ships as an embedded helper). If OpenScout.app is not installed, a",
+    "  repo checkout can fall back to `apps/macos/bin/openscout-menu.ts` for local",
+    "  development. `scout menu build` and `scout menu dmg` always require a checkout.",
     "",
     "Examples:",
     "  scout menu",
@@ -426,10 +426,16 @@ export async function runMenuCommand(context: ScoutCommandContext, args: string[
 
   const command = parseMenuCommand(args);
   await ensureMenuProviderTelemetry(context, command.action);
-  const helperPath = findRepoMenuHelper(defaultScoutContextDirectory(context));
-  const result = helperPath
-    ? await runWithRepoHelper(context, helperPath, command)
-    : await runWithInstalledApp(context, command);
+  const installedAppPath = resolveInstalledAppBundlePath(context.env);
+  const repoHelperPath = findRepoMenuHelper(defaultScoutContextDirectory(context));
+  const preferRepoHelper = command.action === "build" || command.action === "dmg";
+  const result = preferRepoHelper && repoHelperPath
+    ? await runWithRepoHelper(context, repoHelperPath, command)
+    : installedAppPath
+      ? await runWithInstalledApp(context, command)
+      : repoHelperPath
+        ? await runWithRepoHelper(context, repoHelperPath, command)
+        : await runWithInstalledApp(context, command);
 
   context.output.writeValue(result, renderMenuResult);
 }
