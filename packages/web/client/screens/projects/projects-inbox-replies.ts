@@ -34,6 +34,68 @@ type ReplyBurstCoalescer = {
 
 type BurstScheduler = (flush: () => void) => () => void;
 
+export type HistoricalReplayHydrator = {
+  /** True only for the first load or once a failed load's backoff expires. */
+  shouldRun: () => boolean;
+  /** Coalesces concurrent calls and becomes a no-op after the first success. */
+  run: () => Promise<void>;
+  /** Starts a new mounted epoch after live-event listeners were absent. */
+  reset: () => void;
+};
+
+/**
+ * Transcript history is cold-start enrichment. Once it has loaded, live tail
+ * events keep the projection current, so polling it again only repeats disk
+ * work. Failed hydration remains retryable after a small backoff.
+ */
+export function createHistoricalReplayHydrator(options: {
+  load: () => Promise<void>;
+  retryDelayMs: number;
+  now?: () => number;
+}): HistoricalReplayHydrator {
+  const now = options.now ?? Date.now;
+  let phase: "idle" | "loading" | "ready" | "error" = "idle";
+  let retryAt = 0;
+  let inFlight: Promise<void> | null = null;
+  let generation = 0;
+
+  const shouldRun = () =>
+    phase === "idle" || (phase === "error" && now() >= retryAt);
+
+  return {
+    shouldRun,
+    run() {
+      if (inFlight) return inFlight;
+      if (!shouldRun()) return Promise.resolve();
+
+      phase = "loading";
+      const requestGeneration = generation;
+      let request: Promise<void>;
+      request = Promise.resolve()
+        .then(options.load)
+        .then(() => {
+          if (generation === requestGeneration) phase = "ready";
+        })
+        .catch(() => {
+          if (generation !== requestGeneration) return;
+          phase = "error";
+          retryAt = now() + options.retryDelayMs;
+        })
+        .finally(() => {
+          if (inFlight === request) inFlight = null;
+        });
+      inFlight = request;
+      return request;
+    },
+    reset() {
+      generation += 1;
+      phase = "idle";
+      retryAt = 0;
+      inFlight = null;
+    },
+  };
+}
+
 /** Batch streamed reply fragments so one burst causes one model rebuild. */
 export function createReplyBurstCoalescer(
   onFlush: (events: TailEvent[]) => void,

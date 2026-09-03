@@ -1,6 +1,6 @@
 import { describe, expect, mock, test } from "bun:test";
 
-import type { InboxSession } from "./projects-inbox-model.ts";
+import type { InboxProject, InboxSession } from "./projects-inbox-model.ts";
 import { formatTerminalSurfaceId } from "@openscout/protocol";
 import type { TerminalSessionRecord } from "@openscout/protocol";
 import {
@@ -53,7 +53,7 @@ const defaultProject = {
   slug: "pomo",
   title: "Pomo",
   root: "/workspace/pomo",
-  agentCount: 0,
+  agentCount: 1,
   sessionCount: 1,
   liveSessionCount: 0,
   worktreeCount: 0,
@@ -66,6 +66,7 @@ const defaultProject = {
 };
 let mockProjects = [defaultProject];
 let mockSessions = [session];
+let mockProjectAliases: Record<string, string> = {};
 
 mock.module("./useProjectsInbox.ts", () => ({
   refreshProjectsInbox: () => undefined,
@@ -74,6 +75,7 @@ mock.module("./useProjectsInbox.ts", () => ({
       projects: mockProjects,
       threads: [],
       sessions: mockSessions,
+      projectAliases: mockProjectAliases,
     },
     agents: [],
     nowMs: 1_700_000_060_000,
@@ -92,111 +94,59 @@ mock.module("../sessions/SessionRefScreen.tsx", () => ({
 const { ProjectsInbox, ThreadRow } = await import("./ProjectsInbox.tsx");
 const {
   ProjectsRail,
-  filterAndSortProjectGroups,
-  recentReplySessionsForRail,
+  filterAndSortProjects,
 } = await import("./ProjectsRail.tsx");
 
 describe("ProjectsInbox ThreadRow", () => {
-  test("surfaces an observed harness reply ahead of generic project sessions", () => {
-    session.latestReplyAt = 1_700_000_050_000;
-    session.latestReplyPreview = "The exact Codex task is ready for your steer.";
+  test("keeps the initial project rail project-only", () => {
     const html = renderToStaticMarkup(createElement(ProjectsRail, {
       route: { view: "agents-v2" },
       navigate: () => undefined,
     }));
-    session.latestReplyAt = null;
-    session.latestReplyPreview = null;
 
-    expect(html).toContain("Latest replies");
-    expect(html).toContain("Codex replied · The exact Codex task is ready for your...");
-    expect(html).toContain("Latest harness replies");
+    expect(html).toContain("/Pomo");
+    expect(html).toContain("Find project");
+    expect(html).not.toContain("Verify the sessions route");
+    expect(html).not.toContain("Latest replies");
+    expect(html).not.toContain("No sessions yet");
   });
 
-  test("filters latest replies with the active rail query", () => {
-    const openscoutReply: InboxSession = {
-      ...session,
-      id: "openscout-reply",
-      projectSlug: "openscout",
-      projectTitle: "Openscout",
-      latestReplyAt: 1_700_000_050_000,
-      latestReplyPreview: "The OpenScout response",
-    };
-    const blinkReply: InboxSession = {
-      ...session,
-      id: "blink-reply",
-      projectSlug: "blink",
-      projectTitle: "Blink",
-      latestReplyAt: 1_700_000_060_000,
-      latestReplyPreview: "The Blink response",
-    };
+  test("filters and sorts only canonical project fields", () => {
+    const projects: InboxProject[] = [
+      { ...defaultProject, slug: "talkie", title: "Talkie", root: "/workspace/talkie", lastActivityAt: 1 },
+      { ...defaultProject, slug: "openscout", title: "OpenScout", root: "/workspace/openscout", lastActivityAt: 2 },
+    ];
 
-    expect(recentReplySessionsForRail([blinkReply, openscoutReply], "openscout"))
-      .toEqual([openscoutReply]);
-    expect(recentReplySessionsForRail([openscoutReply], "verify the sessions route"))
-      .toEqual([openscoutReply]);
-    expect(recentReplySessionsForRail([openscoutReply], "test-session"))
-      .toEqual([openscoutReply]);
+    expect(filterAndSortProjects(projects, "openscout", "recent").map((project) => project.slug))
+      .toEqual(["openscout"]);
+    expect(filterAndSortProjects(projects, "verify the sessions route", "recent"))
+      .toHaveLength(0);
+    expect(filterAndSortProjects(projects, "", "name").map((project) => project.slug))
+      .toEqual(["openscout", "talkie"]);
   });
 
-  test("keeps a fifth-ranked exact session match visible in the project preview", () => {
-    const newerSessions = Array.from({ length: 4 }, (_, index): InboxSession => ({
-      ...session,
-      id: `pomo:session:newer-${index}`,
-      sessionId: `newer-${index}`,
-      work: `Unrelated newer session ${index}`,
-      lastActivityAt: session.lastActivityAt + 10_000 - index,
-    }));
-    const exactMatch: InboxSession = {
-      ...session,
-      id: "pomo:session:find-this-exact-response",
-      sessionId: "find-this-exact-response",
-      work: "The response I need to steer",
-      lastActivityAt: session.lastActivityAt - 10_000,
-    };
-
-    const groups = filterAndSortProjectGroups([{
-      project: { ...defaultProject, sessionCount: 5 },
-      sessions: [...newerSessions, exactMatch],
-      lastActivityAt: newerSessions[0]!.lastActivityAt,
-    }], "find-this-exact-response", "recent");
-
-    expect(groups).toHaveLength(1);
-    expect(groups[0]?.sessions).toEqual([exactMatch]);
-  });
-
-  test("fails closed for legacy session ids that collide across project groups", () => {
-    const codexSession: InboxSession = { ...session, source: "codex" };
-    const claudeSession: InboxSession = {
-      ...session,
-      id: "blink:session:test-session",
-      projectSlug: "blink",
-      projectTitle: "Blink",
-      projectRoot: "/workspace/blink",
-      workspaceRoot: "/workspace/blink",
-      harness: "claude",
-      source: "claude",
-      agentName: "Claude session",
-    };
+  test("shows quiet projects without a disclosure gate", () => {
     mockProjects = [
       defaultProject,
       {
         ...defaultProject,
-        slug: "blink",
-        title: "Blink",
-        root: "/workspace/blink",
+        slug: "quiet",
+        title: "Quiet",
+        root: "/workspace/quiet",
+        lastActivityAt: 0,
       },
     ];
-    mockSessions = [codexSession, claudeSession];
 
     try {
       const html = renderToStaticMarkup(createElement(ProjectsRail, {
-        route: { view: "agents-v2", sessionId: "session:test-session" },
+        route: { view: "agents-v2" },
         navigate: () => undefined,
       }));
-      expect(html.match(/data-selected="true"/gu) ?? []).toHaveLength(0);
+      expect(html).toContain("/Pomo");
+      expect(html).toContain("/Quiet");
+      expect(html).not.toContain("All projects");
     } finally {
       mockProjects = [defaultProject];
-      mockSessions = [session];
     }
   });
 
@@ -231,6 +181,56 @@ describe("ProjectsInbox ThreadRow", () => {
     expect(html).toContain('aria-label="Selected session"');
     expect(html).toContain('data-session-ref="test-session"');
     expect(html).toContain("Resolved test-session");
+  });
+
+  test("renders one synthetic project agent instead of endpoint rows", () => {
+    const html = renderToStaticMarkup(createElement(ProjectsInbox, {
+      route: {
+        view: "agents-v2",
+        projectSlug: "pomo",
+        indexView: "agents",
+      },
+      navigate: () => undefined,
+    }));
+
+    expect(html).toContain("Project agent");
+    expect(html).toContain("Open project");
+    expect(html).not.toContain("Verify the sessions route");
+    expect(html).not.toContain("No visible agents in this project");
+  });
+
+  test("keeps a folded worktree slug routed to its canonical project", () => {
+    mockProjectAliases = { "pomo-worktree": "pomo" };
+    try {
+      const projectHtml = renderToStaticMarkup(createElement(ProjectsInbox, {
+        route: {
+          view: "agents-v2",
+          projectSlug: "pomo-worktree",
+          indexView: "agents",
+        },
+        navigate: () => undefined,
+      }));
+      const railHtml = renderToStaticMarkup(createElement(ProjectsRail, {
+        route: { view: "agents-v2", projectSlug: "pomo-worktree" },
+        navigate: () => undefined,
+      }));
+
+      expect(projectHtml).toContain("Project agent");
+      expect(projectHtml).toContain("/workspace/pomo");
+      expect(railHtml).toContain('aria-current="page"');
+    } finally {
+      mockProjectAliases = {};
+    }
+  });
+
+  test("uses singular repository activity labels", () => {
+    const html = renderToStaticMarkup(createElement(ProjectsInbox, {
+      route: { view: "agents-v2", projectSlug: "pomo" },
+      navigate: () => undefined,
+    }));
+
+    expect(html).toContain("</b> agent</span>");
+    expect(html).not.toContain("</b> agents</span>");
   });
 
   test("resolves a historical session agent to its discovered tmux surface", () => {

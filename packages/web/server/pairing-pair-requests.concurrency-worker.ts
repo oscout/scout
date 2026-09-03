@@ -36,7 +36,7 @@ import { join } from "node:path";
 import { createPendingPairRequestStore } from "./pairing-pair-requests.ts";
 
 type Role = "decider" | "poller";
-type Scenario = "approve" | "deny" | "expire" | "sweep" | "fulfil";
+type Scenario = "approve" | "deny" | "expire" | "sweep" | "fulfil" | "double-fulfil";
 
 interface GoSignal {
   round: number;
@@ -123,13 +123,15 @@ const ttlMs = scenario === "expire"
   : (scenario === "sweep" || scenario === "fulfil") && role === "decider"
     ? SWEEP_TTL_MS
     : 60_000;
-const store = createPendingPairRequestStore({ statePath, ttlMs });
+const store = createPendingPairRequestStore({ statePath, ttlMs, renewalWindowMs: ttlMs });
 
 if (role === "decider") {
   let lost = 0;
   let resurrected = 0;
-  /** Fulfils that actually handed a payload over, in the `fulfil` scenario. */
+  /** Fulfils that actually handed a payload over. */
   let delivered = 0;
+  /** Rounds where two concurrent fulfils did not produce exactly one winner. */
+  let exclusiveDeliveryViolations = 0;
   /** Last round's fulfilled token, which this round's churn must not revive. */
   let buried: string | null = null;
   for (let round = 0; round < rounds; round += 1) {
@@ -138,10 +140,14 @@ if (role === "decider") {
       requesterIp: `10.0.0.${round % 250 + 1}`,
       requesterLabel: "iPhone",
     });
+    if (scenario === "double-fulfil") {
+      store.decide(request.token, "approve");
+    }
     const actAt = Date.now() + RENDEZVOUS_MS + (scenario === "expire" ? 1 : 0);
     publish(goPath, { round, token: request.token, actAt } satisfies GoSignal);
 
     spinUntil(actAt);
+    let deliveredHere = false;
     if (scenario === "expire") {
       // The instance the human is looking at refreshing its list, which is what
       // used to collect expired rows out of the shared file.
@@ -167,11 +173,27 @@ if (role === "decider") {
         buried = request.token;
       }
       publish(sweptPath, { round, delivered: handedOver !== null } satisfies ActedSignal);
+    } else if (scenario === "double-fulfil") {
+      deliveredHere = store.fulfill(request.token, "approved") !== null;
+      if (deliveredHere) delivered += 1;
     } else {
       store.decide(request.token, scenario === "approve" ? "approve" : "deny");
     }
 
-    awaitSignal<DoneSignal>(donePath, round);
+    let peerDelivered = false;
+    if (scenario === "double-fulfil") {
+      peerDelivered = awaitSignal<ActedSignal>(donePath, round).delivered;
+    } else {
+      awaitSignal<DoneSignal>(donePath, round);
+    }
+
+    if (scenario === "double-fulfil") {
+      if (Number(deliveredHere) + Number(peerDelivered) !== 1) {
+        exclusiveDeliveryViolations += 1;
+      }
+      buried = request.token;
+      continue;
+    }
 
     if (scenario === "fulfil") {
       // Delivered or refused, it was settled at the rendezvous; there is
@@ -198,15 +220,30 @@ if (role === "decider") {
     }
   }
   process.stdout.write(
-    `${JSON.stringify({ role, scenario, rounds, lost, resurrected, delivered })}\n`,
+    `${JSON.stringify({
+      role,
+      scenario,
+      rounds,
+      lost,
+      resurrected,
+      delivered,
+      exclusiveDeliveryViolations,
+    })}\n`,
   );
 } else {
   let touched = 0;
   let extended = 0;
   let lost = 0;
+  let delivered = 0;
   for (let round = 0; round < rounds; round += 1) {
     const go = awaitSignal<GoSignal>(goPath, round);
     spinUntil(go.actAt);
+    if (scenario === "double-fulfil") {
+      const handedOver = store.fulfill(go.token, "approved");
+      if (handedOver !== null) delivered += 1;
+      publish(donePath, { round, delivered: handedOver !== null } satisfies ActedSignal);
+      continue;
+    }
     store.touch(go.token);
     touched += 1;
     if (scenario === "fulfil") {
@@ -233,7 +270,7 @@ if (role === "decider") {
     publish(donePath, { round } satisfies DoneSignal);
   }
   process.stdout.write(
-    `${JSON.stringify({ role, scenario, rounds, touched, extended, lost })}\n`,
+    `${JSON.stringify({ role, scenario, rounds, touched, extended, lost, delivered })}\n`,
   );
 }
 

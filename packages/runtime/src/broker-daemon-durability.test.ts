@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Database } from "bun:sqlite";
@@ -18,6 +18,11 @@ describe("broker daemon durability routes", () => {
         OPENSCOUT_TEST_STARTUP_BOUNDARY_DELAY_MS: "1500",
       },
     });
+
+    // Listener readiness must not wait for SQLite construction or migrations.
+    // The projection opens the one shared store after this test-only boundary;
+    // route aliases and mesh trust reuse it instead of opening eager copies.
+    expect(existsSync(join(harness.controlHome, "control-plane.sqlite"))).toBe(false);
 
     const restoringActivity = await fetch(`${harness.baseUrl}/v1/activity?limit=1`);
     expect(restoringActivity.status).toBe(503);
@@ -89,6 +94,73 @@ describe("broker daemon durability routes", () => {
       expect(database.query("SELECT id FROM actors WHERE id = 'system'").get()).toBeDefined();
     } finally {
       database.close();
+    }
+  }, 15_000);
+
+  test("keeps web control reachable while the projection is restoring", async () => {
+    const existingWeb = Bun.serve({
+      port: 0,
+      fetch(request) {
+        return new URL(request.url).pathname === "/api/health"
+          ? Response.json({ ok: true, surface: "openscout-web" })
+          : new Response("not found", { status: 404 });
+      },
+    });
+    try {
+      const harness = await broker.startBroker({
+        waitForMutationReady: false,
+        env: {
+          OPENSCOUT_TEST_STARTUP_BOUNDARY_DELAY_MS: "1500",
+          OPENSCOUT_WEB_PORT: String(existingWeb.port),
+        },
+      });
+
+      expect(existsSync(join(harness.controlHome, "control-plane.sqlite"))).toBe(false);
+      const health = await broker.getJson<{
+        ok: boolean;
+        startup?: { state?: string; mutationsAdmitted?: boolean };
+      }>(harness.baseUrl, "/health");
+      expect(health).toEqual(expect.objectContaining({
+        ok: true,
+        startup: { state: "restoring", mutationsAdmitted: false },
+      }));
+
+      const webStatus = await broker.getJson<{
+        ok: boolean;
+        running: boolean;
+      }>(harness.baseUrl, "/v1/web/status");
+      expect(webStatus).toEqual(expect.objectContaining({
+        ok: true,
+        running: true,
+      }));
+
+      const webStart = await broker.requestJson(harness.baseUrl, "/v1/web/start", {
+        method: "POST",
+      });
+      expect(webStart.status).toBe(200);
+      expect(webStart.body).toEqual(expect.objectContaining({
+        ok: true,
+        running: true,
+      }));
+
+      const restoringActivity = await fetch(`${harness.baseUrl}/v1/activity?limit=1`);
+      expect(restoringActivity.status).toBe(503);
+      expect(await restoringActivity.json()).toEqual(expect.objectContaining({
+        error: "broker_restoring",
+        retryable: true,
+      }));
+
+      const restoringMutation = await broker.requestJson(harness.baseUrl, "/v1/messages", {
+        method: "POST",
+        body: JSON.stringify({}),
+      });
+      expect(restoringMutation.status).toBe(503);
+      expect(restoringMutation.body).toEqual(expect.objectContaining({
+        error: "broker_restoring",
+        retryable: true,
+      }));
+    } finally {
+      existingWeb.stop(true);
     }
   }, 15_000);
 

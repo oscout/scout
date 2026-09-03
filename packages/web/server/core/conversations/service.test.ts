@@ -7,7 +7,11 @@ mock.module("../broker/service.ts", () => ({
   loadScoutBrokerContext: async () => brokerContextResult,
 }));
 
-const { getScoutConversationMessages, getScoutConversations } = await import("./service.ts");
+const {
+  getScoutConversationMessages,
+  getScoutConversations,
+  provisionalScoutConversations,
+} = await import("./service.ts");
 
 const {
   MAX_MESSAGE_PAGE_LIMIT,
@@ -348,6 +352,75 @@ describe("getScoutConversations", () => {
     }
   });
 
+  test("projects runtime from the conversation session instead of the agent's newest endpoint", async () => {
+    const snapshot = baseSnapshot();
+    snapshot.actors["session-codex-chat"] = {
+      id: "session-codex-chat",
+      kind: "session",
+      displayName: "Hudson Codex session",
+      metadata: {
+        sessionId: "session-codex-chat",
+        harness: "codex",
+        model: "gpt-5.6-terra",
+        reasoningEffort: "high",
+        transport: "codex_app_server",
+      },
+    };
+    snapshot.conversations["chat_hudson-main"].participantIds = [
+      "operator",
+      "hudson.main.mini",
+      "session-codex-chat",
+    ];
+    snapshot.messages["msg-1"].metadata = {
+      targetSessionId: "session-codex-chat",
+    };
+    snapshot.invocations = {
+      "inv-codex": {
+        id: "inv-codex",
+        requesterId: "operator",
+        requesterNodeId: "node-1",
+        targetAgentId: "hudson.main.mini",
+        action: "consult",
+        task: "review",
+        conversationId: "chat_hudson-main",
+        messageId: "msg-1",
+        execution: {
+          harness: "codex",
+          model: "gpt-5.6-terra",
+          reasoningEffort: "high",
+          targetSessionId: "session-codex-chat",
+        },
+        executionResolution: {
+          schemaVersion: "openscout.execution-resolution.v1",
+          sessionId: "session-codex-chat",
+          harness: { requested: "codex", resolved: "codex", observed: "codex", drift: "match" },
+          model: { requested: "gpt-5.6-terra", resolved: "gpt-5.6-terra", observed: "gpt-5.6-sol", drift: "mismatch" },
+          reasoningEffort: { requested: "high", resolved: "high", observed: "xhigh", drift: "mismatch" },
+        },
+        ensureAwake: true,
+        stream: false,
+        createdAt: 1_779_461_700_100,
+      },
+    };
+    brokerContextResult = brokerContext(snapshot);
+
+    const dm = (await getScoutConversations()).find((entry) => entry.id === "chat_hudson-main");
+
+    expect(dm).toMatchObject({
+      sessionId: "session-codex-chat",
+      harness: "codex",
+      model: "gpt-5.6-sol",
+      reasoningEffort: "xhigh",
+      transport: "codex_app_server",
+    });
+    expect(dm?.participants.find((participant) => participant.actorId === "session-codex-chat"))
+      .toMatchObject({
+        harness: "codex",
+        model: "gpt-5.6-terra",
+        reasoningEffort: "high",
+      });
+  });
+
   test("caps huge channel rosters, keeps the operator, and truncates previews", async () => {
     const snapshot = baseSnapshot();
     const channelId = stableChannelId(namedChannelNaturalKey("shared"));
@@ -417,6 +490,12 @@ describe("getScoutConversations", () => {
       const liveId = `session-member-${String(index).padStart(3, "0")}`;
       expect(channel?.participants.some((participant) => participant.actorId === liveId)).toBe(true);
     }
+    // Priority is stable: operator first, then endpoint-backed members, then
+    // the earliest remaining ids until the cap is full.
+    expect(channel?.participants.map((participant) => participant.actorId)).toEqual([
+      "operator",
+      ...memberIds.slice(0, 31),
+    ]);
     // Kept ids lead the id list so participants[i] pairs with
     // participantIds[i] for consumers that zip the two arrays by index.
     expect(
@@ -427,6 +506,70 @@ describe("getScoutConversations", () => {
     const direct = conversations.find((entry) => entry.id === "chat_hudson-main");
     expect(direct?.participantCount).toBe(2);
     expect(direct?.participantIds).toEqual(["hudson.main.mini", "operator"]);
+  });
+
+  test("strictly caps rich records when endpoint-backed members exceed the roster cap", async () => {
+    const snapshot = baseSnapshot();
+    const channelId = stableChannelId(namedChannelNaturalKey("endpoint-heavy"));
+    const memberIds = Array.from({ length: 48 }, (_, index) => {
+      const id = `agent-live-${String(index).padStart(3, "0")}`;
+      snapshot.actors[id] = {
+        id,
+        kind: "session",
+        displayName: `live-${index}`,
+        metadata: { sessionId: id },
+      };
+      snapshot.endpoints[`ep-${id}`] = {
+        id: `ep-${id}`,
+        agentId: id,
+        nodeId: "node-1",
+        harness: "codex",
+        transport: "codex_app_server",
+        state: "active",
+        sessionId: id,
+      };
+      return id;
+    });
+    snapshot.conversations[channelId] = {
+      id: channelId,
+      kind: "channel",
+      title: "endpoint-heavy",
+      visibility: "workspace",
+      shareMode: "local",
+      authorityNodeId: "node-1",
+      // These ids sort before `operator`, exercising the case where more than
+      // 32 endpoint-backed records would otherwise fill the nominal cap first.
+      participantIds: [...memberIds, "operator"],
+      metadata: {
+        naturalKey: namedChannelNaturalKey("endpoint-heavy"),
+        channel: "endpoint-heavy",
+      },
+    };
+    snapshot.messages["msg-endpoint-heavy"] = {
+      id: "msg-endpoint-heavy",
+      conversationId: channelId,
+      actorId: memberIds[0]!,
+      originNodeId: "node-1",
+      class: "agent",
+      body: "active endpoint roster",
+      visibility: "workspace",
+      policy: "durable",
+      createdAt: 1_779_461_900_000,
+    };
+    brokerContextResult = brokerContext(snapshot);
+
+    const first = (await getScoutConversations({ conversationId: channelId }))[0];
+    const second = (await getScoutConversations({ conversationId: channelId }))[0];
+    const expectedRichIds = [...memberIds.slice(0, 31), "operator"];
+
+    expect(first?.participantCount).toBe(49);
+    expect(first?.participantIds).toHaveLength(49);
+    expect(new Set(first?.participantIds)).toEqual(new Set([...memberIds, "operator"]));
+    expect(first?.participants).toHaveLength(32);
+    expect(first?.participants.map((participant) => participant.actorId)).toEqual(expectedRichIds);
+    expect(first?.participantIds.slice(0, 32)).toEqual(expectedRichIds);
+    expect(second?.participants.map((participant) => participant.actorId)).toEqual(expectedRichIds);
+    expect(second?.participantIds).toEqual(first?.participantIds);
   });
 
   test("omits legacy structural conversation ids from the live list", async () => {
@@ -1362,6 +1505,90 @@ describe("getScoutConversations", () => {
 
     // msg-2 and msg-3 are after the cursor and authored by the agent → 2 unread.
     expect(dm?.unreadCount).toBe(2);
+  });
+
+  test("adapts the compact launch projection without treating observed sessions as chats", () => {
+    const shared = {
+      runtimeSessionId: null,
+      source: null,
+      sourceSessionId: null,
+      alias: null,
+      naturalKey: null,
+      model: null,
+      effort: null,
+      authorityNodeId: "node-1",
+      authorityNodeName: "Mini",
+      parentConversationId: null,
+      anchorMessageId: null,
+      activityState: "idle",
+      lastMessageId: null,
+      lastMessageAt: 100,
+      lastActivityAt: 100,
+      messageCount: 1,
+      unreadCount: 0,
+      participantCount: 2,
+      lastEngagedAt: null,
+      sourceFreshAt: null,
+      visibilityState: "visible",
+      updatedSeq: 1,
+      updatedAt: 100,
+    } as const;
+    const projected = provisionalScoutConversations({
+      projectionId: "projection-1",
+      projectionVersion: 1,
+      sequence: 1,
+      generatedAt: 100,
+      sourceFreshAt: null,
+      total: 2,
+      hasMore: false,
+      engagedFeedId: "conv:chat_hudson-main",
+      identityRedirects: [],
+      items: [
+        {
+          ...shared,
+          feedId: "conv:chat_hudson-main",
+          entityKind: "scout_conversation",
+          kind: "direct",
+          conversationId: "chat_hudson-main",
+          title: "Hudson",
+          projectRoot: "/work/openscout",
+          harness: "codex",
+          model: "gpt-5.6-sol",
+          effort: "xhigh",
+          agentId: "hudson.main.mini",
+          agentName: "Hudson",
+          currentBranch: "main",
+          preview: "Ready to review",
+        },
+        {
+          ...shared,
+          feedId: "obs:codex:native-1",
+          entityKind: "observed_session",
+          kind: "observed_session",
+          conversationId: null,
+          source: "codex",
+          sourceSessionId: "native-1",
+          title: "Native session",
+          projectRoot: "/work/openscout",
+          harness: "codex",
+          agentId: null,
+          agentName: null,
+          currentBranch: null,
+          preview: null,
+        },
+      ],
+    });
+
+    expect(projected).toHaveLength(1);
+    expect(projected[0]).toMatchObject({
+      id: "chat_hudson-main",
+      harness: "codex",
+      model: "gpt-5.6-sol",
+      reasoningEffort: "xhigh",
+      transport: null,
+      workspaceRoot: "/work/openscout",
+      participantIds: ["operator", "hudson.main.mini"],
+    });
   });
 
 });

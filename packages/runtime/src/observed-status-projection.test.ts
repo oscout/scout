@@ -304,4 +304,122 @@ describe("observed status projection", () => {
       activity: "queued",
     });
   });
+
+  test("bulk projection preserves the single-agent projection semantics", () => {
+    const snapshot = createRuntimeRegistrySnapshot({
+      agents: {
+        "agent-1": makeAgent(),
+      },
+      endpoints: {
+        "endpoint-1": makeEndpoint({ state: "active" }),
+        "endpoint-2": makeEndpoint({
+          id: "endpoint-2",
+          agentId: "agent-2",
+          state: "waiting",
+        }),
+      },
+      invocations: {
+        "inv-1": makeInvocation(),
+        "inv-3": makeInvocation({
+          id: "inv-3",
+          targetAgentId: "agent-3",
+          createdAt: now - 1_500,
+        }),
+      },
+      flights: {
+        "flight-old": makeFlight({
+          id: "flight-old",
+          state: "queued",
+          startedAt: now - 2_000,
+        }),
+        "flight-new": makeFlight({
+          id: "flight-new",
+          state: "running",
+          startedAt: now - 1_000,
+        }),
+        "flight-3": makeFlight({
+          id: "flight-3",
+          invocationId: "inv-3",
+          targetAgentId: "agent-3",
+          state: "waiting",
+          startedAt: now - 500,
+        }),
+      },
+      collaborationRecords: {
+        "work-old": makeWorkItem({
+          id: "work-old",
+          state: "open",
+          updatedAt: now - 1_000,
+        }),
+        "work-new": makeWorkItem({
+          id: "work-new",
+          ownerId: "agent-4",
+          nextMoveOwnerId: "agent-1",
+          state: "review",
+          updatedAt: now - 250,
+        }),
+      },
+    });
+    const agentIds = ["agent-1", "agent-2", "agent-3", "agent-4"];
+
+    const bulk = projectObservedStatusesFromRuntimeSnapshot(snapshot, { now });
+    const individually = agentIds.map((agentId) =>
+      projectObservedStatusForAgent(snapshot, agentId, { now })
+    );
+
+    expect(bulk).toEqual(individually);
+  });
+
+  test("bulk projection enumerates each record collection only once", () => {
+    const counts = new Map<string, number>();
+    const counted = <T extends object>(name: string, value: T): T => new Proxy(value, {
+      ownKeys(target) {
+        counts.set(name, (counts.get(name) ?? 0) + 1);
+        return Reflect.ownKeys(target);
+      },
+    });
+    const agents: Record<string, AgentDefinition> = {};
+    const endpoints: Record<string, AgentEndpoint> = {};
+    const invocations: Record<string, InvocationRequest> = {};
+    const flights: Record<string, FlightRecord> = {};
+    const collaborationRecords: Record<string, WorkItemRecord> = {};
+    for (let index = 0; index < 64; index += 1) {
+      const agentId = `agent-${index}`;
+      agents[agentId] = makeAgent({ id: agentId, definitionId: agentId });
+      endpoints[`endpoint-${index}`] = makeEndpoint({
+        id: `endpoint-${index}`,
+        agentId,
+      });
+      invocations[`inv-${index}`] = makeInvocation({
+        id: `inv-${index}`,
+        targetAgentId: agentId,
+      });
+      flights[`flight-${index}`] = makeFlight({
+        id: `flight-${index}`,
+        invocationId: `inv-${index}`,
+        targetAgentId: agentId,
+      });
+      collaborationRecords[`work-${index}`] = makeWorkItem({
+        id: `work-${index}`,
+        ownerId: agentId,
+        nextMoveOwnerId: agentId,
+      });
+    }
+    const snapshot = createRuntimeRegistrySnapshot({
+      agents: counted("agents", agents),
+      endpoints: counted("endpoints", endpoints),
+      invocations: counted("invocations", invocations),
+      flights: counted("flights", flights),
+      collaborationRecords: counted("collaborationRecords", collaborationRecords),
+    });
+
+    expect(projectObservedStatusesFromRuntimeSnapshot(snapshot, { now })).toHaveLength(64);
+    expect(Object.fromEntries(counts)).toEqual({
+      agents: 1,
+      endpoints: 1,
+      invocations: 1,
+      flights: 1,
+      collaborationRecords: 1,
+    });
+  });
 });

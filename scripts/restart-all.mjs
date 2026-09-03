@@ -1,9 +1,9 @@
 #!/usr/bin/env bun
 
 import { spawnSync } from "node:child_process";
-import { existsSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
@@ -15,6 +15,70 @@ const DEFAULT_PORTS = {
   pairing: 43130,
 };
 const VALUE_FLAGS = new Set(["--port", "--web-port", "--vite-port", "--pairing-port"]);
+
+function normalizedPath(path) {
+  try {
+    return realpathSync(path);
+  } catch {
+    return resolve(path);
+  }
+}
+
+/**
+ * Resolve the one primary checkout behind a regular clone or linked worktree.
+ * The shared launchd service must never be repointed to a disposable worktree:
+ * rebuilding there and later retiring it would leave broker-managed web on an
+ * obsolete (or missing) source tree.
+ */
+export function primaryCheckoutRootFromGitCommonDir(
+  checkoutRoot,
+  gitCommonDir,
+  pathExists = existsSync,
+) {
+  const value = gitCommonDir?.trim();
+  if (!value) return null;
+  const commonDirectory = normalizedPath(
+    isAbsolute(value) ? value : resolve(checkoutRoot, value),
+  );
+  if (basename(commonDirectory) !== ".git") return null;
+  const primaryRoot = dirname(commonDirectory);
+  return pathExists(join(primaryRoot, "packages", "cli", "package.json"))
+    ? primaryRoot
+    : null;
+}
+
+export function resolvePrimaryCheckoutRoot(checkoutRoot = repoRoot) {
+  const result = spawnSync(
+    "git",
+    ["-C", checkoutRoot, "rev-parse", "--path-format=absolute", "--git-common-dir"],
+    { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] },
+  );
+  if ((result.status ?? 1) !== 0) return null;
+  return primaryCheckoutRootFromGitCommonDir(checkoutRoot, result.stdout);
+}
+
+export function assertSharedServiceRepointRoot(checkoutRoot, primaryRoot) {
+  if (!primaryRoot) {
+    throw new Error(
+      `Cannot verify the primary Git checkout for ${checkoutRoot}; refusing to repoint the shared Scout service.`,
+    );
+  }
+  if (normalizedPath(primaryRoot) !== normalizedPath(checkoutRoot)) {
+    throw new Error(
+      `Refusing to repoint the shared Scout service from linked worktree ${checkoutRoot}. `
+      + `Run \`bun run scout:up\` from the primary checkout at ${primaryRoot}, `
+      + "or use an isolated service label and port set for worktree testing.",
+    );
+  }
+  return primaryRoot;
+}
+
+export function assertPrimaryCheckoutForSharedServiceRepoint(checkoutRoot = repoRoot) {
+  return assertSharedServiceRepointRoot(
+    checkoutRoot,
+    resolvePrimaryCheckoutRoot(checkoutRoot),
+  );
+}
 
 function printHelp() {
   console.log(`OpenScout scout:up
@@ -160,14 +224,16 @@ function runStep(label, command, args = [], options = {}) {
   return true;
 }
 
-function freshGeneratedPaths() {
+export function freshGeneratedPaths() {
   return [
     "packages/protocol/dist",
     "packages/runtime/dist",
     "packages/cli/dist",
     "packages/web/dist",
     "apps/macos/.build",
-    "apps/macos/dist/Scout.app",
+    // Keep the bundle directory's file identity stable for Finder/Dock
+    // bookmarks; the following rebuild repopulates Contents from scratch.
+    "apps/macos/dist/Scout.app/Contents",
     "apps/macos/dist/ScoutMenu.app",
     "apps/macos/dist/OpenScoutMenu.app",
     "apps/macos/dist/OpenScout Menu.app",
@@ -510,6 +576,9 @@ async function main() {
     console.log(`web ready: ${verified.webUrl}`);
     return;
   }
+
+  const sharedServiceRoot = assertPrimaryCheckoutForSharedServiceRepoint();
+  console.log(`shared service owner: ${sharedServiceRoot}`);
 
   reportLifecycle("Stop OpenScout", scoutApp("stop"));
 

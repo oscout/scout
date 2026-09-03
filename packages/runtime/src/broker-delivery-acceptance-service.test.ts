@@ -153,6 +153,7 @@ function createHarness(input: {
     requesterId: string;
     requesterNodeId: string;
   }> = [];
+  const localAgentSyncReasons: string[] = [];
   let idCounter = 0;
 
   const service = new BrokerDeliveryAcceptanceService({
@@ -160,7 +161,9 @@ function createHarness(input: {
     operatorActorId: "operator",
     runtimeSnapshot: () => snapshot,
     createId: (prefix) => `${prefix}-${++idCounter}`,
-    syncRegisteredLocalAgentsIfChanged: async () => {},
+    syncRegisteredLocalAgentsIfChanged: async (reason) => {
+      localAgentSyncReasons.push(reason);
+    },
     metadataStringValue: (metadata, key) => {
       const value = metadata?.[key];
       return typeof value === "string" && value.trim() ? value.trim() : null;
@@ -260,6 +263,7 @@ function createHarness(input: {
     conversationsRequested,
     dispatchedInvocations,
     ensuredActors,
+    localAgentSyncReasons,
     operatorIssues,
     operatorSignals,
     postedMessages,
@@ -352,6 +356,7 @@ describe("BrokerDeliveryAcceptanceService", () => {
     ]);
     expect(harness.operatorIssues[0]).not.toHaveProperty("originConversationId");
     expect(harness.acceptedInvocations).toEqual([]);
+    expect(harness.localAgentSyncReasons).toEqual([]);
   });
 
   test("records an operator signal without creating an invocation", async () => {

@@ -16,8 +16,10 @@ import {
   parseElapsedSeconds,
   parseProcessTable,
   planStop,
+  ownedSweepSurvivorPids,
   resolveLaunchdLabel,
   SCOUT_LAUNCHD_LABEL,
+  scoutdStartArguments,
   supersessionTarget,
   SUPERVISED_LAYERS,
   verifyTree,
@@ -332,6 +334,49 @@ describe("planStop", () => {
     }
   });
 
+  test("rechecks ownership before signalling a planned supervised straggler", () => {
+    const initial = classifyProcesses(parseProcessTable(healthyTable()), paths);
+    const sweep = planStop(initial).find((step) => step.kind === "sweep");
+    expect(sweep?.kind).toBe("sweep");
+    if (sweep?.kind !== "sweep") return;
+
+    const runtime = `${OURS.root}/packages/runtime/bin/openscout-runtime.mjs`;
+    const afterBootout = classifyProcesses(parseProcessTable([
+      line(100, 1, `${OURS.scoutd} supervise`),
+      line(200, 100, `scout-base ${runtime} base`),
+      line(300, 200, `scout-broker run ${runtime} broker`),
+      line(999, 300, `scout-web run ${runtime} web`),
+    ].join("\n")), paths);
+
+    // PIDs 100/200/300 are true survivors. PID 999 appeared after the captured
+    // tree and must not be killed by a stale stop plan.
+    expect(ownedSweepSurvivorPids(sweep, afterBootout).sort((a, b) => a - b)).toEqual([100, 200, 300]);
+  });
+
+  test("keeps planned checkout services eligible after bootout reparents them", () => {
+    const initial = classifyProcesses(parseProcessTable(healthyTable()), paths);
+    const sweep = planStop(initial).find((step) => step.kind === "sweep");
+    expect(sweep?.kind).toBe("sweep");
+    if (sweep?.kind !== "sweep") return;
+
+    const ourRuntime = `${OURS.root}/packages/runtime/bin/openscout-runtime.mjs`;
+    const theirRuntime = `${THEIRS.root}/packages/runtime/bin/openscout-runtime.mjs`;
+    const afterBootout = classifyProcesses(parseProcessTable([
+      // launchd has removed scoutd, so its surviving children have been
+      // reparented to pid 1 and no longer classify through the ownership tree.
+      line(200, 1, `scout-base ${ourRuntime} base`),
+      line(300, 1, `scout-broker run ${ourRuntime} broker`),
+      // Even reuse of a PID captured in the stop plan is insufficient without
+      // this checkout's exact service-root argument.
+      line(100, 1, `scout-base ${theirRuntime} base`),
+      line(999, 1, `scout-broker run ${theirRuntime} broker`),
+    ].join("\n")), paths);
+
+    expect(afterBootout.layers.base).toEqual([]);
+    expect(afterBootout.layers.broker).toEqual([]);
+    expect(ownedSweepSurvivorPids(sweep, afterBootout).sort((a, b) => a - b)).toEqual([200, 300]);
+  });
+
   test("plans nothing for a machine with nothing running", () => {
     expect(planStop(classifyProcesses([], paths))).toEqual([]);
   });
@@ -386,6 +431,16 @@ describe("chooseLaunchdStartMethod", () => {
     expect(launchAgentPlistPath("app.openscout", "/Users/dev")).toBe(
       "/Users/dev/Library/LaunchAgents/app.openscout.plist",
     );
+  });
+});
+
+describe("scoutdStartArguments", () => {
+  test("keeps direct scoutd starts health-blocking by default", () => {
+    expect(scoutdStartArguments()).toEqual(["start"]);
+  });
+
+  test("lets the app lifecycle own readiness after launchd accepts the start", () => {
+    expect(scoutdStartArguments({ waitForHealth: false })).toEqual(["start", "--no-wait"]);
   });
 });
 

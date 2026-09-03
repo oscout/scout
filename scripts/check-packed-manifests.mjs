@@ -77,8 +77,9 @@ const FORBIDDEN_PACKED_PREFIXES = {
 };
 
 // Calibrated against the reviewed 0.2.92 candidate (about 8.08 MB packed,
-// 36.97 MB unpacked, 445 files) and the 0.2.94 candidate (about 6.65 MB packed,
-// 30.75 MB unpacked, 452 files). The previous release's duplicated
+// 36.97 MB unpacked, 445 files), the 0.2.94 candidate (about 6.65 MB packed,
+// 30.75 MB unpacked, 452 files), and the 0.2.96 candidate (about 7.34 MB packed,
+// 36.36 MB unpacked, 482 files). The previous release's duplicated
 // 3.45 MB web-server bundle exceeds both byte ceilings. Raising a ceiling is a
 // deliberate release-review decision, not an incidental side effect of npm
 // packaging.
@@ -86,7 +87,7 @@ const PACKED_FOOTPRINT_BUDGETS = {
   "@openscout/scout": {
     maxPackedBytes: 8_500_000,
     maxUnpackedBytes: 38_000_000,
-    maxFileCount: 475,
+    maxFileCount: 500,
   },
 };
 

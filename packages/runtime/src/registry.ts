@@ -33,7 +33,7 @@ export interface RuntimeRegistrySnapshotQuery {
    * This avoids serializing thousands of unrelated historical agent
    * registrations on the latency-sensitive app startup path.
    */
-  scope?: "conversations";
+  scope?: "conversations" | "agents";
 }
 
 export function createRuntimeRegistrySnapshot(
@@ -116,6 +116,12 @@ export function queryRuntimeRegistrySnapshot(
   snapshot: RuntimeRegistrySnapshot,
   query: RuntimeRegistrySnapshotQuery = {},
 ): RuntimeRegistrySnapshot {
+  if (query.scope === "agents") {
+    return createRuntimeRegistrySnapshot({
+      agents: { ...snapshot.agents },
+    });
+  }
+
   const since = finiteTimestamp(query.since);
   const conversationScoped = query.scope === "conversations";
   if (since === null && !conversationScoped) {

@@ -11,6 +11,7 @@ import {
   clearStaleLocalEndpointMetadata,
   coreAgentPreferenceRank,
   resolveConfiguredCoreAgentId,
+  preserveMissingTmuxEndpointState,
   staleLocalAgentReplacementId,
   staleLocalRegistrationMetadata,
 } from "./broker-local-agent-sync-service.js";
@@ -128,6 +129,10 @@ function createHarness(input: {
   const aliveEndpointIdsAsync = new Set(input.aliveEndpointIdsAsync ?? []);
   const aliveSessionIds = new Set(input.aliveSessionIds ?? []);
   const aliveSessionIdsAsync = new Set(input.aliveSessionIdsAsync ?? []);
+  const endpointLivenessChecks: string[] = [];
+  const asyncEndpointLivenessChecks: string[] = [];
+  const sessionLivenessChecks: string[] = [];
+  const asyncSessionLivenessChecks: string[] = [];
   const disabledSyntheticEndpointIds = new Set(input.disabledSyntheticEndpointIds ?? []);
   let bindingBatchIndex = 0;
   const service = new BrokerLocalAgentSyncService({
@@ -160,10 +165,22 @@ function createHarness(input: {
       clearGitBranchCacheCount++;
     },
     isGeneratedLocalAgentMetadata: (metadata) => metadata?.generatedLocalAgent === true,
-    isLocalAgentEndpointAlive: (candidate) => aliveEndpointIds.has(candidate.id),
-    isLocalAgentEndpointAliveAsync: async (candidate) => aliveEndpointIdsAsync.has(candidate.id),
-    isLocalAgentSessionAlive: (sessionId) => aliveSessionIds.has(sessionId),
-    isLocalAgentSessionAliveAsync: async (sessionId) => aliveSessionIdsAsync.has(sessionId),
+    isLocalAgentEndpointAlive: (candidate) => {
+      endpointLivenessChecks.push(candidate.id);
+      return aliveEndpointIds.has(candidate.id);
+    },
+    isLocalAgentEndpointAliveAsync: async (candidate) => {
+      asyncEndpointLivenessChecks.push(candidate.id);
+      return aliveEndpointIdsAsync.has(candidate.id);
+    },
+    isLocalAgentSessionAlive: (sessionId) => {
+      sessionLivenessChecks.push(sessionId);
+      return aliveSessionIds.has(sessionId);
+    },
+    isLocalAgentSessionAliveAsync: async (sessionId) => {
+      asyncSessionLivenessChecks.push(sessionId);
+      return aliveSessionIdsAsync.has(sessionId);
+    },
     shouldDisableGeneratedCodexEndpoint: (candidate) => disabledSyntheticEndpointIds.has(candidate.id),
     async upsertActor(nextActor) {
       upsertedActors.push(nextActor);
@@ -214,6 +231,10 @@ function createHarness(input: {
     },
     loadCalls,
     logs,
+    endpointLivenessChecks,
+    asyncEndpointLivenessChecks,
+    sessionLivenessChecks,
+    asyncSessionLivenessChecks,
     persistedEndpoints,
     runtimeSnapshot,
     service,
@@ -250,6 +271,31 @@ describe("broker local agent sync helpers", () => {
       replacedByAgentId: "replacement",
       keep: "value",
     })).toEqual({ keep: "value" });
+  });
+
+  test("preserves a missing tmux endpoint diagnostic across registry rematerialization", () => {
+    const waiting = endpoint({
+      id: "endpoint-missing",
+      transport: "tmux",
+      state: "waiting",
+      sessionId: "relay-missing-claude",
+      metadata: { source: "relay-agent-registry", tmuxSession: "relay-missing-claude" },
+    });
+    const offline = {
+      ...waiting,
+      state: "offline" as const,
+      metadata: {
+        ...waiting.metadata,
+        lastError: "tmux session missing: relay-missing-claude",
+        lastFailedAt: 9_000,
+      },
+    };
+
+    expect(preserveMissingTmuxEndpointState(offline, waiting)).toEqual(offline);
+    expect(preserveMissingTmuxEndpointState(
+      { ...offline, sessionId: "relay-previous", metadata: { ...offline.metadata, lastError: "tmux session missing: relay-previous" } },
+      waiting,
+    )).toBe(waiting);
   });
 });
 
@@ -409,6 +455,96 @@ describe("BrokerLocalAgentSyncService", () => {
     }));
     expect(harness.runtimeSnapshot.agents[cardAgent.id]?.metadata?.staleLocalRegistration).toBeUndefined();
     expect(harness.runtimeSnapshot.endpoints[cardEndpoint.id]?.state).toBe("active");
+  });
+
+  test("does not toggle a known-missing registered tmux endpoint back to waiting", async () => {
+    const waitingEndpoint = endpoint({
+      id: "endpoint-missing-registered-tmux",
+      transport: "tmux",
+      state: "waiting",
+      sessionId: "relay-missing-registered-claude",
+      metadata: {
+        source: "relay-agent-registry",
+        tmuxSession: "relay-missing-registered-claude",
+      },
+    });
+    const offlineEndpoint = {
+      ...waitingEndpoint,
+      state: "offline" as const,
+      metadata: {
+        ...waitingEndpoint.metadata,
+        lastError: "tmux session missing: relay-missing-registered-claude",
+        lastFailedAt: 9_000,
+      },
+    };
+    const currentBinding = binding({ endpoint: waitingEndpoint });
+    const harness = createHarness({
+      snapshot: snapshot({
+        agents: { [currentBinding.agent.id]: currentBinding.agent },
+        endpoints: { [offlineEndpoint.id]: offlineEndpoint },
+      }),
+      bindings: [currentBinding],
+    });
+
+    await harness.service.sync();
+
+    expect(harness.persistedEndpoints).toEqual([offlineEndpoint]);
+    expect(harness.sessionLivenessChecks).toEqual([]);
+    expect(harness.asyncSessionLivenessChecks).toEqual([]);
+  });
+
+  test("does not re-probe archived or remote tmux endpoint history", async () => {
+    const archivedAgent = agent({
+      id: "agent.archived",
+      definitionId: "archived",
+      metadata: { generatedLocalAgent: true },
+    });
+    const archived = endpoint({
+      id: "endpoint-archived",
+      agentId: archivedAgent.id,
+      transport: "tmux",
+      sessionId: "archived-session",
+      state: "offline",
+      metadata: {
+        generatedLocalAgent: true,
+        staleLocalRegistration: true,
+        staleAt: 9_000,
+      },
+    });
+    const remote = endpoint({
+      id: "endpoint-remote",
+      agentId: "agent.remote",
+      nodeId: "node-2",
+      transport: "tmux",
+      sessionId: "remote-session",
+      state: "active",
+    });
+    const harness = createHarness({
+      snapshot: snapshot({
+        agents: {
+          [archivedAgent.id]: archivedAgent,
+          "agent.remote": agent({
+            id: "agent.remote",
+            definitionId: "remote",
+            homeNodeId: "node-2",
+            authorityNodeId: "node-2",
+          }),
+        },
+        endpoints: {
+          [archived.id]: archived,
+          [remote.id]: remote,
+        },
+      }),
+      bindings: [],
+    });
+
+    await harness.service.sync();
+
+    expect(harness.endpointLivenessChecks).toEqual([]);
+    expect(harness.asyncEndpointLivenessChecks).toEqual([]);
+    expect(harness.sessionLivenessChecks).toEqual([]);
+    expect(harness.asyncSessionLivenessChecks).toEqual([]);
+    expect(harness.persistedEndpoints).toEqual([]);
   });
 
   test("archives the previous harness endpoint when a local agent switches runtimes", async () => {

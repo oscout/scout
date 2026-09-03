@@ -17,6 +17,7 @@ import {
   sessionOpenRoute,
   sessionRouteRef,
   sessionSelectRoute,
+  resolveProjectSlug,
   threadOpenRoute,
   threadObserveRoute,
   threadRouteRef,
@@ -179,20 +180,31 @@ describe("buildProjectsInboxModel — collapse + truthful counts", () => {
     expect(shown.threads.length).toBe(2);
   });
 
-  test("your-turn count reflects human attention items, never active work or raw agent count", () => {
+  test("your-turn count is sourced only from explicit operator attention", () => {
     const agents = [
       mkAgent({ id: "scout.a", name: "Scout" }),
       mkAgent({ id: "helper.a", name: "Helper", harness: "codex" }),
       mkAgent({ id: "runner.a", name: "Runner", state: "working" }),
     ];
-    const model = buildProjectsInboxModel(baseInput(agents, mkFleet([mkAsk("helper.a")])));
-    expect(model.threads).toHaveLength(3);
-    expect(model.threads.filter((thread) => thread.needs)).toHaveLength(1);
-    expect(model.threads.filter((thread) => thread.working)).toHaveLength(1);
-    const helper = model.threads.find((thread) => thread.agentName === "Helper");
+    const askOnly = buildProjectsInboxModel(
+      baseInput(agents, mkFleet([mkAsk("helper.a")])),
+    );
+    expect(askOnly.threads).toHaveLength(3);
+    expect(askOnly.threads.filter((thread) => thread.needs)).toHaveLength(0);
+    expect(askOnly.threads.filter((thread) => thread.working)).toHaveLength(1);
+    expect(askOnly.threads.find((thread) => thread.agentName === "Helper")?.group).toBe("recent");
+
+    const explicitAttention = buildProjectsInboxModel(
+      baseInput(
+        agents,
+        mkFleet([mkAsk("helper.a")], [mkAttention("helper.a")]),
+      ),
+    );
+    const helper = explicitAttention.threads.find((thread) => thread.agentName === "Helper");
+    expect(explicitAttention.threads.filter((thread) => thread.needs)).toHaveLength(1);
     expect(helper?.needs).toBe(true);
     expect(helper?.group).toBe("needs");
-    expect(helper?.work).toBe("Review the migration diff");
+    expect(helper?.work).toBe("Choose whether the migration is ready to merge");
   });
 
   test("working asks stay in working instead of being mislabeled as your turn", () => {
@@ -264,6 +276,85 @@ describe("project aggregation + dormancy", () => {
     expect(openscout?.sessionCount).toBe(1);
   });
 
+  test("session-backed actors stay in sessions without inflating the agent roster", () => {
+    const actor = mkAgent({
+      id: "session-mt4jt8j7-gkg9xg",
+      name: "Session Mt4jt8j7 Gkg9xg",
+      definitionId: "session-mt4jt8j7-gkg9xg",
+      handle: "session-mt4jt8j7-gkg9xg",
+      harnessSessionId: "mt4jt8j7-gkg9xg",
+    });
+    const model = buildProjectsInboxModel(baseInput([actor], null, false, [mkSession(actor)]));
+    const openscout = model.projects.find((project) => project.slug === "openscout");
+
+    expect(model.threads).toHaveLength(0);
+    expect(model.sessions).toHaveLength(1);
+    expect(model.sessions[0]?.agentId).toBe(actor.id);
+    expect(openscout?.agentCount).toBe(1);
+    expect(openscout?.sessionCount).toBe(1);
+  });
+
+  test("keeps a session actor visible while its conversation inventory is lagging", () => {
+    const actor = mkAgent({
+      id: "session-missing-conversation",
+      name: "Session Missing Conversation",
+      definitionId: "session-missing-conversation",
+      handle: "session-missing-conversation",
+      harnessSessionId: "harness-session-123",
+      state: "working",
+    });
+
+    const model = buildProjectsInboxModel(baseInput([actor], null));
+    const openscout = model.projects.find((project) => project.slug === "openscout");
+
+    expect(model.threads).toHaveLength(0);
+    expect(model.sessions).toHaveLength(1);
+    expect(model.sessions[0]?.agentId).toBe(actor.id);
+    expect(model.sessions[0]?.sessionId).toBe("harness-session-123");
+    expect(model.sessions[0]?.route).toEqual({ view: "sessions", sessionId: "harness-session-123" });
+    expect(sessionRouteRef(model.sessions[0]!)).toBe("session:claude:harness-session-123");
+    expect(model.sessions[0]?.working).toBe(true);
+    expect(openscout?.sessionCount).toBe(1);
+    expect(openscout?.liveSessionCount).toBe(1);
+  });
+
+  test("deduplicates fallback registrations by harness-scoped session ref", () => {
+    const first = mkAgent({
+      id: "session-duplicate-a",
+      name: "Session Duplicate A",
+      definitionId: "session-duplicate-a",
+      harnessSessionId: "shared-session-ref",
+    });
+    const duplicate = mkAgent({
+      id: "session-duplicate-b",
+      name: "Session Duplicate B",
+      definitionId: "session-duplicate-b",
+      harnessSessionId: "shared-session-ref",
+    });
+    const otherHarness = mkAgent({
+      id: "session-duplicate-codex",
+      name: "Session Duplicate Codex",
+      definitionId: "session-duplicate-codex",
+      harness: "codex",
+      harnessSessionId: "shared-session-ref",
+    });
+    const aliasedClaudeHarness = mkAgent({
+      id: "session-duplicate-claude-code",
+      name: "Session Duplicate Claude Code",
+      definitionId: "session-duplicate-claude-code",
+      harness: "claude-code",
+      harnessSessionId: "shared-session-ref",
+    });
+
+    const model = buildProjectsInboxModel(baseInput([first, duplicate, otherHarness, aliasedClaudeHarness], null));
+
+    expect(model.sessions).toHaveLength(2);
+    expect(model.sessions.map(sessionRouteRef).sort()).toEqual([
+      "session:claude:shared-session-ref",
+      "session:codex:shared-session-ref",
+    ]);
+  });
+
   test("project rollup preserves the concrete worktree inventory", () => {
     const agents = [
       mkAgent({ id: "main.a", name: "Main", cwd: "/Users/test/dev/openscout", branch: "main" }),
@@ -282,6 +373,57 @@ describe("project aggregation + dormancy", () => {
       { root: "/Users/test/.codex/worktrees/123/openscout", branch: "codex/worktree-preview" },
       { root: "/Users/test/dev/openscout", branch: "main" },
     ]);
+  });
+
+  test("folds a derived Codex worktree project into its canonical repository", () => {
+    const agents = [
+      mkAgent({ id: "canonical.a", name: "Canonical", cwd: "/Users/test/dev/openscout" }),
+      mkAgent({
+        id: "canonical-worktree-owner.a",
+        name: "Canonical worktree owner",
+        projectRoot: "/Users/test/dev/openscout",
+        cwd: "/Users/test/.codex/worktrees/fb71/openscout",
+        branch: "codex/project-directory",
+      }),
+      mkAgent({
+        id: "worktree.a",
+        name: "Worktree endpoint",
+        projectRoot: "/Users/test/.codex/worktrees/fb71/openscout",
+        cwd: "/Users/test/.codex/worktrees/fb71/openscout",
+        branch: "codex/project-directory",
+      }),
+    ];
+    const model = buildProjectsInboxModel(baseInput(agents, null));
+    const openscoutProjects = model.projects.filter((project) => project.title.toLowerCase() === "openscout");
+
+    expect(openscoutProjects).toHaveLength(1);
+    expect(openscoutProjects[0]?.root).toBe("~/dev/openscout");
+    expect(openscoutProjects[0]?.agentCount).toBe(1);
+    expect(openscoutProjects[0]?.worktrees.map((worktree) => worktree.root)).toEqual([
+      "/Users/test/.codex/worktrees/fb71/openscout",
+      "/Users/test/dev/openscout",
+    ]);
+    expect(new Set(model.threads.map((thread) => thread.projectSlug))).toEqual(new Set([openscoutProjects[0]!.slug]));
+    expect(Object.keys(model.projectAliases)).toHaveLength(1);
+    const [removedSlug] = Object.keys(model.projectAliases);
+    expect(resolveProjectSlug(model, removedSlug!)).toBe(openscoutProjects[0]!.slug);
+  });
+
+  test("does not fold an unowned derived worktree into an unrelated same-title clone", () => {
+    const agents = [
+      mkAgent({ id: "clone.a", name: "Clone", cwd: "/Users/test/dev/openscout" }),
+      mkAgent({
+        id: "orphan-worktree.a",
+        name: "Orphan worktree",
+        projectRoot: "/Users/test/.codex/worktrees/orphan/openscout",
+        cwd: "/Users/test/.codex/worktrees/orphan/openscout",
+      }),
+    ];
+
+    const model = buildProjectsInboxModel(baseInput(agents, null));
+
+    expect(model.projects.filter((project) => project.title.toLowerCase() === "openscout")).toHaveLength(2);
+    expect(model.projectAliases).toEqual({});
   });
 
   test("process-only native observations do not become openable sessions", () => {

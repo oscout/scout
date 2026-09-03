@@ -63,6 +63,10 @@ export function queryMobileSessions(limit = 50): MobileSessionSummary[] {
     // Get agent details if available
     let agentName: string | null = null;
     let harness: string | null = null;
+    let model: string | null = null;
+    let reasoningEffort: string | null = null;
+    let transport: string | null = null;
+    let sessionId: string | null = null;
     let harnessSessionId: string | null = null;
     let harnessLogPath: string | null = null;
     let branch: string | null = null;
@@ -95,6 +99,7 @@ export function queryMobileSessions(limit = 50): MobileSessionSummary[] {
       if (agentRow) {
         agentName = agentRow.display_name;
         harness = agentRow.harness;
+        transport = agentRow.transport;
         workspaceRoot = compact(agentRow.project_root);
         try {
           const meta = agentRow.metadata_json ? JSON.parse(agentRow.metadata_json) : {};
@@ -104,11 +109,18 @@ export function queryMobileSessions(limit = 50): MobileSessionSummary[] {
           const endpointMeta = agentRow.endpoint_metadata_json
             ? JSON.parse(agentRow.endpoint_metadata_json)
             : {};
+          model = typeof endpointMeta.observedModel === "string"
+            ? endpointMeta.observedModel
+            : typeof endpointMeta.model === "string" ? endpointMeta.model : null;
+          reasoningEffort = typeof endpointMeta.observedReasoningEffort === "string"
+            ? endpointMeta.observedReasoningEffort
+            : typeof endpointMeta.reasoningEffort === "string" ? endpointMeta.reasoningEffort : null;
           harnessSessionId = resolveHarnessSessionId(
             agentRow.transport,
             agentRow.session_id,
             endpointMeta,
           );
+          sessionId = harnessSessionId;
           harnessLogPath = resolveHarnessLogPath(
             agentId,
             agentRow.transport,
@@ -121,6 +133,7 @@ export function queryMobileSessions(limit = 50): MobileSessionSummary[] {
             agentRow.session_id,
             undefined,
           );
+          sessionId = harnessSessionId;
           harnessLogPath = resolveHarnessLogPath(
             agentId,
             agentRow.transport,
@@ -141,6 +154,10 @@ export function queryMobileSessions(limit = 50): MobileSessionSummary[] {
       agentId,
       agentName,
       harness,
+      model,
+      reasoningEffort,
+      transport,
+      sessionId,
       harnessSessionId,
       harnessLogPath,
       currentBranch: branch,

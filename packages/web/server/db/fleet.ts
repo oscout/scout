@@ -86,8 +86,8 @@ type FleetAskRow = {
   endpoint_state: string | null;
   work_title: string | null;
   work_summary: string | null;
+  record_kind: "work_item" | "question" | null;
   work_state: string | null;
-  acceptance_state: string | null;
   next_move_owner_id: string | null;
   work_updated_at: number | string | null;
 };
@@ -277,8 +277,8 @@ export function queryFleetAskRows(requesterIds: string[], limit: number): FleetA
        ep.state AS endpoint_state,
        cr.title AS work_title,
        cr.summary AS work_summary,
+       cr.kind AS record_kind,
        cr.state AS work_state,
-       cr.acceptance_state,
        cr.next_move_owner_id,
        cr.updated_at AS work_updated_at
      FROM invocations inv
@@ -351,10 +351,21 @@ function projectFleetAsk(row: FleetAskRow, requesterIdSet: Set<string>): WebFlee
     && !TERMINAL_FLIGHT_STATES.has(row.flight_state)
     && !failed
     && !staleActiveFlight;
-  const awaitingOperator = Boolean(
-    (row.next_move_owner_id && requesterIdSet.has(row.next_move_owner_id))
-    || row.acceptance_state === "pending",
-  );
+  // Collaboration state is authoritative. Reading a conversation or starting
+  // unrelated work cannot silently resolve a handback; only an explicit record
+  // transition or next-move reassignment can do that.
+  const attentionEligibleState =
+    (row.record_kind === "work_item"
+      && row.work_state !== null
+      && ["open", "working", "waiting", "review"].includes(row.work_state))
+    || (row.record_kind === "question"
+      && row.work_state !== null
+      && ["open", "answered"].includes(row.work_state));
+  const awaitingOperator = attentionEligibleState
+    && Boolean(
+      row.next_move_owner_id
+      && requesterIdSet.has(row.next_move_owner_id),
+    );
 
   const updatedAt = normalizeTimestampMs(
     row.status_ts ?? row.completed_at ?? row.started_at ?? row.work_updated_at ?? row.created_at,
@@ -376,10 +387,12 @@ function projectFleetAsk(row: FleetAskRow, requesterIdSet: Set<string>): WebFlee
     status = queuedUntilOnline ? "failed" : "queued";
   } else if (isActiveFlight) {
     status = "working";
+  } else if (failed || staleActiveFlight) {
+    // A failed dispatch produced nothing to review; it must never present as
+    // "Needs your input" just because its work record was born pending.
+    status = "failed";
   } else if (awaitingOperator) {
     status = "needs_attention";
-  } else if (failed || staleActiveFlight) {
-    status = "failed";
   } else {
     status = "completed";
   }
@@ -446,34 +459,7 @@ export function queryFleetAttentionRows(requesterIds: string[], limit: number): 
          (cr.kind = 'work_item' AND cr.state IN ('open', 'working', 'waiting', 'review'))
          OR (cr.kind = 'question' AND cr.state IN ('open', 'answered'))
        )
-       AND (
-         cr.next_move_owner_id IN (${requesterClause})
-         OR (
-           cr.kind = 'work_item'
-           AND cr.state = 'review'
-           AND cr.acceptance_state = 'pending'
-           AND NOT EXISTS (
-             SELECT 1
-             FROM collaboration_events e
-             WHERE e.record_id = cr.id
-               AND e.created_at > cr.updated_at
-           )
-           AND NOT EXISTS (
-             SELECT 1
-             FROM invocations inv
-             WHERE inv.collaboration_record_id = cr.id
-               AND inv.flight_id IS NOT NULL
-               AND COALESCE(inv.completed_at, inv.started_at, 0) > cr.updated_at
-           )
-           AND NOT EXISTS (
-             SELECT 1
-             FROM messages m
-             WHERE m.conversation_id = cr.conversation_id
-               AND m.actor_id = cr.owner_id
-               AND m.created_at > cr.updated_at
-           )
-         )
-       )
+       AND cr.next_move_owner_id IN (${requesterClause})
        AND NOT EXISTS (
          SELECT 1
          FROM collaboration_events dismissed

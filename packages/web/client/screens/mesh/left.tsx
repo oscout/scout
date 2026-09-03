@@ -13,6 +13,7 @@ import {
 import { useScout } from "../../scout/Provider.tsx";
 import { normalizeAgentState, isAgentBusy } from "../../lib/agent-state.ts";
 import { bucketAgentsByMachine, type MachineBucket } from "../../lib/mesh-buckets.ts";
+import { hasFleetActiveAskForAgent } from "../../lib/fleet-active-asks.ts";
 import { useFleetActiveAsks } from "../../lib/use-fleet-active-asks.ts";
 import { RailRow } from "../../scout/slots/RailRow.tsx";
 import { FleetSearch } from "../../scout/slots/FleetSearch.tsx";
@@ -135,7 +136,7 @@ export function MeshLeft() {
               />
               {visible.map((a) => {
                 const agentActive = selectedId === a.id && selectedType === "agent";
-                const attention = activeAsks.has(a.id);
+                const attention = hasFleetActiveAskForAgent(activeAsks, a.id);
                 return (
                   <RailRow
                     key={a.id}

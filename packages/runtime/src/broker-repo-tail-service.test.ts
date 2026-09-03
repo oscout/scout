@@ -86,6 +86,7 @@ function createHarness(input: {
     limit: number;
     perTranscriptLineLimit?: number;
     kinds?: TailEventKind[];
+    since?: number;
   } | null = null;
   let transcriptCallCount = 0;
   let nowValue = input.now ?? 100_000;
@@ -123,6 +124,7 @@ function createHarness(input: {
         limit,
         perTranscriptLineLimit: options?.perTranscriptLineLimit,
         ...(options?.kinds ? { kinds: options.kinds } : {}),
+        ...(options?.since !== undefined ? { since: options.since } : {}),
       };
       if (input.transcriptGate) await input.transcriptGate;
       transcriptCallCount++;
@@ -309,6 +311,34 @@ describe("BrokerRepoTailService", () => {
     ]);
   });
 
+  test("bounds transcript replay and returned events to the requested activity window", async () => {
+    const harness = createHarness({
+      liveEvents: [
+        tailEvent({ id: "live-old", ts: 600_000 }),
+        tailEvent({ id: "live-new", ts: 950_000 }),
+      ],
+      transcriptEvents: [
+        tailEvent({ id: "transcript-old", ts: 650_000 }),
+        tailEvent({ id: "transcript-new", ts: 900_000 }),
+      ],
+      now: 1_000_000,
+    });
+
+    const payload = await harness.service.readTailRecentPayload(
+      new URL("http://test/v1/tail/recent?limit=20&transcripts=1&windowMs=300000"),
+    );
+
+    expect(harness.transcriptRequest).toEqual({
+      limit: 800,
+      perTranscriptLineLimit: 50,
+      since: 700_000,
+    });
+    expect(payload.events.map((event) => event.id)).toEqual([
+      "transcript-new",
+      "live-new",
+    ]);
+  });
+
   test("assistant reply mode keeps only the latest reply per source and session", async () => {
     const harness = createHarness({
       liveEvents: [
@@ -419,5 +449,17 @@ describe("BrokerRepoTailService tail/recent serve-cache", () => {
 
     expect(harness.transcriptCallCount).toBe(1);
     expect(b.payload.events).toEqual(a.payload.events);
+  });
+
+  test("keeps different replay windows in separate cache entries", async () => {
+    const harness = createHarness({
+      tailRecentServeCacheTtlMs: 5_000,
+      transcriptEvents: [tailEvent({ id: "t1", ts: 99_000 })],
+    });
+
+    await harness.service.readTailRecentPayloadWithTiming(new URL(`${replayUrl}&windowMs=300000`));
+    await harness.service.readTailRecentPayloadWithTiming(new URL(`${replayUrl}&windowMs=1800000`));
+
+    expect(harness.transcriptCallCount).toBe(2);
   });
 });

@@ -35,6 +35,7 @@ describe("OpenScout local edge", () => {
       }),
     );
 
+    expect(caddyfile).toStartWith("{\n  log {\n    level WARN\n  }\n}\n");
     expect(caddyfile).toContain("http://*.scout.local {");
     expect(caddyfile).toContain("reverse_proxy 127.0.0.1:43120 {");
     expect(caddyfile).not.toContain("tls internal");

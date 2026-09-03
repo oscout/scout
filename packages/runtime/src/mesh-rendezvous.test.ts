@@ -93,12 +93,29 @@ describe("mesh rendezvous publisher", () => {
       },
     });
 
-    expect(resolveMeshRendezvousPublishConfig({})).toEqual({
+    expect(resolveMeshRendezvousPublishConfig({})).toBeUndefined();
+    expect(resolveMeshRendezvousPublishConfig({
+      OPENSCOUT_MESH_RENDEZVOUS_ALLOW_ANONYMOUS: "1",
+    })).toEqual({
       url: "https://mesh.example.test",
       token: undefined,
       sessionToken: undefined,
       ttlMs: 60_000,
       intervalMs: 30_000,
+    });
+  });
+
+  test("does not publish to an authenticated rendezvous while signed out", () => {
+    expect(resolveMeshRendezvousPublishConfig({
+      OPENSCOUT_MESH_RENDEZVOUS_URL: "https://mesh.oscout.net",
+    })).toBeUndefined();
+    expect(resolveMeshRendezvousPublishConfig({
+      OPENSCOUT_MESH_RENDEZVOUS_URL: "https://mesh.oscout.net",
+      OPENSCOUT_MESH_RENDEZVOUS_ALLOW_ANONYMOUS: "true",
+    })).toMatchObject({
+      url: "https://mesh.oscout.net",
+      token: undefined,
+      sessionToken: undefined,
     });
   });
 
@@ -223,6 +240,36 @@ describe("mesh rendezvous publisher", () => {
     expect(requests).toHaveLength(2);
     await expect(requests[0]!.json()).resolves.toMatchObject({ nodeName: "Node A" });
     await expect(requests[1]!.json()).resolves.toMatchObject({ nodeName: "Node B" });
+  });
+
+  test("suspends an immutable publisher after authentication is rejected", async () => {
+    const warnings: string[] = [];
+    let requests = 0;
+    const publisher = startMeshRendezvousPublisher(makeNode(), {
+      config: {
+        url: "https://mesh.oscout.net",
+        token: "expired",
+        sessionToken: undefined,
+        ttlMs: 60_000,
+        intervalMs: 60_000,
+      },
+      fetch: async () => {
+        requests += 1;
+        return new Response("unauthorized", { status: 401 });
+      },
+      logger: {
+        log() {},
+        warn: (message) => warnings.push(message),
+      },
+    });
+
+    await publisher.publishNow();
+    await publisher.publishNow();
+    publisher.stop();
+
+    expect(requests).toBe(1);
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain("publishing is suspended until restart");
   });
 });
 

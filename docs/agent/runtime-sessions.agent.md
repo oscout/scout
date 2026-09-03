@@ -4,7 +4,7 @@ Source: `docs/runtime-sessions.md`, `packages/runtime/**`, `@openscout/agent-ses
 
 Status: harness lifecycle semantics. Broker routing uses these nouns.
 
-Verified: 2026-06-10
+Verified: 2026-09-02
 
 ## Role
 
@@ -14,8 +14,8 @@ Runtime starts, attaches, wakes, inspects, and health-checks **harness sessions*
 
 | Noun | Meaning |
 |---|---|
-| `agent` | stable identity, e.g. `hudson.main.air-local` |
-| `session` | concrete harness conversation/process/thread |
+| `agent` | durable domain identity, e.g. `hudson.main.air-local` |
+| `session` | opaque `sess.*` handle resolving to one harness context |
 | `endpoint` | broker row: agent + harness + transport + session + node + state |
 | `card` | identity + return address; not implicitly live |
 | `harness` | execution backend: `codex`, `claude`, `cursor`, … |
@@ -27,11 +27,11 @@ Public noun is always **session**. Map provider `threadId` into session metadata
 ## Relations
 
 ```plaintext
-agent 1—* sessions (over lifetime)
+agent 1—* session mappings (over lifetime)
 agent 1—* endpoints (per harness/worktree/node)
 endpoint *—1 session (when attached)
 card → agent identity metadata (may have zero live sessions)
-scout up / session start → runtime creates or attaches session → broker registers endpoint
+scout up / session start → runtime creates or attaches context → broker mints session handle + registers endpoint
 ```
 
 ## Lifecycle Commands
@@ -51,8 +51,8 @@ scout up / session start → runtime creates or attaches session → broker regi
 |---|---|
 | `--to <label>` / `--to <agentId>` | fresh session for new ask work |
 | `--to target:<handle>` | resolve a saved situated Scout target for convenient follow-up |
-| `--to session:<id>` | continue exact harness context |
-| `--to session:<harness>:<native-id>` | continue an exact broker-known native harness session when the id needs harness scope |
+| `--to session:sess.<token>` | canonical continuation of one exact harness context |
+| `--to session:<harness>:<native-id>` | legacy compatibility lookup; resolve to a `sess.*` handle before receipt |
 | agent-target route alias | dereference once, then retain fresh agent/card semantics |
 | session-target route alias | dereference once and continue only the pinned exact session; expire at terminal/GC |
 | `--project <path> --harness <rt>` | broker/runtime pick or create concrete worker+session for project/capability |
@@ -64,8 +64,12 @@ Fresh capability work should be project-routed first. The broker returns durable
 follow-up handles (`ref`, flight, conversation, work, session) and may return a
 situated target handle. Humans type saved situated targets as `target:<handle>`;
 agents and compact UI may render the same target as `⌖handle`. Exact session
-routing is only for raw continuity; card/name promotion happens after the worker
+routing is only for exact continuity; card/name promotion happens after the worker
 is known good.
+
+Session handles never encode agent, profile, project, harness, model, branch, or
+node. Native harness ids are aliases in the resolver. Creating or observing a
+session must not create an agent/actor/directory entry.
 
 Fresh broker-created Claude project sessions use `tmux` by default so operators
 can inspect and attach to the live terminal. `claude_stream_json` remains a

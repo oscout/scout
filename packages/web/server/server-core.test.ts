@@ -1,14 +1,18 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { Hono } from "hono";
+import type { Context } from "hono";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import {
+  createScoutRequestPeerAddressRegistry,
   installScoutApiMiddleware,
   isAuthorizedScoutWebSocketRequest,
+  isScoutWebRequestAllowedFromPeer,
   registerScoutWebAssets,
   resolveScoutWebBindHost,
+  resolveScoutWebLanAccessScope,
   SCOUT_WEB_AUTH_COOKIE,
   shouldIssueLocalScoutWebCredential,
 } from "./server-core.ts";
@@ -35,6 +39,18 @@ function createApp(options?: Parameters<typeof installScoutApiMiddleware>[2]) {
   app.get("/api/ping", (c) => c.json({ ok: true }));
   return app;
 }
+
+describe("createScoutRequestPeerAddressRegistry", () => {
+  test("preserves a socket peer across an authenticated request clone", () => {
+    const registry = createScoutRequestPeerAddressRegistry();
+    const cloned = new Request(new Request("http://localhost/api/bootstrap.js"), {
+      headers: { authorization: `Bearer ${TEST_AUTH_TOKEN}` },
+    });
+    registry.remember(cloned, "127.0.0.1");
+
+    expect(registry.resolve({ req: { raw: cloned } } as Context)).toBe("127.0.0.1");
+  });
+});
 
 describe("installScoutApiMiddleware", () => {
   test("allows same-origin loopback API requests", async () => {
@@ -216,6 +232,60 @@ describe("resolveScoutWebBindHost", () => {
   });
 });
 
+describe("pairing-only LAN access", () => {
+  test("parses the LAN scope strictly", () => {
+    expect(resolveScoutWebLanAccessScope({})).toBe("full");
+    expect(resolveScoutWebLanAccessScope({ OPENSCOUT_WEB_LAN_SCOPE: "pairing" })).toBe("pairing");
+    expect(() => resolveScoutWebLanAccessScope({ OPENSCOUT_WEB_LAN_SCOPE: "public" }))
+      .toThrow("Unsupported OPENSCOUT_WEB_LAN_SCOPE");
+  });
+
+  test("allows remote peers only exact GET /pair", () => {
+    const remote = "192.168.1.50";
+    expect(isScoutWebRequestAllowedFromPeer(
+      new Request("http://mac.local/pair?route=lan"),
+      remote,
+      "pairing",
+    )).toBe(true);
+    expect(isScoutWebRequestAllowedFromPeer(
+      new Request("http://mac.local/.host-info"),
+      remote,
+      "pairing",
+    )).toBe(false);
+    expect(isScoutWebRequestAllowedFromPeer(
+      new Request("http://mac.local/pair", { method: "POST" }),
+      remote,
+      "pairing",
+    )).toBe(false);
+    expect(isScoutWebRequestAllowedFromPeer(
+      new Request("http://mac.local/pair", { headers: { upgrade: "websocket" } }),
+      remote,
+      "pairing",
+    )).toBe(false);
+  });
+
+  test("keeps loopback and explicitly full listeners available", () => {
+    const privileged = new Request("http://localhost/.host-info");
+    expect(isScoutWebRequestAllowedFromPeer(privileged, "127.0.0.1", "pairing")).toBe(true);
+    expect(isScoutWebRequestAllowedFromPeer(privileged, "192.168.1.50", "full")).toBe(true);
+    expect(isScoutWebRequestAllowedFromPeer(privileged, undefined, "pairing")).toBe(false);
+  });
+
+  test("keeps a remote browser remote through the loopback edge", () => {
+    const headers = { "x-forwarded-for": "192.168.1.50" };
+    expect(isScoutWebRequestAllowedFromPeer(
+      new Request("http://m1.scout.local/.host-info", { headers }),
+      "127.0.0.1",
+      "pairing",
+    )).toBe(false);
+    expect(isScoutWebRequestAllowedFromPeer(
+      new Request("http://m1.scout.local/pair", { headers }),
+      "127.0.0.1",
+      "pairing",
+    )).toBe(true);
+  });
+});
+
 describe("isAuthorizedScoutWebSocketRequest", () => {
   const options = { trustedHosts: ["scout.hudson-mini.local"] };
 
@@ -274,6 +344,16 @@ describe("shouldIssueLocalScoutWebCredential", () => {
     expect(shouldIssueLocalScoutWebCredential(
       new Request("http://m1.scout.local/__openscout/bootstrap.js", {
         headers: { "x-forwarded-for": "192.168.1.50" },
+      }),
+      "127.0.0.1",
+      ["192.168.1.20"],
+    )).toBe(false);
+  });
+
+  test("does not trust a remote X-Real-IP through the local edge", () => {
+    expect(shouldIssueLocalScoutWebCredential(
+      new Request("http://m1.scout.local/__openscout/bootstrap.js", {
+        headers: { "x-real-ip": "192.168.1.50" },
       }),
       "127.0.0.1",
       ["192.168.1.20"],

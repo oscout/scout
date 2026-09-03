@@ -266,6 +266,66 @@ describe("createBrokerHttpRouter", () => {
     expect(queries).toEqual([{ since: 1234, scope: "conversations" }]);
   });
 
+  test("forces mesh snapshot reads to the agents-only scope", async () => {
+    const queries: unknown[] = [];
+    const harness = createHarness({
+      brokerService: {
+        ...createHarness().deps.brokerService,
+        readSnapshot: async (query) => {
+          queries.push(query);
+          return { agents: {} } as never;
+        },
+      },
+    });
+
+    const results = await Promise.all([
+      requestRouter(harness, "GET", "/v1/mesh/snapshot?scope=agents"),
+      requestRouter(harness, "GET", "/v1/mesh/snapshot"),
+      requestRouter(harness, "GET", "/v1/mesh/snapshot?scope=conversations"),
+    ]);
+
+    expect(results.map((result) => result.response.status)).toEqual([200, 200, 200]);
+    expect(queries).toEqual([
+      { since: null, scope: "agents" },
+      { since: null, scope: "agents" },
+      { since: null, scope: "agents" },
+    ]);
+  });
+
+  test("serves the bounded conversation projection without reading the registry snapshot", async () => {
+    const queries: unknown[] = [];
+    const harness = createHarness({
+      brokerService: {
+        ...createHarness().deps.brokerService,
+        readConversationProjection: async (query) => {
+          queries.push(query);
+          return {
+            projectionId: "projection-1",
+            projectionVersion: 1,
+            sequence: 7,
+            generatedAt: 10,
+            sourceFreshAt: null,
+            items: [],
+            total: 0,
+            hasMore: false,
+            engagedFeedId: null,
+            identityRedirects: [],
+          };
+        },
+      },
+    });
+
+    const result = await requestRouter(
+      harness,
+      "GET",
+      "/v1/conversation-projection?limit=160",
+    );
+
+    expect(result.response.status).toBe(200);
+    expect(queries).toEqual([{ limit: 160 }]);
+    expect(result.body).toMatchObject({ projectionId: "projection-1", sequence: 7 });
+  });
+
   test("forwards scoped alias writes to the authoritative broker without touching the local store", async () => {
     const forwards: Array<{ nodeSelector: string; path: string; method: string; body?: unknown }> = [];
     const harness = createHarness({
@@ -947,15 +1007,22 @@ describe("createBrokerHttpRouter", () => {
       expect(resolutions).toHaveLength(1);
     });
 
-    test("GET /v1/mesh/snapshot serves the same snapshot as the local-tier route", async () => {
-      const harness = createHarness();
+    test("GET /v1/mesh/snapshot exposes only the peer agent projection", async () => {
+      const harness = createHarness({
+        brokerService: {
+          ...createHarness().deps.brokerService,
+          readSnapshot: async (query) => query?.scope === "agents"
+            ? { agents: {} } as never
+            : { nodes: { "node-1": { id: "node-1" } } } as never,
+        },
+      });
 
       const meshed = await requestRouter(harness, "GET", "/v1/mesh/snapshot");
       expect(meshed.response.status).toBe(200);
-      expect(meshed.body).toEqual({ nodes: { "node-1": expect.objectContaining({ id: "node-1" }) } });
+      expect(meshed.body).toEqual({ agents: {} });
 
       const local = await requestRouter(harness, "GET", "/v1/snapshot");
-      expect(local.body).toEqual(meshed.body);
+      expect(local.body).toEqual({ nodes: { "node-1": { id: "node-1" } } });
     });
 
     test("GET /v1/mesh/invocations/:id/stream reuses the invocation stream logic", async () => {

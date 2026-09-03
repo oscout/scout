@@ -12,7 +12,11 @@ import type {
   MessageRecord,
 } from "@openscout/protocol";
 
-import { FileBackedBrokerJournal } from "./broker-journal.ts";
+import {
+  FileBackedBrokerJournal,
+  type FileBackedBrokerJournalOptions,
+  type BrokerJournalReplayBarrier,
+} from "./broker-journal.ts";
 
 const journalRoots = new Set<string>();
 
@@ -23,12 +27,14 @@ afterEach(() => {
   journalRoots.clear();
 });
 
-function createJournal(): { journal: FileBackedBrokerJournal; journalPath: string } {
+function createJournal(
+  options: FileBackedBrokerJournalOptions = {},
+): { journal: FileBackedBrokerJournal; journalPath: string } {
   const root = mkdtempSync(join(tmpdir(), "openscout-broker-journal-"));
   journalRoots.add(root);
   const journalPath = join(root, "broker-journal.jsonl");
   return {
-    journal: new FileBackedBrokerJournal(journalPath),
+    journal: new FileBackedBrokerJournal(journalPath, options),
     journalPath,
   };
 }
@@ -115,6 +121,15 @@ function sampleDurableAction(input: Partial<DurableAction> = {}): DurableAction 
   };
 }
 
+function sampleReplayBarrier(id: string): BrokerJournalReplayBarrier {
+  return {
+    id,
+    projectionId: "control-plane",
+    projectionVersion: 1,
+    createdAt: 1_700_000_000_000,
+  };
+}
+
 describe("FileBackedBrokerJournal", () => {
   test("reports startup scan and compaction diagnostics without record payloads", async () => {
     const { journal, journalPath } = createJournal();
@@ -137,6 +152,9 @@ describe("FileBackedBrokerJournal", () => {
     expect(report.invalidLines).toBe(1);
     expect(report.blankLines).toBe(1);
     expect(report.compactionRequired).toBe(true);
+    expect(report.estimatedReclaimBytes).toBeGreaterThan(0);
+    expect(report.estimatedReclaimRatio).toBeGreaterThan(0);
+    expect(report.compactionReason).not.toBeNull();
     expect(report.countsByKind).toEqual({
       "actor.upsert": 2,
       "message.record": 1,
@@ -145,6 +163,63 @@ describe("FileBackedBrokerJournal", () => {
     expect(report.totalMs).toBeGreaterThanOrEqual(report.scanMs + report.compactionMs);
     expect(JSON.stringify(report)).not.toContain("hello");
     expect(journal.loadReport()).toEqual(report);
+  });
+
+  test("does not rewrite the whole journal for a trivial duplicate", async () => {
+    const { journal, journalPath } = createJournal();
+    const actor = sampleActor();
+    const supersededLine = JSON.stringify({ kind: "actor.upsert", actor });
+    const originalContents = [
+      supersededLine,
+      JSON.stringify({
+        kind: "message.record",
+        message: { ...sampleMessage(), body: "x".repeat(32_000) },
+      }),
+      JSON.stringify({ kind: "actor.upsert", actor: { ...actor, displayName: "Updated" } }),
+    ].join("\n") + "\n";
+    writeFileSync(journalPath, originalContents, "utf8");
+
+    const report = await journal.load();
+
+    expect(report.compactionRequired).toBe(false);
+    expect(report.compactionReason).toBeNull();
+    expect(report.estimatedReclaimBytes).toBe(Buffer.byteLength(supersededLine, "utf8") + 1);
+    expect(report.estimatedReclaimRatio).toBeLessThan(0.05);
+    expect(report.compactionMs).toBe(0);
+    expect(report.compactedBytes).toBe(report.sourceBytes);
+    expect(readFileSync(journalPath, "utf8")).toBe(originalContents);
+    expect(journal.snapshot().actors["agent-1"]?.displayName).toBe("Updated");
+  });
+
+  test("uses the high-water policy when a large journal has bounded reclaim", async () => {
+    const { journal, journalPath } = createJournal({
+      compactionPolicy: {
+        minimumReclaimBytes: 100_000,
+        minimumReclaimRatio: 0.99,
+        highWaterBytes: 1_000,
+        highWaterMinimumReclaimBytes: 100,
+      },
+    });
+    const actor = sampleActor();
+    writeFileSync(
+      journalPath,
+      [
+        JSON.stringify({ kind: "actor.upsert", actor }),
+        JSON.stringify({
+          kind: "message.record",
+          message: { ...sampleMessage(), body: "x".repeat(2_000) },
+        }),
+        JSON.stringify({ kind: "actor.upsert", actor: { ...actor, displayName: "Updated" } }),
+      ].join("\n") + "\n",
+      "utf8",
+    );
+
+    const report = await journal.load();
+
+    expect(report.compactionRequired).toBe(true);
+    expect(report.compactionReason).toBe("high_water");
+    expect((await journal.readEntries()).filter((entry) => entry.kind === "actor.upsert"))
+      .toHaveLength(1);
   });
 
   test("skips redundant entity upserts on append", async () => {
@@ -191,6 +266,64 @@ describe("FileBackedBrokerJournal", () => {
     expect(allKinds).toEqual(["actor.upsert", "message.record"]);
   });
 
+  test("captures an opaque barrier atomically and resumes after it without exposing barriers", async () => {
+    const { journal } = createJournal();
+    await journal.load();
+    await journal.appendEntries({ kind: "actor.upsert", actor: sampleActor() });
+
+    const firstBarrier = sampleReplayBarrier("barrier-1");
+    const firstBoundary = await journal.captureReplayBoundary({ barrier: firstBarrier });
+    await journal.appendEntries({ kind: "message.record", message: sampleMessage() });
+    const secondBoundary = await journal.captureReplayBoundary({
+      barrier: sampleReplayBarrier("barrier-2"),
+    });
+
+    const replayedKinds: string[] = [];
+    const report = await journal.replay((entry) => {
+      replayedKinds.push(entry.kind);
+    }, secondBoundary, { afterBarrier: firstBarrier });
+
+    expect(firstBoundary.barrier).toEqual(firstBarrier);
+    expect(report).toEqual({ afterBarrierFound: true, visitedEntries: 1 });
+    expect(replayedKinds).toEqual(["message.record"]);
+    expect((await journal.readEntries()).map((entry) => entry.kind)).toEqual([
+      "actor.upsert",
+      "journal.replay_barrier",
+      "message.record",
+      "journal.replay_barrier",
+    ]);
+    expect(journal.snapshot().messages["msg-1"]).toEqual(sampleMessage());
+  });
+
+  test("fails closed when a requested replay barrier is absent", async () => {
+    const { journal } = createJournal();
+    await journal.load();
+    await journal.appendEntries({ kind: "message.record", message: sampleMessage() });
+
+    const replayedKinds: string[] = [];
+    const report = await journal.replay((entry) => {
+      replayedKinds.push(entry.kind);
+    }, undefined, { afterBarrier: sampleReplayBarrier("missing") });
+
+    expect(report).toEqual({ afterBarrierFound: false, visitedEntries: 0 });
+    expect(replayedKinds).toEqual([]);
+  });
+
+  test("does not resume from a same-id marker owned by another projection", async () => {
+    const { journal } = createJournal();
+    await journal.load();
+    const barrier = sampleReplayBarrier("shared-id");
+    const boundary = await journal.captureReplayBoundary({ barrier });
+
+    const report = await journal.replay(() => {
+      throw new Error("foreign barrier must not release replay");
+    }, boundary, {
+      afterBarrier: { ...barrier, projectionId: "foreign-projection" },
+    });
+
+    expect(report).toEqual({ afterBarrierFound: false, visitedEntries: 0 });
+  });
+
   test("skips identical flight records while preserving state transitions", async () => {
     const { journal, journalPath } = createJournal();
     await journal.load();
@@ -227,6 +360,10 @@ describe("FileBackedBrokerJournal", () => {
       journalPath,
       [
         JSON.stringify({ kind: "actor.upsert", actor }),
+        JSON.stringify({
+          kind: "journal.replay_barrier",
+          barrier: sampleReplayBarrier("retained-barrier"),
+        }),
         JSON.stringify({ kind: "message.record", message: sampleMessage() }),
         JSON.stringify({ kind: "actor.upsert", actor: updatedActor }),
       ].join("\n") + "\n",
@@ -236,9 +373,14 @@ describe("FileBackedBrokerJournal", () => {
     await journal.load();
 
     const compactedEntries = await journal.readEntries();
-    expect(compactedEntries).toHaveLength(2);
+    expect(compactedEntries).toHaveLength(3);
     expect(compactedEntries.filter((entry) => entry.kind === "actor.upsert")).toHaveLength(1);
     expect(compactedEntries.filter((entry) => entry.kind === "message.record")).toHaveLength(1);
+    expect(compactedEntries.map((entry) => entry.kind)).toEqual([
+      "journal.replay_barrier",
+      "message.record",
+      "actor.upsert",
+    ]);
     expect(journal.snapshot().actors["agent-1"]?.displayName).toBe("Agent One Updated");
   });
 

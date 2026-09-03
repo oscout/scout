@@ -167,7 +167,9 @@ describe("BrokerWebControlService", () => {
     expect(spawns[0]?.options.argv0).toBe("scout-web");
     expect(spawns[0]?.options.detached).toBeUndefined();
     expect(spawns[0]?.options.env).toEqual(expect.objectContaining({
-      OPENSCOUT_WEB_HOST: "127.0.0.1",
+      OPENSCOUT_WEB_HOST: "0.0.0.0",
+      OPENSCOUT_WEB_ALLOW_LAN: "1",
+      OPENSCOUT_WEB_LAN_SCOPE: "pairing",
       OPENSCOUT_WEB_PORT: "4321",
       OPENSCOUT_WEB_BUN_URL: "http://127.0.0.1:4321",
       OPENSCOUT_BROKER_INTERNAL_URL: "http://127.0.0.1:4321",

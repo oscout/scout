@@ -34,7 +34,7 @@
  * rather than as a visible collapse.
  */
 import type { TailDiscoverySnapshot, TailDiscoveredTranscript } from "../../lib/types.ts";
-import type { TailFeedLoadPhase } from "../../lib/use-tail-feed.ts";
+import type { TailFeedLoadPhase, TailFeedLoadState } from "../../lib/use-tail-feed.ts";
 
 /**
  * Cells drawn before discovery returns anything to count. Deliberately few:
@@ -44,6 +44,20 @@ import type { TailFeedLoadPhase } from "../../lib/use-tail-feed.ts";
 export const PREFLIGHT_BLIND_CELLS = 3;
 /** Upper bound on pre-flight cells, so a busy machine can't carpet the deck. */
 export const PREFLIGHT_MAX_CELLS = 12;
+
+/**
+ * The boot sheet may explain a genuinely blank deck, but it must never cover
+ * useful lanes that live events have already composed. Discovery and replay
+ * can continue behind the deck; readiness means the operator can use the
+ * surface, not that every enrichment request has finished.
+ */
+export function shouldBlockLaneDeckStartup(
+  loadState: TailFeedLoadState,
+  visibleLaneCount: number,
+): boolean {
+  return visibleLaneCount === 0
+    && (loadState.discovery === "loading" || loadState.recent === "loading");
+}
 
 export type LanePreflightCell = {
   /** Stable key for the cell. */

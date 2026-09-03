@@ -55,6 +55,7 @@ export type BrokerJournalEntry =
   | { kind: "durable.attempt.record"; attempt: DurableAttempt }
   | { kind: "durable.checkpoint.record"; checkpoint: DurableCheckpoint }
   | { kind: "durable.signal.record"; signal: DurableSignal }
+  | { kind: "journal.replay_barrier"; barrier: BrokerJournalReplayBarrier }
   | {
       kind: "delivery.status.update";
       deliveryId: string;
@@ -87,7 +88,36 @@ export type BrokerJournalLoadReport = {
   invalidLines: number;
   blankLines: number;
   compactionRequired: boolean;
+  estimatedReclaimBytes: number;
+  estimatedReclaimRatio: number;
+  compactionReason: BrokerJournalCompactionReason | null;
   countsByKind: Partial<Record<BrokerJournalEntry["kind"], number>>;
+};
+
+export type BrokerJournalCompactionReason = "bytes" | "ratio" | "high_water";
+
+export type BrokerJournalCompactionPolicy = {
+  minimumReclaimBytes: number;
+  minimumReclaimRatio: number;
+  highWaterBytes: number;
+  highWaterMinimumReclaimBytes: number;
+};
+
+export type FileBackedBrokerJournalOptions = {
+  compactionPolicy?: Partial<BrokerJournalCompactionPolicy>;
+};
+
+const DEFAULT_BROKER_JOURNAL_COMPACTION_POLICY: BrokerJournalCompactionPolicy = {
+  // Rewriting the journal has a fixed cost proportional to the whole file, not
+  // to the superseded entries. A few changing registry heartbeats must not turn
+  // every broker boot into a full-file rewrite.
+  minimumReclaimBytes: 4 * 1024 * 1024,
+  minimumReclaimRatio: 0.05,
+  // Once the journal is large, accept a smaller absolute win so redundant
+  // registry history cannot grow without bound. The 1 MiB floor still prevents
+  // a single tiny duplicate from rewriting hundreds of megabytes.
+  highWaterBytes: 256 * 1024 * 1024,
+  highWaterMinimumReclaimBytes: 1024 * 1024,
 };
 
 type DedupableJournalEntry =
@@ -107,7 +137,42 @@ type JournalVisitReport = {
 
 export type BrokerJournalReplayBoundary = {
   endByteExclusive: number;
+  barrier?: BrokerJournalReplayBarrier;
 };
+
+/**
+ * An opaque, durable position in the broker journal. Byte offsets are useful
+ * only for one open file: journal compaction rewrites them. The marker itself
+ * remains in the order-preserving journal stream, so a SQLite projection can
+ * safely resume after it even when compaction changed every byte position.
+ */
+export type BrokerJournalReplayBarrier = {
+  id: string;
+  projectionId: string;
+  projectionVersion: number;
+  createdAt: number;
+};
+
+export type BrokerJournalReplayReport = {
+  afterBarrierFound: boolean;
+  visitedEntries: number;
+};
+
+export type BrokerJournalReplayOptions = {
+  afterBarrier?: Pick<
+    BrokerJournalReplayBarrier,
+    "id" | "projectionId" | "projectionVersion"
+  >;
+};
+
+function sameReplayBarrier(
+  left: BrokerJournalReplayBarrier,
+  right: NonNullable<BrokerJournalReplayOptions["afterBarrier"]>,
+): boolean {
+  return left.id === right.id
+    && left.projectionId === right.projectionId
+    && left.projectionVersion === right.projectionVersion;
+}
 
 function cloneSnapshot(snapshot: RuntimeRegistrySnapshot): RuntimeRegistrySnapshot {
   return createRuntimeRegistrySnapshot({
@@ -200,6 +265,49 @@ function isDedupableEntry(entry: BrokerJournalEntry): entry is DedupableJournalE
   return dedupeKey(entry) !== null;
 }
 
+function resolveCompactionPolicy(
+  input: FileBackedBrokerJournalOptions["compactionPolicy"],
+): BrokerJournalCompactionPolicy {
+  const resolveNonNegative = (value: number | undefined, fallback: number): number => (
+    typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : fallback
+  );
+  return {
+    minimumReclaimBytes: resolveNonNegative(
+      input?.minimumReclaimBytes,
+      DEFAULT_BROKER_JOURNAL_COMPACTION_POLICY.minimumReclaimBytes,
+    ),
+    minimumReclaimRatio: resolveNonNegative(
+      input?.minimumReclaimRatio,
+      DEFAULT_BROKER_JOURNAL_COMPACTION_POLICY.minimumReclaimRatio,
+    ),
+    highWaterBytes: resolveNonNegative(
+      input?.highWaterBytes,
+      DEFAULT_BROKER_JOURNAL_COMPACTION_POLICY.highWaterBytes,
+    ),
+    highWaterMinimumReclaimBytes: resolveNonNegative(
+      input?.highWaterMinimumReclaimBytes,
+      DEFAULT_BROKER_JOURNAL_COMPACTION_POLICY.highWaterMinimumReclaimBytes,
+    ),
+  };
+}
+
+function journalCompactionReason(
+  sourceBytes: number,
+  estimatedReclaimBytes: number,
+  policy: BrokerJournalCompactionPolicy,
+): BrokerJournalCompactionReason | null {
+  if (sourceBytes <= 0 || estimatedReclaimBytes <= 0) return null;
+  if (estimatedReclaimBytes >= policy.minimumReclaimBytes) return "bytes";
+  if (estimatedReclaimBytes / sourceBytes >= policy.minimumReclaimRatio) return "ratio";
+  if (
+    sourceBytes >= policy.highWaterBytes
+    && estimatedReclaimBytes >= policy.highWaterMinimumReclaimBytes
+  ) {
+    return "high_water";
+  }
+  return null;
+}
+
 export class FileBackedBrokerJournal {
   private readonly filePath: string;
 
@@ -219,8 +327,11 @@ export class FileBackedBrokerJournal {
 
   private writeQueue: Promise<void> = Promise.resolve();
 
-  constructor(filePath: string) {
+  private readonly compactionPolicy: BrokerJournalCompactionPolicy;
+
+  constructor(filePath: string, options: FileBackedBrokerJournalOptions = {}) {
     this.filePath = filePath;
+    this.compactionPolicy = resolveCompactionPolicy(options.compactionPolicy);
   }
 
   async load(): Promise<BrokerJournalLoadReport> {
@@ -237,30 +348,42 @@ export class FileBackedBrokerJournal {
       throw error;
     });
     const latestIndexByKey = new Map<string, number>();
+    const latestEncodedBytesByKey = new Map<string, number>();
     const lastFlightById = new Map<string, FlightRecord>();
     const countsByKind: BrokerJournalLoadReport["countsByKind"] = {};
-    let compactionRequired = false;
+    let estimatedReclaimBytes = 0;
 
     const scanStartedAt = Date.now();
-    const scan = await this.visitEntries((entry, index) => {
+    const scan = await this.visitEntries((entry, index, encodedLineBytes) => {
       this.apply(entry);
       countsByKind[entry.kind] = (countsByKind[entry.kind] ?? 0) + 1;
       const key = dedupeKey(entry);
       if (key) {
-        if (latestIndexByKey.has(key)) {
-          compactionRequired = true;
+        const previousBytes = latestEncodedBytesByKey.get(key);
+        if (previousBytes !== undefined) {
+          estimatedReclaimBytes += previousBytes;
         }
         latestIndexByKey.set(key, index);
+        latestEncodedBytesByKey.set(key, encodedLineBytes);
       }
       if (entry.kind === "flight.record") {
         const previous = lastFlightById.get(entry.flight.id);
         if (previous && sameValue(previous, entry.flight)) {
-          compactionRequired = true;
+          estimatedReclaimBytes += encodedLineBytes;
         }
         lastFlightById.set(entry.flight.id, entry.flight);
       }
     });
     const scanMs = Date.now() - scanStartedAt;
+    const estimatedReclaimRatio = sourceBytes > 0
+      ? estimatedReclaimBytes / sourceBytes
+      : 0;
+    const compactionReason = journalCompactionReason(
+      sourceBytes,
+      estimatedReclaimBytes,
+      this.compactionPolicy,
+    );
+    const compactionRequired = compactionReason !== null;
 
     let compactionMs = 0;
     if (compactionRequired) {
@@ -284,6 +407,9 @@ export class FileBackedBrokerJournal {
       invalidLines: scan.invalidLines,
       blankLines: scan.blankLines,
       compactionRequired,
+      estimatedReclaimBytes,
+      estimatedReclaimRatio,
+      compactionReason,
       countsByKind,
     };
     return this.latestLoadReport;
@@ -304,9 +430,23 @@ export class FileBackedBrokerJournal {
     return entries;
   }
 
-  captureReplayBoundary(): Promise<BrokerJournalReplayBoundary> {
+  captureReplayBoundary(options: {
+    barrier?: BrokerJournalReplayBarrier;
+  } = {}): Promise<BrokerJournalReplayBoundary> {
     let boundary: BrokerJournalReplayBoundary = { endByteExclusive: 0 };
     const capture = this.writeQueue.then(async () => {
+      if (options.barrier) {
+        await mkdir(dirname(this.filePath), { recursive: true });
+        const entry: BrokerJournalEntry = {
+          kind: "journal.replay_barrier",
+          barrier: options.barrier,
+        };
+        await appendFile(this.filePath, `${JSON.stringify(entry)}\n`, "utf8");
+        // Deliberately a no-op for domain state, but keeping all journal state
+        // transitions on this path prevents future entry kinds from silently
+        // diverging between capture and ordinary append.
+        this.apply(entry);
+      }
       boundary = {
         endByteExclusive: await stat(this.filePath)
           .then((value) => value.size)
@@ -317,6 +457,7 @@ export class FileBackedBrokerJournal {
             if (code === "ENOENT") return 0;
             throw error;
           }),
+        ...(options.barrier ? { barrier: options.barrier } : {}),
       };
     });
     this.writeQueue = capture.then(() => undefined, () => undefined);
@@ -326,11 +467,32 @@ export class FileBackedBrokerJournal {
   async replay(
     visitor: (entry: BrokerJournalEntry) => void | Promise<void>,
     boundary?: BrokerJournalReplayBoundary,
-  ): Promise<void> {
+    options: BrokerJournalReplayOptions = {},
+  ): Promise<BrokerJournalReplayReport> {
+    let afterBarrierFound = options.afterBarrier === undefined;
+    let visitedEntries = 0;
     await this.visitEntries(
-      (entry) => visitor(entry),
+      async (entry) => {
+        if (!afterBarrierFound) {
+          if (
+            entry.kind === "journal.replay_barrier"
+            && sameReplayBarrier(entry.barrier, options.afterBarrier!)
+          ) {
+            afterBarrierFound = true;
+          }
+          return;
+        }
+        // Replay barriers carry no domain state. They exist solely to locate a
+        // crash-safe resume point and must never leak into projection reducers.
+        if (entry.kind === "journal.replay_barrier") {
+          return;
+        }
+        await visitor(entry);
+        visitedEntries += 1;
+      },
       boundary ? { endByteExclusive: boundary.endByteExclusive } : {},
     );
+    return { afterBarrierFound, visitedEntries };
   }
 
   snapshot(): RuntimeRegistrySnapshot {
@@ -452,7 +614,11 @@ export class FileBackedBrokerJournal {
   }
 
   private async visitEntries(
-    visitor: (entry: BrokerJournalEntry, index: number) => void | Promise<void>,
+    visitor: (
+      entry: BrokerJournalEntry,
+      index: number,
+      encodedLineBytes: number,
+    ) => void | Promise<void>,
     options: { endByteExclusive?: number } = {},
   ): Promise<JournalVisitReport> {
     const endByteExclusive = options.endByteExclusive;
@@ -479,6 +645,10 @@ export class FileBackedBrokerJournal {
     try {
       for await (const rawLine of lines) {
         report.rawLines += 1;
+        // Broker journal appends always use one-byte LF terminators. Reuse the
+        // bytes already read instead of serializing every parsed entry again on
+        // the startup scan's hot path.
+        const encodedLineBytes = Buffer.byteLength(rawLine, "utf8") + 1;
         if (!rawLine.trim()) {
           report.blankLines += 1;
           continue;
@@ -488,7 +658,7 @@ export class FileBackedBrokerJournal {
           report.invalidLines += 1;
           continue;
         }
-        await visitor(entry, index);
+        await visitor(entry, index, encodedLineBytes);
         index += 1;
         report.validEntries += 1;
       }
@@ -734,6 +904,10 @@ export class FileBackedBrokerJournal {
         // Durable action facts are intentionally not projected into the
         // in-memory RuntimeRegistrySnapshot. They are journal-durable and
         // replay into SQLite through RecoverableSQLiteProjection.
+        return;
+      case "journal.replay_barrier":
+        // Opaque recovery metadata only. It intentionally has no domain-state
+        // representation in the in-memory broker snapshot.
         return;
       case "scout.dispatch.record":
         this.state.scoutDispatches.push(entry.dispatch);

@@ -948,7 +948,7 @@ fn draw_deck_column(
             dock_spans.push(Span::styled("› ", Style::default().fg(SIGNAL)));
             dock_spans.push(Span::styled(
                 format!(
-                    "Press [i] to draft for {} · sending unavailable ",
+                    "Press [i] to draft for {}   ·   ask not wired ",
                     agent.handle
                 ),
                 Style::default().fg(BONE),
@@ -2876,10 +2876,10 @@ fn draw_dock(frame: &mut Frame, app: &App, handle: &str, area: Rect) {
             Style::default().fg(BONE),
         ));
     } else {
-        spans.push(Span::styled("› ", Style::default().fg(ASH)));
+        spans.push(Span::styled("› ", Style::default().fg(SIGNAL)));
         spans.push(Span::styled(
-            format!("Press [i] to draft for {handle} · sending unavailable"),
-            Style::default().fg(ASH),
+            format!("Press [i] to draft for {handle}   ·   ask not wired"),
+            Style::default().fg(BONE),
         ));
     }
     frame.render_widget(Paragraph::new(Line::from(spans)), area);
@@ -3008,16 +3008,38 @@ fn draw_footer(frame: &mut Frame, app: &App, area: Rect, selected: Option<&Agent
         ));
     } else if app.take == Take::Twin {
         spans.push(Span::styled("j/k", Style::default().fg(BONE)));
-        spans.push(Span::styled(" assign agent  ", Style::default().fg(ASH)));
-        spans.push(Span::styled("Tab/Shift+Tab", Style::default().fg(BONE)));
+        spans.push(Span::styled(
+            if area.width < 96 {
+                " assign  "
+            } else {
+                " assign agent  "
+            },
+            Style::default().fg(ASH),
+        ));
+        spans.push(Span::styled(
+            if area.width < 96 {
+                "Tab"
+            } else {
+                "Tab/Shift+Tab"
+            },
+            Style::default().fg(BONE),
+        ));
         spans.push(Span::styled(
             " cycle column focus  ",
             Style::default().fg(ASH),
         ));
-        spans.push(Span::styled("1-7", Style::default().fg(BONE)));
-        spans.push(Span::styled(" takes  ", Style::default().fg(ASH)));
+        if area.width >= 96 {
+            spans.push(Span::styled("1-7", Style::default().fg(BONE)));
+            spans.push(Span::styled(" takes  ", Style::default().fg(ASH)));
+        }
         spans.push(Span::styled("i", Style::default().fg(BONE)));
-        spans.push(Span::styled(" draft only  ", Style::default().fg(ASH)));
+        spans.push(Span::styled(" draft", Style::default().fg(ASH)));
+        spans.push(Span::styled(" · ", Style::default().fg(HAIR)));
+        spans.push(Span::styled("ask not wired", Style::default().fg(SMOKE)));
+        spans.push(Span::styled(
+            if area.width < 96 { "  " } else { "    " },
+            Style::default().fg(ASH),
+        ));
         spans.push(Span::styled("? ", Style::default().fg(BONE)));
         spans.push(Span::styled("help", Style::default().fg(ASH)));
     } else if app.take == Take::Mesh {
@@ -3063,12 +3085,27 @@ fn draw_footer(frame: &mut Frame, app: &App, area: Rect, selected: Option<&Agent
     } else {
         spans.push(Span::styled("j/k", Style::default().fg(BONE)));
         spans.push(Span::styled(" select  ", Style::default().fg(ASH)));
-        spans.push(Span::styled("1-7", Style::default().fg(BONE)));
-        spans.push(Span::styled(" takes  ", Style::default().fg(ASH)));
+        if area.width >= 110 {
+            spans.push(Span::styled("1-7", Style::default().fg(BONE)));
+            spans.push(Span::styled(" takes  ", Style::default().fg(ASH)));
+        }
         spans.push(Span::styled("Tab", Style::default().fg(BONE)));
-        spans.push(Span::styled(" cycle take  ", Style::default().fg(ASH)));
+        spans.push(Span::styled(
+            if area.width < 110 {
+                " take  "
+            } else {
+                " cycle take  "
+            },
+            Style::default().fg(ASH),
+        ));
         spans.push(Span::styled("i", Style::default().fg(BONE)));
-        spans.push(Span::styled(" draft only  ", Style::default().fg(ASH)));
+        spans.push(Span::styled(" draft", Style::default().fg(ASH)));
+        spans.push(Span::styled(" · ", Style::default().fg(HAIR)));
+        spans.push(Span::styled("ask not wired", Style::default().fg(SMOKE)));
+        spans.push(Span::styled(
+            if area.width < 110 { "  " } else { "    " },
+            Style::default().fg(ASH),
+        ));
         spans.push(Span::styled("? ", Style::default().fg(BONE)));
         spans.push(Span::styled("help    ", Style::default().fg(ASH)));
 
@@ -3147,10 +3184,7 @@ fn draw_help(frame: &mut Frame, area: Rect) {
             "a / x / r",
             "Announce, withdraw, or refresh this machine on the mesh",
         ),
-        (
-            "i / Enter",
-            "Open local draft editor in Now or Twin (sending unavailable)",
-        ),
+        ("i / Enter", "Draft in Now/Twin  ·  ask not wired"),
         ("?", "Toggle this help"),
         ("q / Esc", "Quit, or fall back to Now"),
     ];
@@ -3234,8 +3268,13 @@ fn draw_empty_state(frame: &mut Frame, area: Rect) {
         "No active sessions found.",
         Style::default().fg(BONE).add_modifier(Modifier::BOLD),
     )));
+    lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
-        "Start an agent with scout or trigger an ask flight to seed the night sky.",
+        "Start an agent with scout.",
+        Style::default().fg(ASH),
+    )));
+    lines.push(Line::from(Span::styled(
+        "Then Now → [i] drafts to it  ·  ask not wired.",
         Style::default().fg(ASH),
     )));
     frame.render_widget(Paragraph::new(lines).alignment(Alignment::Center), area);
@@ -3272,6 +3311,15 @@ mod tests {
             .collect()
     }
 
+    fn rendered_footer(terminal: &Terminal<TestBackend>) -> String {
+        let buffer = terminal.backend().buffer();
+        let width = buffer.area.width as usize;
+        buffer.content()[buffer.content().len().saturating_sub(width)..]
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect()
+    }
+
     #[test]
     fn grid_mast_renders_at_85_columns_without_slicing_unicode() {
         let backend = TestBackend::new(85, 24);
@@ -3297,7 +3345,77 @@ mod tests {
         let rendered = rendered_text(&terminal);
         assert!(rendered.contains("EMPTY DECK STREAM"));
         assert!(rendered.contains("cycle column focus"));
+        assert!(rendered.contains("ask not wired"));
         assert!(!rendered.contains("cycle take"));
+    }
+
+    #[test]
+    fn twin_footer_keeps_status_and_help_at_supported_width_boundaries() {
+        for width in [70, 79, 80, 85] {
+            let backend = TestBackend::new(width, 24);
+            let mut terminal = Terminal::new(backend).expect("test terminal");
+            let mut app = App::new(Take::Twin);
+            app.ingest_event(event(1, "session-a", 1_700_000_000_000));
+
+            terminal
+                .draw(|frame| draw(frame, &mut app))
+                .expect("supported-width Twin should render");
+
+            let footer = rendered_footer(&terminal);
+            assert!(
+                footer.contains("cycle column focus"),
+                "missing column-focus hint at width {width}: {footer:?}"
+            );
+            assert!(
+                footer.contains("ask not wired"),
+                "missing ask status at width {width}: {footer:?}"
+            );
+            assert!(
+                footer.contains("? help"),
+                "missing help hint at width {width}: {footer:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn now_footer_keeps_selected_agent_at_ordinary_width() {
+        let backend = TestBackend::new(85, 24);
+        let mut terminal = Terminal::new(backend).expect("test terminal");
+        let mut app = App::new(Take::Now);
+        app.ingest_event(event(1, "session-a", 1_700_000_000_000));
+        let selected = app
+            .selected_agent()
+            .expect("ingested session should be selected")
+            .handle;
+
+        terminal
+            .draw(|frame| draw(frame, &mut app))
+            .expect("ordinary-width Now should render");
+
+        let footer = rendered_footer(&terminal);
+        assert!(footer.contains("ask not wired"));
+        assert!(footer.contains("? help"));
+        assert!(
+            footer.contains(&format!("selected: {selected}")),
+            "selected agent was truncated: {footer:?}"
+        );
+    }
+
+    #[test]
+    fn help_lists_the_draft_shortcut() {
+        let backend = TestBackend::new(85, 28);
+        let mut terminal = Terminal::new(backend).expect("test terminal");
+        let mut app = App::new(Take::Now);
+        app.help = true;
+
+        terminal
+            .draw(|frame| draw(frame, &mut app))
+            .expect("help overlay should render");
+
+        let rendered = rendered_text(&terminal);
+        assert!(rendered.contains("i / Enter"));
+        assert!(rendered.contains("Draft in Now/Twin"));
+        assert!(rendered.contains("ask not wired"));
     }
 
     #[test]

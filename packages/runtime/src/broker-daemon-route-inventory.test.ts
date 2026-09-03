@@ -47,6 +47,7 @@ const expectedRouteInventory = [
   "GET /v1/capabilities/availability",
   "GET /v1/collaboration/events",
   "GET /v1/collaboration/records",
+  "GET /v1/conversation-projection",
   "GET /v1/conversations/:id/read-cursors",
   "GET /v1/conversations/:id/thread-events",
   "GET /v1/conversations/:id/thread-snapshot",

@@ -11,6 +11,7 @@ import type {
   ControlCommand,
   ConversationBinding,
   ConversationDefinition,
+  ConversationProjectionSnapshot,
   InvocationRequest,
   MessageRecord,
   NodeDefinition,
@@ -141,6 +142,10 @@ export type ScoutBrokerActivityQuery = {
   limit?: number;
 };
 
+export type ScoutBrokerConversationProjectionQuery = {
+  limit?: number;
+};
+
 export type ScoutBrokerCollaborationRecordQuery = {
   kind?: string;
   state?: string;
@@ -182,6 +187,9 @@ export type ActiveScoutBrokerService = {
   readHome?: () => Promise<unknown>;
   readNode: () => Promise<NodeDefinition>;
   readSnapshot: (query?: RuntimeRegistrySnapshotQuery) => Promise<RuntimeRegistrySnapshot>;
+  readConversationProjection?: (
+    query: ScoutBrokerConversationProjectionQuery,
+  ) => Promise<ConversationProjectionSnapshot | null>;
   readCapabilities?: (
     query?: ScoutBrokerCapabilitiesQuery,
   ) => Promise<ScoutCapabilityMatrixSnapshot>;
@@ -640,8 +648,21 @@ export async function maybeReadJsonFromActiveScoutBrokerService<T>(
   }
 
   if (url.pathname === "/v1/snapshot") {
+    const requestedScope = url.searchParams.get("scope");
     return handled(await service.readSnapshot({
       since: parsePositiveInt(url.searchParams.get("since")) ?? null,
+      scope: requestedScope === "conversations" || requestedScope === "agents"
+        ? requestedScope
+        : undefined,
+    }) as T);
+  }
+
+  if (url.pathname === "/v1/conversation-projection") {
+    if (!service.readConversationProjection) {
+      return unhandled();
+    }
+    return handled(await service.readConversationProjection({
+      limit: parseLimit(url.searchParams.get("limit")),
     }) as T);
   }
 

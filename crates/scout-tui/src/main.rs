@@ -254,7 +254,7 @@ fn handle_key(app: &mut App, key: KeyEvent, terminal_width: u16) -> bool {
                 app.begin_compose();
             } else {
                 app.composer_notice =
-                    Some("Draft editor is available in Now or Twin; nothing was sent.".into());
+                    Some("Draft lives in Now or Twin — press i there. Ask is not wired.".into());
             }
         }
         (KeyCode::Esc, _) if app.take != Take::Now => {
@@ -446,7 +446,7 @@ mod tests {
         assert!(!app.composing);
         assert_eq!(
             app.composer_notice.as_deref(),
-            Some("Draft editor is available in Now or Twin; nothing was sent.")
+            Some("Draft lives in Now or Twin — press i there. Ask is not wired.")
         );
     }
 

@@ -1,0 +1,1 @@
+CREATE INDEX `idx_runtime_session_aliases_endpoint` ON `runtime_session_aliases` (`endpoint_id`);

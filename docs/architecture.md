@@ -188,6 +188,33 @@ Scout is a control plane, not a transcript warehouse. Its storage model starts f
 
 Scout's coordination vocabulary is small. A **conversation** groups related turns; a **message** is a durable "say this" record; an **invocation** is a request for work; a **flight** is the lifecycle record attached to an invocation; a **delivery** is one routed attempt to reach a target; a **binding** maps a project path and branch to an addressable target; a **question** asks for an answer; and a **work item** owns a durable piece of execution. [`concepts.md`](./concepts.md) defines each precisely and maps them onto external protocols. This section is about who owns them.
 
+### Durable Domain Data And Session Handles
+
+Projects, agents, profiles, runtime profiles/specifications, nodes, channels,
+work, and route bindings are domain data. They have independent meaning,
+lifecycle, policy, and history.
+
+A session is not an identity or a directory member. Its public form is an
+opaque broker handle such as `sess.0123456789abcdefabcd`, addressed as
+`session:sess.0123456789abcdefabcd`. The associated broker row behaves like a
+short-URL mapping:
+
+```text
+session handle -> harness context + project/agent/profile/runtime references + endpoint lease
+```
+
+The handle must not encode an agent name, project path, harness, model, node, or
+branch. Those are resolution facts, not parts of session identity. A harness's
+native thread/session id is an internal alias on the mapping, not the canonical
+Scout address. Session mappings are bounded lifecycle data and may expire after
+the context is terminal; durable work and attribution continue to point at the
+real domain records.
+
+This distinction is also the cardinality boundary: starting or observing a new
+harness context creates a session mapping, not a new agent, actor, profile, or
+mesh directory entry. Compatibility readers may still accept historical native
+ids and session-shaped agent records, but new writes must not create them.
+
 ### What Scout Owns
 
 Scout owns first-party control-plane records:
@@ -254,11 +281,11 @@ use when they do not care about a specific runtime. In practice this is the
 thing represented by a project path, such as `../talkie`, or by a short handle,
 such as `@talkie`.
 
-An **agent instance** is the concrete attachment Scout routes to for that base
-identity: a Claude or Codex harness, a model choice, a machine/node, and
-optionally an explicit session id. Asking for a specific instance should refine
-the route, not create the impression that `talkie#codex` and `talkie#claude`
-are separate base agents.
+An **execution resolution** is the concrete attachment Scout chooses for that
+base identity: a profile/runtime choice, machine/node, endpoint lease, and
+opaque session handle. It is routing state, not another agent identity.
+`talkie#codex`, `talkie#claude`, and each session they start must not multiply
+the base agent directory.
 
 Default rule: if the project is known but the exact agent/session is not, use
 project routing and let Scout pick or create the concrete instance. Add a
@@ -282,9 +309,9 @@ profile, project, harness, rules/tool context, and the current continuation
 handle that Scout should use. Humans type it as `target:<name>`. Agent-authored
 prompts and compact UI may render the same handle as `⌖name`. `@missionwriter`
 names a role or definition, `#ops` names a channel, and
-`session:<harness>:<native-id>` names one exact runtime session. A target handle
+`session:sess.<token>` names one exact runtime session. A target handle
 can resolve through current broker records to the right ref, session, or
-binding, but it is not itself a raw session id.
+binding, but it is not itself a raw harness session id.
 
 A **route alias** is separate broker-owned pointer state attached after creation
 to one durable agent id or one exact broker-known session. `alias:review`
@@ -295,12 +322,13 @@ binding id/revision and canonical target into durable receipts and records.
 Route aliases never create cards, agents, actors, or sessions.
 
 When routing by an agent card, label, or exact agent id, Scout treats the target
-as a fresh-session request. Use `session:<id>` or MCP `targetSessionId` only
+as a fresh-session request. Use `session:sess.<token>` or MCP `targetSessionId` only
 when the caller intentionally wants to continue one concrete prior harness
-session. The id may be a Scout id or a harness-native id already known to the
-broker. Use `session:<harness>:<native-id>` or `execution.harness` when a native
-id needs scope. Historical session records and reachability diagnostics are for
-that explicit session path, not fallback candidates for normal card routing.
+session. Canonical writes and receipts use the opaque Scout handle. Historical
+`session:<harness>:<native-id>` and raw native ids remain compatibility lookup
+forms only and should resolve immediately to the Scout handle. Historical
+session records and reachability diagnostics are for that explicit session
+path, not fallback candidates for normal card routing.
 
 Specialized profiles may become first-class over time. For example,
 `@scout.profile:investigator` could name a profile with a dedicated tool set

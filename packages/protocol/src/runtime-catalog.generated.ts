@@ -2,7 +2,7 @@
 
 export const SCOUT_RUNTIME_CATALOG_DATA = {
   "schemaVersion": "openscout.runtime-catalog.v1",
-  "revision": "2026-08-18.1",
+  "revision": "2026-09-01.1",
   "harnesses": [
     {
       "id": "claude",
@@ -24,6 +24,13 @@ export const SCOUT_RUNTIME_CATALOG_DATA = {
           "enabled": true,
           "default": true,
           "family": "Opus",
+          "version": "5"
+        },
+        {
+          "id": "claude-fable-5",
+          "label": "Fable 5",
+          "enabled": true,
+          "family": "Fable",
           "version": "5"
         },
         {

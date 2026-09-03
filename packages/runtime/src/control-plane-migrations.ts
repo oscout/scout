@@ -147,7 +147,26 @@ CREATE INDEX IF NOT EXISTS idx_activity_items_ts
   ON activity_items(ts DESC);
 CREATE INDEX IF NOT EXISTS idx_conversations_created_at
   ON conversations(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_agent_endpoints_roster_recency
+  ON agent_endpoints (
+    CASE
+      WHEN updated_at IS NULL THEN NULL
+      WHEN CAST(updated_at AS REAL) < 1000000000000
+        THEN CAST(CAST(updated_at AS REAL) * 1000 AS INTEGER)
+      ELSE CAST(updated_at AS INTEGER)
+    END DESC,
+    agent_id
+  );
 `);
+      // Some pre-ledger pilot databases have the legacy two-column
+      // conversations table. The raw schema cannot conditionally create this
+      // index, so keep the repair guarded just like additive columns.
+      if (hasColumn(database, "conversations", "authority_node_id")) {
+        database.exec(`
+CREATE INDEX IF NOT EXISTS idx_conversations_authority_node_id
+  ON conversations(authority_node_id);
+`);
+      }
     },
   },
   {
@@ -200,10 +219,11 @@ CREATE INDEX IF NOT EXISTS idx_conversations_created_at
         return;
       }
       // Latest flight = newest completion/start timestamp, ties broken by
-      // most recent write (INSERT OR REPLACE always assigns a fresh rowid, so
-      // rowid order is write order) — the same ordering the recordFlight
-      // dual-write guard enforces. The IS NOT clauses make the no-divergence
-      // boot a pure read. Invocations with no flights at all are left alone.
+      // most recent write (recordFlight advances rowid on conflict without
+      // replacing the parent key, so rowid order remains write order) — the
+      // same ordering its invocation-shadow guard enforces. The IS NOT clauses
+      // make the no-divergence boot a pure read. Invocations with no flights at
+      // all are left alone.
       database.exec(`
 UPDATE invocations AS inv
 SET

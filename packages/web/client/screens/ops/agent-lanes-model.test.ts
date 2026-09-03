@@ -4,6 +4,7 @@ import type { TerminalSessionRecord } from "@openscout/protocol";
 import type { Agent } from "../../lib/types.ts";
 import {
   agentLaneHorizonWindowMs,
+  agentLaneTailRecentLimit,
   buildLaneFacts,
   buildAgentLanes,
   createStableLaneOrder,
@@ -26,6 +27,13 @@ import {
 import { agentLaneToCardModel } from "./agent-lane-card-model.ts";
 
 const NOW = 1_700_000_000_000;
+
+describe("lane replay budget", () => {
+  test("keeps enrichment bounded independently of the visible horizon", () => {
+    expect((["5m", "30m", "4h", "24h"] as const).map(agentLaneTailRecentLimit))
+      .toEqual([1_000, 1_000, 1_000, 1_000]);
+  });
+});
 
 function lane(overrides: Partial<AgentLane> & { agent: Agent }): AgentLane {
   return {

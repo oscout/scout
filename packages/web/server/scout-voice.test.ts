@@ -3,11 +3,17 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
-import { fallbackScoutSpeechCatalog, resolveScoutSpeechDefaults } from "./scout-voice.ts";
+import {
+  fallbackScoutSpeechCatalog,
+  getScoutSpeechCatalog,
+  resolveScoutSpeechDefaults,
+} from "./scout-voice.ts";
 
 const tempPaths = new Set<string>();
+const originalFetch = globalThis.fetch;
 
 afterEach(() => {
+  globalThis.fetch = originalFetch;
   for (const path of tempPaths) {
     rmSync(path, { recursive: true, force: true });
   }
@@ -76,6 +82,7 @@ describe("fallbackScoutSpeechCatalog", () => {
     expect(openAI.models.map((model) => [model.provider, model.id])).toEqual([
       ["openai", "gpt-4o-mini-tts"],
       ["elevenlabs", "eleven_multilingual_v2"],
+      ["nvidia", "magpie-tts-multilingual"],
     ]);
     expect(openAI.voices.some((voice) => voice.id === "alloy" && voice.isDefault)).toBe(true);
 
@@ -90,5 +97,50 @@ describe("fallbackScoutSpeechCatalog", () => {
       modelId: "eleven_multilingual_v2",
       isDefault: true,
     })]);
+
+    const nvidia = fallbackScoutSpeechCatalog("magpie-tts-multilingual", {
+      modelId: "gpt-4o-mini-tts",
+      voiceId: "alloy",
+    });
+    expect(nvidia.voices).toEqual([expect.objectContaining({
+      id: "Magpie-Multilingual.EN-US.Aria",
+      name: "Aria",
+      language: "en-US",
+      provider: "nvidia",
+      modelId: "magpie-tts-multilingual",
+      isDefault: true,
+    })]);
+  });
+
+  test("uses the hosted NVIDIA roster and falls back deterministically when discovery is unavailable", async () => {
+    globalThis.fetch = async () => Response.json({
+      "en-US,ja-JP": {
+        voices: [
+          "Magpie-Multilingual.JA-JP.Siwei",
+          "Magpie-Multilingual.EN-US.Jason",
+        ],
+      },
+    });
+    const discovered = await getScoutSpeechCatalog({
+      modelId: "magpie-tts-multilingual",
+      directNvidiaApiKey: "synthetic-test-key",
+    });
+    expect(discovered.voices.map((voice) => voice.id)).toEqual([
+      "Magpie-Multilingual.EN-US.Jason",
+      "Magpie-Multilingual.JA-JP.Siwei",
+    ]);
+    expect(discovered.source).toBe("nvidia-developer-inference");
+
+    globalThis.fetch = async () => new Response("temporarily unavailable", { status: 503 });
+    const fallback = await getScoutSpeechCatalog({
+      modelId: "magpie-tts-multilingual",
+      directNvidiaApiKey: "synthetic-test-key",
+    });
+    expect(fallback.voices).toEqual([expect.objectContaining({
+      id: "Magpie-Multilingual.EN-US.Aria",
+      isDefault: true,
+      available: true,
+    })]);
+    expect(fallback.source).toBe("fallback");
   });
 });

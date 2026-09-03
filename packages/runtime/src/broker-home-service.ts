@@ -6,8 +6,9 @@ import {
   summarizeHomeAgent,
 } from "./broker-conversation-helpers.js";
 import {
-  homeEndpointForAgent,
+  compareHomeEndpointPreference,
   isInactiveLocalAgent,
+  isStaleLocalEndpoint,
 } from "./broker-endpoint-selection.js";
 import {
   isWorkingFlightState,
@@ -94,10 +95,11 @@ export class BrokerHomeService {
         .filter((flight) => isWorkingFlightState(flight.state))
         .map((flight) => flight.targetAgentId),
     );
+    const endpointByAgentId = indexHomeEndpoints(snapshot);
     return Object.values(snapshot.agents)
       .filter((agent) => !isInactiveLocalAgent(agent))
       .map((agent) => {
-        const endpoint = homeEndpointForAgent(snapshot, agent.id);
+        const endpoint = endpointByAgentId.get(agent.id) ?? null;
         const status = summarizeHomeAgent(endpoint, workingAgentIds.has(agent.id));
         return {
           id: agent.id,
@@ -168,6 +170,23 @@ export class BrokerHomeService {
   #now(): number {
     return this.#deps.now?.() ?? Date.now();
   }
+}
+
+function indexHomeEndpoints(
+  snapshot: RuntimeRegistrySnapshot,
+): Map<string, RuntimeRegistrySnapshot["endpoints"][string]> {
+  const endpointByAgentId = new Map<
+    string,
+    RuntimeRegistrySnapshot["endpoints"][string]
+  >();
+  for (const endpoint of Object.values(snapshot.endpoints)) {
+    if (isStaleLocalEndpoint(snapshot, endpoint)) continue;
+    const current = endpointByAgentId.get(endpoint.agentId);
+    if (!current || compareHomeEndpointPreference(endpoint, current) < 0) {
+      endpointByAgentId.set(endpoint.agentId, endpoint);
+    }
+  }
+  return endpointByAgentId;
 }
 
 function agentHomeRank(state: BrokerHomeAgent["state"]): number {

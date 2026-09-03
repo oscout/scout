@@ -34,20 +34,24 @@ import type {
 import {
   buildProjectsInboxModel,
   isObservedAssistantReply,
+  reuseFleetIfUnchanged,
+  retainProjectAliases,
   type BuildInboxInput,
   type ProjectsInboxModel,
 } from "./projects-inbox-model.ts";
 import {
+  createHistoricalReplayHydrator,
   createReplyBurstCoalescer,
   deferProjectsInboxWork,
   latestObservedAssistantReplies,
 } from "./projects-inbox-replies.ts";
 
-const REFRESH_INTERVAL_MS = 15_000;
+const REFRESH_INTERVAL_MS = 60_000;
 const NOW_TICK_MS = 30_000;
-const SSE_DEBOUNCE_MS = 250;
+const SSE_DEBOUNCE_MS = 1_000;
 const RECENT_CONTROL_EVENT_LIMIT = 200;
-const RECENT_CONTROL_REFRESH_INTERVAL_MS = 5_000;
+const RECENT_CONTROL_RETRY_INTERVAL_MS = 5_000;
+const TAIL_DISCOVERY_PATH = "/api/tail/discover?scope=hot&limit=160";
 const RECENT_ASSISTANT_REPLIES_PATH =
   `/api/tail/recent?limit=${RECENT_CONTROL_EVENT_LIMIT}&transcripts=1&mode=assistant-replies`;
 
@@ -75,10 +79,8 @@ let snapshot: FetchSnapshot = {
 
 const subscribers = new Set<() => void>();
 let refCount = 0;
-let recentEventsLoadedAt = 0;
 let loadInFlight: Promise<void> | null = null;
 let loadQueued = false;
-let recentEventsInFlight: Promise<void> | null = null;
 let recentEventsDeferredCancel: (() => void) | null = null;
 let refreshTimer: ReturnType<typeof setTimeout> | null = null;
 let pollTimer: ReturnType<typeof setInterval> | null = null;
@@ -90,12 +92,6 @@ let loadRuns = 0;
 
 function emit(): void {
   for (const notify of [...subscribers]) notify();
-}
-
-/** Reuse the prior fleet ref unless the model-relevant slice (activeAsks) changed. */
-function keepFleet(prev: FleetState | null, next: FleetState): FleetState {
-  if (prev && JSON.stringify(prev.activeAsks) === JSON.stringify(next.activeAsks)) return prev;
-  return next;
 }
 
 /** Reuse the prior discovery ref unless transcripts/processes changed. */
@@ -116,38 +112,26 @@ function set(patch: Partial<FetchSnapshot>): void {
  * messages. Load them independently so transcript replay never delays the
  * project shell's first paint.
  */
-async function loadRecentControlEvents(): Promise<void> {
-  if (Date.now() - recentEventsLoadedAt < RECENT_CONTROL_REFRESH_INTERVAL_MS) return;
-  if (recentEventsInFlight) return recentEventsInFlight;
-  recentEventsInFlight = (async () => {
-    try {
-      const result = await api<{ events?: TailEvent[] }>(
-        RECENT_ASSISTANT_REPLIES_PATH,
-      );
-      recentEventsLoadedAt = Date.now();
-      const merged = latestObservedAssistantReplies(
-        [...snapshot.recentEvents, ...(result.events ?? [])],
-        RECENT_CONTROL_EVENT_LIMIT,
-      );
-      const recentEvents = keepPreviousIfJsonEqual(snapshot.recentEvents, merged);
-      if (recentEvents !== snapshot.recentEvents) set({ recentEvents });
-    } catch {
-      // Discovery remains useful without response previews; keep the last good
-      // projection rather than making the whole Projects surface fail.
-    }
-  })();
-  try {
-    await recentEventsInFlight;
-  } finally {
-    recentEventsInFlight = null;
-  }
-}
+const recentControlEventsHydrator = createHistoricalReplayHydrator({
+  retryDelayMs: RECENT_CONTROL_RETRY_INTERVAL_MS,
+  load: async () => {
+    const result = await api<{ events?: TailEvent[] }>(
+      RECENT_ASSISTANT_REPLIES_PATH,
+    );
+    const merged = latestObservedAssistantReplies(
+      [...snapshot.recentEvents, ...(result.events ?? [])],
+      RECENT_CONTROL_EVENT_LIMIT,
+    );
+    const recentEvents = keepPreviousIfJsonEqual(snapshot.recentEvents, merged);
+    if (recentEvents !== snapshot.recentEvents) set({ recentEvents });
+  },
+});
 
 function scheduleRecentControlEventsLoad(): void {
-  if (recentEventsDeferredCancel || recentEventsInFlight) return;
+  if (recentEventsDeferredCancel || !recentControlEventsHydrator.shouldRun()) return;
   recentEventsDeferredCancel = deferProjectsInboxWork(() => {
     recentEventsDeferredCancel = null;
-    if (refCount > 0) void loadRecentControlEvents();
+    if (refCount > 0) void recentControlEventsHydrator.run();
   });
 }
 
@@ -185,7 +169,7 @@ async function load(mode: "initial" | "background"): Promise<void> {
     const [sessionsResult, fleetResult, discoveryResult] = await Promise.allSettled([
       api<SessionEntry[]>("/api/conversations"),
       api<FleetState>("/api/fleet"),
-      api<TailDiscoverySnapshot>("/api/tail/discover"),
+      api<TailDiscoverySnapshot>(TAIL_DISCOVERY_PATH),
     ]);
 
     // Keep the PREVIOUS reference when the MODEL-RELEVANT slice is unchanged. On an
@@ -194,13 +178,13 @@ async function load(mode: "initial" | "background"): Promise<void> {
     // inbox's ~150 sprite rows don't reconcile, and an idle surface stays idle.
     // Churning fresh refs every 250ms (even for identical data) is what pegged a
     // core. NB: /api/fleet and /api/tail/discover stamp a fresh `generatedAt`
-    // every call, so we compare only the fields the model reads (activeAsks;
-    // transcripts + processes) — never the whole envelope.
+    // every call, so we compare only the fields the model reads (activeAsks +
+    // needsAttention; transcripts + processes) — never the whole envelope.
     const nextSessions = sessionsResult.status === "fulfilled"
       ? keepPreviousIfJsonEqual(snapshot.sessions, sessionsResult.value)
       : snapshot.sessions;
     const nextFleet = fleetResult.status === "fulfilled"
-      ? keepFleet(snapshot.fleet, fleetResult.value)
+      ? reuseFleetIfUnchanged(snapshot.fleet, fleetResult.value)
       : snapshot.fleet;
     const nextDiscovery = discoveryResult.status === "fulfilled"
       ? keepDiscovery(snapshot.discovery, discoveryResult.value)
@@ -276,6 +260,9 @@ function startLoop(): void {
 function stopLoop(): void {
   recentEventsDeferredCancel?.();
   recentEventsDeferredCancel = null;
+  // No pane was listening to live replies while unmounted, so the next active
+  // epoch gets one catch-up replay before returning to live-only updates.
+  recentControlEventsHydrator.reset();
   liveReplyCoalescer.cancel();
   if (refreshTimer) {
     clearTimeout(refreshTimer);
@@ -316,7 +303,7 @@ function useFetchSnapshot(): FetchSnapshot {
   // background load per burst of broker events.
   useBrokerEvents(scheduleRefresh);
   // Tail events are the control-plane equivalent of an unread chat event. Add
-  // assistant outputs immediately; the periodic transcript replay only fills
+  // assistant outputs immediately; the one-shot transcript replay only fills
   // history that happened before this surface mounted.
   useTailEvents(recordLiveControlEvent);
   return snap;
@@ -335,6 +322,7 @@ function useFetchSnapshot(): FetchSnapshot {
 
 let modelKey: unknown[] | null = null;
 let modelValue: ProjectsInboxModel | null = null;
+let modelScopeKey: string | null = null;
 
 function sameKey(a: unknown[] | null, b: unknown[]): boolean {
   return Boolean(a) && a!.length === b.length && a!.every((value, index) => value === b[index]);
@@ -363,10 +351,19 @@ function shareModelItems(previous: ProjectsInboxModel | null, next: ProjectsInbo
   const projects = shareByKey(previous.projects, next.projects, (project) => project.slug);
   const threads = shareByKey(previous.threads, next.threads, (thread) => thread.id);
   const sessions = shareByKey(previous.sessions, next.sessions, (session) => session.id);
-  if (projects === previous.projects && threads === previous.threads && sessions === previous.sessions) {
+  const projectAliases = keepPreviousIfJsonEqual(
+    previous.projectAliases,
+    retainProjectAliases(previous.projectAliases, next.projectAliases, projects),
+  );
+  if (
+    projects === previous.projects
+    && threads === previous.threads
+    && sessions === previous.sessions
+    && projectAliases === previous.projectAliases
+  ) {
     return previous;
   }
-  return { projects, threads, sessions };
+  return { projects, threads, sessions, projectAliases };
 }
 
 function computeModel(input: BuildInboxInput): ProjectsInboxModel {
@@ -382,16 +379,18 @@ function computeModel(input: BuildInboxInput): ProjectsInboxModel {
   ];
   if (sameKey(modelKey, key) && modelValue) return modelValue;
   const built = buildProjectsInboxModel(input);
-  const value = shareModelItems(modelValue, built);
+  const scopeKey = `${input.machineId ?? ""}\u0000${input.showEphemeral ? "ephemeral" : "durable"}`;
+  const value = shareModelItems(modelScopeKey === scopeKey ? modelValue : null, built);
   modelKey = key;
   modelValue = value;
+  modelScopeKey = scopeKey;
   return value;
 }
 
 export type ProjectsInbox = {
   model: ProjectsInboxModel;
-  /** The raw agent registry backing the model — for projections (e.g. Crew &
-     Workspaces) that need agent fields the collapsed model doesn't carry. */
+  /** Raw registry backing durable role/project-agent projections that need
+      endpoint fields the collapsed project model intentionally omits. */
   agents: Agent[];
   nowMs: number;
   loading: boolean;

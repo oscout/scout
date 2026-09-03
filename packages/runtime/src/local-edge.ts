@@ -563,5 +563,9 @@ export function renderOpenScoutCaddyfile(config: OpenScoutLocalEdgeConfig): stri
       )),
     )
     .join("\n\n");
-  return `${blocks}\n`;
+  // Caddy's admin API logs every successful config inspection at info level.
+  // Local developer tools may audit those routes periodically; keeping that
+  // healthy control traffic on stderr grew the edge log without adding useful
+  // diagnostics. Warnings and errors remain visible.
+  return `{\n  log {\n    level WARN\n  }\n}\n\n${blocks}\n`;
 }

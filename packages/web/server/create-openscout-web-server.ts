@@ -64,16 +64,27 @@ import {
 } from "./pairing.ts";
 import {
   createPendingPairRequestStore,
+  PairRequestCapacityError,
+  pairRequesterDisplay,
   pairRequestStatePath,
+  parseScoutPairClient,
+  SCOUT_PAIR_CLIENT_HEADER,
+  SCOUT_PAIR_RELAY_HEADER,
 } from "./pairing-pair-requests.ts";
 import { startScoutPairLanBeacon } from "./pairing-lan-beacon.ts";
 import {
   coalesce,
   createCachedSnapshot,
   installScoutApiMiddleware,
+  isLoopbackScoutAddress,
+  isSameMacScoutRequest,
+  isScoutWebRequestAllowedFromPeer,
   relayEventStream,
   registerScoutWebAssets,
+  resolveScoutRequestPeerAddress,
+  resolveScoutWebLanAccessScope,
   type ScoutWebAssetMode,
+  type ScoutWebLanAccessScope,
 } from "./server-core.ts";
 import {
   endpointMetadataRecord,
@@ -81,7 +92,7 @@ import {
   type EndpointPreference,
 } from "./core/agent-endpoints.ts";
 import { resolveTerminalSurface } from "./core/terminal-surfaces.ts";
-import { resolveRepoKeysByRoot } from "./core/repo-identity.ts";
+import { cachedRepoKeysByRoot } from "./core/repo-identity.ts";
 import {
   queryDiscoveredTerminalSessions,
   reconcileTerminalSessionInventory,
@@ -170,6 +181,7 @@ import {
   openScoutDirectSession,
   readScoutBrokerHome,
   readScoutBrokerHealth,
+  readScoutConversationProjection,
   readScoutBrokerMessages,
   readScoutBrokerNodeId,
   readScoutBrokerSnapshot,
@@ -191,6 +203,7 @@ import {
   getScoutConversationById,
   getScoutConversationMessages,
   getScoutConversations,
+  provisionalScoutConversations,
 } from "./core/conversations/service.ts";
 import {
   loadAgentObservePayload,
@@ -471,6 +484,10 @@ export type CreateOpenScoutWebServerOptions = {
   trustedOrigins?: string[];
   /** Required credential for privileged /api routes. Production hosts must set it. */
   authToken?: string;
+  /** Socket peer resolver. Injectable for tests; Bun connection info is used in production. */
+  resolvePeerAddress?: (c: Context) => string | undefined;
+  /** Network exposure policy. Defaults to OPENSCOUT_WEB_LAN_SCOPE. */
+  lanAccessScope?: ScoutWebLanAccessScope;
   runTerminalCommand?: (request: TerminalRunRequest) => Promise<void>;
   destroyTerminalRelaySession?: (sessionId: string) => Promise<boolean>;
   destroyTerminalRelaySurface?: (backend: "tmux" | "zellij" | "herdr", sessionName: string) => Promise<number>;
@@ -2237,7 +2254,8 @@ function brokerCardAgentsForWeb(broker: ScoutBrokerContext): WebAgent[] {
 
 const AGENT_ATTENTION_TTL_MS = 10_000;
 const AGENT_BACKGROUND_REFRESH_DELAY_MS = 500;
-const AGENT_BROKER_CONTEXT_TTL_MS = 5_000;
+const AGENT_BROKER_CONTEXT_TTL_MS = 60_000;
+const AGENT_BROKER_CONTEXT_COLD_BUDGET_MS = 75;
 type TmuxPaneCapture = NonNullable<CreateOpenScoutWebServerOptions["captureTmuxPane"]>;
 type AgentAttentionSnapshot = {
   index: Map<string, AgentAttentionEntry>;
@@ -2326,7 +2344,16 @@ function createAgentBrokerContextReader(): () => Promise<ScoutBrokerContext | nu
   };
 
   return () => {
-    if (!cache) return refresh(0);
+    if (!cache) {
+      // The local SQLite roster is enough to paint the shell. A cold full
+      // broker snapshot can take tens of seconds on a busy host, so keep that
+      // enrichment running but stop making every first-page agent read wait
+      // behind it.
+      return Promise.race([
+        refresh(0),
+        delay(AGENT_BROKER_CONTEXT_COLD_BUDGET_MS).then(() => null),
+      ]);
+    }
     if (Date.now() - cache.at >= AGENT_BROKER_CONTEXT_TTL_MS && !inFlight) {
       void refresh(AGENT_BACKGROUND_REFRESH_DELAY_MS);
     }
@@ -2452,26 +2479,57 @@ function withPinnedMeshPeerAgents(
   if (!localNodeId) return mostRecentAgents(agents, limit);
 
   const peerNodeIds = pinnedMeshPeerNodeIds(broker);
-  const peerAgents = brokerCardAgentsForWeb(broker).filter(
-    (agent) => agent.homeNodeId && peerNodeIds.has(agent.homeNodeId),
-  );
+  // Select before projecting. Projecting a broker card walks endpoint,
+  // conversation, flight, and activity collections; doing that for every
+  // historical card on a peer defeated the point of pinning one machine into
+  // a bounded roster.
+  const representativeCardByNode = new Map<
+    string,
+    ScoutBrokerContext["snapshot"]["agents"][string]
+  >();
+  for (const agent of Object.values(broker.snapshot.agents ?? {})) {
+    const homeNodeId = agent.homeNodeId;
+    if (!homeNodeId || !peerNodeIds.has(homeNodeId) || !isBrokerAgentVisibleInWeb(agent)) continue;
+    const existing = representativeCardByNode.get(homeNodeId);
+    if (
+      !existing
+      || (latestBrokerAgentTimestamp(agent, null) ?? 0)
+        > (latestBrokerAgentTimestamp(existing, null) ?? 0)
+    ) {
+      representativeCardByNode.set(homeNodeId, agent);
+    }
+  }
+  const peerAgents = [...representativeCardByNode.values()]
+    .map((agent) => brokerAgentCardToWebAgent(broker, agent))
+    .filter((agent): agent is WebAgent => Boolean(agent))
+    .sort((left, right) =>
+      (right.updatedAt ?? 0) - (left.updatedAt ?? 0)
+      || left.name.localeCompare(right.name),
+    );
   if (peerAgents.length === 0) return mostRecentAgents(agents, limit);
 
   const byId = new Map(agents.map((agent) => [agent.id, agent]));
   for (const peer of peerAgents) {
-    byId.set(peer.id, peer);
+    // The caller has already merged database and broker data for cards it
+    // knows. Add missing peer cards without replacing that richer projection.
+    if (!byId.has(peer.id)) byId.set(peer.id, peer);
   }
   const merged = [...byId.values()];
   if (limit === undefined) return merged;
 
-  const limited = mostRecentAgents(merged, limit);
-  const included = new Set(limited.map((agent) => agent.id));
-  for (const peer of peerAgents) {
-    if (!included.has(peer.id)) {
-      limited.push(peer);
-    }
+  // Pin one representative per current peer, not every card on that peer.
+  // The old append-after-limit behavior made `limit=20` return hundreds of
+  // rows, defeating both the API contract and the intended first-paint cap.
+  const representatives = peerAgents
+    .map((peer) => byId.get(peer.id) ?? peer)
+    .slice(0, limit);
+  const included = new Set(representatives.map((agent) => agent.id));
+  const limited = [...representatives];
+  for (const agent of mostRecentAgents(merged, undefined)) {
+    if (limited.length >= limit) break;
+    if (included.add(agent.id)) limited.push(agent);
   }
-  return limited;
+  return mostRecentAgents(limited, undefined);
 }
 
 function agentListSummary(agent: WebAgent) {
@@ -2523,13 +2581,12 @@ function agentListSummary(agent: WebAgent) {
   };
 }
 
-async function withAgentRepoKeys(agents: WebAgent[]): Promise<WebAgent[]> {
+function withAgentRepoKeys(agents: WebAgent[]): WebAgent[] {
   const roots = agents
     .map((agent) => agent.projectRoot)
     .filter((root): root is string => Boolean(root));
   if (roots.length === 0) return agents;
-  const keys = await resolveRepoKeysByRoot(roots).catch(() => null);
-  if (!keys) return agents;
+  const keys = cachedRepoKeysByRoot(roots);
   return agents.map((agent) => {
     const repoKey = agent.projectRoot ? keys.get(agent.projectRoot) ?? null : null;
     return repoKey ? { ...agent, repoKey } : agent;
@@ -2627,10 +2684,10 @@ async function queryAgentsIncludingBrokerCards(
   const agents = queryAgents(databaseLimit)
     .filter((agent) => !archivedIds.has(agent.id));
   if (!includeRichBrokerContext) {
-    // Keep the frequently-polled roster off the broker's full snapshot and
-    // terminal-attention paths. SQLite remains authoritative for full agent
-    // metadata; compact home data supplies broker-only cards without transferring
-    // message history or building the terminal-attention index.
+    // Keep the frequently-polled roster off the broker's full snapshot. SQLite
+    // remains authoritative for full agent metadata; compact home data supplies
+    // broker-only cards and current lifecycle state without transferring message
+    // history. An explicit attention read can still decorate this bounded roster.
     const home = await loadBrokerHome();
     const brokerAgents = home
       ? home.agents
@@ -2640,11 +2697,13 @@ async function queryAgentsIncludingBrokerCards(
     const brokerById = new Map(brokerAgents.map((agent) => [agent.id, agent]));
     const mergedAgents = agents.map((agent) => mergeBrokerAgentProjection(agent, brokerById.get(agent.id)));
     const existingIds = new Set(mergedAgents.map((agent) => agent.id));
-    const broker = await loadBrokerContext();
-    const roster = withPinnedMeshPeerAgents([
+    const attention = includeAttention
+      ? await queryAgentAttentionIndex(null, capture)
+      : new Map<string, AgentAttentionEntry>();
+    const roster = mostRecentAgents(applyAgentAttention([
       ...mergedAgents,
       ...brokerAgents.filter((agent) => !existingIds.has(agent.id)),
-    ], broker, limit);
+    ], attention), limit);
     return withAgentRepoKeys(roster);
   }
   const broker = await loadBrokerContext();
@@ -4849,13 +4908,11 @@ async function buildHudRunnerOptions(
 ) {
   // This endpoint sits on the global-hotkey path, so it deliberately avoids
   // the workspace scan performed by the full agent-configuration snapshot.
-  const [settingsResult, catalogResult, runtimeCatalogResult] = await Promise.allSettled([
+  const [settingsResult, runtimeCatalogResult] = await Promise.allSettled([
     readOpenScoutSettings({ currentDirectory }),
-    loadHarnessCatalogSnapshot(),
     loadBrokerRuntimeCatalog(),
   ]);
   const settings = settingsResult.status === "fulfilled" ? settingsResult.value : null;
-  const catalog = catalogResult.status === "fulfilled" ? catalogResult.value : null;
   const liveRuntimeCatalog = runtimeCatalogResult.status === "fulfilled" ? runtimeCatalogResult.value : null;
   const runtimeCatalog = liveRuntimeCatalog?.catalog ?? SCOUT_RUNTIME_CATALOG;
   const allAgents = queryAgents(50);
@@ -4871,20 +4928,21 @@ async function buildHudRunnerOptions(
     : scoutRuntimeDefaultHarness(runtimeCatalog) ?? "claude";
 
   const harnessesById = new Map<string, HudRunnerHarnessOption>();
-  const readinessByHarness = new Map((catalog?.entries ?? []).map((entry) => [entry.harness, entry]));
   for (const entry of runtimeCatalog.harnesses) {
     // Hidden transports remain valid for exact launches and resume, but they
     // are not a second operator-facing choice in the HUD composer.
     if (!entry.enabled || entry.listed === false) continue;
-    const readiness = readinessByHarness.get(entry.id);
     harnessesById.set(entry.id, {
       id: entry.id,
       name: entry.id,
       label: entry.label,
       description: null,
-      state: readiness?.readinessReport.state ?? null,
-      ready: readiness?.readinessReport.ready ?? null,
-      detail: readiness?.readinessReport.detail ?? null,
+      // Full harness readiness executes local health checks and can take
+      // several seconds across the installed fleet. New task only needs the
+      // broker-owned launch catalog; launch remains the final authority.
+      state: null,
+      ready: null,
+      detail: null,
     });
   }
 
@@ -5105,6 +5163,7 @@ export async function createOpenScoutWebServer(
 ): Promise<OpenScoutWebServer> {
   const shellTtl = options.shellStateCacheTtlMs ?? 15_000;
   const currentDirectory = options.currentDirectory;
+  const lanAccessScope = options.lanAccessScope ?? resolveScoutWebLanAccessScope(process.env);
 
   // Approval-gated LAN pairing: a phone tapping an idle Mac registers a request
   // here; the Mac approves it before pair mode starts and the payload is served.
@@ -5130,11 +5189,42 @@ export async function createOpenScoutWebServer(
     startGlobalHeuristicsWatcher();
   }
   const app = new Hono();
+  app.use("*", async (c, next) => {
+    const peerAddress = (options.resolvePeerAddress ?? resolveScoutRequestPeerAddress)(c);
+    if (!isScoutWebRequestAllowedFromPeer(c.req.raw, peerAddress, lanAccessScope)) {
+      return c.text("Not Found", 404);
+    }
+    await next();
+  });
   installHttpsEdgeSecurityHeaders(app, options.publicOrigin);
   const shellStateCache = createCachedSnapshot<OpenScoutWebShellState>(
     loadOpenScoutWebShellState,
     shellTtl,
   );
+  const readAgentConfigurationSnapshot = coalesce(
+    () => buildAgentConfigurationSnapshot(currentDirectory),
+    30_000,
+  );
+  const runnerOptionsReaders = new Map<
+    string,
+    () => Promise<Awaited<ReturnType<typeof buildHudRunnerOptions>>>
+  >();
+  const readRunnerOptions = (
+    scope: ScoutRuntimeCapabilityCatalog["scope"],
+    projectRoot: string,
+  ) => {
+    const key = `${scope}\0${projectRoot}`;
+    let read = runnerOptionsReaders.get(key);
+    if (!read) {
+      if (runnerOptionsReaders.size >= 32) runnerOptionsReaders.clear();
+      read = coalesce(
+        () => buildHudRunnerOptions(currentDirectory, { scope, projectRoot }),
+        30_000,
+      );
+      runnerOptionsReaders.set(key, read);
+    }
+    return read();
+  };
   const agentBrokerContextReader = createAgentBrokerContextReader();
   const agentBrokerHomeReader = createAgentBrokerHomeReader();
   const dispatchBrokerSnapshotCache = createCachedSnapshot<BrokerDiagnosticsSnapshot | null>(async () => {
@@ -5210,6 +5300,7 @@ export async function createOpenScoutWebServer(
     trustedHosts: options.trustedHosts,
     trustedOrigins: options.trustedOrigins,
     authToken: options.authToken,
+    resolvePeerAddress: options.resolvePeerAddress,
   });
 
   mountScoutDeckSurfaceRoutes(app, {
@@ -5621,68 +5712,134 @@ export async function createOpenScoutWebServer(
         ? links.tailnet ?? links.default
         : links.default;
   };
+  // GET /pair is the phone's LAN knock. It is not operator login: the Mac
+  // identifies the connecting app, then allow/deny. Do not put this behind
+  // the web session cookie.
   app.get(`/${SCOUT_PAIRING_DEEP_LINK_PATH}`, async (c) => {
     c.header("cache-control", "no-store");
     const route = c.req.query("route")?.trim().toLowerCase() ?? null;
     const token = c.req.query("token")?.trim() || null;
     const wantsJson = (c.req.header("accept") ?? "").includes("application/json");
+    const peerAddress = (options.resolvePeerAddress ?? resolveScoutRequestPeerAddress)(c);
+    const xff = c.req.header("x-forwarded-for");
+    const forwardedIp = (xff ? xff.split(",").at(-1)?.trim() : null)
+      || c.req.header("x-real-ip")?.trim()
+      || null;
+    const loopbackPeer = Boolean(peerAddress && isLoopbackScoutAddress(peerAddress));
+    const sameMacRequest = isSameMacScoutRequest(c.req.raw, peerAddress);
+    const relayedLanRequest = Boolean(
+      loopbackPeer
+      && c.req.header(SCOUT_PAIR_RELAY_HEADER) === "1",
+    );
+    const directLanRequest = Boolean(peerAddress && !isLoopbackScoutAddress(peerAddress));
+    // A local reverse proxy is still carrying the browser's identity. The
+    // shared same-Mac classifier accepts this Mac's own interface addresses,
+    // while remote, malformed, or multi-hop forwarding stays approval-gated.
+    const proxiedLanRequest = Boolean(
+      loopbackPeer
+      && !relayedLanRequest
+      && !sameMacRequest,
+    );
+    const unidentifiedPairingIngress = !peerAddress;
+    const requiresApproval = relayedLanRequest
+      || directLanRequest
+      || proxiedLanRequest
+      || unidentifiedPairingIngress;
+    const requesterApp = parseScoutPairClient(
+      c.req.header(SCOUT_PAIR_CLIENT_HEADER),
+      c.req.header("user-agent"),
+    );
 
-    const state = await loadPairingState(currentDirectory, true);
+    // `/pair` is unauthenticated and polled frequently. Use the coalesced
+    // reader so LAN traffic cannot force filesystem/process discovery work on
+    // every request; the phone already tolerates this short refresh window.
+    const state = await loadPairingState(currentDirectory, false);
     const location = pickPairingLocation(state, route);
 
-    // Live payload available (pair mode running) — hand it straight over. This
-    // is the existing fast path: manual start, QR, or an approved request whose
-    // pair mode has come up. Once delivered, the request is done.
-    //
-    // Delivering it and burying the token are one decision, so the store takes
-    // it: `fulfill` reports the row it buried, and only a report is licence to
-    // redirect. A token whose row this instance cannot see live — expired here
-    // while a peer holds an extension it could not publish, or already spent —
-    // gets the answer any unknown token gets, and nothing is handed over. The
-    // instance that can still see the row is the one that serves it.
-    if (location) {
-      if (token && !pendingPairRequests.fulfill(token)) {
-        return wantsJson
-          ? c.json({ status: "expired", token }, 410)
-          : c.text("Pairing request expired.", 410);
-      }
-      return c.redirect(location, 302);
-    }
-
-    // No live payload. Initial pairing is trust-on-first-use, so we don't start
-    // pair mode for just anyone on the LAN — we register a request the Mac must
-    // approve. The device polls with its token until approval brings the
-    // payload up (302) or the request is denied/expires.
+    // A polling token is a bearer credential for one operator decision. Check
+    // that decision before considering the live payload, and make the approved
+    // check + one-time consumption one atomic store transition.
     if (token) {
-      const req = pendingPairRequests.get(token);
-      if (!req) {
+      const request = pendingPairRequests.get(token);
+      if (!request) {
         return wantsJson
           ? c.json({ status: "expired", token }, 410)
           : c.text("Pairing request expired.", 410);
       }
-      if (req.status === "denied") {
+      if (request.status === "denied") {
         return wantsJson
           ? c.json({ status: "denied", token }, 403)
           : c.text("Pairing request was denied.", 403);
       }
+      if (location && request.status === "approved") {
+        if (!pendingPairRequests.fulfill(token, "approved")) {
+          // A consume that cannot win the shared CAS fails closed without
+          // deleting the request. Keep an approved device polling; if a peer
+          // won with a denial or delivery, reflect that terminal state instead.
+          const current = pendingPairRequests.get(token);
+          if (current?.status === "approved" || current?.status === "pending") {
+            return c.json({ status: current.status, token, pollAfterMs: 1200 }, 202);
+          }
+          if (current?.status === "denied") {
+            return wantsJson
+              ? c.json({ status: "denied", token }, 403)
+              : c.text("Pairing request was denied.", 403);
+          }
+          return wantsJson
+            ? c.json({ status: "expired", token }, 410)
+            : c.text("Pairing request expired.", 410);
+        }
+        return c.redirect(location, 302);
+      }
       // pending, or approved but the relay payload isn't up yet — keep polling.
       // Touch so an actively-polling device doesn't age out mid-approval.
       pendingPairRequests.touch(token);
-      return c.json({ status: req.status, token, pollAfterMs: 1200 }, 202);
+      return c.json({ status: request.status, token, pollAfterMs: 1200 }, 202);
+    }
+
+    // Same-Mac browser flows may still use the existing live-payload fast path.
+    // A direct LAN peer or the narrow relay ingress always needs an approved
+    // token, even while some other pairing session is already live.
+    if (location && !requiresApproval) {
+      return c.redirect(location, 302);
     }
 
     // First contact from an unpaired device — register an approval request.
-    const xff = c.req.header("x-forwarded-for");
-    const requesterIp = (xff ? xff.split(",")[0]?.trim() : null)
-      || c.req.header("x-real-ip")?.trim()
-      || null;
-    const req = pendingPairRequests.create({
-      requesterIp,
-      requesterLabel: c.req.header("x-scout-device-name")?.trim() || null,
-      route,
-    });
+    const requesterIp = unidentifiedPairingIngress
+      ? null
+      : relayedLanRequest || proxiedLanRequest
+        ? forwardedIp
+        : directLanRequest
+          ? peerAddress ?? null
+          : forwardedIp;
+    if (requiresApproval && !requesterIp) {
+      return wantsJson
+        ? c.json({ status: "unavailable" }, 503)
+        : c.text("Unable to identify pairing requester.", 503);
+    }
+
+    let request: ReturnType<typeof pendingPairRequests.create>;
+    try {
+      request = pendingPairRequests.create({
+        requesterIp,
+        requesterLabel: c.req.header("x-scout-device-name")?.trim() || null,
+        requesterApp,
+        route,
+      });
+    } catch (error) {
+      if (!(error instanceof PairRequestCapacityError)) throw error;
+      c.header("retry-after", String(Math.ceil(error.retryAfterMs / 1000)));
+      return wantsJson
+        ? c.json({ status: "busy", retryAfterMs: error.retryAfterMs }, 429)
+        : c.text("Too many pairing requests. Try again shortly.", 429);
+    }
+    if (request.status === "denied") {
+      return wantsJson
+        ? c.json({ status: "denied", token: request.token }, 403)
+        : c.text("Pairing request was denied.", 403);
+    }
     return wantsJson
-      ? c.json({ status: "pending", token: req.token, pollAfterMs: 1200 }, 202)
+      ? c.json({ status: request.status, token: request.token, pollAfterMs: 1200 }, 202)
       : c.text(
           `${SCOUT_PAIRING_DEEP_LINK_SCHEME}://${SCOUT_PAIRING_DEEP_LINK_PATH} pairing requires approval on the Mac.`,
           202,
@@ -5704,7 +5861,7 @@ export async function createOpenScoutWebServer(
         .map((request) => ({
           id: `pairing_request:${request.token}`,
           type: "pairing_request",
-          title: `${request.requesterLabel?.trim() || "A device"} wants to pair`,
+          title: `${pairRequesterDisplay(request)} wants to pair`,
           body: `On your network${request.requesterIp ? ` · ${request.requesterIp}` : ""}.`,
           createdAt: request.createdAt,
           updatedAt: request.updatedAt,
@@ -5850,7 +6007,7 @@ export async function createOpenScoutWebServer(
   );
 
   app.get("/api/agent-config/snapshot", async (c) =>
-    c.json(await buildAgentConfigurationSnapshot(currentDirectory)),
+    c.json(await readAgentConfigurationSnapshot()),
   );
   app.get("/api/runner/options", async (c) => {
     const requestedScope = c.req.query("scope");
@@ -5859,10 +6016,10 @@ export async function createOpenScoutWebServer(
       || requestedScope === "global+project"
       ? requestedScope
       : "global+project";
-    return c.json(await buildHudRunnerOptions(currentDirectory, {
+    return c.json(await readRunnerOptions(
       scope,
-      projectRoot: c.req.query("projectRoot") || currentDirectory,
-    }));
+      c.req.query("projectRoot") || currentDirectory,
+    ));
   });
   // The roster SQL behind /api/agents costs about a second of synchronous
   // event-loop block per read, and several surfaces poll it. A short coalesce
@@ -5878,7 +6035,7 @@ export async function createOpenScoutWebServer(
       entry = coalesce(
         () => queryAgentsIncludingBrokerCards(
           limit,
-          !summary || attentionRequested,
+          !summary,
           attentionRequested,
           options.captureTmuxPane ?? defaultCaptureTmuxPane,
           agentBrokerContextReader,
@@ -6899,8 +7056,15 @@ export async function createOpenScoutWebServer(
       // whichever source would have answered. Whether the cursor still resolves
       // is the source's business, and the source throws the same error type.
       parseMessageHistoryCursor(beforeMessageId);
+      const brokerContext = cId
+        ? await loadScoutBrokerContext(undefined, {
+            scope: "conversations",
+            waitForInitial: false,
+            initialRefreshDelayMs: 750,
+          }).catch(() => null)
+        : null;
       const brokerMessages = cId
-        ? await getScoutConversationMessages(cId, limit, beforeMessageId)
+        ? await getScoutConversationMessages(cId, limit, beforeMessageId, brokerContext)
         : null;
       if (cId && brokerMessages && brokerMessages.length > 0 && brokerMessages.length < limit) {
         // The broker snapshot is a rolling window: a short page means the
@@ -7325,7 +7489,11 @@ export async function createOpenScoutWebServer(
     if (flights.length > 0) {
       return c.json(flights);
     }
-    const broker = await loadScoutBrokerContext().catch(() => null);
+    const broker = await loadScoutBrokerContext(undefined, {
+      scope: "conversations",
+      waitForInitial: false,
+      initialRefreshDelayMs: 750,
+    }).catch(() => null);
     return c.json(broker ? queryBrokerFlightsForWeb(broker, query) : flights);
   });
   app.get("/api/follow", (c) => {
@@ -7344,7 +7512,10 @@ export async function createOpenScoutWebServer(
       }),
     );
   });
-  const readCommsList = async (c: Context) => {
+  const readCommsList = async (
+    c: Context,
+    options: { preferMaterialized?: boolean } = {},
+  ) => {
     const rawLimit = Number(c.req.query("limit"));
     const rawKinds = c.req.query("kinds")?.trim();
     const filters = {
@@ -7353,9 +7524,28 @@ export async function createOpenScoutWebServer(
       kinds: parseConversationKinds(rawKinds),
       machineId: c.req.query("machineId") || undefined,
     };
+    // `/api/comms` is a bounded list/enrichment read. Keep it on the durable,
+    // indexed projection even after rich broker state has warmed; selected
+    // conversations load their complete detail through `/api/session/:id`.
+    const preferredProjection = options.preferMaterialized && !filters.machineId
+      ? await readScoutConversationProjection(160)
+      : undefined;
+    if (preferredProjection?.items.some((item) => item.entityKind === "scout_conversation")) {
+      return {
+        items: provisionalScoutConversations(preferredProjection, filters),
+        listReady: true,
+      };
+    }
+
     const broker = await loadScoutBrokerContext(
       undefined,
-      filters.machineId ? {} : { scope: "conversations" },
+      filters.machineId
+        ? {}
+        : {
+            scope: "conversations",
+            waitForInitial: false,
+            initialRefreshDelayMs: 750,
+          },
     ).catch(() => null);
     if (broker) {
       // A concrete broker snapshot makes an empty result authoritative for this
@@ -7364,6 +7554,44 @@ export async function createOpenScoutWebServer(
       // canonical store itself is nonempty.
       const items = await getScoutConversations(filters, broker);
       return { items, listReady: true };
+    }
+
+    if (!filters.machineId) {
+      // The broker owns the records, while its SQLite projection gives the web
+      // process a durable, already-indexed cold-start view. A non-empty
+      // projection is safe to paint immediately.
+      const launchProjection = preferredProjection === undefined
+        ? await readScoutConversationProjection(Math.min(160, filters.limit ?? 160))
+        : preferredProjection;
+      // The shared projection also contains observed harness sessions. Those
+      // rows are intentionally not web chats, so an observed-only top page is
+      // not evidence that this endpoint has a usable Scout list (a busy fleet
+      // can push older Scout rows below the shared 160-row launch window).
+      if (launchProjection?.items.some((item) => item.entityKind === "scout_conversation")) {
+        return {
+          items: provisionalScoutConversations(launchProjection, filters),
+          listReady: true,
+        };
+      }
+
+      // Compatibility fallback for a broker that has not produced the shared
+      // SCO-102 projection yet. This path is intentionally secondary: it has
+      // less complete semantics and is retired once the shared view is proven.
+      const projected = querySessions(250);
+      if (projected.length > 0) {
+        const query = filters.query?.trim().toLocaleLowerCase() ?? "";
+        const kinds = filters.kinds ? new Set<string>(filters.kinds) : null;
+        const items = projected
+          .filter((item) => !kinds || kinds.has(item.kind))
+          .filter((item) => !query || [
+            item.title,
+            item.alias,
+            item.agentName,
+            item.preview,
+          ].some((value) => value?.toLocaleLowerCase().includes(query)))
+          .slice(0, filters.limit ?? projected.length);
+        return { items, listReady: true };
+      }
     }
 
     // With no readable broker context, an empty array is not a valid recovery
@@ -7390,7 +7618,7 @@ export async function createOpenScoutWebServer(
   }, 503);
 
   app.get("/api/comms", async (c) => {
-    const { items, listReady } = await readCommsList(c);
+    const { items, listReady } = await readCommsList(c, { preferMaterialized: true });
     if (!listReady) {
       return unavailableConversationList(c);
     }
@@ -7629,15 +7857,18 @@ export async function createOpenScoutWebServer(
       });
     }
 
-    const parsedRef = parseSessionRouteRef(refId);
-    const harnessSession = parsedRef
-      ? querySessions(200).find((session) =>
-          sessionHarnessMatches(parsedRef.harness, session.harness)
-          && parseSessionRouteRef(session.harnessSessionId)?.refId === parsedRef.refId
-        )
-      : null;
     const payload = await loadSessionRefObservePayload(refId);
     if (payload) {
+      // A raw observed transcript has no writable Scout owner. Avoid building
+      // the full session list for this common read-only path; on large pilot
+      // databases that projection can dominate the time to open a tiny file.
+      const parsedRef = payload.agentId ? parseSessionRouteRef(refId) : null;
+      const harnessSession = parsedRef
+        ? querySessions(200).find((session) =>
+            sessionHarnessMatches(parsedRef.harness, session.harness)
+            && parseSessionRouteRef(session.harnessSessionId)?.refId === parsedRef.refId
+          )
+        : null;
       return c.json({
         kind: "observe",
         refId,
@@ -7665,7 +7896,21 @@ export async function createOpenScoutWebServer(
       return c.json({ error: "chatId must be an opaque chat id" }, 400);
     }
     const session = querySessionById(resolvedChatId);
-    const conversation = await getScoutConversationById(resolvedChatId);
+    const broker = session
+      ? await loadScoutBrokerContext(undefined, {
+          scope: "conversations",
+          waitForInitial: false,
+          initialRefreshDelayMs: 750,
+        }).catch(() => null)
+      : undefined;
+    const conversation = broker === null
+      ? null
+      : broker
+        ? (await getScoutConversations(
+            { conversationId: resolvedChatId, limit: 1 },
+            broker,
+          ))[0] ?? null
+        : await getScoutConversationById(resolvedChatId);
     if (session && conversation) {
       // SQLite contributes harness-local fields, but the broker owns Chat
       // identity, transcript recency, equivalent ids, and turn lifecycle.
@@ -8823,6 +9068,10 @@ export async function createOpenScoutWebServer(
     const limitParam = parseOptionalPositiveInt(c.req.query("limit"), 500) ?? 500;
     const includeTranscripts = c.req.query("transcripts") === "true" || c.req.query("transcripts") === "1";
     const mode = c.req.query("mode") === "assistant-replies" ? "assistant-replies" : null;
+    const requestedWindowMs = parseOptionalPositiveInt(c.req.query("windowMs"));
+    const windowMs = requestedWindowMs === undefined
+      ? undefined
+      : Math.min(requestedWindowMs, 24 * 60 * 60 * 1_000);
     const url = new URL(scoutBrokerPaths.v1.tailRecent, resolveScoutBrokerUrl());
     url.searchParams.set("limit", String(limitParam));
     if (includeTranscripts) {
@@ -8831,7 +9080,10 @@ export async function createOpenScoutWebServer(
     if (mode) {
       url.searchParams.set("mode", mode);
     }
-    const cacheKey = `limit=${limitParam};transcripts=${includeTranscripts ? "1" : "0"};mode=${mode ?? "all"}`;
+    if (windowMs !== undefined) {
+      url.searchParams.set("windowMs", String(windowMs));
+    }
+    const cacheKey = `limit=${limitParam};transcripts=${includeTranscripts ? "1" : "0"};mode=${mode ?? "all"};window=${windowMs ?? "all"}`;
     let cache = tailRecentCaches.get(cacheKey);
     if (!cache) {
       cache = createBrokerJsonCache<TailRecentPayload>();

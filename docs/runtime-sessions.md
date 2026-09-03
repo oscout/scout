@@ -16,8 +16,8 @@ MCP, skill, or broker semantics around harness lifecycle.
 
 | Noun | Meaning |
 | --- | --- |
-| Agent | Stable addressable identity, such as `hudson.main.air-local` |
-| Session | A concrete harness conversation/process/thread that can receive work |
+| Agent | Durable addressable domain identity, such as `hudson.main.air-local` |
+| Session | An opaque broker handle resolving to one concrete harness context |
 | Endpoint | The routable attachment between one agent identity and one session |
 | Invocation | A broker-owned request for an agent to do something |
 | Flight | The lifecycle state for an invocation |
@@ -48,6 +48,14 @@ into Scout session metadata instead.
 7. The broker should do the routing work or coach the sender toward the next
    viable action. Do not make agents run a long orientation ritual just to
    discover that a target needs a session, a qualifier, or an attach operation.
+8. Canonical session addresses use `session:sess.<token>`. The token carries no
+   agent, profile, project, harness, model, branch, or node semantics.
+9. Harness-native session ids are resolver aliases, not public Scout identity.
+   Compatibility inputs may accept them, but receipts should return the opaque
+   Scout handle.
+10. Starting or observing a session must not create a new agent, actor, profile,
+    or mesh directory member. The session mapping is bounded and may expire;
+    durable attribution and work belong to their referenced domain records.
 
 ## Broker Coaching
 
@@ -277,18 +285,17 @@ and max uses), are retired after a peer uses their direct conversation, and are
 pruned by retention so older disposable cards do not crowd `who`/search results.
 Manual CLI cards remain persistent unless created with `scout card create
 --one-time`; `scout card cleanup` retires expired or overflow one-time cards.
-When a caller asks a concrete `projectPath` and no existing project card is a
-clear winner, the broker may create the one-time card itself, accept the work
-against that generated identity, and prune older one-time cards for the same
-sender/project. This includes the case where multiple same-project cards are
-equally plausible but the ask requests fresh work rather than a specific
-session.
+When a caller asks a concrete `projectPath`, the broker resolves the durable
+project/agent/profile data and creates only the execution state it needs. A new
+harness context gets a session mapping and endpoint lease, not a one-time agent
+identity. Legacy one-time/session-shaped cards remain readable during migration
+and are pruned by retention.
 
 When a CLI or MCP ask provides only execution preferences, such as
 `--harness codex` or `session: "new"`, Scout treats the current directory as the
-project target and requests a one-time project agent for that fresh work. This
-keeps "run this repo in a fresh compatible worker" cheap without forcing the
-caller to pre-create or choose a stable card.
+project target and requests a fresh session for that durable project/profile.
+This keeps "run this repo in a fresh compatible worker" cheap without forcing
+the caller to pre-create or choose an execution identity.
 
 For a different repo, callers should provide `projectPath` / `--project` plus
 optional `harness` / `--harness`. This is a capability request, not an identity
@@ -300,8 +307,9 @@ name/pin is an explicit promotion after the worker is known good.
 When the broker exposes a friendly situated target, the human-typed form is
 `target:<handle>`. Agent-authored prompts and compact UI may render the same
 handle as `⌖handle`. Use this for "get back to that useful situation" shorthand.
-Use `session:<native-id>` for exact raw harness continuation. If the same raw id
-exists in more than one harness, scope it as `session:<harness>:<native-id>`.
+Use `session:sess.<token>` for exact harness continuation. Legacy
+`session:<native-id>` and `session:<harness>:<native-id>` inputs are accepted by
+the compatibility resolver but are not canonical addresses.
 
 ## Route Alias Lifetime
 
@@ -329,20 +337,17 @@ existing harness session over many turns. Repeating the session id means
 "continue here"; omitting it means Scout may route by agent/project and create
 the lightest usable fresh session for the request.
 
-The session id does not have to be broker-minted. It only has to be
-**harness-known** and exact (a live broker endpoint is sufficient but not
-required). Scout resolves `targetSessionId` / `session:<id>` through endpoint
-aliases such as endpoint id, broker session id, `externalSessionId`, native
-harness thread id, and adapter-provided aliases. When no live endpoint exists,
-Scout may locate the id in the harness session store (for example
-`~/.codex/sessions`) and wake a flat-dispatch cardless endpoint that resumes
-that exact thread. A session known to its harness but not yet to the broker is
-still resolvable; absence of a live endpoint is not evidence of absence of a
-session. When a native id needs scope, use the harness-qualified form
-`session:<harness>:<native-id>` or pass `execution.harness` with
-`targetSessionId`. Scout must fail closed on unknown, ambiguous harness, cwd
-conflict, unresumable, or wake-failed exact-session references; it must not
-silently reinterpret them as fresh project or card routing.
+The canonical session id is broker-minted and opaque. Scout resolves
+`targetSessionId` / `session:sess.<token>` through the session mapping to the
+endpoint and harness-native context. Compatibility inputs may supply endpoint
+ids, `externalSessionId`, native harness thread ids, and adapter-provided
+aliases; the broker resolves those to the canonical handle before returning a
+receipt. When no live endpoint exists, Scout may use the mapping's native alias
+to locate the context in the harness session store (for example
+`~/.codex/sessions`) and wake a flat-dispatch endpoint that resumes that exact
+thread. Scout must fail closed on unknown, expired, cwd-conflicting,
+unresumable, or wake-failed exact-session references; it must not silently
+reinterpret them as fresh project or agent routing.
 
 Agent cards and labels are fresh-session targets by default. A card carries
 identity, harness/profile/model hints, project root, and return-address
@@ -353,8 +358,9 @@ should consult session reachability diagnostics only when the request names an e
 `session: "new"` may also target an existing agent card. In that shape, the card
 supplies the identity, project, harness profile, and return-address metadata;
 the session policy says the work should enter fresh target context instead of
-continuing a concrete prior session for that card. Scout defines a one-time
-project agent when the caller routed by project and explicitly asked for one.
+continuing a concrete prior session for that card. Project routing creates a
+new session mapping beneath the durable project/agent/profile data, never a new
+identity merely to name the execution.
 
 Use exact `agentId` only when the sender knows the intended owner. Use project
 routing plus optional harness/capability when the sender knows the codebase but

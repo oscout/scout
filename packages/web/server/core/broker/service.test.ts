@@ -17,8 +17,10 @@ import {
   askScoutQuestion,
   loadScoutBrokerContext,
   loadScoutMessages,
+  markScoutConversationRead,
   openScoutPeerSession,
   readScoutBrokerHealth,
+  readScoutBrokerTailDiscovery,
   readScoutBrokerTailRecent,
   resolveScoutBrokerUrl,
   ScoutDirectDeliveryUnavailableError,
@@ -38,6 +40,7 @@ const originalBrokerInternalUrl = process.env.OPENSCOUT_BROKER_INTERNAL_URL;
 const originalBrokerSocketPath = process.env.OPENSCOUT_BROKER_SOCKET_PATH;
 const originalSkipUserProjectHints = process.env.OPENSCOUT_SKIP_USER_PROJECT_HINTS;
 const originalFetch = globalThis.fetch;
+const originalDateNow = Date.now;
 const testDirectories = new Set<string>();
 
 afterEach(() => {
@@ -83,6 +86,7 @@ afterEach(() => {
     process.env.OPENSCOUT_SKIP_USER_PROJECT_HINTS = originalSkipUserProjectHints;
   }
   globalThis.fetch = originalFetch;
+  Date.now = originalDateNow;
   for (const directory of testDirectories) {
     rmSync(directory, { recursive: true, force: true });
   }
@@ -124,6 +128,49 @@ describe("resolveScoutBrokerUrl", () => {
     process.env.OPENSCOUT_BROKER_URL = "http://mesh.example.test:43110";
 
     expect(resolveScoutBrokerUrl()).toBe("http://127.0.0.1:43110");
+  });
+});
+
+describe("markScoutConversationRead", () => {
+  test("posts directly without loading the broker snapshot", async () => {
+    const requests: Array<{ method: string; path: string; body?: unknown }> = [];
+    globalThis.fetch = (async (input, init) => {
+      const request = input instanceof Request ? input : new Request(input, init);
+      const url = new URL(request.url);
+      requests.push({
+        method: request.method,
+        path: url.pathname,
+        body: request.method === "POST" ? await request.json() : undefined,
+      });
+
+      return jsonResponse({
+        ok: true,
+        cursor: {
+          conversationId: "chn-direct-read",
+          readerNodeId: "node-local",
+          lastReadMessageId: "msg-latest",
+          lastReadAt: 1234,
+        },
+        acknowledgedDeliveries: 0,
+      });
+    }) as unknown as typeof fetch;
+
+    const result = await markScoutConversationRead({
+      conversationId: "chn-direct-read",
+      lastReadMessageId: "msg-latest",
+      lastReadAt: 1234,
+      baseUrl: "http://broker.test",
+    });
+
+    expect(result.ok).toBe(true);
+    expect(requests).toEqual([{
+      method: "POST",
+      path: "/v1/conversations/chn-direct-read/read-cursors",
+      body: {
+        lastReadMessageId: "msg-latest",
+        lastReadAt: 1234,
+      },
+    }]);
   });
 });
 
@@ -209,6 +256,109 @@ describe("loadScoutBrokerContext", () => {
     expect(snapshotRequests).toBe(1);
   });
 
+  test("can warm a cold snapshot without blocking the first caller", async () => {
+    useIsolatedOpenScoutHome();
+    let snapshotRequests = 0;
+    globalThis.fetch = (async (input, init) => {
+      const request = input instanceof Request ? input : new Request(input, init);
+      const url = new URL(request.url);
+      if (url.pathname === "/health") {
+        return jsonResponse({ ok: true, nodeId: "node-1", meshId: "mesh-1" });
+      }
+      if (url.pathname === "/v1/node") {
+        return jsonResponse({ id: "node-1" });
+      }
+      if (url.pathname === "/v1/snapshot") {
+        snapshotRequests += 1;
+        return jsonResponse({
+          nodes: {},
+          actors: {},
+          agents: {},
+          endpoints: {},
+          conversations: {},
+          bindings: {},
+          messages: {},
+          readCursors: {},
+          invocations: {},
+          flights: {},
+          collaborationRecords: {},
+        });
+      }
+      return jsonResponse({ error: "unexpected request" }, 404);
+    }) as unknown as typeof fetch;
+
+    await expect(loadScoutBrokerContext(undefined, {
+      since: 2468,
+      waitForInitial: false,
+    })).resolves.toBeNull();
+
+    await expect(loadScoutBrokerContext(undefined, { since: 2468 })).resolves.toMatchObject({
+      node: { id: "node-1" },
+    });
+    expect(snapshotRequests).toBe(1);
+  });
+
+  test("serves a stale snapshot while refreshing an expired cache entry", async () => {
+    useIsolatedOpenScoutHome();
+    let now = originalDateNow();
+    Date.now = () => now;
+    let advertiseScope: "local" | "mesh" = "local";
+    let snapshotRequests = 0;
+    let signalBackgroundSnapshot: (() => void) | null = null;
+    const backgroundSnapshotRequested = new Promise<void>((resolve) => {
+      signalBackgroundSnapshot = resolve;
+    });
+    globalThis.fetch = (async (input, init) => {
+      const request = input instanceof Request ? input : new Request(input, init);
+      const url = new URL(request.url);
+      if (url.pathname === "/health") {
+        return jsonResponse({ ok: true, nodeId: "node-1", meshId: "mesh-1" });
+      }
+      if (url.pathname === "/v1/node") {
+        return jsonResponse({ id: "node-1", advertiseScope });
+      }
+      if (url.pathname === "/v1/snapshot") {
+        snapshotRequests += 1;
+        if (snapshotRequests === 2) signalBackgroundSnapshot?.();
+        return jsonResponse({
+          nodes: {},
+          actors: {},
+          agents: {},
+          endpoints: {},
+          conversations: {},
+          bindings: {},
+          messages: {},
+          readCursors: {},
+          invocations: {},
+          flights: {},
+          collaborationRecords: {},
+        });
+      }
+      return jsonResponse({ error: "unexpected request" }, 404);
+    }) as unknown as typeof fetch;
+
+    expect((await loadScoutBrokerContext(undefined, { since: 5678 }))?.node.advertiseScope).toBe("local");
+    advertiseScope = "mesh";
+    now += 5_001;
+
+    // Ordinary polling inside the 30-second fallback window reuses the large
+    // snapshot. Broker writes and explicit force reads invalidate separately.
+    expect((await loadScoutBrokerContext(undefined, { since: 5678 }))?.node.advertiseScope).toBe("local");
+    await Bun.sleep(0);
+    expect(snapshotRequests).toBe(1);
+
+    now += 25_000;
+
+    // Expiry begins a refresh, but the route-facing read remains immediate and
+    // receives the last known-good snapshot instead of awaiting broker JSON.
+    expect((await loadScoutBrokerContext(undefined, { since: 5678 }))?.node.advertiseScope).toBe("local");
+    await backgroundSnapshotRequested;
+    await Bun.sleep(0);
+
+    expect((await loadScoutBrokerContext(undefined, { since: 5678 }))?.node.advertiseScope).toBe("mesh");
+    expect(snapshotRequests).toBe(2);
+  });
+
   test("can bypass a primed context cache after an out-of-band broker mutation", async () => {
     useIsolatedOpenScoutHome();
     let advertiseScope: "local" | "mesh" = "local";
@@ -249,7 +399,7 @@ describe("loadScoutBrokerContext", () => {
     expect(snapshotRequests).toBe(2);
   });
 
-  test("keeps conversation-scoped snapshots separate from the default cache", async () => {
+  test("keeps narrow snapshots separate from the default cache", async () => {
     useIsolatedOpenScoutHome();
     const snapshotQueries: string[] = [];
     globalThis.fetch = (async (input, init) => {
@@ -283,11 +433,13 @@ describe("loadScoutBrokerContext", () => {
     await Promise.all([
       loadScoutBrokerContext(undefined, { since: 1234 }),
       loadScoutBrokerContext(undefined, { since: 1234, scope: "conversations" }),
+      loadScoutBrokerContext(undefined, { since: 1234, scope: "agents" }),
     ]);
 
-    expect(snapshotQueries).toHaveLength(2);
+    expect(snapshotQueries).toHaveLength(3);
     expect(snapshotQueries).toContain("?since=1234");
     expect(snapshotQueries).toContain("?since=1234&scope=conversations");
+    expect(snapshotQueries).toContain("?since=1234&scope=agents");
   });
 
   test("invalidates cached snapshots after a successful broker write", async () => {
@@ -415,6 +567,34 @@ describe("readScoutBrokerTailRecent", () => {
     expect(requestedUrl?.pathname).toBe("/v1/tail/recent");
     expect(requestedUrl?.searchParams.get("limit")).toBe("50");
     expect(requestedUrl?.searchParams.get("transcripts")).toBe("1");
+  });
+});
+
+describe("readScoutBrokerTailDiscovery", () => {
+  test("reads the broker materialized discovery inventory", async () => {
+    useIsolatedOpenScoutHome();
+    let requestedUrl: URL | null = null;
+    globalThis.fetch = (async (input, init) => {
+      const request = input instanceof Request ? input : new Request(input, init);
+      requestedUrl = new URL(request.url);
+      return jsonResponse({
+        generatedAt: 123,
+        processes: [],
+        transcripts: [],
+        totals: {
+          total: 0,
+          scoutManaged: 0,
+          hudsonManaged: 0,
+          unattributed: 0,
+          transcripts: 0,
+        },
+      });
+    }) as typeof fetch;
+
+    const discovery = await readScoutBrokerTailDiscovery();
+
+    expect(requestedUrl?.pathname).toBe("/v1/tail/discover");
+    expect(discovery?.generatedAt).toBe(123);
   });
 });
 

@@ -471,6 +471,85 @@
   background: color-mix(in srgb, var(--hud-ink) 6%, transparent);
   opacity: 1;
 }
+
+/* Flat project index. Sessions belong to the selected project's Sessions tab. */
+.pi-projectIndex {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.pi-projectGroup--flat {
+  margin: 0;
+}
+.pi-projectGroup--flat[data-selected] {
+  margin: 0;
+  padding: 0;
+  background: transparent;
+}
+.pi-projectGroupHead--flat {
+  display: block;
+}
+.pi-projectPath--flat {
+  height: auto;
+  min-height: 47px;
+  padding: 6px 7px;
+  gap: 8px;
+}
+.pi-projectGroup--flat[data-selected] .pi-projectPath--flat {
+  background: color-mix(in srgb, var(--pi-accent) 8%, transparent);
+  border-color: color-mix(in srgb, var(--pi-accent) 22%, var(--pi-hairline));
+}
+.pi-projectPath--flat > svg {
+  flex: none;
+  align-self: flex-start;
+  margin-top: 3px;
+}
+.pi-projectPathStack {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.pi-projectPathMeta {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  overflow: hidden;
+  color: var(--pi-dim);
+  font-family: var(--pi-mono);
+  font-size: var(--text-2xs);
+  white-space: nowrap;
+}
+.pi-projectPathMeta > span:first-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.pi-projectState {
+  flex: none;
+  align-self: flex-start;
+  margin-top: 1px;
+  color: color-mix(in srgb, var(--pi-accent) 78%, var(--pi-ink));
+  font-size: 10px;
+  font-weight: 650;
+}
+.pi-projectState[data-state="needs"] {
+  color: color-mix(in srgb, #d9a441 84%, var(--pi-ink));
+}
+.pi-loadingLine--railRoot {
+  width: 52%;
+  height: 6px;
+}
+.pi-projectPath--flat:focus-visible,
+.pi-railAddBtn:focus-visible,
+.pi-railFootBtn:focus-visible,
+.pi-railFindClear:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--pi-accent) 70%, white);
+  outline-offset: 1px;
+}
+
 .pi-projectSessionList {
   display: flex;
   flex-direction: column;
@@ -1043,6 +1122,7 @@
 .pi-projectRepository {
   display: flex;
   flex-direction: column;
+  align-self: start;
   overflow: hidden;
 }
 .pi-projectRepositoryHead,
@@ -2556,6 +2636,12 @@
   .pi-sessionDetail,
   .s-pi-aside,
   .pi-projectRepositoryPulse { animation: none; }
+}
+
+@media (max-width: 1120px) {
+  .pi-projectSnapshot {
+    grid-template-columns: 1fr;
+  }
 }
 
 @media (max-width: 860px) {

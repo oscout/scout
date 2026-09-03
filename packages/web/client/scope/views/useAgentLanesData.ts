@@ -27,6 +27,8 @@ import { useScopeLaneDeck } from "../useScopeLaneDeck.ts";
 import { scopeStorageKey } from "../../../shared/scope-integration.js";
 
 const LANE_HORIZON_STORAGE_KEY = scopeStorageKey("lanes-horizon");
+const TAIL_DISCOVERY_INTERVAL_MS = 60_000;
+const TAIL_DISCOVERY_LIMIT = 160;
 
 function readStoredHorizon(): AgentLaneHorizonKey {
   try {
@@ -71,8 +73,10 @@ export function useAgentLanesData({
 
   const { discovery, events: tailEvents, loadState } = useTailFeed({
     includeTranscriptReplay: true,
-    discoveryIntervalMs: 5_000,
+    discoveryIntervalMs: TAIL_DISCOVERY_INTERVAL_MS,
+    discoveryLimit: TAIL_DISCOVERY_LIMIT,
     recentLimit: tailRecentLimit,
+    recentWindowMs: traceWindowMs,
     pauseWhenHidden: true,
   });
 

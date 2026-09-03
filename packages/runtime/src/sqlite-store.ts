@@ -10,10 +10,12 @@ import {
 } from "./node-identity.js";
 
 import {
+  EPOCH_MILLISECONDS_FLOOR,
   epochMs,
   normalizeTerminalWorkspaceColumns,
   nowMs,
   parseTerminalWorkspaceLayoutJson,
+  scoutConversationFeedId,
 } from "@openscout/protocol";
 import type {
   ActorIdentity,
@@ -33,6 +35,7 @@ import type {
   ConversationBinding,
   ConversationDefinition,
   ConversationReadCursor,
+  ConversationThreadLaunchSnapshot,
   DeliveryAttempt,
   DeliveryIntent,
   DurableAction,
@@ -87,6 +90,10 @@ import {
   deliveriesTable,
 } from "./drizzle-schema.js";
 import { budgetObservationsFromEndpoint } from "./budget-observations.js";
+import {
+  runtimeSessionHandleForEndpoint,
+  runtimeSessionPrimaryAlias,
+} from "./runtime-session-handle.js";
 
 function parseJson<T>(value: string | null | undefined, fallback: T): T {
   if (!value) return fallback;
@@ -96,6 +103,21 @@ function parseJson<T>(value: string | null | undefined, fallback: T): T {
   } catch {
     return fallback;
   }
+}
+
+const PENDING_EVENT_BUSY_RETRY_MS = 25;
+
+function isTransientSqliteBusyError(error: unknown): boolean {
+  if (typeof error === "object" && error !== null) {
+    const code = (error as { code?: unknown }).code;
+    if (code === "SQLITE_BUSY" || code === "SQLITE_LOCKED") {
+      return true;
+    }
+  }
+  const message = error instanceof Error ? error.message.toLowerCase() : String(error).toLowerCase();
+  return message.includes("database is locked")
+    || message.includes("database is busy")
+    || message.includes("sqlite_busy");
 }
 
 function stringify(value: unknown): string | null {
@@ -681,30 +703,6 @@ function runtimeSessionMetadata(endpoint: AgentEndpoint): Record<string, unknown
   return endpoint.metadata ?? {};
 }
 
-function endpointRuntimeSessionPrimaryAlias(endpoint: AgentEndpoint): string | null {
-  const metadata = runtimeSessionMetadata(endpoint);
-  if (metadata.cardless === true) {
-    return firstStringValue(
-      metadataStringValue(metadata, "handle"),
-      metadataStringValue(metadata, "externalSessionId"),
-      metadataStringValue(metadata, "threadId"),
-      endpoint.sessionId,
-      endpoint.agentId,
-    );
-  }
-  return firstStringValue(
-    metadataStringValue(metadata, "externalSessionId"),
-    metadataStringValue(metadata, "threadId"),
-    metadataStringValue(metadata, "nativeSessionId"),
-    metadataStringValue(metadata, "pairingSessionId"),
-    metadataStringValue(metadata, "sessionId"),
-    endpoint.sessionId,
-    metadataStringValue(metadata, "runtimeSessionId"),
-    metadataStringValue(metadata, "runtimeInstanceId"),
-    metadataStringValue(metadata, "tmuxSession"),
-  );
-}
-
 function endpointRuntimeSessionExternalId(endpoint: AgentEndpoint): string | null {
   const metadata = runtimeSessionMetadata(endpoint);
   return firstStringValue(
@@ -743,17 +741,6 @@ function endpointRuntimeSessionIsTerminal(endpoint: AgentEndpoint): boolean {
 
 function endpointRuntimeSessionState(endpoint: AgentEndpoint): string {
   return endpoint.metadata?.staleLocalRegistration === true ? "superseded" : endpoint.state;
-}
-
-function endpointRuntimeSessionId(endpoint: AgentEndpoint, primaryAlias: string): string {
-  const key = [
-    endpoint.nodeId,
-    endpoint.agentId,
-    endpoint.harness,
-    endpoint.transport,
-    primaryAlias,
-  ].join("\u0000");
-  return `sess.${stableHash(key)}`;
 }
 
 function endpointRuntimeSessionAliases(endpoint: AgentEndpoint, scoutSessionId: string): RuntimeSessionAliasInput[] {
@@ -827,6 +814,15 @@ interface MessageRow {
   visibility: MessageRecord["visibility"];
   policy: MessageRecord["policy"];
   metadata_json: string | null;
+  created_at: number;
+}
+
+interface ConversationThreadLaunchMessageRow {
+  id: string;
+  actor_id: string;
+  actor_name: string | null;
+  body: string;
+  class: MessageRecord["class"];
   created_at: number;
 }
 
@@ -1171,13 +1167,14 @@ function buildCollaborationRecord(row: CollaborationRecordRow): CollaborationRec
 
 export class SQLiteControlPlaneStore {
   private readonly db: ControlPlaneSqliteDatabase;
-  private readonly readDb: ControlPlaneSqliteDatabase;
+  private readDb: ControlPlaneSqliteDatabase;
   private readonly drizzleDb: ReturnType<typeof openControlPlaneDrizzle>;
   private readonly drizzleReadDb: ReturnType<typeof openControlPlaneDrizzle>;
   private readonly persistEventsBatch: (events: ControlEvent[]) => void;
   private pendingEvents: ControlEvent[] = [];
   private flushPendingEventsTimer: ReturnType<typeof setTimeout> | null = null;
   private conversationsApi: ConversationsApi | null = null;
+  private closed = false;
 
   constructor(dbPath: string) {
     mkdirSync(dirname(dbPath), { recursive: true });
@@ -1206,6 +1203,10 @@ export class SQLiteControlPlaneStore {
         );
       }
     });
+  }
+
+  get isClosed(): boolean {
+    return this.closed;
   }
 
   listRuntimeSessions(options: {
@@ -1607,6 +1608,10 @@ export class SQLiteControlPlaneStore {
   }
 
   close(): void {
+    if (this.closed) {
+      return;
+    }
+    this.closed = true;
     this.flushPendingEvents();
     if (this.flushPendingEventsTimer) {
       clearTimeout(this.flushPendingEventsTimer);
@@ -1623,18 +1628,33 @@ export class SQLiteControlPlaneStore {
 
     const nextBatch = this.pendingEvents;
     this.pendingEvents = [];
-    this.persistEventsBatch(nextBatch);
+    try {
+      this.persistEventsBatch(nextBatch);
+    } catch (error) {
+      // Preserve FIFO order when another writer temporarily owns SQLite. New
+      // arrivals belong after this failed batch, never ahead of or instead of it.
+      this.pendingEvents = [...nextBatch, ...this.pendingEvents];
+      throw error;
+    }
   }
 
-  private schedulePendingEventFlush(): void {
+  private schedulePendingEventFlush(delayMs = 0): void {
     if (this.flushPendingEventsTimer) {
       return;
     }
 
     this.flushPendingEventsTimer = setTimeout(() => {
       this.flushPendingEventsTimer = null;
-      this.flushPendingEvents();
-    }, 0);
+      try {
+        this.flushPendingEvents();
+      } catch (error) {
+        if (isTransientSqliteBusyError(error)) {
+          this.schedulePendingEventFlush(PENDING_EVENT_BUSY_RETRY_MS);
+          return;
+        }
+        throw error;
+      }
+    }, delayMs);
     this.flushPendingEventsTimer.unref?.();
   }
 
@@ -1793,7 +1813,7 @@ export class SQLiteControlPlaneStore {
         audience: parseJson<MessageRecord["audience"]>(row.audience_json, undefined),
         visibility: row.visibility,
         policy: row.policy,
-        createdAt: row.created_at,
+        createdAt: normalizeTimestampMs(row.created_at) ?? row.created_at,
         metadata: parseJson<Record<string, unknown> | undefined>(row.metadata_json, undefined),
       };
     }
@@ -1938,6 +1958,74 @@ export class SQLiteControlPlaneStore {
       messages: this.listConversationThreadMessages(conversation),
       collaboration: this.listConversationThreadCollaboration(conversation),
       activeFlights: this.listConversationThreadFlights(conversation),
+    };
+  }
+
+  /**
+   * Read the bounded newest page used by the native launch cache directly
+   * from indexed canonical tables. This deliberately avoids `loadSnapshot()`,
+   * whose whole-database scan is appropriate for compatibility snapshots but
+   * would put unrelated control-plane state back on the launch path.
+   */
+  getConversationThreadLaunchSnapshot(options: {
+    conversationId: string;
+    projectionId: string;
+    projectionVersion: number;
+    sequence: number;
+    limit?: number;
+    generatedAt?: number;
+  }): ConversationThreadLaunchSnapshot | null {
+    const conversation = this.getConversation(options.conversationId, this.readDb);
+    if (!conversation) {
+      return null;
+    }
+
+    const requestedLimit = Math.floor(options.limit ?? 64);
+    const limit = Number.isFinite(requestedLimit)
+      ? Math.max(1, Math.min(64, requestedLimit))
+      : 64;
+    const rows = queryAll<ConversationThreadLaunchMessageRow, [string, number]>(
+      this.readDb,
+      `SELECT
+        m.id,
+        m.actor_id,
+        a.display_name AS actor_name,
+        m.body,
+        m.class,
+        m.created_at
+      FROM messages m
+      LEFT JOIN actors a ON a.id = m.actor_id
+      WHERE m.conversation_id = ?1
+      ORDER BY CASE
+        WHEN m.created_at > 0 AND m.created_at < ${EPOCH_MILLISECONDS_FLOOR}
+          THEN m.created_at * 1000
+        ELSE m.created_at
+      END DESC, m.id DESC
+      LIMIT ?2`,
+      options.conversationId,
+      limit + 1,
+    );
+    const hasEarlier = rows.length > limit;
+    const page = rows.slice(0, limit).reverse();
+
+    return {
+      projectionId: options.projectionId,
+      projectionVersion: options.projectionVersion,
+      sequence: options.sequence,
+      feedId: scoutConversationFeedId(options.conversationId),
+      entityKind: "scout_conversation",
+      conversationId: options.conversationId,
+      cursor: page[0]?.id ?? null,
+      hasEarlier,
+      generatedAt: options.generatedAt ?? currentTimestampMs(),
+      messages: page.map((row) => ({
+        id: row.id,
+        actorId: row.actor_id,
+        actorName: row.actor_name,
+        body: row.body,
+        class: row.class,
+        createdAt: row.created_at,
+      })),
     };
   }
 
@@ -2321,13 +2409,17 @@ export class SQLiteControlPlaneStore {
   }
 
   private projectRuntimeSessionForEndpoint(endpoint: AgentEndpoint, observedAt: number): void {
-    const primaryAlias = endpointRuntimeSessionPrimaryAlias(endpoint);
+    const primaryAlias = runtimeSessionPrimaryAlias(endpoint);
     if (!primaryAlias) {
       this.markRuntimeSessionsForEndpointEnded(endpoint.id, null, observedAt);
       return;
     }
 
-    const sessionId = endpointRuntimeSessionId(endpoint, primaryAlias);
+    const sessionId = runtimeSessionHandleForEndpoint(endpoint, primaryAlias);
+    if (!sessionId) {
+      this.markRuntimeSessionsForEndpointEnded(endpoint.id, null, observedAt);
+      return;
+    }
     const lastSeenAt = endpointRuntimeSessionLastSeenAt(endpoint, observedAt);
     const startedAt = endpointRuntimeSessionStartedAt(endpoint, lastSeenAt);
     const terminal = endpointRuntimeSessionIsTerminal(endpoint);
@@ -2905,11 +2997,28 @@ export class SQLiteControlPlaneStore {
         };
       }
 
+      // Keep the parent key in place: REPLACE deletes it first, which cascades
+      // through activity_items.flight_id and turns a status update into child
+      // deletion work. Advancing only the internal rowid retains write-order
+      // tie-breaking for the boot-time latest-flight reconciliation.
       this.db.query(
-        `INSERT OR REPLACE INTO flights (
+        `INSERT INTO flights (
           id, invocation_id, requester_id, target_agent_id, state, summary, output, error,
           labels_json, metadata_json, started_at, completed_at
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)`,
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+        ON CONFLICT(id) DO UPDATE SET
+          rowid = (SELECT COALESCE(MAX(rowid), 0) + 1 FROM flights),
+          invocation_id = excluded.invocation_id,
+          requester_id = excluded.requester_id,
+          target_agent_id = excluded.target_agent_id,
+          state = excluded.state,
+          summary = excluded.summary,
+          output = excluded.output,
+          error = excluded.error,
+          labels_json = excluded.labels_json,
+          metadata_json = excluded.metadata_json,
+          started_at = excluded.started_at,
+          completed_at = excluded.completed_at`,
       ).run(
         recorded.id,
         recorded.invocationId,
@@ -3197,46 +3306,67 @@ export class SQLiteControlPlaneStore {
   }
 
   recordDeliveries(deliveries: DeliveryIntent[]): void {
-    for (const delivery of deliveries) {
-      this.drizzleDb
-        .insert(deliveriesTable)
-        .values({
-          id: delivery.id,
-          messageId: delivery.messageId ?? null,
-          invocationId: delivery.invocationId ?? null,
-          targetId: delivery.targetId,
-          targetNodeId: delivery.targetNodeId ?? null,
-          targetKind: delivery.targetKind,
-          transport: delivery.transport,
-          reason: delivery.reason,
-          policy: delivery.policy,
-          status: delivery.status,
-          bindingId: delivery.bindingId ?? null,
-          leaseOwner: delivery.leaseOwner ?? null,
-          leaseExpiresAt: delivery.leaseExpiresAt ?? null,
-          metadataJson: stringify(delivery.metadata),
-          createdAt: this.deliveryCreatedAt(delivery),
-        })
-        .onConflictDoUpdate({
-          target: deliveriesTable.id,
-          set: {
-            messageId: delivery.messageId ?? null,
-            invocationId: delivery.invocationId ?? null,
-            targetId: delivery.targetId,
-            targetNodeId: delivery.targetNodeId ?? null,
-            targetKind: delivery.targetKind,
-            transport: delivery.transport,
-            reason: delivery.reason,
-            policy: delivery.policy,
-            status: delivery.status,
-            bindingId: delivery.bindingId ?? null,
-            leaseOwner: delivery.leaseOwner ?? null,
-            leaseExpiresAt: delivery.leaseExpiresAt ?? null,
-            metadataJson: stringify(delivery.metadata),
-          },
-        })
-        .run();
-    }
+    if (deliveries.length === 0) return;
+    const statement = this.db.query(
+      `INSERT INTO deliveries (
+        id, message_id, invocation_id, target_id, target_node_id, target_kind,
+        transport, reason, policy, status, binding_id, lease_owner, lease_expires_at,
+        metadata_json, created_at
+      ) VALUES (
+        ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15
+      )
+      ON CONFLICT(id) DO UPDATE SET
+        message_id = excluded.message_id,
+        invocation_id = excluded.invocation_id,
+        target_id = excluded.target_id,
+        target_node_id = excluded.target_node_id,
+        target_kind = excluded.target_kind,
+        transport = excluded.transport,
+        reason = excluded.reason,
+        policy = excluded.policy,
+        status = excluded.status,
+        binding_id = excluded.binding_id,
+        lease_owner = excluded.lease_owner,
+        lease_expires_at = excluded.lease_expires_at,
+        metadata_json = excluded.metadata_json`,
+    );
+    (this.db as SQLiteTransactionalDatabase).transaction((batch: DeliveryIntent[]) => {
+      const createdAtBySource = new Map<string, number>();
+      for (const delivery of batch) {
+        const sourceKey = delivery.messageId || delivery.invocationId
+          ? `${delivery.messageId ?? ""}\u0000${delivery.invocationId ?? ""}`
+          : null;
+        let createdAt: number;
+        if (sourceKey === null) {
+          createdAt = this.deliveryCreatedAt(delivery);
+        } else {
+          const cached = createdAtBySource.get(sourceKey);
+          if (cached !== undefined) {
+            createdAt = cached;
+          } else {
+            createdAt = this.deliveryCreatedAt(delivery);
+            createdAtBySource.set(sourceKey, createdAt);
+          }
+        }
+        statement.run(
+          delivery.id,
+          delivery.messageId ?? null,
+          delivery.invocationId ?? null,
+          delivery.targetId,
+          delivery.targetNodeId ?? null,
+          delivery.targetKind,
+          delivery.transport,
+          delivery.reason,
+          delivery.policy,
+          delivery.status,
+          delivery.bindingId ?? null,
+          delivery.leaseOwner ?? null,
+          delivery.leaseExpiresAt ?? null,
+          stringify(delivery.metadata),
+          createdAt,
+        );
+      }
+    })(deliveries);
   }
 
   private deliveryCreatedAt(delivery: DeliveryIntent): number {
@@ -4154,6 +4284,24 @@ export class SQLiteControlPlaneStore {
    */
   get writerDb(): ControlPlaneSqliteDatabase {
     return this.db;
+  }
+
+  /**
+   * Run one synchronous startup-replay batch atomically. Store methods normally
+   * read through the separate read-only connection, but dependencies written
+   * earlier in this transaction must be visible while deriving activity and
+   * thread records. The normal reader is restored even when a write throws.
+   */
+  runReplayTransaction(operation: () => void): void {
+    (this.db as SQLiteTransactionalDatabase).transaction(() => {
+      const previousReadDb = this.readDb;
+      this.readDb = this.db;
+      try {
+        operation();
+      } finally {
+        this.readDb = previousReadDb;
+      }
+    })();
   }
 
   /**

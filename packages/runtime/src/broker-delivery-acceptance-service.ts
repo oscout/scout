@@ -407,7 +407,10 @@ export class BrokerDeliveryAcceptanceService {
         throw new Error("operator signals cannot carry work or invocation lifecycle fields");
       }
     }
-    await this.options.syncRegisteredLocalAgentsIfChanged("delivery");
+    const isLocalScoutProductTarget = this.options.isLocalScoutProductTarget(payload);
+    if (!isLocalScoutProductTarget) {
+      await this.options.syncRegisteredLocalAgentsIfChanged("delivery");
+    }
     throwIfAborted(options.signal);
     const askedLabel = askedLabelForRouteTarget(payload);
     const routeExecution = executionWithRouteParams(payload);
@@ -616,7 +619,7 @@ export class BrokerDeliveryAcceptanceService {
       };
     }
 
-    if (this.options.isLocalScoutProductTarget(payload)) {
+    if (isLocalScoutProductTarget) {
       // An unassigned Scout target only *fails* when the caller is blocked on a
       // reply nobody is going to write. A `tell` is fire-and-forget: the message
       // lands durably in the Scout thread and the next operator session to

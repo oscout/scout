@@ -24,7 +24,7 @@
 
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
-import { open } from "node:fs/promises";
+import { open, readdir, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { createInterface } from "node:readline";
@@ -42,6 +42,10 @@ import { db, resolveDbPath } from "./db/internal/db.ts";
 const CACHE_TTL_MS = 60 * 1000;
 const WEEK_MS = 7 * 24 * 3600 * 1000;
 const CODEX_LOOKBACK_DAYS = 3;
+const CODEX_JSONL_TAIL_MAX_BYTES = 2 * 1024 * 1024;
+const CODEX_INITIAL_FILE_LIMIT = 32;
+const CODEX_RECENT_CANDIDATE_LIMIT = 64;
+const CODEX_JSONL_READ_CONCURRENCY = 8;
 const LOCAL_QUOTA_FRESH_MS = 2 * 60 * 1000;
 const REMOTE_QUOTA_FRESH_MS = 5 * 60 * 1000;
 const GH_CLI_TIMEOUT_MS = 4000;
@@ -216,13 +220,16 @@ async function loadCodexGauge(forceRefresh = false): Promise<ServiceGauge | null
   const root = join(homeDir(), ".codex", "sessions");
   if (!existsSync(root)) return fallback;
 
-  const recent = findRecentCodexJsonl(root, CODEX_LOOKBACK_DAYS);
-  if (recent.length === 0) return fallback;
+  const candidates = await findRecentCodexJsonl(root, CODEX_LOOKBACK_DAYS);
+  if (candidates.length === 0) return fallback;
 
-  const observations = (await Promise.all(recent.map((path) => readLatestCodexRateLimits(path))))
-    .flat()
+  const observations = (await harvestRecentCodexRateLimits(candidates))
     .sort((left, right) => left.capturedAt - right.capturedAt);
   if (observations.length === 0) return fallback;
+  // A promo-only partial scan is not evidence that the account pool vanished.
+  // Keep the prior real reading (or show nothing) instead of persisting a 0%
+  // sliding pool over it.
+  if (!observations.some(isCodexAccountPoolObservation)) return fallback;
 
   // Concurrent sessions can report different semantic windows. Harvest each
   // session's latest observation and let the reset-aware selector merge them.
@@ -300,14 +307,22 @@ function bindingCodexPoolSnapshots(snapshots: ServiceQuotaSnapshot[]): ServiceQu
   const pools = new Set(snapshots.map(poolIdOf));
   if (pools.size <= 1) return snapshots;
 
-  const bindingPoolByLabel = new Map<string, { poolId: string; usedPercent: number; capturedAt: number }>();
+  const bindingPoolByLabel = new Map<string, {
+    poolId: string;
+    usedPercent: number;
+    capturedAt: number;
+    accountPool: boolean;
+  }>();
   for (const row of snapshots) {
     const usedPercent = quotaSnapshotUsage(row)?.fill;
     if (usedPercent === undefined) continue;
+    const poolId = poolIdOf(row);
+    const accountPool = isCodexAccountPoolId(poolId);
     const best = bindingPoolByLabel.get(row.label);
     if (!best || usedPercent > best.usedPercent
-      || (usedPercent === best.usedPercent && row.capturedAt > best.capturedAt)) {
-      bindingPoolByLabel.set(row.label, { poolId: poolIdOf(row), usedPercent, capturedAt: row.capturedAt });
+      || (usedPercent === best.usedPercent && accountPool && !best.accountPool)
+      || (usedPercent === best.usedPercent && accountPool === best.accountPool && row.capturedAt > best.capturedAt)) {
+      bindingPoolByLabel.set(row.label, { poolId, usedPercent, capturedAt: row.capturedAt, accountPool });
     }
   }
 
@@ -330,31 +345,93 @@ function formatQuotaWindowLabel(
   return `${windowMinutes}m`;
 }
 
-function findRecentCodexJsonl(root: string, lookbackDays: number): string[] {
-  const cutoffMs = Date.now() - lookbackDays * 86400 * 1000;
-  const paths: Array<{ path: string; mtimeMs: number }> = [];
+type CodexJsonlCandidate = {
+  path: string;
+  mtimeMs: number;
+};
 
-  const walk = (dir: string): void => {
+async function findRecentCodexJsonl(root: string, lookbackDays: number): Promise<CodexJsonlCandidate[]> {
+  const cutoffMs = Date.now() - lookbackDays * 86400 * 1000;
+  const paths: CodexJsonlCandidate[] = [];
+
+  // This tree can contain hundreds of thousands of session files. A recursive
+  // sync walk monopolized the web server's event loop for seconds, so an
+  // unrelated Lanes or chat request could appear frozen while the home budget
+  // card refreshed. Traverse through fs/promises instead: total discovery work
+  // is unchanged, but every directory boundary yields to interactive routes.
+  const pending = [root];
+  while (pending.length > 0) {
+    const dir = pending.pop();
+    if (!dir) continue;
     let entries;
     try {
-      entries = readdirSync(dir, { withFileTypes: true });
+      entries = await readdir(dir, { withFileTypes: true });
     } catch {
-      return;
+      continue;
     }
     for (const entry of entries) {
       const full = join(dir, entry.name);
       if (entry.isDirectory()) {
-        walk(full);
+        pending.push(full);
       } else if (entry.isFile() && entry.name.endsWith(".jsonl")) {
-        const stat = safeStat(full);
-        if (!stat || stat.mtimeMs < cutoffMs) continue;
-        paths.push({ path: full, mtimeMs: stat.mtimeMs });
+        try {
+          const fileStat = await stat(full);
+          if (fileStat.mtimeMs < cutoffMs) continue;
+          paths.push({ path: full, mtimeMs: fileStat.mtimeMs });
+        } catch {
+          // A session can rotate between directory enumeration and stat.
+        }
       }
     }
-  };
+  }
+  return paths
+    .sort((left, right) => right.mtimeMs - left.mtimeMs)
+    .slice(0, CODEX_RECENT_CANDIDATE_LIMIT);
+}
 
-  walk(root);
-  return paths.sort((left, right) => right.mtimeMs - left.mtimeMs).map((entry) => entry.path);
+/**
+ * Preserve the existing newest-32 fast path. If it finds only irrelevant or
+ * promotional sessions, probe the next 32 in bounded batches and stop as soon
+ * as the account pool appears. Worst-case tail work is 64 × 2 MiB, while tiny
+ * files do not consume a quota-observation slot merely by existing.
+ */
+async function harvestRecentCodexRateLimits(
+  candidates: CodexJsonlCandidate[],
+): Promise<CodexRateLimitsObservation[]> {
+  const observations = await readCodexCandidateBatch(candidates.slice(0, CODEX_INITIAL_FILE_LIMIT));
+  if (observations.some(isCodexAccountPoolObservation)) return observations;
+
+  const overflow = candidates.slice(CODEX_INITIAL_FILE_LIMIT, CODEX_RECENT_CANDIDATE_LIMIT);
+  for (let index = 0; index < overflow.length; index += CODEX_JSONL_READ_CONCURRENCY) {
+    observations.push(...await readCodexCandidateBatch(
+      overflow.slice(index, index + CODEX_JSONL_READ_CONCURRENCY),
+    ));
+    if (observations.some(isCodexAccountPoolObservation)) break;
+  }
+
+  return observations;
+}
+
+async function readCodexCandidateBatch(
+  candidates: CodexJsonlCandidate[],
+): Promise<CodexRateLimitsObservation[]> {
+  return (await Promise.all(candidates.map(async (candidate) => {
+    try {
+      return await readLatestCodexRateLimits(candidate.path);
+    } catch {
+      // A rollout may disappear or become unreadable after discovery.
+      return [];
+    }
+  }))).flat();
+}
+
+function isCodexAccountPoolObservation(observation: CodexRateLimitsObservation): boolean {
+  return isCodexAccountPoolId(observation.usage.limitId);
+}
+
+function isCodexAccountPoolId(limitId: string | undefined): boolean {
+  const normalized = limitId?.trim().toLowerCase();
+  return !normalized || normalized === "codex";
 }
 
 /**
@@ -366,9 +443,24 @@ function findRecentCodexJsonl(root: string, lookbackDays: number): string[] {
 async function readLatestCodexRateLimits(path: string): Promise<CodexRateLimitsObservation[]> {
   const handle = await open(path, "r");
   try {
-    const rl = createInterface({ input: handle.createReadStream({ encoding: "utf8" }) });
+    const fileStat = await handle.stat();
+    const start = Math.max(0, fileStat.size - CODEX_JSONL_TAIL_MAX_BYTES);
+    const rl = createInterface({
+      input: handle.createReadStream({
+        encoding: "utf8",
+        start,
+        autoClose: false,
+      }),
+    });
     const latestByPool = new Map<string, CodexRateLimitsObservation>();
+    let firstLine = start > 0;
     for await (const line of rl) {
+      // A bounded tail may begin midway through a JSONL record. Discard only
+      // that fragment; every subsequent line is a complete event.
+      if (firstLine) {
+        firstLine = false;
+        continue;
+      }
       if (!line.includes("\"rate_limits\"")) continue;
       try {
         const record = JSON.parse(line) as {
@@ -2025,11 +2117,18 @@ function persistQuotaSnapshots(snapshots: ServiceQuotaSnapshot[]): void {
       );
     };
 
-    for (const snapshot of snapshots) {
-      writeSnapshot(quotaSnapshotId(snapshot), snapshot, snapshot.metadata);
-      writeSnapshot(quotaHistorySnapshotId(snapshot), snapshot, quotaHistoryMetadata(snapshot));
-    }
-    pruneHistory.run(createdAt - QUOTA_HISTORY_LOOKBACK_MS - QUOTA_HISTORY_BUCKET_MS);
+    // A provider can yield hundreds of history samples. Letting every
+    // read/insert auto-commit held the web event loop for most of a second and
+    // made unrelated navigation wait behind the home budget poll. One SQLite
+    // transaction preserves the same monotonic replacement rules while paying
+    // the WAL commit cost once.
+    writer.transaction(() => {
+      for (const snapshot of snapshots) {
+        writeSnapshot(quotaSnapshotId(snapshot), snapshot, snapshot.metadata);
+        writeSnapshot(quotaHistorySnapshotId(snapshot), snapshot, quotaHistoryMetadata(snapshot));
+      }
+      pruneHistory.run(createdAt - QUOTA_HISTORY_LOOKBACK_MS - QUOTA_HISTORY_BUCKET_MS);
+    })();
   } catch {
     // Quota harvesting is best-effort. If the broker has not created the
     // control-plane schema yet, the direct readers still return a UI gauge.

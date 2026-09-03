@@ -45,6 +45,7 @@ let tailDiscoveryResult: {
 } | null = null;
 type TailDiscoveryStub = NonNullable<typeof tailDiscoveryResult>;
 let tailRefreshDiscoveryResult: TailDiscoveryStub | null = null;
+let localTailDiscoveryCalls = 0;
 
 mock.module("../../db-queries.ts", () => ({
   queryAgents: () => queryAgentsResult,
@@ -55,6 +56,7 @@ mock.module("../../db-queries.ts", () => ({
 
 mock.module("../broker/service.ts", () => ({
   loadScoutBrokerContext: async () => brokerContextResult,
+  readScoutBrokerTailDiscovery: async () => tailDiscoveryResult,
 }));
 
 mock.module("@openscout/runtime/local-agents", () => ({
@@ -67,17 +69,20 @@ mock.module("@openscout/runtime/local-agents", () => ({
 }));
 
 mock.module("@openscout/runtime/tail", () => ({
-  getTailDiscovery: async () => tailDiscoveryResult ?? {
-    generatedAt: Date.now(),
-    processes: [],
-    transcripts: [],
-    totals: {
-      total: 0,
-      scoutManaged: 0,
-      hudsonManaged: 0,
-      unattributed: 0,
-      transcripts: 0,
-    },
+  getTailDiscovery: async () => {
+    localTailDiscoveryCalls += 1;
+    return tailDiscoveryResult ?? {
+      generatedAt: Date.now(),
+      processes: [],
+      transcripts: [],
+      totals: {
+        total: 0,
+        scoutManaged: 0,
+        hudsonManaged: 0,
+        unattributed: 0,
+        transcripts: 0,
+      },
+    };
   },
   refreshTailDiscovery: async () => tailRefreshDiscoveryResult ?? tailDiscoveryResult ?? {
     generatedAt: Date.now(),
@@ -307,6 +312,7 @@ beforeEach(() => {
   pairingSnapshotResult = null;
   tailDiscoveryResult = null;
   tailRefreshDiscoveryResult = null;
+  localTailDiscoveryCalls = 0;
 });
 
 afterEach(() => {
@@ -1384,6 +1390,7 @@ describe("loadAgentObservePayload", () => {
     expect(payload?.historyPath).toBe(historyPath);
     expect(payload?.sessionId).toBe("tail-session");
     expect(payload?.data.events.some((event) => event.text.includes("hello from tail discovery"))).toBe(true);
+    expect(localTailDiscoveryCalls).toBe(0);
   });
 
   test("maps a native Grok session ref to tail observe data", async () => {

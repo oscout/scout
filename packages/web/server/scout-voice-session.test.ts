@@ -187,6 +187,69 @@ describe("scout voice native sessions", () => {
     });
   });
 
+  test("delivers a newly queued command to a waiting host without an interval tick", async () => {
+    registerScoutVoiceHost({
+      hostId: "scout-menu",
+      instanceId: "menu-process",
+      platform: "macos",
+    });
+    const waiting = awaitScoutVoiceHostCommand("scout-menu", 1_000, "menu-process");
+    let settled = false;
+    void waiting.then(() => {
+      settled = true;
+    });
+
+    const { sessionId } = createScoutVoiceSession({ surface: "macos.native-composer" });
+    await Promise.resolve();
+
+    expect(settled).toBe(true);
+    await expect(waiting).resolves.toMatchObject({
+      command: { type: "session.start", sessionId },
+    });
+  });
+
+  test("keeps independent event-driven waiters for different hosts", async () => {
+    registerScoutVoiceHost({ hostId: "menu-a", instanceId: "a", platform: "macos" });
+    const { sessionId: firstSessionId } = createScoutVoiceSession({ surface: "first" });
+    await expect(awaitScoutVoiceHostCommand("menu-a", 1_000, "a")).resolves.toMatchObject({
+      command: { type: "session.start", sessionId: firstSessionId },
+    });
+
+    // Ensure the second host is the newest host selected for the next session.
+    await new Promise((resolve) => setTimeout(resolve, 2));
+    registerScoutVoiceHost({ hostId: "menu-b", instanceId: "b", platform: "macos" });
+    const { sessionId: secondSessionId } = createScoutVoiceSession({ surface: "second" });
+    await expect(awaitScoutVoiceHostCommand("menu-b", 1_000, "b")).resolves.toMatchObject({
+      command: { type: "session.start", sessionId: secondSessionId },
+    });
+
+    const firstWait = awaitScoutVoiceHostCommand("menu-a", 1_000, "a");
+    const secondWait = awaitScoutVoiceHostCommand("menu-b", 1_000, "b");
+    let firstSettled = false;
+    let secondSettled = false;
+    void firstWait.then(() => {
+      firstSettled = true;
+    });
+    void secondWait.then(() => {
+      secondSettled = true;
+    });
+
+    stopScoutVoiceSession(firstSessionId);
+    await Promise.resolve();
+    expect(firstSettled).toBe(true);
+    expect(secondSettled).toBe(false);
+
+    stopScoutVoiceSession(secondSessionId);
+    await Promise.resolve();
+    expect(secondSettled).toBe(true);
+    await expect(firstWait).resolves.toMatchObject({
+      command: { type: "session.stop", sessionId: firstSessionId },
+    });
+    await expect(secondWait).resolves.toMatchObject({
+      command: { type: "session.stop", sessionId: secondSessionId },
+    });
+  });
+
   test("an aborted poll releases command ownership immediately", async () => {
     registerScoutVoiceHost({
       hostId: "scout-menu",
@@ -208,5 +271,24 @@ describe("scout voice native sessions", () => {
     await expect(awaitScoutVoiceHostCommand("scout-menu", 1_000, "menu-process")).resolves.toMatchObject({
       command: { type: "session.start", sessionId },
     });
+  });
+
+  test("reset resolves active command waiters so shutdown does not wait for timeout", async () => {
+    registerScoutVoiceHost({
+      hostId: "scout-menu",
+      instanceId: "menu-process",
+      platform: "macos",
+    });
+    const waiting = awaitScoutVoiceHostCommand("scout-menu", 10_000, "menu-process");
+    let settled = false;
+    void waiting.then(() => {
+      settled = true;
+    });
+
+    resetScoutVoiceSessionStateForTests();
+    await Promise.resolve();
+
+    expect(settled).toBe(true);
+    await expect(waiting).resolves.toEqual({ command: null });
   });
 });

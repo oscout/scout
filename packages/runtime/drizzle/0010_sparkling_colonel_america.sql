@@ -1,0 +1,2 @@
+CREATE INDEX `idx_conversation_members_actor` ON `conversation_members` (`actor_id`,`conversation_id`);--> statement-breakpoint
+CREATE INDEX `idx_invocations_conversation_created_at` ON `invocations` (`conversation_id`,"created_at" desc);

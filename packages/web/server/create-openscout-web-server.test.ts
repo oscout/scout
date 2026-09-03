@@ -14,7 +14,11 @@ import {
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ActionBlock, BlockState, QuestionBlock, SessionState } from "@openscout/agent-sessions";
-import { SCOUT_RUNTIME_CATALOG } from "@openscout/protocol";
+import {
+  SCOUT_RUNTIME_CATALOG,
+  type ConversationProjectionItem,
+  type ConversationProjectionSnapshot,
+} from "@openscout/protocol";
 import type { DiscoverySnapshot } from "@openscout/runtime/tail";
 import {
   buildRelayAgentInstance,
@@ -59,22 +63,27 @@ const decidePairingApprovalCalls: Array<Record<string, unknown>> = [];
 const lanBeaconSuppressPredicates: Array<() => boolean | Promise<boolean>> = [];
 const testDirectories = new Set<string>();
 let scoutBrokerContextResult: unknown = null;
+let loadScoutBrokerContextGate: Promise<void> | null = null;
 let loadScoutBrokerContextCalls = 0;
 const loadScoutBrokerContextOptions: unknown[] = [];
 let scoutBrokerMessagesResult: Array<Record<string, unknown>> | null = null;
 let scoutBrokerHomeResult: Record<string, unknown> | null = null;
 let scoutBrokerSnapshotResult: Record<string, unknown> | null = null;
+let scoutConversationProjectionResult: ConversationProjectionSnapshot | null = null;
 let scoutBrokerHealthResult: Record<string, unknown> = makeOfflineBrokerHealth();
 let agentObservePayloadResult: unknown = null;
 let loadAgentObservePayloadCalls = 0;
 let sessionRefObservePayloadResult: unknown = null;
 let queryAgentsResult: Array<Record<string, unknown>> = [];
 let querySessionsResult: Array<Record<string, unknown>> = [];
+let querySessionsCalls = 0;
 const queryAgentsLimits: Array<number | undefined> = [];
 let queryTerminalSessionsResult: Array<Record<string, unknown>> = [];
 let queryDiscoveredTerminalSessionsResult: Array<Record<string, unknown>> = [];
 let brokerDiagnosticsResult: Record<string, unknown> = makeBrokerDiagnostics();
 let pairingStateResult: Record<string, unknown> = makePairingState();
+let getPairingStateCalls = 0;
+let refreshPairingStateCalls = 0;
 let pairingSessionSnapshotsResult: SessionState[] = [];
 let queryFleetResult: Record<string, unknown> | null = null;
 const queryRecentMessagesCalls: Array<Record<string, unknown>> = [];
@@ -176,7 +185,10 @@ mock.module("./db-queries.ts", () => ({
     queryRecentMessagesCalls.push({ limit, ...opts });
     return queryRecentMessagesResult;
   },
-  querySessions: () => querySessionsResult,
+  querySessions: () => {
+    querySessionsCalls += 1;
+    return querySessionsResult;
+  },
   querySessionById: (conversationId: string) =>
     querySessionByIdImpl(conversationId),
   queryWorkItems: () => [],
@@ -231,11 +243,17 @@ mock.module("./pairing.ts", () => ({
     decidePairingApprovalCalls.push(input);
     return pairingStateResult;
   },
-  getScoutWebPairingState: async () => pairingStateResult,
+  getScoutWebPairingState: async () => {
+    getPairingStateCalls += 1;
+    return pairingStateResult;
+  },
   getScoutWebPairingSessionSnapshot: async (sessionId: string) =>
     pairingSessionSnapshotsResult.find((snapshot) => snapshot.session.id === sessionId) ?? null,
   getScoutWebPairingSessionSnapshots: async () => pairingSessionSnapshotsResult,
-  refreshScoutWebPairingState: async () => pairingStateResult,
+  refreshScoutWebPairingState: async () => {
+    refreshPairingStateCalls += 1;
+    return pairingStateResult;
+  },
   removeScoutPairingTrustedPeer: () => false,
 }));
 
@@ -266,6 +284,7 @@ mock.module("./core/broker/service.ts", () => ({
   loadScoutBrokerContext: async (_baseUrl?: string, options?: unknown) => {
     loadScoutBrokerContextCalls += 1;
     loadScoutBrokerContextOptions.push(options);
+    if (loadScoutBrokerContextGate) await loadScoutBrokerContextGate;
     return scoutBrokerContextResult;
   },
   loadScoutReadCursors: async () => ({}),
@@ -288,6 +307,7 @@ mock.module("./core/broker/service.ts", () => ({
   readScoutBrokerNodeId: async () =>
     (scoutBrokerContextResult as { node?: { id?: string } } | null)?.node?.id ?? null,
   readScoutBrokerHome: async () => scoutBrokerHomeResult,
+  readScoutConversationProjection: async () => scoutConversationProjectionResult,
   readScoutBrokerRuntimeCatalog: async () => null,
   readScoutBrokerMessages: async () => scoutBrokerMessagesResult,
   readScoutBrokerSnapshot: async () => scoutBrokerSnapshotResult,
@@ -514,6 +534,128 @@ function makeOfflineBrokerHealth(overrides: Record<string, unknown> = {}): Recor
     counts: null,
     error: "offline",
     ...overrides,
+  };
+}
+
+function makeObservedProjectionItem(index: number): ConversationProjectionItem {
+  const sessionId = `observed-${index}`;
+  const timestamp = 1_800_000_000_000 + index;
+  return {
+    feedId: `obs:codex:${sessionId}`,
+    entityKind: "observed_session",
+    kind: "observed_session",
+    conversationId: null,
+    runtimeSessionId: sessionId,
+    source: "codex",
+    sourceSessionId: sessionId,
+    title: `Observed ${index}`,
+    alias: null,
+    naturalKey: null,
+    projectRoot: "/tmp/project",
+    harness: "codex",
+    model: null,
+    effort: null,
+    agentId: null,
+    agentName: null,
+    currentBranch: null,
+    authorityNodeId: null,
+    authorityNodeName: null,
+    parentConversationId: null,
+    anchorMessageId: null,
+    activityState: "working",
+    lastMessageId: null,
+    lastMessageAt: null,
+    lastActivityAt: timestamp,
+    messageCount: 0,
+    unreadCount: 0,
+    participantCount: 0,
+    preview: null,
+    lastEngagedAt: null,
+    sourceFreshAt: timestamp,
+    visibilityState: "visible",
+    updatedSeq: index + 1,
+    updatedAt: timestamp,
+  };
+}
+
+function makeScoutProjectionItem(
+  conversationId: string,
+  overrides: Partial<ConversationProjectionItem> = {},
+): ConversationProjectionItem {
+  const timestamp = 1_800_000_000_000;
+  return {
+    feedId: `conv:${conversationId}`,
+    entityKind: "scout_conversation",
+    kind: "direct",
+    conversationId,
+    runtimeSessionId: "session-projected",
+    source: null,
+    sourceSessionId: null,
+    title: "Projected conversation",
+    alias: null,
+    naturalKey: null,
+    projectRoot: "/tmp/project",
+    harness: "codex",
+    model: "gpt-5.6-sol",
+    effort: "xhigh",
+    agentId: "agent-projected",
+    agentName: "Projected Agent",
+    currentBranch: "main",
+    authorityNodeId: "node-1",
+    authorityNodeName: "Local node",
+    parentConversationId: null,
+    anchorMessageId: null,
+    activityState: "idle",
+    lastMessageId: "msg-projected",
+    lastMessageAt: timestamp,
+    lastActivityAt: timestamp,
+    messageCount: 1,
+    unreadCount: 0,
+    participantCount: 2,
+    preview: "Served from the durable projection",
+    lastEngagedAt: timestamp,
+    sourceFreshAt: timestamp,
+    visibilityState: "visible",
+    updatedSeq: 1,
+    updatedAt: timestamp,
+    ...overrides,
+  };
+}
+
+function makeConversationProjectionSnapshot(
+  items: ConversationProjectionItem[],
+  total = items.length,
+): ConversationProjectionSnapshot {
+  return {
+    projectionId: "projection-web-test",
+    projectionVersion: 1,
+    sequence: 7,
+    generatedAt: 1_800_000_100_000,
+    sourceFreshAt: items.at(-1)?.sourceFreshAt ?? null,
+    items,
+    total,
+    hasMore: total > items.length,
+    engagedFeedId: null,
+    identityRedirects: [],
+  };
+}
+
+function makeCompatibilitySession(id: string): Record<string, unknown> {
+  return {
+    id,
+    kind: "direct",
+    title: "Compatibility Scout chat",
+    participantIds: ["operator", "agent-1"],
+    agentId: "agent-1",
+    agentName: "Agent One",
+    harness: "codex",
+    harnessSessionId: "session-1",
+    harnessLogPath: null,
+    currentBranch: "main",
+    preview: "Recovered from the compatibility view",
+    messageCount: 3,
+    lastMessageAt: 1_700_000_000,
+    workspaceRoot: "/tmp/project",
   };
 }
 
@@ -772,6 +914,7 @@ beforeEach(() => {
   querySessionByIdImpl = () => null;
   queryConversationDefinitionByIdImpl = () => null;
   scoutBrokerContextResult = null;
+  loadScoutBrokerContextGate = null;
   loadScoutBrokerContextCalls = 0;
   loadScoutBrokerContextOptions.length = 0;
   queryRecentMessagesCalls.length = 0;
@@ -779,6 +922,7 @@ beforeEach(() => {
   scoutBrokerMessagesResult = null;
   scoutBrokerHomeResult = null;
   scoutBrokerSnapshotResult = null;
+  scoutConversationProjectionResult = null;
   scoutBrokerHealthResult = makeOfflineBrokerHealth();
   agentObservePayloadResult = null;
   loadAgentObservePayloadCalls = 0;
@@ -828,10 +972,13 @@ beforeEach(() => {
   queryFleetResult = null;
   queryAgentsResult = [];
   querySessionsResult = [];
+  querySessionsCalls = 0;
   queryAgentsLimits.length = 0;
   queryTerminalSessionsResult = [];
   queryDiscoveredTerminalSessionsResult = [];
   pairingStateResult = makePairingState();
+  getPairingStateCalls = 0;
+  refreshPairingStateCalls = 0;
   pairingSessionSnapshotsResult = [];
   sendScoutMessageCalls.length = 0;
   sendScoutConversationMessageCalls.length = 0;
@@ -1110,7 +1257,7 @@ describe("createOpenScoutWebServer", () => {
 
     try {
       const response = await server.app.request(
-        "http://localhost/api/tail/recent?limit=200&transcripts=1&mode=assistant-replies",
+        "http://localhost/api/tail/recent?limit=200&transcripts=1&mode=assistant-replies&windowMs=300000",
       );
 
       expect(response.status).toBe(200);
@@ -1118,6 +1265,7 @@ describe("createOpenScoutWebServer", () => {
       expect(requestedUrl?.searchParams.get("limit")).toBe("200");
       expect(requestedUrl?.searchParams.get("transcripts")).toBe("true");
       expect(requestedUrl?.searchParams.get("mode")).toBe("assistant-replies");
+      expect(requestedUrl?.searchParams.get("windowMs")).toBe("300000");
     } finally {
       await server.stop();
     }
@@ -1536,7 +1684,10 @@ describe("createOpenScoutWebServer", () => {
     const response = await server.app.request("http://localhost/api/comms");
 
     expect(response.status).toBe(200);
-    expect(loadScoutBrokerContextOptions).toContainEqual({ scope: "conversations" });
+    expect(loadScoutBrokerContextOptions).toContainEqual(expect.objectContaining({
+      scope: "conversations",
+      waitForInitial: false,
+    }));
     await expect(response.json()).resolves.toEqual([
       expect.objectContaining({
         chatId: "c.general",
@@ -1563,8 +1714,57 @@ describe("createOpenScoutWebServer", () => {
     expect(loadScoutBrokerContextOptions).toContainEqual({});
   });
 
+  test("keeps native comms list reads on the materialized projection after broker warmup", async () => {
+    scoutConversationProjectionResult = makeConversationProjectionSnapshot([
+      makeScoutProjectionItem("c.projected"),
+    ]);
+    scoutBrokerContextResult = {
+      snapshot: {
+        conversations: {
+          "c.expensive-broker": {
+            id: "c.expensive-broker",
+            kind: "channel",
+            title: "Broker-only conversation",
+            participantIds: ["operator"],
+          },
+        },
+        messages: {
+          "msg-expensive": {
+            id: "msg-expensive",
+            conversationId: "c.expensive-broker",
+            actorId: "operator",
+            body: "This full snapshot must not be rebuilt for the list poll",
+            createdAt: 1_800_000_100_000,
+          },
+        },
+        agents: {},
+        actors: { operator: { id: "operator", displayName: "Operator" } },
+        endpoints: {},
+      },
+    };
+    const server = await createOpenScoutWebServer({
+      currentDirectory: "/tmp/openscout",
+      assetMode: "static",
+      staticRoot: makeStaticRoot(),
+    });
+
+    const response = await server.app.request("http://localhost/api/comms");
+
+    expect(response.status).toBe(200);
+    expect(loadScoutBrokerContextCalls).toBe(0);
+    await expect(response.json()).resolves.toEqual([
+      expect.objectContaining({
+        id: "c.projected",
+        preview: "Served from the durable projection",
+        model: "gpt-5.6-sol",
+        reasoningEffort: "xhigh",
+      }),
+    ]);
+  });
+
   test("never presents an ambiguous empty broker response as a new workspace", async () => {
     scoutBrokerContextResult = null;
+    scoutConversationProjectionResult = makeConversationProjectionSnapshot([]);
     scoutBrokerHealthResult = makeOfflineBrokerHealth({
       reachable: true,
       ok: true,
@@ -1586,6 +1786,92 @@ describe("createOpenScoutWebServer", () => {
       error: "conversation_list_restoring",
       retryable: true,
     });
+  });
+
+  test("paints a durable conversation projection while broker context warms", async () => {
+    scoutBrokerContextResult = null;
+    querySessionsResult = [{
+      id: "c.local-ready",
+      kind: "direct",
+      title: "Local Ready",
+      participantIds: ["operator", "agent-1"],
+      agentId: "agent-1",
+      agentName: "Agent One",
+      harness: "codex",
+      harnessSessionId: "session-1",
+      harnessLogPath: null,
+      currentBranch: "main",
+      preview: "Already projected",
+      messageCount: 3,
+      lastMessageAt: 1_700_000_000,
+      workspaceRoot: "/tmp/project",
+    }];
+    scoutBrokerHealthResult = makeOfflineBrokerHealth({
+      reachable: true,
+      ok: true,
+      startup: { state: "ready", mutationsAdmitted: true },
+      counts: { conversations: 1, messages: 3 },
+      error: null,
+    });
+    const server = await createOpenScoutWebServer({
+      currentDirectory: "/tmp/openscout",
+      assetMode: "static",
+      staticRoot: makeStaticRoot(),
+    });
+
+    const response = await server.app.request("http://localhost/api/conversations");
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual([
+      expect.objectContaining({
+        id: "c.local-ready",
+        preview: "Already projected",
+      }),
+    ]);
+  });
+
+  test("falls back to Scout sessions when the launch projection is observed-only", async () => {
+    scoutBrokerContextResult = null;
+    scoutConversationProjectionResult = makeConversationProjectionSnapshot([
+      makeObservedProjectionItem(1),
+    ]);
+    querySessionsResult = [makeCompatibilitySession("c.compat-observed-only")];
+    const server = await createOpenScoutWebServer({
+      currentDirectory: "/tmp/openscout",
+      assetMode: "static",
+      staticRoot: makeStaticRoot(),
+    });
+
+    const response = await server.app.request("http://localhost/api/comms");
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual([
+      expect.objectContaining({
+        id: "c.compat-observed-only",
+        preview: "Recovered from the compatibility view",
+      }),
+    ]);
+  });
+
+  test("falls back when 160 newer observed rows hide older Scout rows", async () => {
+    scoutBrokerContextResult = null;
+    scoutConversationProjectionResult = makeConversationProjectionSnapshot(
+      Array.from({ length: 160 }, (_, index) => makeObservedProjectionItem(index)),
+      161,
+    );
+    querySessionsResult = [makeCompatibilitySession("c.compat-below-window")];
+    const server = await createOpenScoutWebServer({
+      currentDirectory: "/tmp/openscout",
+      assetMode: "static",
+      staticRoot: makeStaticRoot(),
+    });
+
+    const response = await server.app.request("http://localhost/api/comms");
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual([
+      expect.objectContaining({ id: "c.compat-below-window" }),
+    ]);
   });
 
   test("returns an empty filtered list when a broker snapshot is available", async () => {
@@ -2057,6 +2343,114 @@ describe("createOpenScoutWebServer", () => {
     expect(queryAgentsLimits).toContain(5);
   });
 
+  test("keeps the agent limit while reserving one card per current mesh peer", async () => {
+    queryAgentsResult = Array.from({ length: 5 }, (_, index) => ({
+      id: `local-agent-${index + 1}`,
+      definitionId: `local-agent-${index + 1}`,
+      name: `Local Agent ${index + 1}`,
+      updatedAt: 1_800_000_100_000 - index,
+    }));
+    const now = Date.now();
+    const peerAgent = (id: string, nodeId: string, updatedAt: number) => ({
+      id,
+      kind: "agent",
+      definitionId: id,
+      displayName: id,
+      handle: id,
+      labels: [id],
+      selector: id,
+      defaultSelector: id,
+      agentClass: "general",
+      capabilities: ["chat", "invoke"],
+      wakePolicy: "on_demand",
+      homeNodeId: nodeId,
+      authorityNodeId: nodeId,
+      advertiseScope: "mesh",
+      metadata: { brokerRegistered: true, updatedAt },
+    });
+    const peerEndpoint = (agentId: string, nodeId: string, updatedAt: number) => ({
+      id: `endpoint.${agentId}`,
+      agentId,
+      nodeId,
+      harness: "codex",
+      transport: "codex_app_server",
+      state: "active",
+      projectRoot: null,
+      cwd: null,
+      metadata: { lastSeenAt: updatedAt },
+    });
+    scoutBrokerContextResult = {
+      baseUrl: "http://broker.test",
+      node: {
+        id: "node-local",
+        meshId: "mesh-1",
+        name: "Local node",
+        advertiseScope: "mesh",
+        registeredAt: now,
+      },
+      snapshot: {
+        nodes: {
+          "node-local": {
+            id: "node-local",
+            meshId: "mesh-1",
+            name: "Local node",
+            advertiseScope: "mesh",
+            registeredAt: now,
+          },
+          "node-peer-a": {
+            id: "node-peer-a",
+            meshId: "mesh-1",
+            name: "Peer A",
+            brokerUrl: "http://peer-a.test",
+            advertiseScope: "mesh",
+            registeredAt: now,
+            lastSeenAt: now,
+          },
+          "node-peer-b": {
+            id: "node-peer-b",
+            meshId: "mesh-1",
+            name: "Peer B",
+            brokerUrl: "http://peer-b.test",
+            advertiseScope: "mesh",
+            registeredAt: now,
+            lastSeenAt: now,
+          },
+        },
+        actors: {},
+        agents: {
+          "peer-a-old": peerAgent("peer-a-old", "node-peer-a", now - 2_000),
+          "peer-a-new": peerAgent("peer-a-new", "node-peer-a", now - 1_000),
+          "peer-b": peerAgent("peer-b", "node-peer-b", now - 1_500),
+        },
+        endpoints: {
+          "endpoint.peer-a-old": peerEndpoint("peer-a-old", "node-peer-a", now - 2_000),
+          "endpoint.peer-a-new": peerEndpoint("peer-a-new", "node-peer-a", now - 1_000),
+          "endpoint.peer-b": peerEndpoint("peer-b", "node-peer-b", now - 1_500),
+        },
+        conversations: {},
+        messages: {},
+        invocations: {},
+        flights: {},
+      },
+    };
+    const server = await createOpenScoutWebServer({
+      currentDirectory: "/tmp/openscout",
+      assetMode: "static",
+      staticRoot: makeStaticRoot(),
+    });
+
+    const response = await server.app.request("http://localhost/api/agents?limit=3");
+
+    expect(response.status).toBe(200);
+    const agents = await response.json() as Array<{ id: string }>;
+    expect(agents).toHaveLength(3);
+    expect(agents.map((agent) => agent.id)).toEqual(expect.arrayContaining([
+      "peer-a-new",
+      "peer-b",
+    ]));
+    expect(agents.map((agent) => agent.id)).not.toContain("peer-a-old");
+  });
+
   test("bounds the default agents API roster", async () => {
     queryAgentsResult = Array.from({ length: 101 }, (_, index) => ({
       id: `local-agent-${index + 1}`,
@@ -2075,6 +2469,69 @@ describe("createOpenScoutWebServer", () => {
     expect(response.status).toBe(200);
     expect(await response.json()).toHaveLength(100);
     expect(queryAgentsLimits).toContain(100);
+  });
+
+  test("serves the local agent roster without waiting for a cold broker snapshot", async () => {
+    queryAgentsResult = [{
+      id: "local-agent",
+      definitionId: "local-agent",
+      name: "Local Agent",
+      updatedAt: 1_700_000_000_000,
+    }];
+    loadScoutBrokerContextGate = new Promise<void>(() => {});
+    const server = await createOpenScoutWebServer({
+      currentDirectory: "/tmp/openscout",
+      assetMode: "static",
+      staticRoot: makeStaticRoot(),
+    });
+
+    const response = await Promise.race([
+      server.app.request("http://localhost/api/agents"),
+      Bun.sleep(500).then(() => {
+        throw new Error("agent roster exceeded its cold broker budget");
+      }),
+    ]);
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual([
+      expect.objectContaining({ id: "local-agent" }),
+    ]);
+    expect(loadScoutBrokerContextCalls).toBe(1);
+  });
+
+  test("holds rich agent broker enrichment for the 60-second fallback window", async () => {
+    const originalDateNow = Date.now;
+    let now = 1_700_000_000_000;
+    Date.now = () => now;
+    try {
+      queryAgentsResult = [{
+        id: "local-agent",
+        definitionId: "local-agent",
+        name: "Local Agent",
+        updatedAt: now,
+      }];
+      scoutBrokerContextResult = makeA2aBrokerContext();
+      const server = await createOpenScoutWebServer({
+        currentDirectory: "/tmp/openscout",
+        assetMode: "static",
+        staticRoot: makeStaticRoot(),
+      });
+
+      expect((await server.app.request("http://localhost/api/agents?limit=5")).status).toBe(200);
+      expect(loadScoutBrokerContextCalls).toBe(1);
+
+      now += 59_000;
+      expect((await server.app.request("http://localhost/api/agents?limit=6")).status).toBe(200);
+      await Bun.sleep(600);
+      expect(loadScoutBrokerContextCalls).toBe(1);
+
+      now += 2_000;
+      expect((await server.app.request("http://localhost/api/agents?limit=7")).status).toBe(200);
+      await Bun.sleep(600);
+      expect(loadScoutBrokerContextCalls).toBe(2);
+    } finally {
+      Date.now = originalDateNow;
+    }
   });
 
   test("serves a lightweight agent summary without rich broker activity", async () => {
@@ -2123,8 +2580,8 @@ describe("createOpenScoutWebServer", () => {
     );
 
     expect(response.status).toBe(200);
-    expect(loadScoutBrokerContextCalls).toBe(1);
-    expect(loadScoutBrokerContextOptions).toEqual([{ since: null }]);
+    expect(loadScoutBrokerContextCalls).toBe(0);
+    expect(loadScoutBrokerContextOptions).toEqual([]);
     const agents = await response.json() as Array<Record<string, unknown>>;
     expect(agents).toHaveLength(1);
     expect(agents[0]).toMatchObject({
@@ -2177,6 +2634,7 @@ describe("createOpenScoutWebServer", () => {
     expect(agents.find((agent) => agent.id === "agent-1")).toMatchObject({
       state: "available",
     });
+    expect(loadScoutBrokerContextCalls).toBe(0);
   });
 
   test("keeps database agent rows authoritative when broker cards share an id", async () => {
@@ -3235,6 +3693,7 @@ describe("createOpenScoutWebServer", () => {
       pendingAsk: "Permission rule Bash(curl:*) requires confirmation.",
     });
 
+    const brokerContextCallsBeforeSummary = loadScoutBrokerContextCalls;
     const summaryResponse = await server.app.request(
       "http://localhost/api/agents?detail=summary&attention=1",
     );
@@ -3247,6 +3706,7 @@ describe("createOpenScoutWebServer", () => {
       state: "needs_attention",
       pendingAsk: "Permission rule Bash(curl:*) requires confirmation.",
     });
+    expect(loadScoutBrokerContextCalls).toBe(brokerContextCallsBeforeSummary);
 
     const attentionResponse = await server.app.request("http://localhost/api/operator-attention");
     const attention = await attentionResponse.json() as {
@@ -4036,6 +4496,46 @@ describe("createOpenScoutWebServer", () => {
     }
   });
 
+  test("does not build the writable session projection for a raw observed transcript", async () => {
+    const refId = "642ca306-2d7b-4bd8-a2a7-75e0b27a8006";
+    querySessionsResult = [{
+      id: "c.unrelated",
+      kind: "direct",
+      agentId: "unrelated-agent",
+      participantIds: ["operator", "unrelated-agent"],
+      harness: "claude",
+      harnessSessionId: refId,
+    }];
+    sessionRefObservePayloadResult = {
+      kind: "history",
+      refId,
+      agentId: null,
+      source: "history",
+      fidelity: "timestamped",
+      historyPath: `/tmp/${refId}.jsonl`,
+      sessionId: refId,
+      updatedAt: Date.now(),
+      data: {},
+    };
+    const server = await createOpenScoutWebServer({
+      currentDirectory: "/tmp/openscout",
+      assetMode: "static",
+      staticRoot: makeStaticRoot(),
+    });
+
+    const response = await server.app.request(
+      `http://localhost/api/session-ref/${refId}`,
+    );
+
+    expect(response.status).toBe(200);
+    expect(querySessionsCalls).toBe(0);
+    await expect(response.json()).resolves.toMatchObject({
+      kind: "observe",
+      session: null,
+      observe: { kind: "history", agentId: null },
+    });
+  });
+
   test("does not attach a colliding database conversation to a broker presentation ref", async () => {
     const presentationRef = "broker-presentation-owner";
     const databaseSession = {
@@ -4088,6 +4588,7 @@ describe("createOpenScoutWebServer", () => {
       session: { id: databaseSession.id, agentId: "database-owner" },
       observe: { agentId: "database-owner" },
     });
+    expect(querySessionsCalls).toBe(2);
   });
 
   test("promotes direct conversations to group direct when adding a participant", async () => {
@@ -4517,6 +5018,7 @@ describe("createOpenScoutWebServer", () => {
       currentDirectory: "/tmp/openscout",
       assetMode: "static",
       staticRoot: makeStaticRoot(),
+      resolvePeerAddress: () => "127.0.0.1",
     });
 
     const response = await server.app.request("http://localhost/pair", {
@@ -4526,6 +5028,213 @@ describe("createOpenScoutWebServer", () => {
     expect(response.status).toBe(302);
     expect(response.headers.get("cache-control")).toBe("no-store");
     expect(response.headers.get("location")).toBe(`scout://pair?payload=${encodeURIComponent(qrValue)}`);
+  });
+
+  test("requires and atomically consumes approval for direct LAN pairing", async () => {
+    const qrValue = JSON.stringify({
+      v: 1,
+      relay: "ws://192.168.18.14:43131",
+      room: "room-approved",
+      publicKey: "b".repeat(64),
+      expiresAt: Date.now() + 60_000,
+    });
+    pairingStateResult = makePairingState({
+      pairing: {
+        relay: "ws://192.168.18.14:43131",
+        room: "room-approved",
+        publicKey: "b".repeat(64),
+        expiresAt: Date.now() + 60_000,
+        qrArt: "",
+        qrValue,
+      },
+    });
+    let peerAddress = "192.168.18.201";
+    const server = await createOpenScoutWebServer({
+      currentDirectory: "/tmp/openscout",
+      assetMode: "static",
+      staticRoot: makeStaticRoot(),
+      lanAccessScope: "pairing",
+      resolvePeerAddress: () => peerAddress,
+    });
+
+    const knock = await server.app.request("http://localhost/pair?route=lan", {
+      headers: {
+        accept: "application/json",
+        "x-forwarded-for": "198.51.100.77",
+      },
+      redirect: "manual",
+    });
+    expect(knock.status).toBe(202);
+    expect(knock.headers.get("location")).toBeNull();
+    expect(getPairingStateCalls).toBeGreaterThan(0);
+    expect(refreshPairingStateCalls).toBe(0);
+    const { token } = await knock.json() as { token: string };
+
+    const pendingPoll = await server.app.request(`http://localhost/pair?route=lan&token=${token}`, {
+      headers: { accept: "application/json" },
+      redirect: "manual",
+    });
+    expect(pendingPoll.status).toBe(202);
+    await expect(pendingPoll.json()).resolves.toMatchObject({ status: "pending", token });
+
+    peerAddress = "127.0.0.1";
+    const listed = await server.app.request("http://localhost/api/pairing/requests");
+    const listedBody = await listed.json() as {
+      requests: Array<{ token: string; requesterIp: string | null }>;
+    };
+    expect(listedBody.requests.find((request) => request.token === token)?.requesterIp)
+      .toBe("192.168.18.201");
+    const approval = await server.app.request(`http://localhost/api/pairing/requests/${token}/decide`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ decision: "approve" }),
+    });
+    expect(approval.status).toBe(200);
+
+    peerAddress = "192.168.18.201";
+    const delivered = await server.app.request(`http://localhost/pair?route=lan&token=${token}`, {
+      headers: { accept: "application/json" },
+      redirect: "manual",
+    });
+    expect(delivered.status).toBe(302);
+    expect(delivered.headers.get("location"))
+      .toBe(`scout://pair?payload=${encodeURIComponent(qrValue)}`);
+
+    const replay = await server.app.request(`http://localhost/pair?route=lan&token=${token}`, {
+      headers: { accept: "application/json" },
+      redirect: "manual",
+    });
+    expect(replay.status).toBe(410);
+    await server.stop();
+  });
+
+  test("keeps denied LAN sources denied without minting another request", async () => {
+    pairingStateResult = makePairingState({ pairing: null });
+    let peerAddress = "192.168.18.202";
+    const server = await createOpenScoutWebServer({
+      currentDirectory: "/tmp/openscout",
+      assetMode: "static",
+      staticRoot: makeStaticRoot(),
+      lanAccessScope: "pairing",
+      resolvePeerAddress: () => peerAddress,
+    });
+
+    const knock = await server.app.request("http://localhost/pair", {
+      headers: { accept: "application/json" },
+    });
+    const { token } = await knock.json() as { token: string };
+    peerAddress = "127.0.0.1";
+    const denial = await server.app.request(`http://localhost/api/pairing/requests/${token}/decide`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ decision: "deny" }),
+    });
+    expect(denial.status).toBe(200);
+
+    peerAddress = "192.168.18.202";
+    const retry = await server.app.request("http://localhost/pair", {
+      headers: { accept: "application/json" },
+    });
+    expect(retry.status).toBe(403);
+    await expect(retry.json()).resolves.toEqual({ status: "denied", token });
+    await server.stop();
+  });
+
+  test("treats the loopback relay marker as a LAN approval request", async () => {
+    const qrValue = JSON.stringify({
+      v: 1,
+      relay: "ws://192.168.18.14:43131",
+      room: "room-relayed",
+      publicKey: "c".repeat(64),
+      expiresAt: Date.now() + 60_000,
+    });
+    pairingStateResult = makePairingState({ pairing: { qrValue } });
+    const server = await createOpenScoutWebServer({
+      currentDirectory: "/tmp/openscout",
+      assetMode: "static",
+      staticRoot: makeStaticRoot(),
+      lanAccessScope: "pairing",
+      resolvePeerAddress: () => "127.0.0.1",
+    });
+
+    const hostInfo = await server.app.request("http://localhost/.host-info", {
+      headers: { "x-forwarded-for": "192.168.18.204" },
+    });
+    expect(hostInfo.status).toBe(404);
+
+    const response = await server.app.request("http://localhost/pair", {
+      headers: {
+        accept: "application/json",
+        "x-scout-pair-relay": "1",
+        "x-forwarded-for": "192.168.18.203",
+      },
+      redirect: "manual",
+    });
+    expect(response.status).toBe(202);
+    expect(response.headers.get("location")).toBeNull();
+    const { token } = await response.json() as { token: string };
+    const listed = await server.app.request("http://localhost/api/pairing/requests");
+    const body = await listed.json() as {
+      requests: Array<{ token: string; requesterIp: string | null }>;
+    };
+    expect(body.requests.find((request) => request.token === token)?.requesterIp)
+      .toBe("192.168.18.203");
+    await server.stop();
+  });
+
+  test("does not let a loopback reverse proxy bypass LAN approval", async () => {
+    pairingStateResult = makePairingState({ pairing: { qrValue: "proxied-live-secret" } });
+    const server = await createOpenScoutWebServer({
+      currentDirectory: "/tmp/openscout",
+      assetMode: "static",
+      staticRoot: makeStaticRoot(),
+      lanAccessScope: "pairing",
+      resolvePeerAddress: () => "127.0.0.1",
+    });
+
+    const response = await server.app.request("http://localhost/pair", {
+      headers: {
+        accept: "application/json",
+        // A trusted edge appends the authoritative peer at the right. The
+        // caller-controlled first hop must not become the dedupe identity.
+        "x-forwarded-for": "198.51.100.77, 192.168.18.204",
+      },
+      redirect: "manual",
+    });
+    expect(response.status).toBe(202);
+    expect(response.headers.get("location")).toBeNull();
+    const { token } = await response.json() as { token: string };
+    const listed = await server.app.request("http://localhost/api/pairing/requests");
+    const body = await listed.json() as {
+      requests: Array<{ token: string; requesterIp: string | null }>;
+    };
+    expect(body.requests.find((request) => request.token === token)?.requesterIp)
+      .toBe("192.168.18.204");
+    await server.stop();
+  });
+
+  test("fails closed in every scope when the pairing listener cannot identify its peer", async () => {
+    pairingStateResult = makePairingState({ pairing: { qrValue: "live-secret" } });
+    for (const lanAccessScope of ["full", "pairing"] as const) {
+      const server = await createOpenScoutWebServer({
+        currentDirectory: "/tmp/openscout",
+        assetMode: "static",
+        staticRoot: makeStaticRoot(),
+        lanAccessScope,
+        resolvePeerAddress: () => undefined,
+      });
+
+      const response = await server.app.request("http://localhost/pair", {
+        headers: {
+          accept: "application/json",
+          "x-forwarded-for": "127.0.0.1",
+        },
+        redirect: "manual",
+      });
+      expect(response.status).toBe(503);
+      expect(response.headers.get("location")).toBeNull();
+      await server.stop();
+    }
   });
 
   test("redirects route-specific pairing pages to reordered iOS deep links", async () => {
@@ -4558,6 +5267,7 @@ describe("createOpenScoutWebServer", () => {
       currentDirectory: "/tmp/openscout",
       assetMode: "static",
       staticRoot: makeStaticRoot(),
+      resolvePeerAddress: () => "127.0.0.1",
     });
 
     const lan = await server.app.request("http://localhost/pair?route=lan", {
@@ -4598,6 +5308,7 @@ describe("createOpenScoutWebServer", () => {
       assetMode: "static",
       staticRoot: makeStaticRoot(),
       webPort: 4311,
+      resolvePeerAddress: () => "127.0.0.1",
     });
 
     const response = await server.app.request("http://localhost/pair?route=tsn", {
@@ -4654,6 +5365,7 @@ describe("createOpenScoutWebServer", () => {
       currentDirectory: "/tmp/openscout",
       assetMode: "static",
       staticRoot: makeStaticRoot(),
+      resolvePeerAddress: () => "192.168.18.210",
     });
 
     const response = await server.app.request("http://localhost/pair");
@@ -4686,6 +5398,39 @@ describe("createOpenScoutWebServer", () => {
       )
       : [];
     expect(writtenDuringTest).toEqual([]);
+  });
+
+  test("GET /pair does not require an operator credential and records the client app", async () => {
+    pairingStateResult = makePairingState({ pairing: null });
+    let peerAddress = "192.168.18.211";
+    const server = await createOpenScoutWebServer({
+      currentDirectory: "/tmp/openscout",
+      assetMode: "static",
+      staticRoot: makeStaticRoot(),
+      resolvePeerAddress: () => peerAddress,
+    });
+
+    const response = await server.app.request("http://localhost/pair?route=lan", {
+      headers: {
+        accept: "application/json",
+        "x-scout-client": "scout-ios",
+        "x-scout-device-name": "Arts iPhone",
+      },
+    });
+
+    expect(response.status).toBe(202);
+    const body = await response.json() as { status: string; token: string };
+    expect(body.status).toBe("pending");
+    expect(body.token).toBeTruthy();
+
+    peerAddress = "127.0.0.1";
+    const listed = await server.app.request("http://localhost/api/pairing/requests");
+    expect(listed.status).toBe(200);
+    const payload = await listed.json() as {
+      requests: Array<{ requesterApp?: string; requesterLabel?: string }>;
+    };
+    expect(payload.requests[0]?.requesterApp).toBe("scout-ios");
+    expect(payload.requests[0]?.requesterLabel).toBe("Arts iPhone");
   });
 
   test("serves site-level feature flag bundle config for the client", async () => {

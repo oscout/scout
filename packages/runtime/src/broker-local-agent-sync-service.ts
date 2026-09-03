@@ -125,6 +125,45 @@ export function clearStaleLocalEndpointMetadata(
   return rest;
 }
 
+function missingTmuxSessionError(endpoint: AgentEndpoint): string {
+  const sessionId = endpoint.sessionId
+    ?? (typeof endpoint.metadata?.tmuxSession === "string"
+      ? String(endpoint.metadata.tmuxSession)
+      : null);
+  return sessionId ? `tmux session missing: ${sessionId}` : "tmux session missing";
+}
+
+/**
+ * A registry binding describes a configured-but-not-running tmux endpoint as
+ * waiting. Once liveness reconciliation has proven that same session missing,
+ * preserve its offline diagnostic instead of toggling waiting -> offline on
+ * every otherwise-unrelated registry refresh.
+ */
+export function preserveMissingTmuxEndpointState(
+  previous: AgentEndpoint | undefined,
+  next: AgentEndpoint,
+): AgentEndpoint {
+  if (
+    previous?.state !== "offline"
+    || next.state !== "waiting"
+    || next.transport !== "tmux"
+    || previous.metadata?.lastError !== missingTmuxSessionError(next)
+  ) {
+    return next;
+  }
+
+  const lastFailedAt = previous.metadata?.lastFailedAt;
+  return {
+    ...next,
+    state: "offline",
+    metadata: {
+      ...(next.metadata ?? {}),
+      lastError: previous.metadata.lastError,
+      ...(lastFailedAt === undefined ? {} : { lastFailedAt }),
+    },
+  };
+}
+
 export function coreAgentPreferenceRank(agentId: string): number {
   if (/\.(main)\./.test(agentId)) {
     return 0;
@@ -220,6 +259,7 @@ export class BrokerLocalAgentSyncService {
 
   private async syncSnapshot(): Promise<void> {
     const bindings = await this.options.loadRegisteredLocalAgentBindings(this.options.nodeId);
+    const previousEndpoints = this.options.runtime.snapshot().endpoints;
     this.options.log?.(
       `[openscout-runtime] local agent sync found ${bindings.length} registered agent${bindings.length === 1 ? "" : "s"}`,
     );
@@ -229,9 +269,13 @@ export class BrokerLocalAgentSyncService {
         await this.options.upsertActor(binding.actor);
       }
       await this.options.upsertAgent(binding.agent);
-      await this.options.persistEndpoint(binding.endpoint);
+      const endpoint = preserveMissingTmuxEndpointState(
+        previousEndpoints[binding.endpoint.id],
+        binding.endpoint,
+      );
+      await this.options.persistEndpoint(endpoint);
       this.options.log?.(
-        `[openscout-runtime] local agent ${binding.agent.id} -> ${binding.endpoint.transport}:${binding.endpoint.sessionId ?? binding.endpoint.id}`,
+        `[openscout-runtime] local agent ${binding.agent.id} -> ${endpoint.transport}:${endpoint.sessionId ?? endpoint.id}`,
       );
     }
 
@@ -267,7 +311,11 @@ export class BrokerLocalAgentSyncService {
       if (agent?.authorityNodeId && agent.authorityNodeId !== this.options.nodeId) {
         continue;
       }
-      if (await this.isLocalAgentEndpointAlive(endpoint)) {
+      // Archived registrations are durable history, not candidates for
+      // resurrection. The current registry binding above is responsible for
+      // bringing a session back online. Avoid probing every retired endpoint
+      // on each broker start -- large pilot journals can retain thousands.
+      if (endpoint.state !== "offline" && await this.isLocalAgentEndpointAlive(endpoint)) {
         if (endpoint.metadata?.staleLocalRegistration === true) {
           await this.options.persistEndpoint({
             ...endpoint,
@@ -402,24 +450,31 @@ export class BrokerLocalAgentSyncService {
   private async reconcileLocalEndpointStates(): Promise<void> {
     const snapshot = this.options.runtime.snapshot();
     for (const endpoint of Object.values(snapshot.endpoints)) {
+      // This service owns only the current node's process/session liveness.
+      // Probing remote tmux identifiers locally is both expensive and can
+      // incorrectly retire a healthy endpoint on another machine.
+      if (endpoint.nodeId !== this.options.nodeId) {
+        continue;
+      }
+
       if (endpoint.transport === "tmux") {
-        const sessionId =
-          endpoint.sessionId
+        if (endpoint.state === "offline") {
+          continue;
+        }
+        const sessionId = endpoint.sessionId
           ?? (typeof endpoint.metadata?.tmuxSession === "string" ? String(endpoint.metadata.tmuxSession) : null);
         const sessionAlive = sessionId ? await this.isLocalAgentSessionAlive(sessionId) : false;
         if (!sessionAlive) {
-          if (endpoint.state !== "offline") {
-            await this.options.persistEndpoint({
-              ...endpoint,
-              state: "offline",
-              metadata: {
-                ...(endpoint.metadata ?? {}),
-                lastError: sessionId ? `tmux session missing: ${sessionId}` : "tmux session missing",
-                lastFailedAt: this.now(),
-              },
-            });
-            this.options.log?.(`[openscout-runtime] marked stale tmux endpoint offline ${endpoint.id}`);
-          }
+          await this.options.persistEndpoint({
+            ...endpoint,
+            state: "offline",
+            metadata: {
+              ...(endpoint.metadata ?? {}),
+              lastError: missingTmuxSessionError(endpoint),
+              lastFailedAt: this.now(),
+            },
+          });
+          this.options.log?.(`[openscout-runtime] marked stale tmux endpoint offline ${endpoint.id}`);
           continue;
         }
       }

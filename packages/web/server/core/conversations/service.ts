@@ -4,9 +4,11 @@ import type {
   AgentDefinition,
   AgentEndpoint,
   ConversationKind,
+  ConversationProjectionSnapshot,
   FlightRecord,
   InvocationRequest,
   MessageRecord,
+  ScoutExecutionResolution,
 } from "@openscout/protocol";
 import {
   conversationNaturalKey,
@@ -69,6 +71,8 @@ export type ScoutConversationParticipant = {
   agentId: string | null;
   sessionId: string | null;
   harness: string | null;
+  model: string | null;
+  reasoningEffort: string | null;
   transport: string | null;
   workspaceRoot: string | null;
 };
@@ -81,16 +85,21 @@ export type ScoutConversationSummary = {
   title: string;
   alias?: string | null;
   naturalKey?: string | null;
-  /// May be capped for large non-direct rosters; `participantCount` is the truth.
+  /// Complete roster, including members whose rich record is omitted below.
   participantIds: string[];
+  /// May be capped for large non-direct rosters; kept records align with the
+  /// leading entries in `participantIds`.
   participants: ScoutConversationParticipant[];
-  /// True total participant count, even when the arrays above are capped.
+  /// True total participant count, even when `participants` is capped.
   participantCount: number;
   authorityNodeId: string | null;
   authorityNodeName: string | null;
   agentId: string | null;
   agentName: string | null;
   harness: string | null;
+  model: string | null;
+  reasoningEffort: string | null;
+  transport: string | null;
   sessionId: string | null;
   currentBranch: string | null;
   parentConversationId: string | null;
@@ -107,6 +116,71 @@ export type ScoutConversationSummary = {
   /// Rebuildable status of the latest operator turn that requested a reply.
   turn?: ScoutConversationTurn;
 };
+
+/**
+ * Compact list adapter for the durable conversation projection. List surfaces
+ * can keep using these rows after broker startup; selected-conversation reads
+ * load the richer roster, ask, and turn detail separately.
+ */
+export function provisionalScoutConversations(
+  snapshot: ConversationProjectionSnapshot,
+  filters: ScoutConversationListFilters = {},
+): ScoutConversationSummary[] {
+  const allowedKinds = new Set(filters.kinds ?? DEFAULT_CONVERSATION_KINDS);
+  const query = normalizeQuery(filters.query);
+  const limit = Math.max(1, Math.floor(filters.limit ?? snapshot.items.length));
+
+  return snapshot.items
+    .filter((item) => (
+      item.entityKind === "scout_conversation"
+      && item.visibilityState === "visible"
+      && Boolean(item.conversationId)
+      && allowedKinds.has(item.kind as ConversationKind)
+    ))
+    .filter((item) => !query || [
+      item.title,
+      item.alias,
+      item.agentName,
+      item.preview,
+      item.projectRoot,
+    ].some((value) => value?.toLocaleLowerCase().includes(query)))
+    .slice(0, limit)
+    .map((item): ScoutConversationSummary => {
+      const conversationId = item.conversationId!;
+      const participantIds = item.kind === "direct" && item.agentId
+        ? ["operator", item.agentId]
+        : [];
+      return {
+        id: conversationId,
+        chatId: conversationId,
+        equivalentConversationIds: [conversationId],
+        kind: item.kind,
+        title: item.title ?? item.agentName ?? item.alias ?? conversationId,
+        alias: item.alias,
+        naturalKey: item.naturalKey,
+        participantIds,
+        participants: [],
+        participantCount: item.participantCount,
+        authorityNodeId: item.authorityNodeId,
+        authorityNodeName: item.authorityNodeName,
+        agentId: item.agentId,
+        agentName: item.agentName,
+        harness: item.harness,
+        model: item.model,
+        reasoningEffort: item.effort,
+        transport: null,
+        sessionId: item.runtimeSessionId,
+        currentBranch: item.currentBranch,
+        parentConversationId: item.parentConversationId,
+        anchorMessageId: item.anchorMessageId,
+        preview: item.preview,
+        messageCount: item.messageCount,
+        lastMessageAt: item.lastMessageAt,
+        workspaceRoot: item.projectRoot,
+        unreadCount: item.unreadCount,
+      };
+    });
+}
 
 export type ScoutConversationMessage = {
   id: string;
@@ -226,6 +300,105 @@ function metadataSessionId(metadata: Record<string, unknown> | undefined): strin
     ?? metadataString(metadata, "externalSessionId")
     ?? metadataString(metadata, "threadId")
     ?? metadataString(metadataObject(metadata, "returnAddress"), "sessionId");
+}
+
+function executionResolutionDimension(
+  resolution: ScoutExecutionResolution | null | undefined,
+  dimension: "harness" | "model" | "reasoningEffort",
+): string | null {
+  const value = resolution?.[dimension];
+  return value?.observed?.trim()
+    || value?.resolved?.trim()
+    || value?.requested?.trim()
+    || null;
+}
+
+type ScoutConversationRuntime = {
+  harness: string | null;
+  model: string | null;
+  reasoningEffort: string | null;
+  transport: string | null;
+};
+
+function executionResolutionFromUnknown(value: unknown): ScoutExecutionResolution | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const resolution = value as Partial<ScoutExecutionResolution>;
+  return resolution.schemaVersion === "openscout.execution-resolution.v1"
+    ? resolution as ScoutExecutionResolution
+    : null;
+}
+
+function flightSessionRuntime(
+  flights: FlightRecord[],
+  sessionId: string | null,
+): { resolution: ScoutExecutionResolution | null; harness: string | null; transport: string | null } | null {
+  for (const flight of [...flights].reverse()) {
+    const rawTrace = flight.metadata?.sessionTrace;
+    if (!Array.isArray(rawTrace)) continue;
+    const entries = [...rawTrace].reverse();
+    const candidate = entries.find((entry) => {
+      if (!entry || typeof entry !== "object" || Array.isArray(entry)) return false;
+      const id = metadataString(entry as Record<string, unknown>, "sessionId");
+      return sessionId ? id === sessionId : Boolean(id);
+    });
+    if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) continue;
+    const record = candidate as Record<string, unknown>;
+    return {
+      resolution: executionResolutionFromUnknown(record.executionResolution),
+      harness: metadataString(record, "harness"),
+      transport: metadataString(record, "transport"),
+    };
+  }
+  return null;
+}
+
+function latestConversationRuntime(input: {
+  sessionId: string | null;
+  participants: ScoutConversationParticipant[];
+  invocations: InvocationRequest[];
+  flights: FlightRecord[];
+  endpoint: AgentEndpoint | null;
+}): ScoutConversationRuntime {
+  const matchingParticipant = input.sessionId
+    ? input.participants.find((participant) => participant.sessionId === input.sessionId) ?? null
+    : null;
+  const matchingInvocation = input.sessionId
+    ? [...input.invocations].reverse().find((invocation) =>
+      invocation.executionResolution?.sessionId === input.sessionId
+        || invocation.execution?.targetSessionId === input.sessionId
+        || metadataSessionId(invocation.metadata) === input.sessionId
+    ) ?? null
+    : null;
+  const latestInvocation = input.invocations.at(-1) ?? null;
+  const invocation = matchingInvocation ?? latestInvocation;
+  const trace = flightSessionRuntime(input.flights, input.sessionId);
+  const resolution = matchingInvocation?.executionResolution
+    ?? trace?.resolution
+    ?? invocation?.executionResolution
+    ?? null;
+
+  return {
+    harness: executionResolutionDimension(resolution, "harness")
+      ?? trace?.harness
+      ?? matchingParticipant?.harness
+      ?? invocation?.execution?.harness?.trim()
+      ?? input.endpoint?.harness
+      ?? null,
+    model: executionResolutionDimension(resolution, "model")
+      ?? matchingParticipant?.model
+      ?? invocation?.execution?.model?.trim()
+      ?? metadataString(input.endpoint?.metadata, "observedModel")
+      ?? metadataString(input.endpoint?.metadata, "model"),
+    reasoningEffort: executionResolutionDimension(resolution, "reasoningEffort")
+      ?? matchingParticipant?.reasoningEffort
+      ?? invocation?.execution?.reasoningEffort?.trim()
+      ?? metadataString(input.endpoint?.metadata, "observedReasoningEffort")
+      ?? metadataString(input.endpoint?.metadata, "reasoningEffort"),
+    transport: trace?.transport
+      ?? matchingParticipant?.transport
+      ?? input.endpoint?.transport
+      ?? null,
+  };
 }
 
 function formatChannelAlias(value: string): string {
@@ -759,6 +932,12 @@ function buildScopedParticipants(
         ?? (kind === "session" ? participantId : null),
       harness: endpoint?.harness
         ?? metadataString(actor?.metadata, "harness"),
+      model: metadataString(endpoint?.metadata, "observedModel")
+        ?? metadataString(endpoint?.metadata, "model")
+        ?? metadataString(actor?.metadata, "model"),
+      reasoningEffort: metadataString(endpoint?.metadata, "observedReasoningEffort")
+        ?? metadataString(endpoint?.metadata, "reasoningEffort")
+        ?? metadataString(actor?.metadata, "reasoningEffort"),
       transport: endpoint?.transport
         ?? metadataString(actor?.metadata, "transport"),
       workspaceRoot: endpoint?.projectRoot
@@ -798,6 +977,9 @@ function includeConversation(
     summary.title,
     summary.agentId ?? "",
     summary.agentName ?? "",
+    summary.harness ?? "",
+    summary.model ?? "",
+    summary.reasoningEffort ?? "",
     summary.preview ?? "",
     summary.workspaceRoot ?? "",
     ...summary.participantIds,
@@ -915,6 +1097,10 @@ function coalesceDuplicateNamedChannels(
       preview: latest.preview,
       lastMessageAt: latest.lastMessageAt,
       sessionId: latest.sessionId ?? canonical.sessionId,
+      harness: latest.harness ?? canonical.harness,
+      model: latest.model ?? canonical.model,
+      reasoningEffort: latest.reasoningEffort ?? canonical.reasoningEffort,
+      transport: latest.transport ?? canonical.transport,
       messageCount: Math.max(...group.map((summary) => summary.messageCount)),
       unreadCount: Math.max(...group.map((summary) => summary.unreadCount)),
       ...(latestTurn ? { turn: latestTurn } : {}),
@@ -1041,6 +1227,13 @@ export async function getScoutConversations(
         }
         const title = agentDisplayName(snapshot, endpointsByAgent, agentId);
         const identityFields = conversationIdentityFields(conversation);
+        const runtime = latestConversationRuntime({
+          sessionId,
+          participants,
+          invocations,
+          flights,
+          endpoint,
+        });
         return [{
           id: conversation.id,
           chatId: conversation.id,
@@ -1055,7 +1248,10 @@ export async function getScoutConversations(
           authorityNodeName: snapshot.nodes?.[conversation.authorityNodeId]?.name ?? null,
           agentId,
           agentName: title,
-          harness: endpoint?.harness ?? null,
+          harness: runtime.harness,
+          model: runtime.model,
+          reasoningEffort: runtime.reasoningEffort,
+          transport: runtime.transport,
           sessionId,
           currentBranch:
             metadataString(endpoint?.metadata, "branch")
@@ -1088,6 +1284,13 @@ export async function getScoutConversations(
       }
 
       const identityFields = conversationIdentityFields(conversation);
+      const runtime = latestConversationRuntime({
+        sessionId,
+        participants,
+        invocations,
+        flights,
+        endpoint: null,
+      });
 
       return [{
         id: conversation.id,
@@ -1103,7 +1306,10 @@ export async function getScoutConversations(
         authorityNodeName: snapshot.nodes?.[conversation.authorityNodeId]?.name ?? null,
         agentId: null,
         agentName: null,
-        harness: null,
+        harness: runtime.harness,
+        model: runtime.model,
+        reasoningEffort: runtime.reasoningEffort,
+        transport: runtime.transport,
         sessionId,
         currentBranch: null,
         parentConversationId: conversation.parentConversationId ?? null,
@@ -1151,15 +1357,14 @@ export async function getScoutConversations(
 /// bulk of the list payload. `participantIds` always ships COMPLETE — bare
 /// ids are cheap, and consumers use them for membership checks (machine
 /// scoping, deep links) that must see every member. Only the rich
-/// `participants` array is capped, and the kept set always includes the
-/// operator's own entries plus every member with a live endpoint
-/// (session→channel resolution scans rich entries, and live endpoints are
-/// bounded by actual running sessions), so capping only ever drops members
-/// with no current endpoint. Kept ids are moved to the front of
-/// `participantIds` so consumers that zip `participants[i]` with
-/// `participantIds[i]` stay aligned. `participantCount` carries the real
-/// total. Direct/group_direct rosters are tiny and name the conversation, so
-/// they stay complete.
+/// `participants` array is capped. Selection prefers the operator, then
+/// endpoint-backed members, then the remaining roster, preserving input order
+/// within each tier. Endpoint-backed rosters are not assumed to be bounded:
+/// once the cap is full, lower-ranked rich records are omitted. Kept ids are
+/// moved to the front of `participantIds` so consumers that zip
+/// `participants[i]` with `participantIds[i]` stay aligned. `participantCount`
+/// carries the real total. Direct/group_direct rosters are tiny and name the
+/// conversation, so they stay complete.
 const CHANNEL_ROSTER_CAP = 32;
 
 function capSummaryRoster(
@@ -1169,14 +1374,18 @@ function capSummaryRoster(
 ): ScoutConversationSummary {
   if (summary.kind === "direct" || summary.kind === "group_direct") return summary;
   if (summary.participantIds.length <= CHANNEL_ROSTER_CAP) return summary;
+
   const keep = new Set<string>();
-  for (const id of summary.participantIds) {
-    if (operatorIds.has(id) || participantEndpoint(endpoints, id)) keep.add(id);
-  }
-  for (const id of summary.participantIds) {
-    if (keep.size >= CHANNEL_ROSTER_CAP) break;
-    keep.add(id);
-  }
+  const fillFromTier = (matches: (id: string) => boolean): void => {
+    for (const id of summary.participantIds) {
+      if (keep.size >= CHANNEL_ROSTER_CAP) return;
+      if (matches(id)) keep.add(id);
+    }
+  };
+  fillFromTier((id) => operatorIds.has(id));
+  fillFromTier((id) => !operatorIds.has(id) && participantEndpoint(endpoints, id) !== null);
+  fillFromTier(() => true);
+
   const keptIds = summary.participantIds.filter((id) => keep.has(id));
   const droppedIds = summary.participantIds.filter((id) => !keep.has(id));
   return {
@@ -1193,13 +1402,16 @@ export async function getScoutConversationMessages(
   conversationId: string,
   limit = 80,
   beforeMessageId?: string,
+  brokerContext?: ScoutBrokerContext | null,
 ): Promise<ScoutConversationMessage[] | null> {
   const normalizedId = conversationId.trim();
   if (!normalizedId || !isOpaqueChannelId(normalizedId)) {
     return [];
   }
 
-  const broker = await loadScoutBrokerContext(undefined, { scope: "conversations" });
+  const broker = brokerContext === undefined
+    ? await loadScoutBrokerContext(undefined, { scope: "conversations" })
+    : brokerContext;
   if (!broker) return null;
 
   const snapshot = broker.snapshot;

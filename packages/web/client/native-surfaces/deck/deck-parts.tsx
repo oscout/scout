@@ -557,7 +557,7 @@ export function AudioSettings({ model }: { model: DeckModel }) {
         <div><dt>Route</dt><dd>{model.speechRoute?.voiceId ?? selectedVoice?.name ?? model.speechVoiceId}</dd></div>
       </dl>
       <p className="deck-sheet__note">
-        Scout owns both directions: Scout dictation in; OpenAI or ElevenLabs synthesis out through the paired host API.
+        Scout owns both directions: Scout dictation in; OpenAI, ElevenLabs, or NVIDIA synthesis out through the paired host API.
       </p>
     </div>
   );
@@ -566,12 +566,13 @@ export function AudioSettings({ model }: { model: DeckModel }) {
 function providerLabel(provider: string): string {
   if (provider.toLowerCase() === "openai") return "OpenAI";
   if (provider.toLowerCase() === "elevenlabs") return "ElevenLabs";
+  if (provider.toLowerCase() === "nvidia") return "NVIDIA";
   return provider.replace(/(^|[-_])([a-z])/g, (_, prefix: string, letter: string) => `${prefix ? " " : ""}${letter.toUpperCase()}`);
 }
 
 function isCloudSpeechProvider(provider: string): boolean {
   const normalized = provider.toLowerCase();
-  return normalized === "openai" || normalized === "elevenlabs";
+  return normalized === "openai" || normalized === "elevenlabs" || normalized === "nvidia";
 }
 
 /* ------------------------------------------------------------------ lanes */

@@ -530,6 +530,25 @@ export function describeStopStep(step: StopStep): string {
   }
 }
 
+/**
+ * Reconcile a pre-bootout sweep plan with the ownership tree after launchd has
+ * had its graceful drain window. Only PIDs that are both still owned by this
+ * checkout and were present in the stopped tree are safe stragglers to signal.
+ */
+export function ownedSweepSurvivorPids(
+  step: Extract<StopStep, { kind: "sweep" }>,
+  tree: LifecycleTree,
+): number[] {
+  const candidates = new Set(step.pids);
+  const stillOwned = layerProcesses(tree, step.layers);
+  const reparentedFromThisCheckout = detachedExpectedProcesses(tree)
+    .filter((entry) => step.layers.includes(entry.layer));
+
+  return [...stillOwned, ...reparentedFromThisCheckout]
+    .map((entry) => entry.pid)
+    .filter((pid) => candidates.has(pid));
+}
+
 export type StopOutcome = {
   step: string;
   pids: number[];
@@ -658,6 +677,12 @@ export function bootstrapLaunchdJob(plistPath: string, uid: number): { ok: boole
  */
 export type LaunchdStartMethod = "kickstart" | "scoutd" | "bootstrap" | "unavailable";
 
+export function scoutdStartArguments(
+  options: { waitForHealth?: boolean } = {},
+): string[] {
+  return options.waitForHealth === false ? ["start", "--no-wait"] : ["start"];
+}
+
 export function chooseLaunchdStartMethod(input: {
   loaded: boolean;
   plistExists: boolean;
@@ -672,7 +697,7 @@ export function startLaunchdJob(
   label: string,
   uid: number,
   home: string,
-  options: { restart?: boolean; serviceRoot?: string | null } = {},
+  options: { restart?: boolean; serviceRoot?: string | null; waitForHealth?: boolean } = {},
 ): { ok: boolean; detail: string; method: LaunchdStartMethod } {
   const plistPath = launchAgentPlistPath(label, home);
   const scoutdPath = options.serviceRoot ? scoutdPathForRoot(options.serviceRoot) : null;
@@ -686,7 +711,7 @@ export function startLaunchdJob(
     case "kickstart":
       return { ...kickstartLaunchdJob(label, uid, { restart: options.restart }), method };
     case "scoutd": {
-      const result = spawnSync(scoutdPath as string, ["start"], { encoding: "utf8" });
+      const result = spawnSync(scoutdPath as string, scoutdStartArguments(options), { encoding: "utf8" });
       const detail = `${result.stdout ?? ""}${result.stderr ?? ""}`.trim();
       return { ok: (result.status ?? 1) === 0, detail, method };
     }

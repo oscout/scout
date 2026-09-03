@@ -2613,3 +2613,81 @@
 .ctx-panel--ops-inspector .ctx-panel-pulse-row small {
   color: color-mix(in srgb, var(--ink) 58%, transparent);
 }
+
+/* ── Messages rail view toggle (Agents map · Sessions queue) ── */
+
+.ctx-panel-viewtoggle {
+  display: flex;
+  gap: var(--space-3xs);
+  padding: 0 var(--space-md) var(--space-2xs);
+  flex-shrink: 0;
+}
+
+.ctx-panel-viewtab {
+  flex: 1;
+  padding: var(--space-2xs) var(--space-xs);
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  font-size: var(--text-sm);
+  font-weight: 500;
+  font-family: var(--font-mono);
+  letter-spacing: var(--tracking-sm);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  transition: background 0.1s, color 0.1s;
+}
+
+.ctx-panel-viewtab:hover {
+  background: color-mix(in srgb, var(--ink) 4%, transparent);
+  color: var(--ink);
+}
+
+.ctx-panel-viewtab--on {
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  color: var(--accent);
+  font-weight: 600;
+}
+
+/* Sessions-view group switcher — chips, one accent, no chrome. */
+
+.ctx-panel-groupbar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3xs);
+  padding: var(--space-2xs) var(--space-md);
+  flex-shrink: 0;
+}
+
+.ctx-panel-groupbar-label {
+  margin-right: var(--space-3xs);
+  color: var(--dim);
+  font-size: 10px;
+  font-weight: 600;
+  font-family: var(--font-mono);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.ctx-panel-groupchip {
+  padding: 3px 8px;
+  border: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
+  border-radius: var(--radius-pill);
+  background: transparent;
+  color: var(--muted);
+  font-size: 10.5px;
+  font-weight: 550;
+  font-family: var(--font-sans);
+  cursor: pointer;
+  transition: border-color 0.1s, color 0.1s;
+}
+
+.ctx-panel-groupchip:hover {
+  color: var(--ink);
+  border-color: var(--border);
+}
+
+.ctx-panel-groupchip--on {
+  border-color: var(--accent);
+  color: var(--accent);
+}

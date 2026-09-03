@@ -52,7 +52,12 @@ const now = (): number => {
   return Date.now();
 };
 
-const store = createPendingPairRequestStore({ statePath, ttlMs: 60_000, now });
+const store = createPendingPairRequestStore({
+  statePath,
+  ttlMs: 60_000,
+  renewalWindowMs: 60_000,
+  now,
+});
 
 armed = true;
 if (operation === "touch") {

@@ -128,6 +128,67 @@ afterEach(() => {
   }
 });
 
+test("GET /pair proxies to Scout web and forwards client identity", async () => {
+  const pairPort = await getFreePort();
+  const pairOrigin = Bun.serve({
+    port: pairPort,
+    hostname: "127.0.0.1",
+    fetch(req) {
+      expect(new URL(req.url).searchParams.get("route")).toBe("lan");
+      expect(req.headers.get("x-scout-client")).toBe("scout-ios");
+      expect(req.headers.get("x-scout-device-name")).toBe("Test iPhone");
+      expect(req.headers.get("x-scout-pair-relay")).toBe("1");
+      expect(req.headers.get("x-forwarded-for")).toBe("127.0.0.1");
+      expect(req.headers.get("x-real-ip")).toBe("127.0.0.1");
+      return Response.json({ status: "pending", token: "tok-1" }, { status: 202 });
+    },
+  });
+  const port = await getFreePort();
+  const relay = startRelay(port, { pairHttpOrigin: `http://127.0.0.1:${pairPort}` });
+  activeRelays.push(relay);
+
+  try {
+    const response = await fetch(`http://127.0.0.1:${port}/pair?route=lan`, {
+      headers: {
+        accept: "application/json",
+        "x-scout-client": "scout-ios",
+        "x-scout-device-name": "Test iPhone",
+      },
+    });
+    expect(response.status).toBe(202);
+    expect(await response.json()).toEqual({ status: "pending", token: "tok-1" });
+  } finally {
+    pairOrigin.stop();
+  }
+});
+
+test("GET /pair ignores spoofed client forwarding headers", async () => {
+  const pairPort = await getFreePort();
+  const pairOrigin = Bun.serve({
+    port: pairPort,
+    hostname: "127.0.0.1",
+    fetch(req) {
+      expect(new URL(req.url).searchParams.get("route")).toBe("lan");
+      expect(req.headers.get("x-scout-client")).toBe("scout-ios");
+      expect(req.headers.get("x-scout-pair-relay")).toBe("1");
+      expect(req.headers.get("x-forwarded-for")).toBe("127.0.0.1");
+      expect(req.headers.get("x-real-ip")).toBe("127.0.0.1");
+      return Response.json({ status: "pending", token: "tok-1" }, { status: 202 });
+    },
+  });
+  const port = await getFreePort();
+  activeRelays.push(startRelay(port, { pairHttpOrigin: `http://127.0.0.1:${pairPort}` }));
+  try {
+    const response = await fetch(`http://127.0.0.1:${port}/pair?route=lan`, {
+      headers: { "x-scout-client": "scout-ios", "x-forwarded-for": "198.51.100.7" },
+    });
+    expect(response.status).toBe(202);
+    expect(await response.json()).toEqual({ status: "pending", token: "tok-1" });
+  } finally {
+    pairOrigin.stop();
+  }
+});
+
 test("relay routes distinct client envelopes to and from the bridge", async () => {
   const port = await getFreePort();
   const relay = startRelay(port, {} satisfies RelayOptions);

@@ -67,22 +67,15 @@ export function agentLaneHorizonLabel(horizon: AgentLaneHorizonKey): string {
     ?? horizon;
 }
 
-/** Scale tail replay depth with the selected lane horizon. The floor is
- * 2,000 even for the 5m window: replay feeds the trace FILL (last-N history
- * for present-but-quiet lanes), and one chatty lane can crowd a quiet lane
- * out of a 500-event shared buffer. */
-export function agentLaneTailRecentLimit(horizon: AgentLaneHorizonKey): number {
-  switch (horizon) {
-    case "5m":
-    case "30m":
-      return 2_000;
-    case "4h":
-      return 5_000;
-    case "24h":
-      return 10_000;
-    default:
-      return 2_000;
-  }
+/**
+ * Lanes is an at-a-glance surface, not the transcript archive. Discovery
+ * admits quiet sessions and the live channel supplies current work; replay
+ * only fills trace context. Keep that enrichment bounded across every horizon
+ * so opening the floor cannot deserialize an 8–12 MB response in the browser.
+ * Full session history remains available from the lane detail surface.
+ */
+export function agentLaneTailRecentLimit(_horizon: AgentLaneHorizonKey): number {
+  return 1_000;
 }
 
 const MAX_LANE_TRACE_EVENTS = 400;

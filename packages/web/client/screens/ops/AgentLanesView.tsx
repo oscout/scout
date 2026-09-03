@@ -98,6 +98,7 @@ import {
   type AgentLanesGridColumns,
   type AgentLanesLayoutMode,
 } from "./agent-lanes-layout.ts";
+import { shouldBlockLaneDeckStartup } from "./lanes-preflight.ts";
 
 const LANE_HORIZON_STORAGE_KEY = "openscout:agent-lanes-horizon";
 const LANE_LAYOUT_STORAGE_KEY = "openscout:agent-lanes-layout";
@@ -106,7 +107,9 @@ const LANE_TECHNICAL_ROLLUP_STORAGE_KEY = "openscout:agent-lanes-technical-rollu
 const LANE_TECHNICAL_ROLLUP_LANE_STORAGE_PREFIX = `${LANE_TECHNICAL_ROLLUP_STORAGE_KEY}:lane:`;
 const LANE_SCROLL_STORAGE_PREFIX = "openscout:agent-lanes-scroll";
 const EMBEDDED_TAIL_DISCOVERY_LIMIT = 96;
-const EMBEDDED_TAIL_DISCOVERY_INTERVAL_MS = 30_000;
+const BROWSER_TAIL_DISCOVERY_LIMIT = 160;
+const EMBEDDED_TAIL_DISCOVERY_INTERVAL_MS = 60_000;
+const BROWSER_TAIL_DISCOVERY_INTERVAL_MS = 60_000;
 const EMBEDDED_CLOCK_INTERVAL_MS = 30_000;
 const EMBEDDED_TERMINAL_POLL_INTERVAL_MS = 30_000;
 const EMBEDDED_OBSERVE_ACTIVE_INTERVAL_MS = 30_000;
@@ -629,10 +632,12 @@ export function AgentLanesView({
   const browserTail = useTailFeed({
     enabled: !data,
     includeTranscriptReplay: true,
-    hydrateOnDiscovery: true,
-    discoveryIntervalMs: embedded ? EMBEDDED_TAIL_DISCOVERY_INTERVAL_MS : 5_000,
+    discoveryIntervalMs: embedded
+      ? EMBEDDED_TAIL_DISCOVERY_INTERVAL_MS
+      : BROWSER_TAIL_DISCOVERY_INTERVAL_MS,
     recentLimit: tailRecentLimit,
-    discoveryLimit: embedded ? EMBEDDED_TAIL_DISCOVERY_LIMIT : undefined,
+    recentWindowMs: traceWindowMs,
+    discoveryLimit: embedded ? EMBEDDED_TAIL_DISCOVERY_LIMIT : BROWSER_TAIL_DISCOVERY_LIMIT,
     pauseWhenHidden: true,
   });
   const discovery = data?.discovery ?? browserTail.discovery;
@@ -713,7 +718,6 @@ export function AgentLanesView({
     pauseWhenHidden: true,
   });
   const observeCache = data?.observeCache ?? browserObserveCache;
-  const tailLoading = loadState.discovery === "loading" || loadState.recent === "loading";
   // A failed refresh on top of a good scan is not an outage. Only a channel
   // that has never answered earns the full-region failure card; otherwise the
   // quiet-interval reading stands and is marked as behind, matching how the
@@ -722,11 +726,6 @@ export function AgentLanesView({
   const tailBlank = tailFailure === "blank";
   const tailDegraded = tailFailure === "degraded";
   const tailSourceCount = discovery?.totals.transcripts ?? discovery?.transcripts?.length ?? 0;
-  // The status sheet outlives the load by its retract, so the exit plays over
-  // the finished deck instead of vanishing on unmount. A failed scan gets no
-  // exit animation — the unavailable card should take the region immediately.
-  const laneBoot = useLaneBootVisibility(tailLoading, tailBlank ? 0 : LANE_BOOT_EXIT_MS);
-
   useEffect(() => {
     if (newLaneIds.size === 0) return;
     const timer = setTimeout(() => setNewLaneIds(new Set()), 900);
@@ -848,6 +847,15 @@ export function AgentLanesView({
 
   const visibleColumns = layout.flat;
   const pinnedCount = layout.pinnedLeft.length + layout.pinnedRight.length;
+  const visibleLaneCount = floorMode ? filteredLanes.length : visibleColumns.length;
+  // The status sheet outlives a genuinely blank load by its retract, but live
+  // data wins immediately. A slow discovery scan is enrichment once a usable
+  // lane already exists; covering that lane was the source of the apparent
+  // 20+ second "nothing happening" wait.
+  const laneBoot = useLaneBootVisibility(
+    shouldBlockLaneDeckStartup(loadState, visibleLaneCount),
+    tailBlank ? 0 : LANE_BOOT_EXIT_MS,
+  );
 
   // Publish the roster the deck actually rendered — `layout.flat` is exactly the
   // column order on screen (pinned-left → main → pinned-right, with hidden auto
@@ -978,7 +986,7 @@ export function AgentLanesView({
           <div className="s-agent-lanes-title">Agent Lanes</div>
           <div className="s-agent-lanes-meta" aria-label="Lane deck status">
             <span className="s-agent-lanes-meta-stat">
-              {floorMode ? filteredLanes.length : visibleColumns.length} live
+              {visibleLaneCount} live
             </span>
             {!floorMode && pinnedCount > 0 ? (
               <span className="s-agent-lanes-meta-stat">{pinnedCount} pinned</span>
@@ -1143,7 +1151,7 @@ export function AgentLanesView({
           </ul>
         </div>
       ) : null}
-      {(floorMode ? filteredLanes.length : visibleColumns.length) === 0 ? (
+      {visibleLaneCount === 0 ? (
         laneBoot.visible ? (
           <AgentLanesPreflightDeck
             discovery={discovery}
@@ -1241,7 +1249,7 @@ export function AgentLanesView({
           sourceCount={tailSourceCount}
           processCount={discovery?.processes.length ?? 0}
           eventCount={tailEvents.length}
-          laneCount={floorMode ? filteredLanes.length : visibleColumns.length}
+          laneCount={visibleLaneCount}
           horizonLabel={horizonLabel}
           handedOff={laneBoot.exiting}
           exiting={laneBoot.exiting}

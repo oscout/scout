@@ -1,20 +1,25 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "./api.ts";
+import {
+  buildFleetActiveAskIndex,
+  type FleetActiveAskIndex,
+} from "./fleet-active-asks.ts";
 import { useBrokerEvents } from "./sse.ts";
-import type { FleetAsk, FleetState } from "./types.ts";
+import type { FleetState } from "./types.ts";
 
-const ACTIVE_ASK_STATUSES = new Set<FleetAsk["status"]>([
-  "working",
-  "queued",
-  "needs_attention",
-]);
+/** A working turn emits several broker events per second; every one used to
+ *  refetch /api/fleet — one of the heaviest reads the client makes. Events
+ *  inside this window ride along on one trailing refetch instead. */
+const FLEET_REFRESH_TRAILING_MS = 1_500;
 
 /**
- * Loads /api/fleet and exposes the most recent active ask per agent.
- * Refreshes on message.posted / flight.updated / collaboration.event.appended.
+ * Loads /api/fleet and exposes a conversation-first active ask index.
+ * Refreshes on message.posted / flight.updated / collaboration.event.appended,
+ * coalesced to at most one fetch per trailing window.
  */
-export function useFleetActiveAsks(): Map<string, FleetAsk> {
+export function useFleetActiveAsks(): FleetActiveAskIndex {
   const [fleet, setFleet] = useState<FleetState | null>(null);
+  const refreshTimerRef = useRef<number | null>(null);
 
   const load = useCallback(async () => {
     const data = await api<FleetState>("/api/fleet").catch(() => null);
@@ -23,6 +28,20 @@ export function useFleetActiveAsks(): Map<string, FleetAsk> {
 
   useEffect(() => {
     void load();
+    return () => {
+      if (refreshTimerRef.current !== null) {
+        window.clearTimeout(refreshTimerRef.current);
+        refreshTimerRef.current = null;
+      }
+    };
+  }, [load]);
+
+  const scheduleRefresh = useCallback(() => {
+    if (refreshTimerRef.current !== null) return;
+    refreshTimerRef.current = window.setTimeout(() => {
+      refreshTimerRef.current = null;
+      void load();
+    }, FLEET_REFRESH_TRAILING_MS);
   }, [load]);
 
   useBrokerEvents((event) => {
@@ -31,19 +50,12 @@ export function useFleetActiveAsks(): Map<string, FleetAsk> {
       event.kind === "flight.updated" ||
       event.kind === "collaboration.event.appended"
     ) {
-      void load();
+      scheduleRefresh();
     }
   });
 
-  return useMemo(() => {
-    const map = new Map<string, FleetAsk>();
-    for (const ask of fleet?.activeAsks ?? []) {
-      if (!ACTIVE_ASK_STATUSES.has(ask.status)) continue;
-      const existing = map.get(ask.agentId);
-      if (!existing || ask.updatedAt > existing.updatedAt) {
-        map.set(ask.agentId, ask);
-      }
-    }
-    return map;
-  }, [fleet]);
+  return useMemo(
+    () => buildFleetActiveAskIndex(fleet?.activeAsks ?? []),
+    [fleet?.activeAsks],
+  );
 }

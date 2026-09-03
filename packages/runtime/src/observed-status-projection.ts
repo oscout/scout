@@ -45,29 +45,50 @@ type StatusCandidate = ObservedStatusProjection & {
   stateEnteredAt?: number;
 };
 
+type ProjectionSnapshot = Pick<
+  RuntimeRegistrySnapshot,
+  "agents" | "endpoints" | "invocations" | "flights" | "collaborationRecords"
+>;
+
 const DEFAULT_STALE_AFTER_MS = 90_000;
 
 export function projectObservedStatusForAgent(
-  snapshot: Pick<RuntimeRegistrySnapshot, "agents" | "endpoints" | "invocations" | "flights" | "collaborationRecords">,
+  snapshot: ProjectionSnapshot,
   agentId: ScoutId,
   options: ObservedStatusProjectionOptions = {},
+): ObservedStatusProjection {
+  const endpoints = Object.values(snapshot.endpoints)
+    .filter((endpoint) => endpoint.agentId === agentId);
+  return projectObservedStatusForAgentFromRecords(
+    snapshot,
+    agentId,
+    endpoints,
+    latestFlightForAgent(snapshot, agentId),
+    latestCollaborationForAgent(snapshot, agentId),
+    options,
+  );
+}
+
+function projectObservedStatusForAgentFromRecords(
+  snapshot: ProjectionSnapshot,
+  agentId: ScoutId,
+  endpoints: readonly AgentEndpoint[],
+  latestFlight: FlightRecord | null,
+  latestCollaboration: CollaborationRecord | null,
+  options: ObservedStatusProjectionOptions,
 ): ObservedStatusProjection {
   const now = options.now ?? Date.now();
   const candidates: StatusCandidate[] = [];
 
-  for (const endpoint of Object.values(snapshot.endpoints)) {
-    if (endpoint.agentId === agentId) {
-      candidates.push(projectEndpointStatus(endpoint, now, options));
-    }
+  for (const endpoint of endpoints) {
+    candidates.push(projectEndpointStatus(endpoint, now, options));
   }
 
-  const latestFlight = latestFlightForAgent(snapshot, agentId);
   if (latestFlight) {
     const invocation = snapshot.invocations[latestFlight.invocationId];
     candidates.push(projectFlightStatus(latestFlight, invocation, now));
   }
 
-  const latestCollaboration = latestCollaborationForAgent(snapshot, agentId);
   if (latestCollaboration) {
     candidates.push(projectCollaborationStatus(latestCollaboration, agentId));
   }
@@ -154,24 +175,66 @@ function withTransitionAt(
 }
 
 export function projectObservedStatusesFromRuntimeSnapshot(
-  snapshot: Pick<RuntimeRegistrySnapshot, "agents" | "endpoints" | "invocations" | "flights" | "collaborationRecords">,
+  snapshot: ProjectionSnapshot,
   options: ObservedStatusProjectionOptions = {},
 ): ObservedStatusProjection[] {
   const agentIds = new Set<ScoutId>(Object.keys(snapshot.agents));
+  const endpointsByAgent = new Map<ScoutId, AgentEndpoint[]>();
   for (const endpoint of Object.values(snapshot.endpoints)) {
     agentIds.add(endpoint.agentId);
+    const endpoints = endpointsByAgent.get(endpoint.agentId);
+    if (endpoints) {
+      endpoints.push(endpoint);
+    } else {
+      endpointsByAgent.set(endpoint.agentId, [endpoint]);
+    }
   }
   for (const invocation of Object.values(snapshot.invocations)) {
     agentIds.add(invocation.targetAgentId);
   }
+
+  const latestFlightByAgent = new Map<ScoutId, FlightRecord>();
+  for (const flight of Object.values(snapshot.flights)) {
+    const current = latestFlightByAgent.get(flight.targetAgentId);
+    if (!current || flightUpdatedAt(flight, snapshot.invocations[flight.invocationId]) >
+      flightUpdatedAt(current, snapshot.invocations[current.invocationId])) {
+      latestFlightByAgent.set(flight.targetAgentId, flight);
+    }
+  }
+
+  const latestCollaborationByAgent = new Map<ScoutId, CollaborationRecord>();
   for (const record of Object.values(snapshot.collaborationRecords)) {
-    if (record.ownerId) agentIds.add(record.ownerId);
-    if (record.nextMoveOwnerId) agentIds.add(record.nextMoveOwnerId);
+    if (record.ownerId) {
+      agentIds.add(record.ownerId);
+      keepLatestCollaboration(latestCollaborationByAgent, record.ownerId, record);
+    }
+    if (record.nextMoveOwnerId) {
+      agentIds.add(record.nextMoveOwnerId);
+      keepLatestCollaboration(latestCollaborationByAgent, record.nextMoveOwnerId, record);
+    }
   }
 
   return [...agentIds]
     .sort()
-    .map((agentId) => projectObservedStatusForAgent(snapshot, agentId, options));
+    .map((agentId) => projectObservedStatusForAgentFromRecords(
+      snapshot,
+      agentId,
+      endpointsByAgent.get(agentId) ?? [],
+      latestFlightByAgent.get(agentId) ?? null,
+      latestCollaborationByAgent.get(agentId) ?? null,
+      options,
+    ));
+}
+
+function keepLatestCollaboration(
+  records: Map<ScoutId, CollaborationRecord>,
+  agentId: ScoutId,
+  candidate: CollaborationRecord,
+): void {
+  const current = records.get(agentId);
+  if (!current || candidate.updatedAt > current.updatedAt) {
+    records.set(agentId, candidate);
+  }
 }
 
 function projectEndpointStatus(

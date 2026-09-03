@@ -7,6 +7,7 @@ import type {
   AgentBrokerFeedSeverity,
   AgentDefinition,
   CollaborationRecord,
+  ConversationProjectionSnapshot,
   ControlCommand,
   DeliveryAttempt,
   DeliveryIntent,
@@ -46,12 +47,17 @@ import { loadOpenScoutRuntimeBuildIdentity } from "./build-info.js";
 import { readInvocationLifecycle as readInvocationLifecycleModel } from "./invocation-lifecycle-read-model.js";
 import { listBrokerMessages } from "./broker-core-message-read-model.js";
 import type { BrokerRouteTargetInput } from "./scout-dispatcher.js";
-import { queryRuntimeRegistrySnapshot, type RuntimeRegistrySnapshot } from "./registry.js";
+import {
+  createRuntimeRegistrySnapshot,
+  queryRuntimeRegistrySnapshot,
+  type RuntimeRegistrySnapshot,
+} from "./registry.js";
 import type { ActivityItem } from "./sqlite-store.js";
 import type { BrokerRuntimeCatalogSnapshot } from "./broker-runtime-catalog-service.js";
 
 type BrokerCoreRuntime = {
   snapshot: () => RuntimeRegistrySnapshot;
+  peek: () => Readonly<RuntimeRegistrySnapshot>;
 };
 
 type BrokerCoreProjection = {
@@ -61,6 +67,7 @@ type BrokerCoreProjection = {
     actorId?: string;
     conversationId?: string;
   }) => Promise<ActivityItem[]>;
+  conversationSnapshot?: (limit?: number) => Promise<ConversationProjectionSnapshot | null>;
 };
 
 type BrokerCoreJournal = {
@@ -247,6 +254,17 @@ function agentCardLifecycleKind(agent: AgentDefinition): "persistent" | "one_tim
   const lifecycle = metadataRecord(agent.metadata, "cardLifecycle");
   const kind = metadataString(lifecycle, "kind");
   return kind === "persistent" || kind === "one_time" ? kind : null;
+}
+
+function currentLocalAgentRecords(
+  agents: Readonly<Record<string, AgentDefinition>>,
+  localNodeId: string,
+): Record<string, AgentDefinition> {
+  return Object.fromEntries(Object.entries(agents).filter(([, agent]) => (
+    (agent.homeNodeId === localNodeId || agent.authorityNodeId === localNodeId)
+    && !metadataBoolean(agent.metadata, "staleLocalRegistration")
+    && !metadataBoolean(agent.metadata, "retiredFromFleet")
+  )));
 }
 
 function summarizeBrokerAgentCounts(
@@ -801,6 +819,7 @@ export function createBrokerCoreService(
   const postConversationMessage = deps.postConversationMessage;
   const readCapabilities = deps.readCapabilities;
   const readRuntimeCatalog = deps.readRuntimeCatalog;
+  const readConversationProjection = deps.projection.conversationSnapshot;
   return {
     baseUrl: deps.baseUrl,
     readHealth: async () => {
@@ -843,7 +862,20 @@ export function createBrokerCoreService(
     },
     readHome: deps.readHome,
     readNode: async () => deps.localNode,
-    readSnapshot: async (query) => queryRuntimeRegistrySnapshot(deps.runtime.snapshot(), query),
+    readSnapshot: async (query) => query?.scope === "agents"
+      ? createRuntimeRegistrySnapshot({
+          // Mesh roster sync needs only registrations this node can vouch for.
+          // Re-exporting stale rows and agents learned from another peer grows
+          // every discovery response while the receiver rejects those rows.
+          agents: currentLocalAgentRecords(deps.runtime.peek().agents, deps.nodeId),
+        })
+      : queryRuntimeRegistrySnapshot(deps.runtime.snapshot(), query),
+    ...(readConversationProjection
+      ? {
+          readConversationProjection: async (query) =>
+            await readConversationProjection.call(deps.projection, query.limit),
+        }
+      : {}),
     ...(readRuntimeCatalog
       ? { readRuntimeCatalog: async (query) => await readRuntimeCatalog(query) }
       : {}),

@@ -293,10 +293,11 @@ const PREVIEW_VOICE: NativeVoiceSnapshot = {
 const PREVIEW_SPEECH_CATALOG: ScoutSpeechCatalog = {
   defaultModelId: DEFAULT_VOICE_MODEL,
   defaultVoiceId: DEFAULT_VOICE_ID,
-  source: "vox",
+  source: "fallback",
   models: [
     { id: DEFAULT_VOICE_MODEL, name: "GPT-4o mini TTS", provider: "openai", available: true },
     { id: "eleven_multilingual_v2", name: "Eleven Multilingual v2", provider: "elevenlabs", available: true },
+    { id: "magpie-tts-multilingual", name: "Magpie TTS Multilingual", provider: "nvidia", available: true },
   ],
   voices: [
     { id: "alloy", name: "Alloy", provider: "openai", modelId: DEFAULT_VOICE_MODEL, available: true, isDefault: true },
@@ -304,6 +305,7 @@ const PREVIEW_SPEECH_CATALOG: ScoutSpeechCatalog = {
     { id: "fable", name: "Fable", provider: "openai", modelId: DEFAULT_VOICE_MODEL, available: true, isDefault: false },
     { id: "nova", name: "Nova", provider: "openai", modelId: DEFAULT_VOICE_MODEL, available: true, isDefault: false },
     { id: "9BWtsMINqrJLrRacOk9x", name: "Aria", provider: "elevenlabs", modelId: "eleven_multilingual_v2", available: true, isDefault: true },
+    { id: "Magpie-Multilingual.EN-US.Aria", name: "Aria", language: "en-US", provider: "nvidia", modelId: "magpie-tts-multilingual", available: true, isDefault: true },
   ],
 };
 
@@ -1113,9 +1115,13 @@ export function useDeckController() {
     setSpeechModelId(modelId);
     setSpeechCatalog((current) => preview || current?.defaultModelId === modelId ? current : null);
     if (preview) {
-      const voiceId = modelId === "eleven_multilingual_v2" ? "9BWtsMINqrJLrRacOk9x" : DEFAULT_VOICE_ID;
-      setSpeechVoiceId(voiceId);
-      localStorage.setItem(VOICE_ID_STORAGE_KEY, voiceId);
+      const voice = PREVIEW_SPEECH_CATALOG.voices.find((candidate) =>
+        candidate.modelId === modelId && candidate.isDefault
+      ) ?? PREVIEW_SPEECH_CATALOG.voices.find((candidate) => candidate.modelId === modelId);
+      if (voice) {
+        setSpeechVoiceId(voice.id);
+        localStorage.setItem(VOICE_ID_STORAGE_KEY, voice.id);
+      }
     }
     localStorage.setItem(VOICE_MODEL_STORAGE_KEY, modelId);
   };

@@ -246,6 +246,24 @@ describe("broker service scoutd adapter", () => {
     expect(resolveBundledRuntimeDirFromModuleDir(moduleDir)).toBe(packageRoot);
   });
 
+  test("keeps a source workspace service owned by packages/runtime", () => {
+    const root = mkdtempSync(join(tmpdir(), "openscout-source-runtime-package-"));
+    const cliRoot = join(root, "packages", "cli");
+    const runtimeRoot = join(root, "packages", "runtime");
+    const moduleDir = join(cliRoot, "dist");
+
+    mkdirSync(join(cliRoot, "bin"), { recursive: true });
+    mkdirSync(moduleDir, { recursive: true });
+    mkdirSync(join(runtimeRoot, "bin"), { recursive: true });
+    mkdirSync(join(runtimeRoot, "src"), { recursive: true });
+    writeFileSync(join(cliRoot, "package.json"), JSON.stringify({ name: "@openscout/scout" }));
+    writeFileSync(join(cliRoot, "bin", "openscout-runtime.mjs"), "");
+    writeFileSync(join(runtimeRoot, "package.json"), JSON.stringify({ name: "@openscout/runtime" }));
+    writeFileSync(join(runtimeRoot, "bin", "openscout-runtime.mjs"), "");
+
+    expect(resolveBundledRuntimeDirFromModuleDir(moduleDir)).toBe(runtimeRoot);
+  });
+
   test("resolves packaged scoutd from the bundled package bin directory", async () => {
     const root = mkdtempSync(join(tmpdir(), "openscout-packaged-scoutd-"));
     const packageRoot = join(root, "scout");

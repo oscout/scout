@@ -92,6 +92,9 @@ describe("control-plane managed migrations", () => {
       db.query("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'route_alias_bindings'").get(),
     ).toEqual({ name: "route_alias_bindings" });
     expect(
+      db.query("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'broker_journal_projection_checkpoints'").get(),
+    ).toEqual({ name: "broker_journal_projection_checkpoints" });
+    expect(
       db.query("SELECT name FROM pragma_table_info('invocations') WHERE name = 'execution_resolution_json'").get(),
     ).toEqual({ name: "execution_resolution_json" });
     expect(
@@ -240,6 +243,116 @@ describe("control-plane managed migrations", () => {
     migrateControlPlaneDatabaseSchema(db);
     migrateControlPlaneDatabaseSchema(db);
     expect(ledgerRows(db)).toEqual(fullChainLedger);
+  });
+
+  test("legacy two-column conversations table crosses the index migration before authority is added", () => {
+    const db = new Database(":memory:");
+    const meshIndexMigrationIndex = migrations.findIndex(
+      (migration) => migration.folderMillis === 1788388739548,
+    );
+    expect(meshIndexMigrationIndex).toBeGreaterThan(0);
+
+    db.exec(
+      'CREATE TABLE "__drizzle_migrations" (id SERIAL PRIMARY KEY, hash text NOT NULL, created_at numeric)',
+    );
+    for (const migration of migrations.slice(0, meshIndexMigrationIndex)) {
+      for (const statement of migration.sql) db.exec(statement);
+      db.query(
+        'INSERT INTO "__drizzle_migrations" (hash, created_at) VALUES (?, ?)',
+      ).run(migration.hash, migration.folderMillis);
+    }
+
+    // This is the pre-ledger pilot shape that can survive into a database
+    // whose migration ledger was later seeded. Replacing the baseline table
+    // here leaves every other pre-0015 object at its real checked-in shape.
+    db.exec("DROP TABLE conversations");
+    db.exec(`
+      CREATE TABLE conversations (
+        id TEXT PRIMARY KEY,
+        created_at INTEGER NOT NULL DEFAULT (unixepoch())
+      )
+    `);
+
+    expect(
+      db.query("SELECT name FROM pragma_table_info('conversations') WHERE name = 'authority_node_id'").get(),
+    ).toBeNull();
+
+    migrateControlPlaneDatabaseSchema(db);
+
+    expect(ledgerRows(db)).toEqual(fullChainLedger);
+    expect(
+      db.query("SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'idx_conversations_authority_node_id'").get(),
+    ).toBeNull();
+
+    db.exec("ALTER TABLE conversations ADD COLUMN authority_node_id TEXT");
+    migrateControlPlaneDatabaseSchema(db);
+
+    expect(
+      db.query("SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'idx_conversations_authority_node_id'").get(),
+    ).toEqual({ name: "idx_conversations_authority_node_id" });
+  });
+
+  test("mesh-node repair predicates stay indexed while repeated boots remain self-healing", () => {
+    const planDb = new Database(":memory:");
+    migrateControlPlaneDatabaseSchema(planDb);
+
+    const repairPredicates = [
+      ["agents", "home_node_id", "idx_agents_home_node_id"],
+      ["agents", "authority_node_id", "idx_agents_authority_node_id"],
+      ["agent_endpoints", "node_id", "idx_agent_endpoints_node_id"],
+      ["runtime_sessions", "node_id", "idx_runtime_sessions_node_id"],
+      ["runtime_session_aliases", "node_id", "idx_runtime_session_aliases_node_id"],
+      ["conversations", "authority_node_id", "idx_conversations_authority_node_id"],
+      ["conversation_read_cursors", "reader_node_id", "idx_read_cursors_reader_node_id"],
+      ["messages", "origin_node_id", "idx_messages_origin_node_id"],
+      ["deliveries", "target_node_id", "idx_deliveries_target_node_id"],
+      ["invocations", "requester_node_id", "idx_invocations_requester_node_id"],
+      ["invocations", "target_node_id", "idx_invocations_target_node_id"],
+      ["thread_events", "authority_node_id", "idx_thread_events_authority_node_id"],
+      ["thread_cursors", "authority_node_id", "idx_thread_cursors_authority_node_id"],
+      ["trusted_peers", "node_id", "idx_trusted_peers_node_id"],
+    ] as const;
+
+    for (const [table, column, indexName] of repairPredicates) {
+      const plan = planDb
+        .query(`EXPLAIN QUERY PLAN UPDATE ${table} SET ${column} = ?1 WHERE ${column} = ?2`)
+        .all("canonical-node", "ghost-node") as Array<{ detail: string }>;
+      expect(plan.some((step) => step.detail.includes(indexName))).toBe(true);
+      expect(plan.some((step) => step.detail.includes(`SCAN ${table}`))).toBe(false);
+    }
+    planDb.close();
+
+    const db = new Database(":memory:");
+    migrateControlPlaneDatabaseSchema(db);
+    db.exec(`
+      INSERT INTO nodes (
+        id, mesh_id, name, host_name, advertise_scope, registered_at
+      ) VALUES (
+        'air-6-local-openscout', 'openscout', 'air-6.local', 'air-6.local', 'local', 1
+      );
+      INSERT INTO actors (id, kind, display_name)
+        VALUES ('agent-air', 'agent', 'Air');
+      INSERT INTO agents (
+        id, definition_id, agent_class, capabilities_json, wake_policy,
+        home_node_id, authority_node_id, advertise_scope
+      ) VALUES (
+        'agent-air', 'agent-air', 'general', '[]', 'on_demand',
+        'air-6-local-openscout', 'air-6-local-openscout', 'local'
+      );
+    `);
+
+    migrateControlPlaneDatabaseSchema(db);
+
+    expect(
+      db.query("SELECT home_node_id, authority_node_id FROM agents WHERE id = 'agent-air'").get(),
+    ).toEqual({
+      home_node_id: "air-local-openscout",
+      authority_node_id: "air-local-openscout",
+    });
+    expect(db.query("SELECT id FROM nodes WHERE id = 'air-6-local-openscout'").get()).toBeNull();
+    expect(db.query("SELECT id FROM nodes WHERE id = 'air-local-openscout'").get()).toEqual({
+      id: "air-local-openscout",
+    });
   });
 
   test("briefings-markdown backfill adds the column to pre-v8 databases", () => {

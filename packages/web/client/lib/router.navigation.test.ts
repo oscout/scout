@@ -61,6 +61,16 @@ describe("route fixtures", () => {
       canonical: "/messages/c.foo",
     },
     {
+      url: "/messages/agent/worker%2Fmain?thread=conv%2Fthread&machineId=node-a",
+      route: {
+        view: "messages",
+        agentId: "worker/main",
+        threadId: "conv/thread",
+        machineId: "node-a",
+      },
+      canonical: "/messages/agent/worker%2Fmain?thread=conv%2Fthread&machineId=node-a",
+    },
+    {
       url: "/sessions/sess-1",
       route: { view: "sessions", sessionId: "sess-1" },
       canonical: "/sessions/sess-1",
@@ -467,6 +477,10 @@ describe("routeKey scroll ownership", () => {
     expect(routeKey({ view: "sessions" })).not.toBe(routeKey({ view: "sessions", sessionId: "s-1" }));
     expect(routeKey({ view: "mesh" })).not.toBe(routeKey({ view: "activity" }));
     expect(routeKey({ view: "ops", mode: "tail" })).not.toBe(routeKey({ view: "ops", mode: "lanes" }));
+    expect(routeKey({ view: "messages", agentId: "agent-a" }))
+      .not.toBe(routeKey({ view: "messages", agentId: "agent-b" }));
+    expect(routeKey({ view: "messages", agentId: "agent-a", threadId: "thread-a" }))
+      .not.toBe(routeKey({ view: "messages", agentId: "agent-a", threadId: "thread-b" }));
   });
 
   test("machine scope variants scroll independently", () => {

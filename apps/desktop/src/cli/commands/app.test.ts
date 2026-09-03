@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 
 import type { LifecycleProcess, LifecycleTree } from "../app-lifecycle.ts";
-import { lifecycleProblems, selectInstalledAppBundle } from "./app.ts";
+import { lifecycleProblems, selectInstalledAppBundle, startTreeReady } from "./app.ts";
 
 function process(layer: LifecycleProcess["layer"], pid: number): LifecycleProcess {
   return {
@@ -82,6 +82,34 @@ describe("lifecycleProblems", () => {
       .toEqual([
         "broker pid 301 references this checkout but is detached from its expected process tree: broker",
       ]);
+  });
+});
+
+describe("startTreeReady", () => {
+  const supervisedProcesses = [
+    process("scoutd", 100),
+    process("base", 101),
+    process("probes", 102),
+    process("broker", 103),
+    process("edge", 104),
+    process("pairing", 105),
+  ];
+  const appProcesses = [process("app", 200), process("menu", 201)];
+
+  test("keeps a full start waiting when the web child is still missing", () => {
+    expect(startTreeReady(treeWith({
+      owned: [...supervisedProcesses, ...appProcesses],
+    }), "all")).toBe(false);
+  });
+
+  test("accepts a full start only after the complete supervised tree is present", () => {
+    expect(startTreeReady(treeWith({
+      owned: [...supervisedProcesses, process("web", 106), ...appProcesses],
+    }), "all")).toBe(true);
+  });
+
+  test("keeps apps-only starts scoped to Scout and its menu helper", () => {
+    expect(startTreeReady(treeWith({ owned: appProcesses }), "apps")).toBe(true);
   });
 });
 

@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -587,6 +587,52 @@ describe("service budgets", () => {
     rawDb.close();
   });
 
+  test("finds account quota in file 33 after irrelevant newer sessions", async () => {
+    const root = mkdtempSync(join(tmpdir(), "openscout-service-budgets-codex-bound-"));
+    tempPaths.add(root);
+    const controlHome = join(root, "control-plane");
+    const home = join(root, "home");
+    process.env.OPENSCOUT_CONTROL_HOME = controlHome;
+    process.env.HOME = home;
+    process.env.OPENSCOUT_SUPPORT_DIRECTORY = join(home, "Library", "Application Support", "OpenScout");
+    process.env.PATH = "";
+    mkdirSync(controlHome, { recursive: true });
+    const rawDb = new Database(join(controlHome, "control-plane.sqlite"));
+    createQuotaTable(rawDb);
+
+    const sessionDir = join(home, ".codex", "sessions", "2026", "09", "01");
+    mkdirSync(sessionDir, { recursive: true });
+    const now = Date.now();
+    for (let index = 0; index < 40; index += 1) {
+      const path = join(sessionDir, `session-${String(index).padStart(2, "0")}.jsonl`);
+      // Newest-first, index 7 is the 33rd candidate among these 40 files.
+      const payload = index === 7
+        ? {
+            timestamp: new Date(now).toISOString(),
+            payload: {
+              rate_limits: {
+                primary: {
+                  used_percent: 91,
+                  window_minutes: 300,
+                  resets_at: Math.floor((now + 300 * 60_000) / 1000),
+                },
+              },
+            },
+          }
+        : { timestamp: new Date(now).toISOString(), payload: { type: "turn_started" } };
+      writeFileSync(path, `${JSON.stringify(payload)}\n`, "utf8");
+      const modifiedAt = new Date(now - (40 - index) * 1_000);
+      utimesSync(path, modifiedAt, modifiedAt);
+    }
+
+    const response = await loadServiceBudgets(true);
+    const codex = response.gauges.find((gauge) => gauge.id === "codex");
+    expect(codex && codex.kind === "quota" ? codex.windows : []).toEqual([
+      expect.objectContaining({ label: "5h", usedLabel: "91%", source: "Codex local session" }),
+    ]);
+    rawDb.close();
+  });
+
   test("uses semantic Codex window duration even when weekly quota is primary", async () => {
     const root = mkdtempSync(join(tmpdir(), "openscout-service-budgets-codex-weekly-primary-"));
     tempPaths.add(root);
@@ -673,6 +719,59 @@ describe("service budgets", () => {
     const codex = response.gauges.find((gauge) => gauge.id === "codex");
     expect(codex && codex.kind === "quota" ? codex.windows : []).toEqual([
       expect.objectContaining({ label: "7d", usedLabel: "86%", source: "Codex local session" }),
+    ]);
+    rawDb.close();
+  });
+
+  test("does not replace persisted account quota with a promo-only partial scan", async () => {
+    const root = mkdtempSync(join(tmpdir(), "openscout-service-budgets-codex-partial-pool-"));
+    tempPaths.add(root);
+    const controlHome = join(root, "control-plane");
+    const home = join(root, "home");
+    process.env.OPENSCOUT_CONTROL_HOME = controlHome;
+    process.env.HOME = home;
+    process.env.OPENSCOUT_SUPPORT_DIRECTORY = join(home, "Library", "Application Support", "OpenScout");
+    process.env.PATH = "";
+    mkdirSync(controlHome, { recursive: true });
+    const rawDb = new Database(join(controlHome, "control-plane.sqlite"));
+    createQuotaTable(rawDb);
+
+    const sessionDir = join(home, ".codex", "sessions", "2026", "09", "01");
+    mkdirSync(sessionDir, { recursive: true });
+    const sessionPath = join(sessionDir, "usage.jsonl");
+    const now = Date.now();
+    const rateLimits = (usedPercent: number, limitId: string, resetsAt: number) => ({
+      type: "token_count",
+      rate_limits: {
+        limit_id: limitId,
+        primary: { used_percent: usedPercent, window_minutes: 7 * 24 * 60, resets_at: resetsAt },
+        secondary: null,
+        plan_type: "pro",
+      },
+    });
+
+    writeFileSync(sessionPath, `${JSON.stringify({
+      timestamp: new Date(now - 60_000).toISOString(),
+      payload: rateLimits(86, "codex", Math.floor((now + 4 * 24 * 60 * 60_000) / 1000)),
+    })}\n`, "utf8");
+    const accountResponse = await loadServiceBudgets(true);
+    const accountGauge = accountResponse.gauges.find((gauge) => gauge.id === "codex");
+    expect(accountGauge && accountGauge.kind === "quota" ? accountGauge.windows : []).toEqual([
+      expect.objectContaining({ label: "7d", usedLabel: "86%" }),
+    ]);
+
+    // A later bounded harvest sees only the promotional pool. Its reset slides
+    // farther out, but it must not overwrite the persisted binding account pool.
+    writeFileSync(sessionPath, `${JSON.stringify({
+      timestamp: new Date(now).toISOString(),
+      payload: rateLimits(0, "codex_bengalfox", Math.floor((now + 7 * 24 * 60 * 60_000) / 1000)),
+    })}\n`, "utf8");
+    resetServiceBudgetsCache();
+
+    const promoOnlyResponse = await loadServiceBudgets(true);
+    const promoOnlyGauge = promoOnlyResponse.gauges.find((gauge) => gauge.id === "codex");
+    expect(promoOnlyGauge && promoOnlyGauge.kind === "quota" ? promoOnlyGauge.windows : []).toEqual([
+      expect.objectContaining({ label: "7d", usedLabel: "86%" }),
     ]);
     rawDb.close();
   });

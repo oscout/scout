@@ -496,6 +496,16 @@ export function routeFromUrl(urlLike: string | URL): Route {
   // Legacy /conversations → Chat messages index.
   if (parts[0] === "conversations") return scoped({ view: "messages" });
   if (parts[0] === "messages") {
+    // /messages/agent/<agentId> opens the agent master view; ?thread= raises
+    // one of its session conversations in the side panel.
+    if (parts[1] === "agent" && parts[2]) {
+      const threadId = url.searchParams.get("thread")?.trim() || undefined;
+      return scoped({
+        view: "messages",
+        agentId: decodeURIComponent(parts[2]),
+        ...(threadId ? { threadId } : {}),
+      });
+    }
     const base: Extract<Route, { view: "messages" }> = {
       view: "messages",
       ...(parts[1] ? { conversationId: decodeURIComponent(parts[1]) } : {}),
@@ -786,10 +796,13 @@ export function routePath(r: Route, pathname?: string): string {
     }
     case "messages": {
       const params = new URLSearchParams();
+      if (r.agentId && r.threadId) params.set("thread", r.threadId);
       appendMachineScope(params, r);
-      const base = r.conversationId
-        ? `/messages/${encodeURIComponent(r.conversationId)}`
-        : "/messages";
+      const base = r.agentId
+        ? `/messages/agent/${encodeURIComponent(r.agentId)}`
+        : r.conversationId
+          ? `/messages/${encodeURIComponent(r.conversationId)}`
+          : "/messages";
       return `${base}${searchSuffix(params)}`;
     }
     case "sessions": {
@@ -973,7 +986,13 @@ export function routeKey(r: Route): string {
         ? `flight-observe:${r.flightId}:${r.sessionId ?? ""}:${r.compareSessionId ?? ""}${scope}`
         : r.sessionId ? `session:${r.agentId ?? ""}:${r.sessionId}${scope}` : `sessions${scope}`;
     case "messages":
-      return r.conversationId ? `messages:${r.conversationId}${scope}` : `messages${scope}`;
+      return [
+        "messages",
+        r.conversationId ?? "",
+        r.agentId ?? "",
+        r.threadId ?? "",
+        scope,
+      ].join(":");
     case "work":
       return `work:${r.workId}${scope}`;
     case "ops":

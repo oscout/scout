@@ -917,11 +917,31 @@ export function createBrokerHttpRouter(
 
   // /v1/mesh/snapshot is the remote-tier twin (mesh trust cone §4): peer
   // discovery (fetchPeerAgents) reads it in enforce mode; the local-tier
-  // route stays loopback-only and is never widened.
+  // route stays loopback-only and is never widened. Keep the remote route
+  // agents-only even for older callers that omit or send an unsupported scope:
+  // exporting a full registry here turns routine mesh discovery into an
+  // unbounded serialization and transfer of local conversation history.
   if (method === "GET" && (url.pathname === "/v1/snapshot" || url.pathname === "/v1/mesh/snapshot")) {
+    const requestedScope = url.searchParams.get("scope");
+    const scope = url.pathname === "/v1/mesh/snapshot"
+      ? "agents"
+      : requestedScope === "conversations" || requestedScope === "agents"
+        ? requestedScope
+        : undefined;
     json(response, 200, await brokerService.readSnapshot({
       since: parseSince(url),
-      scope: url.searchParams.get("scope") === "conversations" ? "conversations" : undefined,
+      scope,
+    }));
+    return;
+  }
+
+  if (method === "GET" && url.pathname === "/v1/conversation-projection") {
+    if (!brokerService.readConversationProjection) {
+      notFound(response);
+      return;
+    }
+    json(response, 200, await brokerService.readConversationProjection({
+      limit: parseLimit(url),
     }));
     return;
   }

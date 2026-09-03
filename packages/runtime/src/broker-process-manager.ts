@@ -499,10 +499,38 @@ export function resolveBundledRuntimeDirFromModuleDir(moduleDir: string): string
   ];
 
   for (const candidate of candidates) {
-    if (isInstalledRuntimePackageDir(candidate)) return candidate;
+    if (!isInstalledRuntimePackageDir(candidate)) continue;
+
+    // The source-linked CLI has the same private runtime shim as the
+    // published package, but the shared dev service is owned by the sibling
+    // packages/runtime directory. Keep that stable owner instead of making
+    // every CLI command try to repoint launchd from runtime to cli.
+    const sourceWorkspaceRuntime = resolveSourceWorkspaceRuntimeDir(candidate);
+    if (sourceWorkspaceRuntime) return sourceWorkspaceRuntime;
+
+    return candidate;
   }
 
   return null;
+}
+
+function resolveSourceWorkspaceRuntimeDir(bundledPackageDir: string): string | null {
+  const packagesDir = dirname(bundledPackageDir);
+  if (resolve(packagesDir, "cli") !== resolve(bundledPackageDir)) return null;
+
+  const runtimeDir = join(packagesDir, "runtime");
+  if (!existsSync(join(runtimeDir, "src"))) return null;
+  if (!isInstalledRuntimePackageDir(runtimeDir)) return null;
+
+  try {
+    const cliPackage = JSON.parse(readFileSync(join(bundledPackageDir, "package.json"), "utf8")) as { name?: unknown };
+    const runtimePackage = JSON.parse(readFileSync(join(runtimeDir, "package.json"), "utf8")) as { name?: unknown };
+    return cliPackage.name === "@openscout/scout" && runtimePackage.name === "@openscout/runtime"
+      ? runtimeDir
+      : null;
+  } catch {
+    return null;
+  }
 }
 
 function findWorkspaceRuntimeDir(startDir: string): string | null {

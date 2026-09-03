@@ -29,9 +29,10 @@ const START_TIMEOUT: Duration = Duration::from_secs(120);
 const STOP_TIMEOUT: Duration = Duration::from_secs(20);
 // Graceful window scoutd gives each child (base, probe) before SIGKILL. Set above
 // base's worst-case subtree shutdown (~14s: broker 8s + kill wait + caddy) so base
-// exits cleanly on its own, and below launchd's 20s ExitTimeOut so scoutd itself is
+// exits cleanly on its own, and below launchd's ExitTimeOut so scoutd itself is
 // not SIGKILLed mid-shutdown.
 const CHILD_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(18);
+const LAUNCHD_EXIT_TIMEOUT_SECONDS: u64 = 25;
 const POLL_INTERVAL: Duration = Duration::from_millis(100);
 const STATE_WRITE_INTERVAL: Duration = Duration::from_secs(2);
 const PROCESS_SWEEP_INTERVAL: Duration = Duration::from_secs(5 * 60);
@@ -135,6 +136,7 @@ fn run() -> Result<(), String> {
     let json = args.iter().any(|arg| arg == "--json");
     let fix = args.iter().any(|arg| arg == "--fix");
     let yes = args.iter().any(|arg| arg == "--yes");
+    let start_readiness = start_readiness_from_args(&args);
     let command_args: Vec<&str> = args
         .iter()
         .filter(|arg| !arg.starts_with("--"))
@@ -165,7 +167,7 @@ fn run() -> Result<(), String> {
             Ok(())
         }
         "start" => {
-            let status = start_service(&config)?;
+            let status = start_service(&config, start_readiness)?;
             print_status(&status, json);
             Ok(())
         }
@@ -180,7 +182,7 @@ fn run() -> Result<(), String> {
             // because restart used to perform its stop half first.
             ensure_launch_agent(&config)?;
             stop_service(&config)?;
-            let status = start_service(&config)?;
+            let status = start_service(&config, start_readiness)?;
             print_status(&status, json);
             Ok(())
         }
@@ -508,30 +510,62 @@ struct DoctorOptions {
     yes: bool,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum StartReadiness {
+    BrokerHealthy,
+    LaunchdAccepted,
+}
+
+fn start_readiness_from_args(args: &[String]) -> StartReadiness {
+    if args.iter().any(|arg| arg == "--no-wait") {
+        StartReadiness::LaunchdAccepted
+    } else {
+        StartReadiness::BrokerHealthy
+    }
+}
+
+fn start_service_launchctl_command_plan<'a>(
+    config: &'a Config,
+) -> Result<[Vec<&'a str>; 2], String> {
+    Ok([
+        vec!["bootout", &config.service_target],
+        vec![
+            "bootstrap",
+            &config.domain_target,
+            path_str(&config.launch_agent_path)?,
+        ],
+    ])
+}
+
 fn install_service(config: &Config) -> Result<ServiceStatus, String> {
     bootout_legacy_service(config);
     ensure_launch_agent(config)?;
     Ok(broker_service_status(config))
 }
 
-fn start_service(config: &Config) -> Result<ServiceStatus, String> {
+fn start_service(config: &Config, readiness: StartReadiness) -> Result<ServiceStatus, String> {
     bootout_legacy_service(config);
     ensure_launch_agent(config)?;
-    let _ = run_command("/bin/launchctl", &["bootout", &config.service_target]);
+    let [bootout_command, bootstrap_command] = start_service_launchctl_command_plan(config)?;
+    let _ = run_command("/bin/launchctl", &bootout_command);
     let _ = wait_for_stopped(config);
-    run_command_checked(
-        "/bin/launchctl",
-        &[
-            "bootstrap",
-            &config.domain_target,
-            path_str(&config.launch_agent_path)?,
-        ],
-    )?;
-    let _ = run_command(
-        "/bin/launchctl",
-        &["kickstart", "-k", &config.service_target],
-    );
-    wait_for_healthy(config)
+    // The plist is RunAtLoad, so bootstrap is the start signal. Following it
+    // with `kickstart -k` would immediately kill and drain the new process tree.
+    run_command_checked("/bin/launchctl", &bootstrap_command)?;
+    match readiness {
+        StartReadiness::BrokerHealthy => wait_for_healthy(config),
+        StartReadiness::LaunchdAccepted => {
+            let status = launchd_accepted_service_status(config);
+            if status.launchctl.loaded {
+                Ok(status)
+            } else {
+                Err(format!(
+                    "launchd did not accept service {}",
+                    config.service_target,
+                ))
+            }
+        }
+    }
 }
 
 fn stop_service(config: &Config) -> Result<ServiceStatus, String> {
@@ -1118,8 +1152,66 @@ fn send_process_signal(pid: u32, signal_name: &str) -> Result<(), String> {
 
 fn broker_service_status(config: &Config) -> ServiceStatus {
     let health = fetch_health(config);
-    let host_info = read_host_info_json(config);
     let daemon_state = read_daemon_state_json(config);
+    let runtime_freshness = inspect_runtime_freshness(config, daemon_state.as_deref());
+    service_status(
+        config,
+        health,
+        probes::probe_server_status(&config.probes_socket_path),
+        daemon_state,
+        runtime_freshness,
+    )
+}
+
+fn launchd_accepted_service_status(config: &Config) -> ServiceStatus {
+    let daemon_state = read_daemon_state_json(config);
+    service_status(
+        config,
+        HealthStatus {
+            reachable: false,
+            ok: false,
+            transport: None,
+            status_code: None,
+            body: None,
+            error: Some("broker readiness check deferred by --no-wait".to_string()),
+        },
+        probes::ProbeServerStatus {
+            socket_path: config.probes_socket_path.to_string_lossy().to_string(),
+            socket_exists: config.probes_socket_path.exists(),
+            reachable: false,
+            daemon_version: None,
+            families: Vec::new(),
+            error: Some("probe readiness check deferred by --no-wait".to_string()),
+        },
+        daemon_state,
+        RuntimeFreshness {
+            state: "unverified".to_string(),
+            intentional: false,
+            basis: "deferred_start".to_string(),
+            reason_code: Some("readiness_deferred".to_string()),
+            artifact_commit: None,
+            expected_commit: None,
+            pin: None,
+            pin_reason: None,
+            manifest_path: None,
+            version: None,
+            actual_built_at: None,
+            expected_built_at: None,
+            built_at: None,
+            source_dirty: None,
+            detail: "Runtime freshness check deferred by --no-wait.".to_string(),
+        },
+    )
+}
+
+fn service_status(
+    config: &Config,
+    health: HealthStatus,
+    probes: probes::ProbeServerStatus,
+    daemon_state: Option<String>,
+    runtime_freshness: RuntimeFreshness,
+) -> ServiceStatus {
+    let host_info = read_host_info_json(config);
     let effective_broker_url = host_info
         .as_deref()
         .and_then(|body| parse_json_string_field(body, "brokerUrl"))
@@ -1140,9 +1232,9 @@ fn broker_service_status(config: &Config) -> ServiceStatus {
         health,
         effective_broker_url,
         effective_web_url,
-        runtime_freshness: inspect_runtime_freshness(config, daemon_state.as_deref()),
+        runtime_freshness,
         daemon_state,
-        probes: probes::probe_server_status(&config.probes_socket_path),
+        probes,
     }
 }
 
@@ -2140,6 +2232,8 @@ fn render_launch_agent_plist(config: &Config) -> String {
   <string>{cwd}</string>
   <key>RunAtLoad</key>
   <true/>
+  <key>ExitTimeOut</key>
+  <integer>{exit_timeout}</integer>
   <key>KeepAlive</key>
   <dict>
     <key>SuccessfulExit</key>
@@ -2158,6 +2252,7 @@ fn render_launch_agent_plist(config: &Config) -> String {
         label = xml_escape(&config.label),
         daemon = xml_escape(&config.daemon_executable.to_string_lossy()),
         cwd = xml_escape(&config.runtime_package_dir.to_string_lossy()),
+        exit_timeout = LAUNCHD_EXIT_TIMEOUT_SECONDS,
         stdout = xml_escape(&config.stdout_log_path.to_string_lossy()),
         stderr = xml_escape(&config.stderr_log_path.to_string_lossy()),
     )
@@ -3067,8 +3162,9 @@ fn print_version() {
 
 fn print_help() {
     println!(
-        "scoutd <status|install|start|stop|restart|uninstall|doctor|supervise|probes serve|version> [--json] [--fix] [--yes]\n\n\
-         Native daemon for the OpenScout local control plane."
+        "scoutd <status|install|start|stop|restart|uninstall|doctor|supervise|probes serve|version> [--json] [--fix] [--yes] [--no-wait]\n\n\
+         Native daemon for the OpenScout local control plane.\n\n\
+         --no-wait  For start/restart, return after launchd accepts the job instead of waiting for broker health."
     );
 }
 
@@ -3469,12 +3565,12 @@ mod tests {
         resolve_advertise_scope_value, resolve_broker_host_value, resolve_broker_url_value,
         resolve_push_relay_child_environment, restart_telemetry_warnings,
         rotate_child_log_if_needed, rotated_child_log_path, running_runtime_artifact,
-        scoutd_owned_child_log_path, stale_pairing_advertisement_pids, xml_escape, Config,
-        ManagedProcessLease, ProcessInfo, RuntimeArtifactIdentity,
-        ALLOW_SHARED_SERVICE_REPOINT_ENV, BUILD_VERSION, CHILD_LOG_ROTATE_LIMIT, DAEMON_NAME,
-        DEFAULT_BROKER_HOST, DEFAULT_BROKER_HOST_MESH, DEFAULT_BROKER_PORT,
-        DEFAULT_OPENSCOUT_PUSH_RELAY_URL, LEGACY_DAEMON_NAME, LOG_TAIL_WINDOW,
-        REPO_WATCH_WARM_PATH, SHARED_SERVICE_LABEL,
+        scoutd_owned_child_log_path, stale_pairing_advertisement_pids, start_readiness_from_args,
+        start_service_launchctl_command_plan, xml_escape, Config, ManagedProcessLease, ProcessInfo,
+        RuntimeArtifactIdentity, StartReadiness, ALLOW_SHARED_SERVICE_REPOINT_ENV, BUILD_VERSION,
+        CHILD_LOG_ROTATE_LIMIT, DAEMON_NAME, DEFAULT_BROKER_HOST, DEFAULT_BROKER_HOST_MESH,
+        DEFAULT_BROKER_PORT, DEFAULT_OPENSCOUT_PUSH_RELAY_URL, LAUNCHD_EXIT_TIMEOUT_SECONDS,
+        LEGACY_DAEMON_NAME, LOG_TAIL_WINDOW, REPO_WATCH_WARM_PATH, SHARED_SERVICE_LABEL,
     };
     use std::env;
     use std::fs;
@@ -3548,6 +3644,57 @@ mod tests {
             "<key>ProgramArguments</key><array><string>{}</string><string>supervise</string></array>{runtime}",
             xml_escape(daemon_executable),
         )
+    }
+
+    #[test]
+    fn start_waits_for_broker_health_by_default() {
+        assert_eq!(
+            start_readiness_from_args(&["start".to_string()]),
+            StartReadiness::BrokerHealthy,
+        );
+    }
+
+    #[test]
+    fn start_can_return_after_launchd_accepts_the_job() {
+        assert_eq!(
+            start_readiness_from_args(&["start".to_string(), "--no-wait".to_string()]),
+            StartReadiness::LaunchdAccepted,
+        );
+    }
+
+    #[test]
+    fn start_bootstraps_the_run_at_load_job_without_kickstarting_it() {
+        let config = test_config(
+            "/stable/packages/cli",
+            "/stable/packages/cli/bin/scoutd",
+            SHARED_SERVICE_LABEL,
+        );
+
+        assert_eq!(
+            start_service_launchctl_command_plan(&config).unwrap(),
+            [
+                vec!["bootout", "gui/501/app.openscout"],
+                vec![
+                    "bootstrap",
+                    "gui/501",
+                    "/Users/test/Library/LaunchAgents/app.openscout.plist",
+                ],
+            ],
+        );
+    }
+
+    #[test]
+    fn launch_agent_allows_the_supervisor_to_finish_its_child_drain() {
+        let config = test_config(
+            "/stable/packages/cli",
+            "/stable/packages/cli/bin/scoutd",
+            SHARED_SERVICE_LABEL,
+        );
+        let plist = super::render_launch_agent_plist(&config);
+
+        assert!(plist.contains(&format!(
+            "<key>ExitTimeOut</key>\n  <integer>{LAUNCHD_EXIT_TIMEOUT_SECONDS}</integer>",
+        )));
     }
 
     #[test]

@@ -6,6 +6,7 @@ import type { Context, Hono } from "hono";
 import { getConnInfo, serveStatic } from "hono/bun";
 
 export type ScoutWebAssetMode = "vite-proxy" | "static";
+export type ScoutWebLanAccessScope = "full" | "pairing";
 
 const LOOPBACK_IPV4_HOST_PATTERN = /^127(?:\.\d{1,3}){3}$/;
 const FINGERPRINTED_ASSET_PATH_PATTERN = /^\/assets\/[^/]+-[A-Za-z0-9_-]{8,}(?:\.[^/]+)+$/u;
@@ -25,6 +26,13 @@ export function resolveScoutWebBindHost(env: NodeJS.ProcessEnv): string {
     );
   }
   return host;
+}
+
+export function resolveScoutWebLanAccessScope(env: NodeJS.ProcessEnv): ScoutWebLanAccessScope {
+  const scope = env.OPENSCOUT_WEB_LAN_SCOPE?.trim().toLowerCase();
+  if (!scope || scope === "full") return "full";
+  if (scope === "pairing") return "pairing";
+  throw new Error(`Unsupported OPENSCOUT_WEB_LAN_SCOPE: ${scope}`);
 }
 
 export type ScoutApiTrustOptions = {
@@ -107,7 +115,7 @@ function localInterfaceAddresses(): string[] {
  * ineligible so a LAN client cannot smuggle a local-looking address through the
  * edge.
  */
-export function shouldIssueLocalScoutWebCredential(
+export function isSameMacScoutRequest(
   request: Request,
   peerAddress?: string,
   ownAddresses: readonly string[] = localInterfaceAddresses(),
@@ -115,13 +123,30 @@ export function shouldIssueLocalScoutWebCredential(
   if (!peerAddress || !isLoopbackScoutAddress(peerAddress)) return false;
   if (request.headers.has("forwarded")) return false;
 
-  const forwardedFor = request.headers.get("x-forwarded-for");
-  if (!forwardedFor) return true;
-  if (forwardedFor.includes(",")) return false;
-  const clientAddress = normalizeIpAddress(forwardedFor);
-  if (!clientAddress) return false;
-  return isLoopbackScoutAddress(clientAddress)
-    || ownAddresses.some((address) => normalizeIpAddress(address) === clientAddress);
+  const forwardedAddresses = [
+    request.headers.get("x-forwarded-for"),
+    request.headers.get("x-real-ip"),
+  ].filter((value): value is string => value !== null);
+  for (const value of forwardedAddresses) {
+    if (value.includes(",")) return false;
+    const clientAddress = normalizeIpAddress(value);
+    if (!clientAddress) return false;
+    if (
+      !isLoopbackScoutAddress(clientAddress)
+      && !ownAddresses.some((address) => normalizeIpAddress(address) === clientAddress)
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
+
+export function shouldIssueLocalScoutWebCredential(
+  request: Request,
+  peerAddress?: string,
+  ownAddresses: readonly string[] = localInterfaceAddresses(),
+): boolean {
+  return isSameMacScoutRequest(request, peerAddress, ownAddresses);
 }
 
 function normalizeIpAddress(address: string): string | null {
@@ -185,12 +210,48 @@ export function isLoopbackScoutAddress(address: string): boolean {
   return LOOPBACK_IPV4_HOST_PATTERN.test(mapped);
 }
 
-function defaultPeerAddress(c: Context): string | undefined {
+export function resolveScoutRequestPeerAddress(c: Context): string | undefined {
   try {
     return getConnInfo(c).remote.address;
   } catch {
     return undefined;
   }
+}
+
+/**
+ * Preserve socket identity when a request must be cloned before Hono sees it.
+ * Bun associates connection info with the original Request object, so a clone
+ * otherwise looks like an unknown peer and is rejected by the inner LAN gate.
+ */
+export function createScoutRequestPeerAddressRegistry() {
+  const peers = new WeakMap<Request, string>();
+  return {
+    remember(request: Request, address: string | undefined): void {
+      if (address) peers.set(request, address);
+    },
+    resolve(c: Context): string | undefined {
+      return peers.get(c.req.raw) ?? resolveScoutRequestPeerAddress(c);
+    },
+  };
+}
+
+/**
+ * Restrict the broker-managed LAN listener to its one intended public surface.
+ * The socket peer is authoritative; Host, Origin, and forwarding headers are
+ * all client-controlled on a direct LAN connection.
+ */
+export function isScoutWebRequestAllowedFromPeer(
+  request: Request,
+  peerAddress: string | undefined,
+  scope: ScoutWebLanAccessScope,
+): boolean {
+  if (scope === "full" || isSameMacScoutRequest(request, peerAddress)) {
+    return true;
+  }
+  const url = new URL(request.url);
+  return request.method === "GET"
+    && url.pathname === "/pair"
+    && request.headers.get("upgrade") === null;
 }
 
 export function isTrustedScoutApiRequest(
@@ -448,7 +509,7 @@ export function installScoutApiMiddleware(
   options: ScoutApiTrustOptions = {},
 ): void {
   app.use("/api/*", async (c, next) => {
-    const peerAddress = (options.resolvePeerAddress ?? defaultPeerAddress)(c);
+    const peerAddress = (options.resolvePeerAddress ?? resolveScoutRequestPeerAddress)(c);
     if (!isTrustedScoutApiRequest(c.req.raw, options, peerAddress)) {
       return c.json({ error: "forbidden" }, 403);
     }
