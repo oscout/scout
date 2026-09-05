@@ -1935,16 +1935,6 @@ a.s-term-topline-button {
   column-gap: var(--space-md);
 }
 
-.s-term--embedded .s-term-bar--takeover {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  column-gap: var(--space-md);
-}
-
-.s-term--embedded .s-term-bar--takeover .s-term-bar-meta {
-  display: none;
-}
-
 .s-term--embedded .s-term-bar-left,
 .s-term--embedded .s-term-bar-meta,
 .s-term--embedded .s-term-bar-actions {
@@ -1963,25 +1953,105 @@ a.s-term-topline-button {
   max-width: none;
 }
 
-.s-term--embedded .s-term-action {
-  width: 30px;
-  height: 30px;
-  padding: 0;
-}
-
-.s-term--embedded .s-term-action-cluster--view,
-.s-term--embedded .s-term-action-cluster--signals {
-  display: none;
-}
-
-.s-term--embedded .s-term-action span,
-.s-term--embedded .s-term-session-menu span,
-.s-term--embedded .s-term-status {
-  display: none;
-}
-
 .s-term--embedded .s-term-body {
+  position: relative;
   background: #080808;
+}
+
+/* Embedded relay tiles carry no takeover strip; the relay mark, session menu
+   and tile actions float over the canvas and stay quiet until the tile is
+   hovered or holds focus. */
+.s-term-float {
+  position: absolute;
+  top: var(--space-xs);
+  right: var(--space-xs);
+  /* Above xterm's own absolute layers (.xterm-helpers sits at 5). */
+  z-index: 10;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2xs);
+  padding: var(--space-3xs);
+  border: 1px solid color-mix(in srgb, var(--border) 76%, transparent);
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--surface) 68%, transparent);
+  opacity: 0.62;
+  transition: opacity 120ms ease;
+}
+
+.s-term--embedded .s-term-body:hover .s-term-float,
+.s-term-float:focus-within {
+  opacity: 1;
+}
+
+/* Left edge of the float is the pointer drag grip for the workspace grid,
+   standing in for the takeover bar that used to be the tile's handle. */
+.s-term-float-grip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 20px;
+  height: 26px;
+  color: var(--muted);
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+}
+
+.s-term-float-grip:active,
+.s-term-workspace-cell--dragging .s-term-float-grip {
+  cursor: grabbing;
+}
+
+/* Registered tile identity: harness + short source session id, the same
+   pair the takeover bar chip carried. One line, ellipsised. */
+.s-term-float-identity {
+  display: inline-block;
+  min-width: 0;
+  max-width: 14ch;
+  padding-right: var(--space-xs);
+  border-right: 1px solid color-mix(in srgb, var(--border) 76%, transparent);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  line-height: 1;
+  user-select: none;
+}
+
+.s-term-float-identity span + span {
+  margin-left: var(--space-2xs);
+  color: color-mix(in srgb, var(--muted) 62%, transparent);
+}
+
+.s-term-float .s-term-icon-button {
+  width: 26px;
+  height: 26px;
+  border-color: transparent;
+  background: transparent;
+}
+
+.s-term-float .s-term-icon-button:hover:not(:disabled) {
+  border-color: rgba(255, 255, 255, 0.14);
+}
+
+.s-term-float-mark {
+  width: 6px;
+  height: 6px;
+  margin: 0 var(--space-2xs) 0 var(--space-xs);
+  border-radius: 50%;
+  background: var(--muted);
+  flex: none;
+}
+
+.s-term-float-mark--live {
+  background: var(--green);
+}
+
+.s-term-float-mark--connecting {
+  background: var(--amber);
 }
 
 .s-term-home {
@@ -2439,7 +2509,6 @@ a.s-term-topline-button {
     justify-content: flex-end;
   }
 
-  .s-term--embedded .s-term-bar--takeover,
   .s-term--embedded .s-term-bar--fresh {
     grid-template-columns: minmax(0, 1fr) auto;
   }

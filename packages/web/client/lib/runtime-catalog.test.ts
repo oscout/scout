@@ -195,11 +195,21 @@ describe("Scout-owned runtime seed", () => {
   test("keeps display names and effort labels aligned with the shared catalog", () => {
     expect(codex.models.map((model) => model.label)).toEqual([
       "Default",
+      "6 Astra",
       "5.6 Sol",
       "5.6 Terra",
       "5.6 Luna",
       "5.5",
       "5.5 mini",
+    ]);
+    expect(codex.models.find((model) => model.value === "gpt-6-astra")?.note)
+      .toContain("complex reasoning");
+    expect(effortsFor(catalog, "codex", "gpt-6-astra")?.map((effort) => effort.label)).toEqual([
+      "Light",
+      "Medium",
+      "High",
+      "Extra High",
+      "Max",
     ]);
     expect(effortsFor(catalog, "codex", "gpt-5.6-sol")?.map((effort) => effort.label)).toEqual([
       "Light",
@@ -231,7 +241,7 @@ describe("Scout-owned runtime seed", () => {
       { harness: "codex" },
     )).toEqual({
       harness: "codex",
-      model: "gpt-5.6-sol",
+      model: "gpt-6-astra",
       effort: "medium",
     });
   });

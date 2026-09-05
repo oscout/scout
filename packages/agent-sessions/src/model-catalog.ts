@@ -34,6 +34,7 @@ export function applyRuntimeModelContextWindows(windows: Readonly<Record<string,
 export const MODEL_WINDOW_OVERRIDES: Record<string, number> = {
   // Released after the checked-in models.dev snapshot.
   "claude-opus-5": 1_000_000,
+  "gpt-6-astra": 1_050_000,
   // Grok variants carried only by aggregator providers (not under xai natively).
   "grok-4": 256_000,
   "grok-code-fast-1": 256_000,

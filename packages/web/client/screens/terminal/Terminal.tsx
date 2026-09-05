@@ -4,6 +4,7 @@ import {
   ExternalLink,
   Eye,
   Grid2X2,
+  GripHorizontal,
   LogIn,
   MoreHorizontal,
   Plus,
@@ -271,10 +272,12 @@ function terminalTypography(): { fontFamily: string; fontSize: number } {
 
 function ScoutTerminalRelay(props: ComponentProps<typeof TerminalRelay>) {
   const typography = terminalTypography();
+  // "auto" lets Hudson load @xterm/addon-webgl and fall back to the DOM
+  // renderer on context loss. Callers can still pin "dom" or "webgl".
   return (
     <TerminalRelay
       {...props}
-      renderer={props.renderer ?? "dom"}
+      renderer={props.renderer ?? "auto"}
       fontFamily={typography.fontFamily}
       fontSize={typography.fontSize}
     />
@@ -593,10 +596,14 @@ function useTerminalRelaySession(params: {
     navigate(terminalRouteBase);
   }, [navigate, terminalRouteBase]);
 
+  const hasViewActions = Boolean(registeredTarget || terminalSurface);
+  const canSignalTerminal = !readOnly && Boolean(terminalSurface || relay.status === "connected");
+  const canStopTerminalJob = !readOnly && Boolean(terminalSurface);
+
   // Actions are drawn from what the host declares it can do. A host that cannot
   // restart a harness simply has no entry for it, instead of an entry whose
   // route answers 501 after the click.
-  const sessionMenuItems = useMemo<MenuItem[]>(() => {
+  const relayMenuItems = useMemo<MenuItem[]>(() => {
     const backend = terminalSurface?.backend ?? null;
     const supports = (action: Parameters<typeof terminalHostSupportsControl>[2]) =>
       terminalHostSupportsControl(terminalHosts, backend, action);
@@ -621,6 +628,49 @@ function useTerminalRelaySession(params: {
     restartResumeClaudeInstance,
     terminalHosts,
     terminalSurface?.backend,
+  ]);
+
+  // The Session button carries the signal and view actions too, gated the
+  // same way as the bar buttons, so an embedded tile with no bar still
+  // reaches them.
+  const sessionMenuItems = useMemo<MenuItem[]>(() => {
+    const items: MenuItem[] = [...relayMenuItems];
+    const signalItems: MenuItem[] = [];
+    if (canSignalTerminal) {
+      signalItems.push(
+        { kind: "action", label: "Send Ctrl-C", shortcut: "⌃C", onSelect: interruptTerminal },
+        { kind: "action", label: "Quit With Ctrl-D", shortcut: "⌃D", onSelect: quitTerminal },
+      );
+    }
+    if (canStopTerminalJob) {
+      signalItems.push({ kind: "action", label: "Stop Running Job", onSelect: stopTerminalJob });
+    }
+    if (signalItems.length > 0) items.push({ kind: "separator" }, ...signalItems);
+    const viewItems: MenuItem[] = [];
+    if (terminalSurface) {
+      viewItems.push({
+        kind: "action",
+        label: readOnly ? "Open Takeover" : "Open Observe",
+        onSelect: () => openMode(readOnly ? "takeover" : "observe"),
+      });
+    }
+    if (registeredTarget) {
+      viewItems.push({ kind: "action", label: "Open Summary", onSelect: openSummary });
+    }
+    if (viewItems.length > 0) items.push({ kind: "separator" }, ...viewItems);
+    return items;
+  }, [
+    canSignalTerminal,
+    canStopTerminalJob,
+    interruptTerminal,
+    openMode,
+    openSummary,
+    quitTerminal,
+    readOnly,
+    registeredTarget,
+    relayMenuItems,
+    stopTerminalJob,
+    terminalSurface,
   ]);
 
   const handleSessionMenu = useCallback((event: ReactMouseEvent<HTMLButtonElement>) => {
@@ -649,7 +699,7 @@ function useTerminalRelaySession(params: {
     if (items.length > 0) items.push({ kind: "separator" });
     items.push(
       { kind: "action", label: "Focus Terminal", onSelect: focusTerminal },
-      ...sessionMenuItems,
+      ...relayMenuItems,
       { kind: "separator" },
       {
         kind: "action",
@@ -669,7 +719,7 @@ function useTerminalRelaySession(params: {
     pasteClipboard,
     quitTerminal,
     readOnly,
-    sessionMenuItems,
+    relayMenuItems,
     showContextMenu,
     stopTerminalJob,
   ]);
@@ -683,9 +733,9 @@ function useTerminalRelaySession(params: {
     terminalRelay,
     healthUrl,
     scopedRelayUrl: binding.scopedRelayUrl,
-    hasViewActions: Boolean(registeredTarget || terminalSurface),
-    canSignalTerminal: !readOnly && Boolean(terminalSurface || relay.status === "connected"),
-    canStopTerminalJob: !readOnly && Boolean(terminalSurface),
+    hasViewActions,
+    canSignalTerminal,
+    canStopTerminalJob,
     handleSessionMenu,
     handleTerminalContextMenu,
     openMode,
@@ -862,18 +912,31 @@ function TerminalRelayCanvas({
     showContextMenu,
   });
 
+  const relayStatusLabel = session.relay.status === "connected"
+    ? "LIVE"
+    : session.relay.status === "connecting"
+      ? "CONNECTING"
+      : "OFFLINE";
+  const relayStatusTone = session.relay.status === "connected"
+    ? "live"
+    : session.relay.status === "connecting"
+      ? "connecting"
+      : "offline";
+
   return (
     <div className={`s-term${embedded ? " s-term--embedded" : ""}`}>
+      {/* An embedded tile sits under its host's own header (native tile chrome
+          or the workspace cell), so the takeover strip would be a second band.
+          Its controls fold into a floating cluster over the canvas instead. */}
+      {!embedded && (
       <div className="s-term-bar s-term-bar--takeover">
         <div className="s-term-bar-left">
-          {!embedded && (
-            <BackToPicker
-              slot="terminal"
-              fallback={{ view: "terminal" }}
-              navigate={navigate}
-              className="s-term-back"
-            />
-          )}
+          <BackToPicker
+            slot="terminal"
+            fallback={{ view: "terminal" }}
+            navigate={navigate}
+            className="s-term-back"
+          />
           {agent && (
             <div className="s-term-agent">
               <div
@@ -977,21 +1040,56 @@ function TerminalRelayCanvas({
             <MoreHorizontal size={14} strokeWidth={1.8} />
             <span>Session</span>
           </button>
-          <div className="s-term-status">
-            {session.relay.status === "connected"
-              ? "LIVE"
-              : session.relay.status === "connecting"
-                ? "CONNECTING"
-                : "OFFLINE"}
-          </div>
+          <div className="s-term-status">{relayStatusLabel}</div>
           {tileActions}
         </div>
       </div>
+      )}
       <div
         ref={session.terminalBodyRef}
         className="s-term-body"
         onContextMenuCapture={session.handleTerminalContextMenu}
       >
+        {embedded && (
+          <div className="s-term-float" aria-label="Terminal tile actions">
+            {/* Pointer drag handle for the workspace grid (startTileDrag looks
+                for it). preventDefault keeps the pointerdown from moving focus
+                off xterm; keyboard reordering stays on the tile context menu. */}
+            <span
+              className="s-term-float-grip"
+              title="Drag to move"
+              aria-hidden="true"
+              onPointerDown={(event) => event.preventDefault()}
+            >
+              <GripHorizontal size={14} strokeWidth={1.8} />
+            </span>
+            {registeredTarget && (
+              <span
+                className="s-term-float-identity"
+                title={`${registeredTarget.session.harness} ${registeredTarget.session.sourceSessionId}`}
+              >
+                <span>{registeredTarget.session.harness}</span>
+                <span>{registeredTarget.session.sourceSessionId}</span>
+              </span>
+            )}
+            <span
+              className={`s-term-float-mark s-term-float-mark--${relayStatusTone}`}
+              role="status"
+              title={relayStatusLabel}
+              aria-label={`Relay ${relayStatusLabel.toLowerCase()}`}
+            />
+            <button
+              type="button"
+              className="s-term-icon-button"
+              onClick={session.handleSessionMenu}
+              title="Session actions"
+              aria-label="Session actions"
+            >
+              <MoreHorizontal size={14} strokeWidth={1.8} />
+            </button>
+            {tileActions}
+          </div>
+        )}
         <ScoutTerminalRelay
           relay={session.terminalRelay}
           readOnly={session.readOnly}
@@ -1723,7 +1821,7 @@ function TerminalHome({ navigate }: { navigate: TerminalNavigate }) {
     const target = event.target;
     const isDragHandle = event.button === 0
       && target instanceof Element
-      && Boolean(target.closest(".s-term-bar"))
+      && Boolean(target.closest(".s-term-bar, .s-term-float-grip"))
       && !target.closest("button, a");
     if (!isDragHandle) return;
     tileDragRef.current = {

@@ -23,6 +23,7 @@ import {
   type ProjectSessionTmuxTarget,
 } from "./project-session-terminal.ts";
 import { refreshProjectsInbox, useProjectsInbox } from "./useProjectsInbox.ts";
+import { useEmbedHeadline } from "../../surfaces/useEmbedHeadline.ts";
 import { useProjectRepositoryState } from "./useProjectRepositoryState.ts";
 import {
   groupItems,
@@ -1828,10 +1829,12 @@ export function ProjectsInbox({
   route,
   navigate,
   zeroPreview = false,
+  embedded = false,
 }: {
   route: Extract<Route, { view: "agents-v2" }>;
   navigate: Navigate;
   zeroPreview?: boolean;
+  embedded?: boolean;
 }) {
   const { model, nowMs, loading, error, agents = EMPTY_AGENTS } = useProjectsInbox(route);
   const scoped = Boolean(route.projectSlug);
@@ -1857,6 +1860,11 @@ export function ProjectsInbox({
   const scopedProject = scoped
     ? model.projects.find((project) => project.slug === canonicalProjectSlug) ?? null
     : null;
+
+  const embedHeadline = scoped
+    ? (scopedProject?.title ?? canonicalProjectSlug)
+    : "Projects";
+  useEmbedHeadline(embedHeadline, embedded);
 
   const items = useMemo<Array<InboxThread | InboxSession>>(
     () => {

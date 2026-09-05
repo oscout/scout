@@ -105,6 +105,20 @@ export type EventInvocationRecord = {
   conversationId?: string | null;
 };
 
+/** Conversation identity is authoritative for the thread that should wake.
+ * Agent metadata can arrive after the invocation event during first paint, so
+ * requiring an already-resolved agent id here loses the one event that should
+ * reveal the live working card. */
+export function invocationTargetsConversation(
+  invocation: EventInvocationRecord | null | undefined,
+  conversationIds: ReadonlySet<string>,
+): invocation is EventInvocationRecord {
+  return Boolean(
+    invocation?.conversationId
+      && conversationIds.has(invocation.conversationId),
+  );
+}
+
 export type SendResult = {
   chatId?: string;
   conversationId?: string;

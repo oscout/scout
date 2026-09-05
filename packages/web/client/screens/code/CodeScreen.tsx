@@ -7,6 +7,7 @@ import type { Route } from "../../lib/types.ts";
 import { fetchRepoWatchSnapshot, getCachedRepoWatchSnapshot } from "../../scout/repo-watch/api.ts";
 import type { RepoWatchSnapshot } from "../../scout/repo-watch/types.ts";
 import { defineSurface } from "../../surfaces/types.ts";
+import { useEmbedHeadline } from "../../surfaces/useEmbedHeadline.ts";
 import { CodeDiffPane } from "./CodeDiffPane.tsx";
 import { CodeProjectPicker, type CodePickerSelection } from "./CodeProjectPicker.tsx";
 import { formatScoutCodeDeepLink } from "./code-deep-link.ts";
@@ -187,6 +188,7 @@ export function CodeContent({
   returnConversationId?: string;
   embedded?: boolean;
 }) {
+  useEmbedHeadline("Code", embedded);
   const initialRoot = rootProp ?? route?.root ?? null;
   const initialFile = fileProp ?? route?.file ?? null;
   const linkProject = projectProp ?? route?.project ?? null;

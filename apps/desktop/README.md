@@ -59,8 +59,6 @@ scout doctor
 - [Root README](../../README.md) for the product overview and bootstrap path.
 - [Architecture](../../docs/architecture.md) for broker/runtime/protocol
   boundaries.
-- [Current posture](../../docs/current-posture.md) for maturity and trust
-  limits.
 - [Agent integration contract](../../docs/agent-integration-contract.md) before
   changing harness or adapter behavior.
 - [Desktop deprecation plan](../../docs/eng/sco-038-apps-desktop-deprecation.md)

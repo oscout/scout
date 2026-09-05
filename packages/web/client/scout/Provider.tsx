@@ -27,6 +27,7 @@ import {
   resolveScoutbotAgentId,
   type ScoutbotUiAction,
 } from "../lib/scoutbot.ts";
+import { applyEmbedProjectSelection } from "../screens/projects/embed-project-selection.ts";
 import { ContextMenuProvider } from "../components/ContextMenu.tsx";
 import { FilePreviewOverlay } from "./FilePreviewOverlay.tsx";
 import { ScoutbotStateProvider } from "./scoutbot/ScoutbotStateContext.tsx";
@@ -640,7 +641,7 @@ export function ScoutProvider({
   const closeFilePreview = useCallback(() => setFilePreviewPath(null), []);
 
   const applyScoutbotUiAction = useCallback((action: ScoutbotUiAction) => {
-    if (forwardScoutbotUiActionToNativeHost(action)) return;
+    if (action.type !== "select-project" && forwardScoutbotUiActionToNativeHost(action)) return;
     switch (action.type) {
       case "navigate":
         navigate(action.route);
@@ -656,6 +657,9 @@ export function ScoutProvider({
         break;
       case "view-file":
         openFilePreview(action.path);
+        break;
+      case "select-project":
+        applyEmbedProjectSelection(action, navigate);
         break;
     }
   }, [navigate, openFilePreview, reload]);

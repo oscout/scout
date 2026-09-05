@@ -1,6 +1,6 @@
 {
   "name": "@openscout/scout",
-  "version": "0.2.97",
+  "version": "0.2.98",
   "description": "Local-first control plane for discovering, messaging, and coordinating AI agents across Claude Code, Codex, and more",
   "keywords": [
     "openscout",
@@ -46,12 +46,9 @@
   ],
   "dependencies": {
     "@lydell/node-pty": "1.2.0-beta.12",
-    "@opentui/core": "^0.1.88",
-    "@opentui/react": "^0.1.88",
     "bonjour-service": "^1.4.4",
     "picomatch": "^4.0.4",
     "reflect-metadata": "0.2.2",
-    "react": "19.2.3",
     "ws": "^8.18.3"
   },
   "scripts": {

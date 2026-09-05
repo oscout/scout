@@ -135,6 +135,7 @@ import {
   emptyFleetState,
   hasOutstandingConversationReply,
   isOperatorMessage,
+  invocationTargetsConversation,
   keepPreviousIfJsonEqual,
   latestAgentMessageAt,
   mapEventFlight,
@@ -1356,17 +1357,23 @@ export function ConversationScreen({
           const invocation = (
             event.payload as { invocation?: EventInvocationRecord } | undefined
           )?.invocation;
-          if (
-            !invocation ||
-            invocation.targetAgentId !== agentId ||
-            !invocation.conversationId
-            || !equivalentConversationIds.has(invocation.conversationId)
-          )
-            return;
+          if (!invocationTargetsConversation(invocation, equivalentConversationIds)) return;
           trackedInvocationIdsRef.current.add(invocation.id);
           setTurnActivity([]);
           setTurnAsk(null);
           setAwaitingResponseSince((current) => current ?? Date.now());
+          return;
+        }
+
+        if (event.kind === "conversation.upserted") {
+          const conversation = (
+            event.payload as { conversation?: { id?: string | null } } | undefined
+          )?.conversation;
+          if (conversation?.id && equivalentConversationIds.has(conversation.id)) {
+            // Native feed/materialization updates are a second wake-up path for
+            // a turn whose invocation event raced the embedded thread mount.
+            void load({ messageMode: "none", includeMetadata: false });
+          }
           return;
         }
 

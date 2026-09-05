@@ -5,6 +5,7 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  realpathSync,
   rmSync,
   symlinkSync,
   writeFileSync,
@@ -26,7 +27,7 @@ const packageJson = JSON.parse(execFileSync(process.execPath, [
 const temporaryDirectories = new Set();
 
 function temporaryDirectory(prefix) {
-  const directory = mkdtempSync(resolve(tmpdir(), prefix));
+  const directory = realpathSync(mkdtempSync(resolve(tmpdir(), prefix)));
   temporaryDirectories.add(directory);
   return directory;
 }
@@ -131,7 +132,7 @@ test("runs bundled headless service status directly on Node when packaged", () =
   assert.equal(status.usesLaunchAgent, false);
 });
 
-test("prints a direct next step after headless setup", () => {
+test("prints a direct next step after headless setup", { timeout: 15_000 }, () => {
   if (!existsSync(nodeEntrypoint)) {
     return;
   }

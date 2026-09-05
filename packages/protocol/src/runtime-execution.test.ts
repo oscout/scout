@@ -29,6 +29,7 @@ describe("runtime execution contracts", () => {
     expect(SCOUT_RUNTIME_CATALOG.schemaVersion).toBe("openscout.runtime-catalog.v1");
     expect(scoutRuntimeDefaultHarness()).toBe("claude");
     expect(scoutRuntimeDefaultModel("claude")).toBe("claude-opus-5");
+    expect(scoutRuntimeDefaultModel("codex")).toBe("gpt-6-astra");
     expect(scoutRuntimeDefaultModel("grok")).toBe("grok-4.6");
     expect(scoutRuntimeDefaultModel("grok-acp")).toBe("grok-4.6");
     expect(isScoutRuntimeHarnessListed("grok")).toBe(false);
@@ -41,6 +42,9 @@ describe("runtime execution contracts", () => {
   });
 
   test("lets Scout define a different effort ladder for each model", () => {
+    expect(scoutRuntimeReasoningEfforts("codex", "gpt-6-astra")).toEqual([
+      "low", "medium", "high", "xhigh", "max",
+    ]);
     expect(scoutRuntimeReasoningEfforts("codex", "gpt-5.6-sol")).toEqual([
       "low", "medium", "high", "xhigh", "ultra",
     ]);
@@ -120,6 +124,13 @@ describe("runtime execution contracts", () => {
   });
 
   test("normalizes model aliases at the shared boundary", () => {
+    for (const alias of ["6", "gpt-6", "astra"]) {
+      expect(normalizeScoutRuntimeModel("codex", alias)).toEqual({
+        ok: true,
+        requested: alias,
+        resolved: "gpt-6-astra",
+      });
+    }
     expect(normalizeScoutRuntimeModel("codex", "5.6")).toEqual({
       ok: true,
       requested: "5.6",

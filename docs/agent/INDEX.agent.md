@@ -15,7 +15,6 @@ Not governance docs. Not proposals. Compressed ontology + invariants.
 | [pairing-runtime.agent.md](./pairing-runtime.agent.md) | mobile bridge, QR, relay (not broker) |
 | [scoutd.agent.md](./scoutd.agent.md) | launchd, supervise, doctor |
 | [integration-contract.agent.md](./integration-contract.agent.md) | external agent minimum contract |
-| [current-posture.agent.md](./current-posture.agent.md) | maturity/trust boundaries |
 
 ## Read order by task
 
@@ -29,4 +28,4 @@ Not governance docs. Not proposals. Compressed ontology + invariants.
 
 ## Format
 
-The core subsystem specs follow: Role → Model → Relations → (State/Flows) → Invariants → Forbidden → Code map → Verification. `current-posture.agent.md` and `integration-contract.agent.md` are posture/contract digests without code map/verification.
+The core subsystem specs follow: Role → Model → Relations → (State/Flows) → Invariants → Forbidden → Code map → Verification. `integration-contract.agent.md` is a contract digest without code map/verification.

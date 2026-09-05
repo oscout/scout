@@ -1028,6 +1028,7 @@ async function refreshDiscovery(
 
       let watcher = watchers.get(sessionKey);
       if (!watcher) {
+        if (subscribers.size === 0 && internalSubscribers.size === 0) continue;
         watcher = {
           source,
           process: primary,
@@ -1669,8 +1670,14 @@ export async function readRecentTranscriptEvents(
   const kindQuota = kinds
     ? Math.max(1, options?.perTranscriptKindLimit ?? limit)
     : undefined;
+  const allowedPaths = options?.discovery?.transcripts
+    ? new Set(options.discovery.transcripts.map((transcript) => transcript.transcriptPath))
+    : null;
   const activeWatchers = [...watchers.values()]
-    .filter((watcher) => options?.since === undefined || watcher.transcript.mtimeMs >= options.since)
+    .filter((watcher) => (
+      (!allowedPaths || allowedPaths.has(watcher.transcriptPath))
+      && (options?.since === undefined || watcher.transcript.mtimeMs >= options.since)
+    ))
     .sort((left, right) => right.transcript.mtimeMs - left.transcript.mtimeMs)
     .slice(0, transcriptReadLimit);
 

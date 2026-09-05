@@ -49,8 +49,8 @@ Start at [`INDEX.agent.md`](./INDEX.agent.md) for subsystem specs written for ag
 | GitHub first scan | `README.md`, `docs/README.md` |
 | install/bootstrap | `install.md` |
 | first run | `docs/quickstart.md` |
-| maturity/trust/license | `docs/current-posture.md` |
 | architecture | `docs/architecture.md` |
+| license | `LICENSE`, `NOTICE` |
 | runtime/session semantics (prose) | `docs/runtime-sessions.md` |
 | data boundary | `docs/architecture.md#the-data-model` |
 | agent integration | `docs/agent-integration-contract.md` |

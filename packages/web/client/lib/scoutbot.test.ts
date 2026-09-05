@@ -5,6 +5,7 @@ import { scoutbotUiContext } from "../../shared/scoutbot-navigation.ts";
 import {
   extractScoutbotUiActions,
   forwardScoutbotUiActionToNativeHost,
+  normalizeScoutbotUiAction,
   resolveScoutbotAgentId,
   stripScoutbotUiFences,
 } from "./scoutbot.ts";
@@ -300,6 +301,25 @@ describe("resolveScoutbotAgentId", () => {
     ]);
 
     expect(resolved).toBe("scoutbot.codex-vox-getting-started.mini");
+  });
+});
+
+describe("normalizeScoutbotUiAction", () => {
+  test("normalizes select-project actions", () => {
+    expect(normalizeScoutbotUiAction({
+      type: "select-project",
+      root: "/Users/test/dev/talkie",
+    })).toEqual({
+      type: "select-project",
+      root: "/Users/test/dev/talkie",
+    });
+    expect(normalizeScoutbotUiAction({
+      type: "select_project",
+      root: null,
+    })).toEqual({
+      type: "select-project",
+      root: null,
+    });
   });
 });
 

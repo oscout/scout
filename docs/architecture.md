@@ -2,7 +2,7 @@
 
 This document is the system-level map for OpenScout: what the system is made of, and how it treats data. If you are new, read it as a guide to four things: what the broker is, what the runtime does, what the protocol defines, and which records Scout owns versus observes.
 
-Read this after the repo [`README.md`](../README.md) if you are orienting to the project for the first time. If you want the command-first ramp first, read [`quickstart.md`](./quickstart.md) before this page. For the precise meaning of Scout's core nouns and how they map onto external agent protocols, read [`concepts.md`](./concepts.md). For the question, work-item, and delegation semantics between agents, read [`agents-and-collaboration.md`](./agents-and-collaboration.md). If you are evaluating maturity, trust, or license posture, read [`current-posture.md`](./current-posture.md).
+Read this after the repo [`README.md`](../README.md) if you are orienting to the project for the first time. If you want the command-first ramp first, read [`quickstart.md`](./quickstart.md) before this page. For the precise meaning of Scout's core nouns and how they map onto external agent protocols, read [`concepts.md`](./concepts.md). For the question, work-item, and delegation semantics between agents, read [`agents-and-collaboration.md`](./agents-and-collaboration.md). License is Apache-2.0; see the repo [`LICENSE`](../LICENSE) and [`NOTICE`](../NOTICE).
 
 ## Working Thesis
 
@@ -35,9 +35,9 @@ That framing matters because most of the design choices below are about protecti
 
 A small set of constraints shape every design decision.
 
-**Local-first, not cloud-first.** The broker, agent registry, and Scout-owned state live on your machine. Nothing phones home by default. Local files and databases are the source of truth, not a hosted API.
+**Local-first, not cloud-first.** The broker, agent registry, and Scout-owned state live on your machine. Nothing phones home by default. Local files and databases are the source of truth, not a hosted API. The privileged web server is loopback-only by default; a non-loopback bind must be explicitly enabled with `OPENSCOUT_WEB_ALLOW_LAN=1`. Privileged HTTP and WebSocket routes require the per-process web credential in addition to host, origin, and socket-peer checks. Set `OPENSCOUT_WEB_AUTH_TOKEN` when an authenticated LAN client or reverse proxy needs a stable secret; otherwise the server generates an ephemeral credential and issues its HttpOnly session cookie only to direct loopback browser bootstrap requests. Trusted mDNS names and origins are defense-in-depth, never authorization credentials.
 
-**High-trust local pilot, not hardened enterprise perimeter.** Scout assumes trusted local users, trusted local agents, and explicit pairing/mesh choices; it is not yet a multi-tenant, compliance-ready system. See [`current-posture.md`](./current-posture.md).
+**High-trust local pilot, not hardened enterprise perimeter.** Scout assumes trusted local users, trusted local agents, and explicit pairing/mesh choices; it is not yet a multi-tenant, compliance-ready system.
 
 **Observe, don't absorb.** Harnesses own their primary transcripts and logs. Scout observes them through adapters and tail views, then stores links, metadata, and Scout-owned coordination records without importing external turns wholesale. This boundary is central enough to have its own section below; see [The Data Model](#the-data-model).
 

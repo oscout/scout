@@ -2080,6 +2080,29 @@
   gap: var(--space-sm);
 }
 
+.sys-state-card-centered {
+  align-items: center;
+  text-align: center;
+}
+
+.sys-state-card-centered .sys-state-body {
+  margin-left: auto;
+  margin-right: auto;
+}
+
+.sys-broker-empty-wrap {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 240px;
+  padding: var(--space-2xl) 0;
+}
+
+.sys-broker-empty-wrap > .sys-state-card {
+  width: min(480px, 100%);
+}
+
 .sys-state-card-error {
   background: color-mix(in srgb, var(--red) 4%, var(--surface));
   border-color: color-mix(in srgb, var(--red) 16%, transparent);

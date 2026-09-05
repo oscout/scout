@@ -15,7 +15,8 @@ describe("model catalog (models.dev-backed)", () => {
     expect(catalogContextWindowTokens("claude-sonnet-4-5")).toBe(200_000);
   });
 
-  test("knows the raw model windows for GPT-5 / Grok / Gemini / MiniMax", () => {
+  test("knows the raw model windows for GPT-6 / GPT-5 / Grok / Gemini / MiniMax", () => {
+    expect(catalogContextWindowTokens("gpt-6-astra")).toBe(1_050_000);
     expect(catalogContextWindowTokens("gpt-5")).toBe(400_000);
     expect(catalogContextWindowTokens("gpt-5.5")).toBe(1_050_000); // RAW window — Codex caps this separately
     expect(catalogContextWindowTokens("grok-4.6")).toBe(500_000);
@@ -37,6 +38,8 @@ describe("model catalog (models.dev-backed)", () => {
   test("overrides win and cover models missing from the generated catalog", () => {
     expect(MODEL_WINDOW_OVERRIDES["claude-opus-5"]).toBe(1_000_000);
     expect(catalogContextWindowTokens("claude-opus-5")).toBe(1_000_000);
+    expect(MODEL_WINDOW_OVERRIDES["gpt-6-astra"]).toBe(1_050_000);
+    expect(catalogContextWindowTokens("gpt-6-astra")).toBe(1_050_000);
     expect(MODEL_WINDOW_OVERRIDES["grok-4"]).toBe(256_000);
     expect(catalogContextWindowTokens("grok-4")).toBe(256_000);
     expect(catalogContextWindowTokens("grok-code-fast-1")).toBe(256_000);
@@ -51,6 +54,6 @@ describe("model catalog (models.dev-backed)", () => {
   test("adopts context windows from scoutd's live catalog without a rebuild", () => {
     applyRuntimeModelContextWindows({ "grok-live": 777_000 });
     expect(catalogContextWindowTokens("grok-live")).toBe(777_000);
-    applyRuntimeModelContextWindows({ "grok-4.6": 500_000 });
+    applyRuntimeModelContextWindows({ "gpt-6-astra": 1_050_000, "grok-4.6": 500_000 });
   });
 });
