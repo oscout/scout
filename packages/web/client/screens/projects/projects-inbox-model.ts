@@ -756,6 +756,33 @@ function collapseDerivedWorktreeProjects(model: ProjectsInboxModel): ProjectsInb
   return { projects, threads, sessions, projectAliases };
 }
 
+/** Normalize a project root for tolerant host ↔ model matching. */
+export function normalizeProjectRootPath(root: string): string {
+  return root
+    .replace(/^\/Users\/[^/]+(?=\/)/u, "~")
+    .replace(/\/+$/u, "");
+}
+
+/** Resolve a host-supplied absolute (or home-relative) root to a project slug. */
+export function resolveProjectSlugFromRoot(
+  model: ProjectsInboxModel,
+  root: string | null | undefined,
+): string | null {
+  if (!root?.trim()) return null;
+  const needle = normalizeProjectRootPath(root.trim());
+  for (const project of model.projects) {
+    if (project.root && normalizeProjectRootPath(project.root) === needle) {
+      return resolveProjectSlug(model, project.slug) ?? project.slug;
+    }
+    for (const worktree of project.worktrees) {
+      if (normalizeProjectRootPath(worktree.root) === needle) {
+        return resolveProjectSlug(model, project.slug) ?? project.slug;
+      }
+    }
+  }
+  return null;
+}
+
 /** Resolve one historical derived-worktree slug without guessing by title. */
 export function resolveProjectSlug(model: ProjectsInboxModel, slug: string): string | null {
   if (model.projects.some((project) => project.slug === slug)) return slug;

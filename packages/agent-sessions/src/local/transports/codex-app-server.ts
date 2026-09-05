@@ -247,6 +247,9 @@ function normalizeCodexModelValue(value: string | null | undefined): string | nu
   }
 
   const lower = trimmed.toLowerCase();
+  if (lower === "6" || lower === "gpt-6" || lower === "astra") {
+    return "gpt-6-astra";
+  }
   if (lower === "5.6" || lower === "gpt-5.6") {
     return "gpt-5.6-sol";
   }

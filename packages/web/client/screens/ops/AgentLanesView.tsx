@@ -29,6 +29,7 @@ import type {
 } from "../../lib/types.ts";
 import { ScoutContext } from "../../scout/Provider.tsx";
 import { defineSurface } from "../../surfaces/types.ts";
+import { useEmbedHeadline } from "../../surfaces/useEmbedHeadline.ts";
 import type { TerminalSessionRecord } from "@openscout/protocol";
 import { AgentAvatar } from "../../components/AgentAvatar.tsx";
 import { SessionObserve } from "../sessions/SessionObserve.tsx";
@@ -604,6 +605,7 @@ export function AgentLanesView({
   harnessFilter?: string | null;
   projectFilter?: string | null;
 }) {
+  useEmbedHeadline("Lanes", embedded);
   const scoutContext = useContext(ScoutContext);
   const scoutAgents = data?.agents ?? agentsProp ?? scoutContext?.agents ?? [];
   const laneOperatorName = data?.operatorName?.trim()

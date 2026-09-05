@@ -127,13 +127,33 @@
 
 .pi-projectsEmbedShell {
   display: grid;
-  grid-template-columns: clamp(224px, 26vw, 292px) minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr);
   overflow: hidden;
   background: var(--hud-bg);
 }
 
 .pi-projectsEmbedShell > .s-av2 {
   min-width: 0;
+}
+
+.s-discovered-embed.s-projects-embed .pi-inboxTitle,
+.s-discovered-embed.s-projects-embed .pi-projectTitle,
+.pi-projectsEmbedShell .pi-inboxTitle,
+.pi-projectsEmbedShell .pi-projectTitle {
+  display: none;
+}
+
+.s-discovered-embed.s-projects-embed .pi-inboxHead,
+.pi-projectsEmbedShell .pi-inboxHead {
+  min-height: 0;
+  padding-block: 6px;
+  align-items: center;
+}
+
+.s-discovered-embed.s-projects-embed .pi-projectHead,
+.pi-projectsEmbedShell .pi-projectHead {
+  gap: 6px;
+  padding-block: 6px;
 }
 
 .pi-railFind {

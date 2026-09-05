@@ -149,6 +149,7 @@ export function MissionLogPane({
           type="button"
           className="s-wall-pane-file"
           title={log.logPath ?? `session ${log.sessionId}`}
+          aria-label="Open raw tail"
           onClick={(event) => {
             event.stopPropagation();
             onOpenLog();

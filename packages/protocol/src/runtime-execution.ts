@@ -322,6 +322,9 @@ export function normalizeScoutRuntimeModel(
   const normalizedHarness = harness.trim().toLowerCase();
   const lower = requested.toLowerCase();
   if (normalizedHarness === "codex") {
+    if (lower === "6" || lower === "gpt-6" || lower === "astra") {
+      return { ok: true, requested, resolved: "gpt-6-astra" };
+    }
     if (lower === "5.6" || lower === "gpt-5.6") {
       return { ok: true, requested, resolved: "gpt-5.6-sol" };
     }

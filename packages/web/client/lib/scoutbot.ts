@@ -63,7 +63,8 @@ export type ScoutbotUiAction =
       delayMs?: number;
       delayMinutes?: number;
       reason?: string;
-    };
+    }
+  | { type: "select-project"; root: string | null; reason?: string };
 
 type ScoutNativeUiActionHost = {
   webkit?: {
@@ -289,6 +290,18 @@ export function normalizeScoutbotUiAction(raw: unknown): ScoutbotUiAction | null
       return null;
     }
     return { type: "view-file", path: path.trim(), ...(reason ? { reason } : {}) };
+  }
+
+  if (type === "select-project" || type === "select_project") {
+    const rootValue = record.root;
+    if (rootValue === null) {
+      return { type: "select-project", root: null, ...(reason ? { reason } : {}) };
+    }
+    if (typeof rootValue === "string") {
+      const root = rootValue.trim();
+      return { type: "select-project", root: root || null, ...(reason ? { reason } : {}) };
+    }
+    return null;
   }
 
   if (type === "reminder" || type === "set-reminder" || type === "set_reminder" || type === "remind") {

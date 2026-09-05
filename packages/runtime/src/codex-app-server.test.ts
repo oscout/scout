@@ -1658,6 +1658,11 @@ describe("ensureCodexAppServerAgentOnline", () => {
   });
 
   test("expands GPT model shorthand for app-server sessions", () => {
+    expect(normalizeCodexAppServerLaunchArgs(["--model", "astra"])).toEqual([
+      "-c",
+      "model=\"gpt-6-astra\"",
+    ]);
+    expect(readCodexAppServerModelFromLaunchArgs(["--model", "gpt-6"])).toBe("gpt-6-astra");
     expect(normalizeCodexAppServerLaunchArgs(["--model", "5.6"])).toEqual([
       "-c",
       "model=\"gpt-5.6-sol\"",

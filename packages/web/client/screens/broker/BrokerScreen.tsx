@@ -36,6 +36,7 @@ import { brokerDiagnosticsUrl } from "./broker-query.ts";
 import { useBrokerLedgerKeyboard } from "./useBrokerLedgerKeyboard.ts";
 import { ShikiPane } from "../code/ShikiPane.tsx";
 import { defineSurface } from "../../surfaces/types.ts";
+import { useEmbedHeadline } from "../../surfaces/useEmbedHeadline.ts";
 import "../system-surfaces-redesign.css";
 
 type BrokerTab = DispatchFilter;
@@ -405,6 +406,7 @@ export function BrokerScreen({
   /** Embed deep link (`/embed/dispatch?attempt=…`); the shell uses the route. */
   initialAttemptId?: string;
 }) {
+  useEmbedHeadline("Dispatch", embedded);
   const { route, agents, selectedBrokerAttempt, inspectBrokerAttempt, clearBrokerAttempt } = useScout();
   // Warm start: paint the last diagnostics page on remount while the mount
   // effect's load("initial") refreshes it in the background.
@@ -756,17 +758,24 @@ export function BrokerScreen({
           )}
 
           {loading && !broker && (
-            <EmptyState
-              title="Loading dispatch"
-              body="Reading the dispatch database snapshot."
-            />
+            <div className="sys-broker-empty-wrap">
+              <EmptyState
+                className="sys-state-card-centered"
+                icon={<LoaderCircle className="sys-broker-source-spinner" size={24} aria-hidden="true" />}
+                title="Loading dispatch"
+                body="Reading the dispatch database snapshot."
+              />
+            </div>
           )}
 
           {!loading && !broker && !error && (
-            <EmptyState
-              title="No dispatch data"
-              body="No dispatch rows are available yet."
-            />
+            <div className="sys-broker-empty-wrap">
+              <EmptyState
+                className="sys-state-card-centered"
+                title="No dispatch data"
+                body="No dispatch rows are available yet."
+              />
+            </div>
           )}
 
           {broker && (
@@ -831,10 +840,13 @@ function BrokerAttemptList({
 }) {
   if (attempts.length === 0) {
     return (
-      <EmptyState
-        title="No dispatch rows"
-        body="No dispatch rows are available yet."
-      />
+      <div className="sys-broker-empty-wrap">
+        <EmptyState
+          className="sys-state-card-centered"
+          title="No dispatch rows"
+          body="No dispatch rows are available yet."
+        />
+      </div>
     );
   }
 

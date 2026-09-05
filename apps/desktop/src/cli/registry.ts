@@ -49,7 +49,12 @@ export const SCOUT_COMMANDS: ScoutCommandRegistration[] = [
   { name: "update", summary: "Update the installed OpenScout macOS app", canonicalName: "install" },
   { name: "config", summary: "View or set user config (name, handle, agent name pool, etc.)" },
   { name: "mesh", summary: "Mesh status, diagnostics, and trust-cone peers/enrollment" },
-  { name: "monitor", summary: "Launch the v1 OpenTUI console (ask, harness, tail)" },
+  {
+    name: "monitor",
+    summary: "Retired: legacy OpenTUI console (use 'scout tui')",
+    status: "deprecated",
+    deprecationMessage: "`scout monitor` has been retired. Use `scout tui`.",
+  },
   { name: "pair", summary: "Pair a companion device via QR" },
   { name: "server", summary: "Run the Scout web UI (Bun; see: scout server start/open)" },
   { name: "tui", summary: "Launch the Scout TUI" },

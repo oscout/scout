@@ -252,7 +252,7 @@ describe("terminal relay config", () => {
 
     const captured = terminalRelayProps as TerminalRelayCapture | null;
     expect(captured?.relay).toBeTruthy();
-    expect(captured?.renderer).toBe("dom");
+    expect(captured?.renderer).toBe("auto");
     const firstReadOnlyRelay = captured?.relay;
     captured?.relay?.sendInput?.("whoami");
     captured?.relay?.sendLine?.("whoami");

@@ -11,11 +11,31 @@ import {
   shouldShowThreadDayDivider,
   deriveWorkingDurationStage,
   hasOutstandingConversationReply,
+  invocationTargetsConversation,
   mapEventFlight,
   resolveComposeAction,
   resolveConversationAutoscroll,
   resolveThreadEmbedProps,
 } from "./conversation-model.ts";
+
+describe("conversation invocation routing", () => {
+  test("wakes the thread from conversation identity before agent metadata resolves", () => {
+    const ids = new Set(["chn-live", "chn-alias"]);
+    expect(invocationTargetsConversation({
+      id: "inv-1",
+      targetAgentId: "agent-not-loaded-yet",
+      conversationId: "chn-live",
+    }, ids)).toBe(true);
+  });
+
+  test("ignores work routed to another conversation", () => {
+    expect(invocationTargetsConversation({
+      id: "inv-2",
+      targetAgentId: "agent-1",
+      conversationId: "chn-other",
+    }, new Set(["chn-live"]))).toBe(false);
+  });
+});
 
 describe("conversation working duration", () => {
   const startedAt = 1_700_000_000_000;

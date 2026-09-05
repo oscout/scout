@@ -2,7 +2,7 @@
 
 export const SCOUT_RUNTIME_CATALOG_DATA = {
   "schemaVersion": "openscout.runtime-catalog.v1",
-  "revision": "2026-09-01.1",
+  "revision": "2026-09-05.1",
   "harnesses": [
     {
       "id": "claude",
@@ -83,10 +83,26 @@ export const SCOUT_RUNTIME_CATALOG_DATA = {
       "defaultReasoningEffort": "medium",
       "models": [
         {
+          "id": "gpt-6-astra",
+          "label": "6 Astra",
+          "enabled": true,
+          "default": true,
+          "description": "Most capable for complex reasoning, coding, computer use, research, and document creation",
+          "family": "GPT",
+          "version": "6 Astra",
+          "contextWindowTokens": 1050000,
+          "reasoningEfforts": [
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max"
+          ]
+        },
+        {
           "id": "gpt-5.6-sol",
           "label": "5.6 Sol",
           "enabled": true,
-          "default": true,
           "family": "GPT",
           "version": "5.6 Sol",
           "reasoningEfforts": [

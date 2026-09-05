@@ -11,10 +11,10 @@ export const DEFAULT_CONTEXT_WINDOW_TOKENS = 200_000;
  * runtime, no adapter module).
  *
  * Precedence: a window learned from real logs (once per model) → Codex's
- * harness-specific cap (it exposes less than the model's raw window) → the
- * models.dev-generated per-model catalog (Claude per version, Grok, Gemini,
- * MiniMax…) → a conservative default. A transcript-logged window is preferred
- * upstream of all of this.
+ * GPT-5-specific cap (it exposes less than those models' raw windows) → the
+ * models.dev-generated per-model catalog (GPT-6, Claude per version, Grok,
+ * Gemini, MiniMax…) → a conservative default. A transcript-logged window is
+ * preferred upstream of all of this.
  */
 export function inferModelContextWindowTokens(input: {
   model?: string | null;
@@ -24,11 +24,18 @@ export function inferModelContextWindowTokens(input: {
   if (learned !== undefined) return learned;
 
   const adapterType = input.adapterType?.trim().toLowerCase() ?? "";
-  // Codex caps below the model's raw window (its logged budget) — that wins.
-  if (adapterType.includes("codex") || isGpt5Family(input.model)) {
+  const catalogWindow = catalogContextWindowTokens(input.model);
+  const normalizedModel = (input.model?.trim().toLowerCase().split("/").at(-1) ?? "")
+    .replace(/:[a-z0-9-]+$/u, "")
+    .replace(/_/gu, "-");
+  const isGpt6Family = /^gpt-6(?:$|[.-])/u.test(normalizedModel);
+  // Codex capped the GPT-5 family below its raw advertised window. Keep that
+  // established adapter fallback for other models, but let GPT-6 use its own
+  // catalog card.
+  if (isGpt5Family(input.model) || (adapterType.includes("codex") && !isGpt6Family)) {
     return codexContextWindowTokens(input.model);
   }
 
   // Per-model catalog (covers Claude per version, Grok, Gemini, MiniMax, …).
-  return catalogContextWindowTokens(input.model) ?? DEFAULT_CONTEXT_WINDOW_TOKENS;
+  return catalogWindow ?? DEFAULT_CONTEXT_WINDOW_TOKENS;
 }

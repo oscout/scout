@@ -235,7 +235,6 @@ Run `scout --help` for the current command inventory and
 - [Quickstart](https://openscout.app/docs/quickstart)
 - [Documentation](https://openscout.app/docs)
 - [Architecture](https://openscout.app/docs/architecture)
-- [Current status and scope](https://openscout.app/docs/current-posture)
 - [Public source](https://github.com/oscout/scout)
 - [Issues](https://github.com/oscout/scout/issues)
 

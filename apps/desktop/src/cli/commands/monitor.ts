@@ -1,23 +1,18 @@
 import type { ScoutCommandContext } from "../context.ts";
 import { ScoutCliError } from "../errors.ts";
-import { parseMonitorCommandOptions } from "../options.ts";
-import { runScoutMonitorApp } from "../../ui/monitor/index.tsx";
 
 const HELP_FLAGS = new Set(["--help", "-h", "help"]);
 
 export function renderMonitorCommandHelp(): string {
   return [
     "Usage:",
-    "  scout monitor [--channel <name>] [--limit <n>] [--interval <ms>]",
+    "  scout monitor",
     "",
-    "Launch the v1 OpenTUI console (ask, harness, tail).",
-    "",
-    "This is the original desktop terminal dashboard. It is retained for broker",
-    "ask/harness work. The current TUI is `scout tui`.",
+    "The legacy v1 OpenTUI console (`scout monitor`) has been retired.",
+    "Use `scout tui` for the terminal instrument.",
     "",
     "Examples:",
-    "  scout monitor",
-    "  scout monitor --channel shared --limit 20",
+    "  scout tui",
   ].join("\n");
 }
 
@@ -30,11 +25,6 @@ export async function runMonitorCommand(context: ScoutCommandContext, args: stri
     return;
   }
 
-  const options = parseMonitorCommandOptions(args, context.cwd);
-  await runScoutMonitorApp({
-    currentDirectory: options.currentDirectory,
-    channel: options.channel,
-    limit: options.limit,
-    refreshIntervalMs: options.intervalMs,
-  });
+  context.stderr("`scout monitor` (the legacy v1 OpenTUI console) has been retired. Use `scout tui`.");
+  context.output.writeText(renderMonitorCommandHelp());
 }

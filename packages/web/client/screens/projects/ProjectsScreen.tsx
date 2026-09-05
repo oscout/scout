@@ -2,8 +2,8 @@ import type { Route } from "../../lib/types.ts";
 import { useScout } from "../../scout/Provider.tsx";
 import { defineSurface } from "../../surfaces/types.ts";
 import { ProjectsInbox } from "./ProjectsInbox.tsx";
-import { ProjectsRail } from "./ProjectsRail.tsx";
 import { ProjectAgentProfile } from "./ProjectAgentProfile.tsx";
+import { useHostProjectSelection } from "./useHostProjectSelection.ts";
 import { isProjectAgentProfileRoute } from "./model.ts";
 import "./projects.css";
 import "./projects-inbox.css";
@@ -11,9 +11,11 @@ import "./projects-inbox.css";
 export function ProjectsScreen({
   route,
   navigate,
+  embedded = false,
 }: {
   route: Extract<Route, { view: "agents-v2" }>;
   navigate: (route: Route) => void;
+  embedded?: boolean;
 }) {
   const isProfile = isProjectAgentProfileRoute(route);
   const stageKey = isProfile ? `profile:${route.agentId}` : "index";
@@ -25,7 +27,7 @@ export function ProjectsScreen({
         {isProfile ? (
           <ProjectAgentProfile route={route} navigate={navigate} />
         ) : (
-          <ProjectsInbox route={route} navigate={navigate} zeroPreview={zeroPreview} />
+          <ProjectsInbox route={route} navigate={navigate} zeroPreview={zeroPreview} embedded={embedded} />
         )}
       </div>
     </div>
@@ -34,6 +36,7 @@ export function ProjectsScreen({
 
 export function ProjectsEmbedScreen({
   navigate,
+  embedded = false,
 }: {
   navigate: (route: Route) => void;
   embedded?: boolean;
@@ -43,10 +46,11 @@ export function ProjectsEmbedScreen({
     ? route
     : { view: "agents-v2" };
 
+  useHostProjectSelection(projectsRoute, navigate);
+
   return (
     <div className="pi-projectsEmbedShell">
-      <ProjectsRail route={projectsRoute} navigate={navigate} />
-      <ProjectsScreen route={projectsRoute} navigate={navigate} />
+      <ProjectsScreen route={projectsRoute} navigate={navigate} embedded={embedded} />
     </div>
   );
 }

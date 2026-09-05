@@ -5,7 +5,6 @@ import { fileURLToPath } from "node:url";
 
 import type { ScoutCommandContext } from "../context.ts";
 import { ScoutCliError } from "../errors.ts";
-import { runMonitorCommand } from "./monitor.ts";
 
 const HELP_FLAGS = new Set(["--help", "-h", "help"]);
 const SCOUT_TUI_BIN_NAME = "scout-tui";
@@ -33,7 +32,7 @@ export function renderTuiCommandHelp(): string {
     "",
     "Launch the Scout TUI in this terminal.",
     "",
-    "This is the ratatui night instrument. The v1 OpenTUI console is `scout monitor`.",
+    "This is the ratatui night instrument. The legacy v1 OpenTUI console `scout monitor` is retired.",
     "",
     "Binary resolution, in order:",
     "  SCOUT_TUI_BIN",
@@ -132,8 +131,7 @@ export async function runTuiCommand(
   }
 
   if (options.mode === "monitor") {
-    context.stderr("warning: `scout tui --monitor` is retired; use `scout monitor`.");
-    await runMonitorCommand(context, options.args);
+    context.stderr("`scout monitor` (the legacy v1 OpenTUI console) has been retired. Use `scout tui`.");
     return;
   }
 
