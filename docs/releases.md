@@ -14,34 +14,18 @@ Do not complete or manually promote the `0.2.88` or `0.2.90` candidates. Do not
 publish public packages from a private product checkout or from a commit that
 is not public `oscout/scout` `main`.
 
-## Current source
+## Publication ownership
 
-This tree is `0.2.94`. A temporary allowlisted export from the private
-OpenScout workspace brought CLI, runtime, protocol, session packages, desktop,
-the current web dump, and `crates/scout-tui` current. That export is a
-migration snapshot, not the intended steady state and not the
-canonical-public cutover. Native apps, hosted services, and Slack stay out.
+This public repository owns `@openscout/protocol` and `@openscout/scout`.
+Other workspaces share the source version but are not separately supported npm
+releases. Native macOS/iOS apps remain in the private product repository.
 
-After this source is on `main`, tag `v0.2.94` and dispatch
-`release-package-npm.yml`. That workflow publishes only
-`@openscout/protocol` and `@openscout/scout`. npm `latest` must match the
-tagged public commit. Do not publish from the private checkout. The other
-workspaces share the source version but are not a five-package npm release.
-
-## Current publication set
-
-The last registry cut from this repository, `0.2.92`, publishes:
-
-- `@openscout/protocol`
-- `@openscout/scout`
-
-After the cutover source is reviewed and merged, the CLI package bundles the
-public runtime, agent-session, desktop, and baseline web sources. Those
-component workspaces remain on the same source version, but
-`@openscout/agent-sessions`, `@openscout/runtime`, and `@openscout/web` are not
-promoted as supported registry packages until their exports, standalone
-pack/install tests, and web-composition fixture are ready. That later
-five-package release is a separate migration gate.
+Local execution is the default for reviewed, explicitly authorized releases.
+Hosted CI and npm publication remain opt-in. Do not dispatch Actions as a
+fallback for missing local credentials or local validation failures. Record
+proportional local checks against the exact reviewed head and current main base;
+observe required GitHub rules and feedback before merging. Hosted runs can
+provide additional evidence when explicitly requested.
 
 ## Prepare and review
 
@@ -49,9 +33,9 @@ Choose an explicit unused version. Never use `patch` to recover from registry
 drift.
 
 ```bash
-node scripts/bump-version.mjs 0.2.92
+bun scripts/bump-version.mjs <version>
 bun install
-npm run ship -- 0.2.92
+bun run ship -- <version>
 bun run check
 bun run test:unit
 bash scripts/ship-npm.sh --dry-run
@@ -61,37 +45,60 @@ Commit the source, version manifests, `apps/desktop/src/shared/product.ts`,
 `docs.json`, and lockfile on a review branch. Merge only after the standalone
 checks and packed artifact audit pass.
 
-## Historical local cutover path
+## Local publication
 
-`0.2.88` was the one local signed authority-cutover attempt. Its command was:
+After the chosen version and source are reviewed and merged, run from a clean
+public `main` checkout:
 
 ```bash
-npm run ship -- 0.2.88 --execute --yes
+bun run ship -- <version>                 # read-only plan; does not build
+bun run ship -- <version> --execute --yes # authorized local release
 ```
 
-That path is retained only for audit and complete-state verification; do not
-use it for `0.2.89` or later. The command refuses a non-public origin, a branch
-other than `main`, a HEAD that does not match freshly fetched `origin/main`, a
-dirty tree, mismatched existing tag or registry state, or unsigned `scoutd`.
-Matching tag and completed npm and GitHub release state are idempotent. Before
-its first immutable upload, the publisher atomically retains both exact
-tarballs and an integrity receipt under the repository's common Git directory at
-`.git/scout-release/npm/<version>-<release-sha>/`. Keep that bundle through final
-npm and GitHub verification; it is the evidence used to resume without
-rebuilding the signed CLI. The receipt is also attached to the GitHub release.
+Execution never selects a version, bumps manifests, commits source, or starts
+hosted jobs. It requires the canonical public origin, clean `main`, HEAD equal
+to freshly fetched remote `main`, lockstep versions, and matching existing tags.
+It creates/pushes the explicitly chosen tag only after registry preflight.
+Versions through `0.2.90` are historical and cannot be published or promoted.
 
-The `0.2.88` cutover fails closed if only part of its immutable npm package set
-already exists; use a fresh version instead of mixing artifacts across
-publication attempts. A complete immutable set may resume missing mutable
-dist-tag promotion only when every registry SRI matches the retained receipt.
-Missing, altered, or mismatched receipt state also fails closed—do not delete the
-bundle during a release train. The publisher uploads the retained candidates
-under a version-specific staging dist-tag, verifies the complete pair, and only
-then promotes both packages to `latest`.
+The publisher prepares and audits both exact tarballs once, including signed
+`scoutd`, then atomically retains the candidates and integrity receipt under
+`.git/scout-release/npm/<version>-<release-sha>/`. `--publish-prepared` publishes
+those retained bytes without rebuilding. Preserve this bundle through registry
+and GitHub verification. Receipts bind repository, source SHA, version,
+authority, package SHA-256/SRI and sizes. New receipts explicitly record
+`provenance: "none"` for local publication; the `local-signed` authority describes
+signed artifacts, not npm OIDC provenance. Historical schema-1 receipts remain
+readable through their bound authority.
 
-Local npm publication does not create GitHub OIDC provenance. `0.2.89` and
-later therefore have one publication authority: the public workflow, with
-these configured:
+Provide `NPM_TOKEN` or the local secret-store entry `OPENSCOUT_NPM_TOKEN` with
+permission to publish both packages and update their dist-tags. The script uses
+a private temporary npm configuration and removes it on exit. Local publication
+explicitly disables npm provenance generation. It neither stores credentials in
+receipts nor falls back to hosted credentials. Signed build prerequisites still
+apply; do not bypass the binary signing gate.
+
+Local publication uploads protocol and Scout under a version-specific staging
+tag, verifies both against retained candidates, and only then promotes the pair
+to `latest`. A fresh release must advance the current versions and begin with
+both package versions unused. A matching completed release is idempotent. A
+complete immutable pair may resume missing dist-tag promotion only with its
+exact retained receipt. A partial local pair, changed artifact, wrong source,
+missing receipt, or foreign authority fails closed; choose a newly reviewed
+unused version instead of repairing historical candidates manually.
+
+After registry verification succeeds, the command creates or verifies the final
+public GitHub release and attaches `receipt.json`. Existing receipts are never
+clobbered: their size and anonymously downloaded SHA-256 must match the retained
+receipt. An upload command succeeding alone is not a verified release.
+
+## Explicit hosted publication
+
+When the operator deliberately chooses hosted publication, dispatch the public
+`release-package-npm.yml` workflow directly. It verifies its canonical workflow
+identity and refuses token authentication. There is no automatic transition
+between local and hosted authority; retained receipts cannot cross authorities.
+The hosted path uses npm trusted publishing/OIDC and these signing secrets:
 
 - `MACOS_DEVELOPER_ID_APPLICATION_P12_BASE64`
 - `MACOS_DEVELOPER_ID_APPLICATION_P12_PASSWORD`

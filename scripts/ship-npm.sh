@@ -4,7 +4,7 @@
 # GitHub OIDC publication pre-verifies both immutable candidates, then publishes
 # them directly to latest in dependency order. npm trusted publishing authorizes
 # `npm publish`, but not the separate `npm dist-tag` mutations used by the
-# historical local 0.2.88 two-phase path. A completed release is idempotent; a
+# local token-authenticated two-phase path. A completed release is idempotent; a
 # partial immutable package set fails closed so attempts cannot mix candidates.
 
 set -euo pipefail
@@ -124,24 +124,30 @@ if [[ -z "$RELEASE_STATE_DIR" ]]; then
 fi
 RELEASE_RECEIPT_PATH="$RELEASE_STATE_DIR/receipt.json"
 RELEASE_LOCK_DIR="${RELEASE_STATE_DIR}.lock"
-if [[ "$release_version" == "0.2.88" ]]; then
-  if [[ "${GITHUB_ACTIONS:-}" == "true" ]]; then
-    echo "ERROR: v0.2.88 is a local signed authority-cutover release, not a GitHub Actions publication" >&2
+# Local token publication is the default. Hosted OIDC remains an explicit,
+# separately verified workflow authority; neither path falls back to the other.
+if [[ "$MODE" == "publish" || "$MODE" == "prepare" || "$MODE" == "publish-prepared" ]]; then
+  if ! node -e 'const v=process.argv[1].split(".").map(Number); process.exit(v[0]===0 && (v[1]<2 || (v[1]===2 && v[2]<=90)) ? 1 : 0)' "$release_version"; then
+    echo "ERROR: v${release_version} is historical and unsupported; publication is disabled" >&2
     exit 1
   fi
-  export NPM_CONFIG_PROVENANCE=false
-elif [[ "$MODE" == "publish" || "$MODE" == "prepare" || "$MODE" == "publish-prepared" ]]; then
-  expected_workflow_ref="oscout/scout/.github/workflows/release-package-npm.yml@refs/heads/main"
-  if [[ "${GITHUB_ACTIONS:-}" != "true" \
-    || "${GITHUB_REPOSITORY:-}" != "oscout/scout" \
-    || "${GITHUB_WORKFLOW_REF:-}" != "$expected_workflow_ref" ]]; then
-    echo "ERROR: v${release_version} must be published by .github/workflows/release-package-npm.yml" >&2
-    echo "ERROR: refusing a second local publication authority for v0.2.89 and later" >&2
-    exit 1
-  fi
-  if [[ -n "${NPM_TOKEN:-}" ]]; then
-    echo "ERROR: v${release_version} requires npm trusted publishing; refusing token authentication" >&2
-    exit 1
+  if [[ "$PUBLICATION_AUTHORITY" == "github-oidc" ]]; then
+    expected_workflow_ref="oscout/scout/.github/workflows/release-package-npm.yml@refs/heads/main"
+    if [[ "${GITHUB_REPOSITORY:-}" != "oscout/scout" \
+      || "${GITHUB_WORKFLOW_REF:-}" != "$expected_workflow_ref" ]]; then
+      echo "ERROR: hosted publication requires the canonical release-package-npm.yml workflow" >&2
+      exit 1
+    fi
+    if [[ -n "${NPM_TOKEN:-}" ]]; then
+      echo "ERROR: hosted publication requires npm trusted publishing; refusing token authentication" >&2
+      exit 1
+    fi
+    export NPM_CONFIG_PROVENANCE=true
+    export npm_config_provenance=true
+  else
+    # A locally signed binary is not GitHub OIDC package provenance.
+    export NPM_CONFIG_PROVENANCE=false
+    export npm_config_provenance=false
   fi
 fi
 
@@ -415,6 +421,10 @@ persist_release_bundle() {
 
 assert_clean_publish_source() {
   local status
+  if [[ "$(git rev-parse HEAD^{commit})" != "$release_sha" ]]; then
+    echo "ERROR: release HEAD changed during publication" >&2
+    exit 1
+  fi
   status=$(git status --porcelain --untracked-files=normal)
   if [[ -n "$status" ]]; then
     echo "ERROR: npm publication requires a clean reviewed source tree:" >&2
@@ -437,6 +447,19 @@ assert_canonical_publish_ref() {
     exit 1
   fi
 
+  if [[ "$PUBLICATION_AUTHORITY" == "local-signed" ]]; then
+    if [[ "$(git branch --show-current)" != "main" ]]; then
+      echo "ERROR: local publication requires reviewed public main" >&2
+      exit 1
+    fi
+    git fetch --no-tags origin refs/heads/main
+    if [[ "$(git rev-parse FETCH_HEAD^{commit})" != "$release_sha" ]]; then
+      echo "ERROR: release HEAD does not match freshly fetched origin/main" >&2
+      exit 1
+    fi
+    assert_clean_publish_source
+  fi
+
   release_tag="v${release_version}"
   local_tag_sha=$(git rev-parse --verify "refs/tags/${release_tag}^{commit}" 2>/dev/null || true)
   if [[ "$local_tag_sha" != "$release_sha" ]]; then
@@ -456,7 +479,7 @@ assert_canonical_publish_ref() {
 
 configure_publish_credentials() {
   if [[ "${GITHUB_ACTIONS:-}" == "true" ]]; then
-    # Canonical public releases have one authority: npm trusted publishing.
+    # This explicitly selected hosted authority uses npm trusted publishing.
     # Never probe a runner-local credential helper that could silently replace
     # OIDC with a legacy token after the earlier environment check.
     echo "Relying on npm trusted publishing/OIDC."
@@ -806,6 +829,8 @@ else
 
   assert_registry_preflight
   if ! all_artifacts_exist; then
+    assert_clean_publish_source
+    assert_canonical_publish_ref
     publish_missing_artifacts
     inspect_registry_state
     assert_registry_preflight
@@ -816,6 +841,8 @@ else
   fi
 fi
 
+assert_clean_publish_source
+assert_canonical_publish_ref
 promote_package_set
 inspect_registry_state
 all_artifacts_exist && all_packages_promoted || {
