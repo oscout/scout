@@ -36,11 +36,12 @@ test("public release plan is reviewed-source-only and complete-state idempotent"
   assert.ok(result.stdout.includes(`docs.json: ${currentVersion}`));
   assert.match(result.stdout, /git fetch --no-tags origin refs\/heads\/main/);
   assert.match(result.stdout, /ship-npm\.sh --verify-state/);
-  assert.match(result.stdout, /gh workflow run release-package-npm\.yml/);
-  assert.match(result.stdout, /download the exact npm integrity receipt/);
-  assert.match(result.stdout, /attach that receipt to the final GitHub release/);
+  assert.match(result.stdout, /ship-npm\.sh --prepare/);
+  assert.match(result.stdout, /ship-npm\.sh --publish-prepared/);
+  assert.match(result.stdout, /no OIDC provenance/);
+  assert.doesNotMatch(result.stdout, /gh workflow run/);
   assert.match(result.stdout, /git push --atomic origin HEAD:refs\/heads\/main/);
-  assert.doesNotMatch(result.stdout, /ship-npm\.sh --verify-published/);
+  assert.match(result.stdout, /ship-npm\.sh --verify-published/);
   assert.doesNotMatch(result.stdout, /bump-version|git commit|--follow-tags/);
   assert.doesNotMatch(result.stdout, /apps\/macos|appcast|include-ios|\.dmg/i);
 });
@@ -61,20 +62,10 @@ test("ambiguous mutating and partial-release options are rejected", () => {
   }
 });
 
-test("0.2.89 and later execute only through the GitHub publication authority", () => {
-  const result = plan(currentVersion, "--execute", "--yes");
+test("local execution requires explicit confirmation before any mutation", () => {
+  const result = plan(currentVersion, "--execute");
   assert.notEqual(result.status, 0);
-  assert.match(result.stderr, /publishes only through .*release-package-npm\.yml/i);
-});
-
-test("0.2.89 npm publication rejects a local second authority", () => {
-  const result = spawnSync("bash", ["scripts/ship-npm.sh"], {
-    cwd: repoRoot,
-    encoding: "utf8",
-    env: { ...process.env, GITHUB_ACTIONS: "false" },
-  });
-  assert.notEqual(result.status, 0);
-  assert.match(result.stderr, /must be published by .*release-package-npm\.yml/i);
+  assert.match(result.stderr, /Refusing to publish without --yes/);
 });
 
 test("0.2.89 GitHub publication refuses legacy npm token authentication", () => {
@@ -94,13 +85,13 @@ test("0.2.89 GitHub publication refuses legacy npm token authentication", () => 
 });
 
 test("GitHub npm dispatch is disabled for the authority cutover", () => {
-  const result = plan("0.2.88", "--github-npm");
+  const result = plan("0.2.99", "--github-npm");
   assert.notEqual(result.status, 0);
-  assert.match(result.stderr, /disabled[\s\S]*historical local signed attempt/i);
+  assert.match(result.stderr, /disabled[\s\S]*explicit workflow dispatch/i);
 });
 
 test("release versions are exact stable semver", () => {
-  const result = plan("0.2.88oops");
+  const result = plan("0.2.99oops");
   assert.notEqual(result.status, 0);
   assert.match(result.stderr, /Invalid stable version/);
 });
@@ -129,12 +120,12 @@ test("SCOUT_APP_VERSION participates in release lockstep", () => {
       if (directory === "packages/protocol") name = "@openscout/protocol";
       writeFileSync(
         join(fixture, directory, "package.json"),
-        JSON.stringify({ name, version: "0.2.88" }),
+        JSON.stringify({ name, version: "0.2.99" }),
       );
     }
     const lockWorkspaces = manifests
       .filter((directory) => directory !== ".")
-      .map((directory) => `    "${directory}": {\n      "version": "0.2.88",\n    },`)
+      .map((directory) => `    "${directory}": {\n      "version": "0.2.99",\n    },`)
       .join("\n");
     writeFileSync(
       join(fixture, "bun.lock"),
@@ -145,9 +136,9 @@ test("SCOUT_APP_VERSION participates in release lockstep", () => {
       join(fixture, "apps/desktop/src/shared/product.ts"),
       'export const SCOUT_APP_VERSION = process.env.SCOUT_APP_VERSION?.trim() || "0.2.87";\n',
     );
-    writeFileSync(join(fixture, "docs.json"), JSON.stringify({ version: "0.2.88" }));
+    writeFileSync(join(fixture, "docs.json"), JSON.stringify({ version: "0.2.99" }));
 
-    const result = spawnSync(process.execPath, ["scripts/ship-release.mjs", "0.2.88"], {
+    const result = spawnSync(process.execPath, ["scripts/ship-release.mjs", "0.2.99"], {
       cwd: fixture,
       encoding: "utf8",
     });
@@ -159,7 +150,7 @@ test("SCOUT_APP_VERSION participates in release lockstep", () => {
 });
 
 function createRegistryFixture({
-  version = "0.2.88",
+  version = "0.2.99",
   authority = "local-signed",
   mismatchedGitHead = false,
   completeSet = false,
@@ -196,7 +187,8 @@ if [[ "$1" == "rev-parse" ]]; then
   echo aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
   exit 0
 fi
-if [[ "$1" == "status" ]]; then exit 0; fi
+if [[ "$1" == "status" || "$1" == "fetch" ]]; then exit 0; fi
+if [[ "$1" == "branch" ]]; then echo main; exit 0; fi
 if [[ "$1" == "remote" && "$2" == "get-url" ]]; then
   echo https://github.com/oscout/scout.git
   exit 0
@@ -303,7 +295,7 @@ function registryEnv(fixture) {
 }
 
 function createPublishFixture({
-  version = "0.2.88",
+  version = "0.2.99",
   authority = "local-signed",
   completeSet = false,
   firstUploadIntegrityMismatch = false,
@@ -436,7 +428,7 @@ test("registry state rejects an existing artifact from another commit", () => {
 test("registry state allows a complete immutable set to finish dist-tag promotion", () => {
   const fixture = createRegistryFixture({
     completeSet: true,
-    protocolLatest: "0.2.88",
+    protocolLatest: "0.2.99",
     scoutLatest: "0.2.87",
   });
   try {
@@ -446,7 +438,7 @@ test("registry state allows a complete immutable set to finish dist-tag promotio
       env: registryEnv(fixture),
     });
     assert.equal(result.status, 0, result.stderr);
-    assert.match(result.stdout, /complete immutable 0\.2\.88 package set/i);
+    assert.match(result.stdout, /complete immutable 0\.2\.99 package set/i);
   } finally {
     rmSync(fixture, { recursive: true, force: true });
   }
@@ -503,8 +495,8 @@ test("registry integrity must exactly match the durable candidate receipt", () =
 test("published verification reuses the receipt without rebuilding", () => {
   const fixture = createRegistryFixture({
     completeSet: true,
-    protocolLatest: "0.2.88",
-    scoutLatest: "0.2.88",
+    protocolLatest: "0.2.99",
+    scoutLatest: "0.2.99",
   });
   try {
     const result = spawnSync("bash", ["scripts/ship-npm.sh", "--verify-published"], {
@@ -531,15 +523,15 @@ test("release receipts are exclusive and cannot be overwritten", () => {
         "create",
         receiptPath,
         "https://github.com/oscout/scout",
-        "0.2.88",
+        "0.2.99",
         "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         "local-signed",
         "@openscout/protocol",
-        "0.2.88",
-        join(fixture, "release-state/openscout-protocol-0.2.88.tgz"),
+        "0.2.99",
+        join(fixture, "release-state/openscout-protocol-0.2.99.tgz"),
         "@openscout/scout",
-        "0.2.88",
-        join(fixture, "release-state/openscout-scout-0.2.88.tgz"),
+        "0.2.99",
+        join(fixture, "release-state/openscout-scout-0.2.99.tgz"),
       ],
       { cwd: fixture, encoding: "utf8" },
     );
@@ -564,7 +556,7 @@ test("publish resumes from retained candidates and records them before npm mutat
     const mutations = readFileSync(join(stateDir, "mutations.log"), "utf8");
     assert.match(
       mutations,
-      /^publish protocol tag=scout-release-0-2-88\npublish scout tag=scout-release-0-2-88\n/,
+      /^publish protocol tag=scout-release-0-2-99\npublish scout tag=scout-release-0-2-99\n/,
     );
     assert.match(mutations, /promote protocol\npromote scout\n/);
   } finally {
@@ -574,7 +566,7 @@ test("publish resumes from retained candidates and records them before npm mutat
 
 test("trusted publishing works without optional token arguments on macOS Bash", () => {
   const { fixture, stateDir } = createPublishFixture({
-    version: "0.2.90",
+    version: "0.2.91",
     authority: "github-oidc",
   });
   try {
@@ -778,7 +770,7 @@ test("OIDC recovery rejects a Scout-only partial set before npm mutation", () =>
 
 test("trusted publishing refuses dist-tag recovery for an existing unpromoted set", () => {
   const { fixture, stateDir } = createPublishFixture({
-    version: "0.2.90",
+    version: "0.2.91",
     authority: "github-oidc",
     completeSet: true,
     protocolLatest: "0.2.87",
@@ -817,7 +809,7 @@ test("first-upload SRI mismatch stops before the second immutable upload", () =>
     assert.match(result.stderr, /registry integrity does not match the exact reviewed candidate/i);
     assert.equal(
       readFileSync(join(stateDir, "mutations.log"), "utf8"),
-      "publish protocol tag=scout-release-0-2-88\n",
+      "publish protocol tag=scout-release-0-2-99\n",
     );
   } finally {
     rmSync(fixture, { recursive: true, force: true });
@@ -859,7 +851,7 @@ test("a fully promoted matching set performs no npm mutation", () => {
 test("a complete immutable set resumes only the missing mutable promotion", () => {
   const { fixture, stateDir } = createPublishFixture({
     completeSet: true,
-    protocolLatest: "0.2.88",
+    protocolLatest: "0.2.99",
     scoutLatest: "0.2.87",
   });
   try {
@@ -899,13 +891,13 @@ test("the isolated retained Scout candidate is normalized and passes the exact a
     );
     writeFileSync(
       join(fixture, "packages/runtime/package.json"),
-      JSON.stringify({ name: "@openscout/runtime", version: "0.2.88" }),
+      JSON.stringify({ name: "@openscout/runtime", version: "0.2.99" }),
     );
     writeFileSync(
       join(fixture, "candidate/package.json"),
       JSON.stringify({
         name: "@openscout/scout",
-        version: "0.2.88",
+        version: "0.2.99",
         files: ["bin", "dist", "README.md"],
         bin: { scout: "./bin/scout" },
         devDependencies: { "@openscout/runtime": "workspace:*" },
@@ -939,7 +931,7 @@ test("the isolated retained Scout candidate is normalized and passes the exact a
       },
     );
     assert.equal(pack.status, 0, pack.stderr);
-    const tarball = join(fixture, "openscout-scout-0.2.88.tgz");
+    const tarball = join(fixture, "openscout-scout-0.2.99.tgz");
     const audit = spawnSync(
       process.execPath,
       ["scripts/check-packed-manifests.mjs", "--tarball", tarball],
@@ -1007,10 +999,148 @@ test("npm publication is pinned, OIDC-compatible, and exactly scoped", () => {
   assert.match(script, /refusing to overwrite existing npm release bundle/);
   assert.match(script, /incomplete npm package set and cannot be resumed/);
   assert.match(script, /NPM_DIST_TAG_VERIFY_ATTEMPTS="\$\{NPM_DIST_TAG_VERIFY_ATTEMPTS:-60\}"/);
-  assert.match(script, /refusing a second local publication authority for v0\.2\.89 and later/);
+  assert.match(script, /historical and unsupported; publication is disabled/);
   assert.match(script, /GITHUB_WORKFLOW_REF/);
   assert.match(script, /requires npm trusted publishing; refusing token authentication/);
   assert.match(script, /npm OIDC cannot mutate dist-tags/);
   assert.match(script, /assert_canonical_publish_ref/);
   assert.ok(script.indexOf("publish_missing_artifacts") < script.indexOf("promote_package_set"));
 });
+
+for (const version of ["0.2.88", "0.2.89", "0.2.90"]) {
+  test(`historical ${version} cannot publish, prepare, or promote locally`, () => {
+    const { fixture, stateDir } = createPublishFixture({ version });
+    try {
+      for (const mode of ["publish", "--prepare", "--publish-prepared"]) {
+        const result = spawnSync("bash", ["scripts/ship-npm.sh", mode], {
+          cwd: fixture, encoding: "utf8", env: registryEnv(fixture),
+        });
+        assert.notEqual(result.status, 0);
+        assert.match(result.stderr, /historical and unsupported/);
+      }
+      assert.equal(readFileSync(join(stateDir, "mutations.log"), "utf8"), "");
+    } finally { rmSync(fixture, { recursive: true, force: true }); }
+  });
+}
+
+for (const [label, before, after, diagnostic] of [
+  ["foreign origin", "https://github.com/oscout/scout.git", "https://github.com/other/scout.git", /requires https:\/\/github.com\/oscout\/scout/],
+  ["unreviewed branch", "then echo main;", "then echo feature;", /requires reviewed public main/],
+  ["stale main", 'if [[ "$1" == "rev-parse" ]]; then', 'if [[ "$2" == "FETCH_HEAD^{commit}" ]]; then echo bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb; exit 0; fi\nif [[ "$1" == "rev-parse" ]]; then', /freshly fetched origin\/main/],
+  ["dirty source", 'if [[ "$1" == "status" ||', 'if [[ "$1" == "status" ]]; then echo " M source.ts"; exit 0; fi\nif [[ "$1" == "status" ||', /clean reviewed source/],
+]) {
+  test(`local publication rejects ${label} before npm mutation`, () => {
+    const { fixture, stateDir } = createPublishFixture();
+    try {
+      const gitPath = join(fixture, "fake-bin/git");
+      const original = readFileSync(gitPath, "utf8");
+      assert.ok(original.includes(before));
+      writeFileSync(gitPath, original.replace(before, after));
+      const result = spawnSync("bash", ["scripts/ship-npm.sh", "--publish-prepared"], {
+        cwd: fixture, encoding: "utf8", env: { ...registryEnv(fixture), NPM_TOKEN: "test-only" },
+      });
+      assert.notEqual(result.status, 0);
+      assert.match(result.stderr, diagnostic);
+      assert.equal(readFileSync(join(stateDir, "mutations.log"), "utf8"), "");
+    } finally { rmSync(fixture, { recursive: true, force: true }); }
+  });
+}
+
+test("local publication overrides inherited provenance and records its actual authority", () => {
+  const { fixture, stateDir } = createPublishFixture();
+  try {
+    const npmPath = join(fixture, "fake-bin/npm");
+    writeFileSync(npmPath, readFileSync(npmPath, "utf8").replace(
+      'if [[ "$command" == "publish" ]]; then',
+      'if [[ "$command" == "publish" ]]; then\n  [[ "$NPM_CONFIG_PROVENANCE" == "false" && "$npm_config_provenance" == "false" ]] || exit 91',
+    ));
+    const result = spawnSync("bash", ["scripts/ship-npm.sh", "--publish-prepared"], {
+      cwd: fixture, encoding: "utf8", env: { ...registryEnv(fixture), NPM_TOKEN: "test-only", NPM_CONFIG_PROVENANCE: "true", npm_config_provenance: "true" },
+    });
+    assert.equal(result.status, 0, result.stderr);
+    const receipt = JSON.parse(readFileSync(join(fixture, "release-state/receipt.json"), "utf8"));
+    assert.equal(receipt.authority, "local-signed");
+    assert.equal(receipt.provenance, "none");
+    assert.match(readFileSync(join(stateDir, "mutations.log"), "utf8"), /publish protocol/);
+  } finally { rmSync(fixture, { recursive: true, force: true }); }
+});
+
+test("local candidates cannot acquire a false OIDC receipt claim", () => {
+  const { fixture, stateDir } = createPublishFixture();
+  try {
+    const receiptPath = join(fixture, "release-state/receipt.json");
+    const receipt = JSON.parse(readFileSync(receiptPath, "utf8"));
+    receipt.provenance = "github-oidc";
+    writeFileSync(receiptPath, JSON.stringify(receipt));
+    const result = spawnSync("bash", ["scripts/ship-npm.sh", "--publish-prepared"], {
+      cwd: fixture, encoding: "utf8", env: registryEnv(fixture),
+    });
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /receipt provenance/);
+    assert.equal(readFileSync(join(stateDir, "mutations.log"), "utf8"), "");
+  } finally { rmSync(fixture, { recursive: true, force: true }); }
+});
+
+function createLocalReleaseFixture({ corruptReceipt = false } = {}) {
+  const state = createPublishFixture();
+  const { fixture } = state;
+  copyFileSync(new URL("ship-release.mjs", import.meta.url), join(fixture, "scripts/ship-release.mjs"));
+  const manifests = [".", "apps/desktop", "packages/agent-sessions", "packages/cli", "packages/protocol", "packages/runtime", "packages/session-trace", "packages/session-trace-react", "packages/web"];
+  for (const directory of manifests) {
+    mkdirSync(join(fixture, directory), { recursive: true });
+    if (!existsSync(join(fixture, directory, "package.json"))) {
+      writeFileSync(join(fixture, directory, "package.json"), JSON.stringify({ name: "fixture", version: "0.2.99" }));
+    }
+  }
+  writeFileSync(join(fixture, "bun.lock"), '{\n"workspaces": {\n' + manifests.filter(p => p !== ".").map(p => `    "${p}": {\n      "version": "0.2.99",\n    },`).join("\n") + '\n}\n}');
+  mkdirSync(join(fixture, "apps/desktop/src/shared"), { recursive: true });
+  writeFileSync(join(fixture, "apps/desktop/src/shared/product.ts"), 'export const SCOUT_APP_VERSION = process.env.SCOUT_APP_VERSION?.trim() || "0.2.99";');
+  writeFileSync(join(fixture, "docs.json"), '{"version":"0.2.99"}');
+  const receipt = readFileSync(join(fixture, "release-state/receipt.json"));
+  const remoteReceipt = join(fixture, "remote-receipt.json");
+  if (corruptReceipt) {
+    const corrupt = Buffer.from(receipt); corrupt[0] = 0;
+    writeFileSync(remoteReceipt, corrupt);
+  }
+  writeFileSync(join(fixture, "fake-bin/gh"), `#!/bin/bash
+if [[ "$1 $2" == "release view" ]]; then
+  assets='[]'
+  if [[ -f '${remoteReceipt}' ]]; then assets='[{"name":"receipt.json","size":${receipt.length},"url":"https://github.com/oscout/scout/releases/download/v0.2.99/receipt.json"}]'; fi
+  echo '{"tagName":"v0.2.99","isDraft":false,"isPrerelease":false,"url":"https://github.com/oscout/scout/releases/tag/v0.2.99","assets":'"$assets"'}'
+  exit 0
+fi
+if [[ "$1 $2" == "release upload" ]]; then
+  [[ ! -f '${remoteReceipt}' ]] || exit 97
+  cp "$4" '${remoteReceipt}'
+  echo upload >> '${fixture}/gh-mutations.log'
+  exit 0
+fi
+exit 98
+`);
+  writeFileSync(join(fixture, "fake-bin/curl"), `#!/bin/bash\ncat '${remoteReceipt}'\n`);
+  chmodSync(join(fixture, "fake-bin/gh"), 0o755);
+  chmodSync(join(fixture, "fake-bin/curl"), 0o755);
+  return state;
+}
+
+for (const corruptReceipt of [false, true]) {
+  test(`local release orchestration ${corruptReceipt ? "refuses conflicting public receipt" : "reuses candidates and verifies public receipt bytes"}`, () => {
+    const { fixture, stateDir } = createLocalReleaseFixture({ corruptReceipt });
+    try {
+      const result = spawnSync(process.execPath, ["scripts/ship-release.mjs", "0.2.99", "--execute", "--yes"], {
+        cwd: fixture, encoding: "utf8", env: { ...registryEnv(fixture), NPM_TOKEN: "test-only" },
+      });
+      if (corruptReceipt) {
+        assert.notEqual(result.status, 0);
+        assert.match(result.stderr, /Public GitHub npm receipt bytes differ/);
+        assert.equal(existsSync(join(fixture, "gh-mutations.log")), false);
+      } else {
+        assert.equal(result.status, 0, result.stderr);
+        assert.match(result.stdout, /release complete/);
+        assert.deepEqual(readFileSync(join(fixture, "remote-receipt.json")), readFileSync(join(fixture, "release-state/receipt.json")));
+      }
+      assert.match(readFileSync(join(stateDir, "mutations.log"), "utf8"), /publish protocol[\s\S]*publish scout/);
+      assert.doesNotMatch(result.stdout, /workflow run|Building packages/);
+    } finally { rmSync(fixture, { recursive: true, force: true }); }
+  });
+}

@@ -6,6 +6,7 @@
  * already-versioned, reviewed, clean public main commit. Completed matching
  * release state is idempotent; partial immutable npm state fails closed.
  */
+import { createHash } from "node:crypto";
 import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
@@ -45,8 +46,8 @@ function usage() {
     "  node scripts/ship-release.mjs <version> [options]",
     "",
     "Example:",
-    "  npm run ship -- 0.2.92",
-    "  npm run ship -- 0.2.88 --execute --yes  # historical local cutover only",
+    "  bun run ship -- <version>",
+    "  bun run ship -- <version> --execute --yes",
     "",
     "Options:",
     "  --execute              Resume or run the package release.",
@@ -56,8 +57,8 @@ function usage() {
     "",
     "Execution never bumps or commits. Prepare and merge the reviewed release",
     "version first, then run from a clean public main checkout.",
-    "The 0.2.88 authority cutover used local signed publication. Versions",
-    "0.2.89 and later publish only through release-package-npm.yml.",
+    "Execution uses local token authentication and signed artifacts, without OIDC",
+    "provenance. Hosted publication is a separate, explicitly opted-in workflow.",
     "",
   ].join("\n");
 }
@@ -87,8 +88,8 @@ function parseArgs(argv) {
     }
     if (arg === "--github-npm") {
       throw new Error(
-        "--github-npm is disabled in this command: v0.2.88 was the historical local signed attempt; "
-          + "v0.2.89 and later use release-package-npm.yml directly.",
+        "--github-npm is disabled: hosted publication requires explicit workflow dispatch; "
+          + "this command never falls back to hosted execution.",
       );
     }
     if (arg === "--execute") options.execute = true;
@@ -259,23 +260,14 @@ function printPlan(version, options) {
   console.log("  DRY require clean oscout/scout main already versioned at " + version);
   console.log("  DRY git fetch --no-tags origin refs/heads/main");
   console.log("  DRY bash scripts/ship-npm.sh --verify-state");
-  console.log("  DRY bash scripts/ship-npm.sh --dry-run");
   console.log("  DRY create or verify " + tag + " at HEAD");
   console.log(
     "  DRY git push --atomic origin HEAD:refs/heads/main refs/tags/"
       + tag + ":refs/tags/" + tag,
   );
-  if (version !== "0.2.88") {
-    console.log(
-      "  DRY gh workflow run release-package-npm.yml --ref main -f tag="
-        + tag + " -f npm_tag=latest",
-    );
-    console.log("  DRY wait for the exact-tag GitHub OIDC publication");
-    console.log("  DRY download the exact npm integrity receipt workflow artifact");
-    console.log("  DRY attach that receipt to the final GitHub release " + tag);
-    return;
-  }
-  console.log("  DRY bash scripts/ship-npm.sh");
+  console.log("  DRY bash scripts/ship-npm.sh --prepare");
+  console.log("  DRY bash scripts/ship-npm.sh --publish-prepared");
+  console.log("  DRY local token authentication; signed artifacts; no OIDC provenance");
   console.log("  DRY bash scripts/ship-npm.sh --verify-published");
   console.log("  DRY attach the exact npm integrity receipt to " + tag);
   const note = options.releaseNotesFile
@@ -423,18 +415,30 @@ function ensureGithubReceiptAsset(tag, receiptPath) {
   if (!existsSync(receiptPath) || !statSync(receiptPath).isFile()) {
     throw new Error("Verified npm release receipt is missing: " + receiptPath);
   }
-  run("gh", [
-    "release", "upload", tag,
-    receiptPath,
-    "--repo", CANONICAL_GITHUB_REPOSITORY,
-    "--clobber",
-  ]);
-  const release = inspectGithubRelease(tag);
-  const expectedSize = statSync(receiptPath).size;
-  const asset = release?.assets?.find((candidate) => candidate.name === "receipt.json");
-  if (!asset || asset.size !== expectedSize) {
-    throw new Error("GitHub release npm receipt asset did not verify at " + expectedSize + " bytes.");
+  const expected = readFileSync(receiptPath);
+  let release = inspectGithubRelease(tag);
+  let asset = release?.assets?.find((candidate) => candidate.name === "receipt.json");
+  if (!asset) {
+    run("gh", [
+      "release", "upload", tag, receiptPath,
+      "--repo", CANONICAL_GITHUB_REPOSITORY,
+    ]);
+    release = inspectGithubRelease(tag);
+    asset = release?.assets?.find((candidate) => candidate.name === "receipt.json");
   }
+  if (!asset || asset.size !== expected.length) {
+    throw new Error("GitHub npm receipt asset size mismatch; refusing to overwrite it.");
+  }
+  const publicUrl = `https://github.com/${CANONICAL_GITHUB_REPOSITORY}/releases/download/${tag}/receipt.json`;
+  const downloaded = execFileSync("curl", [
+    "--disable", "--fail", "--location", "--silent", "--show-error",
+    "--proto", "=https", "--proto-redir", "=https", "--max-time", "60", publicUrl,
+  ], { maxBuffer: 1024 * 1024, stdio: ["ignore", "pipe", "pipe"] });
+  const digest = (bytes) => createHash("sha256").update(bytes).digest("hex");
+  if (downloaded.length !== expected.length || digest(downloaded) !== digest(expected)) {
+    throw new Error("Public GitHub npm receipt bytes differ from retained receipt; refusing overwrite.");
+  }
+
   console.log("npm integrity receipt: " + asset.url);
 }
 
@@ -449,12 +453,12 @@ function main() {
     return;
   }
   if (!options.yes) throw new Error("Refusing to publish without --yes.");
-  if (version !== "0.2.88") {
-    throw new Error(
-      "v" + version
-        + " publishes only through .github/workflows/release-package-npm.yml; "
-        + "tag reviewed public main and dispatch that workflow.",
-    );
+  const [major, minor, patch] = version.split(".").map(Number);
+  if (major === 0 && (minor < 2 || (minor === 2 && patch <= 90))) {
+    throw new Error("Historical unsupported versions are read-only; select a reviewed unused version.");
+  }
+  if (process.env.GITHUB_ACTIONS === "true") {
+    throw new Error("This entry point is local-only; opt into the hosted workflow separately.");
   }
 
   assertCanonicalLocalSource();
@@ -466,7 +470,6 @@ function main() {
   const tag = "v" + version;
   assertMatchingTagState(tag, head);
   run("bash", ["scripts/ship-npm.sh", "--verify-state"]);
-  run("bash", ["scripts/ship-npm.sh", "--dry-run"]);
 
   assertCleanWorktree();
   if (currentHead() !== head) throw new Error("Release HEAD changed during package verification.");
@@ -474,7 +477,8 @@ function main() {
   assertCleanWorktree();
   ensureRemoteTag(tag, head);
 
-  run("bash", ["scripts/ship-npm.sh"]);
+  run("bash", ["scripts/ship-npm.sh", "--prepare"]);
+  run("bash", ["scripts/ship-npm.sh", "--publish-prepared"]);
   run("bash", ["scripts/ship-npm.sh", "--verify-published"]);
   ensureGithubRelease(tag, options);
   ensureGithubReceiptAsset(tag, npmReleaseReceiptPath(version, head));

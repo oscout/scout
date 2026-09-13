@@ -8,10 +8,9 @@ on:
   # Deliberately NOT on pull_request or push: a stacked series produced ~3
   # runs per PR, most cancelling each other before finishing.
   #
-  # The tradeoff is real, not cosmetic. CI catches things local runs cannot:
-  # the sync-exec fence, and tests that only fail on a machine without the
-  # harness CLIs installed. Nothing now blocks a merge, so the operator must
-  # explicitly dispatch a checkpoint before trusting a batch.
+  # Local exact-head/base validation is the default review evidence. Hosted
+  # execution is optional and must be explicitly requested; required repository
+  # rules and blocking review feedback still apply to every merge.
   workflow_dispatch:
   # Release Candidate deliberately reuses these checks as one lane of its
   # explicitly initiated validation workflow. This is callable, not ambient.

@@ -125,6 +125,7 @@ function createReceipt([
     releaseVersion,
     releaseSha,
     authority,
+    provenance: authority === "github-oidc" ? "github-oidc" : "none",
     packages,
   };
   try {
@@ -164,6 +165,11 @@ function verifyReceipt([
   if (receipt.releaseVersion !== releaseVersion) fail(`receipt version is ${receipt.releaseVersion}`);
   if (receipt.releaseSha !== releaseSha) fail(`receipt SHA is ${receipt.releaseSha}`);
   if (receipt.authority !== authority) fail(`receipt authority is ${receipt.authority}`);
+  const expectedProvenance = authority === "github-oidc" ? "github-oidc" : "none";
+  // Historical schema-1 receipts omitted this field; authority still binds them.
+  if (receipt.provenance !== undefined && receipt.provenance !== expectedProvenance) {
+    fail(`receipt provenance is ${receipt.provenance}, expected ${expectedProvenance}`);
+  }
   if (!Array.isArray(receipt.packages) || receipt.packages.length !== expectedPackages.length) {
     fail(`receipt package count is ${receipt.packages?.length ?? "missing"}`);
   }
