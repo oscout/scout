@@ -1,3 +1,6 @@
+import { clearOperatorTitle, markOperatorTitled } from "./conversation-title.js";
+import { isIdempotentMessageRetry } from "./broker-message-idempotency.js";
+import { readMessageRecord } from "./broker-message-records.js";
 import {
   assertValidCollaborationEvent,
   assertValidCollaborationRecord,
@@ -34,6 +37,8 @@ type DurableStore = {
 
 type RuntimeRecordStore = {
   peek(): {
+    messages?: Record<string, MessageRecord>;
+    conversations: Record<string, ConversationDefinition>;
     actors: Record<string, ActorIdentity>;
     agents: Record<string, AgentDefinition>;
     endpoints: Record<string, AgentEndpoint>;
@@ -248,6 +253,29 @@ export class BrokerDurableRecordStore {
     });
   };
 
+  /** Patch only the title at the canonical writer boundary, after earlier writes. */
+  readonly setConversationTitle = async (
+    conversationId: string,
+    named: string,
+  ): Promise<ConversationDefinition | null> => this.options.durableStore.runWrite(async () => {
+    const current = this.options.runtime.peek().conversations[conversationId];
+    if (!current) return null;
+    const conversation: ConversationDefinition = {
+      ...current,
+      // Clearing relinquishes operator ownership but retains the current text
+      // until automatic derivation next produces a title.
+      title: named || current.title,
+      metadata: named
+        ? markOperatorTitled(current.metadata, Date.now())
+        : clearOperatorTitle(current.metadata),
+    };
+    await this.options.durableStore.commitEntries(
+      { kind: "conversation.upsert", conversation },
+      async () => { await this.options.runtime.upsertConversation(conversation); },
+    );
+    return conversation;
+  });
+
   readonly upsertBinding = async (binding: ConversationBinding): Promise<void> => {
     await this.options.durableStore.runWrite(async () => {
       await this.options.durableStore.commitEntries(
@@ -300,10 +328,22 @@ export class BrokerDurableRecordStore {
     message: MessageRecord,
     options: {
       localOnly?: boolean;
+      dedupeExisting?: boolean;
       enqueueProjection?: boolean;
     } = {},
-  ): Promise<{ deliveries: DeliveryIntent[]; entries: BrokerJournalEntry[] }> => {
+  ): Promise<{ deliveries: DeliveryIntent[]; entries: BrokerJournalEntry[]; duplicate?: MessageRecord }> => {
     return this.options.durableStore.runWrite(async () => {
+      if (options.dedupeExisting) {
+        const messages = this.options.runtime.peek().messages;
+        if (!messages) throw new Error("Message history is unavailable for duplicate validation");
+        const existing = await readMessageRecord(messages, message.id);
+        if (existing) {
+          if (!isIdempotentMessageRetry(existing, message)) {
+            throw new Error(`message id ${message.id} is already assigned to a different record`);
+          }
+          return { deliveries: [], entries: [], duplicate: existing };
+        }
+      }
       const deliveries = this.options.runtime.planMessage(message, {
         localOnly: options.localOnly,
       });
@@ -312,8 +352,9 @@ export class BrokerDurableRecordStore {
           { kind: "message.record", message },
           { kind: "deliveries.record", deliveries },
         ],
-        async () => {
-          await this.options.runtime.commitMessage(message, deliveries);
+        async (committed) => {
+          const recorded = committed.find((entry) => entry.kind === "message.record");
+          await this.options.runtime.commitMessage(recorded?.kind === "message.record" ? recorded.message : message, deliveries);
         },
         { enqueueProjection: options.enqueueProjection },
       );

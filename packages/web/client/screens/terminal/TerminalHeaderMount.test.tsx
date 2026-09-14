@@ -31,7 +31,17 @@ describe("TerminalHeaderMount", () => {
       createElement("button", { type: "button" }, "Create"),
     ));
 
-    expect(html).toContain("data-scout-terminal-header-fallback");
+    expect(html).toContain('data-scout-terminal-header-fallback="actions"');
     expect(html).toContain(">Create</button>");
+  });
+
+  test("names the slot it fell back from so the inline row can place it", () => {
+    const html = renderToStaticMarkup(createElement(TerminalHeaderMount, {
+      slot: "search",
+      children: createElement("input", { type: "search" }),
+    }));
+
+    expect(html).toContain("s-term-inline-header--search");
+    expect(html).toContain('data-scout-terminal-header-fallback="search"');
   });
 });

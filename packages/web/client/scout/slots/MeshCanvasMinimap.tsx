@@ -7,8 +7,10 @@ import {
   clearAllMachinePositions,
 } from "../../lib/mesh-view-store.ts";
 import { useScout } from "../Provider.tsx";
-import { bucketAgentsByMachine, type MachineBucket } from "../../lib/mesh-buckets.ts";
-import { normalizeAgentState, isAgentBusy, isAgentCallable } from "../../lib/agent-state.ts";
+import { type MachineBucket } from "../../lib/mesh-buckets.ts";
+import { isAgentBusy, isAgentCallable } from "../../lib/agent-state.ts";
+import { useMeshNodeStates } from "../../lib/use-mesh-node-state.ts";
+import { canvasMachineBuckets, machineRowMeta } from "../../screens/mesh/machine-children.ts";
 import { stateColor } from "../../lib/colors.ts";
 import "./mesh-rail-rack.css";
 
@@ -26,7 +28,7 @@ export function MeshCanvasMinimap() {
   } = useMeshViewStore();
 
   const buckets = useMemo<MachineBucket[]>(
-    () => (meshSnapshot ? bucketAgentsByMachine(agents, meshSnapshot) : []),
+    () => (meshSnapshot ? canvasMachineBuckets(agents, meshSnapshot) : []),
     [agents, meshSnapshot],
   );
 
@@ -119,6 +121,7 @@ function RackBody({
   selectedType: "node" | "agent" | null;
   onFocus: (id: string) => void;
 }) {
+  const { entries } = useMeshNodeStates();
   return (
     <div className="mesh-rail-body">
       {buckets.map((bucket, idx) => {
@@ -148,11 +151,10 @@ function RackBody({
                 ? "T"
                 : "·";
         const slot = String(idx + 1).padStart(2, "0");
-        const stamp = !bucket.online
-          ? "unreachable"
-          : bucket.agents.length === 0
-            ? "idle"
-            : `${working}w · ${ready}r`;
+        const entry = entries[bucket.machineId];
+        const view = entry?.view ?? null;
+        const stamp = machineRowMeta(bucket, view, entry?.loading ?? false);
+        const count = bucket.kind === "this" ? bucket.agents.length : view?.workload?.total ?? "—";
         return (
           <div
             key={bucket.machineId}
@@ -188,7 +190,7 @@ function RackBody({
                   <span className="mesh-rail-unit-stamp">{stamp}</span>
                 </span>
               </span>
-              <span className="mesh-rail-unit-count">{bucket.agents.length}</span>
+              <span className="mesh-rail-unit-count">{count}</span>
             </button>
             <div className="mesh-rail-unit-actions">
               <button
@@ -223,10 +225,13 @@ function MapBody({
   selectedType: "node" | "agent" | null;
   onFocus: (id: string) => void;
 }) {
+  const { entries } = useMeshNodeStates();
   return (
     <div className="mesh-rail-body mesh-rail-body--map">
       <div className="mesh-mini-map">
         {buckets.map((b) => {
+          const entry = entries[b.machineId];
+          const count = b.kind === "this" ? b.agents.length : entry?.view?.workload?.total;
           const active = selectedId === b.machineId && selectedType === "node";
           const working = b.agents.filter(
             (a) => isAgentBusy(a.state),
@@ -246,7 +251,7 @@ function MapBody({
               type="button"
               className={`mesh-mini-node mesh-mini-node--${dominant}${active ? " mesh-mini-node--active" : ""}${!b.online ? " mesh-mini-node--off" : ""}`}
               onClick={() => onFocus(b.machineId)}
-              title={`${b.machineLabel} — ${b.agents.length} agents`}
+              title={`${b.machineLabel} — ${machineRowMeta(b, entry?.view ?? null, entry?.loading ?? false)}`}
             >
               <span
                 className="mesh-mini-led"
@@ -254,8 +259,8 @@ function MapBody({
                 aria-hidden
               />
               <span className="mesh-mini-label">{b.machineLabel}</span>
-              {b.agents.length > 0 && (
-                <span className="mesh-mini-count">{b.agents.length}</span>
+              {count !== undefined && count > 0 && (
+                <span className="mesh-mini-count">{count}</span>
               )}
             </button>
           );

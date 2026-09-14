@@ -629,7 +629,7 @@ function mobileAgentConversationId(snapshot: ScoutBrokerSnapshot, agentId: strin
   return resolveMobileConversation(snapshot, agentId)?.id ?? null;
 }
 
-function buildMobileAgentSummary(
+export function buildMobileAgentSummary(
   snapshot: ScoutBrokerSnapshot,
   agent: AgentDefinition,
   attention?: ReadonlyMap<string, AgentAttentionEntry>,
@@ -942,9 +942,9 @@ export async function getScoutFleet(
  * Resolve whatever id the phone routed with onto a real broker conversation.
  * The phone may send a chat id directly or a bare agent id from the Agents tab.
  * Bare agent ids resolve to an existing direct chat by natural key, then to the
- * most-recent conversation the agent actually participates in.
+ * most-recent non-channel conversation the agent actually participates in.
  */
-function resolveMobileConversation(
+export function resolveMobileConversation(
   snapshot: ScoutBrokerSnapshot,
   rawId: string,
 ): ScoutBrokerConversationRecord | null {
@@ -959,7 +959,7 @@ function resolveMobileConversation(
   if (directByNaturalKey) return directByNaturalKey;
 
   const participating = Object.values(snapshot.conversations).filter(
-    (conversation) => conversation.participantIds?.includes(rawId),
+    (conversation) => conversation.kind !== "channel" && conversation.participantIds?.includes(rawId),
   );
   if (participating.length === 0) return null;
 
@@ -984,11 +984,57 @@ export async function getScoutMobileSessionSnapshot(
 ): Promise<ScoutMobileSessionSnapshot> {
   void currentDirectory;
   const broker = await requireMobileRelayContext();
-  const { snapshot } = broker;
+  return buildMobileSessionSnapshot(broker.snapshot, conversationId, options);
+}
+
+export function buildMobileSessionSnapshot(
+  snapshot: ScoutBrokerSnapshot,
+  conversationId: string,
+  options: { beforeTurnId?: string | null; limit?: number | null } = {},
+): ScoutMobileSessionSnapshot {
   const conversation = resolveMobileConversation(snapshot, conversationId);
+  // A known lane without a chat renders empty history, never a global room.
   if (!conversation) {
-    throw new Error(`Unknown mobile session "${conversationId}".`);
+    const inferredAgentId = snapshot.agents[conversationId] ? conversationId : null;
+    if (!inferredAgentId) throw new Error(`Unknown mobile session "${conversationId}".`);
+    const agent = inferredAgentId ? snapshot.agents[inferredAgentId] : null;
+    const endpoint = inferredAgentId ? endpointForAgent(snapshot, inferredAgentId) : null;
+    const agentName = agent
+      ? agentDisplayName(snapshot, inferredAgentId!)
+      : inferredAgentId ?? conversationId;
+    return {
+      session: {
+        id: conversationId,
+        name: agentName,
+        adapterType: endpoint?.harness ?? "relay",
+        status: endpoint?.state === "offline" ? "idle" : "active",
+        cwd: endpoint?.projectRoot ?? endpoint?.cwd ?? null,
+        model: typeof endpoint?.metadata?.model === "string" ? endpoint.metadata.model : null,
+        providerMeta: {
+          conversationId: null,
+          conversationKind: "direct",
+          agentId: inferredAgentId,
+          workspaceRoot: endpoint?.projectRoot ?? endpoint?.cwd ?? null,
+          harness: endpoint?.harness ?? null,
+          selector: agent?.selector ?? null,
+          defaultSelector: agent?.defaultSelector ?? null,
+          project: agentName,
+          currentBranch:
+            metadataString(endpoint?.metadata, "branch")
+            ?? metadataString(endpoint?.metadata, "workspaceQualifier")
+            ?? metadataString(agent?.metadata, "branch")
+            ?? metadataString(agent?.metadata, "workspaceQualifier"),
+          workspaceQualifier:
+            metadataString(endpoint?.metadata, "workspaceQualifier")
+            ?? metadataString(agent?.metadata, "workspaceQualifier"),
+        },
+      },
+      history: { hasOlder: false, oldestTurnId: null, newestTurnId: null },
+      turns: [],
+      currentTurnId: null,
+    };
   }
+
 
   const directAgentId = conversation.kind === "direct"
     ? conversation.participantIds.find((participantId) => participantId !== "operator") ?? null

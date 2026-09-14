@@ -1,3 +1,6 @@
+import { BrokerMessageHistory } from "./broker-message-history.js";
+import { memoryMaintenanceFromEnv } from "./broker-memory-maintenance.js";
+import { scoutbotIsolationMetadata } from "./scoutbot-isolation.js";
 import { randomUUID } from "node:crypto";
 import { createServer, type IncomingMessage } from "node:http";
 import { mkdir, rename, unlink, writeFile } from "node:fs/promises";
@@ -25,6 +28,7 @@ import {
   type NodeDefinition,
   type ScoutDispatchEnvelope,
   type ScoutDispatchRecord,
+  AGENT_HARNESSES,
   mintChannelId,
   OPENSCOUT_COORDINATOR_AGENT_ID,
   SCOUT_DISPATCHER_AGENT_ID,
@@ -46,7 +50,7 @@ import { BrokerDurableStore } from "./broker-durable-store.js";
 import { BrokerStartupTrafficGate } from "./broker-startup-traffic-gate.js";
 import { BrokerReadCursorStore } from "./broker-read-cursor-store.js";
 import { BrokerWorkItemStore } from "./broker-work-item-store.js";
-import { BrokerDeliveryRouter } from "./broker-delivery-routing.js";
+import { BrokerDeliveryRouter, type ExactSessionWakeInput } from "./broker-delivery-routing.js";
 import { BrokerDeliveryAcceptanceService } from "./broker-delivery-acceptance-service.js";
 import { BrokerDeliveryHttpService } from "./broker-delivery-http-service.js";
 import { BrokerDurableActionHttpService } from "./broker-durable-action-http-service.js";
@@ -84,6 +88,7 @@ import {
   isLocalAgentSessionAliveAsync,
   invokeLocalAgentEndpoint,
   listRelayAgentTmuxSessionOwners,
+  observeLocalAgentEndpointSession,
   loadRegisteredLocalAgentBindings,
   shutdownLocalSessionEndpoint,
   shouldDisableGeneratedCodexEndpoint,
@@ -179,6 +184,7 @@ import { findHarnessEntry } from "./harness-catalog.js";
 import { BrokerControlStreamService } from "./broker-control-stream-service.js";
 import { json } from "./broker-http-helpers.js";
 import { createBrokerHttpRouter } from "./broker-http-router.js";
+import { BrokerMachineService } from "./broker-machine-service.js";
 import {
   closeServer,
   isAddressInUse,
@@ -186,7 +192,16 @@ import {
   listenUnixSocket,
 } from "./broker-server-lifecycle.js";
 import { BrokerMeshBundleService } from "./broker-mesh-bundle-service.js";
-import { BrokerMeshForwardingService } from "./broker-mesh-forwarding-service.js";
+import {
+  BrokerMeshForwardingService,
+  isReachableMeshNode,
+  postMeshPeerJson,
+} from "./broker-mesh-forwarding-service.js";
+import {
+  wakeLocalHarnessSession,
+  wakeSessionOnPeers,
+  type LocalSessionWakeResult,
+} from "./broker-session-wake.js";
 import { BrokerMeshDiscoveryService } from "./broker-mesh-discovery-service.js";
 import { BrokerMeshHttpService } from "./broker-mesh-http-service.js";
 import { fetchPeerAgents } from "./mesh-forwarding.js";
@@ -206,7 +221,7 @@ import {
   messageRefCandidateForRouteTarget,
   messageVisibilityForConversation,
   metadataStringValue,
-  resolveBrokerMessageRef,
+  resolveBrokerMessageRefAsync,
   scoutbotReplyProvenanceMetadata,
   titleCaseName,
 } from "./broker-conversation-helpers.js";
@@ -221,6 +236,7 @@ import {
   homeEndpointForAgent,
   isInactiveLocalAgent,
 } from "./broker-endpoint-selection.js";
+import { readMeshNodeState } from "./mesh-node-state.js";
 import { BrokerHomeService } from "./broker-home-service.js";
 import { BrokerUnavailableTargetService } from "./broker-unavailable-target-service.js";
 import { BrokerRouteAliasStore } from "./broker-route-alias-store.js";
@@ -365,7 +381,17 @@ nodeId = resolveStableLocalNodeId({
   supportDirectory,
 });
 
-const journal = new FileBackedBrokerJournal(journalPath);
+const memoryMaintenance = memoryMaintenanceFromEnv(process.env);
+const historyCount=(value:string|undefined,fallback:number)=>{const n=Number(value);return Number.isSafeInteger(n)&&n>0?n:fallback;};
+// Experimental until the full packaged memory budget passes.
+const messageHistory=process.env.OPENSCOUT_BROKER_DISK_HISTORY !== "1" ? undefined : await BrokerMessageHistory.create(journalPath,{snapshotReaders:historyCount(process.env.OPENSCOUT_BROKER_HISTORY_SNAPSHOT_READERS,2),coldReaders:historyCount(process.env.OPENSCOUT_BROKER_HISTORY_COLD_READERS,4)});
+const journal = new FileBackedBrokerJournal(journalPath, {
+  messageHistory,
+  progressiveStartup: true,
+  memoryMaintenance,
+  ...(process.env.OPENSCOUT_BROKER_BODY_CACHE === "1" ? { messageBodyCache: { encodedSnapshots: process.env.OPENSCOUT_BROKER_ENCODED_SNAPSHOT === "1" } } : {}),
+  shareLoadedStrings: process.env.OPENSCOUT_BROKER_SHARED_STRINGS === "1",
+});
 const journalLoadReport = await journal.load();
 const initialSnapshot = journal.snapshot();
 assertNoReservedStoredAgentNames(initialSnapshot.agents, { localNodeId: nodeId });
@@ -388,6 +414,8 @@ const projection = new RecoverableSQLiteProjection(dbPath, journal, {
 let observedSessionReducer: ObservedSessionReducer | null = null;
 let unsubscribeObservedSessionReducer: (() => void) | null = null;
 let projectionWarmStarted = false;
+let deferStartupProjection = true;
+let startupEventWrites: Promise<void> = Promise.resolve();
 const bootstrapProjectionOptions = () => (
   projectionWarmStarted ? undefined : { enqueueProjection: false as const }
 );
@@ -489,10 +517,14 @@ const threadEvents = new ThreadEventPlane({
   projection,
 });
 const durableStore = new BrokerDurableStore({
+  memoryMaintenance,
+  deferProjection: () => deferStartupProjection,
+  afterRuntime: () => startupEventWrites,
   journal,
   projection,
   threadEvents,
 });
+messageHistory?.setCaptureGate(durableStore.runWrite);
 const runDurableWrite = durableStore.runWrite;
 const commitDurableEntries = durableStore.commitEntries;
 const applyProjectedEntries = durableStore.applyProjectedEntries;
@@ -514,6 +546,12 @@ const meshHttpService = new BrokerMeshHttpService({
   rememberInvocation: (invocation) => {
     knownInvocations.set(invocation.id, invocation);
   },
+  localEndpointForActor: (actorId) => Object.values(runtime.snapshot().endpoints).find((endpoint) =>
+    endpoint.agentId === actorId
+    && endpoint.nodeId === nodeId
+    && endpoint.state !== "offline"
+    && endpoint.state !== "failed"
+    && endpoint.state !== "stopped"),
   runDispatchJob: (job, invocation) => invocationDispatchService.runDispatchJob(job, invocation),
   warn: (message, detail) => console.warn(message, detail),
 });
@@ -527,10 +565,17 @@ const meshForwardingService = new BrokerMeshForwardingService({
   peerFetch: daemonMeshPeerFetch,
 });
 const controlStreams = new BrokerControlStreamService({
-  enqueueEvent: (event) => projection.enqueueEvent(event),
-  findDeliveryById: (deliveryId) => journal.listDeliveries({ limit: 1000 }).find((delivery) => delivery.id === deliveryId),
+  enqueueEvent: (event) => {
+    if (!deferStartupProjection) { projection.enqueueEvent(event); return; }
+    // Runtime emissions occur inside the serialized durable commit. Its
+    // afterRuntime hook drains these writes before admitting the next command.
+    // Retain at most one command's events, not the entire hydration interval.
+    startupEventWrites = journal.appendEntries([{ kind: "control.event.record", event }]).then(() => {});
+    void startupEventWrites.catch(() => {});
+  },
+  findDeliveryById: (deliveryId) => journal.getDelivery(deliveryId),
   listDeliveries: (options) => projection.listDeliveries(options),
-  messageById: (messageId) => runtime.message(messageId),
+  messageById: (messageId) => runtime.readMessage(messageId),
   invocationById: (invocationId) => knownInvocations.get(invocationId),
   // Reads the same registered source the tRPC subscribe path uses, so both
   // transports hand a new subscriber the identical current value.
@@ -600,7 +645,8 @@ const readCursorStore = new BrokerReadCursorStore({
   operatorActorId,
   nodeId,
   ensureActor: ensureBrokerActorForDelivery,
-  updateDeliveryStatus: updateDeliveryStatusDurably,
+  journal,
+  updateDeliveryStatusIf: deliveryStore.updateDeliveryStatusIf,
 });
 const listReadCursorsForConversation = readCursorStore.listForConversation;
 const resolveReadCursor = readCursorStore.resolve;
@@ -629,6 +675,17 @@ const workItemStore = new BrokerWorkItemStore({
 const recordDeliveryWorkItemIfNeeded = workItemStore.recordDeliveryWorkItemIfNeeded;
 const deliveryWorkItemResolutionForTell = workItemStore.deliveryWorkItemResolutionForTell;
 const promoteInvocationFlightToWork = workItemStore.promoteInvocationFlightToWork;
+const wakeLocalSessionForBroker = (input: ExactSessionWakeInput): Promise<LocalSessionWakeResult> =>
+  wakeLocalHarnessSession({
+    nodeId,
+    registry: { upsertActor: upsertActorDurably, upsertEndpoint: persistEndpoint },
+    snapshotEndpoints: () => runtime.snapshot().endpoints,
+    actorFor: (actorId) => runtime.peek().actors[actorId],
+    harnessSupportsResume: (harness) => Boolean(findHarnessEntry(harness)?.resume),
+    observeEndpointSession: observeLocalAgentEndpointSession,
+    log: (message) => console.log(message),
+  }, input);
+
 const deliveryRouter = new BrokerDeliveryRouter({
   runtimeSnapshot: () => runtime.snapshot(),
   nodeId,
@@ -637,96 +694,40 @@ const deliveryRouter = new BrokerDeliveryRouter({
   warn: (message) => console.warn(message),
   routeAliasService,
   wakeExactHarnessSession: async (input) => {
-    const located = locateHarnessSession({
-      nativeSessionId: input.nativeSessionId,
-      harness: input.harness,
-      projectPath: input.projectPath,
-    });
-    if (!located.ok) {
-      return {
-        ok: false,
-        reason: located.reason,
-        detail: located.detail,
-        ...(located.remediation ? { remediation: located.remediation } : {}),
-      };
-    }
-
-    const session = located.session;
-    const harnessEntry = findHarnessEntry(session.harness);
-    if (!harnessEntry?.resume) {
-      return {
-        ok: false,
-        reason: "session_not_resumable",
-        detail: `harness "${session.harness}" does not advertise a resume command`,
-        remediation: `bring a ${session.harness} worker online first, or use a resumable harness`,
-      };
-    }
-
-    let spawn: ReturnType<typeof resolveCardlessSessionSpawnTarget>;
-    try {
-      spawn = resolveCardlessSessionSpawnTarget(session.harness);
-    } catch (error) {
-      return {
-        ok: false,
-        reason: "session_not_resumable",
-        detail: error instanceof Error ? error.message : String(error),
-      };
-    }
-
-    const cwd = session.cwd || input.projectPath?.trim();
-    if (!cwd) {
-      return {
-        ok: false,
-        reason: "session_not_resumable",
-        detail: `session ${session.nativeSessionId} has no cwd; pass --project`,
-        remediation: `scout ask --to session:${session.harness}:${session.nativeSessionId} --project <cwd>`,
-      };
-    }
-
-    // Stable scout session marker for this native id so re-asks hit the same endpoint.
-    const scoutSessionId = `flat-${session.harness}-${session.nativeSessionId}`;
-    const existing = Object.values(runtime.snapshot().endpoints).find((endpoint) => {
-      if (endpoint.nodeId !== nodeId) return false;
-      const aliases = [
-        endpoint.sessionId,
-        endpoint.metadata?.externalSessionId,
-        endpoint.metadata?.threadId,
-        endpoint.metadata?.nativeSessionId,
-      ].map((value) => (typeof value === "string" ? value.trim() : ""));
-      return aliases.includes(session.nativeSessionId) || endpoint.agentId === scoutSessionId;
-    });
-    if (existing && existing.state !== "offline" && existing.state !== "failed" && existing.state !== "stopped") {
+    const wake = await wakeLocalSessionForBroker(input);
+    if (wake.ok) {
       return { ok: true };
     }
-
-    try {
-      await registerCardlessSession({
-        upsertActor: upsertActorDurably,
-        upsertEndpoint: persistEndpoint,
-      }, {
-        sessionId: scoutSessionId,
-        handle: scoutSessionId,
-        transport: spawn.transport,
-        harness: spawn.harness,
-        cwd,
-        projectRoot: cwd,
-        nodeId,
-        externalSessionId: session.nativeSessionId,
-        nativeSessionId: session.nativeSessionId,
-        flatDispatch: true,
-        displayName: `${basename(cwd)}:${session.nativeSessionId.slice(0, 8)}`,
-      });
-      console.log(
-        `[openscout-runtime] flat-dispatch wake ${session.harness}:${session.nativeSessionId} via ${spawn.transport} cwd=${cwd}`,
-      );
-      return { ok: true };
-    } catch (error) {
-      return {
-        ok: false,
-        reason: "session_wake_failed",
-        detail: error instanceof Error ? error.message : String(error),
-      };
+    if (wake.reason !== "session_unknown") {
+      return wake;
     }
+    // T4: this machine's harness store misses — ask trusted reachable peers to
+    // wake the session in theirs and adopt the winning peer-owned endpoint.
+    const trustedNodeIds = new Set(
+      trustedPeerStore?.listTrustedPeers().flatMap((peer) => peer.nodeId ? [peer.nodeId] : []) ?? [],
+    );
+    const peers = Object.values(runtime.snapshot().nodes).filter((node) =>
+      node.id !== nodeId
+      && node.meshId === meshId
+      && trustedNodeIds.has(node.id)
+      && isReachableMeshNode(node)
+    );
+    const peerWake = await wakeSessionOnPeers({
+      localNodeId: nodeId,
+      peers,
+      postJson: (brokerBaseUrl, path, payload) => postMeshPeerJson(brokerBaseUrl, path, payload, daemonMeshPeerFetch),
+      registry: { upsertActor: upsertActorDurably, upsertEndpoint: persistEndpoint },
+      log: (message) => console.log(message),
+    }, input);
+    if (peerWake.ok) {
+      return { ok: true };
+    }
+    return {
+      ...wake,
+      detail: peerWake.peersTried > 0
+        ? `${wake.detail} (this node and ${peerWake.peersTried} mesh peer(s) checked their harness stores)`
+        : wake.detail,
+    };
   },
   resolveRemoteRouteAlias: async (target, caller) => {
     const selector = target.scope?.nodeId?.trim();
@@ -1139,6 +1140,7 @@ const flightLifecycleService = new BrokerFlightLifecycleService({
   durableStore,
   invocationFor: (invocationId) => knownInvocations.get(invocationId),
   updateDeliveryStatus: updateDeliveryStatusDurably,
+  updateDeliveryStatusIf: deliveryStore.updateDeliveryStatusIf,
   promoteInvocationFlightToWork,
   maybeForwardFlightToAuthority: (flight) => meshForwardingService.maybeForwardFlightToAuthority(flight),
   isInvocationActive: (invocationId) => localInvocationService.hasActiveInvocation(invocationId),
@@ -1218,7 +1220,7 @@ async function transitionInvocation(
 
 async function persistEndpoint(endpoint: AgentEndpoint): Promise<void> {
   await upsertEndpointDurably(endpoint);
-  if (endpoint.state === "idle" || endpoint.state === "active") {
+  if (startupTrafficGate.snapshot().mutationsAdmitted && (endpoint.state === "idle" || endpoint.state === "active")) {
     dispatchRecoveryService.recoverQueuedFlights({
       reason: "endpoint_online",
       agentId: endpoint.agentId,
@@ -1335,6 +1337,7 @@ const localEndpointResolver = new BrokerLocalEndpointResolver({
   isLocalAgentEndpointAlive,
   isLocalAgentEndpointAliveAsync,
   ensureLocalSessionEndpointOnline,
+  observeLocalEndpointSession: observeLocalAgentEndpointSession,
   ensureLocalAgentBindingOnline,
   createIsolatedAgentEndpoint: createIsolatedAgentEndpointForInvocation,
   upsertActor: upsertActorDurably,
@@ -1437,10 +1440,11 @@ async function createCardlessProjectSessionForDelivery(input: {
     claudeTransport: process.env.OPENSCOUT_CLAUDE_CARDLESS_TRANSPORT,
   });
   const reasoningEffort = input.execution?.reasoningEffort?.trim();
-  if (reasoningEffort && (harness === "grok-acp" || harness === "kimi")) {
-    const profile = harness === "grok-acp" ? "grok" : "kimi";
+  // Grok carries effort over ACP on `session/set_model`; Kimi exposes no
+  // equivalent, so it stays a hard rejection there.
+  if (reasoningEffort && harness === "kimi") {
     throw new Error(
-      `${profile} runtime profile does not support reasoning effort through its ACP transport`,
+      "kimi runtime profile does not support reasoning effort through its ACP transport",
     );
   }
   const launchArgs = launchArgsForCardlessSession(harness, input.execution);
@@ -1541,7 +1545,9 @@ async function createIsolatedAgentEndpointForInvocation(
     nodeId,
     ...(requestedHarness ? { harness: requestedHarness } : {}),
   });
-  const baseEndpoint = candidateEndpoints[0]
+  const baseEndpoint = (agent.id === "scoutbot"
+    ? candidateEndpoints.find((endpoint) => endpoint.metadata?.source === "scoutbot")
+    : candidateEndpoints[0])
     ?? runtime.endpointsForAgent(agent.id, { nodeId })[0]
     ?? null;
   const projectRoot = brokerTargetProjectRoot(agent, baseEndpoint);
@@ -1583,6 +1589,7 @@ async function createIsolatedAgentEndpointForInvocation(
     metadata: {
       ...(sessionEndpoint.metadata ?? {}),
       source: "scout-isolated-agent-session",
+      ...scoutbotIsolationMetadata(baseEndpoint, invocation.execution, launchArgs),
       cardless: false,
       isolatedExecution: true,
       definitionId,
@@ -1639,11 +1646,11 @@ async function postInvocationStatusMessage(
   await messageService.postInvocationStatusMessage(invocation, flight);
 }
 
-function existingBrokerReplyForInvocation(
+async function existingBrokerReplyForInvocation(
   invocation: InvocationRequest,
   agentId: string,
   sinceMs: number,
-): MessageRecord | null {
+): Promise<MessageRecord | null> {
   return messageService.existingBrokerReplyForInvocation(invocation, agentId, sinceMs);
 }
 
@@ -1816,7 +1823,7 @@ const deliveryAcceptanceService = new BrokerDeliveryAcceptanceService({
   syncRegisteredLocalAgentsIfChanged,
   metadataStringValue,
   messageRefCandidateForRouteTarget,
-  resolveBrokerMessageRef,
+  resolveBrokerMessageRef: resolveBrokerMessageRefAsync,
   ensureBrokerActorForDelivery,
   ensureBrokerDeliveryConversation,
   brokerRouteKind,
@@ -1846,7 +1853,7 @@ const deliveryAcceptanceService = new BrokerDeliveryAcceptanceService({
   warn: (message, detail) => console.warn(message, detail),
 });
 
-const startupTrafficGate = new BrokerStartupTrafficGate();
+const startupTrafficGate = new BrokerStartupTrafficGate(true);
 
 const homeService = new BrokerHomeService({
   runtimeSnapshot: () => runtime.snapshot(),
@@ -1868,8 +1875,17 @@ const brokerService = createBrokerCoreService({
   isReconciledStaleFlightActivityItem,
   readChildServices: () => webControl.readChildServiceSnapshots(),
   readProjectionStatus: () => projection.statusSnapshot(),
-  readStartupStatus: () => startupTrafficGate.snapshot(),
+  readMemoryStatus: () => ({ maintenance: memoryMaintenance?.status() ?? { enabled: false }, messageBodies: journal.messageBodyCacheStatus(), messageHistory: messageHistory?.status() ?? {enabled:false} }),
+  readStartupStatus: () => ({ ...startupTrafficGate.snapshot(), journal: journal.startupStatus() }),
   readHome: () => homeService.read(),
+  // Observe-tier twin of the home feed: bounded, scoped to agents homed here,
+  // and readable by a signed peer where /v1/home never is (mesh trust cone §4).
+  readMeshNodeState: () => readMeshNodeState({
+    snapshot: () => runtime.snapshot(),
+    nodeId,
+    meshId,
+    actorDisplayName: brokerActorDisplayName,
+  }),
   readCapabilities: readBrokerCapabilityMatrixSnapshot,
   readRuntimeCatalog: readBrokerRuntimeCatalogSnapshot,
   executeCommand: handleCommand,
@@ -1879,7 +1895,7 @@ const brokerService = createBrokerCoreService({
 });
 
 const brokerRepoTailService = new BrokerRepoTailService({
-  readBrokerSnapshot: () => brokerService.readSnapshot(),
+  readBrokerSnapshot: async () => runtime.snapshot(),
   getRepoWatchSnapshot,
   repoWatchHintsFromBrokerSnapshot,
   repoWatchHintsFromTailDiscovery,
@@ -1894,7 +1910,19 @@ const brokerRepoTailService = new BrokerRepoTailService({
 
 const rendezvousService = new BrokerRendezvousService();
 
+// Machine inventory (docs/eng/sco-104-machines.md). Shares the control-plane
+// store with trusted peers; when that store is absent the service reports
+// itself unavailable and its routes answer 503 rather than an empty roster.
+const machineService = new BrokerMachineService({
+  store: sharedControlPlaneStore,
+  nodes: () => runtime.snapshot().nodes,
+  localNodeId: nodeId,
+  localHostName: hostname(),
+});
+
 const routeRequest = createBrokerHttpRouter({
+  encodedSnapshotBodies: process.env.OPENSCOUT_BROKER_ENCODED_SNAPSHOT === "1",
+  onSnapshotFlushedBytes: memoryMaintenance ? (bytes) => memoryMaintenance.snapshotEncoded(bytes) : undefined,
   host,
   port,
   nodeId,
@@ -1917,6 +1945,14 @@ const routeRequest = createBrokerHttpRouter({
   managedSessionHttpService,
   meshDiscoveryService,
   meshHttpService,
+  wakeMeshHarnessSession: (input) => wakeLocalSessionForBroker({
+    nativeSessionId: input.nativeSessionId,
+    // Peer-supplied harness rides in as a plain string; only a known kind narrows.
+    ...(input.harness && (AGENT_HARNESSES as readonly string[]).includes(input.harness)
+      ? { harness: input.harness as AgentHarness }
+      : {}),
+    ...(input.projectPath ? { projectPath: input.projectPath } : {}),
+  }),
   threadEvents,
   handleCommand,
   handleInvocationRequest,
@@ -1925,10 +1961,12 @@ const routeRequest = createBrokerHttpRouter({
   listReadCursorsForConversation,
   resolveReadCursor,
   recordReadCursor: recordReadCursorDurably,
+  setConversationTitle: durableRecords.setConversationTitle,
   acknowledgeDeliveriesForReadCursor,
   deliveryAcceptanceService,
   rendezvousService,
   routeAliasService,
+  machines: machineService,
   meshTrust: {
     enrollment: trustEnrollmentService,
     rateLimiter: trustEndpointRateLimiter,
@@ -2065,7 +2103,8 @@ async function routeBrokerHttpRequest(
   if (!startupTrafficGate.admits(request.method, request.url ?? "/")) {
     json(response, 503, {
       error: "broker_restoring",
-      detail: "Recovery reads are available; this route will resume after the startup projection boundary is established.",
+      detail: "This route requires context that is still restoring. Registration and covered reads are available as reported by startup capabilities.",
+      startup: startupTrafficGate.snapshot(),
       retryable: true,
     });
     return;
@@ -2103,6 +2142,10 @@ function handleBrokerUpgrade(
 ): void {
   const url = new URL(request.url || "/", `http://${host}:${port}`);
   if (url.pathname === "/trpc") {
+    if (!startupTrafficGate.snapshot().mutationsAdmitted) {
+      socket.end("HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");
+      return;
+    }
     // The WS upgrade bypasses the HTTP router, so the mesh gate runs here at
     // the server edge; on enforce-mode deny the gate answers and destroys the
     // socket itself.
@@ -2135,24 +2178,24 @@ console.log(`[openscout-runtime] secret redaction armed (${secretRedaction.regis
 })`);
 
 try {
-  // Arm credential redaction (varlock .env.schema + declared credential env
-  // vars) and patch console.* before the broker emits any output. Best-effort:
-  // never throws, and the broker must boot even if varlock cannot load.
-  const secretRedaction = await bootstrapSecretRedaction({ patchConsole: true });
-  console.log(`[openscout-runtime] secret redaction armed (${secretRedaction.registered} value(s)${
-    secretRedaction.schemaPath ? `, schema ${secretRedaction.schemaPath}` : ", no .env.schema found"
-  })`);
-
   // §11.3: plaintext always on loopback; mesh TLS listeners are added by the
   // bind controller (never a 0.0.0.0 plaintext default).
   await listenTcp(server, { host: isLoopbackHost(host) || host === "0.0.0.0" || host === "::" ? "127.0.0.1" : host, port });
   await listenUnixSocket(socketServer, brokerSocketPath);
+  startupTrafficGate.markListening();
 
   const bootstrapIdentityWrite = upsertNodeDurably(localNode, bootstrapProjectionOptions())
     .then(() => upsertActorDurably(systemActor, bootstrapProjectionOptions()))
     .catch((error) => {
       console.error("[openscout-runtime] bootstrap identity persistence failed:", error);
+      throw error;
     });
+  // Local registration needs the complete control replay and durable local
+  // identity. Mesh binding/host-info publication can proceed afterward.
+  await bootstrapIdentityWrite;
+  startupTrafficGate.admitCore();
+  console.log(`[openscout-runtime] startup core ready ${JSON.stringify(startupTrafficGate.snapshot())}`);
+
 
   function handleBrokerHttp(
     request: import("node:http").IncomingMessage,
@@ -2210,43 +2253,83 @@ try {
       logger: console,
     });
   }
+  // Expensive maintenance and initial message coverage run with listeners and
+  // safe registry commands available. Compaction completes before projection
+  // captures a byte boundary, so rename can never invalidate its replay cursor.
+  await journal.finishStartup();
+  startupTrafficGate.admitHistory();
+  console.log(`[openscout-runtime] startup history ready ${JSON.stringify(startupTrafficGate.snapshot())}`);
   if (Number.isFinite(startupBoundaryTestDelayMs) && startupBoundaryTestDelayMs > 0) {
     await sleep(startupBoundaryTestDelayMs);
   }
   await bootstrapIdentityWrite;
-  projectionWarmStarted = true;
-  await projection.warm();
-  if (!sqliteDisabled) {
-    observedSessionReducer = new ObservedSessionReducer(projection);
-    const persistedObservedSessions = await projection.persistedActiveObservedSessionUpdates();
-    if (persistedObservedSessions !== null) {
-      const hydration = observedSessionReducer.hydratePersistedActiveSessions(
-        persistedObservedSessions,
-      );
-      const lifecycleSeeds = replacePersistedActiveObservedSessionSeeds(
-        persistedObservedSessions.map((update) => ({
-          source: update.source,
-          sourceSessionId: update.sourceSessionId,
-          lastActivityAt: update.lastActivityAt,
-          project: update.project,
-          projectRoot: update.projectRoot,
-          cwd: update.cwd,
-        })),
-      );
-      if (hydration.dropped > 0 || lifecycleSeeds.dropped > 0) {
-        console.warn(
-          `[openscout-runtime] bounded observed-session restart seed: `
-          + `${hydration.hydrated} reducer rows, ${lifecycleSeeds.seeded} lifecycle rows, `
-          + `${hydration.dropped + lifecycleSeeds.dropped} dropped`,
+  let canonicalStartupFailure = false;
+  try {
+    projectionWarmStarted = true;
+    await projection.warm();
+    if (!sqliteDisabled) {
+      // Wait for the original replay, then schedule its accepted startup suffix
+      // before enabling live writes. No payload closure is retained for that
+      // suffix, and writes after its barrier queue strictly behind catch-up.
+      await projection.flush();
+      let catchUp: Promise<void> = Promise.resolve();
+      await durableStore.runWrite(async () => {
+        await startupEventWrites;
+        const boundary = await projection.captureStartupCatchUpBoundary();
+        catchUp = projection.catchUpStartup(boundary);
+        void catchUp.catch(() => {});
+        deferStartupProjection = false;
+      }).catch((error) => {
+        // A failed canonical event append or journal barrier is not a derived
+        // projection failure: never keep accepting writes on that evidence.
+        canonicalStartupFailure = true;
+        throw error;
+      });
+      await catchUp;
+      startupTrafficGate.restoringSessions();
+      observedSessionReducer = new ObservedSessionReducer(projection);
+      const persistedObservedSessions = await projection.persistedActiveObservedSessionUpdates();
+      if (persistedObservedSessions !== null) {
+        const hydration = observedSessionReducer.hydratePersistedActiveSessions(
+          persistedObservedSessions,
         );
+        const lifecycleSeeds = replacePersistedActiveObservedSessionSeeds(
+          persistedObservedSessions.map((update) => ({
+            source: update.source,
+            sourceSessionId: update.sourceSessionId,
+            lastActivityAt: update.lastActivityAt,
+            project: update.project,
+            projectRoot: update.projectRoot,
+            cwd: update.cwd,
+          })),
+        );
+        if (hydration.dropped > 0 || lifecycleSeeds.dropped > 0) {
+          console.warn(
+            `[openscout-runtime] bounded observed-session restart seed: `
+            + `${hydration.hydrated} reducer rows, ${lifecycleSeeds.seeded} lifecycle rows, `
+            + `${hydration.dropped + lifecycleSeeds.dropped} dropped`,
+          );
+        }
       }
+      unsubscribeObservedSessionReducer = subscribeObservedSessionReducer(observedSessionReducer);
     }
-    unsubscribeObservedSessionReducer = subscribeObservedSessionReducer(observedSessionReducer);
+    deferStartupProjection = false;
+    startupTrafficGate.admitMutations();
+  } catch (error) {
+    if (canonicalStartupFailure) throw error;
+    // SQLite is derived. A healthy canonical journal still supports core
+    // registration and snapshots, but cannot certify projection-backed work.
+    deferStartupProjection = true;
+    durableStore.abandonProjectedEntries();
+    projection.close();
+    startupTrafficGate.degradeProjection(error);
+    console.error("[openscout-runtime] startup projection degraded; core remains available", startupTrafficGate.snapshot());
   }
-  startupTrafficGate.admitMutations();
-  startPresenceSampling();
-  registerActiveScoutBrokerService(brokerService);
-  peerDelivery.start();
+  if (startupTrafficGate.snapshot().mutationsAdmitted) {
+    startPresenceSampling();
+    registerActiveScoutBrokerService(brokerService);
+    peerDelivery.start();
+  }
   console.log(`[openscout-runtime] broker listening on 127.0.0.1:${port} (scope: ${advertiseScope}, url: ${brokerUrl})`);
   console.log(`[openscout-runtime] broker local socket ${brokerSocketPath}`);
   const bindState = meshBindController.getState();
@@ -2265,6 +2348,8 @@ try {
   );
   console.log(`[openscout-runtime] sqlite ${sqliteDisabled ? "disabled" : dbPath}`);
 } catch (error) {
+  startupTrafficGate.fail(error);
+  console.error("[openscout-runtime] startup failed", startupTrafficGate.snapshot());
   unregisterActiveScoutBrokerService(brokerService);
   await Promise.all([closeServer(socketServer), closeServer(server)]).catch(() => undefined);
   if (isAddressInUse(error)) {
@@ -2283,6 +2368,7 @@ try {
 }
 
 setTimeout(() => {
+  if (!startupTrafficGate.snapshot().mutationsAdmitted) return;
   bootstrapRegisteredLocalAgents()
     .then(() => dispatchRecoveryService.recoverQueuedFlights({ reason: "startup" }))
     .catch((error) => {
@@ -2333,61 +2419,64 @@ setInterval(() => {
   }
 }, runtimeHeartbeatIntervalMs).unref();
 
-meshDiscoveryService.discoverPeers().catch((error) => {
-  console.error("[openscout-runtime] initial mesh discovery failed:", error);
-});
-
-if (Number.isFinite(discoveryIntervalMs) && discoveryIntervalMs > 0) {
-  setInterval(() => {
-    meshDiscoveryService.discoverPeers().catch((error) => {
-      console.error("[openscout-runtime] periodic mesh discovery failed:", error);
-    });
-  }, discoveryIntervalMs).unref();
-}
-
-if (Number.isFinite(localAgentSyncIntervalMs) && localAgentSyncIntervalMs > 0) {
-  setInterval(() => {
-    syncRegisteredLocalAgentsIfChanged("periodic").catch((error) => {
-      console.error("[openscout-runtime] periodic local agent sync failed:", error);
-    });
-  }, localAgentSyncIntervalMs).unref();
-}
-
-if (Number.isFinite(cardlessSessionSweepIntervalMs) && cardlessSessionSweepIntervalMs > 0) {
-  setInterval(() => {
-    sweepIdleCardlessSessions().catch((error) => {
-      console.error("[openscout-runtime] periodic cardless session sweep failed:", error);
-    });
-  }, Math.max(60_000, cardlessSessionSweepIntervalMs)).unref();
-}
-
-if (Number.isFinite(relayAgentSweepIntervalMs) && relayAgentSweepIntervalMs > 0) {
-  setInterval(() => {
-    relayAgentReaper.sweep("periodic").catch((error) => {
-      console.error("[openscout-runtime] periodic relay-agent sweep failed:", error);
-    });
-  }, Math.max(60_000, relayAgentSweepIntervalMs)).unref();
-}
-
-// Periodic mesh node compaction sweep to prune Bonjour collision sediments
-setInterval(() => {
-  sweepAndCompactMeshNodes();
-}, 15 * 60_000).unref();
-
-// Backstop retry for queued deliveries with no endpoint event to wake them —
-// deferred thread_held_externally parks and any flight whose attach event was
-// missed. Deferrals gate per-invocation cadence inside the recovery service.
-setInterval(() => {
-  dispatchRecoveryService.recoverQueuedFlights({ reason: "queued_retry_sweep" }).catch((error) => {
-    console.error("[openscout-runtime] queued dispatch retry sweep failed:", error);
+// Background coordination must obey the same capability boundary as HTTP.
+if (startupTrafficGate.snapshot().mutationsAdmitted) {
+  meshDiscoveryService.discoverPeers().catch((error) => {
+    console.error("[openscout-runtime] initial mesh discovery failed:", error);
   });
-}, 60_000).unref();
 
-if (routeAliasService) {
-  routeAliasSweepTimer = setInterval(() => {
-    routeAliasService.sweepExpired();
-  }, 60_000);
-  routeAliasSweepTimer.unref();
+  if (Number.isFinite(discoveryIntervalMs) && discoveryIntervalMs > 0) {
+    setInterval(() => {
+      meshDiscoveryService.discoverPeers().catch((error) => {
+        console.error("[openscout-runtime] periodic mesh discovery failed:", error);
+      });
+    }, discoveryIntervalMs).unref();
+  }
+
+  if (Number.isFinite(localAgentSyncIntervalMs) && localAgentSyncIntervalMs > 0) {
+    setInterval(() => {
+      syncRegisteredLocalAgentsIfChanged("periodic").catch((error) => {
+        console.error("[openscout-runtime] periodic local agent sync failed:", error);
+      });
+    }, localAgentSyncIntervalMs).unref();
+  }
+
+  if (Number.isFinite(cardlessSessionSweepIntervalMs) && cardlessSessionSweepIntervalMs > 0) {
+    setInterval(() => {
+      sweepIdleCardlessSessions().catch((error) => {
+        console.error("[openscout-runtime] periodic cardless session sweep failed:", error);
+      });
+    }, Math.max(60_000, cardlessSessionSweepIntervalMs)).unref();
+  }
+
+  if (Number.isFinite(relayAgentSweepIntervalMs) && relayAgentSweepIntervalMs > 0) {
+    setInterval(() => {
+      relayAgentReaper.sweep("periodic").catch((error) => {
+        console.error("[openscout-runtime] periodic relay-agent sweep failed:", error);
+      });
+    }, Math.max(60_000, relayAgentSweepIntervalMs)).unref();
+  }
+
+  // Periodic mesh node compaction sweep to prune Bonjour collision sediments
+  setInterval(() => {
+    sweepAndCompactMeshNodes();
+  }, 15 * 60_000).unref();
+
+  // Backstop retry for queued deliveries with no endpoint event to wake them —
+  // deferred thread_held_externally parks and any flight whose attach event was
+  // missed. Deferrals gate per-invocation cadence inside the recovery service.
+  setInterval(() => {
+    dispatchRecoveryService.recoverQueuedFlights({ reason: "queued_retry_sweep" }).catch((error) => {
+      console.error("[openscout-runtime] queued dispatch retry sweep failed:", error);
+    });
+  }, 60_000).unref();
+
+  if (routeAliasService) {
+    routeAliasSweepTimer = setInterval(() => {
+      routeAliasService.sweepExpired();
+    }, 60_000);
+    routeAliasSweepTimer.unref();
+  }
 }
 
 async function shutdownBroker(exitCode = 0): Promise<void> {
@@ -2424,6 +2513,7 @@ async function shutdownBroker(exitCode = 0): Promise<void> {
   projection.close();
   sharedControlPlaneStore?.close();
   await Promise.all([closeServer(socketServer), closeServer(server)]);
+  await journal.close();
   await unlink(brokerSocketPath).catch(() => undefined);
   await unlink(resolveOpenScoutSupportPaths().hostInfoPath).catch(() => undefined);
   process.exit(exitCode);

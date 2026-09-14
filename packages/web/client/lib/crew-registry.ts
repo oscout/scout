@@ -24,6 +24,19 @@ export interface FacePlacement {
 }
 
 export interface Art {
+  /** Authored points in master-image pixels; attachment coordinates, not joints. */
+  anchors?: {
+    eyes: [[number, number], [number, number]];
+    head: [number, number];
+    chest: [number, number];
+    leftHand: [number, number];
+    rightHand: [number, number];
+    feet: [number, number];
+  };
+  /** Static poses with actual art. Eye-patch coverage is separately in CREW_SHEETS. */
+  supportedPoses?: readonly ["rest"];
+  /** Optional runtime glyph anchor, normalized to the full artwork box (x/y). */
+  runtimeAnchor?: [number, number];
   w: number;
   h: number;
   coin: [number, number, number];
@@ -71,6 +84,9 @@ export const CREW_ART: Record<string, Art> = {
   vex: { w: 512, h: 512, coin: [129, 0, 254], ink: 0.33, kernel: "orb·ears·slit" },
   lulu: { w: 475, h: 512, coin: [-24, -153, 522], ink: 0.75, kernel: "orb·gills·eye-plate", face: LULU_FACE },
   nori: { w: 394, h: 512, coin: [-20, -109, 433], ink: 0.71, kernel: "cap·lamp·eye-plate", face: NORI_FACE },
+  pip: { w: 512, h: 512, coin: [68, -14, 376], ink: 0.58, kernel: "kite·vane·visor", supportedPoses: ["rest"], anchors: { eyes: [[227, 176], [286, 176]], head: [256, 48], chest: [248, 322], leftHand: [146, 376], rightHand: [368, 376], feet: [256, 490] } },
+  tuck: { w: 512, h: 512, coin: [67, -36, 378], ink: 0.54, kernel: "shell·scutes·visor", supportedPoses: ["rest"], anchors: { eyes: [[224, 180], [287, 180]], head: [256, 36], chest: [251, 316], leftHand: [133, 365], rightHand: [379, 365], feet: [256, 479] } },
+  fenn: { w: 512, h: 512, coin: [102, -4, 316], ink: 0.62, kernel: "pear·bent-ears·visor", supportedPoses: ["rest"], anchors: { eyes: [[229, 229], [280, 229]], head: [251, 144], chest: [251, 320], leftHand: [168, 385], rightHand: [342, 385], feet: [256, 488] } },
 };
 
 /**
@@ -105,6 +121,9 @@ export const CHIP_ART: Record<string, ChipArt> = {
   sprout: { fill: 0.88, ink: 0.64, nudge: [0, -0.01] },
   wrench: { fill: 0.88, ink: 0.53, nudge: [0, -0.01] },
   vex: { fill: 0.86, ink: 0.49 },
+  pip: { fill: 0.9, ink: 0.49 },
+  tuck: { fill: 0.9, ink: 0.49 },
+  fenn: { fill: 0.92, ink: 0.55 },
 };
 
 /** Members the Pixel Chip renderer can actually draw. Everything else falls back. */
@@ -147,6 +166,9 @@ export const CAST_MEMBERS: CastMemberDef[] = [
   { slug: "vex", name: "Vex", kernel: "orb·ears·slit", title: "Signal Watcher", blurb: "Agile acoustic observer with radar ears and slit optics." },
   { slug: "lulu", name: "Lulu", kernel: "orb·gills·eye-plate", title: "Deep Explorer", blurb: "Aquatic hydro-scout with atmospheric gills and modular eye-plate." },
   { slug: "nori", name: "Nori", kernel: "cap·lamp·eye-plate", title: "Cave & Tunnel Scout", blurb: "Underground explorer with wide cap canopy and headlamp housing." },
+  { slug: "pip", name: "Pip", kernel: "kite·vane·visor", title: "Weather Scout", blurb: "Bright-eyed forecast watcher with kite fins, a wind vane, and a pocket barometer." },
+  { slug: "tuck", name: "Tuck", kernel: "shell·scutes·visor", title: "Quartermaster", blurb: "Patient keeper of supplies, with a broad shell helmet and a pouch for everything." },
+  { slug: "fenn", name: "Fenn", kernel: "pear·bent-ears·visor", title: "Night Courier", blurb: "Attentive moonlit messenger with one folded ear and a well-travelled satchel." },
 ];
 
 export const SHEET_FRAMES = [

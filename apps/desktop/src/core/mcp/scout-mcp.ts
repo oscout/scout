@@ -1,3 +1,4 @@
+import { setTimeout as delay } from "node:timers/promises";
 import { readFileSync } from "node:fs";
 import { basename, resolve } from "node:path";
 
@@ -88,6 +89,9 @@ import type {
   ScoutAskReceipt,
 } from "../broker/ask-types.ts";
 import { SCOUT_APP_VERSION } from "../../shared/product.ts";
+import { registerAttachmentReaderTool } from "./attachment-reader.ts";
+import { herdrWorkspacesDependencies, registerHerdrWorkspaceTools } from "./herdr-workspaces.ts";
+import { registerSessionDiscoveryTools, sessionDiscoveryDependencies } from "./session-discovery.ts";
 import { waitForStdioServerClosure } from "./stdio-server-lifecycle.ts";
 
 const AGENT_STATE_VALUES = [
@@ -558,6 +562,8 @@ type ScoutMcpDependencies = {
     flightId: string,
     options?: {
       timeoutSeconds?: number;
+      signal?: AbortSignal;
+      invocationId?: string;
       onUpdate?: (flight: ScoutFlightRecord, detail: string) => void;
     },
   ) => Promise<ScoutFlightRecord>;
@@ -1012,7 +1018,6 @@ const brokerFeedSchema = z.object({
     deliveries: z.number(),
     deliveryAttempts: z.number(),
     dispatches: z.number(),
-    unblockRequests: z.number(),
     errors: z.number(),
     warnings: z.number(),
   }),
@@ -1907,16 +1912,19 @@ function sendScoutReplyNotification(
   });
 }
 
+const notificationLifetimes = new WeakMap<McpServer, AbortSignal>();
+
 function scheduleScoutReplyNotification(input: {
   server: McpServer;
   deps: ScoutMcpDependencies;
   brokerUrl: string;
-  flight: Pick<ScoutFlightRecord, "id">;
+  flight: Pick<ScoutFlightRecord, "id"> & Partial<Pick<ScoutFlightRecord, "invocationId">>;
   context: Omit<
     ScoutReplyNotificationParams,
     "status" | "flight" | "output" | "error"
   >;
 }): void {
+  const signal = notificationLifetimes.get(input.server);
   void (async () => {
     try {
       // A queued dispatch may not have materialized the flight yet; give it
@@ -1927,11 +1935,12 @@ function scheduleScoutReplyNotification(input: {
           completedFlight = await input.deps.waitForFlight(
             input.brokerUrl,
             input.flight.id,
+            { signal, invocationId: input.flight.invocationId },
           );
           break;
         } catch (error) {
-          if (attempt >= 2) throw error;
-          await new Promise((resolve) => setTimeout(resolve, 2_000));
+          if (signal?.aborted || attempt >= 2) throw error;
+          await delay(2_000, undefined, { signal });
         }
       }
       await sendScoutReplyNotification(input.server, {
@@ -1942,6 +1951,7 @@ function scheduleScoutReplyNotification(input: {
         error: null,
       });
     } catch (error) {
+      if (signal?.aborted) return;
       await sendScoutReplyNotification(input.server, {
         ...input.context,
         status: "failed",
@@ -3100,6 +3110,14 @@ export function createScoutMcpServer(options: {
     version: SCOUT_APP_VERSION,
   });
 
+  const notificationLifetime = new AbortController();
+  notificationLifetimes.set(server, notificationLifetime.signal);
+  const previousOnClose = server.server.onclose;
+  server.server.onclose = () => {
+    notificationLifetime.abort();
+    previousOnClose?.();
+  };
+
   // Tool exposure policy must gate registration itself, not a later
   // tools/list projection: an unregistered tool rejects tools/call too.
   const toolFilter = options.toolFilter;
@@ -3110,6 +3128,15 @@ export function createScoutMcpServer(options: {
       return registerTool(name, ...rest);
     }) as typeof server.registerTool;
   }
+
+  registerSessionDiscoveryTools(server, sessionDiscoveryDependencies(resolveScoutWebOrigin(env), { env }));
+  registerHerdrWorkspaceTools(server, herdrWorkspacesDependencies(resolveScoutWebOrigin(env), { env }));
+  registerAttachmentReaderTool(server, {
+    currentContext: () => parseScoutReplyContextFromEnv(env),
+    message: async (id) => (await loadScoutBrokerContext(deps.resolveBrokerUrl()))?.snapshot.messages?.[id] ?? null,
+    webOrigin: resolveScoutWebOrigin(env),
+    env,
+  });
 
   const aliasBrokerRequest = async <T>(path: string, init?: RequestInit): Promise<T> => {
     const response = await fetch(new URL(path, deps.resolveBrokerUrl()), {
@@ -3492,7 +3519,6 @@ export function createScoutMcpServer(options: {
             deliveries: 0,
             deliveryAttempts: 0,
             dispatches: 0,
-            unblockRequests: 0,
             errors: 0,
             warnings: 0,
           },

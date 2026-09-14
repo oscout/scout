@@ -210,3 +210,40 @@ describe("ConversationThreadArtifactPublisher", () => {
     expect(names).toContain("unrelated.json");
   });
 });
+
+test("page budget includes exact escaped cursor bytes at the inclusive limit", () => {
+  const input = snapshot("budget-雪", {messages: Array.from({length:9}, (_, index) => ({
+    id: index === 0 ? 'oldest-雪🚀"\\' : `newer-${index}`,
+    actorId: "operator", actorName: null, body: index === 0 ? "" : "x".repeat(30000),
+    class: "agent", createdAt: index,
+  }))});
+  const envelope = {...buildNativeReadThreadArtifact({...input,messages:[]}),
+    messages: input.messages, cursor: input.messages[0]!.id, contentCursor: "0".repeat(64)};
+  const remaining = NATIVE_READ_THREAD_MAX_BYTES - Buffer.byteLength(JSON.stringify(envelope) + "\n");
+  expect(remaining).toBeGreaterThan(0);
+  expect(remaining).toBeLessThan(NATIVE_READ_THREAD_MAX_MESSAGE_BYTES - 200);
+  input.messages[0]!.body = "x".repeat(remaining);
+  const exact = serializeNativeReadThreadArtifact(input);
+  expect(Buffer.byteLength(exact)).toBe(NATIVE_READ_THREAD_MAX_BYTES);
+  expect(JSON.parse(exact).messages).toHaveLength(9);
+  input.messages[0]!.body += "x";
+  const over = buildNativeReadThreadArtifact(input);
+  expect(over.messages).toHaveLength(8);
+  expect(over.cursor).toBe("newer-1");
+  expect(over.hasEarlier).toBe(true);
+});
+
+test.each(["ascii", "\u0000", "\b", "\t", "\n", "\f", "\r", '"', "\\", "雪", "🚀", "\ud800", "\udfff", "\u2028", "\ud800x\udfff🚀"])("JSON body budget chooses the maximal safe prefix for %j", (pattern) => {
+  const body = pattern.repeat(40000);
+  const input = snapshot("json-prefix", {messages:[{
+    id:"message",actorId:"operator",actorName:null,body,class:"agent",createdAt:1,
+  }]});
+  const message = buildNativeReadThreadArtifact(input).messages[0]!;
+  expect(message.body.endsWith("…")).toBe(true);
+  const prefix = message.body.slice(0,-1);
+  expect(body.startsWith(prefix)).toBe(true);
+  expect(Buffer.byteLength(JSON.stringify(message))).toBeLessThanOrEqual(NATIVE_READ_THREAD_MAX_MESSAGE_BYTES);
+  const nextPoint = String.fromCodePoint(body.codePointAt(prefix.length)!);
+  expect(Buffer.byteLength(JSON.stringify({...message,body:prefix+nextPoint+"…"})))
+    .toBeGreaterThan(NATIVE_READ_THREAD_MAX_MESSAGE_BYTES);
+});

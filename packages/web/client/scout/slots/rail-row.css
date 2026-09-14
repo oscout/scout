@@ -489,3 +489,14 @@
 .rr-row-action--on:hover {
   color: var(--accent);
 }
+
+/* Inline rename — the row's own name box, not a dialog on top of it.
+   Sized and set exactly like .rr-row-name so the text does not jump when the
+   field appears, and flat at rest apart from a single accent hairline that
+   says which row is being edited. */
+.rr-row-name-field {
+  width: 100%; min-width: 0; margin: -2px -6px; padding: 2px 6px;
+  font: inherit; color: var(--s-ink); background: var(--s-bg);
+  border: 1px solid var(--s-accent); border-radius: 4px; outline: none;
+}
+.rr-row-name-field::selection { background: var(--s-accent-soft); }

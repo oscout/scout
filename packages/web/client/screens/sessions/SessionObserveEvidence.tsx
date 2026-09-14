@@ -10,21 +10,30 @@ function shortObserveSessionId(value: string | null | undefined): string {
   return value.length > 18 ? `${value.slice(0, 8)}...${value.slice(-6)}` : value;
 }
 
+export const NATIVE_SESSION_ORIGIN_LABEL = "Native session";
+export const SCOUT_MANAGED_CHAT_ORIGIN_LABEL = "Scout-managed chat";
+
 /** Compact embed header backed by the same evidence contract as the observer. */
 export function SessionObserveEmbedStatus({
   source,
   fidelity,
   sessionId,
   evidence,
+  originLabel = NATIVE_SESSION_ORIGIN_LABEL,
 }: {
   source: ObserveEvidenceSource;
   fidelity: ObserveEvidenceFidelity;
   sessionId?: string | null;
   evidence: ObserveEvidencePresentation;
+  originLabel?: string | null;
 }) {
   return (
     <div className="s-observe-embed-status" data-tone={evidence.tone}>
-      <span className="s-observe-embed-status-source">{source}</span>
+      {originLabel ? (
+        <span className="s-observe-embed-status-origin">{originLabel}</span>
+      ) : (
+        <span className="s-observe-embed-status-source">{source}</span>
+      )}
       <span>{fidelity}</span>
       <span title={sessionId ?? undefined}>{shortObserveSessionId(sessionId)}</span>
       <span>{evidence.eventCountLabel}</span>

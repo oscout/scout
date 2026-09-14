@@ -50,6 +50,9 @@ export function prefilterHandle(
   if (parsed.command) {
     const arg = parsed.command.args;
     switch (parsed.command.name) {
+      case "report":
+      case "feedback":
+        return reply(`slash.${parsed.command.name}`, now, "Preparing report…", parsed);
       case "help":
         return reply("slash.help", now, renderHelp(), parsed);
       case "agents":
@@ -119,6 +122,8 @@ function reply(
 function renderHelp(): string {
   return [
     "Scout commands — work-first (FOCUS shape):",
+    "- `/report [note]` — send diagnostics; use `--local-only` to save without upload",
+    "- `/feedback <note>` — send a note; add `--diagnostics` for traces",
     "- `/status` — ON YOU (needs you), then RECENT work",
     "- `/recent` — recent work fleet-wide; `/recent @agent` for one hand",
     "- `/agents` — agents as facets of current work (not an endpoint roster)",

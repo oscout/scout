@@ -1,3 +1,4 @@
+import { captureRegistries } from "./broker-registry-capture.js";
 import type { AgentDefinition, NodeDefinition } from "@openscout/protocol";
 import { isDeepStrictEqual } from "node:util";
 
@@ -16,6 +17,7 @@ import type { RuntimeRegistrySnapshot } from "./registry.js";
 
 export type BrokerMeshDiscoveryRuntime = {
   snapshot(): RuntimeRegistrySnapshot;
+  peek?(): Readonly<RuntimeRegistrySnapshot>;
   agent(agentId: string): AgentDefinition | undefined;
 };
 
@@ -188,7 +190,7 @@ export class BrokerMeshDiscoveryService {
     const peersToSync = new Map<string, NodeDefinition>();
     for (const node of discovered) peersToSync.set(node.id, node);
     for (const node of collectCurrentMeshPeerNodes({
-      nodes: this.deps.runtime.snapshot().nodes,
+      nodes: captureRegistries(this.deps.runtime, ["nodes"]).nodes,
       localNodeId: this.deps.nodeId,
       meshId: this.deps.meshId,
     })) {

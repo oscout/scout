@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Plus } from "lucide-react";
 
 import {
@@ -10,7 +10,11 @@ import {
   machineScopedAgentIds,
 } from "../../lib/machine-scope.ts";
 import { fleetAskForSession } from "../../lib/fleet-active-asks.ts";
-import { routeMachineId } from "../../lib/router.ts";
+import {
+  readReturnToFromState,
+  routeMachineId,
+  useBrowserLocation,
+} from "../../lib/router.ts";
 import {
   isUnread,
   loadLastViewedMap,
@@ -22,7 +26,10 @@ import { useConversationList } from "../../lib/use-conversation-list.ts";
 import { useFleetActiveAsks } from "../../lib/use-fleet-active-asks.ts";
 import { useScout } from "../../scout/Provider.tsx";
 import { AgentMasterScreen } from "./AgentMasterScreen.tsx";
+import { CommsDeck } from "./CommsDeck.tsx";
 import { ConversationScreen } from "./ConversationScreen.tsx";
+import { useBeside, useStage } from "./use-beside.ts";
+import "./agent-master.css";
 import "./conversation-screen.css";
 
 export function MessagesScreen({
@@ -38,9 +45,19 @@ export function MessagesScreen({
   machineId?: string;
   navigate: (route: Route) => void;
 }) {
-  // /messages/agent/<id> — the agent master view (DM + session threads).
+  // Every Comms page is one STAGE — the conversation or agent surface the route
+  // names — with the conversations kept BESIDE it in columns to the right.
+  // The columns are the page's, not any one screen's: `?open=` names them, it
+  // is sticky across /messages routes, so they stay put while the stage moves
+  // from one conversation to the next. See comms-deck.ts.
+  const beside = useBeside();
+  const toStage = useStage(navigate, machineId);
+
+  let stage: ReactNode;
   if (agentId) {
-    return (
+    // /messages/agent/<id> — the agent surface: its own conversation or the
+    // `?thread=` on the stage, its other conversations in a strip above.
+    stage = (
       <AgentMasterScreen
         agentId={agentId}
         threadId={threadId}
@@ -48,19 +65,79 @@ export function MessagesScreen({
         navigate={navigate}
       />
     );
+  } else if (!conversationId) {
+    // One conversation route (D6): ConversationScreen renders every kind —
+    // channels included. The old channels route wrapped the same component,
+    // and the Chat secondary strip died with the DM/Channels split.
+    stage = <MessagesLander />;
+  } else {
+    stage = <ConversationRoute conversationId={conversationId} navigate={navigate} beside={beside} />;
   }
-  // One conversation route (D6): ConversationScreen renders every kind —
-  // channels included. The old channels route wrapped the same component,
-  // and the Chat secondary strip died with the DM/Channels split.
-  if (!conversationId) {
-    return <MessagesLander />;
-  }
+
+  return (
+    <div className="amv">
+      <section className="amv-main">{stage}</section>
+      <CommsDeck
+        ids={beside.ids}
+        onClose={beside.remove}
+        onStage={(id) => {
+          // Move first, close second: the move carries `open` along (it is
+          // sticky), and the close then edits the URL the move produced.
+          // The other way round, the move would put the column back.
+          toStage(id);
+          beside.remove(id);
+        }}
+        renderConversation={(id) => (
+          <ConversationScreen
+            key={id}
+            conversationId={id}
+            navigate={navigate}
+            embedded
+            showBackNav={false}
+          />
+        )}
+      />
+    </div>
+  );
+}
+
+/**
+ * One conversation, on its own page.
+ *
+ * There is deliberately no back pill on the ordinary route (D2: the rail is the
+ * triage surface, and "back to the list" is what the rail already is). But a
+ * deck column can pop out to here, and an arrival that recorded where it came
+ * from is owed the way back — so the pill appears exactly when there is
+ * somewhere specific to return to, and names it.
+ */
+function ConversationRoute({
+  conversationId,
+  navigate,
+  beside,
+}: {
+  conversationId: string;
+  navigate: (route: Route) => void;
+  beside: ReturnType<typeof useBeside>;
+}) {
+  const { agents } = useScout();
+  const location = useBrowserLocation();
+  const returnTo = useMemo(() => readReturnToFromState(location.state), [location.state]);
+  const backLabel = useMemo(() => {
+    if (!returnTo || returnTo.view !== "messages" || !returnTo.agentId) return undefined;
+    const name = agents.find((agent) => agent.id === returnTo.agentId)?.name
+      ?? returnTo.agentId.split(".")[0]
+      ?? returnTo.agentId;
+    return `Back to ${name}`;
+  }, [returnTo, agents]);
+
   return (
     <ConversationScreen
       key={conversationId}
       conversationId={conversationId}
       navigate={navigate}
-      showBackNav={false}
+      showBackNav={Boolean(returnTo)}
+      backLabel={backLabel}
+      beside={beside}
     />
   );
 }

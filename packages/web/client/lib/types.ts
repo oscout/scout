@@ -759,6 +759,8 @@ export type SessionEntry = {
 export type ConversationEntry = SessionEntry;
 
 export type ObserveEvent = {
+  /** Explicit received inter-agent envelope, observed from the harness. */
+  communication?: { from: string; to: string; received: true; bodyAvailable: boolean };
   id: string;
   t: number;
   /** Wall-clock epoch ms when known (preferred for horizon filtering and lane age labels). */
@@ -1019,6 +1021,7 @@ export type MeshStatus = {
     hostName?: string;
     advertiseScope?: string;
     brokerUrl?: string;
+    capabilities?: string[];
   } | null;
   meshId: string | null;
   identity: {
@@ -1039,6 +1042,7 @@ export type MeshStatus = {
       hostName?: string;
       advertiseScope?: string;
       brokerUrl?: string;
+      capabilities?: string[];
       registeredAt?: number;
       lastSeenAt?: number;
       /**
@@ -1586,10 +1590,12 @@ export type TailDiscoveredTranscript = {
   source: string;
   transcriptPath: string;
   sessionId: string | null;
-  /** The Claude Code session which spawned this transcript, when it is a child worker. */
+  /** The harness session which spawned this transcript, when it is a child worker. */
   parentSessionId?: string | null;
   /** Harness-owned child worker id (for example Claude's `agent-*.jsonl` id). */
   subagentId?: string | null;
+  /** Observed harness-assigned child nickname, when available. */
+  agentNickname?: string | null;
   cwd: string | null;
   project: string;
   /** Launch attribution; retained as `harness` for wire compatibility. */

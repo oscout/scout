@@ -10,6 +10,7 @@ import type {
   HerdrSessionTopology,
   HerdrTabLayout,
   HerdrTabProjection,
+  HerdrTopologyUnavailableReason,
   HerdrWorkspaceProjection,
 } from "@openscout/protocol";
 
@@ -657,15 +658,37 @@ export function parseHerdrPersistedTopology(value: unknown): HerdrWorkspaceProje
  * last known change. Null when there is no readable persisted state — the
  * caller then falls back to the empty projection.
  */
+/**
+ * Why the live read failed, decided by the session list rather than by parsing
+ * an error. A herdr CLI failure carries no stderr through the probe layer, and
+ * the session list already answers the only question that matters: does a
+ * server for this session exist? If one does and it still did not answer, the
+ * projection must not claim the session is stopped.
+ */
+async function classifyHerdrUnavailable(
+  sessionName: string,
+  env: RuntimeEnv,
+): Promise<{ reason: HerdrTopologyUnavailableReason; sessionDir: string | null }> {
+  try {
+    const sessions = await readHerdrSessions({ env });
+    const session = sessions.find((entry) => entry.name === sessionName);
+    return {
+      reason: session?.running ? "unreadable" : "not_running",
+      sessionDir: session?.sessionDir ?? null,
+    };
+  } catch {
+    return { reason: "not_running", sessionDir: null };
+  }
+}
+
 async function readPersistedHerdrTopology(
   sessionName: string,
   env: RuntimeEnv,
+  unavailable: { reason: HerdrTopologyUnavailableReason; sessionDir: string | null },
 ): Promise<HerdrSessionTopology | null> {
   try {
-    const sessions = await readHerdrSessions({ env });
-    const sessionDir = sessions.find((session) => session.name === sessionName)?.sessionDir;
-    if (!sessionDir) return null;
-    const path = join(sessionDir, "session.json");
+    if (!unavailable.sessionDir) return null;
+    const path = join(unavailable.sessionDir, "session.json");
     const [raw, stats] = await Promise.all([readFile(path, "utf8"), stat(path)]);
     const workspaces = parseHerdrPersistedTopology(JSON.parse(raw));
     if (workspaces === null) return null;
@@ -675,6 +698,7 @@ async function readPersistedHerdrTopology(
       workspaces,
       observedAt: Date.now(),
       savedAt: stats.mtimeMs,
+      unavailable: unavailable.reason,
     };
   } catch {
     return null;
@@ -701,11 +725,16 @@ async function readHerdrTopologyUncached(sessionName: string, env: RuntimeEnv): 
       observedAt: Date.now(),
     };
   } catch {
-    // The session's herdr server is not running (connection refused). An
-    // ordinary state: the layout persists on disk, so project that as the
-    // last-known topology rather than pretending there is nothing to show.
-    const persisted = await readPersistedHerdrTopology(sessionName, env);
-    return persisted ?? emptyHerdrSessionTopology(sessionName, false);
+    // The live read failed. Usually the session's herdr server is simply not
+    // running (connection refused) — an ordinary state, and the layout persists
+    // on disk, so project that as the last-known topology rather than
+    // pretending there is nothing to show. But a RUNNING server can fail the
+    // same way (a client/server protocol skew is the common one), and calling
+    // that "not running" is a false claim about live work, so the reason is
+    // carried on the projection instead of being flattened away.
+    const unavailable = await classifyHerdrUnavailable(sessionName, env);
+    const persisted = await readPersistedHerdrTopology(sessionName, env, unavailable);
+    return persisted ?? emptyHerdrSessionTopology(sessionName, false, unavailable.reason);
   }
 }
 

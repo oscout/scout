@@ -1,0 +1,8 @@
+.crew-sprite { position: relative; display: inline-block; flex: none; vertical-align: bottom; pointer-events: none; user-select: none; }
+.crew-sprite__art { display: block; width: 100%; height: 100%; object-fit: contain; pointer-events: none; }
+.crew-sprite__patch { position: absolute; display: block; pointer-events: none; }
+.crew-sprite.is-pixel .crew-sprite__art { image-rendering: pixelated; }
+
+/* Fill Milo’s transparent visor opening without painting over authored eyes. */
+.crew-sprite__visor-backing { position:absolute;left:38%;top:24.6%;width:26%;height:8%;border-radius:40%;background:#172329;pointer-events:none; }
+.crew-sprite__art { position:relative; }

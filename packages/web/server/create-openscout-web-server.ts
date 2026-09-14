@@ -1,3 +1,4 @@
+import { worldBrokerMessages } from "../shared/world-broker-messages.ts";
 import { createReadStream, existsSync, readFileSync, readdirSync, realpathSync, rmSync, statSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { createInterface } from "node:readline";
@@ -9,6 +10,7 @@ import { createHash } from "node:crypto";
 import { Hono, type Context } from "hono";
 import {
   channelNaturalKeyFromMetadata,
+  digestHerdrTopology,
   directChannelNaturalKey,
   epochMs,
   extractAgentSelectors,
@@ -27,6 +29,7 @@ import {
   scoutRuntimeDefaultsByHarness,
   scoutRuntimeEffortCatalog,
   scoutRuntimeModelCatalog,
+  scoutRuntimeReasoningEfforts,
   type AgentEndpoint,
   type AgentHarness,
   type CollaborationEvent,
@@ -83,9 +86,12 @@ import {
   registerScoutWebAssets,
   resolveScoutRequestPeerAddress,
   resolveScoutWebLanAccessScope,
+  SCOUT_WEB_LOGIN_PAGE_PATH,
+  type ScoutWebSessionAuthority,
   type ScoutWebAssetMode,
   type ScoutWebLanAccessScope,
 } from "./server-core.ts";
+import { renderScoutWebLoginPage } from "./web-login-page.ts";
 import {
   endpointMetadataRecord,
   selectPreferredAgentEndpoint,
@@ -178,6 +184,7 @@ import {
   loadScoutBrokerContext,
   loadScoutReadCursors,
   markScoutConversationRead,
+  renameScoutConversation,
   openScoutDirectSession,
   readScoutBrokerHome,
   readScoutBrokerHealth,
@@ -258,6 +265,13 @@ import {
   subscribeBroadcast,
 } from "./core/broadcast/service.ts";
 import {
+  annotateMachine,
+  forgetMachine,
+  loadMachine,
+  loadMachines,
+  runMachineScan,
+} from "./core/machines/service.ts";
+import {
   announceMeshVisibility,
   controlTailscale,
   joinMesh,
@@ -265,6 +279,7 @@ import {
   loadMeshStatus,
   type TailscaleControlAction,
 } from "./core/mesh/service.ts";
+import { createMeshNodeStateStore } from "./core/mesh/node-state.ts";
 import {
   loadOpenScoutWebShellState,
   type OpenScoutWebShellState,
@@ -295,6 +310,7 @@ import {
   gitBuildInfoProbe,
   readAllProcessCommandRows,
   readAllProcessRows,
+  readHerdrSessions,
   readHerdrTopology,
   readProcessCwd as readProcessCwdProbe,
   readProcessRowsForTty,
@@ -484,6 +500,8 @@ export type CreateOpenScoutWebServerOptions = {
   trustedOrigins?: string[];
   /** Required credential for privileged /api routes. Production hosts must set it. */
   authToken?: string;
+  /** Minted browser sessions; when absent the auth cookie carries the token itself. */
+  sessions?: ScoutWebSessionAuthority;
   /** Socket peer resolver. Injectable for tests; Bun connection info is used in production. */
   resolvePeerAddress?: (c: Context) => string | undefined;
   /** Network exposure policy. Defaults to OPENSCOUT_WEB_LAN_SCOPE. */
@@ -2452,6 +2470,49 @@ function mostRecentAgents(agents: WebAgent[], limit: number | undefined): WebAge
     .slice(0, limit);
 }
 
+/** Node a roster row belongs to, for coverage purposes. */
+function agentRosterNodeId(agent: WebAgent): string | null {
+  return agent.authorityNodeId ?? agent.homeNodeId ?? null;
+}
+
+/**
+ * Cap the roster without erasing a whole machine.
+ *
+ * The bounded `/api/agents?detail=summary` roster deliberately skips the full
+ * broker snapshot, so it cannot pin peers the way the rich path does. It does
+ * not need to: one representative per distinct node, reserved before the cap,
+ * is enough for the Network page to know a machine exists, and every other
+ * consumer still gets a recency-ordered list. Without this, a busy local
+ * broker filled all 100 slots and every remote card vanished (#906).
+ */
+export function withNodeCoveredRoster(agents: WebAgent[], limit: number | undefined): WebAgent[] {
+  const ranked = mostRecentAgents(agents, undefined);
+  if (limit === undefined || ranked.length <= limit) return ranked;
+
+  const representatives = new Map<string, WebAgent>();
+  for (const agent of ranked) {
+    const nodeId = agentRosterNodeId(agent);
+    if (!nodeId || representatives.has(nodeId)) continue;
+    representatives.set(nodeId, agent);
+  }
+
+  const kept = new Set<string>();
+  const covered: WebAgent[] = [];
+  for (const agent of representatives.values()) {
+    if (covered.length >= limit) break;
+    if (kept.has(agent.id)) continue;
+    kept.add(agent.id);
+    covered.push(agent);
+  }
+  for (const agent of ranked) {
+    if (covered.length >= limit) break;
+    if (kept.has(agent.id)) continue;
+    kept.add(agent.id);
+    covered.push(agent);
+  }
+  return mostRecentAgents(covered, undefined);
+}
+
 function localBrokerNodeId(broker: ScoutBrokerContext): string | null {
   return broker.node.id ?? null;
 }
@@ -2653,9 +2714,11 @@ function brokerHomeAgentToWebAgent(agent: ScoutBrokerHomeAgentRecord): WebAgent 
     terminalSurface: null,
     harnessLogPath: null,
     conversationId: null,
-    authorityNodeId: null,
+    // Node identity is what tells a local card from a peer's. Clearing it here
+    // is what left the Network page unable to place any remote agent (#906).
+    authorityNodeId: agent.authorityNodeId ?? null,
     authorityNodeName: null,
-    homeNodeId: null,
+    homeNodeId: agent.homeNodeId ?? null,
     homeNodeName: null,
     ownerId: null,
     ownerName: null,
@@ -2700,7 +2763,7 @@ async function queryAgentsIncludingBrokerCards(
     const attention = includeAttention
       ? await queryAgentAttentionIndex(null, capture)
       : new Map<string, AgentAttentionEntry>();
-    const roster = mostRecentAgents(applyAgentAttention([
+    const roster = withNodeCoveredRoster(applyAgentAttention([
       ...mergedAgents,
       ...brokerAgents.filter((agent) => !existingIds.has(agent.id)),
     ], attention), limit);
@@ -2744,6 +2807,10 @@ function mergeBrokerAgentProjection(local: WebAgent, broker: WebAgent | undefine
     // for the lifetime of an attached harness session, so its projected
     // `working` value must not outlive the completed flight in list views.
     state: broker.state,
+    ...(broker.transport === "tmux" ? {
+      harnessSessionId: broker.harnessSessionId,
+      harnessLogPath: broker.harnessLogPath,
+    } : {}),
     updatedAt: Math.max(local.updatedAt ?? 0, broker.updatedAt ?? 0) || null,
     role: local.role ?? broker.role,
     brokerActivity: broker.brokerActivity,
@@ -2787,6 +2854,9 @@ function withResolvedHarnessSessionIdentity(agent: WebAgent): WebAgent {
     return agent;
   }
   const cwd = agent.cwd ?? agent.projectRoot;
+  // Managed tmux identity is projected from broker observation metadata by
+  // resolveHarnessSessionIdForAgent. Read-side cwd scans cannot prove it.
+  if (agent.transport === "tmux") return agent;
   const transcript = cwd ? mostRecentClaudeSessionForCwd(cwd) : null;
   if (!transcript?.sessionId) {
     return agent;
@@ -3363,22 +3433,21 @@ function buildAgentSessionCatalogPayload(input: {
     endpointMetadata.externalSessionId,
     endpointMetadata.threadId,
   );
-  const observedHarnessSession = input.harness === "claude"
-    ? mostRecentClaudeSessionForCwd(input.cwd)
-    : null;
-  const discoveredHarnessSessionId = firstMetadataString(input.nativeTranscript?.sessionId);
-  const harnessNativeSessionId = firstMetadataString(
-    endpointMetadata.externalSessionId,
-    endpointMetadata.threadId,
-    observedHarnessSession?.sessionId,
-    discoveredHarnessSessionId,
-  );
-  const runtimeSessionId = firstMetadataString(input.activeSessionId, input.endpoint?.sessionId);
   const terminalSurface = input.terminalSurface ?? resolveTerminalSurface({
     transport: input.transport,
     endpointSessionId: input.activeSessionId,
     metadata: endpointMetadata,
   });
+  const managedTmux = input.transport === "tmux";
+  const observedHarnessSession = input.harness === "claude" && !managedTmux
+    ? mostRecentClaudeSessionForCwd(input.cwd)
+    : null;
+  const discoveredHarnessSessionId = firstMetadataString(input.nativeTranscript?.sessionId);
+  const harnessNativeSessionId = managedTmux
+    ? resolveHarnessSessionId("tmux", input.endpoint?.sessionId ?? input.activeSessionId ?? null, endpointMetadata)
+    : firstMetadataString(endpointMetadata.externalSessionId, endpointMetadata.threadId,
+      observedHarnessSession?.sessionId, discoveredHarnessSessionId);
+  const runtimeSessionId = firstMetadataString(input.activeSessionId, input.endpoint?.sessionId);
   const fallbackTerminalSessionId = terminalSurface
     ? input.activeSessionId ?? terminalSurface.sessionName
     : null;
@@ -3387,7 +3456,9 @@ function buildAgentSessionCatalogPayload(input: {
     && (!input.harness || !catalogActiveSession.harness || catalogActiveSession.harness === input.harness)
     && (!input.transport || !catalogActiveSession.transport || catalogActiveSession.transport === input.transport),
   );
-  const sessionId = catalogActiveMatchesProfile
+  const sessionId = managedTmux
+    ? harnessNativeSessionId ?? runtimeSessionId ?? fallbackTerminalSessionId
+    : catalogActiveMatchesProfile
     ? harnessNativeSessionId ?? catalog.activeSessionId
     : harnessNativeSessionId ?? endpointSessionId ?? fallbackTerminalSessionId ?? catalog.activeSessionId;
   const harnessEntry = findHarnessEntry(input.harness);
@@ -3400,14 +3471,17 @@ function buildAgentSessionCatalogPayload(input: {
     endpointMetadata.resumeSessionPath,
     endpointMetadata.historyPath,
   );
-  const sessionHistoryPath = historyPath ?? observedHarnessSession?.transcriptPath ?? input.nativeTranscript?.transcriptPath ?? null;
+  const sessionHistoryPath = managedTmux
+    ? (harnessNativeSessionId && input.nativeTranscript?.sessionId === harnessNativeSessionId
+      ? input.nativeTranscript.transcriptPath : null)
+    : historyPath ?? observedHarnessSession?.transcriptPath ?? input.nativeTranscript?.transcriptPath ?? null;
   const provider = firstMetadataString(endpointMetadata.provider);
   const source = firstMetadataString(endpointMetadata.source) ?? "broker-endpoint";
   const startedAt = metadataTimestampMs(endpointMetadata.lastStartedAt)
     ?? metadataTimestampMs(endpointMetadata.startedAt)
     ?? input.startedAt
     ?? Date.now();
-  const sessions = sessionId && !catalog.sessions.some((session) => session.id === sessionId)
+  const sessions = sessionId && (managedTmux || !catalog.sessions.some((session) => session.id === sessionId))
     ? [
         {
           id: sessionId,
@@ -3423,8 +3497,9 @@ function buildAgentSessionCatalogPayload(input: {
             ? { surfaceSessionId: terminalSurface.sessionName }
             : {}),
           ...(harnessNativeSessionId ? { harnessSessionId: harnessNativeSessionId } : {}),
-          ...(endpointMetadata.externalSessionId ? { externalSessionId: endpointMetadata.externalSessionId } : {}),
-          ...(endpointMetadata.threadId ?? (input.harness === "codex" ? harnessNativeSessionId : null)
+          ...((managedTmux ? harnessNativeSessionId : endpointMetadata.externalSessionId)
+            ? { externalSessionId: managedTmux ? harnessNativeSessionId : endpointMetadata.externalSessionId } : {}),
+          ...(!managedTmux && (endpointMetadata.threadId ?? (input.harness === "codex" ? harnessNativeSessionId : null))
             ? { threadId: endpointMetadata.threadId ?? harnessNativeSessionId }
             : {}),
           ...(runtimeSessionId && runtimeSessionId !== sessionId ? { runtimeSessionId } : {}),
@@ -3435,7 +3510,7 @@ function buildAgentSessionCatalogPayload(input: {
           // command can still be useful copy, but it is not a live takeover.
           canTakeover: Boolean(terminalSurface) || Boolean(resumeCommand && canResumeIntoTerminal),
         },
-        ...catalog.sessions,
+        ...catalog.sessions.filter((session) => session.id !== sessionId),
       ]
     : catalog.sessions;
   return {
@@ -5300,7 +5375,15 @@ export async function createOpenScoutWebServer(
     trustedHosts: options.trustedHosts,
     trustedOrigins: options.trustedOrigins,
     authToken: options.authToken,
+    sessions: options.sessions,
     resolvePeerAddress: options.resolvePeerAddress,
+  });
+
+  // Server-rendered operator login for browsers that no auto-issuance path
+  // covers — a Tailscale or LAN client reaching this host by address or name.
+  app.get(SCOUT_WEB_LOGIN_PAGE_PATH, (c) => {
+    c.header("cache-control", "no-store");
+    return c.html(renderScoutWebLoginPage());
   });
 
   mountScoutDeckSurfaceRoutes(app, {
@@ -6026,6 +6109,11 @@ export async function createOpenScoutWebServer(
   // per distinct (limit, detail, attention) shape means a polling burst pays
   // for one read; the key space is bounded (limit is clamped to 100) and
   // capped besides. The DB layer stays untouched — this is route-level only.
+  // One probe per node per web server, however many viewers are watching. See
+  // core/mesh/node-state.ts for why this cache is web-server-owned rather than
+  // broker-owned.
+  const meshNodeStateStore = createMeshNodeStateStore();
+
   const agentsResponseCache = new Map<string, () => Promise<WebAgent[]>>();
   const readAgentsResponse = (limit: number, summary: boolean, attentionRequested: boolean) => {
     const key = `${limit}|${summary ? 1 : 0}|${attentionRequested ? 1 : 0}`;
@@ -6066,6 +6154,34 @@ export async function createOpenScoutWebServer(
       count: hosts.length,
       preferredHostId: preferred?.id ?? null,
       hosts,
+    });
+  });
+
+  // Every herdr session, digested: what is blocked, what is moving, where the
+  // panes live, and how each tab is arranged. The per-session topology route
+  // below is the faithful projection; this is the RANKED one — the answer to
+  // "what is going on in my workspaces" for a caller that cannot afford to
+  // read the whole tree (Scoutbot, a bulletin, a narrow surface). Same rule as
+  // the projection: no mutation verbs, herdr still owns the layout.
+  app.get("/api/terminal-hosts/herdr/workspaces", async (c) => {
+    if (!terminalHostAdapter("herdr")) return c.json({ error: "unknown terminal host" }, 404);
+    const requested = c.req.query("session")?.trim();
+    const sessions = requested
+      ? [{ name: requested }]
+      : await readHerdrSessions().catch(() => []);
+    // A herdr install with no sessions is an ordinary empty state. Shelling a
+    // topology read per session is bounded by herdr's own 2s topology cache,
+    // but the session count is not, so cap the fan-out.
+    const targets = sessions.slice(0, 8);
+    const digests = await Promise.all(targets.map(async (session) => {
+      const topology = await readHerdrTopology(session.name);
+      return digestHerdrTopology(topology);
+    }));
+    return c.json({
+      ok: true,
+      count: digests.length,
+      truncated: sessions.length > targets.length,
+      digests,
     });
   });
 
@@ -6719,13 +6835,14 @@ export async function createOpenScoutWebServer(
       projectRoot: agent.projectRoot,
     }) : null;
     const cwd = endpoint?.cwd ?? endpoint?.projectRoot ?? agent.cwd ?? agent.projectRoot ?? ".";
-    const nativeTranscript = agent.harness
-      ? mostRecentTranscriptForHarnessCwd(
-          (await tailRuntime.getTailDiscovery().catch(() => null))?.transcripts ?? [],
-          agent.harness,
-          cwd,
-        )
-      : null;
+    const discoveredTranscripts = agent.harness
+      ? (await tailRuntime.getTailDiscovery().catch(() => null))?.transcripts ?? [] : [];
+    const verifiedTmuxSessionId = agent.transport === "tmux"
+      ? resolveHarnessSessionId("tmux", endpoint?.sessionId ?? null, agentEndpointMetadata(endpoint)) : null;
+    const nativeTranscript = agent.transport === "tmux"
+      ? discoveredTranscripts.find((transcript) => transcript.harness === agent.harness
+        && transcript.sessionId === verifiedTmuxSessionId) ?? null
+      : agent.harness ? mostRecentTranscriptForHarnessCwd(discoveredTranscripts, agent.harness, cwd) : null;
     return c.json(
       buildAgentSessionCatalogPayload({
         agentId,
@@ -6733,7 +6850,8 @@ export async function createOpenScoutWebServer(
         cwd,
         transport: agent.transport,
         terminalSurface: agent.terminalSurface,
-        activeSessionId: endpoint?.sessionId ?? agent.harnessSessionId,
+        activeSessionId: endpoint?.sessionId ?? (agent.transport === "tmux"
+          ? agent.terminalSurface?.sessionName ?? null : agent.harnessSessionId),
         model: observedModel ?? agent.model,
         reasoningEffort: observedEffort ?? agent.reasoningEffort,
         startedAt: agent.createdAt ?? agent.updatedAt,
@@ -7035,6 +7153,10 @@ export async function createOpenScoutWebServer(
       }),
     ),
   );
+  app.get("/api/world/messages", async (c) => {
+    const broker = await loadScoutBrokerContext(undefined, { scope: "conversations", waitForInitial: false });
+    return c.json(broker ? worldBrokerMessages(broker.snapshot, Date.now()) : []);
+  });
   app.get("/api/messages", async (c) => {
     const cId = c.req.query("chatId")
       || c.req.query("cId")
@@ -7050,6 +7172,12 @@ export async function createOpenScoutWebServer(
       DEFAULT_MESSAGE_PAGE_LIMIT,
     );
     const beforeMessageId = c.req.query("beforeMessageId")?.trim() || undefined;
+    // `actor` bounds the page to one agent's neighbourhood — the conversations
+    // it spoke in or was addressed in. Without it an agent-scoped view was
+    // served the global tail, so an agent's own map showed whatever else the
+    // fleet happened to be doing. It only narrows a conversation-less read;
+    // an explicit chat id is already the tighter bound.
+    const actorId = cId ? undefined : c.req.query("actor")?.trim() || undefined;
     let messages;
     try {
       // Cursor shape is the route's business — a malformed cursor is a 400
@@ -7087,7 +7215,7 @@ export async function createOpenScoutWebServer(
       } else {
         messages = brokerMessages ?? queryRecentMessages(
           limit,
-          { conversationId: cId, beforeMessageId },
+          { conversationId: cId, actorId, beforeMessageId },
         );
       }
     } catch (cause) {
@@ -7779,6 +7907,25 @@ export async function createOpenScoutWebServer(
     }
   });
 
+  app.post("/api/conversations/:id/title", async (c) => {
+    const conversationId = c.req.param("id");
+    if (!isOpaqueChannelId(conversationId)) {
+      return c.json({ error: "chatId must be an opaque chat id" }, 400);
+    }
+    const body = (await c.req.json().catch(() => ({}))) as { title?: unknown };
+    try {
+      return c.json(await renameScoutConversation({
+        conversationId,
+        title: typeof body.title === "string" ? body.title : "",
+      }));
+    } catch (cause) {
+      return c.json(
+        { error: cause instanceof Error ? cause.message : String(cause) },
+        502,
+      );
+    }
+  });
+
   const writeConversationMembers = async (
     conversationId: string,
     mutate: (current: string[]) => string[],
@@ -7921,6 +8068,55 @@ export async function createOpenScoutWebServer(
     }
     return conversation ? c.json(conversation) : c.json({ error: "not found" }, 404);
   });
+  // ── Machines (docs/eng/sco-104-machines.md) ──────────────────────────
+  // Every handler forwards to the broker, which owns the scan and the durable
+  // roster. `?refresh=1` and /scan are the only paths that make probes run.
+  app.get("/api/machines", async (c) => {
+    try {
+      const refresh = c.req.query("refresh") === "1" || c.req.query("refresh") === "true";
+      return c.json(await loadMachines({ refresh }));
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      return c.json({ error: message }, 500);
+    }
+  });
+  app.post("/api/machines/scan", async (c) => {
+    try {
+      return c.json(await runMachineScan());
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      return c.json({ error: message }, 500);
+    }
+  });
+  app.get("/api/machines/:reference", async (c) => {
+    try {
+      return c.json(await loadMachine(c.req.param("reference")));
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      return c.json({ error: message }, 500);
+    }
+  });
+  app.patch("/api/machines/:reference", async (c) => {
+    try {
+      const body = (await c.req.json()) as {
+        displayName?: string | null;
+        notes?: string | null;
+        pinned?: boolean;
+      };
+      return c.json(await annotateMachine(c.req.param("reference"), body));
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      return c.json({ error: message }, 500);
+    }
+  });
+  app.delete("/api/machines/:reference", async (c) => {
+    try {
+      return c.json(await forgetMachine(c.req.param("reference")));
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      return c.json({ error: message }, 500);
+    }
+  });
   app.get("/api/mesh", async (c) => {
     try {
       return c.json(await loadMeshStatus());
@@ -7959,6 +8155,51 @@ export async function createOpenScoutWebServer(
         action: TailscaleControlAction;
       };
       return c.json(await controlTailscale(action));
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      return c.json({ error: message }, 500);
+    }
+  });
+
+  // Per-node state for the Network page. Machines are named by the id the mesh
+  // snapshot already publishes, never by URL, and every peer read goes over the
+  // signed/pinned mesh client to an observe-tier route.
+  app.get("/api/mesh/nodes/state", async (c) => {
+    try {
+      return c.json(await meshNodeStateStore.list());
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      return c.json({ error: message }, 500);
+    }
+  });
+
+  // Selection read. `deep=1` allows the selection-only fallback for peers that
+  // predate compact node state; the recurring list refresh never uses it.
+  app.get("/api/mesh/nodes/:machineId/state", async (c) => {
+    const machineId = c.req.param("machineId")?.trim();
+    if (!machineId) return c.json({ error: "machineId is required" }, 400);
+    try {
+      const view = await meshNodeStateStore.read(machineId, {
+        deep: c.req.query("deep") === "1",
+        force: c.req.query("force") === "1",
+      });
+      if (!view) return c.json({ error: "unknown machine" }, 404);
+      return c.json(view);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      return c.json({ error: message }, 500);
+    }
+  });
+
+  // Manual per-node refresh: bypasses freshness and backoff for this machine
+  // only, because the operator asking is itself the evidence worth retrying on.
+  app.post("/api/mesh/nodes/:machineId/refresh", async (c) => {
+    const machineId = c.req.param("machineId")?.trim();
+    if (!machineId) return c.json({ error: "machineId is required" }, 400);
+    try {
+      const view = await meshNodeStateStore.read(machineId, { deep: true, force: true });
+      if (!view) return c.json({ error: "unknown machine" }, 404);
+      return c.json(view);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       return c.json({ error: message }, 500);
@@ -8398,10 +8639,73 @@ export async function createOpenScoutWebServer(
       return c.json({ error: "scoutbot runner is not enabled" }, 503);
     }
     try {
-      return c.json(await scoutbotRunner.getThreads());
+      const [threads, catalog] = await Promise.all([
+        scoutbotRunner.getThreads(), readRunnerOptions("global", currentDirectory),
+      ]);
+      return c.json({ ...threads,
+        defaultModel: catalog.defaultsByHarness.codex?.model ?? null,
+        defaultReasoningEffort: catalog.defaultsByHarness.codex?.reasoningEffort ?? null,
+      });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       return c.json({ error: message }, /broker unreachable/i.test(message) ? 502 : 500);
+    }
+  });
+
+  app.post("/api/scoutbot/threads", async (c) => {
+    const body = await c.req.json().catch(() => null) as {
+      name?: unknown; model?: unknown; reasoningEffort?: unknown;
+      pins?: { projectRoot?: unknown; topic?: unknown };
+    } | null;
+    const model = typeof body?.model === "string" ? body.model.trim() : "";
+    const effort = typeof body?.reasoningEffort === "string" ? body.reasoningEffort.trim() : "";
+    const catalog = (await loadBrokerRuntimeCatalog().catch(() => null))?.catalog ?? SCOUT_RUNTIME_CATALOG;
+    if (!model || !scoutRuntimeModelCatalog(catalog).some((entry) => entry.id === model && entry.harnesses.includes("codex"))) {
+      return c.json({ error: "Choose an available Codex model from the runtime catalog" }, 400);
+    }
+    const supportedEfforts = scoutRuntimeReasoningEfforts("codex", model, catalog) ?? [];
+    if (effort && !supportedEfforts.some((entry) => entry === effort)) {
+      return c.json({ error: "Reasoning effort is not supported by this model" }, 400);
+    }
+    const runner = scoutbot.runner ?? await scoutbot.waitForRunner();
+    if (!runner) return c.json({ error: "scoutbot runner is not enabled" }, 503);
+    try {
+      const projectRoot = typeof body?.pins?.projectRoot === "string" ? body.pins.projectRoot.trim() : "";
+      const topic = typeof body?.pins?.topic === "string" ? body.pins.topic.trim() : "";
+      const thread = await runner.createThread({
+        name: typeof body?.name === "string" ? body.name.trim().slice(0, 120) : "New conversation",
+        model,
+        reasoningEffort: effort || scoutRuntimeDefaultReasoningEffort("codex", model, catalog) || undefined,
+        pins: projectRoot || topic ? { ...(projectRoot ? { projectRoot } : {}), ...(topic ? { topic } : {}) } : null,
+      });
+      return c.json({ thread }, 201);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      return c.json({ error: message }, /broker unreachable/i.test(message) ? 502 : 500);
+    }
+  });
+
+  app.post("/api/scoutbot/messages", async (c) => {
+    const body = await c.req.json().catch(() => null) as {
+      threadId?: unknown; body?: unknown; attachments?: OutgoingAttachmentInput[]; replyToMessageId?: unknown;
+    } | null;
+    const threadId = typeof body?.threadId === "string" ? body.threadId.trim() : "";
+    const messageBody = typeof body?.body === "string" ? body.body.trim() : "";
+    if (!threadId || (!messageBody && !body?.attachments?.length)) {
+      return c.json({ error: "threadId and body or attachments are required" }, 400);
+    }
+    const runner = scoutbot.runner ?? await scoutbot.waitForRunner();
+    if (!runner) return c.json({ error: "scoutbot runner is not enabled" }, 503);
+    try {
+      const result = await runner.postOperatorMessage({
+        threadId, body: messageBody, attachments: body?.attachments,
+        replyToMessageId: typeof body?.replyToMessageId === "string" ? body.replyToMessageId : undefined,
+      });
+      if (!result.usedBroker) return c.json({ error: "broker unreachable" }, 502);
+      return c.json(result);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      return c.json({ error: message }, /unknown scoutbot thread/i.test(message) ? 404 : /scoutbot_turn_pending/.test(message) ? 409 : /scoutbot_runtime_fixed/.test(message) ? 400 : 500);
     }
   });
 
@@ -8925,6 +9229,13 @@ export async function createOpenScoutWebServer(
       await writeOpenScoutSettings({ voice: { realtimeEnabled: enabled } }, { currentDirectory })
     ).voice.realtimeEnabled,
     realtimeVoiceEnvironment: process.env,
+    readVoicePlayback: async () => (
+      await readOpenScoutSettings({ currentDirectory })
+    ).voice.playback,
+    writeVoicePlayback: async (playback) => (
+      await writeOpenScoutSettings({ voice: { playback } }, { currentDirectory })
+    ).voice.playback,
+    voiceEnvironment: process.env,
   });
 
   // Dev-only: serve generated Scoutbot FX fixtures for /dev/scoutbot-fx lab.

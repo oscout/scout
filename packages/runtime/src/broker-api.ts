@@ -73,10 +73,7 @@ export type ScoutBrokerProjectionStatus = {
   detail: string | null;
 };
 
-export type ScoutBrokerStartupStatus = {
-  state: "restoring" | "ready";
-  mutationsAdmitted: boolean;
-};
+export type ScoutBrokerStartupStatus = import("./broker-startup-traffic-gate.js").BrokerStartupTrafficGateSnapshot;
 
 export type ScoutBrokerHealthPayload = {
   ok: boolean;
@@ -103,7 +100,8 @@ export type ScoutBrokerHealthPayload = {
     oneTimeAgentCards?: number;
     persistentAgentCards?: number;
     conversations: number;
-    messages: number;
+    /** Null until historical membership is fully covered. */
+    messages: number | null;
     flights: number;
     collaborationRecords: number;
   } | null;
@@ -185,8 +183,11 @@ export type ActiveScoutBrokerService = {
   matchesBaseUrl?: (baseUrl: string) => boolean;
   readHealth: () => Promise<ScoutBrokerHealthPayload>;
   readHome?: () => Promise<unknown>;
+  /** Observe-tier compact node state; absent on brokers that predate it. */
+  readMeshNodeState?: () => Promise<unknown> | unknown;
   readNode: () => Promise<NodeDefinition>;
   readSnapshot: (query?: RuntimeRegistrySnapshotQuery) => Promise<RuntimeRegistrySnapshot>;
+  withSnapshot?: <T>(query:RuntimeRegistrySnapshotQuery,consume:(snapshot:RuntimeRegistrySnapshot)=>Promise<T>,options?:{signal?:AbortSignal})=>Promise<T>;
   readConversationProjection?: (
     query: ScoutBrokerConversationProjectionQuery,
   ) => Promise<ConversationProjectionSnapshot | null>;
@@ -244,7 +245,9 @@ export type ActiveScoutBrokerServiceResult<T> =
   | { handled: true; value: T };
 
 export type ScoutBrokerJsonRequestOptions<T> = {
-  method?: "GET" | "POST";
+  // Both transports (fetch and the unix-socket http client) pass the verb
+  // straight through, so this list is a contract choice, not a limitation.
+  method?: "GET" | "POST" | "PATCH" | "DELETE";
   body?: unknown;
   headers?: Record<string, string>;
   socketPath?: string | null;

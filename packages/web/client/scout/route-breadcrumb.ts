@@ -11,8 +11,8 @@ export const ROUTE_VIEW_LABELS: Record<string, string> = {
   inbox: "Home",
   conversation: "Conversation",
   "agent-info": "Agent",
-  "agents-v2": "Crew & Workspaces",
-  messages: "Messages",
+  "agents-v2": "Agents",
+  messages: "Chat",
   sessions: "Sessions",
   terminal: "Terminals",
   repos: "Repositories",
@@ -23,12 +23,12 @@ export const ROUTE_VIEW_LABELS: Record<string, string> = {
   briefings: "Briefings",
   mesh: "Network",
   "mesh-ops": "Mesh Ops",
-  broker: "Dispatch",
+  broker: "Broker",
   settings: "Settings",
   work: "Work",
   follow: "Follow",
   code: "Code Browser",
-  ops: "Operations",
+  ops: "Ops",
   voice: "Live Voice",
 };
 
@@ -50,14 +50,15 @@ export function routeBreadcrumbForRoute(route: Route): string | null {
     case "harnesses":
     case "mesh":
     case "mesh-ops":
-    case "broker":
     case "work":
     case "code":
     case "briefings":
     case "activity":
     case "follow":
-    case "terminal":
     case "voice":
+    // Sessions lives under the Terminals tab now; the crumb says which
+    // surface of that tab is open.
+    case "sessions":
       return ROUTE_VIEW_LABELS[route.view] ?? route.view;
     case "ops": {
       if (route.mode === "tail") return "Live Activity";
@@ -67,15 +68,17 @@ export function routeBreadcrumbForRoute(route: Route): string | null {
       if (route.mode === "mission" || route.mode === "issues" || route.mode === undefined) {
         return "Mission Control";
       }
-      return ROUTE_VIEW_LABELS.ops ?? "Operations";
+      return ROUTE_VIEW_LABELS.ops ?? "Ops";
     }
     case "settings":
       return "Settings";
     case "inbox":
     case "agents-v2":
-    case "sessions":
     case "messages":
     case "search":
+    // Broker and Terminals are top tabs; the tab conveys the location.
+    case "broker":
+    case "terminal":
     default:
       return null;
   }

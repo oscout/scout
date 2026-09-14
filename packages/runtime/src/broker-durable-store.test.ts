@@ -210,3 +210,22 @@ describe("BrokerDurableStore", () => {
     expect(published).toBe(false);
   });
 });
+
+test("startup deferral retains journal facts without queuing projection payloads", async () => {
+  let defer = true; const accepted: BrokerJournalEntry[] = [], projected: BrokerJournalEntry[] = [];
+  let release!: () => void;
+  const eventDrain = new Promise<void>(r => { release = r; });
+  const durable = new BrokerDurableStore({
+    journal: { async appendEntries(entries) { accepted.push(...entries); return entries; } },
+    projection: { async applyEntries(entries) { projected.push(...entries); return []; } },
+    threadEvents: { publish() {} }, deferProjection: () => defer, afterRuntime: () => eventDrain,
+  });
+  let acknowledged = false;
+  const write = durable.runWrite(async () => { await durable.commitEntries(nodeEntry("core"), async () => {}); acknowledged = true; });
+  await new Promise(r => setImmediate(r));
+  expect(acknowledged).toBe(false); release(); await write;
+  await durable.flushProjectedEntries(); expect(projected).toHaveLength(0); expect(accepted).toHaveLength(1);
+  defer = false;
+  await durable.runWrite(() => durable.commitEntries(nodeEntry("live"), async () => {}));
+  await durable.flushProjectedEntries(); expect(projected).toEqual([nodeEntry("live")]);
+});

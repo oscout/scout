@@ -178,6 +178,40 @@ CREATE INDEX IF NOT EXISTS idx_terminal_workspaces_updated
   ON terminal_workspaces (updated_at DESC);
 `;
 
+// Machine inventory, as the idempotent repair layer for databases that predate
+// it. Mirrors the `machines` block inside CONTROL_PLANE_SQLITE_SCHEMA exactly —
+// the imperative migration execs this one when the table is missing.
+export const MACHINES_SQLITE_SCHEMA = `
+CREATE TABLE IF NOT EXISTS machines (
+  id TEXT PRIMARY KEY,
+  display_name TEXT,
+  name TEXT NOT NULL,
+  platform TEXT NOT NULL,
+  identity_keys_json TEXT NOT NULL,
+  is_self INTEGER NOT NULL DEFAULT 0,
+  scout_node_id TEXT,
+  mesh_id TEXT,
+  tailnet_id TEXT,
+  tailnet_name TEXT,
+  host_names_json TEXT,
+  addresses_json TEXT,
+  mac_addresses_json TEXT,
+  capabilities_json TEXT,
+  routes_json TEXT,
+  evidence_json TEXT,
+  pinned INTEGER NOT NULL DEFAULT 0,
+  notes TEXT,
+  metadata_json TEXT,
+  first_seen_at INTEGER NOT NULL,
+  last_seen_at INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_machines_last_seen_at
+  ON machines (last_seen_at DESC);
+CREATE INDEX IF NOT EXISTS idx_machines_scout_node_id
+  ON machines (scout_node_id);
+`;
+
 // Do not AUTHOR schema changes here. The declarative model in
 // drizzle-schema.ts is the schema authority: edit it there, run `bun run
 // db:generate`, commit the generated migration, and then mirror the change
@@ -203,6 +237,33 @@ CREATE TABLE IF NOT EXISTS nodes (
   metadata_json TEXT,
   last_seen_at INTEGER,
   registered_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS machines (
+  id TEXT PRIMARY KEY,
+  display_name TEXT,
+  name TEXT NOT NULL,
+  platform TEXT NOT NULL,
+  -- Sorted durable identity keys, JSON array. This is the join key set the
+  -- next inventory pass seeds its grouping with, so a machine seen by one
+  -- channel today and another tomorrow stays one record.
+  identity_keys_json TEXT NOT NULL,
+  is_self INTEGER NOT NULL DEFAULT 0,
+  scout_node_id TEXT,
+  mesh_id TEXT,
+  tailnet_id TEXT,
+  tailnet_name TEXT,
+  host_names_json TEXT,
+  addresses_json TEXT,
+  mac_addresses_json TEXT,
+  capabilities_json TEXT,
+  routes_json TEXT,
+  evidence_json TEXT,
+  pinned INTEGER NOT NULL DEFAULT 0,
+  notes TEXT,
+  metadata_json TEXT,
+  first_seen_at INTEGER NOT NULL,
+  last_seen_at INTEGER NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS trusted_peers (
@@ -826,6 +887,10 @@ CREATE TABLE IF NOT EXISTS mission_log_entries (
 
 CREATE INDEX IF NOT EXISTS idx_nodes_mesh_id
   ON nodes (mesh_id);
+CREATE INDEX IF NOT EXISTS idx_machines_last_seen_at
+  ON machines (last_seen_at DESC);
+CREATE INDEX IF NOT EXISTS idx_machines_scout_node_id
+  ON machines (scout_node_id);
 CREATE INDEX IF NOT EXISTS idx_trusted_peers_node_id
   ON trusted_peers (node_id);
 CREATE INDEX IF NOT EXISTS idx_trusted_peers_label
@@ -854,6 +919,8 @@ CREATE INDEX IF NOT EXISTS idx_conversation_members_actor
   ON conversation_members (actor_id, conversation_id);
 CREATE INDEX IF NOT EXISTS idx_messages_conversation_created_at
   ON messages (conversation_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_messages_conversation_epoch_id
+  ON messages (conversation_id, CASE WHEN created_at > 0 AND created_at < 1000000000000 THEN created_at * 1000 ELSE created_at END DESC, id DESC);
 CREATE INDEX IF NOT EXISTS idx_messages_created_at
   ON messages (created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_messages_actor_created_at

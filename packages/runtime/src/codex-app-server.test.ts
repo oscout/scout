@@ -23,8 +23,14 @@ import {
 
 const tempPaths = new Set<string>();
 const originalCodexBin = process.env.OPENSCOUT_CODEX_BIN;
+const originalOpenAIAPIKey = process.env.OPENAI_API_KEY;
 
 afterEach(() => {
+  if (originalOpenAIAPIKey === undefined) {
+    delete process.env.OPENAI_API_KEY;
+  } else {
+    process.env.OPENAI_API_KEY = originalOpenAIAPIKey;
+  }
   if (originalCodexBin === undefined) {
     delete process.env.OPENSCOUT_CODEX_BIN;
   } else {
@@ -1686,6 +1692,8 @@ describe("ensureCodexAppServerAgentOnline", () => {
   });
 
   test("passes launch args through to the spawned app-server process", async () => {
+    // Exercise managed auth-file setup regardless of the operator's API-key environment.
+    delete process.env.OPENAI_API_KEY;
     const tempRoot = mkdtempSync(join(tmpdir(), "openscout-codex-launch-args-test-"));
     tempPaths.add(tempRoot);
     const runtimeDirectory = join(tempRoot, "runtime");

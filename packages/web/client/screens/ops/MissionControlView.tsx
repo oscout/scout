@@ -1,11 +1,15 @@
+import { sendToFocusedAgentSession } from "../../lib/send-to-agent-session.ts";
 import "./mission-control.css";
 
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { api } from "../../lib/api.ts";
 import {
+  MISSION_TIME_FILTERS,
   clearMissionRevealRequest,
   clearMissionSelection,
+  missionTimeFilterId,
   setMissionFocusedId,
+  setMissionTimeFilter,
   setMissionVisibleAgents,
   toggleMissionSelected,
   useMissionControlStore,
@@ -150,55 +154,6 @@ function transcriptForLog(
   };
 }
 
-function nativeSessionInstructionsPayload(agent: Agent, instructions: string) {
-  const sessionId = agent.harnessSessionId?.trim();
-  if (!sessionId) {
-    throw new Error("This native session has no session id to continue.");
-  }
-  const projectPath = agent.projectRoot?.trim() || agent.cwd?.trim();
-  if (!projectPath) {
-    throw new Error("This native session has no project path to route from.");
-  }
-  const harness = agent.harness?.trim();
-  const model = agent.model?.trim();
-  return {
-    target: { projectPath },
-    execution: {
-      session: "existing",
-      targetSessionId: sessionId,
-      ...(harness ? { harness } : {}),
-      ...(model ? { model } : {}),
-    },
-    agent: {
-      persistence: "one_time",
-      ...(agent.handle?.trim() ? { handle: agent.handle.trim() } : {}),
-    },
-    seed: { instructions },
-  };
-}
-
-async function sendToFocusedAgentSession(agent: Agent, body: string): Promise<void> {
-  if (isNativeSessionAgent(agent)) {
-    await api<unknown>("/api/sessions", {
-      method: "POST",
-      body: JSON.stringify(nativeSessionInstructionsPayload(agent, body)),
-    });
-    return;
-  }
-
-  const conversationId = await ensureAgentChat(agent);
-  await api<unknown>("/api/send", {
-    method: "POST",
-    body: JSON.stringify({
-      body,
-      chatId: conversationId,
-      execution: {
-        ...(agent.harness?.trim() ? { harness: agent.harness.trim() } : {}),
-        ...(agent.model?.trim() ? { model: agent.model.trim() } : {}),
-      },
-    }),
-  });
-}
 
 function missionActivity(log: MissionLog, now: number, windowMs: number): MissionActivityState {
   if (log.live) return "active";
@@ -353,6 +308,7 @@ export function MissionControlView({
 
   /* ── Tiling ── */
 
+  const rootRef = useRef<HTMLDivElement>(null);
   const wallRef = useRef<HTMLDivElement>(null);
   // State holds the discrete tiling, not the measured size: a drag-resize
   // reports a new contentRect every frame, but the wall only changes at grid
@@ -564,6 +520,20 @@ export function MissionControlView({
       }
       if (e.metaKey || e.ctrlKey || e.altKey) return;
 
+      // Someone upstream already answered this key: the left rail's list steps
+      // its own rows on j/k and the shell's go-chord takes `g`, both with
+      // preventDefault. Reading it again here moved the wall cursor under a
+      // sidebar keystroke.
+      if (e.defaultPrevented) return;
+      // The wall reads keys aimed at it — nothing focused, or focus somewhere
+      // inside the wall (a pane, the rail, a status chip). A key pressed with
+      // focus parked in the sidebar belongs to the sidebar.
+      const target = e.target instanceof Node ? e.target : null;
+      const unfocused = !target
+        || target === document.body
+        || target === document.documentElement;
+      if (!unfocused && !rootRef.current?.contains(target)) return;
+
       const { index, ids } = cursorRef.current;
       if (ids.length === 0) return;
 
@@ -572,6 +542,16 @@ export function MissionControlView({
         e.preventDefault();
         const next = moveWallCursor(index, ids.length, colsRef.current, move);
         setCursorId(ids[next] ?? null);
+        return;
+      }
+
+      // Enter and Space on a button inside the wall (a filter chip, a rail
+      // action, a pane's file link) are that button's click, not a wall
+      // command — otherwise activating "Tail ↗" also opened the context rail.
+      if (
+        target instanceof Element
+        && target.closest("button, a, [role='button'], [role='link']")
+      ) {
         return;
       }
 
@@ -604,9 +584,10 @@ export function MissionControlView({
 
   const streamingLines = shown.reduce((total, log) => total + log.lines.length, 0);
   const quiet = logs.length - ordered.length;
+  const timeFilterId = missionTimeFilterId(mc);
 
   return (
-    <div className="s-wall">
+    <div className="s-wall" ref={rootRef}>
       <div className="s-wall-status">
         <span className="s-wall-status-key">logs</span>
         <span className="s-wall-status-value">
@@ -628,6 +609,25 @@ export function MissionControlView({
             {quiet} quiet
           </span>
         )}
+        {/* The one filter that decides what the wall shows lives on the wall,
+            not only in a side panel that may be collapsed. */}
+        <span className="s-wall-status-filter" role="group" aria-label="Show logs active within">
+          <span className="s-wall-status-key">within</span>
+          {MISSION_TIME_FILTERS.map((filter) => {
+            const active = timeFilterId === filter.id;
+            return (
+              <button
+                key={filter.id}
+                type="button"
+                className={`s-wall-status-chip${active ? " s-wall-status-chip--active" : ""}`}
+                aria-pressed={active}
+                onClick={() => setMissionTimeFilter(filter.id)}
+              >
+                {filter.label}
+              </button>
+            );
+          })}
+        </span>
         {shown.length > 0 && (
           <span className="s-wall-status-keys">
             <kbd>hjkl</kbd> move · <kbd>⏎</kbd> context · <kbd>o</kbd> expand
@@ -694,7 +694,7 @@ export function MissionControlView({
           agent={focusedAgent}
           observe={focusedObserve}
           onClose={() => setMissionFocusedId(null)}
-          onSend={(body) => sendToFocusedAgentSession(focusedAgent, body)}
+          onSend={async (body) => { await sendToFocusedAgentSession(focusedAgent, body); }}
           onOpenConversation={() => {
             setMissionFocusedId(null);
             if (isNativeSessionAgent(focusedAgent) && focusedAgent.harnessSessionId) {

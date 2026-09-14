@@ -4,7 +4,7 @@ export function normalizeCliBinaryMtimeMs(value: number): number {
 
 export function shouldEnsureBrokerUptodateForCommand(command: string | null): boolean {
   // Local-only knowledge search does not need broker maintenance.
-  return command !== "mcp" && command !== "statusline" && command !== "search";
+  return command !== "report" && command !== "feedback" && command !== "mcp" && command !== "statusline" && command !== "search";
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

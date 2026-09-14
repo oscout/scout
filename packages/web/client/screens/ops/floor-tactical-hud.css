@@ -1,0 +1,48 @@
+.floor-tactical { position: absolute; z-index: 8; border: 1px solid var(--floor-line-2); border-radius: 7px; background: var(--floor-bg); color: var(--floor-ink); font-size: 11px; box-shadow: 0 9px 24px -16px var(--floor-shadow-strong); }
+.floor-tactical button { cursor: pointer; color: inherit; }
+.floor-tactical button:focus-visible { outline: 2px solid var(--floor-accent); outline-offset: 2px; }
+.floor-tactical__radar { left: 14px; bottom: 14px; width: 186px; }
+.floor-tactical__radar-toggle { display: flex; align-items: center; gap: 7px; padding: 10px 11px; width: 100%; border: 0; background: none; font-size: 11px; }
+.floor-tactical__radar-toggle > svg:last-child { margin-left: auto; }
+.floor-tactical__map { position: relative; margin: 0 8px; height: 116px; background: var(--floor-face-1); border: 1px solid var(--floor-line-soft); }
+.floor-tactical__room { position: absolute; width: 42.7%; height: 40.7%; border: 1px solid var(--floor-line-2); border-radius: 2px; background: var(--floor-face-2); padding: 0; }
+.floor-tactical__room span { position: absolute; top: 2px; left: 3px; font-size: 7px; color: var(--floor-muted); }
+.floor-tactical__room.is-occupied { border-top-color: var(--floor-accent); }
+.floor-tactical__room:hover { background: var(--floor-face-3); }
+.floor-tactical__dot { position: absolute; z-index: 2; width: 8px; height: 8px; margin: -4px; padding: 0; background: var(--floor-muted); border: 1px solid var(--floor-bg); border-radius: 50%; }
+.floor-tactical__dot.is-working { background: var(--floor-accent); }
+.floor-tactical__dot.is-attention, .floor-tactical__dot.is-blocked { background: var(--yellow, #e9b958); }
+.floor-tactical__dot.is-selected { outline: 1px solid var(--floor-ink); outline-offset: 2px; }
+.floor-tactical__radar > p { padding: 7px 10px; margin: 0; font-size: 9px; color: var(--floor-muted); }
+.floor-tactical__motion { display: flex; gap: 8px; align-items: center; padding: 9px 11px; border: 0; border-top: 1px solid var(--floor-line-soft); width: 100%; background: transparent; font-size: 10px; }
+.floor-tactical__motion[aria-pressed="true"] { color: var(--floor-accent); }
+.floor-tactical__paused { display: block; padding: 0 11px 9px; font-size: 9px; color: var(--floor-accent); }
+.floor-tactical__activity { right: 14px; top: 65px; width: 185px; }
+.floor-tactical__attention { display: flex; align-items: center; gap: 6px; width: 100%; padding: 10px; border: 0; border-bottom: 1px solid var(--floor-line-soft); background: none; font-size: 10px; }
+.floor-tactical__attention > svg:last-child { margin-left: auto; }
+.floor-tactical__attention.has-attention { color: var(--yellow, #e9b958); }
+.floor-tactical__activity h3 { font-size: 10px; font-weight: 600; margin: 0; padding: 10px 10px 5px; display: flex; justify-content: space-between; }
+.floor-tactical__activity h3 span { color: var(--floor-muted); font-weight: 400; }
+.floor-tactical__activity-item { display: block; width: 100%; padding: 8px 10px; background: none; border: 0; border-bottom: 1px solid var(--floor-line-soft); text-align: left; }
+.floor-tactical__activity-item > span { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.floor-tactical__activity-item strong { max-width: 110px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; font-weight: 500; }
+.floor-tactical__activity-item time { color: var(--floor-muted); font-size: 9px; }
+.floor-tactical__activity-item small { display: block; padding-top: 4px; font-size: 9px; color: var(--floor-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.floor-tactical__activity-item:hover { background: var(--floor-face-2); }
+.floor-tactical__attention-list { padding: 0 10px; border-bottom: 1px solid var(--floor-line-2); max-height: 220px; overflow: auto; }
+.floor-tactical__attention-list button { display: block; width: 100%; border: 0; border-bottom: 1px solid var(--floor-line-soft); background: transparent; text-align: left; padding: 9px 0; }
+.floor-tactical__attention-list strong, .floor-tactical__attention-list small { display: block; font-size: 10px; }
+.floor-tactical__attention-list small { margin-top: 4px; color: var(--floor-muted); }
+.floor-tactical__attention-list p, .floor-tactical__empty { padding: 5px 0; font-size: 10px; line-height: 1.5; color: var(--floor-muted); }
+.floor-tactical__empty { padding-inline: 10px; }
+@container (max-width: 700px) { .floor-tactical__activity { display: none; } .floor-tactical__radar { width: 150px; } .floor-tactical__map { height: 94px; } }
+.floor-world.is-motion-paused .floor-world__sprite, .floor-world.is-motion-paused .floor-world__screen i { animation-play-state: paused !important; }
+.floor-saved__list { max-height: 190px; overflow: auto; overscroll-behavior: contain; padding: 0 10px; border-top: 1px solid var(--floor-line-soft); }
+.floor-saved__list article { padding: 10px 0; border-bottom: 1px solid var(--floor-line-soft); }
+.floor-saved__list button { border: 0; padding: 0; background: none; text-align: left; }
+.floor-saved__list button:disabled { cursor: default; }
+.floor-saved__list strong, .floor-saved__list small { display: block; font-size: 10px; }
+.floor-saved__list small { color: var(--floor-muted); margin-top: 3px; }
+.floor-saved__list p { font-size: 10px; line-height: 1.5; overflow-wrap: anywhere; white-space: pre-wrap; }
+.floor-saved__list footer { display: flex; align-items: center; justify-content: space-between; }
+.floor-tactical__radar { max-height: calc(100% - 85px); overflow: auto; }

@@ -24,6 +24,12 @@ import {
   clearEndpointFailureMetadata,
   type LocalAgentBinding,
 } from "./local-agents.js";
+import {
+  discardAdoptedSessionEvidence,
+  endpointSessionIdIsUnverified,
+  sessionObservationMetadata,
+  type LocalEndpointSessionObservation,
+} from "./session-observation.js";
 
 type LocalEndpointRuntime = {
   endpointsForAgent(
@@ -58,6 +64,12 @@ export type BrokerLocalEndpointResolverOptions = {
    * changing that agent's configured endpoint or runtime metadata.
    */
   createIsolatedAgentEndpoint?: (invocation: InvocationRequest) => Promise<AgentEndpoint | null>;
+  /**
+   * What the harness itself reports about the session behind an endpoint whose
+   * transport cannot be asked over a wire (tmux). Null when no live, unambiguous
+   * harness record exists for that endpoint.
+   */
+  observeLocalEndpointSession?: (endpoint: AgentEndpoint) => Promise<LocalEndpointSessionObservation | null>;
   upsertActor: (actor: ActorIdentity) => Promise<void>;
   upsertAgent: (agent: AgentDefinition) => Promise<void>;
   persistEndpoint: (endpoint: AgentEndpoint) => Promise<void>;
@@ -189,10 +201,24 @@ export class BrokerLocalEndpointResolver {
       )
     ) {
       assertEndpointPlacementMatches(existing, invocation);
-      if (hasExplicitRuntime) {
-        assertEndpointObservedRuntimeMatches(existing, invocation, this.now());
+      // Exact continuations and exact runtimes are judged on what the harness
+      // reports: re-read its record for a named session (a stale or adopted
+      // alias must not steer a request into a session it does not name), and
+      // give an unobserved runtime one chance to be observed before ruling.
+      const evidence = shouldUseExistingSession || hasExplicitRuntime
+        ? await this.withObservedSessionEvidence(existing, { verifyIdentity: shouldUseExistingSession, invocation })
+        : { endpoint: existing };
+      const evidenced = evidence.endpoint;
+      if (targetSessionId && !endpointMatchesTargetSession(evidenced, targetSessionId)) {
+        throw new Error(
+          `session_identity_mismatch: session ${targetSessionId} is not the session running on `
+            + `${existing.sessionId ?? existing.id}; its harness reports ${localEndpointProviderSessionId(evidenced)}`,
+        );
       }
-      return existing;
+      if (hasExplicitRuntime) {
+        assertEndpointObservedRuntimeMatches(evidenced, invocation, this.now(), evidence.resumeHarness);
+      }
+      return evidenced;
     }
 
     if (!shouldUseExistingSession && sessionPreference === "existing") {
@@ -219,7 +245,16 @@ export class BrokerLocalEndpointResolver {
       for (const endpoint of staleEndpoints) {
         assertEndpointPlacementMatches(endpoint, invocation);
         try {
-          const revived = await this.reviveExactSessionEndpoint(endpoint);
+          const checked = endpoint.transport === "tmux" && endpoint.harness === "claude"
+            ? await this.withObservedSessionEvidence(endpoint, { verifyIdentity: true, invocation })
+            : { endpoint };
+          if (!endpointMatchesTargetSession(checked.endpoint, targetSessionId!)) {
+            throw new Error(`session_identity_mismatch: session ${targetSessionId} is not the current native session`);
+          }
+          if (endpoint.transport === "tmux" && endpoint.harness === "claude" && hasExplicitRuntime) {
+            assertEndpointObservedRuntimeMatches(checked.endpoint, invocation, this.now(), checked.resumeHarness);
+          }
+          const revived = await this.reviveExactSessionEndpoint(checked.endpoint);
           if (revived) return revived;
         } catch (error) {
           if (isCodexThreadHeldExternallyError(error)) {
@@ -256,6 +291,12 @@ export class BrokerLocalEndpointResolver {
     }
 
     if (targetSessionId && invocation.ensureAwake) {
+      const correlated = await this.correlatePendingExternalSession(
+        invocation,
+        targetSessionId,
+        requestedHarness,
+      );
+      if (correlated) return correlated;
       throw new Error(`session ${targetSessionId} is not currently reachable`);
     }
 
@@ -281,6 +322,122 @@ export class BrokerLocalEndpointResolver {
     await this.options.upsertAgent(binding.agent);
     await this.options.persistEndpoint(binding.endpoint);
     return binding.endpoint;
+  }
+
+  /**
+   * Scout registers a session-backed endpoint the moment it launches a harness,
+   * before that harness has told us its own session id, and records
+   * `pendingExternalSession` to say the id is still owed. `prepareLocalEndpoint\
+ForInvocation` settles that debt for the transports that can be asked directly
+   * (codex_app_server, claude_stream_json, pi_rpc). A tmux-hosted harness
+   * cannot be asked over a wire, but it still records its own identity on disk
+   * (Claude Code names the tmux pane it runs in next to its session id), and
+   * `observeLocalEndpointSession` reads that record for the endpoint's pane.
+   *
+   * A steer addressed by a harness id therefore correlates; it never adopts.
+   * Every live endpoint still owed a verified id is asked what its harness
+   * says about it, that answer is persisted as the endpoint's alias whether or
+   * not it is the id the caller named, and the steer proceeds only onto an
+   * endpoint whose harness reported exactly the requested id. The caller's id
+   * is a claim to check against evidence, not evidence that the only pending
+   * process is theirs; missing or ambiguous evidence leaves the endpoint
+   * pending and the request unmet.
+   */
+  private async correlatePendingExternalSession(
+    invocation: InvocationRequest,
+    targetSessionId: string,
+    requestedHarness: AgentEndpoint["harness"] | undefined,
+  ): Promise<AgentEndpoint | undefined> {
+    if (!this.options.observeLocalEndpointSession) return undefined;
+    const candidates = this.options.runtime.endpointsForAgent(invocation.targetAgentId, {
+      nodeId: this.options.nodeId,
+      harness: requestedHarness,
+    }).filter((endpoint) => (
+      endpointSessionIdIsUnverified(endpoint)
+      && endpoint.metadata?.staleLocalRegistration !== true
+      && isCorrelatableEndpointState(endpoint.state)
+    ));
+    let matched: AgentEndpoint | undefined;
+    for (const endpoint of candidates) {
+      if (!(await this.endpointIsAlive(endpoint))) continue;
+      const observed = await this.observedEndpoint(endpoint);
+      if (!observed) continue;
+      // Evidence about this endpoint is worth keeping whether or not it
+      // satisfies this request: the next steer resolves by alias directly.
+      await this.options.persistEndpoint(observed);
+      if (!matched && localEndpointProviderSessionId(observed) === targetSessionId) {
+        matched = observed;
+      }
+    }
+    if (!matched) return undefined;
+    assertEndpointPlacementMatches(matched, invocation);
+    if (invocationHasExplicitRuntime(invocation)) {
+      assertEndpointObservedRuntimeMatches(matched, invocation, this.now());
+    }
+    return matched;
+  }
+
+  /**
+   * Fold in the current harness report, or quarantine prior caller-adopted
+   * evidence if observation is unavailable. Named sessions re-read identity;
+   * runtime-only requests re-read while no trustworthy model is available.
+   */
+  private async withObservedSessionEvidence(
+    endpoint: AgentEndpoint,
+    options: { verifyIdentity: boolean; invocation: InvocationRequest },
+  ): Promise<{ endpoint: AgentEndpoint; resumeHarness?: string }> {
+    const adopted = typeof endpoint.metadata?.externalSessionAdoptedAt === "number";
+    const tmuxClaude = endpoint.transport === "tmux" && endpoint.harness === "claude";
+    if (!tmuxClaude && !adopted && !options.verifyIdentity && observedRuntimeForEndpoint(endpoint).model) return { endpoint };
+    const observed = await this.observedEndpoint(endpoint);
+    if (!observed) {
+      const quarantined = discardAdoptedSessionEvidence(endpoint);
+      if (quarantined !== endpoint) await this.options.persistEndpoint(quarantined);
+      const target = invocationTargetSessionId(options.invocation);
+      const exactNative = target && target !== endpoint.id && target !== endpoint.sessionId;
+      if (!adopted && tmuxClaude && (options.invocation.execution?.model || options.invocation.execution?.reasoningEffort)) {
+        throw new Error(`session_runtime_unobserved: session ${target ?? endpoint.sessionId ?? endpoint.id} has no current model or effort observation`);
+      }
+      if (!adopted && exactNative && endpoint.transport === "tmux" && endpoint.harness === "claude") {
+        // A configured-agent restart creates a fresh context. Only a stopped
+        // flat-dispatch endpoint has the supported native --resume path.
+        const canResume = endpoint.metadata?.flatDispatch === true && options.invocation.ensureAwake
+          && !(await this.endpointIsAlive(endpoint));
+        if (!canResume) throw new Error(`session_identity_unobserved: cannot verify native session ${target} on ${endpoint.sessionId ?? endpoint.id}`);
+        const awaitingResume: AgentEndpoint = { ...endpoint, metadata: { ...endpoint.metadata,
+          pendingExternalSession: false, observedSessionId: null, observedSessionEvidence: null,
+          observedRuntime: null, observedHarness: null, observedModel: null, observedReasoningEffort: null,
+          observedRuntimeAt: null, observedRuntimeSource: null,
+        } };
+        await this.options.persistEndpoint(awaitingResume);
+        // This is a supported routing hint, not a persisted runtime observation.
+        return { endpoint: awaitingResume, resumeHarness: "claude" };
+      }
+      return { endpoint: quarantined };
+    }
+    await this.options.persistEndpoint(observed);
+    return { endpoint: observed };
+  }
+
+  private async observedEndpoint(endpoint: AgentEndpoint): Promise<AgentEndpoint | null> {
+    const observe = this.options.observeLocalEndpointSession;
+    if (!observe) return null;
+    let observation: LocalEndpointSessionObservation | null;
+    try {
+      observation = await observe(endpoint);
+    } catch {
+      observation = null;
+    }
+    if (!observation) return null;
+    return promoteLocalEndpointProviderSession(endpoint, {
+      metadata: sessionObservationMetadata(endpoint, observation),
+    });
+  }
+
+  private async endpointIsAlive(endpoint: AgentEndpoint): Promise<boolean> {
+    return this.options.isLocalAgentEndpointAliveAsync
+      ? await this.options.isLocalAgentEndpointAliveAsync(endpoint)
+      : this.options.isLocalAgentEndpointAlive(endpoint);
   }
 
   async prepareLocalEndpointForInvocation(endpoint: AgentEndpoint): Promise<AgentEndpoint> {
@@ -438,6 +595,7 @@ function assertEndpointObservedRuntimeMatches(
   endpoint: AgentEndpoint,
   invocation: InvocationRequest,
   now: number,
+  resumeHarness?: string,
 ): void {
   const observed = observedRuntimeForEndpoint(endpoint);
   const provisioned = provisionedRuntimeForPendingEndpoint(endpoint, now);
@@ -449,7 +607,7 @@ function assertEndpointObservedRuntimeMatches(
   for (const dimension of ["harness", "model", "reasoningEffort"] as const) {
     const expected = requested[dimension];
     if (!expected) continue;
-    const actual = observed[dimension];
+    const actual = observed[dimension] ?? (dimension === "harness" ? resumeHarness : undefined);
     if (!actual) {
       const pendingActual = provisioned?.[dimension];
       if (pendingActual) {
@@ -475,6 +633,16 @@ function assertEndpointObservedRuntimeMatches(
   }
 }
 
+/** States in which a tmux/host-backed session can still take a steer. */
+function isCorrelatableEndpointState(state: AgentEndpoint["state"]): boolean {
+  return state === "idle"
+    || state === "active"
+    || state === "waiting"
+    || state === "working"
+    || state === "attaching"
+    || state === "waking";
+}
+
 /**
  * A Scout-owned session has to receive its first invocation before the harness
  * can report observed runtime metadata. During that narrow pending-launch
@@ -484,26 +652,18 @@ function assertEndpointObservedRuntimeMatches(
  */
 export const PENDING_PROVISIONED_RUNTIME_TRUST_MS = 2 * 60_000;
 
-function provisionedRuntimeForPendingEndpoint(
+/**
+ * What Scout launched this endpoint with, read off the endpoint itself. A
+ * promise about a process, not an observation of one — the caller decides
+ * whether it has earned the right to be trusted.
+ */
+export function provisionedRuntimeForScoutOwnedEndpoint(
   endpoint: AgentEndpoint,
-  now: number,
 ): ObservedRuntime | undefined {
   const metadata = endpoint.metadata ?? {};
   if (
-    metadata.pendingExternalSession !== true
-    || metadata.sessionBacked !== true
+    metadata.sessionBacked !== true
     || (metadata.source !== "scout-cardless-session" && metadata.source !== "scout-isolated-agent-session")
-  ) {
-    return undefined;
-  }
-
-  const pendingAt = metadataTimestamp(
-    metadata.pendingExternalSessionAt ?? metadata.startedAt,
-  );
-  if (
-    !pendingAt
-    || pendingAt > now + 30_000
-    || now - pendingAt >= PENDING_PROVISIONED_RUNTIME_TRUST_MS
   ) {
     return undefined;
   }
@@ -526,6 +686,29 @@ function provisionedRuntimeForPendingEndpoint(
     model: stringValue(metadata.model) ?? resolvedDimension("model"),
     reasoningEffort: stringValue(metadata.reasoningEffort) ?? resolvedDimension("reasoningEffort"),
   };
+}
+
+function provisionedRuntimeForPendingEndpoint(
+  endpoint: AgentEndpoint,
+  now: number,
+): ObservedRuntime | undefined {
+  const metadata = endpoint.metadata ?? {};
+  if (metadata.pendingExternalSession !== true) {
+    return undefined;
+  }
+
+  const pendingAt = metadataTimestamp(
+    metadata.pendingExternalSessionAt ?? metadata.startedAt,
+  );
+  if (
+    !pendingAt
+    || pendingAt > now + 30_000
+    || now - pendingAt >= PENDING_PROVISIONED_RUNTIME_TRUST_MS
+  ) {
+    return undefined;
+  }
+
+  return provisionedRuntimeForScoutOwnedEndpoint(endpoint);
 }
 
 function metadataTimestamp(value: unknown): number | undefined {

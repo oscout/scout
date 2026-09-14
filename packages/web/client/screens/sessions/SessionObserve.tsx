@@ -1009,24 +1009,34 @@ function ToolBlock({
 function AskLine({
   event,
   laneMode = false,
+  conversationMode = false,
   operatorName = "you",
   wallLabel,
   wallTitle,
 }: {
   event: SessionEvent;
   laneMode?: boolean;
-  /** Lane mode: display name on the chat-style request head. */
+  conversationMode?: boolean;
+  /** Lane/conversation mode: display name on the chat-style request head. */
   operatorName?: string;
-  /** Lane mode: relative time for the request head (the row's clock). */
+  /** Lane/conversation mode: relative time for the request head (the row's clock). */
   wallLabel?: string;
   wallTitle?: string;
 }) {
   const ask = buildLaneAskDisplay(event);
   const previewText = ask.preview === ask.title ? "" : ask.preview;
+  const chatStyle = laneMode || conversationMode;
   const initial = (operatorName.trim()[0] ?? "y").toUpperCase();
   return (
-    <div className={`s-observe-ask s-observe-block${laneMode ? " s-observe-ask--lane" : ""}`}>
-      {laneMode ? (
+    <div
+      className={[
+        "s-observe-ask",
+        "s-observe-block",
+        laneMode && "s-observe-ask--lane",
+        conversationMode && "s-observe-ask--conversation",
+      ].filter(Boolean).join(" ")}
+    >
+      {chatStyle ? (
         <div className="s-observe-ask-head">
           <span
             className="s-observe-ask-avatar"
@@ -1069,7 +1079,7 @@ function AskLine({
       ) : event.live ? (
         <span className="s-observe-cursor" />
       ) : null}
-      {ask.answer && (!laneMode || laneTextNeedsExpand(ask.answer.text)) && (
+      {ask.answer && ((!laneMode && !conversationMode) || laneTextNeedsExpand(ask.answer.text)) && (
         <div className="s-observe-ask-answer">
           <span className="s-observe-ask-answer-meta">
             ↳ {ask.answer.label}
@@ -1077,7 +1087,7 @@ function AskLine({
           <div className="s-observe-ask-answer-text">{ask.answer.text}</div>
         </div>
       )}
-      {!laneMode && <CopyButton text={ask.copyText} label="Copy request" />}
+      {!laneMode && !conversationMode && <CopyButton text={ask.copyText} label="Copy request" />}
     </div>
   );
 }
@@ -1093,16 +1103,31 @@ function isLaneThinkingPlaceholderEvent(event: Pick<SessionEvent, "kind" | "text
   return event.kind === "message" && (event.text ?? "").trim().toLowerCase() === "[thinking]";
 }
 
-function MessageLine({ event, laneMode = false }: { event: SessionEvent; laneMode?: boolean }) {
+function MessageLine({
+  event,
+  laneMode = false,
+  conversationMode = false,
+  assistantName,
+}: {
+  event: SessionEvent;
+  laneMode?: boolean;
+  conversationMode?: boolean;
+  assistantName?: string;
+}) {
   const rawText = event.text ?? "";
-  const thinking = laneMode && isLaneThinkingPlaceholderEvent(event);
+  const thinking = (laneMode || conversationMode) && isLaneThinkingPlaceholderEvent(event);
   const text = thinking ? "Thinking..." : rawText;
-  const label = thinking ? "Agent thinking" : messageDisplayLabel(event);
+  const label = thinking
+    ? "Agent thinking"
+    : conversationMode
+      ? (assistantName?.trim() || "Agent")
+      : messageDisplayLabel(event);
   return (
     <div
       className={[
         "s-observe-block",
         laneMode && "s-observe-message--lane",
+        conversationMode && "s-observe-message--conversation",
         thinking && "s-observe-message--thinking",
         event.live && "s-observe-message--streaming",
       ]
@@ -1114,12 +1139,12 @@ function MessageLine({ event, laneMode = false }: { event: SessionEvent; laneMod
       <LaneExpandableText
         text={text}
         className="s-observe-message-text"
-        laneMode={laneMode}
+        laneMode={laneMode || conversationMode}
         live={event.live}
         renderCollapsed={(value) => renderWithMentions(value)}
         renderExpanded={(value) => <MessageMarkup text={value} />}
       />
-      {!laneMode && <CopyButton text={rawText} label="Copy message" />}
+      {!laneMode && !conversationMode && <CopyButton text={rawText} label="Copy message" />}
     </div>
   );
 }
@@ -1179,6 +1204,37 @@ function TechnicalSummaryLine({
     >
       {body}
     </button>
+  );
+}
+
+export type ObserveSessionPresentation = "conversation" | "timeline";
+
+function ObservePresentationToggle({
+  presentation,
+  onChange,
+}: {
+  presentation: ObserveSessionPresentation;
+  onChange: (next: ObserveSessionPresentation) => void;
+}) {
+  return (
+    <div className="s-observe-presentation-toggle" role="group" aria-label="Session presentation">
+      <button
+        type="button"
+        className="s-observe-presentation-toggle-btn"
+        aria-pressed={presentation === "conversation"}
+        onClick={() => onChange("conversation")}
+      >
+        Conversation
+      </button>
+      <button
+        type="button"
+        className="s-observe-presentation-toggle-btn"
+        aria-pressed={presentation === "timeline"}
+        onClick={() => onChange("timeline")}
+      >
+        Trace
+      </button>
+    </div>
   );
 }
 
@@ -1375,6 +1431,7 @@ function StreamRow({
   prevT,
   prevWallMs,
   laneMode = false,
+  conversationMode = false,
   entering = false,
   repeatCount = 1,
   sessionStartMs,
@@ -1386,6 +1443,7 @@ function StreamRow({
   stackedTool = false,
   laneGutter = "time",
   laneOperatorName,
+  conversationAssistantName,
   onLaneEventSelect,
   laneToolHover,
   hoverPreviewActive = false,
@@ -1397,6 +1455,7 @@ function StreamRow({
   prevT: number;
   prevWallMs?: number | null;
   laneMode?: boolean;
+  conversationMode?: boolean;
   entering?: boolean;
   repeatCount?: number;
   sessionStartMs?: number;
@@ -1408,6 +1467,7 @@ function StreamRow({
   stackedTool?: boolean;
   laneGutter?: "time" | "label-time";
   laneOperatorName?: string;
+  conversationAssistantName?: string;
   onLaneEventSelect?: (event: SessionEvent) => void;
   laneToolHover?: (event: SessionEvent, meta: {
     wallLabel?: string;
@@ -1421,7 +1481,7 @@ function StreamRow({
 }) {
   const gap = event.t - prevT;
   const accent = technicalSummary ? "var(--dim)" : KIND_COLOR[event.kind] ?? "var(--dim)";
-  const rowTime = laneMode
+  const rowTime = laneMode || conversationMode
     ? fmtLaneRowTime(event, sessionStartMs, nowMs, preferWallAge)
     : fmtObserveRowTime(event, sessionStartMs);
   const eventWallMs = laneEventWallMs(event, sessionStartMs);
@@ -1485,12 +1545,20 @@ function StreamRow({
             <AskLine
               event={event}
               laneMode={laneMode}
-              operatorName={laneOperatorName}
-              wallLabel={laneMode ? rowTime.label : undefined}
-              wallTitle={laneMode ? rowTime.title : undefined}
+              conversationMode={conversationMode}
+              operatorName={laneOperatorName ?? (conversationMode ? "You" : undefined)}
+              wallLabel={laneMode || conversationMode ? rowTime.label : undefined}
+              wallTitle={laneMode || conversationMode ? rowTime.title : undefined}
             />
           )}
-          {event.kind === "message" && <MessageLine event={event} laneMode={laneMode} />}
+          {event.kind === "message" && (
+            <MessageLine
+              event={event}
+              laneMode={laneMode}
+              conversationMode={conversationMode}
+              assistantName={conversationAssistantName}
+            />
+          )}
           {event.kind === "note" && <NoteLine event={event} laneMode={laneMode} />}
           {(event.kind === "system" || event.kind === "boot") && (
             <SystemLine event={event} laneMode={laneMode} />
@@ -1569,6 +1637,7 @@ function ReplayStream({
   events,
   followEnd,
   laneMode = false,
+  conversationMode = false,
   sessionStartMs,
   nowMs = Date.now(),
   preferWallAge = false,
@@ -1580,10 +1649,12 @@ function ReplayStream({
   richSimpleTools = false,
   collapseTechnicalEvents = false,
   laneOperatorName,
+  conversationAssistantName,
 }: {
   events: SessionEvent[];
   followEnd: boolean;
   laneMode?: boolean;
+  conversationMode?: boolean;
   sessionStartMs?: number;
   nowMs?: number;
   preferWallAge?: boolean;
@@ -1595,6 +1666,7 @@ function ReplayStream({
   richSimpleTools?: boolean;
   collapseTechnicalEvents?: boolean;
   laneOperatorName?: string;
+  conversationAssistantName?: string;
 }) {
   const endRef = useRef<HTMLDivElement>(null);
   const prevFollowEndRef = useRef(followEnd);
@@ -1622,10 +1694,11 @@ function ReplayStream({
 
   const displayRows = useMemo(
     () => {
-      const rows = laneMode
+      const compact = laneMode || conversationMode;
+      const rows: ObserveDisplayRow[] = compact
         ? collapseObserveDisplayRows(events)
         : events.map((event) => ({ event, repeatCount: 1 }));
-      if (!laneMode) return rows;
+      if (!compact) return rows;
       const visibleRows = rows.filter((row) => (
         row.event.live || !isLaneThinkingPlaceholderEvent(row.event)
       ));
@@ -1633,7 +1706,7 @@ function ReplayStream({
         ? collapseTechnicalObserveDisplayRows(visibleRows)
         : visibleRows;
     },
-    [events, laneMode, collapseTechnicalEvents],
+    [events, laneMode, conversationMode, collapseTechnicalEvents],
   );
 
   useEffect(() => {
@@ -1709,6 +1782,7 @@ function ReplayStream({
         prevT={prevEvent?.t ?? 0}
         prevWallMs={prevWallMs}
         laneMode={laneMode}
+        conversationMode={conversationMode}
         simpleTool={simpleTool}
         stackedTool={stackedTool}
         laneGutter={laneGutter}
@@ -1717,9 +1791,10 @@ function ReplayStream({
         sessionStartMs={sessionStartMs}
         nowMs={nowMs}
         preferWallAge={preferWallAge}
-        highlighted={!laneMode && focusEventId === row.event.id}
+        highlighted={!laneMode && !conversationMode && focusEventId === row.event.id}
         focusAnchor={isInlineFocus}
         laneOperatorName={laneOperatorName}
+        conversationAssistantName={conversationAssistantName}
         onLaneEventSelect={onLaneEventSelect}
         laneToolHover={laneMode ? laneToolHover.bind : undefined}
         hoverPreviewActive={laneMode && laneToolHover.hoveredEventId === row.event.id}
@@ -1748,7 +1823,7 @@ function ReplayStream({
 
   return (
     <div className="s-observe-stream">
-      <div className="s-observe-spine" />
+      {!conversationMode && <div className="s-observe-spine" />}
       {displayRows.map((row, index) => {
         const prevRow = index > 0 ? displayRows[index - 1]! : null;
         const sourceRows = row.technicalSourceRows;
@@ -2871,6 +2946,8 @@ export function SessionObserve({
   conversationId,
   observeSource,
   observeFidelity,
+  originLabel,
+  defaultPresentation = "timeline",
 
   showRail = true,
   variant = "default",
@@ -2896,6 +2973,10 @@ export function SessionObserve({
   conversationId?: string | null;
   observeSource?: ObserveEvidenceSource;
   observeFidelity?: ObserveEvidenceFidelity;
+  /** Product origin, e.g. "Native session" versus a Scout-managed chat. */
+  originLabel?: string | null;
+  /** Default non-lane presentation. Conversation is the Mac observed-session default. */
+  defaultPresentation?: ObserveSessionPresentation;
   showRail?: boolean;
   variant?: "default" | "lane";
   /** Scope instrument: timeline only — no Scout replay chrome, rail, or lane meta bar. */
@@ -2933,6 +3014,10 @@ export function SessionObserve({
   const effectiveLaneGutter = laneGutter ?? (scopeSurface ? "label-time" : "time");
   const effectiveRichSimpleTools = richSimpleTools ?? scopeSurface;
   const effectiveShowRail = showRail && !scopeSurface;
+  const [presentation, setPresentation] = useState<ObserveSessionPresentation>(
+    () => (laneMode || scopeSurface ? "timeline" : defaultPresentation),
+  );
+  const conversationMode = !laneMode && !scopeSurface && presentation === "conversation";
   const observeData = data ?? EMPTY_OBSERVE_DATA;
   const { events } = observeData;
   const effectiveObserveSource = observeSource ?? (observeData.live ? "live" : "history");
@@ -3090,6 +3175,10 @@ export function SessionObserve({
   const metadata = observeData.metadata;
   const sessionMeta = metadata?.session;
   const sourcePath = sessionMeta?.threadPath ?? null;
+  const conversationAssistantName = sessionMeta?.model?.trim()
+    || resumableHarnessFromAdapterType(sessionMeta?.adapterType)
+    || "Agent";
+  const conversationOperatorName = laneOperatorName ?? "You";
 
   // A bare history trace has no live agent identity. If the session carries its
   // own project path + id, offer a broker-invoke path in the composer so the
@@ -3116,6 +3205,7 @@ export function SessionObserve({
         (!effectiveShowRail || laneMode) && "s-observe--content-only",
         laneMode && "s-observe--lane",
         laneMode && effectiveLaneGutter === "label-time" && "s-observe--lane-gutter-label",
+        conversationMode && "s-observe--conversation",
         scopeSurface && "s-observe--scope",
       ].filter(Boolean).join(" ")}
     >
@@ -3125,9 +3215,17 @@ export function SessionObserve({
           <div className="s-observe-evidence-banner" data-tone={evidence.tone}>
             <span className="s-observe-evidence-dot" aria-hidden="true" />
             <span>
-              <strong>{evidence.label}</strong>
-              <small>{evidence.detail}</small>
+              <strong>{originLabel ?? evidence.label}</strong>
+              <small>
+                {originLabel ? `${evidence.label}. ${evidence.detail}` : evidence.detail}
+              </small>
             </span>
+            {!evidence.receiptOnly && (
+              <ObservePresentationToggle
+                presentation={presentation}
+                onChange={setPresentation}
+              />
+            )}
           </div>
         )}
         {sourcePath && !laneMode && (
@@ -3179,6 +3277,7 @@ export function SessionObserve({
             events={visible}
             followEnd={isFollowing}
             laneMode={laneMode}
+            conversationMode={conversationMode}
             sessionStartMs={sessionStartMs}
             nowMs={now}
             preferWallAge={useHorizonTrace}
@@ -3188,8 +3287,11 @@ export function SessionObserve({
             onLaneEventSelect={onLaneEventSelect}
             laneGutter={effectiveLaneGutter}
             richSimpleTools={effectiveRichSimpleTools}
-            collapseTechnicalEvents={laneMode && Boolean(laneCollapseTechnicalEvents)}
-            laneOperatorName={laneOperatorName}
+            collapseTechnicalEvents={
+              conversationMode || (laneMode && Boolean(laneCollapseTechnicalEvents))
+            }
+            laneOperatorName={conversationMode ? conversationOperatorName : laneOperatorName}
+            conversationAssistantName={conversationAssistantName}
           />
         )}
       </main>
@@ -3210,7 +3312,7 @@ export function SessionObserve({
       {/* Scrubber footer */}
       {!scopeSurface && !laneMode && (
         <footer className="s-observe-scrubber">
-          {evidence.replayable ? (
+          {conversationMode ? null : evidence.replayable ? (
             <SessionTransport
               events={events}
               duration={duration}

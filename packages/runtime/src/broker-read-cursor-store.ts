@@ -1,3 +1,5 @@
+import { readRuntimeMessage } from "./broker-message-records.js";
+import { selectMessageRecordsAsync } from "./broker-message-records.js";
 import type {
   ConversationDefinition,
   ConversationReadCursor,
@@ -24,13 +26,14 @@ type ReadCursorRuntime = {
   };
   conversation(conversationId: string): ConversationDefinition | undefined;
   message(messageId: string): MessageRecord | undefined;
+  readMessage?(messageId:string):Promise<MessageRecord|undefined>;
   readCursor(conversationId: string, actorId: string): ConversationReadCursor | undefined;
   upsertReadCursor(cursor: ConversationReadCursor): Promise<void>;
 };
 
 type ReadCursorProjection = {
   latestThreadSeq(conversationId: string): Promise<number>;
-  listDeliveries(options: { limit: number }): Promise<DeliveryIntent[]>;
+
 };
 
 export type ReadCursorResolveInput = {
@@ -49,7 +52,11 @@ export type BrokerReadCursorStoreOptions = {
   operatorActorId: string;
   nodeId: string;
   ensureActor: (actorId: string) => Promise<void>;
-  updateDeliveryStatus: (input: DeliveryStatusUpdateInput) => Promise<void>;
+  journal: { visitDeliveries(visitor: (delivery: DeliveryIntent) => void | Promise<void>, options?: { activeOnly?: boolean }): Promise<void> };
+  updateDeliveryStatusIf: (
+    input: DeliveryStatusUpdateInput,
+    eligible: (current: DeliveryIntent) => boolean | Promise<boolean>,
+  ) => Promise<boolean>;
 };
 
 function finitePositiveNumber(value: unknown): number | undefined {
@@ -96,8 +103,8 @@ export class BrokerReadCursorStore {
 
     const explicitMessageId = input.lastReadMessageId?.trim();
     const lastReadMessage = explicitMessageId
-      ? this.options.runtime.message(explicitMessageId)
-      : this.latestMessageForConversation(conversationId);
+      ? await readRuntimeMessage(this.options.runtime,explicitMessageId)
+      : await this.latestMessageForConversation(conversationId);
 
     if (explicitMessageId && !lastReadMessage) {
       throw new Error(`message ${explicitMessageId} not found`);
@@ -115,8 +122,8 @@ export class BrokerReadCursorStore {
 
     const current = this.options.runtime.readCursor(conversationId, actorId);
     if (current) {
-      const currentRank = this.cursorProgressRank(current);
-      const nextRank = this.cursorProgressRank({ lastReadSeq, lastReadMessageId });
+      const currentRank = await this.cursorProgressRank(current);
+      const nextRank = await this.cursorProgressRank({ lastReadSeq, lastReadMessageId });
       if (
         currentRank !== undefined
         && (nextRank === undefined || nextRank < currentRank)
@@ -152,26 +159,24 @@ export class BrokerReadCursorStore {
 
   readonly acknowledgeDeliveries = async (cursor: ConversationReadCursor): Promise<number> => {
     const boundaryMessage = cursor.lastReadMessageId
-      ? this.options.runtime.message(cursor.lastReadMessageId)
-      : this.latestMessageForConversation(cursor.conversationId);
+      ? await readRuntimeMessage(this.options.runtime,cursor.lastReadMessageId)
+      : await this.latestMessageForConversation(cursor.conversationId);
     if (!boundaryMessage) {
       return 0;
     }
 
     let acknowledged = 0;
 
-    const deliveries = await this.options.projection.listDeliveries({ limit: 5000 });
-    for (const delivery of deliveries) {
-      if (delivery.targetId !== cursor.actorId) continue;
-      if (!delivery.messageId) continue;
-      if (!readableDeliveryStatuses.has(delivery.status)) continue;
-      if (!readDeliveryReasons.has(delivery.reason)) continue;
-
-      const message = this.options.runtime.message(delivery.messageId);
-      if (!message || message.conversationId !== cursor.conversationId) continue;
-      if (message.createdAt > boundaryMessage.createdAt) continue;
-
-      await this.options.updateDeliveryStatus({
+    const eligible = async (delivery: DeliveryIntent): Promise<boolean> => {
+      if (delivery.targetId !== cursor.actorId || !delivery.messageId) return false;
+      if (!readableDeliveryStatuses.has(delivery.status) || !readDeliveryReasons.has(delivery.reason)) return false;
+      const message = await readRuntimeMessage(this.options.runtime,delivery.messageId);
+      return Boolean(message && message.conversationId === cursor.conversationId
+        && message.createdAt <= boundaryMessage.createdAt);
+    };
+    await this.options.journal.visitDeliveries(async (delivery) => {
+      if (!await eligible(delivery)) return;
+      const changed = await this.options.updateDeliveryStatusIf({
         deliveryId: delivery.id,
         status: "acknowledged",
         metadata: {
@@ -182,27 +187,27 @@ export class BrokerReadCursorStore {
         },
         leaseOwner: null,
         leaseExpiresAt: null,
-      });
-      acknowledged += 1;
-    }
+      }, eligible);
+      if (changed) acknowledged += 1;
+    }, { activeOnly: true });
 
     return acknowledged;
   };
 
-  private latestMessageForConversation(conversationId: string): MessageRecord | undefined {
-    return Object.values(this.options.runtime.snapshot().messages ?? {})
-      .filter((message) => message.conversationId === conversationId)
-      .sort((left, right) => right.createdAt - left.createdAt)[0];
+  private async latestMessageForConversation(conversationId: string): Promise<MessageRecord | undefined> {
+    return (await selectMessageRecordsAsync(this.options.runtime.snapshot().messages ?? {}, 1,
+      (left, right) => right.createdAt - left.createdAt,
+      (message) => message.conversationId === conversationId,{selection:{conversationIds:[conversationId],newestFirst:true}}))[0];
   }
 
-  private messageCreatedAt(messageId: string | undefined): number | undefined {
-    return messageId ? this.options.runtime.message(messageId)?.createdAt : undefined;
+  private async messageCreatedAt(messageId: string | undefined): Promise<number | undefined> {
+    return messageId ? (await readRuntimeMessage(this.options.runtime,messageId))?.createdAt : undefined;
   }
 
-  private cursorProgressRank(cursor: {
+  private async cursorProgressRank(cursor: {
     lastReadSeq?: number;
     lastReadMessageId?: string;
-  }): number | undefined {
+  }): Promise<number | undefined> {
     if (typeof cursor.lastReadSeq === "number" && Number.isFinite(cursor.lastReadSeq)) {
       return cursor.lastReadSeq;
     }

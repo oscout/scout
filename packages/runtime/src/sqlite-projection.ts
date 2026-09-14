@@ -1,3 +1,4 @@
+import { ProjectionSkipLedger } from './projection-skip-ledger.js';
 import type {
   ConversationProjectionCursor,
   ConversationProjectionEvent,
@@ -84,6 +85,8 @@ const SQLITE_PROJECTION_VERSION = 1;
 export type SQLiteProjectionStatusSnapshot = {
   state: "ready" | "warming" | "degraded" | "disabled";
   detail: string | null;
+  skips?: ReturnType<ProjectionSkipLedger["snapshot"]>;
+  hydration?: { phase: string; processedEntries: number; totalEntries: null; boundaryBytes: number };
 };
 
 type SQLiteProjectionCheckpointRow = {
@@ -208,6 +211,7 @@ function collectReplayParents(scan: ReplayParentScan, entry: BrokerJournalEntry)
     case "agent.endpoint.delete":
     case "invocation.dispatch_job.record":
     case "journal.replay_barrier":
+    case "control.event.record":
       break;
     case "conversation.upsert":
       scan.providedConversations.set(entry.conversation.id, entry.conversation);
@@ -452,6 +456,9 @@ function applyJournalEntryToStore(
         leaseGeneration: undefined,
       });
       return [];
+    case "control.event.record":
+      store.recordEvent(entry.event);
+      return [];
     case "journal.replay_barrier":
       return [];
     case "scout.dispatch.record":
@@ -494,17 +501,6 @@ function formatError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-const skippedEntryReasons = new Set<string>();
-
-function reportSkippedEntry(entry: BrokerJournalEntry, error: unknown): void {
-  const reason = formatError(error);
-  const key = `${entry.kind}:${reason}`;
-  if (skippedEntryReasons.has(key)) return;
-  skippedEntryReasons.add(key);
-  console.warn(
-    `[broker] sqlite projection skipped malformed ${entry.kind} entry: ${reason}`,
-  );
-}
 
 function isTransientStoreBusyError(error: unknown): boolean {
   if (typeof error === "object" && error !== null) {
@@ -538,6 +534,15 @@ function isFatalStoreError(error: unknown): boolean {
 }
 
 export class RecoverableSQLiteProjection {
+  private readonly skipLedger = new ProjectionSkipLedger();
+
+  private readonly reportSkippedEntry = (entry: BrokerJournalEntry, error: unknown): void => {
+    if (this.skipLedger.record(entry.kind, error)) {
+      console.warn(`[broker] sqlite projection skipped malformed ${entry.kind} entry: ${formatError(error).slice(0, 256)}`);
+    }
+  };
+
+  private hydration: SQLiteProjectionStatusSnapshot["hydration"];
   private store: SQLiteControlPlaneStore | null = null;
 
   private conversationProjection: Pick<
@@ -615,6 +620,11 @@ export class RecoverableSQLiteProjection {
   }
 
   statusSnapshot(): SQLiteProjectionStatusSnapshot {
+    const skips = this.skipLedger.snapshot();
+    return { ...this.readStatus(), ...(skips.total ? { skips } : {}), ...(this.warming && this.hydration ? { hydration: { ...this.hydration } } : {}) };
+  }
+
+  private readStatus(): SQLiteProjectionStatusSnapshot {
     if (this.options.disabled) {
       return {
         state: "disabled",
@@ -672,6 +682,44 @@ export class RecoverableSQLiteProjection {
     return this.warmBoundaryReady;
   }
 
+  /** Enqueue before enabling live projection writes. The caller holds the
+   * durable writer only while scheduling this fixed-boundary catch-up. Accepted
+   * startup records stay in the journal, not in closures behind SQLite replay. */
+  async captureStartupCatchUpBoundary(): Promise<BrokerJournalReplayBoundary> {
+    return this.journal.captureReplayBoundary({ barrier: {
+      id: randomUUID(), projectionId: SQLITE_PROJECTION_ID,
+      projectionVersion: SQLITE_PROJECTION_VERSION, createdAt: Date.now(),
+    } });
+  }
+
+  catchUpStartup(boundary: BrokerJournalReplayBoundary): Promise<void> {
+    return this.enqueueResult(async () => {
+      if (this.options.disabled) return;
+      const store = this.store;
+      if (!store || this.warming || this.closed) throw new Error("Startup projection is unavailable.");
+      const afterBarrier = readReplayCheckpoint(store);
+      if (!afterBarrier) throw new Error("Startup projection has no committed replay checkpoint.");
+      const parents = createReplayParentScan();
+      const scan = await this.replayJournalInBatches(batch => {
+        for (const entry of batch) collectReplayParents(parents, entry);
+      }, boundary, { afterBarrier });
+      if (!scan.afterBarrierFound) throw new Error("Startup replay checkpoint disappeared.");
+      await this.prepareReplayParents(store, parents);
+      const replay = await this.replayJournalInBatches(batch => {
+        store.runReplayTransaction(() => {
+          const entries = [...batch];
+          applyJournalEntriesToStore(store, entries, this.reportSkippedEntry);
+          this.applyConversationProjectionBatch(store, entries);
+        });
+      }, boundary, { afterBarrier });
+      if (!replay.afterBarrierFound) throw new Error("Startup replay checkpoint disappeared.");
+      const projection = this.ensureConversationProjection(store);
+      if (boundary.barrier) writeReplayCheckpoint(store, boundary.barrier);
+      this.publishConversationFeed(projection);
+      this.publishConversationThreads(store, projection);
+    });
+  }
+
   enqueueEntries(entriesInput: BrokerJournalEntry | BrokerJournalEntry[]): void {
     const entries = normalizeEntries(entriesInput);
     if (entries.length === 0 || this.options.disabled || this.closed) {
@@ -691,7 +739,7 @@ export class RecoverableSQLiteProjection {
 
       try {
         await this.withBusyRetry(() => {
-          applyJournalEntriesToStore(store, entries, reportSkippedEntry);
+          applyJournalEntriesToStore(store, entries, this.reportSkippedEntry);
           this.applyConversationProjectionBatch(store, entries);
         });
       } catch (error) {
@@ -702,7 +750,7 @@ export class RecoverableSQLiteProjection {
         if (isFatalStoreError(error)) {
           this.invalidateStore(error);
         } else {
-          reportSkippedEntry({ kind: "unknown" } as never, error);
+          this.reportSkippedEntry({ kind: "unknown" } as never, error);
         }
       }
     });
@@ -803,7 +851,7 @@ export class RecoverableSQLiteProjection {
 
       try {
         return await this.withBusyRetry(() => {
-          const threadEvents = applyJournalEntriesToStore(store, entries, reportSkippedEntry);
+          const threadEvents = applyJournalEntriesToStore(store, entries, this.reportSkippedEntry);
           this.applyConversationProjectionBatch(store, entries);
           return threadEvents;
         });
@@ -815,7 +863,7 @@ export class RecoverableSQLiteProjection {
         if (isFatalStoreError(error)) {
           this.invalidateStore(error);
         } else {
-          reportSkippedEntry({ kind: "unknown" } as never, error);
+          this.reportSkippedEntry({ kind: "unknown" } as never, error);
         }
         return [];
       }
@@ -1119,6 +1167,7 @@ export class RecoverableSQLiteProjection {
     options: BrokerJournalReplayOptions = {},
   ): Promise<BrokerJournalReplayReport> {
     const batchSize = this.replayBatchSize();
+    this.hydration = { phase: this.hydration?.phase ?? "replay", processedEntries: 0, totalEntries: null, boundaryBytes: boundary.endByteExclusive };
     let batch: BrokerJournalEntry[] = [];
     let batchWork = 0;
     const flushForMoreWork = async (): Promise<void> => {
@@ -1128,6 +1177,7 @@ export class RecoverableSQLiteProjection {
       await this.yieldReplayTurn();
     };
     const replayReport = await this.journal.replay(async (entry) => {
+      if (this.hydration) this.hydration.processedEntries++;
       if (entry.kind !== "deliveries.record" || entry.deliveries.length === 0) {
         // Endpoint projection derives session aliases and budget observations,
         // so it is materially heavier than a scalar record upsert. Account for
@@ -1195,7 +1245,7 @@ export class RecoverableSQLiteProjection {
             if (isFatalStoreError(error)) {
               throw error;
             }
-            reportSkippedEntry(entry, error);
+            this.reportSkippedEntry(entry, error);
           }
         }
       });
@@ -1259,6 +1309,7 @@ export class RecoverableSQLiteProjection {
         let replayAfter = replayBoundary.barrier
           ? readReplayCheckpoint(store)
           : undefined;
+        this.hydration = { phase: "parents", processedEntries: 0, totalEntries: null, boundaryBytes: replayBoundary.endByteExclusive };
         let parents = createReplayParentScan();
         const parentReport = await this.replayJournalInBatches((batch) => {
           for (const entry of batch) collectReplayParents(parents, entry);
@@ -1271,6 +1322,7 @@ export class RecoverableSQLiteProjection {
           }, replayBoundary);
         }
         await this.prepareReplayParents(store, parents);
+        this.hydration.phase = "records";
         const replayReport = await this.applyReplayJournal(
           store,
           replayBoundary,
@@ -1279,6 +1331,7 @@ export class RecoverableSQLiteProjection {
         if (replayAfter && !replayReport.afterBarrierFound) {
           throw new Error("SQLite projection replay barrier disappeared during fixed-boundary recovery.");
         }
+        this.hydration.phase = "conversations";
         conversationProjection.reconcileAll();
         // This autocommit is deliberately last among durable projection writes.
         // A crash before it leaves the old checkpoint in place, making the next
@@ -1503,6 +1556,7 @@ export class RecoverableSQLiteProjection {
           projectionVersion: meta.projectionVersion,
           sequence: meta.headSeq,
           limit: 64,
+          nativePreview: true,
         });
         if (snapshot) this.ensureConversationThreadPublisher().publish(snapshot);
       }

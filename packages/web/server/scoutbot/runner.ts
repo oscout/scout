@@ -1,3 +1,4 @@
+import { handleDiagnosticCommand } from "./report.ts";
 import type {
   ScoutBrokerAgentRecord,
   ScoutBrokerConversationRecord,
@@ -24,6 +25,7 @@ import {
   ScoutbotThreadMapStore,
   type ScoutbotThreadListResponse,
   type ScoutbotThreadRecord,
+  type ScoutbotThreadPins,
 } from "./thread-map.ts";
 import {
   SCOUTBOT_AGENT_ID,
@@ -39,6 +41,7 @@ import {
 export interface ScoutbotRunnerHandle {
   stop(): Promise<void>;
   getThreads(): Promise<ScoutbotThreadListResponse>;
+  createThread(input: { name: string; model: string; reasoningEffort?: string; pins?: ScoutbotThreadPins }): Promise<ScoutbotThreadRecord>;
   postOperatorMessage(input: {
     body: string;
     threadId?: string | null;
@@ -155,6 +158,14 @@ export async function startScoutbotRunner(
       }
       return threadMap.list();
     },
+    async createThread(input) {
+      const ctx = await loadScoutBrokerContext(baseUrl);
+      if (!ctx) throw new Error("broker unreachable");
+      const thread = await threadMap.createThread(input.name, { ...input, transportSessionId: null });
+      const conversation = buildScoutbotThreadConversation(thread, ctx.snapshot, ctx.node.id);
+      if (conversation) await postJson(baseUrl, "/v1/conversations", conversation);
+      return thread;
+    },
     async postOperatorMessage(input) {
       return postScoutbotOperatorMessage({
         brokerBaseUrl: baseUrl,
@@ -206,18 +217,35 @@ export async function postScoutbotOperatorMessage(
   if (input.threadId?.trim() && thread.threadId !== input.threadId.trim()) {
     throw new Error(`Unknown scoutbot thread ${input.threadId}`);
   }
-  return postOperatorThreadMessage({
-    baseUrl,
-    thread,
-    body: input.body,
-    attachments: input.attachments,
-    source: input.source ?? "scout-web",
-    clientMessageId: input.clientMessageId,
-    replyToMessageId: input.replyToMessageId,
-    referenceMessageIds: input.referenceMessageIds,
-    deviceId: input.deviceId,
-    log,
-  });
+  const post = async () => {
+    // A reply may have learned the provider session while admission was queued.
+    let currentThread = await threadMap.getThread(thread.threadId) ?? thread;
+    if (currentThread.model && !currentThread.transportSessionId) {
+      const ctx = await loadScoutBrokerContext(baseUrl);
+      const reply = Object.values(ctx?.snapshot.messages ?? {})
+        .filter((message) => message.conversationId === thread.conversationId && message.actorId === SCOUTBOT_AGENT_ID)
+        .sort((a, b) => b.createdAt - a.createdAt).find((message) => scoutbotReplyTransportSessionId(message));
+      const providerSession = reply ? scoutbotReplyTransportSessionId(reply) : null;
+      if (providerSession) currentThread = await threadMap.setThreadTransportSessionId(thread.threadId, providerSession) ?? currentThread;
+    }
+    return postOperatorThreadMessage({
+      baseUrl, thread: currentThread, body: input.body, attachments: input.attachments,
+      source: input.source ?? "scout-web", clientMessageId: input.clientMessageId,
+      replyToMessageId: input.replyToMessageId, referenceMessageIds: input.referenceMessageIds,
+      deviceId: input.deviceId, log,
+    });
+  };
+  if (!thread.model) return post();
+  const directives = parseScoutbotDirectives(stripMentions(input.body));
+  if (directives.directives.targetSessionId || directives.command?.name === "steer"
+    || (directives.directives.reasoningEffort && directives.directives.reasoningEffort !== thread.reasoningEffort)) {
+    throw new Error("scoutbot_runtime_fixed: This conversation retains its model and session. Start a new conversation to change runtime, or use @session context references.");
+  }
+  return admitScoutbotTurn(`${baseUrl}:${thread.threadId}`, thread, async () => {
+    const ctx = await loadScoutBrokerContext(baseUrl);
+    if (!ctx) throw new Error("broker unreachable");
+    return ctx.snapshot;
+  }, post);
 }
 
 async function resolvePostTargetThread(input: {
@@ -257,6 +285,7 @@ function inertHandle(): ScoutbotRunnerHandle {
   return {
     async stop() { /* inert */ },
     async getThreads() { throw new Error("scoutbot runner is inert because broker is unreachable"); },
+    async createThread() { throw new Error("broker unreachable"); },
     async postOperatorMessage(_input?: {
       body?: string;
       threadId?: string | null;
@@ -411,7 +440,9 @@ function buildScoutbotEndpoint(nodeId: string, currentDirectory: string): ScoutB
 
 function findScoutbotEndpoint(snapshot: ScoutBrokerSnapshot, nodeId?: string): ScoutBrokerEndpointRecord | null {
   const endpoints = Object.values((snapshot as { endpoints?: Record<string, ScoutBrokerEndpointRecord> }).endpoints ?? {})
-    .filter((endpoint) => endpoint.agentId === SCOUTBOT_AGENT_ID && endpoint.transport === "codex_app_server");
+    .filter((endpoint) => endpoint.agentId === SCOUTBOT_AGENT_ID
+      && endpoint.transport === "codex_app_server"
+      && endpoint.metadata?.isolatedExecution !== true);
   return endpoints.find((endpoint) => endpoint.nodeId === nodeId && endpoint.state !== "offline")
     ?? endpoints.find((endpoint) => endpoint.state !== "offline")
     ?? endpoints[0]
@@ -651,7 +682,7 @@ async function handleBlock(block: string, options: RunEventLoopOptions): Promise
 
   const prompt = stripMentions(message.body);
   const prefilter = prefilterHandle(prompt, ctx.snapshot);
-  const existingFlight = findScoutbotFlightForMessage(ctx.snapshot, message.id, { includeTerminal: false });
+  const existingFlight = findScoutbotFlightForMessage(ctx.snapshot, message.id, { includeTerminal: true });
   if (existingFlight && !(prefilter && isScoutbotDirectDeliveryFlight(existingFlight))) {
     options.log.info(`message already has flight id=${shortId(existingFlight.id)} source=${shortId(message.id)}`);
     return;
@@ -659,6 +690,9 @@ async function handleBlock(block: string, options: RunEventLoopOptions): Promise
 
   options.log.info(`handling thread=${thread.threadId} source=${shortId(message.id)} promptChars=${prompt.length}`);
   if (prefilter) {
+    if (prefilter.metadata.matched_rule === "slash.report" || prefilter.metadata.matched_rule === "slash.feedback") {
+      prefilter.body = await handleDiagnosticCommand(prompt);
+    }
     const steerTargetSessionId = prefilter.metadata.matched_rule === "slash.steer"
       ? metadataString(prefilter.metadata, "targetSessionId")
       : undefined;
@@ -734,11 +768,20 @@ async function postScoutbotInvocation(input: {
   message: ScoutBrokerMessageRecord;
   nodeId: string;
 }): Promise<void> {
-  const invocationId = createId("inv");
+  await postJson(input.baseUrl, "/v1/invocations", buildScoutbotInvocation(input));
+}
+
+export function buildScoutbotInvocation(input: {
+  thread: ScoutbotThreadRecord;
+  message: ScoutBrokerMessageRecord;
+  nodeId: string;
+}) {
+  const invocationId = input.thread.model ? `inv-scoutbot-${input.message.id}` : createId("inv");
   const prompt = stripMentions(input.message.body);
   const parsed = parseScoutbotDirectives(prompt);
   const requestedReasoningEffort =
-    parsed.directives.reasoningEffort
+    (input.thread.reasoningEffort as ScoutbotReasoningEffort | undefined)
+    ?? parsed.directives.reasoningEffort
     ?? metadataReasoningEffort(input.message.metadata);
   const transportSessionId =
     parsed.directives.targetSessionId
@@ -751,7 +794,7 @@ async function postScoutbotInvocation(input: {
     requestedReasoningEffort,
     targetSessionId: transportSessionId,
   });
-  await postJson(input.baseUrl, "/v1/invocations", {
+  return {
     id: invocationId,
     requesterId: input.message.actorId,
     requesterNodeId: input.nodeId,
@@ -764,6 +807,8 @@ async function postScoutbotInvocation(input: {
     execution: {
       session: transportSessionId ? "existing" : "new",
       ...(transportSessionId ? { targetSessionId: transportSessionId } : {}),
+      ...(input.thread.model ? { harness: "codex", model: input.thread.model } : {}),
+      ...(input.thread.reasoningEffort ? { reasoningEffort: input.thread.reasoningEffort } : {}),
     },
     ensureAwake: true,
     stream: false,
@@ -786,7 +831,7 @@ async function postScoutbotInvocation(input: {
         ...(transportSessionId ? { sessionId: transportSessionId } : {}),
       },
     },
-  });
+  };
 }
 
 function scoutbotInvocationDirectiveContext(input: {
@@ -851,9 +896,10 @@ export function isScoutbotAddressedMessage(message: ScoutBrokerMessageRecord): b
   return /(^|\s)@scoutbot(\b|\s|$)/i.test(message.body);
 }
 
-const MENTION_RE = /@([A-Za-z0-9][A-Za-z0-9._-]*)/g;
 function stripMentions(body: string): string {
-  return body.replace(MENTION_RE, "").replace(/\s{2,}/g, " ").trim();
+  // Routing is explicit metadata. Only an optional leading assistant address
+  // belongs to the envelope; other mentions and formatting are user payload.
+  return body.replace(/^\s*@scoutbot(?=\s|[:,]|$)[:,]?\s*/i, "").trim();
 }
 
 type SnapshotWithFlights = ScoutBrokerSnapshot & {
@@ -1001,4 +1047,42 @@ function describeError(cause: unknown): string {
 
 function shortId(value: string): string {
   return value.length <= 16 ? value : `${value.slice(0, 8)}...${value.slice(-6)}`;
+}
+
+const scoutbotAdmissions = new Map<string, Promise<unknown>>();
+
+export function scoutbotThreadHasPendingTurn(thread: ScoutbotThreadRecord, snapshot: ScoutBrokerSnapshot): boolean {
+  const messages = Object.values(snapshot.messages ?? {}).filter((message) => message.conversationId === thread.conversationId);
+  const latest = messages.filter((message) => message.actorId === "operator")
+    .sort((a, b) => b.createdAt - a.createdAt)[0];
+  if (!latest) return false;
+  const flight = findScoutbotFlightForMessage(snapshot, latest.id, { includeTerminal: true });
+  if (flight && !TERMINAL_FLIGHT_STATES.has(flight.state)) return true;
+  if (flight && (flight.state === "failed" || flight.state === "cancelled")) return false;
+  const reply = messages.find((message) => message.actorId === SCOUTBOT_AGENT_ID
+    && (message.replyToMessageId === latest.id || message.createdAt > latest.createdAt));
+  if (!reply) return flight?.state !== "completed" || !thread.transportSessionId;
+  // Deterministic replies need no provider history. Model replies must bind
+  // their first provider session before another isolated invocation can start.
+  return flight?.state === "completed" && !thread.transportSessionId && !scoutbotReplyTransportSessionId(reply);
+}
+
+/** Serialize admission until the first durable message is visible to the next
+ * caller; pending broker turns are rejected before any second message is written. */
+export async function admitScoutbotTurn<T>(
+  key: string,
+  thread: ScoutbotThreadRecord,
+  snapshot: () => Promise<ScoutBrokerSnapshot>,
+  post: () => Promise<T>,
+): Promise<T> {
+  const previous = scoutbotAdmissions.get(key) ?? Promise.resolve();
+  const next = previous.catch(() => undefined).then(async () => {
+    if (scoutbotThreadHasPendingTurn(thread, await snapshot())) {
+      throw new Error("scoutbot_turn_pending: Wait for Scoutbot's current reply before sending again. Your draft has not been sent.");
+    }
+    return post();
+  });
+  scoutbotAdmissions.set(key, next);
+  try { return await next; }
+  finally { if (scoutbotAdmissions.get(key) === next) scoutbotAdmissions.delete(key); }
 }

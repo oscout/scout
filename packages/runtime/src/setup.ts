@@ -178,6 +178,8 @@ export type Scene = {
   body: SceneBody;
 };
 
+export type OpenScoutVoicePlayback = "browser" | "host";
+
 export type OpenScoutSettings = {
   version: 1;
   profile: {
@@ -232,6 +234,8 @@ export type OpenScoutSettings = {
   };
   voice: {
     realtimeEnabled: boolean;
+    /** Where web-originated speech is heard: this browser, or Scout Menu on the Mac. */
+    playback: OpenScoutVoicePlayback;
   };
   ui: {
     scenes: Scene[];
@@ -1248,6 +1252,7 @@ function defaultSettings(): OpenScoutSettings {
     },
     voice: {
       realtimeEnabled: false,
+      playback: "browser",
     },
     ui: {
       scenes: [],
@@ -1809,6 +1814,9 @@ async function normalizeSettingsRecord(
       realtimeEnabled: typeof voice.realtimeEnabled === "boolean"
         ? voice.realtimeEnabled
         : base.voice.realtimeEnabled,
+      playback: voice.playback === "host" || voice.playback === "browser"
+        ? voice.playback
+        : base.voice.playback,
     },
     ui: normalizeUi(ui),
   };

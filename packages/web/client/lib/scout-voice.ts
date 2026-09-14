@@ -5,6 +5,7 @@ import {
   playWithVoiceFx,
   type VoiceFxParams,
 } from "@voxd/client/fx";
+import type { ScoutVoicePlayback } from "../../shared/voice-playback.ts";
 
 export type ScoutVoiceConnectionState = "unknown" | "probing" | "connected" | "unavailable";
 export type ScoutVoiceSessionState = "starting" | "recording" | "processing" | "done" | "cancelled" | "error";
@@ -39,14 +40,24 @@ export type ScoutVoiceLiveOptions = {
 };
 
 export type ScoutSpeechResult = {
+  /** Empty when the utterance was spoken on the host instead of rendered. */
   contentType: string;
   audioBase64: string;
   modelId: string;
   voiceId: string;
   audioBytes: number;
+  /**
+   * Scout Menu spoke it live on the Mac. The request resolved when playback
+   * ended, so there is nothing left for the page to play. `interrupted`
+   * marks an operator cut (hold-to-talk, a newer utterance), not a failure.
+   */
+  playedOnHost?: boolean;
+  interrupted?: boolean;
   metrics?: Record<string, unknown>;
   traceId?: string;
   speechTiming?: ScoutSpeechTimingResult;
+  originAppId?: string;
+  utteranceId?: string;
 };
 
 export type ScoutSpeechHandle = {
@@ -63,13 +74,16 @@ export type ScoutSpeechOptions = {
   originAppId?: string;
   utteranceId?: string;
   speechTiming?: ScoutSpeechTimingRequest;
+  /** Override the operator's "spoken on host" setting for this utterance. */
+  playback?: ScoutVoicePlayback;
 };
 
 export type ScoutSpeechCatalogModel = {
   id: string;
   name: string;
   provider: string;
-  available: boolean;
+  /** `null` means Scout Menu has not queried native provider credentials. */
+  available: boolean | null;
 };
 
 export type ScoutSpeechCatalogVoice = {
@@ -78,7 +92,8 @@ export type ScoutSpeechCatalogVoice = {
   language?: string;
   provider: string;
   modelId: string;
-  available: boolean;
+  /** `null` means Scout Menu has not queried native provider credentials. */
+  available: boolean | null;
   isDefault: boolean;
 };
 
@@ -87,7 +102,7 @@ export type ScoutSpeechCatalog = {
   defaultVoiceId?: string;
   models: ScoutSpeechCatalogModel[];
   voices: ScoutSpeechCatalogVoice[];
-  source: "vox" | "nvidia-developer-inference" | "fallback";
+  source: "scout-menu" | "nvidia-developer-inference" | "fallback";
 };
 
 export type ScoutSpeechTimingCueRequest = {
@@ -1015,6 +1030,7 @@ export async function prepareScoutSpeech(
   if (options.utteranceId) body.utteranceId = options.utteranceId;
   if (options.instructions) body.instructions = options.instructions;
   if (options.speechTiming?.enabled) body.speechTiming = options.speechTiming;
+  if (options.playback) body.playback = options.playback;
 
   const response = await fetch("/api/voice/speak", {
     method: "POST",
@@ -1046,11 +1062,39 @@ export async function fetchScoutSpeechCatalog(modelId?: string): Promise<ScoutSp
   return await response.json() as ScoutSpeechCatalog;
 }
 
+/**
+ * Reconcile only a voice that cannot belong to the selected model. Provider
+ * availability is host-query state, not permission to overwrite a persisted
+ * Deck choice, so the model id always remains operator-owned.
+ */
+export function reconcileScoutSpeechSelection(
+  catalog: ScoutSpeechCatalog,
+  modelId: string,
+  voiceId: string,
+): { modelId: string; voiceId: string } {
+  const selected = catalog.voices.find((voice) => (
+    voice.id === voiceId && voice.modelId === modelId
+  ));
+  if (selected) return { modelId, voiceId };
+
+  const voicesForModel = catalog.voices.filter((voice) => voice.modelId === modelId);
+  const next = voicesForModel.find((voice) => voice.isDefault && voice.available !== false)
+    ?? voicesForModel.find((voice) => voice.available !== false)
+    ?? voicesForModel[0];
+  return { modelId, voiceId: next?.id ?? voiceId };
+}
+
 export async function playPreparedScoutSpeech(
   result: ScoutSpeechResult,
   options: { signal?: AbortSignal; onPlaybackStart?: () => void } = {},
 ): Promise<ScoutSpeechResult> {
   if (options.signal?.aborted) throw stoppedSpeechError();
+  if (result.playedOnHost) {
+    // Scout Menu already spoke this on the Mac; the prepare call returned
+    // when playback ended. There are no bytes to play here.
+    options.onPlaybackStart?.();
+    return result;
+  }
   const audio = new Audio(`data:${result.contentType};base64,${result.audioBase64}`);
   const stopPlayback = () => {
     audio.pause();
@@ -1119,6 +1163,7 @@ export async function speakWithEffects(
 ): Promise<ScoutSpeechResult> {
   const result = await prepareScoutSpeech(text, options);
   if (options.signal?.aborted) throw stoppedSpeechError();
+  if (result.playedOnHost) return result;
   const buffer = await decodeAudioFromBase64(result.audioBase64, result.contentType);
   const params = resolveVoiceFxParams(options.presetId, options.params);
   const handle = playWithVoiceFx(buffer, { params, signal: options.signal });
@@ -1131,6 +1176,10 @@ export async function playPreparedScoutSpeechWithEffects(
   options: { signal?: AbortSignal; presetId?: string; params?: Partial<VoiceFxParams>; onPlaybackStart?: () => void } = {},
 ): Promise<ScoutSpeechResult> {
   if (options.signal?.aborted) throw stoppedSpeechError();
+  if (result.playedOnHost) {
+    options.onPlaybackStart?.();
+    return result;
+  }
   const buffer = await decodeAudioFromBase64(result.audioBase64, result.contentType);
   const params = resolveVoiceFxParams(options.presetId, options.params);
   const handle = playWithVoiceFx(buffer, { params, signal: options.signal });

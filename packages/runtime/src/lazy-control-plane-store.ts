@@ -14,6 +14,11 @@ type SharedStoreSurface = Pick<
   | "upsertTrustedPeer"
   | "revokeTrustedPeer"
   | "claimPeerNonce"
+  | "listMachines"
+  | "machine"
+  | "upsertMachine"
+  | "deleteMachine"
+  | "updateMachineAnnotations"
   | "compactAndPruneMeshNodes"
   | "close"
 >;
@@ -65,6 +70,26 @@ export class LazyControlPlaneStore<TStore extends SharedStoreSurface = SQLiteCon
 
   claimPeerNonce(...args: Parameters<SQLiteControlPlaneStore["claimPeerNonce"]>): ReturnType<SQLiteControlPlaneStore["claimPeerNonce"]> {
     return this.get().claimPeerNonce(...args);
+  }
+
+  listMachines(...args: Parameters<SQLiteControlPlaneStore["listMachines"]>): ReturnType<SQLiteControlPlaneStore["listMachines"]> {
+    return this.get().listMachines(...args);
+  }
+
+  machine(...args: Parameters<SQLiteControlPlaneStore["machine"]>): ReturnType<SQLiteControlPlaneStore["machine"]> {
+    return this.get().machine(...args);
+  }
+
+  upsertMachine(...args: Parameters<SQLiteControlPlaneStore["upsertMachine"]>): ReturnType<SQLiteControlPlaneStore["upsertMachine"]> {
+    return this.get().upsertMachine(...args);
+  }
+
+  deleteMachine(...args: Parameters<SQLiteControlPlaneStore["deleteMachine"]>): ReturnType<SQLiteControlPlaneStore["deleteMachine"]> {
+    return this.get().deleteMachine(...args);
+  }
+
+  updateMachineAnnotations(...args: Parameters<SQLiteControlPlaneStore["updateMachineAnnotations"]>): ReturnType<SQLiteControlPlaneStore["updateMachineAnnotations"]> {
+    return this.get().updateMachineAnnotations(...args);
   }
 
   compactAndPruneMeshNodes(...args: Parameters<SQLiteControlPlaneStore["compactAndPruneMeshNodes"]>): ReturnType<SQLiteControlPlaneStore["compactAndPruneMeshNodes"]> {

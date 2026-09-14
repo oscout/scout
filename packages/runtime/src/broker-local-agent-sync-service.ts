@@ -1,3 +1,4 @@
+import { captureRegistries } from "./broker-registry-capture.js";
 import type {
   ActorIdentity,
   AgentDefinition,
@@ -10,6 +11,7 @@ import type { RuntimeSnapshot } from "./scout-dispatcher.js";
 
 type LocalAgentSyncRuntime = {
   snapshot(): RuntimeSnapshot;
+  peek?(): Readonly<RuntimeSnapshot>;
 };
 
 export type RelayAgentOverrides = Record<string, RelayAgentOverride>;
@@ -259,7 +261,7 @@ export class BrokerLocalAgentSyncService {
 
   private async syncSnapshot(): Promise<void> {
     const bindings = await this.options.loadRegisteredLocalAgentBindings(this.options.nodeId);
-    const previousEndpoints = this.options.runtime.snapshot().endpoints;
+    const previousEndpoints = captureRegistries(this.options.runtime, ["endpoints"]).endpoints;
     this.options.log?.(
       `[openscout-runtime] local agent sync found ${bindings.length} registered agent${bindings.length === 1 ? "" : "s"}`,
     );
@@ -299,7 +301,7 @@ export class BrokerLocalAgentSyncService {
       map.set(definitionId, next);
       return map;
     }, new Map<string, string[]>());
-    const snapshot = this.options.runtime.snapshot();
+    const snapshot = captureRegistries(this.options.runtime, ["agents", "endpoints"]);
     const staleAt = this.now();
 
     for (const endpoint of Object.values(snapshot.endpoints)) {
@@ -364,7 +366,7 @@ export class BrokerLocalAgentSyncService {
       activeByAgentHarness.set(`${endpoint.agentId}\0${endpoint.nodeId}\0${endpoint.harness ?? ""}`, endpoint);
     }
 
-    const snapshot = this.options.runtime.snapshot();
+    const snapshot = captureRegistries(this.options.runtime, ["agents", "endpoints"]);
     const retiredAt = this.now();
     for (const endpoint of Object.values(snapshot.endpoints)) {
       if (endpoint.nodeId !== this.options.nodeId) {
@@ -448,7 +450,7 @@ export class BrokerLocalAgentSyncService {
   }
 
   private async reconcileLocalEndpointStates(): Promise<void> {
-    const snapshot = this.options.runtime.snapshot();
+    const snapshot = captureRegistries(this.options.runtime, ["agents", "endpoints"]);
     for (const endpoint of Object.values(snapshot.endpoints)) {
       // This service owns only the current node's process/session liveness.
       // Probing remote tmux identifiers locally is both expensive and can

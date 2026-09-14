@@ -15,13 +15,14 @@ import type { BrokerJournalEntry } from "./broker-journal.js";
 import { BrokerDurableRecordStore, isEndpointLastSeenHeartbeat } from "./broker-durable-record-store.js";
 import { BrokerDurableStore } from "./broker-durable-store.js";
 
-function createTestRecordStore() {
+function createTestRecordStore(options: { beforeAppend?: () => Promise<void> } = {}) {
   const runtime = createInMemoryControlRuntime({}, { localNodeId: "node-1" });
   const appended: BrokerJournalEntry[][] = [];
   const projected: BrokerJournalEntry[][] = [];
   const durableStore = new BrokerDurableStore({
     journal: {
       async appendEntries(entries) {
+        await options.beforeAppend?.();
         appended.push(entries);
         return entries;
       },
@@ -45,6 +46,7 @@ function createTestRecordStore() {
 
   return {
     runtime,
+    durableStore,
     appended,
     projected,
     knownInvocations,
@@ -142,6 +144,53 @@ function testInvocation(input: Partial<InvocationRequest> = {}): InvocationReque
     ...input,
   };
 }
+
+describe("canonical conversation title mutation", () => {
+  test("patches the latest coordination state after writes already queued ahead of rename", async () => {
+    const { runtime, durableStore, records, appended } = createTestRecordStore();
+    const original = testConversation();
+    await runtime.upsertConversation(original);
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    let entered!: () => void;
+    const started = new Promise<void>((resolve) => { entered = resolve; });
+    const blocker = durableStore.runWrite(async () => { entered(); await gate; });
+    await started;
+    const changed = { ...original, participantIds: [...original.participantIds, "agent-new"],
+      shareMode: "shared" as const, metadata: { routingEpoch: 7, source: "coordination" } };
+    const coordination = records.upsertConversation(changed);
+    const rename = records.setConversationTitle(original.id, "Operator name");
+    release();
+    await Promise.all([blocker, coordination]);
+    const titled = await rename;
+    expect(titled).toMatchObject({ ...changed, title: "Operator name",
+      metadata: { ...changed.metadata, titleSource: "operator", titleSetAt: expect.any(Number) } });
+    expect(runtime.peek().conversations[original.id]).toMatchObject({ ...changed, title: "Operator name", metadata: { titleSource: "operator" } });
+    expect(appended).toHaveLength(2);
+    expect(appended[1]![0]).toEqual({ kind: "conversation.upsert", conversation: titled });
+    const cleared = await records.setConversationTitle(original.id, "");
+    expect(cleared).toMatchObject({ ...changed, title: "Operator name" });
+    expect(cleared?.metadata).not.toHaveProperty("titleSource");
+    expect(cleared?.metadata).not.toHaveProperty("titleSetAt");
+  });
+
+  test("unknown conversation does not append or create a record", async () => {
+    const { records, appended, runtime } = createTestRecordStore();
+    expect(await records.setConversationTitle("missing", "New name")).toBeNull();
+    expect(appended).toEqual([]);
+    expect(runtime.peek().conversations.missing).toBeUndefined();
+  });
+
+  test("journal failure rejects rename without changing canonical runtime state", async () => {
+    const { records, runtime, appended } = createTestRecordStore({ beforeAppend: async () => { throw new Error("injected journal failure"); } });
+    const original = testConversation();
+    await runtime.upsertConversation(original);
+    const before = structuredClone(runtime.peek().conversations[original.id]);
+    await expect(records.setConversationTitle(original.id, "Uncommitted")).rejects.toThrow("injected journal failure");
+    expect(runtime.peek().conversations[original.id]).toEqual(before);
+    expect(appended).toEqual([]);
+  });
+});
 
 describe("BrokerDurableRecordStore", () => {
   test("can defer projection only for explicit bootstrap node and actor writes", async () => {

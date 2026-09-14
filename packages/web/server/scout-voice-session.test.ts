@@ -10,6 +10,7 @@ import {
   resetScoutVoiceSessionStateForTests,
   stopScoutVoiceSession,
   subscribeScoutVoiceSession,
+  synthesizeScoutVoiceSpeech,
 } from "./scout-voice-session.ts";
 
 afterEach(() => {
@@ -147,6 +148,171 @@ describe("scout voice native sessions", () => {
     await expect(awaitScoutVoiceHostCommand("scout-menu", 1_000, "menu-process")).resolves.toMatchObject({
       command: { type: "session.stop", sessionId },
     });
+  });
+
+  test("routes speech synthesis through the registered Scout Menu host", async () => {
+    registerScoutVoiceHost({
+      hostId: "scout-menu",
+      instanceId: "menu-process",
+      platform: "macos",
+      bundle: "app.openscout.scout.menu",
+    });
+
+    const resultPromise = synthesizeScoutVoiceSpeech({
+      text: "Scout owns this voice path.",
+      modelId: "gpt-4o-mini-tts",
+      voiceId: "alloy",
+      speed: 1.2,
+    });
+    const response = await awaitScoutVoiceHostCommand("scout-menu", 1_000, "menu-process");
+    expect(response.command).toMatchObject({
+      type: "speech.synthesize",
+      text: "Scout owns this voice path.",
+      modelId: "gpt-4o-mini-tts",
+      voiceId: "alloy",
+      speed: 1.2,
+    });
+    const sessionId = response.command?.sessionId;
+    expect(sessionId?.startsWith("scout-speech:")).toBe(true);
+
+    pushScoutVoiceHostEvent({
+      hostId: "scout-menu",
+      instanceId: "menu-process",
+      sessionId: sessionId!,
+      event: "speech.result",
+      data: {
+        contentType: "audio/wav",
+        audioBase64: "UklGRg==",
+        modelId: "gpt-4o-mini-tts",
+        voiceId: "alloy",
+        audioBytes: 4,
+        metrics: { provider: "openai" },
+      },
+    });
+
+    await expect(resultPromise).resolves.toEqual({
+      contentType: "audio/wav",
+      audioBase64: "UklGRg==",
+      modelId: "gpt-4o-mini-tts",
+      voiceId: "alloy",
+      audioBytes: 4,
+      route: "scout-menu",
+      metrics: { provider: "openai" },
+    });
+
+    const replayed: Array<{ event: string; data: Record<string, unknown> }> = [];
+    const unsubscribe = subscribeScoutVoiceSession(sessionId!, (event) => {
+      replayed.push({ event: event.event, data: event.data });
+    });
+    unsubscribe();
+    expect(replayed.find((event) => event.event === "speech.result")?.data).toEqual({
+      contentType: "audio/wav",
+      modelId: "gpt-4o-mini-tts",
+      voiceId: "alloy",
+      audioBytes: 4,
+      metrics: { provider: "openai" },
+      audioTransferred: true,
+    });
+  });
+
+  test("rejects a speech result that arrives after client cancellation", async () => {
+    registerScoutVoiceHost({
+      hostId: "scout-menu",
+      instanceId: "menu-process",
+      platform: "macos",
+    });
+    const controller = new AbortController();
+    const resultPromise = synthesizeScoutVoiceSpeech({
+      text: "Stop this result.",
+      modelId: "system",
+      signal: controller.signal,
+    });
+    const response = await awaitScoutVoiceHostCommand("scout-menu", 1_000, "menu-process");
+    const sessionId = response.command?.sessionId;
+    expect(typeof sessionId).toBe("string");
+
+    controller.abort();
+    await expect(resultPromise).rejects.toMatchObject({ name: "AbortError" });
+    expect(() => pushScoutVoiceHostEvent({
+      hostId: "scout-menu",
+      instanceId: "menu-process",
+      sessionId: sessionId!,
+      event: "speech.result",
+      data: {
+        contentType: "audio/wav",
+        audioBase64: "UklGRg==",
+        modelId: "system",
+        voiceId: "system-default",
+        audioBytes: 4,
+      },
+    })).toThrow("Voice session has already finished.");
+  });
+
+  test("rejects a speech result that arrives after synthesis timeout", async () => {
+    registerScoutVoiceHost({
+      hostId: "scout-menu",
+      instanceId: "menu-process",
+      platform: "macos",
+    });
+    const resultPromise = synthesizeScoutVoiceSpeech({
+      text: "This host never answers.",
+      modelId: "system",
+      timeoutMs: 30,
+    });
+    const response = await awaitScoutVoiceHostCommand("scout-menu", 1_000, "menu-process");
+    const sessionId = response.command?.sessionId;
+    expect(typeof sessionId).toBe("string");
+
+    await expect(resultPromise).rejects.toMatchObject({ code: "speech_timeout", status: 504 });
+    expect(() => pushScoutVoiceHostEvent({
+      hostId: "scout-menu",
+      instanceId: "menu-process",
+      sessionId: sessionId!,
+      event: "speech.result",
+      data: {
+        contentType: "audio/wav",
+        audioBase64: "UklGRg==",
+        modelId: "system",
+        voiceId: "system-default",
+        audioBytes: 4,
+      },
+    })).toThrow("Voice session has already finished.");
+  });
+
+  test("does not route speech through an arbitrary voice host", async () => {
+    registerScoutVoiceHost({
+      hostId: "some-other-helper",
+      instanceId: "helper-process",
+      platform: "macos",
+    });
+
+    await expect(synthesizeScoutVoiceSpeech({
+      text: "Use Scout Menu only.",
+      modelId: "system",
+    })).rejects.toMatchObject({
+      code: "host_unavailable",
+      status: 503,
+    });
+  });
+
+  test("outbound commands do not keep a silent host alive", () => {
+    const originalNow = Date.now;
+    let now = 1_700_000_000_000;
+    Date.now = () => now;
+    try {
+      registerScoutVoiceHost({
+        hostId: "scout-menu",
+        instanceId: "menu-process",
+        platform: "macos",
+      });
+      now += 44_000;
+      createScoutVoiceSession({ surface: "macos.native-composer" });
+      now += 2_000;
+
+      expect(getScoutVoiceHealthSnapshot(now)).toMatchObject({ ok: false, host: null });
+    } finally {
+      Date.now = originalNow;
+    }
   });
 
   test("a stale helper poll cannot consume a replacement helper's command", async () => {

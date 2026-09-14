@@ -681,7 +681,7 @@ describe("RecoverableSQLiteProjection", () => {
     ]);
   });
 
-  test("sees endpoint, binding, and reply dependencies written earlier in one real replay batch", async () => {
+  test.each([false, true])("sees endpoint, binding, and reply dependencies written earlier in one real replay batch (cache=%s)", async (cacheReplayLookups) => {
     const root = mkdtempSync(join(tmpdir(), "openscout-sqlite-projection-real-"));
     tempRoots.add(root);
     const entries: BrokerJournalEntry[] = [
@@ -774,6 +774,7 @@ describe("RecoverableSQLiteProjection", () => {
       join(root, "projection.sqlite"),
       journal,
       {
+        cacheReplayLookups,
         replayYieldEvery: entries.length,
         conversationFeedPublishDelayMs: 0,
         conversationThreadPublishDelayMs: 0,
@@ -1511,4 +1512,34 @@ describe("RecoverableSQLiteProjection", () => {
     });
     expect(correctedArtifact.contentCursor).not.toBe(originalArtifact.contentCursor);
   });
+});
+
+test("startup suffix catch-up excludes later writes and survives checkpoint restart", async () => {
+  const root = mkdtempSync(join(tmpdir(), "scout-startup-suffix-")); tempRoots.add(root);
+  const dbPath = join(root, "projection.sqlite");
+  const journal = new FileBackedBrokerJournal(join(root, "broker.jsonl"));
+  await journal.load();
+  await journal.appendEntries(sampleMessageEntry());
+  const projection = createRealProjection(dbPath, journal);
+  await projection.warm();
+  // These accepted records deliberately receive no live projection enqueue.
+  await journal.appendEntries(sampleAgentEntry("During fill"));
+  await projection.flush();
+  const boundary = await projection.captureStartupCatchUpBoundary();
+  const catchUp = projection.catchUpStartup(boundary);
+  const later = sampleAgentEntry("After boundary");
+  await journal.appendEntries(later);
+  await catchUp;
+  const reader = new SQLiteControlPlaneStore(dbPath);
+  try { expect(reader.loadSnapshot().agents["agent-1"]?.displayName).toBe("During fill"); }
+  finally { reader.close(); }
+  await projection.applyEntries([later]);
+  projection.close();
+  const restarted = createRealProjection(dbPath, journal);
+  await restarted.warm(); await restarted.flush(); restarted.close();
+  const verified = new SQLiteControlPlaneStore(dbPath);
+  try {
+    expect(verified.loadSnapshot().agents["agent-1"]?.displayName).toBe("After boundary");
+    expect(Object.keys(verified.loadSnapshot().messages)).toEqual(["msg-1"]);
+  } finally { verified.close(); await journal.close(); }
 });

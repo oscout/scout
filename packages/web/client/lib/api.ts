@@ -137,7 +137,8 @@ export function peekApiGet<T>(path: string, maxAgeMs: number, init?: RequestInit
 /** Typed fetch wrapper for Scout API endpoints. */
 export async function api<T>(path: string, init?: RequestInit): Promise<T> {
   const method = (init?.method ?? "GET").toUpperCase();
-  const dedupeGet = method === "GET" && !init?.body;
+  // A signal owns its request lifetime; never share it with unrelated consumers.
+  const dedupeGet = method === "GET" && !init?.body && !init?.signal;
 
   if (!dedupeGet) {
     const response = await fetchApiText(path, init);

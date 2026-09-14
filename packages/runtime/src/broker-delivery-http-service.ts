@@ -43,7 +43,7 @@ export type BrokerDeliveryHttpServiceDeps = {
     reasons?: Set<DeliveryReason>;
     limit?: number;
   }) => Promise<InboxItem[]>;
-  inboxItemForDelivery: (delivery: DeliveryIntent) => InboxItem;
+  inboxItemForDelivery: (delivery: DeliveryIntent) => InboxItem | Promise<InboxItem>;
   claimDelivery: (input: DeliveryClaimInput) => Promise<DeliveryIntent | null>;
   updateDeliveryStatus: (input: DeliveryStatusUpdateInput) => Promise<void>;
   listDeliveries: (options: {
@@ -111,7 +111,7 @@ export class BrokerDeliveryHttpService {
     });
     return {
       ok: true,
-      claimed: claimedDelivery ? this.deps.inboxItemForDelivery(claimedDelivery) : null,
+      claimed: claimedDelivery ? await this.deps.inboxItemForDelivery(claimedDelivery) : null,
     };
   };
 

@@ -1,8 +1,8 @@
 'use client';
 
 import React, { useState, useCallback, useEffect, useMemo, useRef } from "react";
-import { ChevronDown, ChevronRight, Maximize2, Minimize2, PanelBottom, PanelRight, Pin, PinOff, Search, Sparkles, Terminal as TerminalIcon, X } from "lucide-react";
-import { Assistant, type HudsonApp, type CommandOption, usePersistentState, usePlatform, usePlatformLayout } from "@hudsonkit";
+import { ChevronDown, ChevronRight, PanelBottom, PanelRight, Pin, PinOff, Search, X } from "lucide-react";
+import { type HudsonApp, type CommandOption, usePersistentState, usePlatform, usePlatformLayout } from "@hudsonkit";
 import { CommandDock, Frame, SidePanel, StatusBar } from "@hudsonkit/chrome";
 import { FeatureFlagsProvider, useOptionalFlag } from "hudsonkit/flags";
 import { ScoutFeatureFlagPanel } from "./components/ScoutFeatureFlagPanel.tsx";
@@ -88,7 +88,6 @@ import { nextRightPanelToggle } from "./scout/sidebar/right-panel-toggle.ts";
 
 interface OpenScoutAppShellProps {
   app: HudsonApp;
-  assistant?: boolean;
 }
 
 const SIDE_PANEL_MIN_WIDTH = 240;
@@ -240,7 +239,7 @@ function ScoutNavigationBar({ title, center, actions, search }: ScoutNavigationB
   );
 }
 
-export function OpenScoutAppShell({ app, assistant = true }: OpenScoutAppShellProps) {
+export function OpenScoutAppShell({ app }: OpenScoutAppShellProps) {
   return (
     <FeatureFlagsProvider
       registry={scoutFlags}
@@ -251,7 +250,7 @@ export function OpenScoutAppShell({ app, assistant = true }: OpenScoutAppShellPr
     >
       <app.Provider>
         <CanvasMinimapProvider>
-          <OpenScoutAppShellInner app={app} assistantEnabled={assistant} />
+          <OpenScoutAppShellInner app={app} />
         </CanvasMinimapProvider>
       </app.Provider>
     </FeatureFlagsProvider>
@@ -320,7 +319,7 @@ function OpenScoutStatusBarRight({
   );
 }
 
-function OpenScoutAppShellInner({ app, assistantEnabled }: { app: HudsonApp; assistantEnabled: boolean }) {
+function OpenScoutAppShellInner({ app }: { app: HudsonApp }) {
   const { navTotalHeight } = usePlatformLayout();
   const { titleBarInset, dragRegionProps, onInteractiveMouseDown } = usePlatform();
   const keyboardHelp = useKeyboardHelp();
@@ -530,19 +529,6 @@ function OpenScoutAppShellInner({ app, assistantEnabled }: { app: HudsonApp; ass
   const [terminalHeight, setTerminalHeight] = usePersistentState(`appshell.${app.id}.termH`, 320);
 
   const hasTerminalSlot = !!app.slots.Terminal;
-  const drawerTabs = useMemo<DrawerTab[]>(() => {
-    const tabs: DrawerTab[] = [];
-    if (hasTerminalSlot) tabs.push("terminal");
-    if (assistantEnabled) tabs.push("assistant");
-    return tabs;
-  }, [hasTerminalSlot, assistantEnabled]);
-  const defaultTab: DrawerTab = drawerTabs[0] ?? "terminal";
-  const [activeTab, setActiveTab] = usePersistentState<DrawerTab>(
-    `appshell.${app.id}.drawerTab`,
-    defaultTab,
-  );
-  const resolvedTab: DrawerTab = drawerTabs.includes(activeTab) ? activeTab : defaultTab;
-
   const [showCommandPalette, setShowCommandPalette] = useState(false);
   const [showFlagPanel, setShowFlagPanel] = useState(false);
   const [openTools, setOpenTools] = useState<Set<string>>(new Set());
@@ -798,7 +784,7 @@ function OpenScoutAppShellInner({ app, assistantEnabled }: { app: HudsonApp; ass
   const showRightPanel = !terminalFocusActive
     && !scopePresentation
     && hasMeaningfulInspector;
-  const bottomPanelAvailable = drawerTabs.length > 0;
+  const bottomPanelAvailable = hasTerminalSlot;
   const rightPanelAvailable = !scopePresentation && hasMeaningfulInspector;
   const rightPanelExpanded = showRightPanel && !effectiveRightCollapsed;
   const toggleRightPanel = useCallback(() => {
@@ -891,25 +877,11 @@ function OpenScoutAppShellInner({ app, assistantEnabled }: { app: HudsonApp; ass
         action: () => setShowFlagPanel(true),
       },
     ];
-    if (assistantEnabled) {
-      commands.push({
-        id: "shell:toggle-assistant",
-        label: "Toggle Assistant",
-        shortcut: "Cmd+J",
-        action: () => {
-          setActiveTab("assistant");
-          setShowTerminal((visible) => !visible || activeTab !== "assistant");
-        },
-      });
-    }
     return commands;
   }, [
-    assistantEnabled,
-    activeTab,
     openContextCapture,
     navigateBack,
     route,
-    setActiveTab,
     setLeftCollapsed,
     setRightOverlay,
     setShowFlagPanel,
@@ -999,10 +971,9 @@ function OpenScoutAppShellInner({ app, assistantEnabled }: { app: HudsonApp; ass
         e.preventDefault();
         setShowTerminal((visible) => !visible);
       }
-      if (assistantEnabled && (e.metaKey || e.ctrlKey) && e.key === "j") {
+      if (hasTerminalSlot && (e.metaKey || e.ctrlKey) && e.key === "j") {
         e.preventDefault();
-        setActiveTab("assistant");
-        setShowTerminal((visible) => !(visible && resolvedTab === "assistant"));
+        setShowTerminal((visible) => !visible);
       }
       if (
         isScoutDevToolsAvailable()
@@ -1019,15 +990,13 @@ function OpenScoutAppShellInner({ app, assistantEnabled }: { app: HudsonApp; ass
     window.addEventListener("keydown", handler, true);
     return () => window.removeEventListener("keydown", handler, true);
   }, [
-    assistantEnabled,
     clearGoShortcut,
+    hasTerminalSlot,
     keyboardHelp.open,
     navigateBack,
     navigate,
     openContextCapture,
-    resolvedTab,
     route,
-    setActiveTab,
     setLeftCollapsed,
     setRightCollapsed,
     setRightOverlay,
@@ -1052,6 +1021,14 @@ function OpenScoutAppShellInner({ app, assistantEnabled }: { app: HudsonApp; ass
     window.addEventListener("scout:set-inspector-width", handler);
     return () => window.removeEventListener("scout:set-inspector-width", handler);
   }, [setRightCollapsed, setRightWidth, sidePanelMaxWidth]);
+
+  // The Terminals screen folds "Focus terminal" into its own menu; the shell
+  // still owns the focus state and the ⌘⇧B shortcut, so it listens for the ask.
+  useEffect(() => {
+    const handler = () => setTerminalFocus((focused) => !focused);
+    window.addEventListener("scout:terminal-focus-toggle", handler);
+    return () => window.removeEventListener("scout:terminal-focus-toggle", handler);
+  }, [setTerminalFocus]);
 
   const InspectorSlot = app.slots.Inspector;
   const RightPanelSlot = app.slots.RightPanel;
@@ -1590,48 +1567,43 @@ function OpenScoutAppShellInner({ app, assistantEnabled }: { app: HudsonApp; ass
                     variant="top-row"
                     presentation={slackShell ? "slack" : "scout"}
                     onOpenSearch={() => setShowCommandPalette(true)}
+                    // Terminals owns the middle of its row (search) and the rest
+                    // of the reading line (workspace tabs); both are portal slots
+                    // the screen fills, so the state stays where the screen keeps it.
+                    crumbUtility={route.view === "terminal"
+                      ? <div id="scout-terminal-header-crumb-slot" data-scout-terminal-header-crumb-slot="" />
+                      : undefined}
+                    centerUtility={route.view === "terminal"
+                      ? <div id="scout-terminal-header-search-slot" data-scout-terminal-header-search-slot="" />
+                      : undefined}
                     rightUtility={(
                       <>
-                        <TopRowIdentity presentation={slackShell ? "slack" : "scout"} />
+                        {/* On Terminals the row is the screen's: identity is not
+                            a control, and the focus toggle lives in the screen's
+                            menu with its ⌘⇧B shortcut. */}
+                        {route.view !== "terminal" ? (
+                          <TopRowIdentity presentation={slackShell ? "slack" : "scout"} />
+                        ) : null}
                         {route.view === "terminal" ? (
-                          <>
-                            <div id="scout-terminal-header-slot" data-scout-terminal-header-slot="" />
-                            <button
-                              type="button"
-                              data-scout-terminal-focus-toggle=""
-                              aria-label={terminalFocusActive ? "Exit terminal focus" : "Focus terminal"}
-                              aria-pressed={terminalFocusActive}
-                              aria-keyshortcuts="Meta+Shift+B Control+Shift+B"
-                              title={terminalFocusActive
-                                ? "Exit focus (⌘⇧B)"
-                                : "Focus terminal (⌘⇧B)"}
-                              className={`scout-terminal-focus-toggle${
-                                terminalFocusActive ? " scout-terminal-focus-toggle--active" : ""
-                              }`}
-                              onClick={() => setTerminalFocus((focused) => !focused)}
-                            >
-                              {terminalFocusActive
-                                ? <Minimize2 size={13} strokeWidth={1.8} aria-hidden="true" />
-                                : <Maximize2 size={13} strokeWidth={1.8} aria-hidden="true" />}
-                            </button>
-                          </>
+                          <div id="scout-terminal-header-slot" data-scout-terminal-header-slot="" />
                         ) : null}
                         <span
                           className="scout-top-row-panel-toggles"
                           role="group"
                           aria-label="Layout panels"
                         >
+                          {route.view !== "terminal" ? (
                           <button
                             type="button"
                             data-scout-bottom-panel-toggle=""
                             aria-label={bottomPanelAvailable
-                              ? (showTerminal ? "Hide bottom panel" : "Show bottom panel")
-                              : "Bottom panel unavailable"}
+                              ? (showTerminal ? "Hide terminal" : "Show terminal")
+                              : "Terminal unavailable"}
                             aria-pressed={showTerminal}
                             aria-keyshortcuts="Control+`"
                             title={bottomPanelAvailable
-                              ? (showTerminal ? "Hide bottom panel (⌃`)" : "Show bottom panel (⌃`)")
-                              : "No bottom panel is available in this app"}
+                              ? (showTerminal ? "Hide terminal (⌃`)" : "Show terminal (⌃`)")
+                              : "No terminal is available in this app"}
                             className={`scout-top-row-panel-toggle${
                               showTerminal ? " scout-top-row-panel-toggle--active" : ""
                             }`}
@@ -1640,6 +1612,7 @@ function OpenScoutAppShellInner({ app, assistantEnabled }: { app: HudsonApp; ass
                           >
                             <PanelBottom size={14} strokeWidth={1.8} aria-hidden="true" />
                           </button>
+                          ) : null}
                           <button
                             type="button"
                             data-scout-right-panel-toggle=""
@@ -1788,6 +1761,7 @@ function OpenScoutAppShellInner({ app, assistantEnabled }: { app: HudsonApp; ass
                 )}
                 onToggleTerminal={() => setShowTerminal((visible) => !visible)}
                 isTerminalOpen={showTerminal}
+                terminalLabel="Terminal"
               />
 
               <ScoutActivityLogOverlay
@@ -1815,26 +1789,9 @@ function OpenScoutAppShellInner({ app, assistantEnabled }: { app: HudsonApp; ass
                   isMaximized={isTerminalMaximized}
                   height={Math.min(terminalHeight, window.innerHeight * 0.8)}
                   onHeightChange={(h) => setTerminalHeight(Math.min(h, window.innerHeight * 0.8))}
-                  title={(
-                    <DrawerTabs
-                      tabs={drawerTabs}
-                      active={resolvedTab}
-                      onSelect={setActiveTab}
-                    />
-                  )}
+                  closeLabel="Close terminal"
                 >
-                  {showTerminal && resolvedTab === "terminal" && (
-                    app.slots.Terminal ? (
-                      <app.slots.Terminal />
-                    ) : (
-                      <div className="p-4 font-mono text-md text-neutral-400">
-                        No terminal content
-                      </div>
-                    )
-                  )}
-                  {showTerminal && resolvedTab === "assistant" && (
-                    <Assistant app={app} commands={appCommands} />
-                  )}
+                  {showTerminal && app.slots.Terminal && <app.slots.Terminal />}
                 </TerminalDrawer>
               </div>
 
@@ -1896,42 +1853,5 @@ function OpenScoutAppShellInner({ app, assistantEnabled }: { app: HudsonApp; ass
       />
       <PairingRequestPrompt />
     </>
-  );
-}
-
-type DrawerTab = "terminal" | "assistant";
-
-function DrawerTabs({
-  tabs,
-  active,
-  onSelect,
-}: {
-  tabs: DrawerTab[];
-  active: DrawerTab;
-  onSelect: (tab: DrawerTab) => void;
-}) {
-  if (tabs.length === 0) return null;
-  return (
-    <div className="flex items-center gap-0.5">
-      {tabs.map((tab) => {
-        const isActive = tab === active;
-        const Icon = tab === "terminal" ? TerminalIcon : Sparkles;
-        const label = tab === "terminal" ? "TERMINAL" : "ASSISTANT";
-        const accent = tab === "terminal" ? "text-emerald-400" : "text-cyan-400";
-        return (
-          <button
-            key={tab}
-            type="button"
-            onClick={() => onSelect(tab)}
-            className={`flex items-center gap-1.5 px-2.5 py-1 rounded text-xs font-bold tracking-widest font-mono transition-colors ${
-              isActive ? `${accent} bg-white/[0.04]` : "text-neutral-500 hover:text-neutral-300"
-            }`}
-          >
-            <Icon size={13} />
-            <span>{label}</span>
-          </button>
-        );
-      })}
-    </div>
   );
 }

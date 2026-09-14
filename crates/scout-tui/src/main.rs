@@ -1,10 +1,11 @@
 //! THESIS: The TUI is a night instrument, not an attention inbox.
-//! OWN-WORLD: Warm near-black room canvas (#0A0908), BONE primary text,
-//! ASH machine details, PHOSPHOR live state, SIGNAL amber attention.
+//! OWN-WORLD: Warm near-black room canvas (#0C0A08), BONE primary text,
+//! ASH machine details, EMBER live/selected, SIGNAL gold for needs-you.
 //! STORY: What is moving; last thought already on screen; draft a response.
 //! FORM: Seven takes on one fleet (Now, Horizon, Twin, Mesh, Quota, Harvest, Grid).
 
 mod app;
+mod ask;
 mod classify;
 mod draw;
 mod feed;
@@ -20,7 +21,10 @@ use std::sync::mpsc::TryRecvError;
 use std::time::Duration;
 
 use crossterm::cursor::Show;
-use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use crossterm::event::{
+    self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind,
+    KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+};
 use crossterm::execute;
 use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
@@ -28,7 +32,9 @@ use crossterm::terminal::{
 use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
 
-use app::{clean_summary, short_session, twin_visible_columns, App, Composition, Take};
+use app::{
+    clean_summary, short_session, twin_visible_columns, App, Composition, HitKind, Pointer, Take,
+};
 use feed::{fetch_recent, spawn_tail};
 use git::spawn_git;
 use machines::spawn_machines;
@@ -45,8 +51,27 @@ impl Drop for TerminalGuard {
 fn restore_terminal() {
     let _ = disable_raw_mode();
     let mut out = io::stdout();
-    let _ = execute!(out, LeaveAlternateScreen, Show);
+    let _ = write!(out, "{}", Pointer::Default.osc());
+    let _ = execute!(out, DisableMouseCapture, LeaveAlternateScreen, Show);
     let _ = out.flush();
+}
+
+fn sync_pointer(app: &mut App, next: Pointer) {
+    if app.pointer == next {
+        return;
+    }
+    app.pointer = next;
+    let mut out = io::stdout();
+    let _ = write!(out, "{}", next.osc());
+    let _ = out.flush();
+}
+
+fn pointer_for_hit(kind: Option<HitKind>) -> Pointer {
+    match kind {
+        Some(HitKind::Split) => Pointer::EwResize,
+        Some(_) => Pointer::Pointer,
+        None => Pointer::Default,
+    }
 }
 
 struct Args {
@@ -164,7 +189,7 @@ fn handle_key(app: &mut App, key: KeyEvent, terminal_width: u16) -> bool {
                 app.cancel_compose();
             }
             KeyCode::Enter => {
-                app.submit_compose_disabled();
+                app.submit_compose();
             }
             KeyCode::Backspace => {
                 app.draft.pop();
@@ -194,7 +219,12 @@ fn handle_key(app: &mut App, key: KeyEvent, terminal_width: u16) -> bool {
             if app.take == Take::Grid {
                 app.next_composition();
             } else {
-                app.take = Take::Grid;
+                app.take = match app.take {
+                    Take::Horizon => Take::Mesh,
+                    Take::Mesh => Take::Harvest,
+                    Take::Harvest => Take::Horizon,
+                    _ => Take::Horizon,
+                };
             }
         }
         (KeyCode::Char('h'), _) | (KeyCode::Left, _) if app.take == Take::Grid => {
@@ -227,7 +257,7 @@ fn handle_key(app: &mut App, key: KeyEvent, terminal_width: u16) -> bool {
             } else if app.take == Take::Twin {
                 app.cycle_deck_focus(1, visible_twin_cols);
             } else {
-                app.take = app.take.next();
+                app.take = app.take.next_spine();
             }
         }
         (KeyCode::BackTab, _) => {
@@ -235,6 +265,8 @@ fn handle_key(app: &mut App, key: KeyEvent, terminal_width: u16) -> bool {
                 app.move_slot_focus(-1);
             } else if app.take == Take::Twin {
                 app.cycle_deck_focus(-1, visible_twin_cols);
+            } else {
+                app.take = app.take.prev_spine();
             }
         }
         (KeyCode::Char('p'), _) | (KeyCode::Enter, _) if app.take == Take::Mesh => {
@@ -250,12 +282,20 @@ fn handle_key(app: &mut App, key: KeyEvent, terminal_width: u16) -> bool {
             app.queue_mesh_refresh();
         }
         (KeyCode::Char('i'), _) | (KeyCode::Enter, _) => {
-            if matches!(app.take, Take::Now | Take::Twin) && app.selected_agent().is_some() {
+            if app.can_compose() {
+                if matches!(app.take, Take::Horizon | Take::Harvest) {
+                    app.take = Take::Now;
+                }
                 app.begin_compose();
-            } else {
-                app.composer_notice =
-                    Some("Draft lives in Now or Twin — press i there. Ask is not wired.".into());
+            } else if !matches!(app.take, Take::Mesh) {
+                app.composer_notice = Some(app.compose_blocked_reason());
             }
+        }
+        (KeyCode::Char('['), _) if app.take.splits_detail() => {
+            app.nudge_split(-4);
+        }
+        (KeyCode::Char(']'), _) if app.take.splits_detail() => {
+            app.nudge_split(4);
         }
         (KeyCode::Esc, _) if app.take != Take::Now => {
             app.take = Take::Now;
@@ -264,6 +304,63 @@ fn handle_key(app: &mut App, key: KeyEvent, terminal_width: u16) -> bool {
     }
 
     false
+}
+
+fn handle_mouse(app: &mut App, mouse: MouseEvent) -> bool {
+    if app.help || app.composing {
+        app.split_drag = false;
+        sync_pointer(app, Pointer::Default);
+        return false;
+    }
+    let hit = app.hit_at(mouse.column, mouse.row);
+    match mouse.kind {
+        MouseEventKind::Down(MouseButton::Left) => {
+            if matches!(hit, Some(HitKind::Split)) {
+                app.split_drag = true;
+                app.set_split_from_col(mouse.column);
+                sync_pointer(app, Pointer::EwResize);
+            } else {
+                app.split_drag = false;
+                if let Some(kind) = hit {
+                    app.apply_hit(kind);
+                }
+                sync_pointer(app, pointer_for_hit(hit));
+            }
+            true
+        }
+        MouseEventKind::Drag(MouseButton::Left) if app.split_drag => {
+            app.set_split_from_col(mouse.column);
+            sync_pointer(app, Pointer::EwResize);
+            true
+        }
+        MouseEventKind::Up(MouseButton::Left) => {
+            if app.split_drag {
+                app.persist_split();
+            }
+            app.split_drag = false;
+            sync_pointer(app, pointer_for_hit(hit));
+            true
+        }
+        MouseEventKind::Moved => {
+            if app.split_drag {
+                app.set_split_from_col(mouse.column);
+                sync_pointer(app, Pointer::EwResize);
+                true
+            } else {
+                sync_pointer(app, pointer_for_hit(hit));
+                false
+            }
+        }
+        MouseEventKind::ScrollDown => {
+            app.move_cursor(1);
+            true
+        }
+        MouseEventKind::ScrollUp => {
+            app.move_cursor(-1);
+            true
+        }
+        _ => false,
+    }
 }
 
 fn main() -> io::Result<()> {
@@ -295,9 +392,13 @@ fn main() -> io::Result<()> {
         std::process::exit(1);
     }
 
+    if std::env::var_os("COLORTERM").is_none() {
+        std::env::set_var("COLORTERM", "truecolor");
+    }
+
     enable_raw_mode()?;
     let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen)?;
+    execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
     let _guard = TerminalGuard;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
@@ -367,9 +468,28 @@ fn main() -> io::Result<()> {
 
         terminal.draw(|frame| draw::draw(frame, &mut app))?;
 
-        if event::poll(Duration::from_millis(60))? {
-            if let Event::Key(key) = event::read()? {
-                done = handle_key(&mut app, key, terminal.size()?.width);
+        if event::poll(Duration::from_millis(80))? {
+            let mut redraw = false;
+            loop {
+                match event::read()? {
+                    Event::Key(key) if key.kind != KeyEventKind::Release => {
+                        done = handle_key(&mut app, key, terminal.size()?.width) || done;
+                        redraw = true;
+                    }
+                    Event::Mouse(mouse) => {
+                        if handle_mouse(&mut app, mouse) {
+                            redraw = true;
+                        }
+                    }
+                    Event::Resize(_, _) => redraw = true,
+                    _ => {}
+                }
+                if done || !event::poll(Duration::ZERO)? {
+                    break;
+                }
+            }
+            if redraw && !done {
+                terminal.draw(|frame| draw::draw(frame, &mut app))?;
             }
         }
     }
@@ -402,6 +522,7 @@ mod tests {
     #[test]
     fn enter_never_discards_or_claims_to_send_a_draft() {
         let mut app = App::new(Take::Now);
+        add_agents(&mut app, 1);
         app.begin_compose();
         app.draft = "Please continue with the review".into();
 
@@ -412,10 +533,28 @@ mod tests {
         ));
         assert!(!app.composing);
         assert_eq!(app.draft, "Please continue with the review");
+        assert!(!app.composer_ok);
         assert_eq!(
             app.composer_notice.as_deref(),
             Some("Sending is not wired; draft was not sent.")
         );
+    }
+
+    #[test]
+    fn enter_without_a_session_keeps_the_draft() {
+        let mut app = App::new(Take::Now);
+        app.begin_compose();
+        app.draft = "Please continue with the review".into();
+
+        assert!(!handle_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            85,
+        ));
+        assert!(!app.composing);
+        assert_eq!(app.draft, "Please continue with the review");
+        assert!(!app.composer_ok);
+        assert_eq!(app.composer_notice.as_deref(), Some("no session to ask"));
     }
 
     #[test]
@@ -435,7 +574,7 @@ mod tests {
     }
 
     #[test]
-    fn enter_outside_a_draft_view_does_not_capture_input() {
+    fn enter_on_empty_horizon_does_not_compose() {
         let mut app = App::new(Take::Horizon);
 
         assert!(!handle_key(
@@ -444,10 +583,17 @@ mod tests {
             85,
         ));
         assert!(!app.composing);
-        assert_eq!(
-            app.composer_notice.as_deref(),
-            Some("Draft lives in Now or Twin — press i there. Ask is not wired.")
-        );
+        assert_eq!(app.composer_notice.as_deref(), Some("no session to ask"));
+    }
+
+    #[test]
+    fn enter_on_horizon_with_a_session_opens_now_compose() {
+        let mut app = App::new(Take::Horizon);
+        add_agents(&mut app, 1);
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(app.take, Take::Now);
+        assert!(app.composing);
+        assert_eq!(app.selected_agent().unwrap().id, "session-0");
     }
 
     fn mesh_machine() -> app::Machine {
@@ -661,7 +807,54 @@ mod tests {
         press(&mut app, KeyCode::Char('g'));
         assert_eq!(app.composition, Composition::Review);
         assert_eq!(app.focused_slot, 0);
-        assert_eq!(app.take, Take::Grid);
+    }
+
+    #[test]
+    fn tab_cycles_the_spine_and_skips_twin_and_grid() {
+        let mut app = App::new(Take::Now);
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(app.take, Take::Horizon);
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(app.take, Take::Mesh);
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(app.take, Take::Harvest);
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(app.take, Take::Quota);
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(app.take, Take::Now);
+        assert!(!handle_key(
+            &mut app,
+            KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT),
+            120,
+        ));
+        assert_eq!(app.take, Take::Quota);
+    }
+
+    #[test]
+    fn harvest_jk_steps_trees_not_files() {
+        let mut app = App::new(Take::Harvest);
+        add_agents(&mut app, 3);
+        assert_eq!(app.harvest_item_count(), 3);
+        press(&mut app, KeyCode::Char('j'));
+        assert_eq!(app.harvest_cursor, 1);
+        let selected = app.selected_harvest_item().unwrap().0.session_id;
+        assert_eq!(app.selected_agent().unwrap().id, selected);
+        press(&mut app, KeyCode::Char('j'));
+        assert_eq!(app.harvest_cursor, 2);
+        press(&mut app, KeyCode::Char('k'));
+        assert_eq!(app.harvest_cursor, 1);
+    }
+
+    #[test]
+    fn harvest_enter_opens_now_compose_for_the_tree() {
+        let mut app = App::new(Take::Harvest);
+        add_agents(&mut app, 3);
+        press(&mut app, KeyCode::Char('j'));
+        let tree_id = app.selected_harvest_item().unwrap().0.session_id;
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(app.take, Take::Now);
+        assert!(app.composing);
+        assert_eq!(app.selected_agent().unwrap().id, tree_id);
     }
 
     #[test]

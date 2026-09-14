@@ -1,26 +1,18 @@
-import { createVoxdClient } from "@voxd/client";
-
 import {
   getScoutVoiceHealthSnapshot,
+  ScoutVoiceSessionError,
+  synthesizeScoutVoiceSpeech,
   type ScoutVoiceHealthSnapshot,
+  type ScoutVoiceSpeechResult,
+  type ScoutVoiceSpeechTimingCueRequest,
+  type ScoutVoiceSpeechTimingRequest,
 } from "./scout-voice-session.ts";
-import {
-  ensureOpenScoutVoxOrigins,
-  listVoxSpeechModels,
-  listVoxSpeechVoices,
-  resolveVoxSpeechDefaults,
-  synthesizeVoxSpeech,
-  type VoxSpeechDefaults,
-  type VoxSpeechModel,
-  type VoxSpeechResult,
-  type VoxSpeechTimingRequest,
-  type VoxSpeechVoice,
-} from "./vox.ts";
 import {
   NVIDIA_MAGPIE_DEFAULT_VOICE,
   NVIDIA_MAGPIE_MODEL,
   listNvidiaMagpieVoices,
 } from "./nvidia-speech.ts";
+import type { ScoutVoicePlayback } from "../shared/voice-playback.ts";
 
 export type ScoutVoiceHealth = ScoutVoiceHealthSnapshot;
 
@@ -31,53 +23,61 @@ export type ScoutVoiceTranscriptionResult = {
   metrics?: Record<string, unknown>;
 };
 
-export type ScoutSpeechResult = VoxSpeechResult;
-export type ScoutSpeechDefaults = VoxSpeechDefaults;
-export type ScoutSpeechTimingRequest = VoxSpeechTimingRequest;
-export type ScoutSpeechModel = VoxSpeechModel;
-export type ScoutSpeechVoice = VoxSpeechVoice;
+export type ScoutSpeechDefaults = {
+  modelId: string;
+  voiceId?: string;
+};
+
+export type ScoutSpeechTimingCueRequest = ScoutVoiceSpeechTimingCueRequest;
+export type ScoutSpeechTimingRequest = ScoutVoiceSpeechTimingRequest;
+
+export type ScoutSpeechModel = {
+  id: string;
+  name: string;
+  provider: string;
+  /** `null` means the native host has not been queried for credentials yet. */
+  available: boolean | null;
+};
+
+export type ScoutSpeechVoice = {
+  id: string;
+  name: string;
+  language?: string;
+  provider: string;
+  modelId: string;
+  /** `null` means the native host has not been queried for credentials yet. */
+  available: boolean | null;
+  isDefault: boolean;
+};
+
+export type ScoutSpeechResult = ScoutVoiceSpeechResult;
 
 export type ScoutSpeechCatalog = {
   defaultModelId: string;
   defaultVoiceId?: string;
   models: ScoutSpeechModel[];
   voices: ScoutSpeechVoice[];
-  source: "vox" | "nvidia-developer-inference" | "fallback";
+  source: "scout-menu" | "nvidia-developer-inference" | "fallback";
 };
 
-const SCOUT_VOICE_CLIENT_ID = "openscout-web";
-const DEFAULT_SCOUT_VOICE_ASR_URL = "http://127.0.0.1:43115";
+const DEFAULT_SCOUT_SPEECH_MODEL_ID = "system";
 
 export async function getScoutVoiceHealth(): Promise<ScoutVoiceHealth> {
   return getScoutVoiceHealthSnapshot();
 }
 
-export async function transcribeScoutVoiceAudio(input: {
+export async function transcribeScoutVoiceAudio(_input: {
   audio: Blob | ArrayBuffer;
   modelId?: string;
   format?: "mp3" | "wav" | "aac" | "opus" | "pcm16";
   language?: string;
   timestamps?: boolean;
 }): Promise<ScoutVoiceTranscriptionResult> {
-  const client = createScoutVoiceAsrClient();
-  const result = await client.transcribe({
-    audio: input.audio,
-    modelId: input.modelId,
-    format: input.format,
-    language: input.language,
-    timestamps: input.timestamps,
-    metadata: {
-      surface: SCOUT_VOICE_CLIENT_ID,
-      owner: "scout",
-    },
-  });
-
-  return {
-    text: result.text,
-    durationMs: result.durationMs,
-    ...(result.words ? { words: result.words } : {}),
-    ...(result.metrics ? { metrics: result.metrics } : {}),
-  };
+  throw new ScoutVoiceSessionError(
+    "uploaded_transcription_unsupported",
+    "Uploaded-audio transcription is not supported by the Scout Menu voice host. Use a native voice session.",
+    501,
+  );
 }
 
 export async function synthesizeScoutSpeech(input: {
@@ -89,103 +89,136 @@ export async function synthesizeScoutSpeech(input: {
   originAppId?: string;
   utteranceId?: string;
   speechTiming?: ScoutSpeechTimingRequest;
+  playback?: ScoutVoicePlayback;
   signal?: AbortSignal;
-}): Promise<ScoutSpeechResult> {
-  return synthesizeVoxSpeech(input);
+}, env: NodeJS.ProcessEnv = process.env): Promise<ScoutSpeechResult> {
+  if (input.speechTiming?.strict) {
+    throw new ScoutVoiceSessionError(
+      "speech_timing_unsupported",
+      "Strict speech timing is not supported by the Scout Menu synthesis host.",
+      501,
+    );
+  }
+  const playback = input.playback ?? "browser";
+  const resolved = resolveScoutSpeechRequest(input, env);
+  // Spoken on host: the web's environment defaults do not apply. An explicit
+  // model or voice from the request is honored; otherwise Scout Menu speaks
+  // in the voice chosen in its own Settings › Voice (Kokoro included).
+  const explicitModelId = input.modelId?.trim() || undefined;
+  const explicitVoiceId = input.voiceId?.trim() || undefined;
+  return await synthesizeScoutVoiceSpeech({
+    text: input.text,
+    modelId: playback === "host" ? explicitModelId : resolved.modelId,
+    voiceId: playback === "host" ? explicitVoiceId : resolved.voiceId,
+    speed: input.speed,
+    instructions: input.instructions,
+    originAppId: resolved.originAppId,
+    utteranceId: resolved.utteranceId,
+    speechTiming: input.speechTiming,
+    playback,
+    signal: input.signal,
+  });
+}
+
+export function resolveScoutSpeechRequest(input: {
+  modelId?: string;
+  voiceId?: string;
+  originAppId?: string;
+  utteranceId?: string;
+}, env: NodeJS.ProcessEnv = process.env): {
+  modelId: string;
+  voiceId?: string;
+  originAppId?: string;
+  utteranceId?: string;
+} {
+  const defaults = resolveScoutSpeechDefaults(env);
+  const modelId = input.modelId?.trim() || defaults.modelId;
+  const voiceId = input.voiceId?.trim()
+    || (modelId === defaults.modelId ? defaults.voiceId : undefined);
+  const originAppId = input.originAppId?.trim();
+  const utteranceId = input.utteranceId?.trim();
+  return {
+    modelId,
+    ...(voiceId ? { voiceId } : {}),
+    ...(originAppId ? { originAppId } : {}),
+    ...(utteranceId ? { utteranceId } : {}),
+  };
 }
 
 export function resolveScoutSpeechDefaults(env: NodeJS.ProcessEnv = process.env): ScoutSpeechDefaults {
-  return resolveVoxSpeechDefaults({
-    ...env,
-    OPENSCOUT_VOX_TTS_MODEL_ID: env.OPENSCOUT_VOICE_TTS_MODEL_ID ?? env.OPENSCOUT_VOX_TTS_MODEL_ID,
-    OPENSCOUT_VOX_TTS_VOICE_ID: env.OPENSCOUT_VOICE_TTS_VOICE_ID ?? env.OPENSCOUT_VOX_TTS_VOICE_ID,
-  });
+  const modelId = env.OPENSCOUT_VOICE_TTS_MODEL_ID?.trim() || DEFAULT_SCOUT_SPEECH_MODEL_ID;
+  const voiceId = env.OPENSCOUT_VOICE_TTS_VOICE_ID?.trim();
+  return {
+    modelId,
+    ...(voiceId ? { voiceId } : {}),
+  };
 }
 
 export async function getScoutSpeechCatalog(input: {
   modelId?: string;
   signal?: AbortSignal;
-  directOpenAIAvailable?: boolean;
-  directNvidiaAvailable?: boolean;
   directNvidiaApiKey?: string;
 } = {}): Promise<ScoutSpeechCatalog> {
   const defaults = resolveScoutSpeechDefaults();
   const requestedModelId = input.modelId?.trim() || defaults.modelId;
-  let models: ScoutSpeechModel[] = [];
-  let voices: ScoutSpeechVoice[] = [];
-  let source: ScoutSpeechCatalog["source"] = "fallback";
-  if (requestedModelId !== NVIDIA_MAGPIE_MODEL) {
-    try {
-      [models, voices] = await Promise.all([
-        listVoxSpeechModels(input.signal),
-        listVoxSpeechVoices(requestedModelId, input.signal),
-      ]);
-      if (models.length > 0) source = "vox";
-    } catch {
-      // Vox is optional. The same fallback catalog drives Scout's direct OpenAI
-      // route and the in-process native provider path when its daemon is absent.
-    }
-  }
-  const fallback = fallbackScoutSpeechCatalog(requestedModelId, defaults);
-  for (const model of fallback.models) {
-    if (!models.some((candidate) => candidate.id === model.id)) {
-      models.push({ ...model, available: false });
-    }
-  }
-  if (voices.length === 0) {
-    voices = fallback.voices.map((voice) => ({ ...voice, available: false }));
-  }
-  if (input.directOpenAIAvailable) {
-    models = models.map((model) => model.provider === "openai" ? { ...model, available: true } : model);
-    voices = voices.map((voice) => voice.provider === "openai" ? { ...voice, available: true } : voice);
-  }
-  if (input.directNvidiaAvailable || input.directNvidiaApiKey) {
-    models = models.map((model) => model.provider === "nvidia" ? { ...model, available: true } : model);
-    voices = voices.map((voice) => voice.provider === "nvidia" ? { ...voice, available: true } : voice);
-  }
-  if (input.directNvidiaApiKey && requestedModelId === NVIDIA_MAGPIE_MODEL) {
-    try {
-      const discovered = await listNvidiaMagpieVoices({
-        apiKey: input.directNvidiaApiKey,
-        signal: input.signal,
-      });
-      voices = discovered.map((voice) => ({
+  const directNvidiaApiKey = input.directNvidiaApiKey?.trim() || undefined;
+  const fallback = fallbackScoutSpeechCatalog(requestedModelId, defaults, {
+    directNvidiaAvailable: Boolean(directNvidiaApiKey),
+  });
+  if (!directNvidiaApiKey || requestedModelId !== NVIDIA_MAGPIE_MODEL) return fallback;
+  try {
+    // Hosted Magpie is the one direct cloud route the web server keeps: it
+    // adds no local process. Every other model is synthesized by Scout Menu.
+    const discovered = await listNvidiaMagpieVoices({
+      apiKey: directNvidiaApiKey,
+      signal: input.signal,
+    });
+    return {
+      ...fallback,
+      voices: discovered.map((voice) => ({
         ...voice,
         provider: "nvidia",
         modelId: NVIDIA_MAGPIE_MODEL,
         available: true,
-      }));
-      source = "nvidia-developer-inference";
-    } catch {
-      // The deterministic Aria entry remains as an explicit fallback only
-      // when hosted NVIDIA Developer Inference discovery is unavailable.
-    }
+      })),
+      source: "nvidia-developer-inference",
+    };
+  } catch {
+    // The deterministic Aria entry remains as the explicit fallback when
+    // hosted NVIDIA Developer Inference discovery is unavailable.
+    return fallback;
   }
-  return {
-    defaultModelId: defaults.modelId,
-    ...(defaults.voiceId ? { defaultVoiceId: defaults.voiceId } : {}),
-    models,
-    voices,
-    source,
-  };
 }
 
 export function fallbackScoutSpeechCatalog(
   modelId: string,
   defaults: ScoutSpeechDefaults = resolveScoutSpeechDefaults(),
+  options: { directNvidiaAvailable?: boolean } = {},
 ): ScoutSpeechCatalog {
+  // Cloud models are `null` until Scout Menu answers for its Keychain. Hosted
+  // Magpie is the exception when the web server itself lends `NV_API_KEY`.
+  const nvidiaAvailable: boolean | null = options.directNvidiaAvailable ? true : null;
   const models: ScoutSpeechModel[] = [
-    { id: "gpt-4o-mini-tts", name: "GPT-4o mini TTS", provider: "openai", available: true },
-    { id: "eleven_multilingual_v2", name: "Eleven Multilingual v2", provider: "elevenlabs", available: true },
-    { id: NVIDIA_MAGPIE_MODEL, name: "Magpie TTS Multilingual", provider: "nvidia", available: true },
+    { id: "system", name: "System voice", provider: "system", available: true },
+    { id: "gpt-4o-mini-tts", name: "GPT-4o mini TTS", provider: "openai", available: null },
+    { id: "eleven_multilingual_v2", name: "Eleven Multilingual v2", provider: "elevenlabs", available: null },
+    { id: NVIDIA_MAGPIE_MODEL, name: "Magpie TTS Multilingual", provider: "nvidia", available: nvidiaAvailable },
   ];
+  const systemVoices: ScoutSpeechVoice[] = [{
+    id: "system",
+    name: "System default",
+    provider: "system",
+    modelId: "system",
+    available: true,
+    isDefault: true,
+  }];
   const openAIVoices = ["alloy", "ash", "ballad", "cedar", "coral", "echo", "fable", "marin", "nova", "onyx", "sage", "shimmer", "verse"]
     .map((id) => ({
       id,
       name: id[0]?.toUpperCase() + id.slice(1),
       provider: "openai",
       modelId: "gpt-4o-mini-tts",
-      available: true,
+      available: null,
       isDefault: id === "alloy",
     } satisfies ScoutSpeechVoice));
   const elevenLabsVoices: ScoutSpeechVoice[] = [{
@@ -193,7 +226,7 @@ export function fallbackScoutSpeechCatalog(
     name: "Aria",
     provider: "elevenlabs",
     modelId: "eleven_multilingual_v2",
-    available: true,
+    available: null,
     isDefault: true,
   }];
   const nvidiaVoices: ScoutSpeechVoice[] = [{
@@ -202,46 +235,21 @@ export function fallbackScoutSpeechCatalog(
     language: "en-US",
     provider: "nvidia",
     modelId: NVIDIA_MAGPIE_MODEL,
-    available: true,
+    available: nvidiaAvailable,
     isDefault: true,
   }];
+  const voices = modelId === "eleven_multilingual_v2"
+    ? elevenLabsVoices
+    : modelId === "gpt-4o-mini-tts"
+      ? openAIVoices
+      : modelId === NVIDIA_MAGPIE_MODEL
+        ? nvidiaVoices
+        : systemVoices;
   return {
     defaultModelId: defaults.modelId,
     ...(defaults.voiceId ? { defaultVoiceId: defaults.voiceId } : {}),
     models,
-    voices: modelId === "eleven_multilingual_v2"
-      ? elevenLabsVoices
-      : modelId === NVIDIA_MAGPIE_MODEL
-        ? nvidiaVoices
-        : openAIVoices,
+    voices,
     source: "fallback",
   };
-}
-
-export function ensureScoutVoiceOrigins(): void {
-  ensureOpenScoutVoxOrigins();
-}
-
-function createScoutVoiceAsrClient(probeTimeout?: number) {
-  return createVoxdClient({
-    baseUrl: resolveScoutVoiceAsrUrl(),
-    clientId: SCOUT_VOICE_CLIENT_ID,
-    ...(probeTimeout ? { probeTimeout } : {}),
-  });
-}
-
-function resolveScoutVoiceAsrUrl(env: NodeJS.ProcessEnv = process.env): string {
-  return firstNonEmptyString(
-    env.OPENSCOUT_VOICE_ASR_URL,
-    env.OPENSCOUT_VOICE_BRIDGE_URL,
-    env.VOX_COMPANION_URL,
-  ) ?? DEFAULT_SCOUT_VOICE_ASR_URL;
-}
-
-function firstNonEmptyString(...values: Array<string | undefined>): string | undefined {
-  for (const value of values) {
-    const trimmed = value?.trim();
-    if (trimmed) return trimmed.replace(/\/$/, "");
-  }
-  return undefined;
 }

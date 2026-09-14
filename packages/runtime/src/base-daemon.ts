@@ -1,7 +1,7 @@
 import type { RuntimeErrnoError } from "./portable-types.js";
 import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync, mkdirSync, openSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
+import { homedir, networkInterfaces } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -122,6 +122,25 @@ function appendCsvValues(input: string | undefined, values: string[]): string | 
 
 function resolveTailnetWebHosts(): string[] {
   return readTailscaleSelfWebHostsSync();
+}
+
+/**
+ * This machine's own non-loopback addresses, so the local edge answers for a
+ * bare LAN address (http://192.168.1.20) the way it already answers for the
+ * tailnet ones. Routing only — reaching the web server still depends on the LAN
+ * access scope, and every /api route still requires a credential. Opt out with
+ * OPENSCOUT_WEB_TRUST_LAN_ADDRESSES=0.
+ */
+function resolveLanWebHosts(): string[] {
+  if (process.env.OPENSCOUT_WEB_TRUST_LAN_ADDRESSES?.trim() === "0") {
+    return [];
+  }
+  return Object.values(networkInterfaces())
+    .flatMap((entries) => entries ?? [])
+    .filter((entry) => !entry.internal)
+    .map((entry) => entry.address)
+    // IPv6 link-local carries a zone id (fe80::1%en0) that never appears in a URL host.
+    .filter((address) => !address.toLowerCase().startsWith("fe80:"));
 }
 
 function resolveWebTrustedHostsEnv(): string | undefined {
@@ -252,6 +271,7 @@ function resolveEdgeConfig(): OpenScoutLocalEdgeConfig {
     extraHosts: [
       ...splitCsv(process.env.OPENSCOUT_WEB_TRUSTED_HOSTS),
       ...resolveTailnetWebHosts(),
+      ...resolveLanWebHosts(),
     ],
   });
 }
@@ -311,7 +331,11 @@ function startLocalEdge(): void {
   const edgeConfig = resolveEdgeConfig();
   const schemes = edgeConfig.scheme === "both" ? ["http", "https"] as const : [edgeConfig.scheme] as const;
   const caddyfilePath = resolveLocalEdgeCaddyfilePath();
-  writeFileSync(caddyfilePath, renderOpenScoutCaddyfile(edgeConfig), "utf8");
+  // Keep operator-owned routes across regenerated Scout configs. Other local
+  // services must use separate upstream ports, not competing port-80 listeners.
+  const sitesDirectory = join(dirname(caddyfilePath), "sites");
+  ensureDirectory(sitesDirectory);
+  writeFileSync(caddyfilePath, renderOpenScoutCaddyfile(edgeConfig, join(sitesDirectory, "*.caddy")), "utf8");
 
   mdnsProcesses = schemes.flatMap((scheme) => {
     const edgePort = scheme === "https" ? 443 : 80;

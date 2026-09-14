@@ -255,11 +255,16 @@ describe("parseAskCommandOptions", () => {
         ["--profile", "Kimi", "--effort", "medium", "review", "this"],
         "/tmp/workspace",
       )).toThrow("kimi runtime profile does not support reasoning effort through its ACP transport");
-    expect(() =>
-      parseAskCommandOptions(
-        ["Grok", "with", "high", "effort", "to", "review", "this"],
-        "/tmp/workspace",
-      )).toThrow("grok runtime profile does not support reasoning effort through its ACP transport");
+  });
+
+  test("carries effort for Grok, which sets it over ACP", () => {
+    const options = parseAskCommandOptions(
+      ["Grok", "with", "high", "effort", "to", "review", "this"],
+      "/tmp/workspace",
+    );
+
+    expect(options.runtimeProfile).toBe("grok");
+    expect(options.reasoningEffort).toBe("high");
   });
 
   test("normalizes the agent prefix to an exact existing handle", () => {
@@ -561,9 +566,19 @@ describe("parseImplicitAskCommandOptions", () => {
   test("rejects effort for implicit ACP runtime profiles", () => {
     expect(() =>
       parseImplicitAskCommandOptions(
-        ["--effort", "high", "Grok", "to", "review", "this"],
+        ["--effort", "high", "Kimi", "to", "review", "this"],
         "/tmp/workspace",
-      )).toThrow("grok runtime profile does not support reasoning effort through its ACP transport");
+      )).toThrow("kimi runtime profile does not support reasoning effort through its ACP transport");
+  });
+
+  test("carries effort for an implicit Grok profile", () => {
+    const options = parseImplicitAskCommandOptions(
+      ["--effort", "high", "Grok", "to", "review", "this"],
+      "/tmp/workspace",
+    );
+
+    expect(options.runtimeProfile).toBe("grok");
+    expect(options.reasoningEffort).toBe("high");
   });
 
   test("extracts a target agent from natural language input", () => {

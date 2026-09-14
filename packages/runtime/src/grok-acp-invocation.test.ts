@@ -83,12 +83,17 @@ for await (const line of rl) {
   }
 
   if (method === "session/new") {
-    console.log(JSON.stringify({ jsonrpc: "2.0", id, result: { sessionId: "fake-grok-acp-session" } }));
+    console.log(JSON.stringify({
+      jsonrpc: "2.0",
+      id,
+      result: { sessionId: "fake-grok-acp-session", models: { currentModelId: "grok-4.6" } },
+    }));
     continue;
   }
 
   if (method === "session/set_model") {
     log("model:" + (params.modelId ?? ""));
+    log("effort:" + (params._meta?.reasoningEffort ?? ""));
     console.log(JSON.stringify(rejectModel
       ? { jsonrpc: "2.0", id, error: { code: -32601, message: "Method not found" } }
       : { jsonrpc: "2.0", id, result: {} }));
@@ -222,15 +227,76 @@ describe("invokeGrokAcpAgent", () => {
       cwd: directory,
       prompt: "second",
       timeoutMs: 2_000,
-      adapterOptions: { model: "grok-4.3" },
+      adapterOptions: { model: "grok-4.6" },
     });
 
     const log = readFileSync(logPath, "utf8");
     expect(log.match(/initialize:/g)).toHaveLength(2);
     expect(log).toContain("model:grok-4.5");
     expect(log).toContain("session/resume:fake-grok-acp-session\n");
-    expect(log).toContain("session/set_model:fake-grok-acp-session\nmodel:grok-4.3");
-    expect(log.lastIndexOf("model:grok-4.3")).toBeLessThan(log.lastIndexOf("session/prompt:"));
+    expect(log).toContain("session/set_model:fake-grok-acp-session\nmodel:grok-4.6");
+    expect(log.lastIndexOf("model:grok-4.6")).toBeLessThan(log.lastIndexOf("session/prompt:"));
+  });
+
+  test("sends the requested reasoning effort alongside the model", async () => {
+    const directory = tempDir();
+    const { binDir, grokPath, logPath } = writeFakeGrok(directory);
+    configureFakeGrok({ binDir, grokPath, logPath, delayMs: 0 });
+
+    await invokeGrokAcpAgent({
+      sessionId: "grok-effort",
+      cwd: directory,
+      prompt: "reply",
+      timeoutMs: 2_000,
+      adapterOptions: { model: "grok-4.5", reasoningEffort: "low" },
+    });
+
+    const log = readFileSync(logPath, "utf8");
+    expect(log).toContain("session/set_model:fake-grok-acp-session\nmodel:grok-4.5\neffort:low");
+  });
+
+  test("applies an effort-only request against the session's current model", async () => {
+    const directory = tempDir();
+    const { binDir, grokPath, logPath } = writeFakeGrok(directory);
+    configureFakeGrok({ binDir, grokPath, logPath, delayMs: 0 });
+
+    // Grok resets effort to the model default on any set_model that omits it,
+    // so effort alone still has to name a model — the one the session reports.
+    await invokeGrokAcpAgent({
+      sessionId: "grok-effort-only",
+      cwd: directory,
+      prompt: "reply",
+      timeoutMs: 2_000,
+      adapterOptions: { reasoningEffort: "xhigh" },
+    });
+
+    const log = readFileSync(logPath, "utf8");
+    expect(log).toContain("session/set_model:fake-grok-acp-session\nmodel:grok-4.6\neffort:xhigh");
+  });
+
+  test("reuses the pooled session only while model and effort both hold", async () => {
+    const directory = tempDir();
+    const { binDir, grokPath, logPath } = writeFakeGrok(directory);
+    configureFakeGrok({ binDir, grokPath, logPath, delayMs: 0 });
+
+    await invokeGrokAcpAgent({
+      sessionId: "grok-effort-change",
+      cwd: directory,
+      prompt: "first",
+      timeoutMs: 2_000,
+      adapterOptions: { model: "grok-4.6", reasoningEffort: "low" },
+    });
+    await invokeGrokAcpAgent({
+      sessionId: "grok-effort-change",
+      cwd: directory,
+      prompt: "second",
+      timeoutMs: 2_000,
+      adapterOptions: { model: "grok-4.6", reasoningEffort: "high" },
+    });
+
+    const log = readFileSync(logPath, "utf8");
+    expect(log.match(/initialize:/g)).toHaveLength(2);
+    expect(log).toContain("effort:high");
   });
 
   test("keeps one ACP process attached across sequential turns", async () => {

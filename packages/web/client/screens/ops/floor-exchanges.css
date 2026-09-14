@@ -1,0 +1,23 @@
+.floor-exchange-panel { position:absolute; z-index:25; top:56px; right:16px; width:min(360px,calc(100% - 32px)); max-height:calc(100% - 120px); overflow:auto; padding:18px; background:#141c19; border:1px solid #ffffff26; border-radius:14px; color:#e8ede7; box-shadow:0 16px 45px #0005; }
+.floor-exchange-panel header,.floor-exchange-panel li > div { display:flex; justify-content:space-between; gap:12px; }
+.floor-exchange-panel header small { display:block; margin-top:5px; }
+.floor-exchange-panel small { color:#9baaa2; font-size:11px; }
+.floor-exchange-panel button { color:inherit; background:#ffffff0a; border:1px solid #ffffff15; border-radius:6px; padding:6px 10px; cursor:pointer; }
+.floor-exchange-panel button:disabled { opacity:.4; cursor:default; }
+.floor-exchange-panel__actions { display:flex; gap:8px; margin:14px 0; }
+.floor-exchange-panel ol { padding:0; list-style:none; }
+.floor-exchange-panel li { border-bottom:1px solid #ffffff0b; padding:12px 8px; border-radius:6px; }
+.floor-exchange-panel li.is-speaking { background:#b6d98920; }
+.floor-exchange-panel p { font-size:12px; line-height:1.55; white-space:pre-wrap; overflow-wrap:anywhere; }
+.floor-exchange-panel section { display:grid; gap:8px; }
+.floor-exchange-links { position:absolute; inset:0; overflow:visible; pointer-events:none; z-index:1; }
+.floor-exchange-links .exchange-line { fill:none; stroke:#b1ca87; stroke-opacity:.28; stroke-width:1.5; }
+.floor-exchange-links .exchange-hit { fill:none; stroke:transparent; stroke-width:18; pointer-events:stroke; cursor:pointer; }
+.floor-exchange-links g:hover .exchange-line,.floor-exchange-links g:focus .exchange-line,.floor-exchange-links g.is-active .exchange-line { stroke-opacity:.9; stroke-width:2; }
+.shared-floor__wanderer.is-speaking .shared-floor-character__sprite { filter:drop-shadow(0 0 7px #c9ef93); }
+.floor-exchange-links g:focus { outline:none; }
+.floor-exchange-links g:focus-visible .exchange-line { stroke:#d2efaa; stroke-width:3; stroke-opacity:1; }
+
+.floor-exchange-links .is-family .exchange-line { stroke-dasharray:2 7; stroke-linecap:round; stroke:#a8b5b0; }
+.floor-exchange-panel__relationship { margin-top:16px; padding-bottom:12px; border-bottom:1px solid #ffffff12; }
+.floor-exchange-panel__relationship p { margin:0; }

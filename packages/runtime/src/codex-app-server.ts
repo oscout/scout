@@ -2,14 +2,14 @@ import type { RuntimeEnv } from "./portable-types.js";
 import { lstat, mkdir, readFile, symlink } from "node:fs/promises";
 import { join } from "node:path";
 
-import {
-  readCodexRolloutUsageObservation,
-  type ActionBlock,
-  type BlockState,
-  type ReasoningBlock,
-  type SessionState,
-  type TextBlock,
-  type TurnState,
+import { readCodexRolloutUsageObservation } from "@openscout/agent-sessions/adapters/codex/usage";
+import type {
+  ActionBlock,
+  BlockState,
+  ReasoningBlock,
+  SessionState,
+  TextBlock,
+  TurnState,
 } from "@openscout/agent-sessions";
 import { CodexObservedTopologyTracker } from "@openscout/agent-sessions/adapters/codex/topology";
 import { OBSERVED_HARNESS_TOPOLOGY_META_KEY } from "@openscout/agent-sessions/protocol/primitives";

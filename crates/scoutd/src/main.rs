@@ -35,6 +35,8 @@ const CHILD_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(18);
 const LAUNCHD_EXIT_TIMEOUT_SECONDS: u64 = 25;
 const POLL_INTERVAL: Duration = Duration::from_millis(100);
 const STATE_WRITE_INTERVAL: Duration = Duration::from_secs(2);
+const STATE_WRITE_RETRY_MAX: Duration = Duration::from_secs(30);
+const STATE_WRITE_WARNING_INTERVAL: Duration = Duration::from_secs(30);
 const PROCESS_SWEEP_INTERVAL: Duration = Duration::from_secs(5 * 60);
 const ORPHAN_ADVERTISEMENT_GRACE: Duration = Duration::from_secs(5 * 60);
 const CHILD_LOG_ROTATE_LIMIT: u64 = 512 * 1024;
@@ -583,9 +585,234 @@ fn uninstall_service(config: &Config) -> Result<ServiceStatus, String> {
     Ok(broker_service_status(config))
 }
 
+/// One pending snapshot, retried from live state; never queue stale snapshots.
+struct StatePublication {
+    next_attempt: Instant,
+    retry_delay: Duration,
+    failing: bool,
+    last_warning: Option<Instant>,
+}
+
+impl StatePublication {
+    fn new(now: Instant) -> Self {
+        Self {
+            next_attempt: now + STATE_WRITE_INTERVAL,
+            retry_delay: STATE_WRITE_INTERVAL,
+            failing: false,
+            last_warning: None,
+        }
+    }
+
+    fn is_due(&self, now: Instant) -> bool {
+        now >= self.next_attempt
+    }
+
+    fn request_refresh(&mut self, now: Instant) {
+        // Child lifecycle events must not turn a disk failure into a busy loop.
+        if !self.failing {
+            self.next_attempt = now;
+        }
+    }
+
+    fn refresh(
+        &mut self,
+        now: Instant,
+        write: impl FnOnce() -> Result<(), String>,
+        mut report: impl FnMut(String),
+    ) {
+        if !self.is_due(now) {
+            return;
+        }
+        match write() {
+            Ok(()) => {
+                if self.failing {
+                    report("publication recovered".to_string());
+                }
+                self.failing = false;
+                self.last_warning = None;
+                self.retry_delay = STATE_WRITE_INTERVAL;
+                self.next_attempt = now + STATE_WRITE_INTERVAL;
+            }
+            Err(error) => {
+                if self.last_warning.map_or(true, |previous| {
+                    now.duration_since(previous) >= STATE_WRITE_WARNING_INTERVAL
+                }) {
+                    report(format!(
+                        "publication failed; supervision continues; retry in {}s: {error}",
+                        self.retry_delay.as_secs()
+                    ));
+                    self.last_warning = Some(now);
+                }
+                self.failing = true;
+                self.next_attempt = now + self.retry_delay;
+                self.retry_delay = (self.retry_delay * 2).min(STATE_WRITE_RETRY_MAX);
+            }
+        }
+    }
+}
+
+fn require_initial_state(
+    result: Result<(), String>,
+    cleanup: impl FnOnce() -> Result<(), String>,
+) -> Result<(), String> {
+    match result {
+        Ok(()) => Ok(()),
+        Err(error) => match cleanup() {
+            Ok(()) => Err(format!("initial state publication failed: {error}")),
+            Err(cleanup_error) => Err(format!(
+                "initial state publication failed: {error}; cleanup failed: {cleanup_error}"
+            )),
+        },
+    }
+}
+
+fn terminate_supervised_children(
+    child: &mut Child,
+    probe: &mut Option<Child>,
+) -> Result<(), String> {
+    // Always attempt both: one child's failure must not strand its sibling.
+    let probe_result = match probe.as_mut() {
+        Some(probe) => terminate_child(probe, "probe server", CHILD_SHUTDOWN_TIMEOUT),
+        None => Ok(()),
+    };
+    let base_result = terminate_child(child, "Bun base", CHILD_SHUTDOWN_TIMEOUT);
+    let errors: Vec<String> = [("probe server", probe_result), ("Bun base", base_result)]
+        .into_iter()
+        .filter_map(|(phase, result)| result.err().map(|error| format!("{phase}: {error}")))
+        .collect();
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors.join("; "))
+    }
+}
+
+fn finish_supervision(
+    stopping: Result<(), String>,
+    cleanup: impl FnOnce() -> Result<(), String>,
+    stopped: impl FnOnce() -> Result<(), String>,
+) -> Result<(), String> {
+    let cleanup_result = cleanup();
+    // Never publish "stopped" if a child could still be alive.
+    let stopped_result = if cleanup_result.is_ok() {
+        stopped()
+    } else {
+        Ok(())
+    };
+    combine_supervision_shutdown(stopping, cleanup_result, stopped_result)
+}
+
+fn combine_supervision_shutdown(
+    stopping: Result<(), String>,
+    cleanup: Result<(), String>,
+    stopped: Result<(), String>,
+) -> Result<(), String> {
+    let errors: Vec<String> = [
+        ("stopping state", stopping),
+        ("child cleanup", cleanup),
+        ("stopped state", stopped),
+    ]
+    .into_iter()
+    .filter_map(|(phase, result)| result.err().map(|error| format!("{phase}: {error}")))
+    .collect();
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors.join("; "))
+    }
+}
+
+#[cfg(test)]
+struct SupervisionTestHooks {
+    base: Option<Child>,
+    probe: Option<Child>,
+    expected_pids: (u32, u32),
+    start: Instant,
+    ticks: u32,
+    stop_after_ticks: u32,
+    fail_phase: &'static str,
+    write_attempts: Vec<(&'static str, u32)>,
+    observations: usize,
+}
+
+#[cfg(test)]
+impl SupervisionTestHooks {
+    fn now(&self) -> Instant {
+        self.start + POLL_INTERVAL * self.ticks
+    }
+    fn write(
+        &mut self,
+        phase: &'static str,
+        write: impl FnOnce() -> Result<(), String>,
+    ) -> Result<(), String> {
+        self.write_attempts.push((phase, self.ticks));
+        if phase == self.fail_phase {
+            Err("injected No space left on device (os error 28)".into())
+        } else {
+            write()
+        }
+    }
+    fn observe(&mut self, base: &mut Child, probe: Option<&mut Child>) {
+        let probe = probe.expect("test probe remains owned");
+        assert_eq!((base.id(), probe.id()), self.expected_pids);
+        assert!(base.try_wait().unwrap().is_none());
+        assert!(probe.try_wait().unwrap().is_none());
+        self.observations += 1;
+    }
+}
+
 fn supervise_service(config: &Config) -> Result<(), String> {
-    install_signal_handlers();
-    ensure_daemon_directories(config)?;
+    supervise_service_inner(
+        config,
+        #[cfg(test)]
+        None,
+    )
+}
+
+fn supervise_service_inner(
+    config: &Config,
+    #[cfg(test)] mut test_hooks: Option<&mut SupervisionTestHooks>,
+) -> Result<(), String> {
+    #[cfg(test)]
+    let testing = test_hooks.is_some();
+    #[cfg(not(test))]
+    let testing = false;
+    // Tests inject owned pipe children and clock/write faults; never start
+    // a Scout service, process sweep, signal handler, or repo warmer.
+    if !testing {
+        install_signal_handlers();
+        ensure_daemon_directories(config)?;
+    }
+    macro_rules! clock_now {
+        () => {{
+            #[cfg(test)]
+            {
+                test_hooks
+                    .as_ref()
+                    .map_or_else(Instant::now, |hooks| hooks.now())
+            }
+            #[cfg(not(test))]
+            {
+                Instant::now()
+            }
+        }};
+    }
+    macro_rules! write_state {
+        ($phase:expr, $write:expr) => {{
+            #[cfg(test)]
+            {
+                if let Some(hooks) = test_hooks.as_mut() {
+                    hooks.write($phase, || $write)
+                } else {
+                    $write
+                }
+            }
+            #[cfg(not(test))]
+            {
+                $write
+            }
+        }};
+    }
     eprintln!(
         "[scoutd] starting Bun base from {}",
         config.runtime_entrypoint().display(),
@@ -596,14 +823,41 @@ fn supervise_service(config: &Config) -> Result<(), String> {
     let mut restart_delay = RESTART_MIN_DELAY;
     let mut last_child_exit: Option<ChildExitTelemetry> = None;
     let mut runtime_build = configured_runtime_artifact(config);
-    let mut child = spawn_base_process(config)?;
+    let mut child = {
+        #[cfg(test)]
+        {
+            if let Some(hooks) = test_hooks.as_mut() {
+                hooks.base.take().expect("test base")
+            } else {
+                spawn_base_process(config)?
+            }
+        }
+        #[cfg(not(test))]
+        {
+            spawn_base_process(config)?
+        }
+    };
 
     let mut probe_restart_count = 0_u32;
     let mut probe_restart_delay = RESTART_MIN_DELAY;
     let mut last_probe_exit: Option<ChildExitTelemetry> = None;
     let mut probe_state: String;
     let mut next_probe_restart_at: Option<Instant> = None;
-    let mut probe_child = match spawn_probe_process(config) {
+    let probe_spawn = {
+        #[cfg(test)]
+        {
+            if let Some(hooks) = test_hooks.as_mut() {
+                Ok(hooks.probe.take().expect("test probe"))
+            } else {
+                spawn_probe_process(config)
+            }
+        }
+        #[cfg(not(test))]
+        {
+            spawn_probe_process(config)
+        }
+    };
+    let mut probe_child = match probe_spawn {
         Ok(child) => {
             eprintln!(
                 "[scoutd] probe server started: pid {} socket {}",
@@ -616,34 +870,81 @@ fn supervise_service(config: &Config) -> Result<(), String> {
         Err(error) => {
             eprintln!("[scoutd] probe server failed to start: {error}");
             probe_state = "failed".to_string();
-            next_probe_restart_at = Some(Instant::now() + probe_restart_delay);
+            next_probe_restart_at = Some(clock_now!() + probe_restart_delay);
             probe_restart_delay = doubled_delay(probe_restart_delay);
             None
         }
     };
 
-    let _repo_watch_warmer = start_repo_watch_warmer(config.clone());
-    write_daemon_state(
-        config,
-        &runtime_build,
-        started_at_ms,
-        Some(child.id()),
-        "running",
-        restart_count,
-        Some(restart_delay),
-        last_child_exit.as_ref(),
-        probe_child.as_ref().map(Child::id),
-        &probe_state,
-        probe_restart_count,
-        Some(probe_restart_delay),
-        last_probe_exit.as_ref(),
+    let _repo_watch_warmer = if testing {
+        None
+    } else {
+        start_repo_watch_warmer(config.clone())
+    };
+    require_initial_state(
+        write_state!(
+            "initial",
+            write_daemon_state(
+                config,
+                &runtime_build,
+                started_at_ms,
+                Some(child.id()),
+                "running",
+                restart_count,
+                Some(restart_delay),
+                last_child_exit.as_ref(),
+                probe_child.as_ref().map(Child::id),
+                &probe_state,
+                probe_restart_count,
+                Some(probe_restart_delay),
+                last_probe_exit.as_ref(),
+            )
+        ),
+        || terminate_supervised_children(&mut child, &mut probe_child),
     )?;
-    let mut next_state_write = Instant::now() + STATE_WRITE_INTERVAL;
-    let mut next_process_sweep = Instant::now();
+    let mut state_publication = StatePublication::new(clock_now!());
+    // State publication is diagnostic after startup. A failed write must not
+    // relinquish ownership of healthy children to launchd.
+    macro_rules! refresh_state {
+        ($phase:expr, $write:expr) => {{
+            let now = clock_now!();
+            if $phase != "periodic" {
+                state_publication.request_refresh(now);
+            }
+            state_publication.refresh(
+                now,
+                || $write,
+                |message| {
+                    let _ = writeln!(
+                        io::stderr(),
+                        "[scoutd] state {} ({}): {}",
+                        config.daemon_state_path.display(),
+                        $phase,
+                        message
+                    );
+                },
+            );
+        }};
+    }
+    let mut next_process_sweep = clock_now!();
 
-    while !SHUTDOWN_REQUESTED.load(Ordering::SeqCst) {
-        if Instant::now() >= next_process_sweep {
-            if process_sweep_enabled() {
+    loop {
+        #[cfg(test)]
+        let stop = test_hooks.as_ref().map_or_else(
+            || SHUTDOWN_REQUESTED.load(Ordering::SeqCst),
+            |hooks| hooks.ticks >= hooks.stop_after_ticks,
+        );
+        #[cfg(not(test))]
+        let stop = SHUTDOWN_REQUESTED.load(Ordering::SeqCst);
+        if stop {
+            break;
+        }
+        #[cfg(test)]
+        if let Some(hooks) = test_hooks.as_mut() {
+            hooks.observe(&mut child, probe_child.as_mut());
+        }
+        if clock_now!() >= next_process_sweep {
+            if !testing && process_sweep_enabled() {
                 match sweep_stale_managed_processes(config) {
                     Ok(result)
                         if result.expired_leases > 0
@@ -661,7 +962,7 @@ fn supervise_service(config: &Config) -> Result<(), String> {
                     Err(error) => eprintln!("[scoutd] process sweep failed: {error}"),
                 }
             }
-            next_process_sweep = Instant::now() + PROCESS_SWEEP_INTERVAL;
+            next_process_sweep = clock_now!() + PROCESS_SWEEP_INTERVAL;
         }
 
         if let Some(probe) = probe_child.as_mut() {
@@ -671,28 +972,34 @@ fn supervise_service(config: &Config) -> Result<(), String> {
                 probe_child = None;
                 probe_state = "exited".to_string();
                 probe_restart_count = probe_restart_count.saturating_add(1);
-                next_probe_restart_at = Some(Instant::now() + probe_restart_delay);
-                write_daemon_state(
-                    config,
-                    &runtime_build,
-                    started_at_ms,
-                    Some(child.id()),
-                    "running",
-                    restart_count,
-                    Some(restart_delay),
-                    last_child_exit.as_ref(),
-                    None,
-                    &probe_state,
-                    probe_restart_count,
-                    Some(probe_restart_delay),
-                    last_probe_exit.as_ref(),
-                )?;
+                next_probe_restart_at = Some(clock_now!() + probe_restart_delay);
+                refresh_state!(
+                    "probe-exited",
+                    write_state!(
+                        "probe-exited",
+                        write_daemon_state(
+                            config,
+                            &runtime_build,
+                            started_at_ms,
+                            Some(child.id()),
+                            "running",
+                            restart_count,
+                            Some(restart_delay),
+                            last_child_exit.as_ref(),
+                            None,
+                            &probe_state,
+                            probe_restart_count,
+                            Some(probe_restart_delay),
+                            last_probe_exit.as_ref(),
+                        )
+                    )
+                );
                 probe_restart_delay = doubled_delay(probe_restart_delay);
             }
         }
         if probe_child.is_none() {
             if let Some(deadline) = next_probe_restart_at {
-                if Instant::now() >= deadline {
+                if clock_now!() >= deadline {
                     match spawn_probe_process(config) {
                         Ok(child) => {
                             eprintln!(
@@ -708,11 +1015,11 @@ fn supervise_service(config: &Config) -> Result<(), String> {
                             eprintln!("[scoutd] probe server restart failed: {error}");
                             probe_state = "failed".to_string();
                             probe_restart_count = probe_restart_count.saturating_add(1);
-                            next_probe_restart_at = Some(Instant::now() + probe_restart_delay);
+                            next_probe_restart_at = Some(clock_now!() + probe_restart_delay);
                             probe_restart_delay = doubled_delay(probe_restart_delay);
                         }
                     }
-                    next_state_write = Instant::now();
+                    state_publication.request_refresh(clock_now!());
                 }
             }
         }
@@ -720,106 +1027,138 @@ fn supervise_service(config: &Config) -> Result<(), String> {
         match child.try_wait().map_err(|error| error.to_string())? {
             Some(status) => {
                 last_child_exit = Some(child_exit_telemetry(&status));
-                write_daemon_state(
-                    config,
-                    &runtime_build,
-                    started_at_ms,
-                    None,
-                    "exited",
-                    restart_count,
-                    Some(restart_delay),
-                    last_child_exit.as_ref(),
-                    probe_child.as_ref().map(Child::id),
-                    &probe_state,
-                    probe_restart_count,
-                    Some(probe_restart_delay),
-                    last_probe_exit.as_ref(),
-                )?;
+                refresh_state!(
+                    "base-exited",
+                    write_state!(
+                        "base-exited",
+                        write_daemon_state(
+                            config,
+                            &runtime_build,
+                            started_at_ms,
+                            None,
+                            "exited",
+                            restart_count,
+                            Some(restart_delay),
+                            last_child_exit.as_ref(),
+                            probe_child.as_ref().map(Child::id),
+                            &probe_state,
+                            probe_restart_count,
+                            Some(probe_restart_delay),
+                            last_probe_exit.as_ref(),
+                        )
+                    )
+                );
                 eprintln!("[scoutd] Bun base exited: {status}");
                 restart_count = restart_count.saturating_add(1);
-                sleep_until_or_shutdown(Instant::now() + restart_delay);
+                sleep_until_or_shutdown(clock_now!() + restart_delay);
                 if SHUTDOWN_REQUESTED.load(Ordering::SeqCst) {
                     break;
                 }
                 restart_delay = doubled_delay(restart_delay);
                 runtime_build = configured_runtime_artifact(config);
                 child = spawn_base_process(config)?;
-                write_daemon_state(
-                    config,
-                    &runtime_build,
-                    started_at_ms,
-                    Some(child.id()),
-                    "running",
-                    restart_count,
-                    Some(restart_delay),
-                    last_child_exit.as_ref(),
-                    probe_child.as_ref().map(Child::id),
-                    &probe_state,
-                    probe_restart_count,
-                    Some(probe_restart_delay),
-                    last_probe_exit.as_ref(),
-                )?;
-                next_state_write = Instant::now() + STATE_WRITE_INTERVAL;
+                refresh_state!(
+                    "base-started",
+                    write_state!(
+                        "base-started",
+                        write_daemon_state(
+                            config,
+                            &runtime_build,
+                            started_at_ms,
+                            Some(child.id()),
+                            "running",
+                            restart_count,
+                            Some(restart_delay),
+                            last_child_exit.as_ref(),
+                            probe_child.as_ref().map(Child::id),
+                            &probe_state,
+                            probe_restart_count,
+                            Some(probe_restart_delay),
+                            last_probe_exit.as_ref(),
+                        )
+                    )
+                );
             }
             None => {
-                if Instant::now() >= next_state_write {
-                    write_daemon_state(
-                        config,
-                        &runtime_build,
-                        started_at_ms,
-                        Some(child.id()),
-                        "running",
-                        restart_count,
-                        Some(restart_delay),
-                        last_child_exit.as_ref(),
-                        probe_child.as_ref().map(Child::id),
-                        &probe_state,
-                        probe_restart_count,
-                        Some(probe_restart_delay),
-                        last_probe_exit.as_ref(),
-                    )?;
-                    next_state_write = Instant::now() + STATE_WRITE_INTERVAL;
+                if state_publication.is_due(clock_now!()) {
+                    refresh_state!(
+                        "periodic",
+                        write_state!(
+                            "periodic",
+                            write_daemon_state(
+                                config,
+                                &runtime_build,
+                                started_at_ms,
+                                Some(child.id()),
+                                "running",
+                                restart_count,
+                                Some(restart_delay),
+                                last_child_exit.as_ref(),
+                                probe_child.as_ref().map(Child::id),
+                                &probe_state,
+                                probe_restart_count,
+                                Some(probe_restart_delay),
+                                last_probe_exit.as_ref(),
+                            )
+                        )
+                    );
                 }
+                #[cfg(test)]
+                {
+                    if let Some(hooks) = test_hooks.as_mut() {
+                        hooks.ticks += 1;
+                    } else {
+                        thread::sleep(POLL_INTERVAL);
+                    }
+                }
+                #[cfg(not(test))]
                 thread::sleep(POLL_INTERVAL);
             }
         }
     }
 
-    write_daemon_state(
-        config,
-        &runtime_build,
-        started_at_ms,
-        Some(child.id()),
+    let stopping_state = write_state!(
         "stopping",
-        restart_count,
-        Some(restart_delay),
-        last_child_exit.as_ref(),
-        probe_child.as_ref().map(Child::id),
-        "stopping",
-        probe_restart_count,
-        Some(probe_restart_delay),
-        last_probe_exit.as_ref(),
-    )?;
-    if let Some(mut probe) = probe_child {
-        terminate_child(&mut probe, "probe server", CHILD_SHUTDOWN_TIMEOUT)?;
-    }
-    terminate_child(&mut child, "Bun base", CHILD_SHUTDOWN_TIMEOUT)?;
-    write_daemon_state(
-        config,
-        &runtime_build,
-        started_at_ms,
-        None,
-        "stopped",
-        restart_count,
-        Some(restart_delay),
-        last_child_exit.as_ref(),
-        None,
-        "stopped",
-        probe_restart_count,
-        Some(probe_restart_delay),
-        last_probe_exit.as_ref(),
-    )?;
-    Ok(())
+        write_daemon_state(
+            config,
+            &runtime_build,
+            started_at_ms,
+            Some(child.id()),
+            "stopping",
+            restart_count,
+            Some(restart_delay),
+            last_child_exit.as_ref(),
+            probe_child.as_ref().map(Child::id),
+            "stopping",
+            probe_restart_count,
+            Some(probe_restart_delay),
+            last_probe_exit.as_ref(),
+        )
+    );
+    finish_supervision(
+        stopping_state,
+        || terminate_supervised_children(&mut child, &mut probe_child),
+        || {
+            write_state!(
+                "stopped",
+                write_daemon_state(
+                    config,
+                    &runtime_build,
+                    started_at_ms,
+                    None,
+                    "stopped",
+                    restart_count,
+                    Some(restart_delay),
+                    last_child_exit.as_ref(),
+                    None,
+                    "stopped",
+                    probe_restart_count,
+                    Some(probe_restart_delay),
+                    last_probe_exit.as_ref(),
+                )
+            )
+        },
+    )
 }
 
 fn install_signal_handlers() {
@@ -1468,6 +1807,9 @@ fn doctor_report(config: &Config, options: DoctorOptions) -> DoctorReport {
     }
     if let Some(raw_state) = status.daemon_state.as_deref() {
         warnings.extend(restart_telemetry_warnings(raw_state));
+        if status.launchctl.loaded {
+            warnings.extend(daemon_state_age_warning(raw_state, epoch_ms()));
+        }
     }
     if matches!(
         status.runtime_freshness.state.as_str(),
@@ -1632,6 +1974,17 @@ fn remove_file_repair(id: &str, title: &str, path: &Path, options: DoctorOptions
             detail: Some(format!("Failed to remove {}: {error}.", path.display())),
             changed: false,
         },
+    }
+}
+
+fn daemon_state_age_warning(raw_state: &str, now_ms: u128) -> Option<String> {
+    let value: serde_json::Value = serde_json::from_str(raw_state).ok()?;
+    let updated_at = value.get("updatedAtMs")?.as_u64()? as u128;
+    let age = now_ms.saturating_sub(updated_at);
+    if age > (STATE_WRITE_RETRY_MAX * 2).as_millis() {
+        Some(format!("scoutd diagnostic state is stale ({}s old); persisted child and runtime metadata may be outdated; check current process and broker health separately", age / 1000))
+    } else {
+        None
     }
 }
 
@@ -2334,9 +2687,20 @@ fn write_daemon_state(
         json_string(&config.probes_socket_path.to_string_lossy()),
         epoch_ms(),
     );
-    let temporary_path = config.daemon_state_path.with_extension("json.tmp");
-    fs::write(&temporary_path, payload).map_err(|error| error.to_string())?;
-    fs::rename(&temporary_path, &config.daemon_state_path).map_err(|error| error.to_string())
+    write_daemon_state_payload(&config.daemon_state_path, payload.as_bytes())
+}
+
+fn write_daemon_state_payload(path: &Path, payload: &[u8]) -> Result<(), String> {
+    let temporary_path = path.with_extension("json.tmp");
+    fs::write(&temporary_path, payload)
+        .map_err(|error| format!("write {}: {error}", temporary_path.display()))?;
+    fs::rename(&temporary_path, path).map_err(|error| {
+        format!(
+            "rename {} to {}: {error}",
+            temporary_path.display(),
+            path.display()
+        )
+    })
 }
 
 fn child_exit_json(value: Option<&ChildExitTelemetry>) -> String {
@@ -3644,6 +4008,250 @@ mod tests {
             "<key>ProgramArguments</key><array><string>{}</string><string>supervise</string></array>{runtime}",
             xml_escape(daemon_executable),
         )
+    }
+
+    struct OwnedPipeChildren(Vec<u32>);
+    impl Drop for OwnedPipeChildren {
+        fn drop(&mut self) {
+            for &pid in &self.0 {
+                // Reap only a child still owned by this test process. ECHILD
+                // means already reaped; never signal a potentially reused PID.
+                unsafe {
+                    let mut status = 0;
+                    if libc::waitpid(pid as i32, &mut status, libc::WNOHANG) == 0 {
+                        libc::kill(pid as i32, libc::SIGKILL);
+                        libc::waitpid(pid as i32, &mut status, 0);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn supervisor_loop_keeps_children_through_periodic_enospc_and_drains_on_shutdown() {
+        use std::process::{Command, Stdio};
+        let base = Command::new("/bin/cat")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .spawn()
+            .unwrap();
+        let probe = Command::new("/bin/cat")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .spawn()
+            .unwrap();
+        let expected_pids = (base.id(), probe.id());
+        let _guard = OwnedPipeChildren(vec![base.id(), probe.id()]);
+        let directory = unique_temp_path("supervisor-loop");
+        fs::create_dir_all(&directory).unwrap();
+        let mut config = test_config(
+            "/nonexistent-test-runtime",
+            "/nonexistent-test-scoutd",
+            "scoutd.test",
+        );
+        config.runtime_directory = directory.clone();
+        config.daemon_state_path = directory.join("state.json");
+        let mut hooks = super::SupervisionTestHooks {
+            base: Some(base),
+            probe: Some(probe),
+            expected_pids,
+            start: std::time::Instant::now(),
+            ticks: 0,
+            stop_after_ticks: 700,
+            fail_phase: "periodic",
+            write_attempts: Vec::new(),
+            observations: 0,
+        };
+        // The production supervisor loop used to propagate the injected error
+        // and exit on its first periodic publication. This must reach shutdown.
+        super::supervise_service_inner(&config, Some(&mut hooks)).unwrap();
+        assert_eq!(hooks.observations, 700);
+        let attempts: Vec<_> = hooks
+            .write_attempts
+            .iter()
+            .filter(|(phase, _)| *phase == "periodic")
+            .map(|(_, tick)| *tick)
+            .collect();
+        assert_eq!(attempts, vec![20, 40, 80, 160, 320, 620]);
+        let persisted: serde_json::Value =
+            serde_json::from_slice(&fs::read(&config.daemon_state_path).unwrap()).unwrap();
+        assert_eq!(persisted["baseState"], "stopped");
+        assert!(persisted["basePid"].is_null());
+        for pid in [expected_pids.0, expected_pids.1] {
+            let mut status = 0;
+            assert_eq!(
+                unsafe { libc::waitpid(pid as i32, &mut status, libc::WNOHANG) },
+                -1
+            );
+            assert_eq!(
+                std::io::Error::last_os_error().raw_os_error(),
+                Some(libc::ECHILD)
+            );
+        }
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn state_publication_retries_enospc_without_ending_child_supervision() {
+        use std::process::{Command, Stdio};
+        use std::time::{Duration, Instant};
+        // A controlled pipe child, not a Scout service. It stays alive until
+        // explicit cleanup and proves telemetry failures do not reap it.
+        let mut child = Command::new("/bin/cat")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .spawn()
+            .unwrap();
+        let _guard = OwnedPipeChildren(vec![child.id()]);
+        let child_id = child.id();
+        let start = Instant::now();
+        let mut publication = super::StatePublication::new(start);
+        let mut attempts = Vec::new();
+        let mut reports = Vec::new();
+        let mut persisted = String::from("initial:0");
+        super::require_initial_state(Ok(()), || panic!("initial success must not clean up"))
+            .unwrap();
+        for tick in 0..=1000 {
+            let now = start + Duration::from_millis(tick * 100);
+            // Even noisy lifecycle refresh requests must respect failed retry.
+            if tick % 3 == 0 {
+                publication.request_refresh(now);
+            }
+            publication.refresh(
+                now,
+                || {
+                    attempts.push(tick * 100);
+                    if tick < 930 {
+                        Err("No space left on device (os error 28)".into())
+                    } else {
+                        persisted = format!("current:{tick}");
+                        Ok(())
+                    }
+                },
+                |message| reports.push((tick * 100, message)),
+            );
+            assert_eq!(child.id(), child_id);
+            assert!(child.try_wait().unwrap().is_none());
+            if tick < 930 {
+                assert_eq!(persisted, "initial:0");
+            }
+        }
+        assert_eq!(attempts, vec![0, 2000, 6000, 14000, 30000, 60000, 90000]);
+        // Recovery is tested separately below with a controlled due instant.
+        let recover_at = start + Duration::from_secs(120);
+        publication.refresh(
+            recover_at,
+            || {
+                persisted = "latest:120".into();
+                Ok(())
+            },
+            |message| reports.push((120000, message)),
+        );
+        assert_eq!(persisted, "latest:120");
+        let failures: Vec<_> = reports
+            .iter()
+            .filter(|(_, message)| message.contains("failed"))
+            .collect();
+        assert!(failures
+            .windows(2)
+            .all(|pair| pair[1].0 - pair[0].0 >= 30000));
+        assert_eq!(
+            reports
+                .iter()
+                .filter(|(_, message)| message.contains("recovered"))
+                .count(),
+            1
+        );
+        assert!(!publication.is_due(recover_at + Duration::from_secs(1)));
+        assert!(publication.is_due(recover_at + Duration::from_secs(2)));
+        super::terminate_supervised_children(&mut child, &mut None).unwrap();
+        assert!(child.try_wait().unwrap().is_some());
+    }
+
+    #[test]
+    fn initial_state_failure_reaps_both_owned_children_and_returns_error() {
+        use std::process::{Command, Stdio};
+        let mut base = Command::new("/bin/cat")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .spawn()
+            .unwrap();
+        let mut probe = Some(
+            Command::new("/bin/cat")
+                .stdin(Stdio::piped())
+                .stdout(Stdio::null())
+                .spawn()
+                .unwrap(),
+        );
+        let _guard = OwnedPipeChildren(vec![base.id(), probe.as_ref().unwrap().id()]);
+        let result = super::require_initial_state(Err("injected ENOSPC".into()), || {
+            super::terminate_supervised_children(&mut base, &mut probe)
+        });
+        assert!(result
+            .unwrap_err()
+            .contains("initial state publication failed"));
+        assert!(base.try_wait().unwrap().is_some());
+        assert!(probe.as_mut().unwrap().try_wait().unwrap().is_some());
+    }
+
+    #[test]
+    fn stopping_state_failure_cannot_skip_cleanup_or_final_publication() {
+        use std::cell::RefCell;
+        let calls = RefCell::new(Vec::new());
+        let result = super::finish_supervision(
+            Err("ENOSPC stopping".into()),
+            || {
+                calls.borrow_mut().push("cleanup");
+                Ok(())
+            },
+            || {
+                calls.borrow_mut().push("stopped");
+                Err("ENOSPC stopped".into())
+            },
+        );
+        assert_eq!(*calls.borrow(), vec!["cleanup", "stopped"]);
+        let error = result.unwrap_err();
+        assert!(error.contains("ENOSPC stopping") && error.contains("ENOSPC stopped"));
+    }
+
+    #[test]
+    fn failed_cleanup_does_not_publish_a_false_stopped_snapshot() {
+        let result = super::finish_supervision(
+            Ok(()),
+            || Err("child still alive".into()),
+            || panic!("must not publish stopped after failed cleanup"),
+        );
+        assert!(result.unwrap_err().contains("child still alive"));
+    }
+
+    #[test]
+    fn failed_snapshot_write_preserves_last_valid_timestamp_then_recovers() {
+        let directory = unique_temp_path("state-publication");
+        fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("scoutd-state.json");
+        let original = br#"{"updatedAtMs":1,"basePid":123}"#;
+        super::write_daemon_state_payload(&path, original).unwrap();
+        let temporary = path.with_extension("json.tmp");
+        // Filesystem fault without filling disk: a directory blocks temp write.
+        fs::create_dir(&temporary).unwrap();
+        assert!(super::write_daemon_state_payload(&path, br#"{"updatedAtMs":2}"#).is_err());
+        assert_eq!(fs::read(&path).unwrap(), original);
+        fs::remove_dir(&temporary).unwrap();
+        let recovered = br#"{"updatedAtMs":3,"basePid":456}"#;
+        super::write_daemon_state_payload(&path, recovered).unwrap();
+        assert_eq!(fs::read(&path).unwrap(), recovered);
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn diagnostic_state_age_warning_does_not_claim_broker_unhealthy() {
+        let state = r#"{"updatedAtMs":1000}"#;
+        assert!(super::daemon_state_age_warning(state, 61000).is_none());
+        let warning = super::daemon_state_age_warning(state, 62000).unwrap();
+        assert!(warning.contains("diagnostic state is stale"));
+        assert!(warning.contains("health separately"));
+        assert!(super::daemon_state_age_warning(state, 0).is_none());
+        assert!(super::daemon_state_age_warning("{}", 62000).is_none());
     }
 
     #[test]

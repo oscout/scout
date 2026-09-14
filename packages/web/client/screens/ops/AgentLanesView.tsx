@@ -614,6 +614,7 @@ export function AgentLanesView({
   const profileId = profileIdProp ?? readLaneDeckProfileId();
   const defaultWidthTier = laneSize ?? readAgentLaneSize();
   const [now, setNow] = useState(Date.now());
+  const [mapHorizon, setMapHorizon] = useState<AgentLaneHorizonKey>("4h");
   const [horizon, setHorizon] = useState<AgentLaneHorizonKey>(readStoredHorizon);
   const [laneLayout, setLaneLayout] = useState<AgentLanesLayoutMode>(() => readStoredLaneLayout(embedded));
   const [gridColumns, setGridColumns] = useState<AgentLanesGridColumns>(readStoredLaneGridColumns);
@@ -621,7 +622,7 @@ export function AgentLanesView({
   const gridMode = laneLayout === "grid";
   // The floor's recency bands span up to 4h; admission follows the bands while
   // the user's stored horizon choice stays untouched for the lanes layout.
-  const effectiveHorizon: AgentLaneHorizonKey = floorMode ? "4h" : horizon;
+  const effectiveHorizon: AgentLaneHorizonKey = floorMode ? mapHorizon : horizon;
   const [summaryHeight, setSummaryHeight] = useState<number | null>(readStoredLaneSummaryHeight);
   const [browserTerminalSessions, setBrowserTerminalSessions] = useState<TerminalSessionRecord[]>([]);
   const { beginResize, resetSummaryHeight, resizing: summaryResizing } = useLaneSummaryResize(setSummaryHeight);
@@ -988,13 +989,13 @@ export function AgentLanesView({
           <div className="s-agent-lanes-title">Agent Lanes</div>
           <div className="s-agent-lanes-meta" aria-label="Lane deck status">
             <span className="s-agent-lanes-meta-stat">
-              {visibleLaneCount} live
+              {visibleLaneCount} {floorMode ? "actors" : "live"}
             </span>
             {!floorMode && pinnedCount > 0 ? (
               <span className="s-agent-lanes-meta-stat">{pinnedCount} pinned</span>
             ) : null}
             <span className="s-agent-lanes-meta-stat">
-              {floorMode ? "past 30m · lanes 4h" : `trace ${horizonLabel}`}
+              {floorMode ? `history 15m · actors ${horizonLabel}` : `trace ${horizonLabel}`}
             </span>
             {activeFilterLabel ? (
               <span className="s-agent-lanes-meta-filter">{activeFilterLabel}</span>
@@ -1120,22 +1121,22 @@ export function AgentLanesView({
               </div>
             ) : null}
           </div>
-          {!floorMode ? (
-            <div className="s-agent-lanes-horizons" role="group" aria-label="Activity window">
+          {(
+            <div className="s-agent-lanes-horizons" role="group" aria-label={floorMode ? "Map activity window" : "Activity window"}>
               {AGENT_LANE_HORIZON_OPTIONS.map((option, index) => (
                 <button
                   key={option.key}
                   type="button"
-                  className={`s-agent-lanes-horizon${horizon === option.key ? " s-agent-lanes-horizon--on" : ""}`}
-                  aria-pressed={horizon === option.key}
+                  className={`s-agent-lanes-horizon${effectiveHorizon === option.key ? " s-agent-lanes-horizon--on" : ""}`}
+                  aria-pressed={effectiveHorizon === option.key}
                   title={`${option.label} window (${index + 1})`}
-                  onClick={() => setHorizon(option.key)}
+                  onClick={() => floorMode ? setMapHorizon(option.key) : setHorizon(option.key)}
                 >
                   {option.label}
                 </button>
               ))}
             </div>
-          ) : null}
+          )}
         </div>
       </div>
       {data == null && issues.length > 0 ? (

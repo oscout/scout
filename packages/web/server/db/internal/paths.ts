@@ -106,6 +106,25 @@ function resolveNoProviderHarnessSessionId(): string | null {
   return null;
 }
 
+/**
+ * A tmux endpoint's own session id is the tmux session name, never a harness
+ * session. The harness id it exposes is only what the broker observed from the
+ * harness's own records and wrote back as the endpoint's external alias.
+ */
+function resolveObservedOnlyHarnessSessionId({ endpointSessionId, metadata }: HarnessSessionContext): string | null {
+  if (metadata?.pendingExternalSession === true || typeof metadata?.externalSessionAdoptedAt === "number") return null;
+  const observed = providerHarnessSessionId(metadataString(metadata, "observedSessionId"));
+  const evidence = metadata?.observedSessionEvidence;
+  if (!observed || observed === endpointSessionId || !evidence || typeof evidence !== "object"
+    || (evidence as Record<string, unknown>).source !== "claude-session-record") return null;
+  // Conflicting aliases indicate an observation has not repaired the binding.
+  for (const key of ["externalSessionId", "nativeSessionId", "threadId"]) {
+    const alias = metadataString(metadata, key);
+    if (alias && alias !== observed) return null;
+  }
+  return observed;
+}
+
 function resolveDefaultHarnessSessionId({ metadata }: HarnessSessionContext): string | null {
   return providerSessionIdFromMetadata(metadata, DEFAULT_PROVIDER_SESSION_METADATA_KEYS);
 }
@@ -150,7 +169,7 @@ function resolvePiRpcHarnessSessionId(
 }
 
 const HARNESS_SESSION_RESOLVERS: Record<string, HarnessSessionResolver> = {
-  tmux: resolveNoProviderHarnessSessionId,
+  tmux: resolveObservedOnlyHarnessSessionId,
   zellij: resolveNoProviderHarnessSessionId,
   pairing_bridge: resolvePairingBridgeHarnessSessionId,
   codex_app_server: resolveThreadFirstHarnessSessionId,

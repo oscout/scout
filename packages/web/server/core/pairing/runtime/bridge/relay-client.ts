@@ -1,3 +1,4 @@
+import { watchSharedScoutMessages } from "./broker-message-fanout.ts";
 // Relay client — connects the bridge OUTBOUND to a relay server.
 //
 // This lets phones and tablets reach the bridge when they're not on the same
@@ -15,7 +16,6 @@ import { bridgeRouter } from "./router.ts";
 import { callTRPCProcedure, getErrorShape, TRPCError } from "@trpc/server";
 import { log } from "./log.ts";
 import {
-  watchScoutMessages,
   type ScoutBrokerConversationLifecycleRecord,
   type ScoutBrokerMessageRecord,
 } from "../../../broker/service.ts";
@@ -348,7 +348,7 @@ export function connectToRelay(
 
     const abort = new AbortController();
     brokerWatchAbort = abort;
-    void watchScoutMessages({
+    void watchSharedScoutMessages({
       allConversations: true,
       signal: abort.signal,
       onMessage(message) {

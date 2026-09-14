@@ -286,7 +286,7 @@ describe("BrokerMessageService", () => {
     expect(harness.recordedMessages).toEqual([
       expect.objectContaining({
         message: expect.objectContaining({ id: "msg-reply" }),
-        options: { enqueueProjection: false },
+        options: { enqueueProjection: false, dedupeExisting: true },
       }),
     ]);
     expect(harness.forwardedPeerDeliveries).toEqual([
@@ -433,7 +433,7 @@ describe("BrokerMessageService", () => {
     }
   });
 
-  test("finds the newest existing broker reply using the reply lookback window", () => {
+  test("finds the newest existing broker reply using the reply lookback window", async () => {
     const olderReply = message({ id: "old", createdAt: 4_999 });
     const firstReply = message({ id: "first", createdAt: 5_000 });
     const newestReply = message({ id: "newest", createdAt: 7_000 });
@@ -447,12 +447,12 @@ describe("BrokerMessageService", () => {
       },
     });
 
-    expect(harness.service.existingBrokerReplyForInvocation(invocation(), "agent-1", 10_000))
+    expect(await harness.service.existingBrokerReplyForInvocation(invocation(), "agent-1", 10_000))
       .toBe(newestReply);
-    expect(harness.service.existingBrokerReplyForInvocation(invocation({
+    expect(await harness.service.existingBrokerReplyForInvocation(invocation({
       conversationId: undefined,
     }), "agent-1", 10_000)).toBeNull();
-    expect(harness.service.existingBrokerReplyForInvocation(invocation({
+    expect(await harness.service.existingBrokerReplyForInvocation(invocation({
       messageId: undefined,
     }), "agent-1", 10_000)).toBeNull();
   });

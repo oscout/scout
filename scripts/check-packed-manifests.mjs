@@ -63,31 +63,45 @@ function findWorkspaceLeaks(pkg) {
 // @openscout/scout ships the prebuilt scoutd broker service binary; if it is
 // missing, npm-installed users hit "Unable to locate scoutd" for every broker
 // operation (resolveScoutdCommand in broker-process-manager.ts).
+export const CREW_RUNTIME_FILES = [
+  ...["milo", "brik", "sprout", "wrench", "vex", "lulu", "nori", "pip", "tuck", "fenn"].map((slug) => `${slug}-bust.webp`),
+  ...["milo", "brik", "sprout", "wrench", "vex", "pip", "tuck", "fenn"].map((slug) => `${slug}-chip-id.webp`),
+  ...["sprout", "eye-plate-v1"].flatMap((sheet) => ["blink-half", "blink-shut", "look-left", "look-right", "look-up"].map((pose) => `sheets/${sheet}/${pose}.webp`)),
+  "sheets/eye-plate-v1/rest.webp",
+].map((file) => `package/dist/client/crew/${file}`);
+
 const REQUIRED_PACKED_FILES = {
   "@openscout/scout": [
     "package/bin/scoutd",
     "package/dist/scout-control-plane-web.mjs",
     "package/dist/scout-web-server.mjs",
     "package/dist/client/index.html",
+    "package/dist/client/characters/sage/sage.glb",
+    ...CREW_RUNTIME_FILES,
   ],
 };
 
 const FORBIDDEN_PACKED_PREFIXES = {
-  "@openscout/scout": ["package/dist/client/crew/"],
+  "@openscout/scout": [
+    "package/dist/client/crew/masters/",
+    "package/dist/client/crew/_runs/",
+    "package/dist/client/crew/_qa/",
+    "package/dist/client/crew/poses/",
+    "package/dist/client/crew-preview.html",
+  ],
 };
 
-// Calibrated against the reviewed 0.2.92 candidate (about 8.08 MB packed,
-// 36.97 MB unpacked, 445 files), the 0.2.94 candidate (about 6.65 MB packed,
-// 30.75 MB unpacked, 452 files), and the 0.2.96 candidate (about 7.34 MB packed,
-// 36.36 MB unpacked, 482 files). The previous release's duplicated
-// 3.45 MB web-server bundle exceeds both byte ceilings. Raising a ceiling is a
-// deliberate release-review decision, not an incidental side effect of npm
-// packaging.
+// 0.2.101 deliberately ships the reachable World/Replay renderers and 3D studio:
+// their atlases/model add about 16.7 MB, and the runtime crew pack adds 0.885 MB.
+// Authoring masters and previews are excluded. See docs/releases.md for the
+// measured candidate and review rationale. The compatibility entry retains its
+// separate 1 KB ceiling so new art cannot hide a duplicated server bundle.
+// Raising these ceilings remains a deliberate release-review decision.
 const PACKED_FOOTPRINT_BUDGETS = {
   "@openscout/scout": {
-    maxPackedBytes: 8_500_000,
-    maxUnpackedBytes: 38_000_000,
-    maxFileCount: 500,
+    maxPackedBytes: 26_000_000,
+    maxUnpackedBytes: 60_000_000,
+    maxFileCount: 670,
   },
 };
 

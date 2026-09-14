@@ -460,8 +460,8 @@ export function AudioSettings({ model }: { model: DeckModel }) {
             disabled={!model.cloudSpeechAvailable || !model.speechCatalog}
           >
             {model.speechCatalog?.models.filter((entry) => isCloudSpeechProvider(entry.provider)).map((entry) => (
-              <option key={entry.id} value={entry.id} disabled={!entry.available}>
-                {providerLabel(entry.provider)} · {entry.name}{entry.available ? "" : " · unavailable"}
+              <option key={entry.id} value={entry.id} disabled={entry.available === false}>
+                {providerLabel(entry.provider)} · {entry.name}{speechAvailabilityLabel(entry.available)}
               </option>
             )) ?? <option>{model.speechCatalog ? "No API models" : "Loading Scout voices…"}</option>}
           </select>
@@ -473,11 +473,11 @@ export function AudioSettings({ model }: { model: DeckModel }) {
             className="deck-sheet__select"
             value={model.speechVoiceId}
             onChange={(event) => model.selectSpeechVoice(event.currentTarget.value)}
-            disabled={!model.cloudSpeechAvailable || !model.speechCatalog || model.speechCatalog.voices.length === 0}
+            disabled={!model.cloudSpeechAvailable || !model.speechCatalog || !model.speechCatalog.voices.some((entry) => entry.modelId === model.speechModelId)}
           >
-            {model.speechCatalog?.voices.filter((entry) => entry.modelId === model.speechModelId && entry.available).map((entry) => (
-              <option key={entry.id} value={entry.id}>
-                {entry.name}{entry.language ? ` · ${entry.language}` : ""}
+            {model.speechCatalog?.voices.filter((entry) => entry.modelId === model.speechModelId).map((entry) => (
+              <option key={entry.id} value={entry.id} disabled={entry.available === false}>
+                {entry.name}{entry.language ? ` · ${entry.language}` : ""}{speechAvailabilityLabel(entry.available)}
               </option>
             )) ?? <option>Loading…</option>}
           </select>
@@ -573,6 +573,12 @@ function providerLabel(provider: string): string {
 function isCloudSpeechProvider(provider: string): boolean {
   const normalized = provider.toLowerCase();
   return normalized === "openai" || normalized === "elevenlabs" || normalized === "nvidia";
+}
+
+function speechAvailabilityLabel(available: boolean | null): string {
+  if (available === false) return " · unavailable";
+  if (available === null) return " · availability not checked";
+  return "";
 }
 
 /* ------------------------------------------------------------------ lanes */

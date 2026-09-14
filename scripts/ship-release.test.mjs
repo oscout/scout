@@ -12,9 +12,9 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import test from "node:test";
-import { findFootprintFailures } from "./check-packed-manifests.mjs";
+import { CREW_RUNTIME_FILES, findFootprintFailures } from "./check-packed-manifests.mjs";
 
 const repoRoot = new URL("..", import.meta.url);
 const currentVersion = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"))
@@ -913,6 +913,11 @@ test("the isolated retained Scout candidate is normalized and passes the exact a
       'import "./scout-control-plane-web.mjs";\n',
     );
     writeFileSync(join(fixture, "candidate/dist/client/index.html"), "<!doctype html>\n");
+    for (const file of [...CREW_RUNTIME_FILES, "package/dist/client/characters/sage/sage.glb"]) {
+      const output = join(fixture, "candidate", file.slice("package/".length));
+      mkdirSync(dirname(output), { recursive: true });
+      writeFileSync(output, "fixture runtime art\n");
+    }
     writeFileSync(join(fixture, "candidate/README.md"), "# Scout\n");
 
     const normalize = spawnSync(
@@ -945,6 +950,18 @@ test("the isolated retained Scout candidate is normalized and passes the exact a
     );
     assert.equal(packedManifest.status, 0, packedManifest.stderr);
     assert.doesNotMatch(packedManifest.stdout, /workspace:/);
+
+    rmSync(join(fixture, "candidate/dist/client/crew/sprout-bust.webp"));
+    const incompletePack = spawnSync("npm", ["pack", "--ignore-scripts", "--pack-destination", fixture], {
+      cwd: join(fixture, "candidate"), encoding: "utf8",
+      env: { ...process.env, npm_config_cache: join(fixture, "npm-cache") },
+    });
+    assert.equal(incompletePack.status, 0, incompletePack.stderr);
+    const incompleteAudit = spawnSync(process.execPath, ["scripts/check-packed-manifests.mjs", "--tarball", tarball], {
+      cwd: fixture, encoding: "utf8",
+    });
+    assert.notEqual(incompleteAudit.status, 0);
+    assert.match(incompleteAudit.stderr, /missing required packed files[\s\S]*crew\/sprout-bust\.webp/);
   } finally {
     rmSync(fixture, { recursive: true, force: true });
   }
@@ -965,9 +982,19 @@ test("Scout's release footprint gate rejects the previous duplicate web bundle",
     fileCount: 445,
     fileSizes: new Map([["package/dist/scout-web-server.mjs", 3_450_009]]),
   });
-  assert.match(duplicated.join("\n"), /packed size .* exceeds/);
-  assert.match(duplicated.join("\n"), /unpacked size .* exceeds/);
   assert.match(duplicated.join("\n"), /compatibility entry must not exceed/);
+});
+
+test("World-aware package limits still reject excess bytes and file growth", () => {
+  const oversized = findFootprintFailures("@openscout/scout", {
+    packedBytes: 26_000_001,
+    unpackedBytes: 60_000_001,
+    fileCount: 671,
+    fileSizes: new Map([["package/dist/scout-web-server.mjs", 103]]),
+  });
+  assert.match(oversized.join("\n"), /packed size .* exceeds/);
+  assert.match(oversized.join("\n"), /unpacked size .* exceeds/);
+  assert.match(oversized.join("\n"), /file count .* exceeds/);
 });
 
 test("npm publication is pinned, OIDC-compatible, and exactly scoped", () => {

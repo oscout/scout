@@ -7,7 +7,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import * as z from "zod/v4";
 
-import type { ScoutOperatorSignal } from "@openscout/protocol";
+import type { AgentBrokerFeedCounts, ScoutOperatorSignal } from "@openscout/protocol";
 
 import {
   SCOUT_MCP_UI_META_KEY,
@@ -110,6 +110,10 @@ describe("createScoutMcpServer", () => {
 
     const result = await client.listTools();
     expect(result.tools.map((tool) => tool.name)).toEqual([
+      "sessions_inventory",
+      "sessions_search",
+      "herdr_workspaces",
+      "attachments_read",
       "aliases_set",
       "aliases_list",
       "aliases_resolve",
@@ -511,7 +515,7 @@ describe("createScoutMcpServer", () => {
     });
   });
 
-  test("reads native broker feed through the broker dependency", async () => {
+  test("validates the protocol broker feed without an invented unblock count through MCP", async () => {
     let receivedInput:
       | {
         agentId: string;
@@ -553,10 +557,9 @@ describe("createScoutMcpServer", () => {
             deliveries: 0,
             deliveryAttempts: 0,
             dispatches: 0,
-            unblockRequests: 0,
             errors: 1,
             warnings: 0,
-          },
+          } satisfies AgentBrokerFeedCounts,
           items: [
             {
               id: "flight:flight-1",
@@ -577,6 +580,15 @@ describe("createScoutMcpServer", () => {
       },
     });
 
+    const tools = await client.listTools();
+    const advertised = tools.tools.find((tool) => tool.name === "broker_feed");
+    const countsSchema = advertised?.outputSchema?.properties?.counts as
+      | { required?: string[] }
+      | undefined;
+    expect(countsSchema?.required).toContain("errors");
+    expect(countsSchema?.required).not.toContain("unblockRequests");
+
+    // This invokes the SDK server's real output-schema validation over transport.
     const result = await client.callTool({
       name: "broker_feed",
       arguments: {
@@ -588,6 +600,7 @@ describe("createScoutMcpServer", () => {
       },
     });
 
+    expect(result.isError).not.toBe(true);
     expect(receivedInput).toMatchObject({
       agentId: "hudson.main.mini@/tmp/project",
       since: 500,
@@ -605,11 +618,30 @@ describe("createScoutMcpServer", () => {
     };
     expect(structured.found).toBe(true);
     expect(structured.counts.errors).toBe(1);
+    expect(structured.counts).not.toHaveProperty("unblockRequests");
     expect(structured.items[0]).toMatchObject({
       kind: "flight",
       severity: "error",
       summary: "dispatch stalled",
     });
+  });
+
+  test("validates the unavailable broker feed without fabricating an unblock count", async () => {
+    const { client } = await connectTestServer({
+      readBrokerFeed: async () => null,
+    });
+    const result = await client.callTool({
+      name: "broker_feed",
+      arguments: { agentId: "agent-unavailable" },
+    });
+    expect(result.isError).not.toBe(true);
+    const structured = result.structuredContent as {
+      found: boolean;
+      counts: AgentBrokerFeedCounts;
+    };
+    expect(structured.found).toBe(false);
+    expect(structured.counts.items).toBe(0);
+    expect(structured.counts).not.toHaveProperty("unblockRequests");
   });
 
   test("reads tail events through the broker dependency", async () => {
@@ -1245,7 +1277,7 @@ describe("createScoutMcpServer", () => {
     expect(notification.params.flightId).toBe("flight-1");
     expect(notification.params.output).toBe("talkie replied");
     expect(notification.params.targetAgentId).toBe("talkie.main");
-    expect(receivedWaitOptions).toBeUndefined();
+    expect(receivedWaitOptions).toMatchObject({ invocationId: "inv-1", signal: expect.any(AbortSignal) });
   });
 
   test("ask does not schedule MCP reply notifications by default", async () => {
@@ -3234,4 +3266,32 @@ describe("createScoutMcpServer", () => {
     expect(receivedSenderId).toBeUndefined();
     expect(receivedMessageSenderId).toBe("ranger.main.mini");
   });
+});
+
+
+test("disconnect cancels an unfinished MCP notification wait", async () => {
+  let waitSignal: AbortSignal | undefined;
+  let cancelled = false;
+  const { client } = await connectTestServer({
+    resolveSenderId: async () => "operator",
+    resolveBrokerUrl: () => "http://broker.test",
+    askAgentById: async () => ({
+      usedBroker: true,
+      conversationId: "dm.operator.worker",
+      messageId: "msg-1",
+      flight: { id: "flight-1", invocationId: "inv-1", requesterId: "operator", targetAgentId: "worker", state: "running" },
+    }),
+    waitForFlight: async (_url, _id, options) => {
+      waitSignal = options?.signal;
+      expect(options?.invocationId).toBe("inv-1");
+      return new Promise((_resolve, reject) => {
+        waitSignal?.addEventListener("abort", () => { cancelled = true; reject(waitSignal?.reason); }, { once: true });
+      });
+    },
+  }, { OPENSCOUT_MCP_ENABLE_NOTIFICATIONS: "1" });
+  await client.callTool({ name: "invocations_ask", arguments: { body: "Review", targetAgentId: "worker", replyMode: "notify" } });
+  expect(waitSignal?.aborted).toBe(false);
+  await client.close();
+  expect(waitSignal?.aborted).toBe(true);
+  expect(cancelled).toBe(true);
 });

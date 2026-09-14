@@ -1,0 +1,130 @@
+/* A bound field journal. Paper is sized to the record it carries, never to a blank canvas.
+   The shared token names are re-pointed to paper values so embedded file renderers,
+   which are authored for the dark app shell, print as ink on parchment inside the journal. */
+.adventure-reader {
+  --paper: #faf5e7; --paper-edge: #efe7cf; --panel: #f4ecd7; --panel-head: #ece3ca;
+  --board: #344e3d; --board-ink: #f6f1dc; --board-dim: #c3cdb2;
+  --rule: #ddd3b8; --rule-soft: #e8dfc6;
+  --journal-ink: #2f3e33; --journal-soft: #63654f; --journal-faint: #8a8971;
+  --serif: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
+  --page-sans: "Inter", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --page-mono: ui-monospace, SFMono-Regular, "JetBrains Mono", Menlo, monospace;
+  --ink: #2f3e33; --bg: #f5eeda; --surface: #efe7cf; --border: #d8ceb4;
+  --muted: #7b7c66; --dim: #8a8971; --accent: #7b6224;
+  --font-sans: var(--page-sans); --font-mono: var(--page-mono);
+  --text-md: 12.5px; --text-lg: 15px; --text-xl: 16px; --text-2xl: 18px; --text-4xl: 22px;
+  --leading-normal: 1.7;
+  width: min(1020px, 94vw);
+  min-height: min(300px, 60vh);
+  max-height: min(860px, 88vh);
+  height: fit-content;
+  margin: auto;
+  padding: 0;
+  border: 0;
+  border-radius: 14px;
+  background: var(--paper);
+  color: var(--journal-ink);
+  font-family: var(--page-sans);
+  box-shadow: 0 28px 100px #091c1990, 0 5px 0 #c4b99c, 0 9px 0 #344e3d;
+  overflow: hidden;
+}
+.adventure-reader[open] { display: flex; flex-direction: column; }
+.adventure-reader::backdrop { background: #12241ec4; backdrop-filter: blur(4px); }
+
+/* Masthead: what this record is, and when it was taken. */
+.adventure-reader.adventure-reader > header { flex: none; display: flex; align-items: center; gap: 13px; padding: 13px 16px 13px 20px; background: var(--board); color: var(--board-ink); }
+.adventure-reader.adventure-reader > header > svg { flex: none; opacity: .78; }
+.adventure-reader .adventure-reader__masthead { flex: 1; min-width: 0; }
+.adventure-reader .adventure-reader__masthead small { display: block; font-size: 10px; letter-spacing: .1em; text-transform: uppercase; color: var(--board-dim); }
+.adventure-reader.adventure-reader h2 { margin: 3px 0 0; font-family: var(--serif); font-size: 23px; font-weight: 400; line-height: 1.25; overflow-wrap: anywhere; }
+.adventure-reader .adventure-reader__stamp { flex: none; font-size: 11px; letter-spacing: .03em; color: var(--board-dim); white-space: nowrap; }
+.adventure-reader.adventure-reader > header > button { flex: none; margin-left: 4px; display: flex; padding: 8px; border: 0; border-radius: 7px; background: transparent; color: inherit; cursor: pointer; }
+.adventure-reader.adventure-reader > header > button:hover { background: #ffffff1f; }
+
+.adventure-reader .adventure-reader__binding { flex: 0 1 auto; min-height: 0; display: grid; grid-template-columns: 172px minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); }
+.adventure-reader .adventure-reader__binding > aside { min-height: 0; display: flex; flex-direction: column; gap: 18px; padding: 18px 15px 22px; border-right: 1px solid var(--rule); background: var(--paper-edge); overflow: auto; }
+
+.adventure-reader.adventure-reader nav { display: grid; gap: 2px; }
+.adventure-reader.adventure-reader nav button { display: flex; align-items: center; gap: 9px; padding: 8px 10px; border: 0; border-radius: 7px; background: transparent; color: var(--journal-soft); font: inherit; font-size: 12.5px; text-align: left; cursor: pointer; }
+.adventure-reader.adventure-reader nav button > svg { flex: none; opacity: .65; }
+.adventure-reader.adventure-reader nav button:hover { background: #e2d9bd; color: var(--journal-ink); }
+.adventure-reader.adventure-reader nav button[aria-pressed=true] { background: var(--board); color: var(--board-ink); }
+.adventure-reader.adventure-reader nav button[aria-pressed=true] > svg { opacity: 1; }
+
+/* The margin column carries the facts of the record, not decoration. */
+.adventure-reader .adventure-reader__meta { margin: 0; display: grid; gap: 12px; align-content: start; }
+.adventure-reader .adventure-reader__meta dt { font-size: 9.5px; letter-spacing: .11em; text-transform: uppercase; color: var(--journal-faint); }
+.adventure-reader .adventure-reader__meta dd { margin: 3px 0 0; font-size: 11.5px; line-height: 1.5; color: var(--journal-ink); overflow-wrap: anywhere; }
+.adventure-reader .adventure-reader__meta dd.is-path { font-family: var(--page-mono); font-size: 10.5px; line-height: 1.55; color: var(--journal-soft); }
+
+.adventure-reader .adventure-reader__leaf { min-height: 0; min-width: 0; padding: 20px 34px 30px; background: var(--paper); box-shadow: inset 12px 0 18px -20px #51452866; overflow: auto; }
+.adventure-reader .adventure-reader__head { display: flex; align-items: baseline; justify-content: space-between; gap: 20px; padding-bottom: 9px; border-bottom: 1px solid var(--rule); }
+.adventure-reader .adventure-reader__head span { font-size: 10px; letter-spacing: .14em; text-transform: uppercase; color: var(--journal-soft); }
+.adventure-reader .adventure-reader__head small { font-family: var(--serif); font-style: italic; font-size: 12px; color: var(--journal-faint); white-space: nowrap; }
+.adventure-reader .adventure-reader__body { padding-top: 20px; }
+
+.adventure-reader .adventure-reader__prose { margin: 0; max-width: 64ch; font-family: var(--serif); font-size: 16px; line-height: 1.66; color: var(--journal-ink); white-space: pre-wrap; }
+.adventure-reader .adventure-reader__tally { margin: 0 0 14px; display: flex; align-items: baseline; gap: 10px; font-family: var(--serif); font-size: 19px; line-height: 1.3; color: var(--board); }
+.adventure-reader .adventure-reader__tally b { font-weight: 600; font-variant-numeric: tabular-nums; }
+.adventure-reader .adventure-reader__tally small { font-family: var(--page-sans); font-size: 10.5px; letter-spacing: .1em; text-transform: uppercase; color: var(--journal-faint); }
+.adventure-reader .adventure-reader__quiet { margin: 0; font-family: var(--serif); font-style: italic; font-size: 14.5px; color: var(--journal-faint); }
+
+.adventure-reader.adventure-reader pre { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font-family: var(--page-mono); font-size: 12.5px; line-height: 1.68; tab-size: 2; color: var(--journal-ink); }
+.adventure-reader .adventure-reader__record { margin: 20px 0 0; border: 1px solid var(--rule); border-radius: 9px; background: var(--panel); overflow: hidden; }
+.adventure-reader .adventure-reader__record figcaption { padding: 7px 14px; border-bottom: 1px solid var(--rule-soft); background: var(--panel-head); font-size: 9.5px; letter-spacing: .11em; text-transform: uppercase; color: var(--journal-faint); }
+.adventure-reader .adventure-reader__record pre { padding: 13px 14px; }
+.adventure-reader .adventure-reader__output { padding: 13px 14px; border: 1px solid var(--rule); border-radius: 9px; background: var(--panel); }
+.adventure-reader .adventure-reader__prose + .adventure-reader__record { margin-top: 22px; }
+
+.adventure-reader .adventure-reader__diff { border: 1px solid var(--rule); border-radius: 9px; background: var(--panel); padding: 9px 0; overflow: hidden; }
+.adventure-reader .adventure-reader__diff span { display: block; padding: 0 14px; }
+.adventure-reader .adventure-reader__diff .is-added { background: #dfe9cf; color: #2a5230; box-shadow: inset 3px 0 0 #7d9c5c; }
+.adventure-reader .adventure-reader__diff .is-removed { background: #f1ded1; color: #79392a; box-shadow: inset 3px 0 0 #b8785e; }
+
+.adventure-reader .adventure-reader__next { display: inline-flex; align-items: center; gap: 10px; margin-top: 24px; padding: 8px 0; border: 0; border-bottom: 1px solid var(--rule); background: transparent; color: var(--board); font: inherit; font-size: 12.5px; font-weight: 600; letter-spacing: .02em; cursor: pointer; }
+.adventure-reader .adventure-reader__next:hover { border-bottom-color: var(--board); }
+.adventure-reader .adventure-reader__failed { border-left: 3px solid #a8543c; padding: 2px 0 2px 14px; }
+.adventure-reader .adventure-reader__failed strong { display: block; font-size: 14px; color: #7d3a2a; }
+.adventure-reader .adventure-reader__failed p { margin: 6px 0 0; font-size: 12px; line-height: 1.6; color: var(--journal-soft); overflow-wrap: anywhere; }
+
+/* File renderers are shared components; the journal only lends them its paper and measure. */
+.adventure-reader .adventure-reader__file img { max-width: 100%; }
+.adventure-reader.adventure-reader .s-text-document-surface { display: block; overflow: visible; color: var(--journal-ink); }
+.adventure-reader.adventure-reader .s-text-document-code, .adventure-reader.adventure-reader .s-text-document-markdown { min-height: 0; overflow: visible; }
+.adventure-reader.adventure-reader .s-text-document-surface-code, .adventure-reader.adventure-reader .s-text-document-surface-text, .adventure-reader.adventure-reader .s-text-document-surface-raw { border: 1px solid var(--rule); border-radius: 9px; overflow: hidden; }
+.adventure-reader.adventure-reader .s-text-document-code { padding: 13px 14px; font-size: 12.5px; line-height: 1.68; }
+.adventure-reader.adventure-reader .s-text-document-markdown { padding: 0; max-width: 70ch; font-family: var(--serif); font-size: 16px; line-height: 1.66; }
+.adventure-reader.adventure-reader .s-text-document-markdown h1, .adventure-reader.adventure-reader .s-text-document-markdown h2, .adventure-reader.adventure-reader .s-text-document-markdown h3 { font-family: var(--serif); font-weight: 500; color: var(--board); }
+.adventure-reader.adventure-reader .s-file-preview-directory, .adventure-reader.adventure-reader .s-file-preview-image-wrap { min-height: 0; padding: 0; }
+.adventure-reader.adventure-reader .s-file-preview-image-stage { background: var(--panel); border: 1px solid var(--rule); }
+.adventure-reader.adventure-reader .s-file-preview-entry { border: 1px solid var(--rule); border-radius: 9px; background: var(--panel); padding: 9px 12px; }
+.adventure-reader.adventure-reader .s-file-preview-entry:hover { border-color: #c2b48c; background: var(--panel-head); }
+.adventure-reader.adventure-reader .s-file-preview-breadcrumb-link { border: 0; padding: 0; background: transparent; color: var(--board); }
+.adventure-reader.adventure-reader .s-syntax-comment { color: #8f8e76; }
+.adventure-reader.adventure-reader .s-syntax-keyword { color: #8a3f2c; }
+.adventure-reader.adventure-reader .s-syntax-string { color: #4a6b3a; }
+.adventure-reader.adventure-reader .s-syntax-number, .adventure-reader.adventure-reader .s-syntax-literal { color: #7a5296; }
+.adventure-reader.adventure-reader .s-syntax-property, .adventure-reader.adventure-reader .s-syntax-attribute { color: #2f6069; }
+.adventure-reader.adventure-reader .s-syntax-function, .adventure-reader.adventure-reader .s-syntax-tag { color: #8a5a1c; }
+.adventure-reader.adventure-reader .s-syntax-type { color: #3d6a4a; }
+.adventure-reader.adventure-reader .s-syntax-operator, .adventure-reader.adventure-reader .s-syntax-punctuation, .adventure-reader.adventure-reader .s-syntax-meta { color: #8a8971; }
+
+.adventure-reader.adventure-reader > footer { flex: none; display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 10px 16px 10px 20px; border-top: 1px solid var(--rule); background: var(--paper-edge); font-size: 11.5px; color: var(--journal-soft); }
+.adventure-reader.adventure-reader > footer button { border: 0; border-radius: 7px; padding: 8px 14px; background: var(--board); color: var(--board-ink); font: inherit; font-size: 12px; cursor: pointer; }
+.adventure-reader.adventure-reader > footer button:hover { background: #2b4133; }
+
+.adventure-reader.adventure-reader :focus-visible { outline: 2px solid #8a6a1b; outline-offset: 2px; border-radius: 4px; }
+.adventure-reader.adventure-reader > header :focus-visible { outline-color: #d9b45c; }
+
+@media (max-width: 760px) {
+  .adventure-reader { width: 96vw; max-height: 92vh; }
+  .adventure-reader .adventure-reader__binding { display: flex; flex-direction: column; }
+  .adventure-reader .adventure-reader__binding > aside { flex: none; gap: 12px; padding: 11px 16px 13px; border-right: 0; border-bottom: 1px solid var(--rule); overflow: visible; }
+  .adventure-reader.adventure-reader nav { display: flex; flex-wrap: wrap; }
+  .adventure-reader .adventure-reader__meta { display: flex; flex-wrap: wrap; gap: 8px 22px; }
+  .adventure-reader .adventure-reader__leaf { flex: 1; min-height: 0; padding: 16px 18px 24px; }
+  .adventure-reader .adventure-reader__head small { display: none; }
+  .adventure-reader .adventure-reader__prose { font-size: 15.5px; }
+  .adventure-reader.adventure-reader > footer { justify-content: flex-end; }
+  .adventure-reader.adventure-reader > footer span { display: none; }
+}

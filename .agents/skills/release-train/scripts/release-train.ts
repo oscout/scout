@@ -1,5 +1,7 @@
 #!/usr/bin/env bun
 
+import { validateMergeEvidence } from "./validation-evidence";
+
 import { createHash, randomUUID } from "node:crypto";
 import {
   closeSync,
@@ -138,7 +140,7 @@ const SCRIPT_DIR = import.meta.dir;
 const SKILL_ROOT = resolve(SCRIPT_DIR, "..");
 const WORKFLOW_PATH = join(SKILL_ROOT, "references", "workflow-v1.json");
 const CHECKPOINT_SCHEMA_PATH = join(SKILL_ROOT, "references", "checkpoint-v1.schema.json");
-const RUN_ID_PATTERN = /^rt-[0-9]{8}-(09|17)-[a-f0-9]{8}$/u;
+const RUN_ID_PATTERN = /^rt-[0-9]{8}-(09|17)-(?:[a-z][a-z0-9]{0,23}-)?[a-f0-9]{8}$/u;
 
 function fail(message: string): never {
   throw new Error(message);
@@ -523,6 +525,7 @@ export function validateStageArtifact(
         for (const key of ["mergeable", "baseCurrent", "blockingFeedback"]) {
           if (typeof gate[key] !== "boolean") fail(`S80.${key} must be boolean`);
         }
+        if (!historical && gate.checks === "PASS") validateMergeEvidence(checkpoint, gate);
       }
       break;
     }
@@ -583,6 +586,7 @@ export function assertAdvanceGate(checkpoint: Checkpoint, from: StageId, to: Sta
   if (from === "S80") {
     const green = asArray(artifact.gates, "S80.gates").every((gate) => gate.checks === "PASS" && gate.mergeable && gate.baseCurrent && !gate.blockingFeedback);
     if (!green && !["S40", "S50"].includes(to)) fail("S80 failures must loop to S40 or S50");
+    if (green) for (const gate of artifact.gates) validateMergeEvidence(checkpoint, gate);
     if (green && to !== "S90") fail("S80 green gate must advance to S90");
   }
   if (from === "S90" && artifact.releaseState === "AMBIGUOUS") fail(`S90 stopped: ${artifact.ambiguity}`);

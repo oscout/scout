@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 
 import type { ScoutBrokerChildServiceSnapshots } from "./broker-api.js";
 import { resolveBrokerServiceConfig } from "./broker-process-manager.js";
-import { resolveWebAuthToken, resolveWebPort } from "./local-config.js";
+import { loadLocalConfig, resolveWebAuthToken, resolveWebPort } from "./local-config.js";
 import {
   resolveBunExecutable,
   resolveOpenScoutRepoRoot,
@@ -552,7 +552,11 @@ export class BrokerWebControlService {
       ...(brokerPairingIngress
         ? {
             OPENSCOUT_WEB_ALLOW_LAN: "1",
-            OPENSCOUT_WEB_LAN_SCOPE: this.env.OPENSCOUT_WEB_LAN_SCOPE?.trim() || "pairing",
+            // env wins, then ~/.openscout/config.json, then the closed default.
+            // Read per spawn so flipping the config only needs a web restart.
+            OPENSCOUT_WEB_LAN_SCOPE: this.env.OPENSCOUT_WEB_LAN_SCOPE?.trim()
+              || loadLocalConfig().webLanScope
+              || "pairing",
           }
         : {}),
       OPENSCOUT_WEB_PORT: String(this.port()),

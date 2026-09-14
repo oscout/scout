@@ -2,28 +2,34 @@
 
 use ratatui::style::{Color, Modifier, Style};
 
-/// "Ash and Phosphor" Palette — Committed 2026 Visual Direction.
-/// Warm near-black room canvas (#0A0908). Phosphor is the one live hue.
-pub const GROUND: Color = Color::Rgb(10, 9, 8); // #0A0908 — the room. Warm near-black. Full canvas.
-pub const HEARTH: Color = Color::Rgb(20, 18, 16); // #141210 — the only fill in the frame. Selected agent's tile.
-pub const HAIR: Color = Color::Rgb(42, 38, 33); // #2A2621 — hairlines, pulse rule at rest.
-pub const ASH: Color = Color::Rgb(90, 82, 72); // #5A5248 — machine chatter: tools, results, reasoning, clocks, JSON.
-pub const SMOKE: Color = Color::Rgb(154, 145, 134); // #9A9186 — secondary text: unselected agent names, ages, eyebrows.
-pub const BONE: Color = Color::Rgb(237, 231, 223); // #EDE7DF — human words and assistant prose. Bright text.
-pub const PHOSPHOR: Color = Color::Rgb(61, 220, 151); // #3DDC97 — the one live hue. Pulse cells, active mark.
-pub const SIGNAL: Color = Color::Rgb(240, 169, 59); // #F0A93B — earned amber. Blocked / needs-you only.
+/// "Ash and Ember" — warm near-black room, one live orange.
+///
+/// Ambient ramp is the Nightwatch calibration: ASH/SMOKE stay readable as
+/// machine chatter, HEARTH actually lifts off GROUND. Ember is the single
+/// chromatic hue (live, selected, pulse, prompt). SIGNAL is a brighter gold
+/// reserved for needs-you. FAULT is failure.
+pub const GROUND: Color = Color::Rgb(12, 10, 8); // #0C0A08 — the room. Warm near-black.
+pub const HEARTH: Color = Color::Rgb(34, 28, 22); // #221C16 — selected fill; must read as a tile.
+pub const HAIR: Color = Color::Rgb(58, 50, 40); // #3A3228 — hairlines, idle pulse cells.
+pub const ASH: Color = Color::Rgb(138, 125, 110); // #8A7D6E — machine chatter: tools, clocks, JSON.
+pub const SMOKE: Color = Color::Rgb(196, 182, 166); // #C4B6A6 — secondary text: unselected names, ages.
+pub const BONE: Color = Color::Rgb(240, 230, 216); // #F0E6D8 — human words and assistant prose.
+pub const EMBER: Color = Color::Rgb(255, 133, 51); // #FF8533 — the one live hue. Pulse, selected, live.
+pub const EMBER_DIM: Color = Color::Rgb(196, 94, 36); // #C45E24 — cooled coal; older pulse cells.
+pub const SIGNAL: Color = Color::Rgb(255, 196, 77); // #FFC44D — earned gold. Blocked / needs-you only.
 pub const FAULT: Color = Color::Rgb(226, 86, 77); // #E2564D — earned failure.
 
-// Phosphor decay / recency ramp
-pub const AGE0: Color = Color::Rgb(244, 244, 245);
-pub const AGE1: Color = Color::Rgb(201, 206, 214);
-pub const AGE2: Color = Color::Rgb(135, 142, 153);
-pub const AGE3: Color = Color::Rgb(86, 92, 102);
-pub const AGE4: Color = Color::Rgb(53, 57, 63);
+/// Ember decay / recency ramp. Fresh coal → spent coal. Never cool zinc.
+pub const AGE0: Color = EMBER; // #FF8533
+pub const AGE1: Color = Color::Rgb(224, 112, 46); // #E0702E
+pub const AGE2: Color = Color::Rgb(176, 90, 40); // #B05A28
+pub const AGE3: Color = Color::Rgb(122, 72, 38); // #7A4826
+pub const AGE4: Color = Color::Rgb(74, 50, 32); // #4A3220
 
 // Compatibility aliases
+pub const PHOSPHOR: Color = EMBER;
 pub const RULE: Color = HAIR;
-pub const ACCENT: Color = PHOSPHOR;
+pub const ACCENT: Color = EMBER;
 pub const BG: Color = GROUND;
 pub const SURFACE: Color = HEARTH;
 pub const FAINT: Color = ASH;
@@ -47,7 +53,7 @@ pub fn hero_tile_style() -> Style {
 
 pub fn chip_selected_style() -> Style {
     Style::default()
-        .fg(BONE)
+        .fg(EMBER)
         .bg(HEARTH)
         .add_modifier(Modifier::BOLD)
 }

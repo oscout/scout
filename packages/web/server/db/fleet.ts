@@ -90,6 +90,7 @@ type FleetAskRow = {
   work_state: string | null;
   next_move_owner_id: string | null;
   work_updated_at: number | string | null;
+  record_dismissed_at: number | string | null;
 };
 
 type FleetAttentionRow = {
@@ -280,7 +281,14 @@ export function queryFleetAskRows(requesterIds: string[], limit: number): FleetA
        cr.kind AS record_kind,
        cr.state AS work_state,
        cr.next_move_owner_id,
-       cr.updated_at AS work_updated_at
+       cr.updated_at AS work_updated_at,
+       (
+         SELECT MAX(dismissed.created_at)
+         FROM collaboration_events dismissed
+         WHERE dismissed.record_id = cr.id
+           AND dismissed.kind = 'dismissed'
+           AND dismissed.actor_id IN (${requesterClause})
+       ) AS record_dismissed_at
      FROM invocations inv
      LEFT JOIN actors ac ON ac.id = inv.target_agent_id
      LEFT JOIN activity_items latest_ai ON latest_ai.id = (
@@ -314,7 +322,7 @@ export function queryFleetAskRows(requesterIds: string[], limit: number): FleetA
        )
      ORDER BY COALESCE(inv.completed_at, inv.started_at, inv.created_at) DESC
      LIMIT ?`,
-  ).all(...requesterIds, limit) as Array<FleetAskRow>;
+  ).all(...requesterIds, ...requesterIds, limit) as Array<FleetAskRow>;
 }
 
 function isRecoverableDeliveryFailure(row: FleetAskRow): boolean {
@@ -361,7 +369,15 @@ function projectFleetAsk(row: FleetAskRow, requesterIdSet: Set<string>): WebFlee
     || (row.record_kind === "question"
       && row.work_state !== null
       && ["open", "answered"].includes(row.work_state));
+  // A standing operator dismissal (nothing on the record has moved since)
+  // resolves the handback here exactly as it does in the attention band —
+  // otherwise a dismissed record's ask re-surfaces as "needs you" forever.
+  const recordDismissedAt = normalizeTimestampMs(row.record_dismissed_at);
+  const recordUpdatedAt = normalizeTimestampMs(row.work_updated_at);
+  const recordDismissed = recordDismissedAt !== null
+    && recordDismissedAt >= (recordUpdatedAt ?? 0);
   const awaitingOperator = attentionEligibleState
+    && !recordDismissed
     && Boolean(
       row.next_move_owner_id
       && requesterIdSet.has(row.next_move_owner_id),

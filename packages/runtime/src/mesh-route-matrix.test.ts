@@ -103,8 +103,8 @@ describe("mesh route matrix", () => {
       counts.set(tier, (counts.get(tier) ?? 0) + 1);
     }
     expect(counts.get("public")).toBe(3);
-    expect(counts.get("observe")).toBe(3); // nodes + the snapshot/invocation-stream remote-tier twins
-    expect(counts.get("control")).toBe(8); // 7 mesh POST routes + the /trpc upgrade
-    expect(counts.get("local")).toBe(Object.keys(meshRouteMatrixEntries()).length - 14);
+    expect(counts.get("observe")).toBe(4); // nodes, node-state, snapshot and invocation-stream
+    expect(counts.get("control")).toBe(9); // 8 mesh POST routes + the /trpc upgrade
+    expect(counts.get("local")).toBe(Object.keys(meshRouteMatrixEntries()).length - 16);
   });
 });

@@ -36,6 +36,9 @@ import { encodeMessageHistoryCursor } from "../shared/message-pagination.ts";
 const isolatedTestHome = mkdtempSync(join(tmpdir(), "openscout-web-server-test-home-"));
 process.env.OPENSCOUT_HOME = join(isolatedTestHome, ".openscout");
 process.env.OPENSCOUT_CONTROL_HOME = join(isolatedTestHome, ".openscout", "control-plane");
+// Roster queries also read the relay-agent registry from application support.
+// Keep archived agents from the operator's real registry out of test fixtures.
+process.env.OPENSCOUT_SUPPORT_DIRECTORY = join(isolatedTestHome, "support");
 mkdirSync(process.env.OPENSCOUT_CONTROL_HOME, { recursive: true });
 
 const originalFetch = globalThis.fetch;
@@ -280,6 +283,7 @@ mock.module("./core/broker/service.ts", () => ({
   readScoutBrokerTailRecent: unstubbedBrokerCall("readScoutBrokerTailRecent"),
   recordScoutBrokerReadCursor: unstubbedBrokerCall("recordScoutBrokerReadCursor"),
   watchScoutMessages: unstubbedBrokerCall("watchScoutMessages"),
+  renameScoutConversation: unstubbedBrokerCall("renameScoutConversation"),
   ScoutDirectDeliveryUnavailableError: class ScoutDirectDeliveryUnavailableError extends Error {},
   loadScoutBrokerContext: async (_baseUrl?: string, options?: unknown) => {
     loadScoutBrokerContextCalls += 1;
@@ -1482,7 +1486,7 @@ describe("createOpenScoutWebServer", () => {
     await expect(quietResponse.json()).resolves.toMatchObject({ ok: false });
   });
 
-  test("bridges native voice sessions between the web client and scout voice host", async () => {
+  test("bridges dictation and speech between the web client and Scout Menu", async () => {
     const server = await createOpenScoutWebServer({
       currentDirectory: "/tmp/openscout",
       assetMode: "static",
@@ -1531,6 +1535,68 @@ describe("createOpenScoutWebServer", () => {
       }),
     });
     expect(eventResponse.status).toBe(200);
+
+    const speakResponsePromise = server.app.request("http://localhost/api/voice/speak", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        text: "Scout owns this path.",
+        modelId: "system",
+        speed: 1.1,
+      }),
+    });
+    const speechCommandResponse = await server.app.request(
+      "http://localhost/api/voice/host/commands?hostId=scout-menu&timeoutMs=1000",
+    );
+    expect(speechCommandResponse.status).toBe(200);
+    const speechCommandBody = await speechCommandResponse.json() as {
+      command: { type: string; sessionId: string };
+    };
+    expect(speechCommandBody.command).toMatchObject({
+      type: "speech.synthesize",
+      text: "Scout owns this path.",
+      modelId: "system",
+      speed: 1.1,
+    });
+
+    const speechEventResponse = await server.app.request("http://localhost/api/voice/host/events", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        hostId: "scout-menu",
+        sessionId: speechCommandBody.command.sessionId,
+        event: "speech.result",
+        data: {
+          contentType: "audio/wav",
+          audioBase64: "UklGRg==",
+          modelId: "system",
+          voiceId: "system-default",
+          audioBytes: 4,
+        },
+      }),
+    });
+    expect(speechEventResponse.status).toBe(200);
+
+    const speakResponse = await speakResponsePromise;
+    expect(speakResponse.status).toBe(200);
+    await expect(speakResponse.json()).resolves.toMatchObject({
+      contentType: "audio/wav",
+      audioBase64: "UklGRg==",
+      modelId: "system",
+      voiceId: "system-default",
+      route: "scout-menu",
+    });
+
+    const transcriptionForm = new FormData();
+    transcriptionForm.set("audio", new Blob(["legacy-audio"], { type: "audio/wav" }), "voice.wav");
+    const transcriptionResponse = await server.app.request("http://localhost/api/voice/transcribe", {
+      method: "POST",
+      body: transcriptionForm,
+    });
+    expect(transcriptionResponse.status).toBe(501);
+    await expect(transcriptionResponse.json()).resolves.toMatchObject({
+      code: "uploaded_transcription_unsupported",
+    });
   });
 
   test("serves and writes global material heuristics", async () => {
@@ -2186,6 +2252,49 @@ describe("createOpenScoutWebServer", () => {
     );
     expect(sqliteResponse.status).toBe(200);
     expect(queryRecentMessagesCalls.at(-1)?.limit).toBe(500);
+  });
+
+  test("scopes an agent-scoped page to that agent, not the global tail", async () => {
+    const server = await createOpenScoutWebServer({
+      currentDirectory: "/tmp/openscout",
+      assetMode: "static",
+      staticRoot: makeStaticRoot(),
+    });
+
+    const response = await server.app.request(
+      "http://localhost/api/messages?actor=session-grok-1&limit=500",
+    );
+
+    expect(response.status).toBe(200);
+    // The agent map asks for one agent's neighbourhood. Dropping `actor` here
+    // is what served it the fleet's latest 500 instead.
+    expect(queryRecentMessagesCalls.at(-1)).toMatchObject({
+      limit: 500,
+      actorId: "session-grok-1",
+      conversationId: undefined,
+    });
+  });
+
+  test("lets an explicit chat id win over an agent scope", async () => {
+    const chatId = "chn-0600eb9f39144007919e969bc3c13e19";
+    scoutBrokerContextResult = null;
+    const server = await createOpenScoutWebServer({
+      currentDirectory: "/tmp/openscout",
+      assetMode: "static",
+      staticRoot: makeStaticRoot(),
+    });
+
+    const response = await server.app.request(
+      `http://localhost/api/messages?conversationId=${chatId}&actor=session-grok-1`,
+    );
+
+    expect(response.status).toBe(200);
+    // A chat id is already the tighter bound; narrowing it again by actor
+    // would drop the other participants' half of that transcript.
+    expect(queryRecentMessagesCalls.at(-1)).toMatchObject({
+      conversationId: chatId,
+      actorId: undefined,
+    });
   });
 
   test("answers 400 for a history cursor it cannot read", async () => {
@@ -6385,7 +6494,7 @@ describe("createOpenScoutWebServer", () => {
     }));
     expect(payload.catalogVersion).toBe("openscout.runtime-catalog.v1");
     expect(payload.defaultsByHarness.codex).toEqual({
-      model: "gpt-5.6-sol",
+      model: "gpt-6-astra",
       reasoningEffort: "medium",
     });
     expect(payload.runners).toContainEqual(expect.objectContaining({
@@ -7989,6 +8098,45 @@ describe("herdr topology routes", () => {
     expect(payload.topology.session).toBe(missing);
     expect(payload.topology.running).toBe(false);
     expect(payload.topology.workspaces).toEqual([]);
+  });
+
+  test("digests a named herdr session, ranked and honest about not being live", async () => {
+    const server = await createOpenScoutWebServer({
+      currentDirectory: "/tmp/openscout",
+      assetMode: "static",
+      staticRoot: makeStaticRoot(),
+    });
+
+    const response = await server.app.request(
+      `http://localhost/api/terminal-hosts/herdr/workspaces?session=${missing}`,
+    );
+
+    expect(response.status).toBe(200);
+    const payload = await response.json() as {
+      ok: boolean;
+      count: number;
+      truncated: boolean;
+      digests: Array<{
+        session: string;
+        live: boolean;
+        totals: { workspaces: number; tabs: number; panes: number; agents: number };
+        needsYou: unknown[];
+        groups: unknown[];
+        notes: string[];
+      }>;
+    };
+    expect(payload.ok).toBe(true);
+    expect(payload.count).toBe(1);
+    expect(payload.truncated).toBe(false);
+    const digest = payload.digests[0]!;
+    expect(digest.session).toBe(missing);
+    // An absent session is an ordinary empty state, and it is never described
+    // as live — the digest carries the caveat with the numbers.
+    expect(digest.live).toBe(false);
+    expect(digest.totals).toEqual({ workspaces: 0, tabs: 0, panes: 0, agents: 0 });
+    expect(digest.needsYou).toEqual([]);
+    expect(digest.groups).toEqual([]);
+    expect(digest.notes[0]).toContain("persisted last-known layout");
   });
 
   test("rejects a focus request without a target", async () => {

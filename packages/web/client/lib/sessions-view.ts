@@ -27,6 +27,8 @@ export type SessionGroup<S extends QueueSession> = {
 };
 
 export const NO_PROJECT_LABEL = "No project";
+/** Header for the ungrouped queue — one list, newest first. */
+export const RECENT_LABEL = "Recent";
 
 /** Same fallback ladder the group rail uses: project name, else repo basename. */
 export function projectLabelForAgent(
@@ -100,6 +102,11 @@ export function dayBucket(lastMessageAt: number | null, now: number): string {
  * Group the queue. Section order is fixed per key (alphabetical for
  * project/agent with the no-project bucket last; ladder order for day/state);
  * WITHIN a group rows sort by recency.
+ *
+ * "recent" is the degenerate case and the rail's default: no sections at all,
+ * one list in strict recency order. Every other key buries the newest
+ * conversation somewhere inside an alphabetical section, which is exactly the
+ * thing a "what moved last?" read cannot afford.
  */
 export function groupQueueSessions<S extends QueueSession>(
   sessions: S[],
@@ -108,8 +115,17 @@ export function groupQueueSessions<S extends QueueSession>(
   activeAsks: FleetActiveAskIndex,
   now: number,
 ): Array<SessionGroup<S>> {
+  if (by === "recent") {
+    if (sessions.length === 0) return [];
+    const all = [...sessions].sort(
+      (a, b) => (b.lastMessageAt ?? 0) - (a.lastMessageAt ?? 0),
+    );
+    return [{ label: RECENT_LABEL, sessions: all }];
+  }
+
   const label = (s: S): string => {
     const agent = s.agentId ? agentById.get(s.agentId) : undefined;
+    // `by` is narrowed past "recent" by the early return above.
     switch (by) {
       case "project":
         return projectLabelForAgent(agent);

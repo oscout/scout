@@ -1945,3 +1945,31 @@ function stubAgent(name: string): Agent {
     replacedByAgentId: null,
   };
 }
+
+
+describe("turn lifecycle aliases", () => {
+  test("a new Codex turn supersedes an earlier completed task", () => {
+    const events = [
+      stubTailEvent("session", NOW - 10_000, "system", { summary: "task complete", raw: { type: "event_msg", payload: { type: "task_complete" } } }),
+      stubTailEvent("session", NOW - 1_000, "system", { summary: "turn started", raw: { type: "turn_started" } }),
+    ];
+    expect(buildLaneFacts(null, events, stubAgent("Scout"), []).turn?.phase).toBe("started");
+    events.push(stubTailEvent("session", NOW, "system", { summary: "turn complete", raw: { type: "turn_completed" } }));
+    expect(buildLaneFacts(null, events, stubAgent("Scout"), []).turn?.phase).toBe("complete");
+  });
+});
+
+
+test("task context extracts the user request before clipping browser context", () => {
+  const message = '<in-app-browser-context source="ambient-ui-state">Injected browser state</in-app-browser-context>\n\n## My request:\nShow different sheets based on the map context';
+  const event = stubTailEvent("session", NOW, "user", {
+    summary: message.slice(0, 90), raw: { type: "response_item", payload: { role: "user", content: [{ type: "input_text", text: message }] } },
+  });
+  expect(buildLaneFacts(null, [event], stubAgent("Scout"), []).currentTask).toBe("Show different sheets based on the map context");
+});
+
+test("voice task context extracts the current input without prior transcript", () => {
+  const text = "<realtime_delegation><input>Keep building the floor</input><transcript_delta>Old conversation</transcript_delta></realtime_delegation>";
+  const event = stubTailEvent("session", NOW, "user", { summary: text, raw: { type: "response_item", payload: { role: "user", content: [{ type: "input_text", text }] } } });
+  expect(buildLaneFacts(null, [event], stubAgent("Scout"), []).currentTask).toBe("Keep building the floor");
+});

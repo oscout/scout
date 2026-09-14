@@ -44,6 +44,10 @@ const MESH_ROUTE_MATRIX: Record<string, MeshRouteTier> = {
   // mounts for peer-needed reads so signed peers work in enforce mode. The
   // local-tier originals below are never widened.
   "GET /v1/mesh/invocations/:id/stream": "observe",
+  // Compact node state: identity + bounded workload counts for the agents
+  // homed on the answering node. The local-tier `GET /v1/home` stays
+  // loopback-only; this is the narrow twin a peer's Network view may read.
+  "GET /v1/mesh/node-state": "observe",
   "GET /v1/mesh/snapshot": "observe",
 
   // ── control: mesh peer write/forwarding surface ─────────────────────────
@@ -56,6 +60,10 @@ const MESH_ROUTE_MATRIX: Record<string, MeshRouteTier> = {
   "POST /v1/mesh/flights": "control",
   "POST /v1/mesh/invocations": "control",
   "POST /v1/mesh/messages": "control",
+  // T4 flat session dispatch: a peer asks this node to wake a session found in
+  // its local harness store. Registers a cardless endpoint — control tier, the
+  // same trust as forwarding an invocation here.
+  "POST /v1/mesh/sessions/wake": "control",
   [TRPC_UPGRADE_ROUTE]: "control",
 
   // ── local: machine-local bind flip (handler also refuse-remote, §11.5/§11.9)
@@ -64,6 +72,7 @@ const MESH_ROUTE_MATRIX: Record<string, MeshRouteTier> = {
   // ── local: everything else (deny by default) ────────────────────────────
   "DELETE /v1/aliases/:id": "local",
   "DELETE /v1/endpoints/:id": "local",
+  "DELETE /v1/machines/:id": "local",
   "GET /.host-info": "local",
   "GET /.well-known/agent-card.json": "local",
   "GET /health": "local",
@@ -93,6 +102,8 @@ const MESH_ROUTE_MATRIX: Record<string, MeshRouteTier> = {
   "GET /v1/invocations/:id": "local",
   "GET /v1/invocations/:id/lifecycle": "local",
   "GET /v1/invocations/:id/stream": "local",
+  "GET /v1/machines": "local",
+  "GET /v1/machines/:id": "local",
   "GET /v1/messages": "local",
   "GET /v1/missions/:id/log": "local",
   "GET /v1/pairing/sessions": "local",
@@ -114,6 +125,7 @@ const MESH_ROUTE_MATRIX: Record<string, MeshRouteTier> = {
   "OPTIONS /v1/web/start": "local",
   "OPTIONS /v1/web/status": "local",
   "PATCH /v1/aliases/:id": "local",
+  "PATCH /v1/machines/:id": "local",
   "POST /a2a": "local",
   "POST /v1/a2a/agents/:id/rpc": "local",
   "POST /v1/a2a/rpc": "local",
@@ -129,6 +141,7 @@ const MESH_ROUTE_MATRIX: Record<string, MeshRouteTier> = {
   "POST /v1/commands": "local",
   "POST /v1/conversations": "local",
   "POST /v1/conversations/:id/read-cursors": "local",
+  "POST /v1/conversations/:id/title": "local",
   "POST /v1/deliver": "local",
   "POST /v1/deliveries/claim": "local",
   "POST /v1/deliveries/status": "local",
@@ -144,6 +157,7 @@ const MESH_ROUTE_MATRIX: Record<string, MeshRouteTier> = {
   "POST /v1/local-sessions/attach": "local",
   "POST /v1/local-sessions/detach": "local",
   "POST /v1/local-sessions/ensure": "local",
+  "POST /v1/machines/scan": "local",
   "POST /v1/messages": "local",
   "POST /v1/missions/:id/log": "local",
   "POST /v1/nodes": "local",

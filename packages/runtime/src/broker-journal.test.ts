@@ -1,11 +1,12 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import type {
   ActorIdentity,
   AgentDefinition,
+  DeliveryIntent,
   DurableAction,
   FlightRecord,
   InvocationRequest,
@@ -220,6 +221,31 @@ describe("FileBackedBrokerJournal", () => {
     expect(report.compactionReason).toBe("high_water");
     expect((await journal.readEntries()).filter((entry) => entry.kind === "actor.upsert"))
       .toHaveLength(1);
+  });
+
+  test("dedupes within a batch and preserves delete-then-reinsert ordering", async () => {
+    const { journal } = createJournal(); await journal.load();
+    const actor = sampleActor();
+    const changed = { ...actor, displayName: "Changed" };
+    const endpoint = {id: "ep", agentId: actor.id, nodeId: "node-1", harness: "codex" as const, transport: "local_socket" as const, state: "idle" as const};
+    await journal.appendEntries({kind: "agent.endpoint.upsert", endpoint});
+    const retained = await journal.appendEntries([
+      {kind: "actor.upsert", actor}, {kind: "actor.upsert", actor},
+      {kind: "actor.upsert", actor: changed}, {kind: "actor.upsert", actor: changed},
+      {kind: "agent.endpoint.delete", endpointId: endpoint.id},
+      {kind: "agent.endpoint.upsert", endpoint},
+    ]);
+    expect(retained).toHaveLength(4);
+    expect(journal.snapshot().actors[actor.id]).toEqual(changed);
+    expect(journal.snapshot().endpoints[endpoint.id]).toEqual(endpoint);
+  });
+
+  test("failed durable append does not publish copy-on-write batch state", async () => {
+    const { journal, journalPath } = createJournal(); await journal.load();
+    mkdirSync(journalPath);
+    await expect(journal.appendEntries({kind: "agent.upsert", agent: sampleAgent()})).rejects.toThrow();
+    expect(journal.snapshot().agents).toEqual({});
+    expect(journal.snapshot().actors).toEqual({});
   });
 
   test("skips redundant entity upserts on append", async () => {
@@ -463,4 +489,212 @@ describe("FileBackedBrokerJournal", () => {
       idempotencyKey: "delivery-1:create",
     })).toBeNull();
   });
+});
+
+
+describe("bounded delivery listing", () => {
+  test("matches filtered insertion-order slice including unusual limits and replacements", async () => {
+    const { journal } = createJournal();
+    await journal.load();
+    const deliveries = Array.from({ length: 6001 }, (_, i) => ({
+      id: `delivery-${i}`, targetId: "agent-1", targetKind: "agent" as const,
+      transport: i % 2 ? "local_socket" as const : "peer_broker" as const,
+      reason: "direct_message" as const, policy: "best_effort" as const,
+      status: i % 3 ? "pending" as const : "acknowledged" as const,
+    }));
+    await journal.appendEntries({ kind: "deliveries.record", deliveries });
+    const replacement = { ...deliveries[2]!, status: "pending" as const };
+    deliveries[2] = replacement;
+    await journal.appendEntries({ kind: "deliveries.record", deliveries: [replacement] });
+    expect(journal.getDelivery("delivery-6000")).toEqual(deliveries[6000]);
+    expect(journal.getDelivery("missing")).toBeUndefined();
+    expect(journal.getDelivery("delivery-2")).toEqual(replacement);
+    expect(journal.findDelivery(d => d.id === "delivery-6000")).toEqual(deliveries[6000]);
+    expect(journal.findDelivery(() => false)).toBeUndefined();
+    for (const limit of [undefined, 0, 1, 20, 5000, 7000, 1.9, -1, -3.7, NaN, Infinity, -Infinity]) {
+      for (const transport of [undefined, "local_socket" as const]) {
+        for (const status of [undefined, "pending" as const]) {
+          const expected = deliveries.filter(d => !transport || d.transport === transport)
+            .filter(d => !status || d.status === status).slice(0, limit ?? 200);
+          expect(journal.listDeliveries({ limit, transport, status })).toEqual(expected);
+        }
+      }
+    }
+  });
+});
+
+test("complete delivery traversal yields and excludes later appends without freezing replacements", async () => {
+  const { journal } = createJournal();
+  await journal.load();
+  const deliveries = Array.from({ length: 1500 }, (_, index) => ({
+    id: `visit-${index}`, targetId: "agent", targetKind: "agent" as const,
+    transport: "local_socket" as const, policy: "best_effort" as const,
+    reason: "direct_message" as const, status: "pending" as const,
+  }));
+  await journal.appendEntries({ kind: "deliveries.record", deliveries });
+  let yielded = false;
+  setImmediate(() => { yielded = true; });
+  const seen: string[] = [];
+  await journal.visitDeliveries(async (delivery) => {
+    seen.push(delivery.id);
+    if (seen.length === 1) {
+      await journal.appendEntries({ kind: "deliveries.record", deliveries: [{ ...deliveries[0]!, id: "later" }] });
+      await journal.appendEntries({ kind: "delivery.status.update", deliveryId: "visit-1400", status: "acknowledged" });
+    }
+    if (seen.length === 130) expect(yielded).toBe(true);
+    if (delivery.id === "visit-1400") expect(delivery.status).toBe("acknowledged");
+  });
+  expect(seen).toEqual(deliveries.map((delivery) => delivery.id));
+  expect(journal.getDelivery("later")).toBeDefined();
+});
+
+
+test("canonical delivery reads reconstruct status/leases/large metadata and preserve captured boundaries", async () => {
+  const { journal, journalPath } = createJournal();
+  await journal.load();
+  const original: DeliveryIntent = {
+    id: "canonical-delivery", targetId: "agent", targetKind: "agent", transport: "local_socket",
+    reason: "direct_message", policy: "durable", status: "pending", messageId: "message",
+    invocationId: "invocation", bindingId: "binding", targetNodeId: "node",
+    metadata: { rich: "雪🦉\ud800".repeat(20000), nested: { array: [null, true, 3] } },
+  };
+  await journal.appendEntries({ kind: "deliveries.record", deliveries: [original] });
+  const capture = journal.captureReplayBoundary.bind(journal);
+  let markCaptured!: () => void;
+  let resume!: () => void;
+  const captured = new Promise<void>((resolve) => { markCaptured = resolve; });
+  const paused = new Promise<void>((resolve) => { resume = resolve; });
+  journal.captureReplayBoundary = async (...args) => {
+    const boundary = await capture(...args); markCaptured(); await paused; return boundary;
+  };
+  const priorRead = journal.readCanonicalDelivery(original.id);
+  await captured;
+  await journal.appendEntries({ kind: "delivery.status.update", deliveryId: original.id,
+    status: "leased", leaseOwner: "worker", leaseExpiresAt: 5000, metadata: { phase: "leased" } });
+  resume();
+  const prior = await priorRead;
+  expect(prior.kind).toBe("found");
+  if (prior.kind === "found") expect(prior.value).toEqual(original);
+  journal.captureReplayBoundary = capture;
+  const leased = await journal.readCanonicalDelivery(original.id);
+  expect(leased.kind).toBe("found");
+  if (leased.kind === "found") expect(leased.value).toEqual({ ...original, status: "leased",
+    leaseOwner: "worker", leaseExpiresAt: 5000, metadata: { ...original.metadata, phase: "leased" } });
+  await journal.appendEntries({ kind: "delivery.status.update", deliveryId: original.id, status: "completed",
+    leaseOwner: null, leaseExpiresAt: null, metadata: { phase: "completed" } });
+  const final = await journal.readCanonicalDelivery(original.id);
+  expect(final.kind).toBe("found");
+  if (final.kind === "found") {
+    expect(final.value.leaseOwner).toBeUndefined();
+    expect(final.value.leaseExpiresAt).toBeUndefined();
+    expect(final.value.metadata).toEqual({ ...original.metadata, phase: "completed" });
+  }
+  await journal.appendEntries({ kind: "delivery.status.update", deliveryId: "unknown", status: "acknowledged" });
+  expect((await journal.readCanonicalDelivery("unknown")).kind).toBe("not_found");
+  rmSync(journalPath);
+  expect((await journal.readCanonicalDelivery(original.id)).kind).toBe("unavailable");
+  expect((await journal.readCanonicalDelivery("absent")).kind).toBe("unavailable");
+});
+
+test("canonical delivery coverage rejects malformed records and survives journal compaction/restart", async () => {
+  const { journal, journalPath } = createJournal({ compactionPolicy: { minimumReclaimBytes: 1 } });
+  await journal.load();
+  await journal.appendEntries({ kind: "deliveries.record", deliveries: [{ id: "d", targetId: "a", targetKind: "agent",
+    transport: "local_socket", reason: "mention", policy: "durable", status: "pending", metadata: { a: 1 } }] });
+  await journal.appendEntries({ kind: "delivery.status.update", deliveryId: "d", status: "acknowledged", metadata: { b: 2 } });
+  await journal.appendEntries({ kind: "actor.upsert", actor: { id: "a", kind: "agent", displayName: "before" } });
+  await journal.appendEntries({ kind: "actor.upsert", actor: { id: "a", kind: "agent", displayName: "after" } });
+  const expected = await journal.readCanonicalDelivery("d");
+  const restarted = new FileBackedBrokerJournal(journalPath, { compactionPolicy: { minimumReclaimBytes: 1 } });
+  expect((await restarted.load()).compactionRequired).toBe(true);
+  const actual = await restarted.readCanonicalDelivery("d");
+  expect(actual.kind).toBe("found");
+  if (expected.kind === "found" && actual.kind === "found") expect(actual.value).toEqual(expected.value);
+  const valid = readFileSync(journalPath, "utf8");
+  for (const suffix of ["bad-json", JSON.stringify({ kind: "delivery.status.update", deliveryId: "d", status: "delivered" }),
+    JSON.stringify({ kind: "deliveries.record", deliveries: [{ id: "bad", status: "pending" }] })]) {
+    writeFileSync(journalPath, valid + suffix + "\n");
+    expect((await restarted.readCanonicalDelivery("d")).kind).toBe("unavailable");
+    expect((await restarted.readCanonicalDelivery("absent")).kind).toBe("unavailable");
+  }
+});
+
+
+test("active delivery traversal excludes later appends after filtering terminal records", async () => {
+  const { journal } = createJournal();
+  await journal.load();
+  const delivery: DeliveryIntent = { id: "active-first", targetId: "agent", targetKind: "agent",
+    transport: "local_socket", policy: "best_effort", reason: "direct_message", status: "pending" };
+  await journal.appendEntries({ kind: "deliveries.record", deliveries: [
+    delivery, { ...delivery, id: "terminal", status: "completed" }, { ...delivery, id: "active-last" },
+  ] });
+  const seen: string[] = [];
+  await journal.visitDeliveries(async (current) => {
+    seen.push(current.id);
+    if (current.id === "active-first") {
+      await journal.appendEntries({ kind: "deliveries.record", deliveries: [{ ...delivery, id: "later" }] });
+    }
+  }, { activeOnly: true });
+  expect(seen).toEqual(["active-first", "active-last"]);
+  expect(journal.getDelivery("later")).toBeDefined();
+});
+
+describe("progressive startup", () => {
+  test("defers compaction, preserves writes during prefix rewrite and is restart exact", async () => {
+    const { journal, journalPath } = createJournal({ progressiveStartup: true,
+      compactionPolicy: { minimumReclaimBytes: 1, minimumReclaimRatio: 0 } });
+    const actor = sampleActor();
+    writeFileSync(journalPath, Array.from({ length: 2000 }, (_, i) => JSON.stringify({ kind: "actor.upsert", actor: { ...actor, displayName: `old-${i}` } }) + "\n").join(""));
+    const report = await journal.load();
+    expect(report.compactionRequired).toBe(true);
+    expect(report.compactionMs).toBe(0);
+    expect(journal.snapshot().actors[actor.id]?.displayName).toBe("old-1999");
+    const hydration = journal.finishStartup();
+    for (let i = 0; i < 20; i++) await journal.appendEntries([{ kind: "actor.upsert", actor: { ...actor, displayName: `accepted-${i}` } }]);
+    await hydration;
+    expect(journal.startupStatus().phase).toBe("complete");
+    const restarted = new FileBackedBrokerJournal(journalPath);
+    await restarted.load();
+    expect(restarted.snapshot().actors[actor.id]?.displayName).toBe("accepted-19");
+    await journal.close(); await restarted.close();
+  });
+
+  test("startup hydration rejects before load instead of caching a false completion", async () => {
+    const { journal } = createJournal({ progressiveStartup: true });
+    await expect(journal.finishStartup()).rejects.toThrow("must be loaded");
+    await journal.load(); await journal.finishStartup();
+    expect(journal.startupStatus().phase).toBe("complete");
+    await journal.close();
+  });
+});
+
+test("failed background compaction leaves the canonical prefix and accepted suffix recoverable", async () => {
+  const { journal, journalPath } = createJournal({ progressiveStartup: true,
+    compactionPolicy: { minimumReclaimBytes: 1, minimumReclaimRatio: 0 } });
+  const actor = sampleActor();
+  writeFileSync(journalPath, Array.from({ length: 128 }, (_, i) => JSON.stringify({ kind: "actor.upsert", actor: { ...actor, displayName: `old-${i}` } }) + "\n").join(""));
+  await journal.load();
+  // Inject a failed streaming reader after output has begun, while accepting a
+  // concurrent command. The original file must remain the recovery authority.
+  const internal = journal as unknown as { visitEntries: (...args: any[]) => Promise<any> };
+  const visit = internal.visitEntries.bind(journal);
+  let entered!: () => void, release!: () => void;
+  const started = new Promise<void>(resolve => { entered = resolve; });
+  const resume = new Promise<void>(resolve => { release = resolve; });
+  internal.visitEntries = (visitor, options) => visit(async (entry: unknown, index: number, bytes: number) => {
+    if (index === 0) { entered(); await resume; }
+    await visitor(entry, index, bytes);
+    if (index === 32) throw Error("injected compaction read failure");
+  }, options);
+  const hydration = journal.finishStartup();
+  const rejected = hydration.catch(error => error);
+  await started;
+  await journal.appendEntries([{ kind: "actor.upsert", actor: { ...actor, displayName: "accepted-during-failure" } }]);
+  release();
+  expect(await rejected).toBeInstanceOf(Error);
+  expect(journal.startupStatus().phase).toBe("failed");
+  const recovered = new FileBackedBrokerJournal(journalPath);
+  await recovered.load();
+  expect(recovered.snapshot().actors[actor.id]?.displayName).toBe("accepted-during-failure");
+  await journal.close(); await recovered.close();
 });

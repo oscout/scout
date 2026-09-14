@@ -54,20 +54,20 @@ function routePatternFromRegexSource(pattern: string): string {
 //   - method === "M" && (url.pathname === "P1" || url.pathname === "P2" || …)
 //   - (url.pathname === "P1" || url.pathname === "P2") && method === "M"
 //   - (method === "M1" || method === "M2") && url.pathname === "P"
-//   - const xMatch = method === "M" [|| method === "M2"] ? url.pathname.match(/…/) : null
+//   - const xMatch = method === "M" [|| method === "M2" …] ? url.pathname.match(/…/) : null
 //   - method === "M" && url.pathname.startsWith("P")
 // Param captures ([^/]+) are rendered as ":id".
 export function extractRouteInventory(source: string): Set<string> {
   const text = source.replace(/\s+/g, " ");
   const routes = new Set<string>();
 
-  // const xMatch = method === "M" [|| method === "M2"] ? url.pathname.match(/…/) : null
+  // const xMatch = method === "M" [|| method === "M2" …] ? url.pathname.match(/…/) : null
   for (const match of text.matchAll(
-    /method === "([A-Z]+)"(?: \|\| method === "([A-Z]+)")? \? url\.pathname\.match\(\/([^ ]+?)\/\) : null/g,
+    /(method === "[A-Z]+"(?: \|\| method === "[A-Z]+")*) \? url\.pathname\.match\(\/([^ ]+?)\/\) : null/g,
   )) {
-    const path = routePatternFromRegexSource(match[3] ?? "");
-    for (const method of [match[1], match[2]]) {
-      if (method) routes.add(`${method} ${path}`);
+    const path = routePatternFromRegexSource(match[2] ?? "");
+    for (const method of (match[1] ?? "").matchAll(/method === "([A-Z]+)"/g)) {
+      routes.add(`${method[1]} ${path}`);
     }
   }
 

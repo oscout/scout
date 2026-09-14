@@ -12,9 +12,16 @@ export const scoutBrokerPaths = {
     capabilities: "/v1/capabilities",
     runtimeCatalog: "/v1/runtime-catalog",
     topologySnapshot: "/v1/topology/snapshot",
+    meshNodes: "/v1/mesh/nodes",
+    // Observe-tier compact node state. Read against a PEER broker's base URL
+    // through the signed/pinned mesh client; the local home feed is never
+    // widened for remote callers (mesh trust cone §4).
+    meshNodeState: "/v1/mesh/node-state",
     tailDiscover: "/v1/tail/discover",
     tailRecent: "/v1/tail/recent",
     repoWatchSnapshot: "/v1/repo-watch/snapshot",
+    machines: "/v1/machines",
+    machinesScan: "/v1/machines/scan",
     messages: "/v1/messages",
     brokerMessages: "/v1/broker/messages",
     eventsStream: "/v1/events/stream",
@@ -50,6 +57,11 @@ export function scoutBrokerMessagesPath(search: URLSearchParams): string {
     : scoutBrokerPaths.v1.brokerMessages;
 }
 
+/** Name a conversation. An empty title hands it back to automatic naming. */
+export function scoutBrokerConversationTitlePath(conversationId: string): string {
+  return `${scoutBrokerPaths.v1.conversations}/${encodeURIComponent(conversationId)}/title`;
+}
+
 export function scoutBrokerInvocationPath(invocationId: string): string {
   return `${scoutBrokerPaths.v1.invocations}/${encodeURIComponent(invocationId)}`;
 }
@@ -60,4 +72,8 @@ export function scoutBrokerInvocationStreamPath(invocationId: string): string {
 
 export function scoutBrokerInvocationLifecyclePath(invocationId: string): string {
   return `${scoutBrokerInvocationPath(invocationId)}/lifecycle`;
+}
+
+export function scoutBrokerMachinePath(machineRef: string): string {
+  return `${scoutBrokerPaths.v1.machines}/${encodeURIComponent(machineRef)}`;
 }

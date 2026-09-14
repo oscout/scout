@@ -16,6 +16,33 @@ describe("resolveHarnessSessionId", () => {
     })).toBeNull();
   });
 
+  test("exposes the harness id the broker observed for a tmux session, never the tmux name", () => {
+    expect(resolveHarnessSessionId("tmux", "session-mtus22pe-emx8hl", {
+      tmuxSession: "session-mtus22pe-emx8hl",
+      externalSessionId: "7b81300d-0a9c-4953-8d7f-9274b11ebdfb",
+      observedSessionId: "7b81300d-0a9c-4953-8d7f-9274b11ebdfb",
+      observedSessionEvidence: { source: "claude-session-record" },
+    })).toBe("7b81300d-0a9c-4953-8d7f-9274b11ebdfb");
+    expect(resolveHarnessSessionId("tmux", "relay-agent-1-claude", {
+      tmuxSession: "relay-agent-1-claude",
+      externalSessionId: "relay-agent-1-claude",
+    })).toBeNull();
+  });
+
+  test("does not expose adopted, pending, contradictory, or merely descriptive tmux identity", () => {
+    const verified = { externalSessionId: "native-A", observedSessionId: "native-A",
+      observedSessionEvidence: { source: "claude-session-record" } };
+    for (const metadata of [
+      { externalSessionId: "native-A", observedRuntimeSource: "claude-statusline" },
+      { ...verified, externalSessionAdoptedAt: 123 },
+      { ...verified, pendingExternalSession: true },
+      { ...verified, externalSessionId: "native-B" },
+      { ...verified, nativeSessionId: "native-B" },
+      { ...verified, threadId: "native-B" },
+    ]) expect(resolveHarnessSessionId("tmux", "scout-tmux", metadata)).toBeNull();
+    expect(resolveHarnessSessionId("tmux", "scout-tmux", verified)).toBe("native-A");
+  });
+
   test("returns provider thread ids for codex app server", () => {
     expect(resolveHarnessSessionId("codex_app_server", "relay-runtime-codex", {
       threadId: "019d9762-19f7-7792-8962-90d924ce7faa",

@@ -3,14 +3,14 @@ import "../../scout/slots/ctx-panel.css";
 import "../../scout/slots/mission-left.css";
 import { normalizeAgentState } from "../../lib/agent-state.ts";
 import {
-  MISSION_ACTIVITY_WINDOWS,
+  MISSION_TIME_FILTERS,
   clearMissionSelection,
+  missionTimeFilterId,
   requestMissionReveal,
-  setMissionActivityFilter,
-  setMissionActivityWindow,
   setMissionGroupMode,
   setMissionQuery,
   setMissionSourceFilter,
+  setMissionTimeFilter,
   toggleMissionSelected,
   useMissionControlStore,
 } from "../../lib/mission-control-store.ts";
@@ -35,7 +35,7 @@ export function OpsMissionLeft() {
   useSlashToFocus(useCallback(() => inputRef.current, []));
 
   const [expandedId, setExpandedId] = useState<string | null>(null);
-  const isActive = mc.activityFilter === "active";
+  const timeFilterId = missionTimeFilterId(mc);
   const selectedCount = mc.selectedIds.length;
 
   const toggleExpand = (id: string) => {
@@ -90,30 +90,25 @@ export function OpsMissionLeft() {
         />
       </div>
 
-      {/* Secondary: activity + (conditional) time window — inline, smaller */}
+      {/* Secondary: the wall's one time axis (live · 5m · 30m · 4h · 24h · all),
+          the same steps the wall's status line shows. */}
       <div className="ml-section ml-section--secondary">
-        <div className="ml-chips ml-chips--secondary">
-          {(["active", "live", "all"] as const).map((f) => (
-            <button
-              key={f}
-              type="button"
-              className={["ml-chip ml-chip--ghost", mc.activityFilter === f && "ml-chip--ghost-active"].filter(Boolean).join(" ")}
-              onClick={() => setMissionActivityFilter(f)}
-            >
-              {f === "active" ? "Active" : f === "live" ? "Live" : "Any"}
-            </button>
-          ))}
-          {isActive && <span className="ml-divider" aria-hidden />}
-          {isActive && MISSION_ACTIVITY_WINDOWS.map((opt) => (
-            <button
-              key={opt.value}
-              type="button"
-              className={["ml-chip ml-chip--ghost", mc.activityWindowMs === opt.value && "ml-chip--ghost-active"].filter(Boolean).join(" ")}
-              onClick={() => setMissionActivityWindow(opt.value)}
-            >
-              {opt.label}
-            </button>
-          ))}
+        <div className="ml-chips ml-chips--secondary" role="group" aria-label="Show logs active within">
+          <span className="ml-section-label ml-section-label--inline">Within</span>
+          {MISSION_TIME_FILTERS.map((filter) => {
+            const active = timeFilterId === filter.id;
+            return (
+              <button
+                key={filter.id}
+                type="button"
+                className={["ml-chip ml-chip--ghost", active && "ml-chip--ghost-active"].filter(Boolean).join(" ")}
+                aria-pressed={active}
+                onClick={() => setMissionTimeFilter(filter.id)}
+              >
+                {filter.label}
+              </button>
+            );
+          })}
         </div>
       </div>
 

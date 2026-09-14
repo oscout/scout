@@ -126,9 +126,20 @@ export function createBrokerDaemonTestHarness() {
       stdout: "pipe",
       stderr: "pipe",
     });
-    const outputDrain = [drainProcessOutput(child.stdout), drainProcessOutput(child.stderr)];
+    let outputTail = "";
+    const retainOutput = (text: string) => { outputTail = (outputTail + text).slice(-16_384); };
+    const outputDrain = [drainProcessOutput(child.stdout, retainOutput), drainProcessOutput(child.stderr, retainOutput)];
 
-    await waitForHealth(baseUrl, input.waitForMutationReady !== false);
+    try {
+      await waitForHealth(baseUrl, input.waitForMutationReady !== false);
+    } catch (error) {
+      child.kill();
+      const exited = await Promise.race([child.exited.then(() => true), Bun.sleep(2_000).then(() => false)]);
+      if (!exited) { child.kill("SIGKILL"); await child.exited; }
+      await Promise.all(outputDrain);
+      temporaryDirectories.add(controlHome);
+      throw new Error(`Owned broker failed startup: ${String(error)}\n${outputTail}`);
+    }
     const node = await getJson<{ id: string }>(baseUrl, "/v1/node");
     const harness = { baseUrl, controlHome, nodeId: node.id, child, outputDrain };
     harnesses.add(harness);
@@ -199,9 +210,16 @@ export function createBrokerDaemonTestHarness() {
     return logPath;
   }
 
-  async function drainProcessOutput(stream: ReadableStream<Uint8Array> | null): Promise<void> {
+  async function drainProcessOutput(stream: ReadableStream<Uint8Array> | null, retain?: (text: string) => void): Promise<void> {
     if (!stream) return;
-    await new Response(stream).arrayBuffer().catch(() => undefined);
+    const reader = stream.getReader(), decoder = new TextDecoder();
+    try {
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        retain?.(decoder.decode(value, { stream: true }));
+      }
+    } catch {} finally { reader.releaseLock(); }
   }
 
   async function waitForHealth(baseUrl: string, waitForMutationReady: boolean): Promise<void> {
@@ -742,6 +760,8 @@ export function createBrokerDaemonTestHarness() {
     });
 
     await postJson(harness.baseUrl, "/v1/conversations", {
+      // Explicit historical fixture, not an implicit broadcast/default room.
+      // Keep exercising old records: retirement must not require data migration.
       id: "channel.shared",
       kind: "channel",
       title: "shared",

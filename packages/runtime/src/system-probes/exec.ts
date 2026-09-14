@@ -32,13 +32,15 @@ export class ProbeCommandError extends Error {
   code: string;
   exitCode?: number | null;
   signal?: RuntimeSignal | null;
+  stderr?: string;
 
-  constructor(message: string, options: { code: string; exitCode?: number | null; signal?: RuntimeSignal | null }) {
+  constructor(message: string, options: { code: string; exitCode?: number | null; signal?: RuntimeSignal | null; stderr?: string }) {
     super(message);
     this.name = "ProbeCommandError";
     this.code = options.code;
     this.exitCode = options.exitCode;
     this.signal = options.signal;
+    this.stderr = options.stderr;
   }
 }
 
@@ -213,7 +215,7 @@ export async function execProbeFile(
       }
       reject(new ProbeCommandError(
         `${file} exited with ${exitCode ?? signal ?? "unknown status"}`,
-        { code: "exit", exitCode, signal },
+        { code: "exit", exitCode, signal, stderr },
       ));
     });
   });

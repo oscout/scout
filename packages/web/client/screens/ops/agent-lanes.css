@@ -3849,3 +3849,6 @@
 .s-lane-sheet-plan-foot {
   margin-top: var(--space-sm);
 }
+.s-agent-lanes[data-lane-layout="floor"] .s-agent-lanes-bar { flex-wrap:wrap;height:auto;min-height:48px; }
+.s-agent-lanes[data-lane-layout="floor"] .s-agent-lanes-bar-controls { flex:1 1 auto;min-width:0; }
+.s-agent-lanes[data-lane-layout="floor"] .s-agent-lanes-horizons { display:inline-flex; }

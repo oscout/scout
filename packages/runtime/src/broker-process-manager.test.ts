@@ -12,6 +12,7 @@ import { LOCAL_CONFIG_VERSION, writeLocalConfig } from "./local-config.ts";
 import { CONTROL_PLANE_SCHEMA_VERSION } from "./schema-version.ts";
 
 import {
+  isBrokerServiceEntrypoint,
   buildDefaultBrokerUrl,
   buildLocalBrokerControlUrl,
   DEFAULT_BROKER_HOST,
@@ -565,4 +566,18 @@ describe("runScoutdServiceCommand shell-out", () => {
     // Must reject promptly, not let a runaway child pin the caller.
     expect(Date.now() - started).toBeLessThan(2000);
   });
+});
+
+
+test("service autorun recognizes only its own source, dist and bundled entries", () => {
+  for (const extension of ["ts", "js", "mjs"]) {
+    const path = `/owned/runtime/broker-process-manager.${extension}`;
+    expect(isBrokerServiceEntrypoint(`file://${path}`, path)).toBe(true);
+    expect(isBrokerServiceEntrypoint(`file://${path}`, "/owned/runtime/other.mjs")).toBe(false);
+    expect(isBrokerServiceEntrypoint(`file://${path}`, undefined)).toBe(false);
+  }
+  for (const name of ["broker-daemon.mjs", "base-daemon.mjs", "mesh-discover.mjs", "main.mjs"]) {
+    const path = `/owned/runtime/${name}`;
+    expect(isBrokerServiceEntrypoint(`file://${path}`, path)).toBe(false);
+  }
 });

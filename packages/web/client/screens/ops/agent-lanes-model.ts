@@ -1,3 +1,5 @@
+import { floorCodexCommunication } from "./floor-codex-communication.ts";
+import { buildLaneAskDisplay } from "../../lib/lane-ask-display.ts";
 import type { ObserveCacheEntry } from "../../lib/observe.ts";
 // Import via the browser-safe `/client` entry — the barrel index re-exports
 // node-only history helpers (node:path) that crash the browser bundle.
@@ -607,11 +609,11 @@ function turnFactsFromTailEvents(events: TailEvent[]): LaneFacts["turn"] {
   for (const event of events) {
     const summary = event.summary.trim().toLowerCase();
     const type = payloadType(event);
-    if (summary === "task started" || type === "task_started") {
+    if (summary === "task started" || summary === "turn started" || type === "task_started" || type === "turn_started") {
       startedAt = Math.max(startedAt, event.ts);
       startedCount += 1;
     }
-    if (summary === "task complete" || type === "task_complete" || type === "turn_aborted") {
+    if (summary === "task complete" || summary === "turn complete" || type === "task_complete" || type === "turn_complete" || type === "turn_completed" || type === "turn_aborted") {
       completedAt = Math.max(completedAt, event.ts);
     }
   }
@@ -626,20 +628,34 @@ function currentTaskFromTailEvents(
   events: TailEvent[],
   observe: ObserveData | null | undefined,
 ): string | undefined {
-  const latestObserveAsk = [...observe?.events ?? []]
-    .reverse()
-    .find((event) => event.kind === "ask" && event.text.trim());
-  if (latestObserveAsk) return laneSnippetText(latestObserveAsk.text, 160, 2);
-
+  const taskPreview = (text: string): string | undefined => {
+    if (text.trimStart().startsWith("<realtime_delegation>")) {
+      const input = text.match(/<input>([\s\S]*?)<\/input>/)?.[1];
+      if (!input) return undefined;
+      text = input;
+    }
+    // A truncated ambient wrapper contains no reliable task to display.
+    if (text.trim().startsWith("<in-app-browser-context") && !text.includes("</in-app-browser-context>") && !/##? My request/i.test(text)) return undefined;
+    return laneSnippetText(buildLaneAskDisplay({ text, t: 0 }).preview, 240, 3) || undefined;
+  };
   for (const event of [...events].sort((left, right) => right.ts - left.ts)) {
-    if (event.kind === "user" && event.summary.trim()) {
-      return laneSnippetText(event.summary, 160, 2);
-    }
     const payload = tailPayload(event);
-    if (payloadType(event) === "user_message") {
-      const message = stringValue(payload?.message);
-      if (message) return laneSnippetText(message, 160, 2);
-    }
+    if (event.kind !== "user" && payloadType(event) !== "user_message") continue;
+    const raw = metadataRecord(event.raw);
+    const message = metadataRecord(raw?.message);
+    const content = payload?.content ?? message?.content ?? raw?.content;
+    const contentText = Array.isArray(content)
+      ? content.map((block) => stringValue(metadataRecord(block)?.text) ?? "").filter(Boolean).join("\n")
+      : typeof content === "string" ? content : undefined;
+    // Extract the request before clipping; summaries can contain only the wrapper.
+    const text = stringValue(payload?.message, contentText, event.summary);
+    const preview = text ? taskPreview(text) : undefined;
+    if (preview) return preview;
+  }
+  for (const event of [...observe?.events ?? []].reverse()) {
+    if (event.kind !== "ask" || !event.text.trim()) continue;
+    const preview = taskPreview(event.text);
+    if (preview) return preview;
   }
   return undefined;
 }
@@ -765,6 +781,7 @@ function toolDetailFromTailEvent(
     return strReplaceDetailText(replace);
   }
 
+  if (event.source === "codex" && event.kind === "tool") return codexToolRawArgument(event);
   return undefined;
 }
 
@@ -809,6 +826,13 @@ export function observeDataFromTail(
   const sessionStart = tail[0]?.ts ?? transcript.mtimeMs;
 
   const observeEvents = tail.map((event): ObserveEvent => {
+    const payload = tailPayload(event);
+    const item = metadataRecord(payload?.item);
+    const completedCommand = event.source === "codex" && payload?.type === "item_completed" && item?.type === "CommandExecution";
+    const completedArg = completedCommand && Array.isArray(item?.command) && item.command.every(part => typeof part === "string")
+      ? item.command.length >= 3 && /(?:^|\/)(?:ba|z|da)?sh$/.test(String(item.command[0])) && /c/.test(String(item.command[1])) ? String(item.command[2]) : item.command.join(" ")
+      : undefined;
+    const completedExit = completedCommand && typeof item?.exit_code === "number" ? item.exit_code : undefined;
     const toolFields = observeToolFieldsFromTailEvent(event);
     const strReplace = strReplaceFromTailEvent(event, toolFields.tool);
     const detail = tailObserveEventDetail(event, transcript)
@@ -829,6 +853,8 @@ export function observeDataFromTail(
       diff,
       detail,
       live: current && event.id === tail[tail.length - 1]?.id,
+      ...floorCodexCommunication(event),
+      ...(completedArg ? { kind: "tool" as const, tool: "exec_command", arg: completedArg, detail: completedArg, text: "Command completed", result: completedExit === undefined ? undefined : { exit_code: completedExit } } : {}),
     };
   });
 
@@ -866,15 +892,29 @@ function shortId(value: string | null | undefined): string {
   return value.replace(/\.jsonl$/u, "").slice(0, 8);
 }
 
+/** Codex metadata carries lineage even when tail discovery has not enriched it. */
+function observedLaneParent(transcript: TailDiscoveredTranscript | null | undefined, events: TailEvent[]): { parentSessionId?: string; nickname?: string } {
+  if (transcript?.parentSessionId?.trim()) return { parentSessionId: transcript.parentSessionId.trim(), nickname: transcript.agentNickname?.trim() || undefined };
+  if (transcript?.source !== "codex" || !transcript.sessionId?.trim()) return {};
+  // Forked context can contain another session's metadata. Only accept this child's own record.
+  const meta = latestSessionMeta(events.filter((event) => tailPayload(event)?.id === transcript.sessionId));
+  const spawn = nestedRecord(nestedRecord(nestedRecord(meta, "source"), "sub_agent"), "thread_spawn");
+  const parentSessionId = stringValue(meta?.parent_thread_id, spawn?.parent_thread_id);
+  if (!parentSessionId || parentSessionId === transcript.sessionId) return {};
+  return { parentSessionId, nickname: stringValue(meta?.agent_nickname, spawn?.agent_nickname) };
+}
+
 export function nativeSessionAgent(
   transcript: TailDiscoveredTranscript,
   lastActiveAt: number,
   current: boolean,
+  events: TailEvent[] = [],
 ): Agent {
   const sessionId = transcript.sessionId?.trim() || null;
-  const isSubagent = Boolean(transcript.subagentId);
+  const lineage = observedLaneParent(transcript, events);
+  const isSubagent = Boolean(transcript.subagentId || lineage.parentSessionId);
   const name = isSubagent
-    ? `${titleCase(transcript.source)} subagent ${shortId(transcript.subagentId)}`
+    ? lineage.nickname ?? `${titleCase(transcript.source)} subagent ${shortId(transcript.subagentId || sessionId)}`
     : `${titleCase(transcript.source)} ${shortId(sessionId)}`;
   return {
     id: nativeSessionId(transcript),
@@ -1236,8 +1276,8 @@ export function buildLaneFacts(
       ? turnFactsFromTailEvents(events)
       : (observe?.live ? { phase: "started" } : { phase: "idle" }),
     usage,
-    parentSessionId: transcript?.parentSessionId?.trim() || undefined,
-    parentAgentName: transcript?.parentSessionId && parentAgent
+    parentSessionId: observedLaneParent(transcript, events).parentSessionId,
+    parentAgentName: observedLaneParent(transcript, events).parentSessionId && parentAgent
       ? agentLabel(parentAgent)
       : undefined,
     currentTask: currentTaskFromTailEvents(events, observe),
@@ -1987,8 +2027,9 @@ export function buildAgentLanes(input: {
     }
 
     const scoutAgent = scoutAgentForTranscript(transcript, scoutBySession);
-    const parentAgent = transcript.parentSessionId
-      ? scoutBySession.get(transcript.parentSessionId)
+    const parentSessionId = observedLaneParent(transcript, events).parentSessionId;
+    const parentAgent = parentSessionId
+      ? scoutBySession.get(parentSessionId)
       : undefined;
     if (scoutAgent) representedBoundAgentIds.add(scoutAgent.id);
     const observe = observeDataFromTail(transcript, events, current, { now, windowMs });
@@ -1996,7 +2037,7 @@ export function buildAgentLanes(input: {
     const facts = buildLaneFacts(
       transcript,
       events,
-      scoutAgent ?? nativeSessionAgent(transcript, lastActiveAt, current),
+      scoutAgent ?? nativeSessionAgent(transcript, lastActiveAt, current, events),
       processes,
       observe,
       parentAgent,
@@ -2014,7 +2055,7 @@ export function buildAgentLanes(input: {
         }
       : {
           id: nativeSessionId(transcript),
-          agent: nativeSessionAgent(transcript, lastActiveAt, current),
+          agent: nativeSessionAgent(transcript, lastActiveAt, current, events),
           source: "native",
           observe,
           facts,

@@ -1,4 +1,6 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent, type ReactNode } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type MouseEvent, type ReactNode } from "react";
+import { loadConversationList } from "../../lib/conversation-list-cache.ts";
+import { api } from "../../lib/api.ts";
 import "../../scout/slots/ctx-panel.css";
 import { isOfflineApiError } from "../../lib/api-errors.ts";
 import { useListArrowNav, makeSearchHandoff, useSlashToFocus, rovingTabIndex } from "../../lib/keyboard-nav.ts";
@@ -42,6 +44,7 @@ import {
   taskThreadTitle,
 } from "../../lib/sessions-view.ts";
 import { useContextMenu, type MenuItem } from "../../components/ContextMenu.tsx";
+import { useBeside } from "./use-beside.ts";
 import { timeAgo } from "../../lib/time.ts";
 import {
   loadLastViewedMap,
@@ -97,6 +100,7 @@ type AgentRailEntry = {
 };
 
 const GROUP_CHIPS: Array<[SessionsGroupKey, string]> = [
+  ["recent", "Recent"],
   ["project", "Project"],
   ["agent", "Agent"],
   ["day", "Day"],
@@ -107,7 +111,8 @@ const GROUP_CHIPS: Array<[SessionsGroupKey, string]> = [
  * The chat rail (D1/D3/D4/D5 of docs/design/comms-channel-navigation.md).
  *
  * One list, fixed sections, no switchers: Needs you · Pinned · Agents ·
- * Channels · Observed · Archived. Attention is the only emphasis — Needs-you
+ * Channels · Observed · Archived. Ordered by recency folds Channels and
+ * Observed into the one list. Attention is the only emphasis — Needs-you
  * MIRRORS rows rather than moving them, so nothing reflows when an ask
  * resolves and positional memory survives.
  */
@@ -215,7 +220,7 @@ export function ChatLeft() {
       pinned,
       channels: sortByRecency(channels),
       dms: sortByRecency(dms),
-      observed: buildConversationGroups(sortByRecency(observed), agentById, lastViewed, "recent"),
+      observed: sortByRecency(observed),
       archived,
     };
   }, [scoped, agentById, lastViewed, prefs]);
@@ -289,14 +294,32 @@ export function ChatLeft() {
     };
   }, [sections.dms, agentById]);
 
-  /** Sessions view — the queue. Allowed to move; grouping is switchable. */
-  const queueGroups = useMemo(
-    () =>
-      view === "sessions"
-        ? groupQueueSessions(sections.dms, railPrefs.groupBy, agentById, asksByAgent, Date.now())
-        : [],
-    [view, sections.dms, railPrefs.groupBy, agentById, asksByAgent],
+  /**
+   * Ungrouped recency is the "all my conversations, newest first" read, so it
+   * folds channels AND observed traffic into the one list rather than stranding
+   * them in sections below — anything that moved five minutes ago belongs at
+   * the top, and membership ("am I in this room") is a property of a row, not a
+   * reason to hide it under a collapsed stratum.
+   */
+  const queueFolded = view === "sessions" && railPrefs.groupBy === "recent";
+  const railChannels = useMemo(
+    () => (queueFolded ? [] : sections.channels),
+    [queueFolded, sections.channels],
   );
+  /** Observed keeps its project/repo grouping only when it still has a section. */
+  const railObserved = useMemo(
+    () => (queueFolded ? [] : buildConversationGroups(sections.observed, agentById, lastViewed, "recent")),
+    [queueFolded, sections.observed, agentById, lastViewed],
+  );
+
+  /** Sessions view — the queue. Allowed to move; grouping is switchable. */
+  const queueGroups = useMemo(() => {
+    if (view !== "sessions") return [];
+    const source = queueFolded
+      ? [...sections.dms, ...sections.channels, ...sections.observed]
+      : sections.dms;
+    return groupQueueSessions(source, railPrefs.groupBy, agentById, asksByAgent, Date.now());
+  }, [view, queueFolded, sections.dms, sections.channels, sections.observed, railPrefs.groupBy, agentById, asksByAgent]);
 
   const showContextMenu = useContextMenu();
 
@@ -307,6 +330,10 @@ export function ChatLeft() {
   const onToggleArchive = useCallback((id: string) => {
     setPrefs((prev) => toggleArchive(id, prev));
   }, []);
+
+  const rename = useRenameState();
+  // Conversations kept beside the stage, on every Comms page (comms-deck.ts).
+  const beside = useBeside();
 
   const onSelect = useCallback((s: SessionEntry) => {
     setLastViewed(saveLastViewed(s.id));
@@ -360,6 +387,11 @@ export function ChatLeft() {
           label: "Open",
           onSelect: () => onSelect(s),
         },
+        {
+          kind: "action",
+          label: beside.has(s.id) ? "Close beside the stage" : "Open beside the stage",
+          onSelect: () => beside.toggle(s.id),
+        },
         { kind: "separator" },
         {
           kind: "action",
@@ -374,6 +406,11 @@ export function ChatLeft() {
         { kind: "separator" },
         {
           kind: "action",
+          label: "Rename\u2026",
+          onSelect: () => rename.begin(s.id),
+        },
+        {
+          kind: "action",
           label: "Copy name",
           onSelect: () => {
             void navigator.clipboard?.writeText(title).catch(() => {});
@@ -382,7 +419,7 @@ export function ChatLeft() {
       ];
       showContextMenu(event, items);
     },
-    [prefs, onSelect, onTogglePin, onToggleArchive, showContextMenu],
+    [prefs, onSelect, onTogglePin, onToggleArchive, showContextMenu, rename, beside],
   );
 
   const toggleGroup = (key: string) => {
@@ -404,11 +441,11 @@ export function ChatLeft() {
   useSlashToFocus(useCallback(() => inputRef.current, []));
 
   const pinnedCount = sections.pinned.length;
-  const channelCount = sections.channels.length;
+  const channelCount = railChannels.length;
   const agentCount = view === "agents"
     ? agentsRail.projects.reduce((n, p) => n + p.entries.length, 0) + agentsRail.unassigned.length
     : queueGroups.reduce((n, g) => n + g.sessions.length, 0);
-  const observedCount = sections.observed.reduce((n, g) => n + g.conversations.length, 0);
+  const observedCount = railObserved.reduce((n, g) => n + g.conversations.length, 0);
   const archivedCount = sections.archived.length;
   // Needs-you rows are mirrors of rows counted below — never counted twice.
   const totalVisible = pinnedCount + channelCount + agentCount + observedCount + archivedCount;
@@ -428,11 +465,11 @@ export function ChatLeft() {
     } else {
       for (const g of queueGroups) for (const s of g.sessions) out.push({ rowId: s.id, id: s.id });
     }
-    for (const s of sections.channels) out.push({ rowId: s.id, id: s.id });
-    for (const g of sections.observed) for (const c of g.conversations) out.push({ rowId: c.id, id: c.id });
+    for (const s of railChannels) out.push({ rowId: s.id, id: s.id });
+    for (const g of railObserved) for (const c of g.conversations) out.push({ rowId: c.id, id: c.id });
     for (const s of sections.archived) out.push({ rowId: `arch-${s.id}`, id: s.id });
     return out;
-  }, [needsYou, sections, view, agentsRail, queueGroups]);
+  }, [needsYou, sections, view, agentsRail, queueGroups, railChannels, railObserved]);
 
   // Agent rows key into the same roving-tabindex system through a pseudo-id
   // that can never collide with a conversation id. In the queue, a raised
@@ -464,9 +501,9 @@ export function ChatLeft() {
 
   // The preview limit lives INSIDE the expanded stratum (D5).
   const observedShown = showAllObserved || query
-    ? sections.observed
-    : sections.observed.slice(0, OBSERVED_PREVIEW_LIMIT);
-  const observedHidden = Math.max(0, sections.observed.length - observedShown.length);
+    ? railObserved
+    : railObserved.slice(0, OBSERVED_PREVIEW_LIMIT);
+  const observedHidden = Math.max(0, railObserved.length - observedShown.length);
 
   // Auto-open the group that holds the active conversation.
   const isGroupOpen = (group: ConversationGroup) => {
@@ -480,12 +517,15 @@ export function ChatLeft() {
     <ConversationActions
       pinned={isPinned(s.id, prefs)}
       archived={isArchived(s.id, prefs)}
+      beside={beside.has(s.id)}
       onTogglePin={() => onTogglePin(s.id)}
       onToggleArchive={() => onToggleArchive(s.id)}
+      onToggleBeside={() => beside.toggle(s.id)}
     />
   );
 
   return (
+    <RenameContext.Provider value={rename}>
     <div className="ctx-panel">
       <div className="ctx-panel-toolbar">
         <input
@@ -633,8 +673,8 @@ export function ChatLeft() {
             )}
 
             {view === "sessions" && (
-              <div className="ctx-panel-groupbar" role="radiogroup" aria-label="Group sessions by">
-                <span className="ctx-panel-groupbar-label">Group</span>
+              <div className="ctx-panel-groupbar" role="radiogroup" aria-label="Order the queue by">
+                <span className="ctx-panel-groupbar-label">Order</span>
                 {GROUP_CHIPS.map(([key, label]) => (
                   <button
                     key={key}
@@ -671,7 +711,7 @@ export function ChatLeft() {
 
             {channelCount > 0 && (
               <RailSection label="Channels" count={channelCount}>
-                {sections.channels.map((s) => (
+                {railChannels.map((s) => (
                   <SessionRailRow
                     key={s.id}
                     rowId={s.id}
@@ -754,7 +794,60 @@ export function ChatLeft() {
         )}
       </div>
     </div>
+    </RenameContext.Provider>
   );
+}
+
+/**
+ * Inline rename, shared with the rows without threading a prop through every
+ * call site (`SessionRailRow` is rendered from eight places in this file).
+ *
+ * `renamed` is the optimistic overlay: the row shows the new name the instant
+ * you press Enter and keeps showing it until the forced list reload lands, so
+ * a rename never flashes back to the old title while the broker catches up.
+ */
+type RenameState = {
+  editingId: string | null;
+  renamed: Record<string, string>;
+  begin: (id: string) => void;
+  commit: (id: string, title: string) => void;
+  cancel: () => void;
+};
+
+const RenameContext = createContext<RenameState | null>(null);
+
+function useRenameState(): RenameState {
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [renamed, setRenamed] = useState<Record<string, string>>({});
+
+  const commit = useCallback((id: string, title: string) => {
+    setEditingId(null);
+    const next = title.trim();
+    setRenamed((prev) => ({ ...prev, [id]: next }));
+    void api(`/api/conversations/${encodeURIComponent(id)}/title`, {
+      method: "POST",
+      body: JSON.stringify({ title: next }),
+    })
+      .then(() => loadConversationList({ force: true }))
+      /* Drop the overlay either way: on success the list now carries the real
+         name, and on failure the row must show what the broker actually has
+         rather than a name that only ever existed in this tab. */
+      .catch(() => {})
+      .then(() => {
+        setRenamed((prev) => {
+          const { [id]: _dropped, ...rest } = prev;
+          return rest;
+        });
+      });
+  }, []);
+
+  return {
+    editingId,
+    renamed,
+    begin: useCallback((id: string) => setEditingId(id), []),
+    commit,
+    cancel: useCallback(() => setEditingId(null), []),
+  };
 }
 
 function RailSection({
@@ -807,16 +900,36 @@ function RailSection({
 function ConversationActions({
   pinned,
   archived,
+  beside,
   onTogglePin,
   onToggleArchive,
+  onToggleBeside,
 }: {
   pinned: boolean;
   archived: boolean;
+  /** Kept in a column beside the stage (comms-deck.ts). */
+  beside?: boolean;
   onTogglePin: () => void;
   onToggleArchive: () => void;
+  onToggleBeside?: () => void;
 }) {
   return (
     <>
+      {onToggleBeside ? (
+        <button
+          type="button"
+          className={["rr-row-action", beside && "rr-row-action--on"].filter(Boolean).join(" ")}
+          title={beside ? "Close the column beside the stage" : "Keep this conversation beside the stage"}
+          aria-label={beside ? "Close beside" : "Open beside"}
+          aria-pressed={beside}
+          onClick={(e) => {
+            e.stopPropagation();
+            onToggleBeside();
+          }}
+        >
+          Beside
+        </button>
+      ) : null}
       <button
         type="button"
         className={["rr-row-action", pinned && "rr-row-action--on"].filter(Boolean).join(" ")}
@@ -877,7 +990,10 @@ function SessionRailRow({
   onContextMenu?: (event: MouseEvent, s: SessionEntry) => void;
 }) {
   const active = s.id === nav.activeId;
-  const title = taskTitled ? taskThreadTitle(s) : conversationDisplayTitle(s);
+  const rename = useContext(RenameContext);
+  /* The optimistic name wins until the forced reload lands. */
+  const title = rename?.renamed[s.id]
+    ?? (taskTitled ? taskThreadTitle(s) : conversationDisplayTitle(s));
   const channel = isChannelConversation(s);
   const observed = isObservedDirect(s);
   const agent = s.agentId ? agentById.get(s.agentId) : undefined;
@@ -896,8 +1012,12 @@ function SessionRailRow({
       : identifier.toLowerCase() === title.toLowerCase()
         ? undefined
         : identifier;
-  const sub =
+  const rawSub =
     !channel && !taskTitled && ask ? activeAskSubtitle(s, agent, ask) : baseSub;
+  // Folded into the one recency list, an observed row sits next to your own
+  // conversations and would otherwise be indistinguishable from them. The
+  // "Observed" header used to carry that fact; now the row does.
+  const sub = observed ? (rawSub ? `watching · ${rawSub}` : "watching") : rawSub;
 
   return (
     <RailRow
@@ -930,7 +1050,16 @@ function SessionRailRow({
       activityTone={ask ? askActivityTone(ask) : undefined}
       worktreeLabel={worktreeLabel ?? undefined}
       title={depth === 1 ? conversationChildTooltip(s, agent, ask) : undefined}
-      actions={actions}
+      actions={rename?.editingId === s.id ? undefined : actions}
+      editing={
+        rename && rename.editingId === s.id
+          ? {
+            value: title,
+            onCommit: (next: string) => rename.commit(s.id, next),
+            onCancel: rename.cancel,
+          }
+          : undefined
+      }
       tabIndex={rovingTabIndex(
         rowId === nav.activeRowId,
         nav.activeRowId !== undefined,

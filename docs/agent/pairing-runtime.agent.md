@@ -245,3 +245,23 @@ bun test packages/runtime/src/pairing-supervisor.test.ts
 Expect one `pairing-runtime-controller` owned by `scout-base`. Controller crashes
 are recovered, explicit stop remains stopped, restart replaces the controller,
 and `runtime.json` remains the shared observer snapshot.
+
+## Memory and connection bounds
+
+The canonical tRPC bridge limits admission to 64 simultaneous WebSockets. Short
+status clients use `?events=0`, skip event replay/broker watches, and expire after
+60 seconds. Secure clients must complete their handshake within 10 seconds.
+Expired sockets get one second to close before termination. Outgoing WebSocket
+backpressure is capped at 4 MiB per connection; slow consumers are disconnected.
+The `/health` response includes `connections` and `connectionLimit`.
+
+Concurrent web status snapshot reads share one in-flight request per port and
+release it on success or failure. Mobile peers share one broker message watch
+per process; the last unsubscribe aborts it. Do not reintroduce per-poll or
+per-device broker snapshots/watches. MCP notification waits are tied to the MCP
+connection lifetime and poll an invocation instead of repeatedly loading the
+whole registry.
+
+Run `bun run test:memory` for connection timeout/admission/coalescing, shared
+watch lifecycle, MCP disconnect cancellation, and scoped flight polling tests.
+These test files also run through the existing `test:unit` checkpoint suite.

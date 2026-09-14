@@ -23,7 +23,10 @@ import {
   type ScoutRealtimeVoiceTraceEvent,
   type ScoutRealtimeVoiceTraceKind,
 } from "../../lib/realtime-voice.ts";
-import { SCOUT_REALTIME_VOICE_FLAG } from "../../../shared/realtime-voice.ts";
+import {
+  SCOUT_REALTIME_VOICE_FLAG,
+  SCOUT_REALTIME_VOICE_SETTINGS_PATH,
+} from "../../../shared/realtime-voice.ts";
 import {
   fetchScoutRealtimeVoiceSettings,
   subscribeScoutRealtimeVoiceSettings,
@@ -43,6 +46,9 @@ import type {
 export const SCOUTBOT_REALTIME_REPLY_EVENT = "scout:scoutbot-realtime-reply";
 export const SCOUTBOT_SESSION_CHANGED_EVENT = "scout:scoutbot-session-changed";
 
+/** Live chat is fetched separately from the call, so it reports its own state. */
+export type ScoutbotLiveChatStatus = "idle" | "loading" | "ready" | "failed";
+
 type ScoutbotRealtimeVoiceContextValue = {
   enabled: boolean;
   open: boolean;
@@ -51,6 +57,8 @@ type ScoutbotRealtimeVoiceContextValue = {
   error: string | null;
   trace: ScoutRealtimeVoiceTraceEvent[];
   chatState: ScoutbotAssistantSessionState | null;
+  chatStatus: ScoutbotLiveChatStatus;
+  chatError: string | null;
   sessionAction: "new" | string | null;
   setOpen: Dispatch<SetStateAction<boolean>>;
   startCall: () => Promise<void>;
@@ -70,6 +78,8 @@ const DEFAULT_REALTIME_VOICE_CONTEXT: ScoutbotRealtimeVoiceContextValue = {
   error: null,
   trace: [],
   chatState: null,
+  chatStatus: "idle",
+  chatError: null,
   sessionAction: null,
   setOpen: () => {},
   startCall: async () => {},
@@ -96,6 +106,8 @@ export function ScoutbotRealtimeVoiceProvider({ children }: { children: ReactNod
   const [error, setError] = useState<string | null>(null);
   const [trace, setTrace] = useState<ScoutRealtimeVoiceTraceEvent[]>([]);
   const [chatState, setChatState] = useState<ScoutbotAssistantSessionState | null>(null);
+  const [chatStatus, setChatStatus] = useState<ScoutbotLiveChatStatus>("idle");
+  const [chatError, setChatError] = useState<string | null>(null);
   const [sessionAction, setSessionAction] = useState<"new" | string | null>(null);
   const callRef = useRef<ScoutRealtimeVoiceCall | null>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
@@ -125,11 +137,18 @@ export function ScoutbotRealtimeVoiceProvider({ children }: { children: ReactNod
 
   const clearTrace = useCallback(() => setTrace([]), []);
 
-  const loadChatState = useCallback(async () => {
-    const next = await api<ScoutbotAssistantSessionState>("/api/scoutbot/session");
-    if (!disposedRef.current) setChatState(next);
-    return next;
+  const adoptChatState = useCallback((next: ScoutbotAssistantSessionState) => {
+    setChatState(next);
+    setChatStatus("ready");
+    setChatError(null);
   }, []);
+
+  const loadChatState = useCallback(async () => {
+    setChatStatus((current) => (current === "ready" ? current : "loading"));
+    const next = await api<ScoutbotAssistantSessionState>("/api/scoutbot/session");
+    if (!disposedRef.current) adoptChatState(next);
+    return next;
+  }, [adoptChatState]);
 
   useEffect(() => {
     if (!featureAvailable) {
@@ -148,7 +167,7 @@ export function ScoutbotRealtimeVoiceProvider({ children }: { children: ReactNod
       .catch((caught) => {
         if (cancelled || isAbortError(caught)) return;
         setSettingsEnabled(false);
-        setError(caught instanceof Error ? caught.message : "Could not load live voice settings.");
+        setError(describeVoiceSettingsFailure(caught));
       });
     return () => {
       cancelled = true;
@@ -157,17 +176,21 @@ export function ScoutbotRealtimeVoiceProvider({ children }: { children: ReactNod
     };
   }, [featureAvailable]);
 
+  // The live chat and its reply model are Scoutbot state, not call state. Gating
+  // the fetch on the voice toggle left the panel stuck on "Loading chat…" with a
+  // dash for a model whenever live voice was off — or whenever the settings route
+  // was unreachable and the toggle read false as a result.
   useEffect(() => {
-    if (!enabled) return;
+    if (!featureAvailable || (!enabled && !open)) return;
     const refresh = () => void loadChatState().catch((caught) => {
-      if (!disposedRef.current) {
-        setError(caught instanceof Error ? caught.message : "Could not load Scoutbot chats.");
-      }
+      if (disposedRef.current) return;
+      setChatStatus("failed");
+      setChatError(caught instanceof Error ? caught.message : "Could not load Scoutbot chats.");
     });
     refresh();
     window.addEventListener(SCOUTBOT_SESSION_CHANGED_EVENT, refresh);
     return () => window.removeEventListener(SCOUTBOT_SESSION_CHANGED_EVENT, refresh);
-  }, [enabled, loadChatState]);
+  }, [enabled, featureAvailable, loadChatState, open]);
 
   const endCall = useCallback(async () => {
     generationRef.current += 1;
@@ -357,7 +380,7 @@ export function ScoutbotRealtimeVoiceProvider({ children }: { children: ReactNod
       const next = await api<ScoutbotAssistantSessionState>("/api/scoutbot/session/reset", {
         method: "POST",
       });
-      setChatState(next);
+      adoptChatState(next);
       setTrace([{ id: `voice-chat-${Date.now()}`, at: Date.now(), kind: "scoutbot", label: "New live chat ready" }]);
       window.dispatchEvent(new CustomEvent(SCOUTBOT_SESSION_CHANGED_EVENT, { detail: { id: next.session.id } }));
     } catch (caught) {
@@ -367,7 +390,7 @@ export function ScoutbotRealtimeVoiceProvider({ children }: { children: ReactNod
     } finally {
       setSessionAction(null);
     }
-  }, [appendTrace, chatState?.session.messages.length, endCall, sessionAction, state]);
+  }, [adoptChatState, appendTrace, chatState?.session.messages.length, endCall, sessionAction, state]);
 
   const switchChat = useCallback(async (id: string) => {
     if (!id || sessionAction || id === chatState?.session.id) return;
@@ -381,7 +404,7 @@ export function ScoutbotRealtimeVoiceProvider({ children }: { children: ReactNod
         method: "POST",
         body: JSON.stringify({ id }),
       });
-      setChatState(next);
+      adoptChatState(next);
       setTrace([{
         id: `voice-chat-${Date.now()}`,
         at: Date.now(),
@@ -397,7 +420,7 @@ export function ScoutbotRealtimeVoiceProvider({ children }: { children: ReactNod
     } finally {
       setSessionAction(null);
     }
-  }, [appendTrace, chatState?.session.id, endCall, sessionAction, state]);
+  }, [adoptChatState, appendTrace, chatState?.session.id, endCall, sessionAction, state]);
 
   const updatePreferredModel = useCallback(async (nextModel: string) => {
     const model = nextModel.trim();
@@ -422,6 +445,8 @@ export function ScoutbotRealtimeVoiceProvider({ children }: { children: ReactNod
       error,
       trace,
       chatState,
+      chatStatus,
+      chatError,
       sessionAction,
       setOpen,
       startCall,
@@ -440,6 +465,8 @@ export function ScoutbotRealtimeVoiceProvider({ children }: { children: ReactNod
       error,
       trace,
       chatState,
+      chatStatus,
+      chatError,
       sessionAction,
       startCall,
       endCall,
@@ -456,6 +483,19 @@ export function ScoutbotRealtimeVoiceProvider({ children }: { children: ReactNod
       {children}
     </ScoutbotRealtimeVoiceContext.Provider>
   );
+}
+
+/**
+ * A Scout host whose web server predates the live voice settings route answers
+ * the API router's 404 instead of the endpoint. Raw "unknown api route" reads as
+ * a client bug in the panel; name the actual condition so the operator can act.
+ */
+function describeVoiceSettingsFailure(caught: unknown): string {
+  const message = caught instanceof Error ? caught.message : "";
+  if (/unknown api route/i.test(message) && message.includes(SCOUT_REALTIME_VOICE_SETTINGS_PATH)) {
+    return "This Scout host is running an older web server with no live voice settings route. Restart Scout so it serves the current build.";
+  }
+  return message || "Could not load live voice settings.";
 }
 
 function isAbortError(error: unknown): boolean {

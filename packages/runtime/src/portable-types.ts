@@ -130,6 +130,8 @@ export type RuntimeHttpResponseLike = {
   write(chunk: unknown): unknown;
   end(chunk?: unknown): unknown;
   on(event: string, listener: (...args: any[]) => void): unknown;
+  off?(event: string, listener: (...args: any[]) => void): unknown;
+  destroy?(): unknown;
   setHeader?(name: string, value: string | number | readonly string[]): unknown;
   getHeader?(name: string): string | number | string[] | undefined;
 };

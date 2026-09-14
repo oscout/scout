@@ -55,8 +55,11 @@ export function moveWallCursor(
 
 /**
  * The wall's binding table. Vim motions plus the arrow keys they stand in for,
- * with `g`/`G` for the ends — the same dialect Agent Lanes speaks, widened from
- * a list to a grid.
+ * with `G`/End (and Home) for the ends — the same dialect Agent Lanes speaks,
+ * widened from a list to a grid. Bare `g` is deliberately absent: the shell
+ * owns it as the go-chord prefix (`g` then `h` is Home, `g` then `l` is Tail),
+ * and it captures the key before any surface sees it, so binding it here would
+ * only advertise a motion that can never fire.
  */
 export function wallCursorMoveForKey(key: string): WallCursorMove | null {
   switch (key) {
@@ -72,7 +75,6 @@ export function wallCursorMoveForKey(key: string): WallCursorMove | null {
     case "j":
     case "ArrowDown":
       return "down";
-    case "g":
     case "Home":
       return "first";
     case "G":

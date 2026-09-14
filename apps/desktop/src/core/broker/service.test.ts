@@ -571,11 +571,12 @@ describe("resolveScoutBrokerUrl", () => {
 
 describe("scoutConversationIdForChannel", () => {
   test("maps friendly and structural channel names to one definitive opaque id", () => {
-    const sharedId = stableChannelId(namedChannelNaturalKey("shared"));
+    const sharedId = stableChannelId(namedChannelNaturalKey("broadcast"));
     const fontStudioId = stableChannelId(namedChannelNaturalKey("font-studio"));
 
     expect(scoutConversationIdForChannel()).toBe(sharedId);
     expect(scoutConversationIdForChannel("shared")).toBe(sharedId);
+    expect(scoutConversationIdForChannel("broadcast")).toBe(sharedId);
     expect(scoutConversationIdForChannel("channel.shared")).toBe(sharedId);
     expect(scoutConversationIdForChannel("font studio")).toBe(fontStudioId);
     expect(scoutConversationIdForChannel("channel.font-studio")).toBe(fontStudioId);
@@ -2176,6 +2177,35 @@ describe("askScoutQuestion", () => {
 });
 
 describe("waitForScoutFlight", () => {
+  test("resolves the flight once, then polls only its invocation", async () => {
+    useIsolatedOpenScoutHome();
+    const paths: string[] = [];
+    const flight = { id: "flight-1", invocationId: "inv-1", requesterId: "operator", targetAgentId: "worker", state: "running" };
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      const path = new URL(input instanceof Request ? input.url : String(input)).pathname;
+      paths.push(path);
+      if (path === "/v1/snapshot") return jsonResponse({ flights: { "flight-1": flight } });
+      expect(path).toBe("/v1/invocations/inv-1");
+      return jsonResponse({ flight: { ...flight, state: "completed" } });
+    }) as typeof fetch;
+    expect((await waitForScoutFlight("http://broker.test", "flight-1")).state).toBe("completed");
+    expect(paths).toEqual(["/v1/snapshot", "/v1/invocations/inv-1"]);
+  });
+
+  test("a known invocation skips the registry and cancellation stops polling", async () => {
+    useIsolatedOpenScoutHome();
+    const controller = new AbortController();
+    let requests = 0;
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      expect(new URL(input instanceof Request ? input.url : String(input)).pathname).toBe("/v1/invocations/inv-1");
+      requests++;
+      controller.abort();
+      return jsonResponse({ flight: { id: "flight-1", invocationId: "inv-1", requesterId: "operator", targetAgentId: "worker", state: "running" } });
+    }) as typeof fetch;
+    await expect(waitForScoutFlight("http://broker.test", "flight-1", { invocationId: "inv-1", signal: controller.signal })).rejects.toThrow();
+    expect(requests).toBe(1);
+  });
+
   test("can return on target acknowledgement without waiting for completion", async () => {
     useIsolatedOpenScoutHome();
     globalThis.fetch = (async (input: RequestInfo | URL) => {
@@ -3562,7 +3592,7 @@ describe("watchScoutMessages", () => {
           payload: {
             message: {
               id: "m-1",
-              conversationId: stableChannelId(namedChannelNaturalKey("shared")),
+              conversationId: stableChannelId(namedChannelNaturalKey("broadcast")),
               actorId: "scout.main.mini",
               body: "hello from a sibling session",
               class: "agent",

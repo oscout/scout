@@ -1,3 +1,4 @@
+import { selectMessageRecordsAsync } from "./broker-message-records.js";
 import type { RuntimeRegistrySnapshot } from "./registry.js";
 import type { ActivityItem } from "./sqlite-store.js";
 import {
@@ -21,6 +22,13 @@ export type BrokerHomeAgent = {
   role: string | null;
   summary: string | null;
   projectRoot: string | null;
+  /**
+   * Node identity, carried so bounded roster consumers can tell a local card
+   * from a peer's. The compact projection used to drop it, which made the
+   * Network page unable to place any remote agent (#906).
+   */
+  homeNodeId: string | null;
+  authorityNodeId: string | null;
   state: "offline" | "available" | "working";
   reachable: boolean;
   statusLabel: string;
@@ -83,41 +91,15 @@ export class BrokerHomeService {
       agents: this.#agents(snapshot),
       activity: projectionReady
         ? this.#activity(snapshot, await this.#deps.listActivityItems({ limit: 96 }))
-        : this.#runtimeActivity(snapshot),
+        : await this.#runtimeActivity(snapshot),
       activitySource: projectionReady ? "sqlite_projection" : "runtime_snapshot",
       activityState: projectionStatus.state,
     };
   }
 
   #agents(snapshot: RuntimeRegistrySnapshot): BrokerHomeAgent[] {
-    const workingAgentIds = new Set(
-      Object.values(snapshot.flights)
-        .filter((flight) => isWorkingFlightState(flight.state))
-        .map((flight) => flight.targetAgentId),
-    );
-    const endpointByAgentId = indexHomeEndpoints(snapshot);
-    return Object.values(snapshot.agents)
-      .filter((agent) => !isInactiveLocalAgent(agent))
-      .map((agent) => {
-        const endpoint = endpointByAgentId.get(agent.id) ?? null;
-        const status = summarizeHomeAgent(endpoint, workingAgentIds.has(agent.id));
-        return {
-          id: agent.id,
-          title: this.#deps.actorDisplayName(snapshot, agent.id),
-          role: typeof agent.metadata?.role === "string" ? agent.metadata.role : null,
-          summary: typeof agent.metadata?.summary === "string" ? agent.metadata.summary : null,
-          projectRoot: brokerTargetProjectRoot(agent, endpoint),
-          state: status.state,
-          reachable: status.reachable,
-          statusLabel: status.statusLabel,
-          statusDetail: status.statusDetail,
-          activeTask: null,
-          lastSeenAt: status.lastSeenAt,
-        };
-      })
-      .sort((left, right) => agentHomeRank(left.state) - agentHomeRank(right.state)
-        || left.title.localeCompare(right.title))
-      .slice(0, BROKER_HOME_AGENT_LIMIT);
+    const ranked = projectHomeAgents(snapshot, this.#deps.actorDisplayName);
+    return withNodeCoverage(ranked, BROKER_HOME_AGENT_LIMIT);
   }
 
   #activity(
@@ -145,10 +127,9 @@ export class BrokerHomeService {
       });
   }
 
-  #runtimeActivity(snapshot: RuntimeRegistrySnapshot): BrokerHomeActivity[] {
-    return Object.values(snapshot.messages)
-      .sort((left, right) => right.createdAt - left.createdAt || right.id.localeCompare(left.id))
-      .slice(0, 24)
+  async #runtimeActivity(snapshot: RuntimeRegistrySnapshot): Promise<BrokerHomeActivity[]> {
+    return (await selectMessageRecordsAsync(snapshot.messages, 24,
+      (left, right) => right.createdAt - left.createdAt || right.id.localeCompare(left.id)))
       .map((message) => {
         const actorName = this.#deps.actorDisplayName(snapshot, message.actorId);
         return {
@@ -172,6 +153,48 @@ export class BrokerHomeService {
   }
 }
 
+/**
+ * Every live agent card this broker knows, ranked working-first.
+ *
+ * Shared by the local home feed and the compact mesh node-state twin so both
+ * report the same lifecycle state for the same agent; the two differ only in
+ * how they bound and scope the result.
+ */
+export function projectHomeAgents(
+  snapshot: RuntimeRegistrySnapshot,
+  actorDisplayName: (snapshot: RuntimeRegistrySnapshot, actorId: string) => string,
+): BrokerHomeAgent[] {
+  const workingAgentIds = new Set(
+    Object.values(snapshot.flights)
+      .filter((flight) => isWorkingFlightState(flight.state))
+      .map((flight) => flight.targetAgentId),
+  );
+  const endpointByAgentId = indexHomeEndpoints(snapshot);
+  return Object.values(snapshot.agents)
+    .filter((agent) => !isInactiveLocalAgent(agent))
+    .map((agent) => {
+      const endpoint = endpointByAgentId.get(agent.id) ?? null;
+      const status = summarizeHomeAgent(endpoint, workingAgentIds.has(agent.id));
+      return {
+        id: agent.id,
+        title: actorDisplayName(snapshot, agent.id),
+        role: typeof agent.metadata?.role === "string" ? agent.metadata.role : null,
+        summary: typeof agent.metadata?.summary === "string" ? agent.metadata.summary : null,
+        projectRoot: brokerTargetProjectRoot(agent, endpoint),
+        homeNodeId: agent.homeNodeId ?? null,
+        authorityNodeId: agent.authorityNodeId ?? null,
+        state: status.state,
+        reachable: status.reachable,
+        statusLabel: status.statusLabel,
+        statusDetail: status.statusDetail,
+        activeTask: null,
+        lastSeenAt: status.lastSeenAt,
+      } satisfies BrokerHomeAgent;
+    })
+    .sort((left, right) => agentHomeRank(left.state) - agentHomeRank(right.state)
+      || left.title.localeCompare(right.title));
+}
+
 function indexHomeEndpoints(
   snapshot: RuntimeRegistrySnapshot,
 ): Map<string, RuntimeRegistrySnapshot["endpoints"][string]> {
@@ -187,6 +210,47 @@ function indexHomeEndpoints(
     }
   }
   return endpointByAgentId;
+}
+
+/**
+ * Bound the roster without erasing a whole machine.
+ *
+ * The compact home feed is capped, and the cap used to be a plain slice: a
+ * busy local broker filled every slot and the one card standing for a peer
+ * node fell off the end, so consumers could not tell the peer existed (#906).
+ * One representative per distinct home node is reserved first — highest-ranked
+ * card on that node — and the remaining slots keep the original ranking.
+ */
+export function withNodeCoverage(
+  ranked: readonly BrokerHomeAgent[],
+  limit: number,
+): BrokerHomeAgent[] {
+  if (ranked.length <= limit) return [...ranked];
+
+  const representatives = new Map<string, BrokerHomeAgent>();
+  for (const agent of ranked) {
+    const nodeId = agent.homeNodeId;
+    if (!nodeId || representatives.has(nodeId)) continue;
+    representatives.set(nodeId, agent);
+  }
+
+  const kept = new Set<string>();
+  const covered: BrokerHomeAgent[] = [];
+  for (const agent of representatives.values()) {
+    if (covered.length >= limit) break;
+    if (kept.has(agent.id)) continue;
+    kept.add(agent.id);
+    covered.push(agent);
+  }
+  for (const agent of ranked) {
+    if (covered.length >= limit) break;
+    if (kept.has(agent.id)) continue;
+    kept.add(agent.id);
+    covered.push(agent);
+  }
+  // Restore the caller-visible ranking; reservation decides membership only.
+  const order = new Map(ranked.map((agent, index) => [agent.id, index]));
+  return covered.sort((left, right) => (order.get(left.id) ?? 0) - (order.get(right.id) ?? 0));
 }
 
 function agentHomeRank(state: BrokerHomeAgent["state"]): number {

@@ -16,6 +16,7 @@ import {
   resolveConversationShareMode,
   titleCaseName,
 } from "./broker-conversation-helpers.js";
+import { isOperatorTitled, resolveConversationTitle } from "./conversation-title.js";
 
 export type BrokerConversationRuntime = {
   snapshot(): RuntimeSnapshot;
@@ -81,10 +82,15 @@ export class BrokerConversationService {
       return await this.ensureDirectConversation(snapshot, input.requesterId, targetAgentId);
     }
 
+    if (!normalizedChannel) {
+      throw new Error("Delivery requires an explicit target or channel; use scout broadcast to tell everyone.");
+    }
+
     return await this.ensureChannelConversation(snapshot, {
       requesterId: input.requesterId,
       targetAgentId,
-      channel: normalizedChannel || "shared",
+      // Keep the explicit legacy wire selector, but never feed the retired room.
+      channel: normalizedChannel === "shared" ? "broadcast" : normalizedChannel,
     });
   };
 
@@ -114,7 +120,16 @@ export class BrokerConversationService {
     const conversation: ConversationDefinition = {
       id: conversationId,
       kind: "direct",
-      title: targetAgentId === this.deps.dispatcherAgentId && requesterId === this.deps.operatorActorId ? "Scout" : conversationTitle,
+      /* Automatic naming defers to a human one. Without this, re-deriving the
+         conversation — a share-mode flip, a participant change — silently
+         undoes a rename. */
+      title: resolveConversationTitle({
+        derived: targetAgentId === this.deps.dispatcherAgentId && requesterId === this.deps.operatorActorId
+          ? "Scout"
+          : conversationTitle,
+        existingTitle: existing?.title,
+        existingMetadata: existing?.metadata,
+      }),
       visibility: "private",
       shareMode,
       authorityNodeId: this.deps.nodeId,
@@ -123,6 +138,12 @@ export class BrokerConversationService {
         surface: "broker",
         naturalKey,
         ...(targetAgentId === this.deps.dispatcherAgentId && requesterId === this.deps.operatorActorId ? { role: "partner" } : {}),
+        /* The rename mark rides on metadata, and this object replaces it
+           wholesale — carry it or the guard above has nothing to read next
+           time. */
+        ...(isOperatorTitled(existing?.metadata)
+          ? { titleSource: existing!.metadata!.titleSource, titleSetAt: existing!.metadata!.titleSetAt }
+          : {}),
       },
     };
     await this.deps.upsertConversation(conversation);
@@ -137,11 +158,13 @@ export class BrokerConversationService {
       channel: string;
     },
   ): Promise<ConversationDefinition> {
-    const sharedParticipants = [...new Set([
+    const broadcastParticipants = input.channel === "broadcast" ? [...new Set([
       this.deps.operatorActorId,
       input.requesterId,
-      ...Object.keys(snapshot.agents),
-    ])].sort();
+      ...Object.values(snapshot.endpoints)
+        .filter((endpoint) => endpoint.state !== "offline" && snapshot.agents[endpoint.agentId])
+        .map((endpoint) => endpoint.agentId),
+    ])].sort() : [];
     const scopedParticipants = [...new Set([
       this.deps.operatorActorId,
       input.requesterId,
@@ -154,7 +177,7 @@ export class BrokerConversationService {
 
     const definition = this.channelDefinition(snapshot, {
       channel: input.channel,
-      sharedParticipants,
+      broadcastParticipants,
       scopedParticipants,
       systemParticipants,
     });
@@ -163,7 +186,8 @@ export class BrokerConversationService {
     const equivalentConversations = naturalKey
       ? conversationsWithNaturalKey(Object.values(snapshot.conversations), naturalKey)
       : [];
-    const nextParticipants = [...new Set([
+    // Broadcast membership is a send-time snapshot, not an accumulating roster.
+    const nextParticipants = input.channel === "broadcast" ? definition.participantIds : [...new Set([
       ...equivalentConversations.flatMap((conversation) => conversation.participantIds),
       ...definition.participantIds,
     ])].sort();
@@ -189,7 +213,7 @@ export class BrokerConversationService {
     snapshot: RuntimeSnapshot,
     input: {
       channel: string;
-      sharedParticipants: string[];
+      broadcastParticipants: string[];
       scopedParticipants: string[];
       systemParticipants: string[];
     },
@@ -230,19 +254,19 @@ export class BrokerConversationService {
       };
     }
 
-    if (input.channel === "shared") {
-      const naturalKey = namedChannelNaturalKey("shared");
+    if (input.channel === "broadcast") {
+      const naturalKey = namedChannelNaturalKey("broadcast");
       return {
         id: stableChannelId(naturalKey),
         kind: "channel",
-        title: "shared-channel",
+        title: "broadcast",
         visibility: "workspace",
         shareMode: "shared",
         authorityNodeId: this.deps.nodeId,
-        participantIds: input.sharedParticipants,
+        participantIds: input.broadcastParticipants,
         metadata: {
           surface: "broker",
-          channel: "shared",
+          channel: "broadcast",
           naturalKey,
         },
       };

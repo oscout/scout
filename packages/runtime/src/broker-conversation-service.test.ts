@@ -96,6 +96,20 @@ function createHarness(input: {
 }
 
 describe("BrokerConversationService", () => {
+  test("rejects destinationless delivery without writing a conversation", async () => {
+    const harness = createHarness();
+    for (const route of [{}, { channel: "  " }, { targetAgentId: "  ", channel: " " }]) {
+      await expect(harness.service.ensureDeliveryConversation({ requesterId: "operator", ...route }))
+        .rejects.toThrow("Delivery requires an explicit target or channel");
+    }
+    expect(harness.upsertedConversations).toEqual([]);
+    const dm = await harness.service.ensureDeliveryConversation({
+      requesterId: "operator", targetAgentId: " agent-1 ", channel: "  ",
+    });
+    expect(dm.kind).toBe("direct");
+    expect(dm.participantIds).toEqual(["agent-1", "operator"]);
+  });
+
   test("creates missing broker actors and refreshes operator display names", async () => {
     const harness = createHarness({
       snapshot: createRuntimeRegistrySnapshot({
@@ -180,6 +194,34 @@ describe("BrokerConversationService", () => {
     expect(scout.metadata?.role).toBe("partner");
   });
 
+  test("broadcast snapshots live endpoints, replaces old membership, and leaves the retired room untouched", async () => {
+    const legacy = conversation({ id: stableChannelId(namedChannelNaturalKey("shared")) });
+    const alias = conversation({ id: "channel.shared" });
+    const harness = createHarness({ snapshot: createRuntimeRegistrySnapshot({
+      conversations: { [legacy.id]: legacy, [alias.id]: alias },
+      agents: Object.fromEntries(["live", "offline", "unattached", "next"].map((id) => [id, agent({ id })])),
+      endpoints: {
+        live: { id: "live", agentId: "live", nodeId: "node-local", harness: "codex", transport: "acp", state: "active" },
+        duplicate: { id: "duplicate", agentId: "live", nodeId: "node-local", harness: "codex", transport: "acp", state: "offline" },
+        offline: { id: "offline", agentId: "offline", nodeId: "node-local", harness: "codex", transport: "acp", state: "offline" },
+      },
+    }) });
+    const first = await harness.service.ensureDeliveryConversation({ requesterId: "operator", channel: "shared" });
+    expect(first.id).toBe(stableChannelId(namedChannelNaturalKey("broadcast")));
+    expect(first.participantIds).toEqual(["live", "operator"]);
+    harness.snapshot.endpoints.live!.state = "offline";
+    harness.snapshot.endpoints.next = { ...harness.snapshot.endpoints.live!, id: "next", agentId: "next", state: "active" };
+    const second = await harness.service.ensureDeliveryConversation({ requesterId: "operator", channel: "shared" });
+    expect(second.id).toBe(first.id);
+    expect(second.participantIds).toEqual(["next", "operator"]);
+    harness.snapshot.endpoints.next.state = "offline";
+    const empty = await harness.service.ensureDeliveryConversation({ requesterId: "operator", channel: "shared" });
+    expect(empty.participantIds).toEqual(["operator"]);
+    expect(harness.snapshot.conversations[legacy.id]).toBe(legacy);
+    expect(harness.snapshot.conversations[alias.id]).toBe(alias);
+    expect(harness.upsertedConversations.every((record) => record.id === first.id)).toBe(true);
+  });
+
   test("creates and merges channel conversations with scoped participant rules", async () => {
     const existingDocs = conversation({
       id: "channel.docs",
@@ -203,14 +245,14 @@ describe("BrokerConversationService", () => {
       channel: "shared",
     });
     expect(shared).toEqual(expect.objectContaining({
-      id: stableChannelId(namedChannelNaturalKey("shared")),
+      id: stableChannelId(namedChannelNaturalKey("broadcast")),
       kind: "channel",
-      title: "shared-channel",
+      title: "broadcast",
       shareMode: "shared",
-      participantIds: ["agent-1", "agent-2", "operator"],
+      participantIds: ["operator"],
       metadata: expect.objectContaining({
-        channel: "shared",
-        naturalKey: namedChannelNaturalKey("shared"),
+        channel: "broadcast",
+        naturalKey: namedChannelNaturalKey("broadcast"),
       }),
     }));
 

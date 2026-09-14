@@ -74,6 +74,14 @@ function resolveGrokEnvironment(configEnv: Record<string, string> | undefined): 
   };
 }
 
+/** Efforts Grok accepts on `session/set_model`; anything else is dropped. */
+const GROK_REASONING_EFFORTS = new Set(["low", "medium", "high", "xhigh"]);
+
+function normalizeReasoningEffort(value: unknown): string | null {
+  const effort = stringValue(value)?.toLowerCase();
+  return effort && GROK_REASONING_EFFORTS.has(effort) ? effort : null;
+}
+
 function defaultAuthPreference(hasXaiApiKey: boolean): string[] {
   return hasXaiApiKey ? ["xai.api_key", "cached_token"] : ["cached_token"];
 }
@@ -84,6 +92,11 @@ export const createAdapter = (config: AdapterConfig) => {
 
   const command = stringValue(rawOptions.command) ?? defaultGrokCommand(config.env);
   const args = stringArray(rawOptions.args) ?? DEFAULT_GROK_ARGS;
+  // `grok agent stdio` takes no --model/--reasoning-effort flags; both are set
+  // over ACP once the session exists. Normalize the effort here so an unknown
+  // level never reaches the agent, which would silently reset it to the model
+  // default rather than fail.
+  const reasoningEffort = normalizeReasoningEffort(rawOptions.reasoningEffort);
   const authMethodPreference = stringArray(rawOptions.authMethodPreference)
     ?? defaultAuthPreference(hasXaiApiKey);
 
@@ -97,6 +110,7 @@ export const createAdapter = (config: AdapterConfig) => {
       adapterType: GROK_ACP_ADAPTER_TYPE,
       command,
       args,
+      ...(reasoningEffort ? { reasoningEffort } : {}),
       requireAuth: typeof rawOptions.requireAuth === "boolean" ? rawOptions.requireAuth : true,
       authMethodPreference,
     },

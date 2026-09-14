@@ -164,6 +164,9 @@ export type ScoutBrokerHomeAgentRecord = {
   role: string | null;
   summary: string | null;
   projectRoot: string | null;
+  /** Node identity, carried by the broker so bounded rosters stay placeable. */
+  homeNodeId?: string | null;
+  authorityNodeId?: string | null;
   state: "offline" | "available" | "working";
   reachable: boolean;
   statusLabel: string;
@@ -1395,7 +1398,8 @@ function resolveConversationIdForChannel(
   snapshot: ScoutBrokerSnapshot,
   channel?: string,
 ): string | null {
-  const normalizedChannel = channel?.trim() || "shared";
+  const requestedChannel = channel?.trim() || "shared";
+  const normalizedChannel = requestedChannel === "shared" ? "broadcast" : requestedChannel;
   const naturalKey = normalizedChannel === "system"
     ? systemChannelNaturalKey("system")
     : namedChannelNaturalKey(normalizedChannel);
@@ -2064,8 +2068,12 @@ function conversationDefinition(
   senderId: string,
   targetParticipantIds: string[] = [],
 ): ScoutBrokerConversationRecord {
-  const normalizedChannel = channel?.trim() || "shared";
-  const sharedParticipants = [...new Set([OPERATOR_ID, senderId, ...Object.keys(snapshot.agents)])].sort();
+  const requestedChannel = channel?.trim();
+  if (!requestedChannel) throw new Error("Delivery requires an explicit target or channel; use scout broadcast to tell everyone.");
+  const normalizedChannel = requestedChannel === "shared" ? "broadcast" : requestedChannel;
+  const broadcastParticipants = normalizedChannel === "broadcast" ? [...new Set([OPERATOR_ID, senderId, ...Object.values(snapshot.endpoints)
+      .filter((endpoint) => endpoint.state !== "offline" && snapshot.agents[endpoint.agentId])
+      .map((endpoint) => endpoint.agentId)])].sort() : [];
   const scopedParticipants = [...new Set([OPERATOR_ID, senderId, ...targetParticipantIds])].sort();
 
   if (normalizedChannel === "voice") {
@@ -2102,19 +2110,19 @@ function conversationDefinition(
       },
     };
   }
-  if (normalizedChannel === "shared") {
-    const naturalKey = namedChannelNaturalKey("shared");
+  if (normalizedChannel === "broadcast") {
+    const naturalKey = namedChannelNaturalKey("broadcast");
     return {
       id: stableChannelId(naturalKey),
       kind: "channel",
-      title: "shared-channel",
+      title: "broadcast",
       visibility: "workspace",
       shareMode: "shared",
       authorityNodeId: nodeId,
-      participantIds: sharedParticipants,
+      participantIds: broadcastParticipants,
       metadata: {
         surface: "scout-cli",
-        channel: "shared",
+        channel: "broadcast",
         naturalKey,
       },
     };
@@ -2150,7 +2158,7 @@ async function ensureBrokerConversation(
   const equivalentConversations = naturalKey
     ? conversationsWithNaturalKey(Object.values(snapshot.conversations), naturalKey)
     : [];
-  const nextParticipants = [...new Set([
+  const nextParticipants = definition.metadata?.channel === "broadcast" ? definition.participantIds : [...new Set([
     ...equivalentConversations.flatMap((conversation) => conversation.participantIds),
     ...definition.participantIds,
   ])].sort();
@@ -2160,7 +2168,7 @@ async function ensureBrokerConversation(
     existing.kind !== definition.kind ||
     existing.visibility !== definition.visibility ||
     existing.shareMode !== definition.shareMode ||
-    nextParticipants.length !== existing.participantIds.length
+    nextParticipants.join("\u0000") !== existing.participantIds.join("\u0000")
   ) {
     const nextConversation: ScoutBrokerConversationRecord = {
       ...definition,
@@ -2919,6 +2927,25 @@ export async function markScoutConversationRead(input: {
     lastReadAt: input.lastReadAt,
     metadata: input.metadata,
   });
+}
+
+/**
+ * Give a conversation a human name, or hand it back to automatic naming.
+ *
+ * An empty title clears the operator's claim rather than blanking the row —
+ * see packages/runtime/src/conversation-title.ts for why the mark lives on
+ * metadata instead of being a plain title write.
+ */
+export async function renameScoutConversation(input: {
+  conversationId: string;
+  title: string;
+  baseUrl?: string;
+}): Promise<{ ok: true; conversation: { id: string; title: string }; titled: boolean }> {
+  const baseUrl = input.baseUrl ?? resolveScoutBrokerUrl();
+  const path = `/v1/conversations/${encodeURIComponent(input.conversationId)}/title`;
+  // Like the read cursor, a rename must not sit behind a multi-megabyte
+  // snapshot load — the broker resolves the conversation itself.
+  return brokerPostJson(baseUrl, path, { title: input.title });
 }
 
 export async function openScoutDirectSession(input: {

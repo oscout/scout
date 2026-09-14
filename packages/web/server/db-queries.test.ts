@@ -1210,6 +1210,108 @@ describe("web db timestamp normalization", () => {
 });
 
 describe("web db message filtering", () => {
+  test("bounds an agent page to the conversations it is actually in", () => {
+    const store = createSeededStore();
+
+    try {
+      // A conversation the agent was addressed in but has not answered yet.
+      store.upsertActor({ id: "agent-2", kind: "agent", displayName: "Agent Two" });
+      store.upsertConversation({
+        id: "c.conv-addressed",
+        kind: "direct",
+        title: "Addressed",
+        visibility: "private",
+        shareMode: "local",
+        authorityNodeId: "node-1",
+        participantIds: ["agent-1", "operator"],
+      });
+      // A conversation the agent spoke in without a membership row.
+      store.upsertConversation({
+        id: "c.conv-spoken",
+        kind: "channel",
+        title: "Spoken",
+        visibility: "private",
+        shareMode: "local",
+        authorityNodeId: "node-1",
+        participantIds: ["operator"],
+      });
+      // An ask delivered to the agent that it has not answered: no membership
+      // row, nothing authored. The delivery is the only record it was asked.
+      store.upsertConversation({
+        id: "c.conv-unanswered",
+        kind: "channel",
+        title: "Unanswered",
+        visibility: "private",
+        shareMode: "local",
+        authorityNodeId: "node-1",
+        participantIds: ["operator"],
+      });
+      // Unrelated fleet traffic — the global tail this page must not return.
+      store.upsertConversation({
+        id: "c.conv-elsewhere",
+        kind: "direct",
+        title: "Elsewhere",
+        visibility: "private",
+        shareMode: "local",
+        authorityNodeId: "node-1",
+        participantIds: ["agent-2", "operator"],
+      });
+
+      const seed = [
+        { id: "msg-addressed", conversationId: "c.conv-addressed", actorId: "operator", at: 20_001 },
+        { id: "msg-spoken", conversationId: "c.conv-spoken", actorId: "agent-1", at: 20_002 },
+        // The other side of a conversation the agent is in: scoping by
+        // conversation has to bring this back, or the flow has no partner.
+        { id: "msg-spoken-reply", conversationId: "c.conv-spoken", actorId: "operator", at: 20_003 },
+        { id: "msg-elsewhere", conversationId: "c.conv-elsewhere", actorId: "agent-2", at: 20_004 },
+        { id: "msg-unanswered", conversationId: "c.conv-unanswered", actorId: "operator", at: 20_005 },
+      ];
+      for (const row of seed) {
+        store.recordMessage({
+          id: row.id,
+          conversationId: row.conversationId,
+          actorId: row.actorId,
+          originNodeId: "node-1",
+          class: row.actorId === "operator" ? "operator" : "agent",
+          body: row.id,
+          visibility: "private",
+          policy: "durable",
+          createdAt: row.at,
+        });
+      }
+
+      store.recordDeliveries([{
+        id: "delivery-unanswered",
+        messageId: "msg-unanswered",
+        targetId: "agent-1",
+        targetKind: "agent",
+        transport: "local_socket",
+        reason: "direct_message",
+        policy: "best_effort",
+        status: "accepted",
+      }]);
+
+      const scoped = queryRecentMessages(50, { actorId: "agent-1" });
+      const ids = scoped.map((message) => message.id);
+
+      expect(ids).toContain("msg-addressed");
+      expect(ids).toContain("msg-spoken");
+      expect(ids).toContain("msg-spoken-reply");
+      // Addressed but unanswered, with no membership row: the delivery leg is
+      // the only thing that brings this back.
+      expect(ids).toContain("msg-unanswered");
+      // The whole point: unrelated traffic stays out, however recent it is.
+      expect(ids).not.toContain("msg-elsewhere");
+      expect(scoped.every((message) => message.conversationId !== "c.conv-elsewhere")).toBe(true);
+
+      // Without the scope the same read is the global tail, which is what the
+      // agent map was being served.
+      expect(queryRecentMessages(50).map((message) => message.id)).toContain("msg-elsewhere");
+    } finally {
+      store.close();
+    }
+  });
+
   test("pages to messages before a stable message id", () => {
     const store = createSeededStore();
 
@@ -3402,6 +3504,102 @@ describe("web db query fleet", () => {
       expect(afterByInvocationId.get("inv-superseded")?.status).toBe("completed");
       expect(afterByInvocationId.get("inv-review-read")?.status).toBe("completed");
       expect(afterByInvocationId.get("inv-creator-awaiting")?.status).toBe("completed");
+    } finally {
+      store.close();
+    }
+  });
+
+  test("a standing operator dismissal resolves the ask until the record moves again", () => {
+    const store = createSeededStore();
+    const now = Date.now();
+
+    try {
+      store.upsertActor({ id: "agent-10", kind: "agent", displayName: "Agent Ten" });
+      store.upsertAgent({
+        id: "agent-10",
+        kind: "agent",
+        definitionId: "agent-10",
+        displayName: "Agent Ten",
+        agentClass: "general",
+        capabilities: ["chat"],
+        wakePolicy: "on_demand",
+        homeNodeId: "node-1",
+        authorityNodeId: "node-1",
+        advertiseScope: "local",
+      });
+      store.upsertConversation({
+        id: "conv-10",
+        kind: "direct",
+        title: "Agent Ten",
+        visibility: "private",
+        shareMode: "local",
+        authorityNodeId: "node-1",
+        participantIds: ["agent-10", "operator"],
+      });
+      const record = {
+        id: "work-dismissed-standing",
+        kind: "work_item" as const,
+        title: "Handback the operator dismissed",
+        createdById: "operator",
+        ownerId: "agent-10",
+        nextMoveOwnerId: "operator",
+        conversationId: "conv-10",
+        state: "waiting" as const,
+        acceptanceState: "pending" as const,
+        requestedById: "operator",
+        createdAt: now - 30_000,
+        updatedAt: now - 20_000,
+      };
+      store.recordCollaborationRecord(record);
+      store.recordInvocation({
+        id: "inv-dismissed-standing",
+        requesterId: "operator",
+        requesterNodeId: "node-1",
+        targetAgentId: "agent-10",
+        action: "consult",
+        task: "Dismissed handback dispatch",
+        collaborationRecordId: "work-dismissed-standing",
+        conversationId: "conv-10",
+        ensureAwake: true,
+        stream: false,
+        createdAt: now - 30_000,
+      });
+      store.recordFlight({
+        id: "flight-dismissed-standing",
+        invocationId: "inv-dismissed-standing",
+        requesterId: "operator",
+        targetAgentId: "agent-10",
+        state: "completed",
+        summary: "Agent Ten handed the work back.",
+        startedAt: now - 29_000,
+        completedAt: now - 28_000,
+      });
+      store.recordCollaborationEvent({
+        id: "event-work-dismissed-standing",
+        recordId: "work-dismissed-standing",
+        recordKind: "work_item",
+        kind: "dismissed",
+        actorId: "operator",
+        summary: "Dismissed from operator queue.",
+        at: now - 10_000,
+      });
+
+      // The dismissal outdates the record's last movement, so the handback is
+      // resolved everywhere: no needs_attention ask, no attention row.
+      const fleet = queryFleet({ limit: 10, activityLimit: 5 });
+      const ask = [...fleet.activeAsks, ...fleet.recentCompleted]
+        .find((entry) => entry.invocationId === "inv-dismissed-standing");
+      expect(ask?.status).toBe("completed");
+      expect(fleet.needsAttention.some((item) => item.recordId === "work-dismissed-standing")).toBe(false);
+
+      // New movement on the record outdates the dismissal; the handback is
+      // attention again on both surfaces.
+      store.recordCollaborationRecord({ ...record, updatedAt: now - 5_000 });
+      const revived = queryFleet({ limit: 10, activityLimit: 5 });
+      const revivedAsk = [...revived.activeAsks, ...revived.recentCompleted]
+        .find((entry) => entry.invocationId === "inv-dismissed-standing");
+      expect(revivedAsk?.status).toBe("needs_attention");
+      expect(revived.needsAttention.some((item) => item.recordId === "work-dismissed-standing")).toBe(true);
     } finally {
       store.close();
     }

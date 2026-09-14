@@ -7,6 +7,7 @@ import {
   isScoutSpeechStopped,
   playPreparedScoutSpeech,
   prepareScoutSpeech,
+  reconcileScoutSpeechSelection,
   type ScoutSpeechCatalog,
   type ScoutSpeechResult,
 } from "../../lib/scout-voice.ts";
@@ -552,23 +553,10 @@ export function useDeckController() {
       .then((catalog) => {
         if (cancelled) return;
         setSpeechCatalog(catalog);
-        const activeModel = catalog.models.find((model) => model.id === speechModelId);
-        if (!activeModel?.available) {
-          const nextModel = catalog.models.find((model) => model.id === catalog.defaultModelId && model.available)
-            ?? catalog.models.find((model) => model.available);
-          if (nextModel && nextModel.id !== speechModelId) {
-            setSpeechModelId(nextModel.id);
-            localStorage.setItem(VOICE_MODEL_STORAGE_KEY, nextModel.id);
-            return;
-          }
-        }
-        const selected = catalog.voices.find((voice) => voice.id === speechVoiceId && voice.available);
-        if (selected) return;
-        const next = catalog.voices.find((voice) => voice.isDefault && voice.available)
-          ?? catalog.voices.find((voice) => voice.available);
-        if (!next) return;
-        setSpeechVoiceId(next.id);
-        localStorage.setItem(VOICE_ID_STORAGE_KEY, next.id);
+        const next = reconcileScoutSpeechSelection(catalog, speechModelId, speechVoiceId);
+        if (next.voiceId === speechVoiceId) return;
+        setSpeechVoiceId(next.voiceId);
+        localStorage.setItem(VOICE_ID_STORAGE_KEY, next.voiceId);
       })
       .catch((cause) => {
         if (!cancelled) setVoiceError(cause instanceof Error ? cause.message : String(cause));

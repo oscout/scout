@@ -78,6 +78,8 @@ export function AreaSubNavStrip({
  */
 export function CenterPaneHeader({
   rightUtility,
+  centerUtility,
+  crumbUtility,
   variant,
   presentation = "scout",
   onOpenSearch,
@@ -85,6 +87,18 @@ export function CenterPaneHeader({
 }: {
   /** Right-aligned utility slot for screen-level header actions. */
   rightUtility?: ReactNode;
+  /**
+   * Centred slot between the reading group and the utilities. A screen that
+   * owns a search (Terminals) puts its field here so it is the row's middle,
+   * not a corner control. Top-row variant only.
+   */
+  centerUtility?: ReactNode;
+  /**
+   * Replaces the area sub-nav after the section crumb: "Section / <utility>".
+   * Terminals uses it for its workspace tabs, whose Sessions / Terminals
+   * tabs already live in the rail. Top-row variant only.
+   */
+  crumbUtility?: ReactNode;
   /**
    * "top-row" renders the header as the fixed app-wide top row (SCO-087):
    * always mounted, no sticky, sits inside a drag-region wrapper.
@@ -194,10 +208,12 @@ export function CenterPaneHeader({
 
     return (
       <div
-        className="scout-center-pane-header scout-center-pane-header--top-row"
+        className={`scout-center-pane-header scout-center-pane-header--top-row${
+          centerUtility ? " scout-center-pane-header--centered" : ""
+        }`}
         data-scout-center-pane-header=""
         data-scout-top-row=""
-        data-scout-has-secondary-row={showSecondaryRow ? "" : undefined}
+        data-scout-has-secondary-row={showSecondaryRow && !crumbUtility ? "" : undefined}
       >
         <div
           className="scout-center-pane-header-main"
@@ -217,13 +233,35 @@ export function CenterPaneHeader({
           <div className="scout-center-pane-breadcrumb" data-scout-breadcrumb="">
             <span className="scout-nav-crumb">{sectionName}</span>
           </div>
-          {showSecondaryRow ? (
-            <span className="scout-top-row-sep" aria-hidden="true">
-              /
-            </span>
-          ) : null}
-          {secondaryNav}
+          {crumbUtility ? (
+            <>
+              <span className="scout-top-row-sep" aria-hidden="true">
+                /
+              </span>
+              <div className="scout-center-pane-crumb-utility" data-scout-crumb-utility="">
+                {crumbUtility}
+              </div>
+            </>
+          ) : (
+            <>
+              {showSecondaryRow ? (
+                <span className="scout-top-row-sep" aria-hidden="true">
+                  /
+                </span>
+              ) : null}
+              {secondaryNav}
+            </>
+          )}
         </div>
+        {centerUtility ? (
+          <div
+            className="scout-center-pane-header-center"
+            data-scout-header-center=""
+            onMouseDown={onInteractiveMouseDown}
+          >
+            {centerUtility}
+          </div>
+        ) : null}
         {rightUtility ? (
           <div
             className="scout-center-pane-header-utility"

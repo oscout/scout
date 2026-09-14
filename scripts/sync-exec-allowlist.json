@@ -413,6 +413,13 @@
     "owner": "runtime"
   },
   {
+    "path": "packages/runtime/src/system-probes/lan-scan.ts",
+    "symbol": "node:child_process",
+    "category": "probe-exec",
+    "reason": "Probe-owned asynchronous dns-sd browse collects partial stdout within a fixed window and output cap; timer/abort/exit terminate the child. execProbeFile discards partial stdout on timeout.",
+    "owner": "runtime"
+  },
+  {
     "path": "packages/runtime/src/tailscale.test.ts",
     "symbol": "node:child_process",
     "category": "test",

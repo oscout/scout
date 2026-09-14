@@ -892,9 +892,9 @@ export async function getScoutFleet(
  * a `dm.…` direct id) or a bare agent id (from the Agents tab). Not every agent
  * has an `operator` DM — many only have ask/consult conversations keyed `c.…` —
  * so when there's no direct hit and no `dm.operator.{agentId}`, fall back to the
- * most-recent conversation the agent actually participates in.
+ * most-recent non-channel conversation the agent actually participates in.
  */
-function resolveMobileConversation(
+export function resolveMobileConversation(
   snapshot: ScoutBrokerSnapshot,
   rawId: string,
 ): ScoutBrokerConversationRecord | null {
@@ -905,7 +905,7 @@ function resolveMobileConversation(
   if (operatorDm) return operatorDm;
 
   const participating = Object.values(snapshot.conversations).filter(
-    (conversation) => conversation.participantIds?.includes(rawId),
+    (conversation) => conversation.kind !== "channel" && conversation.participantIds?.includes(rawId),
   );
   if (participating.length === 0) return null;
 
@@ -930,7 +930,14 @@ export async function getScoutMobileSessionSnapshot(
 ): Promise<ScoutMobileSessionSnapshot> {
   void currentDirectory;
   const broker = await requireMobileRelayContext();
-  const { snapshot } = broker;
+  return buildMobileSessionSnapshot(broker.snapshot, conversationId, options);
+}
+
+export function buildMobileSessionSnapshot(
+  snapshot: ScoutBrokerSnapshot,
+  conversationId: string,
+  options: { beforeTurnId?: string | null; limit?: number | null } = {},
+): ScoutMobileSessionSnapshot {
   const conversation = resolveMobileConversation(snapshot, conversationId);
 
   // The conversation may not exist yet — the iOS app navigates to
@@ -938,7 +945,7 @@ export async function getScoutMobileSessionSnapshot(
   // empty session instead of throwing so the UI can render the chat
   // composer.
   if (!conversation) {
-    const inferredAgentId = conversationId.startsWith("dm.operator.")
+    const inferredAgentId = snapshot.agents[conversationId] ? conversationId : conversationId.startsWith("dm.operator.")
       ? conversationId.slice("dm.operator.".length)
       : null;
     const agent = inferredAgentId ? snapshot.agents[inferredAgentId] : null;

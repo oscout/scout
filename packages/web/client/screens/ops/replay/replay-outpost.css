@@ -1,0 +1,397 @@
+/* Replay · the outpost.
+   One continuous section: sky and surface above the cut, the ridge on the
+   ground line, the record of the run carved into the strata below it.
+   Geometry that the component computes (camera, ground, travel clock) is passed
+   in as inline style; everything static lives here. */
+
+.replay-outpost {
+  --ro-edge: var(--s-hairline, oklch(0.975 0.006 260 / 0.08));
+  --ro-edge-soft: oklch(0.975 0.006 260 / 0.045);
+  position: relative;
+  display: grid;
+  grid-template-rows: auto minmax(360px, 46%) auto minmax(280px, 1fr);
+  min-height: 0;
+  overflow: hidden;
+  border-radius: 12px;
+  background: var(--s-bg, oklch(0.118 0.004 260));
+  color: var(--s-ink, oklch(0.975 0.006 260));
+  font-family: var(--s-font-sans, Inter, ui-sans-serif, system-ui, sans-serif);
+  font-size: 13px;
+}
+
+/* ---------- header ---------- */
+.replay-outpost__head {
+  display: flex; align-items: center; gap: 10px;
+  padding: 10px 14px; border-bottom: 1px solid var(--ro-edge);
+}
+.replay-outpost__who { font-weight: 600; letter-spacing: -0.01em; }
+.replay-outpost__spacer { flex: 1; }
+
+/* ---------- above the cut ---------- */
+.replay-outpost__stage { position: relative; overflow: hidden; background: #05070c; min-height: 0; }
+/* Used ONCE. The shipped view tiled this painting into a 1200px pattern and
+   mirrored it, so the outpost repeated about three times and read as wallpaper. */
+.replay-outpost__panorama {
+  position: absolute; left: 0; bottom: 0; max-width: none; height: auto;
+  transition: transform 520ms linear; will-change: transform;
+}
+.replay-outpost__veil {
+  position: absolute; inset: 0; pointer-events: none;
+  background:
+    linear-gradient(180deg, oklch(0.118 0.004 260 / 0.55) 0%, oklch(0.118 0.004 260 / 0.10) 26%, transparent 46%),
+    /* The painting's own rubble band below source y=507 is already subsurface;
+       the old 0.86 floor wash buried the one edge worth seeing. */
+    linear-gradient(0deg, oklch(0.118 0.004 260 / 0.52) 0%, oklch(0.118 0.004 260 / 0.14) 20%, transparent 33%);
+}
+
+/* Where you are in the run. What is happening reads off the character. */
+.replay-outpost__hud {
+  position: absolute; top: 14px; left: 16px; right: 16px;
+  display: flex; align-items: baseline; gap: 9px;
+}
+.replay-outpost__hud-dot {
+  width: 5px; height: 5px; border-radius: 999px; flex: none; align-self: center;
+  background: var(--s-accent, oklch(0.86 0.17 125));
+}
+.replay-outpost__hud-dot[data-failed] { background: var(--color-status-error-fg); }
+.replay-outpost__hud-who {
+  font-family: var(--s-font-mono, "JetBrains Mono", ui-monospace, monospace);
+  font-size: 11px; letter-spacing: 0.14em; text-transform: uppercase;
+}
+.replay-outpost__hud-step {
+  margin-left: auto; font-family: var(--s-font-mono, ui-monospace, monospace);
+  font-size: 10px; color: var(--s-dim); font-variant-numeric: tabular-nums;
+}
+
+/* Anchored on the FEET. The label used to sit in flow inside this box, so a
+   stop that renders no label — every `think` — made the stack shorter and, being
+   bottom-anchored, dropped the sprite through the ground and back up again. */
+.replay-outpost__actor {
+  position: absolute; left: 0; bottom: 38%;
+  display: grid; justify-items: center;
+  transition: transform 520ms linear; will-change: transform;
+}
+.replay-outpost__art { position: relative; display: block; }
+/* The bust carries 4.1% empty height below the feet; the atlas lands exactly on
+   the box bottom. Without this he rises ~6px the moment he starts thinking. */
+.replay-outpost__standing { display: block; transform: translateY(4.1%); }
+/* The jump arc is the stage's job — the atlas supplies the airborne tuck.
+   `translate` rather than `transform` so it never fights the facing mirror. */
+.replay-outpost__art.is-hopping { animation: replay-outpost-hop 520ms cubic-bezier(0.33, 0, 0.4, 1) 1; }
+@keyframes replay-outpost-hop {
+  0% { translate: 0 0 } 45% { translate: 0 -52px } 100% { translate: 0 0 }
+}
+.replay-outpost__shadow {
+  width: 76px; height: 9px; margin-top: -6px; border-radius: 999px;
+  background: #000; opacity: 0.5; filter: blur(5px);
+}
+.replay-outpost__shadow.is-small { width: 52px; }
+
+/* Reads with the character. Fixed width so the sprite never shifts when a long
+   path replaces a short one. */
+.replay-outpost__doing {
+  position: absolute; top: calc(100% + 8px); left: 50%; transform: translateX(-50%);
+  display: grid; justify-items: center; gap: 4px; text-align: center; width: 460px;
+}
+/* The caption lands on the foreground rubble — the busiest, highest contrast
+   part of the whole painting, where 10px mono is unreadable. A scrim rather
+   than a panel: the bubbles are the only objects in this world, and a second
+   bordered box at his feet would compete with them. The mask feathers the wash
+   so the ground goes quiet under the words with no edge to find. */
+.replay-outpost__doing::before,
+.replay-outpost__handoff-label::before {
+  content: ""; position: absolute; inset: -11px -22px -13px; z-index: -1;
+  background: radial-gradient(58% 128% at 50% 50%,
+    oklch(0.118 0.004 260 / 0.94) 0%, oklch(0.118 0.004 260 / 0.72) 46%, transparent 78%);
+  -webkit-mask-image: radial-gradient(58% 128% at 50% 50%, #000 0%, #000 46%, transparent 78%);
+  mask-image: radial-gradient(58% 128% at 50% 50%, #000 0%, #000 46%, transparent 78%);
+}
+.replay-outpost__activity {
+  font-family: var(--s-font-mono, ui-monospace, monospace); font-size: 10px;
+  letter-spacing: 0.14em; text-transform: uppercase; color: var(--s-accent);
+}
+.replay-outpost__target {
+  font-size: 12px; color: var(--s-ink); max-width: 100%;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+/* ---- bubbles: what he says, and what he says to himself ----------------- */
+/* Two of the nine kinds are not facts about a step, they are the agent's own
+   words — a thinking trace, and a message to another agent. Those go over his
+   head, in the shape the world already reads without a label. Paths, commands
+   and exit codes stay in the caption at his feet, where a long path can run
+   wide without crowding him.
+
+   Anchored on __actor, not __art: the art gets scaleX(-1) when he heads back
+   toward the domes, and a mirrored sprite is the point — mirrored prose isn't. */
+.replay-outpost__bubble {
+  position: absolute; bottom: calc(100% + 14px); left: 50%; transform: translateX(-50%);
+  width: max-content; max-width: min(360px, 78%); padding: 9px 14px;
+  background: color-mix(in oklab, var(--s-surface) 94%, transparent);
+  border: 1px solid color-mix(in oklab, var(--s-ink) 14%, transparent);
+  /* No backdrop-filter: __actor carries will-change: transform, which makes it
+     a backdrop root — a blur in here samples an empty backdrop and silently
+     does nothing. The fill carries it instead. */
+  box-shadow: 0 12px 34px rgb(0 0 0 / 0.5);
+  animation: replay-outpost-bubble-in 220ms cubic-bezier(0.2, 0.9, 0.3, 1) 1;
+}
+.replay-outpost__bubble-text {
+  margin: 0; overflow: hidden; display: -webkit-box; -webkit-box-orient: vertical;
+  -webkit-line-clamp: var(--replay-bubble-lines, 3); line-clamp: var(--replay-bubble-lines, 3);
+}
+@keyframes replay-outpost-bubble-in {
+  from { opacity: 0; translate: 0 6px; scale: 0.96 }
+  to { opacity: 1; translate: 0 0; scale: 1 }
+}
+
+/* A thinking trace is prose, and gets set as prose. Rounder than the speech
+   bubble, and it trails puffs instead of a tail — that difference alone tells
+   the two apart at a glance, so neither needs a word above it. */
+.replay-outpost__bubble.is-thought { border-radius: 20px; }
+.replay-outpost__bubble.is-thought .replay-outpost__bubble-text {
+  font-family: Spectral, Georgia, serif; font-style: italic; font-size: 13.5px;
+  line-height: 1.45; color: var(--s-ink);
+}
+.replay-outpost__puff {
+  position: absolute; left: 50%; border-radius: 999px;
+  background: color-mix(in oklab, var(--s-surface) 94%, transparent);
+  border: 1px solid color-mix(in oklab, var(--s-ink) 14%, transparent);
+  animation: replay-outpost-puff 1.6s ease-in-out infinite;
+}
+.replay-outpost__puff.is-big { width: 11px; height: 11px; bottom: -8px; margin-left: -20px; }
+.replay-outpost__puff.is-small { width: 6px; height: 6px; bottom: -18px; margin-left: -30px; animation-delay: 0.28s; }
+@keyframes replay-outpost-puff {
+  0%, 100% { opacity: 0.45; scale: 0.86 }
+  45% { opacity: 1; scale: 1 }
+}
+
+/* Speech: squarer, with a tail that points at the head that said it. */
+.replay-outpost__bubble.is-speech { border-radius: 11px; }
+.replay-outpost__bubble.is-speech .replay-outpost__bubble-text {
+  font-size: 13px; line-height: 1.45; color: var(--s-ink);
+}
+.replay-outpost__bubble-to {
+  display: block; margin-bottom: 3px; font-family: var(--s-font-mono, ui-monospace, monospace);
+  font-size: 9.5px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--s-accent);
+}
+/* Rotated square rather than a border triangle, so the hairline carries on
+   around the point instead of stopping at it. */
+.replay-outpost__tail {
+  position: absolute; bottom: -6px; left: 50%; width: 11px; height: 11px; margin-left: -5.5px;
+  background: color-mix(in oklab, var(--s-surface) 94%, transparent);
+  border-right: 1px solid color-mix(in oklab, var(--s-ink) 14%, transparent);
+  border-bottom: 1px solid color-mix(in oklab, var(--s-ink) 14%, transparent);
+  rotate: 45deg;
+}
+
+.replay-outpost__handoff {
+  position: absolute; bottom: 38%; display: grid; justify-items: center; gap: 6px;
+  transition: left 520ms linear;
+}
+.replay-outpost__handoff-label {
+  position: relative;
+  font-family: var(--s-font-mono, ui-monospace, monospace); font-size: 10px;
+  letter-spacing: 0.1em; text-transform: uppercase; color: var(--s-muted);
+}
+
+/* ---------- the ground line ----------
+   One strip replacing the scrubber, the checkpoint markers, the checkpoint-mode
+   select, the next-review button and the stop counter. */
+.replay-outpost__ridge {
+  display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 14px;
+  padding: 10px 14px;
+  border-top: 1px solid var(--ro-edge); border-bottom: 1px solid var(--ro-edge);
+  background: var(--s-surface, oklch(0.205 0.005 260));
+}
+.replay-outpost__transport { display: flex; align-items: center; gap: 6px; }
+.replay-outpost__play {
+  width: 30px; height: 30px; display: grid; place-items: center; padding: 0;
+  border-radius: 999px; cursor: pointer;
+  border: 1px solid var(--s-accent); background: var(--s-accent-soft); color: var(--s-accent);
+}
+.replay-outpost__play:hover { background: oklch(0.86 0.17 125 / 0.18); }
+.replay-outpost__speed {
+  background: none; border: 1px solid var(--ro-edge); border-radius: 6px;
+  color: var(--s-muted); font-family: var(--s-font-mono, ui-monospace, monospace);
+  font-size: 11px; padding: 4px 6px; cursor: pointer;
+}
+
+.replay-outpost__bars {
+  position: relative; display: flex; align-items: flex-end; gap: 2px; height: 42px; cursor: pointer;
+}
+.replay-outpost__bar {
+  flex: 1 1 0; min-width: 0; position: relative; border-radius: 2px 2px 0 0;
+  background: currentColor; opacity: 0.26; transition: opacity 140ms ease;
+}
+.replay-outpost__bar.is-seen { opacity: 1; }
+.replay-outpost__bar.is-now { opacity: 1; box-shadow: 0 0 0 1px var(--s-accent), 0 0 10px var(--s-accent-soft); }
+.replay-outpost__bars:hover .replay-outpost__bar { opacity: 0.5; }
+.replay-outpost__bars:hover .replay-outpost__bar.is-seen { opacity: 1; }
+/* A checkpoint gets a mark above the bar, never a colour change on it. */
+.replay-outpost__flag {
+  position: absolute; top: -7px; left: 50%; margin-left: -1.5px;
+  width: 3px; height: 3px; border-radius: 999px; background: currentColor;
+}
+.replay-outpost__elapsed {
+  font-family: var(--s-font-mono, ui-monospace, monospace); font-size: 11px;
+  color: var(--s-dim); font-variant-numeric: tabular-nums;
+}
+.replay-outpost__elapsed span { opacity: 0.5; }
+.replay-outpost__tip {
+  position: absolute; bottom: calc(100% + 8px); transform: translateX(-50%); z-index: 3;
+  background: #10141b; border: 1px solid var(--ro-edge); border-radius: 6px;
+  padding: 5px 8px; pointer-events: none; white-space: nowrap;
+  box-shadow: 0 8px 24px rgb(0 0 0 / 0.5);
+}
+.replay-outpost__tip-kind {
+  font-family: var(--s-font-mono, ui-monospace, monospace); font-size: 9px;
+  letter-spacing: 0.12em; text-transform: uppercase;
+}
+.replay-outpost__tip-title { font-size: 12px; color: var(--s-ink); margin-top: 1px; }
+
+/* ---------- below the cut ----------
+   Strata darken with depth, so the log is somewhere rather than a panel bolted
+   underneath. Ready to take a painted subsurface plate as a background layer. */
+.replay-outpost__subsurface {
+  position: relative; display: grid; grid-template-columns: 1fr 320px; min-height: 0;
+  background: linear-gradient(180deg, #0c1119 0%, #080c12 52%, #05070b 100%);
+}
+.replay-outpost__subsurface::before {
+  content: ""; position: absolute; inset: 0; pointer-events: none;
+  background: repeating-linear-gradient(179.4deg,
+    transparent 0 58px, oklch(0.975 0.006 260 / 0.022) 58px 59px);
+}
+/* the cut face — dust catching light along the top edge */
+.replay-outpost__subsurface::after {
+  content: ""; position: absolute; left: 0; right: 0; top: 0; height: 44px; pointer-events: none;
+  background: linear-gradient(180deg, oklch(0.86 0.17 125 / 0.05), transparent 78%);
+}
+
+.replay-outpost__log {
+  position: relative; overflow: auto; min-height: 0; border-right: 1px solid var(--ro-edge);
+}
+.replay-outpost__row {
+  display: grid; grid-template-columns: 52px 12px 1fr auto; gap: 10px; align-items: baseline;
+  padding: 7px 14px; border-bottom: 1px solid var(--ro-edge-soft);
+}
+.replay-outpost__row:last-child { border-bottom: 0; }
+.replay-outpost__row.is-now { background: var(--s-accent-soft); box-shadow: inset 2px 0 0 var(--s-accent); }
+.replay-outpost__row.is-ahead { opacity: 0.4; }
+.replay-outpost__at,
+.replay-outpost__ms {
+  font-family: var(--s-font-mono, ui-monospace, monospace); font-size: 10px;
+  color: var(--s-dim); font-variant-numeric: tabular-nums;
+}
+.replay-outpost__pip {
+  width: 6px; height: 6px; border-radius: 999px; background: currentColor;
+  justify-self: center; transform: translateY(3px);
+}
+.replay-outpost__text { min-width: 0; }
+.replay-outpost__title {
+  display: block; font-size: 12px; color: var(--s-ink);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.replay-outpost__activity-small {
+  display: block; margin-top: 2px; font-family: var(--s-font-mono, ui-monospace, monospace);
+  font-size: 9px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--s-dim);
+}
+
+/* Recessed rather than greyed: further into the rock, not less important. */
+.replay-outpost__satchel {
+  position: relative; padding: 12px 14px; overflow: auto; min-height: 0;
+  background: linear-gradient(180deg, oklch(0.118 0.004 260 / 0.55), oklch(0.118 0.004 260 / 0.8));
+  box-shadow: inset 10px 0 18px -12px #000;
+}
+.replay-outpost__satchel-head {
+  display: flex; justify-content: space-between;
+  font-family: var(--s-font-mono, ui-monospace, monospace); font-size: 10px;
+  letter-spacing: 0.12em; text-transform: uppercase; color: var(--s-dim);
+}
+.replay-outpost__satchel-empty {
+  margin-top: 14px; font-family: Spectral, Georgia, serif; font-style: italic;
+  font-size: 12px; color: var(--s-dim);
+}
+.replay-outpost__shelf { margin-top: 12px; }
+.replay-outpost__shelf-name {
+  display: flex; align-items: center; gap: 6px;
+  font-family: var(--s-font-mono, ui-monospace, monospace); font-size: 9px;
+  letter-spacing: 0.1em; text-transform: uppercase;
+}
+.replay-outpost__shelf-name span { color: var(--s-muted); }
+.replay-outpost__shelf-list { margin: 6px 0 0; padding: 0; list-style: none; display: grid; gap: 3px; }
+.replay-outpost__shelf-item { animation: replay-outpost-land 260ms cubic-bezier(0.22, 0.61, 0.36, 1); }
+@keyframes replay-outpost-land {
+  from { opacity: 0; transform: translateY(-3px) } to { opacity: 1; transform: none }
+}
+.replay-outpost__shelf-button {
+  display: flex; align-items: baseline; gap: 6px; width: 100%; text-align: left;
+  margin: 0 -6px; padding: 3px 6px; border: 0; border-radius: 4px; background: none;
+  font-family: var(--s-font-mono, ui-monospace, monospace); font-size: 11px;
+  color: var(--s-muted); cursor: pointer;
+  transition: background 120ms ease, color 120ms ease;
+}
+.replay-outpost__shelf-button > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.replay-outpost__shelf-button > b { flex: none; font-weight: 500; color: var(--s-ink); }
+.replay-outpost__shelf-button[data-failed] { color: var(--color-status-error-fg); }
+.replay-outpost__shelf-button:hover { background: oklch(0.975 0.006 260 / 0.05); color: var(--s-ink); }
+.replay-outpost__shelf-button:focus-visible { outline: 1px solid var(--s-accent); outline-offset: 1px; }
+/* the affordance, only on hover — the list stays quiet at rest */
+.replay-outpost__shelf-button::after {
+  content: ""; margin-left: auto; width: 5px; height: 5px; flex: none; align-self: center;
+  border-right: 1px solid currentColor; border-top: 1px solid currentColor;
+  transform: rotate(45deg); opacity: 0; transition: opacity 120ms ease;
+}
+.replay-outpost__shelf-button:hover::after,
+.replay-outpost__shelf-button:focus-visible::after { opacity: 0.6; }
+
+/* ---------- the reader ----------
+   A drawer over the section, not a modal that blanks it: the run stays visible
+   behind, so opening a file never costs you your place in the journey. */
+.replay-outpost__scrim {
+  position: absolute; inset: 0; z-index: 5; border: 0; padding: 0; cursor: default;
+  background: oklch(0.118 0.004 260 / 0.62); animation: replay-outpost-fade 160ms ease;
+}
+.replay-outpost__reader {
+  position: absolute; top: 0; right: 0; bottom: 0; width: min(560px, 62%); z-index: 6;
+  display: grid; grid-template-rows: auto 1fr;
+  background: #0a0e15; border-left: 1px solid var(--ro-edge);
+  box-shadow: -24px 0 60px -20px #000;
+  animation: replay-outpost-drawer 240ms cubic-bezier(0.22, 0.61, 0.36, 1);
+}
+@keyframes replay-outpost-fade { from { opacity: 0 } to { opacity: 1 } }
+@keyframes replay-outpost-drawer {
+  from { transform: translateX(18px); opacity: 0 } to { transform: none; opacity: 1 }
+}
+.replay-outpost__reader-head {
+  position: relative; padding: 14px 16px; border-bottom: 1px solid var(--ro-edge);
+  display: grid; gap: 3px;
+}
+.replay-outpost__reader-kind {
+  font-family: var(--s-font-mono, ui-monospace, monospace); font-size: 10px;
+  letter-spacing: 0.12em; text-transform: uppercase; color: var(--s-muted);
+}
+.replay-outpost__reader-kind[data-failed] { color: var(--color-status-error-fg); }
+.replay-outpost__reader-title { font-size: 14px; font-weight: 600; word-break: break-word; }
+.replay-outpost__reader-meta {
+  font-family: var(--s-font-mono, ui-monospace, monospace); font-size: 10px; color: var(--s-dim);
+}
+.replay-outpost__reader-close {
+  position: absolute; top: 12px; right: 12px; width: 24px; height: 24px;
+  display: grid; place-items: center; border-radius: 6px; cursor: pointer;
+  border: 1px solid var(--ro-edge); background: none; color: var(--s-muted);
+}
+.replay-outpost__reader-close:hover { color: var(--s-ink); background: oklch(0.975 0.006 260 / 0.06); }
+.replay-outpost__reader-body {
+  overflow: auto; padding: 14px 16px; white-space: pre-wrap;
+  font-family: var(--s-font-mono, ui-monospace, monospace); font-size: 11px;
+  line-height: 1.6; color: var(--s-muted);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .replay-outpost__actor,
+  .replay-outpost__panorama,
+  .replay-outpost__handoff { transition-duration: 1ms; }
+  .replay-outpost__art.is-hopping,
+  .replay-outpost__bubble { animation: none; }
+  .replay-outpost__puff { animation: none; opacity: 0.8; }
+}

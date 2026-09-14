@@ -13,14 +13,20 @@ import { resolveScoutBrokerUrl } from "./core/broker/service.ts";
 import {
   isAuthenticatedScoutRequest,
   isAuthorizedScoutWebSocketRequest,
+  isForwardedHttpsScoutRequest,
   isScoutWebRequestAllowedFromPeer,
   isTrustedScoutApiRequest,
   createScoutRequestPeerAddressRegistry,
   resolveScoutWebLanAccessScope,
   resolveScoutWebBindHost,
   scoutWebAuthCookie,
+  shouldIssueFrontDoorScoutWebCredential,
   shouldIssueLocalScoutWebCredential,
 } from "./server-core.ts";
+import {
+  createScoutWebSessionStore,
+  SCOUT_WEB_SESSION_MAX_AGE_SECONDS,
+} from "./web-sessions.ts";
 import { resolveOpenScoutWebApplicationServerIdentity } from "./app-server-origin.ts";
 import {
   createRelayWebSocketProxy,
@@ -45,6 +51,7 @@ const port = Number.parseInt(
 const hostname = resolveScoutWebBindHost(process.env);
 const lanAccessScope = resolveScoutWebLanAccessScope(process.env);
 const webAuthToken = resolveWebAuthToken(process.env);
+const webSessions = createScoutWebSessionStore();
 const currentDirectory = resolveOpenScoutSetupContextRoot({
   env: process.env,
   fallbackDirectory: process.cwd(),
@@ -161,6 +168,7 @@ const web = await createOpenScoutWebServer({
   trustedHosts: applicationServerIdentity.trustedHosts,
   trustedOrigins: applicationServerIdentity.trustedOrigins,
   authToken: webAuthToken,
+  sessions: webSessions,
   resolvePeerAddress: requestPeerAddresses.resolve,
   runTerminalCommand: async (request) => {
     const relay = await ensureTerminalRelay();
@@ -224,6 +232,7 @@ try {
             !isAuthorizedScoutWebSocketRequest(req, webAuthToken, {
               trustedHosts: applicationServerIdentity.trustedHosts,
               trustedOrigins: applicationServerIdentity.trustedOrigins,
+              sessions: webSessions,
             }, peerAddress)
           )
         ) {
@@ -271,7 +280,7 @@ try {
             trustedHosts: applicationServerIdentity.trustedHosts,
             trustedOrigins: applicationServerIdentity.trustedOrigins,
           }, peerAddress)
-          || !isAuthenticatedScoutRequest(req, webAuthToken)
+          || !isAuthenticatedScoutRequest(req, webAuthToken, webSessions.validate)
         ) {
           return new Response("Unauthorized", {
             status: 401,
@@ -281,8 +290,21 @@ try {
         return handleRelayUpload(req);
       }
 
+      // The bootstrap script auto-issues a browser session on two vouched
+      // paths: a same-Mac client (loopback / local edge), or a declared front
+      // door (an authenticating reverse proxy such as an exe.dev private share
+      // or the OSN mesh front door). Already-authenticated requests pass
+      // through untouched so page loads don't mint a fresh session each time.
+      const frontDoorEligible = url.pathname === routes.bootstrapScriptPath
+        && shouldIssueFrontDoorScoutWebCredential(
+          req,
+          peerAddress,
+          applicationServerIdentity.frontDoorOrigins,
+          applicationServerIdentity.frontDoorPeers,
+        );
       const bootstrapEligible = url.pathname === routes.bootstrapScriptPath
-        && shouldIssueLocalScoutWebCredential(req, peerAddress);
+        && !isAuthenticatedScoutRequest(req, webAuthToken, webSessions.validate)
+        && (frontDoorEligible || shouldIssueLocalScoutWebCredential(req, peerAddress));
       const honoRequest = bootstrapEligible
         ? new Request(req, {
             headers: (() => {
@@ -294,12 +316,28 @@ try {
         : req;
       requestPeerAddresses.remember(honoRequest, peerAddress);
       const response = await honoFetch(honoRequest, server);
-      if (!bootstrapEligible) return response;
+      if (!bootstrapEligible || response.status >= 400) return response;
 
       const headers = new Headers(response.headers);
-      const secure = url.protocol === "https:"
-        || req.headers.get("x-forwarded-proto")?.toLowerCase() === "https";
-      headers.append("set-cookie", scoutWebAuthCookie(webAuthToken, secure));
+      // Front-door browsers get a minted, revocable session. Loopback clients
+      // keep the operator-token cookie: CLI helpers fetch bootstrap on every
+      // uncredentialed call, and minting there would churn the session store.
+      const secure = isForwardedHttpsScoutRequest(req);
+      try {
+        headers.append("set-cookie", frontDoorEligible
+          ? scoutWebAuthCookie(
+              webSessions.mint({ label: "front-door" }),
+              secure,
+              SCOUT_WEB_SESSION_MAX_AGE_SECONDS,
+            )
+          : scoutWebAuthCookie(webAuthToken, secure));
+      } catch {
+        void response.body?.cancel().catch(() => {});
+        return Response.json({ error: "session storage unavailable" }, {
+          status: 503,
+          headers: { "cache-control": "no-store" },
+        });
+      }
       return new Response(response.body, {
         status: response.status,
         statusText: response.statusText,

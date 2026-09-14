@@ -11,7 +11,12 @@ import {
   type MessageRecord,
 } from "@openscout/protocol";
 
-import { promoteLocalEndpointProviderSession } from "./broker-local-endpoint-resolver.js";
+import { createInMemoryControlRuntime } from "./broker.js";
+import {
+  BrokerLocalEndpointResolver,
+  promoteLocalEndpointProviderSession,
+} from "./broker-local-endpoint-resolver.js";
+import { sessionObservationMetadata, type LocalEndpointSessionObservation } from "./session-observation.js";
 import { applyInvocationStatusPatch } from "./broker-local-invocation-helpers.js";
 import { BrokerLocalInvocationService } from "./broker-local-invocation-service.js";
 import { DispatchStalledError } from "./dispatch-stalled.js";
@@ -1022,5 +1027,97 @@ describe("BrokerLocalInvocationService", () => {
     expect(started).toEqual(["invocation-1", "invocation-2"]);
     expect(harness.persistedFlights.filter((flight) => flight.state === "running").map((flight) => flight.invocationId))
       .toEqual(["invocation-1", "invocation-2"]);
+  });
+});
+
+describe("tmux session observation across the invocation boundary", () => {
+  test("a turn's harness evidence binds the endpoint so the follow-up continues the same session", async () => {
+    // Producer: the tmux invoke path reports what the harness's own record
+    // says about the pane, through the same metadata the resolver reads.
+    const nativeId = "7b81300d-0a9c-4953-8d7f-9274b11ebdfb";
+    const endpoint = testEndpoint({
+      id: "endpoint-woolf-20-tmux",
+      transport: "tmux",
+      harness: "claude",
+      state: "active",
+      sessionId: "session-mtus22pe-emx8hl",
+      cwd: "/Users/art/dev/openscout",
+      projectRoot: "/Users/art/dev/openscout",
+      metadata: {
+        source: "scout-isolated-agent-session",
+        sessionBacked: true,
+        pendingExternalSession: true,
+        pendingExternalSessionAt: 9_000,
+        model: "claude-opus-5",
+        alive: true,
+      },
+    });
+    const observation: LocalEndpointSessionObservation = {
+      sessionId: nativeId,
+      runtime: { harness: "claude", model: "claude-opus-5", reasoningEffort: "high" },
+      runtimeSource: "claude-statusline",
+      evidence: { source: "claude-session-record", tmuxSession: "session-mtus22pe-emx8hl", pid: 17446 },
+      observedAt: 12_000,
+    };
+    const harness = createHarness({
+      endpoint,
+      invokeResult: {
+        output: "first reply",
+        metadata: sessionObservationMetadata(endpoint, observation),
+      },
+    });
+    harness.seedFlight(testFlight());
+
+    await harness.service.execute(testInvocation());
+
+    const bound = harness.persistedEndpoints.at(-1);
+    expect(bound).toEqual(expect.objectContaining({
+      id: endpoint.id,
+      sessionId: "session-mtus22pe-emx8hl",
+      metadata: expect.objectContaining({
+        externalSessionId: nativeId,
+        pendingExternalSession: false,
+        observedSessionId: nativeId,
+        observedRuntime: { harness: "claude", model: "claude-opus-5", reasoningEffort: "high" },
+        observedRuntimeSource: "claude-statusline",
+        observedSessionEvidence: expect.objectContaining({ source: "claude-session-record", pid: 17446 }),
+      }),
+    }));
+
+    // Consumer: a follow-up naming either id resolves the same endpoint,
+    // with current harness evidence and no caller adoption.
+    const runtime = createInMemoryControlRuntime({}, { localNodeId: "node-1" });
+    await runtime.upsertEndpoint(bound!);
+    const resolver = new BrokerLocalEndpointResolver({
+      nodeId: "node-1",
+      runtime,
+      isLocalAgentEndpointAlive: (candidate) => candidate.metadata?.alive === true,
+      observeLocalEndpointSession: async () => observation,
+      ensureLocalSessionEndpointOnline: async () => ({}),
+      ensureLocalAgentBindingOnline: async () => null,
+      createIsolatedAgentEndpoint: async () => null,
+      upsertActor: async () => {},
+      upsertAgent: async () => {},
+      persistEndpoint: async () => {},
+      now: () => 10_000_000,
+    });
+    for (const targetSessionId of [nativeId, "session-mtus22pe-emx8hl"]) {
+      const resolved = await resolver.resolveLocalEndpointForInvocation(testInvocation({
+        execution: { session: "existing", targetSessionId },
+        ensureAwake: true,
+      }));
+      expect(resolved?.id).toBe(endpoint.id);
+    }
+
+    // An exact runtime is judged on the observed evidence, not the launch flags.
+    await expect(resolver.resolveLocalEndpointForInvocation(testInvocation({
+      execution: { session: "existing", targetSessionId: nativeId, harness: "claude", model: "claude-sonnet-5" },
+      ensureAwake: true,
+    }))).rejects.toThrow("session_runtime_mismatch");
+    const exact = await resolver.resolveLocalEndpointForInvocation(testInvocation({
+      execution: { session: "existing", targetSessionId: nativeId, harness: "claude", model: "claude-opus-5", reasoningEffort: "high" },
+      ensureAwake: true,
+    }));
+    expect(exact?.id).toBe(endpoint.id);
   });
 });

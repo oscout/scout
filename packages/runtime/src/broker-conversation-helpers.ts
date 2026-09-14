@@ -1,3 +1,4 @@
+import { iterateMessageRecords, iterateMessageRecordsAsync, readMessageRecord } from "./broker-message-records.js";
 import {
   buildScoutReturnAddress,
   preferredConversationWithNaturalKey,
@@ -114,7 +115,7 @@ export function brokerRouteKind(
   if (conversation.kind === "direct") {
     return "dm";
   }
-  return conversation.metadata?.channel === "shared"
+  return conversation.metadata?.channel === "shared" || conversation.metadata?.channel === "broadcast"
     ? "broadcast"
     : "channel";
 }
@@ -180,11 +181,28 @@ export function resolveBrokerMessageRef(snapshot: RuntimeSnapshot, ref: string):
     return direct;
   }
   const normalized = ref.toLowerCase();
-  const matches = Object.values(snapshot.messages).filter((message) =>
-    message.id.toLowerCase() === normalized
-    || message.id.toLowerCase().endsWith(normalized)
-  );
-  return matches.length === 1 ? matches[0]! : null;
+  let match: MessageRecord | null = null;
+  for (const message of iterateMessageRecords(snapshot.messages)) {
+    if (message.id.toLowerCase() !== normalized && !message.id.toLowerCase().endsWith(normalized)) continue;
+    if (match) return null;
+    match = message;
+  }
+  return match;
+}
+
+export async function resolveBrokerMessageRefAsync(snapshot: RuntimeSnapshot, ref: string): Promise<MessageRecord | null> {
+  const direct = await readMessageRecord(snapshot.messages,ref);
+  if (direct) {
+    return direct;
+  }
+  const normalized = ref.toLowerCase();
+  let match: MessageRecord | null = null;
+  for await (const message of iterateMessageRecordsAsync(snapshot.messages)) {
+    if (message.id.toLowerCase() !== normalized && !message.id.toLowerCase().endsWith(normalized)) continue;
+    if (match) return null;
+    match = message;
+  }
+  return match;
 }
 
 export function resolveConversationShareMode(

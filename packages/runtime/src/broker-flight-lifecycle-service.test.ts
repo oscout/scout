@@ -154,6 +154,7 @@ function createHarness(input: {
   snapshot?: RuntimeSnapshot;
   deliveries?: DeliveryIntent[];
   deliveryAttempts?: Record<string, DeliveryAttempt[]>;
+  beforeConditionalUpdate?: () => void;
   invocation?: InvocationRequest;
   activeInvocationIds?: string[];
   now?: number;
@@ -191,7 +192,7 @@ function createHarness(input: {
       },
     },
     journal: {
-      listDeliveries: () => input.deliveries ?? [],
+      visitDeliveries: async (visitor) => { for (const delivery of [...(input.deliveries ?? [])]) await visitor(delivery); },
       listDeliveryAttempts: (deliveryId) => input.deliveryAttempts?.[deliveryId] ?? [],
     },
     durableStore: {
@@ -210,6 +211,13 @@ function createHarness(input: {
     invocationFor: (invocationId) => input.invocation ?? snapshot.invocations[invocationId],
     async updateDeliveryStatus(update) {
       updatedDeliveries.push(update);
+    },
+    async updateDeliveryStatusIf(update, eligible) {
+      input.beforeConditionalUpdate?.();
+      const current = input.deliveries?.find(delivery => delivery.id === update.deliveryId);
+      if (!current || !await eligible(current)) return false;
+      updatedDeliveries.push(update);
+      return true;
     },
     async promoteInvocationFlightToWork(invocation, flight, output) {
       promoted.push({ invocation, flight, output });
@@ -659,5 +667,35 @@ describe("broker flight lifecycle helpers", () => {
     ]);
     expect(harness.promoted).toHaveLength(1);
     expect(harness.forwardedFlights).toHaveLength(1);
+  });
+});
+
+
+describe("stale reconciliation writer eligibility", () => {
+  for (const status of ["leased", "completed"] as const) {
+    test(`preserves a concurrent ${status} replacement`, async () => {
+      const endpoint = testEndpoint();
+      const delivery = testDelivery({ status: "pending" });
+      const deliveries = [delivery];
+      const harness = createHarness({
+        snapshot: testSnapshot({ agents: { "agent-1": testAgent() }, endpoints: { [endpoint.id]: endpoint } }),
+        deliveries, now: 30_000,
+        beforeConditionalUpdate: () => { deliveries[0] = { ...delivery, status, leaseOwner: "worker", leaseExpiresAt: 90_000 }; },
+      });
+      await harness.service.reconcileStaleLocalDeliveries();
+      expect(harness.updatedDeliveries).toEqual([]);
+      expect(deliveries[0]!.status).toBe(status);
+      expect(harness.warnings).toEqual([]);
+    });
+  }
+  test("leaves an existing unexpired lease intact", async () => {
+    const endpoint = testEndpoint();
+    const harness = createHarness({
+      snapshot: testSnapshot({ agents: { "agent-1": testAgent() }, endpoints: { [endpoint.id]: endpoint } }),
+      deliveries: [testDelivery({ status: "leased", leaseOwner: "worker", leaseExpiresAt: 90_000 })], now: 30_000,
+    });
+    await harness.service.reconcileStaleLocalDeliveries();
+    expect(harness.updatedDeliveries).toEqual([]);
+    expect(harness.warnings).toEqual([]);
   });
 });

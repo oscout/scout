@@ -120,6 +120,21 @@ export type HerdrWorkspaceProjection = {
   tabs: HerdrTabProjection[];
 };
 
+/**
+ * Why a projection is not live.
+ *
+ * `not_running` is the ordinary case: no herdr server answers for this session,
+ * so its persisted layout is the honest thing to show.
+ *
+ * `unreadable` is the case worth naming. A herdr server for this session IS
+ * running, but it did not answer the topology commands — a protocol skew
+ * between the installed client and a long-lived server is the common cause,
+ * and a busy server or a timeout look the same from here. Collapsing that into
+ * `not_running` would state, of live work, that it is not running. The
+ * projection says which it is so a reader never has to guess.
+ */
+export type HerdrTopologyUnavailableReason = "not_running" | "unreadable";
+
 export type HerdrSessionTopology = {
   /** Herdr session name, e.g. "openscout". */
   session: string;
@@ -134,8 +149,23 @@ export type HerdrSessionTopology = {
    * projection is live.
    */
   savedAt?: number | null;
+  /**
+   * Why this projection is not live. Set only when `running` is false; absent
+   * on a live read. See {@link HerdrTopologyUnavailableReason}.
+   */
+  unavailable?: HerdrTopologyUnavailableReason | null;
 };
 
-export function emptyHerdrSessionTopology(session: string, running: boolean): HerdrSessionTopology {
-  return { session, running, workspaces: [], observedAt: Date.now() };
+export function emptyHerdrSessionTopology(
+  session: string,
+  running: boolean,
+  unavailable?: HerdrTopologyUnavailableReason | null,
+): HerdrSessionTopology {
+  return {
+    session,
+    running,
+    workspaces: [],
+    observedAt: Date.now(),
+    ...(running ? {} : { unavailable: unavailable ?? "not_running" }),
+  };
 }

@@ -92,10 +92,18 @@ export function MissionLogPane({
   const file = missionLogFileLabel(log);
   const where = [log.project, log.agent?.branch].filter(Boolean).join("/") || log.cwd || "—";
 
-  const hover = statusOnHover({
-    label: `Focus ${title}`,
-    route: `/ops/control · ${log.sessionId}`,
-  });
+  // Only the file button previews a destination: it is the one control here
+  // that leaves the wall. The pane itself used to announce "Focus …" on every
+  // hover, which mounted the status bar for a non-navigation and, with twenty
+  // panes under a moving pointer, kept it blinking. Memoised so pointer-leave
+  // finds the same object it set on enter.
+  const tailHover = useMemo(
+    () => statusOnHover({
+      label: `Tail · ${title}`,
+      route: `/ops/tail?q=${encodeURIComponent(log.sessionId)}`,
+    }),
+    [log.sessionId, title],
+  );
 
   const onPaneClick = (event: ReactMouseEvent) => {
     if (event.metaKey || event.ctrlKey || event.shiftKey) {
@@ -118,8 +126,6 @@ export function MissionLogPane({
       data-cursor={cursor ? true : undefined}
       tabIndex={cursor ? 0 : -1}
       onClick={onPaneClick}
-      onPointerEnter={hover.onPointerEnter}
-      onPointerLeave={hover.onPointerLeave}
     >
       <div className="s-wall-pane-head">
         <span
@@ -154,6 +160,8 @@ export function MissionLogPane({
             event.stopPropagation();
             onOpenLog();
           }}
+          onPointerEnter={tailHover.onPointerEnter}
+          onPointerLeave={tailHover.onPointerLeave}
         >
           {file}
         </button>

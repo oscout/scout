@@ -60,6 +60,15 @@ import {
   publishScoutRealtimeVoiceSettings,
   saveScoutRealtimeVoiceSettings,
 } from "../../lib/realtime-voice-settings.ts";
+import {
+  fetchScoutVoicePlaybackSettings,
+  publishScoutVoicePlaybackSettings,
+  saveScoutVoicePlaybackSettings,
+} from "../../lib/voice-playback-settings.ts";
+import {
+  SCOUT_VOICE_PLAYBACK_ENV,
+  type ScoutVoicePlaybackSettings,
+} from "../../../shared/voice-playback.ts";
 import { VoiceHostStatusBanner, VoicePermissionsPanel } from "./VoicePermissionsPanel.tsx";
 import "./settings-drawer.css";
 import "./voice-permissions-panel.css";
@@ -1141,27 +1150,31 @@ function VoiceSection() {
   const realtimeVoiceAvailable = useOptionalFlag(SCOUT_REALTIME_VOICE_FLAG, true);
   const [settings, setSettings] = useState<ScoutVoiceSettings | null>(null);
   const [realtimeSettings, setRealtimeSettings] = useState<Awaited<ReturnType<typeof fetchScoutRealtimeVoiceSettings>> | null>(null);
+  const [playbackSettings, setPlaybackSettings] = useState<ScoutVoicePlaybackSettings | null>(null);
   const [devices, setDevices] = useState<ScoutVoiceInputDevice[]>([]);
   const [history, setHistory] = useState<ScoutVoiceSessionHistoryEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [realtimeSaving, setRealtimeSaving] = useState(false);
+  const [playbackSaving, setPlaybackSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const [snapshot, sessions, realtime] = await Promise.all([
+      const [snapshot, sessions, realtime, playback] = await Promise.all([
         fetchScoutVoiceSettings(),
         fetchScoutVoiceHistory(12).catch(() => []),
         // The host voice inventory remains useful when an older or restarting
         // web server has not mounted the realtime settings endpoint yet.
         fetchScoutRealtimeVoiceSettings().catch(() => null),
+        fetchScoutVoicePlaybackSettings().catch(() => null),
       ]);
       setSettings(snapshot.settings);
       setDevices(snapshot.devices);
       setHistory(sessions);
       setRealtimeSettings(realtime);
+      setPlaybackSettings(playback);
       setError(null);
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : String(loadError));
@@ -1204,6 +1217,20 @@ function VoiceSection() {
     }
   }, []);
 
+  const applyPlaybackOnHost = useCallback(async (onHost: boolean) => {
+    setPlaybackSaving(true);
+    setError(null);
+    try {
+      const snapshot = await saveScoutVoicePlaybackSettings(onHost ? "host" : "browser");
+      setPlaybackSettings(snapshot);
+      publishScoutVoicePlaybackSettings(snapshot);
+    } catch (saveError) {
+      setError(saveError instanceof Error ? saveError.message : String(saveError));
+    } finally {
+      setPlaybackSaving(false);
+    }
+  }, []);
+
   if (loading && !settings) {
     return <div className="s-settings-field-hint">Loading voice settings…</div>;
   }
@@ -1228,6 +1255,18 @@ function VoiceSection() {
         : realtimeEnabled
           ? "Ready. Use Voice in the footer to start a call."
           : "Off. No microphone or OpenAI connection runs in the background.";
+
+  const playbackOnHost = playbackSettings?.playback === "host";
+  const playbackToggleDisabled = playbackSaving || !playbackSettings || playbackSettings.locked;
+  const playbackStatus = !playbackSettings
+    ? "Playback settings are temporarily unavailable."
+    : playbackSettings.locked
+      ? `Controlled by ${SCOUT_VOICE_PLAYBACK_ENV} · ${playbackSettings.playback}`
+      : playbackOnHost
+        ? hostOnline
+          ? "On. Scout Menu speaks replies on this Mac in its own voice."
+          : "On, but Scout Menu is offline. Launch it on this Mac to hear replies."
+        : "Off. Replies play in this browser.";
 
   const troubleshootingTips = [
     !hostOnline
@@ -1281,6 +1320,33 @@ function VoiceSection() {
         >
           <span className="s-settings-switch-thumb" aria-hidden="true" />
           <span className="sr-only">{realtimeEnabled ? "On" : "Off"}</span>
+        </button>
+      </div>
+
+      <SectionRule label="Spoken replies" right="where they play" />
+      <div
+        className="s-settings-realtime-voice"
+        data-enabled={playbackOnHost || undefined}
+      >
+        <span className="s-settings-realtime-voice-copy">
+          <strong>Speak on this Mac</strong>
+          <span>
+            Spoken replies and briefs play through Scout Menu on the Mac instead of this browser tab, in the voice chosen in Scout Menu › Voice. Installed voices such as Kokoro work only this way. A surface or agent can still name the browser for one utterance.
+          </span>
+          <em>{playbackStatus}</em>
+        </span>
+        <button
+          type="button"
+          role="switch"
+          aria-checked={playbackOnHost}
+          aria-label="Speak on this Mac"
+          disabled={playbackToggleDisabled}
+          data-checked={playbackOnHost || undefined}
+          className="s-settings-switch"
+          onClick={() => void applyPlaybackOnHost(!playbackOnHost)}
+        >
+          <span className="s-settings-switch-thumb" aria-hidden="true" />
+          <span className="sr-only">{playbackOnHost ? "On" : "Off"}</span>
         </button>
       </div>
 
@@ -1772,7 +1838,7 @@ const SECTIONS: { id: Section; label: string; sub: string }[] = [
   { id: "appearance", label: "Appearance", sub: "mode · workspace style" },
   { id: "operator", label: "Operator", sub: "identity · bio · hours" },
   { id: "comms", label: "Communication", sub: "how agents reach you" },
-  { id: "voice", label: "Voice", sub: "realtime · permissions · dictation" },
+  { id: "voice", label: "Voice", sub: "realtime · playback · permissions · dictation" },
   { id: "credentials", label: "Credentials", sub: "model provider keys" },
   { id: "devices", label: "Paired devices", sub: "relay · connected" },
   { id: "about", label: "About", sub: "versions · build · runtime" },

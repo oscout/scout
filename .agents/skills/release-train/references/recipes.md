@@ -143,3 +143,15 @@ Classify every finding `must_fix`, `should_fix`, `follow_up`, or `reject`.
   deployment, or publication owner.
 - Complete S110 with ready-to-merge, needs-review, needs-follow-up,
   held/excluded, and shipped queues plus stable receipts and next owners.
+
+
+## Local validation and hosted opt-in
+
+Read [local-delivery.md](local-delivery.md) for the normative evidence contract.
+Do not dispatch GitHub Actions as a default review step. Record required local
+checks at S30 and their exact-head/base receipts at S50. Before S60/S80 and each
+merge, freshly inspect the PR head, base, mergeability, reviews, protection and
+rulesets using GitHub's read API. Persist the observation with the receipts.
+Merge using `--match-head-commit <reviewed-head>`; if the base or head changes,
+return to validation and refresh the exact revision receipts. Do not create
+synthetic check runs or statuses, dismiss feedback, or bypass a remote rule.

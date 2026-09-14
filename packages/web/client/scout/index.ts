@@ -84,7 +84,7 @@ const intents: AppIntent[] = [
   },
   {
     commandId: "nav:mesh",
-    title: "Open Mesh",
+    title: "Open Network",
     description: "Navigate to the mesh network view showing nodes and topology",
     category: "navigation",
     keywords: ["mesh", "network", "nodes", "peers", "topology"],

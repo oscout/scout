@@ -24,6 +24,7 @@ import {
 } from "@openscout/protocol";
 
 import { planMessageDeliveries, type DeliveryRoute } from "./planner.js";
+import { captureMessageRecords, asyncMessageRecordView, readMessageRecord } from "./broker-message-records.js";
 import {
   createRuntimeRegistrySnapshot,
   type RuntimeRegistrySnapshot,
@@ -175,7 +176,7 @@ export class InMemoryControlRuntime implements ControlRuntime {
       endpoints: { ...this.registry.endpoints },
       conversations: { ...this.registry.conversations },
       bindings: { ...this.registry.bindings },
-      messages: { ...this.registry.messages },
+      messages: captureMessageRecords(this.registry.messages),
       readCursors: { ...this.registry.readCursors },
       invocations: { ...this.registry.invocations },
       flights: { ...this.registry.flights },
@@ -207,6 +208,8 @@ export class InMemoryControlRuntime implements ControlRuntime {
   message(messageId: ScoutId): MessageRecord | undefined {
     return this.registry.messages[messageId];
   }
+
+  async readMessage(messageId: ScoutId, options?: {signal?:AbortSignal}): Promise<MessageRecord | undefined> { return readMessageRecord(this.registry.messages,messageId,options); }
 
   readCursor(conversationId: ScoutId, actorId: ScoutId) {
     return this.registry.readCursors[`${conversationId}\u0000${actorId}`];
@@ -613,7 +616,7 @@ export class InMemoryControlRuntime implements ControlRuntime {
     message: MessageRecord,
     deliveries: DeliveryIntent[],
   ): Promise<void> {
-    this.registry.messages[message.id] = message;
+    if(!asyncMessageRecordView(this.registry.messages))this.registry.messages[message.id] = message;
 
     this.emit({
       id: createRuntimeId("evt"),

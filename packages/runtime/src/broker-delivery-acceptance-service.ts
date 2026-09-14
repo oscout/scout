@@ -1,3 +1,4 @@
+import { iterateMessageRecordsAsync } from "./broker-message-records.js";
 import {
   SCOUT_DISPATCHER_AGENT_ID,
   createScoutExecutionResolution,
@@ -83,7 +84,7 @@ export type BrokerDeliveryAcceptanceServiceOptions = {
   syncRegisteredLocalAgentsIfChanged: (reason: string) => Promise<void>;
   metadataStringValue: (metadata: Record<string, unknown> | undefined, key: string) => string | null;
   messageRefCandidateForRouteTarget: (payload: BrokerRouteTargetInput) => string | null;
-  resolveBrokerMessageRef: (snapshot: RuntimeSnapshot, ref: string) => MessageRecord | null;
+  resolveBrokerMessageRef: (snapshot: RuntimeSnapshot, ref: string) => MessageRecord | null | Promise<MessageRecord|null>;
   ensureBrokerActorForDelivery: (actorId: string) => Promise<void>;
   ensureBrokerDeliveryConversation: (
     input: EnsureBrokerDeliveryConversationInput,
@@ -315,10 +316,8 @@ export class BrokerDeliveryAcceptanceService {
       "clientMessageId",
     );
     const existingMessage = clientMessageId
-      ? Object.values(initialSnapshot.messages).find((message) => (
-          message.actorId === requesterId
-          && this.options.metadataStringValue(message.metadata, "clientMessageId") === clientMessageId
-        ))
+      ? await firstMatchingMessage(initialSnapshot.messages, (message) => message.actorId === requesterId
+        && this.options.metadataStringValue(message.metadata, "clientMessageId") === clientMessageId, { actorId: requesterId, clientMessageId })
       : undefined;
 
     // A bridge acknowledgement can be lost after the broker commits the
@@ -477,7 +476,7 @@ export class BrokerDeliveryAcceptanceService {
 
     const messageRef = this.options.messageRefCandidateForRouteTarget(payload);
     const replyTarget = messageRef
-      ? this.options.resolveBrokerMessageRef(this.options.runtimeSnapshot(), messageRef)
+      ? await this.options.resolveBrokerMessageRef(this.options.runtimeSnapshot(), messageRef)
       : null;
     throwIfAborted(options.signal);
     if (replyTarget) {
@@ -1161,4 +1160,9 @@ export class BrokerDeliveryAcceptanceService {
   private now(): number {
     return (this.options.now ?? Date.now)();
   }
+}
+
+async function firstMatchingMessage(records: Record<string, MessageRecord>, predicate: (record: MessageRecord) => boolean, selection?: import("./broker-message-records.js").MessageSelection): Promise<MessageRecord | undefined> {
+  for await (const record of iterateMessageRecordsAsync(records, { selection })) if (predicate(record)) return record;
+  return undefined;
 }

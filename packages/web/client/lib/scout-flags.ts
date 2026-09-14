@@ -108,7 +108,7 @@ export const scoutFlags = createFlagRegistry({
     tags: ["ops", "nav"],
   },
   "ops.mesh": {
-    label: "Ops · Mesh",
+    label: "Ops · Network",
     description: "Mesh topology and peer status.",
     defaultEnabled: true,
     tier: "power",

@@ -14,6 +14,8 @@ export type ScoutCommandName =
   | "diff"
   | "down"
   | "doctor"
+  | "report"
+  | "feedback"
   | "env"
   | "flight"
   | "init"
@@ -21,6 +23,7 @@ export type ScoutCommandName =
   | "install"
   | "label"
   | "latest"
+  | "machines"
   | "match"
   | "mcp"
   | "menu"
@@ -70,6 +73,10 @@ export async function loadScoutCommandHandler(name: ScoutCommandName): Promise<S
       return (await import("./diff.ts")).runDiffCommand;
     case "down":
       return (await import("./down.ts")).runDownCommand;
+    case "report":
+      return (await import("./report.ts")).runReportCommand;
+    case "feedback":
+      return (await import("./report.ts")).runFeedbackCommand;
     case "doctor":
       return (await import("./doctor.ts")).runDoctorCommand;
     case "env":
@@ -86,6 +93,8 @@ export async function loadScoutCommandHandler(name: ScoutCommandName): Promise<S
       return (await import("./label.ts")).runLabelCommand;
     case "latest":
       return (await import("./latest.ts")).runLatestCommand;
+    case "machines":
+      return (await import("./machines.ts")).runMachinesCommand;
     case "match":
       return (await import("./match.ts")).runMatchCommand;
     case "mcp":

@@ -6,12 +6,12 @@ import { registerSecretValue } from "@openscout/agent-sessions/secret-redaction"
 import { homedir } from "node:os";
 import { join } from "node:path";
 
-import {
-  StateTracker,
-  createPiAdapter,
-  type Adapter,
-  type AgentSessionStreamEvent,
-  type SessionState,
+import { StateTracker } from "@openscout/agent-sessions/state";
+import { createAdapter as createPiAdapter } from "@openscout/agent-sessions/adapters/pi";
+import type {
+  Adapter,
+  AgentSessionStreamEvent,
+  SessionState,
 } from "@openscout/agent-sessions";
 
 export type PiRpcSessionRequestOptions = {

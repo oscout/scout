@@ -336,9 +336,29 @@ function compareEndpointPreference(left: EndpointRow, right: EndpointRow): numbe
     || right.id.localeCompare(left.id);
 }
 
+/**
+ * Whether this endpoint is inside a turn the broker started and has not seen
+ * end. `lastStartedAt`/`lastCompletedAt` are written only by the invocation
+ * dispatcher (broker-local-invocation-service), so they are turn facts —
+ * unlike `startedAt`, which a presence heartbeat stamps with a process start.
+ */
+function endpointTurnIsOpen(row: EndpointRow): boolean {
+  const metadata = parseJsonObject(row.metadata_json);
+  const startedAt = metadataTimestamp(metadata, "lastStartedAt");
+  return startedAt > 0 && startedAt > metadataTimestamp(metadata, "lastCompletedAt");
+}
+
 function activityForEndpoint(endpoint: EndpointRow | null): ObservedActivity {
   switch (endpoint?.state) {
+    // Two different producers write `active`, and they do not mean the same
+    // thing. The invocation dispatcher writes it at turn start (stamping
+    // `lastStartedAt`, then `idle` + `lastCompletedAt` at the end); a presence
+    // heartbeat — `scout channel`, which re-registers every 15s — writes it for
+    // as long as a process is connected. Reading presence as work pins every
+    // conversation for that agent at "working" for the life of the process,
+    // which is what put a permanent spinner on the $HOME project row.
     case "active":
+      return endpointTurnIsOpen(endpoint) ? "working" : "idle";
     case "working":
       return "working";
     case "waiting":

@@ -1,3 +1,4 @@
+import { iterateMessageRecords } from "./broker-message-records.js";
 import { randomUUID } from "node:crypto";
 import { mkdir, readFile, unlink, writeFile } from "node:fs/promises";
 import { basename, join, resolve } from "node:path";
@@ -58,6 +59,7 @@ import {
   resolveBrokerSocketPathForBaseUrl,
 } from "./broker-process-manager.js";
 import { endpointAvailabilityScore } from "./broker-endpoint-selection.js";
+import { isOperatorTitled, resolveConversationTitle } from "./conversation-title.js";
 
 export type ScoutBrokerActorRecord = {
   id: string;
@@ -536,7 +538,8 @@ function resolveConversationIdForChannel(
   snapshot: ScoutBrokerSnapshot,
   channel?: string,
 ): string | null {
-  const normalizedChannel = channel?.trim() || "shared";
+  const requestedChannel = channel?.trim() || "shared";
+  const normalizedChannel = requestedChannel === "shared" ? "broadcast" : requestedChannel;
   const naturalKey = normalizedChannel === "system"
     ? systemChannelNaturalKey("system")
     : namedChannelNaturalKey(normalizedChannel);
@@ -549,7 +552,7 @@ function relayRouteKind(
   if (conversation.kind === "direct") {
     return "dm";
   }
-  return conversation.metadata?.channel === "shared"
+  return conversation.metadata?.channel === "shared" || conversation.metadata?.channel === "broadcast"
     ? "broadcast"
     : "channel";
 }
@@ -1139,12 +1142,16 @@ function conversationDefinition(
   senderId: string,
   targetParticipantIds: string[] = [],
 ): ScoutBrokerConversationRecord {
-  const normalizedChannel = channel?.trim() || "shared";
-  const sharedParticipants = unique([
+  const requestedChannel = channel?.trim();
+  if (!requestedChannel) throw new Error("Delivery requires an explicit target or channel; use scout broadcast to tell everyone.");
+  const normalizedChannel = requestedChannel === "shared" ? "broadcast" : requestedChannel;
+  const broadcastParticipants = normalizedChannel === "broadcast" ? unique([
     OPERATOR_ID,
     senderId,
-    ...Object.keys(snapshot.agents),
-  ]).sort();
+    ...Object.values(snapshot.endpoints)
+      .filter((endpoint) => endpoint.state !== "offline" && snapshot.agents[endpoint.agentId])
+      .map((endpoint) => endpoint.agentId),
+  ]).sort() : [];
   const scopedParticipants = unique([
     OPERATOR_ID,
     senderId,
@@ -1187,19 +1194,19 @@ function conversationDefinition(
     };
   }
 
-  if (normalizedChannel === "shared") {
-    const naturalKey = namedChannelNaturalKey("shared");
+  if (normalizedChannel === "broadcast") {
+    const naturalKey = namedChannelNaturalKey("broadcast");
     return {
       id: stableChannelId(naturalKey),
       kind: "channel",
-      title: "shared-channel",
+      title: "broadcast",
       visibility: "workspace",
       shareMode: "shared",
       authorityNodeId: nodeId,
-      participantIds: sharedParticipants,
+      participantIds: broadcastParticipants,
       metadata: {
         surface: "scout-cli",
-        channel: "shared",
+        channel: "broadcast",
         naturalKey,
       },
     };
@@ -1236,7 +1243,7 @@ async function ensureBrokerConversation(
   const equivalentConversations = naturalKey
     ? conversationsWithNaturalKey(Object.values(snapshot.conversations), naturalKey)
     : [];
-  const nextParticipants = unique([
+  const nextParticipants = definition.metadata?.channel === "broadcast" ? definition.participantIds : unique([
     ...equivalentConversations.flatMap((conversation) => conversation.participantIds),
     ...definition.participantIds,
   ]).sort();
@@ -1246,7 +1253,7 @@ async function ensureBrokerConversation(
     || existing.kind !== definition.kind
     || existing.visibility !== definition.visibility
     || existing.shareMode !== definition.shareMode
-    || nextParticipants.length !== existing.participantIds.length
+    || nextParticipants.join("\u0000") !== existing.participantIds.join("\u0000")
   ) {
     const nextConversation: ScoutBrokerConversationRecord = {
       ...definition,
@@ -1311,7 +1318,12 @@ async function ensureBrokerDirectConversationBetween(
   const definition: ScoutBrokerConversationRecord = {
     id: conversationId,
     kind: "direct",
-    title: targetId === SCOUT_AGENT_ID && sourceId === OPERATOR_ID ? "Scout" : conversationTitle,
+    /* Automatic naming defers to a human one — see conversation-title.ts. */
+    title: resolveConversationTitle({
+      derived: targetId === SCOUT_AGENT_ID && sourceId === OPERATOR_ID ? "Scout" : conversationTitle,
+      existingTitle: existing?.title,
+      existingMetadata: existing?.metadata,
+    }),
     visibility: "private",
     shareMode: nextShareMode,
     authorityNodeId: nodeId,
@@ -1320,6 +1332,11 @@ async function ensureBrokerDirectConversationBetween(
       surface: "scout",
       naturalKey,
       ...(targetId === SCOUT_AGENT_ID && sourceId === OPERATOR_ID ? { role: "partner" } : {}),
+      /* The rename mark rides on metadata, and this object replaces it
+         wholesale — carry it or the title guard has nothing to read. */
+      ...(isOperatorTitled(existing?.metadata)
+        ? { titleSource: existing!.metadata!.titleSource, titleSetAt: existing!.metadata!.titleSetAt }
+        : {}),
     },
   };
 
@@ -2021,7 +2038,7 @@ export async function listScoutAgents(options: { currentDirectory?: string } = {
     endpointsByAgent.set(endpoint.agentId, existing);
   }
 
-  for (const message of Object.values(broker.snapshot.messages ?? {})) {
+  for (const message of iterateMessageRecords(broker.snapshot.messages ?? {})) {
     if (!message.actorId || message.actorId === OPERATOR_ID) {
       continue;
     }

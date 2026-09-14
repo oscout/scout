@@ -70,11 +70,14 @@ describe("wallCursorMoveForKey", () => {
     expect(wallCursorMoveForKey("ArrowDown")).toBe("down");
   });
 
-  test("g/G and Home/End reach the ends", () => {
-    expect(wallCursorMoveForKey("g")).toBe("first");
+  test("G and Home/End reach the ends", () => {
     expect(wallCursorMoveForKey("Home")).toBe("first");
     expect(wallCursorMoveForKey("G")).toBe("last");
     expect(wallCursorMoveForKey("End")).toBe("last");
+  });
+
+  test("bare g is left to the shell's go-chord", () => {
+    expect(wallCursorMoveForKey("g")).toBeNull();
   });
 
   test("unbound keys are left for the rest of the surface", () => {

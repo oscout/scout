@@ -1,6 +1,6 @@
 {
   "schemaVersion": "openscout.runtime-catalog.v1",
-  "revision": "2026-09-05.1",
+  "revision": "2026-09-10.1",
   "harnesses": [
     {
       "id": "claude",
@@ -40,22 +40,21 @@
       "enabled": true,
       "listed": false,
       "reasoningEfforts": ["low", "medium", "high", "xhigh"],
-      "defaultReasoningEffort": "medium",
+      "defaultReasoningEffort": "high",
       "models": [
         { "id": "grok-4.6", "label": "Grok 4.6", "enabled": true, "default": true, "family": "Grok", "version": "4.6", "contextWindowTokens": 500000 },
-        { "id": "grok-4.5", "label": "Grok 4.5", "enabled": true, "family": "Grok", "version": "4.5" },
-        { "id": "grok-4.3", "label": "Grok 4.3", "enabled": true, "family": "Grok", "version": "4.3" }
+        { "id": "grok-4.5", "label": "Grok 4.5", "enabled": true, "family": "Grok", "version": "4.5", "contextWindowTokens": 500000 }
       ]
     },
     {
       "id": "grok-acp",
       "label": "Grok",
       "enabled": true,
-      "reasoningEfforts": null,
+      "reasoningEfforts": ["low", "medium", "high", "xhigh"],
+      "defaultReasoningEffort": "high",
       "models": [
         { "id": "grok-4.6", "label": "Grok 4.6", "enabled": true, "default": true, "family": "Grok", "version": "4.6", "contextWindowTokens": 500000 },
-        { "id": "grok-4.5", "label": "Grok 4.5", "enabled": true, "family": "Grok", "version": "4.5" },
-        { "id": "grok-4.3", "label": "Grok 4.3", "enabled": true, "family": "Grok", "version": "4.3" }
+        { "id": "grok-4.5", "label": "Grok 4.5", "enabled": true, "family": "Grok", "version": "4.5", "contextWindowTokens": 500000 }
       ]
     },
     { "id": "kimi", "label": "Kimi Code", "enabled": true, "reasoningEfforts": null, "models": [] },

@@ -124,6 +124,41 @@ function validateNonnegativeInteger(label: string, value: number): void {
   }
 }
 
+/** Longest safe prefix of an already oversized body, including its ellipsis.
+ * Count JSON string-content bytes directly instead of allocating candidate JSON. */
+function truncateJsonBody(value: string, maximumContentBytes: number): string {
+  const prefixBudget = maximumContentBytes - 3; // UTF-8 ellipsis
+  if (prefixBudget < 0) return "";
+  let end = 0;
+  let bytes = 0;
+  while (end < value.length) {
+    const code = value.charCodeAt(end);
+    let width = 1;
+    let cost: number;
+    if (code < 0x20) {
+      cost = code === 8 || code === 9 || code === 10 || code === 12 || code === 13 ? 2 : 6;
+    } else if (code === 0x22 || code === 0x5c) {
+      cost = 2;
+    } else if (code < 0x80) {
+      cost = 1;
+    } else if (code < 0x800) {
+      cost = 2;
+    } else if (code >= 0xd800 && code <= 0xdbff
+      && value.charCodeAt(end + 1) >= 0xdc00 && value.charCodeAt(end + 1) <= 0xdfff) {
+      width = 2;
+      cost = 4;
+    } else if (code >= 0xd800 && code <= 0xdfff) {
+      cost = 6; // Well-formed JSON escapes each unpaired surrogate.
+    } else {
+      cost = 3;
+    }
+    if (bytes + cost > prefixBudget) break;
+    bytes += cost;
+    end += width;
+  }
+  return `${value.slice(0, end)}…`;
+}
+
 function canonicalMessage(
   message: ConversationThreadLaunchSnapshot["messages"][number],
 ): ConversationThreadLaunchSnapshot["messages"][number] {
@@ -140,29 +175,19 @@ function canonicalMessage(
     class: message.class,
     createdAt: message.createdAt,
   };
-  if (encodedBytes({ ...canonical, body: "" }) > NATIVE_READ_THREAD_MAX_MESSAGE_BYTES) {
+  const metadataBytes = encodedBytes({ ...canonical, body: "" });
+  if (metadataBytes > NATIVE_READ_THREAD_MAX_MESSAGE_BYTES) {
     throw new ConversationThreadArtifactError(
       `message ${message.id} metadata exceeds ${NATIVE_READ_THREAD_MAX_MESSAGE_BYTES} bytes`,
     );
   }
-  if (encodedBytes(canonical) <= NATIVE_READ_THREAD_MAX_MESSAGE_BYTES) return canonical;
+  const bodyBudget = NATIVE_READ_THREAD_MAX_MESSAGE_BYTES - metadataBytes;
+  // JSON escaping can only increase the body's UTF-8 byte cost. Avoid
+  // serializing an oversized source body just to establish that it cannot fit.
+  if (Buffer.byteLength(message.body, "utf8") <= bodyBudget
+    && encodedBytes(canonical) <= NATIVE_READ_THREAD_MAX_MESSAGE_BYTES) return canonical;
 
-  let low = 0;
-  let high = message.body.length;
-  let best = "";
-  while (low <= high) {
-    const middle = Math.floor((low + high) / 2);
-    const prefix = safeUtf16Prefix(message.body, middle);
-    const candidate = `${prefix}${middle < message.body.length ? "…" : ""}`;
-    canonical.body = candidate;
-    if (encodedBytes(canonical) <= NATIVE_READ_THREAD_MAX_MESSAGE_BYTES) {
-      best = candidate;
-      low = middle + 1;
-    } else {
-      high = middle - 1;
-    }
-  }
-  canonical.body = best;
+  canonical.body = truncateJsonBody(message.body, bodyBudget);
   return canonical;
 }
 
@@ -233,7 +258,9 @@ export function buildNativeReadThreadArtifact(
     contentCursor: "0".repeat(64),
   };
 
-  if (artifactBytes(artifact) > NATIVE_READ_THREAD_MAX_BYTES) {
+  let pageBytes = artifactBytes(artifact);
+  let cursorBytes = encodedBytes(artifact.cursor);
+  if (pageBytes > NATIVE_READ_THREAD_MAX_BYTES) {
     throw new ConversationThreadArtifactError(
       `native thread artifact metadata exceeds ${NATIVE_READ_THREAD_MAX_BYTES} bytes`,
     );
@@ -242,9 +269,20 @@ export function buildNativeReadThreadArtifact(
   // Retain a contiguous newest page. Iterating backwards ensures an older
   // oversized row can never evict a newer message from first paint.
   for (let index = candidates.length - 1; index >= 0; index -= 1) {
-    artifact.messages.unshift(candidates[index]!);
+    const candidate = candidates[index]!;
+    const nextCursorBytes = encodedBytes(candidate.id);
+    // Only the inserted message, an optional array comma, and the cursor
+    // change. Quote their exact JSON bytes without re-encoding prior bodies.
+    const nextPageBytes = pageBytes + encodedBytes(candidate)
+      + (artifact.messages.length > 0 ? 1 : 0)
+      + nextCursorBytes - cursorBytes;
+    artifact.messages.unshift(candidate);
     artifact.cursor = artifact.messages[0]?.id ?? null;
-    if (artifactBytes(artifact) <= NATIVE_READ_THREAD_MAX_BYTES) continue;
+    if (nextPageBytes <= NATIVE_READ_THREAD_MAX_BYTES) {
+      pageBytes = nextPageBytes;
+      cursorBytes = nextCursorBytes;
+      continue;
+    }
     artifact.messages.shift();
     artifact.cursor = artifact.messages[0]?.id ?? null;
     artifact.hasEarlier = true;

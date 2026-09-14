@@ -85,17 +85,23 @@ function createStore(input: {
       async latestThreadSeq() {
         return input.latestThreadSeq ?? 0;
       },
-      async listDeliveries() {
-        return input.deliveries ?? [];
-      },
+
     },
     operatorActorId: "operator",
     nodeId: "node-1",
     ensureActor: async (actorId) => {
       ensuredActors.push(actorId);
     },
-    updateDeliveryStatus: async (update) => {
+    journal: {
+      async visitDeliveries(visitor) {
+        for (const delivery of input.deliveries ?? []) await visitor(delivery);
+      },
+    },
+    updateDeliveryStatusIf: async (update, eligible) => {
+      const current = input.deliveries?.find((delivery) => delivery.id === update.deliveryId);
+      if (!current || !await eligible(current)) return false;
       deliveryUpdates.push(update);
+      return true;
     },
   });
 
@@ -194,4 +200,20 @@ describe("BrokerReadCursorStore", () => {
       }),
     ]);
   });
+});
+
+
+test("read acknowledgement reaches the eligible delivery beyond 6000 historical records", async () => {
+  const deliveries = Array.from({ length: 6001 }, (_, index) => testDelivery({
+    id: `history-${index}`, status: index === 6000 ? "pending" : "completed",
+  }));
+  const { runtime, deliveryUpdates, store } = createStore({ deliveries });
+  await runtime.upsertConversation(testConversation());
+  await runtime.commitMessage(testMessage(), []);
+  const count = await store.acknowledgeDeliveries({
+    conversationId: "conversation-1", actorId: "agent-1", lastReadMessageId: "message-1",
+    lastReadAt: 300, updatedAt: 350,
+  });
+  expect(count).toBe(1);
+  expect(deliveryUpdates).toEqual([expect.objectContaining({ deliveryId: "history-6000" })]);
 });

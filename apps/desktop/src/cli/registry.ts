@@ -10,6 +10,8 @@ export const SCOUT_COMMANDS: ScoutCommandRegistration[] = [
   { name: "help", summary: "Show help text" },
   { name: "version", summary: "Print the Scout CLI version" },
   { name: "setup", summary: "Bootstrap local settings and broker" },
+  { name: "report", summary: "Upload diagnostics with a private local fallback" },
+  { name: "feedback", summary: "Send a note, optionally with diagnostics" },
   { name: "doctor", summary: "Show broker health and project inventory" },
   { name: "attention", summary: "Show recent unfinished work and local diffs" },
   { name: "diff", summary: "Inspect worktree or session-scoped diffs" },
@@ -48,6 +50,7 @@ export const SCOUT_COMMANDS: ScoutCommandRegistration[] = [
   { name: "install", summary: "Download and install the OpenScout macOS app" },
   { name: "update", summary: "Update the installed OpenScout macOS app", canonicalName: "install" },
   { name: "config", summary: "View or set user config (name, handle, agent name pool, etc.)" },
+  { name: "machines", summary: "The computers Scout can see — mesh nodes, tailnet peers, LAN neighbours" },
   { name: "mesh", summary: "Mesh status, diagnostics, and trust-cone peers/enrollment" },
   {
     name: "monitor",

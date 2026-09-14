@@ -187,7 +187,7 @@ describe("agents route parsing", () => {
       view: "mesh",
       machineId: "node-b",
     });
-    expect(routePath({ view: "mesh", machineId: "node-b" })).toBe("/mesh?machineId=node-b");
+    expect(routePath({ view: "mesh", machineId: "node-b" })).toBe("/network?machineId=node-b");
 
     expect(routeFromUrl("http://127.0.0.1:43120/mesh-ops/wi-1?machineId=node-b")).toEqual({
       view: "mesh-ops",
@@ -493,12 +493,17 @@ describe("agents route parsing", () => {
     // Simple static views: URL and Route must round-trip exactly.
     for (const view of [
       "repos",
-      "mesh",
       "activity",
     ] as const) {
       expect(routeFromUrl(`http://127.0.0.1:43120/${view}`)).toEqual({ view });
       expect(routePath({ view })).toBe(`/${view}`);
     }
+    // The Network page is named Network in every user-facing surface, so
+    // /network is canonical and /mesh stays a working alias for old links.
+    expect(routeFromUrl("http://127.0.0.1:43120/network")).toEqual({ view: "mesh" });
+    expect(routeFromUrl("http://127.0.0.1:43120/mesh")).toEqual({ view: "mesh" });
+    expect(routePath({ view: "mesh" })).toBe("/network");
+
     expect(routeFromUrl("http://127.0.0.1:43120/providers")).toEqual({ view: "harnesses" });
     expect(routeFromUrl("http://127.0.0.1:43120/harnesses")).toEqual({ view: "harnesses" });
     expect(routePath({ view: "harnesses" })).toBe("/providers");

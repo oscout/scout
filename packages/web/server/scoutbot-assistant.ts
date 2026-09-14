@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { SCOUT_RUNTIME_CATALOG } from "@openscout/protocol";
 import { scoutbotUiContext } from "../shared/scoutbot-navigation.ts";
 
 export type ScoutbotAssistantMessageRole = "user" | "assistant";
@@ -23,11 +24,18 @@ export type ScoutbotAssistantSession = ScoutbotAssistantSessionSummary & {
   messages: ScoutbotAssistantMessage[];
 };
 
+export type ScoutbotAssistantModelOption = {
+  id: string;
+  label: string;
+};
+
 export type ScoutbotAssistantConfig = {
   editable: true;
   model: string;
   provider: ScoutbotAssistantProviderPreference;
   systemPrompt: string;
+  /** Selectable reply models for the web picker; the active model is always present. */
+  modelOptions: ScoutbotAssistantModelOption[];
 };
 
 export type ScoutbotAssistantSessionState = {
@@ -233,8 +241,23 @@ type OpenAIResponsePayload = {
   usage?: unknown;
 };
 
-const DEFAULT_MODEL = "gpt-4.1-mini";
+const DEFAULT_MODEL = "gpt-5.6-luna";
 const DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1";
+
+// The reply brain rides the OpenAI Responses API, so the picker offers the
+// runtime catalog's GPT ladder rather than a free-text field.
+const CATALOG_MODEL_OPTIONS: ScoutbotAssistantModelOption[] = (
+  SCOUT_RUNTIME_CATALOG.harnesses.find((harness) => harness.id === "codex")?.models ?? []
+)
+  .filter((model) => model.enabled !== false)
+  .map((model) => ({ id: model.id, label: model.label }));
+
+// The active model must always be selectable, even when the operator applied
+// something off-catalog through the API.
+const modelOptionsFor = (activeModel: string): ScoutbotAssistantModelOption[] =>
+  CATALOG_MODEL_OPTIONS.some((option) => option.id === activeModel)
+    ? CATALOG_MODEL_OPTIONS
+    : [{ id: activeModel, label: activeModel }, ...CATALOG_MODEL_OPTIONS];
 
 // SCO-037 step 5: presenter defaults. The presenter is a small-model
 // formatter that turns the analyst's markdown into spoken sentences. Both
@@ -355,6 +378,14 @@ export function createScoutbotAssistantService(input: {
     return session;
   };
 
+  const configView = (): ScoutbotAssistantConfig => ({
+    editable: true,
+    model,
+    provider: providerPreference,
+    systemPrompt,
+    modelOptions: modelOptionsFor(model),
+  });
+
   const snapshot = (): ScoutbotAssistantSessionState => ({
     session: publicSession(ensureSession()),
     sessions: activeSessions()
@@ -365,7 +396,7 @@ export function createScoutbotAssistantService(input: {
       archivedCount: sessions.filter((session) => session.archivedAt !== null).length,
       totalCount: sessions.length,
     },
-    config: { editable: true, model, provider: providerPreference, systemPrompt },
+    config: configView(),
   });
   const enforceSessionRetention = (): void => {
     const active = activeSessions();
@@ -412,13 +443,13 @@ export function createScoutbotAssistantService(input: {
   });
 
   return {
-    getConfig: () => ({ editable: true, model, provider: providerPreference, systemPrompt }),
+    getConfig: configView,
     updateConfig: (next) => {
       const nextModel = next.model?.trim();
       const nextPrompt = next.systemPrompt?.trim();
       if (nextModel) model = nextModel;
       if (nextPrompt) systemPrompt = nextPrompt;
-      return { editable: true, model, provider: providerPreference, systemPrompt };
+      return configView();
     },
     getSessionState: snapshot,
     resetSession: () => {

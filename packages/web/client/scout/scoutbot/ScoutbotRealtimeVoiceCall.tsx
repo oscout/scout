@@ -166,6 +166,8 @@ export function ScoutbotRealtimeVoiceCall({
     error,
     trace,
     chatState,
+    chatStatus,
+    chatError,
     sessionAction,
     startCall,
     endCall,
@@ -345,12 +347,25 @@ export function ScoutbotRealtimeVoiceCall({
               <History size={11} className="shrink-0 text-[var(--scout-chrome-ink-ghost)]" />
               <p className={EYEBROW}>Live chat</p>
             </div>
+            {/* Three states, never one that lies: resolving, resolved, gave up.
+                "Loading chat…" as the only fallback made an unreachable session
+                endpoint look like a request that was still in flight. */}
             <p className="mt-1.5 truncate text-base text-[var(--scout-chrome-ink-strong)]" title={chatState?.session.id}>
-              {chatState?.session.title || "Loading chat…"}
+              {chatState?.session.title
+                || (chatStatus === "failed"
+                  ? "Chat unavailable"
+                  : chatStatus === "ready"
+                    ? "Untitled chat"
+                    : "Loading chat…")}
             </p>
             <p className="mt-0.5 text-sm leading-snug text-[var(--scout-chrome-ink-faint)]">
               Context stays with this chat when voice stops or the panel closes.
             </p>
+            {chatStatus === "failed" && chatError && (
+              <p className="mt-1.5 rounded-md border border-red-400/30 bg-red-400/[0.08] px-2 py-1.5 text-sm leading-relaxed text-red-100">
+                {chatError}
+              </p>
+            )}
             <div className="mt-2.5 flex min-w-0 items-center gap-1.5">
               {chatState && chatState.sessions.length > 1 && (
                 <label className="min-w-0 flex-1">
@@ -422,19 +437,37 @@ export function ScoutbotRealtimeVoiceCall({
                   Used for typed and live Scoutbot replies.
                 </p>
                 <div className="mt-2 flex gap-1.5">
-                  <input
-                    value={modelDraft}
-                    onChange={(event) => {
-                      setModelDraft(event.target.value);
-                      setModelStatus(null);
-                    }}
-                    onKeyDown={(event) => {
-                      if (event.key === "Enter") void savePreferredModel();
-                    }}
-                    placeholder="gpt-4.1-mini"
-                    aria-label="Preferred Scoutbot model"
-                    className={`h-8 min-w-0 flex-1 px-2 font-mono text-sm ${FIELD}`}
-                  />
+                  {(chatState?.config.modelOptions?.length ?? 0) > 0 ? (
+                    <select
+                      value={modelDraft}
+                      onChange={(event) => {
+                        setModelDraft(event.target.value);
+                        setModelStatus(null);
+                      }}
+                      aria-label="Preferred Scoutbot model"
+                      className={`h-8 min-w-0 flex-1 px-2 font-mono text-sm ${FIELD}`}
+                    >
+                      {chatState?.config.modelOptions?.map((option) => (
+                        <option key={option.id} value={option.id}>
+                          {option.label}
+                        </option>
+                      ))}
+                    </select>
+                  ) : (
+                    <input
+                      value={modelDraft}
+                      onChange={(event) => {
+                        setModelDraft(event.target.value);
+                        setModelStatus(null);
+                      }}
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter") void savePreferredModel();
+                      }}
+                      placeholder="gpt-5.6-luna"
+                      aria-label="Preferred Scoutbot model"
+                      className={`h-8 min-w-0 flex-1 px-2 font-mono text-sm ${FIELD}`}
+                    />
+                  )}
                   <button
                     type="button"
                     onClick={() => void savePreferredModel()}

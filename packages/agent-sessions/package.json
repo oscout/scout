@@ -1,6 +1,6 @@
 {
   "name": "@openscout/agent-sessions",
-  "version": "0.2.98",
+  "version": "0.2.101",
   "description": "Browser-safe session boundary for OpenScout agent sessions",
   "license": "Apache-2.0",
   "type": "module",
@@ -158,7 +158,37 @@
       "import": "./dist/protocol/primitives.js",
       "default": "./dist/protocol/primitives.js"
     },
-    "./package.json": "./package.json"
+    "./package.json": "./package.json",
+    "./state": {
+      "bun": "./src/state.ts",
+      "types": "./dist/state.d.ts",
+      "import": "./dist/state.js",
+      "default": "./dist/state.js"
+    },
+    "./model-catalog": {
+      "bun": "./src/model-catalog.ts",
+      "types": "./dist/model-catalog.d.ts",
+      "import": "./dist/model-catalog.js",
+      "default": "./dist/model-catalog.js"
+    },
+    "./protocol/approval-normalization": {
+      "bun": "./src/protocol/approval-normalization.ts",
+      "types": "./dist/protocol/approval-normalization.d.ts",
+      "import": "./dist/protocol/approval-normalization.js",
+      "default": "./dist/protocol/approval-normalization.js"
+    },
+    "./adapters/codex/usage": {
+      "bun": "./src/adapters/codex/usage.ts",
+      "types": "./dist/adapters/codex/usage.d.ts",
+      "import": "./dist/adapters/codex/usage.js",
+      "default": "./dist/adapters/codex/usage.js"
+    },
+    "./adapters/budget-observations": {
+      "bun": "./src/adapters/budget-observations.ts",
+      "types": "./dist/adapters/budget-observations.d.ts",
+      "import": "./dist/adapters/budget-observations.js",
+      "default": "./dist/adapters/budget-observations.js"
+    }
   },
   "types": "./dist/index.d.ts",
   "files": [

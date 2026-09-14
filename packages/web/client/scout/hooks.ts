@@ -21,7 +21,6 @@ import {
 } from "./topNavConfig.ts";
 import { paletteNavCommandOptions } from "./nav-destinations.ts";
 import { renderNavCenter } from "./nav-center.tsx";
-import { SystemMenu } from "./nav-system-menu.tsx";
 
 export type ScoutStatusBarState = {
   status: { label: string; color: StatusColor };
@@ -264,7 +263,6 @@ export function useScoutNavActions(): ReactNode | null {
   }
 
   return createElement("div", { className: "scout-nav-actions" },
-    createElement(SystemMenu),
     createElement(MachineScopeControl, { variant: "nav" }),
     createElement(
       "button",

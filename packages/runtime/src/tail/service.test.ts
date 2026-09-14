@@ -167,7 +167,16 @@ describe("internal tail subscribers", () => {
     }));
   });
 
-  test("receive pre-coalesced events and keep tailing alive without a public subscriber", () => {
+  test("receive pre-coalesced events and keep tailing alive without a public subscriber", async () => {
+    // Exercise the real subscriber loop with an owned transcript. Starting it
+    // with no watcher launches ambient harness discovery, whose asynchronous
+    // results can populate later tests with the operator's live sessions.
+    const path = await transcriptFile();
+    await __testing.installWatcher({
+      source: testSource(),
+      process: testProcess,
+      transcript: testTranscript(path, "subscriber-fixture"),
+    });
     const internalEvents: TailEvent[] = [];
     const publicEvents: TailEvent[] = [];
     const unsubscribeInternal = subscribeTailInternal((entry) => internalEvents.push(entry));

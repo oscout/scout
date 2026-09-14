@@ -2,7 +2,7 @@ import type { RuntimeEnv, RuntimePlatform } from "./portable-types.js";
 import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { homedir, networkInterfaces, type NetworkInterfaceInfo } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import type {
@@ -90,7 +90,7 @@ export type BrokerHealthSnapshot = {
     oneTimeAgentCards?: number;
     persistentAgentCards?: number;
     conversations: number;
-    messages: number;
+    messages: number | null;
     flights: number;
     collaborationRecords: number;
   };
@@ -1334,11 +1334,17 @@ function formatBrokerServiceStatus(status: BrokerServiceStatus): string {
   return lines.join("\n");
 }
 
-if (
-  process.argv[1] &&
-  fileURLToPath(import.meta.url) === process.argv[1] &&
-  !process.argv[1].endsWith("/main.mjs")
-) {
+export function isBrokerServiceEntrypoint(moduleUrl: string, argvEntry: string | undefined): boolean {
+  if (!argvEntry) return false;
+  const modulePath = fileURLToPath(moduleUrl);
+  // Bundling collapses imported modules' URLs to the containing entry. A broker
+  // or CLI bundle must not auto-run this imported service-management command.
+  return modulePath === argvEntry
+    && ["broker-process-manager.ts", "broker-process-manager.js", "broker-process-manager.mjs"]
+      .includes(basename(modulePath));
+}
+
+if (isBrokerServiceEntrypoint(import.meta.url, process.argv[1])) {
   main().catch((error) => {
     console.error(error instanceof Error ? error.message : String(error));
     process.exit(1);

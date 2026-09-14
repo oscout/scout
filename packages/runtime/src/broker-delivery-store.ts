@@ -20,7 +20,8 @@ type DurableStore = {
 };
 
 type DeliveryJournal = {
-  listDeliveries(options: { limit: number; transport?: DeliveryIntent["transport"]; status?: DeliveryIntent["status"] }): DeliveryIntent[];
+  getDelivery(deliveryId: string): DeliveryIntent | undefined;
+  findDelivery(predicate: (delivery: DeliveryIntent) => boolean, options?: { activeOnly?: boolean }): DeliveryIntent | undefined;
   getDurableAction(actionId: string): DurableAction | null | undefined;
 };
 
@@ -113,10 +114,18 @@ export class BrokerDeliveryStore {
   };
 
   readonly updateDeliveryStatus = async (input: DeliveryStatusUpdateInput): Promise<void> => {
-    let previous: DeliveryIntent | undefined;
-    await this.options.durableStore.runWrite(async () => {
-      previous = this.options.journal.listDeliveries({ limit: 5000 })
-        .find((delivery) => delivery.id === input.deliveryId);
+    await this.updateDeliveryStatusIf(input, () => true, true);
+  };
+
+  /** Internal conditional update; eligibility is checked under the canonical writer. */
+  readonly updateDeliveryStatusIf = async (
+    input: DeliveryStatusUpdateInput,
+    eligible: (current: DeliveryIntent) => boolean | Promise<boolean>,
+    allowMissing = false,
+  ): Promise<boolean> => {
+    return this.options.durableStore.runWrite(async () => {
+      const previous = this.options.journal.getDelivery(input.deliveryId);
+      if ((!previous && !allowMissing) || (previous && !await eligible(previous))) return false;
       if (input.expectedLeaseOwner || input.requireActiveLease) {
         if (!previous) {
           throw new Error("delivery not found");
@@ -144,12 +153,10 @@ export class BrokerDeliveryStore {
         },
         async () => {},
       );
+      const updated = this.options.journal.getDelivery(input.deliveryId);
+      if (updated) this.publishDeliveryChanged(updated, previous?.status);
+      return Boolean(updated);
     });
-    const updated = this.options.journal.listDeliveries({ limit: 5000 })
-      .find((delivery) => delivery.id === input.deliveryId);
-    if (updated) {
-      this.publishDeliveryChanged(updated, previous?.status);
-    }
   };
 
   readonly claimDelivery = async (input: DeliveryClaimInput): Promise<DeliveryIntent | null> => {
@@ -157,15 +164,17 @@ export class BrokerDeliveryStore {
     const claimed = await this.options.durableStore.runWrite(async () => {
       const now = Date.now();
       const reasons = input.reasons?.length ? new Set(input.reasons) : null;
-      const delivery = this.options.journal
-        .listDeliveries({ limit: 5000 })
-        .find((candidate) => (
+      const matches = (candidate: DeliveryIntent) => (
           (!input.itemId || candidate.id === input.itemId)
           && (!input.messageId || candidate.messageId === input.messageId)
           && candidate.targetId === input.targetId
           && (!reasons || reasons.has(candidate.reason))
           && isDeliveryClaimable(candidate, now)
-        ));
+        );
+      const exact = input.itemId ? this.options.journal.getDelivery(input.itemId) : undefined;
+      const delivery = input.itemId
+        ? (exact && matches(exact) ? exact : undefined)
+        : this.options.journal.findDelivery(matches, { activeOnly: true });
 
       if (!delivery) {
         return null;

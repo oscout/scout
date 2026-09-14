@@ -178,7 +178,8 @@ describe("broker conversation helpers", () => {
 
   test("classifies broker route targets and message refs", () => {
     expect(brokerRouteKind(conversation({ kind: "direct", id: "direct-1" }))).toBe("dm");
-    expect(brokerRouteKind(conversation())).toBe("broadcast");
+    expect(brokerRouteKind(conversation())).toBe("broadcast"); // historical shared records stay readable
+    expect(brokerRouteKind(conversation({ metadata: { channel: "broadcast" } }))).toBe("broadcast");
     expect(brokerRouteKind(conversation({ id: "channel.docs", metadata: { channel: "docs" } }))).toBe("channel");
     expect(isLocalScoutProductTarget({ targetLabel: "@Scout" })).toBe(true);
     expect(isLocalScoutProductTarget({ target: { kind: "agent_label", label: "openscout" } })).toBe(true);

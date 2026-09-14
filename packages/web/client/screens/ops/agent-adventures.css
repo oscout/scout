@@ -1,0 +1,250 @@
+.adventures { --adv-ink: #243a35; --adv-paper: #f0ecd9; color: var(--adv-ink); background: var(--adv-paper); min-height: 100%; overflow: auto; font-family: var(--font-sans, system-ui); }
+.adventures button, .adventures select { font: inherit; font-size: 12px; cursor: pointer; color: inherit; border: 1px solid #78857b; border-radius: 6px; background: #faf7e9; padding: 8px 12px; }
+.adventures button:hover { background: #e0e7cb; }
+.adventures button:focus-visible, .adventures select:focus-visible, .adventures input:focus-visible, .adventures__scene:focus-visible { outline: 3px solid #246b6a; outline-offset: 3px; }
+.adventures button:disabled { opacity: .4; cursor: default; }
+
+.adventures h2 { font-size: clamp(26px, 3vw, 38px); letter-spacing: -.035em; font-weight: 750; line-height: 1.15; margin: 4px 0 6px; }
+.adventures p { font-size: 13px; line-height: 1.6; margin: 0; }
+
+.adventures button[aria-pressed=true] { background: #2e5145; color: #f8f2dc; border-color: #2e5145; }
+.adventures__navigation { display: flex; flex-wrap: wrap; gap: 14px; padding: 0 30px 20px; align-items: end; }
+.adventures__navigation label { display: grid; gap: 5px; font-size: 11px; }
+.adventures__navigation select { max-width: 265px; }
+.adventures__navigation > button { margin-left: auto; }
+.adventures__scene { overflow-x: auto; overflow-y: hidden; background: #b8d6cf; scrollbar-color: #698471 #d9debc; }
+.adventures__landscape { position: relative; height: 365px; overflow: hidden; isolation: isolate; min-width: 100%; }
+
+.adventures__trail { position: absolute; inset: auto 0 0; height: 115px; background: #d8d7a8; border-top: 8px solid #839a68; box-shadow: inset 0 22px #e7dfbb; }
+.adventures__stop { position: absolute; bottom: 37px; width: 168px; height: 225px; transform: translateX(-50%); display: flex; align-items: center; flex-direction: column; justify-content: flex-end; padding: 0 !important; border: 0 !important; background: transparent !important; color: #263e35 !important; border-radius: 0 !important; }
+.adventures__stop-title { font-size: 12px; font-weight: 700; background: #f2eed6; padding: 5px 9px; border-radius: 3px; margin-bottom: 12px; box-shadow: 0 3px 0 #6e826350; }
+.adventures__prop { width: 76px; height: 65px; display: grid; place-items: center; border-radius: 5px 5px 0 0; background: #9b6948; color: #fff0c8; border-bottom: 8px solid #684d37; box-shadow: 7px 7px 0 #506c4920; }
+.adventures__stop--read .adventures__prop { background: #506e5b; border-color: #344c40; }
+.adventures__stop--think .adventures__prop { background: #839b93; border-color: #617d75; border-radius: 55% 45% 0 0; }
+.adventures__stop--message .adventures__prop { background: #af6a43; width: 57px; border-radius: 20px 20px 0 0; }
+.adventures__stop--wait .adventures__prop, .adventures__stop--stopped .adventures__prop { background: #aa8050; clip-path: polygon(50% 0, 100% 100%, 0 100%); width: 90px; padding-top: 15px; }
+.adventures__stop--end .adventures__prop, .adventures__stop--start .adventures__prop { background: transparent; color: #345b46; border: 0; box-shadow: none; }
+.adventures__stop.is-current .adventures__stop-title { background: #2e5145; color: #fff5d8; }
+.adventures__stop.is-ahead { opacity: .45; }
+.adventures__artifact { width: 160px; height: 34px; margin-top: 18px; overflow: hidden; overflow-wrap: anywhere; font-size: 11px; line-height: 16px; text-align: center; }
+.adventures__stop time { font-size: 10px; margin-top: 5px; }
+.adventures__traveler { position: absolute; bottom: 111px; z-index: 2; width: 112px; pointer-events: none; transition: left 650ms cubic-bezier(.16,1,.3,1); }
+.adventures__traveler > button { background: transparent !important; border: 0; padding: 0; pointer-events: auto; display: block; position: relative; z-index: 1; transform-origin: 50% 95%; animation: adventure-settle 650ms ease-out; }
+.adventures__thought { display: block; position: absolute; bottom: 116px; left: -8px; min-width: 128px; width: max-content; max-width: 180px; background: #fff9e6; border-radius: 9px 9px 9px 0; padding: 7px 10px; font-size: 11px; box-shadow: 2px 4px 7px #2b49332a; }
+.adventures__shadow { position: absolute; bottom: -2px; left: 17px; width: 78px; height: 12px; background: #465b473b; border-radius: 50%; }
+.adventures__frontier { position: absolute; bottom: 150px; width: 180px; display: grid; gap: 6px; font-weight: 650; }
+.adventures__frontier small { font-weight: 400; font-size: 11px; }
+.adventures__empty { position: absolute; inset: 55px auto auto 50px; display: grid; grid-template-columns: 120px 350px; gap: 0 24px; align-items: center; }
+.adventures__empty .crew-sprite { grid-row: span 2; }
+.adventures__empty h3 { margin: 0; }
+.adventures__playhead { display: flex; align-items: center; gap: 12px; padding: 15px 30px; border-bottom: 1px solid #bfc6ad; }
+.adventures__playhead button { padding: 8px; display: grid; place-items: center; }
+.adventures__playhead input { flex: 1; min-width: 50px; accent-color: #3c6653; }
+.adventures__playhead span { font-size: 11px; white-space: nowrap; }
+
+@keyframes adventure-settle { 0% { transform: translateY(-12px) rotate(-5deg); } 65% { transform: scale(1.04,.96); } 100% { transform: none; } }
+.adventures.is-paused *, .adventures.is-paused *::after { animation: none !important; transition: none !important; }
+@media (prefers-reduced-motion: reduce) { .adventures *, .adventures *::after { animation: none !important; transition: none !important; } }
+@media (max-width: 720px) {  .adventures__navigation { padding: 0 20px 16px; gap: 10px; } .adventures__navigation select { max-width: 210px; }   .adventures__playhead { padding: 12px; gap: 6px; } .adventures__playhead span { font-size: 10px; } }
+/* The floor owns a bounded viewport; this mode scrolls within it. */
+.adventures { position: absolute; inset: 74px 0 0; min-height: 0; cursor: default; touch-action: auto; }
+.agent-floor__viewport:has(> .adventures) { touch-action: auto; }
+
+.adventures__traveler--think > button { animation: adventure-ponder 4s ease-in-out infinite; }
+.adventures__traveler--edit > button { animation: adventure-work 1.8s ease-in-out infinite; }
+.adventures__traveler--read > button { transform: rotate(5deg); }
+.adventures__traveler--message > button { animation: adventure-wave 2.5s ease-in-out infinite; }
+@keyframes adventure-ponder { 0%,100% { transform: rotate(-2deg); } 50% { transform: rotate(3deg) translateY(-2px); } }
+@keyframes adventure-work { 0%,60%,100% { transform: none; } 30% { transform: rotate(7deg) translateY(3px); } }
+@keyframes adventure-wave { 0%,65%,100% { transform: none; } 75%,90% { transform: rotate(-5deg); } 83% { transform: rotate(3deg); } }
+.adventures__handoff { position: absolute; bottom: 112px; display: flex; align-items: center; gap: 8px; max-width: 180px; background: #f8efcf; padding: 7px; border-radius: 6px; font-size: 10px; z-index: 3; }
+.adventures__handoff > span { overflow-wrap: anywhere; }
+
+.adventures__landscape { height: 310px; }
+
+/* Small observations are hurdles; consequential stops have a planted station. */
+.adventures__stop.is-routine .adventures__prop { width: 52px; height: 34px; border-bottom-width: 5px; border-radius: 7px 7px 2px 2px; box-shadow: 4px 5px 0 #506c491a; }
+.adventures__stop.is-routine .adventures__prop svg { width: 23px; height: 23px; }
+.adventures__stop.is-routine .adventures__stop-title { font-size: 11px; font-weight: 550; max-width: 145px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.adventures__stop.is-checkpoint .adventures__prop { width: 86px; height: 62px; border-radius: 8px 8px 3px 3px; border-bottom-width: 9px; box-shadow: 5px 7px 0 #506c4926; }
+.adventures__stop.is-checkpoint .adventures__stop-title { max-width: 164px; line-height: 1.3; text-align: center; white-space: normal; }
+.adventures__stop.is-checkpoint.is-current .adventures__prop { outline: 2px solid #f8edb9; outline-offset: 4px; }
+.adventures__stop.is-checkpoint .adventures__artifact { font-weight: 550; }
+.adventures__stop.is-routine:not(.is-current) .adventures__artifact { color: #4b6049; }
+.adventures__traveler { transition: left 700ms cubic-bezier(.25,.7,.3,1); }
+.adventures__traveler.is-hopping > button { animation: adventure-hop 700ms linear both; }
+.adventures__traveler.is-hopping .adventures__shadow { animation: adventure-hop-shadow 700ms linear both; }
+.adventures__traveler.is-checkpoint > button { animation: adventure-checkpoint-arrival 700ms ease-out both; }
+.adventures__traveler.is-checkpoint .adventures__thought { border-radius: 8px; background: #fff7df; border-bottom: 2px solid #b7a576; }
+.adventures__thought { z-index: 4; line-height: 1.35; overflow-wrap: anywhere; }
+.adventures__shadow { transform-origin: center; }
+@keyframes adventure-hop {
+  0% { transform: translateY(0); }
+  10% { transform: translateY(1px) scale(1.025,.965); }
+  38% { transform: translateY(-29px) rotate(2deg); }
+  53% { transform: translateY(-33px) rotate(1deg); }
+  78% { transform: translateY(-5px); }
+  86% { transform: translateY(2px) scale(1.035,.945); }
+  100% { transform: translateY(0); }
+}
+@keyframes adventure-hop-shadow {
+  0%,100% { transform: scaleX(1); opacity: 1; }
+  43%,55% { transform: scaleX(.65); opacity: .48; }
+  86% { transform: scaleX(1.08); opacity: 1; }
+}
+@keyframes adventure-checkpoint-arrival {
+  0%,65% { transform: translateY(0); }
+  78% { transform: translateY(1px) rotate(-1deg); }
+  90% { transform: translateY(-1px); }
+  100% { transform: translateY(0); }
+}
+@media (prefers-reduced-motion: reduce) { .adventures__traveler.is-hopping > button { animation:none; } }
+
+.adventures__traveler.has-action-sprite:not(.is-hopping) > button { animation:none; transform:none; }
+.adventures__traveler.has-action-sprite > button { margin-left:-8px; }
+
+
+.adventures__navigation { padding:0 24px 12px; gap:10px; }
+
+.adventures__playhead { position:sticky; bottom:0; z-index:6; background:#f0ecd9; box-shadow:0 -5px 18px #243a3512; }
+.adventures__speed { display:flex; align-items:center; gap:6px; font-size:11px; }
+.adventures__speed select { padding:6px; }
+
+@media(max-width:720px) { .adventures__speed { flex-basis:100%; } }
+
+/* A woodland trail: small work objects, distinct gates, detail on inspection. */
+.adventures__scene { background:#d6e3cf; }
+.adventures__landscape { height:400px; }
+.adventures__scenery { position:absolute; inset:0 0 auto; pointer-events:none; }
+.adventures__trail { height:115px; border-top:0; background:#c6c69a; box-shadow:inset 0 7px #849869,inset 0 33px #ddcf9f,inset 0 37px #adab7b; }
+.adventures__trail::after { content:""; position:absolute; inset:44px 0 0; opacity:.28; background-image:radial-gradient(ellipse,#788457 1px,transparent 2px); background-size:43px 19px; }
+.adventures__stop { height:235px; bottom:37px; }
+.adventures__stop .adventures__prop { position:relative; width:43px; height:31px; border:0; border-radius:10px 13px 5px 5px; background:#859079; color:#eef0d6; box-shadow:3px 5px 0 #344c3520,inset 0 -5px #52665055; }
+.adventures__stop .adventures__prop svg { width:20px; height:20px; }
+.adventures__stop--read .adventures__prop,.adventures__stop.is-routine .adventures__prop { width:34px; height:24px; border-radius:3px 6px 6px 3px; border-left:5px solid #385e50; background:#b8c69b; color:#385e50; box-shadow:2px 4px 0 #344c3525,inset 0 -4px #e3ddba; }
+.adventures__stop--think .adventures__prop { width:52px; height:30px; border-radius:60% 65% 20% 25%; background:#9aab90; color:#526e58; }
+.adventures__stop--message .adventures__prop { width:36px; height:36px; background:#ad7650; border-radius:12px 12px 4px 4px; box-shadow:inset 0 5px #c6986b,3px 5px 0 #344c3520; }
+.adventures__stop--edit .adventures__prop { width:55px; height:33px; background:#8c694d; border-radius:4px; border-top:7px solid #b99a72; }
+.adventures__stop.is-checkpoint .adventures__prop { width:98px; height:94px; background:transparent; border:0; border-radius:0; box-shadow:none; color:#e8deb6; clip-path:none; padding:0; }
+.adventures__stop.is-checkpoint .adventures__prop::before { content:""; position:absolute; inset:0 5px; border:9px solid #526f59; border-bottom:0; border-radius:35px 35px 0 0; box-shadow:inset 3px 3px #b4c59e,3px 0 #344c3520; }
+.adventures__stop.is-checkpoint .adventures__prop svg { width:27px; height:27px; align-self:start; margin-top:8px; padding:5px; background:#526f59; border-radius:50%; z-index:1; box-sizing:content-box; }
+.adventures__stop.is-checkpoint.is-current .adventures__prop { outline:none; }
+.adventures__stop-title { opacity:0; transform:translateY(5px); transition:opacity 160ms,transform 160ms; box-shadow:none; background:#edf0d9; color:#385443; font-size:11px; margin-bottom:8px; }
+.adventures__stop.is-checkpoint .adventures__stop-title,.adventures__stop:hover .adventures__stop-title,.adventures__stop:focus-visible .adventures__stop-title { opacity:1; transform:none; }
+.adventures__stop.is-current .adventures__stop-title { opacity:0; }
+.adventures__stop .adventures__artifact,.adventures__stop time { opacity:0; transition:opacity 160ms; }
+.adventures__stop.is-current .adventures__artifact,.adventures__stop:hover .adventures__artifact,.adventures__stop:focus-visible .adventures__artifact,.adventures__stop:hover time,.adventures__stop:focus-visible time { opacity:1; }
+.adventures__stop.is-ahead { opacity:.72; }
+.adventures__thought { background:#f3f0da; box-shadow:0 3px 8px #354b3020; border-radius:10px; }
+/* Material scenery and a compact, unified transport. */
+.adventures { background:#f4f3ec; }
+.adventures__scenery { top:-8px; }
+.adventures__trail { display:none; }
+.adventures__scene { background:#9eafa0; border-block:1px solid #243a3520; }
+
+.adventures__navigation label { color:#738071; font-size:10px; letter-spacing:.04em; }
+.adventures__navigation select { color:#2f4739; border:1px solid #d5dbcf; border-radius:8px; background:#fffef8; min-width:180px; padding:9px 12px; }
+.adventures__navigation > button { display:flex; gap:7px; align-items:center; border:0; background:#e4eadc; color:#3f654a; }
+.adventures__transport { position:sticky; bottom:0; z-index:7; background:#f7f8f1; padding:12px 22px 8px; border-bottom:1px solid #dce1d5; box-shadow:0 -4px 18px #243a3510; }
+.adventures__transport-top { display:flex; align-items:center; gap:14px; }
+.adventures__transport .adventures__play-button { display:flex; align-items:center; gap:8px; background:#315741; border:0; color:#f5f8ec; border-radius:9px; padding:10px 16px; min-width:92px; justify-content:center; }
+.adventures__transport .adventures__play-button:hover { background:#416a50; }
+.adventures__transport-status { display:flex; align-items:center; gap:6px; font-size:12px; color:#70806e; flex:1; }
+.adventures__transport-status i { width:6px; height:6px; border-radius:50%; background:#7a9e64; }
+.adventures__transport-status.is-checkpoint i { background:#ba8a3d; }
+.adventures__transport select { border:1px solid #d9dfd0; background:#fafcf5; border-radius:8px; padding:7px; font-size:11px; }
+.adventures__transport .adventures__playhead { position:static; box-shadow:none; background:transparent; padding:9px 0 2px; gap:10px; border:0; }
+.adventures__transport .adventures__playhead button { border:0; background:transparent; color:#647760; padding:5px; }
+.adventures__transport .adventures__playhead span { font-size:10px; min-width:48px; text-align:right; color:#7b8575; font-variant-numeric:tabular-nums; }
+.adventures__transport input[type=range] { accent-color:#486e4d; height:5px; }
+.adventures__checkpoint-review { display:flex; align-items:center; justify-content:space-between; gap:16px; padding:10px 0 3px; margin-top:6px; border-top:1px solid #dce1d5; }
+.adventures__checkpoint-review strong { display:block; font-size:12px; }
+.adventures__checkpoint-review small { display:block; font-size:11px; color:#7c806b; margin-top:3px; }
+.adventures__checkpoint-review button { display:flex; align-items:center; gap:8px; background:#ecebd7; border:1px solid #d2d6c1; border-radius:8px; }
+.adventures__thought { background:#f6f3e5ed; backdrop-filter:blur(8px); color:#38523b; box-shadow:0 3px 12px #1c352329; }
+.adventures__stop .adventures__artifact { background:#f4f0dded; border-radius:6px; padding:3px; box-sizing:border-box; }
+@media(max-width:720px) { .adventures__transport { padding:10px 12px; }.adventures__transport-top { flex-wrap:wrap; gap:9px; }.adventures__transport-status { min-width:120px; }.adventures__transport .adventures__speed { flex-basis:auto; }.adventures__checkpoint-mode { flex:1; } }
+.adventures .adventures__world-artifact { position:absolute; bottom:116px; width:174px; z-index:4; display:grid; justify-items:center; padding:0; border:0; background:none; text-align:left; }
+.adventures .adventures__world-artifact:hover { background:none; }
+.adventures__artifact-sheet { display:grid; gap:7px; padding:14px; background:#f3eed9f5; border:1px solid #c8c8a3; border-radius:8px; box-shadow:0 7px 20px #193d3633; transform:rotate(2deg); }
+.adventures__artifact-sheet > svg { color:#6b8153; }
+.adventures__artifact-sheet strong { font-size:11px; line-height:1.35; }
+.adventures__artifact-sheet > span { font-size:10px; line-height:1.45; overflow-wrap:anywhere; max-height:44px; overflow:hidden; }
+.adventures__artifact-sheet small { font-size:9px; color:#697850; }
+.adventures__artifact-stand { width:7px; height:19px; background:#8b7956; box-shadow:2px 0 #45584640; }
+.adventures.is-reviewing .adventures__stop:not(.is-current) { opacity:.38; }
+.adventures .adventures__next-review { display:flex; align-items:center; gap:6px; border:0; padding:6px 0 0; background:none; color:#6c7c5b; font-size:10px; margin-left:auto; }
+/* Replay: the dark habitat over one flight console. Written last-wins: each
+   selector below appears once with its resolved values. */
+.adventures { inset: 80px 14px 14px; border-radius: 12px; background: #090f17; color: #dce6df; }
+.adventures__scene { border: 0; background: #080e18; overflow-x: hidden; scrollbar-width: none; }
+.adventures__scene::-webkit-scrollbar { display: none; }
+.adventures__scene, .adventures__landscape { height: 400px; }
+.adventures__scenery { top: 0; bottom: auto; }
+.adventures__stop .adventures__prop { opacity: .3; }
+.adventures__stop.is-current .adventures__prop { opacity: .7; }
+.adventures__stop .adventures__stop-title { display: none; }
+.adventures__stop.is-current .adventures__artifact { display: none; }
+/* Review points live in the timeline; no gate around the traveler. */
+.adventures__stop.is-checkpoint .adventures__prop::before { display: none; }
+.adventures__thought { background: #11232aeb; color: #dfead6; border: 1px solid #9bbbaa40; }
+.adventures__world-artifact .adventures__artifact-sheet { background: #13262deb; color: #e0e9dd; border: 1px solid #9bbbaa55; box-shadow: 0 8px 24px #03090e66; transform: rotate(1deg); }
+.adventures__world-artifact .adventures__artifact-sheet strong, .adventures__world-artifact .adventures__artifact-sheet > span { color: #e0e9dd; }
+.adventures__world-artifact .adventures__artifact-sheet small { color: #bfd49d; }
+.adventures__action-caption { position: absolute; top: calc(100% + 20px); left: 50%; transform: translateX(-50%); width: 220px; display: flex; flex-direction: column; gap: 4px; text-align: center; pointer-events: none; color: #e1ebdf; text-shadow: 0 2px 5px #02080d; }
+.adventures__action-caption strong { font-size: 11px; font-weight: 500; }
+.adventures__action-caption small { font: 10px/1.4 ui-monospace, monospace; color: #b9cbc2; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; }
+
+/* Console: source picker, one transport row (clock beside playback), evidence, log. */
+.adventures__console { background: #0b151d; border-top: 1px solid #a9c6be30; padding: 0 24px 20px; }
+.adventures__console select, .adventures__console .adventures__navigation button { background: #172830; color: #dce6df; border-color: #809d9138; }
+.adventures__console .replay-selection { position: relative; margin: 0; padding: 8px 0 4px; font-size: 11px; color: #b9cbc2; }
+.replay-selection summary { cursor: pointer; width: max-content; padding: 6px 0; }
+.adventures__console .adventures__navigation { padding: 10px 0 8px; border: 0; background: transparent; }
+.adventures__console .adventures__navigation label { color: #adbbb8; }
+.adventures__console .adventures__transport { position: relative; display: flex; flex-wrap: wrap; align-items: center; gap: 10px 18px; padding: 8px 0 0; background: transparent; border: 0; box-shadow: none; }
+.adventures__console .adventures__recording-clock { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 10px; flex: 1 1 310px; width: auto; margin: 0; padding: 0; }
+.adventures__recording-clock > span { color: #a8bbb7; font-size: 11px; }
+.adventures__recording-clock time { font: 15px/1.5 ui-monospace, monospace; font-variant-numeric: tabular-nums; color: #e6eedc; }
+.adventures__recording-clock > time:not(.adventures__elapsed-clock) { font-size: 10px; color: #9fadb5; }
+.adventures__console .adventures__elapsed-clock { min-width: 172px; font-size: 18px; line-height: 1.2; letter-spacing: .02em; font-variant-numeric: tabular-nums; color: #eff5e9; }
+.adventures__clock-divider { width: 1px; height: 24px; background: #819d9140; }
+.adventures__console .adventures__transport-top { flex: 1 1 430px; padding: 0; gap: 10px; margin-top: 0; }
+.adventures__console .adventures__play-button { min-width: 78px; padding: 9px 12px; }
+.adventures__console .adventures__transport-status, .adventures__console .adventures__speed, .adventures__console .adventures__next-review { color: #bacbc4; }
+.adventures__console .adventures__next-review { margin: 0 0 0 auto; }
+.adventures__console .adventures__playhead, .adventures__console .adventures__checkpoint-review { background: transparent; color: #dce6df; }
+.adventures__console .adventures__playhead { flex: 1 0 100%; padding: 6px 0; border-bottom: 0; }
+.adventures__console .adventures__checkpoint-review { flex-basis: 100%; }
+.adventures__playhead > button:first-child { white-space: nowrap; width: auto; min-width: 74px; }
+.adventures__playhead > button.is-live { color: #dceec0; }
+.adventures__seek-track { position: relative; flex: 1; min-width: 0; padding: 0 0 16px; }
+.adventures__seek-track input { width: 100%; margin: 0; }
+.adventures__console .adventures__seek-track input { accent-color: #b7cc9c; }
+.adventures__seek-markers { position: absolute; left: 8px; right: 8px; bottom: 0; height: 12px; }
+.adventures__seek-markers button { position: absolute; transform: translateX(-50%); width: 12px; height: 12px; min-width: 0; padding: 0; border: 0; border-radius: 2px; background: #637b78; cursor: pointer; }
+.adventures__seek-markers button.is-visited { background: #c6d5a4; }
+.adventures__seek-markers button:focus-visible { outline: 2px solid #f0e4ba; outline-offset: 3px; }
+.adventures__console .adventure-evidence { margin: 12px 0 0; padding: 18px 0; background: transparent; border: 0; border-top: 1px solid #809d9130; border-radius: 0; color: #dce6df; }
+.adventures__console .adventure-evidence p, .adventures__console .adventure-evidence small, .adventures__console .adventure-evidence h3 { color: #aebfb6; }
+.adventures__console .adventure-evidence button { color: #dce6df; background: #172830; border-color: #809d9138; }
+.replay-log { max-height: 250px; min-height: 120px; overflow: auto; border-top: 1px solid #809d9120; padding: 8px 0; font: 12px/1.6 ui-monospace, monospace; }
+.replay-log button { display: grid; grid-template-columns: 90px 110px minmax(0, 1fr); gap: 12px; width: 100%; padding: 8px; background: transparent; color: #c5d5cf; border: 0; text-align: left; cursor: pointer; }
+.replay-log button > span:last-child { white-space: pre-wrap; overflow-wrap: anywhere; }
+.replay-log time, .replay-log__kind { color: #91a8a2; overflow-wrap: anywhere; }
+.replay-log button:hover { background: #192b2a; }
+.replay-log button.is-current { background: #182b2d; color: #e0ebd5; }
+@media (min-width: 1000px) {
+  .adventures__console .adventures__recording-clock { max-width: 65%; }
+  .adventures__console .adventures__transport-top { margin-top: 4px; }
+}
+@media (max-width: 700px) {
+  .adventures__console { padding: 0 12px 16px; }
+}
+@media (max-width: 650px) {
+  .adventures__scene, .adventures__landscape { height: 360px; }
+  .adventures__clock-divider { display: none; }
+  .adventures__recording-clock time:not(.adventures__elapsed-clock) { flex-basis: 100%; text-align: center; }
+  .replay-log button { grid-template-columns: 72px minmax(0, 1fr); gap: 5px; }
+  .replay-log button > span:last-child { grid-column: 1 / -1; }
+}

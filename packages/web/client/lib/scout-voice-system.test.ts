@@ -1,6 +1,10 @@
 import { afterEach, describe, expect, test } from "bun:test";
 
-import { startScoutSystemSpeech } from "./scout-voice.ts";
+import {
+  reconcileScoutSpeechSelection,
+  startScoutSystemSpeech,
+  type ScoutSpeechCatalog,
+} from "./scout-voice.ts";
 
 const originalWindow = globalThis.window;
 const originalSpeechSynthesisUtterance = globalThis.SpeechSynthesisUtterance;
@@ -75,5 +79,36 @@ describe("Scout system speech", () => {
 
     await expect(speech.promise).rejects.toMatchObject({ name: "AbortError" });
     expect(synthesis.cancelCalls).toBe(2);
+  });
+});
+
+describe("Scout speech catalog selection", () => {
+  const catalog: ScoutSpeechCatalog = {
+    defaultModelId: "system",
+    source: "fallback",
+    models: [
+      { id: "system", name: "System voice", provider: "system", available: true },
+      { id: "gpt-4o-mini-tts", name: "GPT-4o mini TTS", provider: "openai", available: null },
+      { id: "eleven_multilingual_v2", name: "Eleven Multilingual v2", provider: "elevenlabs", available: null },
+    ],
+    voices: [
+      { id: "coral", name: "Coral", provider: "openai", modelId: "gpt-4o-mini-tts", available: null, isDefault: false },
+      { id: "alloy", name: "Alloy", provider: "openai", modelId: "gpt-4o-mini-tts", available: null, isDefault: true },
+      { id: "aria", name: "Aria", provider: "elevenlabs", modelId: "eleven_multilingual_v2", available: null, isDefault: true },
+    ],
+  };
+
+  test("preserves a Deck model and voice whose native availability is unqueried", () => {
+    expect(reconcileScoutSpeechSelection(catalog, "gpt-4o-mini-tts", "coral")).toEqual({
+      modelId: "gpt-4o-mini-tts",
+      voiceId: "coral",
+    });
+  });
+
+  test("changes only the voice when the operator selects a different model", () => {
+    expect(reconcileScoutSpeechSelection(catalog, "eleven_multilingual_v2", "coral")).toEqual({
+      modelId: "eleven_multilingual_v2",
+      voiceId: "aria",
+    });
   });
 });

@@ -1,3 +1,5 @@
+import { readMessageRecord } from "./broker-message-records.js";
+import { messageRecordCount, withMessageCapture, materializeMessageRecords } from "./broker-message-records.js";
 import { evaluateScoutCapabilityAvailability } from "@openscout/protocol";
 import type {
   AgentBrokerFeed,
@@ -45,11 +47,12 @@ import type {
 } from "./broker-api.js";
 import { loadOpenScoutRuntimeBuildIdentity } from "./build-info.js";
 import { readInvocationLifecycle as readInvocationLifecycleModel } from "./invocation-lifecycle-read-model.js";
-import { listBrokerMessages } from "./broker-core-message-read-model.js";
+import { listBrokerMessagesAsync } from "./broker-core-message-read-model.js";
 import type { BrokerRouteTargetInput } from "./scout-dispatcher.js";
 import {
   createRuntimeRegistrySnapshot,
   queryRuntimeRegistrySnapshot,
+  queryRuntimeRegistrySnapshotAsync,
   type RuntimeRegistrySnapshot,
 } from "./registry.js";
 import type { ActivityItem } from "./sqlite-store.js";
@@ -124,7 +127,9 @@ export type BrokerCoreServiceDeps = {
   readChildServices?: () => ScoutBrokerChildServiceSnapshots;
   readProjectionStatus?: () => ScoutBrokerProjectionStatus;
   readStartupStatus?: () => ScoutBrokerStartupStatus;
+  readMemoryStatus?: () => unknown;
   readHome?: () => Promise<unknown>;
+  readMeshNodeState?: () => Promise<unknown> | unknown;
   readCapabilities?: (
     query?: ScoutBrokerCapabilitiesQuery,
   ) => Promise<ScoutCapabilityMatrixSnapshot>;
@@ -523,15 +528,15 @@ function flightToFeedItem(
   };
 }
 
-function deliveryMatchesAgent(
+async function deliveryMatchesAgent(
   delivery: DeliveryIntent,
   snapshot: RuntimeRegistrySnapshot,
   agentId: string,
-): boolean {
+): Promise<boolean> {
   if (delivery.targetId === agentId) {
     return true;
   }
-  const message = delivery.messageId ? snapshot.messages[delivery.messageId] : undefined;
+  const message = delivery.messageId ? await readMessageRecord(snapshot.messages, delivery.messageId) : undefined;
   if (message && messageMentionsAgent(message, agentId)) {
     return true;
   }
@@ -541,22 +546,22 @@ function deliveryMatchesAgent(
   return Boolean(invocation && (invocation.requesterId === agentId || invocation.targetAgentId === agentId));
 }
 
-function deliveryAt(
+async function deliveryAt(
   delivery: DeliveryIntent,
   snapshot: RuntimeRegistrySnapshot,
   attempts: DeliveryAttempt[],
-): number {
+): Promise<number> {
   const latestAttempt = attempts.at(-1)?.createdAt;
-  const messageAt = delivery.messageId ? snapshot.messages[delivery.messageId]?.createdAt : undefined;
+  const messageAt = delivery.messageId ? (await readMessageRecord(snapshot.messages, delivery.messageId))?.createdAt : undefined;
   const invocationAt = delivery.invocationId ? snapshot.invocations[delivery.invocationId]?.createdAt : undefined;
   return latestAttempt ?? messageAt ?? invocationAt ?? metadataNumber(delivery.metadata, "createdAt") ?? 0;
 }
 
-function deliveryToFeedItem(
+async function deliveryToFeedItem(
   delivery: DeliveryIntent,
   snapshot: RuntimeRegistrySnapshot,
   attempts: DeliveryAttempt[],
-): AgentBrokerFeedItem {
+): Promise<AgentBrokerFeedItem> {
   const invocation = delivery.invocationId
     ? snapshot.invocations[delivery.invocationId]
     : undefined;
@@ -564,7 +569,7 @@ function deliveryToFeedItem(
     id: `delivery:${delivery.id}`,
     kind: "delivery",
     severity: deliverySeverity(delivery.status),
-    at: deliveryAt(delivery, snapshot, attempts),
+    at: await deliveryAt(delivery, snapshot, attempts),
     title: `Delivery ${delivery.status}`,
     summary: compactText(
       metadataString(delivery.metadata, "failureReason")
@@ -716,8 +721,10 @@ async function readAgentBrokerFeed(
   const endpoints = Object.values(snapshot.endpoints)
     .filter((endpoint) => endpoint.agentId === agentId)
     .map(endpointStatus);
-  const deliveries = deps.journal.listDeliveries({ limit: sourceLimit })
-    .filter((delivery) => deliveryMatchesAgent(delivery, snapshot, agentId));
+  const deliveries: DeliveryIntent[] = [];
+  for (const delivery of deps.journal.listDeliveries({ limit: sourceLimit })) {
+    if (await deliveryMatchesAgent(delivery, snapshot, agentId)) deliveries.push(delivery);
+  }
   const visibleDeliveries = deliveries
     .filter((delivery) => visibleDeliveryStatus(delivery.status, includeAcknowledged));
   const items: AgentBrokerFeedItem[] = [];
@@ -733,7 +740,7 @@ async function readAgentBrokerFeed(
     items.push(invocationToFeedItem(invocation));
   }
 
-  for (const message of listBrokerMessages(deps.runtime, {
+  for (const message of await listBrokerMessagesAsync(deps.runtime, {
     participantId: agentId,
     inboxOnly: false,
     since,
@@ -748,7 +755,7 @@ async function readAgentBrokerFeed(
 
   for (const delivery of visibleDeliveries) {
     const attempts = deps.journal.listDeliveryAttempts(delivery.id);
-    items.push(deliveryToFeedItem(delivery, snapshot, attempts));
+    items.push(await deliveryToFeedItem(delivery, snapshot, attempts));
     for (const attempt of attempts) {
       if (attempt.status === "failed" || includeAcknowledged) {
         items.push(deliveryAttemptToFeedItem(delivery, attempt));
@@ -820,11 +827,17 @@ export function createBrokerCoreService(
   const readCapabilities = deps.readCapabilities;
   const readRuntimeCatalog = deps.readRuntimeCatalog;
   const readConversationProjection = deps.projection.conversationSnapshot;
+  const withSnapshot:NonNullable<ActiveScoutBrokerService['withSnapshot']>=async(query,consume,options)=>{
+    if(query.scope==='agents')return consume(createRuntimeRegistrySnapshot({agents:currentLocalAgentRecords(deps.runtime.peek().agents,deps.nodeId)}));
+    return withMessageCapture(deps.runtime.peek().messages,async messages=>{const snapshot=deps.runtime.snapshot();snapshot.messages=messages;return consume(await queryRuntimeRegistrySnapshotAsync(snapshot,query,options));},{...options,stream:true});
+  };
   return {
     baseUrl: deps.baseUrl,
     readHealth: async () => {
-      const snapshot = deps.runtime.snapshot();
+      // Synchronous summary only: no detached copy of every historical map.
+      const snapshot = deps.runtime.peek();
       const agentCounts = summarizeBrokerAgentCounts(snapshot, deps.nodeId);
+      const startup = deps.readStartupStatus?.();
       return {
         ok: true,
         nodeId: deps.nodeId,
@@ -834,9 +847,10 @@ export function createBrokerCoreService(
         ...(deps.readProjectionStatus
           ? { projection: deps.readProjectionStatus() }
           : {}),
-        ...(deps.readStartupStatus
-          ? { startup: deps.readStartupStatus() }
+        ...(startup
+          ? { startup }
           : {}),
+        ...(deps.readMemoryStatus ? { memory: deps.readMemoryStatus() } : {}),
         counts: {
           nodes: Object.keys(snapshot.nodes).length,
           actors: Object.keys(snapshot.actors).length,
@@ -853,7 +867,7 @@ export function createBrokerCoreService(
           oneTimeAgentCards: agentCounts.oneTimeAgentCards,
           persistentAgentCards: agentCounts.persistentAgentCards,
           conversations: Object.keys(snapshot.conversations).length,
-          messages: Object.keys(snapshot.messages).length,
+          messages: startup?.historyReady === false ? null : messageRecordCount(snapshot.messages),
           flights: Object.keys(snapshot.flights).length,
           collaborationRecords: Object.keys(snapshot.collaborationRecords)
             .length,
@@ -861,15 +875,10 @@ export function createBrokerCoreService(
       };
     },
     readHome: deps.readHome,
+    readMeshNodeState: deps.readMeshNodeState,
     readNode: async () => deps.localNode,
-    readSnapshot: async (query) => query?.scope === "agents"
-      ? createRuntimeRegistrySnapshot({
-          // Mesh roster sync needs only registrations this node can vouch for.
-          // Re-exporting stale rows and agents learned from another peer grows
-          // every discovery response while the receiver rejects those rows.
-          agents: currentLocalAgentRecords(deps.runtime.peek().agents, deps.nodeId),
-        })
-      : queryRuntimeRegistrySnapshot(deps.runtime.snapshot(), query),
+    withSnapshot,
+    readSnapshot: async(query)=>withSnapshot(query??{},async snapshot=>({...snapshot,messages:await materializeMessageRecords(snapshot.messages)})),
     ...(readConversationProjection
       ? {
           readConversationProjection: async (query) =>
@@ -895,7 +904,7 @@ export function createBrokerCoreService(
                 ),
         }
       : {}),
-    readMessages: async (query) => listBrokerMessages(deps.runtime, query),
+    readMessages: async (query) => listBrokerMessagesAsync(deps.runtime, query),
     readActivity: async (query) =>
       await listBrokerActivity(
         deps.projection,

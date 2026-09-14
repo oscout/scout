@@ -1,5 +1,5 @@
 import { useEffect, useId, useRef, useState, type CSSProperties } from "react";
-import { Eye, UserPlus } from "lucide-react";
+import { Eye, PanelRight, UserPlus } from "lucide-react";
 import { copyTextToClipboard } from "../../lib/clipboard.ts";
 import { routeMachineId } from "../../lib/router.ts";
 import type { Agent, Route } from "../../lib/types.ts";
@@ -114,8 +114,18 @@ function OverflowCoin({
 }
 
 
+export type ConversationView = "thread" | "flow" | "map" | "canvas";
+
+const CONVERSATION_VIEWS: { id: ConversationView; label: string; hint: string }[] = [
+  { id: "thread", label: "Thread", hint: "The conversation in order" },
+  { id: "flow", label: "Flow", hint: "Who asked whom, who waited, and where the work branched" },
+  { id: "map", label: "Map", hint: "Who exchanges work with whom, and on which model" },
+  { id: "canvas", label: "Canvas", hint: "The same window laid out left to right, with nobody folded away" },
+];
+
 export function ConversationHeader({
   showBackNav,
+  backLabel,
   isDm,
   navigate,
   route,
@@ -128,8 +138,13 @@ export function ConversationHeader({
   operator,
   canAddParticipants,
   onToggleAddParticipant,
+  view,
+  onChangeView,
+  beside,
 }: {
   showBackNav: boolean;
+  /** Names where back goes, when the arrival recorded somewhere specific. */
+  backLabel?: string;
   isDm: boolean;
   navigate: (r: Route) => void;
   route: Route;
@@ -142,6 +157,11 @@ export function ConversationHeader({
   operator: ConversationHeaderOperator;
   canAddParticipants: boolean;
   onToggleAddParticipant: () => void;
+  /** Which drawing of this conversation is on screen: the thread, or the flow graph. */
+  view: ConversationView;
+  onChangeView: (view: ConversationView) => void;
+  /** Keep this conversation beside the stage — on a Comms page, which has columns. */
+  beside?: { on: boolean; toggle: () => void };
 }) {
   const showContextMenu = useContextMenu();
   const machineId = routeMachineId(route);
@@ -253,7 +273,7 @@ export function ConversationHeader({
           slot="conversation"
           fallback={{ view: "inbox" }}
           navigate={navigate}
-          label="Back"
+          label={backLabel ?? "Back"}
           className="s-thread-header-back"
         />
       )}
@@ -273,6 +293,20 @@ export function ConversationHeader({
       </div>
 
       <div className="s-thread-center-header-right">
+        <div className="s-thread-view-toggle" role="group" aria-label="Conversation view">
+          {CONVERSATION_VIEWS.map((option) => (
+            <button
+              key={option.id}
+              type="button"
+              className={`s-thread-view-option${view === option.id ? " s-thread-view-option--on" : ""}`}
+              aria-pressed={view === option.id}
+              title={option.hint}
+              onClick={() => onChangeView(option.id)}
+            >
+              {option.label}
+            </button>
+          ))}
+        </div>
         {participants.length > 0 && (
           <div
             className="s-thread-participants"
@@ -503,6 +537,18 @@ export function ConversationHeader({
               </div>
             ) : null}
           </div>
+        )}
+        {beside && (
+          <button
+            type="button"
+            className={`s-thread-add-participant-trigger${beside.on ? " is-on" : ""}`}
+            onClick={beside.toggle}
+            title={beside.on ? "Close the column beside the stage" : "Keep this conversation beside the stage"}
+            aria-label={beside.on ? "Close beside" : "Keep beside"}
+            aria-pressed={beside.on}
+          >
+            <PanelRight size={14} strokeWidth={1.9} aria-hidden="true" />
+          </button>
         )}
         {canAddParticipants && (
           <button

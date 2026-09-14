@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 
-import { readAdapterBudgetObservations } from "@openscout/agent-sessions";
+import { readAdapterBudgetObservations } from "@openscout/agent-sessions/adapters/budget-observations";
 import type {
   AgentEndpoint,
   BudgetQuotaWindowSnapshot,

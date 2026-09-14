@@ -653,6 +653,69 @@ describe("ConversationProjectionStore", () => {
     );
   });
 
+  test("reads a presence-only active endpoint as idle, and a turn-open one as working", () => {
+    const { db, projection } = setup();
+    const agent = seedAgent(db, { id: "agent-presence", displayName: "Presence" });
+    // What `scout channel` registers: connected for as long as the process
+    // lives, re-stamped every 15s, and never inside a broker turn.
+    const endpoint = seedEndpoint(db, {
+      id: "endpoint-presence",
+      agentId: agent.id,
+      state: "active",
+      projectRoot: "/work/presence",
+      metadata: {
+        source: "scout-channel",
+        processId: 4242,
+        startedAt: BASE + 100,
+        lastSeenAt: BASE + 400,
+      },
+      updatedAt: BASE + 400,
+    });
+    const conversation = seedConversation(db, {
+      id: "chat_presence",
+      participantIds: [OPERATOR_ID, agent.id],
+    });
+    const message = seedMessage(db, {
+      id: "message-presence",
+      conversationId: conversation.id,
+      actorId: agent.id,
+      createdAt: BASE + 500,
+    });
+
+    expect(projection.applyBrokerBatch([
+      entryForConversation(conversation),
+      { kind: "agent.endpoint.upsert", endpoint },
+      entryForMessage(message),
+    ])?.delta.upserted[0]?.activityState).toBe("idle");
+
+    // The dispatcher's own turn markers still read as work.
+    const turnEndpoint: AgentEndpoint = {
+      ...endpoint,
+      metadata: {
+        ...endpoint.metadata,
+        lastInvocationId: "inv-presence",
+        lastStartedAt: BASE + 600,
+      },
+    };
+    db.query("UPDATE agent_endpoints SET metadata_json = ?1, updated_at = ?2 WHERE id = ?3")
+      .run(JSON.stringify(turnEndpoint.metadata), BASE + 600, endpoint.id);
+    expect(projection.applyBrokerBatch([
+      { kind: "agent.endpoint.upsert", endpoint: turnEndpoint },
+    ])?.delta.upserted[0]?.activityState).toBe("working");
+
+    // ...and stop as soon as that turn completes, even while the endpoint row
+    // stays `active` because nothing has written it back to idle yet.
+    const completedEndpoint: AgentEndpoint = {
+      ...turnEndpoint,
+      metadata: { ...turnEndpoint.metadata, lastCompletedAt: BASE + 700 },
+    };
+    db.query("UPDATE agent_endpoints SET metadata_json = ?1, updated_at = ?2 WHERE id = ?3")
+      .run(JSON.stringify(completedEndpoint.metadata), BASE + 700, endpoint.id);
+    expect(projection.applyBrokerBatch([
+      { kind: "agent.endpoint.upsert", endpoint: completedEndpoint },
+    ])?.delta.upserted[0]?.activityState).toBe("idle");
+  });
+
   test("projects queued, running, waiting, and completed flight state ahead of endpoint presence", () => {
     const { db, projection, setNow } = setup();
     const agent = seedAgent(db, { id: "agent-flight", displayName: "Flight" });

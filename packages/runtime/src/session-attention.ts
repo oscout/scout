@@ -1,10 +1,10 @@
-import {
-  normalizeApprovalRequest,
-  type ActionBlock,
-  type NormalizedApprovalRequest,
-  type QuestionBlock,
-  type SessionState,
-  type TurnState,
+import { normalizeApprovalRequest } from "@openscout/agent-sessions/protocol/approval-normalization";
+import type {
+  ActionBlock,
+  NormalizedApprovalRequest,
+  QuestionBlock,
+  SessionState,
+  TurnState,
 } from "@openscout/agent-sessions";
 
 export type SessionAttentionKind =

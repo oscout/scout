@@ -63,6 +63,10 @@ export function useObservePolling(agents: Agent[], options?: {
         }
         return next;
       });
+    } catch (error) {
+      // A failed background refresh must not reject into the global promise handler.
+      // Keep the last successful observations; the regular poll retries.
+      console.warn("[observe] Refresh failed; keeping previous observations", error);
     } finally {
       inFlightRef.current = false;
       if (queuedRef.current) {
