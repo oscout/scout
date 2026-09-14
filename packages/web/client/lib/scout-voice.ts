@@ -6,6 +6,23 @@ import {
   type VoiceFxParams,
 } from "@voxd/client/fx";
 import type { ScoutVoicePlayback } from "../../shared/voice-playback.ts";
+import {
+  formatScoutVoiceIssue,
+  voiceIssueHostOffline,
+  voiceIssueMicrophone,
+  voiceIssueNoInputDevice,
+  voiceIssueSpeechRecognition,
+  type ScoutVoiceIssue,
+  type ScoutVoiceIssueAction,
+  type ScoutVoiceIssueCode,
+} from "../../shared/voice-issues.ts";
+
+export {
+  formatScoutVoiceIssue,
+  type ScoutVoiceIssue,
+  type ScoutVoiceIssueAction,
+  type ScoutVoiceIssueCode,
+};
 
 export type ScoutVoiceConnectionState = "unknown" | "probing" | "connected" | "unavailable";
 export type ScoutVoiceSessionState = "starting" | "recording" | "processing" | "done" | "cancelled" | "error";
@@ -203,32 +220,6 @@ export type ScoutVoiceSettings = {
  * | `fetchScoutVoiceSettings()` | `GET /api/voice/settings` | Read engine, devices, and permission snapshot from the host. |
  */
 
-export type ScoutVoiceIssueCode =
-  | "host_offline"
-  | "microphone_not_requested"
-  | "microphone_denied"
-  | "speech_not_requested"
-  | "speech_denied"
-  | "no_input_device"
-  | "ready";
-
-export type ScoutVoiceIssueAction =
-  | "launch_host"
-  | "request_microphone"
-  | "open_microphone_settings"
-  | "request_speech"
-  | "open_speech_settings"
-  | "open_voice_settings"
-  | "none";
-
-export type ScoutVoiceIssue = {
-  code: ScoutVoiceIssueCode;
-  title: string;
-  message: string;
-  hint: string | null;
-  action: ScoutVoiceIssueAction;
-};
-
 export type ScoutVoiceEngageResult = {
   ready: boolean;
   issue: ScoutVoiceIssue | null;
@@ -245,10 +236,6 @@ export type ScoutVoiceEngageOptions = {
   requestPermissions?: boolean;
 };
 
-export function formatScoutVoiceIssue(issue: ScoutVoiceIssue | null | undefined): string {
-  if (!issue) return "Scout voice is unavailable.";
-  return issue.hint ? `${issue.message} ${issue.hint}` : issue.message;
-}
 
 export async function executeScoutVoiceIssueAction(action: ScoutVoiceIssueAction): Promise<void> {
   switch (action) {
@@ -315,13 +302,10 @@ async function engageScoutVoiceDictationFallback(
   if (!hostOnline) {
     return {
       ready: false,
-      issue: {
-        code: "host_offline",
-        title: "Scout Menu is not running",
-        message: "Launch Scout Menu on this Mac to dictate in web chat.",
-        hint: "Restart the web server if you just updated Scout — `scout server restart` or restart `bun run server/index.ts`.",
-        action: "launch_host",
-      },
+      // This fallback only runs when the server has no /api/voice/engage, so
+      // it cannot read the registry's age — it reports the plain offline case
+      // and leaves the reconnecting distinction to the server path.
+      issue: voiceIssueHostOffline(),
       warnings: [],
       settings,
       devices,
@@ -330,7 +314,7 @@ async function engageScoutVoiceDictationFallback(
     };
   }
 
-  const micIssue = scoutVoiceMicrophoneIssue(mic);
+  const micIssue = voiceIssueMicrophone(mic);
   if (micIssue) {
     return {
       ready: false,
@@ -346,13 +330,7 @@ async function engageScoutVoiceDictationFallback(
   if (!inputDevice) {
     return {
       ready: false,
-      issue: {
-        code: "no_input_device",
-        title: "No microphone detected",
-        message: "Scout Menu did not report any audio input devices.",
-        hint: "Plug in a microphone, check Sound settings, then refresh Settings → Voice.",
-        action: "open_voice_settings",
-      },
+      issue: voiceIssueNoInputDevice(),
       warnings: [],
       settings,
       devices,
@@ -361,7 +339,7 @@ async function engageScoutVoiceDictationFallback(
     };
   }
 
-  const speechIssue = scoutVoiceSpeechIssue(speech);
+  const speechIssue = voiceIssueSpeechRecognition(speech);
   return {
     ready: true,
     issue: null,
@@ -386,49 +364,7 @@ function resolveScoutVoiceInputDevice(
   return device ? { id: device.id, name: device.name } : null;
 }
 
-function scoutVoiceMicrophoneIssue(
-  permission: ScoutVoicePermissionStatus | null,
-): ScoutVoiceIssue | null {
-  if (!permission || permission.granted) return null;
-  if (permission.canRequest) {
-    return {
-      code: "microphone_not_requested",
-      title: "Microphone access needed",
-      message: "Scout Menu needs microphone access before dictation can start.",
-      hint: "Request access or tap the mic again to show the macOS prompt.",
-      action: "request_microphone",
-    };
-  }
-  return {
-    code: "microphone_denied",
-    title: "Microphone blocked",
-    message: "Scout Menu cannot record because microphone access is off.",
-    hint: "Scout is opening macOS Microphone settings and will detect the change automatically.",
-    action: "open_microphone_settings",
-  };
-}
 
-function scoutVoiceSpeechIssue(
-  permission: ScoutVoicePermissionStatus | null,
-): ScoutVoiceIssue | null {
-  if (!permission || permission.granted) return null;
-  if (permission.canRequest) {
-    return {
-      code: "speech_not_requested",
-      title: "Speech recognition needed",
-      message: "Scout Menu needs speech recognition for live partials.",
-      hint: "Request access to show the macOS prompt.",
-      action: "request_speech",
-    };
-  }
-  return {
-    code: "speech_denied",
-    title: "Speech recognition blocked",
-    message: "Speech recognition is off for Scout Menu.",
-    hint: "Choose Retry access to reopen macOS Speech Recognition settings.",
-    action: "open_speech_settings",
-  };
-}
 
 function friendlySessionError(message: string, code: string | null): string {
   switch (code) {
@@ -693,20 +629,8 @@ export class ScoutVoiceClient {
   }
 
   async launch(_options: ScoutVoiceLaunchOptions = {}): Promise<void> {
-    try {
-      const response = await fetch("/api/scout-services/restart-link", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ target: "all" }),
-      });
-      const body = await response.json().catch(() => ({})) as { url?: string };
-      if (body.url?.startsWith("scout://services/restart/")) {
-        window.location.href = body.url;
-        return;
-      }
-    } catch {
-      // Fall through to the HUD URL. The retry button still gives feedback.
-    }
+    // LaunchServices opens the registered Scout helper/app. Launching voice
+    // must not mint a services/restart/all link or restart the web registry.
     window.location.href = "scout://hud/show";
   }
 
@@ -753,7 +677,7 @@ async function startNativeScoutVoiceLive(
     resolveResult = resolve;
     rejectResult = reject;
   });
-  let resultTimeout: ReturnType<typeof setTimeout> | null = null;
+  let resultTimeout: number | null = null;
   const armResultTimeout = () => {
     if (resultTimeout) window.clearTimeout(resultTimeout);
     resultTimeout = window.setTimeout(() => {
@@ -786,7 +710,7 @@ async function startNativeScoutVoiceLive(
   };
 
   const eventSource = new EventSource(`/api/voice/session/${encodeURIComponent(sessionId)}/events`);
-  const onNamedEvent = (eventName: ScoutVoiceSessionState | "session.partial" | "session.final" | "session.error" | "session.cancelled") => {
+  const onNamedEvent = (eventName: "session.state" | "session.partial" | "session.final" | "session.error" | "session.cancelled") => {
     return (event: MessageEvent<string>) => {
       if (finalized) return;
       let payload: Record<string, unknown> = {};

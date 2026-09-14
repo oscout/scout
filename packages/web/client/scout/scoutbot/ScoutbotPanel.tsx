@@ -206,6 +206,7 @@ export function ScoutbotPanel({
           modelId: speechVoice.modelId,
           voiceId: speechVoice.voiceId,
           instructions: speechVoice.instructions,
+          playback: speechVoice.playback,
         })
       : startScoutSpeechWithEffects(spokenText, {
           speed: voiceSpeed,

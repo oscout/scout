@@ -24,6 +24,8 @@ export type ScoutSurfaceEmbed = {
    * the action as a no-op destination change and the control appears dead.
    */
   ownsInternalRoutes?: boolean;
+  /** Narrow ownership when native siblings share the same route view. */
+  isInternalRoute?: (route: Route) => boolean;
   chrome?: Partial<SurfaceChrome>;
   /** Extra props parsed from the embed URL query string. */
   resolveEmbedProps?: (params: URLSearchParams) => Record<string, unknown>;

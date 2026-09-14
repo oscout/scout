@@ -1,15 +1,13 @@
+import type { LiveFinalization } from "./live-finalization.ts";
 import { Database } from "bun:sqlite";
 import { mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 
-import {
-  SCOUT_REALTIME_VOICE_FAR_FIELD_INPUT,
-  type ScoutRealtimeVoiceSettings,
-} from "../shared/realtime-voice.ts";
+import { type ScoutRealtimeVoiceSettings } from "../shared/realtime-voice.ts";
 import { resolveDbPath } from "./db/internal/db.ts";
 
-const OPENAI_REALTIME_CALLS_URL = "https://api.openai.com/v1/realtime/calls";
-const DEFAULT_REALTIME_MODEL = "gpt-realtime-2.1";
+const OPENAI_LIVE_SESSIONS_URL = "https://api.openai.com/v1/live/sessions";
+const DEFAULT_REALTIME_MODEL = "gpt-live-1";
 const DEFAULT_REALTIME_VOICE = "marin";
 const MAX_SDP_BYTES = 64 * 1024;
 const DEFAULT_MAX_CONCURRENT_CALLS = 1;
@@ -18,32 +16,18 @@ const DEFAULT_LEASE_TTL_MS = 90_000;
 const RATE_WINDOW_MS = 60_000;
 const ADMISSION_DB_BUSY_TIMEOUT_MS = 2_000;
 
-const SCOUT_REALTIME_INSTRUCTIONS = [
+// Live splits the prompt in two: these frontend instructions govern the spoken
+// conversation and when to hand work off, while everything Scout actually knows
+// stays behind the delegation handler. Business rules do not belong here.
+const SCOUT_LIVE_INSTRUCTIONS = [
   "You are Scoutbot Voice, the spoken front end for OpenScout's in-app control-plane assistant.",
   "Keep turns concise, practical, conversational, and suitable for audio.",
-  "For any question about the operator's fleet, agents, projects, workspace, current work, coordination, navigation, or what to do next, call ask_scoutbot with the operator's full request before answering.",
-  "Treat the ask_scoutbot result as the source of truth for live Scout state. Never invent fleet state or claim a Scout action completed unless the result says so.",
-  "The result can include an OpenScout UI action that the app applies locally. When the operator explicitly asks Scoutbot to coordinate with an agent, Scoutbot sends that request automatically and reports whether delivery succeeded. Never claim the requested work itself is complete unless the result says so.",
-  "Do not read JSON, fence markup, or implementation details aloud.",
-  "You may handle a simple greeting directly, but use ask_scoutbot whenever the operator asks for work or live context.",
+  "Delegate to the application for any question about the operator's fleet, agents, projects, workspace, current work, coordination, navigation, or what to do next.",
+  "You never hold live Scout state yourself. Never invent fleet state, and never claim a Scout action completed unless the delegated result says so.",
+  "While a delegation is in flight you may stay in the conversation, but do not guess at the answer before the result arrives.",
+  "Speak the delegated result in your own words. Do not read JSON, fence markup, or implementation details aloud.",
+  "You may handle a simple greeting or a conversational aside directly; delegate whenever the operator asks for work or live context.",
 ].join(" ");
-
-const SCOUTBOT_REALTIME_TOOL = {
-  type: "function",
-  name: "ask_scoutbot",
-  description: "Ask the live Scoutbot control-plane assistant about the current OpenScout fleet, agents, workspace, coordination, navigation, or next action. Use this for any request that needs live Scout context or should affect the OpenScout UI.",
-  parameters: {
-    type: "object",
-    properties: {
-      request: {
-        type: "string",
-        description: "The operator's complete request, preserving relevant agent names, project names, and requested action.",
-      },
-    },
-    required: ["request"],
-    additionalProperties: false,
-  },
-};
 
 export type ScoutRealtimeVoiceConfig = {
   model: string;
@@ -67,6 +51,7 @@ export class ScoutRealtimeVoiceError extends Error {
     message: string,
     readonly status: number,
     readonly diagnostic?: Record<string, string | number>,
+    readonly providerSessionId?: string,
   ) {
     super(message);
     this.name = "ScoutRealtimeVoiceError";
@@ -126,6 +111,10 @@ export class ScoutRealtimeVoiceAdmission {
       );
       CREATE INDEX IF NOT EXISTS realtime_voice_leases_expires_at
         ON realtime_voice_leases(expires_at);
+      CREATE TABLE IF NOT EXISTS live_provider_sessions (
+        lease_id TEXT PRIMARY KEY, session_id TEXT NOT NULL, state TEXT NOT NULL,
+        reason TEXT, usage_seconds REAL, client_state TEXT, client_reason TEXT, client_usage_seconds REAL, updated_at INTEGER NOT NULL, attempts INTEGER NOT NULL DEFAULT 0
+      );
       CREATE TABLE IF NOT EXISTS realtime_voice_starts (
         id TEXT PRIMARY KEY,
         started_at INTEGER NOT NULL
@@ -213,6 +202,49 @@ export class ScoutRealtimeVoiceAdmission {
     return row.count;
   }
 
+  bindSession(leaseId: string, sessionId: string): void {
+    this.database.query("INSERT INTO live_provider_sessions (lease_id, session_id, state, updated_at) VALUES (?1, ?2, 'active', ?3)").run(leaseId, sessionId, this.now());
+  }
+
+  sessionForLease(leaseId: string): { sessionId: string; state: string } | null {
+    return this.database.query("SELECT session_id AS sessionId, state FROM live_provider_sessions WHERE lease_id = ?1").get(leaseId) as { sessionId: string; state: string } | null;
+  }
+
+  sessionsNeedingCleanup(): Array<{ leaseId: string; sessionId: string }> {
+    return this.database.query(`SELECT p.lease_id AS leaseId, p.session_id AS sessionId FROM live_provider_sessions p
+      LEFT JOIN realtime_voice_leases l ON l.id = p.lease_id
+      WHERE p.state != 'confirmed' AND p.attempts < 3 AND (l.id IS NULL OR l.expires_at <= ?1)
+      AND (p.attempts = 0 OR p.updated_at <= ?2)`).all(this.now(), this.now() - 30000) as Array<{ leaseId: string; sessionId: string }>;
+  }
+
+  hasPendingFinalization(): boolean {
+    const row = this.database.query("SELECT COUNT(*) AS count FROM live_provider_sessions WHERE state != 'confirmed' AND attempts < 3").get() as {count:number};
+    return row.count > 0;
+  }
+
+  recordClientFinalization(leaseId: string, result: LiveFinalization): void {
+    this.database.query(`UPDATE live_provider_sessions SET client_state = ?1,
+      client_reason = ?2, client_usage_seconds = ?3 WHERE lease_id = ?4`)
+      .run(result.state, result.reason ?? null, result.seconds ?? null, leaseId);
+  }
+
+  reserveFinalization(leaseId: string): { sessionId: string; attempt: number } | null {
+    // One UPDATE makes the shared SQLite retry budget authoritative across
+    // overlapping web workers, DELETE retries and the watchdog.
+    return this.database.query(`UPDATE live_provider_sessions
+      SET state = 'closing', attempts = attempts + 1, updated_at = ?1
+      WHERE lease_id = ?2 AND state != 'confirmed' AND attempts < 3
+      AND (attempts = 0 OR updated_at <= ?3)
+      RETURNING session_id AS sessionId, attempts AS attempt`)
+      .get(this.now(), leaseId, this.now() - 30000) as {sessionId:string;attempt:number} | null;
+  }
+
+  recordFinalization(leaseId: string, result: LiveFinalization, attempt: number): void {
+    this.database.query(`UPDATE live_provider_sessions SET state = ?1, reason = ?2,
+      usage_seconds = ?3, updated_at = ?4 WHERE lease_id = ?5 AND attempts = ?6 AND state != 'confirmed'`)
+      .run(result.state, result.reason ?? null, result.seconds ?? null, this.now(), leaseId, attempt);
+  }
+
   close(): void {
     if (this.ownsDatabase) this.database.close();
   }
@@ -224,7 +256,7 @@ export function resolveScoutRealtimeVoiceConfig(
   return {
     model: firstNonEmptyString(env.OPENSCOUT_REALTIME_MODEL) ?? DEFAULT_REALTIME_MODEL,
     voice: firstNonEmptyString(env.OPENSCOUT_REALTIME_VOICE) ?? DEFAULT_REALTIME_VOICE,
-    instructions: firstNonEmptyString(env.OPENSCOUT_REALTIME_INSTRUCTIONS) ?? SCOUT_REALTIME_INSTRUCTIONS,
+    instructions: firstNonEmptyString(env.OPENSCOUT_REALTIME_INSTRUCTIONS) ?? SCOUT_LIVE_INSTRUCTIONS,
   };
 }
 
@@ -295,7 +327,7 @@ export function validateScoutRealtimeOffer(sdp: string): string {
     throw new ScoutRealtimeVoiceError("WebRTC offer SDP is invalid.", 400);
   }
   // SDP uses CRLF line endings. In particular, the final CRLF is significant to
-  // the Realtime SDP parser, so validate a trimmed view but proxy the browser's
+  // the Live SDP parser, so validate a trimmed view but proxy the browser's
   // exact payload rather than normalizing it.
   return sdp;
 }
@@ -334,58 +366,93 @@ export async function readScoutRealtimeOffer(request: Request): Promise<string> 
   return validateScoutRealtimeOffer(new TextDecoder().decode(bytes));
 }
 
+export type ScoutLiveVoiceCall = {
+  /** SDP answer to apply as the peer's remote description. */
+  answerSdp: string;
+  /** Opaque Live session id, preserved verbatim for sideband and recordings. */
+  sessionId: string;
+};
+
 export async function createScoutRealtimeVoiceCall(input: {
   offerSdp: string;
   apiKey: string;
   config?: ScoutRealtimeVoiceConfig;
   signal?: AbortSignal;
   fetchImpl?: typeof fetch;
-}): Promise<string> {
+}): Promise<ScoutLiveVoiceCall> {
   const config = input.config ?? resolveScoutRealtimeVoiceConfig();
-  const session = JSON.stringify({
-    type: "realtime",
-    model: config.model,
-    audio: {
-      input: SCOUT_REALTIME_VOICE_FAR_FIELD_INPUT,
-      output: { voice: config.voice },
+  // Live is full-duplex: it owns turn-taking and interruption itself, so there
+  // is no input VAD or noise-reduction profile to send. Voice and instructions
+  // are immutable once the session starts.
+  const body = JSON.stringify({
+    session: {
+      model: config.model,
+      audio: { output: { voice: config.voice } },
+      instructions: config.instructions,
+      // Scout's fleet state is host-local, so the application answers delegated
+      // work. A Responses backend would have no way to read it.
+      delegation: { type: "client" },
     },
-    instructions: config.instructions,
-    tools: [SCOUTBOT_REALTIME_TOOL],
-    tool_choice: "auto",
+    transport: { type: "webrtc", sdp: input.offerSdp },
   });
-  const form = new FormData();
-  form.set("sdp", input.offerSdp);
-  form.set("session", session);
 
   let response: Response;
   try {
-    response = await (input.fetchImpl ?? fetch)(OPENAI_REALTIME_CALLS_URL, {
+    response = await (input.fetchImpl ?? fetch)(OPENAI_LIVE_SESSIONS_URL, {
       method: "POST",
-      headers: { authorization: `Bearer ${input.apiKey}` },
-      body: form,
+      headers: {
+        authorization: `Bearer ${input.apiKey}`,
+        "content-type": "application/json",
+      },
+      body,
       signal: input.signal,
     });
   } catch (error) {
     if (input.signal?.aborted) throw error;
-    throw new ScoutRealtimeVoiceError("Could not reach OpenAI Realtime.", 502);
+    throw new ScoutRealtimeVoiceError("Could not reach OpenAI Live.", 502);
   }
 
-  const body = await response.text();
+  const raw = await response.text();
   if (!response.ok) {
     throw new ScoutRealtimeVoiceError(
-      `OpenAI Realtime could not start the call (${response.status}).`,
+      `OpenAI Live could not start the call (${response.status}).`,
       502,
       {
         upstreamStatus: response.status,
         model: config.model,
-        ...parseOpenAIErrorDiagnostic(body),
+        ...parseOpenAIErrorDiagnostic(raw),
       },
     );
   }
-  if (!body.trim()) {
-    throw new ScoutRealtimeVoiceError("OpenAI Realtime returned an empty call answer.", 502);
+  return readScoutLiveVoiceCall(raw);
+}
+
+/**
+ * Live answers with JSON rather than a bare SDP body, so a truncated or
+ * reshaped payload has to fail loudly here instead of reaching the browser as
+ * an unparseable remote description.
+ */
+function readScoutLiveVoiceCall(raw: string): ScoutLiveVoiceCall {
+  if (!raw.trim()) {
+    throw new ScoutRealtimeVoiceError("OpenAI Live returned an empty call answer.", 502);
   }
-  return body;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new ScoutRealtimeVoiceError("OpenAI Live returned a malformed call answer.", 502);
+  }
+  if (!parsed || typeof parsed !== "object") throw new ScoutRealtimeVoiceError("OpenAI Live returned a malformed call answer.", 502);
+  const payload = parsed as {
+    session?: { id?: unknown };
+    transport?: { sdp?: unknown; type?: unknown };
+  };
+  const answerSdp = typeof payload.transport?.sdp === "string" ? payload.transport.sdp : "";
+  const sessionId = typeof payload.session?.id === "string" ? payload.session.id : "";
+  if (payload.transport?.type !== "webrtc" || !answerSdp.trim() || !sessionId.trim()) {
+    throw new ScoutRealtimeVoiceError("OpenAI Live returned a call answer without a WebRTC session.", 502, undefined, sessionId.trim() ? sessionId : undefined);
+  }
+  return { answerSdp, sessionId };
 }
 
 function defaultRealtimeVoiceAdmissionPath(): string {

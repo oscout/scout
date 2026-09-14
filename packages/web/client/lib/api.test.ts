@@ -148,6 +148,50 @@ describe("api GET dedupe", () => {
 
     await expect(api("/api/fleet")).rejects.toThrow("unauthorized");
   });
+
+  test("replays a failure report POST unchanged after refreshing an expired session", async () => {
+    const requests: Array<{ path: string; init?: RequestInit }> = [];
+    const body = JSON.stringify({ attemptId: "failed-query-1", attempt: { id: "failed-query-1", status: "failed" } });
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(input);
+      requests.push({ path, init });
+      if (path === "/api/bootstrap.js") {
+        expect(init).toMatchObject({ method: "GET", credentials: "include", cache: "no-store" });
+        return new Response("", { status: 200 });
+      }
+      if (requests.length === 1) return new Response("Unauthorized", { status: 401 });
+      return Response.json({ conversationId: "report-1" });
+    }) as typeof fetch;
+
+    await expect(api("/api/broker/dispatch-review", { method: "POST", body })).resolves.toEqual({ conversationId: "report-1" });
+    expect(requests.map((request) => request.path)).toEqual([
+      "/api/broker/dispatch-review", "/api/bootstrap.js", "/api/broker/dispatch-review",
+    ]);
+    for (const request of [requests[0], requests[2]]) {
+      expect(request?.init?.method).toBe("POST");
+      expect(request?.init?.body).toBe(body);
+      expect(new Headers(request?.init?.headers).get("content-type")).toBe("application/json");
+    }
+  });
+
+
+  test("stops after one failure report retry when refreshed credentials are still rejected", async () => {
+    const paths: string[] = [];
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      const path = String(input);
+      paths.push(path);
+      return path === "/api/bootstrap.js"
+        ? new Response("", { status: 200 })
+        : new Response("Unauthorized", { status: 401 });
+    }) as typeof fetch;
+
+    await expect(api("/api/broker/dispatch-review", { method: "POST", body: "{}" })).rejects.toThrow("Unauthorized");
+    expect(paths).toEqual([
+      "/api/broker/dispatch-review", "/api/bootstrap.js", "/api/broker/dispatch-review",
+    ]);
+  });
+
+
 });
 
 describe("owned API request cancellation", () => {

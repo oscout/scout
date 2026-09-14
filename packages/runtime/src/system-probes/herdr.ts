@@ -501,7 +501,14 @@ export function parseHerdrTopology(inputs: {
       terminalId: herdrString(record.terminal_id),
       tabId,
       workspaceId,
-      label: herdrString(record.label),
+      // herdr reports a pane's human-readable string as its terminal title, not
+      // as `label`: `terminal_title` carries the agent's own status glyphs and
+      // `terminal_title_stripped` the plain text. Reading `label` alone left
+      // every pane nameless, so callers fell back to the pane id and a session
+      // full of real work read as "w1:p1, w2:p1, w3:p1".
+      label: herdrString(record.terminal_title_stripped)
+        ?? herdrString(record.terminal_title)
+        ?? herdrString(record.label),
       agent: herdrString(record.agent),
       agentStatus: normalizeHerdrAgentStatus(record.agent_status),
       agentSession,

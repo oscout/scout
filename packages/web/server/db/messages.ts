@@ -25,15 +25,18 @@ import type { WebMessage } from "./types/web.ts";
 type ThreadSummary = NonNullable<WebMessage["threadSummary"]>;
 
 /**
- * An agent's neighbourhood: every conversation it spoke in or was addressed
- * in, read whole.
+ * An agent's neighbourhood: every conversation it is a member of or has
+ * spoken in, read whole.
  *
- * Three legs, because no one of them is the whole answer. Membership misses an
- * agent the broker delivered to without writing a member row. Authorship
- * misses an agent that was asked and has not answered yet — the case the map
- * most needs, since an unanswered ask is exactly what an operator is looking
- * for. Deliveries carry that recipient side: `deliveries.target_id` is who a
- * message was routed to, whether or not they have replied.
+ * Membership is what carries an ask nobody has answered yet — the broker puts
+ * the target into `participantIds` when it opens the conversation, so being
+ * addressed writes a member row before any reply exists. Authorship is the
+ * second leg because a channel's membership is a send-time snapshot rather
+ * than an accumulating roster, so an agent that spoke in one need not still be
+ * listed in it.
+ *
+ * Member-or-author is the whole contract. An agent named only in routing
+ * metadata, with no member row and nothing authored, is outside this read.
  *
  * Scoping by conversation rather than by author is the point: the flow views
  * draw who asked whom, so the other side of every exchange has to come back
@@ -44,11 +47,6 @@ const AGENT_NEIGHBOURHOOD_PREDICATE = `m.conversation_id IN (
   SELECT cm.conversation_id FROM conversation_members cm WHERE cm.actor_id = ?
   UNION
   SELECT spoken.conversation_id FROM messages spoken WHERE spoken.actor_id = ?
-  UNION
-  SELECT addressed.conversation_id
-  FROM deliveries d
-  JOIN messages addressed ON addressed.id = d.message_id
-  WHERE d.target_id = ?
 )`;
 
 export function queryRecentMessages(
@@ -86,7 +84,7 @@ export function queryRecentMessages(
   ]);
   // Clause order is the parameter order: conversation ids, then the
   // neighbourhood actor, then the page cursor.
-  const actorParams = actorId ? [actorId, actorId, actorId] : [];
+  const actorParams = actorId ? [actorId, actorId] : [];
   const beforeParams = beforeMessage
     ? [beforeMessage.createdAt, beforeMessage.createdAt, beforeMessage.id]
     : [];

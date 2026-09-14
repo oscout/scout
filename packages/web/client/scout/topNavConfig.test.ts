@@ -71,6 +71,7 @@ describe("top nav config", () => {
     expect(topNavKeyForRoute({ view: "ops" })).toBe("ops");
     expect(topNavKeyForRoute({ view: "ops", mode: "tail" })).toBe("ops");
     expect(topNavKeyForRoute({ view: "ops", mode: "lanes" })).toBe("ops");
+    expect(topNavKeyForRoute({ view: "ops", mode: "world" })).toBe("ops");
     expect(topNavKeyForRoute({ view: "harnesses" })).toBe("ops");
     expect(topNavKeyForRoute({ view: "mesh" })).toBe("ops");
     expect(topNavKeyForRoute({ view: "mesh-ops" })).toBe("ops");

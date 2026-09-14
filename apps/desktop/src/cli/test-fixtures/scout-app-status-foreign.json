@@ -1,0 +1,76 @@
+{
+  "action": "status",
+  "bundlePath": "/Applications/OpenScout.app",
+  "menuBundlePath": "/Applications/OpenScout.app/Contents/Library/LoginItems/ScoutMenu.app",
+  "running": true,
+  "layers": [
+    {
+      "layer": "scoutd",
+      "pids": [
+        980
+      ]
+    },
+    {
+      "layer": "base",
+      "pids": [
+        1074
+      ]
+    },
+    {
+      "layer": "probes",
+      "pids": [
+        1075
+      ]
+    },
+    {
+      "layer": "broker",
+      "pids": [
+        1322
+      ]
+    },
+    {
+      "layer": "edge",
+      "pids": [
+        1326
+      ]
+    },
+    {
+      "layer": "web",
+      "pids": [
+        1574
+      ]
+    },
+    {
+      "layer": "pairing",
+      "pids": [
+        1327
+      ]
+    },
+    {
+      "layer": "menu",
+      "pids": []
+    },
+    {
+      "layer": "app",
+      "pids": []
+    }
+  ],
+  "foreign": [
+    {
+      "layer": "app",
+      "pid": 676,
+      "executable": "/Users/operator/dev/openscout/apps/macos/dist/Scout.app/Contents/MacOS/Scout"
+    },
+    {
+      "layer": "menu",
+      "pid": 876,
+      "executable": "/Users/operator/dev/openscout/apps/macos/dist/Scout.app/Contents/Library/LoginItems/ScoutMenu.app/Contents/MacOS/ScoutMenu"
+    }
+  ],
+  "problems": [
+    "no app process is running",
+    "no menu process is running"
+  ],
+  "steps": [],
+  "message": "OpenScout is running with 2 problems."
+}

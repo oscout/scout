@@ -19,6 +19,7 @@ import { ScoutCliError } from "../errors.ts";
 import {
   DEFAULT_OPENSCOUT_APP_PATH,
   findAppDmgAsset,
+  loadInstallCandidate,
   OPENSCOUT_APP_BUNDLE_ID,
   OPENSCOUT_APP_NAME,
   OPENSCOUT_RELEASE_OWNER,
@@ -674,6 +675,33 @@ describe("processIdsForMenuOutsideApp", () => {
   });
 });
 describe("runInstallCommand", () => {
+  test("a local candidate reuses verification and replacement without a network release", async () => {
+    const world = createWorld({ installed: true });
+    const dmg = join(world.root, "candidate.dmg");
+    const receipt = join(world.root, "receipt.json");
+    writeFileSync(dmg, world.body);
+    const metadata = {
+      schema: "openscout-native-candidate-v1", version: "0.2.70",
+      source: { repository: "arach/openscout", commit: "a".repeat(40) },
+      verification: { release: true, team: OPENSCOUT_SIGNING_TEAM_ID },
+      artifact: { size: world.body.length, sha256: sha256(world.body).slice(7) },
+    };
+    writeFileSync(receipt, JSON.stringify(metadata));
+    const deps = createHarness(world);
+    deps.fetch = async () => { throw new Error("Candidate must not contact GitHub"); };
+    const result = captureContext();
+    await runInstallCommand(result.context, ["--candidate", receipt, "--dmg", dmg], deps);
+    expect(parseJsonOutput(result.stdout).installed).toBe("0.2.70");
+    expect(world.calls.some(c => c.command === "codesign")).toBe(true);
+    expect(world.calls.some(c => c.command === "spctl")).toBe(true);
+    writeFileSync(dmg, "corrupted bytes");
+    expect(() => loadInstallCandidate(receipt, dmg)).toThrow(/mismatch/);
+    metadata.verification.team = "WRONG";
+    writeFileSync(receipt, JSON.stringify(metadata));
+    expect(() => loadInstallCandidate(receipt, dmg)).toThrow(/Invalid/);
+    expect(() => parseInstallArgs(["--candidate", receipt])).toThrow(/together/);
+    expect(() => parseInstallArgs(["--candidate", receipt, "--dmg", dmg, "--version", "v0.2.70"])).toThrow(/either/);
+  });
   test("rejects non-macOS hosts", async () => {
     const { context } = captureContext();
     await expect(runInstallCommand(context, [], { platform: "linux" })).rejects.toThrow(

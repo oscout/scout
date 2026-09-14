@@ -1,5 +1,61 @@
 # Scout Comms
 
+## Inspect work and contact the operator
+
+Use `scout status <handle>` to inspect a flight, invocation, work item, question,
+message, or `ref:` binding without waiting. To triage all work visible to the
+current broker:
+
+```bash
+scout status --all
+scout status --all --blocked
+scout status --all --failed
+scout status --all --blocked --next-actor operator --json
+scout status --all --blocked --next-actor self --json
+```
+
+`--blocked` selects explicit waiting/review states and unanswered questions. It
+never guesses from silence, inactivity, or words such as “blocked” in a message.
+Each result carries its stable handle, source state, reason, next actor when
+known, and a suggested next action. A broker read failure is an error, not an
+empty list. `--all` means the current broker snapshot; it does not poll every
+remote machine, inspect uncaptured native harness prompts, or promise historical
+records beyond the broker's retained snapshot. No additional age cutoff is
+applied. Related work items and flights remain separate records with their own
+handles. Reading status never acknowledges, dismisses, retries, or resumes work.
+
+An operating agent may deliberately contact the operator whenever a user-defined
+condition is satisfied, independently of turn completion:
+
+```bash
+scout notify --message "The screen is ready for review." --image ./screen.png
+scout notify --message "The investigation found a reason to change our plan."
+scout ask --operator --question "Which environment should I use?" \
+  --option staging --option production
+scout ask --operator --question "May I deploy this migration to staging?" --permission
+```
+
+The operating agent evaluates the condition. `notify` does not create a monitor,
+flight, or blocked state. `ask --operator` records an answer-required question;
+`--permission` labels the question without granting any native harness or system
+permission. The CLI exits after recording it. An exact threaded operator reply
+resolves the question in `status`, which also exposes the answer. Unrelated
+conversation traffic and replies from other agents do not resolve it.
+
+Receipts distinguish durable recording from notification delivery, which remains
+best-effort and unconfirmed. macOS consumes explicit signals while Scout is
+running, with a persisted delivery cursor; initial installation starts with new
+signals rather than replaying history. Remote iOS push carries generic text and
+opaque message/conversation references. Open Scout for the authored content.
+There is no image embedded directly in the remote push payload. PNG/JPEG/GIF/WebP
+images up to 25 MiB use the existing local paired attachment store, require the
+local broker and pairing file server, and expire after six hours; the receipt
+includes that expiry. Text remains in the durable conversation.
+
+The former public commands `need` and `attention` are retired. Use
+`ask --operator`, `status`, and `diff` for their distinct purposes.
+
+
 This is the front door for building a Scout-aware client, plugin, or adapter.
 Read this when you want to understand how Scout interactions work: what gets
 routed, what gets stored, how replies find their way home, and which pieces are

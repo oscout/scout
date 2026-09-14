@@ -33,6 +33,17 @@ export type LaneRosterEntry = {
 export type LaneRosterFloorEntry = {
   live: boolean;
   harness: string | null;
+  /**
+   * What the actor is called on the floor itself (floorCharacterName) — a
+   * recorded name, or the harness plus the short lane discriminator. The row's
+   * `label` is the workspace, which every actor in one repo shares; a rail of
+   * seven identical project names names nothing. This is what tells them apart,
+   * and it is the same string printed under the character on the plane, so a
+   * row and a person on the floor read as the same thing.
+   */
+  identity: string;
+  /** Workspace this actor is working in, when reported — the row's context line. */
+  project: string | null;
   actionGlyph: string;
   actionLabel: string;
   actionMeta: string;
@@ -51,6 +62,8 @@ function floorEntriesEqual(
   if (!a || !b) return false;
   return a.live === b.live
     && a.harness === b.harness
+    && a.identity === b.identity
+    && a.project === b.project
     && a.actionGlyph === b.actionGlyph
     && a.actionLabel === b.actionLabel
     && a.actionMeta === b.actionMeta

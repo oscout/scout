@@ -37,6 +37,87 @@ describe("Scoutbot read-only session tools", () => {
     expect(result.structuredContent).toMatchObject({ mode: "lexical", coverage: { kind: "empty_index" }, results: [], inventoryStatus: "not_requested" });
     expect(closed).toBe(true);
   });
+  test("a window deeper than the index narrows to what is warmed instead of returning nothing", async () => {
+    // The index is only ever warmed to ~72h, but the schema invites up to 720h,
+    // so "what did we do last week" used to come back structurally empty.
+    const now = Date.now();
+    const span = {
+      id: "span-1", source: "sessions" as const, harness: "*", lookbackMs: 72 * 3_600_000,
+      cutoffMs: now - 72 * 3_600_000, completedAt: now - 60_000, jobId: "job-1",
+      discovered: 40, indexed: 40, failed: 0,
+    };
+    const asked: number[] = [];
+    const client = await clientFor(dependencies({
+      openStore: () => ({
+        assessCoverage: (request = {}) => {
+          asked.push(request.lookbackMs ?? 0);
+          return (request.lookbackMs ?? 0) > span.lookbackMs
+            ? { kind: "not_warmed", source: "sessions", harness: [], lookbackMs: request.lookbackMs, suggestion: "scout search index", nearestSpans: [span] }
+            : { kind: "warmed", spans: [span], stale: false, staleAfterMs: 1000 };
+        },
+        searchLexical: () => [hit],
+        close() {},
+      }),
+    }));
+    const result = await client.callTool({ name: "sessions_search", arguments: { query: "xcodebuild", hours: 168 } });
+    expect(asked).toEqual([168 * 3_600_000, 72 * 3_600_000]);
+    expect(result.structuredContent).toMatchObject({
+      coverage: { kind: "warmed" },
+      requestedHours: 168,
+      searchedHours: 72,
+      narrowedToWarmedWindow: true,
+    });
+    expect((result.structuredContent as { results: unknown[] }).results).toHaveLength(1);
+  });
+  test("a window with nothing warmed behind it still reports not_warmed rather than inventing coverage", async () => {
+    const now = Date.now();
+    // Scanned 4h of history two days ago: every 4h-window hit predates the scan.
+    const stale = {
+      id: "span-2", source: "sessions" as const, harness: "*", lookbackMs: 4 * 3_600_000,
+      cutoffMs: now - 52 * 3_600_000, completedAt: now - 48 * 3_600_000, jobId: "job-2",
+      discovered: 5, indexed: 5, failed: 0,
+    };
+    const client = await clientFor(dependencies({
+      openStore: () => ({
+        assessCoverage: (request = {}) => ({ kind: "not_warmed", source: "sessions", harness: [], lookbackMs: request.lookbackMs, suggestion: "scout search index", nearestSpans: [stale] }),
+        searchLexical: () => { throw new Error("must not search"); },
+        close() {},
+      }),
+    }));
+    const result = await client.callTool({ name: "sessions_search", arguments: { query: "xcodebuild", hours: 168 } });
+    expect(result.structuredContent).toMatchObject({ coverage: { kind: "not_warmed" }, results: [], searchedHours: 168 });
+    expect(result.structuredContent).not.toHaveProperty("narrowedToWarmedWindow");
+  });
+  test.each(["codex", "claude"])("uses real indexed coverage for %s without crossing harnesses or accepting failed scans", async (harness) => {
+    const directory = mkdtempSync(join(tmpdir(), "scout-session-coverage-"));
+    const store = new SQLiteKnowledgeStore(join(directory, "knowledge.sqlite"));
+    const now = Date.now();
+    try {
+      for (const [indexedHarness, indexed] of [["codex", 2], ["claude", 0]] as const) {
+        store.recordWarmSpan({ source: "sessions", harness: indexedHarness, lookbackMs: 72 * 3_600_000,
+          cutoffMs: now - 72 * 3_600_000, completedAt: now - 60_000, jobId: `job-${indexedHarness}`,
+          discovered: 2, indexed, failed: 2 - indexed });
+      }
+      let requested: Parameters<SQLiteKnowledgeStore["searchLexical"]>[0] | undefined;
+      const client = await clientFor(dependencies({ openStore: () => ({
+        assessCoverage: (request) => store.assessCoverage(request),
+        searchLexical: (query) => { requested = query; return [hit]; },
+        close() {},
+      }) }));
+      const result = await client.callTool({ name: "sessions_search", arguments: { query: "build", harness, project: "openscout", hours: 168 } });
+      if (harness === "codex") {
+        expect(result.structuredContent).toMatchObject({ requestedHours: 168, searchedHours: 72,
+          narrowedToWarmedWindow: true, coverage: { kind: "warmed" }, results: [{ sessionId: "native-1" }] });
+        expect(requested).toMatchObject({ facets: { harness: "codex", project: "openscout" } });
+        expect(requested!.sourceUpdatedAfterMs).toBeGreaterThanOrEqual(now - 72 * 3_600_000);
+        expect(requested!.sourceUpdatedAfterMs).toBeLessThanOrEqual(Date.now() - 72 * 3_600_000);
+      } else {
+        expect(result.structuredContent).toMatchObject({ coverage: { kind: "not_warmed" }, results: [] });
+        expect(requested).toBeUndefined();
+      }
+    } finally { store.close(); rmSync(directory, { recursive: true, force: true }); }
+  });
+
   test("bounds queries before opening the store", async () => {
     let opened = false;
     const client = await clientFor(dependencies({ openStore: () => { opened = true; throw new Error("must not open"); } }));

@@ -1,7 +1,7 @@
 import type { ConversationKind } from "./conversations.js";
 import type { ObservedActivity } from "./observed-status.js";
 
-export const CONVERSATION_PROJECTION_VERSION = 1;
+export const CONVERSATION_PROJECTION_VERSION = 2;
 
 export type ConversationProjectionEntityKind =
   | "scout_conversation"

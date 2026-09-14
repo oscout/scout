@@ -148,7 +148,12 @@
   color: #e8edf4;
 }
 .shared-floor-character:hover .shared-floor-character__context,
-.shared-floor-character:focus-visible .shared-floor-character__context { display: grid; gap: 7px; }
+.shared-floor-character:focus-visible .shared-floor-character__context,
+.shared-floor-character.is-pinned .shared-floor-character__context { display: grid; gap: 7px; }
+/* A held card outlives the pointer, so it says so on its own: the accent edge
+   is what separates the two or three you are watching from the one you happen
+   to be hovering. */
+.shared-floor-character.is-pinned .shared-floor-character__context { border-color: color-mix(in oklab, var(--floor-accent) 55%, transparent); }
 .shared-floor-character__context strong { color: var(--floor-accent); font-size: 11px; }
 .shared-floor-character__context small { color: var(--floor-muted); font-size: 10px; }
 .shared-floor-character__context-activity { color: #bdc8c2; }

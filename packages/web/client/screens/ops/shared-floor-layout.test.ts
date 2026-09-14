@@ -21,14 +21,18 @@ describe("shared floor placement", () => {
     const returned = buildSharedFloorLayout(lanes, absent.memory);
     expect(returned).toEqual(first);
   });
-  test("large groups have sufficient height and later rows do not overlap", () => {
+  test("a large crew grows its island and every actor still stands on the painted deck", () => {
     const lanes = Array.from({ length: 20 }, (_, index) => lane(`a${index}`, "/a"));
     const layout = buildSharedFloorLayout([...lanes, lane("b", "/b"), lane("c", "/c")]);
     const [large, beside, below] = layout.groups;
     expect(large.actors).toHaveLength(20);
+    expect(large.height).toBeGreaterThan(beside.height);
     for (const actor of large.actors) {
-      expect(actor.y + 140).toBeLessThanOrEqual(large.height);
-      expect(actor.x + 84).toBeLessThanOrEqual(large.width);
+      // Feet inside the deck rectangle the art paints: 22%-78% across, 36%-58% down.
+      expect(actor.x).toBeGreaterThanOrEqual(large.width * .22);
+      expect(actor.x + 84).toBeLessThanOrEqual(large.width * .78);
+      expect(actor.y + 84).toBeGreaterThanOrEqual(large.height * .36);
+      expect(actor.y + 84).toBeLessThanOrEqual(large.height * .58);
     }
     expect(beside.x).toBeGreaterThan(large.x + large.width);
     expect(below.y).toBeGreaterThan(large.y + large.height);
@@ -42,12 +46,15 @@ describe("shared floor placement", () => {
   });
 });
 
-test("automatic positions leave room for captions and adjacent rows", () => {
+test("crew stay clear of each other and of the caption hung below the island", () => {
   const { groups } = buildSharedFloorLayout(Array.from({ length: 12 }, (_, i) => lane(`actor-${i}`, "/repo")));
-  const actors = groups[0].actors;
+  const island = groups[0];
+  const actors = island.actors;
   for (let i = 0; i < actors.length; i++) for (let j = i + 1; j < actors.length; j++) {
     const horizontal = Math.abs(actors[i].x - actors[j].x);
     const vertical = Math.abs(actors[i].y - actors[j].y);
-    expect(horizontal >= 145 + 40 || vertical >= 140 + 10).toBe(true);
+    expect(horizontal >= 84 + 20 || vertical >= 84).toBe(true);
   }
+  // The caption hangs at 98.1% of the island; no actor label may reach it.
+  for (const actor of actors) expect(actor.y + 140).toBeLessThan(island.height * .981);
 });

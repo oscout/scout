@@ -66,6 +66,7 @@ export type WebAgent = {
   repoKey?: string | null;
   role: string | null;
   model: string | null;
+  modelProvider?: string | null;
   reasoningEffort?: string | null;
   harnessSessionId: string | null;
   terminalSurface: WebTerminalSurfaceDescriptor | null;

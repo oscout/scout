@@ -1,3 +1,4 @@
+import { isSearchUnanswered } from "./search-loading.ts";
 import "./knowledge-search.css";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -51,6 +52,15 @@ import {
   knowledgeSearchFilterKey,
   updateKnowledgeSearchSnapshot,
 } from "./knowledge-search-store.ts";
+
+/**
+ * How long a search may run before the page admits it is running.
+ *
+ * Longer than the 180ms input debounce, so a burst of typing followed by a
+ * fast answer never flashes a loading state; short enough that a real wait is
+ * acknowledged before it feels like nothing happened.
+ */
+const SEARCH_GRACE_MS = 220;
 
 function formatCount(value: number): string {
   return new Intl.NumberFormat("en-US").format(value || 0);
@@ -217,6 +227,22 @@ export function KnowledgeSearchScreen({
       : []
   ));
   const [searching, setSearching] = useState(false);
+  // True once the query has gone unanswered for longer than one grace beat —
+  // counting the input debounce, not just the request. A warm index answers in
+  // a frame or two, and committing to a loading shape that fast reads as a
+  // flicker, so the spinner and the skeleton wait this out together.
+  const [pending, setPending] = useState(false);
+  // The full filter set `hits` actually answer. Between a keystroke and its response the
+  // list still holds the previous query's results, and counting those would
+  // put a confident "0 sessions" (or a stale number) under a query nobody has
+  // searched yet.
+  const [settledFilterKey, setSettledFilterKey] = useState<string | null>(
+    () => storeSeed.lastFilterKey === knowledgeSearchFilterKey(initialFilters)
+      ? knowledgeSearchFilterKey(initialFilters)
+      : null,
+  );
+  const [failedFilterKey, setFailedFilterKey] = useState<string | null>(null);
+  const searchGeneration = useRef(0);
   const [indexing, setIndexing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [statusLoaded, setStatusLoaded] = useState(storeSeed.status !== null);
@@ -229,6 +255,11 @@ export function KnowledgeSearchScreen({
   const sessionResults = useMemo(() => groupHitsBySession(hits), [hits]);
   const isBusy = indexing || Boolean(activeJob);
   const trimmedQuery = filters.query.trim();
+  // Typed, but not yet answered — true through the input debounce as well as
+  // the request itself, which is the whole window the operator is waiting in.
+  const filterKey = knowledgeSearchFilterKey(filters);
+  const unanswered = isSearchUnanswered({ query: trimmedQuery, hasIndex, filterKey, settledFilterKey, failedFilterKey });
+  const waiting = Boolean(trimmedQuery) && (unanswered || searching);
   const filtersActive = searchFiltersAreActive(filters);
 
   // Browser back/forward updates the router first; mirror that durable state
@@ -247,7 +278,11 @@ export function KnowledgeSearchScreen({
 
   const applySearchResponse = useCallback(
     (next: SearchFilters, response: SearchResponse) => {
+      const responseKey = knowledgeSearchFilterKey(next);
+      if (responseKey !== knowledgeSearchFilterKey(filtersRef.current)) return;
       setHits(response.hits);
+      setSettledFilterKey(responseKey);
+      setFailedFilterKey(null);
       setStatus(response.status);
       updateKnowledgeSearchSnapshot({
         results: response.hits,
@@ -269,20 +304,32 @@ export function KnowledgeSearchScreen({
 
   const runSearch = useCallback(
     async (nextFilters: SearchFilters) => {
+      const generation = ++searchGeneration.current;
+      const requestKey = knowledgeSearchFilterKey(nextFilters);
+      const isCurrent = () => generation === searchGeneration.current
+        && requestKey === knowledgeSearchFilterKey(filtersRef.current);
       const trimmed = nextFilters.query.trim();
       if (!trimmed) {
         setHits([]);
+        setSettledFilterKey(requestKey);
+        setFailedFilterKey(null);
+        setSearching(false);
         clearKnowledgeHit();
         return;
       }
       setSearching(true);
+      setFailedFilterKey(null);
       try {
         setError(null);
-        applySearchResponse(nextFilters, await searchKnowledge(trimmed, nextFilters));
+        const response = await searchKnowledge(trimmed, nextFilters);
+        if (isCurrent()) applySearchResponse(nextFilters, response);
       } catch (err) {
-        setError(err instanceof Error ? err.message : String(err));
+        if (isCurrent()) {
+          setFailedFilterKey(requestKey);
+          setError(err instanceof Error ? err.message : String(err));
+        }
       } finally {
-        setSearching(false);
+        if (generation === searchGeneration.current) setSearching(false);
       }
     },
     [applySearchResponse, clearKnowledgeHit],
@@ -383,6 +430,15 @@ export function KnowledgeSearchScreen({
       cancelled = true;
     };
   }, [hasIndex, primitivesLoaded]);
+
+  useEffect(() => {
+    if (!waiting) {
+      setPending(false);
+      return;
+    }
+    const timer = window.setTimeout(() => setPending(true), SEARCH_GRACE_MS);
+    return () => window.clearTimeout(timer);
+  }, [waiting]);
 
   // Re-run search whenever filters change AND we have an indexed corpus to query.
   useEffect(() => {
@@ -517,7 +573,7 @@ export function KnowledgeSearchScreen({
           ) : (
             <span className="ks-search-hint" aria-hidden="true">/</span>
           )}
-          {searching ? <Loader2 size={15} className="ks-spin" aria-hidden="true" /> : null}
+          {pending ? <Loader2 size={15} className="ks-spin" aria-hidden="true" /> : null}
         </form>
 
         <section className="ks-filterbar" aria-label="Search filters">
@@ -639,7 +695,9 @@ export function KnowledgeSearchScreen({
           <div className="ks-hit-list" role="listbox" aria-label="Search results">
             <div className="ks-hit-list-head" aria-live="polite">
               <span>
-                {searching
+                {failedFilterKey === filterKey
+                  ? "Search failed"
+                  : waiting
                   ? "Searching…"
                   : trimmedQuery
                     ? `${formatCount(sessionResults.length)} session${sessionResults.length === 1 ? "" : "s"}`
@@ -653,7 +711,23 @@ export function KnowledgeSearchScreen({
               ) : null}
             </div>
 
-            {trimmedQuery && sessionResults.length === 0 && !searching ? (
+            {pending && sessionResults.length === 0 ? (
+              <div className="ks-skeleton" aria-hidden="true">
+                {[0, 1, 2].map((row) => (
+                  <section className="ks-skeleton-session" key={row}>
+                    <span className="ks-skeleton-line ks-skeleton-line--meta" />
+                    <span className="ks-skeleton-line ks-skeleton-line--goal" />
+                    <div className="ks-skeleton-moments">
+                      <span className="ks-skeleton-line ks-skeleton-line--title" />
+                      <span className="ks-skeleton-line ks-skeleton-line--snippet" />
+                      <span className="ks-skeleton-line ks-skeleton-line--snippet-short" />
+                    </div>
+                  </section>
+                ))}
+              </div>
+            ) : null}
+
+            {trimmedQuery && sessionResults.length === 0 && !unanswered && !searching && failedFilterKey !== filterKey ? (
               <div className="ks-empty-hit">
                 <strong>No matches for “{trimmedQuery}”</strong>
                 <span>
@@ -686,7 +760,7 @@ export function KnowledgeSearchScreen({
               </div>
             ) : null}
 
-            <div className="ks-hit-list-body">
+            <div className="ks-hit-list-body" aria-busy={searching}>
               {sessionResults.map((session, sessionIndex) => {
                 const best = session.best;
                 const routing = resultRoutingContext(best);
@@ -796,19 +870,21 @@ export function KnowledgeSearchScreen({
       </div>
 
       <footer className="ks-foot-status" aria-live="polite">
-        <span className="ks-foot-status-facts">
-          {isBusy ? <Loader2 size={12} className="ks-spin" aria-hidden="true" /> : null}
-          {footStatus}
-          {filterChipsActive(filters) ? <> · {summarizeFilters(filters)}</> : null}
-        </span>
-        <button
-          type="button"
-          className="ks-text-action"
-          onClick={() => void refreshIndex(true)}
-          disabled={indexing}
-        >
-          {indexing ? "Updating…" : "Update index"}
-        </button>
+        <div className="ks-foot-status-shell">
+          <span className="ks-foot-status-facts">
+            {isBusy ? <Loader2 size={12} className="ks-spin" aria-hidden="true" /> : null}
+            {footStatus}
+            {filterChipsActive(filters) ? <> · {summarizeFilters(filters)}</> : null}
+          </span>
+          <button
+            type="button"
+            className="ks-text-action"
+            onClick={() => void refreshIndex(true)}
+            disabled={indexing}
+          >
+            {indexing ? "Updating…" : "Update index"}
+          </button>
+        </div>
       </footer>
     </main>
   );

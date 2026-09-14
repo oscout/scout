@@ -1968,7 +1968,7 @@ export function rosterIssuesFromTailDiscovery(
 }
 
 export function buildAgentLanes(input: {
-  transcripts: TailDiscoveredTranscript[];
+  transcripts?: TailDiscoveredTranscript[];
   tailEvents: TailEvent[];
   processes?: TailDiscoveredProcess[];
   scoutAgents?: Agent[];
@@ -1981,7 +1981,7 @@ export function buildAgentLanes(input: {
   agents?: Agent[];
 }): AgentLaneRosterBuild {
   const {
-    transcripts: rawTranscripts,
+    transcripts: rawTranscripts = [],
     tailEvents,
     processes = [],
     scoutAgents = input.agents ?? [],

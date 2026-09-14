@@ -47,6 +47,7 @@ const OPS_MODE_LABELS: Record<OpsMode, string> = {
   atop: "Runtime",
   agents: "Agents",
   lanes: "Lanes",
+  world: "World",
 };
 
 export function OpsInspectorPanel({
@@ -109,7 +110,7 @@ export function OpsInspectorPanel({
   const activeAsks = (fleet?.activeAsks ?? []).filter((ask) => ask.status !== "needs_attention");
   const needsAttention = fleet?.needsAttention ?? [];
 
-  if (mode === "lanes") {
+  if (mode === "lanes" || mode === "world") {
     return null;
   }
 

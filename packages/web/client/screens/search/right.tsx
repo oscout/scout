@@ -102,14 +102,15 @@ function ConversationTurn({
   );
 }
 
-export function KnowledgeSearchInspector() {
+export function KnowledgeSearchInspector({ navigate: suppliedNavigate }: { navigate?: ReturnType<typeof useScout>["navigate"] } = {}) {
   const {
     selectedKnowledgeHit,
     selectedKnowledgeQuery,
     clearKnowledgeHit,
     openFilePreview,
-    navigate,
+    navigate: defaultNavigate,
   } = useScout();
+  const navigate = suppliedNavigate ?? defaultNavigate;
   const [loadedPreview, setLoadedPreview] = useState<{
     hitId: string;
     value: KnowledgeSourcePreview;

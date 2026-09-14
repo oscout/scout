@@ -47,6 +47,8 @@ import {
   watchScoutMessages,
 } from "./service.ts";
 import { scoutAskHandler } from "./ask.ts";
+import { runAskCommand } from "../../cli/commands/ask.ts";
+import { createScoutCommandContext } from "../../cli/context.ts";
 import type { ScoutAskCommand } from "./ask-types.ts";
 
 const originalHome = process.env.HOME;
@@ -1002,7 +1004,7 @@ describe("scoutAskHandler", () => {
     expect(captured.delivery?.targetAgentId).toBe("talkie.main");
   }, 15000);
 
-  test("posts exact ask-by-id deliveries with a session-pinned return address", async () => {
+  test.each(["api", "cli"])("posts %s ask deliveries with a session-pinned return address", async (surface) => {
     const home = useIsolatedOpenScoutHome();
     const workspaceRoot = join(home, "dev", "openscout");
     mkdirSync(workspaceRoot, { recursive: true });
@@ -1010,7 +1012,7 @@ describe("scoutAskHandler", () => {
     const captured = {
       delivery: null as {
         caller?: { actorId?: string; nodeId?: string; currentDirectory?: string };
-        target?: { kind?: string; agentId?: string };
+        target?: { kind?: string; agentId?: string; label?: string };
         targetAgentId?: string;
         targetLabel?: string;
         replyToSessionId?: string;
@@ -1085,27 +1087,34 @@ describe("scoutAskHandler", () => {
       return jsonResponse({ error: "not found" }, 404);
     }) as typeof fetch;
 
-    const result = await askScoutAgentById({
-      senderId: "operator",
-      targetAgentId: "hudson.main",
-      body: "Review this.",
-      replyToSessionId: "codex-thread-123",
-      currentDirectory: workspaceRoot,
-      source: "scout-mcp",
-    });
-
-    expect(result.usedBroker).toBe(true);
-    expect(result.flight?.id).toBe("flt-1");
+    if (surface === "cli") {
+      await runAskCommand(createScoutCommandContext({
+        cwd: workspaceRoot,
+        env: { CODEX_THREAD_ID: "codex-thread-123" },
+        stdout: () => {},
+        stderr: () => {},
+      }), ["--as", "operator", "--to", "hudson.main", "--notify", "Review this."]);
+    } else {
+      const result = await askScoutAgentById({
+        senderId: "operator",
+        targetAgentId: "hudson.main",
+        body: "Review this.",
+        replyToSessionId: "codex-thread-123",
+        currentDirectory: workspaceRoot,
+        source: "scout-mcp",
+      });
+      expect(result.usedBroker).toBe(true);
+      expect(result.flight?.id).toBe("flt-1");
+    }
     expect(captured.delivery?.caller).toMatchObject({
       actorId: "operator",
       nodeId: "node-1",
       currentDirectory: workspaceRoot,
     });
-    expect(captured.delivery?.target).toEqual({
-      kind: "agent_id",
-      agentId: "hudson.main",
-    });
-    expect(captured.delivery?.targetAgentId).toBe("hudson.main");
+    expect(captured.delivery?.target).toEqual(surface === "api"
+      ? { kind: "agent_id", agentId: "hudson.main" }
+      : { kind: "agent_label", label: "hudson.main" });
+    if (surface === "api") expect(captured.delivery?.targetAgentId).toBe("hudson.main");
     expect(captured.delivery?.targetLabel).toBe("hudson.main");
     expect(captured.delivery?.replyToSessionId).toBe("codex-thread-123");
     expect(captured.delivery?.execution).toEqual({ session: "new" });

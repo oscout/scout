@@ -22,7 +22,7 @@ import {
   getCachedRepoWatchSnapshot,
   type RepoPullRequestItem,
   type RepoPullRequestSnapshot,
-  type RepoWatchScanDepth,
+  type RepoWatchInteractiveScanDepth,
 } from "../../scout/repo-watch/api.ts";
 import {
   buildPullRequestMenuItems,
@@ -539,7 +539,7 @@ export function ReposScreen({
   const [tone, setTone] = usePersistedState<Tone>(TONE_KEY, TONES, "warm");
   const [view, setView] = usePersistedState<ReposView>(VIEW_KEY, VIEWS, "table");
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [scanDepth, setScanDepth] = useState<RepoWatchScanDepth>("standard");
+  const [scanDepth, setScanDepth] = useState<RepoWatchInteractiveScanDepth>("standard");
   const [refreshing, setRefreshing] = useState(false);
   const [refreshReceipt, setRefreshReceipt] = useState<string | null>(null);
   const [scanMorePending, setScanMorePending] = useState(false);
@@ -552,7 +552,7 @@ export function ReposScreen({
   const [diffPath, setDiffPath] = useState<string | null>(null);
 
   const load = useCallback(async (options: {
-    depth?: RepoWatchScanDepth;
+    depth?: RepoWatchInteractiveScanDepth;
     force?: boolean;
     scanMore?: boolean;
   } = {}) => {

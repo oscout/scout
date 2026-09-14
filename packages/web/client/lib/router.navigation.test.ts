@@ -142,6 +142,11 @@ describe("route fixtures", () => {
       canonical: "/ops/tail?q=thread-1",
     },
     {
+      url: "/ops/world",
+      route: { view: "ops", mode: "world" },
+      canonical: "/ops/world",
+    },
+    {
       url: "/follow?flightId=f-1",
       route: { view: "follow", flightId: "f-1" },
       canonical: "/follow?flightId=f-1",
@@ -656,5 +661,31 @@ describe("Phase B selection state in the URL", () => {
     expect(isSettingsHistoryEntry(away)).toBe(false);
     expect(isSettingsHistoryEntry(null)).toBe(false);
     expect(isSettingsHistoryEntry({})).toBe(false);
+  });
+});
+
+describe("native primary-area embed routes", () => {
+  test("initial embed URLs parse into actual provider routes and preserve filters", () => {
+    expect(routeFromUrl("/embed/ops?mode=mission&no-ops")).toEqual({ view: "ops", mode: "tail" });
+    expect(routeFromUrl("/embed/home?machineId=node-a")).toEqual({ view: "inbox", machineId: "node-a" });
+    expect(routeFromUrl("/embed/ops?mode=world&flightId=flight%2F1")).toEqual({ view: "ops", mode: "world", flightId: "flight/1" });
+    expect(routeFromUrl("/embed/search?mode=knowledge&q=alpha%26beta&hit=hit%2F1&harness=codex&time=7")).toEqual({
+      view: "search", hitId: "hit/1", filters: { query: "alpha&beta", sourceKinds: [], harness: ["codex"], project: [], timeWindow: "7" },
+    });
+  });
+
+  test("local mode/filter navigation retains the embed entry across reloads", () => {
+    const world = planNavigation({ pathname: "/embed/ops", searchStr: "?profile=macos.ops&embed=app&theme=dark&themeVars=palette&_nav=ingress-1" }, { view: "ops", mode: "world" });
+    expect(new URL(world.href, ORIGIN).pathname).toBe("/embed/ops");
+    expect(routeFromUrl(world.href)).toEqual({ view: "ops", mode: "world" });
+    const worldParams = new URL(world.href, ORIGIN).searchParams;
+    expect(worldParams.get("profile")).toBe("macos.ops");
+    expect(worldParams.get("themeVars")).toBe("palette");
+    expect(worldParams.get("_nav")).toBe("ingress-1");
+    const search: Route = { view: "search", hitId: "hit/one", filters: { query: "spaces & slashes /", sourceKinds: ["harness_transcript"], harness: ["codex"], project: [], timeWindow: "7" } };
+    const next = planNavigation({ pathname: "/embed/search", searchStr: "?profile=macos.search" }, search);
+    expect(new URL(next.href, ORIGIN).pathname).toBe("/embed/search");
+    expect(routeFromUrl(next.href)).toEqual(search);
+    expect(new URL(planNavigation({ pathname: "/embed/search", searchStr: "" }, { view: "messages" }).href, ORIGIN).pathname).toBe("/messages");
   });
 });

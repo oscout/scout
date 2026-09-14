@@ -24,6 +24,8 @@ export type SharedFloorCharacterProps = {
   playful?: boolean;
   character?: WorkerCharacter;
   rigged?: boolean;
+  /** Bubble held open by a click rather than a hover — see SharedWorkFloor. */
+  pinned?: boolean;
   onActor: (lane: AgentLane) => void;
 };
 
@@ -46,7 +48,7 @@ export function sharedCharacterGesture(lane: AgentLane, now: number): "run" | "h
 }
 
 /** A live actor's stance reflects observations; motion never invents extra activity. */
-export function SharedFloorCharacter({ lane, now, paused, playful = false, character, rigged = false, onActor, displayName, crewSlug, pixelCrew = false }: SharedFloorCharacterProps) {
+export function SharedFloorCharacter({ lane, now, paused, playful = false, character, rigged = false, pinned = false, onActor, displayName, crewSlug, pixelCrew = false }: SharedFloorCharacterProps) {
   const state = floorActorState(lane, now);
   const context = characterContext(lane, now);
   const runtimeHarness = lane.agent.harness || lane.facts?.attribution;
@@ -82,11 +84,12 @@ export function SharedFloorCharacter({ lane, now, paused, playful = false, chara
   return <button
     ref={node}
     type="button"
-    className={`shared-floor-character is-${state.posture}${gesture ? ` has-${gesture}` : ""}${atWork ? " is-at-work" : ""}${paused || !visible || !pageVisible ? " is-still" : ""}`}
+    className={`shared-floor-character is-${state.posture}${gesture ? ` has-${gesture}` : ""}${atWork ? " is-at-work" : ""}${pinned ? " is-pinned" : ""}${paused || !visible || !pageVisible ? " is-still" : ""}`}
     style={{ "--character-delay": `${-identityOffset / 10}s` } as CSSProperties}
     onClick={() => onActor(lane)}
     aria-describedby={contextId}
-    aria-label={`${name} ${lane.id.slice(-5)}, ${context.summary}. ${runtimeLabel}. Inspect actor`}
+    aria-pressed={pinned}
+    aria-label={`${name} ${lane.id.slice(-5)}, ${context.summary}. ${runtimeLabel}. ${pinned ? "Release this actor's card" : "Inspect actor and keep its card open"}`}
   >
     <span className="shared-floor-character__shadow" aria-hidden="true" />
     <span className={`shared-floor-character__sprite${crewSlug || character || rigged ? " is-rendered" : ""}`} aria-hidden="true">
@@ -95,6 +98,6 @@ export function SharedFloorCharacter({ lane, now, paused, playful = false, chara
     </span>
     {needsAttention ? <span className="shared-floor-character__attention" aria-hidden="true">!</span> : null}
     <span className="shared-floor-character__label" aria-hidden="true"><strong className="shared-floor-character__identity"><span>{label}</span></strong><small>{context.summary}</small></span>
-    <span id={contextId} className="shared-floor-character__context" role="tooltip"><strong>{context.state}</strong><span className="shared-floor-character__runtime"><HarnessMark harness={runtimeHarness} size={14} title={null} />{runtimeLabel}</span><span>{context.task || "No task summary reported."}</span>{context.activity ? <span className="shared-floor-character__context-activity">{context.activity}</span> : null}<small>{context.at ? `Observed ${Math.max(0, Math.floor((now - context.at) / 60000)) < 1 ? "just now" : `${Math.floor((now - context.at) / 60000)}m ago`}` : "No recent observation"} · Click to inspect</small></span>
+    <span id={contextId} className="shared-floor-character__context" role="tooltip"><strong>{context.state}</strong><span className="shared-floor-character__runtime"><HarnessMark harness={runtimeHarness} size={14} title={null} />{runtimeLabel}</span><span>{context.task || "No task summary reported."}</span>{context.activity ? <span className="shared-floor-character__context-activity">{context.activity}</span> : null}<small>{context.at ? `Observed ${Math.max(0, Math.floor((now - context.at) / 60000)) < 1 ? "just now" : `${Math.floor((now - context.at) / 60000)}m ago`}` : "No recent observation"} · {pinned ? "Kept open · click to release" : "Click to keep open"}</small></span>
   </button>;
 }

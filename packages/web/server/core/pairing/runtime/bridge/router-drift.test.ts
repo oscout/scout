@@ -55,15 +55,11 @@ const KNOWN_COPY_DRIFT = {
 };
 
 // Route map entries in RPCWire.swift that no Swift code in the iOS core
-// invokes. `mobile/message/send` is the known dead entry (design doc §2C):
-// the phone sends through `mobile/comms/send`, and the entry plus its param
-// structs survive from the donor app. Phase 1 flags it for cleanup rather
-// than deleting it (the Swift-side BridgeBrokerClientTests still asserts the
-// map covers it). Deleting the entry from RPCWire.swift should also delete it
-// here; adding NEW dead entries fails the dead-entry test.
-const KNOWN_DEAD_ROUTE_MAP_ENTRIES = [
-  "mobile/message/send",
-];
+// invokes. `mobile/message/send` used to sit here (#912), but
+// BridgeBrokerClient.sendDirectMessage now calls it. Keep this list empty
+// until a new unused map entry appears; adding NEW dead entries fails the
+// dead-entry test, and deleting a live caller should put the name back.
+const KNOWN_DEAD_ROUTE_MAP_ENTRIES: string[] = [];
 
 // ---------------------------------------------------------------------------
 // tRPC router enumeration

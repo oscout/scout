@@ -234,24 +234,26 @@ describe("ProjectsInbox ThreadRow", () => {
   });
 
   test("resolves a historical session agent to its discovered tmux surface", () => {
-    const terminalSessions = [{
+    const terminalSessions: TerminalSessionRecord[] = [{
       id: "discovered.tmux.pomo",
-      agentId: null,
       harness: "tmux",
+      sourceSessionId: "session-ms0hf3f7-3ngln1",
       cwd: "/workspace/pomo",
-      sourceSessionId: null,
+      resumeCommand: "",
+      origin: "discovered",
+      createdAt: 0,
+      updatedAt: 0,
       surfaces: [{
         backend: "tmux",
         sessionName: "session-ms0hf3f7-3ngln1",
         paneId: null,
-        socketDir: null,
         attachCommand: ["tmux", "attach", "-t", "session-ms0hf3f7-3ngln1"],
         observeCommand: null,
-        relay: null,
+        relay: { backend: "tmux", sessionName: "session-ms0hf3f7-3ngln1" },
         state: "live",
       }],
       metadata: { registryState: "discovered" },
-    }] as TerminalSessionRecord[];
+    }];
 
     const target = resolveProjectSessionTmuxTarget(terminalSessions, {
       agentId: "session-ms0hf3f7-3ngln1.main.arts-mac-mini-local",

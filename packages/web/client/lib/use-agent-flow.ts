@@ -6,8 +6,8 @@ import type { Message } from "./types.ts";
 const AGENT_FLOW_LIMIT = 500;
 
 /**
- * Every message in an agent's neighbourhood — each conversation it spoke in or
- * was addressed in, whole.
+ * Every message in an agent's neighbourhood — each conversation it is a member
+ * of or has spoken in, whole.
  *
  * Scoped to the agent rather than to one conversation, because the thing worth
  * seeing is what an agent is mixed up in: its sub-agents, the agents it hands

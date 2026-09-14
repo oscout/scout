@@ -17,7 +17,7 @@
     },
     "apps/desktop": {
       "name": "@scout/app",
-      "version": "0.2.101",
+      "version": "0.2.102",
       "bin": {
         "scout": "./bin/scout.ts",
         "pairing-runtime-controller": "./bin/pairing-runtime-controller.ts",
@@ -49,7 +49,7 @@
     },
     "packages/agent-sessions": {
       "name": "@openscout/agent-sessions",
-      "version": "0.2.101",
+      "version": "0.2.102",
       "dependencies": {
         "@opencode-ai/client": "0.0.0-next-17226",
       },
@@ -61,7 +61,7 @@
     },
     "packages/cli": {
       "name": "@openscout/scout",
-      "version": "0.2.101",
+      "version": "0.2.102",
       "bin": {
         "scout": "./bin/scout",
         "openscout-runtime": "./bin/openscout-runtime.mjs",
@@ -79,14 +79,14 @@
     },
     "packages/protocol": {
       "name": "@openscout/protocol",
-      "version": "0.2.101",
+      "version": "0.2.102",
       "devDependencies": {
         "typescript": "^5",
       },
     },
     "packages/runtime": {
       "name": "@openscout/runtime",
-      "version": "0.2.101",
+      "version": "0.2.102",
       "bin": {
         "openscout-runtime": "./bin/openscout-runtime.mjs",
       },
@@ -113,7 +113,7 @@
     },
     "packages/session-trace": {
       "name": "@openscout/session-trace",
-      "version": "0.2.101",
+      "version": "0.2.102",
       "dependencies": {
         "@openscout/agent-sessions": "workspace:*",
       },
@@ -123,7 +123,7 @@
     },
     "packages/session-trace-react": {
       "name": "@openscout/session-trace-react",
-      "version": "0.2.101",
+      "version": "0.2.102",
       "dependencies": {
         "@openscout/session-trace": "workspace:*",
       },
@@ -137,7 +137,7 @@
     },
     "packages/web": {
       "name": "@openscout/web",
-      "version": "0.2.101",
+      "version": "0.2.102",
       "bin": {
         "openscout-web": "./bin/openscout-web.mjs",
       },

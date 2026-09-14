@@ -256,6 +256,7 @@ describe("Scoutbot host navigation catalogs", () => {
       "Dispatch",
       "Search",
       "Operations",
+      "World",
       "Repositories",
       "Code Browser",
       "Terminals",

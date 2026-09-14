@@ -63,6 +63,7 @@ export type NavDestinationId =
   | "mesh-ops"
   | "mission-control"
   | "lanes"
+  | "world"
   | "repos"
   | "code"
   | "providers"
@@ -178,6 +179,12 @@ export const NAV_DESTINATIONS: readonly NavDestination[] = [
     label: "Agent Lanes",
     route: { view: "ops", mode: "lanes" },
     active: (route) => route.view === "ops" && route.mode === "lanes",
+  },
+  {
+    id: "world",
+    label: "World",
+    route: { view: "ops", mode: "world" },
+    active: (route) => route.view === "ops" && route.mode === "world",
   },
   {
     id: "repos",
@@ -363,6 +370,7 @@ export function projectOpsSecondaryNav(): SecondaryNavGroup[] {
   return [
     projectSecondaryGroup([
       { destinationId: "lanes", id: "lanes" },
+      { destinationId: "world", id: "world" },
       { destinationId: "mission-control", id: "control" },
       { destinationId: "providers", id: "harnesses", label: "Agent Providers" },
       { destinationId: "mesh", id: "mesh" },
@@ -398,6 +406,7 @@ export const GO_SHORTCUT_PROJECTION: readonly GoShortcutProjection[] = [
   { key: "b", label: "Go to code browser", destinationId: "code" },
   { key: "f", label: "Go to search", destinationId: "search" },
   { key: "l", label: "Go to live activity", destinationId: "tail" },
+  { key: "w", label: "Go to world", destinationId: "world" },
   // Default ops entry uses bare `{ view: "ops" }` (mode undefined), matching
   // the historical shortcut — not the explicit mission mode in the catalog.
   { key: "o", label: "Go to operations", destinationId: "mission-control", route: { view: "ops" } },
@@ -520,6 +529,7 @@ const PALETTE_NAV_PROJECTION: readonly PaletteNavProjection[] = [
   { id: "nav:code", label: "Open Code Browser", destinationId: "code" },
   { id: "nav:harnesses", label: "Open Providers", destinationId: "providers" },
   { id: "nav:ops-lanes", label: "Open Agent Lanes", destinationId: "lanes" },
+  { id: "nav:ops-world", label: "Open World", destinationId: "world" },
   {
     id: "nav:ops",
     label: "Go to Ops",
@@ -690,6 +700,7 @@ const SIDEBAR_SUB_NAV_PROJECTION: Record<
   ],
   ops: [
     { destinationId: "lanes", id: "lanes", label: "Lanes" },
+    { destinationId: "world", id: "world", label: "World" },
     { destinationId: "mission-control", id: "control" },
     { destinationId: "providers", id: "harnesses", label: "Providers" },
     { destinationId: "runtime", id: "runtime", label: "Runtime" },
@@ -768,6 +779,7 @@ export function allProjectedDestinationIds(): NavDestinationId[] {
     "agent-config",
     "chat",
     "lanes",
+    "world",
     "mission-control",
     "providers",
     "mesh",

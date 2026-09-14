@@ -30,6 +30,8 @@ export function renderAskCommandHelp(): string {
     "",
     "Ask one agent to do work or return a concrete answer.",
     "",
+    "Operator questions: scout ask --operator --question <text> [--option <choice> ...] [--permission]",
+    "",
     "Routing:",
     "  one target + no channel            -> DM",
     "  --channel <name>                   -> named group thread",
@@ -316,6 +318,11 @@ export async function runAskCommand(
   context: ScoutCommandContext,
   args: string[],
 ): Promise<void> {
+  if (args.includes("--operator")) {
+    const { runOperatorQuestionCommand } = await import("./operator-question.ts");
+    await runOperatorQuestionCommand(context, args.filter(arg => arg !== "--operator"));
+    return;
+  }
   if (args.some((arg) => HELP_FLAGS.has(arg))) {
     context.output.writeText(renderAskCommandHelp());
     return;
@@ -372,6 +379,15 @@ export async function runAskWithOptions(
     executionSource: options.executionSource,
     session: options.session,
     labels: options.labels,
+    // The project agent's home endpoint can belong to a different harness.
+    // Preserve the calling session instead of letting that endpoint answer for it.
+    replyToSessionId: context.env.OPENSCOUT_SESSION_ID?.trim()
+      || context.env.CODEX_THREAD_ID?.trim()
+      || context.env.OPENSCOUT_CODEX_THREAD_ID?.trim()
+      || context.env.CLAUDE_CODE_SESSION_ID?.trim()
+      || context.env.CLAUDE_SESSION_ID?.trim()
+      || context.env.CLAUDE_CODE_REMOTE_SESSION_ID?.trim()
+      || undefined,
     replyMode,
     currentDirectory,
     source: "scout-cli",

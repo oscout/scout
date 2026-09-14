@@ -38,6 +38,12 @@ export type MicStatus = {
   levels: number[];
   /** True when levels come from a real AnalyserNode (not speech-proxy). */
   levelsLive: boolean;
+  /**
+   * The structured engagement failure behind `message`, when there is one.
+   * `message` is the flattened form; a surface with room should render the
+   * title, hint and action from here instead of clipping one long string.
+   */
+  issue: ScoutVoiceIssue | null;
 };
 
 function sessionStateFromVoice(state: ScoutVoiceSessionState): MicSessionState {
@@ -123,6 +129,7 @@ export function DictationMic({
     state: MicSessionState,
     partial: string,
     message: string | null,
+    issue: ScoutVoiceIssue | null,
   ) => {
     onStatus?.({
       state,
@@ -139,19 +146,21 @@ export function DictationMic({
         ? []
         : historyRef.current.snapshot(),
       levelsLive: levelsLiveRef.current,
+      issue: message ? issue : null,
     });
   }, [onStatus]);
 
   useEffect(() => {
-    emitStatus(sessionState, partialText, lastError);
-  }, [emitStatus, lastError, partialText, sessionState, levelsTick]);
+    emitStatus(sessionState, partialText, lastError, engageIssue);
+  }, [emitStatus, engageIssue, lastError, partialText, sessionState, levelsTick]);
 
   const probeVoice = useCallback(async (force = false) => {
     const client = clientRef.current;
     setProbeState((state) => (state === "launching" ? state : "probing"));
     const ok = await client.probe(force ? { force: true } : undefined);
     setVoiceReady(ok);
-    setEngageIssue(null);
+    // A health probe cannot resolve a specific engagement/permission issue.
+    // Keep its action until the next explicit capture attempt rechecks it.
     setProbeState("idle");
     return ok;
   }, []);
@@ -162,7 +171,6 @@ export function DictationMic({
 
     const unsubscribe = subscribeScoutVoiceProbe((snapshot) => {
       setVoiceReady(snapshot.ok);
-      setEngageIssue(null);
       setProbeState("idle");
     });
 
@@ -215,6 +223,7 @@ export function DictationMic({
   const startRecording = useCallback(async () => {
     const client = clientRef.current;
     setLastError(null);
+    setEngageIssue(null);
     setPartialText("");
     partialRef.current = "";
     lastPartialAtRef.current = performance.now();

@@ -102,6 +102,18 @@ describe("scope route parsing", () => {
       .toBe("/projects/pomo/sessions/s1");
   });
 
+  test("preserveLocationSearch keeps the beside columns while you stay in Comms", () => {
+    // `open` names the conversations kept beside the Comms stage. It follows a
+    // navigation from one conversation to the next on any /messages path…
+    expect(preserveLocationSearch("/messages/chn-b", "?open=c%3Achn-a&view=canvas"))
+      .toBe("/messages/chn-b?open=c%3Achn-a");
+    expect(preserveLocationSearch("/messages/agent/agent-2?thread=chn-b", "?open=c%3Achn-a"))
+      .toBe("/messages/agent/agent-2?thread=chn-b&open=c%3Achn-a");
+    // …and stays behind when you leave the surface.
+    expect(preserveLocationSearch("/scope", "?open=c%3Achn-a")).toBe("/scope");
+    expect(preserveLocationSearch("/messagesx", "?open=c%3Achn-a")).toBe("/messagesx");
+  });
+
   test("sessions route stays under /scope when the browser is in the scope namespace", () => {
     expect(routePath({ view: "sessions" }, "/scope/lanes")).toBe("/scope/sessions");
     expect(routePath({ view: "sessions" }, "/scope/sessions")).toBe("/scope/sessions");

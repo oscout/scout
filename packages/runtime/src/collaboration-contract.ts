@@ -95,8 +95,8 @@ export function buildCollaborationContractPrompt(agentId: string): string {
     // an agent describing that it is stuck and an agent actually raising a
     // human; before this, the contract asked for the former and hoped
     // something downstream inferred the latter.
-    "  - If the next move is the OPERATOR's and you cannot proceed without them, run `scout need --question \"<what you need>\"` (add repeated --option for a choice, --because for why you are stuck)",
-    "  - Only use scout need when you are genuinely blocked: it interrupts a human. If you can pick a sane default and say what you chose, do that instead",
+    "  - If the next move is the OPERATOR's and you cannot proceed without them, run `scout ask --operator --question \"<what you need>\"` (add repeated --option for a choice, --because for why you are stuck)",
+    "  - Only use scout ask --operator when you are genuinely blocked: it interrupts a human. If you can pick a sane default and say what you chose, do that instead",
     "  - If asking for review, say exactly what needs review and who should review it",
     "  - If complete, return the final answer without waking additional agents",
   ].join("\n");

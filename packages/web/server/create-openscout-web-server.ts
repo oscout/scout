@@ -20,6 +20,7 @@ import {
   isOpaqueChannelId,
   reconcileTerminalWorkspace,
   resolveAgentIdentity,
+  AGENT_HARNESSES,
   SCOUT_LAUNCHABLE_HARNESSES,
   SCOUT_RUNTIME_CATALOG,
   SCOUT_ROLE_CATALOG,
@@ -286,7 +287,6 @@ import {
 } from "./runtime-summary.ts";
 import type { ScoutbotCodexAssistantInvoker } from "./scoutbot-assistant.ts";
 import {
-  SCOUTBOT_AGENT_ID,
   SCOUTBOT_DEFAULT_THREAD_ID,
 } from "./scoutbot/role.ts";
 import { importProviderDashboardUsage, loadServiceBudgets } from "./service-budgets.ts";
@@ -1322,17 +1322,8 @@ function normalizeExecutionSession(
     : undefined;
 }
 
-const KNOWN_AGENT_HARNESSES = new Set<string>([
-  "codex",
-  "claude",
-  "flue",
-  "cursor",
-  "native",
-  "worker",
-  "bridge",
-  "http",
-  "pi",
-]);
+// Request coercion must recognize the same harness values as the protocol.
+const KNOWN_AGENT_HARNESSES = new Set<string>(AGENT_HARNESSES);
 
 function coerceAgentHarness(value: unknown): AgentHarness | undefined {
   const normalized = optionalString(value)?.trim();
@@ -7157,6 +7148,24 @@ export async function createOpenScoutWebServer(
     const broker = await loadScoutBrokerContext(undefined, { scope: "conversations", waitForInitial: false });
     return c.json(broker ? worldBrokerMessages(broker.snapshot, Date.now()) : []);
   });
+  // Explicit agent-authored notifications are independent of flight completion.
+  app.get("/api/operator-signals", async (c) => {
+    const since = Number(c.req.query("since") ?? "0");
+    if (!Number.isFinite(since) || since < 0) return c.json({ error: "since must be epoch milliseconds" }, 400);
+    const snapshot = await readScoutBrokerSnapshot(undefined, { since, scope: "conversations" });
+    if (!snapshot) return c.json({ error: "broker unavailable" }, 503);
+    const afterId = c.req.query("afterId") ?? "";
+    const signals = Object.values(snapshot.messages ?? {}).flatMap(message => {
+      const value = message.metadata?.operatorSignal;
+      if (!value || typeof value !== "object" || Array.isArray(value) || message.actorId === "operator" || (message.createdAt < since || (message.createdAt === since && message.id <= afterId))) return [];
+      const signal = value as Record<string, unknown>;
+      if (!["need", "notify", "consult"].includes(String(signal.kind))) return [];
+      return [{ id: message.id, conversationId: message.conversationId, actorId: message.actorId,
+        kind: String(signal.kind), body: message.body, createdAt: message.createdAt }];
+    }).sort((a, b) => a.createdAt - b.createdAt || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)).slice(0, 100);
+    return c.json({ signals });
+  });
+
   app.get("/api/messages", async (c) => {
     const cId = c.req.query("chatId")
       || c.req.query("cId")
@@ -7173,7 +7182,7 @@ export async function createOpenScoutWebServer(
     );
     const beforeMessageId = c.req.query("beforeMessageId")?.trim() || undefined;
     // `actor` bounds the page to one agent's neighbourhood — the conversations
-    // it spoke in or was addressed in. Without it an agent-scoped view was
+    // it is a member of or has spoken in. Without it an agent-scoped view was
     // served the global tail, so an agent's own map showed whatever else the
     // fleet happened to be doing. It only narrows a conversation-less read;
     // an explicit chat id is already the tighter bound.
@@ -9068,24 +9077,6 @@ export async function createOpenScoutWebServer(
     const { directAgentId, channel, senderId } = resolveConversationRouting(undefined);
 
     if (directAgentId) {
-      if (directAgentId === SCOUTBOT_AGENT_ID && scoutbotRunner) {
-        try {
-          const result = await scoutbotRunner.postOperatorMessage({
-            body: messageBody,
-            threadId,
-            attachments,
-            replyToMessageId: routedReplyToMessageId,
-          });
-          if (!result.usedBroker) {
-            return c.json({ error: "broker unreachable" }, 502);
-          }
-          return c.json(result);
-        } catch (error) {
-          const message = error instanceof Error ? error.message : String(error);
-          return c.json({ error: message }, /unknown scoutbot thread/i.test(message) ? 404 : 500);
-        }
-      }
-
       const result = await sendScoutDirectMessage({
         agentId: directAgentId,
         body: messageBody,

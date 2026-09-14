@@ -24,6 +24,8 @@ const OPS_MODES = new Set([
   "agents",
   "tail",
   "atop",
+  "lanes",
+  "world",
 ]);
 
 const ONLINE_SCOUTBOT_STATES = new Set([
@@ -527,6 +529,7 @@ function normalizeOpsMode(mode: string): OpsMode | undefined {
     case "tail":
     case "atop":
     case "lanes":
+    case "world":
       return mode;
     default:
       return undefined;

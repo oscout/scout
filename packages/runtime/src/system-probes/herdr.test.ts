@@ -227,6 +227,22 @@ describe("parseHerdrTopology", () => {
     expect(ops.panes[0]).toMatchObject({ label: "scout shell", agent: null, agentStatus: "unknown" });
   });
 
+  test.each([
+    [{ terminal_title_stripped: "Build worker", terminal_title: "● Build worker", label: "legacy" }, "Build worker"],
+    [{ terminal_title_stripped: "", terminal_title: "● Build worker", label: "legacy" }, "● Build worker"],
+    [{ terminal_title: "● Build worker", label: "legacy" }, "● Build worker"],
+    [{ terminal_title_stripped: " ", terminal_title: "", label: "legacy" }, "legacy"],
+    [{ label: "legacy" }, "legacy"],
+    [{}, null],
+  ])("uses available pane titles with legacy fallback: %j", (titles, expected) => {
+    const payload = JSON.parse(paneList);
+    const pane = payload.result.panes[0];
+    delete pane.label;
+    Object.assign(pane, titles);
+    const [workspace] = parseHerdrTopology({ workspaceList, tabList, paneList: JSON.stringify(payload) });
+    expect(workspace.tabs[0]?.panes[0]?.label).toBe(expected);
+  });
+
   test("carries the agent session reference opaquely", () => {
     const [workspace] = parseHerdrTopology({ workspaceList, tabList, paneList });
     expect(workspace.tabs[0]?.panes[0]?.agentSession).toEqual({

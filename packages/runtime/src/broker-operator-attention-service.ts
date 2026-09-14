@@ -82,11 +82,7 @@ export class BrokerOperatorAttentionService {
 
   async sendOperatorSignalAlert(input: OperatorSignalInput): Promise<void> {
     const signal = input.signal;
-    // A `need` is blocking, so it is the one signal that earns an interrupt and
-    // a sound. It also carries its own body: the agent authored a question, and
-    // "Open Scout for details" on top of a real question is how an alert ends up
-    // saying nothing. notify/consult keep the quiet generic copy — they have no
-    // authored text to show.
+    // Remote push carries generic copy; the paired broker serves authored content.
     const isNeed = signal.kind === "need";
     const result = await this.options.broadcastApnsAlertToActiveMobileDevices({
       title: isNeed
@@ -94,7 +90,7 @@ export class BrokerOperatorAttentionService {
         : signal.kind === "consult"
           ? "An agent would value your input"
           : "Agent update",
-      body: isNeed ? signal.question : "Open Scout for details.",
+      body: isNeed ? "An agent needs your answer. Open Scout for details." : "Open Scout for details.",
       sound: isNeed ? "default" : null,
       urgency: isNeed ? "interrupt" : "silent",
       threadId: "scout.agent-signal",

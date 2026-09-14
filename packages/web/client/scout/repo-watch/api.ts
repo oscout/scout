@@ -4,7 +4,8 @@ import type { RepoWatchSnapshot } from "./types.ts";
 let cachedRepoWatchSnapshot: RepoWatchSnapshot | null = null;
 let cachedPullRequestSnapshot: RepoPullRequestSnapshot | null = null;
 
-export type RepoWatchScanDepth = "standard" | "expanded";
+export type RepoWatchInteractiveScanDepth = "standard" | "expanded";
+export type RepoWatchScanDepth = "quick" | RepoWatchInteractiveScanDepth;
 
 export type RepoPullRequestItem = {
   id: string;

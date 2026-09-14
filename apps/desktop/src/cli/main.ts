@@ -58,6 +58,11 @@ async function main() {
   }
 
   const registration = findScoutCommandRegistration(command);
+  if (!registration && (command === "need" || command === "attention")) {
+    throw new ScoutCliError(command === "need"
+      ? "scout need has been replaced by scout ask --operator --question <text>"
+      : "scout attention has been replaced by scout status --all --blocked; use scout diff for repository changes");
+  }
   if (!registration) {
     const implicitPromptArgs = [command, ...commandArgs];
     try {

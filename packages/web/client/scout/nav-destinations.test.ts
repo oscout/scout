@@ -75,6 +75,7 @@ describe("nav destination catalog", () => {
     expect(ops.active({ view: "ops" })).toBe(true);
     expect(ops.active({ view: "ops", mode: "tail" })).toBe(true);
     expect(ops.active({ view: "ops", mode: "lanes" })).toBe(true);
+    expect(ops.active({ view: "ops", mode: "world" })).toBe(true);
     expect(ops.active({ view: "search" })).toBe(false);
 
     const secondaryMission = OPS_SECONDARY_NAV
@@ -110,6 +111,7 @@ describe("nav destination catalog", () => {
     expect(ids).not.toContain("code");
     expect(ids).toEqual([
       "lanes",
+      "world",
       "control",
       "harnesses",
       "mesh",
@@ -203,12 +205,12 @@ describe("nav destination catalog", () => {
   test("repos.active includes repo-diff (SCO-085)", () => {
     const repos = getDestination("repos");
     expect(repos.active({ view: "repos" })).toBe(true);
-    expect(repos.active({ view: "repo-diff" })).toBe(true);
+    expect(repos.active({ view: "repo-diff", path: "/tmp/repo" })).toBe(true);
     expect(repos.active({ view: "code" })).toBe(false);
 
-    const sub = areaSubNavForRoute({ view: "repo-diff" });
+    const sub = areaSubNavForRoute({ view: "repo-diff", path: "/tmp/repo" });
     expect(sub?.areaId).toBe("projects");
-    expect(sub?.items.find((item) => item.id === "repos")?.active({ view: "repo-diff" })).toBe(
+    expect(sub?.items.find((item) => item.id === "repos")?.active({ view: "repo-diff", path: "/tmp/repo" })).toBe(
       true,
     );
   });
@@ -260,6 +262,7 @@ describe("nav destination catalog", () => {
     expect(all?.areaId).toBe("ops");
     expect(all?.items.map((item) => item.label)).toEqual([
       "Lanes",
+      "World",
       "Mission Control",
       "Providers",
       "Runtime",
@@ -274,6 +277,7 @@ describe("nav destination catalog", () => {
     );
     expect(gated?.items.map((item) => item.label)).toEqual([
       "Lanes",
+      "World",
       "Providers",
       "Network",
       "Live Activity",

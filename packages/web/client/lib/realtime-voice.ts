@@ -1,10 +1,9 @@
+import { LiveDelegationContext, boundedLiveCommentary } from "./live-delegation.ts";
 import {
   SCOUT_REALTIME_SCOUTBOT_CHAT_PATH,
-  SCOUT_REALTIME_VOICE_FAR_FIELD_INPUT,
   SCOUT_REALTIME_VOICE_CALL_PATH,
   SCOUT_REALTIME_VOICE_LEASE_HEADER,
   SCOUT_REALTIME_VOICE_LEASE_PATH,
-  SCOUT_REALTIME_VOICE_NEAR_FIELD_INPUT,
 } from "../../shared/realtime-voice.ts";
 import { extractScoutbotUiActions, stripScoutbotUiFences } from "./scoutbot.ts";
 import { fetchScoutRealtimeVoiceSettings } from "./realtime-voice-settings.ts";
@@ -35,13 +34,8 @@ export type ScoutRealtimeVoiceReplyActions = {
     requested: number;
     sent: number;
     failed: number;
+    unknown?: number;
   };
-};
-
-type ScoutRealtimeFunctionCall = {
-  callId: string;
-  name: string;
-  arguments: string;
 };
 
 type ScoutbotChatResult = {
@@ -53,6 +47,7 @@ export async function startScoutRealtimeVoiceCall(callbacks: {
   onError?: (message: string) => void;
   onScoutbotReply?: (
     body: string,
+    isCurrent: () => boolean,
   ) => ScoutRealtimeVoiceReplyActions | Promise<ScoutRealtimeVoiceReplyActions>;
   onTrace?: (event: ScoutRealtimeVoiceTraceEvent) => void;
   /** Read the route at the moment Scoutbot handles a turn, not only when the call started. */
@@ -82,6 +77,8 @@ export async function startScoutRealtimeVoiceCall(callbacks: {
   const peerConnection = new RTCPeerConnection();
   const audio = new Audio();
   audio.autoplay = true;
+  const setupController = new AbortController();
+  const setupSignal = setupController.signal;
   let stopped = false;
   let mediaStream: MediaStream | null = null;
   let leaseId: string | null = null;
@@ -104,21 +101,45 @@ export async function startScoutRealtimeVoiceCall(callbacks: {
     });
   };
 
+  let events: RTCDataChannel | null = null;
+  let started = false;
+  let sessionId: string | undefined;
+  let usageSeconds: number | undefined;
+  let finalReason: string | undefined;
+  let finalized = false;
+  let resolveFinal: () => void = () => {};
+  const finalEvent = new Promise<void>(resolve => { resolveFinal = resolve; });
+  let startupTimer: ReturnType<typeof setTimeout> | undefined;
+  let delegationContext: LiveDelegationContext | undefined;
+  const pendingAppends = new Map<string, ReturnType<typeof setTimeout>>();
   let stopPromise: Promise<void> | null = null;
   const stop = (): Promise<void> => {
     if (stopPromise) return stopPromise;
     stopped = true;
+    setupController.abort();
     callbacks.signal?.removeEventListener("abort", stopAfterAbort);
     if (heartbeatTimer) clearInterval(heartbeatTimer);
     heartbeatTimer = null;
-    mediaStream?.getTracks().forEach((track) => track.stop());
-    audio.pause();
-    audio.srcObject = null;
-    peerConnection.close();
+    clearTimeout(startupTimer);
+    delegationContext?.stop();
+    for (const timer of pendingAppends.values()) clearTimeout(timer);
+    pendingAppends.clear();
+    // Stop capturing immediately; keep the receiver alive for final usage.
+    mediaStream?.getTracks().forEach((track) => { track.enabled = false; });
     const leaseToRelease = leaseId;
     leaseId = null;
     stopPromise = (async () => {
-      if (leaseToRelease) await releaseRealtimeVoiceLease(leaseToRelease);
+      if (!finalized && events?.readyState === "open") {
+        try { events.send(JSON.stringify({ type: "session.close", event_id: crypto.randomUUID() })); } catch {}
+        let closeTimer: ReturnType<typeof setTimeout> | undefined;
+        await Promise.race([finalEvent, new Promise<void>(resolve => { closeTimer = setTimeout(resolve, 4000); })]);
+        clearTimeout(closeTimer);
+      }
+      trace(finalized ? "Live session finalized" : "Live finalization unconfirmed", JSON.stringify({ sessionId, reason: finalReason, usageSeconds }));
+      mediaStream?.getTracks().forEach((track) => track.stop());
+      audio.pause(); audio.srcObject = null; peerConnection.close();
+      if (leaseToRelease) await releaseRealtimeVoiceLease(leaseToRelease, { state: finalized ? "confirmed" : "unconfirmed", reason: finalReason, seconds: usageSeconds });
+      if (!finalized && sessionId) callbacks.onError?.("Audio stopped; provider final usage is unconfirmed. Scout will attempt server cleanup.");
       callbacks.onState?.("ended");
     })();
     return stopPromise;
@@ -140,20 +161,21 @@ export async function startScoutRealtimeVoiceCall(callbacks: {
     const [track] = stream.getAudioTracks();
     if (track) {
       track.addEventListener("ended", () => {
-        if (!stopped) callbacks.onError?.("Realtime voice audio ended unexpectedly.");
+        if (!stopped) { callbacks.onError?.("Realtime voice audio ended unexpectedly."); stopQuietly(); }
       });
     }
     audio.srcObject = stream;
     void audio.play()
       .catch(() => {
+        if (stopped) return;
         callbacks.onError?.("Browser playback was blocked. Interact with the page, then start the call again.");
+        stopQuietly();
       });
   };
   peerConnection.onconnectionstatechange = () => {
     if (stopped) return;
     if (peerConnection.connectionState === "connected") {
-      callbacks.onState?.("live");
-      trace("Realtime channel connected", "Scoutbot bridge is ready");
+      trace("Audio transport connected", "Waiting for Live session readiness");
     } else if (peerConnection.connectionState === "failed" || peerConnection.connectionState === "disconnected") {
       callbacks.onError?.("Realtime voice connection ended unexpectedly.");
       stopQuietly();
@@ -163,113 +185,87 @@ export async function startScoutRealtimeVoiceCall(callbacks: {
   try {
     mediaStream = await acquireRealtimeVoiceMediaStream(
       callbacks.inputDeviceName,
-      callbacks.signal,
+      setupSignal,
     );
-    throwIfAborted(callbacks.signal);
+    throwIfAborted(setupSignal);
     for (const track of mediaStream.getTracks()) {
       peerConnection.addTrack(track, mediaStream);
     }
 
-    const events = peerConnection.createDataChannel("oai-events");
-    const handledFunctionCallIds = new Set<string>();
-    let functionQueue = Promise.resolve();
-    let responseActive = false;
-    let responseRequestInFlight: string | null = null;
-    const pendingResponseInstructions: string[] = [];
-    const sendRealtimeEvent = (payload: unknown): boolean => {
-      if (stopped || events.readyState !== "open") return false;
+    events = peerConnection.createDataChannel("oai-events");
+    const sendLiveEvent = (payload: unknown): boolean => {
+      if (stopped || !started || events?.readyState !== "open") return false;
+      const eventId = crypto.randomUUID();
       try {
-        events.send(JSON.stringify(payload));
+        pendingAppends.set(eventId, setTimeout(() => {
+          pendingAppends.delete(eventId);
+          if (!stopped) callbacks.onError?.("Live update acceptance was not confirmed; check the activity log.");
+        }, 10000));
+        events.send(JSON.stringify({ ...(payload as object), event_id: eventId }));
         return true;
       } catch {
-        callbacks.onError?.("Realtime voice events channel closed unexpectedly.");
+        clearTimeout(pendingAppends.get(eventId)); pendingAppends.delete(eventId);
+        callbacks.onError?.("Live voice events channel closed unexpectedly."); stopQuietly();
         return false;
       }
     };
-    const flushResponseQueue = () => {
-      if (responseActive || responseRequestInFlight || pendingResponseInstructions.length === 0) return;
-      const instructions = pendingResponseInstructions.shift();
-      if (!instructions) return;
-      responseRequestInFlight = instructions;
-      if (!sendRealtimeEvent({ type: "response.create", response: { instructions } })) {
-        responseRequestInFlight = null;
-        pendingResponseInstructions.unshift(instructions);
-        return;
-      }
-      // Treat a sent response.create as active immediately. Waiting for the
-      // provider's response.created event leaves a race where a second local
-      // tool result can issue another response.create against the same turn.
-      responseActive = true;
-    };
-    const requestResponse = (instructions: string) => {
-      pendingResponseInstructions.push(instructions);
-      flushResponseQueue();
-    };
-    events.addEventListener("open", () => {
-      if (stopped) return;
-      const inputProfile = realtimeVoiceInputProfile(callbacks.inputDeviceName);
-      if (!sendRealtimeEvent({
-        type: "session.update",
-        session: {
-          type: "realtime",
-          audio: { input: inputProfile },
-        },
-      })) {
-        callbacks.onError?.("Could not configure Scout's realtime microphone processing.");
-        return;
-      }
-      trace("Scoutbot bridge ready", "Live fleet context is available");
-      requestResponse("Open with one brief audible greeting: 'Hi, I’m Scoutbot. I can check the fleet and coordinate through Scout. What would you like to work on?'");
-    });
-    events.addEventListener("error", () => {
-      if (!stopped) callbacks.onError?.("Realtime voice events channel closed unexpectedly.");
-    });
+    delegationContext = new LiveDelegationContext(
+      task => fulfillScoutLiveDelegation({ delegationId: task.id, request: task.request, signal: task.signal,
+        isCurrent: task.isCurrent, route: callbacks.getRoute?.() ?? callbacks.route,
+        uiContext: callbacks.getUiContext?.(), onReply: callbacks.onScoutbotReply, onTrace: trace, send: sendLiveEvent }),
+      id => sendScoutLiveCommentary({ delegationId: id, send: sendLiveEvent }, "No new complete request could be identified. Ask the operator to clarify; do not repeat earlier work."),
+    );
+    const failTransport = () => { if (!stopped) { callbacks.onError?.("Live voice events channel closed unexpectedly."); stopQuietly(); } };
+    events.addEventListener("error", failTransport);
+    events.addEventListener("close", failTransport);
     events.addEventListener("message", (event) => {
-      const payload = parseRealtimeEvent(event.data);
-      if (payload?.type === "error") {
-        if (isActiveResponseError(payload.message)) {
-          if (responseRequestInFlight) {
-            pendingResponseInstructions.unshift(responseRequestInFlight);
-            responseRequestInFlight = null;
-          }
-          responseActive = true;
-          trace("Scoutbot reply queued", "Waiting for the current spoken response to finish", "scoutbot");
-          return;
+      const payload = parseLiveEvent(event.data);
+      if (!payload) return;
+      if (payload.client_event_id && pendingAppends.has(payload.client_event_id)) {
+        clearTimeout(pendingAppends.get(payload.client_event_id)); pendingAppends.delete(payload.client_event_id);
+        trace(payload.type === "error" ? "Live update rejected" : "Live update accepted", payload.client_event_id);
+      }
+      if (payload.usage && typeof payload.usage.seconds === "number" && Number.isFinite(payload.usage.seconds)) usageSeconds = payload.usage.seconds;
+      if (typeof payload.session?.id === "string") sessionId = payload.session.id;
+      if (payload.type === "session.closed") {
+        finalized = true; finalReason = payload.reason; resolveFinal();
+        if (!stopped) {
+          const message = liveSessionCloseError(payload.reason);
+          if (message) callbacks.onError?.(message);
+          stopQuietly();
         }
-        callbacks.onError?.(payload.message ?? "OpenAI Realtime reported an error.");
         return;
       }
-      if (payload?.type === "response.created") {
-        responseActive = true;
-        responseRequestInFlight = null;
+      if (stopped) return;
+      if (payload.type === "error") {
+        callbacks.onError?.(payload.message ?? "OpenAI Live reported an error.");
+        if (!started || !payload.client_event_id) stopQuietly();
         return;
       }
-      if (payload?.type !== "response.done") return;
-      responseActive = false;
-      responseRequestInFlight = null;
-      for (const functionCall of extractFunctionCalls(payload)) {
-        if (functionCall.name !== "ask_scoutbot" || handledFunctionCallIds.has(functionCall.callId)) continue;
-        handledFunctionCallIds.add(functionCall.callId);
-        functionQueue = functionQueue
-          .then(() => fulfillScoutbotFunctionCall({
-            functionCall,
-            route: callbacks.getRoute?.() ?? callbacks.route,
-            uiContext: callbacks.getUiContext?.(),
-            onReply: callbacks.onScoutbotReply,
-            onTrace: trace,
-            send: sendRealtimeEvent,
-            requestResponse,
-          }))
-          .catch((error) => {
-            callbacks.onError?.(error instanceof Error ? error.message : "Scoutbot could not complete the voice request.");
-          });
+      if (payload.type === "session.started") {
+        if (started) return;
+        started = true; clearTimeout(startupTimer);
+        callbacks.onState?.("live"); trace("Live session ready", sessionId);
+        sendLiveEvent({ type: "session.instructions.append", delegation_id: null,
+          content: "Open with one brief spoken greeting: you are Scoutbot, you can check the fleet and coordinate through Scout, and ask what the operator would like to work on." });
+        return;
       }
-      flushResponseQueue();
+      if (!started) return;
+      if (payload.type === "session.input_transcript.delta" || payload.type === "session.output_transcript.delta") {
+        delegationContext?.transcript(payload.type === "session.input_transcript.delta" ? "user" : "assistant", payload.delta ?? "", payload.start_ms ?? NaN, payload.end_ms ?? NaN);
+      } else if (payload.type === "session.delegation.created" && payload.delegation?.target === "client") {
+        delegationContext?.delegation(payload.delegation.id, payload.offset_ms ?? 0);
+      }
     });
+    startupTimer = setTimeout(() => {
+      if (!started && !stopped) { callbacks.onError?.("Live session did not become ready in time."); stopQuietly(); }
+    }, 15000);
 
-    const offer = await abortable(peerConnection.createOffer(), callbacks.signal);
-    await abortable(peerConnection.setLocalDescription(offer), callbacks.signal);
-    if (!offer.sdp) {
+    const offer = await abortable(peerConnection.createOffer(), setupSignal);
+    await abortable(peerConnection.setLocalDescription(offer), setupSignal);
+    await waitForIceGathering(peerConnection, setupSignal);
+    const offerSdp = peerConnection.localDescription?.sdp ?? offer.sdp;
+    if (!offerSdp) {
       throw new Error("Could not create a WebRTC offer.");
     }
 
@@ -278,11 +274,12 @@ export async function startScoutRealtimeVoiceCall(callbacks: {
       headers: {
         "content-type": "application/sdp",
       },
-      body: offer.sdp,
-      signal: callbacks.signal,
+      body: offerSdp,
+      signal: setupSignal,
     });
+    sessionId = response.headers.get("x-openscout-live-session-id") ?? sessionId;
     leaseId = response.headers.get(SCOUT_REALTIME_VOICE_LEASE_HEADER)?.trim() || null;
-    const answerSdp = await abortable(response.text(), callbacks.signal);
+    const answerSdp = await abortable(response.text(), setupSignal);
     if (!response.ok) {
       throw new Error(readRealtimeCallError(answerSdp, response.status));
     }
@@ -311,9 +308,10 @@ export async function startScoutRealtimeVoiceCall(callbacks: {
     }, REALTIME_VOICE_HEARTBEAT_MS);
     await abortable(
       peerConnection.setRemoteDescription({ type: "answer", sdp: answerSdp }),
-      callbacks.signal,
+      setupSignal,
     );
-    throwIfAborted(callbacks.signal);
+    throwIfAborted(setupSignal);
+    if (stopped) throw new Error("Live session ended during setup.");
 
     return { leaseId, stop };
   } catch (error) {
@@ -322,35 +320,50 @@ export async function startScoutRealtimeVoiceCall(callbacks: {
   }
 }
 
-async function fulfillScoutbotFunctionCall(input: {
-  functionCall: ScoutRealtimeFunctionCall;
+/**
+ * Commentary is capped at 500 tokens, and it is spoken rather than reasoned
+ * over, so use a conservative UTF-8 byte ceiling for long answers
+ * here instead of being silently rejected by the session.
+ */
+
+
+async function fulfillScoutLiveDelegation(input: {
+  delegationId: string;
+  request: string;
+  signal: AbortSignal;
+  isCurrent: () => boolean;
   route: unknown;
   uiContext?: unknown;
   onReply?: (
     body: string,
+    isCurrent: () => boolean,
   ) => ScoutRealtimeVoiceReplyActions | Promise<ScoutRealtimeVoiceReplyActions>;
   onTrace: (label: string, detail?: string, kind?: ScoutRealtimeVoiceTraceKind) => void;
   send: (payload: unknown) => boolean;
-  requestResponse: (instructions: string) => void;
 }): Promise<void> {
-  const request = readScoutbotRequest(input.functionCall.arguments);
-  if (!request) {
+  if (!input.isCurrent()) return;
+  if (!input.request) {
     input.onTrace("Scoutbot request could not be read", undefined, "error");
-    sendScoutbotFunctionOutput(input, { ok: false, error: "The voice request did not include a usable Scoutbot prompt." });
+    sendScoutLiveCommentary(
+      input,
+      "Scout did not catch that request clearly enough to look it up. Ask the operator to say it again.",
+    );
     return;
   }
 
-  input.onTrace("Scoutbot is checking the control plane", request, "scoutbot");
+  input.onTrace("Scoutbot is checking the control plane", input.request, "scoutbot");
   try {
     const response = await fetch(SCOUT_REALTIME_SCOUTBOT_CHAT_PATH, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ body: request, route: input.route, uiContext: input.uiContext }),
+      body: JSON.stringify({ body: input.request, route: input.route, uiContext: input.uiContext }),
+      signal: input.signal,
     });
     const raw = await response.text();
     if (!response.ok) {
       throw new Error(readScoutbotChatError(raw, response.status));
     }
+    if (!input.isCurrent()) return;
     const parsed = JSON.parse(raw) as ScoutbotChatResult;
     const body = typeof parsed.reply?.body === "string" ? parsed.reply.body.trim() : "";
     if (!body) {
@@ -361,7 +374,7 @@ async function fulfillScoutbotFunctionCall(input: {
       .filter((action) => action.type === "ask-agent")
       .length;
     const replyActions = input.onReply
-      ? await input.onReply(body)
+      ? await input.onReply(body, input.isCurrent)
       : {
           agentRequests: {
             requested: agentRequestCount,
@@ -369,110 +382,96 @@ async function fulfillScoutbotFunctionCall(input: {
             failed: agentRequestCount,
           },
         };
+    if (!input.isCurrent()) return;
     const spokenReply = stripScoutbotUiFences(body);
     input.onTrace("Scoutbot reply ready", undefined, "scoutbot");
-    sendScoutbotFunctionOutput(input, {
-      ok: true,
-      reply: spokenReply,
-      ...(replyActions.agentRequests.requested > 0
-        ? { agentRequests: replyActions.agentRequests }
-        : {}),
-    });
+    // Delivery outcome has to ride inside the spoken text now. With client
+    // delegation there is no structured tool result the model can reason over,
+    // so an unsaid failure would be reported as success.
+    sendScoutLiveCommentary(
+      input,
+      replyActions.agentRequests.requested > 0 ? agentRequestSuffix(replyActions.agentRequests) : spokenReply,
+    );
   } catch (error) {
+    if (!input.isCurrent()) return;
     const message = error instanceof Error ? error.message : "Scoutbot could not complete the voice request.";
     input.onTrace("Scoutbot request failed", message, "error");
-    sendScoutbotFunctionOutput(input, { ok: false, error: message });
+    sendScoutLiveCommentary(
+      input,
+      `Scout could not complete that live lookup. Tell the operator plainly: ${message}`,
+    );
   }
 }
 
-function sendScoutbotFunctionOutput(
-  input: {
-    functionCall: ScoutRealtimeFunctionCall;
-    send: (payload: unknown) => boolean;
-    requestResponse: (instructions: string) => void;
-  },
-  output: {
-    ok: boolean;
-    reply?: string;
-    error?: string;
-    agentRequests?: ScoutRealtimeVoiceReplyActions["agentRequests"];
-  },
+function agentRequestSuffix(
+  agentRequests: ScoutRealtimeVoiceReplyActions["agentRequests"],
+): string {
+  if (agentRequests.requested < 1) return "";
+  const unknown = Math.max(agentRequests.unknown ?? 0, agentRequests.requested - agentRequests.sent - agentRequests.failed);
+  return `${agentRequests.sent} of ${agentRequests.requested} requests sent automatically; ${agentRequests.failed} failed; ${unknown} unconfirmed. Check the activity log before retrying. Accepted work is not completed work.`;
+
+}
+
+function sendScoutLiveCommentary(
+  input: { delegationId: string; send: (payload: unknown) => boolean },
+  content: string,
 ): void {
-  const sent = input.send({
-    type: "conversation.item.create",
-    item: {
-      type: "function_call_output",
-      call_id: input.functionCall.callId,
-      output: JSON.stringify(output),
-    },
+  input.send({
+    type: "session.commentary.append",
+    delegation_id: input.delegationId,
+    content: trimCommentary(content),
   });
-  if (!sent) return;
-  const agentRequests = output.agentRequests;
-  input.requestResponse(
-    output.ok
-      ? agentRequests && agentRequests.requested > 0
-        ? agentRequests.failed > 0
-          ? "Answer using the Scoutbot result. Say clearly that Scoutbot tried to send the agent request automatically but delivery failed, and tell the operator to check the activity log. Be concise and do not mention tools, JSON, fences, or implementation details."
-          : "Answer using the Scoutbot result. Say clearly that the agent request was sent automatically. Do not claim the requested work is complete. Be concise and do not mention tools, JSON, fences, or implementation details."
-        : "Answer using the Scoutbot result. Speak the useful answer naturally and concisely. Do not mention tools, JSON, fences, or implementation details."
-      : "Briefly tell the operator that Scoutbot could not complete the live lookup and state the returned error plainly.",
-  );
 }
 
-export function isActiveResponseError(message: string | undefined): boolean {
-  const normalized = message?.toLowerCase() ?? "";
-  return normalized.includes("active response in progress")
-    || normalized.includes("conversation already has an active response")
-    || normalized.includes("response is already in progress");
-}
+function trimCommentary(content: string): string { return boundedLiveCommentary(content); }
 
-function parseRealtimeEvent(value: unknown): {
-  type?: string;
-  message?: string;
-  response?: { output?: unknown };
+function parseLiveEvent(value: unknown): {
+  type?: string; message?: string; delta?: string; reason?: string;
+  client_event_id?: string; start_ms?: number; end_ms?: number; offset_ms?: number;
+  usage?: { seconds?: number }; session?: { id?: string };
+  delegation?: { id: string; target: string };
 } | null {
   if (typeof value !== "string") return null;
   try {
-    const parsed = JSON.parse(value) as {
-      type?: unknown;
-      error?: { message?: unknown };
-      response?: { output?: unknown };
-    };
-    return {
-      ...(typeof parsed.type === "string" ? { type: parsed.type } : {}),
-      ...(typeof parsed.error?.message === "string" ? { message: parsed.error.message } : {}),
-      ...(parsed.response && typeof parsed.response === "object" ? { response: parsed.response } : {}),
-    };
-  } catch {
-    return null;
-  }
+    const parsed = JSON.parse(value);
+    if (!parsed || typeof parsed !== "object") return null;
+    const string = (value: unknown) => typeof value === "string" ? value : undefined;
+    const number = (value: unknown) => typeof value === "number" && Number.isFinite(value) ? value : undefined;
+    return { type: string(parsed.type), delta: string(parsed.delta), reason: string(parsed.reason),
+      message: string(parsed.error?.message), client_event_id: string(parsed.client_event_id) ?? string(parsed.error?.event_id),
+      start_ms: number(parsed.start_ms), end_ms: number(parsed.end_ms), offset_ms: number(parsed.offset_ms),
+      usage: {seconds:number(parsed.usage?.seconds)}, session: {id:string(parsed.session?.id)},
+      delegation: typeof parsed.delegation?.id === "string" && typeof parsed.delegation?.target === "string"
+        ? {id:parsed.delegation.id,target:parsed.delegation.target} : undefined };
+  } catch { return null; }
 }
 
-function extractFunctionCalls(event: { response?: { output?: unknown } }): ScoutRealtimeFunctionCall[] {
-  if (!Array.isArray(event.response?.output)) return [];
-  return event.response.output.flatMap((entry) => {
-    if (!entry || typeof entry !== "object") return [];
-    const item = entry as { type?: unknown; call_id?: unknown; name?: unknown; arguments?: unknown };
-    if (
-      item.type !== "function_call"
-      || typeof item.call_id !== "string"
-      || typeof item.name !== "string"
-      || typeof item.arguments !== "string"
-    ) {
-      return [];
-    }
-    return [{ callId: item.call_id, name: item.name, arguments: item.arguments }];
-  });
+async function waitForIceGathering(peer: RTCPeerConnection, signal?: AbortSignal): Promise<void> {
+  if (peer.iceGatheringState === "complete") return;
+  await abortable(new Promise<void>((resolve, reject) => {
+    const finish = () => { clearTimeout(timer); peer.removeEventListener("icegatheringstatechange", changed); signal?.removeEventListener("abort", aborted); };
+    const changed = () => { if (peer.iceGatheringState === "complete") { finish(); resolve(); } };
+    const aborted = () => { finish(); reject(abortReason(signal!)); };
+    const timer = setTimeout(() => { finish(); reject(new Error("Audio connection discovery timed out.")); }, 8000);
+    peer.addEventListener("icegatheringstatechange", changed); signal?.addEventListener("abort", aborted, { once: true });
+    changed();
+  }), signal);
 }
 
-function readScoutbotRequest(argumentsJson: string): string | null {
-  try {
-    const parsed = JSON.parse(argumentsJson) as { request?: unknown };
-    if (typeof parsed.request !== "string") return null;
-    const request = parsed.request.trim();
-    return request ? request.slice(0, 8_000) : null;
-  } catch {
-    return null;
+/** A requested hangup is the expected ending; every other reason is reportable. */
+function liveSessionCloseError(reason: string | undefined): string | null {
+  switch (reason) {
+    case "close_requested":
+    case "remote_hangup":
+      return null;
+    case "expired":
+      return "Live voice reached its session limit. Start a new call to continue.";
+    case "content":
+      return "Live voice ended the call on a safety filter.";
+    case "connection_lost":
+      return "Live voice lost its connection unexpectedly.";
+    default:
+      return reason ? `Live voice ended unexpectedly (${reason}).` : null;
   }
 }
 
@@ -551,14 +550,6 @@ const REALTIME_SPEECH_CONSTRAINTS: MediaTrackConstraints = {
   autoGainControl: true,
   channelCount: 1,
 };
-
-const NEAR_FIELD_INPUT_LABEL = /\b(?:airpods?|earbuds?|earphones?|headsets?|headphones?|buds?|hands[- ]?free)\b/iu;
-
-function realtimeVoiceInputProfile(inputDeviceName: string | null | undefined) {
-  return NEAR_FIELD_INPUT_LABEL.test(inputDeviceName?.trim() ?? "")
-    ? SCOUT_REALTIME_VOICE_NEAR_FIELD_INPUT
-    : SCOUT_REALTIME_VOICE_FAR_FIELD_INPUT;
-}
 
 async function acquireRealtimeVoiceMediaStream(
   inputDeviceName: string | null | undefined,
@@ -648,9 +639,11 @@ async function heartbeatRealtimeVoiceLease(leaseId: string): Promise<boolean> {
   return response.ok;
 }
 
-async function releaseRealtimeVoiceLease(leaseId: string): Promise<void> {
+async function releaseRealtimeVoiceLease(leaseId: string, finalization?: { state: string; reason?: string; seconds?: number }): Promise<void> {
   const response = await fetch(`${SCOUT_REALTIME_VOICE_LEASE_PATH}/${encodeURIComponent(leaseId)}`, {
     method: "DELETE",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(finalization ?? { state: "unconfirmed" }),
     keepalive: true,
   });
   if (!response.ok && response.status !== 404) {

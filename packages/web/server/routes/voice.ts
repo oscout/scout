@@ -1,3 +1,4 @@
+import { finalizeLiveSession } from "../live-finalization.ts";
 import type { Hono } from "hono";
 
 import {
@@ -49,6 +50,7 @@ import {
   isTerminalScoutVoiceSessionEvent,
   listScoutVoiceSessionHistory,
   openScoutVoicePrivacySettings,
+  parseScoutVoiceSettingsPatch,
   pushScoutVoiceHostEvent,
   registerScoutVoiceHost,
   requestScoutVoicePermissions,
@@ -162,16 +164,61 @@ export type ScoutVoiceRouteDeps = {
   realtimeVoiceEnvironment?: NodeJS.ProcessEnv;
   realtimeVoiceAdmission?: ScoutRealtimeVoiceAdmission;
   createRealtimeVoiceCall?: typeof createScoutRealtimeVoiceCall;
+  finalizeLiveSession?: typeof finalizeLiveSession;
   /** Persisted "spoken on host" preference; a request may still override it. */
   readVoicePlayback?: () => Promise<ScoutVoicePlayback>;
   writeVoicePlayback?: (playback: ScoutVoicePlayback) => Promise<ScoutVoicePlayback>;
   voiceEnvironment?: NodeJS.ProcessEnv;
 };
 
-export function mountScoutVoiceRoutes(app: Hono, deps: ScoutVoiceRouteDeps = {}): void {
+export function mountScoutVoiceRoutes(app: Hono, deps: ScoutVoiceRouteDeps = {}): () => void {
   let defaultRealtimeVoiceAdmission: ScoutRealtimeVoiceAdmission | null = null;
   const realtimeVoiceAdmission = () => deps.realtimeVoiceAdmission
     ?? (defaultRealtimeVoiceAdmission ??= createScoutRealtimeVoiceAdmission());
+  const closing = new Map<string, Promise<void>>();
+  const closeLease = (leaseId: string): Promise<void> => {
+    const existing = closing.get(leaseId); if (existing) return existing;
+    const work = (async () => {
+      const admission = realtimeVoiceAdmission();
+      admission.release(leaseId);
+      const reserved = admission.reserveFinalization(leaseId);
+      if (!reserved) return;
+      let result: Awaited<ReturnType<typeof finalizeLiveSession>>;
+      try {
+        let credentialTimer: ReturnType<typeof setTimeout> | undefined;
+        let apiKey: string | undefined;
+        try {
+          apiKey = await Promise.race([
+            Promise.resolve().then(() => deps.resolveOpenAIApiKey?.()).then(key => key ?? process.env.OPENAI_API_KEY?.trim()),
+            new Promise<never>((_, reject) => { credentialTimer = setTimeout(() => reject(new Error("credential_timeout")), 5000); }),
+          ]);
+        } finally { clearTimeout(credentialTimer); }
+        result = apiKey ? await (deps.finalizeLiveSession ?? finalizeLiveSession)(reserved.sessionId, apiKey)
+          : { state: "unconfirmed", reason: "credential_unavailable" };
+      } catch {
+        // Reserve before credentials/network; exceptions consume the same
+        // bounded budget, without persisting credential/provider diagnostics.
+        result = { state: "unconfirmed", reason: "cleanup_exception" };
+      }
+      admission.recordFinalization(leaseId, result, reserved.attempt);
+
+    })().finally(() => closing.delete(leaseId));
+    closing.set(leaseId, work); return work;
+  };
+  let cleanupTimer: ReturnType<typeof setInterval> | undefined;
+  const startCleanup = () => {
+    if (cleanupTimer) return;
+    const cleanup = () => {
+      const pending = realtimeVoiceAdmission().sessionsNeedingCleanup();
+      for (const session of pending) {
+        void closeLease(session.leaseId).catch(() => console.warn("[voice-live] cleanup_unconfirmed", { leaseId: session.leaseId }));
+      }
+      if (!realtimeVoiceAdmission().hasPendingFinalization() && !closing.size && realtimeVoiceAdmission().activeLeaseCount() === 0 && cleanupTimer) {
+        clearInterval(cleanupTimer); cleanupTimer = undefined;
+      }
+    };
+    cleanup(); cleanupTimer = setInterval(cleanup, 10000); cleanupTimer.unref();
+  };
   const realtimeVoiceSettings = async (): Promise<ScoutRealtimeVoiceSettings> => {
     if (deps.realtimeVoiceEnabled) {
       const enabled = deps.realtimeVoiceEnabled();
@@ -236,7 +283,10 @@ export function mountScoutVoiceRoutes(app: Hono, deps: ScoutVoiceRouteDeps = {})
         configuredEnabled,
         deps.realtimeVoiceEnvironment ?? process.env,
       );
-      if (!next.enabled) realtimeVoiceAdmission().releaseAll();
+      if (!next.enabled) {
+        realtimeVoiceAdmission().releaseAll();
+        await Promise.all(realtimeVoiceAdmission().sessionsNeedingCleanup().map(session => closeLease(session.leaseId)));
+      }
       return c.json(next);
     } catch (error) {
       console.warn("[voice-realtime] settings_write_failed", {
@@ -350,19 +400,7 @@ export function mountScoutVoiceRoutes(app: Hono, deps: ScoutVoiceRouteDeps = {})
       instanceId?: string;
       platform?: string;
       bundle?: string;
-      settings?: {
-        preference?: "auto" | "parakeet" | "apple";
-        inputDeviceId?: string | null;
-        inputDeviceName?: string | null;
-        modelReady?: boolean;
-        modelInstalled?: boolean;
-        permissions?: Array<{
-          kind?: "microphone" | "speechRecognition";
-          status?: string;
-          granted?: boolean;
-          canRequest?: boolean;
-        }>;
-      };
+      settings?: unknown;
       devices?: Array<{ id?: string; name?: string; isDefault?: boolean }>;
     };
     try {
@@ -371,7 +409,7 @@ export function mountScoutVoiceRoutes(app: Hono, deps: ScoutVoiceRouteDeps = {})
         instanceId: body.instanceId,
         platform: body.platform ?? "unknown",
         bundle: body.bundle,
-        settings: body.settings,
+        settings: parseScoutVoiceSettingsPatch(body.settings),
         devices: (body.devices ?? [])
           .map((device) => ({
             id: device.id?.trim() ?? "",
@@ -463,7 +501,7 @@ export function mountScoutVoiceRoutes(app: Hono, deps: ScoutVoiceRouteDeps = {})
           };
 
           let heartbeat: ReturnType<typeof setInterval> | null = null;
-          let unsubscribe = () => undefined;
+          let unsubscribe: () => void = () => undefined;
 
           const close = () => {
             if (closed) return;
@@ -650,26 +688,39 @@ export function mountScoutVoiceRoutes(app: Hono, deps: ScoutVoiceRouteDeps = {})
       if (!apiKey) {
         return c.json({ error: "OpenAI API key is required to start a realtime voice call." }, 503);
       }
+      startCleanup();
       const lease = realtimeVoiceAdmission().admit();
       leaseId = lease.id;
-      const answerSdp = await (deps.createRealtimeVoiceCall ?? createScoutRealtimeVoiceCall)({
+      const call = await (deps.createRealtimeVoiceCall ?? createScoutRealtimeVoiceCall)({
         offerSdp,
         apiKey,
-        signal: c.req.raw.signal,
+        signal: AbortSignal.timeout(15000),
       });
-      return new Response(answerSdp, {
+      // Keep ownership even if the browser vanished after provider creation.
+      realtimeVoiceAdmission().bindSession(lease.id, call.sessionId);
+      if (c.req.raw.signal.aborted || !(await realtimeVoiceSettings()).enabled) {
+        await closeLease(lease.id);
+        throw new ScoutRealtimeVoiceError("Live call setup was cancelled.", 409);
+      }
+      return new Response(call.answerSdp, {
         headers: {
           "cache-control": "no-store",
           "content-type": "application/sdp",
           [SCOUT_REALTIME_VOICE_LEASE_HEADER]: lease.id,
+          "x-openscout-live-session-id": call.sessionId,
         },
       });
     } catch (error) {
-      if (leaseId) realtimeVoiceAdmission().release(leaseId);
+      if (leaseId) {
+        if (error instanceof ScoutRealtimeVoiceError && error.providerSessionId && !realtimeVoiceAdmission().sessionForLease(leaseId)) {
+          realtimeVoiceAdmission().bindSession(leaseId, error.providerSessionId);
+        }
+        await closeLease(leaseId);
+      }
       const status = error instanceof ScoutRealtimeVoiceError ? error.status : 502;
       const message = error instanceof ScoutRealtimeVoiceError
         ? error.message
-        : "Realtime voice admission is temporarily unavailable. Try again shortly.";
+        : "Live voice setup is temporarily unavailable. Try again shortly.";
       if (error instanceof ScoutRealtimeVoiceAdmissionError) {
         c.header("retry-after", String(error.retryAfterSeconds));
       } else if (status >= 500 && !c.req.raw.signal.aborted) {
@@ -698,12 +749,17 @@ export function mountScoutVoiceRoutes(app: Hono, deps: ScoutVoiceRouteDeps = {})
 
   app.delete(`${SCOUT_REALTIME_VOICE_LEASE_PATH}/:leaseId`, async (c) => {
     c.header("cache-control", "no-store");
-    if (!(await realtimeVoiceSettings()).enabled) {
-      return c.json({ error: "Live voice is off on this Scout host." }, 404);
-    }
+    // Disabling new calls must never disable cleanup of an existing one.
     const leaseId = validRealtimeVoiceLeaseId(c.req.param("leaseId"));
     if (!leaseId) return c.json({ error: "Realtime voice lease id is invalid." }, 400);
-    realtimeVoiceAdmission().release(leaseId);
+    const report = await c.req.json().catch(() => null);
+    if (report && (report.state === "confirmed" || report.state === "unconfirmed")) {
+      realtimeVoiceAdmission().recordClientFinalization(leaseId, {
+        state: report.state, reason: typeof report.reason === "string" ? report.reason.slice(0, 100) : undefined,
+        seconds: typeof report.seconds === "number" && Number.isFinite(report.seconds) && report.seconds >= 0 ? report.seconds : undefined,
+      });
+    }
+    await closeLease(leaseId);
     return new Response(null, { status: 204, headers: { "cache-control": "no-store" } });
   });
 
@@ -711,6 +767,7 @@ export function mountScoutVoiceRoutes(app: Hono, deps: ScoutVoiceRouteDeps = {})
     return c.json(resolveScoutSpeechDefaults());
   });
 
+  return () => { if (cleanupTimer) clearInterval(cleanupTimer); cleanupTimer = undefined; };
 }
 
 function validRealtimeVoiceLeaseId(value: string): string | null {

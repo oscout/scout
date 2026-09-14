@@ -181,12 +181,28 @@ export function isGlobalStickySearchKey(key: string): boolean {
     || GLOBAL_STICKY_SEARCH_PREFIXES.some((prefix) => key.startsWith(prefix));
 }
 
+/**
+ * Keys that stick only while you stay on one surface. `open` is the list of
+ * conversations kept beside the Comms stage (screens/chat/comms-deck.ts): it has
+ * to survive navigating from one conversation to the next, which is the whole
+ * point of keeping something beside, and it means nothing anywhere else.
+ */
+const SURFACE_STICKY_SEARCH_KEYS: ReadonlyArray<{ key: string; prefix: string }> = [
+  { key: "open", prefix: "/messages" },
+];
+
+export function isSurfaceStickySearchKey(key: string, targetPath: string): boolean {
+  return SURFACE_STICKY_SEARCH_KEYS.some(
+    (entry) => entry.key === key && (targetPath === entry.prefix || targetPath.startsWith(`${entry.prefix}/`)),
+  );
+}
+
 /** Carry whitelisted global params (feature flags) when rewriting to a new path. */
 export function preserveLocationSearch(path: string, search = ""): string {
   const target = new URL(path, "http://scout.local");
   const current = new URLSearchParams(search);
   current.forEach((value, key) => {
-    if (!isGlobalStickySearchKey(key)) return;
+    if (!isGlobalStickySearchKey(key) && !isSurfaceStickySearchKey(key, target.pathname)) return;
     if (!target.searchParams.has(key)) {
       target.searchParams.set(key, value);
     }

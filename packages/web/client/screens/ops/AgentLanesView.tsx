@@ -167,6 +167,13 @@ function readStoredLaneLayout(embedded: boolean): AgentLanesLayoutMode {
   return "lanes";
 }
 
+// Floor is a route (`/ops/world`) rather than a persisted layout; a legacy
+// stored "floor" falls back to lanes.
+function restoredLaneLayout(embedded: boolean): AgentLanesLayoutMode {
+  const stored = readStoredLaneLayout(embedded);
+  return stored === "floor" ? "lanes" : stored;
+}
+
 function readStoredLaneGridColumns(): AgentLanesGridColumns {
   try {
     return normalizeAgentLanesGridColumns(sessionStorage.getItem(LANE_GRID_COLUMNS_STORAGE_KEY));
@@ -613,13 +620,16 @@ export function AgentLanesView({
     || undefined;
   const profileId = profileIdProp ?? readLaneDeckProfileId();
   const defaultWidthTier = laneSize ?? readAgentLaneSize();
+  const worldMode = !embedded && scoutContext?.route.view === "ops" && scoutContext.route.mode === "world";
   const [now, setNow] = useState(Date.now());
   const [mapHorizon, setMapHorizon] = useState<AgentLaneHorizonKey>("4h");
   const [horizon, setHorizon] = useState<AgentLaneHorizonKey>(readStoredHorizon);
-  const [laneLayout, setLaneLayout] = useState<AgentLanesLayoutMode>(() => readStoredLaneLayout(embedded));
+  const [laneLayout, setLaneLayout] = useState<AgentLanesLayoutMode>(() =>
+    worldMode ? "floor" : restoredLaneLayout(embedded),
+  );
   const [gridColumns, setGridColumns] = useState<AgentLanesGridColumns>(readStoredLaneGridColumns);
-  const floorMode = !embedded && laneLayout === "floor";
-  const gridMode = laneLayout === "grid";
+  const floorMode = worldMode;
+  const gridMode = !worldMode && laneLayout === "grid";
   // The floor's recency bands span up to 4h; admission follows the bands while
   // the user's stored horizon choice stays untouched for the lanes layout.
   const effectiveHorizon: AgentLaneHorizonKey = floorMode ? mapHorizon : horizon;
@@ -648,7 +658,7 @@ export function AgentLanesView({
   const loadState = data?.loadState ?? browserTail.loadState;
   const retryInitialLoad = data?.retryInitialLoad ?? browserTail.retryInitialLoad;
   const terminalSessions = data?.terminalSessions ?? browserTerminalSessions;
-  const returnRoute: Route = { view: "ops", mode: "lanes" };
+  const returnRoute: Route = { view: "ops", mode: worldMode ? "world" : "lanes" };
   const horizonLabel = agentLaneHorizonLabel(effectiveHorizon);
   const clockIntervalMs = embedded ? EMBEDDED_CLOCK_INTERVAL_MS : 10_000;
   const terminalPollIntervalMs = embedded ? EMBEDDED_TERMINAL_POLL_INTERVAL_MS : 10_000;
@@ -691,6 +701,12 @@ export function AgentLanesView({
   }, [horizon]);
 
   useEffect(() => {
+    if (worldMode) setLaneLayout("floor");
+    else setLaneLayout((current) => (current === "floor" ? restoredLaneLayout(embedded) : current));
+  }, [worldMode, embedded]);
+
+  useEffect(() => {
+    if (laneLayout === "floor") return;
     try {
       sessionStorage.setItem(LANE_LAYOUT_STORAGE_KEY, laneLayout);
     } catch {
@@ -986,7 +1002,7 @@ export function AgentLanesView({
     >
       <div className="s-agent-lanes-bar">
         <div className="s-agent-lanes-bar-leading">
-          <div className="s-agent-lanes-title">Agent Lanes</div>
+          <div className="s-agent-lanes-title">{floorMode ? "World" : "Agent Lanes"}</div>
           <div className="s-agent-lanes-meta" aria-label="Lane deck status">
             <span className="s-agent-lanes-meta-stat">
               {visibleLaneCount} {floorMode ? "actors" : "live"}
@@ -1012,8 +1028,12 @@ export function AgentLanesView({
                 key={option.key}
                 type="button"
                 className={`s-agent-lanes-horizon${laneLayout === option.key ? " s-agent-lanes-horizon--on" : ""}`}
-                aria-pressed={laneLayout === option.key}
-                onClick={() => setLaneLayout(option.key)}
+                aria-pressed={option.key === "floor" ? floorMode : !floorMode && laneLayout === option.key}
+                onClick={() => {
+                  setLaneLayout(option.key);
+                  if (option.key === "floor") navigate({ view: "ops", mode: "world" });
+                  else if (worldMode) navigate({ view: "ops", mode: "lanes" });
+                }}
               >
                 {option.label}
               </button>

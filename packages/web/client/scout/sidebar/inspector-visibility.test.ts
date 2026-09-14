@@ -21,6 +21,7 @@ describe("context inspector visibility", () => {
       { view: "harnesses" },
       { view: "inbox" },
       { view: "ops", mode: "lanes" },
+      { view: "ops", mode: "world" },
       { view: "repo-diff", path: "/repo" },
       { view: "sessions", flightId: "flight-1" },
       { view: "settings", section: "appearance" },

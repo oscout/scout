@@ -20,7 +20,9 @@ export function homeNowCardLaneModel(
   return agentLaneToCardModel(lane, { isLive: observeLive, nowMs });
 }
 
-export function homeNowCardHasDetail(model: AgentLaneCardModel): boolean {
+export function homeNowCardHasDetail(
+  model: Pick<AgentLaneCardModel, "stats" | "pops" | "context">,
+): boolean {
   return model.stats.tools > 0
     || model.stats.files > 0
     || model.context !== null
