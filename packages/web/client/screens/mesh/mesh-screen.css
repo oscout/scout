@@ -2398,3 +2398,257 @@
 .mesh-machine-state-cell--working .mesh-machine-state-num {
   color: var(--accent);
 }
+
+/* ── Network: per-machine menu ──────────────────────────────────────────
+   The ⋯ button is always rendered, never hover-revealed: a menu that only
+   appears on hover is a menu the keyboard cannot reach, and refresh lives in
+   here. */
+
+.mesh-node-menu-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: color-mix(in srgb, var(--ink) 55%, transparent);
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.mesh-node-menu-btn:hover {
+  background: color-mix(in srgb, var(--ink) 8%, transparent);
+  color: var(--ink);
+}
+
+.mesh-node-menu-btn:focus-visible {
+  outline: none;
+  border-color: color-mix(in srgb, var(--accent) 60%, transparent);
+  color: var(--ink);
+}
+
+.mesh-node-menu-btn[aria-expanded="true"] {
+  background: color-mix(in srgb, var(--ink) 10%, transparent);
+  color: var(--ink);
+}
+
+/* Placed in viewport coordinates by the component and rendered into the
+   document body: the map's racks live inside a CSS transform, which would
+   otherwise become the containing block for a fixed menu and drag it around
+   with the pan. */
+.mesh-node-menu {
+  position: fixed;
+  z-index: 240;
+  max-height: min(60vh, 420px);
+  overflow-y: auto;
+  min-width: 208px;
+  max-width: 280px;
+  padding: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  border: 1px solid color-mix(in srgb, var(--ink) 12%, transparent);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.35);
+}
+
+.mesh-node-menu-item {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  width: 100%;
+  padding: 5px 8px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--ink);
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.mesh-node-menu-item:hover:not(:disabled),
+.mesh-node-menu-item:focus-visible {
+  outline: none;
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+}
+
+.mesh-node-menu-item:disabled {
+  cursor: default;
+  color: color-mix(in srgb, var(--ink) 40%, transparent);
+}
+
+.mesh-node-menu-item-label { font-weight: 500; }
+
+.mesh-node-menu-item-hint {
+  font-size: 10.5px;
+  color: color-mix(in srgb, var(--ink) 52%, transparent);
+}
+
+/* The rail row's action slot is hover-revealed by default; the machine menu
+   must not be, so it is pinned visible for machine rows. */
+.mesh-nav-machine > .rr-row--has-actions .rr-row-actions {
+  display: inline-flex;
+  position: static;
+  transform: none;
+  background: transparent;
+  padding: 0;
+}
+
+.mesh-nav-machine > .rr-row--has-actions .rr-row-meta { opacity: 1; }
+
+/* ── Network: selected-machine inspector ────────────────────────────────
+   Deliberately not `.mesh-node-detail`: that class is the 180px canvas
+   popover, and the inspector is a full-width panel. */
+
+.mesh-node-inspector {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.mesh-node-inspector-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.mesh-node-inspector-section { display: flex; flex-direction: column; gap: 4px; }
+
+.mesh-node-reach--ok   { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 35%, transparent); }
+.mesh-node-reach--warn { color: var(--warning, #d08b28); border-color: color-mix(in srgb, var(--warning, #d08b28) 35%, transparent); }
+.mesh-node-reach--bad  { color: var(--danger, #c8553d); border-color: color-mix(in srgb, var(--danger, #c8553d) 35%, transparent); }
+.mesh-node-reach--muted { color: color-mix(in srgb, var(--ink) 50%, transparent); }
+
+.mesh-node-reach-note { margin-top: 2px; }
+
+.mesh-node-workload {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  padding: 8px 10px;
+  border: 1px solid color-mix(in srgb, var(--ink) 8%, transparent);
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--ink) 3%, transparent);
+}
+
+.mesh-node-workload-cell { display: flex; flex-direction: column; gap: 1px; min-width: 54px; }
+.mesh-node-workload-num { font-size: 17px; font-weight: 600; line-height: 1.1; }
+.mesh-node-workload-cell--working .mesh-node-workload-num { color: var(--accent); }
+
+.mesh-node-workload-label,
+.mesh-node-workload-note {
+  font-size: 10.5px;
+  color: color-mix(in srgb, var(--ink) 55%, transparent);
+}
+
+.mesh-node-workload-cell--unknown { flex: 1 1 140px; justify-content: center; }
+.mesh-node-workload--unknown { display: block; }
+
+.mesh-node-stale-tag {
+  margin-left: 6px;
+  padding: 0 4px;
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--ink) 8%, transparent);
+  font-size: 9.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: color-mix(in srgb, var(--ink) 55%, transparent);
+}
+
+.mesh-node-section-count {
+  margin-left: 6px;
+  color: color-mix(in srgb, var(--ink) 45%, transparent);
+}
+
+/* Two different sentences, two different weights: one is missing evidence,
+   the other is evidence of absence. */
+.mesh-node-unreported,
+.mesh-node-empty {
+  margin: 2px 0 0;
+  font-size: 11.5px;
+  color: color-mix(in srgb, var(--ink) 52%, transparent);
+}
+
+.mesh-node-unreported { font-style: italic; }
+
+.mesh-node-rows { display: flex; flex-direction: column; gap: 2px; }
+
+.mesh-node-row {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 3px 0;
+  font-size: 11.5px;
+  border-bottom: 1px solid color-mix(in srgb, var(--ink) 5%, transparent);
+}
+
+.mesh-node-row-name { flex: 0 1 auto; font-weight: 500; }
+
+.mesh-node-row-meta {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: color-mix(in srgb, var(--ink) 52%, transparent);
+}
+
+.mesh-node-row-state {
+  flex: 0 0 auto;
+  font-size: 10px;
+  text-transform: lowercase;
+  color: color-mix(in srgb, var(--ink) 55%, transparent);
+}
+
+.mesh-node-row-state--running,
+.mesh-node-row-state--active { color: var(--accent); }
+
+.mesh-node-roster-note {
+  margin: 4px 0 0;
+  font-size: 10.5px;
+  color: color-mix(in srgb, var(--ink) 45%, transparent);
+}
+
+/* The rail row and the canvas card both anchor a menu. */
+.mesh-nav-machine,
+.mesh-machine-header { position: relative; }
+
+/* ── The map's racks carry the same menu the rail does ── */
+
+.mesh-machine-menu-btn {
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  z-index: 3;
+  width: 18px;
+  height: 18px;
+  font-size: 12px;
+  background: color-mix(in srgb, var(--surface) 80%, transparent);
+}
+
+.mesh-machine-reach {
+  margin-left: auto;
+  padding: 0 5px;
+  border-radius: 999px;
+  font-size: 9px;
+  letter-spacing: 0.02em;
+  text-transform: lowercase;
+  white-space: nowrap;
+  background: color-mix(in srgb, var(--ink) 6%, transparent);
+}
+
+.mesh-summary-hint {
+  margin: 8px 0 0;
+  font-size: 11px;
+  line-height: 1.5;
+  color: color-mix(in srgb, var(--ink) 55%, transparent);
+}
+
+.mesh-machine-detail-link { display: block; width: 100%; padding: 12px; border: 0; background: transparent; color: var(--ink); text-align: left; font: inherit; cursor: pointer; white-space: normal; overflow-wrap: anywhere; }
+.mesh-machine-detail-link:hover { background: color-mix(in srgb, var(--ink) 5%, transparent); }

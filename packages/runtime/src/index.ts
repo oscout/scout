@@ -36,6 +36,8 @@ export * from "./openscout-discovery.js";
 export * from "./setup.js";
 export * from "./managed-installs.js";
 export * from "./claude-statusline.js";
+export * from "./claude-session-records.js";
+export * from "./session-observation.js";
 export * from "./provider-telemetry-bootstrap.js";
 export * from "./onboarding.js";
 export * from "./runtime-adapters.js";

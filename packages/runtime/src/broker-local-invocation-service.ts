@@ -1,3 +1,4 @@
+import { readRuntimeMessage } from "./broker-message-records.js";
 import {
   buildScoutReturnAddress,
   runtimeDimensionResolution,
@@ -51,6 +52,7 @@ type LocalInvocationRuntime = {
   agent(agentId: string): AgentDefinition | undefined;
   conversation(conversationId: string): ConversationDefinition | undefined;
   message(messageId: string): MessageRecord | undefined;
+  readMessage?(messageId:string):Promise<MessageRecord|undefined>;
   flightForInvocation(invocationId: string): FlightRecord | undefined;
   snapshot(): RuntimeSnapshot;
 };
@@ -117,15 +119,15 @@ function executionResolutionWithObservedEndpoint(
   };
 }
 
-function invocationWithOriginatingMessageAttachments(
+async function invocationWithOriginatingMessageAttachments(
   invocation: InvocationRequest,
   runtime: LocalInvocationRuntime,
-): InvocationRequest {
+): Promise<InvocationRequest> {
   if (!invocation.messageId) {
     return invocation;
   }
 
-  const attachments = runtime.message(invocation.messageId)?.attachments;
+  const attachments = (await readRuntimeMessage(runtime,invocation.messageId))?.attachments;
   if (!attachments?.length) {
     return invocation;
   }
@@ -174,7 +176,7 @@ export type BrokerLocalInvocationServiceOptions = {
     invocation: InvocationRequest,
     agentId: string,
     sinceMs: number,
-  ) => MessageRecord | null;
+  ) => MessageRecord | null | Promise<MessageRecord|null>;
   completeInvocationForBrokerReply: (
     invocation: InvocationRequest,
     reply: MessageRecord,
@@ -385,7 +387,7 @@ export class BrokerLocalInvocationService {
     try {
       const result = await this.invokeEndpoint(
         runningEndpoint,
-        invocationWithOriginatingMessageAttachments(invocation, this.options.runtime),
+        await invocationWithOriginatingMessageAttachments(invocation, this.options.runtime),
       );
       const completedEndpoint = this.completedEndpoint(runningEndpoint, result);
       const completedSessionId = localEndpointTraceSessionId(completedEndpoint);
@@ -432,7 +434,7 @@ export class BrokerLocalInvocationService {
         return;
       }
 
-      const postedReply = this.options.existingBrokerReplyForInvocation(
+      const postedReply = await this.options.existingBrokerReplyForInvocation(
         invocation,
         target.id,
         runningFlight.startedAt ?? this.now(),
@@ -591,7 +593,7 @@ export class BrokerLocalInvocationService {
       if (currentFlight && isTerminalFlightState(currentFlight.state)) {
         return;
       }
-      const postedReply = this.options.existingBrokerReplyForInvocation(
+      const postedReply = await this.options.existingBrokerReplyForInvocation(
         invocation,
         target.id,
         runningFlight.startedAt ?? this.now(),

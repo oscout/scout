@@ -1,4 +1,14 @@
+import { AgentAdventures } from "./AgentAdventures.tsx";
+import { SharedWorkFloor } from "./SharedWorkFloor.tsx";
+import { FloorReplay } from "./FloorReplay.tsx";
+import { floorDeskOrder } from "./floor-memory.ts";
+import { FloorTacticalHUD } from "./FloorTacticalHUD.tsx";
+import { FloorResourcesSheet, type FloorResourceView } from "./FloorResourcesSheet.tsx";
 import "./agent-floor.css";
+import { FLOOR_ROOMS } from "./agent-floor-world-layout.ts";
+import { FloorContextSheet } from "./FloorContextSheet.tsx";
+import { AgentFloorWorld, FLOOR_WORLD_WIDTH, FLOOR_WORLD_HEIGHT } from "./AgentFloorWorld.tsx";
+import { floorActorState, type FloorActorStation } from "./agent-floor-actor.ts";
 
 import {
   useCallback,
@@ -11,6 +21,7 @@ import {
   type WheelEvent as ReactWheelEvent,
 } from "react";
 
+import { Terminal, FileCode2, MessageSquare, CircleDot } from "lucide-react";
 import { HarnessMark } from "../../components/HarnessMark.tsx";
 import { agentSpriteProps, SpriteAvatar } from "../../components/SpriteAvatar.tsx";
 import { normalizeAgentState } from "../../lib/agent-state.ts";
@@ -19,7 +30,6 @@ import { timeAgo } from "../../lib/time.ts";
 import type { ObserveEvent } from "../../lib/types.ts";
 import { SessionObserve } from "../sessions/SessionObserve.tsx";
 import {
-  isAgentLaneLive,
   lanePrimaryLabel,
   type AgentLane,
 } from "./agent-lanes-model.ts";
@@ -31,9 +41,9 @@ import {
 } from "./lane-roster-store.ts";
 
 /**
- * AgentFloorView — the "floor" lane treatment, shared across surfaces. An
- * isometric plane where each agent keeps a LANE strip stacked along the
- * isometric Y and the other axis is TIME, anchored to wall-clock five-minute
+ * AgentFloorView — the "floor" lane treatment, shared across surfaces. A
+ * tactical plane where each agent keeps a working area stacked along the
+ * vertical axis and the other axis is TIME, anchored to wall-clock five-minute
  * slots: the leading slot is live; behind it, slots are MINTED — once their
  * five minutes pass they sit still until the next mint boundary.
  *
@@ -58,13 +68,13 @@ import {
  */
 
 const BUCKET_MS = 5 * 60_000;
-/** Minted (static) slots behind the live one — 6 × 5m = 30 min of past. */
-const MINTED_SLOTS = 6;
+/** Minted (static) slots behind the live one — 3 × 5m = 15 min of past. */
+const MINTED_SLOTS = 3;
 const TOTAL_SLOTS = MINTED_SLOTS + 1;
 const SLOT_MAX_BLOCKS = 8;
 const MAX_FLOOR_LANES = 8;
 const STRIP_BLOCKS = 10;
-const FLOOR_TRACE_WINDOW_MS = 30 * 60_000;
+const FLOOR_TRACE_WINDOW_MS = 15 * 60_000;
 const FLOOR_ZOOM_MIN = 0.65;
 const FLOOR_ZOOM_MAX = 1.45;
 const FLOOR_ZOOM_STEP = 0.1;
@@ -79,20 +89,17 @@ function clampFloorPan(value: number, limit: number): number {
   return Math.round(Math.min(limit, Math.max(-limit, value)));
 }
 
-const LANE_PITCH = 164;
-const STACK_SIZE = 56;
+const LANE_PITCH = 128;
+const STACK_SIZE = 34;
 const STACK_STEP = 14;
 const BLOCK_H = 12;
-const SLAB_SIZE = 66;
+const SLAB_SIZE = 44;
 const SLAB_H = 7;
-const PAD_SIZE = 96;
-const PAD_H = 12;
-const BUCKET_DEPTH = 88;
-const FRONT_APRON = 150;
+const BUCKET_DEPTH = 58;
+const FRONT_APRON = 440;
 const BACK_MARGIN = 48;
 const EDGE_MARGIN = 24;
 const MIN_PLANE_D = 480;
-const FLAG_LIFT = 38;
 
 /** Which plane edge history drifts toward ("now" sits on the other side). */
 type FloorOrientation = "past-left" | "past-right";
@@ -160,7 +167,7 @@ function classifyObserveEvent(event: ObserveEvent): FloorBlockKind | null {
   return null;
 }
 
-function buildFloorLane(lane: AgentLane, periodStart: number): FloorLaneSeries {
+function buildFloorLane(lane: AgentLane, periodStart: number, now: number): FloorLaneSeries {
   const sessionStart = lane.observe?.metadata?.session?.sessionStart;
   const counts: Record<FloorBlockKind, number> = { tool: 0, edit: 0, msg: 0 };
   const slots: Array<{
@@ -175,7 +182,6 @@ function buildFloorLane(lane: AgentLane, periodStart: number): FloorLaneSeries {
     total: 0,
   }));
   const timeline: Array<{ kind: FloorBlockKind; label: string; at: number | null }> = [];
-  let classified = 0;
   let last: { at: number | null; label: string } | null = null;
 
   for (const event of lane.observe?.events ?? []) {
@@ -192,7 +198,6 @@ function buildFloorLane(lane: AgentLane, periodStart: number): FloorLaneSeries {
     slot.counts[kind] += 1;
     slot.total += 1;
     counts[kind] += 1;
-    classified += 1;
     const toolName = kind === "msg" ? null : event.tool?.trim() || "tool";
     if (toolName) slot.tools.set(toolName, (slot.tools.get(toolName) ?? 0) + 1);
     timeline.push({
@@ -210,10 +215,8 @@ function buildFloorLane(lane: AgentLane, periodStart: number): FloorLaneSeries {
 
   return {
     lane,
-    // "Session ready" placeholder observes report as live without any real
-    // work — require at least one classifiable event so dormant-but-registered
-    // agents don't glow at the now edge.
-    live: isAgentLaneLive(lane.observe) && classified > 0,
+    // Live status shares the actor projection, including attention and completion.
+    live: floorActorState(lane, now).posture === "working",
     slots: slots.map((slot) => ({
       blocks: slot.blocks.slice(-SLOT_MAX_BLOCKS),
       counts: slot.counts,
@@ -269,7 +272,7 @@ function dominantTool(series: FloorLaneSeries): { value: string; detail: string 
   }
   const [top] = [...totals.entries()].sort((left, right) => right[1] - left[1]);
   return top
-    ? { value: top[0], detail: `${top[1]} call${top[1] === 1 ? "" : "s"} · 30m` }
+    ? { value: top[0], detail: `${top[1]} call${top[1] === 1 ? "" : "s"} · 15m` }
     : { value: "no tool pattern", detail: "messages and edits only" };
 }
 
@@ -436,10 +439,6 @@ function FloorLaneStrip({ series, index, planeW, flip, periodStart, now, focused
   const name = lanePrimaryLabel(agent, lane.source);
   const sprite = agentSpriteProps(agent);
 
-  const padX = flip
-    ? (FRONT_APRON - PAD_SIZE) / 2
-    : planeW - FRONT_APRON + (FRONT_APRON - PAD_SIZE) / 2;
-  const padY = (LANE_PITCH - PAD_SIZE) / 2;
   const stackY = (LANE_PITCH - SLAB_SIZE) / 2;
   const slotX = (slotIndex: number) => {
     const inset = (BUCKET_DEPTH - SLAB_SIZE) / 2;
@@ -447,7 +446,19 @@ function FloorLaneStrip({ series, index, planeW, flip, periodStart, now, focused
       ? FRONT_APRON + slotIndex * BUCKET_DEPTH + inset
       : planeW - FRONT_APRON - (slotIndex + 1) * BUCKET_DEPTH + inset;
   };
-  const flagZ = PAD_H + FLAG_LIFT + (index % 2) * 14;
+  const actor = floorActorState(lane, now);
+  const stations: Array<{ id: FloorActorStation; label: string; x: number; y: number }> = [
+    { id: "home", label: "READY", x: 55, y: 44 },
+    { id: "tools", label: "TOOLS", x: 165, y: 44 },
+    { id: "edit", label: "EDIT", x: 275, y: 44 },
+    { id: "message", label: "COMMS", x: 380, y: 44 },
+  ];
+  const station = stations.find((entry) => entry.id === actor.station)!;
+  const workX = flip ? 0 : planeW - FRONT_APRON;
+  const actorX = workX + station.x;
+  const actorY = station.y;
+  const shortId = lane.id.replace(/[^a-zA-Z0-9]/g, "").slice(-5);
+  const flagZ = 76;
 
   return (
     <button
@@ -460,7 +471,9 @@ function FloorLaneStrip({ series, index, planeW, flip, periodStart, now, focused
         onFocus(null);
         onPeek(lane.id, null);
       }}
-      aria-label={pinned ? `${name} — open timeline` : `${name} — pin details`}
+      onFocus={() => onFocus(lane.id)}
+      onBlur={() => onFocus(null)}
+      aria-label={`${name} ${agent.harness ?? ""} ${shortId} — ${actor.label} — ${pinned ? "open timeline" : "pin details"}`}
     >
       <span className="agent-floor__lane-strip" aria-hidden="true" />
 
@@ -500,27 +513,32 @@ function FloorLaneStrip({ series, index, planeW, flip, periodStart, now, focused
         );
       })}
 
-      <span className="agent-floor__pad" style={{ left: padX, top: padY }} aria-hidden="true">
-        <span className="agent-floor__ground" />
-        <IsoBlock kind="pad" z={0} size={PAD_SIZE} faceH={PAD_H} pad />
-        {live ? <IsoBlock kind="head" z={PAD_H + 2} size={STACK_SIZE} faceH={BLOCK_H} live /> : null}
-      </span>
-
-      <span
-        className="agent-floor__bb agent-floor__flag-anchor"
-        style={{
-          left: padX + PAD_SIZE / 2,
-          top: padY + PAD_SIZE / 2,
-          "--z": `${flagZ}px`,
-        } as CSSProperties}
-      >
-        <span className={`agent-floor__flag${focused ? " is-focus" : ""}${pinned ? " is-pinned" : ""}`}>
-          <SpriteAvatar name={agent.name} size={15} tile hue={sprite.hue} tone={sprite.tone} />
-          <span className="agent-floor__flag-name">{name}</span>
-          <span className="agent-floor__flag-action">
-            <LaneActionLine series={series} now={now} />
+      <span className="agent-floor__work-zone" style={{ left: workX, width: FRONT_APRON }} aria-hidden="true">
+        <span className="agent-floor__route" />
+        {stations.map((entry) => (
+          <span key={entry.id} className={`agent-floor__station${entry.id === actor.station ? " is-occupied" : ""}`}
+            style={{ left: entry.x, top: entry.y }}>
+            <span className="agent-floor__station-surface">
+              {entry.id === "home" ? <CircleDot size={22} /> : entry.id === "tools" ? <Terminal size={22} /> : entry.id === "edit" ? <FileCode2 size={22} /> : <MessageSquare size={22} />}
+            </span>
+            <span className="agent-floor__bb agent-floor__station-label">{entry.label}</span>
           </span>
-          <span className={`agent-floor__card-dot${live ? " is-live" : ""}`} />
+        ))}
+      </span>
+      <span className={`agent-floor__actor-position is-${actor.posture}${pinned || focused ? " is-selected" : ""}`}
+        style={{ left: actorX, top: actorY }} data-station={actor.station}>
+        <span className="agent-floor__selection-ring" />
+        <span className="agent-floor__bb agent-floor__actor-body" style={{ "--z": "42px" } as CSSProperties}>
+          <SpriteAvatar name={agent.name} size={56} hue={sprite.hue} tone={sprite.tone} glow={false} />
+          {actor.posture === "attention" || actor.posture === "blocked" ? <span className="agent-floor__actor-alert">!</span> : null}
+        </span>
+      </span>
+      <span className="agent-floor__bb agent-floor__flag-anchor agent-floor__unit-label"
+        style={{ left: workX + 220, top: 91, "--z": `${flagZ}px` } as CSSProperties}>
+        <span className={`agent-floor__flag${focused ? " is-focus" : ""}${pinned ? " is-pinned" : ""}`}>
+          <span className="agent-floor__flag-name">{name}</span>
+          <span className="agent-floor__unit-id">{agent.harness} · {shortId}</span>
+          <span className={`agent-floor__unit-status is-${actor.posture}`}>{actor.label}</span>
         </span>
       </span>
     </button>
@@ -564,7 +582,7 @@ function FloorDock({ focus, pinned, ledger, liveCount, now }: {
           <DockInsight
             label="coverage"
             value={`${activeLanes}/${ledger.length} lanes`}
-            detail="showed work · 30m"
+            detail="showed work · 15m"
           />
           <DockInsight
             label="hottest lane"
@@ -574,7 +592,7 @@ function FloorDock({ focus, pinned, ledger, liveCount, now }: {
           <DockInsight
             label="throughput"
             value={`${classifiedCount(totals)} events`}
-            detail="classified · 30m"
+            detail="classified · 15m"
           />
           <DockInsight
             label="activity mix"
@@ -668,7 +686,7 @@ function FloorTracePanel({
             variant="lane"
             nowMs={now}
             traceWindowMs={FLOOR_TRACE_WINDOW_MS}
-            traceWindowLabel="30m"
+            traceWindowLabel="15m"
             laneCollapseTechnicalEvents={concise}
             onLaneCollapseTechnicalEventsChange={onConciseChange}
             laneOperatorName={operatorName}
@@ -719,7 +737,7 @@ function FloorZoomControls({
   );
 }
 
-export function AgentFloorView({ lanes, now, onOpenTrace, railLedger = false, operatorName }: {
+export function AgentFloorView({ lanes, now: suppliedNow, onOpenTrace, railLedger = false, operatorName }: {
   lanes: AgentLane[];
   now: number;
   onOpenTrace: (lane: AgentLane) => void;
@@ -728,6 +746,16 @@ export function AgentFloorView({ lanes, now, onOpenTrace, railLedger = false, op
   /** Operator display name for the chat-style user-request head in the trace panel. */
   operatorName?: string;
 }) {
+  // Fresh feed renders can arrive while the host pauses its peripheral clock.
+  const now = Math.max(suppliedNow, Date.now());
+  const [resourceView, setResourceView] = useState<FloorResourceView | null>(null);
+  const [motionPaused, setMotionPaused] = useState(false);
+  const [sharedWork, setSharedWork] = useState(true);
+  const [adventures, setAdventures] = useState(false);
+  const [historyView, setHistoryView] = useState(false);
+  const [contextRoom, setContextRoom] = useState<FloorActorStation | null>(null);
+  const [requestedPage, setRequestedPage] = useState(0);
+
   const [orientation, setOrientation] = useState<FloorOrientation>(readStoredOrientation);
   const [focusLaneId, setFocusLaneId] = useState<string | null>(null);
   const [pinnedId, setPinnedId] = useState<string | null>(null);
@@ -737,6 +765,10 @@ export function AgentFloorView({ lanes, now, onOpenTrace, railLedger = false, op
   const [pan, setPan] = useState({ x: 0, y: 0 });
   const [dragging, setDragging] = useState(false);
   const [laneOrder, setLaneOrder] = useState<string[]>(readStoredLaneOrder);
+  const deskOrder = useMemo(() => floorDeskOrder(laneOrder, lanes.map((lane) => lane.id)), [laneOrder, lanes]);
+  const pageCount = Math.max(1, Math.ceil(deskOrder.length / MAX_FLOOR_LANES));
+  const floorPage = Math.min(requestedPage, pageCount - 1);
+  const berths = Object.fromEntries(deskOrder.map((id, index) => [id, index % MAX_FLOOR_LANES]));
   const viewportRef = useRef<HTMLDivElement | null>(null);
   const dragRef = useRef<{
     pointerId: number;
@@ -782,9 +814,13 @@ export function AgentFloorView({ lanes, now, onOpenTrace, railLedger = false, op
     setPeek(slot === null ? null : { laneId, slot });
   }, []);
   const selectLane = useCallback((lane: AgentLane) => {
-    if (pinnedId === lane.id) onOpenTrace(lane);
+    const laneIndex = deskOrder.indexOf(lane.id);
+    if (laneIndex >= 0) setRequestedPage(Math.floor(laneIndex / MAX_FLOOR_LANES));
+    setContextRoom(null);
+    setResourceView(null);
+    if (historyView && pinnedId === lane.id) onOpenTrace(lane);
     else setPinnedId(lane.id);
-  }, [pinnedId, onOpenTrace]);
+  }, [pinnedId, onOpenTrace, deskOrder, historyView]);
 
   const resetFloorView = useCallback(() => {
     setZoom(1);
@@ -792,7 +828,7 @@ export function AgentFloorView({ lanes, now, onOpenTrace, railLedger = false, op
   }, []);
   const handleViewportWheel = useCallback((event: ReactWheelEvent<HTMLDivElement>) => {
     const target = event.target instanceof Element ? event.target : null;
-    if (target?.closest(".agent-floor__trace-panel, .agent-floor__zoom")) return;
+    if (target?.closest(".agent-floor__trace-panel, .agent-floor__zoom, .floor-tactical, .shared-floor, .floor-replay")) return;
     event.preventDefault();
     if (event.metaKey || event.ctrlKey) {
       setZoom((current) => clampFloorZoom(current - event.deltaY * 0.002));
@@ -805,7 +841,7 @@ export function AgentFloorView({ lanes, now, onOpenTrace, railLedger = false, op
   }, []);
   const handleViewportPointerDown = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
     const target = event.target instanceof Element ? event.target : null;
-    if (event.button !== 0 || target?.closest("button, .agent-floor__trace-panel")) return;
+    if (event.button !== 0 || target?.closest("button, .agent-floor__trace-panel, .floor-tactical, .shared-floor, .floor-replay")) return;
     dragRef.current = {
       pointerId: event.pointerId,
       startX: event.clientX,
@@ -834,13 +870,13 @@ export function AgentFloorView({ lanes, now, onOpenTrace, railLedger = false, op
   }, []);
 
   useEffect(() => {
-    if (pinnedId === null) return;
+    if (pinnedId === null && contextRoom === null && resourceView === null) return;
     const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setPinnedId(null);
+      if (event.key === "Escape") { setPinnedId(null); setContextRoom(null); setResourceView(null); }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [pinnedId]);
+  }, [pinnedId, contextRoom, resourceView]);
 
   // Slots anchor to wall-clock five-minute periods: minted towers hold still;
   // everything shifts one slot only when a new period mints.
@@ -860,7 +896,7 @@ export function AgentFloorView({ lanes, now, onOpenTrace, railLedger = false, op
   }, [lanes, laneOrder]);
 
   useEffect(() => {
-    const nextOrder = orderedLanes.map((lane) => lane.id);
+    const nextOrder = deskOrder;
     setLaneOrder((current) => (
       current.length === nextOrder.length && current.every((laneId, index) => laneId === nextOrder[index])
         ? current
@@ -871,25 +907,26 @@ export function AgentFloorView({ lanes, now, onOpenTrace, railLedger = false, op
     } catch {
       // ignore storage failures
     }
-  }, [orderedLanes]);
+  }, [deskOrder]);
 
   const { series, hidden, planeW, planeD, lanesStartY } = useMemo(() => {
-    const built = orderedLanes.map((lane) => buildFloorLane(lane, periodStart));
+    const built = orderedLanes.map((lane) => buildFloorLane(lane, periodStart, now));
     // Initial order is seeded by recency; after that, each agent holds its
     // physical lane while newly discovered agents join at the end.
-    const shown = built.slice(0, MAX_FLOOR_LANES);
+    const pageIds = new Set(deskOrder.slice(floorPage * MAX_FLOOR_LANES, (floorPage + 1) * MAX_FLOOR_LANES));
+    const shown = built.filter((entry) => pageIds.has(entry.lane.id));
     const stripsH = shown.length * LANE_PITCH;
     const depth = Math.max(MIN_PLANE_D, stripsH + EDGE_MARGIN * 2);
     return {
       series: shown,
-      hidden: built.slice(MAX_FLOOR_LANES),
+      hidden: built.filter((entry) => !shown.includes(entry)),
       planeW: BACK_MARGIN + TOTAL_SLOTS * BUCKET_DEPTH + FRONT_APRON,
       planeD: depth,
       lanesStartY: (depth - stripsH) / 2,
     };
-  }, [orderedLanes, periodStart]);
+  }, [orderedLanes, deskOrder, periodStart, floorPage, now]);
 
-  const ledger = useMemo(() => series.concat(hidden), [series, hidden]);
+  const ledger = useMemo(() => orderedLanes.map((lane) => buildFloorLane(lane, periodStart, now)), [orderedLanes, periodStart, now]);
   const liveCount = ledger.filter((entry) => entry.live).length;
   const effectiveFocus = focusLaneId ?? pinnedId;
   const focusSeries = effectiveFocus === null
@@ -964,17 +1001,16 @@ export function AgentFloorView({ lanes, now, onOpenTrace, railLedger = false, op
   // shrinking instead of clipping on small ones.
   const stageFitScale = useMemo(() => {
     if (!viewportSize) return 1;
-    const span = planeW + planeD;
-    const projectedW = 0.708 * span + 60;
-    const projectedH = 0.386 * span + 250;
-    const fit = Math.min(viewportSize.w / projectedW, viewportSize.h / projectedH);
-    return Math.round(Math.min(1.6, Math.max(0.7, fit)) * 100) / 100;
-  }, [viewportSize, planeW, planeD]);
+    const projectedW = (historyView ? planeW : FLOOR_WORLD_WIDTH) + 40;
+    const projectedH = (historyView ? planeD : FLOOR_WORLD_HEIGHT) + 35;
+    const fit = Math.min((viewportSize.w - 40) / projectedW, (viewportSize.h - 55) / projectedH);
+    return Math.round(Math.min(1.6, Math.max(0.15, fit)) * 100) / 100;
+  }, [viewportSize, planeW, planeD, historyView]);
   const stageScale = Math.round(stageFitScale * zoom * 100) / 100;
 
   return (
     <div
-      className={`agent-floor${railLedger ? " is-rail-ledger" : ""}`}
+      className={`agent-floor is-tactical${railLedger ? " is-rail-ledger" : ""}`}
       data-live-count={liveCount}
       data-floor-orient={orientation}
     >
@@ -986,7 +1022,7 @@ export function AgentFloorView({ lanes, now, onOpenTrace, railLedger = false, op
               <span className="agent-floor__ledger-meta">
                 {ledger.length} lane{ledger.length === 1 ? "" : "s"} · {liveCount} live
               </span>
-              <span className="agent-floor__ledger-trace">trace 30m</span>
+              <span className="agent-floor__ledger-trace">trace 15m</span>
             </header>
             <div className="agent-floor__ledger-rows">
               {ledger.map((entry) => {
@@ -1028,7 +1064,7 @@ export function AgentFloorView({ lanes, now, onOpenTrace, railLedger = false, op
         )}
 
         <div
-          className={`agent-floor__viewport${pinnedSeries ? " is-inspecting" : ""}${dragging ? " is-dragging" : ""}`}
+          className={`agent-floor__viewport${pinnedSeries || contextRoom || resourceView ? " is-inspecting" : ""}${dragging ? " is-dragging" : ""}`}
           ref={viewportRef}
           onWheel={handleViewportWheel}
           onPointerDown={handleViewportPointerDown}
@@ -1036,16 +1072,51 @@ export function AgentFloorView({ lanes, now, onOpenTrace, railLedger = false, op
           onPointerUp={stopViewportDrag}
           onPointerCancel={stopViewportDrag}
         >
-          <FloorZoomControls
+          <div className="agent-floor__command-bar">
+            {historyView || !sharedWork ? <strong>Operations floor</strong> : null}
+            <div className="agent-floor__view-switch" role="group" aria-label="Floor view">
+              <button type="button" aria-pressed={!historyView && !adventures} onClick={() => { setAdventures(false); setHistoryView(false); resetFloorView(); }}>World</button>
+              <button type="button" aria-pressed={adventures} onClick={() => { setAdventures(true); setHistoryView(false); setContextRoom(null); setResourceView(null); resetFloorView(); }}>Replay</button>
+              <button type="button" aria-pressed={historyView} onClick={() => { setAdventures(false); setHistoryView(true); setContextRoom(null); setResourceView(null); resetFloorView(); }}>History</button>
+            </div>
+            {!historyView && !adventures ? <button type="button" onClick={() => setSharedWork(!sharedWork)}>{sharedWork ? "Rooms" : "Shared map"}</button> : null}
+            {!historyView && !adventures ? <div className="agent-floor__view-switch" aria-label="Floor resources">{(["artifacts", "branches", "terminals"] as const).map((view) => <button type="button" key={view} aria-pressed={resourceView === view} onClick={() => { setResourceView(view); setPinnedId(null); setContextRoom(null); }}>{view === "artifacts" ? "Artifacts" : view === "branches" ? "Branches" : "Terminals"}</button>)}</div> : null}
+            {!historyView && !adventures && !sharedWork && deskOrder.length > lanes.length ? <button type="button" title="Release vacant desks and compact sectors" onClick={() => { setLaneOrder(orderedLanes.map((lane) => lane.id)); setRequestedPage(0); }}>Release {deskOrder.length - lanes.length} {deskOrder.length - lanes.length === 1 ? "desk" : "desks"}</button> : null}
+            {!historyView && !adventures && !sharedWork && pageCount > 1 ? <span className="agent-floor__page-controls">
+              <button type="button" aria-label="Previous floor sector" disabled={floorPage === 0} onClick={() => { setRequestedPage(floorPage - 1); setPinnedId(null); handleFocus(null); }}>←</button>
+              Sector {floorPage + 1} / {pageCount}
+              <button type="button" aria-label="Next floor sector" disabled={floorPage === pageCount - 1} onClick={() => { setRequestedPage(floorPage + 1); setPinnedId(null); handleFocus(null); }}>→</button>
+            </span> : null}
+          </div>
+          {!historyView && !adventures && !sharedWork ? <FloorTacticalHUD berths={berths} allLanes={orderedLanes} lanes={series.map((entry) => entry.lane)} now={now} selectedId={effectiveFocus}
+            sheetOpen={Boolean(pinnedSeries || contextRoom || resourceView)} motionPaused={motionPaused} onPause={() => setMotionPaused(!motionPaused)}
+            onActor={(lane) => { selectLane(lane); setPan({ x: -100, y: 0 }); setZoom(1); }}
+            onRoom={(room) => { setResourceView(null); setContextRoom(room); setPinnedId(null); handleFocus(null); }} /> : null}
+          {!historyView && !adventures && resourceView ? <FloorResourcesSheet view={resourceView} lanes={orderedLanes} onView={setResourceView} onClose={() => setResourceView(null)} onActor={selectLane} /> : null}
+          {!historyView && !adventures && sharedWork ? <SharedWorkFloor now={now} lanes={orderedLanes} onActor={selectLane} /> : null}
+          {adventures ? <AgentAdventures lanes={orderedLanes} now={now} onActor={onOpenTrace} /> : null}
+          {historyView ? <FloorReplay lanes={orderedLanes} now={now} onActor={selectLane} /> : null}
+          {!historyView && !adventures && !sharedWork ? <FloorZoomControls
             zoom={zoom}
             fit={zoom === 1 && pan.x === 0 && pan.y === 0}
             onZoomChange={setZoom}
             onReset={resetFloorView}
-          />
+          /> : null}
           <div
             className="agent-floor__stage"
-            style={{ transform: `translate3d(${pan.x}px, ${pan.y}px, 0) scale(${stageScale}) rotateX(57deg) rotateZ(45deg)` }}
+            style={{ display: adventures || historyView || sharedWork ? "none" : undefined, transform: `translate3d(${pan.x}px, ${pan.y}px, 0) scale(${stageScale})` }}
           >
+            {!historyView ? <AgentFloorWorld berths={berths} lanes={series.map((entry) => entry.lane)} now={now}
+              motionPaused={motionPaused} selectedId={effectiveFocus} onFocus={handleFocus} onSelect={selectLane}
+              onFocusRoom={(station, x, y) => {
+                setResourceView(null);
+                setContextRoom(station);
+                setPinnedId(null);
+                handleFocus(null);
+                setZoom(FLOOR_ZOOM_MAX);
+                setPan({ x: clampFloorPan((FLOOR_WORLD_WIDTH / 2 - x) * stageFitScale * FLOOR_ZOOM_MAX - 140, FLOOR_PAN_X_MAX),
+                  y: clampFloorPan((FLOOR_WORLD_HEIGHT / 2 - y) * stageFitScale * FLOOR_ZOOM_MAX, FLOOR_PAN_Y_MAX) });
+              }} /> : (
             <div
               className="agent-floor__field"
               style={{
@@ -1118,8 +1189,21 @@ export function AgentFloorView({ lanes, now, onOpenTrace, railLedger = false, op
                 </div>
               ) : null}
             </div>
+            )}
           </div>
-          {pinnedSeries ? (
+          {!historyView && (pinnedSeries || contextRoom) ? (
+            <FloorContextSheet key={pinnedSeries?.lane.id ?? contextRoom} lane={pinnedSeries?.lane ?? null} room={contextRoom}
+              lanes={series.map((entry) => entry.lane)} allLanes={orderedLanes} now={now}
+              onClose={() => { setPinnedId(null); setContextRoom(null); }}
+              onSelectRoom={(station) => {
+                setResourceView(null);
+                setContextRoom(station);
+                const room = FLOOR_ROOMS[station];
+                setPan({ x: clampFloorPan((FLOOR_WORLD_WIDTH / 2 - room.x - 205) * stageFitScale * zoom - 140, FLOOR_PAN_X_MAX),
+                  y: clampFloorPan((FLOOR_WORLD_HEIGHT / 2 - room.y - 132) * stageFitScale * zoom, FLOOR_PAN_Y_MAX) });
+              }}
+              onSelectLane={selectLane} onOpenTrace={onOpenTrace} />
+          ) : pinnedSeries ? (
             <FloorTracePanel
               series={pinnedSeries}
               now={now}
@@ -1133,15 +1217,15 @@ export function AgentFloorView({ lanes, now, onOpenTrace, railLedger = false, op
         </div>
       </div>
 
-      <FloorDock
+      {!adventures ? <FloorDock
         focus={focusSeries}
         pinned={pinnedId !== null && effectiveFocus === pinnedId}
         ledger={ledger}
         liveCount={liveCount}
         now={now}
-      />
+      /> : null}
 
-      <footer className="agent-floor__legend">
+      <footer className="agent-floor__legend" style={{ display: adventures ? "none" : undefined }}>
         <span className="agent-floor__legend-item">
           <span className="agent-floor__legend-swatch is-tool" />tool call
         </span>
@@ -1152,18 +1236,19 @@ export function AgentFloorView({ lanes, now, onOpenTrace, railLedger = false, op
           <span className="agent-floor__legend-swatch is-msg" />message
         </span>
         <span className="agent-floor__legend-item">
-          <span className="agent-floor__legend-pulse" />live — pad glows
+          <span className="agent-floor__legend-pulse" />actors follow recent activity
         </span>
         <button
           type="button"
           className="agent-floor__legend-flip"
+          hidden={!historyView}
           onClick={flipOrientation}
           title="Flip which side history accumulates on"
         >
           past {flip ? "→" : "←"}
         </button>
         <span className="agent-floor__legend-note">
-          Towers mint every 5 min · details land in the dock · click to pin, click again for the timeline
+          Rooms open their own sheets · actors open task details · History retains the trace
         </span>
       </footer>
     </div>

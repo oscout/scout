@@ -1,6 +1,6 @@
 {
   "note": "Known packages/web type errors that predate the typecheck gate. Never add to this file by hand: fix the error instead. The gate rewrites it downward on its own whenever an error is fixed; `node scripts/typecheck.mjs --update` refuses any change that would grow it.",
-  "total": 78,
+  "total": 73,
   "errors": [
     {
       "file": "client/lib/conversation-groups.ts",
@@ -48,12 +48,6 @@
       "file": "client/scout/sidebar/SideRailCollapsedBody.tsx",
       "code": "TS2339",
       "message": "Property 'workspaceRoot' does not exist on type 'Agent'.",
-      "count": 1
-    },
-    {
-      "file": "client/screens/chat/ConversationScreen.tsx",
-      "code": "TS2345",
-      "message": "Argument of type 'string | null | undefined' is not assignable to parameter of type 'string'.",
       "count": 1
     },
     {
@@ -180,30 +174,6 @@
       "file": "client/screens/projects/ProjectsInbox.test.ts",
       "code": "TS2352",
       "message": "Conversion of type '{ id: string; agentId: null; harness: string; cwd: string; sourceSessionId: null; surfaces: { backend: \"tmux\"; sessionName: string; paneId: null; socketDir: null; attachCommand: string[]; observeCommand: null; relay: null; state: \"live\"; }[]; metadata: { ...; }; }[]' to type 'TerminalSessionRecord[]' may be a mistake because neither type sufficiently overlaps with the other. If this was intentional, convert the expression to 'unknown' first.",
-      "count": 1
-    },
-    {
-      "file": "client/screens/sessions/SessionObserve.tsx",
-      "code": "TS2339",
-      "message": "Property 'technicalSourceRows' does not exist on type '{ event: ObserveEvent; repeatCount: number; }'.",
-      "count": 1
-    },
-    {
-      "file": "client/screens/sessions/SessionObserve.tsx",
-      "code": "TS2339",
-      "message": "Property 'technicalSummary' does not exist on type '{ event: ObserveEvent; repeatCount: number; }'.",
-      "count": 1
-    },
-    {
-      "file": "client/screens/sessions/SessionObserve.tsx",
-      "code": "TS7006",
-      "message": "Parameter 'sourceIndex' implicitly has an 'any' type.",
-      "count": 1
-    },
-    {
-      "file": "client/screens/sessions/SessionObserve.tsx",
-      "code": "TS7006",
-      "message": "Parameter 'sourceRow' implicitly has an 'any' type.",
       "count": 1
     },
     {

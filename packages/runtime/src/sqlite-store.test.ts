@@ -458,6 +458,53 @@ describe("SQLiteControlPlaneStore", () => {
     }
   });
 
+  test("native thread index preserves mixed epoch ordering, ties and bounded page reads", () => {
+    const store = createStore();
+    try {
+      seedAgent(store);
+      store.upsertConversation({
+        id: "epoch-thread", title: "Epoch ordering", kind: "channel", visibility: "private",
+        shareMode: "local", authorityNodeId: "node-1", participantIds: ["agent-1"],
+      });
+      const records = [
+        { id: "seconds-a", createdAt: 1_800_000_000 },
+        { id: "seconds-z", createdAt: 1_800_000_000 },
+        { id: "millis", createdAt: 1_800_000_000_001 },
+        { id: "old-millis", createdAt: 1_700_000_000_000 },
+        { id: "zero", createdAt: 0 },
+        { id: "negative", createdAt: -1 },
+      ];
+      for (const record of records) store.recordMessage({
+        ...record, conversationId: "epoch-thread", actorId: "agent-1",
+        originNodeId: "node-1", class: "agent", visibility: "private", policy: "durable",
+        body: `${record.id} 🦉\n${"body".repeat(2048)}`,
+      });
+      const read = () => store.getConversationThreadLaunchSnapshot({
+        conversationId: "epoch-thread", projectionId: "test", projectionVersion: 1,
+        sequence: 0, limit: 3, generatedAt: 0,
+      });
+      const indexed = read();
+      expect(indexed?.messages.map((message) => message.id)).toEqual(["seconds-a", "seconds-z", "millis"]);
+      expect(indexed?.hasEarlier).toBe(true);
+      const db = getWritableDb(store);
+      const plan = db.query(`EXPLAIN QUERY PLAN SELECT id, body FROM messages
+        WHERE conversation_id = ?1 ORDER BY CASE
+        WHEN created_at > 0 AND created_at < 1000000000000 THEN created_at * 1000
+        ELSE created_at END DESC, id DESC LIMIT 65`).all("epoch-thread") as { detail: string }[];
+      expect(plan.some((row) => row.detail.includes("idx_messages_conversation_epoch_id"))).toBe(true);
+      expect(plan.some((row) => row.detail.includes("TEMP B-TREE"))).toBe(false);
+      const unindexed = db.query(`SELECT m.id, m.actor_id AS actorId,
+        a.display_name AS actorName, m.body, m.class, m.created_at AS createdAt
+        FROM messages m NOT INDEXED LEFT JOIN actors a ON a.id = m.actor_id
+        WHERE m.conversation_id = ?1 ORDER BY CASE
+        WHEN m.created_at > 0 AND m.created_at < 1000000000000 THEN m.created_at * 1000
+        ELSE m.created_at END DESC, m.id DESC LIMIT 3`).all("epoch-thread").reverse();
+      expect(indexed?.messages).toEqual(unindexed);
+    } finally {
+      store.close();
+    }
+  });
+
   test("indexes latest endpoint lookups used by activity projection", () => {
     const { store, dbPath } = createStoreWithPath();
     const db = new Database(dbPath, { readonly: true });

@@ -1,4 +1,4 @@
-import { hostname as osHostname } from "node:os";
+import { hostname as osHostname, networkInterfaces as osNetworkInterfaces } from "node:os";
 
 import {
   DEFAULT_SCOUT_WEB_PORTAL_HOST,
@@ -17,6 +17,14 @@ export type OpenScoutWebApplicationServerIdentity = {
   publicOrigin?: string;
   trustedHosts: string[];
   trustedOrigins: string[];
+  /**
+   * Authenticating reverse-proxy origins (exe.dev private shares, the OSN mesh
+   * front door) that vouch for the browser; see
+   * shouldIssueFrontDoorScoutWebCredential.
+   */
+  frontDoorOrigins: string[];
+  /** Extra proxy peer addresses allowed for front-door issuance (loopback always is). */
+  frontDoorPeers: string[];
 };
 
 function splitList(value: string | undefined): string[] {
@@ -37,6 +45,17 @@ function hostFromOrigin(value: string | undefined): string | null {
   }
 }
 
+function normalizeFrontDoorOrigin(value: string): string | null {
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  const withScheme = trimmed.includes("://") ? trimmed : `https://${trimmed}`;
+  try {
+    return new URL(withScheme).origin.toLowerCase();
+  } catch {
+    return null;
+  }
+}
+
 function uniq(values: Array<string | null | undefined>): string[] {
   const seen = new Set<string>();
   const out: string[] = [];
@@ -51,10 +70,28 @@ function uniq(values: Array<string | null | undefined>): string[] {
   return out;
 }
 
+/**
+ * This machine's own non-loopback IPv4/IPv6 addresses, so a browser that reaches
+ * Scout by bare LAN address (http://192.168.1.20) passes the Host trust gate the
+ * same way the tailnet addresses already do. Opt out with
+ * OPENSCOUT_WEB_TRUST_LAN_ADDRESSES=0 — this only makes the address a *trusted
+ * name*; reaching the port at all is still governed by the LAN access scope and
+ * every /api route still requires a credential.
+ */
+export function localReachableWebHosts(): string[] {
+  return Object.values(osNetworkInterfaces())
+    .flatMap((entries) => entries ?? [])
+    .filter((entry) => !entry.internal)
+    .map((entry) => entry.address)
+    // Drop IPv6 link-local (fe80::…%en0): the zone id never appears in a URL host.
+    .filter((address) => !address.toLowerCase().startsWith("fe80:"));
+}
+
 export function resolveOpenScoutWebApplicationServerIdentity(
   env: NodeJS.ProcessEnv = process.env,
   _machineHostname = osHostname(),
   config: Pick<LocalConfig, "webLocalName"> = loadLocalConfig(),
+  _localAddresses: readonly string[] = localReachableWebHosts(),
 ): OpenScoutWebApplicationServerIdentity {
   const configuredName = env.OPENSCOUT_WEB_LOCAL_NAME?.trim();
   const portalHost = resolveScoutWebNamedHostname(env.OPENSCOUT_WEB_PORTAL_HOST?.trim() || DEFAULT_SCOUT_WEB_PORTAL_HOST);
@@ -66,6 +103,12 @@ export function resolveOpenScoutWebApplicationServerIdentity(
   const publicOriginHost = hostFromOrigin(publicOrigin);
   const tailnetHosts = readTailscaleSelfWebHostsSync(env);
   const mdnsHost = resolveScoutWebMdnsHostname(_machineHostname);
+  const frontDoorOrigins = uniq(
+    splitList(env.OPENSCOUT_WEB_FRONT_DOORS).map(normalizeFrontDoorOrigin),
+  );
+  const lanHosts = env.OPENSCOUT_WEB_TRUST_LAN_ADDRESSES?.trim() === "0"
+    ? []
+    : _localAddresses;
 
   return {
     advertisedHost,
@@ -78,11 +121,16 @@ export function resolveOpenScoutWebApplicationServerIdentity(
       mdnsHost,
       publicOriginHost,
       ...tailnetHosts,
+      ...lanHosts,
+      ...frontDoorOrigins.map(hostFromOrigin),
       ...splitList(env.OPENSCOUT_WEB_TRUSTED_HOSTS),
     ]),
     trustedOrigins: uniq([
       publicOrigin,
+      ...frontDoorOrigins,
       ...splitList(env.OPENSCOUT_WEB_TRUSTED_ORIGINS),
     ]),
+    frontDoorOrigins,
+    frontDoorPeers: uniq(splitList(env.OPENSCOUT_WEB_FRONT_DOOR_PEERS)),
   };
 }

@@ -1,6 +1,6 @@
 {
   "name": "@openscout/runtime",
-  "version": "0.2.98",
+  "version": "0.2.101",
   "description": "Local runtime foundation for the OpenScout control plane",
   "type": "module",
   "bin": {
@@ -72,6 +72,18 @@
       "types": "./dist/mesh-dial-order.d.ts",
       "import": "./dist/mesh-dial-order.js",
       "default": "./dist/mesh-dial-order.js"
+    },
+    "./mesh-peer-client": {
+      "bun": "./src/mesh-peer-client.ts",
+      "types": "./dist/mesh-peer-client.d.ts",
+      "import": "./dist/mesh-peer-client.js",
+      "default": "./dist/mesh-peer-client.js"
+    },
+    "./mesh-node-state": {
+      "bun": "./src/mesh-node-state.ts",
+      "types": "./dist/mesh-node-state.d.ts",
+      "import": "./dist/mesh-node-state.js",
+      "default": "./dist/mesh-node-state.js"
     },
     "./mesh-peer-filter": {
       "bun": "./src/mesh-peer-filter.ts",
@@ -277,7 +289,13 @@
       "import": "./dist/drizzle.js",
       "default": "./dist/drizzle.js"
     },
-    "./package.json": "./package.json"
+    "./package.json": "./package.json",
+    "./diagnostic-report": {
+      "bun": "./src/diagnostic-report.ts",
+      "types": "./dist/diagnostic-report.d.ts",
+      "import": "./dist/diagnostic-report.js",
+      "default": "./dist/diagnostic-report.js"
+    }
   },
   "types": "./dist/index.d.ts",
   "files": [

@@ -21,6 +21,7 @@ export function ScoutbotSettingsPanel({
   voiceDefaults,
   modelDraft,
   onModelDraft,
+  modelOptions = [],
   promptDraft,
   onPromptDraft,
   configLoading,
@@ -44,6 +45,7 @@ export function ScoutbotSettingsPanel({
   voiceDefaults: ScoutbotVoiceDefaults | null;
   modelDraft: string;
   onModelDraft: (value: string) => void;
+  modelOptions?: { id: string; label: string }[];
   promptDraft: string;
   onPromptDraft: (value: string) => void;
   configLoading: boolean;
@@ -181,13 +183,28 @@ export function ScoutbotSettingsPanel({
         )}
         <label className="flex flex-col gap-1 font-mono text-xs uppercase tracking-[0.12em] text-[var(--scout-chrome-ink-faint)]">
           Preferred model
-          <input
-            value={modelDraft}
-            onChange={(event) => onModelDraft(event.target.value)}
-            placeholder="gpt-4.1-mini"
-            className={`rounded border border-[var(--scout-chrome-border-soft)] px-2 py-1.5 font-mono text-sm normal-case tracking-normal text-[var(--scout-chrome-ink)] placeholder:text-[var(--scout-chrome-ink-ghost)] ${directVoice ? "bg-white/75" : "bg-black/20"}`}
-            disabled={configLoading || configSaving}
-          />
+          {modelOptions.length > 0 ? (
+            <select
+              value={modelDraft}
+              onChange={(event) => onModelDraft(event.target.value)}
+              className={`rounded border border-[var(--scout-chrome-border-soft)] px-2 py-1.5 font-mono text-sm normal-case tracking-normal text-[var(--scout-chrome-ink)] ${directVoice ? "bg-white/75" : "bg-black/20"}`}
+              disabled={configLoading || configSaving}
+            >
+              {modelOptions.map((option) => (
+                <option key={option.id} value={option.id}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+          ) : (
+            <input
+              value={modelDraft}
+              onChange={(event) => onModelDraft(event.target.value)}
+              placeholder="gpt-5.6-luna"
+              className={`rounded border border-[var(--scout-chrome-border-soft)] px-2 py-1.5 font-mono text-sm normal-case tracking-normal text-[var(--scout-chrome-ink)] placeholder:text-[var(--scout-chrome-ink-ghost)] ${directVoice ? "bg-white/75" : "bg-black/20"}`}
+              disabled={configLoading || configSaving}
+            />
+          )}
         </label>
         <label className="flex flex-col gap-1 font-mono text-xs uppercase tracking-[0.12em] text-[var(--scout-chrome-ink-faint)]">
           System Prompt

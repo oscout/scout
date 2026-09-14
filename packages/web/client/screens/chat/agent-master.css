@@ -1,19 +1,32 @@
-/* Agent master view — the agent's DM as the center, task conversations as a
-   thread strip, one thread raised in a side panel. Hairlines only; the single
-   accent stays a precedence signal (needs-you), green means working. */
+/* The Comms page: one stage, with the conversations kept beside it in columns
+   (CommsDeck). On the agent surface the stage is the agent's own conversation
+   or the thread the route names, under a strip of its conversations. Hairlines
+   only; the single accent stays a precedence signal (needs-you), green means
+   working. */
 
+/* Columns kept beside the stage take their width from the stage; past the
+   stage's floor the row scrolls sideways rather than squeezing what was
+   opened. */
 .amv {
   display: flex;
   height: 100%;
   min-height: 0;
+  overflow-x: auto;
   background: var(--bg);
 }
 
 .amv-main {
   flex: 1;
-  min-width: 0;
+  min-width: 520px;
   display: flex;
   flex-direction: column;
+  min-height: 0;
+}
+
+/* A conversation page on the stage fills it, the way it filled the slot. */
+.amv-main > .s-thread-layout,
+.amv-main > .s-conv-empty {
+  flex: 1;
   min-height: 0;
 }
 
@@ -76,16 +89,16 @@
   scrollbar-width: thin;
 }
 
+/* A card is two controls in one outline: the card itself puts the
+   conversation on the stage; the glyph at its end keeps it beside. The glyph
+   is shown only when it means something — on hover, or while kept. */
 .amv-card {
   display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 6px 10px;
+  align-items: stretch;
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
   background: var(--surface);
   color: var(--muted);
-  cursor: pointer;
   white-space: nowrap;
   font: 400 11.5px/1.3 var(--font-sans);
   flex: none;
@@ -95,8 +108,45 @@
   background: color-mix(in srgb, var(--ink) 5%, var(--surface));
 }
 
+/* On the stage: weight, not hue. */
 .amv-card--on {
-  border-color: var(--accent);
+  border-color: color-mix(in oklab, var(--ink) 45%, transparent);
+  color: var(--ink);
+}
+
+.amv-cardMain {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+  min-width: 0;
+}
+
+.amv-cardBeside {
+  display: grid;
+  place-items: center;
+  padding: 0 6px 0 2px;
+  border: 0;
+  background: none;
+  color: var(--dim);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+
+.amv-card:hover .amv-cardBeside,
+.amv-card:focus-within .amv-cardBeside,
+.amv-card--kept .amv-cardBeside {
+  opacity: 1;
+}
+
+.amv-cardBeside:hover,
+.amv-card--kept .amv-cardBeside {
   color: var(--ink);
 }
 
@@ -150,76 +200,4 @@
   place-items: center;
   color: var(--dim);
   font: 400 12.5px/1.4 var(--font-sans);
-}
-
-/* ── Thread side panel ── */
-
-.amv-thread {
-  width: min(420px, 44%);
-  min-width: 320px;
-  border-left: 1px solid var(--border);
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
-  background: var(--bg);
-}
-
-.amv-threadHead {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 10px 12px;
-  border-bottom: 1px solid var(--border);
-}
-
-.amv-threadIdent {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 1px;
-}
-
-.amv-threadKicker {
-  font: 600 9.5px/1.2 var(--font-mono);
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: var(--dim);
-}
-
-.amv-threadTitle {
-  font: 550 12.5px/1.3 var(--font-sans);
-  color: var(--ink);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.amv-threadBtn {
-  flex: none;
-  border: 0;
-  background: none;
-  color: var(--dim);
-  cursor: pointer;
-  padding: 4px;
-  border-radius: var(--radius-sm);
-  display: grid;
-  place-items: center;
-}
-
-.amv-threadBtn:hover {
-  color: var(--ink);
-  background: color-mix(in srgb, var(--ink) 6%, transparent);
-}
-
-.amv-threadBody {
-  flex: 1;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
-}
-
-.amv-threadBody > * {
-  flex: 1;
-  min-height: 0;
 }

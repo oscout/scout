@@ -11,6 +11,7 @@ import type {
   ConversationReadCursor,
 } from "@openscout/protocol";
 import type { NodeDefinition } from "@openscout/protocol";
+import { filterMessageRecords, filterMessageRecordsAsync } from "./broker-message-records.js";
 
 export interface RuntimeRegistrySnapshot {
   nodes: Record<string, NodeDefinition>;
@@ -129,8 +130,18 @@ export function queryRuntimeRegistrySnapshot(
   }
   const cutoff = since ?? 0;
 
-  const messages = Object.values(snapshot.messages)
-    .filter((message) => message.createdAt >= cutoff);
+  const messageConversationIds = new Set<string>();
+  const messageActorIds = new Set<string>();
+  const messages = filterMessageRecords(snapshot.messages, (message) => {
+    if (!(message.createdAt >= cutoff)) return false;
+    messageConversationIds.add(message.conversationId);
+    messageActorIds.add(message.actorId);
+    return true;
+  });
+  return finishRegistryQuery(snapshot,query,cutoff,conversationScoped,messages,messageConversationIds,messageActorIds);
+}
+
+function finishRegistryQuery(snapshot:RuntimeRegistrySnapshot,query:RuntimeRegistrySnapshotQuery,cutoff:number,conversationScoped:boolean,messages:Record<string,MessageRecord>,messageConversationIds:Set<string>,messageActorIds:Set<string>):RuntimeRegistrySnapshot {
   const recentInvocationIds = new Set(
     Object.values(snapshot.invocations)
       .filter((invocation) => invocation.createdAt >= cutoff)
@@ -151,8 +162,7 @@ export function queryRuntimeRegistrySnapshot(
   const collaborationRecords = Object.values(snapshot.collaborationRecords)
     .filter((record) => activeCollaboration(record) || record.updatedAt >= cutoff);
 
-  const conversationIds = new Set<string>();
-  for (const message of messages) conversationIds.add(message.conversationId);
+  const conversationIds = new Set<string>(messageConversationIds);
   for (const invocation of invocations) {
     if (invocation.conversationId) conversationIds.add(invocation.conversationId);
   }
@@ -234,7 +244,7 @@ export function queryRuntimeRegistrySnapshot(
       }
     }
   }
-  for (const message of messages) actorIds.add(message.actorId);
+  for (const actorId of messageActorIds) actorIds.add(actorId);
   for (const invocation of scopedInvocations) {
     actorIds.add(invocation.requesterId);
     agentIds.add(invocation.targetAgentId);
@@ -283,7 +293,7 @@ export function queryRuntimeRegistrySnapshot(
     bindings: recordById(
       Object.values(snapshot.bindings).filter((binding) => conversationIds.has(binding.conversationId)),
     ),
-    messages: recordById(messages),
+    messages,
     readCursors: Object.fromEntries(
       Object.entries(snapshot.readCursors)
         .filter(([, cursor]) => conversationIds.has(cursor.conversationId)),
@@ -292,4 +302,12 @@ export function queryRuntimeRegistrySnapshot(
     flights: recordById(scopedFlights),
     collaborationRecords: recordById(collaborationRecords),
   });
+}
+
+export async function queryRuntimeRegistrySnapshotAsync(snapshot:RuntimeRegistrySnapshot,query:RuntimeRegistrySnapshotQuery={},options?:{signal?:AbortSignal}):Promise<RuntimeRegistrySnapshot>{
+ if(query.scope==='agents')return createRuntimeRegistrySnapshot({agents:{...snapshot.agents}});
+ const since=finiteTimestamp(query.since),conversationScoped=query.scope==='conversations';if(since===null&&!conversationScoped)return snapshot;
+ const cutoff=since??0,messageConversationIds=new Set<string>(),messageActorIds=new Set<string>();
+ const messages=await filterMessageRecordsAsync(snapshot.messages,message=>{if(!(message.createdAt>=cutoff))return false;messageConversationIds.add(message.conversationId);messageActorIds.add(message.actorId);return true;},options);
+ return finishRegistryQuery(snapshot,query,cutoff,conversationScoped,messages,messageConversationIds,messageActorIds);
 }

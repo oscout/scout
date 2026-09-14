@@ -48,7 +48,7 @@ export const SLASH_COMMANDS: SlashCommand[] = [
   { command: "/agents", label: "/agents", description: "Open the agents list", insert: "/agents" },
   { command: "/fleet", label: "/fleet", description: "Open the fleet view", insert: "/fleet" },
   { command: "/sessions", label: "/sessions", description: "Browse sessions", insert: "/sessions" },
-  { command: "/mesh", label: "/mesh", description: "Open the mesh view", insert: "/mesh" },
+  { command: "/network", label: "/network", description: "Open the Network page", insert: "/network" },
   { command: "/activity", label: "/activity", description: "Open activity feed", insert: "/activity" },
   { command: "/settings", label: "/settings", description: "Open settings", insert: "/settings" },
 ];

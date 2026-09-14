@@ -1,3 +1,4 @@
+import { NATIVE_READ_THREAD_MAX_MESSAGE_BYTES } from "./conversation-thread-artifact.js";
 import { createHash } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
@@ -66,6 +67,7 @@ import type {
   ThreadFlightSummary,
   ThreadMessageSummary,
   ThreadSnapshot,
+  MachineRecord,
   TrustedPeerRecord,
 } from "@openscout/protocol";
 
@@ -302,6 +304,30 @@ interface NodeRow {
   metadata_json: string | null;
   last_seen_at: number | null;
   registered_at: number;
+}
+
+interface MachineRow {
+  id: string;
+  display_name: string | null;
+  name: string;
+  platform: MachineRecord["platform"];
+  identity_keys_json: string;
+  is_self: number;
+  scout_node_id: string | null;
+  mesh_id: string | null;
+  tailnet_id: string | null;
+  tailnet_name: string | null;
+  host_names_json: string | null;
+  addresses_json: string | null;
+  mac_addresses_json: string | null;
+  capabilities_json: string | null;
+  routes_json: string | null;
+  evidence_json: string | null;
+  pinned: number;
+  notes: string | null;
+  metadata_json: string | null;
+  first_seen_at: number;
+  last_seen_at: number;
 }
 
 interface TrustedPeerRow {
@@ -657,6 +683,34 @@ function terminalSessionFromRow(row: TerminalSessionRow): TerminalSessionRecord 
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     metadata: parseJson<Record<string, unknown> | undefined>(row.metadata_json, undefined),
+  };
+}
+
+function machineFromRow(row: MachineRow): MachineRecord {
+  return {
+    id: row.id,
+    displayName: row.display_name,
+    name: row.name,
+    platform: row.platform,
+    identityKeys: parseJson<string[]>(row.identity_keys_json, []),
+    isSelf: row.is_self === 1,
+    ...(row.scout_node_id ? { scoutNodeId: row.scout_node_id } : {}),
+    ...(row.mesh_id ? { meshId: row.mesh_id } : {}),
+    ...(row.tailnet_id ? { tailnetId: row.tailnet_id } : {}),
+    ...(row.tailnet_name ? { tailnetName: row.tailnet_name } : {}),
+    hostNames: parseJson<string[]>(row.host_names_json, []),
+    addresses: parseJson<string[]>(row.addresses_json, []),
+    macAddresses: parseJson<string[]>(row.mac_addresses_json, []),
+    capabilities: parseJson<MachineRecord["capabilities"]>(row.capabilities_json, []),
+    routes: parseJson<MachineRecord["routes"]>(row.routes_json, []),
+    evidence: parseJson<MachineRecord["evidence"]>(row.evidence_json, []),
+    pinned: row.pinned === 1,
+    ...(row.notes ? { notes: row.notes } : {}),
+    ...(parseJson<Record<string, unknown> | undefined>(row.metadata_json, undefined)
+      ? { metadata: parseJson<Record<string, unknown>>(row.metadata_json, {}) }
+      : {}),
+    firstSeenAt: row.first_seen_at,
+    lastSeenAt: row.last_seen_at,
   };
 }
 
@@ -1974,6 +2028,8 @@ export class SQLiteControlPlaneStore {
     sequence: number;
     limit?: number;
     generatedAt?: number;
+    /** Internal native artifact input only; ordinary thread/history reads stay full. */
+    nativePreview?: boolean;
   }): ConversationThreadLaunchSnapshot | null {
     const conversation = this.getConversation(options.conversationId, this.readDb);
     if (!conversation) {
@@ -1984,13 +2040,21 @@ export class SQLiteControlPlaneStore {
     const limit = Number.isFinite(requestedLimit)
       ? Math.max(1, Math.min(64, requestedLimit))
       : 64;
+    // JSON escaping can only expand UTF-8 bytes. Four guard bytes keep any
+    // partial final UTF-8 code point beyond the artifact's possible body budget.
+    // Slice as BLOB so the bound is bytes and embedded NUL does not stop it;
+    // the empty BLOB substring needs an explicit empty-text fallback.
+    // Only disposable preview input is shortened; stored/history bodies stay full.
+    const bodyColumn = options.nativePreview
+      ? `COALESCE(CAST(substr(CAST(m.body AS BLOB), 1, ${NATIVE_READ_THREAD_MAX_MESSAGE_BYTES + 4}) AS TEXT), '')`
+      : "m.body";
     const rows = queryAll<ConversationThreadLaunchMessageRow, [string, number]>(
       this.readDb,
       `SELECT
         m.id,
         m.actor_id,
         a.display_name AS actor_name,
-        m.body,
+        ${bodyColumn} AS body,
         m.class,
         m.created_at
       FROM messages m
@@ -2110,6 +2174,111 @@ export class SQLiteControlPlaneStore {
       node.lastSeenAt ?? null,
       node.registeredAt,
     );
+  }
+
+  /* ── Machines (see @openscout/protocol machines.ts) ── */
+
+  upsertMachine(machine: MachineRecord): void {
+    this.db.query(
+      `INSERT INTO machines (
+        id, display_name, name, platform, identity_keys_json, is_self,
+        scout_node_id, mesh_id, tailnet_id, tailnet_name, host_names_json,
+        addresses_json, mac_addresses_json, capabilities_json, routes_json,
+        evidence_json, pinned, notes, metadata_json, first_seen_at, last_seen_at
+      ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21)
+      ON CONFLICT(id) DO UPDATE SET
+        display_name = excluded.display_name,
+        name = excluded.name,
+        platform = excluded.platform,
+        identity_keys_json = excluded.identity_keys_json,
+        is_self = excluded.is_self,
+        scout_node_id = excluded.scout_node_id,
+        mesh_id = excluded.mesh_id,
+        tailnet_id = excluded.tailnet_id,
+        tailnet_name = excluded.tailnet_name,
+        host_names_json = excluded.host_names_json,
+        addresses_json = excluded.addresses_json,
+        mac_addresses_json = excluded.mac_addresses_json,
+        capabilities_json = excluded.capabilities_json,
+        routes_json = excluded.routes_json,
+        evidence_json = excluded.evidence_json,
+        pinned = excluded.pinned,
+        notes = excluded.notes,
+        metadata_json = excluded.metadata_json,
+        -- A rebuild must never move first-seen forward: the operator's answer
+        -- to "how long have I known this machine" is the earliest sighting.
+        first_seen_at = MIN(machines.first_seen_at, excluded.first_seen_at),
+        last_seen_at = MAX(machines.last_seen_at, excluded.last_seen_at)`,
+    ).run(
+      machine.id,
+      machine.displayName ?? null,
+      machine.name,
+      machine.platform,
+      JSON.stringify(machine.identityKeys),
+      machine.isSelf ? 1 : 0,
+      machine.scoutNodeId ?? null,
+      machine.meshId ?? null,
+      machine.tailnetId ?? null,
+      machine.tailnetName ?? null,
+      JSON.stringify(machine.hostNames),
+      JSON.stringify(machine.addresses),
+      JSON.stringify(machine.macAddresses),
+      JSON.stringify(machine.capabilities),
+      JSON.stringify(machine.routes),
+      JSON.stringify(machine.evidence),
+      machine.pinned ? 1 : 0,
+      machine.notes ?? null,
+      stringify(machine.metadata),
+      machine.firstSeenAt,
+      machine.lastSeenAt,
+    );
+  }
+
+  listMachines(): MachineRecord[] {
+    const rows = queryAll<MachineRow>(
+      this.readDb,
+      "SELECT * FROM machines ORDER BY is_self DESC, last_seen_at DESC",
+    );
+    return rows.map(machineFromRow);
+  }
+
+  machine(id: string): MachineRecord | undefined {
+    const row = queryGet<MachineRow, [string]>(
+      this.readDb,
+      "SELECT * FROM machines WHERE id = ?1 LIMIT 1",
+      id,
+    );
+    return row ? machineFromRow(row) : undefined;
+  }
+
+  deleteMachine(id: string): boolean {
+    const result = this.db.query("DELETE FROM machines WHERE id = ?1").run(id) as { changes?: number };
+    return (result.changes ?? 0) > 0;
+  }
+
+  /**
+   * The operator-owned fields, and only those. Everything else on a machine is
+   * derived from evidence and would be overwritten by the next inventory pass,
+   * so exposing it here would be an edit that silently reverts.
+   */
+  updateMachineAnnotations(
+    id: string,
+    input: { displayName?: string | null; notes?: string | null; pinned?: boolean },
+  ): MachineRecord | undefined {
+    const assignments: string[] = [];
+    const params: SQLiteBinding[] = [id];
+    const bind = (column: string, value: SQLiteBinding): void => {
+      params.push(value);
+      assignments.push(`${column} = ?${params.length}`);
+    };
+
+    if (input.displayName !== undefined) bind("display_name", input.displayName?.trim() || null);
+    if (input.notes !== undefined) bind("notes", input.notes?.trim() || null);
+    if (input.pinned !== undefined) bind("pinned", input.pinned ? 1 : 0);
+    if (!assignments.length) return this.machine(id);
+
+    this.db.query(`UPDATE machines SET ${assignments.join(", ")} WHERE id = ?1`).run(...params);
+    return this.machine(id);
   }
 
   upsertTrustedPeer(peer: TrustedPeerRecord): void {

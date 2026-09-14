@@ -218,7 +218,7 @@ describe("broker control stream service", () => {
     expect(response.ended).toBe(true);
   });
 
-  test("fans control events to global, invocation, and inbox subscribers", () => {
+  test("fans control events to global, invocation, and inbox subscribers", async () => {
     const relatedDelivery = delivery({ invocationId: "invocation-1" });
     const { enqueuedEvents, service } = createService({
       deliveries: [relatedDelivery],
@@ -261,6 +261,7 @@ describe("broker control stream service", () => {
     expect(enqueuedEvents).toEqual([event]);
     expect(eventResponse.body()).toContain("event: delivery.planned");
     expect(invocationResponse.body()).toContain("event: delivery.planned");
+    await new Promise((resolve) => setImmediate(resolve));
     expect(inboxResponse.body()).toContain("event: inbox.item");
     expect(inboxResponse.body()).toContain("\"conversationId\":\"conversation-1\"");
   });

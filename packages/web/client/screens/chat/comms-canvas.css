@@ -1,0 +1,215 @@
+/* Comms · Canvas — the work graph as a flow diagram.
+ *
+ * Same grammar as the Flow and Map: hue is DIRECTION, weight is SELECTION, and
+ * nothing changes hue to mean "current". The one hue this drawing adds is for
+ * an ask that never came back, because that is an OUTCOME rather than a state —
+ * and it rides on the edge as a dotted overlay rather than recolouring a card,
+ * so a lane still reads as one material. */
+
+.cvs { display: flex; flex-direction: column; gap: var(--space-lg); }
+
+/* ---- Controls ---- */
+
+.cvs-controls {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-sm) var(--space-md);
+}
+
+.cvs-ctl-label {
+  font-family: var(--mono, ui-monospace, SFMono-Regular, monospace);
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--dim);
+}
+
+.cvs-seg {
+  display: inline-flex;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xs, 4px);
+  overflow: hidden;
+}
+
+.cvs-seg-btn {
+  appearance: none;
+  border: 0;
+  background: none;
+  padding: 3px 9px;
+  font: inherit;
+  font-size: 11.5px;
+  color: var(--dim);
+  cursor: pointer;
+}
+
+.cvs-seg-btn + .cvs-seg-btn { border-left: 1px solid var(--border); }
+.cvs-seg-btn:hover { color: var(--ink); }
+.cvs-seg-btn.is-active { color: var(--ink); background: color-mix(in oklab, var(--ink) 8%, transparent); font-weight: 550; }
+
+/* ---- Stage ----
+ *
+ * The canvas scrolls in both axes rather than scaling to fit: a card that
+ * shrinks below its own label is not a smaller drawing, it is a worse one. */
+
+.cvs-stage {
+  overflow: auto;
+  /* A real stage, not whatever is left over. How tall it is decides where a
+     lane wraps, so it must not collapse to the height of one card. */
+  height: clamp(320px, 52vh, 620px);
+  margin: 0 calc(-1 * var(--space-sm));
+  padding: 0 var(--space-sm) var(--space-sm);
+}
+
+.cvs-svg { display: block; }
+
+.cvs-lane-label {
+  font-family: var(--mono, ui-monospace, SFMono-Regular, monospace);
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  fill: var(--dim);
+}
+
+.cvs-lane-count {
+  font-family: var(--mono, ui-monospace, SFMono-Regular, monospace);
+  font-size: 10px;
+  fill: var(--muted);
+}
+
+/* ---- Edges ---- */
+
+.cvs-edge, .cvs-trunk, .cvs-node { transition: opacity 120ms ease; }
+.cvs-edge--dim { opacity: 0.18; }
+.cvs-edge-line { fill: none; stroke: color-mix(in oklab, var(--ink) 34%, transparent); stroke-linecap: round; }
+.cvs-edge-tip { fill: color-mix(in oklab, var(--ink) 34%, transparent); stroke: none; }
+
+/* An ask that never came back. Dotted over the same path, so the edge keeps its
+   weight and only gains a texture. */
+.cvs-edge-late {
+  fill: none;
+  stroke: var(--red);
+  stroke-dasharray: 2 5;
+  stroke-linecap: round;
+  opacity: 0.85;
+}
+
+/* A 1px arrow is not a target; this is. */
+.cvs-edge-hit { fill: none; stroke: transparent; stroke-width: 14; cursor: pointer; }
+.cvs-edge-hit:focus-visible { outline: none; stroke: color-mix(in oklab, var(--accent) 30%, transparent); }
+
+.cvs-bracket { fill: none; stroke: color-mix(in oklab, var(--ink) 34%, transparent); stroke-width: 1.5; }
+
+.cvs-trunk-label {
+  font-family: var(--mono, ui-monospace, SFMono-Regular, monospace);
+  font-size: 11px;
+  font-weight: 600;
+  fill: var(--ink);
+}
+
+.cvs-trunk-sub {
+  font-family: var(--mono, ui-monospace, SFMono-Regular, monospace);
+  font-size: 9.5px;
+  fill: var(--dim);
+}
+
+/* ---- Node cards ---- */
+
+.cvs-node { cursor: pointer; }
+.cvs-node--dim { opacity: 0.28; }
+.cvs-box { fill: var(--bg); stroke: var(--border); stroke-width: 1; }
+.cvs-node--hub .cvs-box { stroke: color-mix(in oklab, var(--ink) 45%, transparent); }
+/* An open column is selection, so it reads as weight — never as another hue. */
+.cvs-node--on .cvs-box { stroke: var(--ink); stroke-width: 1.5; }
+.cvs-node:hover .cvs-box { stroke: color-mix(in oklab, var(--ink) 45%, transparent); }
+.cvs-node:focus-visible { outline: none; }
+.cvs-node:focus-visible .cvs-box { stroke: var(--accent); stroke-width: 2; }
+
+/* The record contradicts itself about who this is. A dashed edge to the card,
+   because the card's OUTLINE is the claim "this is a participant" and that is
+   exactly the claim in doubt. Hue stays free: it means direction here, and an
+   attribution problem is not a direction. */
+.cvs-node--disputed .cvs-box { stroke-dasharray: 3 3; }
+
+.cvs-late-mark { fill: var(--red); }
+
+.cvs-name { fill: var(--ink); font-size: 12.5px; font-weight: 500; }
+.cvs-meta {
+  fill: var(--dim);
+  font-family: var(--mono, ui-monospace, SFMono-Regular, monospace);
+  font-size: 9.5px;
+}
+/* A harness is a coarser fact than a model; it should not read as one. */
+.cvs-ran { fill: color-mix(in oklab, var(--dim) 72%, transparent); }
+/* Placed by who it talks to, not by a recorded ask. */
+.cvs-inferred { fill: var(--dim); opacity: 0.5; }
+
+/* ---- Asks: the rows the drawing is a summary of ---- */
+
+.cvs-tasks {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.cvs-task {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  gap: 14px;
+  align-items: baseline;
+  width: 100%;
+  padding: 5px 8px;
+  border: 0;
+  border-radius: 4px;
+  background: none;
+  font: inherit;
+  font-size: 12px;
+  color: var(--dim);
+  text-align: left;
+  cursor: pointer;
+}
+
+.cvs-task:hover { background: color-mix(in oklab, var(--ink) 5%, transparent); }
+.cvs-task--on { background: color-mix(in oklab, var(--ink) 8%, transparent); }
+.cvs-task--on .cvs-task-title { color: var(--ink); }
+
+.cvs-task-title {
+  color: var(--ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cvs-task-who { color: var(--dim); white-space: nowrap; }
+
+.cvs-task-ran {
+  font-style: normal;
+  font-family: var(--mono, ui-monospace, SFMono-Regular, monospace);
+  font-size: 11px;
+  color: color-mix(in oklab, var(--dim) 72%, transparent);
+  padding-left: 6px;
+}
+
+.cvs-task-ms { color: var(--dim); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.cvs-task-ms--late { color: var(--red); }
+.cvs-arrow { font-style: normal; color: var(--dim); padding: 0 6px; }
+
+/* The legend reads the drawing, so it sits under the drawing — not under fifty
+   rows of asks, where nobody would find it. That makes it a divider rather than
+   a footer, and a footer's margin would push the asks off the page. */
+.cvs .cf-legend { margin-top: 0; }
+
+/* ---- Selection ----
+ *
+ * One gesture, one meaning: a click selects, and the selection reads as weight
+ * (.cvs-node--on, .cvs-task--on above). Hue stays free: it means direction. */
+
+.cvs-hint {
+  margin: 0 0 0 auto;
+  font-size: 11px;
+  color: var(--muted);
+}

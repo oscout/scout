@@ -22,7 +22,7 @@ export type BrokerControlStreamServiceDeps = {
   enqueueEvent: (event: ControlEvent) => void;
   findDeliveryById: (deliveryId: string) => DeliveryIntent | undefined;
   listDeliveries: (options: { limit: number }) => Promise<DeliveryIntent[]> | DeliveryIntent[];
-  messageById: (messageId: string) => MessageRecord | undefined;
+  messageById: (messageId: string) => MessageRecord | undefined | Promise<MessageRecord | undefined>;
   invocationById: (invocationId: string) => InvocationRequest | undefined;
   /**
    * Current value of every ephemeral fact a fresh subscriber needs, replayed on
@@ -104,6 +104,8 @@ export class BrokerControlStreamService {
   private readonly invocationStreamClients = new Map<string, Set<RuntimeHttpResponseLike>>();
   private readonly inboxStreamClients = new Map<string, Set<RuntimeHttpResponseLike>>();
 
+  private readonly inboxPublications = new Map<string, Promise<void>>();
+
   constructor(private readonly deps: BrokerControlStreamServiceDeps) {}
 
   eventSubscriberCount(): number {
@@ -118,8 +120,8 @@ export class BrokerControlStreamService {
     return this.inboxStreamClients.get(targetId)?.size ?? 0;
   }
 
-  inboxItemForDelivery(delivery: DeliveryIntent): InboxItem {
-    const message = delivery.messageId ? this.deps.messageById(delivery.messageId) : undefined;
+  async inboxItemForDelivery(delivery: DeliveryIntent): Promise<InboxItem> {
+    const message = delivery.messageId ? await this.deps.messageById(delivery.messageId) : undefined;
     const invocation = delivery.invocationId ? this.deps.invocationById(delivery.invocationId) : undefined;
     return {
       id: delivery.id,
@@ -149,12 +151,14 @@ export class BrokerControlStreamService {
     const statuses = options.statuses ?? DEFAULT_INBOX_STATUSES;
     const limit = Math.min(Math.max(options.limit ?? 100, 1), 500);
     const deliveries = await this.deps.listDeliveries({ limit: 5000 });
-    return deliveries
+    const selected = deliveries
       .filter((delivery) => delivery.targetId === options.targetId)
       .filter((delivery) => statuses.has(delivery.status))
       .filter((delivery) => !options.reasons || options.reasons.has(delivery.reason))
-      .slice(0, limit)
-      .map((delivery) => this.inboxItemForDelivery(delivery));
+      .slice(0, limit);
+    const items: InboxItem[] = [];
+    for (const delivery of selected) items.push(await this.inboxItemForDelivery(delivery));
+    return items;
   }
 
   addInboxStream(options: {
@@ -316,9 +320,22 @@ export class BrokerControlStreamService {
     if (!subscribers || subscribers.size === 0) {
       return;
     }
-    const item = this.inboxItemForDelivery(delivery);
-    for (const client of subscribers) {
-      writeSseFrame(client, eventName, item);
-    }
+    // Preserve accepted event order across asynchronous history reads. Queued
+    // work retains the delivery reference, never a captured history generation.
+    const previous = this.inboxPublications.get(delivery.targetId) ?? Promise.resolve();
+    const pending = previous.then(async () => {
+      if (subscribers.size === 0) return;
+      const item = await this.inboxItemForDelivery(delivery);
+      for (const client of subscribers) writeSseFrame(client, eventName, item);
+    }).catch((error) => {
+      console.error("[broker] Inbox history read failed; reconnect required", error);
+      for (const client of subscribers) client.end();
+      subscribers.clear();
+    }).finally(() => {
+      if (this.inboxPublications.get(delivery.targetId) === pending) {
+        this.inboxPublications.delete(delivery.targetId);
+      }
+    });
+    this.inboxPublications.set(delivery.targetId, pending);
   }
 }

@@ -1,0 +1,1 @@
+CREATE INDEX `idx_messages_conversation_epoch_id` ON `messages` (`conversation_id`,CASE WHEN created_at > 0 AND created_at < 1000000000000 THEN created_at * 1000 ELSE created_at END DESC,"id" desc);

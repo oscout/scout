@@ -1,0 +1,312 @@
+/* ──────────────────────────────────────────────────────────────────────────
+ * Comms · Beside (the kept columns) and the Selection panel.
+ *
+ * Grammar, same as the drawings they open from: hue is DIRECTION (accent =
+ * addressed to you, dim dotted = broker status, neutral = the rest) and weight
+ * is SELECTION. Nothing here changes hue to mean "current".
+ *
+ * The two are told apart by where they sit and what they are made of, not by
+ * colour: a kept column stands outside the stage on the page background and
+ * holds a live conversation; the selection stands inside the drawing's pane on
+ * the surface tone and holds an excerpt.
+ * ────────────────────────────────────────────────────────────────────────── */
+
+.cdk {
+  flex: none;
+  display: flex;
+  min-height: 0;
+  border-left: 1px solid var(--border);
+}
+
+.cdk-col {
+  flex: none;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: var(--bg);
+}
+
+.cdk-col + .cdk-col,
+.cdk-col + .cdk-spine,
+.cdk-spine + .cdk-col,
+.cdk-spine + .cdk-spine {
+  border-left: 1px solid var(--border);
+}
+
+/* Each column carries its own handle, on its own left edge, so widening one
+   never silently narrows another by the same amount — the deck grows and the
+   stage gives way. Arrow keys move it too; a drag-only control is no control. */
+.cdk-grip {
+  position: absolute;
+  left: -3px;
+  top: 0;
+  bottom: 0;
+  width: 7px;
+  z-index: 3;
+  cursor: col-resize;
+}
+
+.cdk-grip::after {
+  content: "";
+  position: absolute;
+  inset: 0 3px;
+  background: transparent;
+  transition: background 120ms ease;
+}
+
+.cdk-grip:hover::after,
+.cdk-grip:focus-visible::after,
+.cdk-grip--on::after { background: var(--accent); }
+.cdk-grip:focus-visible { outline: none; }
+
+.cdk-head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 7px 6px 7px 10px;
+  border-bottom: 1px solid var(--border);
+}
+
+.cdk-ident {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.cdk-kicker {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  font-weight: 600;
+  line-height: 1.2;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--dim);
+}
+
+.cdk-title {
+  font-size: var(--text-md);
+  font-weight: 550;
+  line-height: 1.3;
+  color: var(--ink);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.cdk-btn {
+  flex: none;
+  display: grid;
+  place-items: center;
+  padding: 4px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: none;
+  color: var(--dim);
+  cursor: pointer;
+}
+
+.cdk-btn:hover {
+  color: var(--ink);
+  background: color-mix(in oklab, var(--ink) 8%, transparent);
+}
+
+/* A toggle that is on: ink, not hue — being kept is not a direction. */
+.cdk-btn--on { color: var(--ink); }
+
+/* A column you want kept but not read: a spine, not a closed thing. */
+.cdk-spine {
+  flex: none;
+  width: 30px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 0;
+  border: 0;
+  background: var(--bg);
+  font: inherit;
+  cursor: pointer;
+}
+
+.cdk-spine:hover { background: color-mix(in oklab, var(--ink) 4%, transparent); }
+
+.cdk-spine-kicker,
+.cdk-spine-title {
+  writing-mode: vertical-rl;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-height: 100%;
+}
+
+.cdk-spine-kicker {
+  flex: none;
+  font-family: var(--font-mono);
+  font-size: 8.5px;
+  font-weight: 600;
+  line-height: 1;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--dim);
+}
+
+.cdk-spine-title {
+  font-size: var(--text-sm);
+  font-weight: 550;
+  line-height: 1;
+  color: var(--ink);
+}
+
+.cdk-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-md);
+  padding: var(--space-md) var(--space-lg) var(--space-2xl);
+}
+
+/* A live conversation brings its own scroller and composer. */
+.cdk-live { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.cdk-live > * { flex: 1; min-height: 0; }
+
+.cdk-msg { display: flex; flex-direction: column; gap: 2px; }
+
+.cdk-msg-head {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-xs);
+  font-size: var(--text-sm);
+}
+
+.cdk-msg-from { color: var(--ink); font-weight: 550; }
+.cdk-msg-to { color: var(--dim); }
+
+.cdk-msg-tag {
+  padding: 0 var(--space-2xs);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xs);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  line-height: 14px;
+  color: var(--dim);
+}
+
+.cdk-msg-at {
+  margin-left: auto;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--dim);
+}
+
+.cdk-msg-body {
+  margin: 0;
+  padding-left: var(--space-sm);
+  border-left: 1px solid var(--border);
+  font-size: var(--text-md);
+  line-height: 1.45;
+  color: var(--muted);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.cdk-msg--in .cdk-msg-body { border-left-color: var(--accent); color: var(--ink); }
+
+.cdk-msg--status .cdk-msg-body {
+  border-left-style: dotted;
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  color: var(--dim);
+}
+
+.cdk-empty {
+  flex: 1;
+  display: grid;
+  place-items: center;
+  margin: 0;
+  padding: var(--space-4xl) var(--space-lg);
+  text-align: center;
+  font-size: var(--text-md);
+  line-height: 1.5;
+  color: var(--dim);
+}
+
+/* ---- The selection ----
+ *
+ * One panel, floated over the drawing's right edge, on the surface tone so it
+ * reads as part of the drawing rather than as another column. Floating, not
+ * docked: selecting something must never reflow the drawing it was selected
+ * in, and a stage narrowed by kept columns has no width to give. It is fixed
+ * width: it is a look, not a workspace, and the columns are where width is
+ * spent. */
+
+.csl {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 2;
+  width: 340px;
+  max-width: 100%;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  border-left: 1px solid var(--border);
+  background: var(--surface);
+  box-shadow: -12px 0 28px -16px rgb(0 0 0 / 0.45);
+}
+
+.csl .cdk-body { padding-top: var(--space-sm); }
+
+/* Where the selection leads: the conversations it happened in. */
+.csl-in {
+  flex: none;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 6px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+}
+
+.csl-in-label {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--dim);
+  margin-right: 2px;
+}
+
+.csl-conv {
+  display: inline-flex;
+  align-items: center;
+  gap: 1px;
+  max-width: 100%;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+}
+
+.csl-conv-open {
+  min-width: 0;
+  max-width: 220px;
+  padding: 3px 8px;
+  border: 0;
+  background: none;
+  font: 500 var(--text-sm) / 1.3 var(--font-sans);
+  color: var(--ink);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: pointer;
+}
+
+.csl-conv-open:hover { text-decoration: underline; text-underline-offset: 2px; }
+.csl-conv .cdk-btn { padding: 3px; }

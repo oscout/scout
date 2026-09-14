@@ -155,6 +155,11 @@ type PendingCursorPlan = {
   blockId: string;
 };
 
+type AcpSessionResult = {
+  sessionId?: string;
+  models?: { currentModelId?: string };
+};
+
 type AcpAdapterOptions = {
   adapterType: string;
   command: string;
@@ -167,6 +172,7 @@ type AcpAdapterOptions = {
   sessionId: string | null;
   sessionMode: "new" | "load" | "resume" | "auto";
   model: string | null;
+  reasoningEffort: string | null;
   authMethodId: string | null;
   authMethodPreference: string[];
   requireAuth: boolean;
@@ -239,6 +245,7 @@ function parseOptions(config: AdapterConfig): AcpAdapterOptions {
     sessionId: stringValue(raw.sessionId),
     sessionMode,
     model: stringValue(raw.model),
+    reasoningEffort: stringValue(raw.reasoningEffort),
     authMethodId: stringValue(raw.authMethodId),
     authMethodPreference: stringArray(raw.authMethodPreference),
     requireAuth: booleanValue(raw.requireAuth, false),
@@ -507,6 +514,7 @@ export class AcpAdapter extends BaseAdapter {
   private requestId = 0;
   private pendingRequests = new Map<JsonRpcId, PendingRequest>();
   private currentSessionId: string | null = null;
+  private currentAcpModelId: string | null = null;
   private agentCapabilities: AcpInitializeResponse["agentCapabilities"] = {};
   private activeTurn: ActiveTurnState | null = null;
   private pendingPermissions = new Map<string, PendingPermission>();
@@ -763,10 +771,10 @@ export class AcpAdapter extends BaseAdapter {
         if (!canResume) {
           throw new Error(`ACP agent does not advertise support for resuming session ${requestedSessionId}.`);
         }
-        await this.request("session/resume", {
+        this.captureModelState(await this.request<AcpSessionResult>("session/resume", {
           ...baseParams,
           sessionId: requestedSessionId,
-        }, options.startupTimeoutMs);
+        }, options.startupTimeoutMs));
         this.setAcpSessionId(requestedSessionId);
         await this.selectRequestedModel(requestedSessionId);
         return;
@@ -776,10 +784,10 @@ export class AcpAdapter extends BaseAdapter {
         if (!canLoad) {
           throw new Error(`ACP agent does not advertise support for loading session ${requestedSessionId}.`);
         }
-        await this.request("session/load", {
+        this.captureModelState(await this.request<AcpSessionResult>("session/load", {
           ...baseParams,
           sessionId: requestedSessionId,
-        }, options.startupTimeoutMs);
+        }, options.startupTimeoutMs));
         this.setAcpSessionId(requestedSessionId);
         await this.selectRequestedModel(requestedSessionId);
         return;
@@ -789,10 +797,10 @@ export class AcpAdapter extends BaseAdapter {
       let recovered = false;
       if (canResume) {
         try {
-          await this.request("session/resume", {
+          this.captureModelState(await this.request<AcpSessionResult>("session/resume", {
             ...baseParams,
             sessionId: requestedSessionId,
-          }, options.startupTimeoutMs);
+          }, options.startupTimeoutMs));
           this.setAcpSessionId(requestedSessionId);
           recovered = true;
         } catch (error) {
@@ -801,10 +809,10 @@ export class AcpAdapter extends BaseAdapter {
       }
       if (!recovered && canLoad) {
         try {
-          await this.request("session/load", {
+          this.captureModelState(await this.request<AcpSessionResult>("session/load", {
             ...baseParams,
             sessionId: requestedSessionId,
-          }, options.startupTimeoutMs);
+          }, options.startupTimeoutMs));
           this.setAcpSessionId(requestedSessionId);
           recovered = true;
         } catch (error) {
@@ -827,26 +835,38 @@ export class AcpAdapter extends BaseAdapter {
       });
     }
 
-    const created = await this.request<{ sessionId?: string }>("session/new", baseParams, options.startupTimeoutMs);
+    const created = await this.request<AcpSessionResult>("session/new", baseParams, options.startupTimeoutMs);
     if (!created.sessionId) {
       throw new Error("ACP agent did not return a sessionId from session/new.");
     }
+    this.captureModelState(created);
     this.setAcpSessionId(created.sessionId);
     await this.selectRequestedModel(created.sessionId);
   }
 
   private async selectRequestedModel(sessionId: string): Promise<void> {
-    const model = this.acpOptions.model;
+    const { model, reasoningEffort } = this.acpOptions;
     // `model` is also used by adapters such as OpenCode to configure the
     // child process. Do not assume that means the ACP agent implements the
     // optional session/set_model method; Grok is the transport that exposes
     // model switching through ACP today.
-    if (!model || this.acpOptions.adapterType !== "grok-acp") return;
+    if (this.acpOptions.adapterType !== "grok-acp") return;
+    if (!model && !reasoningEffort) return;
+    // Effort rides on set_model rather than a call of its own, and the agent
+    // resets it to the model default on every set_model that omits it. So a
+    // model-only switch would silently drop a requested effort: send both, and
+    // fall back to the current model id when only the effort changed.
+    const modelId = model ?? this.currentAcpModelId;
+    if (!modelId) return;
     await this.request("session/set_model", {
       sessionId,
-      modelId: model,
+      modelId,
+      ...(reasoningEffort ? { _meta: { reasoningEffort } } : {}),
     }, this.acpOptions.startupTimeoutMs);
-    this.updateProviderMeta({ requestedModel: model });
+    this.updateProviderMeta({
+      requestedModel: modelId,
+      ...(reasoningEffort ? { requestedReasoningEffort: reasoningEffort } : {}),
+    });
   }
 
   private async runPrompt(prompt: Prompt): Promise<void> {
@@ -1484,6 +1504,17 @@ export class AcpAdapter extends BaseAdapter {
       return;
     }
     this.process.stdin.write(`${line}\n`);
+  }
+
+  /**
+   * Remember the model the agent says the session is on. Effort changes ride
+   * on `session/set_model`, so switching effort alone still needs a model id.
+   */
+  private captureModelState(result: AcpSessionResult | undefined): void {
+    const current = result?.models?.currentModelId;
+    if (typeof current === "string" && current.trim()) {
+      this.currentAcpModelId = current.trim();
+    }
   }
 
   private setAcpSessionId(sessionId: string): void {

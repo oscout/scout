@@ -24,7 +24,10 @@ import { useBrokerEvents } from "../../lib/sse.ts";
 import { useTailEvents } from "../../lib/tail-events.ts";
 import { ConversationScreen } from "../chat/ConversationScreen.tsx";
 import { SessionObserve } from "./SessionObserve.tsx";
-import { SessionObserveEmbedStatus } from "./SessionObserveEvidence.tsx";
+import {
+  NATIVE_SESSION_ORIGIN_LABEL,
+  SessionObserveEmbedStatus,
+} from "./SessionObserveEvidence.tsx";
 import type { SessionRefLookup } from "./SessionRefScreen.tsx";
 import {
   brokerEventMayAffectSessionRef,
@@ -73,6 +76,7 @@ export function SessionEmbedObserveContent({
         fidelity={lookup.observe.fidelity}
         sessionId={lookup.observe.sessionId ?? lookup.observe.refId}
         evidence={evidence}
+        originLabel={NATIVE_SESSION_ORIGIN_LABEL}
       />
       <SessionObserve
         data={lookup.observe.data}
@@ -81,6 +85,8 @@ export function SessionEmbedObserveContent({
         showRail={false}
         observeSource={lookup.observe.source}
         observeFidelity={lookup.observe.fidelity}
+        originLabel={NATIVE_SESSION_ORIGIN_LABEL}
+        defaultPresentation="conversation"
       />
     </EmbedShell>
   );

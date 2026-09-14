@@ -1,3 +1,5 @@
+import { BrokerRecordCacheUnavailable } from "./broker-record-reader.js";
+import { BrokerMessageBodyCacheUnavailable } from "./broker-message-body-cache.js";
 import type { RuntimeHttpRequestLike, RuntimeHttpResponseLike } from "./portable-types.js";
 
 import { A2A_JSON_RPC_CONTENT_TYPE } from "@openscout/protocol";
@@ -125,9 +127,19 @@ export function throwIfAborted(signal?: AbortSignal): void {
 }
 
 export function json(response: RuntimeHttpResponseLike, status: number, payload: unknown): void {
+  // Encode before headers so a cold-body read failure can report unavailability.
+  let encoded: string | undefined;
+  try { encoded = JSON.stringify(payload); }
+  catch (error) {
+    if (error instanceof BrokerMessageBodyCacheUnavailable || error instanceof BrokerRecordCacheUnavailable) {
+      response.writeHead(503, { "content-type": "application/json; charset=utf-8" });
+      response.end(JSON.stringify({ error: error.code, detail: error.message }));
+      return;
+    }
+    throw error;
+  }
   response.writeHead(status, { "content-type": "application/json; charset=utf-8" });
-  // Compact on purpose: pretty-printing inflated large snapshot responses by ~25%.
-  response.end(JSON.stringify(payload));
+  response.end(encoded);
 }
 
 export function a2aJson(
@@ -198,6 +210,10 @@ export function notFound(response: RuntimeHttpResponseLike): void {
 }
 
 export function badRequest(response: RuntimeHttpResponseLike, error: unknown): void {
+  if (error instanceof BrokerMessageBodyCacheUnavailable || error instanceof BrokerRecordCacheUnavailable) {
+    json(response, 503, { error: error.code, detail: error.message });
+    return;
+  }
   if (error instanceof BrokerHttpRequestError) {
     json(response, error.status, {
       error: error.code,

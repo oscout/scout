@@ -42,6 +42,42 @@ export const nodesTable = sqliteTable("nodes", {
   index("idx_nodes_mesh_id").on(table.meshId),
 ]);
 
+// -- machines ----------------------------------------------------------------
+// One row per physical machine, assembled from evidence rather than declared.
+// A machine is NOT a node: most rows here are tailnet peers or LAN neighbours
+// that never run Scout, and a node row exists only for the ones that do. No
+// foreign key to `nodes` for that reason — the join is by identity key, and a
+// node being forgotten must not delete the machine it ran on.
+export const machinesTable = sqliteTable("machines", {
+  id: text("id").primaryKey(),
+  displayName: text("display_name"),
+  name: text("name").notNull(),
+  platform: text("platform").notNull(),
+  // Sorted durable identity keys, JSON array. This is the join key set the
+  // next inventory pass seeds its grouping with, so a machine seen by one
+  // channel today and another tomorrow stays one record.
+  identityKeysJson: text("identity_keys_json").notNull(),
+  isSelf: integer("is_self").notNull().default(0),
+  scoutNodeId: text("scout_node_id"),
+  meshId: text("mesh_id"),
+  tailnetId: text("tailnet_id"),
+  tailnetName: text("tailnet_name"),
+  hostNamesJson: text("host_names_json"),
+  addressesJson: text("addresses_json"),
+  macAddressesJson: text("mac_addresses_json"),
+  capabilitiesJson: text("capabilities_json"),
+  routesJson: text("routes_json"),
+  evidenceJson: text("evidence_json"),
+  pinned: integer("pinned").notNull().default(0),
+  notes: text("notes"),
+  metadataJson: text("metadata_json"),
+  firstSeenAt: integer("first_seen_at").notNull(),
+  lastSeenAt: integer("last_seen_at").notNull(),
+}, (table) => [
+  index("idx_machines_last_seen_at").on(desc(table.lastSeenAt)),
+  index("idx_machines_scout_node_id").on(table.scoutNodeId),
+]);
+
 // -- trusted_peers -----------------------------------------------------------
 export const trustedPeersTable = sqliteTable("trusted_peers", {
   keyId: text("key_id").primaryKey(),
@@ -305,6 +341,12 @@ export const messagesTable = sqliteTable("messages", {
   createdAt: integer("created_at").notNull(),
 }, (table) => [
   index("idx_messages_conversation_created_at").on(table.conversationId, table.createdAt),
+  // Match the native thread ordering, including historical seconds timestamps.
+  index("idx_messages_conversation_epoch_id").on(
+    table.conversationId,
+    sql`CASE WHEN created_at > 0 AND created_at < 1000000000000 THEN created_at * 1000 ELSE created_at END DESC`,
+    desc(table.id),
+  ),
   index("idx_messages_created_at").on(desc(table.createdAt)),
   index("idx_messages_actor_created_at").on(table.actorId, desc(table.createdAt)),
   index("idx_messages_origin_node_id").on(table.originNodeId),
@@ -1054,6 +1096,7 @@ export const missionLogEntriesTable = sqliteTable("mission_log_entries", {
 
 export const controlPlaneDrizzleSchema = {
   nodes: nodesTable,
+  machines: machinesTable,
   trustedPeers: trustedPeersTable,
   peerNonces: peerNoncesTable,
   actors: actorsTable,

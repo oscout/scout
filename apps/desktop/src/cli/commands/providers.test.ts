@@ -504,7 +504,7 @@ describe("providers command", () => {
 
     await runProvidersCommand(context, ["usage"], {
       ...formatOptions,
-      readJson: async <T>(_context: ScoutCommandContext, path: string): Promise<T> => {
+      readJson: async <T>(_context: Pick<ScoutCommandContext, "env">, path: string): Promise<T> => {
         paths.push(path);
         return serviceBudgetsPayload as T;
       },

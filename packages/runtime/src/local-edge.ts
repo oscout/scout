@@ -551,7 +551,7 @@ function renderCaddyViteDevRouteBlock(
     + `}`;
 }
 
-export function renderOpenScoutCaddyfile(config: OpenScoutLocalEdgeConfig): string {
+export function renderOpenScoutCaddyfile(config: OpenScoutLocalEdgeConfig, siteImportsGlob?: string): string {
   const schemes = config.scheme === "both" ? ["http", "https"] as const : [config.scheme] as const;
   const startPage = renderOpenScoutStartPage(config);
   const blocks = schemes
@@ -567,5 +567,6 @@ export function renderOpenScoutCaddyfile(config: OpenScoutLocalEdgeConfig): stri
   // Local developer tools may audit those routes periodically; keeping that
   // healthy control traffic on stderr grew the edge log without adding useful
   // diagnostics. Warnings and errors remain visible.
-  return `{\n  log {\n    level WARN\n  }\n}\n\n${blocks}\n`;
+  const imports = siteImportsGlob ? `\nimport ${JSON.stringify(siteImportsGlob)}\n` : "";
+  return `{\n  log {\n    level WARN\n  }\n}\n\n${blocks}\n${imports}`;
 }

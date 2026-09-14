@@ -1,0 +1,9 @@
+.sage-studio { position:absolute; inset:20px; z-index:40; display:flex; flex-direction:column; border:1px solid #ffffff24; border-radius:18px; overflow:hidden; background:#202a29; color:#edf1e8; box-shadow:0 20px 80px #0009; }
+.sage-studio header,.sage-studio footer { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:14px 20px; background:#141c19; }
+.sage-studio header small { display:block; font-size:11px; color:#a0b0a7; margin-top:4px; }
+.sage-studio button { border:0; border-radius:7px; padding:8px 12px; color:inherit; background:transparent; cursor:pointer; text-transform:capitalize; }
+.sage-studio button:hover,.sage-studio button[aria-pressed=true] { background:#b7d98926; color:#d0e9ad; }
+.sage-studio__canvas { flex:1; min-height:180px; touch-action:none; }
+.sage-studio__canvas canvas { display:block; }
+.sage-studio footer { flex-wrap:wrap; }
+.sage-studio p { padding:10px 20px; }

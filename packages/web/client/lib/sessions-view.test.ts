@@ -5,6 +5,7 @@ import {
   groupQueueSessions,
   NO_PROJECT_LABEL,
   projectLabelForAgent,
+  RECENT_LABEL,
   queueSessionState,
 } from "./sessions-view.ts";
 import { buildFleetActiveAskIndex } from "./fleet-active-asks.ts";
@@ -86,6 +87,37 @@ describe("sessions view grouping", () => {
     expect(groups[0]!.sessions.map((s) => s.id)).toEqual(["c2"]);
     expect(groups[1]!.sessions.map((s) => s.id)).toEqual(["c1"]);
     expect(groups[2]!.sessions.map((s) => s.id)).toEqual(["c3", "c4", "c5"]);
+  });
+
+  test("recent is one ungrouped list in strict recency order", () => {
+    const groups = groupQueueSessions(sessions, "recent", agents, asks, NOW);
+    expect(groups).toHaveLength(1);
+    expect(groups[0]!.label).toBe(RECENT_LABEL);
+    // Every session, newest first, across projects/agents/days — nothing is
+    // buried under an alphabetical header and nothing is dropped.
+    expect(groups[0]!.sessions.map((s) => s.id)).toEqual(["c1", "c2", "c3", "c4", "c5"]);
+    expect(groups[0]!.sessions).toHaveLength(sessions.length);
+  });
+
+  test("recent puts a just-moved conversation first even from a last-alphabetical project", () => {
+    // The exact read the flat order exists for: c4 (Drift, no project — dead
+    // last under "project") moves, and lands at the top.
+    const bumped = sessions.map((s) => (s.id === "c4" ? { ...s, lastMessageAt: NOW } : s));
+    const grouped = groupQueueSessions(bumped, "project", agents, asks, NOW);
+    expect(grouped.at(-1)!.label).toBe(NO_PROJECT_LABEL);
+
+    const recent = groupQueueSessions(bumped, "recent", agents, asks, NOW);
+    expect(recent[0]!.sessions[0]!.id).toBe("c4");
+  });
+
+  test("recent leaves no empty section behind", () => {
+    expect(groupQueueSessions([], "recent", agents, asks, NOW)).toEqual([]);
+  });
+
+  test("recent does not mutate the input order", () => {
+    const input = [...sessions];
+    groupQueueSessions(input, "recent", agents, asks, NOW);
+    expect(input.map((s) => s.id)).toEqual(sessions.map((s) => s.id));
   });
 
   test("agent grouping is alphabetical with an unknown bucket", () => {

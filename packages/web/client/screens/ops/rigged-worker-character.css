@@ -1,0 +1,23 @@
+.worker-rig { display: block; overflow: visible; }
+.worker-rig__figure { transform-origin: 50px 110px; animation: rig-breathe 5.6s ease-in-out infinite; }
+.worker-rig__eye { transform-box: fill-box; transform-origin: center; animation: rig-blink 7.2s ease-in-out infinite; animation-delay: var(--rig-blink-delay); }
+.worker-rig__arm { transform-box: view-box; transform-origin: 0 0; transition: transform 280ms ease-out; }
+.worker-rig__head { transform-origin: 0 0; transition: transform 280ms ease-out; }
+.worker-rig__pupil { transition: transform 220ms ease-out; }
+.worker-rig.is-thinking .worker-rig__head { transform: rotate(-5deg); }
+.worker-rig.is-thinking .worker-rig__arm.is-left { transform: rotate(-130deg); }
+.worker-rig.is-thinking .worker-rig__arm.is-right { transform: rotate(24deg); }
+.worker-rig.is-thinking .worker-rig__pupil { transform: translate(-1px,-1px); }
+.worker-rig.is-working .worker-rig__arm.is-left { transform: rotate(-42deg); }
+.worker-rig.is-working .worker-rig__arm.is-right { animation: rig-work 1.8s ease-in-out infinite; }
+.worker-rig.is-working .worker-rig__pupil { transform: translateY(1px); }
+.worker-rig.is-working .worker-rig__brow { transform: translateY(1px); }
+.worker-rig.is-waiting .worker-rig__arm.is-left { transform: rotate(-25deg); }
+.worker-rig.is-waiting .worker-rig__arm.is-right { transform: rotate(25deg); }
+.worker-rig.is-waiting .worker-rig__eye { animation-name: rig-wait-blink; }
+.worker-rig.is-paused * { animation-play-state: paused !important; }
+@keyframes rig-breathe { 0%,100% { transform: scaleY(1); } 50% { transform: scaleY(1.012); } }
+@keyframes rig-blink { 0%,43%,47%,100% { transform: scaleY(1); } 45% { transform: scaleY(.08); } }
+@keyframes rig-wait-blink { 0%,43%,47%,100% { transform: scaleY(.75); } 45% { transform: scaleY(.08); } }
+@keyframes rig-work { 0%,100% { transform: rotate(45deg); } 45%,60% { transform: rotate(58deg); } }
+@media (prefers-reduced-motion: reduce) { .worker-rig * { animation: none !important; transition: none !important; } .worker-rig.is-working .worker-rig__arm.is-right { transform: rotate(45deg); } .worker-rig.is-waiting .worker-rig__eye { transform: scaleY(.75); } }

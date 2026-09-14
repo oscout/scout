@@ -80,6 +80,22 @@ pub fn classify(mut event: TailEvent) -> Row {
 }
 
 fn extract_tool(raw: Option<&Value>, summary: &str) -> (Option<String>, Option<String>) {
+    // Grok / xAI: raw { tool_name, tool_input, tool_arg }.
+    if let Some(name) = raw
+        .and_then(|r| r.get("tool_name"))
+        .and_then(Value::as_str)
+        .map(norm_tool)
+    {
+        let target = raw
+            .and_then(|r| r.get("tool_input"))
+            .and_then(tool_target)
+            .or_else(|| {
+                raw.and_then(|r| r.get("tool_arg"))
+                    .and_then(Value::as_str)
+                    .map(|value| shorten(value, 90))
+            });
+        return (Some(name), target);
+    }
     // Claude: raw.message.content[] holds tool_use { name, input }.
     if let Some(content) = raw
         .and_then(|r| r.pointer("/message/content"))
@@ -128,7 +144,9 @@ fn extract_tool(raw: Option<&Value>, summary: &str) -> (Option<String>, Option<S
 fn norm_tool(name: &str) -> String {
     let lower = name.to_ascii_lowercase();
     match lower.as_str() {
-        "exec_command" | "shell" => "exec".into(),
+        "exec_command" | "shell" | "run_terminal_command" => "exec".into(),
+        "search_replace" | "str_replace" | "apply_patch" => "edit".into(),
+        "read_file" => "read".into(),
         other => other.to_string(),
     }
 }
@@ -139,6 +157,7 @@ fn tool_target(input: &Value) -> Option<String> {
         "command",
         "cmd",
         "file_path",
+        "target_file",
         "path",
         "pattern",
         "query",
@@ -298,4 +317,44 @@ fn shorten(text: &str, max: usize) -> String {
     let mut out: String = chars.into_iter().take(max.saturating_sub(1)).collect();
     out.push('…');
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::classify;
+    use crate::feed::TailEvent;
+
+    fn grok_tool(name: &str, target: &str) -> TailEvent {
+        TailEvent {
+            id: "1".into(),
+            ts: 1_700_000_000_000,
+            source: "grok".into(),
+            session_id: "session-g".into(),
+            kind: "tool".into(),
+            summary: format!("{name} · {target}"),
+            project: Some("openscout".into()),
+            cwd: Some("/work/openscout".into()),
+            raw: Some(json!({
+                "type": "tool_started",
+                "tool_name": name,
+                "tool_arg": target,
+                "tool_input": { "target_file": target }
+            })),
+        }
+    }
+
+    #[test]
+    fn grok_search_replace_is_an_edit_of_the_target_file() {
+        let row = classify(grok_tool(
+            "search_replace",
+            "/work/openscout/crates/scout-tui/src/app.rs",
+        ));
+        assert_eq!(row.tool.as_deref(), Some("edit"));
+        assert_eq!(
+            row.target.as_deref(),
+            Some("/work/openscout/crates/scout-tui/src/app.rs")
+        );
+    }
 }

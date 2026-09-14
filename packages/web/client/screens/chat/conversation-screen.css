@@ -974,6 +974,12 @@ button.s-thread-participant-roster-row:focus-visible {
   color: var(--ink);
 }
 
+/* Kept beside the stage: on is ink, not hue — being kept is not a direction. */
+.s-thread-add-participant-trigger.is-on {
+  border-color: color-mix(in oklab, var(--ink) 45%, transparent);
+  color: var(--ink);
+}
+
 .s-thread-identity-row {
   display: flex;
   align-items: center;

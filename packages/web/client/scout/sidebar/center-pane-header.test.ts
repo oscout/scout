@@ -14,25 +14,25 @@ import {
  */
 describe("center-pane header seam projections (SCO-085 / SCO-086)", () => {
   test("breadcrumb renders for sample detail routes", () => {
-    expect(routeBreadcrumbForRoute({ view: "terminal" })).toBe("Terminals");
+    expect(routeBreadcrumbForRoute({ view: "sessions" })).toBe("Sessions");
     expect(routeBreadcrumbForRoute({ view: "repos" })).toBe("Repositories");
     expect(routeBreadcrumbForRoute({ view: "code" })).toBe("Code Browser");
     expect(routeBreadcrumbForRoute({ view: "ops", mode: "lanes" })).toBe("Agent Lanes");
-    expect(routeBreadcrumbForRoute({ view: "broker" })).toBe("Dispatch");
   });
 
   test("breadcrumb is null on top-level area landings that need no crumb", () => {
     expect(routeBreadcrumbForRoute({ view: "inbox" })).toBeNull();
     expect(routeBreadcrumbForRoute({ view: "agents-v2" })).toBeNull();
-    expect(routeBreadcrumbForRoute({ view: "sessions" })).toBeNull();
+    expect(routeBreadcrumbForRoute({ view: "terminal" })).toBeNull();
     expect(routeBreadcrumbForRoute({ view: "messages" })).toBeNull();
     expect(routeBreadcrumbForRoute({ view: "search" })).toBeNull();
+    expect(routeBreadcrumbForRoute({ view: "broker" })).toBeNull();
   });
 
   test("area sub-nav strip is present for projects/sessions mouse paths", () => {
     const projects = areaSubNavForRoute({ view: "agents-v2" });
     expect(projects?.items.map((i) => i.label)).toEqual([
-      "Crew & Workspaces",
+      "Agents",
       "Repositories",
       "Code Browser",
     ]);
@@ -64,7 +64,8 @@ describe("center-pane header seam projections (SCO-085 / SCO-086)", () => {
       if (route.view === "code") expect(hasSeam).toBe(true); // crumb + sub-nav
       if (route.view === "terminal") expect(hasSeam).toBe(true);
       if (route.view === "ops") expect(hasSeam).toBe(true); // crumb + ops secondary
-      if (route.view === "broker") expect(hasSeam).toBe(true); // crumb
+      // Broker is a flush top-level tab now: no crumb, no sub-nav.
+      if (route.view === "broker") expect(hasSeam).toBe(false);
     }
   });
 

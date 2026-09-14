@@ -24,7 +24,7 @@ const GROUPS: Group[] = [
       { chords: [chord("⌘", "]")], label: "Toggle right panel" },
       { chords: [chord("⌘", "⇧", "]")], label: "Toggle inspector overlay" },
       { chords: [chord("Ctrl", "`")], label: "Toggle terminal drawer" },
-      { chords: [chord("⌘", "J")], label: "Toggle assistant drawer" },
+      { chords: [chord("⌘", "J")], label: "Toggle terminal" },
     ],
   },
   {

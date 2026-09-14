@@ -1,0 +1,154 @@
+/* World map: one orbital viewport, one painted outpost per workspace, crew on a
+   remembered grid, camera and minimap chrome in the corners. Written last-wins:
+   each selector appears once with its resolved values. Rules marked "layout"
+   are mirrored by constants in shared-floor-layout.ts; change both together. */
+
+.shared-floor { position: absolute; inset: 80px 14px 14px; color: var(--floor-ink); }
+.shared-floor.is-map { display: flex; flex-direction: column; overflow: hidden; border-radius: 12px; }
+.agent-floor:has(.shared-floor) .agent-floor__dock, .agent-floor:has(.shared-floor) .agent-floor__legend { display: none; }
+/* The lane trace panel opens bottom-right on actor select; lift it clear of the camera cluster. */
+.agent-floor:has(.shared-floor) .agent-floor__trace-panel { bottom: 72px; max-height: calc(100% - 140px); }
+.shared-floor button:focus-visible { outline: 2px solid var(--floor-accent); outline-offset: 3px; }
+@media (prefers-reduced-motion: reduce) { .shared-floor__wanderer { transition: none; } }
+
+/* Viewport: quiet orbital atmosphere; the world stays in world coordinates. */
+.shared-floor__viewport { position: relative; flex: 1; min-height: 0; overflow: hidden; touch-action: none; cursor: grab; background-color: #090f17; background-image: radial-gradient(ellipse at 18% 80%, #28404c38, transparent 55%), radial-gradient(ellipse at 84% 15%, #44406325, transparent 48%); }
+.shared-floor__viewport:active { cursor: grabbing; }
+.shared-floor__viewport::before { content: ""; position: absolute; inset: 0; pointer-events: none; opacity: .48; background-image: radial-gradient(circle at 8% 17%, #d3e6df 0 1px, transparent 1.5px), radial-gradient(circle at 24% 63%, #d3e6df 0 .7px, transparent 1.3px), radial-gradient(circle at 43% 9%, #d3e6df 0 1px, transparent 1.5px), radial-gradient(circle at 67% 82%, #d3e6df 0 .7px, transparent 1.3px), radial-gradient(circle at 89% 36%, #d3e6df 0 1px, transparent 1.5px); background-size: 431px 347px; }
+.shared-floor__benches { position: absolute; left: 50%; top: 50%; transform-origin: center; }
+.shared-floor__connections { position: absolute; inset: 0; pointer-events: none; overflow: visible; }
+.shared-floor__connections path { fill: none; stroke: var(--floor-accent); stroke-width: 1.5; opacity: .4; }
+.shared-floor__connections .is-shared { stroke-dasharray: 5 6; }
+
+/* Islands: painting and caption share one upright plane (billboarded in Iso);
+   the crew sit on the projected grid. */
+.shared-floor__island { position: absolute; }
+.has-boundaries .shared-floor__island { border: 1px dashed var(--floor-line-2); border-radius: 25px; }
+.shared-floor__place-presentation { position: absolute; inset: 0; pointer-events: none; transform-origin: center; }
+.is-iso .shared-floor__place-presentation { transform: matrix(.57735027, -.57735027, 1, 1, 0, 0); }
+/* layout: one 647×809 panel at the group width plus a 40px bleed per side, centred on the group.
+   The mask reaches full transparency at the panel edge so no rectangle ghosts through. */
+.shared-floor__outpost { position: absolute; left: -40px; top: 50%; width: calc(100% + 80px); aspect-ratio: 647 / 809; transform: translateY(-50%); pointer-events: none; background-size: 300% 100%; background-repeat: no-repeat; opacity: .9; mask-image: radial-gradient(ellipse 50% 50% at center, #000 60%, transparent 100%); }
+/* layout: platform socket, bottom-centre, independent of caption size. */
+.shared-floor__label-anchor { position: absolute; left: 50%; top: calc(50% + 352px); width: 1px; height: 70px; background: linear-gradient(#c0d5d580, #c0d5d530); pointer-events: none; }
+.shared-floor__label-anchor::before { content: ""; position: absolute; top: -2px; left: -2px; width: 5px; height: 5px; border-radius: 50%; background: #b6ccc7; }
+/* layout: the workspace caption hangs below the painting, outside its playable surface. */
+.shared-floor__island button.shared-floor__gathering-label { position: absolute; top: calc(50% + 430px); left: 50%; transform: translateX(-50%); transform-origin: top center; z-index: 3; display: flex; flex-direction: column; align-items: center; gap: 4px; width: max-content; max-width: 460px; padding: 8px 12px; border: 0; border-radius: 8px; background: transparent; color: #e4ece5; font-family: inherit; font-size: 16px; letter-spacing: .025em; text-align: center; text-shadow: 0 2px 5px #03090c; opacity: .8; cursor: pointer; pointer-events: auto; }
+.shared-floor__island button.shared-floor__gathering-label:hover { background: #adcac012; }
+.shared-floor__island button.shared-floor__gathering-label:focus-visible { outline: 2px solid #c7d79e; outline-offset: 4px; }
+.shared-floor__gathering-label strong { font-weight: 500; font-size: 16px; }
+.shared-floor__gathering-label small { font-size: 11px; line-height: 1.4; letter-spacing: 0; overflow-wrap: anywhere; color: #b0c2ce; }
+/* Optional furniture (layer toggle). */
+.shared-floor__optional-table { position: absolute; left: 100px; right: 30px; bottom: 0; min-height: 65px; border: 1px solid var(--floor-line-2); border-bottom: 6px solid var(--floor-face-3); border-radius: 20px; background: var(--floor-face-2); padding: 15px; z-index: 1; }
+.shared-floor__optional-table > span { color: var(--floor-muted); font-size: 13px; }
+.shared-floor__optional-table > div { display: flex; gap: 8px; }
+.shared-floor__optional-table button { border: 1px solid var(--floor-line-soft); background: var(--floor-bg); color: var(--floor-ink); border-radius: 5px; padding: 7px; width: 64px; cursor: pointer; }
+.shared-floor__optional-table small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; }
+.is-iso .shared-floor__optional-table > span, .is-iso .shared-floor__optional-table button small { display: inline-block; transform-origin: center; transform: matrix(.57735027, -.57735027, 1, 1, 0, 0); }
+
+/* Crew: each actor stands on a glass footing with a crisp caption below; work
+   context is revealed on hover, focus, or selection. */
+.shared-floor__crew { position: relative; width: 100%; height: 100%; }
+.shared-floor__wanderer { position: absolute; width: 84px; height: 94px; z-index: 2; touch-action: none; user-select: none; transition: opacity 180ms ease; }
+.shared-floor__wanderer:hover { z-index: 6; }
+.is-iso .shared-floor__wanderer { transform: matrix(.57735027, -.57735027, 1, 1, 0, 0); }
+.has-selection .shared-floor__wanderer:not(.is-selected):not(.is-connected) { opacity: .8; }
+.shared-floor__wanderer.is-selected::after { content: ""; position: absolute; top: 57px; left: -5px; width: 94px; height: 37px; border: 0; border-radius: 50%; background: radial-gradient(ellipse, #ffffff38 0%, #ffffff18 35%, #ffffff00 72%); filter: blur(5px); mix-blend-mode: screen; pointer-events: none; z-index: -1; }
+.shared-floor__wanderer.is-selected .shared-floor-character__sprite { filter: drop-shadow(0 4px 5px #ffffff30); }
+.shared-floor__wanderer.is-connected:not(.is-selected)::after { content: ""; position: absolute; top: 68px; left: 22px; width: 40px; height: 9px; border-bottom: 2px solid var(--floor-accent); border-radius: 50%; pointer-events: none; opacity: .5; }
+.shared-floor__wanderer[data-dragging] .shared-floor-character { cursor: grabbing; }
+.shared-floor__wanderer[data-dragging] .shared-floor-character__context { display: none; }
+.shared-floor-character__sprite.is-rendered { animation: none !important; }
+/* Restrained status ink: pearl, sage, and a reserved warm attention tone. */
+.shared-floor__crew .shared-floor-character { cursor: grab; --actor-status-ink: #bdc8d0; }
+.shared-floor__crew .shared-floor-character.is-working { --actor-status-ink: #b9d2c4; }
+.shared-floor__crew .shared-floor-character.is-attention, .shared-floor__crew .shared-floor-character.is-blocked { --actor-status-ink: #ddc5a0; }
+.shared-floor-character.is-attention .shared-floor-character__shadow, .shared-floor-character.is-blocked .shared-floor-character__shadow { background: #e6b85b40; width: 50px; left: 17px; }
+/* Footing behind the whole actor, sprite above it, caption and runtime mark on top. */
+.shared-floor__crew .shared-floor-character::before { content: ""; position: absolute; left: 50%; top: 75px; width: 66px; height: 22px; transform: translateX(-50%); z-index: 0; border-radius: 50%; background: #b7dbeb16; border: 1px solid #d9efff28; box-shadow: inset 0 1px 0 #ffffff12, 0 3px 8px #03101925; backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px); pointer-events: none; }
+.shared-floor__crew .shared-floor-character__sprite { z-index: 1; }
+.shared-floor__crew .shared-floor-character__runtime-mark { z-index: 2; }
+.shared-floor__crew .shared-floor-character .shared-floor-character__label { position: absolute; top: 99px; left: 50%; transform: translateX(-50%); z-index: 2; padding: 4px 9px; line-height: 1.4; opacity: 1; visibility: visible; background: #10212c30; border: 1px solid #e5f4ff0d; border-radius: 7px; box-shadow: none; text-shadow: none; backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px); }
+.shared-floor__crew .shared-floor-character .shared-floor-character__label strong { font-size: 12px; font-weight: 500; text-transform: capitalize; color: #e7ecee; }
+.shared-floor__crew .shared-floor-character .shared-floor-character__label small { display: none; font-size: 12px; color: var(--actor-status-ink); }
+.shared-floor__crew .shared-floor-character:hover .shared-floor-character__label small,
+.shared-floor__crew .shared-floor-character:focus-visible .shared-floor-character__label small,
+.shared-floor__crew .is-selected .shared-floor-character__label small { display: block; }
+.shared-floor__crew .shared-floor-character .shared-floor-character__context strong { color: var(--actor-status-ink); }
+.shared-floor__crew .shared-floor-character .shared-floor-character__context-activity { color: #bdc8d0; }
+.shared-floor__crew .shared-floor-character .shared-floor-character__context small { color: #a6b4be; }
+.shared-floor__talk-follow { position: absolute; bottom: 105px; left: 50%; transform: translateX(-50%); white-space: nowrap; color: #b9d2c4; font-size: 10px; pointer-events: none; }
+.shared-floor__talk-follow span { margin-left: 6px; color: #bdc8d0; }
+
+/* Chrome: teams top-left, layers top-right, camera bottom-right, minimap or
+   workspace panel bottom-left. One 11px type size across the corner controls. */
+.shared-floor__camera { position: absolute; z-index: 10; bottom: 12px; right: 12px; display: flex; gap: 4px; padding: 5px; background: var(--floor-bg); border: 1px solid var(--floor-line-soft); border-radius: 7px; }
+.shared-floor__camera button, .shared-floor__layers > button, .shared-floor__teams > button { padding: 7px 9px; border: 0; border-radius: 4px; background: transparent; color: var(--floor-muted); cursor: pointer; font-size: 11px; }
+.shared-floor__camera [role="group"] { display: flex; gap: 3px; padding-right: 5px; border-right: 1px solid var(--floor-line-soft); }
+.shared-floor__camera button[aria-pressed="true"] { color: var(--floor-accent); background: var(--floor-face-2); }
+.shared-floor__layers { position: absolute; z-index: 10; top: 0; right: 12px; font-size: 11px; }
+.shared-floor__layers > button { display: block; margin-left: auto; }
+.shared-floor__layers > div { margin-top: 5px; padding: 10px; border: 1px solid var(--floor-line-2); border-radius: 6px; background: var(--floor-bg); }
+.shared-floor__layers label { display: flex; align-items: center; gap: 8px; padding: 5px; }
+.shared-floor__layers input { accent-color: var(--floor-accent); }
+.shared-floor__teams { position: absolute; top: 10px; left: 18px; z-index: 20; }
+.shared-floor__teams section { width: 230px; max-height: 300px; overflow: auto; background: #111715f5; border: 1px solid #ffffff20; border-radius: 12px; padding: 12px; }
+.shared-floor__teams section > strong { display: block; font-size: 11px; color: var(--floor-muted); margin-bottom: 8px; }
+.shared-floor__teams section button { display: block; width: 100%; text-align: left; border: 0; border-radius: 5px; padding: 7px; background: transparent; color: var(--floor-ink); cursor: pointer; }
+.shared-floor__teams section button:hover { background: #ffffff0b; }
+.shared-floor__teams section .shared-floor__team-child { padding-left: 20px; color: var(--floor-accent); }
+.shared-floor__teams small { float: right; color: var(--floor-muted); font-size: 10px; }
+.shared-floor__teams p { color: var(--floor-muted); font-size: 12px; }
+/* A bounded, projection-aware navigation surface (176×112, mirrored in floor-minimap.ts). */
+.shared-floor__minimap { position: absolute; z-index: 10; left: 12px; bottom: 12px; width: 176px; height: 112px; overflow: hidden; border: 1px solid var(--floor-line-soft); border-radius: 6px; background: rgba(9, 22, 29, .72); backdrop-filter: blur(12px); opacity: .8; touch-action: none; cursor: grab; }
+.shared-floor__minimap:active { cursor: grabbing; }
+.shared-floor__minimap svg { display: block; width: 100%; height: 100%; pointer-events: none; }
+.shared-floor__mini-ground { fill: var(--floor-bg); }
+.shared-floor__mini-camera { fill: #b9e46c08; stroke: var(--floor-accent); stroke-width: 1; pointer-events: none; }
+.shared-floor__minimap button { position: absolute; width: 12px; height: 12px; transform: translate(-50%, -50%); padding: 0; border: 1px solid var(--floor-bg); background: var(--floor-accent); border-radius: 50%; cursor: pointer; }
+.shared-floor__minimap button:focus-visible { outline: 2px solid white; outline-offset: 3px; }
+.shared-floor:has(.shared-floor__workspace-panel) .shared-floor__minimap { visibility: hidden; }
+.shared-floor__workspace-panel { position: absolute; bottom: 12px; left: 12px; z-index: 12; width: 350px; max-width: calc(100% - 24px); max-height: 55%; overflow: auto; padding: 16px; background: #101d26f5; color: #e4ece5; border: 1px solid #b6ccc725; border-radius: 10px; box-shadow: 0 8px 24px #0006; }
+.shared-floor__workspace-panel header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.shared-floor__workspace-panel header button { background: transparent; border: 0; color: inherit; font-size: 22px; cursor: pointer; }
+.shared-floor__workspace-panel p { overflow-wrap: anywhere; font-size: 12px; color: #b0c2ce; margin: 10px 0; }
+.shared-floor__workspace-panel > small { color: #c7d79e; font-size: 11px; overflow-wrap: anywhere; }
+.shared-floor__workspace-panel h4 { font-size: 11px; margin: 16px 0 6px; color: #b0c2ce; }
+.shared-floor__workspace-panel button:focus-visible { outline: 2px solid #c7d79e; outline-offset: 3px; }
+.shared-floor__workspace-actor { display: flex; flex-direction: column; gap: 5px; width: 100%; padding: 12px 0; border: 0; border-bottom: 1px solid #b6ccc718; background: transparent; color: inherit; text-align: left; font-size: 12px; cursor: pointer; }
+.shared-floor__workspace-actor:last-child { border-bottom: 0; }
+.shared-floor__workspace-actor:hover { color: #c7d79e; }
+.shared-floor__workspace-actor small { color: #b0c2ce; font-size: 10px; }
+.shared-floor__workspace-actor-heading { display: flex; justify-content: space-between; gap: 12px; align-items: baseline; }
+.shared-floor__workspace-runtime { font-size: 10px; line-height: 1.5; color: #b0c2ce; overflow-wrap: anywhere; }
+.shared-floor__workspace-task { font-size: 12px; line-height: 1.5; color: #dbe5df; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+.world-actor-talk { position: fixed; z-index: 1000; width: 360px; max-width: calc(100vw - 24px); padding: 12px; border: 1px solid #c7dce02b; border-radius: 12px; background: #102029f5; box-shadow: 0 12px 36px #0005; color: #e7ecee; }
+.world-actor-talk > button { display: flex; justify-content: space-between; width: 100%; padding: 10px; border: 0; border-radius: 6px; background: transparent; color: inherit; text-align: left; cursor: pointer; }
+.world-actor-talk > button:hover, .world-actor-talk button:focus-visible { background: #ffffff12; }
+.world-actor-talk header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; font-size: 13px; }
+.world-actor-talk header button { background: none; border: 0; color: inherit; font-size: 22px; cursor: pointer; }
+.world-actor-talk small { color: #a6b4be; font-size: 11px; }
+.world-actor-talk__header-actions { display: flex; align-items: center; gap: 4px; }
+/* Talk-back: a named row with a switch, not a glyph. Both halves of the state
+   are visible at once — the word and the side the knob sits on — because the
+   tinted icon this replaced was unreadable in either state. */
+.world-actor-talk__talkback { align-items: center; gap: 10px; margin-top: 4px; }
+.world-actor-talk__talkback > span:first-child { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.world-actor-talk__state { display: flex; align-items: center; gap: 8px; flex: none; }
+.world-actor-talk__state small { color: #8d9aa2; }
+.world-actor-talk__switch { position: relative; width: 30px; height: 17px; border: 1px solid #c7dce03d; border-radius: 9px; background: #ffffff0f; transition: background 140ms ease, border-color 140ms ease; }
+.world-actor-talk__switch::after { content: ""; position: absolute; top: 2px; left: 2px; width: 11px; height: 11px; border-radius: 50%; background: #8d9aa2; transition: transform 140ms ease, background 140ms ease; }
+.world-actor-talk__talkback.is-on .world-actor-talk__switch { border-color: var(--floor-accent, #4fd1a5); background: color-mix(in oklab, var(--floor-accent, #4fd1a5) 30%, transparent); }
+.world-actor-talk__talkback.is-on .world-actor-talk__switch::after { transform: translateX(13px); background: var(--floor-accent, #4fd1a5); }
+.world-actor-talk__talkback.is-on .world-actor-talk__state small { color: var(--floor-accent, #4fd1a5); }
+@media (prefers-reduced-motion: reduce) { .world-actor-talk__switch, .world-actor-talk__switch::after { transition: none; } }
+.world-actor-talk__receipt { display: flex; flex-direction: column; gap: 6px; margin-top: 10px; padding: 8px 10px; border: 1px solid #c7dce02b; border-radius: 8px; }
+.world-actor-talk__receipt strong { font-size: 12px; }
+.world-actor-talk__links { display: flex; flex-wrap: wrap; gap: 6px; }
+.world-actor-talk__links button { padding: 4px 8px; border: 1px solid currentColor; border-radius: 6px; background: none; color: var(--floor-accent, #4fd1a5); font-size: 11px; cursor: pointer; }
+
+/* Experiment surface (a lane's work run opened inside the floor). */
+.shared-floor__experiment { display: flex; flex-direction: column; overflow: hidden; background: var(--floor-bg); }
+.shared-floor__back { align-self: flex-start; flex: none; margin-bottom: 10px; padding: 8px 10px; color: var(--floor-muted); background: none; border: 0; font-size: 11px; cursor: pointer; }
+.shared-floor__experiment > .work-run { flex: 1; min-height: 0; }
+.shared-floor__run-link { padding: 8px; margin-top: 5px; width: 100%; text-align: left; border: 0; border-top: 1px solid var(--floor-line-soft); background: none; color: var(--floor-accent); font-size: 11px; cursor: pointer; }

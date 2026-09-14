@@ -1,0 +1,12 @@
+.sprout-action-sprite { display: inline-flex; position: relative; align-items: end; justify-content: center; pointer-events: none; user-select: none; }
+.sprout-action-sprite__crop { position: relative; display: block; overflow: hidden; flex: none; }
+.sprout-action-sprite__crop img { position: absolute; max-width: none; display: block; pointer-events: none; }
+.sprout-action-proof { display: grid; justify-items: center; gap: 16px; padding: 20px; color: #e5eddf; background: #344a3a; }
+.sprout-action-proof > div { display: flex; flex-wrap: wrap; gap: 6px; }
+.sprout-action-proof button { font: inherit; color: inherit; background: #455f48; border: 1px solid #8ba487; border-radius: 5px; padding: 6px 10px; cursor: pointer; }
+.sprout-action-proof button[aria-pressed=true] { background: #e1eccb; color: #263e2b; }
+.sprout-action-proof button:focus-visible { outline: 2px solid #f3e5a6; outline-offset: 3px; }
+.sprout-action-proof small { font-size: 11px; }
+.adventures .sprout-action-proof button { background:#455f48; color:#e5eddf; border-color:#8ba487; }
+.adventures .sprout-action-proof button:hover { background:#557252; }
+.adventures .sprout-action-proof button[aria-pressed=true] { background:#e1eccb; color:#263e2b; }

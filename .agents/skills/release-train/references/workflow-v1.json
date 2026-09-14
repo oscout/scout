@@ -16,7 +16,7 @@
     {"id":"S50","title":"Run proportional validation and attach receipts","outputType":"ValidationReceiptSet","transitions":["S60"],"externalMutation":false},
     {"id":"S60","title":"Synthesize, open, or update clean PRs","outputType":"PullRequestReceiptSet","transitions":["S70"],"externalMutation":true},
     {"id":"S70","title":"Review gate","outputType":"ReviewDecisionSet","transitions":["S40","S50","S80"],"externalMutation":false},
-    {"id":"S80","title":"CI and mergeability gate","outputType":"MergeGateSet","transitions":["S40","S50","S90"],"externalMutation":false},
+    {"id":"S80","title":"Validation evidence and mergeability gate","outputType":"MergeGateSet","transitions":["S40","S50","S90"],"externalMutation":false},
     {"id":"S90","title":"Merge and run or verify canonical release path","outputType":"ReleaseReceiptSet","transitions":["S100"],"externalMutation":true},
     {"id":"S100","title":"Convergence poll and authorized reconciliation","outputType":"ConvergenceLedger","transitions":["S110"],"externalMutation":true},
     {"id":"S110","title":"Final ledger, receipts, unresolved work, and next checkpoint","outputType":"CompletionReport","transitions":[],"externalMutation":false}

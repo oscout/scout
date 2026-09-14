@@ -26,6 +26,7 @@ import {
   describeUnavailableSessionEndpoint,
   homeEndpointForAgent,
 } from "./broker-endpoint-selection.js";
+import { isReachableMeshNode } from "./broker-mesh-forwarding-service.js";
 
 export type BrokerInvocationDispatchRuntime = {
   snapshot(): RuntimeSnapshot;
@@ -347,6 +348,25 @@ export class BrokerInvocationDispatchService {
       }
       await this.deps.enqueuePeerInvocation(invocation, authorityNode!);
       return;
+    }
+
+    // Cardless session targets carry no agent card, so authority rides on the
+    // endpoint: one owned by another node (adopted from a mesh session wake)
+    // forwards there instead of dead-ending in a local launch.
+    if (!targetAgent) {
+      const homeEndpoint = homeEndpointForAgent(this.deps.runtime.snapshot(), invocation.targetAgentId);
+      if (homeEndpoint && homeEndpoint.nodeId !== this.deps.nodeId) {
+        const ownerNode = this.deps.runtime.node(homeEndpoint.nodeId);
+        if (!ownerNode || !isReachableMeshNode(ownerNode)) {
+          await this.failAcceptedInvocation(
+            invocation,
+            `session endpoint for ${invocation.targetAgentId} lives on ${homeEndpoint.nodeId}, which has no reachable broker URL`,
+          );
+          return;
+        }
+        await this.deps.enqueuePeerInvocation(invocation, ownerNode);
+        return;
+      }
     }
 
     if (flight.state === "failed") {

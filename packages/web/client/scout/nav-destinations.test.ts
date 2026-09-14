@@ -6,17 +6,14 @@ import {
   areaSubNavForRoute,
   getDestination,
   projectAreaSubNav,
-  projectCoreSystemMenuEntries,
   projectGoShortcuts,
   projectJumpDockItems,
   projectOpsSecondaryNav,
-  projectOpsSystemMenuEntries,
   projectPaletteNavCommands,
   sidebarSubNavForRoute,
   projectTopNavItems,
   type NavDestinationId,
 } from "./nav-destinations.ts";
-import { CORE_SYSTEM_MENU_ENTRIES, SYSTEM_OPS_ENTRIES } from "./nav-system-menu-config.ts";
 import { AGENTS_SECONDARY_NAV, OPS_SECONDARY_NAV } from "./secondaryNavConfig.ts";
 import { GO_SHORTCUTS } from "../lib/go-shortcuts.ts";
 import { TOP_NAV_ITEMS } from "./topNavConfig.ts";
@@ -44,9 +41,9 @@ describe("nav destination catalog", () => {
     }
   });
 
-  test("exposes Crew, Repositories, and Code Browser as first-class destinations", () => {
+  test("exposes Agents, Repositories, and Code Browser as first-class destinations", () => {
     expect(getDestination("projects")).toMatchObject({
-      label: "Crew & Workspaces",
+      label: "Agents",
       route: { view: "agents-v2" },
     });
     expect(getDestination("repos")).toMatchObject({
@@ -63,35 +60,30 @@ describe("nav destination catalog", () => {
     expect(projectTopNavItems()).toEqual(TOP_NAV_ITEMS);
     expect(TOP_NAV_ITEMS.map((item) => item.key)).toEqual([
       "home",
-      "agents",
-      "sessions",
       "chat",
+      "agents",
+      "terminals",
+      "broker",
+      "search",
+      "ops",
     ]);
   });
 
-  test("system menu projections match public exports and share active with secondary ops", () => {
-    expect(projectCoreSystemMenuEntries().map((e) => e.key)).toEqual(
-      CORE_SYSTEM_MENU_ENTRIES.map((e) => e.key),
-    );
-    expect(projectOpsSystemMenuEntries().map((e) => e.key)).toEqual(
-      SYSTEM_OPS_ENTRIES.map((e) => e.key),
-    );
-    expect(SYSTEM_OPS_ENTRIES.map((e) => e.key)).not.toContain("repos");
-    expect(SYSTEM_OPS_ENTRIES.map((e) => e.key)).not.toContain("code");
+  test("ops tab destination lights for every ops mode; mission stays a deep link", () => {
+    const ops = getDestination("ops");
+    expect(ops.route).toEqual({ view: "ops" });
+    expect(ops.active({ view: "ops" })).toBe(true);
+    expect(ops.active({ view: "ops", mode: "tail" })).toBe(true);
+    expect(ops.active({ view: "ops", mode: "lanes" })).toBe(true);
+    expect(ops.active({ view: "search" })).toBe(false);
 
-    const systemMission = SYSTEM_OPS_ENTRIES.find((e) => e.key === "control");
     const secondaryMission = OPS_SECONDARY_NAV
       .flatMap((g) => g.items)
       .find((item) => item.id === "control");
-
-    expect(systemMission).toBeDefined();
     expect(secondaryMission).toBeDefined();
-    // Shared destination identity: same active semantics (no duplicated predicates).
-    expect(systemMission!.active).toBe(secondaryMission!.active);
-    expect(systemMission!.route).toEqual(secondaryMission!.route);
-    expect(systemMission!.active({ view: "ops" })).toBe(true);
-    expect(systemMission!.active({ view: "ops", mode: "mission" })).toBe(true);
-    expect(systemMission!.active({ view: "ops", mode: "tail" })).toBe(false);
+    expect(secondaryMission!.route).toEqual({ view: "ops", mode: "mission" });
+    expect(secondaryMission!.active({ view: "ops", mode: "mission" })).toBe(true);
+    expect(secondaryMission!.active({ view: "ops", mode: "tail" })).toBe(false);
   });
 
   test("ops secondary nav items resolve to catalog destinations with valid active predicates", () => {
@@ -169,7 +161,7 @@ describe("nav destination catalog", () => {
     expect(gated.some((c) => c.id === "nav:ops-atop")).toBe(false);
     // Settings drawer is intentionally absent from the destination projection.
     expect(all.some((c) => c.id === "nav:settings")).toBe(false);
-    expect(all.find((c) => c.id === "nav:agents")?.label).toBe("Go to Crew");
+    expect(all.find((c) => c.id === "nav:agents")?.label).toBe("Go to Agents");
     expect(all.find((c) => c.id === "nav:repos")?.label).toBe("Open Repositories");
     expect(all.find((c) => c.id === "nav:code")?.label).toBe("Open Code Browser");
     // Agent config remains a routed destination.
@@ -194,7 +186,7 @@ describe("nav destination catalog", () => {
     const projects = projectAreaSubNav("projects");
     expect(projects.map((item) => item.id)).toEqual(["projects", "repos", "code"]);
     expect(projects.map((item) => item.label)).toEqual([
-      "Crew & Workspaces",
+      "Agents",
       "Repositories",
       "Code Browser",
     ]);

@@ -93,12 +93,8 @@
   background: color-mix(in srgb, var(--accent) 10%, transparent);
 }
 
-.ml-divider {
-  display: inline-block;
-  width: 1px;
-  height: 10px;
-  background: color-mix(in srgb, var(--ink) 16%, transparent);
-  margin: 0 var(--space-2xs);
+.ml-section-label--inline {
+  margin: 0 var(--space-2xs) 0 0;
 }
 
 .ml-chips--grouping {

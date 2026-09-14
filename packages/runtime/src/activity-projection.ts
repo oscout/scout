@@ -1,3 +1,4 @@
+import { iterateMessageRecords } from "./broker-message-records.js";
 import type {
   CollaborationRecord,
   FlightRecord,
@@ -136,7 +137,7 @@ export function collectActivityEventsForAgent(
     events.push(collaborationActivityEvent(record, agentId));
   }
 
-  for (const message of Object.values(snapshot.messages)) {
+  for (const message of iterateMessageRecords(snapshot.messages)) {
     if (!messageTouchesAgent(message, agentId)) continue;
     events.push(messageActivityEvent(message, agentId));
   }
@@ -167,7 +168,7 @@ function collectActivityAgentIds(snapshot: ActivityProjectionSnapshot): ScoutId[
       agentIds.add(requesterId);
     }
   }
-  for (const message of Object.values(snapshot.messages)) {
+  for (const message of iterateMessageRecords(snapshot.messages)) {
     if (snapshot.agents[message.actorId]) agentIds.add(message.actorId);
     for (const mention of message.mentions ?? []) {
       if (snapshot.agents[mention.actorId]) agentIds.add(mention.actorId);

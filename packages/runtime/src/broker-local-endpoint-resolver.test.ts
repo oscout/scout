@@ -13,6 +13,7 @@ import {
   PENDING_PROVISIONED_RUNTIME_TRUST_MS,
 } from "./broker-local-endpoint-resolver.js";
 import type { LocalAgentBinding } from "./local-agents.js";
+import type { LocalEndpointSessionObservation } from "./session-observation.js";
 
 function testActor(input: Partial<ActorIdentity> = {}): ActorIdentity {
   return {
@@ -81,10 +82,12 @@ function createResolver(input: {
     metadata?: Record<string, unknown>;
   };
   isolatedEndpoint?: AgentEndpoint | null;
+  observe?: (endpoint: AgentEndpoint) => Promise<LocalEndpointSessionObservation | null>;
   now?: number;
 } = {}) {
   const runtime = createInMemoryControlRuntime({}, { localNodeId: "node-1" });
   const persistedEndpoints: AgentEndpoint[] = [];
+  const observedEndpoints: AgentEndpoint[] = [];
   const upsertedActors: ActorIdentity[] = [];
   const upsertedAgents: AgentDefinition[] = [];
   const ensuredBindings: Array<{ agentId: string; harness?: string }> = [];
@@ -106,6 +109,12 @@ function createResolver(input: {
       isolatedInvocations.push(invocation);
       return input.isolatedEndpoint ?? null;
     },
+    ...(input.observe ? {
+      observeLocalEndpointSession: async (endpoint: AgentEndpoint) => {
+        observedEndpoints.push(endpoint);
+        return input.observe!(endpoint);
+      },
+    } : {}),
     async upsertActor(actor) {
       upsertedActors.push(actor);
       await runtime.upsertActor(actor);
@@ -130,6 +139,7 @@ function createResolver(input: {
     ensuredBindings,
     ensuredSessionEndpoints,
     isolatedInvocations,
+    observedEndpoints,
   };
 }
 
@@ -309,6 +319,352 @@ describe("BrokerLocalEndpointResolver", () => {
     expect(harness.ensuredSessionEndpoints.map((candidate) => candidate.id)).toEqual(["registry-codex"]);
     expect(harness.persistedEndpoints).toHaveLength(1);
   });
+
+  // --- tmux sessions: identity and runtime come from harness evidence ---
+  //
+  // A Scout-launched claude session in tmux registers pending: alive, but its
+  // harness id was never learned, so it matches no alias. The harness records
+  // its own id next to the tmux pane it runs in; `observe` stands in for that
+  // record here (see claude-session-records.test.ts for the on-disk reader).
+  const nativeId = "7b81300d-0a9c-4953-8d7f-9274b11ebdfb";
+  const foreignId = "0a898412-b3a2-4659-aad3-405e9a24d015";
+
+  function tmuxObservation(
+    sessionId: string,
+    runtime: LocalEndpointSessionObservation["runtime"] = { harness: "claude", model: "claude-opus-5" },
+  ): LocalEndpointSessionObservation {
+    return {
+      sessionId,
+      runtime,
+      runtimeSource: "claude-statusline",
+      evidence: { source: "claude-session-record", tmuxSession: "session-mtus22pe", pid: 17446 },
+      observedAt: 10_000_000,
+    };
+  }
+
+  function pendingTmuxEndpoint(input: Partial<AgentEndpoint> = {}): AgentEndpoint {
+    return testEndpoint({
+      id: "isolated-tmux",
+      harness: "claude",
+      transport: "tmux",
+      state: "active",
+      sessionId: "session-mtus22pe",
+      ...input,
+      metadata: {
+        source: "scout-isolated-agent-session",
+        sessionBacked: true,
+        pendingExternalSession: true,
+        pendingExternalSessionAt: 9_000,
+        model: "claude-opus-5",
+        alive: true,
+        ...(input.metadata ?? {}),
+      },
+    });
+  }
+
+  test("binds the id the harness reports for a pending tmux session, then continues it by either alias", async () => {
+    const harness = createResolver({
+      now: 10_000_000,
+      observe: async () => tmuxObservation(nativeId),
+    });
+    await harness.runtime.upsertEndpoint(pendingTmuxEndpoint());
+
+    const resolved = await harness.resolver.resolveLocalEndpointForInvocation(testInvocation({
+      execution: { session: "existing", targetSessionId: nativeId },
+      ensureAwake: true,
+    }));
+
+    expect(resolved?.id).toBe("isolated-tmux");
+    expect(harness.observedEndpoints.map((endpoint) => endpoint.id)).toEqual(["isolated-tmux"]);
+    expect(harness.persistedEndpoints).toEqual([
+      expect.objectContaining({
+        id: "isolated-tmux",
+        // The Scout-owned routing id is untouched; the harness id is an alias.
+        sessionId: "session-mtus22pe",
+        metadata: expect.objectContaining({
+          externalSessionId: nativeId,
+          pendingExternalSession: false,
+          observedSessionId: nativeId,
+          observedRuntime: { harness: "claude", model: "claude-opus-5" },
+          observedRuntimeAt: 10_000_000,
+          observedRuntimeSource: "claude-statusline",
+          observedSessionEvidence: expect.objectContaining({ source: "claude-session-record", pid: 17446 }),
+        }),
+      }),
+    ]);
+
+    // Native alias and Scout session id name the same endpoint from now on.
+    for (const targetSessionId of [nativeId, "session-mtus22pe"]) {
+      const followUp = await harness.resolver.resolveLocalEndpointForInvocation(testInvocation({
+        execution: { session: "existing", targetSessionId },
+        ensureAwake: true,
+      }));
+      expect(followUp?.id).toBe("isolated-tmux");
+      expect(followUp?.metadata?.externalSessionId).toBe(nativeId);
+    }
+  });
+
+  test("never binds a caller's id that the harness did not report", async () => {
+    const harness = createResolver({
+      now: 10_000_000,
+      observe: async () => tmuxObservation(nativeId),
+    });
+    await harness.runtime.upsertEndpoint(pendingTmuxEndpoint());
+
+    // The only pending process is not proof that it is the caller's session.
+    await expect(harness.resolver.resolveLocalEndpointForInvocation(testInvocation({
+      execution: { session: "existing", targetSessionId: foreignId },
+      ensureAwake: true,
+    }))).rejects.toThrow(`session ${foreignId} is not currently reachable`);
+
+    // What the harness reported is still worth keeping; the claim is not.
+    expect(harness.persistedEndpoints).toHaveLength(1);
+    expect(harness.persistedEndpoints[0]?.metadata?.externalSessionId).toBe(nativeId);
+    expect(harness.persistedEndpoints[0]?.metadata?.externalSessionAdoptedAt).toBeUndefined();
+  });
+
+  test("leaves a session pending when there is no harness evidence and fabricates no runtime", async () => {
+    const harness = createResolver({
+      now: 9_000 + 15 * 60 * 60_000,
+      observe: async () => null,
+    });
+    await harness.runtime.upsertEndpoint(pendingTmuxEndpoint({
+      metadata: {
+        executionResolution: {
+          harness: { requested: "claude", resolved: "claude", source: "flag" },
+          model: { requested: "claude-opus-5", resolved: "claude-opus-5", source: "flag" },
+        },
+      },
+    }));
+
+    for (const execution of [
+      { session: "existing" as const, targetSessionId: nativeId },
+      { session: "existing" as const, targetSessionId: nativeId, harness: "claude" as const, model: "claude-opus-5" },
+    ]) {
+      await expect(harness.resolver.resolveLocalEndpointForInvocation(testInvocation({
+        execution,
+        ensureAwake: true,
+      }))).rejects.toThrow("is not currently reachable");
+    }
+    // Launch flags never became an observed runtime, and nothing was bound.
+    expect(harness.persistedEndpoints).toEqual([]);
+    expect(harness.observedEndpoints).toHaveLength(2);
+  });
+
+  test("judges an exact runtime on what the harness reports, not on launch flags", async () => {
+    const harness = createResolver({
+      now: 10_000_000,
+      observe: async () => tmuxObservation(nativeId, { harness: "claude", model: "claude-sonnet-5" }),
+    });
+    await harness.runtime.upsertEndpoint(pendingTmuxEndpoint({
+      metadata: {
+        executionResolution: {
+          model: { requested: "claude-opus-5", resolved: "claude-opus-5", source: "flag" },
+        },
+      },
+    }));
+
+    // Launched with opus flags, observed running sonnet: the observation wins.
+    await expect(harness.resolver.resolveLocalEndpointForInvocation(testInvocation({
+      execution: { session: "existing", targetSessionId: nativeId, harness: "claude", model: "claude-opus-5" },
+      ensureAwake: true,
+    }))).rejects.toThrow("session_runtime_mismatch");
+    expect(harness.persistedEndpoints.at(-1)?.metadata?.observedRuntime).toEqual({
+      harness: "claude",
+      model: "claude-sonnet-5",
+    });
+
+    const resolved = await harness.resolver.resolveLocalEndpointForInvocation(testInvocation({
+      execution: { session: "existing", targetSessionId: nativeId, harness: "claude", model: "claude-sonnet-5" },
+      ensureAwake: true,
+    }));
+    expect(resolved?.id).toBe("isolated-tmux");
+  });
+
+  test("an exact runtime stays unobserved when the harness reported only its identity", async () => {
+    const harness = createResolver({
+      now: 10_000_000,
+      observe: async () => tmuxObservation(nativeId, { harness: "claude" }),
+    });
+    await harness.runtime.upsertEndpoint(pendingTmuxEndpoint());
+
+    await expect(harness.resolver.resolveLocalEndpointForInvocation(testInvocation({
+      execution: { session: "existing", targetSessionId: nativeId, harness: "claude", model: "claude-opus-5" },
+      ensureAwake: true,
+    }))).rejects.toThrow("session_runtime_unobserved");
+    expect(harness.persistedEndpoints.at(-1)?.metadata?.observedRuntime).toEqual({ harness: "claude" });
+
+    // Without a runtime constraint the same session is simply continued.
+    const resolved = await harness.resolver.resolveLocalEndpointForInvocation(testInvocation({
+      execution: { session: "existing", targetSessionId: nativeId },
+      ensureAwake: true,
+    }));
+    expect(resolved?.id).toBe("isolated-tmux");
+  });
+
+  test("correlates each pending endpoint against its own harness record", async () => {
+    const harness = createResolver({
+      now: 10_000_000,
+      observe: async (endpoint) => tmuxObservation(`native-${endpoint.id}`),
+    });
+    for (const id of ["isolated-a", "isolated-b"]) {
+      await harness.runtime.upsertEndpoint(pendingTmuxEndpoint({ id, sessionId: id }));
+    }
+
+    const resolved = await harness.resolver.resolveLocalEndpointForInvocation(testInvocation({
+      execution: { session: "existing", targetSessionId: "native-isolated-b" },
+      ensureAwake: true,
+    }));
+    expect(resolved?.id).toBe("isolated-b");
+    expect(harness.persistedEndpoints.map((endpoint) => [endpoint.id, endpoint.metadata?.externalSessionId])).toEqual([
+      ["isolated-a", "native-isolated-a"],
+      ["isolated-b", "native-isolated-b"],
+    ]);
+
+    await expect(harness.resolver.resolveLocalEndpointForInvocation(testInvocation({
+      execution: { session: "existing", targetSessionId: "native-isolated-c" },
+      ensureAwake: true,
+    }))).rejects.toThrow("is not currently reachable");
+  });
+
+  test("an ordinary follow-up steers a live tmux session long after the provisioning grace", async () => {
+    // No session selector and no runtime constraint: the descriptive harness
+    // and model on the agent's card are not a request, so nothing is judged.
+    const harness = createResolver({
+      now: 9_000 + 15 * 60 * 60_000,
+      observe: async () => null,
+    });
+    await harness.runtime.upsertEndpoint(pendingTmuxEndpoint());
+
+    const resolved = await harness.resolver.resolveLocalEndpointForInvocation(testInvocation({
+      execution: { session: "existing" },
+      ensureAwake: true,
+    }));
+    expect(resolved?.id).toBe("isolated-tmux");
+    expect(harness.observedEndpoints).toEqual([]);
+    expect(harness.persistedEndpoints).toEqual([]);
+  });
+
+  test("re-verifies an adopted alias against the harness before an exact continuation", async () => {
+    // Left behind by the retired adoption path: a caller's id bound to the
+    // only pending process, stamped externalSessionAdoptedAt.
+    const harness = createResolver({
+      now: 10_000_000,
+      observe: async () => tmuxObservation(nativeId),
+    });
+    await harness.runtime.upsertEndpoint(pendingTmuxEndpoint({
+      metadata: {
+        pendingExternalSession: false,
+        externalSessionId: foreignId,
+        externalSessionAdoptedAt: 9_500,
+      },
+    }));
+
+    await expect(harness.resolver.resolveLocalEndpointForInvocation(testInvocation({
+      execution: { session: "existing", targetSessionId: foreignId },
+      ensureAwake: true,
+    }))).rejects.toThrow("session_identity_mismatch");
+    expect(harness.persistedEndpoints.at(-1)?.metadata).toEqual(expect.objectContaining({
+      externalSessionId: nativeId,
+      pendingExternalSession: false,
+    }));
+    expect(harness.persistedEndpoints.at(-1)?.metadata?.externalSessionAdoptedAt).toBeUndefined();
+
+    const resolved = await harness.resolver.resolveLocalEndpointForInvocation(testInvocation({
+      execution: { session: "existing", targetSessionId: nativeId },
+      ensureAwake: true,
+    }));
+    expect(resolved?.id).toBe("isolated-tmux");
+  });
+
+  test("rejects unexplained native identity drift even on flat dispatch while retaining Scout selectors", async () => {
+    const harness = createResolver({ now: 10_000_000, observe: async () => tmuxObservation(nativeId) });
+    await harness.runtime.upsertEndpoint(pendingTmuxEndpoint({
+      metadata: { flatDispatch: true, pendingExternalSession: false, externalSessionId: foreignId, nativeSessionId: foreignId },
+    }));
+    await expect(harness.resolver.resolveLocalEndpointForInvocation(testInvocation({
+      execution: { session: "existing", targetSessionId: foreignId, harness: "claude", model: "claude-opus-5" },
+      ensureAwake: true,
+    }))).rejects.toThrow("session_identity_mismatch");
+    const resolved = await harness.resolver.resolveLocalEndpointForInvocation(testInvocation({
+      execution: { session: "existing", targetSessionId: "session-mtus22pe" }, ensureAwake: true,
+    }));
+    expect(resolved?.metadata?.externalSessionId).toBe(nativeId);
+  });
+
+  for (const missing of ["null", "throw"] as const) {
+    test(`rejects previously verified native tmux identity when current observation is ${missing}`, async () => {
+      const harness = createResolver({ observe: async () => { if (missing === "throw") throw new Error("missing"); return null; } });
+      await harness.runtime.upsertEndpoint(pendingTmuxEndpoint({ metadata: {
+        pendingExternalSession: false, externalSessionId: nativeId,
+        observedRuntime: { harness: "claude", model: "claude-opus-5" },
+      } }));
+      await expect(harness.resolver.resolveLocalEndpointForInvocation(testInvocation({
+        execution: { targetSessionId: nativeId }, ensureAwake: true,
+      }))).rejects.toThrow("session_identity_unobserved");
+      expect(harness.ensuredSessionEndpoints).toHaveLength(0);
+      const stable = await harness.resolver.resolveLocalEndpointForInvocation(testInvocation({
+        execution: { targetSessionId: "session-mtus22pe" }, ensureAwake: true,
+      }));
+      expect(stable?.id).toBe("isolated-tmux");
+    });
+  }
+
+  test("an offline configured tmux endpoint cannot bypass native identity checks through revival", async () => {
+    const harness = createResolver({ observe: async () => null });
+    await harness.runtime.upsertEndpoint(pendingTmuxEndpoint({ state: "offline", metadata: {
+      pendingExternalSession: false, externalSessionId: nativeId, alive: false,
+    } }));
+    await expect(harness.resolver.resolveLocalEndpointForInvocation(testInvocation({
+      execution: { targetSessionId: nativeId }, ensureAwake: true,
+    }))).rejects.toThrow();
+    expect(harness.ensuredSessionEndpoints).toHaveLength(0);
+  });
+
+  test("only permits unobserved flat native resume when stopped, with no exact model or effort", async () => {
+    const harness = createResolver({ observe: async () => null });
+    const endpoint = pendingTmuxEndpoint({ metadata: {
+      flatDispatch: true, pendingExternalSession: false, externalSessionId: nativeId,
+      observedRuntime: { harness: "claude", model: "claude-opus-5", reasoningEffort: "high" },
+    } });
+    await harness.runtime.upsertEndpoint(endpoint);
+    const request = testInvocation({ execution: { targetSessionId: nativeId, harness: "claude" }, ensureAwake: true });
+    await expect(harness.resolver.resolveLocalEndpointForInvocation(request)).rejects.toThrow("session_identity_unobserved");
+    await harness.runtime.upsertEndpoint({ ...endpoint, metadata: { ...endpoint.metadata, alive: false } });
+    for (const dimension of [{ model: "claude-opus-5" }, { reasoningEffort: "high" }]) {
+      await expect(harness.resolver.resolveLocalEndpointForInvocation({ ...request,
+        execution: { ...request.execution, ...dimension },
+      })).rejects.toThrow("session_runtime_unobserved");
+    }
+    const resumed = await harness.resolver.resolveLocalEndpointForInvocation(request);
+    expect(resumed?.metadata?.externalSessionId).toBe(nativeId);
+    expect(resumed?.metadata?.observedRuntime).toBeNull();
+    expect(resumed?.metadata?.observedSessionEvidence).toBeNull();
+  });
+
+  for (const unavailable of ["absent", "null", "throw"] as const) {
+    test(`quarantines adopted aliases and runtime when observer is ${unavailable}`, async () => {
+      const harness = createResolver({ now: 10_000_000, ...(unavailable === "absent" ? {} : {
+        observe: async () => { if (unavailable === "throw") throw new Error("unavailable"); return null; },
+      }) });
+      await harness.runtime.upsertEndpoint(pendingTmuxEndpoint({ metadata: {
+        pendingExternalSession: false, externalSessionId: foreignId, nativeSessionId: foreignId,
+        externalSessionAdoptedAt: 9_500, observedRuntime: { harness: "claude", model: "claude-opus-5" },
+        observedModel: "claude-opus-5",
+      } }));
+      await expect(harness.resolver.resolveLocalEndpointForInvocation(testInvocation({
+        execution: { targetSessionId: foreignId, harness: "claude", model: "claude-opus-5" }, ensureAwake: true,
+      }))).rejects.toThrow("session_identity_mismatch");
+      await expect(harness.resolver.resolveLocalEndpointForInvocation(testInvocation({
+        execution: { targetSessionId: "session-mtus22pe", harness: "claude", model: "claude-opus-5" }, ensureAwake: true,
+      }))).rejects.toThrow("session_runtime_unobserved");
+      const stable = await harness.resolver.resolveLocalEndpointForInvocation(testInvocation({
+        execution: { targetSessionId: "session-mtus22pe" }, ensureAwake: true,
+      }));
+      expect(stable?.metadata?.externalSessionId).toBeNull();
+      expect(stable?.metadata?.observedRuntime).toBeNull();
+    });
+  }
 
   test("fails exact-session wake requests when the matching endpoint cannot be resumed", async () => {
     const harness = createResolver({ now: 14_000 });

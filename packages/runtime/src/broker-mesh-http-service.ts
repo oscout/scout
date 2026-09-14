@@ -1,5 +1,7 @@
+import { readRuntimeMessage } from "./broker-message-records.js";
 import type {
   AgentDefinition,
+  AgentEndpoint,
   DeliveryIntent,
   FlightRecord,
   InvocationRequest,
@@ -21,6 +23,7 @@ import type {
 
 export type BrokerMeshHttpRuntime = {
   message(messageId: string): MessageRecord | undefined;
+  readMessage?(messageId:string):Promise<MessageRecord|undefined>;
   planMessage(message: MessageRecord, options?: { localOnly?: boolean }): DeliveryIntent[];
   commitMessage(message: MessageRecord, deliveries: DeliveryIntent[]): Promise<void>;
   agent(agentId: string): AgentDefinition | undefined;
@@ -45,6 +48,12 @@ export type BrokerMeshHttpServiceDeps = {
   ) => Promise<BrokerJournalEntry[]>;
   applyProjectedEntries: (entries: BrokerJournalEntry[]) => Promise<void>;
   rememberInvocation: (invocation: InvocationRequest) => void;
+  /**
+   * Cardless session targets carry no agent card, so authority rides on the
+   * endpoint instead: a forwarded invocation is accepted when this node owns a
+   * live endpoint for the session actor id (registered by a mesh session wake).
+   */
+  localEndpointForActor?: (actorId: string) => AgentEndpoint | undefined;
   runDispatchJob?: (
     job: BrokerInvocationDispatchJob,
     invocation: InvocationRequest,
@@ -75,7 +84,7 @@ export class BrokerMeshHttpService {
         };
       }
 
-      if (this.deps.runtime.message(bundle.message.id)) {
+      if ((await readRuntimeMessage(this.deps.runtime,bundle.message.id))) {
         return {
           kind: "duplicate" as const,
           bundleEntries,
@@ -132,9 +141,11 @@ export class BrokerMeshHttpService {
 
       const targetAgent = this.deps.runtime.agent(bundle.invocation.targetAgentId);
       if (!targetAgent) {
-        throw new Error(`unknown target agent ${bundle.invocation.targetAgentId}`);
-      }
-      if (targetAgent.authorityNodeId !== this.deps.nodeId) {
+        const localEndpoint = this.deps.localEndpointForActor?.(bundle.invocation.targetAgentId);
+        if (!localEndpoint) {
+          throw new Error(`unknown target agent ${bundle.invocation.targetAgentId}`);
+        }
+      } else if (targetAgent.authorityNodeId !== this.deps.nodeId) {
         return {
           kind: "not_authority" as const,
           bundleEntries,

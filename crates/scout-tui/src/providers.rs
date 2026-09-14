@@ -164,7 +164,7 @@ fn status_error(resp: &http::HttpResponse) -> String {
     format!("providers feed: {status}")
 }
 
-fn web_auth_token() -> Option<String> {
+pub(crate) fn web_auth_token() -> Option<String> {
     if let Ok(token) = env::var("OPENSCOUT_WEB_AUTH_TOKEN") {
         let trimmed = token.trim();
         if !trimmed.is_empty() {

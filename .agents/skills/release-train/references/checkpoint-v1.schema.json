@@ -7,7 +7,7 @@
   "properties": {
     "schemaVersion":{"const":1},
     "workflowVersion":{"const":"1.0.0"},
-    "runId":{"type":"string","pattern":"^rt-[0-9]{8}-(09|17)-[a-f0-9]{8}$"},
+    "runId":{"type":"string","pattern":"^rt-[0-9]{8}-(09|17)-(?:[a-z][a-z0-9]{0,23}-)?[a-f0-9]{8}$"},
     "idempotencyKey":{"type":"string","pattern":"^sha256:"},
     "lock":{"$ref":"#/$defs/lock"},
     "currentStage":{"enum":["S00","S10","S20","S30","S40","S50","S60","S70","S80","S90","S100","S110"]},

@@ -5,13 +5,17 @@ describe("route breadcrumbs (SCO-083)", () => {
   test("skips top-level primary destinations", () => {
     expect(routeBreadcrumbForRoute({ view: "inbox" })).toBeNull();
     expect(routeBreadcrumbForRoute({ view: "agents-v2" })).toBeNull();
-    expect(routeBreadcrumbForRoute({ view: "sessions" })).toBeNull();
     expect(routeBreadcrumbForRoute({ view: "messages" })).toBeNull();
     expect(routeBreadcrumbForRoute({ view: "search" })).toBeNull();
+    // Broker and Terminals are top-level tabs now; no crumb repeats the tab.
+    expect(routeBreadcrumbForRoute({ view: "broker" })).toBeNull();
+    expect(routeBreadcrumbForRoute({ view: "terminal" })).toBeNull();
+    // Sessions is a sub-surface of the Terminals tab: the crumb names it.
+    expect(routeBreadcrumbForRoute({ view: "sessions" })).toBe("Sessions");
   });
 
-  test("uses agent-first labels for Crew workspace routes", () => {
-    expect(ROUTE_VIEW_LABELS["agents-v2"]).toBe("Crew & Workspaces");
+  test("uses agent-first labels for Agents workspace routes", () => {
+    expect(ROUTE_VIEW_LABELS["agents-v2"]).toBe("Agents");
     expect(ROUTE_VIEW_LABELS.code).toBe("Code Browser");
     expect(ROUTE_VIEW_LABELS.repos).toBe("Repositories");
   });
@@ -20,7 +24,6 @@ describe("route breadcrumbs (SCO-083)", () => {
     expect(routeBreadcrumbForRoute({ view: "conversation", conversationId: "c1" })).toBe(
       "Conversation",
     );
-    expect(routeBreadcrumbForRoute({ view: "broker" })).toBe("Dispatch");
     expect(routeBreadcrumbForRoute({ view: "settings", section: "agents" })).toBe(
       "Configuration",
     );

@@ -248,10 +248,10 @@ export function resolveScoutPairingPaths(): ScoutPairingPaths {
 }
 
 function createScoutPairingBridgeUrl(port: number): string {
-  return `ws://127.0.0.1:${port}`;
+  return `ws://127.0.0.1:${port}?events=0`;
 }
 
-async function createScoutPairingBridgeClient(port: number): Promise<ScoutPairingBridgeClient> {
+export async function createScoutPairingBridgeClient(port: number): Promise<ScoutPairingBridgeClient> {
   const url = createScoutPairingBridgeUrl(port);
   const socket = new WebSocket(url);
   let nextRequestId = 1;
@@ -270,6 +270,7 @@ async function createScoutPairingBridgeClient(port: number): Promise<ScoutPairin
   await new Promise<void>((resolve, reject) => {
     const timeout = setTimeout(() => {
       cleanup();
+      socket.close();
       reject(new Error(`Timed out connecting to Scout pairing bridge at ${url}.`));
     }, SCOUT_PAIRING_BRIDGE_CONNECT_TIMEOUT_MS);
 
@@ -279,16 +280,23 @@ async function createScoutPairingBridgeClient(port: number): Promise<ScoutPairin
     };
     const handleError = () => {
       cleanup();
+      socket.close();
       reject(new Error(`Unable to connect to Scout pairing bridge at ${url}.`));
+    };
+    const handleClosed = () => {
+      cleanup();
+      reject(new Error(`Scout pairing bridge closed before connecting at ${url}.`));
     };
     const cleanup = () => {
       clearTimeout(timeout);
       socket.removeEventListener("open", handleOpen);
       socket.removeEventListener("error", handleError);
+      socket.removeEventListener("close", handleClosed);
     };
 
     socket.addEventListener("open", handleOpen);
     socket.addEventListener("error", handleError);
+    socket.addEventListener("close", handleClosed);
   });
 
   const handleMessage = (event: MessageEvent) => {
@@ -407,7 +415,19 @@ async function withScoutPairingBridgeClient<T>(
   }
 }
 
-async function loadScoutPairingSessionSnapshots(port: number): Promise<SessionState[]> {
+const pendingSessionSnapshots = new Map<number, Promise<SessionState[]>>();
+
+export function loadScoutPairingSessionSnapshots(port: number): Promise<SessionState[]> {
+  const existing = pendingSessionSnapshots.get(port);
+  if (existing) return existing;
+  const pending = readScoutPairingSessionSnapshots(port).finally(() => {
+    if (pendingSessionSnapshots.get(port) === pending) pendingSessionSnapshots.delete(port);
+  });
+  pendingSessionSnapshots.set(port, pending);
+  return pending;
+}
+
+async function readScoutPairingSessionSnapshots(port: number): Promise<SessionState[]> {
   return await withScoutPairingBridgeClient(port, async (client) => {
     const status = await client.query<{ sessions: SessionSummary[] }>("bridgeStatus");
     const snapshots = await Promise.all(status.sessions.map((session) =>

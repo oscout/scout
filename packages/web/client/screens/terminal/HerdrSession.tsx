@@ -14,6 +14,7 @@ import type {
   HerdrAgentStatus,
   HerdrPaneProjection,
   HerdrTabProjection,
+  HerdrWorkspaceProjection,
 } from "@openscout/protocol";
 
 import { usePersistentState } from "@hudsonkit";
@@ -632,10 +633,24 @@ function TabHarnessMarks({ tab }: { tab: HerdrTabProjection }) {
   );
 }
 
-/** Compact per-tab summary for tight spaces (the workspace hosted tile). */
-export function herdrTabSummary(tab: HerdrTabProjection): { label: string; statuses: HerdrAgentStatus[] } {
+/**
+ * Compact per-tab summary for tight spaces (the workspace hosted tile).
+ *
+ * Takes the workspace as well as the tab because herdr numbers tabs within a
+ * workspace: a session with four one-tab workspaces reports four tabs all
+ * labelled "1", and a flattened list of those is four identical rows. The
+ * workspace is the thing the operator switches between, so it leads; the tab
+ * follows only when it carries a name of its own rather than its index.
+ */
+export function herdrTabSummary(
+  workspace: HerdrWorkspaceProjection,
+  tab: HerdrTabProjection,
+): { label: string; statuses: HerdrAgentStatus[] } {
+  const desk = workspace.label ?? workspace.workspaceId;
+  const deskLabel = workspace.number != null ? `${desk} ${workspace.number}` : desk;
+  const tabName = tab.label && tab.label !== String(tab.number ?? "") ? tab.label : null;
   return {
-    label: tab.label ?? `Tab ${tab.number ?? ""}`,
+    label: tabName ? `${deskLabel} · ${tabName}` : deskLabel,
     statuses: tab.panes.map((pane) => pane.agentStatus),
   };
 }

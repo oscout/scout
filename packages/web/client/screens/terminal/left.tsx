@@ -20,7 +20,7 @@ import {
   terminalSurfaceIdsEqual,
 } from "../../lib/terminal-sessions.ts";
 import type { TerminalSessionRecord } from "@openscout/protocol";
-import { makeSearchHandoff, rovingTabIndex, useListArrowNav, useSlashToFocus } from "../../lib/keyboard-nav.ts";
+import { isEditableTarget, rovingTabIndex, useListArrowNav } from "../../lib/keyboard-nav.ts";
 import { useScout } from "../../scout/Provider.tsx";
 import { agentStateLabel } from "../../lib/agent-state.ts";
 import { controlTerminalSurface, resolveAgentTerminalSurface } from "../../lib/terminal-relay.ts";
@@ -62,17 +62,42 @@ export function TerminalLeft() {
     | { state: "ready"; sessions: TerminalSessionRecord[] }
     | { state: "failed"; sessions: TerminalSessionRecord[]; error: string }
   >({ state: "loading", sessions: [] });
-  const [query, setQuery] = useState("");
   const [sort, setSort] = useState<TerminalNavSort>("recent");
   const [navMode, setNavMode] = usePersistentState<TerminalNavMode>("terminal-nav-mode", "fleet");
   const [inactiveExpanded, setInactiveExpanded] = useState(false);
   const [releasingItemId, setReleasingItemId] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
-  const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
   const onListKeyDown = useListArrowNav();
-  const onSearchKeyDown = makeSearchHandoff(() => listRef.current);
-  useSlashToFocus(useCallback(() => inputRef.current, []));
+  /**
+   * Finding a terminal has one door: the field on the Terminals stage. The
+   * rail no longer carries a search box of its own, so "/" pressed while the
+   * rail is showing goes to that field — opening the stage first when a
+   * terminal session, not the picker, is on screen.
+   */
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "/" || event.metaKey || event.ctrlKey || event.altKey) return;
+      if (isEditableTarget(event.target)) return;
+      const focusFind = () => {
+        const field = document.querySelector<HTMLInputElement>("[data-terminal-find]");
+        if (!field) return false;
+        field.focus();
+        field.select();
+        return true;
+      };
+      if (focusFind()) {
+        event.preventDefault();
+        return;
+      }
+      event.preventDefault();
+      navigate({ view: "terminal" });
+      // The stage mounts on the next paint; retry once after it does.
+      requestAnimationFrame(() => { if (!focusFind()) requestAnimationFrame(focusFind); });
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [navigate]);
 
   const load = useCallback((options: { silent?: boolean } = {}) => {
     if (!options.silent) {
@@ -137,24 +162,14 @@ export function TerminalLeft() {
     }),
     [agents, allItems, sort],
   );
-  const normalizedQuery = query.trim().toLowerCase();
-  const visibleItems = normalizedQuery
-    ? items.filter((item) => item.searchable.includes(normalizedQuery))
-    : items;
-  const currentItems = visibleItems.filter((item) => terminalSessionLifecycle(item) === "current");
+  const currentItems = items.filter((item) => terminalSessionLifecycle(item) === "current");
   const navSections = groupTerminalNavItems(currentItems, navMode);
-  const inactiveItems = visibleItems.filter((item) => terminalSessionLifecycle(item) === "inactive");
-  const reviewItems = visibleItems.filter((item) => terminalSessionLifecycle(item) === "review");
-  const inactiveCount = normalizedQuery
-    ? inactiveItems.length + reviewItems.length
-    : items.filter((item) => terminalSessionLifecycle(item) !== "current").length;
-  const reviewCount = normalizedQuery
-    ? reviewItems.length
-    : items.filter((item) => terminalSessionLifecycle(item) === "review").length;
-  const showInactive = inactiveExpanded || Boolean(normalizedQuery);
-  const visibleAgents = normalizedQuery
-    ? agentTargets.filter((agent) => terminalAgentSearchable(agent).includes(normalizedQuery))
-    : agentTargets;
+  const inactiveItems = items.filter((item) => terminalSessionLifecycle(item) === "inactive");
+  const reviewItems = items.filter((item) => terminalSessionLifecycle(item) === "review");
+  const inactiveCount = inactiveItems.length + reviewItems.length;
+  const reviewCount = reviewItems.length;
+  const showInactive = inactiveExpanded;
+  const visibleAgents = agentTargets;
   const activeTerminalSurfaceKey = route.view === "terminal" ? route.terminalSurfaceKey ?? null : null;
   const activeTerminalSessionId = route.view === "terminal" ? route.terminalSessionId ?? null : null;
   const isActiveTerminalItem = (item: ReturnType<typeof terminalListItems>[number]) =>
@@ -169,11 +184,7 @@ export function TerminalLeft() {
   const firstRowId = currentItems[0]?.id
     ?? (showInactive ? inactiveItems[0]?.id ?? reviewItems[0]?.id : undefined)
     ?? (visibleAgents[0] ? `agent:${visibleAgents[0].id}` : undefined);
-  const summary = state.state === "loading"
-    ? "Syncing"
-    : normalizedQuery
-      ? `${visibleItems.length + visibleAgents.length}/${items.length + agentTargets.length}`
-      : `${items.length + agentTargets.length} targets`;
+  const summary = state.state === "loading" ? "Syncing" : `${items.length + agentTargets.length} targets`;
   const terminalRouteFor = (
     item: ReturnType<typeof terminalListItems>[number],
     mode?: "takeover" | "observe",
@@ -314,15 +325,6 @@ export function TerminalLeft() {
         })}
       </div>
       <div className="ctx-panel-toolbar terminal-nav-toolbar">
-        <input
-          ref={inputRef}
-          type="text"
-          className="ctx-panel-search-input"
-          placeholder="Search…  (/)"
-          value={query}
-          onChange={(event) => setQuery(event.target.value)}
-          onKeyDown={onSearchKeyDown}
-        />
         <div className="ctx-panel-sort" role="group" aria-label="Sort terminals">
           {TERMINAL_NAV_SORTS.map((option) => (
             <button
@@ -347,8 +349,8 @@ export function TerminalLeft() {
         className="terminal-nav-list"
         onKeyDown={onListKeyDown}
       >
-        {visibleItems.length === 0 && visibleAgents.length === 0 && state.state !== "loading" ? (
-          <div className="ctx-panel-empty">{items.length + agentTargets.length === 0 ? "No terminal targets" : "No matches"}</div>
+        {items.length === 0 && visibleAgents.length === 0 && state.state !== "loading" ? (
+          <div className="ctx-panel-empty">No terminal targets</div>
         ) : (
           <>
             {navSections.map((section) => {
@@ -359,7 +361,7 @@ export function TerminalLeft() {
                     <span>{section.label}</span>
                     <span>{section.items.length}</span>
                   </div>
-                  {section.items.map(renderTerminalItem)}
+                  {section.items.map((item) => renderTerminalItem(item))}
                 </div>
               );
             })}
@@ -382,14 +384,14 @@ export function TerminalLeft() {
                 </button>
                 {showInactive && (
                   <>
-                    {inactiveItems.map(renderTerminalItem)}
+                    {inactiveItems.map((item) => renderTerminalItem(item))}
                     {reviewItems.length > 0 && (
                       <div className="terminal-nav-section-title terminal-nav-section-title--review">
                         <span>Review after 30 days</span>
                         <span>{reviewItems.length}</span>
                       </div>
                     )}
-                    {reviewItems.map(renderTerminalItem)}
+                    {reviewItems.map((item) => renderTerminalItem(item))}
                   </>
                 )}
               </div>
@@ -489,20 +491,6 @@ function terminalAgentDetail(agent: Agent): string {
     workspace,
     agent.branch,
   ].filter(Boolean).join(" · ");
-}
-
-function terminalAgentSearchable(agent: Agent): string {
-  return [
-    agent.name,
-    agent.handle,
-    agent.harness,
-    agent.state,
-    agent.project,
-    agent.branch,
-    agent.cwd,
-    agent.projectRoot,
-    agent.definitionId,
-  ].filter(Boolean).join(" ").toLowerCase();
 }
 
 function basename(path: string | null | undefined): string | null {

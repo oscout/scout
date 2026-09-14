@@ -1,11 +1,14 @@
 import { useState, useCallback, useMemo } from "react";
-import { useMeshViewStore, setMeshSelection, setMeshSnapshot } from "../../lib/mesh-view-store.ts";
+import { useMeshViewStore, setMeshSnapshot } from "../../lib/mesh-view-store.ts";
+import { NodeDetailPanel } from "./NodeDetailPanel.tsx";
 import { useLocalAgents } from "../../lib/local-agents.ts";
+import { useMeshNodeStates } from "../../lib/use-mesh-node-state.ts";
+import { summarizeNodeReach } from "../../lib/mesh-node-state.ts";
+import { timeAgo } from "../../lib/time.ts";
 import { filterMeshRosterAgents } from "../../lib/mesh-roster.ts";
 import { hasJoinedMesh } from "../../lib/mesh-membership.ts";
-import { agentStateCssToken, normalizeAgentState, isAgentBusy } from "../../lib/agent-state.ts";
+import { normalizeAgentState, isAgentBusy } from "../../lib/agent-state.ts";
 import { api } from "../../lib/api.ts";
-import { timeAgo } from "../../lib/time.ts";
 import type { Agent, MeshStatus } from "../../lib/types.ts";
 import "../system-surfaces-redesign.css";
 import "./mesh-screen.css";
@@ -41,10 +44,6 @@ function harnessBreakdown(agents: Agent[]): Array<{ label: string; total: number
 function shortHost(input?: string | null): string {
   if (!input) return "Unavailable";
   return input.replace(/^https?:\/\//, "").split("/")[0] ?? input;
-}
-
-function cleanIp(addr: string): string {
-  return addr.split("/")[0];
 }
 
 function delay(ms: number): Promise<void> {
@@ -88,8 +87,9 @@ function firstActionableIssue(mesh: MeshStatus): string | null {
 }
 
 export function MeshInspectorPanel() {
-  const { meshSnapshot, selectedId, selectedType, probeCache } = useMeshViewStore();
+  const { meshSnapshot, selectedId, selectedType } = useMeshViewStore();
   const { agents } = useLocalAgents();
+  const nodeStates = useMeshNodeStates();
   const rosterAgents = useMemo(() => filterMeshRosterAgents(agents), [agents]);
   const [meshBusy, setMeshBusy] = useState(false);
   const [actionMessage, setActionMessage] = useState<MeshActionMessage | null>(null);
@@ -165,226 +165,82 @@ export function MeshInspectorPanel() {
     );
   }
 
-  // ── Tailnet peer selected ──
-  if (selectedId?.startsWith("tailnet:") && selectedType === "node") {
-    const peerId = selectedId.slice("tailnet:".length);
-    const peer = meshSnapshot.tailscale.peers.find((p) => p.id === peerId);
-    const entry = probeCache[selectedId] ?? null;
-    const tailnetIp = peer?.addresses?.[0] ? cleanIp(peer.addresses[0]) : null;
-    const label = peer?.hostName?.split(".")[0] ?? peer?.hostName ?? "Tailnet peer";
-
-    return (
-      <div className="sys-inspector-content">
-        <div className="sys-inspector-head">
-          <h3 className="sys-inspector-title">{label}</h3>
-          <span className={`sys-chip sys-chip-${peer?.online ? "success" : "failed"}`}>
-            {peer?.online ? "Online" : "Offline"}
-          </span>
-        </div>
-
-        <div className="sys-detail-grid">
-          {tailnetIp && (
-            <div className="sys-detail-card">
-              <span className="sys-detail-label">Address</span>
-              <code className="sys-detail-value">{tailnetIp}</code>
-            </div>
-          )}
-          {peer?.os && (
-            <div className="sys-detail-card">
-              <span className="sys-detail-label">Platform</span>
-              <span className="sys-detail-value">{peer.os}</span>
-            </div>
-          )}
-          {entry?.result?.node?.meshId && (
-            <div className="sys-detail-card">
-              <span className="sys-detail-label">Mesh ID</span>
-              <code className="sys-detail-value">{entry.result.node.meshId.slice(0, 14)}…</code>
-            </div>
-          )}
-          {entry?.result?.node?.name && (
-            <div className="sys-detail-card">
-              <span className="sys-detail-label">Node name</span>
-              <span className="sys-detail-value">{entry.result.node.name}</span>
-            </div>
-          )}
-        </div>
-
-        {/* Broker probe state */}
-        {(!entry || entry.status === "loading") && (
-          <div className="sys-banner sys-banner-muted" style={{ marginTop: 8 }}>
-            <span>Connecting to Scout broker…</span>
-          </div>
-        )}
-
-        {entry?.status === "error" && (
-          <div className="sys-banner sys-banner-warning" style={{ marginTop: 8 }}>
-            <strong>Broker unreachable.</strong>
-            <span>{entry.result?.error ?? "Could not reach the remote broker."}</span>
-          </div>
-        )}
-
-        {entry?.status === "done" && entry.result?.node?.capabilities?.length && (
-          <div style={{ marginTop: 10 }}>
-            <div className="sys-inspector-section-label">Capabilities</div>
-            <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
-              {entry.result.node.capabilities.map((cap) => (
-                <span key={cap} className="sys-chip sys-chip-neutral">{cap}</span>
-              ))}
-            </div>
-          </div>
-        )}
-
-        {entry?.status === "done" && entry.result?.home && (
-          <div style={{ marginTop: 14 }}>
-            <div className="sys-inspector-section-label">
-              Agents — {entry.result.home.agents.length} registered
-            </div>
-            {entry.result.home.agents.length === 0 ? (
-              <div className="sys-list-empty" style={{ marginTop: 4 }}>
-                <p>No agents registered on this broker.</p>
-              </div>
-            ) : (
-              <div className="mesh-agent-table" style={{ marginTop: 4 }}>
-                {entry.result.home.agents.map((agent) => {
-                  const state = agentStateCssToken(agent.state);
-                  return (
-                    <div key={agent.id} className="mesh-detail-agent" style={{ padding: "4px 0" }}>
-                      <span className={`mesh-detail-dot mesh-detail-dot--${state}`} />
-                      <div className="mesh-detail-agent-body">
-                        <span className="mesh-detail-agent-name" style={{ fontSize: 12 }}>{agent.title}</span>
-                        {agent.activeTask && (
-                          <span className="mesh-detail-agent-task">{agent.activeTask}</span>
-                        )}
-                      </div>
-                      <span className={`mesh-detail-agent-state mesh-detail-agent-state--${state}`}>{agent.statusLabel || state}</span>
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-          </div>
-        )}
-
-        <button
-          type="button"
-          className="s-btn"
-          style={{ marginTop: 14 }}
-          onClick={() => setMeshSelection(null, null)}
-        >
-          Clear selection
-        </button>
-      </div>
-    );
-  }
-
-  // ── Mesh / local node selected ──
+  // ── A machine is selected: show what is going on there ──
+  // One panel for every row — this broker, a mesh peer, or a tailnet-only
+  // device — so no kind of machine is a dead end on click.
   if (selectedId && selectedType === "node") {
-    const allNodes = Object.values(meshSnapshot.nodes);
-    const node =
-      allNodes.find((n) => n.id === selectedId) ??
-      (meshSnapshot.localNode?.id === selectedId ? meshSnapshot.localNode : null);
-    const isLocal = meshSnapshot.localNode?.id === selectedId;
-
-    if (!node) {
-      return (
-        <div className="sys-inspector-empty">
-          <p>Node not found.</p>
-          <button type="button" className="s-btn" onClick={() => setMeshSelection(null, null)}>
-            Clear
-          </button>
-        </div>
-      );
-    }
-
-    return (
-      <div className="sys-inspector-content">
-        <div className="sys-inspector-head">
-          <h3 className="sys-inspector-title">
-            {node.hostName?.split(".")[0] ?? node.name ?? "Node"}
-          </h3>
-          {isLocal && <span className="sys-chip sys-chip-neutral">this broker</span>}
-        </div>
-
-        <div className="sys-detail-grid">
-          <div className="sys-detail-card">
-            <span className="sys-detail-label">Node ID</span>
-            <code className="sys-detail-value">{node.id.slice(0, 16)}…</code>
-          </div>
-          {node.brokerUrl && (
-            <div className="sys-detail-card">
-              <span className="sys-detail-label">Broker URL</span>
-              <code className="sys-detail-value">{shortHost(node.brokerUrl)}</code>
-            </div>
-          )}
-          {node.hostName && (
-            <div className="sys-detail-card">
-              <span className="sys-detail-label">Host</span>
-              <span className="sys-detail-value">{node.hostName}</span>
-            </div>
-          )}
-          {!isLocal && "lastSeenAt" in node && typeof node.lastSeenAt === "number" && (
-            <div className="sys-detail-card">
-              <span className="sys-detail-label">Last seen</span>
-              <span className="sys-detail-value">{timeAgo(node.lastSeenAt)}</span>
-            </div>
-          )}
-          {!isLocal && (
-            <div className="sys-detail-card">
-              <span className="sys-detail-label">Scope</span>
-              <span className="sys-detail-value">
-                {node.advertiseScope === "mesh" ? "Announced to mesh" : "Local only"}
-              </span>
-            </div>
-          )}
-        </div>
-
-        {isLocal && meshSnapshot.issues.length > 0 && (
-          <div className="sys-issue-grid" style={{ marginTop: 12 }}>
-            {meshSnapshot.issues.map((issue, i) => (
-              <article
-                key={i}
-                className={`sys-issue-card sys-issue-card-${issue.severity === "error" ? "error" : "warning"}`}
-              >
-                <div className="sys-issue-head">
-                  <h3 className="sys-issue-title">{issue.title}</h3>
-                </div>
-                <p className="sys-issue-body">{issue.summary}</p>
-                {issue.actionCommand && (
-                  <div className="sys-issue-action">
-                    <code className="sys-code-inline">{issue.actionCommand}</code>
-                  </div>
-                )}
-              </article>
-            ))}
-          </div>
-        )}
-
-        <button
-          type="button"
-          className="s-btn"
-          style={{ marginTop: 12 }}
-          onClick={() => setMeshSelection(null, null)}
-        >
-          Clear selection
-        </button>
-      </div>
-    );
+    return <NodeDetailPanel machineId={selectedId} mesh={meshSnapshot} issues={meshSnapshot.issues} />;
   }
 
-  // ── Default: machine summary ──
+  // ── Default: the network, counted in machines ──
+  // Nothing selected means no machine has been asked about, so this panel talks
+  // about machines and when they were last checked. It deliberately does not
+  // total the local agent roster and present it as the network: that roster is
+  // this host's, and reading it as a fleet-wide figure is the habit that made
+  // remote machines look empty.
   const mesh = meshSnapshot;
   const peerCount = Object.values(mesh.nodes).filter((n) => n.id !== mesh.localNode?.id).length;
   const tailnetOnline = mesh.tailscale.onlineCount ?? 0;
   const hostLabel = mesh.localNode?.hostName?.split(".")[0] ?? mesh.localNode?.name ?? mesh.identity.name ?? "this broker";
 
+  const machines = Object.values(nodeStates.entries);
+  const machineCounts = machines.reduce(
+    (acc, entry) => {
+      const tone = summarizeNodeReach(entry.view ?? null).tone;
+      if (!entry.view || entry.view.broker === "unknown") acc.unchecked += 1;
+      else if (tone === "ok") acc.responding += 1;
+      else if (tone === "warn") acc.partial += 1;
+      else acc.silent += 1;
+      return acc;
+    },
+    { responding: 0, partial: 0, silent: 0, unchecked: 0 },
+  );
+
   return (
     <div className="sys-inspector-content mesh-summary">
       <div className="sys-inspector-head">
-        <h3 className="sys-inspector-title">{hostLabel}</h3>
+        <h3 className="sys-inspector-title">Network</h3>
         <span className="mesh-summary-mode">{mesh.identity.modeLabel}</span>
       </div>
 
       <section className="mesh-summary-section">
+        <div className="mesh-summary-counts">
+          <div className="mesh-summary-count">
+            <span className="mesh-summary-count-value">{machines.length || peerCount + 1}</span>
+            <span className="mesh-summary-count-label">machines</span>
+          </div>
+          <div className="mesh-summary-count mesh-summary-count--working">
+            <span className="mesh-summary-count-value">{machineCounts.responding}</span>
+            <span className="mesh-summary-count-label">responding</span>
+          </div>
+          {machineCounts.partial > 0 && (
+            <div className="mesh-summary-count">
+              <span className="mesh-summary-count-value">{machineCounts.partial}</span>
+              <span className="mesh-summary-count-label">partial</span>
+            </div>
+          )}
+          {machineCounts.silent > 0 && (
+            <div className="mesh-summary-count mesh-summary-count--offline">
+              <span className="mesh-summary-count-value">{machineCounts.silent}</span>
+              <span className="mesh-summary-count-label">no answer</span>
+            </div>
+          )}
+          {machineCounts.unchecked > 0 && (
+            <div className="mesh-summary-count">
+              <span className="mesh-summary-count-value">{machineCounts.unchecked}</span>
+              <span className="mesh-summary-count-label">not checked</span>
+            </div>
+          )}
+        </div>
+        <p className="mesh-summary-hint">
+          {nodeStates.updatedAt
+            ? `Machines last swept ${timeAgo(nodeStates.updatedAt)}. Select one to see what is running on it.`
+            : "Select a machine to see what is running on it."}
+        </p>
+      </section>
+
+      <section className="mesh-summary-section">
+        <div className="sys-inspector-section-label">On {hostLabel}</div>
         <div className="mesh-summary-counts">
           <div className="mesh-summary-count">
             <span className="mesh-summary-count-value">{totals.total}</span>
@@ -407,7 +263,7 @@ export function MeshInspectorPanel() {
 
       {harness.length > 0 && (
         <section className="mesh-summary-section">
-          <div className="sys-inspector-section-label">By harness</div>
+          <div className="sys-inspector-section-label">By harness, on {hostLabel}</div>
           <div className="mesh-summary-harness">
             {harness.map((h) => (
               <div key={h.label} className="mesh-summary-harness-row">

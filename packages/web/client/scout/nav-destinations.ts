@@ -25,12 +25,18 @@ import type { SecondaryNavGroup } from "../components/SecondaryNav.tsx";
 import type { Route } from "../lib/types.ts";
 import { ROUTE_AREA_BY_VIEW } from "./primary-areas.ts";
 
-/** Top-tab keys used by chrome; `system` is a dropdown, not a catalog destination. */
+/**
+ * Top-tab keys used by chrome. `system` is a residual key for routes outside
+ * the tab row (settings, voice) so no tab false-highlights on them.
+ */
 export type TopNavKey =
   | "home"
-  | "agents"
   | "chat"
-  | "sessions"
+  | "agents"
+  | "terminals"
+  | "broker"
+  | "search"
+  | "ops"
   | "system";
 
 export type TopNavItem = {
@@ -62,7 +68,8 @@ export type NavDestinationId =
   | "providers"
   | "runtime"
   | "advisor"
-  | "agent-config";
+  | "agent-config"
+  | "ops";
 
 export type NavDestination = {
   id: NavDestinationId;
@@ -96,7 +103,7 @@ export const NAV_DESTINATIONS: readonly NavDestination[] = [
   },
   {
     id: "projects",
-    label: "Crew & Workspaces",
+    label: "Agents",
     route: { view: "agents-v2" },
     active: (route) =>
       route.view === "agents-v2" ||
@@ -110,7 +117,7 @@ export const NAV_DESTINATIONS: readonly NavDestination[] = [
   },
   {
     id: "chat",
-    label: "Messages",
+    label: "Chat",
     route: { view: "messages" },
     active: (route) =>
       route.view === "messages" ||
@@ -136,7 +143,7 @@ export const NAV_DESTINATIONS: readonly NavDestination[] = [
   },
   {
     id: "dispatch",
-    label: "Dispatch",
+    label: "Broker",
     route: { view: "broker" },
     active: (route) => route.view === "broker",
   },
@@ -210,6 +217,15 @@ export const NAV_DESTINATIONS: readonly NavDestination[] = [
     route: { view: "settings", section: "agents" },
     active: (route) => route.view === "settings" && route.section === "agents",
   },
+  {
+    id: "ops",
+    // The Ops umbrella tab. Mode-specific destinations (mission-control,
+    // lanes, tail, runtime, advisor) stay in the catalog for deep links and
+    // the Ops secondary strip; this entry is the tab-level default.
+    label: "Ops",
+    route: { view: "ops" },
+    active: (route) => route.view === "ops",
+  },
 ] as const;
 
 const DESTINATION_BY_ID: ReadonlyMap<NavDestinationId, NavDestination> = new Map(
@@ -260,9 +276,12 @@ type TopTabProjection = {
 
 const TOP_TAB_PROJECTION: readonly TopTabProjection[] = [
   { destinationId: "home", key: "home" },
-  { destinationId: "projects", key: "agents", label: "Crew" },
-  { destinationId: "sessions", key: "sessions" },
-  { destinationId: "chat", key: "chat", label: "Messages" },
+  { destinationId: "chat", key: "chat" },
+  { destinationId: "projects", key: "agents" },
+  { destinationId: "terminals", key: "terminals" },
+  { destinationId: "dispatch", key: "broker" },
+  { destinationId: "search", key: "search" },
+  { destinationId: "ops", key: "ops" },
 ];
 
 export function projectTopNavItems(): TopNavItem[] {
@@ -274,60 +293,6 @@ export function projectTopNavItems(): TopNavItem[] {
       route: destination.route,
     };
   });
-}
-
-/* ── Projection: System menu ──────────────────────────────────────────── */
-
-export type SystemMenuEntry = {
-  key: string;
-  label: string;
-  route: Route;
-  active: (route: Route) => boolean;
-  destinationId: NavDestinationId;
-  capability?: NavCapability;
-};
-
-type SystemMenuProjection = {
-  destinationId: NavDestinationId;
-  key: string;
-  label?: string;
-};
-
-const CORE_SYSTEM_MENU_PROJECTION: readonly SystemMenuProjection[] = [
-  { destinationId: "search", key: "search" },
-  { destinationId: "terminals", key: "terminals" },
-  { destinationId: "tail", key: "tail" },
-  { destinationId: "dispatch", key: "dispatch" },
-];
-
-const OPS_SYSTEM_MENU_PROJECTION: readonly SystemMenuProjection[] = [
-  { destinationId: "mission-control", key: "control" },
-  { destinationId: "lanes", key: "lanes" },
-  { destinationId: "providers", key: "providers" },
-  { destinationId: "mesh", key: "mesh" },
-  { destinationId: "mesh-ops", key: "mesh-ops" },
-  { destinationId: "runtime", key: "runtime" },
-  { destinationId: "advisor", key: "advisor" },
-];
-
-function projectSystemMenuEntry(entry: SystemMenuProjection): SystemMenuEntry {
-  const projected = project(entry.destinationId, { label: entry.label });
-  return {
-    key: entry.key,
-    label: projected.label,
-    route: projected.route,
-    active: projected.active,
-    destinationId: projected.id,
-    capability: projected.capability,
-  };
-}
-
-export function projectCoreSystemMenuEntries(): SystemMenuEntry[] {
-  return CORE_SYSTEM_MENU_PROJECTION.map(projectSystemMenuEntry);
-}
-
-export function projectOpsSystemMenuEntries(): SystemMenuEntry[] {
-  return OPS_SYSTEM_MENU_PROJECTION.map(projectSystemMenuEntry);
 }
 
 /* ── Projection: secondary nav ────────────────────────────────────────── */
@@ -426,7 +391,7 @@ export const GO_SHORTCUT_PROJECTION: readonly GoShortcutProjection[] = [
   { key: "h", label: "Go home", destinationId: "home" },
   { key: "i", label: "Go to messages", destinationId: "chat" },
   { key: "c", label: "Go to messages", destinationId: "chat" },
-  { key: "p", label: "Go to crew", destinationId: "projects" },
+  { key: "p", label: "Go to agents", destinationId: "projects" },
   { key: "s", label: "Go to sessions", destinationId: "sessions" },
   { key: "t", label: "Go to terminals", destinationId: "terminals" },
   { key: "r", label: "Go to repositories", destinationId: "repos" },
@@ -436,7 +401,7 @@ export const GO_SHORTCUT_PROJECTION: readonly GoShortcutProjection[] = [
   // Default ops entry uses bare `{ view: "ops" }` (mode undefined), matching
   // the historical shortcut — not the explicit mission mode in the catalog.
   { key: "o", label: "Go to operations", destinationId: "mission-control", route: { view: "ops" } },
-  { key: "d", label: "Go to dispatch", destinationId: "dispatch" },
+  { key: "d", label: "Go to broker", destinationId: "dispatch" },
   { key: "m", label: "Go to network", destinationId: "mesh" },
   { key: "a", label: "Go to activity log", destinationId: "activity" },
 ];
@@ -493,7 +458,7 @@ const JUMP_DOCK_PROJECTION: readonly JumpDockProjection[] = [
   {
     destinationId: "mission-control",
     id: "ops",
-    label: "Operations",
+    label: "Ops",
     icon: Compass,
     route: { view: "ops", mode: "mission" },
     opsGated: true,
@@ -543,14 +508,14 @@ type PaletteNavProjection = {
  */
 const PALETTE_NAV_PROJECTION: readonly PaletteNavProjection[] = [
   { id: "nav:home", label: "Go to Home", destinationId: "home", shortcut: "Cmd+1" },
-  { id: "nav:agents", label: "Go to Crew", destinationId: "projects", shortcut: "Cmd+2" },
+  { id: "nav:agents", label: "Go to Agents", destinationId: "projects", shortcut: "Cmd+2" },
   { id: "nav:messages", label: "Go to Chat", destinationId: "chat", shortcut: "Cmd+3" },
   { id: "nav:sessions", label: "Open Sessions", destinationId: "sessions" },
   { id: "nav:terminals", label: "Open Terminals", destinationId: "terminals" },
   { id: "nav:search", label: "Go to Search", destinationId: "search", shortcut: "Cmd+4" },
   { id: "nav:activity", label: "Open Activity", destinationId: "activity" },
-  { id: "nav:mesh", label: "Open Mesh", destinationId: "mesh" },
-  { id: "nav:dispatch", label: "Open Dispatch", destinationId: "dispatch" },
+  { id: "nav:mesh", label: "Open Network", destinationId: "mesh" },
+  { id: "nav:dispatch", label: "Open Broker", destinationId: "dispatch" },
   { id: "nav:repos", label: "Open Repositories", destinationId: "repos" },
   { id: "nav:code", label: "Open Code Browser", destinationId: "code" },
   { id: "nav:harnesses", label: "Open Providers", destinationId: "providers" },
@@ -772,8 +737,6 @@ export function sidebarSubNavForRoute(
 export function allProjectedDestinationIds(): NavDestinationId[] {
   const ids = new Set<NavDestinationId>();
   for (const entry of TOP_TAB_PROJECTION) ids.add(entry.destinationId);
-  for (const entry of CORE_SYSTEM_MENU_PROJECTION) ids.add(entry.destinationId);
-  for (const entry of OPS_SYSTEM_MENU_PROJECTION) ids.add(entry.destinationId);
   for (const entry of GO_SHORTCUT_PROJECTION) ids.add(entry.destinationId);
   for (const entry of JUMP_DOCK_PROJECTION) ids.add(entry.destinationId);
   for (const entry of PALETTE_NAV_PROJECTION) ids.add(entry.destinationId);
@@ -808,6 +771,7 @@ export function allProjectedDestinationIds(): NavDestinationId[] {
     "mission-control",
     "providers",
     "mesh",
+    "mesh-ops",
     "tail",
     "runtime",
     "advisor",

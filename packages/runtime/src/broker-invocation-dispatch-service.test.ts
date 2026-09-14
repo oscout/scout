@@ -3,6 +3,7 @@ import { describe, expect, test } from "bun:test";
 import {
   type ActorIdentity,
   type AgentDefinition,
+  type AgentEndpoint,
   type FlightRecord,
   type InvocationRequest,
   type NodeDefinition,
@@ -108,6 +109,7 @@ function createHarness(input: {
   actors?: Record<string, ActorIdentity>;
   agents?: Record<string, AgentDefinition>;
   nodes?: Record<string, NodeDefinition>;
+  endpoints?: Record<string, AgentEndpoint>;
   flights?: Record<string, FlightRecord>;
   invocations?: Record<string, InvocationRequest>;
   resolution?: InvocationResolution;
@@ -119,6 +121,7 @@ function createHarness(input: {
     Object.values(agents).map((nextAgent) => [nextAgent.id, actor(nextAgent)]),
   );
   const nodes = input.nodes ?? {};
+  const endpoints = input.endpoints ?? {};
   const flights = input.flights ?? {};
   const invocations = input.invocations ?? {};
   const recordInvocationCalls: Array<{
@@ -150,7 +153,7 @@ function createHarness(input: {
         nodes,
         actors,
         agents,
-        endpoints: {},
+        endpoints,
         conversations: {},
         bindings: {},
         messages: {},
@@ -510,6 +513,88 @@ describe("BrokerInvocationDispatchService", () => {
     ]);
     expect(harness.launched).toEqual([]);
     expect(harness.recordedFlights).toEqual([]);
+  });
+
+  test("forwards cardless session invocations whose endpoint lives on another node", async () => {
+    const sessionActorId = "flat-claude-4fad8bb9";
+    const ownerNode = node({ id: "node-peer", brokerUrl: "http://peer.example:43110" });
+    const nextInvocation = invocation({
+      id: "invocation-cross-node",
+      targetAgentId: sessionActorId,
+    });
+    const harness = createHarness({
+      agents: {},
+      actors: { [sessionActorId]: actor({ id: sessionActorId, kind: "session" }) },
+      nodes: { [ownerNode.id]: ownerNode },
+      endpoints: {
+        "endpoint-remote": {
+          id: "endpoint-remote",
+          agentId: sessionActorId,
+          nodeId: "node-peer",
+          harness: "claude",
+          transport: "claude_stream_json",
+          state: "idle",
+          sessionId: sessionActorId,
+          metadata: { cardless: true },
+        } as AgentEndpoint,
+      },
+      flights: {
+        [nextInvocation.id]: flight({
+          invocationId: nextInvocation.id,
+          targetAgentId: sessionActorId,
+        }),
+      },
+    });
+
+    await harness.service.dispatchAcceptedInvocation(nextInvocation);
+
+    expect(harness.peerEnqueues).toEqual([
+      { invocation: nextInvocation, authorityNode: ownerNode },
+    ]);
+    expect(harness.launched).toEqual([]);
+    expect(harness.recordedFlights).toEqual([]);
+  });
+
+  test("fails cardless session invocations when the endpoint's node is unreachable", async () => {
+    const sessionActorId = "flat-claude-4fad8bb9";
+    const nextInvocation = invocation({
+      id: "invocation-cross-node-dark",
+      targetAgentId: sessionActorId,
+    });
+    const harness = createHarness({
+      agents: {},
+      actors: { [sessionActorId]: actor({ id: sessionActorId, kind: "session" }) },
+      nodes: { "node-peer": node({ id: "node-peer", brokerUrl: undefined }) },
+      endpoints: {
+        "endpoint-remote": {
+          id: "endpoint-remote",
+          agentId: sessionActorId,
+          nodeId: "node-peer",
+          harness: "claude",
+          transport: "claude_stream_json",
+          state: "idle",
+          sessionId: sessionActorId,
+          metadata: { cardless: true },
+        } as AgentEndpoint,
+      },
+      flights: {
+        [nextInvocation.id]: flight({
+          invocationId: nextInvocation.id,
+          targetAgentId: sessionActorId,
+        }),
+      },
+    });
+
+    await harness.service.dispatchAcceptedInvocation(nextInvocation);
+
+    expect(harness.peerEnqueues).toEqual([]);
+    expect(harness.launched).toEqual([]);
+    expect(harness.recordedFlights).toEqual([
+      expect.objectContaining({
+        state: "failed",
+        error: `session endpoint for ${sessionActorId} lives on node-peer, which has no reachable broker URL`,
+      }),
+    ]);
   });
 
   test("fails remote-authority invocations with unavailable authority details", async () => {

@@ -1,7 +1,6 @@
 import type { Hono } from "hono";
 
 import {
-  ensureScoutVoiceOrigins,
   getScoutSpeechCatalog,
   getScoutVoiceHealth,
   resolveScoutSpeechDefaults,
@@ -25,7 +24,15 @@ import {
   SCOUT_REALTIME_VOICE_SETTINGS_PATH,
   type ScoutRealtimeVoiceSettings,
 } from "../../shared/realtime-voice.ts";
-import { synthesizeOpenAISpeech } from "../openai-speech.ts";
+import {
+  SCOUT_VOICE_PLAYBACK_DEFAULT,
+  SCOUT_VOICE_PLAYBACK_ENV,
+  SCOUT_VOICE_PLAYBACK_SETTINGS_PATH,
+  parseScoutVoicePlayback,
+  type ScoutVoicePlayback,
+  type ScoutVoicePlaybackSettings,
+} from "../../shared/voice-playback.ts";
+import { resolveScoutVoicePlaybackSettings } from "../voice-playback.ts";
 import {
   isNvidiaMagpieSpeechModel,
   resolveNvidiaApiKey,
@@ -155,14 +162,16 @@ export type ScoutVoiceRouteDeps = {
   realtimeVoiceEnvironment?: NodeJS.ProcessEnv;
   realtimeVoiceAdmission?: ScoutRealtimeVoiceAdmission;
   createRealtimeVoiceCall?: typeof createScoutRealtimeVoiceCall;
+  /** Persisted "spoken on host" preference; a request may still override it. */
+  readVoicePlayback?: () => Promise<ScoutVoicePlayback>;
+  writeVoicePlayback?: (playback: ScoutVoicePlayback) => Promise<ScoutVoicePlayback>;
+  voiceEnvironment?: NodeJS.ProcessEnv;
 };
 
 export function mountScoutVoiceRoutes(app: Hono, deps: ScoutVoiceRouteDeps = {}): void {
   let defaultRealtimeVoiceAdmission: ScoutRealtimeVoiceAdmission | null = null;
   const realtimeVoiceAdmission = () => deps.realtimeVoiceAdmission
     ?? (defaultRealtimeVoiceAdmission ??= createScoutRealtimeVoiceAdmission());
-  ensureScoutVoiceOrigins();
-
   const realtimeVoiceSettings = async (): Promise<ScoutRealtimeVoiceSettings> => {
     if (deps.realtimeVoiceEnabled) {
       const enabled = deps.realtimeVoiceEnabled();
@@ -178,6 +187,11 @@ export function mountScoutVoiceRoutes(app: Hono, deps: ScoutVoiceRouteDeps = {})
       configuredEnabled,
       deps.realtimeVoiceEnvironment ?? process.env,
     );
+  };
+  const voiceEnvironment = () => deps.voiceEnvironment ?? deps.realtimeVoiceEnvironment ?? process.env;
+  const voicePlaybackSettings = async (): Promise<ScoutVoicePlaybackSettings> => {
+    const configuredPlayback = await deps.readVoicePlayback?.() ?? SCOUT_VOICE_PLAYBACK_DEFAULT;
+    return resolveScoutVoicePlaybackSettings(configuredPlayback, voiceEnvironment());
   };
   app.get("/api/voice/health", async (c) => {
     const health = await getScoutVoiceHealth();
@@ -232,18 +246,50 @@ export function mountScoutVoiceRoutes(app: Hono, deps: ScoutVoiceRouteDeps = {})
     }
   });
 
+  app.get(SCOUT_VOICE_PLAYBACK_SETTINGS_PATH, async (c) => {
+    c.header("cache-control", "no-store");
+    try {
+      return c.json(await voicePlaybackSettings());
+    } catch (error) {
+      console.warn("[voice-playback] settings_read_failed", {
+        message: error instanceof Error ? error.message : String(error),
+      });
+      return c.json({ error: "Voice playback settings are temporarily unavailable." }, 503);
+    }
+  });
+
+  app.put(SCOUT_VOICE_PLAYBACK_SETTINGS_PATH, async (c) => {
+    c.header("cache-control", "no-store");
+    const body = (await c.req.json().catch(() => null)) as { playback?: unknown } | null;
+    const playback = parseScoutVoicePlayback(body?.playback);
+    if (!playback) {
+      return c.json({ error: "playback must be \"browser\" or \"host\"" }, 400);
+    }
+    try {
+      const current = await voicePlaybackSettings();
+      if (current.locked) {
+        return c.json({
+          error: `Voice playback is controlled by ${SCOUT_VOICE_PLAYBACK_ENV} on this host.`,
+        }, 409);
+      }
+      if (!deps.writeVoicePlayback) {
+        return c.json({ error: "Voice playback settings cannot be changed on this host." }, 503);
+      }
+      const configuredPlayback = await deps.writeVoicePlayback(playback);
+      return c.json(resolveScoutVoicePlaybackSettings(configuredPlayback, voiceEnvironment()));
+    } catch (error) {
+      console.warn("[voice-playback] settings_write_failed", {
+        message: error instanceof Error ? error.message : String(error),
+      });
+      return c.json({ error: "Voice playback settings could not be saved." }, 500);
+    }
+  });
+
   app.get("/api/voice/catalog", async (c) => {
-    const directOpenAIAvailable = Boolean(
-      await deps.resolveOpenAIApiKey?.().catch(() => undefined)
-        ?? process.env.OPENAI_API_KEY?.trim(),
-    );
-    const directNvidiaApiKey = resolveNvidiaApiKey();
     return c.json(await getScoutSpeechCatalog({
       modelId: c.req.query("modelId"),
       signal: c.req.raw.signal,
-      directOpenAIAvailable,
-      directNvidiaAvailable: Boolean(directNvidiaApiKey),
-      directNvidiaApiKey,
+      directNvidiaApiKey: resolveNvidiaApiKey(),
     }));
   });
 
@@ -504,8 +550,7 @@ export function mountScoutVoiceRoutes(app: Hono, deps: ScoutVoiceRouteDeps = {})
         modelId: optionalString(form?.get("modelId")),
       }));
     } catch (error) {
-      const message = error instanceof Error ? error.message : "Scout voice transcription failed";
-      return c.json({ error: message }, 503);
+      return jsonScoutVoiceSessionError(error);
     }
   });
 
@@ -519,6 +564,7 @@ export function mountScoutVoiceRoutes(app: Hono, deps: ScoutVoiceRouteDeps = {})
       originAppId?: string;
       utteranceId?: string;
       speechTiming?: unknown;
+      playback?: unknown;
     };
     const text = body.text?.trim();
     if (!text) {
@@ -528,14 +574,33 @@ export function mountScoutVoiceRoutes(app: Hono, deps: ScoutVoiceRouteDeps = {})
     if (speechTiming === null) {
       return c.json({ error: "speechTiming is invalid" }, 400);
     }
+    // A request may name where it is heard (an agent or surface asking for
+    // the Mac's speaker); otherwise the operator's persisted setting decides.
+    let playback: ScoutVoicePlayback;
+    if (body.playback !== undefined) {
+      const requested = parseScoutVoicePlayback(body.playback);
+      if (!requested) {
+        return c.json({ error: "playback must be \"browser\" or \"host\"" }, 400);
+      }
+      playback = requested;
+    } else {
+      try {
+        playback = (await voicePlaybackSettings()).playback;
+      } catch {
+        playback = SCOUT_VOICE_PLAYBACK_DEFAULT;
+      }
+    }
 
     const defaults = resolveScoutSpeechDefaults();
     const requestedModelId = body.modelId ?? defaults.modelId;
-    if (isNvidiaMagpieSpeechModel(requestedModelId)) {
-      const nvidiaApiKey = resolveNvidiaApiKey();
-      if (!nvidiaApiKey) {
-        return c.json({ error: "NV_API_KEY is required for hosted NVIDIA Developer Inference." }, 503);
-      }
+    // Hosted Magpie is the one direct cloud route the web server keeps, and
+    // only when this deployment lends `NV_API_KEY`. It adds no local process.
+    // Without that key the request goes to Scout Menu like every other model.
+    // Spoken-on-host requests always go to the Mac: bytes are useless there.
+    const nvidiaApiKey = playback === "browser" && isNvidiaMagpieSpeechModel(requestedModelId)
+      ? resolveNvidiaApiKey()
+      : undefined;
+    if (nvidiaApiKey) {
       try {
         return c.json({
           ...await synthesizeNvidiaMagpieSpeech({
@@ -562,39 +627,11 @@ export function mountScoutVoiceRoutes(app: Hono, deps: ScoutVoiceRouteDeps = {})
         originAppId: optionalString(body.originAppId),
         utteranceId: optionalString(body.utteranceId),
         speechTiming,
+        playback,
         signal: c.req.raw.signal,
       }));
     } catch (error) {
-      // Vox is a separate app; when its daemon is down every request here
-      // fails and callers drop to the on-device system voice. Reach the chosen
-      // direct cloud provider instead — a selected voice shouldn't silently
-      // become the robot one because another process isn't running.
-      const apiKey = await deps.resolveOpenAIApiKey?.().catch(() => undefined)
-        ?? process.env.OPENAI_API_KEY?.trim();
-      if (apiKey && !c.req.raw.signal.aborted) {
-        try {
-          return c.json({
-            ...await synthesizeOpenAISpeech({
-              text,
-              apiKey,
-              modelId: requestedModelId,
-              voiceId: body.voiceId ?? defaults.voiceId,
-              speed: body.speed,
-              instructions: optionalString(body.instructions),
-              signal: c.req.raw.signal,
-            }),
-            // Named so a caller can tell a direct call from a Vox one and
-            // report it honestly rather than claiming the configured route.
-            route: "openai-direct",
-          });
-        } catch (fallbackError) {
-          console.warn("[voice-speak] openai_fallback_failed", {
-            message: fallbackError instanceof Error ? fallbackError.message : String(fallbackError),
-          });
-        }
-      }
-      const message = error instanceof Error ? error.message : "Voice speech failed";
-      return c.json({ error: message }, 503);
+      return jsonScoutVoiceSessionError(error);
     }
   });
 

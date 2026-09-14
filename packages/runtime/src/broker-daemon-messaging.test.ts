@@ -3,13 +3,45 @@ import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } f
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { namedChannelNaturalKey } from "@openscout/protocol";
+import { namedChannelNaturalKey, stableChannelId, type ConversationDefinition } from "@openscout/protocol";
 
 import { createBrokerDaemonTestHarness } from "./test-helpers/broker-daemon-harness.test";
 
 const broker = createBrokerDaemonTestHarness();
 
 describe("broker daemon messaging routes", () => {
+  test("broadcast uses live membership in a new room without rewriting historical shared records", async () => {
+    const harness = await broker.startBroker();
+    await broker.seedBasicConversation(harness);
+    const oldId = stableChannelId(namedChannelNaturalKey("shared"));
+    await broker.postJson(harness.baseUrl, "/v1/conversations", {
+      id: oldId, kind: "channel", title: "shared-channel", visibility: "workspace",
+      shareMode: "shared", authorityNodeId: harness.nodeId, participantIds: ["operator", "fabric"],
+      metadata: { channel: "shared", naturalKey: namedChannelNaturalKey("shared") },
+    });
+    const before = await broker.getJson<{ conversations: Record<string, ConversationDefinition> }>(harness.baseUrl, "/v1/snapshot");
+    const endpoint = {
+      id: "fabric-broadcast", agentId: "fabric", nodeId: harness.nodeId,
+      harness: "claude", transport: "pairing_bridge", state: "active",
+    };
+    await broker.postJson(harness.baseUrl, "/v1/endpoints", endpoint);
+    const first = await broker.postJson<{ routeKind: string; conversation: ConversationDefinition }>(harness.baseUrl, "/v1/deliver", {
+      requesterId: "operator", target: { kind: "broadcast" }, intent: "tell", body: "maintenance soon",
+    });
+    expect(first.routeKind).toBe("broadcast");
+    expect(first.conversation.id).toBe(stableChannelId(namedChannelNaturalKey("broadcast")));
+    expect(first.conversation.participantIds).toContain("fabric");
+    await broker.postJson(harness.baseUrl, "/v1/endpoints", { ...endpoint, state: "offline" });
+    const second = await broker.postJson<{ conversation: ConversationDefinition }>(harness.baseUrl, "/v1/deliver", {
+      requesterId: "operator", channel: "shared", intent: "tell", body: "maintenance done",
+    });
+    expect(second.conversation.id).toBe(first.conversation.id);
+    expect(second.conversation.participantIds).not.toContain("fabric");
+    const after = await broker.getJson<{ conversations: Record<string, ConversationDefinition> }>(harness.baseUrl, "/v1/snapshot");
+    expect(after.conversations[oldId]).toEqual(before.conversations[oldId]);
+    expect(after.conversations["channel.shared"]).toEqual(before.conversations["channel.shared"]);
+  }, 15_000);
+
   test("persists posted messages and emits message events", async () => {
     const harness = await broker.startBroker();
     await broker.seedBasicConversation(harness);

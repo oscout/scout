@@ -5,15 +5,24 @@ import {
   useMeshViewStore,
   toggleMachineCollapse,
   setMachinePosition,
+  clearMachinePosition,
   toggleMachineVisibility,
+  showAllMachines,
+  soloMachine,
+  setMeshSelection,
   type MeshDensity,
 } from "../../lib/mesh-view-store.ts";
+import { NodeMenu, nodeMenuRowProps, type NodeMenuHandle } from "./NodeMenu.tsx";
+import { buildNodeMenuActions } from "./node-actions.ts";
+import { canvasMachineBuckets } from "./machine-children.ts";
+import { refreshMeshNodeState, summarizeNodeReach } from "../../lib/mesh-node-state.ts";
+import { useMeshNodeState } from "../../lib/use-mesh-node-state.ts";
 import { normalizeAgentState } from "../../lib/agent-state.ts";
 import { stateColor } from "../../lib/colors.ts";
 import { timeAgo } from "../../lib/time.ts";
 import { useScout } from "../../scout/Provider.tsx";
 import { useAgentHoverCard } from "../../components/useAgentHoverCard.tsx";
-import { bucketAgentsByMachine, type HostFacts, type MachineBucket } from "../../lib/mesh-buckets.ts";
+import { type HostFacts, type MachineBucket } from "../../lib/mesh-buckets.ts";
 // FloatingMachinesTool removed — the rack now lives in MeshLeftPanel.
 
 type TileBindings = ReturnType<ReturnType<typeof useAgentHoverCard>["bind"]>;
@@ -622,7 +631,8 @@ function packMachineSections(
     const sectionWidth = Math.max(MIN_SECTION_WIDTH, bodyW + MACHINE_BODY_PAD_X * 2);
     const sectionHeight = collapsed
       ? chromeHeight
-      : chromeHeight + MACHINE_BODY_PAD_TOP + bodyH + MACHINE_BODY_PAD_X;
+      : chromeHeight + MACHINE_BODY_PAD_TOP + bodyH + MACHINE_BODY_PAD_X
+        + (bucket.kind === "this" ? 0 : 64);
 
     return {
       machineId: bucket.machineId,
@@ -688,6 +698,8 @@ function MachineSectionView({
   onAgentOpen,
   bindFor,
   activeId,
+  anyHidden,
+  machineIds,
   onHeaderPointerDown,
   onHeaderClick,
   onGhostActivate,
@@ -697,10 +709,48 @@ function MachineSectionView({
   onAgentOpen: (agent: Agent) => void;
   bindFor: (agentId: string) => TileBindings | null;
   activeId: string | null;
+  anyHidden: boolean;
+  /** Every machine on the map, so "show only this one" knows what to hide. */
+  machineIds: string[];
   onHeaderPointerDown: (event: React.PointerEvent, section: MachineSectionLayout) => void;
   onHeaderClick: (machineId: string) => void;
   onGhostActivate: (machineId: string) => void;
 }) {
+  const menu = useRef<NodeMenuHandle | null>(null);
+  const entry = useMeshNodeState(section.machineId);
+  const view = entry?.view ?? null;
+  const reach = summarizeNodeReach(view);
+
+  // Every rack on the map answers the same menu the rail does — a rack that is
+  // only a ghost, a tailnet device, this host — so no card is a dead end.
+  const menuNode = (
+    <NodeMenu
+      ref={menu}
+      machineLabel={section.machineLabel}
+      className="mesh-machine-menu-btn"
+      actions={buildNodeMenuActions({
+        machineId: section.machineId,
+        machineLabel: section.machineLabel,
+        nodeId: view?.node?.id ?? null,
+        brokerUrl: view?.node?.brokerUrl ?? null,
+        hidden: section.ghost,
+        anyHidden,
+        positioned: section.pinned,
+        canCopy: typeof navigator !== "undefined" && Boolean(navigator.clipboard),
+        checking: entry?.loading ?? false,
+        on: {
+          select: (id) => setMeshSelection(id, "node"),
+          refresh: (id) => void refreshMeshNodeState(id),
+          focus: (id) => { soloMachine(id, machineIds); setMeshSelection(id, "node"); },
+          toggleHidden: (id) => toggleMachineVisibility(id),
+          showAll: () => showAllMachines(),
+          clearPosition: (id) => clearMachinePosition(id),
+          copy: (text) => void navigator.clipboard?.writeText(text),
+        },
+      })}
+    />
+  );
+  const menuProps = nodeMenuRowProps(menu);
   const reachabilityLabel =
     section.reachability === "this"
       ? "this node"
@@ -710,11 +760,10 @@ function MachineSectionView({
           ? "tailnet"
           : "";
 
-  const stamp = !section.online
-    ? "unreachable"
-    : section.agentCount === 0
-      ? "idle"
-      : "standby";
+  // What the machine itself reported, when it has reported. A card that has
+  // only been laid out says "not checked" — never "idle", which is a claim
+  // about the machine that nobody has made.
+  const stamp = view ? reach.label.toLowerCase() : section.online ? "not checked" : "unreachable";
 
   if (section.ghost) {
     return (
@@ -730,7 +779,9 @@ function MachineSectionView({
           pointerEvents: "all",
         }}
         title={`${section.machineLabel} · ${stamp} — click to show`}
+        {...menuProps}
       >
+        {menuNode}
         <button
           type="button"
           className="mesh-machine-ghost-body"
@@ -748,7 +799,7 @@ function MachineSectionView({
             </span>
           )}
           <span className="mesh-machine-ghost-counts">
-            <span className="mesh-machine-count">{section.agentCount}</span>
+            <span className="mesh-machine-count">{section.reachability === "this" ? section.agentCount : view?.workload?.total ?? "—"}</span>
             {section.workingCount > 0 && (
               <span className="mesh-machine-count mesh-machine-count--working">
                 {section.workingCount}W
@@ -774,7 +825,9 @@ function MachineSectionView({
         height: section.height,
         pointerEvents: "all",
       }}
+      {...menuProps}
     >
+      {menuNode}
       <button
         type="button"
         className="mesh-machine-header"
@@ -802,20 +855,26 @@ function MachineSectionView({
             {reachabilityLabel}
           </span>
         )}
+        <span
+          className={`mesh-machine-reach mesh-node-reach--${reach.tone}`}
+          title={reach.detail ?? reach.label}
+        >
+          {reach.label}
+        </span>
       </button>
       {section.collapsed && (
         <div className="mesh-machine-spec">
           <div className="mesh-machine-state-strip" style={{ height: MACHINE_STATE_STRIP_HEIGHT }}>
             <div className="mesh-machine-state-cell mesh-machine-state-cell--working">
-              <span className="mesh-machine-state-num">{section.workingCount}</span>
+              <span className="mesh-machine-state-num">{section.reachability === "this" ? section.workingCount : view?.workload?.working ?? "—"}</span>
               <span className="mesh-machine-state-label">working</span>
             </div>
             <div className="mesh-machine-state-cell">
-              <span className="mesh-machine-state-num">{section.availableCount}</span>
+              <span className="mesh-machine-state-num">{section.reachability === "this" ? section.availableCount : view?.workload?.available ?? "—"}</span>
               <span className="mesh-machine-state-label">ready</span>
             </div>
             <div className="mesh-machine-state-cell">
-              <span className="mesh-machine-state-num">{section.agentCount}</span>
+              <span className="mesh-machine-state-num">{section.reachability === "this" ? section.agentCount : view?.workload?.total ?? "—"}</span>
               <span className="mesh-machine-state-label">total</span>
             </div>
           </div>
@@ -832,6 +891,11 @@ function MachineSectionView({
             </div>
           ))}
         </div>
+      )}
+      {!section.collapsed && section.reachability !== "this" && (
+        <button type="button" className="mesh-machine-detail-link" onClick={() => setMeshSelection(section.machineId, "node")}>
+          {view?.workload ? `${view.workload.total} registered here${view.stale ? " · last known" : ""} — view agents and activity` : "View this node’s agents and activity"}
+        </button>
       )}
       {!section.collapsed &&
         section.layouts.map((layout) => (
@@ -934,7 +998,7 @@ export function MeshCanvas({ mesh, agents = [] }: { mesh: MeshStatus; agents?: A
   }, [agents, query, agentStateFilters]);
 
   const machineBuckets = useMemo(
-    () => bucketAgentsByMachine(filteredAgents, mesh),
+    () => canvasMachineBuckets(filteredAgents, mesh),
     [filteredAgents, mesh],
   );
 
@@ -1042,6 +1106,7 @@ export function MeshCanvas({ mesh, agents = [] }: { mesh: MeshStatus; agents?: A
 
   const handleHeaderClick = useCallback((machineId: string) => {
     if (wasDraggedRef.current) return;
+    setMeshSelection(machineId, "node");
     toggleMachineCollapse(machineId);
   }, []);
 
@@ -1150,6 +1215,8 @@ export function MeshCanvas({ mesh, agents = [] }: { mesh: MeshStatus; agents?: A
               onAgentOpen={handleAgentOpen}
               bindFor={bindFor}
               activeId={activeId}
+              anyHidden={hiddenMachineIds.size > 0}
+              machineIds={renderedSections.map((s) => s.machineId)}
               onHeaderPointerDown={handleHeaderPointerDown}
               onHeaderClick={handleHeaderClick}
               onGhostActivate={handleGhostActivate}

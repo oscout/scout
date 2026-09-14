@@ -9,6 +9,8 @@ export type ScoutbotReasoningEffort =
   | "ultra";
 
 export type ScoutbotDirectiveAction =
+  | "report"
+  | "feedback"
   | "help"
   | "agents"
   | "status"
@@ -37,6 +39,8 @@ export type ScoutbotDirectiveParseResult = {
 };
 
 const ACTIONS = new Set<ScoutbotDirectiveAction>([
+  "report",
+  "feedback",
   "help",
   "agents",
   "status",

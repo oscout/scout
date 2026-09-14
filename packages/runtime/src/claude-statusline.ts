@@ -1,6 +1,8 @@
 import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 
+import { readBoundedClaudeFile } from "./claude-session-records.js";
+
 import { resolveOpenScoutSupportPaths } from "./support-paths.js";
 
 export type ClaudeStatuslineSnapshot = Record<string, unknown>;
@@ -35,6 +37,19 @@ export function resolveClaudeStatuslineLatestPath(): string {
 
 export function resolveClaudeStatuslineHistoryPath(): string {
   return join(resolveClaudeStatuslineDirectory(), "claude-history.jsonl");
+}
+
+export function resolveClaudeStatuslineSessionsDirectory(directory = resolveClaudeStatuslineDirectory()): string {
+  return join(directory, "sessions");
+}
+
+const CLAUDE_STATUSLINE_SESSION_ID_PATTERN = /^[A-Za-z0-9._-]{1,128}$/u;
+
+/** Latest payload per Claude session id, so a session's model and effort can be read without scanning history. */
+export function resolveClaudeStatuslineSessionSnapshotPath(sessionId: string, directory?: string): string | null {
+  const trimmed = sessionId.trim();
+  if (!CLAUDE_STATUSLINE_SESSION_ID_PATTERN.test(trimmed)) return null;
+  return join(resolveClaudeStatuslineSessionsDirectory(directory), `${trimmed}.json`);
 }
 
 export function resolveClaudeStatuslineDelegatePath(): string {
@@ -116,11 +131,17 @@ export async function captureClaudeStatuslineSnapshot(
   const historyPath = join(directory, "claude-history.jsonl");
   const snapshot = normalizeClaudeStatuslineSnapshot(parsed, options.capturedAt);
   const line = JSON.stringify(snapshot);
+  const sessionId = stringValue(snapshot.session_id);
+  const sessionSnapshotPath = sessionId ? resolveClaudeStatuslineSessionSnapshotPath(sessionId, directory) : null;
 
   await mkdir(directory, { recursive: true });
+  if (sessionSnapshotPath) {
+    await mkdir(resolveClaudeStatuslineSessionsDirectory(directory), { recursive: true });
+  }
   await Promise.all([
     writeFile(latestPath, `${line}\n`, "utf8"),
     appendFile(historyPath, `${line}\n`, "utf8"),
+    ...(sessionSnapshotPath ? [writeFile(sessionSnapshotPath, `${line}\n`, "utf8")] : []),
   ]);
 
   return {
@@ -128,6 +149,53 @@ export async function captureClaudeStatuslineSnapshot(
     latestPath,
     historyPath,
     snapshot,
+  };
+}
+
+/** The newest statusline payload Claude Code emitted for this session id, or null when none was captured. */
+export async function readClaudeStatuslineSessionSnapshot(
+  sessionId: string,
+  options: { directory?: string } = {},
+): Promise<ClaudeStatuslineSnapshot | null> {
+  const path = resolveClaudeStatuslineSessionSnapshotPath(sessionId, options.directory);
+  if (!path) return null;
+  let raw: string;
+  try {
+    const bounded = await readBoundedClaudeFile(path);
+    if (bounded === null) return null;
+    raw = bounded;
+  } catch {
+    return null;
+  }
+  const parsed = parseClaudeStatuslinePayload(raw);
+  if (!parsed || stringValue(parsed.session_id) !== sessionId.trim()) return null;
+  return parsed;
+}
+
+export type ClaudeStatuslineObservedRuntime = {
+  model?: string;
+  reasoningEffort?: string;
+  sessionName?: string;
+  cwd?: string;
+  transcriptPath?: string;
+  capturedAt?: number;
+};
+
+/** Runtime dimensions the harness itself reported in a statusline payload. */
+export function claudeStatuslineObservedRuntime(snapshot: ClaudeStatuslineSnapshot): ClaudeStatuslineObservedRuntime {
+  const model = stringValue(recordValue(snapshot.model)?.id);
+  const reasoningEffort = stringValue(recordValue(snapshot.effort)?.level);
+  const sessionName = stringValue(snapshot.session_name);
+  const cwd = stringValue(snapshot.cwd);
+  const transcriptPath = stringValue(snapshot.transcript_path);
+  const capturedAt = numberValue(snapshot.openscoutCapturedAt);
+  return {
+    ...(model ? { model } : {}),
+    ...(reasoningEffort ? { reasoningEffort } : {}),
+    ...(sessionName ? { sessionName } : {}),
+    ...(cwd ? { cwd } : {}),
+    ...(transcriptPath ? { transcriptPath } : {}),
+    ...(capturedAt !== undefined ? { capturedAt } : {}),
   };
 }
 

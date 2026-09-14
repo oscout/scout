@@ -1,3 +1,11 @@
+import type { BrokerMessageHistory } from "./broker-message-history.js";
+import { readableCanonicalMessage, readableJournalKinds } from "./broker-journal-record-contract.js";
+import { shareLoadedRecordStrings } from "./broker-record-strings.js";
+import { captureMessageRecords } from "./broker-message-records.js";
+import type { BrokerMemoryMaintenance } from "./broker-memory-maintenance.js";
+import { setImmediate as yieldReadTurn } from "node:timers/promises";
+import { readableDelivery, readableDeliveryStatus, readableMetadata, type BrokerRecordRead } from "./broker-record-reader.js";
+import { BrokerMessageBodyCache, BrokerMessageBodyCacheUnavailable, type MessageBodyCacheOptions } from "./broker-message-body-cache.js";
 import { once } from "node:events";
 import { createReadStream, createWriteStream } from "node:fs";
 import { appendFile, mkdir, rename, stat, unlink } from "node:fs/promises";
@@ -5,6 +13,7 @@ import { dirname } from "node:path";
 import { createInterface } from "node:readline";
 
 import type {
+  ControlEvent,
   ActorIdentity,
   AgentDefinition,
   AgentEndpoint,
@@ -55,6 +64,7 @@ export type BrokerJournalEntry =
   | { kind: "durable.attempt.record"; attempt: DurableAttempt }
   | { kind: "durable.checkpoint.record"; checkpoint: DurableCheckpoint }
   | { kind: "durable.signal.record"; signal: DurableSignal }
+  | { kind: "control.event.record"; event: ControlEvent }
   | { kind: "journal.replay_barrier"; barrier: BrokerJournalReplayBarrier }
   | {
       kind: "delivery.status.update";
@@ -65,6 +75,7 @@ export type BrokerJournalEntry =
       leaseExpiresAt?: number | null;
     }
   | { kind: "scout.dispatch.record"; dispatch: ScoutDispatchRecord };
+
 
 type JournalSnapshotState = {
   snapshot: RuntimeRegistrySnapshot;
@@ -104,7 +115,12 @@ export type BrokerJournalCompactionPolicy = {
 };
 
 export type FileBackedBrokerJournalOptions = {
+  messageHistory?: BrokerMessageHistory;
+  progressiveStartup?: boolean;
+  shareLoadedStrings?: boolean;
   compactionPolicy?: Partial<BrokerJournalCompactionPolicy>;
+  messageBodyCache?: MessageBodyCacheOptions;
+  memoryMaintenance?: BrokerMemoryMaintenance;
 };
 
 const DEFAULT_BROKER_JOURNAL_COMPACTION_POLICY: BrokerJournalCompactionPolicy = {
@@ -182,7 +198,7 @@ function cloneSnapshot(snapshot: RuntimeRegistrySnapshot): RuntimeRegistrySnapsh
     endpoints: { ...snapshot.endpoints },
     conversations: { ...snapshot.conversations },
     bindings: { ...snapshot.bindings },
-    messages: { ...snapshot.messages },
+    messages: captureMessageRecords(snapshot.messages),
     readCursors: { ...snapshot.readCursors },
     invocations: { ...snapshot.invocations },
     flights: { ...snapshot.flights },
@@ -311,6 +327,11 @@ function journalCompactionReason(
 export class FileBackedBrokerJournal {
   private readonly filePath: string;
 
+  private readonly messageHistory?: BrokerMessageHistory;
+  private readonly messageBodyCache?: BrokerMessageBodyCache;
+  private readonly shareLoadedStrings: boolean;
+  private readonly memoryMaintenance?: BrokerMemoryMaintenance;
+
   private readonly state: JournalSnapshotState = {
     snapshot: createRuntimeRegistrySnapshot(),
     collaborationEvents: [],
@@ -328,9 +349,44 @@ export class FileBackedBrokerJournal {
   private writeQueue: Promise<void> = Promise.resolve();
 
   private readonly compactionPolicy: BrokerJournalCompactionPolicy;
+  private readonly progressiveStartup: boolean;
+  private finishStartupWork: (() => Promise<void>) | undefined;
+  private startupWork: Promise<void> | undefined;
+  private startupPhase: "journal" | "maintenance" | "history" | "complete" | "failed" = "journal";
+  private startupCompactionMs = 0;
+  private startupError: string | null = null;
+  private replayedEntries = 0;
+  private replayedBytes = 0;
+  private startupSourceBytes: number | null = null;
+
+  startupStatus() { return { phase: this.startupPhase, entries: this.replayedEntries,
+    messageCount: this.startupPhase === "complete" ? this.messageHistory?.status().count ?? Object.keys(this.state.snapshot.messages).length : null,
+    bytes: this.replayedBytes, totalBytes: this.startupSourceBytes, compactionMs: this.startupCompactionMs, error: this.startupError }; }
+  finishStartup(): Promise<void> {
+    if (!this.loaded) return Promise.reject(new Error("Journal must be loaded before startup hydration."));
+    if (this.startupWork) return this.startupWork;
+    const work = this.finishStartupWork;
+    // Release the compaction dedupe map after the one hydration call. The
+    // resolved promise must not keep the historical metadata closure resident.
+    this.finishStartupWork = undefined;
+    return this.startupWork = (work?.() ?? Promise.resolve()).catch(error => {
+      this.startupPhase = "failed";
+      this.startupError = String(error);
+      throw error;
+    });
+  }
+
 
   constructor(filePath: string, options: FileBackedBrokerJournalOptions = {}) {
     this.filePath = filePath;
+    this.progressiveStartup = options.progressiveStartup ?? false;
+    this.messageHistory = options.messageHistory;
+    if(this.messageHistory)this.state.snapshot.messages=this.messageHistory.records;
+    this.shareLoadedStrings = options.shareLoadedStrings ?? false;
+    this.memoryMaintenance = options.memoryMaintenance;
+    if (options.messageBodyCache) this.messageBodyCache = new BrokerMessageBodyCache(dirname(filePath), {
+      ...options.messageBodyCache,
+    });
     this.compactionPolicy = resolveCompactionPolicy(options.compactionPolicy);
   }
 
@@ -339,6 +395,7 @@ export class FileBackedBrokerJournal {
       return this.latestLoadReport!;
     }
 
+    if(this.messageHistory){await mkdir(dirname(this.filePath),{recursive:true});await appendFile(this.filePath, "", "utf8");}
     const startedAt = Date.now();
     const sourceBytes = await stat(this.filePath).then((value) => value.size).catch((error) => {
       const code = error && typeof error === "object" && "code" in error
@@ -347,6 +404,7 @@ export class FileBackedBrokerJournal {
       if (code === "ENOENT") return 0;
       throw error;
     });
+    this.startupSourceBytes = sourceBytes;
     const latestIndexByKey = new Map<string, number>();
     const latestEncodedBytesByKey = new Map<string, number>();
     const lastFlightById = new Map<string, FlightRecord>();
@@ -355,7 +413,9 @@ export class FileBackedBrokerJournal {
 
     const scanStartedAt = Date.now();
     const scan = await this.visitEntries((entry, index, encodedLineBytes) => {
-      this.apply(entry);
+      this.replayedEntries++; this.replayedBytes += encodedLineBytes;
+      if (this.shareLoadedStrings) shareLoadedRecordStrings(entry);
+      this.apply(this.messageHistory && entry.kind === "message.record" ? entry : this.prepareEntry(entry));
       countsByKind[entry.kind] = (countsByKind[entry.kind] ?? 0) + 1;
       const key = dedupeKey(entry);
       if (key) {
@@ -386,13 +446,26 @@ export class FileBackedBrokerJournal {
     const compactionRequired = compactionReason !== null;
 
     let compactionMs = 0;
-    if (compactionRequired) {
+    if (compactionRequired && !this.progressiveStartup) {
       const compactionStartedAt = Date.now();
       await this.rewriteCompactedEntries(latestIndexByKey);
       compactionMs = Date.now() - compactionStartedAt;
     }
 
+    if (!this.progressiveStartup) await this.messageHistory?.accepted();
     this.loaded = true;
+    this.startupPhase = this.progressiveStartup ? "maintenance" : "complete";
+    this.finishStartupWork = !this.progressiveStartup ? undefined : async () => {
+      if (compactionRequired && this.progressiveStartup) {
+        const start = Date.now();
+        await this.rewriteCompactedEntries(latestIndexByKey, sourceBytes);
+        this.startupCompactionMs = Date.now() - start;
+      }
+      this.startupPhase = "history";
+      // Unlike accepted(), startup must surface failed history coverage.
+      await this.messageHistory?.refresh();
+      this.startupPhase = "complete";
+    };
     const completedAt = Date.now();
     const compactedBytes = await stat(this.filePath).then((value) => value.size).catch(() => 0);
     this.latestLoadReport = {
@@ -413,6 +486,103 @@ export class FileBackedBrokerJournal {
       countsByKind,
     };
     return this.latestLoadReport;
+  }
+
+  /**
+   * Complete asynchronous durable lookup, independent of SQLite/body caches.
+   * A bounded streaming scan is intentionally a correctness baseline, not a
+   * per-message hot-path index. Callers receive explicit source coverage.
+   */
+  async readCanonicalMessage(messageId: string): Promise<BrokerRecordRead<MessageRecord>> {
+    return this.readCanonicalRecord("message", (entry, current) => {
+      if (entry.kind !== "message.record") return { value: current, valid: true };
+      const message = entry.message;
+      const valid = readableCanonicalMessage(message);
+      return { value: valid && message.id === messageId ? message : current, valid };
+    });
+  }
+
+  async readCanonicalDelivery(deliveryId: string): Promise<BrokerRecordRead<DeliveryIntent>> {
+    return this.readCanonicalRecord("delivery", (entry, current) => {
+      if (entry.kind === "deliveries.record") {
+        if (!Array.isArray(entry.deliveries) || !entry.deliveries.every(readableDelivery)) return { value: current, valid: false };
+        for (const delivery of entry.deliveries) if (delivery.id === deliveryId) current = delivery;
+      } else if (entry.kind === "delivery.status.update") {
+        const valid = typeof entry.deliveryId === "string" && readableDeliveryStatus(entry.status)
+          && readableMetadata(entry.metadata)
+          && (entry.leaseOwner == null || typeof entry.leaseOwner === "string")
+          && (entry.leaseExpiresAt == null || (typeof entry.leaseExpiresAt === "number" && Number.isFinite(entry.leaseExpiresAt)));
+        if (!valid) return { value: current, valid: false };
+        // Legacy status updates for unknown IDs never create a delivery.
+        if (current && entry.deliveryId === deliveryId) current = {
+          ...current, status: entry.status,
+          leaseOwner: entry.leaseOwner ?? undefined, leaseExpiresAt: entry.leaseExpiresAt ?? undefined,
+          metadata: mergeMetadata(current.metadata, entry.metadata),
+        };
+      }
+      return { value: current, valid: true };
+    });
+  }
+
+  private async readCanonicalRecord<T>(
+    recordKind: "message" | "delivery",
+    reduce: (entry: BrokerJournalEntry, current: T | undefined) => { value: T | undefined; valid: boolean },
+  ): Promise<BrokerRecordRead<T>> {
+    try {
+      await this.load();
+      const boundary = await this.captureReplayBoundary();
+      const before = await stat(this.filePath);
+      if (before.size < boundary.endByteExclusive) {
+        return { kind: "unavailable", reason: "journal_truncated", retryable: true };
+      }
+      let value: T | undefined;
+      let unsupported = false;
+      let visited = 0;
+      const report = await this.visitEntries(async (entry) => {
+        if (!entry || typeof entry !== "object" || !Object.hasOwn(readableJournalKinds, entry.kind)) {
+          unsupported = true;
+        } else {
+          const next = reduce(entry, value);
+          if (!next.valid) unsupported = true;
+          value = next.value;
+        }
+        if (++visited % 128 === 0) await yieldReadTurn();
+      }, { endByteExclusive: boundary.endByteExclusive });
+      const after = await stat(this.filePath);
+      if (before.dev !== after.dev || before.ino !== after.ino || after.size < boundary.endByteExclusive) {
+        return { kind: "unavailable", reason: "journal_changed_during_read", retryable: true };
+      }
+      if (unsupported || report.invalidLines > 0) {
+        return { kind: "unavailable", reason: `journal_${recordKind}_coverage_incomplete`, retryable: false };
+      }
+      const coverage = { source: "broker_journal" as const, fileIdentity: `${before.dev}:${before.ino}`, endByteExclusive: boundary.endByteExclusive };
+      return value ? { kind: "found", value, coverage } : { kind: "not_found", coverage };
+    } catch {
+      return { kind: "unavailable", reason: "journal_read_failed", retryable: true };
+    }
+  }
+
+  messageBodyCacheStatus() {
+    return this.messageBodyCache?.status() ?? { enabled: false };
+  }
+
+
+  close(): Promise<void> { this.messageBodyCache?.close(); return this.messageHistory?.close() ?? Promise.resolve(); }
+
+  private deliveryValues(activeOnly = false): IterableIterator<DeliveryIntent> {
+    const values = this.state.deliveries.values();
+    if (!activeOnly) return values;
+    return (function* () {
+      for (const delivery of values) {
+        if (!["acknowledged", "completed", "failed", "cancelled"].includes(delivery.status)) yield delivery;
+      }
+    })();
+  }
+
+  private prepareEntry(entry: BrokerJournalEntry): BrokerJournalEntry {
+    return this.messageBodyCache && entry.kind === "message.record"
+      ? { ...entry, message: this.messageBodyCache.prepare(entry.message) }
+      : entry;
   }
 
   loadReport(): BrokerJournalLoadReport | null {
@@ -506,20 +676,42 @@ export class FileBackedBrokerJournal {
     }
 
     const retained = this.selectEntriesToAppend(entries);
+    let prepared = retained;
+    let acceptedEncodedBytes = 0;
+    let preparationError: BrokerMessageBodyCacheUnavailable | undefined;
     this.writeQueue = this.writeQueue.then(async () => {
       await mkdir(dirname(this.filePath), { recursive: true });
       if (retained.length === 0) {
         return;
       }
+      // Spill must succeed before accepting the canonical append. Tentative
+      // cache bytes are disposable; a failed append never publishes records.
+      try {
+        prepared = retained.map((entry) => this.prepareEntry(entry));
+      } catch (error) {
+        if (!(error instanceof BrokerMessageBodyCacheUnavailable)) throw error;
+        // Reject this new payload without poisoning the canonical write queue:
+        // acknowledgements/leases/completions do not need fresh body spill space.
+        preparationError = error;
+        return;
+      }
       const payload = retained.map((entry) => JSON.stringify(entry)).join("\n") + "\n";
+      if (this.memoryMaintenance) acceptedEncodedBytes = Buffer.byteLength(payload, "utf8");
       await appendFile(this.filePath, payload, "utf8");
-      for (const entry of retained) {
+      for (const entry of prepared) {
         this.apply(entry);
+      }
+      // Registration/control records do not change message membership. During
+      // progressive startup they must not trigger the initial history scan.
+      if (!this.progressiveStartup || prepared.some(entry => entry.kind === "message.record")) {
+        await this.messageHistory?.accepted();
       }
     });
 
     await this.writeQueue;
-    return retained;
+    if (preparationError) throw preparationError;
+    this.memoryMaintenance?.accepted(prepared, acceptedEncodedBytes);
+    return prepared;
   }
 
   listCollaborationRecords(options: {
@@ -547,16 +739,56 @@ export class FileBackedBrokerJournal {
       .slice(0, limit);
   }
 
+  getDelivery(deliveryId: string): DeliveryIntent | undefined {
+    return this.state.deliveries.get(deliveryId);
+  }
+
+  /** Complete insertion-order search without allocating a historical list. */
+  findDelivery(predicate: (delivery: DeliveryIntent) => boolean, options: { activeOnly?: boolean } = {}): DeliveryIntent | undefined {
+    for (const delivery of this.deliveryValues(options.activeOnly)) {
+      if (predicate(delivery)) return delivery;
+    }
+    return undefined;
+  }
+
+  /**
+   * Visit every delivery present at entry without allocating a history array.
+   * Entries are never deleted/reinserted in this map; replacements retain their
+   * insertion position. Later appends are outside this traversal's boundary.
+   */
+  async visitDeliveries(visitor: (delivery: DeliveryIntent) => void | Promise<void>, options: { activeOnly?: boolean } = {}): Promise<void> {
+    const boundary = this.state.deliveries.size;
+    const iterator = this.state.deliveries.values();
+    for (let visited = 0; visited < boundary; visited++) {
+      const next = iterator.next();
+      if (next.done) return;
+      // Count original map positions, including filtered terminal records.
+      // Otherwise a sparse active scan can drift into later appended entries.
+      if (!options.activeOnly || !["acknowledged", "completed", "failed", "cancelled"].includes(next.value.status)) {
+        await visitor(next.value);
+      }
+      if ((visited + 1) % 128 === 0) await yieldReadTurn();
+    }
+  }
+
   listDeliveries(options: {
     transport?: DeliveryIntent["transport"];
     status?: DeliveryIntent["status"];
     limit?: number;
   } = {}): DeliveryIntent[] {
     const limit = options.limit ?? 200;
-    return [...this.state.deliveries.values()]
-      .filter((delivery) => !options.transport || delivery.transport === options.transport)
-      .filter((delivery) => !options.status || delivery.status === options.status)
-      .slice(0, limit);
+    // Preserve Array.slice's public limit semantics, including negative limits.
+    // Ordinary bounded reads must not allocate arrays for the entire history.
+    const end = Number.isNaN(limit) ? 0 : Math.trunc(limit);
+    if (end === 0 || end === -Infinity) return [];
+    const deliveries: DeliveryIntent[] = [];
+    for (const delivery of this.deliveryValues()) {
+      if (options.transport && delivery.transport !== options.transport) continue;
+      if (options.status && delivery.status !== options.status) continue;
+      deliveries.push(delivery);
+      if (end > 0 && deliveries.length >= end) break;
+    }
+    return end < 0 ? deliveries.slice(0, end) : deliveries;
   }
 
   listDeliveryAttempts(deliveryId: string): DeliveryAttempt[] {
@@ -630,6 +862,7 @@ export class FileBackedBrokerJournal {
         blankLines: 0,
       };
     }
+    const maintenance = this.memoryMaintenance?.beginReplay();
     const input = createReadStream(this.filePath, {
       encoding: "utf8",
       ...(endByteExclusive === undefined ? {} : { end: endByteExclusive - 1 }),
@@ -651,16 +884,19 @@ export class FileBackedBrokerJournal {
         const encodedLineBytes = Buffer.byteLength(rawLine, "utf8") + 1;
         if (!rawLine.trim()) {
           report.blankLines += 1;
+          maintenance?.add(encodedLineBytes);
           continue;
         }
         const entry = parseEntry(rawLine);
         if (!entry) {
           report.invalidLines += 1;
+          maintenance?.add(encodedLineBytes);
           continue;
         }
         await visitor(entry, index, encodedLineBytes);
         index += 1;
         report.validEntries += 1;
+        maintenance?.add(encodedLineBytes);
       }
     } catch (error) {
       const code = error && typeof error === "object" && "code" in error
@@ -672,11 +908,12 @@ export class FileBackedBrokerJournal {
     } finally {
       lines.close();
       input.destroy();
+      maintenance?.finish();
     }
     return report;
   }
 
-  private async rewriteCompactedEntries(latestIndexByKey: Map<string, number>): Promise<void> {
+  private async rewriteCompactedEntries(latestIndexByKey: Map<string, number>, prefixBytes?: number): Promise<void> {
     await mkdir(dirname(this.filePath), { recursive: true });
     const temporaryPath = `${this.filePath}.${process.pid}.${Date.now()}.tmp`;
     const output = createWriteStream(temporaryPath, { encoding: "utf8", flags: "wx" });
@@ -700,10 +937,28 @@ export class FileBackedBrokerJournal {
         if (!output.write(`${JSON.stringify(entry)}\n`, "utf8")) {
           await once(output, "drain");
         }
-      });
-      output.end();
-      await once(output, "finish");
-      await rename(temporaryPath, this.filePath);
+      }, prefixBytes === undefined ? {} : { endByteExclusive: prefixBytes });
+      const publish = async () => {
+        if (prefixBytes !== undefined) {
+          // The prefix rewrite runs cooperatively while control registrations
+          // append. Capture/copy its accepted suffix under the canonical writer
+          // before atomic rename; no accepted late record can be dropped.
+          const end = (await stat(this.filePath)).size;
+          if (end > prefixBytes) {
+            const suffix = createReadStream(this.filePath, { start: prefixBytes, end: end - 1 });
+            for await (const bytes of suffix) if (!output.write(bytes)) await once(output, "drain");
+          }
+        }
+        output.end();
+        await once(output, "finish");
+        await rename(temporaryPath, this.filePath);
+      };
+      if (prefixBytes === undefined) await publish();
+      else {
+        const committed = this.writeQueue.then(publish);
+        this.writeQueue = committed.catch(() => {});
+        await committed;
+      }
     } catch (error) {
       output.destroy();
       await unlink(temporaryPath).catch(() => undefined);
@@ -712,7 +967,15 @@ export class FileBackedBrokerJournal {
   }
 
   private selectEntriesToAppend(entries: BrokerJournalEntry[]): BrokerJournalEntry[] {
-    const nextSnapshot = cloneSnapshot(this.state.snapshot);
+    // Duplicate selection only mutates entity/flight maps. Copy each touched
+    // map once; message-only batches must not clone all historical messages.
+    const nextSnapshot = { ...this.state.snapshot };
+    const copied = new Set<keyof RuntimeRegistrySnapshot>();
+    const copy = <K extends keyof RuntimeRegistrySnapshot>(key: K): void => {
+      if (copied.has(key)) return;
+      nextSnapshot[key] = { ...nextSnapshot[key] };
+      copied.add(key);
+    };
     const retained: BrokerJournalEntry[] = [];
 
     for (const entry of entries) {
@@ -720,6 +983,16 @@ export class FileBackedBrokerJournal {
         continue;
       }
       retained.push(entry);
+      switch (entry.kind) {
+        case "node.upsert": copy("nodes"); break;
+        case "actor.upsert": copy("actors"); break;
+        case "agent.upsert": copy("agents"); copy("actors"); break;
+        case "agent.endpoint.upsert":
+        case "agent.endpoint.delete": copy("endpoints"); break;
+        case "conversation.upsert": copy("conversations"); break;
+        case "binding.upsert": copy("bindings"); break;
+        case "flight.record": copy("flights"); break;
+      }
       this.applyToSnapshot(nextSnapshot, entry);
     }
 
@@ -831,7 +1104,7 @@ export class FileBackedBrokerJournal {
         this.state.snapshot.bindings[entry.binding.id] = entry.binding;
         return;
       case "message.record":
-        this.state.snapshot.messages[entry.message.id] = entry.message;
+        if(!this.messageHistory)this.state.snapshot.messages[entry.message.id] = entry.message;
         return;
       case "conversation.read_cursor.upsert":
         this.state.snapshot.readCursors[`${entry.cursor.conversationId}\u0000${entry.cursor.actorId}`] = entry.cursor;
@@ -868,13 +1141,14 @@ export class FileBackedBrokerJournal {
           return;
         }
 
-        this.state.deliveries.set(entry.deliveryId, {
+        const next = {
           ...current,
           status: entry.status,
           leaseOwner: entry.leaseOwner ?? undefined,
           leaseExpiresAt: entry.leaseExpiresAt ?? undefined,
           metadata: mergeMetadata(current.metadata, entry.metadata),
-        });
+        };
+        this.state.deliveries.set(entry.deliveryId, next);
         return;
       }
       case "durable.action.record":
@@ -904,6 +1178,8 @@ export class FileBackedBrokerJournal {
         // Durable action facts are intentionally not projected into the
         // in-memory RuntimeRegistrySnapshot. They are journal-durable and
         // replay into SQLite through RecoverableSQLiteProjection.
+        return;
+      case "control.event.record":
         return;
       case "journal.replay_barrier":
         // Opaque recovery metadata only. It intentionally has no domain-state

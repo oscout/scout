@@ -115,3 +115,82 @@ describe("session observe evidence presentation", () => {
     expect(html).not.toContain("s-observe-transport");
   });
 });
+
+const nativeCodexTurns = {
+  events: [
+    {
+      id: "ask-1",
+      t: 1,
+      kind: "ask" as const,
+      text: "Work on the native Mac app session presentation.",
+    },
+    {
+      id: "read-1",
+      t: 2,
+      kind: "tool" as const,
+      tool: "Read",
+      arg: "ScoutObserveView.swift",
+      text: "Read · ScoutObserveView.swift",
+    },
+    {
+      id: "think-1",
+      t: 3,
+      kind: "think" as const,
+      text: "This is an observed native session, not a Scout-managed chat.",
+    },
+    {
+      id: "msg-1",
+      t: 4,
+      kind: "message" as const,
+      text: "I'll present this as a conversation, with a way to inspect the trace.",
+    },
+  ],
+  files: [],
+  contextUsage: [],
+  live: true,
+  metadata: {
+    session: {
+      adapterType: "codex",
+      model: "gpt-5.6-sol",
+    },
+  },
+};
+
+describe("observed native session conversation presentation", () => {
+  test("labels the embed as a native session and defaults to conversation turns", () => {
+    const html = renderToStaticMarkup(createElement(SessionEmbedObserveContent, {
+      lookup: {
+        kind: "observe",
+        refId: "codex-native-1",
+        session: null,
+        observe: {
+          kind: "history",
+          refId: "codex-native-1",
+          agentId: null,
+          source: "history",
+          fidelity: "timestamped",
+          historyPath: "/tmp/codex.jsonl",
+          sessionId: "codex-native-1",
+          updatedAt: Date.now(),
+          data: nativeCodexTurns,
+        },
+      },
+    }));
+
+    expect(html).toContain("Native session");
+    expect(html).toContain("s-observe--conversation");
+    expect(html).toContain("s-observe-ask--conversation");
+    expect(html).toContain("s-observe-message--conversation");
+    expect(html).toContain("Work on the native Mac app session presentation.");
+    expect(html).toContain("present this as a conversation, with a way to inspect the trace.");
+    expect(html).toContain("s-observe-ask-author");
+    expect(html).toContain(">You<");
+    expect(html).toContain("aria-label=\"Session presentation\"");
+    expect(html).toContain("Conversation");
+    expect(html).toContain("Trace");
+    expect(html).toContain("1 tool · 1 reasoning update");
+    expect(html).toContain("Expand 2 technical events");
+    expect(html).not.toContain("s-observe-spine");
+    expect(html).not.toContain("s-observe-transport");
+  });
+});

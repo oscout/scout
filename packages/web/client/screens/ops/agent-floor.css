@@ -1171,3 +1171,62 @@
     animation: agent-floor-glow 2.8s ease-in-out infinite;
   }
 }
+
+/* Live actors occupy the working apron; the quieter towers are the record. */
+.agent-floor__stage { top: 53%; }
+.agent-floor__command-bar {
+  position: absolute; left: 22px; top: 20px; z-index: 9;
+  display: flex; align-items: center; gap: 18px; color: var(--floor-ink);
+  font-size: 13px;
+}
+.agent-floor__command-bar > span { color: var(--floor-muted); font-size: 11px; }
+.agent-floor__page-controls { display: flex; align-items: center; gap: 8px; }
+.agent-floor__page-controls button { color: var(--floor-ink); background: var(--floor-face-2); border: 1px solid var(--floor-line-2); padding: 4px 9px; cursor: pointer; }
+.agent-floor__page-controls button:disabled { opacity: .35; cursor: default; }
+.agent-floor__work-zone { position: absolute; inset-block: 8px; background: color-mix(in oklab, var(--floor-accent) 4%, var(--floor-bg)); border-block: 1px solid var(--floor-line-2); transform-style: preserve-3d; }
+.agent-floor__route { position: absolute; left: 55px; right: 60px; top: 82px; border-top: 2px dashed var(--floor-line-2); }
+.agent-floor__station { position: absolute; transform-style: preserve-3d; }
+.agent-floor__station-surface { position: absolute; width: 58px; height: 58px; left: -29px; top: -29px; background: var(--floor-face-2); border: 1px solid var(--floor-line-2); border-radius: 8px; }
+.agent-floor__station.is-occupied .agent-floor__station-surface { border-color: var(--floor-accent); background: var(--floor-accent-soft); }
+.agent-floor__station-label { --z: 2px; top: 38px; text-align: center; font-size: 10px; font-weight: 600; color: var(--floor-muted); }
+.agent-floor__actor-position { position: absolute; transform-style: preserve-3d; transition: left 1100ms cubic-bezier(.22,1,.36,1), top 1100ms cubic-bezier(.22,1,.36,1); pointer-events: none; }
+.agent-floor__selection-ring { position: absolute; width: 48px; height: 48px; left: -24px; top: -24px; border: 2px solid var(--floor-ok); border-radius: 50%; transform: translateZ(3px); background: color-mix(in oklab, var(--floor-ok) 9%, transparent); }
+.agent-floor__actor-position.is-selected .agent-floor__selection-ring { border-width: 3px; outline: 1px solid var(--floor-ink); outline-offset: 5px; }
+.agent-floor__actor-position.is-quiet .agent-floor__selection-ring { border-color: var(--floor-line-2); }
+.agent-floor__actor-body { display: flex; justify-content: center; margin-top: -32px; filter: drop-shadow(0 8px 4px var(--floor-shadow)); }
+.agent-floor__actor-alert { position: absolute; right: 44px; top: -14px; width: 20px; height: 20px; border-radius: 50%; background: var(--yellow, #e9b958); color: var(--floor-bg); font-weight: 800; text-align: center; }
+.agent-floor__actor-position.is-attention .agent-floor__selection-ring, .agent-floor__actor-position.is-blocked .agent-floor__selection-ring { border-color: var(--yellow, #e9b958); }
+.agent-floor__unit-label .agent-floor__flag { display: grid; grid-template-columns: auto auto; gap: 3px 8px; border-radius: 4px; padding: 7px 10px; min-width: 170px; background: var(--floor-bg); }
+.agent-floor__unit-label .agent-floor__flag-name { max-width: 145px; font-size: 13px; }
+.agent-floor__unit-id { font-size: 10px; color: var(--floor-muted); align-self: center; white-space: nowrap; }
+.agent-floor__unit-status { grid-column: 1 / -1; font-size: 11px; color: var(--floor-muted); max-width: 220px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.agent-floor__unit-status.is-working { color: var(--floor-ok); }
+.agent-floor__unit-status.is-attention, .agent-floor__unit-status.is-blocked { color: var(--yellow, #e9b958); }
+.agent-floor__lane:focus-visible { outline: 2px solid var(--floor-accent); outline-offset: -3px; }
+.agent-floor__stack { opacity: .5; }
+.agent-floor__stack:hover { opacity: 1; }
+@keyframes floor-actor-work { 0%,100% { translate: 0 0; } 50% { translate: 0 -3px; } }
+@media (prefers-reduced-motion: no-preference) {
+  .agent-floor__actor-position.is-working .agent-floor__actor-body > span { animation: floor-actor-work 1.4s ease-in-out infinite; }
+}
+@media (prefers-reduced-motion: reduce) { .agent-floor__actor-position { transition: none; } }
+@container (max-width: 650px) { .agent-floor__command-bar { gap: 8px; left: 12px; } .agent-floor__command-bar > span:not(.agent-floor__page-controls) { display: none; } }
+
+/* Tactical camera: actors and their names remain upright and directly selectable. */
+.agent-floor.is-tactical .agent-floor__bb { transform: translateZ(var(--z, 6px)); }
+.agent-floor.is-tactical .agent-floor__stage { top: 55%; }
+.agent-floor.is-tactical .agent-floor__work-zone { background: color-mix(in oklab, var(--floor-accent) 5%, var(--floor-bg)); }
+.agent-floor.is-tactical .agent-floor__route { top: 44px; }
+.agent-floor.is-tactical .agent-floor__station-label { top: 29px; font-size: 11px; color: var(--floor-ink); }
+.agent-floor.is-tactical .agent-floor__unit-label .agent-floor__flag { display: flex; min-width: 280px; justify-content: center; padding: 5px 9px; }
+.agent-floor.is-tactical .agent-floor__unit-label .agent-floor__flag-name { font-size: 14px; }
+.agent-floor.is-tactical .agent-floor__unit-status { max-width: 110px; }
+.agent-floor.is-tactical .agent-floor__actor-body { margin-top: -27px; }
+.agent-floor.is-tactical .agent-floor__stack-blocks .agent-floor__block { transform: translate3d(calc(var(--z) * .16), calc(var(--z) * -.24), var(--z)); }
+.agent-floor.is-tactical .agent-floor__stack { opacity: .65; }
+.agent-floor.is-tactical .agent-floor__station-surface { border-radius: 5px; border-bottom-width: 4px; background: var(--floor-face-3); }
+.agent-floor.is-tactical .agent-floor__station.is-occupied .agent-floor__station-surface { background: var(--floor-accent-soft); }
+.agent-floor.is-tactical .agent-floor__plane { border-radius: 8px; }
+.agent-floor__station-surface { display: grid; place-items: center; color: var(--floor-muted); }
+.agent-floor__station.is-occupied .agent-floor__station-surface > svg { opacity: .15; }
+.agent-floor__station-surface > svg { stroke-width: 1.4; }

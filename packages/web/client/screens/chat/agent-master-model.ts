@@ -44,7 +44,7 @@ export function canonicalAgentForIdentity(
   return [...agents].sort(canonicalAgentOrder)[0];
 }
 
-function sessionMatchesConversationId(
+export function sessionMatchesConversationId(
   session: SessionEntry,
   conversationId: string,
 ): boolean {

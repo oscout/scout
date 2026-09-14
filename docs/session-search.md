@@ -87,3 +87,43 @@ path is available. Do **not** bulk-import transcripts into Scout messages.
 - Design: `docs/eng/sco-062-qmd-knowledge-search-and-context-index.md`
 - Runtime: `packages/runtime/src/knowledge/`
 - CLI: `apps/desktop/src/cli/commands/search.ts`
+
+## Scoutbot read-only tools
+
+Scoutbot can use `sessions_search` to query this same existing FTS index without
+indexing or opening raw transcript files. Queries are bounded to 300 characters,
+1–20 hits (default 8), and 1–720 hours (default 72). Optional harness and project
+basename filters use existing index facets. This is lexical search; a natural
+language request is translated into search terms, not a semantic embedding query.
+The response always includes warm coverage and staleness. Missing coverage skips
+the search and returns the explicit warm-up suggestion for the operator.
+
+`sessions_inventory` reads the existing canonical session views and observed
+terminal inventory, with literal filters and at most 20 returned results. The
+underlying view is bounded (80 sessions / 100 terminal records), so it does not
+prove that a session or process does not exist. `live_attachable` requires a
+terminal surface observed as live or detached. `history_only` requires all matched terminal surfaces to be explicitly exited;
+it does not rule out an independent harness process. Missing terminal evidence,
+unknown surface state, or unavailable inventory is reported as `unknown`.
+
+Search hits receive an Open session link only when their harness-native identity
+matches a canonical session, and an Attach terminal link only for an observed
+live/detached surface. Index-only hits retain source coordinates and have no
+fabricated action. Both tools are read-only; neither imports transcripts, warms
+an index, launches a shell, resumes a harness, or dispatches work. Returned source
+text remains untrusted observed material.
+
+
+## Scoutbot attachment inspection
+
+`attachments_read` accepts an attachment id and optional originating message id.
+It requires an active broker reply context and a canonical operator message in
+that same conversation. Only that message's same-origin `/api/blobs/<id>` URL
+can be read. Authentication uses the existing Scout Web bearer/bootstrap path;
+redirects, arbitrary URLs, and filesystem reads are not allowed.
+
+Text/code attachments must match their declared MIME type, contain valid UTF-8
+text, and stay within 256 KiB. Returned text is limited to 32,000 characters and
+reports truncation. Image, audio, video, PDF, and other binary inspection is
+explicitly unavailable in this runtime; accepting such a file in the composer
+does not imply that the assistant can inspect it. Source text is untrusted data.

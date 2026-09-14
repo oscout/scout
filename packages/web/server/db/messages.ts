@@ -24,14 +24,42 @@ import type { WebMessage } from "./types/web.ts";
 
 type ThreadSummary = NonNullable<WebMessage["threadSummary"]>;
 
+/**
+ * An agent's neighbourhood: every conversation it spoke in or was addressed
+ * in, read whole.
+ *
+ * Three legs, because no one of them is the whole answer. Membership misses an
+ * agent the broker delivered to without writing a member row. Authorship
+ * misses an agent that was asked and has not answered yet — the case the map
+ * most needs, since an unanswered ask is exactly what an operator is looking
+ * for. Deliveries carry that recipient side: `deliveries.target_id` is who a
+ * message was routed to, whether or not they have replied.
+ *
+ * Scoping by conversation rather than by author is the point: the flow views
+ * draw who asked whom, so the other side of every exchange has to come back
+ * with it. Filtering messages by `actor_id` would return only this agent's own
+ * half and leave every reply out.
+ */
+const AGENT_NEIGHBOURHOOD_PREDICATE = `m.conversation_id IN (
+  SELECT cm.conversation_id FROM conversation_members cm WHERE cm.actor_id = ?
+  UNION
+  SELECT spoken.conversation_id FROM messages spoken WHERE spoken.actor_id = ?
+  UNION
+  SELECT addressed.conversation_id
+  FROM deliveries d
+  JOIN messages addressed ON addressed.id = d.message_id
+  WHERE d.target_id = ?
+)`;
+
 export function queryRecentMessages(
   limit = 80,
-  opts?: { conversationId?: string; beforeMessageId?: string },
+  opts?: { conversationId?: string; actorId?: string; beforeMessageId?: string },
 ): WebMessage[] {
   if (opts?.conversationId && !isOpaqueChannelId(opts.conversationId)) {
     return [];
   }
   const conversationIds = opts?.conversationId ? conversationIdAliases(opts.conversationId) : [];
+  const actorId = opts?.actorId?.trim() || null;
   const messageCreatedAtExpression = sqlTimestampMsExpression("m.created_at");
   const pageLimit = clampMessagePageLimit(limit);
   const beforeMessage = resolveBeforeMessage(
@@ -48,6 +76,7 @@ export function queryRecentMessages(
           OR (substr(m.conversation_id, 1, 5) = 'chat_' AND length(m.conversation_id) > 5)
           OR (m.conversation_id LIKE 'c.%' AND length(m.conversation_id) > 2)
         )`,
+    actorId ? AGENT_NEIGHBOURHOOD_PREDICATE : null,
     beforeMessage
       ? `(
           ${messageCreatedAtExpression} < ?
@@ -55,6 +84,9 @@ export function queryRecentMessages(
         )`
       : null,
   ]);
+  // Clause order is the parameter order: conversation ids, then the
+  // neighbourhood actor, then the page cursor.
+  const actorParams = actorId ? [actorId, actorId, actorId] : [];
   const beforeParams = beforeMessage
     ? [beforeMessage.createdAt, beforeMessage.createdAt, beforeMessage.id]
     : [];
@@ -78,7 +110,7 @@ export function queryRecentMessages(
        ORDER BY ${messageCreatedAtExpression} DESC, m.id DESC
        LIMIT ?`,
     )
-    .all(...conversationIds, ...beforeParams, pageLimit) as Array<{
+    .all(...conversationIds, ...actorParams, ...beforeParams, pageLimit) as Array<{
     id: string;
     conversation_id: string;
     actor_id: string;

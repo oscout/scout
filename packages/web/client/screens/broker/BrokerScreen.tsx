@@ -1,4 +1,4 @@
-import { ArrowDown, ArrowRight, AtSign, Bot, Check, ChevronDown, Copy, ExternalLink, Hash, LoaderCircle, Maximize2, MessageSquare, Minimize2, Paperclip, Plus, Radio, RefreshCw, SendHorizontal, Sparkles, X } from "lucide-react";
+import { ArrowDown, ArrowRight, AtSign, Check, ChevronDown, Copy, ExternalLink, Hash, LoaderCircle, Maximize2, MessageSquare, Minimize2, Paperclip, Plus, Radio, RefreshCw, SendHorizontal, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { DictationMic } from "../../components/DictationMic.tsx";
@@ -26,7 +26,6 @@ import {
   brokerAttemptIsFailure,
   brokerAttemptTargetAgent,
   brokerAttemptContextText,
-  brokerDispatchReviewRequest,
   brokerMessageFeedRows,
   brokerMetadataJson,
 } from "./broker-display.ts";
@@ -992,17 +991,6 @@ function CopyIconButton({ value, subject, className }: { value: string; subject:
   );
 }
 
-type DispatchReviewResponse = {
-  ok: true;
-  conversationId: string | null;
-  messageId: string | null;
-  flightId: string | null;
-  targetAgentId: string | null;
-  targetLabel: string | null;
-  dedupeFingerprint: string;
-  rootCauseFingerprint: string;
-};
-
 type DispatchAskResponse = {
   conversationId?: string | null;
   flightId?: string | null;
@@ -1148,9 +1136,11 @@ export function BrokerAttemptInspector({
   const deliveredAt = metadataTimestamp(attempt, "deliveredAt", "completedAt")
     ?? normalizeTimestampMs(attempt.ts);
   const reference = brokerAttemptReference(attempt);
-  const [reviewStatus, setReviewStatus] = useState<"idle" | "running" | "sent" | "failed">("idle");
-  const [reviewMessage, setReviewMessage] = useState<string | null>(null);
-  const [reviewConversationId, setReviewConversationId] = useState<string | null>(null);
+  const [investigateStatus, setInvestigateStatus] = useState<DispatchActionStatus>("idle");
+  const [investigateMessage, setInvestigateMessage] = useState<string | null>(null);
+  const [investigateConversationId, setInvestigateConversationId] = useState<string | null>(null);
+  const [forwardOpen, setForwardOpen] = useState(false);
+  const [adjustOpen, setAdjustOpen] = useState(false);
   const [messageDraft, setMessageDraft] = useState("");
   const [redispatchAgentId, setRedispatchAgentId] = useState("");
   const [redispatchStatus, setRedispatchStatus] = useState<DispatchActionStatus>("idle");
@@ -1185,9 +1175,10 @@ export function BrokerAttemptInspector({
     () => brokerAttemptTargetAgent(attempt, routableAgents)?.id ?? "",
     [attempt, routableAgents],
   );
-  const defaultForwardAgentId = routableAgents.some((agent) => agent.id === scoutbotAgentId)
-    ? scoutbotAgentId
-    : routableAgents[0]?.id ?? "";
+  // Forward's default target skips Scout — Scout already has its own intent
+  // (Investigate), so the draft points at a working agent when one exists.
+  const defaultForwardAgentId = routableAgents.find((agent) => agent.id !== scoutbotAgentId)?.id
+    ?? routableAgents[0]?.id ?? "";
   const firstRoutableAgentId = routableAgents[0]?.id ?? "";
   const defaultForwardAgent = routableAgents.find((agent) => agent.id === defaultForwardAgentId) ?? null;
   const projectOptions = useMemo(() => {
@@ -1229,9 +1220,11 @@ export function BrokerAttemptInspector({
   useEffect(() => {
     const defaults = composerDefaultsRef.current;
     routingTouchedRef.current = false;
-    setReviewStatus("idle");
-    setReviewMessage(null);
-    setReviewConversationId(null);
+    setInvestigateStatus("idle");
+    setInvestigateMessage(null);
+    setInvestigateConversationId(null);
+    setForwardOpen(false);
+    setAdjustOpen(false);
     setMessageDraft("");
     setRedispatchAgentId(defaults.originalTargetAgentId || defaults.firstRoutableAgentId);
     setRedispatchStatus("idle");
@@ -1281,9 +1274,18 @@ export function BrokerAttemptInspector({
     return () => { cancelled = true; };
   }, [forwardProjectPath]);
 
-  const prepareScoutMessage = useCallback((prompt: string) => {
-    setMessageDraft(prompt);
+  const openForwardDraft = useCallback(() => {
+    setForwardOpen(true);
     window.requestAnimationFrame(() => messageInputRef.current?.focus());
+  }, []);
+
+  const discardForwardDraft = useCallback(() => {
+    setForwardOpen(false);
+    setAdjustOpen(false);
+    setMessageDraft("");
+    setForwardFiles([]);
+    setForwardStatus("idle");
+    setForwardMessage(null);
   }, []);
 
   const redispatch = useCallback(async () => {
@@ -1377,9 +1379,6 @@ export function BrokerAttemptInspector({
     }
   }, []);
 
-  const scoutPrompts = isFailure
-    ? ["Get a second opinion", "Propose a recovery plan", "Draft a follow-up"]
-    : ["Summarize this dispatch", "Draft a follow-up", "What changed?"];
   const redispatchAgent = routableAgents.find((agent) => agent.id === redispatchAgentId) ?? null;
   const forwardAgent = routableAgents.find((agent) => agent.id === forwardAgentId) ?? null;
   const forwardProjectAgents = routableAgents.filter((agent) => {
@@ -1434,55 +1433,66 @@ export function BrokerAttemptInspector({
       ?? "");
   }, [forwardCatalog, forwardHarness, forwardEffort]);
 
-  const invokeCodex = useCallback(async () => {
-    setReviewStatus("running");
-    setReviewMessage(null);
-    try {
-      const result = await api<DispatchReviewResponse>("/api/broker/dispatch-review", {
-        method: "POST",
-        body: JSON.stringify(brokerDispatchReviewRequest(attempt)),
-      });
-      setReviewStatus("sent");
-      setReviewConversationId(result.conversationId);
-      setReviewMessage(result.conversationId
-        ? `Report started${result.targetLabel ? ` with ${result.targetLabel}` : ""}. Open the conversation to follow it.`
-        : `Report started${result.targetLabel ? ` with ${result.targetLabel}` : ""}${result.flightId ? ` · ${result.flightId}` : ""}.`);
-    } catch (error) {
-      setReviewStatus("failed");
-      setReviewMessage(`Couldn't start the report. ${error instanceof Error ? error.message : String(error)}`);
+  // The one automated intent: a stock prompt plus the dispatch context to
+  // Scoutbot (read-only, so sending without composing is safe). On a failure
+  // it doubles as the failure report — recovery framing instead of a summary.
+  const investigatePrompt = isFailure
+    ? "Investigate why this dispatch failed. Say what stopped it, whether anything was received, and propose a recovery: who should take it and what should happen next."
+    : "Summarize this dispatch and what happened next. Flag anything that needs the operator.";
+  const investigate = useCallback(async () => {
+    if (investigateStatus === "sending") return;
+    if (investigateConversationId) {
+      openContent(navigate, { view: "conversation", conversationId: investigateConversationId }, { returnTo: route });
+      return;
     }
-  }, [attempt]);
+    const scoutbot = routableAgents.find((agent) => agent.id === scoutbotAgentId);
+    if (!scoutbot) {
+      setInvestigateStatus("failed");
+      setInvestigateMessage("Scout isn't reachable right now.");
+      return;
+    }
+    setInvestigateStatus("sending");
+    setInvestigateMessage(null);
+    try {
+      const result = await api<DispatchAskResponse>("/api/ask", {
+        method: "POST",
+        body: JSON.stringify({
+          body: `${investigatePrompt}\n\nAttached dispatch context:\n${contextText}`,
+          targetAgentId: scoutbot.id,
+          targetLabel: "Scout",
+          metadata: {
+            source: "scout-dispatch-investigate",
+            originalDispatchId: attempt.id,
+            ...(attempt.messageId ? { originalMessageId: attempt.messageId } : {}),
+            ...(attempt.conversationId ? { originalConversationId: attempt.conversationId } : {}),
+          },
+        }),
+      });
+      const flightId = result.flightId ?? result.flight?.id;
+      setInvestigateStatus("sent");
+      setInvestigateConversationId(result.conversationId ?? null);
+      setInvestigateMessage(result.conversationId
+        ? "Investigation started. Open it to follow along."
+        : `Investigation sent to Scout${flightId ? ` · ${flightId}` : ""}.`);
+    } catch (error) {
+      setInvestigateStatus("failed");
+      setInvestigateMessage(`Investigation wasn't sent. ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }, [attempt, contextText, investigateConversationId, investigatePrompt, investigateStatus, navigate, routableAgents, route, scoutbotAgentId]);
 
-  // Quiet action rows, ordered by failure kind: a route failure never reached
-  // a destination, so the report outranks retrying; a delivery failure did, so
-  // retrying outranks the report.
-  const reportAction = isFailure ? (
-    <div className="sys-broker-action-row">
-      <div className="sys-broker-action-line">
-        <span className="sys-broker-action-label" id="dispatch-report-title">Failure report</span>
-        <button
-          type="button"
-          className="sys-broker-report-button"
-          disabled={reviewStatus === "running" || (reviewStatus === "sent" && !reviewConversationId)}
-          onClick={() => {
-            if (reviewConversationId) {
-              openContent(navigate, { view: "conversation", conversationId: reviewConversationId }, { returnTo: route });
-              return;
-            }
-            void invokeCodex();
-          }}
-        >
-          {reviewStatus === "running" ? <LoaderCircle size={13} className="sys-broker-action-spinner" aria-hidden="true" /> : reviewConversationId ? <ExternalLink size={13} aria-hidden="true" /> : <Bot size={13} aria-hidden="true" />}
-          {reviewStatus === "running" ? "Starting report…" : reviewConversationId ? "Open report conversation" : "Start failure report"}
-        </button>
-      </div>
-      {reviewMessage && (
-        <div className={`sys-broker-review-status sys-broker-review-status--${reviewStatus}`} role="status">
-          {reviewMessage}
-        </div>
-      )}
-    </div>
-  ) : null;
+  // One paste-able record: the delivery grid plus every technical row.
+  const recordJson = useMemo(() => {
+    const record: Record<string, string> = {
+      state: dispatchStateLabel(attempt),
+      reference,
+      channel: dispatchChannelLabel(attempt.route),
+      latency: dispatchLatencyLabel(attempt),
+      sent: dispatchClockWithSeconds(sentAt),
+      [isFailure ? "failed" : "delivered"]: dispatchClockWithSeconds(deliveredAt),
+    };
+    for (const row of rows) record[row.label.toLowerCase()] = row.value;
+    return JSON.stringify(record, null, 2);
+  }, [attempt, deliveredAt, isFailure, reference, rows, sentAt]);
 
   const retryAction = (
     <div className="sys-broker-action-row">
@@ -1547,6 +1557,11 @@ export function BrokerAttemptInspector({
           <strong className={`sys-broker-state sys-broker-state--${tone}`}>{dispatchStateLabel(attempt)}</strong>
           <code title={reference}>{reference}</code>
           <CopyIconButton
+            value={reference}
+            subject="message id"
+            className="sys-broker-inspector-copy"
+          />
+          <CopyIconButton
             value={contextText}
             subject="dispatch context"
             className="sys-broker-inspector-copy"
@@ -1573,6 +1588,7 @@ export function BrokerAttemptInspector({
               <span className="sys-detail-label">From · {dispatchPartyKind(attempt, "from")}</span>
               <strong>{attempt.actorName ?? "Unknown sender"}</strong>
             </div>
+            {attempt.actorName && <CopyIconButton value={attempt.actorName} subject="sender" />}
           </div>
 
           <ArrowDown className="sys-broker-route-down" size={17} aria-hidden="true" />
@@ -1585,6 +1601,7 @@ export function BrokerAttemptInspector({
               <span className="sys-detail-label">To · {dispatchPartyKind(attempt, "to")}</span>
               <code title={attempt.target ?? "No target"}>{attempt.target ?? "No target"}</code>
             </div>
+            {attempt.target && <CopyIconButton value={attempt.target} subject="target" />}
             {attempt.conversationId && (
               <button
                 type="button"
@@ -1597,25 +1614,6 @@ export function BrokerAttemptInspector({
             )}
           </div>
         </section>
-
-        <dl className="sys-broker-delivery-grid">
-          <div>
-            <dt>Channel</dt>
-            <dd>{dispatchChannelLabel(attempt.route)}</dd>
-          </div>
-          <div>
-            <dt>Latency</dt>
-            <dd className="sys-broker-delivery-accent">{dispatchLatencyLabel(attempt)}</dd>
-          </div>
-          <div>
-            <dt>Sent</dt>
-            <dd>{dispatchClockWithSeconds(sentAt)}</dd>
-          </div>
-          <div>
-            <dt>{isFailure ? "Failed" : "Delivered"}</dt>
-            <dd>{dispatchClockWithSeconds(deliveredAt)}</dd>
-          </div>
-        </dl>
 
         <section className="sys-broker-payload">
           {isRouteFailure
@@ -1639,9 +1637,225 @@ export function BrokerAttemptInspector({
         />
 
         <section className="sys-broker-actions" aria-label="Dispatch actions">
-          {isRouteFailure
-            ? <>{reportAction}{retryAction}</>
-            : <>{retryAction}{reportAction}</>}
+          {isFailure && retryAction}
+          <div className="sys-broker-intents">
+            <button
+              type="button"
+              className={`sys-broker-intent${!isFailure ? " sys-broker-intent--primary" : ""}`}
+              disabled={investigateStatus === "sending"}
+              onClick={() => void investigate()}
+            >
+              {investigateStatus === "sending"
+                ? <LoaderCircle size={13} className="sys-broker-action-spinner" aria-hidden="true" />
+                : investigateConversationId
+                  ? <ExternalLink size={13} aria-hidden="true" />
+                  : <MessageSquare size={13} aria-hidden="true" />}
+              {investigateStatus === "sending"
+                ? "Asking Scout…"
+                : investigateConversationId
+                  ? "Open investigation"
+                  : "Investigate with Scout"}
+            </button>
+            <button
+              type="button"
+              className="sys-broker-intent"
+              aria-expanded={forwardOpen}
+              onClick={() => (forwardOpen ? discardForwardDraft() : openForwardDraft())}
+            >
+              <ArrowRight size={13} aria-hidden="true" />
+              Forward to agent…
+            </button>
+          </div>
+          {investigateMessage && (
+            <div className={`sys-broker-action-status sys-broker-action-status--${investigateStatus}`} role="status">
+              {investigateMessage}
+            </div>
+          )}
+          {forwardOpen && (
+            <div className="sys-broker-forward-draft">
+              <div className="sys-broker-forward-draft-head">
+                <span className="sys-broker-action-label">Forward to agent</span>
+                <button type="button" className="sys-broker-forward-discard" onClick={discardForwardDraft}>
+                  Discard
+                </button>
+              </div>
+              <form
+                className="sys-broker-message-composer"
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  void forwardDispatch();
+                }}
+              >
+                <textarea
+                  ref={messageInputRef}
+                  id="dispatch-message-input"
+                  aria-label="Forward message"
+                  value={messageDraft}
+                  rows={3}
+                  placeholder={`What should ${forwardAgent?.id === scoutbotAgentId ? "Scout" : forwardAgent?.name ?? "this agent"} investigate or do?`}
+                  disabled={forwardStatus === "sending"}
+                  onChange={(event) => {
+                    setMessageDraft(event.target.value);
+                    if (forwardStatus !== "idle") {
+                      setForwardStatus("idle");
+                      setForwardMessage(null);
+                    }
+                  }}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+                      event.preventDefault();
+                      void forwardDispatch();
+                    }
+                  }}
+                />
+                {forwardFiles.length > 0 && (
+                  <div className="sys-broker-composer-attachments" aria-label="Attachments">
+                    {forwardFiles.map((file, index) => (
+                      <span key={`${file.name}:${file.size}:${index}`}>
+                        <Paperclip size={10} aria-hidden="true" />
+                        <span title={file.name}>{file.name}</span>
+                        <button
+                          type="button"
+                          onClick={() => setForwardFiles((current) => current.filter((_, itemIndex) => itemIndex !== index))}
+                          aria-label={`Remove ${file.name}`}
+                        >
+                          <X size={10} aria-hidden="true" />
+                        </button>
+                      </span>
+                    ))}
+                  </div>
+                )}
+                <footer>
+                  <div className="sys-broker-composer-left">
+                    <input
+                      ref={forwardFileInputRef}
+                      type="file"
+                      multiple
+                      hidden
+                      disabled={forwardStatus === "sending"}
+                      onChange={(event) => {
+                        addForwardFiles([...(event.target.files ?? [])]);
+                        event.target.value = "";
+                      }}
+                    />
+                    <button
+                      type="button"
+                      className="sys-broker-composer-attach"
+                      disabled={forwardStatus === "sending"}
+                      onClick={() => forwardFileInputRef.current?.click()}
+                      aria-label="Attach files"
+                      title="Attach files"
+                    >
+                      <Plus size={16} aria-hidden="true" />
+                    </button>
+                    <span className="sys-broker-message-attachment" title={reference}>Context + payload attached</span>
+                  </div>
+
+                  <div className="sys-broker-composer-targets">
+                    <span className="sys-broker-composer-route-label">To</span>
+                    <label title="Forward target">
+                      <span>Agent</span>
+                      <select
+                        aria-label="Forward target"
+                        value={forwardAgentId}
+                        disabled={forwardStatus === "sending" || forwardProjectAgents.length === 0}
+                        onChange={(event) => {
+                          const nextAgent = routableAgents.find((agent) => agent.id === event.target.value) ?? null;
+                          routingTouchedRef.current = true;
+                          setForwardAgentId(event.target.value);
+                          if (nextAgent) {
+                            setForwardProjectPath(nextAgent.projectRoot?.trim() || nextAgent.cwd?.trim() || "");
+                            setForwardHarness(nextAgent.harness?.trim() || "");
+                            setForwardModel(nextAgent.model?.trim() || "");
+                          }
+                          setForwardStatus("idle");
+                          setForwardMessage(null);
+                        }}
+                      >
+                        {forwardProjectAgents.length === 0 ? (
+                          <option value="">No agents</option>
+                        ) : forwardProjectAgents.map((agent) => (
+                          <option key={agent.id} value={agent.id}>{agent.id === scoutbotAgentId ? "Scout" : agent.name}</option>
+                        ))}
+                      </select>
+                    </label>
+                    <button
+                      type="button"
+                      className="sys-broker-forward-adjust-toggle"
+                      aria-expanded={adjustOpen}
+                      onClick={() => setAdjustOpen((open) => !open)}
+                    >
+                      Adjust
+                      <ChevronDown size={11} aria-hidden="true" />
+                    </button>
+                    <DictationMic
+                      className="sys-broker-composer-mic"
+                      disabled={forwardStatus === "sending"}
+                      onAppend={(text) => setMessageDraft((current) => current.trim() ? `${current.trimEnd()} ${text}` : text)}
+                      onError={(message) => {
+                        setForwardStatus("failed");
+                        setForwardMessage(message);
+                      }}
+                    />
+                  </div>
+                  <button
+                    type="submit"
+                    className="sys-broker-composer-send"
+                    disabled={!messageDraft.trim() || !forwardAgent || forwardStatus === "sending"}
+                    aria-label={`Ask ${forwardAgent?.name ?? "recipient"} about this dispatch`}
+                  >
+                    {forwardStatus === "sending" ? <LoaderCircle size={14} className="sys-broker-action-spinner" aria-hidden="true" /> : <SendHorizontal size={14} aria-hidden="true" />}
+                  </button>
+                </footer>
+                {adjustOpen && (
+                  <div className="sys-broker-composer-targets sys-broker-forward-adjust">
+                    <label title="Project target">
+                      <span>Project</span>
+                      <select
+                        aria-label="Project target"
+                        value={forwardProjectPath}
+                        disabled={forwardStatus === "sending"}
+                        onChange={(event) => {
+                          const projectPath = event.target.value;
+                          const nextAgent = routableAgents.find((agent) => (
+                            !projectPath || (agent.projectRoot?.trim() || agent.cwd?.trim()) === projectPath
+                          )) ?? null;
+                          routingTouchedRef.current = true;
+                          setForwardProjectPath(projectPath);
+                          if (nextAgent) {
+                            setForwardAgentId(nextAgent.id);
+                            setForwardHarness(nextAgent.harness?.trim() || "");
+                            setForwardModel(nextAgent.model?.trim() || "");
+                          }
+                        }}
+                      >
+                        <option value="">Any project</option>
+                        {projectOptions.map((project) => (
+                          <option key={project.path} value={project.path}>{project.label}</option>
+                        ))}
+                      </select>
+                    </label>
+                    <RuntimePicker
+                      catalog={forwardCatalog}
+                      value={{ harness: forwardHarness, model: forwardModel, effort: forwardEffort }}
+                      onChange={(next: RuntimeValue) => {
+                        routingTouchedRef.current = true;
+                        setForwardHarness(next.harness);
+                        setForwardModel(next.model);
+                        setForwardEffort(next.effort);
+                      }}
+                      disabled={forwardStatus === "sending"}
+                    />
+                  </div>
+                )}
+              </form>
+              {forwardMessage && (
+                <div className={`sys-broker-action-status sys-broker-action-status--${forwardStatus}`} role="status">
+                  {forwardMessage}
+                </div>
+              )}
+            </div>
+          )}
         </section>
 
         <details className="sys-broker-technical">
@@ -1649,6 +1863,28 @@ export function BrokerAttemptInspector({
             <span>Technical details</span>
             <ChevronDown size={13} aria-hidden="true" />
           </summary>
+          <dl className="sys-broker-delivery-grid">
+            <div>
+              <dt>Channel</dt>
+              <dd>{dispatchChannelLabel(attempt.route)}</dd>
+            </div>
+            <div>
+              <dt>Latency</dt>
+              <dd className="sys-broker-delivery-accent">{dispatchLatencyLabel(attempt)}</dd>
+            </div>
+            <div>
+              <dt>Sent</dt>
+              <dd>{dispatchClockWithSeconds(sentAt)}</dd>
+            </div>
+            <div>
+              <dt>{isFailure ? "Failed" : "Delivered"}</dt>
+              <dd>{dispatchClockWithSeconds(deliveredAt)}</dd>
+            </div>
+          </dl>
+          <div className="sys-broker-record-head">
+            <span className="sys-detail-label">Record</span>
+            <CopyIconButton value={recordJson} subject="record as JSON" className="sys-broker-metadata-copy" />
+          </div>
           <div className="sys-broker-inspector-rows">
             {rows.map((row) => (
               <div key={row.label} className="sys-broker-inspector-row">
@@ -1665,188 +1901,9 @@ export function BrokerAttemptInspector({
             </div>
             <BrokerMetadataPanel metadata={attempt.metadata} rawJson={metadata} />
           </div>
+          {!isFailure && retryAction}
         </details>
       </div>
-
-      <section className="sys-broker-forward" aria-labelledby="dispatch-forward-title">
-        <div className="sys-broker-forward-head">
-          <span id="dispatch-forward-title" className="sys-broker-action-label">Follow up</span>
-        </div>
-        <div id="dispatch-forward-content">
-            <div className="sys-broker-forward-intro">
-              <div className="sys-broker-ask-prompts" aria-label="Suggested requests">
-                {scoutPrompts.map((prompt) => (
-                  <button key={prompt} type="button" onClick={() => prepareScoutMessage(prompt)}>
-                    <Sparkles size={11} aria-hidden="true" />
-                    {prompt}
-                  </button>
-                ))}
-              </div>
-            </div>
-            <form
-              className="sys-broker-message-composer"
-              onSubmit={(event) => {
-                event.preventDefault();
-                void forwardDispatch();
-              }}
-            >
-          <label htmlFor="dispatch-message-input">Request</label>
-          <textarea
-            ref={messageInputRef}
-            id="dispatch-message-input"
-            value={messageDraft}
-            rows={3}
-            placeholder={`What should ${forwardAgent?.id === scoutbotAgentId ? "Scout" : forwardAgent?.name ?? "this agent"} investigate or do?`}
-            disabled={forwardStatus === "sending"}
-            onChange={(event) => {
-              setMessageDraft(event.target.value);
-              if (forwardStatus !== "idle") {
-                setForwardStatus("idle");
-                setForwardMessage(null);
-              }
-            }}
-            onKeyDown={(event) => {
-              if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
-                event.preventDefault();
-                void forwardDispatch();
-              }
-            }}
-          />
-          {forwardFiles.length > 0 && (
-            <div className="sys-broker-composer-attachments" aria-label="Attachments">
-              {forwardFiles.map((file, index) => (
-                <span key={`${file.name}:${file.size}:${index}`}>
-                  <Paperclip size={10} aria-hidden="true" />
-                  <span title={file.name}>{file.name}</span>
-                  <button
-                    type="button"
-                    onClick={() => setForwardFiles((current) => current.filter((_, itemIndex) => itemIndex !== index))}
-                    aria-label={`Remove ${file.name}`}
-                  >
-                    <X size={10} aria-hidden="true" />
-                  </button>
-                </span>
-              ))}
-            </div>
-          )}
-          <footer>
-            <div className="sys-broker-composer-left">
-              <input
-                ref={forwardFileInputRef}
-                type="file"
-                multiple
-                hidden
-                disabled={forwardStatus === "sending"}
-                onChange={(event) => {
-                  addForwardFiles([...(event.target.files ?? [])]);
-                  event.target.value = "";
-                }}
-              />
-              <button
-                type="button"
-                className="sys-broker-composer-attach"
-                disabled={forwardStatus === "sending"}
-                onClick={() => forwardFileInputRef.current?.click()}
-                aria-label="Attach files"
-                title="Attach files"
-              >
-                <Plus size={16} aria-hidden="true" />
-              </button>
-              <span className="sys-broker-message-attachment" title={reference}>Dispatch context included</span>
-            </div>
-
-            <div className="sys-broker-composer-targets">
-              <span className="sys-broker-composer-route-label">Send to</span>
-              <label title="Project target">
-                <span>Project</span>
-                <select
-                  aria-label="Project target"
-                  value={forwardProjectPath}
-                  disabled={forwardStatus === "sending"}
-                  onChange={(event) => {
-                    const projectPath = event.target.value;
-                    const nextAgent = routableAgents.find((agent) => (
-                      !projectPath || (agent.projectRoot?.trim() || agent.cwd?.trim()) === projectPath
-                    )) ?? null;
-                    routingTouchedRef.current = true;
-                    setForwardProjectPath(projectPath);
-                    if (nextAgent) {
-                      setForwardAgentId(nextAgent.id);
-                      setForwardHarness(nextAgent.harness?.trim() || "");
-                      setForwardModel(nextAgent.model?.trim() || "");
-                    }
-                  }}
-                >
-                  <option value="">Any project</option>
-                  {projectOptions.map((project) => (
-                    <option key={project.path} value={project.path}>{project.label}</option>
-                  ))}
-                </select>
-              </label>
-              <label title="Agent target">
-                <span>Agent</span>
-                <select
-                  aria-label="Agent target"
-                  value={forwardAgentId}
-                  disabled={forwardStatus === "sending" || forwardProjectAgents.length === 0}
-                  onChange={(event) => {
-                    const nextAgent = routableAgents.find((agent) => agent.id === event.target.value) ?? null;
-                    routingTouchedRef.current = true;
-                    setForwardAgentId(event.target.value);
-                    if (nextAgent) {
-                      setForwardProjectPath(nextAgent.projectRoot?.trim() || nextAgent.cwd?.trim() || "");
-                      setForwardHarness(nextAgent.harness?.trim() || "");
-                      setForwardModel(nextAgent.model?.trim() || "");
-                    }
-                    setForwardStatus("idle");
-                    setForwardMessage(null);
-                  }}
-                >
-                  {forwardProjectAgents.length === 0 ? (
-                    <option value="">No agents</option>
-                  ) : forwardProjectAgents.map((agent) => (
-                    <option key={agent.id} value={agent.id}>{agent.id === scoutbotAgentId ? "Scout" : agent.name}</option>
-                  ))}
-                </select>
-              </label>
-              <RuntimePicker
-                catalog={forwardCatalog}
-                value={{ harness: forwardHarness, model: forwardModel, effort: forwardEffort }}
-                onChange={(next: RuntimeValue) => {
-                  routingTouchedRef.current = true;
-                  setForwardHarness(next.harness);
-                  setForwardModel(next.model);
-                  setForwardEffort(next.effort);
-                }}
-                disabled={forwardStatus === "sending"}
-              />
-              <DictationMic
-                className="sys-broker-composer-mic"
-                disabled={forwardStatus === "sending"}
-                onAppend={(text) => setMessageDraft((current) => current.trim() ? `${current.trimEnd()} ${text}` : text)}
-                onError={(message) => {
-                  setForwardStatus("failed");
-                  setForwardMessage(message);
-                }}
-              />
-            </div>
-            <button
-              type="submit"
-              className="sys-broker-composer-send"
-              disabled={!messageDraft.trim() || !forwardAgent || forwardStatus === "sending"}
-              aria-label={`Ask ${forwardAgent?.name ?? "recipient"} about this dispatch`}
-            >
-              {forwardStatus === "sending" ? <LoaderCircle size={14} className="sys-broker-action-spinner" aria-hidden="true" /> : <SendHorizontal size={14} aria-hidden="true" />}
-            </button>
-          </footer>
-            </form>
-            {forwardMessage && (
-              <div className={`sys-broker-action-status sys-broker-action-status--${forwardStatus}`} role="status">
-                {forwardMessage}
-              </div>
-            )}
-          </div>
-      </section>
     </aside>
   );
 }

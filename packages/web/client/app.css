@@ -432,7 +432,6 @@ body { margin: 0; }
   opacity: 0.48;
 }
 
-.scout-terminal-focus-toggle,
 .scout-top-row-panel-toggle {
   display: inline-flex;
   align-items: center;
@@ -447,20 +446,17 @@ body { margin: 0; }
   cursor: pointer;
 }
 
-.scout-terminal-focus-toggle:hover,
 .scout-top-row-panel-toggle:hover {
   border-color: color-mix(in srgb, var(--hud-ink) 10%, transparent);
   background: color-mix(in srgb, var(--hud-ink) 7%, transparent);
   color: var(--scout-chrome-ink);
 }
 
-.scout-terminal-focus-toggle:focus-visible,
 .scout-top-row-panel-toggle:focus-visible {
   outline: 2px solid var(--hud-accent);
   outline-offset: 1px;
 }
 
-.scout-terminal-focus-toggle--active,
 .scout-top-row-panel-toggle--active {
   border-color: color-mix(in srgb, var(--hud-accent) 34%, transparent);
   background: color-mix(in srgb, var(--hud-accent) 10%, transparent);
@@ -485,6 +481,42 @@ body { margin: 0; }
 .scout-center-pane-header--top-row .scout-center-pane-header-utility {
   flex-wrap: nowrap;
   flex: 0 0 auto;
+}
+
+/* A screen-owned search in the middle of the row (Terminals). The reading
+   group and the utilities share the remaining width equally, so the field is
+   the row's centre regardless of how much sits on either side. */
+.scout-center-pane-header--top-row.scout-center-pane-header--centered .scout-center-pane-header-main,
+.scout-center-pane-header--top-row.scout-center-pane-header--centered .scout-center-pane-header-utility {
+  flex: 1 1 0;
+  min-width: 0;
+}
+
+.scout-center-pane-header--top-row.scout-center-pane-header--centered .scout-center-pane-header-utility {
+  justify-content: flex-end;
+}
+
+.scout-center-pane-header-center {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  flex: 0 1 760px;
+  min-width: 220px;
+}
+
+.scout-center-pane-header-center > * {
+  width: 100%;
+}
+
+/* Section / <screen utility>: the crumb hands the rest of the reading line to
+   the screen (Terminals: workspace tabs). Scrolls rather than clips. */
+.scout-center-pane-crumb-utility {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
 }
 
 /* The tab cluster scrolls horizontally rather than clipping (thin, unobtrusive). */

@@ -53,6 +53,13 @@ export type MessageComposerProps = {
   showDictation?: boolean;
   /** Reports dictation lifecycle so a containing focus surface can preserve it. */
   onDictationStatusChange?: (status: MessageComposerDictationStatus) => void;
+  /**
+   * Fires with the full draft once a final transcript has been folded into it.
+   * A surface that wants voice to commit without a read-and-press step sends
+   * from here — the value is passed explicitly because `value` has not
+   * re-rendered yet at this point.
+   */
+  onDictationCommit?: (draft: string) => void;
   /** Left toolbar: paperclip / add attachment. */
   showAttach?: boolean;
   onAttach?: () => void;
@@ -223,6 +230,7 @@ function MessageComposerControl({
   stopAriaLabel = "Stop agent",
   showDictation = true,
   onDictationStatusChange,
+  onDictationCommit,
   showAttach = false,
   onAttach,
   attachTitle = "Add attachment",
@@ -325,6 +333,10 @@ function MessageComposerControl({
     // Final transcript lands in the draft so the operator can edit before Send.
     const next = value.trim() ? `${value.trimEnd()} ${text}` : text;
     onChange(next, { caret: next.length });
+    if (onDictationCommit) {
+      onDictationCommit(next);
+      return;
+    }
     // Focus the field after stop so editing is immediate.
     requestAnimationFrame(() => localRef.current?.focus());
   };

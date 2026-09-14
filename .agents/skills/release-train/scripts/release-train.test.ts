@@ -135,6 +135,7 @@ describe("release-train workflow", () => {
       excludedLaneIds: [holdLane],
       commitPlan: [{ laneId: readyLane, outcome: "ship ready lane" }],
       prPlan: [{ laneIds: [readyLane], outcome: "one coherent PR" }],
+      validationPlan: [{ laneId: readyLane, checks: [{ id: "unit", platform: process.platform }] }],
       releasePlan: { mode: "canonical", target: null, ambiguity: null, risk: "medium" },
     });
     runner("record-stage", ["--stage", "S30", "--artifact", s30, "--write", "--run-id", runId]);
@@ -155,11 +156,12 @@ describe("release-train workflow", () => {
     const s50Fail = artifact("s50-fail.json", { type: "ValidationReceiptSet", receipts: [{ laneId: readyLane, command: "bun test", result: "FAIL", at: "2026-08-12T13:00:00Z", outputRef: "log:fail" }] });
     runner("record-stage", ["--stage", "S50", "--artifact", s50Fail, "--write", "--run-id", runId]);
     expect(runner("advance", ["--to", "S60", "--write", "--run-id", runId], false).stderr).toContain("failing validation");
-    const s50Pass = artifact("s50-pass.json", { type: "ValidationReceiptSet", receipts: [{ laneId: readyLane, command: "bun test", result: "PASS", at: "2026-08-12T13:02:00Z", outputRef: "log:pass" }] });
+    const passLog = artifact("validation.log", { passed: true });
+    const s50Pass = artifact("s50-pass.json", { type: "ValidationReceiptSet", receipts: [{ laneId: readyLane, command: "bun test", result: "PASS", at: "2026-08-12T13:02:00Z", outputRef: passLog, outputSha256: sha256(readFileSync(passLog, "utf8")), checkId: "unit", headSha: "c".repeat(40), baseSha: "b".repeat(40), platform: process.platform, architecture: process.arch, toolVersions: { bun: Bun.version }, exitCode: 0, startedAt: "2026-08-12T13:00:00Z", finishedAt: "2026-08-12T13:02:00Z" }] });
     runner("record-stage", ["--stage", "S50", "--artifact", s50Pass, "--write", "--run-id", runId]);
     runner("advance", ["--to", "S60", "--write", "--run-id", runId]);
 
-    const s60 = artifact("s60.json", { type: "PullRequestReceiptSet", prs: [{ laneIds: [readyLane], number: 711, url: "https://github.com/arach/openscout/pull/711", headSha: "c".repeat(40), base: "main", action: "OPENED", idempotencyKey: "sha256:pr" }] });
+    const s60 = artifact("s60.json", { type: "PullRequestReceiptSet", prs: [{ laneIds: [readyLane], number: 711, url: "https://github.com/arach/openscout/pull/711", headSha: "c".repeat(40), baseSha: "b".repeat(40), base: "main", action: "OPENED", idempotencyKey: "sha256:pr" }] });
     runner("record-stage", ["--stage", "S60", "--artifact", s60, "--write", "--run-id", runId]);
     runner("advance", ["--to", "S70", "--write", "--run-id", runId]);
     const s70Changes = artifact("s70-changes.json", { type: "ReviewDecisionSet", decisions: [{ pr: 711, risk: "medium", mode: "INDEPENDENT", verdict: "CHANGES", findings: [{ class: "must_fix", summary: "fix" }], reviewerRef: "flight:review" }] });
@@ -173,7 +175,7 @@ describe("release-train workflow", () => {
     runner("advance", ["--to", "S60", "--write", "--run-id", runId]);
     runner("record-stage", ["--stage", "S60", "--artifact", s60, "--write", "--run-id", runId]);
     runner("advance", ["--to", "S70", "--write", "--run-id", runId]);
-    const s70Approve = artifact("s70-approve.json", { type: "ReviewDecisionSet", decisions: [{ pr: 711, risk: "medium", mode: "INDEPENDENT", verdict: "APPROVE", findings: [], reviewerRef: "flight:review-2" }] });
+    const s70Approve = artifact("s70-approve.json", { type: "ReviewDecisionSet", decisions: [{ pr: 711, risk: "medium", mode: "INDEPENDENT", verdict: "APPROVE", headSha: "c".repeat(40), findings: [], reviewerRef: "flight:review-2" }] });
     runner("record-stage", ["--stage", "S70", "--artifact", s70Approve, "--write", "--run-id", runId]);
     runner("advance", ["--to", "S80", "--write", "--run-id", runId]);
 
@@ -188,8 +190,14 @@ describe("release-train workflow", () => {
     runner("advance", ["--to", "S70", "--write", "--run-id", runId]);
     runner("record-stage", ["--stage", "S70", "--artifact", s70Approve, "--write", "--run-id", runId]);
     runner("advance", ["--to", "S80", "--write", "--run-id", runId]);
-    const s80Pass = artifact("s80-pass.json", { type: "MergeGateSet", gates: [{ pr: 711, headSha: "c".repeat(40), checks: "PASS", mergeable: true, baseCurrent: true, blockingFeedback: false }] });
+    const s80Pass = artifact("s80-pass.json", { type: "MergeGateSet", gates: [{ pr: 711, headSha: "c".repeat(40), baseSha: "b".repeat(40), validationSource: "LOCAL_RECEIPTS", checks: "PASS", mergeable: true, baseCurrent: true, blockingFeedback: false }] });
     runner("record-stage", ["--stage", "S80", "--artifact", s80Pass, "--write", "--run-id", runId]);
+    const originalLog = readFileSync(passLog, "utf8");
+    writeFileSync(passLog, "altered after gate recording");
+    expect(runner("advance", ["--to", "S90", "--write", "--run-id", runId], false).stderr).toContain("evidence hash mismatch");
+    rmSync(passLog);
+    expect(runner("advance", ["--to", "S90", "--write", "--run-id", runId], false).stderr).toContain("ENOENT");
+    writeFileSync(passLog, originalLog);
     runner("advance", ["--to", "S90", "--write", "--run-id", runId]);
 
     const s90Ambiguous = artifact("s90-ambiguous.json", { type: "ReleaseReceiptSet", releaseState: "AMBIGUOUS", ambiguity: "version not authorized", merges: [{ pr: 711, mergeCommit: "e".repeat(40) }], releases: [] });
@@ -411,4 +419,17 @@ describe("release-train workflow", () => {
       shipped: ["merged"],
     });
   });
+});
+
+
+test("named interactive runs preserve shared locking and resume precedence", () => {
+  const root = join(sandbox, "named-state");
+  const preview = JSON.parse(runner("init", [], true, root).stdout);
+  const scheduled = preview.checkpoint.runId;
+  const named = scheduled.replace(/-([a-f0-9]{8})$/, "-local-$1");
+  const created = JSON.parse(runner("init", ["--run-id", named, "--write"], true, root).stdout);
+  expect(created.checkpoint.runId).toBe(named);
+  expect(JSON.parse(runner("init", ["--run-id", scheduled, "--write"], true, root).stdout).checkpoint.runId).toBe(named);
+  runner("stop", ["--run-id", named, "--reason", "test complete", "--write"], true, root);
+  expect(JSON.parse(runner("init", ["--run-id", scheduled, "--write"], true, root).stdout).checkpoint.runId).toBe(scheduled);
 });

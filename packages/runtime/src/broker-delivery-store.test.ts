@@ -66,8 +66,14 @@ class TestDeliveryJournal {
     return entries;
   }
 
-  listDeliveries(): DeliveryIntent[] {
-    return [...this.deliveries.values()];
+  getDelivery(id: string): DeliveryIntent | undefined { return this.deliveries.get(id); }
+  findDelivery(predicate: (delivery: DeliveryIntent) => boolean): DeliveryIntent | undefined {
+    for (const delivery of this.deliveries.values()) if (predicate(delivery)) return delivery;
+    return undefined;
+  }
+
+  listDeliveries(options: { limit: number }): DeliveryIntent[] {
+    return [...this.deliveries.values()].slice(0, options.limit);
   }
 
   getDurableAction(actionId: string): DurableAction | undefined {
@@ -186,6 +192,33 @@ describe("BrokerDeliveryStore", () => {
     })).rejects.toThrow("delivery lease is missing, expired, or owned by another worker");
   });
 
+  test("claims and acknowledges deliveries beyond the listing window without admitting a second claimant", async () => {
+    const { journal, events, store } = createTestDeliveryStore();
+    await journal.appendEntries([{
+      kind: "deliveries.record",
+      deliveries: Array.from({ length: 6001 }, (_, i) => testDelivery({
+        id: `history-${i}`, status: i === 6000 ? "pending" : "completed",
+      })),
+    }]);
+    const [first, second] = await Promise.all([
+      store.claimDelivery({ targetId: "agent-1", leaseOwner: "worker-1", leaseMs: 60000 }),
+      store.claimDelivery({ itemId: "history-6000", targetId: "agent-1", leaseOwner: "worker-2" }),
+    ]);
+    expect(first?.id).toBe("history-6000");
+    expect(second).toBeNull();
+    await expect(store.updateDeliveryStatus({
+      deliveryId: "history-6000", status: "acknowledged",
+      expectedLeaseOwner: "worker-2", requireActiveLease: true,
+    })).rejects.toThrow("owned by another worker");
+    await store.updateDeliveryStatus({
+      deliveryId: "history-6000", status: "acknowledged",
+      expectedLeaseOwner: "worker-1", requireActiveLease: true,
+    });
+    expect(journal.deliveries.get("history-6000")?.status).toBe("acknowledged");
+    expect(events).toHaveLength(2);
+    expect(events[1]?.payload).toEqual(expect.objectContaining({previousStatus: "leased"}));
+  });
+
   test("records delivery attempts and durable action heartbeats", async () => {
     const { journal, store } = createTestDeliveryStore();
     const action = testDurableAction();
@@ -220,4 +253,44 @@ describe("BrokerDeliveryStore", () => {
       updatedAt: 50,
     }));
   });
+});
+
+test("conditional read acknowledgement rechecks after queued claims and terminal updates", async () => {
+  const { journal, store, events } = createTestDeliveryStore();
+  await store.recordDelivery(testDelivery());
+  const snapshot = journal.getDelivery("delivery-1")!;
+  expect(snapshot.status).toBe("pending");
+  const claim = store.claimDelivery({ targetId: "agent-1", leaseOwner: "worker", leaseMs: 60000 });
+  const ack = store.updateDeliveryStatusIf({ deliveryId: snapshot.id, status: "acknowledged", leaseOwner: null, leaseExpiresAt: null }, (current) => current.status === "pending");
+  await expect(claim).resolves.toEqual(expect.objectContaining({ status: "leased" }));
+  await expect(ack).resolves.toBe(false);
+  expect(journal.getDelivery(snapshot.id)?.leaseOwner).toBe("worker");
+  const complete = store.updateDeliveryStatus({ deliveryId: snapshot.id, status: "completed" });
+  const staleAck = store.updateDeliveryStatusIf({ deliveryId: snapshot.id, status: "acknowledged" }, (current) => current.status !== "completed");
+  await complete;
+  await expect(staleAck).resolves.toBe(false);
+  expect(journal.getDelivery(snapshot.id)?.status).toBe("completed");
+  expect(journal.appended.flat().filter((entry) => entry.kind === "delivery.status.update" && entry.status === "acknowledged")).toEqual([]);
+  const eventCount = events.length;
+  await expect(store.updateDeliveryStatusIf({ deliveryId: "missing", status: "acknowledged" }, () => true)).resolves.toBe(false);
+  expect(events.length).toBe(eventCount);
+});
+
+test("asynchronous read-ack eligibility holds the existing write queue until its decision", async () => {
+  const { journal, store } = createTestDeliveryStore();
+  await store.recordDelivery(testDelivery());
+  let ready!: () => void;
+  const entered = new Promise<void>(resolve => { ready = resolve; });
+  let resume!: () => void;
+  const gate = new Promise<void>(resolve => { resume = resolve; });
+  const rejected = store.updateDeliveryStatusIf({ deliveryId: "delivery-1", status: "acknowledged" }, async () => {
+    ready(); await gate; return false;
+  });
+  await entered;
+  const claim = store.claimDelivery({ targetId: "agent-1", leaseOwner: "worker", leaseMs: 60000 });
+  expect(journal.getDelivery("delivery-1")?.status).toBe("pending");
+  resume();
+  expect(await rejected).toBe(false);
+  expect((await claim)?.status).toBe("leased");
+  expect(journal.getDelivery("delivery-1")?.leaseOwner).toBe("worker");
 });

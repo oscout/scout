@@ -19,6 +19,25 @@ ports, while staying well above privileged system ports.
 | Pairing file server | `43132` | Defaults to pairing bridge + 2 |
 | Design studio | `43140` | `design/studio` Next dev server |
 
+### Shared local edge
+
+Only one Caddy instance should own ports `80` and `2019`. Independent Caddy
+processes can both bind these ports on macOS and silently answer another
+service's hostname with an empty HTTP 200 response.
+
+Scout preserves operator-owned site blocks in `~/.scout/local-edge/sites/*.caddy`
+when generating its Caddyfile. Use these snippets to forward companion hostnames
+to distinct upstream ports. Validate the generated config before reloading the
+Scout admin endpoint; never hand-edit generated route blocks as the lasting fix.
+
+On this development machine, `studio.local` and `*.studio.local` forward to
+Studio's private HTTP edge on `127.0.0.1:43181`; Studio's admin endpoint is
+`127.0.0.1:43182`, and its supervisor stays on `43180`. Studio's LaunchAgent sets
+`STUDIO_LOCAL_PRIVATE_HTTP_PORT=43181` and `CADDY_ADMIN=127.0.0.1:43182` with
+`--scheme http`. Preserve these overrides when reinstalling that service.
+Verify both hostnames and JSON API bodies after changes: a successful direct
+web-port probe alone does not establish that public hostname routing works.
+
 Additional git worktrees use deterministic adjacent bands to avoid colliding
 with the main checkout:
 

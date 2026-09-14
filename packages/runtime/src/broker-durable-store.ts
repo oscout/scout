@@ -1,3 +1,4 @@
+import type { BrokerMemoryMaintenance } from "./broker-memory-maintenance.js";
 import type {
   ThreadEventEnvelope,
 } from "@openscout/protocol";
@@ -17,6 +18,9 @@ export type BrokerThreadEventPublisher = {
 };
 
 export type BrokerDurableStoreOptions = {
+  memoryMaintenance?: BrokerMemoryMaintenance;
+  deferProjection?: () => boolean;
+  afterRuntime?: () => Promise<void>;
   journal: BrokerJournalWriter;
   projection: BrokerProjectionWriter;
   threadEvents: BrokerThreadEventPublisher;
@@ -59,6 +63,7 @@ export class BrokerDurableStore {
       return [];
     }
     await applyRuntime(entries);
+    await this.options.afterRuntime?.();
     if (options.enqueueProjection !== false) {
       await this.applyProjectedEntries(entries);
     }
@@ -69,7 +74,7 @@ export class BrokerDurableStore {
     entriesInput: BrokerJournalEntry | BrokerJournalEntry[],
   ): Promise<void> => {
     const entries = normalizeBrokerJournalEntries(entriesInput);
-    if (entries.length === 0 || this.projectionWritesAbandoned) {
+    if (entries.length === 0 || this.projectionWritesAbandoned || this.options.deferProjection?.()) {
       return;
     }
 
@@ -104,9 +109,13 @@ export class BrokerDurableStore {
   };
 
   private readonly projectEntries = async (entries: BrokerJournalEntry[]): Promise<void> => {
-    const threadEventEnvelopes = await this.options.projection.applyEntries(entries);
-    if (!this.projectionWritesAbandoned && threadEventEnvelopes.length > 0) {
-      this.options.threadEvents.publish(threadEventEnvelopes);
+    try {
+      const threadEventEnvelopes = await this.options.projection.applyEntries(entries);
+      if (!this.projectionWritesAbandoned && threadEventEnvelopes.length > 0) {
+        this.options.threadEvents.publish(threadEventEnvelopes);
+      }
+    } finally {
+      this.options.memoryMaintenance?.projected(entries);
     }
   };
 }

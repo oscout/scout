@@ -35,7 +35,7 @@ const HEAD_READ_BYTES = 512 * 1024;
 const METADATA_CACHE_LIMIT = 512;
 
 type TranscriptFileStat = { path: string; mtimeMs: number; size: number };
-type TranscriptMetadata = { cwd: string | null; sessionId: string | null };
+type TranscriptMetadata = { cwd: string | null; sessionId: string | null; parentSessionId?: string | null; agentNickname?: string | null };
 
 const metadataCache = new Map<string, TranscriptFileStat & TranscriptMetadata>();
 
@@ -159,12 +159,14 @@ function metadataRecord(value: unknown): Record<string, unknown> | null {
 function readCodexMetadata(file: TranscriptFileStat): TranscriptMetadata {
   const cached = metadataCache.get(file.path);
   if (cached && cached.mtimeMs === file.mtimeMs && cached.size === file.size) {
-    return { cwd: cached.cwd, sessionId: cached.sessionId };
+    return { cwd: cached.cwd, sessionId: cached.sessionId, parentSessionId: cached.parentSessionId, agentNickname: cached.agentNickname };
   }
 
   const head = readFileHead(file.path);
   let cwd: string | null = null;
   let sessionId: string | null = null;
+  let parentSessionId: string | null = null;
+  let agentNickname: string | null = null;
   for (const line of head.split(/\r?\n/)) {
     const record = parseJsonRecord(line.trim());
     if (!record) continue;
@@ -177,14 +179,18 @@ function readCodexMetadata(file: TranscriptFileStat): TranscriptMetadata {
       sessionId ??= typeof payload.id === "string" && payload.id.trim()
         ? payload.id
         : null;
-      if (cwd || sessionId) {
-        if (cwd && sessionId) {
-          return rememberMetadata(file, { cwd, sessionId });
-        }
+      if (record.type === "session_meta") {
+        const source = metadataRecord(payload.source);
+        const spawn = metadataRecord(metadataRecord(source?.sub_agent)?.thread_spawn);
+        const parent = payload.parent_thread_id ?? spawn?.parent_thread_id;
+        parentSessionId = typeof parent === "string" && parent.trim() && parent.trim() !== sessionId ? parent.trim() : null;
+        const nickname = payload.agent_nickname ?? spawn?.agent_nickname;
+        agentNickname = parentSessionId && typeof nickname === "string" && nickname.trim() ? nickname.trim() : null;
       }
+      if (cwd && sessionId) return rememberMetadata(file, { cwd, sessionId, parentSessionId, agentNickname });
     }
   }
-  return rememberMetadata(file, { cwd, sessionId });
+  return rememberMetadata(file, { cwd, sessionId, parentSessionId, agentNickname });
 }
 
 function walkRecentJsonlFiles(
@@ -240,6 +246,9 @@ function discoverCodexTranscripts(scope: TailDiscoveryScope): DiscoveredTranscri
         source: SOURCE_NAME,
         transcriptPath: file.path,
         sessionId,
+        parentSessionId: meta.parentSessionId ?? null,
+        subagentId: meta.parentSessionId ? sessionId : null,
+        agentNickname: meta.agentNickname ?? null,
         cwd: meta.cwd,
         project: meta.cwd ? basename(meta.cwd) : "(unknown)",
         harness: "unattributed",

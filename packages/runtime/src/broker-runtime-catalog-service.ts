@@ -7,7 +7,7 @@ import {
   SCOUT_RUNTIME_CATALOG,
   type ScoutOwnedRuntimeCatalog,
 } from "@openscout/protocol";
-import { applyRuntimeModelContextWindows } from "@openscout/agent-sessions";
+import { applyRuntimeModelContextWindows } from "@openscout/agent-sessions/model-catalog";
 
 import { resolveOpenScoutSupportPaths } from "./support-paths.js";
 

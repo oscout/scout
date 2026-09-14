@@ -1,6 +1,7 @@
 #![allow(dead_code)]
 
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::path::PathBuf;
 use std::sync::OnceLock;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
@@ -84,6 +85,27 @@ impl Take {
             Take::Quota => Take::Harvest,
             Take::Harvest => Take::Grid,
             Take::Grid => Take::Now,
+        }
+    }
+
+    /// Now → Horizon → Mesh → Harvest → Quota → Now. Twin and Grid stay off Tab.
+    pub fn next_spine(&self) -> Self {
+        match self {
+            Take::Now => Take::Horizon,
+            Take::Horizon => Take::Mesh,
+            Take::Mesh => Take::Harvest,
+            Take::Harvest => Take::Quota,
+            Take::Quota | Take::Twin | Take::Grid => Take::Now,
+        }
+    }
+
+    pub fn prev_spine(&self) -> Self {
+        match self {
+            Take::Now | Take::Twin | Take::Grid => Take::Quota,
+            Take::Horizon => Take::Now,
+            Take::Mesh => Take::Horizon,
+            Take::Harvest => Take::Mesh,
+            Take::Quota => Take::Harvest,
         }
     }
 
@@ -461,6 +483,8 @@ pub struct App {
     pub composing: bool,
     pub draft: String,
     pub composer_notice: Option<String>,
+    /// True when `composer_notice` is a successful ask receipt.
+    pub composer_ok: bool,
     pub help: bool,
     pub events: VecDeque<Row>,
     seen: HashMap<String, ()>,
@@ -476,6 +500,55 @@ pub struct App {
     pub git_untracked: HashSet<String>,
     pub git_roots: Vec<String>,
     pub git_error: Option<String>,
+    /// Click targets from the last frame. Rebuilt every draw.
+    pub hits: Vec<Hit>,
+    /// Left pane percent for Horizon / Mesh / Harvest / Quota.
+    pub detail_split: u16,
+    pub split_drag: bool,
+    pub body_x: u16,
+    pub body_w: u16,
+    pub pointer: Pointer,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum HitKind {
+    Take(Take),
+    Agent(usize),
+    Mesh(usize),
+    Harvest(usize),
+    Split,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Pointer {
+    Default,
+    Pointer,
+    EwResize,
+}
+
+impl Pointer {
+    pub fn osc(self) -> &'static str {
+        match self {
+            Pointer::Default => "\x1b]22;default\x07",
+            Pointer::Pointer => "\x1b]22;pointer\x07",
+            Pointer::EwResize => "\x1b]22;ew-resize\x07",
+        }
+    }
+}
+
+impl Take {
+    pub fn splits_detail(self) -> bool {
+        matches!(self, Take::Horizon | Take::Mesh | Take::Quota | Take::Harvest)
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct Hit {
+    pub x: u16,
+    pub y: u16,
+    pub w: u16,
+    pub h: u16,
+    pub kind: HitKind,
 }
 
 impl App {
@@ -503,6 +576,7 @@ impl App {
             composing: false,
             draft: String::new(),
             composer_notice: None,
+            composer_ok: false,
             help: false,
             events: VecDeque::new(),
             seen: HashMap::new(),
@@ -518,6 +592,85 @@ impl App {
             git_untracked: HashSet::new(),
             git_roots: Vec::new(),
             git_error: None,
+            hits: Vec::new(),
+            detail_split: load_detail_split().unwrap_or(58),
+            split_drag: false,
+            body_x: 0,
+            body_w: 0,
+            pointer: Pointer::Default,
+        }
+    }
+
+    pub fn set_body(&mut self, x: u16, width: u16) {
+        self.body_x = x;
+        self.body_w = width;
+    }
+
+    pub fn nudge_split(&mut self, delta: i16) {
+        let next = (self.detail_split as i16).saturating_add(delta);
+        self.detail_split = next.clamp(28, 75) as u16;
+        save_detail_split(self.detail_split);
+    }
+
+    pub fn set_split_from_col(&mut self, col: u16) {
+        if self.body_w < 24 {
+            return;
+        }
+        let local = u32::from(col.saturating_sub(self.body_x));
+        let pct = (local * 100 / u32::from(self.body_w.max(1))) as u16;
+        self.detail_split = pct.clamp(28, 75);
+    }
+
+    pub fn persist_split(&self) {
+        save_detail_split(self.detail_split);
+    }
+
+    pub fn clear_hits(&mut self) {
+        self.hits.clear();
+    }
+
+    pub fn push_hit(&mut self, x: u16, y: u16, w: u16, h: u16, kind: HitKind) {
+        if w == 0 || h == 0 {
+            return;
+        }
+        self.hits.push(Hit { x, y, w, h, kind });
+    }
+
+    pub fn hit_at(&self, col: u16, row: u16) -> Option<HitKind> {
+        self.hits.iter().rev().find_map(|hit| {
+            let x1 = hit.x;
+            let y1 = hit.y;
+            let x2 = hit.x.saturating_add(hit.w);
+            let y2 = hit.y.saturating_add(hit.h);
+            (col >= x1 && col < x2 && row >= y1 && row < y2).then_some(hit.kind)
+        })
+    }
+
+    pub fn apply_hit(&mut self, kind: HitKind) {
+        match kind {
+            HitKind::Take(take) => self.take = take,
+            HitKind::Agent(index) => {
+                let agents = self.agents();
+                if agents.get(index).is_some() {
+                    self.cursor = index;
+                    self.selected_session_id = agents.get(index).map(|agent| agent.id.clone());
+                }
+            }
+            HitKind::Mesh(index) => {
+                if index < self.machines.len() {
+                    self.mesh_cursor = index;
+                }
+            }
+            HitKind::Harvest(index) => {
+                let trees = self.harvest_trees();
+                if !trees.is_empty() {
+                    self.harvest_cursor = index.min(trees.len() - 1);
+                    if let Some(tree) = trees.get(self.harvest_cursor) {
+                        self.select_session(&tree.session_id);
+                    }
+                }
+            }
+            HitKind::Split => {}
         }
     }
 
@@ -668,20 +821,74 @@ impl App {
     pub fn begin_compose(&mut self) {
         self.composing = true;
         self.composer_notice = None;
+        self.composer_ok = false;
     }
 
     pub fn cancel_compose(&mut self) {
         self.composing = false;
         self.draft.clear();
         self.composer_notice = None;
+        self.composer_ok = false;
+    }
+
+    pub fn can_compose(&self) -> bool {
+        matches!(
+            self.take,
+            Take::Now | Take::Twin | Take::Horizon | Take::Harvest
+        ) && self.selected_agent().is_some()
+    }
+
+    pub fn compose_blocked_reason(&self) -> String {
+        if self.selected_agent().is_none() {
+            "no session to ask".into()
+        } else {
+            "Draft lives in Now — press i there.".into()
+        }
     }
 
     /// Keep the draft visible and explicitly report that no broker action ran.
-    /// A future send implementation should replace this method only when it
-    /// can route through Scout's canonical broker APIs.
     pub fn submit_compose_disabled(&mut self) {
         self.composing = false;
+        self.composer_ok = false;
         self.composer_notice = Some("Sending is not wired; draft was not sent.".into());
+    }
+
+    pub fn submit_compose(&mut self) {
+        let draft = self.draft.trim().to_string();
+        self.composer_ok = false;
+        if draft.is_empty() {
+            self.composing = false;
+            self.composer_notice = Some("empty draft".into());
+            return;
+        }
+        let Some(agent) = self.selected_agent() else {
+            self.composing = false;
+            self.composer_notice = Some("no session to ask".into());
+            return;
+        };
+        self.composing = false;
+        if cfg!(test) {
+            self.composer_notice = Some("Sending is not wired; draft was not sent.".into());
+            return;
+        }
+        match crate::ask::post_ask(&agent.id, &agent.handle, &draft) {
+            Ok(receipt) => {
+                self.draft.clear();
+                self.composer_ok = true;
+                self.composer_notice = Some(receipt);
+            }
+            Err(err) => {
+                self.composer_notice = Some(err);
+            }
+        }
+    }
+
+    fn select_session(&mut self, session_id: &str) {
+        let agents = self.agents();
+        if let Some(index) = agents.iter().position(|agent| agent.id == session_id) {
+            self.cursor = index;
+            self.selected_session_id = Some(session_id.to_string());
+        }
     }
 
     pub fn ingest(&mut self, snapshot: Snapshot) {
@@ -959,11 +1166,8 @@ impl App {
 
             for r in &session_rows {
                 // Only writes count as touching a file; reads and greps do not.
-                let tool = r.tool.as_deref().unwrap_or("").to_lowercase();
-                if !matches!(
-                    tool.as_str(),
-                    "edit" | "write" | "notebookedit" | "multiedit"
-                ) {
+                let tool = r.tool.as_deref().unwrap_or("");
+                if !is_write_tool(tool) {
                     continue;
                 }
                 let Some(target) = &r.target else { continue };
@@ -1009,24 +1213,26 @@ impl App {
                     .then_with(|| a.path.cmp(&b.path))
             });
 
-            if !files.is_empty() {
-                trees.push(HarvestTree {
-                    session_id: agent.id.clone(),
-                    who: agent.name.clone(),
-                    handle: agent.handle.clone(),
-                    source: agent.harness.clone(),
-                    project: agent.project.clone(),
-                    last: agent.doing.clone(),
-                    turns: session_rows.len(),
-                    fresh: agent.live,
-                    files,
-                });
-            }
+            // Resting trees stay in the grove. Fruit is writes; talk without
+            // yield is an empty shelf, not a missing row.
+            trees.push(HarvestTree {
+                session_id: agent.id.clone(),
+                who: agent.name.clone(),
+                handle: agent.handle.clone(),
+                source: agent.harness.clone(),
+                project: agent.project.clone(),
+                last: agent.doing.clone(),
+                turns: session_rows.len(),
+                fresh: agent.live,
+                files,
+            });
         }
 
         trees.sort_by(|a, b| {
-            b.fresh
-                .cmp(&a.fresh)
+            a.files
+                .is_empty()
+                .cmp(&b.files.is_empty())
+                .then_with(|| b.fresh.cmp(&a.fresh))
                 .then_with(|| b.turns.cmp(&a.turns))
                 .then_with(|| a.handle.cmp(&b.handle))
         });
@@ -1035,37 +1241,26 @@ impl App {
     }
 
     pub fn harvest_item_count(&self) -> usize {
-        let trees = self.harvest_trees();
-        trees.iter().map(|t| 1 + t.files.len()).sum()
+        self.harvest_trees().len()
     }
 
     pub fn selected_harvest_item(&self) -> Option<(HarvestTree, Option<HarvestFile>)> {
         let trees = self.harvest_trees();
-        if trees.is_empty() {
-            return None;
-        }
-
-        let mut idx = 0;
-        for t in trees {
-            if idx == self.harvest_cursor {
-                return Some((t, None));
-            }
-            idx += 1;
-            for f in t.files.clone() {
-                if idx == self.harvest_cursor {
-                    return Some((t.clone(), Some(f)));
-                }
-                idx += 1;
-            }
-        }
-        None
+        let tree = trees.get(self.harvest_cursor).cloned()?;
+        let file = tree.files.first().cloned();
+        Some((tree, file))
     }
 
     pub fn move_harvest_cursor(&mut self, delta: isize) {
-        let count = self.harvest_item_count() as isize;
+        let trees = self.harvest_trees();
+        let count = trees.len() as isize;
         if count > 0 {
             let next = (self.harvest_cursor as isize + delta).clamp(0, count - 1);
             self.harvest_cursor = next as usize;
+            if let Some(tree) = trees.get(self.harvest_cursor) {
+                let session_id = tree.session_id.clone();
+                self.select_session(&session_id);
+            }
         }
     }
 
@@ -1074,11 +1269,8 @@ impl App {
     pub fn since_records(&self) -> Vec<SinceRecord> {
         let mut records = Vec::new();
         for r in self.events.iter() {
-            let tool = r.tool.as_deref().unwrap_or("").to_lowercase();
-            if !matches!(
-                tool.as_str(),
-                "edit" | "write" | "notebookedit" | "multiedit"
-            ) {
+            let tool = r.tool.as_deref().unwrap_or("");
+            if !is_write_tool(tool) {
                 continue;
             }
             let Some(target) = r.target.as_ref().filter(|t| is_file_path(t)) else {
@@ -1514,6 +1706,13 @@ pub fn short_session(raw: &str) -> String {
     }
 }
 
+pub fn is_write_tool(tool: &str) -> bool {
+    matches!(
+        tool.to_ascii_lowercase().as_str(),
+        "edit" | "write" | "notebookedit" | "multiedit" | "search_replace" | "str_replace" | "apply_patch"
+    )
+}
+
 pub fn is_file_path(path: &str) -> bool {
     let p = path.trim();
     (p.contains('/') || p.contains('.'))
@@ -1553,6 +1752,36 @@ pub fn clean_file_path(path: &str) -> String {
         }
     }
     p
+}
+
+fn tui_state_path() -> PathBuf {
+    if let Ok(home) = std::env::var("OPENSCOUT_HOME") {
+        let trimmed = home.trim();
+        if !trimmed.is_empty() {
+            return PathBuf::from(trimmed).join("tui-state.json");
+        }
+    }
+    let home = std::env::var("HOME").unwrap_or_default();
+    PathBuf::from(home).join(".openscout/tui-state.json")
+}
+
+fn load_detail_split() -> Option<u16> {
+    let text = std::fs::read_to_string(tui_state_path()).ok()?;
+    let value: serde_json::Value = serde_json::from_str(&text).ok()?;
+    let split = value.get("detailSplit")?.as_u64()? as u16;
+    Some(split.clamp(28, 75))
+}
+
+fn save_detail_split(split: u16) {
+    if cfg!(test) {
+        return;
+    }
+    let path = tui_state_path();
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let body = serde_json::json!({ "detailSplit": split.clamp(28, 75) });
+    let _ = std::fs::write(path, body.to_string());
 }
 
 #[cfg(test)]
@@ -1598,6 +1827,33 @@ mod tests {
         for removed in ["tail", "sessions", "needs"] {
             assert_eq!(Take::parse(removed), None, "{removed} unexpectedly parsed");
         }
+    }
+
+    #[test]
+    fn harvest_plants_grok_search_replace_as_fruit() {
+        let mut app = App::new(Take::Harvest);
+        app.ingest_event(TailEvent {
+            id: "write-1".into(),
+            ts: 1_700_000_000_000,
+            source: "grok".into(),
+            session_id: "session-g".into(),
+            kind: "tool".into(),
+            summary: "search_replace · app.rs".into(),
+            project: Some("openscout".into()),
+            cwd: Some("/work/openscout".into()),
+            raw: Some(serde_json::json!({
+                "tool_name": "search_replace",
+                "tool_input": { "target_file": "/work/openscout/crates/scout-tui/src/app.rs" }
+            })),
+        });
+        let trees = app.harvest_trees();
+        assert_eq!(trees.len(), 1);
+        assert_eq!(trees[0].files.len(), 1);
+        assert!(
+            trees[0].files[0].path.contains("app.rs"),
+            "fruit path was {}",
+            trees[0].files[0].path
+        );
     }
 
     #[test]
@@ -1809,5 +2065,19 @@ mod tests {
         assert_eq!(agents.len(), 1);
         assert!(agents[0].live);
         assert!(agents[0].ticks.is_empty());
+    }
+
+    #[test]
+    fn dossier_split_clamps_and_maps_pointer_column() {
+        let mut app = App::new(Take::Harvest);
+        app.set_body(0, 100);
+        app.nudge_split(100);
+        assert_eq!(app.detail_split, 75);
+        app.nudge_split(-100);
+        assert_eq!(app.detail_split, 28);
+        app.set_split_from_col(40);
+        assert_eq!(app.detail_split, 40);
+        app.set_split_from_col(0);
+        assert_eq!(app.detail_split, 28);
     }
 }

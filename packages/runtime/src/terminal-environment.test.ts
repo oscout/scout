@@ -4,6 +4,7 @@ import {
   buildInteractiveTerminalEnvironment,
   buildInteractiveTerminalShellDirectives,
   INHERITED_CLAUDE_SESSION_ENV_KEYS,
+  INHERITED_MULTIPLEXER_PANE_ENV_KEYS,
 } from "./terminal-environment.js";
 
 describe("buildInteractiveTerminalEnvironment", () => {
@@ -51,6 +52,25 @@ describe("buildInteractiveTerminalEnvironment", () => {
     // Only the parent-session markers go; deliberate configuration stays.
     expect(env.CLAUDE_CODE_FORCE_SESSION_PERSISTENCE).toBe("1");
   });
+
+  test("does not leak the pane identity of a multiplexer Scout was launched inside", () => {
+    const inherited = Object.fromEntries(
+      INHERITED_MULTIPLEXER_PANE_ENV_KEYS.map((key) => [key, "inherited"]),
+    );
+    const env = buildInteractiveTerminalEnvironment({
+      PATH: "/usr/bin",
+      ...inherited,
+      HERDR_BIN_PATH: "/opt/homebrew/bin/herdr",
+    });
+
+    // With HERDR_ENV set, `herdr --session x` refuses to start at all, and an
+    // agent in the tile would drive the pane Scout was launched from.
+    for (const key of INHERITED_MULTIPLEXER_PANE_ENV_KEYS) {
+      expect(env[key]).toBeUndefined();
+    }
+    // Where to find the binary is not pane identity, so it survives.
+    expect(env.HERDR_BIN_PATH).toBe("/opt/homebrew/bin/herdr");
+  });
 });
 
 describe("buildInteractiveTerminalShellDirectives", () => {
@@ -61,5 +81,12 @@ describe("buildInteractiveTerminalShellDirectives", () => {
       'export COLORTERM="${COLORTERM:-truecolor}"',
       'export FORCE_COLOR="${FORCE_COLOR:-1}"',
     ]);
+  });
+
+  test("leaves multiplexer pane identity alone — these run inside a real pane", () => {
+    const directives = buildInteractiveTerminalShellDirectives().join("\n");
+    for (const key of INHERITED_MULTIPLEXER_PANE_ENV_KEYS) {
+      expect(directives).not.toContain(key);
+    }
   });
 });

@@ -12,6 +12,9 @@ const LOOPBACK_IPV4_HOST_PATTERN = /^127(?:\.\d{1,3}){3}$/;
 const FINGERPRINTED_ASSET_PATH_PATTERN = /^\/assets\/[^/]+-[A-Za-z0-9_-]{8,}(?:\.[^/]+)+$/u;
 const IMMUTABLE_ASSET_CACHE_CONTROL = "public, max-age=31536000, immutable";
 export const SCOUT_WEB_AUTH_COOKIE = "openscout_web_session";
+export const SCOUT_WEB_LOGIN_PAGE_PATH = "/login";
+export const SCOUT_WEB_LOGIN_API_PATH = "/api/login";
+export const SCOUT_WEB_LOGOUT_API_PATH = "/api/logout";
 
 export function resolveScoutWebBindHost(env: NodeJS.ProcessEnv): string {
   const host = env.OPENSCOUT_WEB_HOST?.trim()
@@ -35,6 +38,17 @@ export function resolveScoutWebLanAccessScope(env: NodeJS.ProcessEnv): ScoutWebL
   throw new Error(`Unsupported OPENSCOUT_WEB_LAN_SCOPE: ${scope}`);
 }
 
+/**
+ * Minted browser sessions (see web-sessions.ts). When present, the auth cookie
+ * carries a revocable session token instead of the operator token itself; the
+ * operator token remains valid as a Bearer credential for CLI/SSH clients.
+ */
+export type ScoutWebSessionAuthority = {
+  mint: (meta?: { label?: string }) => string;
+  validate: (token: string) => boolean;
+  revoke?: (token: string) => void;
+};
+
 export type ScoutApiTrustOptions = {
   /**
    * Credential required by privileged HTTP routes. Network identity is never an
@@ -42,6 +56,12 @@ export type ScoutApiTrustOptions = {
    * defense-in-depth gate.
    */
   authToken?: string;
+  /**
+   * Revocable browser sessions accepted alongside the operator token. Remote
+   * browsers (front door, /login) hold one of these, never the operator token,
+   * so a leaked cookie is revocable without rotating the machine credential.
+   */
+  sessions?: ScoutWebSessionAuthority;
   trustedHosts?: string[];
   trustedOrigins?: string[];
   /**
@@ -77,6 +97,7 @@ function cookieValue(request: Request, name: string): string | null {
 export function isAuthenticatedScoutRequest(
   request: Request,
   expectedToken: string | undefined,
+  validateSession?: (token: string) => boolean,
 ): boolean {
   const token = expectedToken?.trim();
   if (!token) return false;
@@ -84,18 +105,41 @@ export function isAuthenticatedScoutRequest(
   const bearer = authorization.toLowerCase().startsWith("bearer ")
     ? authorization.slice(7).trim()
     : null;
-  return constantTimeTokenMatch(bearer, token)
-    || constantTimeTokenMatch(cookieValue(request, SCOUT_WEB_AUTH_COOKIE), token);
+  if (constantTimeTokenMatch(bearer, token)) return true;
+  const cookie = cookieValue(request, SCOUT_WEB_AUTH_COOKIE);
+  if (constantTimeTokenMatch(cookie, token)) return true;
+  return Boolean(cookie && validateSession?.(cookie));
 }
 
-export function scoutWebAuthCookie(token: string, secure: boolean): string {
+export function scoutWebAuthCookie(
+  token: string,
+  secure: boolean,
+  maxAgeSeconds?: number,
+): string {
   return [
     `${SCOUT_WEB_AUTH_COOKIE}=${encodeURIComponent(token)}`,
     "Path=/",
     "HttpOnly",
     "SameSite=Strict",
+    ...(maxAgeSeconds !== undefined ? [`Max-Age=${Math.floor(maxAgeSeconds)}`] : []),
     ...(secure ? ["Secure"] : []),
   ].join("; ");
+}
+
+export function clearScoutWebAuthCookie(secure: boolean): string {
+  return scoutWebAuthCookie("", secure, 0);
+}
+
+/**
+ * Whether the request reached this server as HTTPS at the edge — directly, or
+ * one forwarded hop away. Used to decide the cookie's Secure attribute, not as
+ * a security boundary (a loopback client can forge the header, and loopback
+ * clients are already trusted to obtain a credential).
+ */
+export function isForwardedHttpsScoutRequest(request: Request): boolean {
+  if (new URL(request.url).protocol === "https:") return true;
+  const proto = request.headers.get("x-forwarded-proto");
+  return proto?.split(",")[0]?.trim().toLowerCase() === "https";
 }
 
 function localInterfaceAddresses(): string[] {
@@ -147,6 +191,47 @@ export function shouldIssueLocalScoutWebCredential(
   ownAddresses: readonly string[] = localInterfaceAddresses(),
 ): boolean {
   return isSameMacScoutRequest(request, peerAddress, ownAddresses);
+}
+
+/**
+ * Decide whether the bootstrap request arrived through a declared front door —
+ * an authenticating reverse proxy such as an exe.dev private share or the OSN
+ * mesh front door. The front door already verified the browser's identity, so
+ * Scout delegates: it issues a session when the socket peer is the proxy hop on
+ * this box (loopback, or an explicitly configured proxy peer address) and the
+ * request Host matches a declared front-door origin. Forwarding headers are
+ * deliberately ignored here; the forwarded client address is the front door's
+ * concern. This widens nothing over the local path above — bare loopback peers
+ * can already obtain a credential — it only stops refusing them for carrying
+ * X-Forwarded-For, and only for hostnames the operator opted in.
+ */
+export function shouldIssueFrontDoorScoutWebCredential(
+  request: Request,
+  peerAddress: string | undefined,
+  frontDoorOrigins: readonly string[],
+  frontDoorPeers: readonly string[] = [],
+): boolean {
+  if (frontDoorOrigins.length === 0 || !peerAddress) return false;
+  const peer = normalizeIpAddress(peerAddress);
+  const peerTrusted = isLoopbackScoutAddress(peerAddress)
+    || (peer !== null && frontDoorPeers.some((candidate) => normalizeIpAddress(candidate) === peer));
+  if (!peerTrusted) return false;
+
+  const requestHost = normalizeHostname(new URL(request.url).hostname);
+  for (const declared of frontDoorOrigins) {
+    let origin: URL;
+    try {
+      origin = new URL(declared);
+    } catch {
+      continue;
+    }
+    if (normalizeHostname(origin.hostname) !== requestHost) continue;
+    // An https front door must present as forwarded-HTTPS so the issued
+    // cookie's Secure attribute matches how the browser will replay it.
+    if (origin.protocol === "https:" && !isForwardedHttpsScoutRequest(request)) continue;
+    return true;
+  }
+  return false;
 }
 
 function normalizeIpAddress(address: string): string | null {
@@ -347,7 +432,7 @@ export function isAuthorizedScoutWebSocketRequest(
   const url = new URL(request.url);
   return isTrustedScoutApiRequest(request, options, peerAddress)
     && isTrustedWebSocketOrigin(request.headers.get("origin"), url.host, options)
-    && isAuthenticatedScoutRequest(request, expectedToken);
+    && isAuthenticatedScoutRequest(request, expectedToken, options.sessions?.validate);
 }
 
 export function coalesce<T>(fn: () => Promise<T>, ttlMs = 2000): () => Promise<T> {
@@ -503,6 +588,40 @@ export function scoutApiPerfReport(): {
   return { recent: [...scoutApiTimings], paths };
 }
 
+const SCOUT_WEB_LOGIN_MAX_BODY_BYTES = 4096;
+class ScoutWebLoginBodyTooLarge extends Error {}
+
+async function readScoutWebLoginBody(request: Request): Promise<unknown> {
+  const declaredLength = Number(request.headers.get("content-length"));
+  if (declaredLength > SCOUT_WEB_LOGIN_MAX_BODY_BYTES) {
+    void request.body?.cancel().catch(() => {});
+    throw new ScoutWebLoginBodyTooLarge();
+  }
+  const reader = request.body?.getReader();
+  if (!reader) throw new Error("Missing login body");
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (value.byteLength === 0) continue;
+      total += value.byteLength;
+      if (total > SCOUT_WEB_LOGIN_MAX_BODY_BYTES) {
+        void reader.cancel().catch(() => {});
+        throw new ScoutWebLoginBodyTooLarge();
+      }
+      chunks.push(value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  const bytes = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
+  return JSON.parse(new TextDecoder().decode(bytes));
+}
+
 export function installScoutApiMiddleware(
   app: Hono,
   label = "api",
@@ -513,7 +632,14 @@ export function installScoutApiMiddleware(
     if (!isTrustedScoutApiRequest(c.req.raw, options, peerAddress)) {
       return c.json({ error: "forbidden" }, 403);
     }
-    if (options.authToken !== undefined && !isAuthenticatedScoutRequest(c.req.raw, options.authToken)) {
+    // The login endpoint is the auth gate — it authenticates by the operator
+    // token in its body. Everything else under /api/* requires a credential.
+    const isLoginAttempt = c.req.method === "POST" && c.req.path === SCOUT_WEB_LOGIN_API_PATH;
+    if (
+      !isLoginAttempt
+      && options.authToken !== undefined
+      && !isAuthenticatedScoutRequest(c.req.raw, options.authToken, options.sessions?.validate)
+    ) {
       c.header("WWW-Authenticate", 'Bearer realm="OpenScout Web"');
       return c.json({ error: "unauthorized" }, 401);
     }
@@ -560,7 +686,56 @@ export function installScoutApiMiddleware(
 
   // Registered after the /api/* middleware above so the same trust/auth gates apply.
   app.get("/api/perf/recent", (c) => c.json(scoutApiPerfReport()));
+
+  // Operator login for browsers no auto-issuance path covers (Tailscale, LAN).
+  // Trust-gated by the middleware above, exempt from its auth gate.
+  app.post(SCOUT_WEB_LOGIN_API_PATH, async (c) => {
+    const token = options.authToken?.trim();
+    if (!token) {
+      return c.json({ error: "login is not available on this host" }, 404);
+    }
+    let candidate: unknown;
+    try {
+      candidate = ((await readScoutWebLoginBody(c.req.raw)) as { token?: unknown })?.token;
+    } catch (error) {
+      if (error instanceof ScoutWebLoginBodyTooLarge) return c.json({ error: "login request too large" }, 413);
+      return c.json({ error: "invalid login request" }, 400);
+    }
+    if (typeof candidate !== "string" || !constantTimeTokenMatch(candidate.trim(), token)) {
+      return c.json({ error: "invalid operator token" }, 401);
+    }
+    let session: string;
+    try {
+      session = options.sessions?.mint({ label: "login" }) ?? token;
+    } catch {
+      return c.json({ error: "session storage unavailable" }, 503);
+    }
+    c.header(
+      "set-cookie",
+      scoutWebAuthCookie(
+        session,
+        isForwardedHttpsScoutRequest(c.req.raw),
+        SCOUT_WEB_LOGIN_SESSION_MAX_AGE_SECONDS,
+      ),
+    );
+    return c.json({ ok: true });
+  });
+
+  app.post(SCOUT_WEB_LOGOUT_API_PATH, (c) => {
+    const cookie = cookieValue(c.req.raw, SCOUT_WEB_AUTH_COOKIE);
+    try {
+      if (cookie) options.sessions?.revoke?.(cookie);
+    } catch {
+      return c.json({ error: "session storage unavailable" }, 503);
+    }
+    c.header("set-cookie", clearScoutWebAuthCookie(isForwardedHttpsScoutRequest(c.req.raw)));
+    return c.json({ ok: true });
+  });
 }
+
+// Matches web-sessions.ts SESSION_TTL; duplicated as a plain constant so this
+// module stays dependency-free for embedded hosts.
+const SCOUT_WEB_LOGIN_SESSION_MAX_AGE_SECONDS = 30 * 24 * 60 * 60;
 
 export async function registerScoutWebAssets(
   app: Hono,

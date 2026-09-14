@@ -89,8 +89,50 @@
   font-variant-numeric: tabular-nums;
 }
 
-.s-wall-status-keys {
+/* The time axis: ghost chips at the strip's own size, one accent for the
+   active step — the same grammar as the left panel's chips, so the two never
+   look like different controls for the same question. */
+.s-wall-status-filter {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
   margin-left: auto;
+  white-space: nowrap;
+}
+
+.s-wall-status-filter .s-wall-status-key {
+  margin-right: var(--space-2xs);
+}
+
+.s-wall-status-chip {
+  padding: 1px var(--space-xs);
+  border: 0;
+  border-radius: var(--radius-xs);
+  background: none;
+  color: var(--wall-time);
+  font: inherit;
+  letter-spacing: inherit;
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+  transition: color 0.12s, background 0.12s;
+}
+
+.s-wall-status-chip:hover {
+  color: var(--ink);
+}
+
+.s-wall-status-chip--active {
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+}
+
+.s-wall-status-chip:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.s-wall-status-keys {
+  margin-left: var(--space-lg);
   color: var(--wall-time);
   white-space: nowrap;
 }

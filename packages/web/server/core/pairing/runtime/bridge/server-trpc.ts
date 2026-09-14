@@ -1,3 +1,4 @@
+import { watchSharedScoutMessages } from "./broker-message-fanout.ts";
 // Bridge server — Hono + tRPC edition.
 //
 // Drop-in replacement for server.ts.  Exports `startBridgeServerTRPC` with the
@@ -41,7 +42,6 @@ import { resolveConfig } from "./config.ts";
 import { handleRPC, type BridgeServerOptions } from "./server.ts";
 import { bridgeRouter, lookupMobileInboxItemForEvent } from "./router.ts";
 import {
-  watchScoutMessages,
   type ScoutBrokerConversationLifecycleRecord,
   type ScoutBrokerMessageRecord,
 } from "../../../broker/service.ts";
@@ -72,6 +72,7 @@ export interface BridgeContext {
 
 /** Per-socket state, same role as in server.ts but extended for tRPC. */
 interface SocketState {
+  lifetimeTimer?: ReturnType<typeof setTimeout>;
   /** Unsubscribe from bridge event stream. */
   unsub?: () => void;
   /** Abort the broker message invalidation watch for this socket. */
@@ -213,13 +214,23 @@ function genericMobileInboxAlertBody(kind: string): string {
 // Server
 // ---------------------------------------------------------------------------
 
+export const BRIDGE_CONNECTION_LIMITS = {
+  maxConnections: 64,
+  queryLifetimeMs: 60_000,
+  handshakeTimeoutMs: 10_000,
+  closeGraceMs: 1_000,
+  backpressureBytes: 4 * 1024 * 1024,
+} as const;
+
 export function startBridgeServerTRPC(options: {
   bridge: Bridge;
   port: number;
   secure?: boolean;
   identity?: KeyPair;
+  connectionLimits?: Partial<Record<keyof typeof BRIDGE_CONNECTION_LIMITS, number>>;
 }): { stop: () => void } {
   const { bridge, port, secure = false, identity } = options;
+  const limits = { ...BRIDGE_CONNECTION_LIMITS, ...options.connectionLimits };
 
   if (secure && !identity) {
     throw new Error("[bridge-trpc] secure mode requires an identity (key pair)");
@@ -229,10 +240,11 @@ export function startBridgeServerTRPC(options: {
   // Hono app — HTTP surface
   // -------------------------------------------------------------------------
 
+  let connectionCount = 0;
   const app = new Hono();
 
   app.get("/health", (c) =>
-    c.json({ ok: true, mode: secure ? "secure" : "plaintext", uptime: process.uptime() }),
+    c.json({ ok: true, mode: secure ? "secure" : "plaintext", uptime: process.uptime(), connections: connectionCount, connectionLimit: limits.maxConnections }),
   );
 
   // SECURITY: the plaintext HTTP tRPC adapter was removed. It served the full
@@ -549,6 +561,9 @@ export function startBridgeServerTRPC(options: {
     ws: ServerWebSocket<unknown>,
     state: SocketState,
   ) {
+    // Short-lived status/RPC clients do not need replay or a broker SSE watch.
+    if ((ws.data as { subscribeEvents?: boolean } | undefined)?.subscribeEvents === false) return;
+
     const sendEvent = (json: string) => {
       if (state.transport) {
         state.transport.send(json);
@@ -596,7 +611,7 @@ export function startBridgeServerTRPC(options: {
     state.brokerWatchAbort?.abort();
     const brokerWatchAbort = new AbortController();
     state.brokerWatchAbort = brokerWatchAbort;
-    void watchScoutMessages({
+    void watchSharedScoutMessages({
       allConversations: true,
       signal: brokerWatchAbort.signal,
       onMessage(message) {
@@ -619,16 +634,22 @@ export function startBridgeServerTRPC(options: {
   // Bun.serve — combined HTTP + WebSocket
   // -------------------------------------------------------------------------
 
-  const server = Bun.serve({
+  const server = Bun.serve<{ subscribeEvents: boolean }>({
     port,
 
     fetch(req, server) {
       // WebSocket upgrade.
       if (req.headers.get("upgrade")?.toLowerCase() === "websocket") {
-        const upgraded = server.upgrade(req);
+        if (connectionCount >= limits.maxConnections) {
+          return new Response("Pairing connection limit reached", { status: 503, headers: { "retry-after": "5" } });
+        }
+        const upgraded = server.upgrade(req, {
+          data: { subscribeEvents: new URL(req.url).searchParams.get("events") !== "0" },
+        });
         if (!upgraded) {
           return new Response("WebSocket upgrade failed", { status: 500 });
         }
+        connectionCount++;
         return undefined;
       }
 
@@ -637,6 +658,8 @@ export function startBridgeServerTRPC(options: {
     },
 
     websocket: {
+      backpressureLimit: limits.backpressureBytes,
+      closeOnBackpressureLimit: true,
       open(ws) {
         log.info("srv", "client connected");
 
@@ -649,6 +672,15 @@ export function startBridgeServerTRPC(options: {
         };
 
         socketState.set(ws, state);
+        const queryOnly = ws.data.subscribeEvents === false;
+        const lifetimeMs = queryOnly ? limits.queryLifetimeMs : secure ? limits.handshakeTimeoutMs : null;
+        if (lifetimeMs !== null) {
+          state.lifetimeTimer = setTimeout(() => {
+            // A peer that ignores the close handshake must still release its slot.
+            state.lifetimeTimer = setTimeout(() => ws.terminate(), limits.closeGraceMs);
+            ws.close(1008, queryOnly ? "Status connection expired" : "Handshake timed out");
+          }, lifetimeMs);
+        }
 
         if (secure && identity) {
           // --- Secure mode: Noise handshake first, then tRPC ----------------
@@ -660,6 +692,7 @@ export function startBridgeServerTRPC(options: {
             identity,
             {
               onReady: (remotePublicKey, readyInfo) => {
+                if (!queryOnly) clearTimeout(state.lifetimeTimer);
                 const pubHex = bytesToHex(remotePublicKey);
                 const trusted = readyInfo.wasTrustedPeer && isTrustedPeer(pubHex);
                 state.deviceId = pubHex.slice(0, 16);
@@ -759,7 +792,10 @@ export function startBridgeServerTRPC(options: {
         log.info("srv", "client disconnected");
         const state = socketState.get(ws);
         if (!state) return;
+        socketState.delete(ws);
+        connectionCount = Math.max(0, connectionCount - 1);
 
+        clearTimeout(state.lifetimeTimer);
         state.unsub?.();
         state.brokerWatchAbort?.abort();
         state.abortController.abort();
@@ -778,7 +814,7 @@ export function startBridgeServerTRPC(options: {
 
   return {
     stop() {
-      server.stop();
+      server.stop(true);
     },
   };
 }

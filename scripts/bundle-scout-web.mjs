@@ -121,14 +121,26 @@ export function buildControlPlaneClientAndCopy(repoRoot, targetClientDir) {
     console.error("[bundle-scout-web] expected control-plane index.html after build at", indexHtml);
     return false;
   }
+  copyControlPlaneClient(source, targetClientDir);
+  return true;
+}
+
+/** Copy runtime assets without the crew authoring masters or preview page. */
+export function copyControlPlaneClient(source, targetClientDir) {
   rmSync(targetClientDir, { recursive: true, force: true });
   mkdirSync(dirname(targetClientDir), { recursive: true });
-  cpSync(source, targetClientDir, { recursive: true });
-  const crewDir = join(targetClientDir, "crew");
-  if (existsSync(crewDir)) {
-    rmSync(crewDir, { recursive: true, force: true });
-  }
-  return true;
+  cpSync(source, targetClientDir, {
+    recursive: true,
+    filter: (entry) => {
+      const relative = entry.slice(source.length + 1).replaceAll("\\", "/");
+      if (relative === "crew-preview.html") return false;
+      if (!relative.startsWith("crew/")) return true;
+      // CrewAvatar/CrewSprite request top-level portraits and authored eye
+      // patches. Keep those paths intact, never the masters, runs or QA trees.
+      return /^crew\/[^/]+\.webp$/.test(relative)
+        || /^crew\/sheets(?:\/[^/]+)?(?:\/[^/]+\.webp)?$/.test(relative);
+    },
+  });
 }
 
 function verifyScoutWebBundle(outfile) {

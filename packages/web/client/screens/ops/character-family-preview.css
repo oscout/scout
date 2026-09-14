@@ -1,0 +1,22 @@
+.character-family-preview { position:absolute; z-index:30; top:60px; right:20px; width:min(500px,calc(100% - 40px)); max-height:calc(100% - 90px); overflow:auto; background:#141b19f7; border:1px solid #ffffff20; border-radius:18px; padding:20px; color:#e8edf4; box-shadow:0 20px 60px #0007; }
+.character-family-preview header { display:flex; justify-content:space-between; gap:12px; }
+.character-family-preview strong { font-size:15px; }
+.character-family-preview p { font-size:12px; line-height:1.5; color:#9daaa4; }
+.character-family-preview button { border:0; border-radius:6px; background:transparent; color:inherit; cursor:pointer; padding:7px 9px; }
+.character-family-preview button:hover { background:#ffffff0c; }
+.character-family-preview__poses { display:flex; gap:4px; flex-wrap:wrap; margin:10px 0; }
+.character-family-preview__poses button { font-size:12px; text-transform:capitalize; }
+.character-family-preview__poses button[aria-pressed=true] { background:#bedf9230; color:#d9edbe; }
+.character-family-preview__cast { display:grid; grid-template-columns:repeat(3,1fr); gap:16px; }
+.character-family-preview figure { margin:0; text-align:center; }
+.character-family-preview figcaption { font-size:12px; margin-top:8px; }
+.character-family-preview { width:min(760px,calc(100% - 40px)); }
+.character-family-preview__cast { grid-template-columns:repeat(auto-fit,minmax(130px,1fr)); gap:20px 12px; }
+.character-family-preview__stage { height:165px; display:grid; place-items:center; cursor:grab; touch-action:none; }
+.character-family-preview__stage:active { cursor:grabbing; }
+.character-family-preview__missing,.character-family-preview small { font-size:10px; color:#93a298; }
+.character-family-preview small { display:block; margin-top:4px; }
+.character-family-preview button:focus-visible { outline:2px solid #bedf92; outline-offset:2px; }
+.character-family-preview { background:#141b19; top:20px; max-height:calc(100% - 40px); }
+.character-family-preview__stage:focus-visible { outline:2px solid #bedf92; outline-offset:2px; border-radius:12px; }
+.character-family-preview__moving { display:inline-block; transform-origin:50% 85%; pointer-events:none; }

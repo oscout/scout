@@ -1,3 +1,5 @@
+import { isIdempotentMessageRetry } from "./broker-message-idempotency.js";
+import { selectMessageRecordsAsync, readMessageRecord } from "./broker-message-records.js";
 import type {
   AgentDefinition,
   ConversationDefinition,
@@ -51,38 +53,13 @@ export type BrokerMessageServiceDeps = {
   createId: (prefix: string) => string;
   recordMessage: (
     message: MessageRecord,
-    options?: { enqueueProjection?: boolean },
-  ) => Promise<{ deliveries: DeliveryIntent[]; entries: BrokerJournalEntry[] }>;
+    options?: { enqueueProjection?: boolean; dedupeExisting?: boolean },
+  ) => Promise<{ deliveries: DeliveryIntent[]; entries: BrokerJournalEntry[]; duplicate?: MessageRecord }>;
   applyProjectedEntries: (entries: BrokerJournalEntry[]) => Promise<void>;
   reconcileStaleLocalDeliveries: () => Promise<void>;
   persistFlight: (flight: FlightRecord) => Promise<void>;
   activeLocalEndpointForAgent: (agentId: string) => unknown;
 };
-
-function clientMessageId(message: MessageRecord): string | null {
-  const value = message.metadata?.clientMessageId;
-  return typeof value === "string" && value.trim() ? value.trim() : null;
-}
-
-function isIdempotentMessageRetry(
-  existing: MessageRecord,
-  incoming: MessageRecord,
-): boolean {
-  const existingClientId = clientMessageId(existing);
-  return Boolean(
-    existingClientId
-    && existingClientId === clientMessageId(incoming)
-    && existing.conversationId === incoming.conversationId
-    && existing.actorId === incoming.actorId
-    && existing.class === incoming.class
-    && existing.body === incoming.body
-    && (existing.replyToMessageId ?? null) === (incoming.replyToMessageId ?? null)
-    && (existing.threadConversationId ?? null) === (incoming.threadConversationId ?? null)
-    && JSON.stringify(existing.mentions ?? []) === JSON.stringify(incoming.mentions ?? [])
-    && JSON.stringify(existing.attachments ?? []) === JSON.stringify(incoming.attachments ?? [])
-    && JSON.stringify(existing.speech ?? null) === JSON.stringify(incoming.speech ?? null)
-  );
-}
 
 export class BrokerMessageService {
   constructor(private readonly deps: BrokerMessageServiceDeps) {}
@@ -97,7 +74,7 @@ export class BrokerMessageService {
     authorityNodeId?: string;
     duplicate?: boolean;
   }> => {
-    const existing = this.deps.runtime.peek().messages[message.id];
+    const existing = await readMessageRecord(this.deps.runtime.peek().messages,message.id);
     if (existing) {
       if (!isIdempotentMessageRetry(existing, message)) {
         throw new Error(`message id ${message.id} is already assigned to a different record`);
@@ -121,9 +98,11 @@ export class BrokerMessageService {
       };
     }
 
-    const { deliveries, entries } = await this.deps.recordMessage(message, {
+    const { deliveries, entries, duplicate } = await this.deps.recordMessage(message, {
       enqueueProjection: false,
+      dedupeExisting: true,
     });
+    if (duplicate) return { ok: true, message: duplicate, deliveries: [], duplicate: true };
     await this.deps.mesh.forwardPeerBrokerDeliveries(message, deliveries);
     await this.deps.applyProjectedEntries(entries);
     await this.deps.reconcileStaleLocalDeliveries();
@@ -178,25 +157,23 @@ export class BrokerMessageService {
     });
   };
 
-  readonly existingBrokerReplyForInvocation = (
+  readonly existingBrokerReplyForInvocation = async (
     invocation: InvocationRequest,
     agentId: string,
     sinceMs: number,
-  ): MessageRecord | null => {
+  ): Promise<MessageRecord | null> => {
     if (!invocation.conversationId || !invocation.messageId) {
       return null;
     }
 
     const since = Math.max(0, sinceMs - 5_000);
-    const replies = Object.values(this.deps.runtime.peek().messages)
-      .filter((message) =>
+    const replies = await selectMessageRecordsAsync(this.deps.runtime.peek().messages, 1,
+      (lhs, rhs) => rhs.createdAt - lhs.createdAt, (message) =>
         message.conversationId === invocation.conversationId
         && message.replyToMessageId === invocation.messageId
         && message.actorId === agentId
         && message.class === "agent"
-        && message.createdAt >= since
-      )
-      .sort((lhs, rhs) => rhs.createdAt - lhs.createdAt);
+        && message.createdAt >= since, {selection:{conversationIds:[invocation.conversationId],actorId:agentId,replyToMessageId:invocation.messageId,since,newestFirst:true}});
 
     return replies[0] ?? null;
   };

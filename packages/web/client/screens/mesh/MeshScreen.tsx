@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../../lib/api.ts";
+import { sweepMeshNodeStates } from "../../lib/mesh-node-state.ts";
 import { timeAgo } from "../../lib/time.ts";
 import { normalizeAgentState } from "../../lib/agent-state.ts";
 import { filterAgentsByMachineScope } from "../../lib/machine-scope.ts";
@@ -209,6 +210,16 @@ export function MeshScreen({ navigate }: { navigate: (r: Route) => void }) {
     const t = setInterval(() => void load("background"), 10_000);
     return () => clearInterval(t);
   }, [load]);
+
+  // Reachability and per-node state sweep alongside the inventory, on its own
+  // cadence: the machine list renders from /api/mesh straight away and each
+  // node's reading arrives when its own check lands, rather than the page
+  // waiting on the slowest peer.
+  useEffect(() => {
+    void sweepMeshNodeStates();
+    const t = setInterval(() => void sweepMeshNodeStates(), 15_000);
+    return () => clearInterval(t);
+  }, []);
 
   const filteredAgents = useMemo(() => {
     const needle = query.trim().toLowerCase();

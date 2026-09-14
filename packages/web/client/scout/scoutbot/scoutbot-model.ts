@@ -52,6 +52,8 @@ export type ScoutbotAgentConfig = {
    * ScoutbotAssistantProviderPreference in server/scoutbot-assistant.ts. */
   provider?: "auto" | "openai" | "codex";
   systemPrompt: string;
+  /** Selectable reply models; the active model is always present. */
+  modelOptions?: { id: string; label: string }[];
 };
 
 export type ScoutbotAgentConfigUpdateResult = {

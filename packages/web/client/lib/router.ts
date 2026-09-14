@@ -566,7 +566,11 @@ export function routeFromUrl(urlLike: string | URL): Route {
     return scoped({ view: "messages", conversationId: decodeURIComponent(parts[1]) });
   }
   if (parts[0] === "channels") return scoped({ view: "messages" });
-  if (parts[0] === "mesh") return scoped({ view: "mesh" });
+  // The page is called Network everywhere it is named, so /network is the
+  // canonical path. /mesh stays a working alias: it is in bookmarks, in older
+  // links, and in the native app's deep links, and breaking those to rename a
+  // page would be a worse trade than carrying one extra alias.
+  if (parts[0] === "network" || parts[0] === "mesh") return scoped({ view: "mesh" });
   if (parts[0] === "mesh-ops") {
     return scoped({
       view: "mesh-ops",
@@ -847,7 +851,7 @@ export function routePath(r: Route, pathname?: string): string {
       return `${base}${searchSuffix(params)}`;
     }
     case "mesh":
-      return pathWithMachineScope("/mesh", r);
+      return pathWithMachineScope("/network", r);
     case "mesh-ops":
       return pathWithMachineScope(
         r.itemId ? `/mesh-ops/${encodeURIComponent(r.itemId)}` : "/mesh-ops",

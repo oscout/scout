@@ -1,0 +1,11 @@
+.rendered-worker { display: inline-block; position: relative; width: var(--worker-size, 76px); height: var(--worker-size, 76px); vertical-align: bottom; pointer-events: none; }
+.rendered-worker__pose { position: absolute; inset: 0; width: 100%; height: 100%; display: block; object-fit: contain; opacity: 0; user-select: none; transition: opacity 160ms ease-out; transform-origin: 50% 94%; }
+.rendered-worker__pose.is-current { opacity: 1; animation: rendered-worker-breathe 5s ease-in-out infinite; }
+.rendered-worker__pose.is-current.is-thinking { animation: rendered-worker-consider 5.8s ease-in-out infinite; }
+.rendered-worker__pose.is-current.is-working { animation: rendered-worker-tap 2.5s ease-in-out infinite; }
+.rendered-worker__pose.is-current.is-waiting { animation-duration: 6s; }
+.rendered-worker.is-paused .rendered-worker__pose { animation-play-state: paused; }
+@keyframes rendered-worker-breathe { 0%,100% { transform: scaleY(1); } 50% { transform: scaleY(1.014); } }
+@keyframes rendered-worker-consider { 0%,25%,100% { transform: rotate(0); } 50%,70% { transform: rotate(-1.5deg); } }
+@keyframes rendered-worker-tap { 0%,45%,100% { transform: translateY(0); } 52%,66% { transform: translateY(-1px) rotate(.6deg); } 59%,73% { transform: translateY(0) rotate(-.5deg); } }
+@media (prefers-reduced-motion: reduce) { .rendered-worker .rendered-worker__pose { animation: none !important; transition: none; } }

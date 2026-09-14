@@ -1,4 +1,4 @@
-import { type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import "./rail-row.css";
 import { stateColor } from "../../lib/colors.ts";
 import { agentStateCssToken, type AgentDisplayState } from "../../lib/agent-state.ts";
@@ -47,6 +47,19 @@ type RailRowProps = {
   actions?: ReactNode;
   /** Show a persistent pin mark in the trailing meta area. */
   pinned?: boolean;
+  /**
+   * Inline rename. When set, the name becomes a real text field.
+   *
+   * A real `<input>` on purpose: the shell's keyboard layer bails on
+   * `isEditableTarget`, so bare-key navigation (`g`, `j`, `k`) stops eating the
+   * keystrokes the moment one is focused. A fake editable span is what makes a
+   * rename box you cannot type into.
+   */
+  editing?: {
+    value: string;
+    onCommit: (next: string) => void;
+    onCancel: () => void;
+  };
   onClick?: (event: React.MouseEvent) => void;
   onKeyDown?: (event: React.KeyboardEvent) => void;
   onContextMenu?: (event: React.MouseEvent) => void;
@@ -77,6 +90,7 @@ export function RailRow({
   activityTone = "working",
   actions,
   pinned,
+  editing,
   onClick,
   onKeyDown,
   onContextMenu,
@@ -127,14 +141,18 @@ export function RailRow({
           avatarKind={avatarKind}
         />
         <span className="rr-row-body">
-          <span className="rr-row-name">
-            {pinned ? (
-              <span className="rr-row-pin-mark" aria-label="Pinned" title="Pinned">
-                <PinGlyph />
-              </span>
-            ) : null}
-            {name}
-          </span>
+          {editing ? (
+            <RowNameField {...editing} />
+          ) : (
+            <span className="rr-row-name">
+              {pinned ? (
+                <span className="rr-row-pin-mark" aria-label="Pinned" title="Pinned">
+                  <PinGlyph />
+                </span>
+              ) : null}
+              {name}
+            </span>
+          )}
           {sub && <span className="rr-row-sub">{sub}</span>}
           {worktreeLabel && <span className="rr-row-worktree">{worktreeLabel}</span>}
           {activityLabel && (
@@ -158,6 +176,71 @@ export function RailRow({
       ) : null}
       {expanded && detail && <div className="rr-row-detail">{detail}</div>}
     </div>
+  );
+}
+
+/**
+ * The rename box.
+ *
+ * Every pointer and key event stops here. The rail runs roving keyboard
+ * navigation over its rows and the row itself opens the conversation on click —
+ * without this, typing a name would scroll the list out from under you and the
+ * first click would navigate away mid-edit.
+ *
+ * Blur commits rather than cancels: clicking away from a name you just typed
+ * meaning to discard it is rarer than clicking away meaning to keep it, and
+ * Escape is right there for the other case.
+ */
+function RowNameField({
+  value,
+  onCommit,
+  onCancel,
+}: {
+  value: string;
+  onCommit: (next: string) => void;
+  onCancel: () => void;
+}) {
+  const ref = useRef<HTMLInputElement>(null);
+  const [draft, setDraft] = useState(value);
+  const settled = useRef(false);
+
+  useEffect(() => {
+    const node = ref.current;
+    if (!node) return;
+    node.focus();
+    node.select();
+  }, []);
+
+  const settle = (commit: boolean) => {
+    if (settled.current) return;
+    settled.current = true;
+    if (commit) onCommit(draft);
+    else onCancel();
+  };
+
+  return (
+    <input
+      ref={ref}
+      className="rr-row-name rr-row-name-field"
+      value={draft}
+      spellCheck={false}
+      aria-label="Conversation name"
+      onChange={(event) => setDraft(event.target.value)}
+      onKeyDown={(event) => {
+        event.stopPropagation();
+        if (event.key === "Enter") {
+          event.preventDefault();
+          settle(true);
+        } else if (event.key === "Escape") {
+          event.preventDefault();
+          settle(false);
+        }
+      }}
+      onClick={(event) => event.stopPropagation()}
+      onPointerDown={(event) => event.stopPropagation()}
+      onContextMenu={(event) => event.stopPropagation()}
+      onBlur={() => settle(true)}
+    />
   );
 }
 

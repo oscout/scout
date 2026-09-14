@@ -13,3 +13,4 @@ export * from "./net-listeners.js";
 export * from "./sessions.js";
 export * from "./cert-status.js";
 export * from "./diagnostics.js";
+export * from "./lan-scan.js";

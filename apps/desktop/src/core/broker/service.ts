@@ -1,3 +1,4 @@
+import { setTimeout as delay } from "node:timers/promises";
 import { mkdir, readFile, unlink, writeFile } from "node:fs/promises";
 import { basename, join, resolve } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
@@ -964,7 +965,8 @@ function isBuiltInBrokerAgent(
   return BUILT_IN_AGENT_DEFINITION_IDS.has(definitionId);
 }
 
-async function brokerReadJson<T>(baseUrl: string, path: string): Promise<T> {
+async function brokerReadJson<T>(baseUrl: string, path: string, signal?: AbortSignal): Promise<T> {
+  signal?.throwIfAborted();
   const direct = await maybeReadJsonFromActiveScoutBrokerService<T>(
     baseUrl,
     path,
@@ -974,6 +976,7 @@ async function brokerReadJson<T>(baseUrl: string, path: string): Promise<T> {
   }
 
   return requestScoutBrokerJson<T>(baseUrl, path, {
+    signal,
     socketPath: resolveBrokerSocketPathForBaseUrl(baseUrl),
   });
 }
@@ -1785,9 +1788,10 @@ export function scoutConversationIdForChannel(channel?: string): string {
 
 function scoutChannelName(channel?: string): string {
   const sanitized = sanitizeConversationSegment(channel?.trim() || "shared");
-  return sanitized.startsWith("channel.")
+  const name = sanitized.startsWith("channel.")
     ? sanitized.slice("channel.".length) || "shared"
     : sanitized;
+  return name === "shared" ? "broadcast" : name;
 }
 
 function scoutChannelNaturalKey(channelName: string): string {
@@ -2542,11 +2546,15 @@ function conversationDefinition(
   senderId: string,
   targetParticipantIds: string[] = [],
 ): ScoutBrokerConversationRecord {
-  const normalizedChannel = scoutChannelName(channel);
+  const requestedChannel = channel?.trim();
+  if (!requestedChannel) throw new Error("Delivery requires an explicit target or channel; use scout broadcast to tell everyone.");
+  const normalizedChannel = scoutChannelName(requestedChannel);
   const naturalKey = scoutChannelNaturalKey(normalizedChannel);
-  const sharedParticipants = [
-    ...new Set([OPERATOR_ID, senderId, ...Object.keys(snapshot.agents)]),
-  ].sort();
+  const broadcastParticipants = normalizedChannel === "broadcast" ? [
+    ...new Set([OPERATOR_ID, senderId, ...Object.values(snapshot.endpoints)
+      .filter((endpoint) => endpoint.state !== "offline" && snapshot.agents[endpoint.agentId])
+      .map((endpoint) => endpoint.agentId)]),
+  ].sort() : [];
   const scopedParticipants = [
     ...new Set([OPERATOR_ID, senderId, ...targetParticipantIds]),
   ].sort();
@@ -2580,16 +2588,16 @@ function conversationDefinition(
       metadata: { surface: "scout-cli", channel: "system", naturalKey },
     };
   }
-  if (normalizedChannel === "shared") {
+  if (normalizedChannel === "broadcast") {
     return {
       id: stableChannelId(naturalKey),
       kind: "channel",
-      title: "shared-channel",
+      title: "broadcast",
       visibility: "workspace",
       shareMode: "shared",
       authorityNodeId: nodeId,
-      participantIds: sharedParticipants,
-      metadata: { surface: "scout-cli", channel: "shared", naturalKey },
+      participantIds: broadcastParticipants,
+      metadata: { surface: "scout-cli", channel: "broadcast", naturalKey },
     };
   }
   return {
@@ -2629,7 +2637,7 @@ async function ensureBrokerConversation(
   const equivalentConversations = naturalKey
     ? conversationsWithNaturalKey(Object.values(snapshot.conversations), naturalKey)
     : [];
-  const nextParticipants = [
+  const nextParticipants = definition.metadata?.channel === "broadcast" ? definition.participantIds : [
     ...new Set([
       ...equivalentConversations.flatMap((conversation) => conversation.participantIds),
       ...definition.participantIds,
@@ -2641,7 +2649,7 @@ async function ensureBrokerConversation(
     existing.kind !== definition.kind ||
     existing.visibility !== definition.visibility ||
     existing.shareMode !== definition.shareMode ||
-    nextParticipants.length !== existing.participantIds.length
+    nextParticipants.join("\u0000") !== existing.participantIds.join("\u0000")
   ) {
     const nextConversation: ScoutBrokerConversationRecord = {
       ...definition,
@@ -2696,7 +2704,7 @@ function relayRouteKind(
   if (conversation.kind === "direct") {
     return "dm";
   }
-  return conversation.metadata?.channel === "shared" ? "broadcast" : "channel";
+  return ["shared", "broadcast"].includes(String(conversation.metadata?.channel)) ? "broadcast" : "channel";
 }
 
 function buildScoutEntityId(prefix: string, createdAtMs: number): string {
@@ -4248,10 +4256,11 @@ export async function askScoutQuestion(input: {
 async function loadBrokerFlight(
   baseUrl: string,
   flightId: string,
+  signal?: AbortSignal,
 ): Promise<ScoutFlightRecord | null> {
   const snapshot = await brokerReadJson<{
     flights?: Record<string, ScoutFlightRecord>;
-  }>(baseUrl, scoutBrokerPaths.v1.snapshot);
+  }>(baseUrl, scoutBrokerPaths.v1.snapshot, signal);
   return snapshot.flights?.[flightId] ?? null;
 }
 
@@ -4265,10 +4274,12 @@ export async function loadScoutFlight(
 export async function loadScoutInvocationSnapshot(
   baseUrl: string,
   invocationId: string,
+  signal?: AbortSignal,
 ): Promise<ScoutInvocationSnapshot | null> {
   const snapshot = await brokerReadJson<ScoutInvocationSnapshot>(
     baseUrl,
     scoutBrokerInvocationPath(invocationId),
+    signal,
   );
   if (!snapshot.invocation && !snapshot.flight) {
     return null;
@@ -4471,6 +4482,8 @@ export async function waitForScoutFlight(
   flightId: string,
   options: {
     timeoutSeconds?: number;
+    signal?: AbortSignal;
+    invocationId?: string;
     waitUntil?: "acknowledged" | "completed";
     onUpdate?: (flight: ScoutFlightRecord, detail: string) => void;
   } = {},
@@ -4479,15 +4492,22 @@ export async function waitForScoutFlight(
     typeof options.timeoutSeconds === "number" && options.timeoutSeconds > 0
       ? Date.now() + options.timeoutSeconds * 1000
       : null;
+  let invocationId = options.invocationId;
   let lastState = "";
   let lastSummary = "";
 
   while (true) {
-    const flight = await loadBrokerFlight(baseUrl, flightId);
-    if (!flight) {
+    options.signal?.throwIfAborted();
+    // Resolve the invocation once; subsequent polls must not download the
+    // entire registry (including unrelated messages and coordination records).
+    const flight = invocationId
+      ? (await loadScoutInvocationSnapshot(baseUrl, invocationId, options.signal))?.flight
+      : await loadBrokerFlight(baseUrl, flightId, options.signal);
+    if (!flight || flight.id !== flightId) {
       throw new Error(`Flight ${flightId} is no longer available.`);
     }
 
+    invocationId = flight.invocationId;
     if (flight.state !== lastState || (flight.summary ?? "") !== lastSummary) {
       const detail = [flight.state, flight.summary].filter(Boolean).join(" - ");
       if (detail) {
@@ -4512,7 +4532,7 @@ export async function waitForScoutFlight(
     if (deadline !== null && Date.now() > deadline) {
       throw new Error(`Timed out waiting for flight ${flight.id}.`);
     }
-    await new Promise((resolve) => setTimeout(resolve, 1000));
+    await delay(1000, undefined, { signal: options.signal });
   }
 }
 

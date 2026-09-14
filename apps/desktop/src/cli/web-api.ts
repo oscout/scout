@@ -14,10 +14,18 @@ export function resolveScoutWebApiBaseUrl(env: NodeJS.ProcessEnv): string {
 }
 
 export async function readScoutWebJson<T>(
-  context: ScoutCommandContext,
+  context: Pick<ScoutCommandContext, "env">,
   path: string,
   options: { fetchImpl?: typeof fetch } = {},
 ): Promise<T> {
+  return await (await readScoutWebResponse(context, path, options)).json() as T;
+}
+
+export async function readScoutWebResponse(
+  context: Pick<ScoutCommandContext, "env">,
+  path: string,
+  options: { fetchImpl?: typeof fetch } = {},
+): Promise<Response> {
   const baseUrl = resolveScoutWebApiBaseUrl(context.env);
   const fetchImpl = options.fetchImpl ?? fetch;
   const url = new URL(path, baseUrl);
@@ -45,7 +53,7 @@ export async function readScoutWebJson<T>(
     }
     throw new ScoutCliError(`Scout web API request failed: ${detail}`);
   }
-  return await response.json() as T;
+  return response;
 }
 
 async function readLocalScoutWebAuthCookie(

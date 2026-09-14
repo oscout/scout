@@ -37,6 +37,17 @@ export function usePageStatusState(): State {
   return useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
 }
 
+/**
+ * Callers build the hover object inline per render, so the object that was set
+ * on pointer-enter is rarely the one in hand on pointer-leave; a leave that
+ * only cleared on identity left the bar stuck on a stale destination.
+ */
+function sameHover(a: PageStatusHover | null, b: PageStatusHover | null): boolean {
+  if (a === b) return true;
+  if (!a || !b) return false;
+  return a.route === b.route && a.label === b.label;
+}
+
 export function setPageStatusHover(hover: PageStatusHover | null) {
   if (state.hover === hover) return;
   state = { ...state, hover };
@@ -60,7 +71,7 @@ export function statusOnHover(hover: PageStatusHover | null | undefined) {
   return {
     onPointerEnter: () => setPageStatusHover(hover),
     onPointerLeave: () => {
-      if (state.hover === hover) setPageStatusHover(null);
+      if (sameHover(state.hover, hover)) setPageStatusHover(null);
     },
   };
 }

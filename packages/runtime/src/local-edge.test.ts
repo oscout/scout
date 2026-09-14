@@ -6,6 +6,11 @@ import {
 } from "./local-edge.ts";
 
 describe("OpenScout local edge", () => {
+  test("preserves optional operator-owned site imports outside generated routes", () => {
+    const output = renderOpenScoutCaddyfile(resolveOpenScoutLocalEdgeConfig({}), "/path with spaces/sites/*.caddy");
+    expect(output).toEndWith('\nimport "/path with spaces/sites/*.caddy"\n');
+    expect(output).toContain("http://scout.local {");
+  });
   test("registers scout.local and the node host", () => {
     expect(
       resolveOpenScoutLocalEdgeConfig({

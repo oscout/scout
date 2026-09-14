@@ -6,6 +6,7 @@ import {
 
 import type { ScoutBrokerMessageQuery } from "./broker-api.js";
 import type { RuntimeRegistrySnapshot } from "./registry.js";
+import { selectMessageRecords, selectMessageRecordsAsync } from "./broker-message-records.js";
 
 type BrokerCoreMessageRuntime = {
   snapshot: () => RuntimeRegistrySnapshot;
@@ -53,20 +54,61 @@ export function listBrokerMessages(
     return authored || addressed || participantConversation;
   };
 
-  return Object.values(snapshot.messages)
-    .filter((message) => !isBrokerRequesterWaitTimeoutStatusMessage(message))
-    .filter((message) =>
-      !conversationIds || conversationIds.has(message.conversationId)
-    )
-    .filter(matchesParticipant)
-    .filter((message) =>
-      input.since === null || input.since === undefined
-        ? true
-        : message.createdAt >= input.since
-    )
-    .sort((lhs, rhs) => rhs.createdAt - lhs.createdAt)
-    .slice(0, limit)
+  return selectMessageRecords(snapshot.messages, limit, (lhs, rhs) => rhs.createdAt - lhs.createdAt,
+    (message) => !isBrokerRequesterWaitTimeoutStatusMessage(message)
+      && (!conversationIds || conversationIds.has(message.conversationId))
+      && matchesParticipant(message)
+      && (input.since === null || input.since === undefined || message.createdAt >= input.since))
     .reverse();
+}
+
+export async function listBrokerMessagesAsync(
+  runtime: BrokerCoreMessageRuntime,
+  input: ScoutBrokerMessageQuery = {},
+): Promise<MessageRecord[]> {
+  const snapshot = runtime.snapshot();
+  const limit = normalizeMessageLimit(input.limit);
+  const requestedConversation = input.conversationId
+    ? snapshot.conversations[input.conversationId]
+    : null;
+  const requestedNaturalKey = requestedConversation
+    ? conversationNaturalKey(requestedConversation)
+    : null;
+  const conversationIds = input.conversationId
+    ? new Set(
+        requestedNaturalKey
+          ? conversationsWithNaturalKey(
+              Object.values(snapshot.conversations),
+              requestedNaturalKey,
+            ).map((conversation) => conversation.id)
+          : [input.conversationId],
+      )
+    : null;
+  const participantId = input.participantId?.trim();
+  const matchesParticipant = (message: MessageRecord): boolean => {
+    if (!participantId) {
+      return true;
+    }
+    const conversation = snapshot.conversations[message.conversationId];
+    const participantConversation = Boolean(conversation?.participantIds.includes(participantId));
+    const directConversation = conversation?.kind === "direct" || conversation?.kind === "group_direct";
+    const authored = message.actorId === participantId;
+    const addressed = Boolean(message.mentions?.some((mention) => mention.actorId === participantId))
+      || Boolean(message.audience?.notify?.includes(participantId))
+      || Boolean(message.audience?.invoke?.includes(participantId))
+      || Boolean(message.audience?.visibleTo?.includes(participantId));
+
+    if (input.inboxOnly) {
+      return addressed || (participantConversation && directConversation);
+    }
+    return authored || addressed || participantConversation;
+  };
+
+  return (await selectMessageRecordsAsync(snapshot.messages, limit, (lhs, rhs) => rhs.createdAt - lhs.createdAt,
+    (message) => !isBrokerRequesterWaitTimeoutStatusMessage(message)
+      && (!conversationIds || conversationIds.has(message.conversationId))
+      && matchesParticipant(message)
+      && (input.since === null || input.since === undefined || message.createdAt >= input.since), {selection:{conversationIds:conversationIds?[...conversationIds]:undefined,since:input.since??undefined,newestFirst:true}})).reverse();
 }
 
 export function isBrokerRequesterWaitTimeoutStatusMessage(message: MessageRecord): boolean {

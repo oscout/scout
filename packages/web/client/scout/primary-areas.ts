@@ -17,13 +17,13 @@
 import type { LucideIcon } from "lucide-react";
 import {
   Compass,
-  FileText,
   FolderKanban,
   House,
   MessageSquare,
   Search,
   Send,
   Settings,
+  Terminal,
 } from "lucide-react";
 import type { Route } from "../lib/types.ts";
 
@@ -63,28 +63,30 @@ export const PRIMARY_AREAS: readonly PrimaryArea[] = [
   },
   {
     id: "chat",
-    label: "Messages",
+    label: "Chat",
     icon: MessageSquare,
     defaultRoute: { view: "messages" },
     section: "navigate",
   },
   {
     id: "projects",
-    label: "Crew",
+    label: "Agents",
     icon: FolderKanban,
     defaultRoute: { view: "agents-v2" },
     section: "navigate",
   },
   {
+    // Area id stays "sessions" (route classification key); the surface leads
+    // with Terminals, with session transcripts as its sibling sub-surface.
     id: "sessions",
-    label: "Sessions",
-    icon: FileText,
-    defaultRoute: { view: "sessions" },
+    label: "Terminals",
+    icon: Terminal,
+    defaultRoute: { view: "terminal" },
     section: "navigate",
   },
   {
     id: "dispatch",
-    label: "Dispatch",
+    label: "Broker",
     icon: Send,
     defaultRoute: { view: "broker" },
     section: "navigate",
@@ -98,7 +100,7 @@ export const PRIMARY_AREAS: readonly PrimaryArea[] = [
   },
   {
     id: "ops",
-    label: "Operations",
+    label: "Ops",
     icon: Compass,
     // Catalog default is Mission Control; gate policy may redirect to Tail.
     defaultRoute: { view: "ops", mode: "mission" },

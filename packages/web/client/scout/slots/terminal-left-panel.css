@@ -298,6 +298,44 @@
   letter-spacing: var(--tracking-sm);
 }
 
+/* Why a ranked row is here. A screen match shows the captured line, which is
+   the whole point of searching output, so it gets the accent and the mono
+   face; a field match is a quiet aside. Both stay on one line — the rail is a
+   list, not a reading surface. */
+.terminal-nav-row-because {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--text-2xs);
+  color: var(--dim);
+}
+
+.terminal-nav-row-because--screen {
+  font-family: var(--font-mono);
+  color: color-mix(in srgb, var(--accent) 78%, var(--ink));
+}
+
+/* Query syntax, shown only while a query is up: discoverable when it is useful
+   and absent when it is noise. */
+.terminal-nav-search-hint {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  padding: 2px var(--space-md) var(--space-sm);
+  font-size: var(--text-2xs);
+  color: var(--dim);
+}
+
+.terminal-nav-search-hint code {
+  font-family: var(--font-mono);
+  color: var(--muted);
+}
+
+.terminal-nav-search-working {
+  color: color-mix(in srgb, var(--accent) 70%, var(--ink));
+}
+
 .terminal-nav-badges {
   flex: none;
   display: inline-flex;

@@ -1,3 +1,77 @@
+diff --git a/dist/CommandDock-BvMtR8UO.d.ts b/dist/CommandDock-BvMtR8UO.d.ts
+index a93acd8d6d9e4a77051061fd5578de4976332a53..3eff7801825fbb66d025dc259e613f10b8f3911a 100644
+--- a/dist/CommandDock-BvMtR8UO.d.ts
++++ b/dist/CommandDock-BvMtR8UO.d.ts
+@@ -157,6 +157,7 @@ interface StatusBarProps {
+     onToggleTerminal?: () => void;
+     /** Whether the terminal is currently open */
+     isTerminalOpen?: boolean;
++    terminalLabel?: string;
+ }
+ declare const StatusBar: React__default.FC<StatusBarProps>;
+
+diff --git a/dist/chunk-DN4GBMXZ.js b/dist/chunk-DN4GBMXZ.js
+index eb453be035f262149cdb59b21ee336093a840bcd..281edae83aefc531c1c720f68704856b82bfceff 100644
+--- a/dist/chunk-DN4GBMXZ.js
++++ b/dist/chunk-DN4GBMXZ.js
+@@ -16,6 +16,7 @@ var chromeGripStyle = {
+ var TerminalDrawer = ({
+   isOpen,
+   onClose,
++  closeLabel = "Close console",
+   onToggleMaximize,
+   isMaximized = false,
+   height = 320,
+@@ -59,7 +60,7 @@ var TerminalDrawer = ({
+     "div",
+     {
+       ref: drawerRef,
+-      "data-hudson-template": "hudson",
++      "data-hudson-terminal-drawer": "true",
+       className: `
+         fixed left-0 right-0 shadow-[0_-2px_12px_rgba(0,0,0,0.16)] flex flex-col border-t text-card-foreground
+         bg-card
+@@ -97,8 +98,8 @@ var TerminalDrawer = ({
+               {
+                 onClick: onClose,
+                 className: "p-1.5 rounded hover:bg-destructive/10 text-muted-foreground hover:text-destructive transition-colors",
+-                title: "Close console",
+-                "aria-label": "Close console",
++                title: closeLabel,
++                "aria-label": closeLabel,
+                 children: /* @__PURE__ */ jsx(X, { size: 14 })
+               }
+             )
+diff --git a/dist/chunk-F64WBZGR.js b/dist/chunk-F64WBZGR.js
+index 7e17afc57fc63da9c4e93c8f2c490a63ec0dedc5..70fdde1b23cdd43b5013470f2fc230e454e1820e 100644
+--- a/dist/chunk-F64WBZGR.js
++++ b/dist/chunk-F64WBZGR.js
+@@ -522,7 +522,8 @@ var StatusBar = ({
+   status = { label: "READY", color: "emerald" },
+   onStatusClick,
+   onToggleTerminal,
+-  isTerminalOpen = false
++  isTerminalOpen = false,
++  terminalLabel = "Console"
+ }) => {
+   const [time, setTime] = useState(/* @__PURE__ */ new Date());
+   const [vpCopied, setVpCopied] = useState(false);
+@@ -637,13 +638,13 @@ var StatusBar = ({
+               {
+                 onClick: onToggleTerminal,
+                 className: `flex items-center gap-1.5 transition-colors focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none rounded ${isTerminalOpen ? "text-accent" : "text-muted-foreground hover:text-foreground"}`,
+-                title: "Toggle Console (Ctrl+`)",
++                title: `Toggle ${terminalLabel} (Ctrl+\`)`,
+                 children: [
+                   /* @__PURE__ */ jsxs("span", { className: "text-[10px]", children: [
+                     ">",
+                     "_"
+                   ] }),
+-                  /* @__PURE__ */ jsx("span", { className: "uppercase text-[9px] font-light tracking-[0.18em]", children: "Console" })
++                  /* @__PURE__ */ jsx("span", { className: "uppercase text-[9px] font-light tracking-[0.18em]", children: terminalLabel })
+                 ]
+               }
+             ),
 diff --git a/dist/chunk-JTPDIGGW.js b/dist/chunk-JTPDIGGW.js
 index 6d52dfc9c0e4236217db3ecce4c7e57eb04360b2..002894b96cf25f3fb07695383c0e25ffed26038b 100644
 --- a/dist/chunk-JTPDIGGW.js
@@ -122,6 +196,18 @@ index 28dfb2052257e92da282e0e370b916f64b4cfc67..547eb3fc52ecf4032c207f70b923a58f
      subscribeData,
      sendInput,
      sendLine,
+diff --git a/dist/overlays.d.ts b/dist/overlays.d.ts
+index 1f5ff15cfb417ac62887f76bc8e3a8680857cd0a..4c860fc4f65f2a84dd0b5e84ca9d8b3021e4468d 100644
+--- a/dist/overlays.d.ts
++++ b/dist/overlays.d.ts
+@@ -5,6 +5,7 @@ import './types-DQppvHZi.js';
+ interface TerminalDrawerProps {
+     isOpen: boolean;
+     onClose: () => void;
++    closeLabel?: string;
+     onToggleMaximize?: () => void;
+     isMaximized?: boolean;
+     /** Controlled height in px (default 320) */
 diff --git a/dist/terminal.d.ts b/dist/terminal.d.ts
 index fedb383530bb8728fd4cef7a94460b238b4c990e..1a26f99374f02c27a9d2ebaca482d0e1e72faa41 100644
 --- a/dist/terminal.d.ts

@@ -1,3 +1,4 @@
+import { readMessageRecord } from "./broker-message-records.js";
 import { isDeepStrictEqual } from "node:util";
 
 import { redactSecrets } from "@openscout/agent-sessions/secret-redaction";
@@ -27,15 +28,12 @@ import type { RuntimeSnapshot } from "./scout-dispatcher.js";
 
 type FlightLifecycleRuntime = {
   snapshot(): RuntimeSnapshot;
+  peek?(): Readonly<RuntimeSnapshot>;
   upsertFlight(flight: FlightRecord): Promise<void>;
 };
 
 type FlightLifecycleJournal = {
-  listDeliveries(options?: {
-    limit?: number;
-    transport?: DeliveryIntent["transport"];
-    status?: DeliveryIntent["status"];
-  }): DeliveryIntent[];
+  visitDeliveries(visitor: (delivery: DeliveryIntent) => void | Promise<void>, options?: { activeOnly?: boolean }): Promise<void>;
   listDeliveryAttempts?: (deliveryId: string) => DeliveryAttempt[];
 };
 
@@ -61,6 +59,10 @@ export type BrokerFlightLifecycleServiceOptions = {
     leaseOwner?: string | null;
     leaseExpiresAt?: number | null;
   }) => Promise<unknown>;
+  updateDeliveryStatusIf: (
+    input: Parameters<BrokerFlightLifecycleServiceOptions["updateDeliveryStatus"]>[0],
+    eligible: (current: DeliveryIntent) => boolean | Promise<boolean>,
+  ) => Promise<boolean>;
   promoteInvocationFlightToWork: (
     invocation: InvocationRequest,
     flight: FlightRecord,
@@ -339,19 +341,33 @@ export class BrokerFlightLifecycleService {
   };
 
   readonly reconcileStaleLocalDeliveries = async (): Promise<void> => {
-    const snapshot = this.options.runtime.snapshot();
     const now = this.now();
+    let snapshot: RuntimeSnapshot | undefined;
+    let messageFreeSnapshot: RuntimeSnapshot | undefined;
 
-    for (const delivery of this.options.journal.listDeliveries({ limit: 5000 })) {
+    await this.options.journal.visitDeliveries(async (delivery) => {
+      // Terminal/non-agent records cannot reconcile; avoid a full registry copy
+      // on every incoming message when the scan contains no eligible records.
+      if (delivery.targetKind !== "agent" || !staleReconcileableDeliveryStatuses.has(delivery.status)) return;
+      snapshot ??= this.options.runtime.peek?.() ?? this.options.runtime.snapshot();
       const latestAttemptAt = this.options.journal
         .listDeliveryAttempts?.(delivery.id)
         .at(-1)?.createdAt;
-      const reason = staleLocalDeliveryReason(snapshot, delivery, { now, latestAttemptAt });
+      // Message age can only make a candidate younger. If other timestamps or
+      // the endpoint state already rule out reconciliation, avoid opening a
+      // cold history view for every active delivery on every accepted message.
+      messageFreeSnapshot ??= { ...snapshot, messages: {} };
+      if (!staleLocalDeliveryReason(messageFreeSnapshot, delivery, { now, latestAttemptAt })) return;
+      const message = delivery.messageId
+        ? await readMessageRecord(snapshot.messages, delivery.messageId) : undefined;
+      const reason = staleLocalDeliveryReason({
+        ...snapshot, messages: message ? { [message.id]: message } : {},
+      }, delivery, { now, latestAttemptAt });
       if (!reason) {
-        continue;
+        return;
       }
 
-      await this.options.updateDeliveryStatus({
+      const changed = await this.options.updateDeliveryStatusIf({
         deliveryId: delivery.id,
         status: "failed",
         metadata: {
@@ -364,9 +380,13 @@ export class BrokerFlightLifecycleService {
         },
         leaseOwner: null,
         leaseExpiresAt: null,
-      });
-      this.options.warn?.(`[openscout-runtime] reconciled stale local delivery ${delivery.id}: ${reason}`);
-    }
+      }, (current) => current === delivery
+        // Journal records are replaced, never mutated: rechecking identity under
+        // the writer rejects claims/completions that raced the stale read.
+        && !(current.leaseOwner && typeof current.leaseExpiresAt === "number"
+          && current.leaseExpiresAt > this.now()));
+      if (changed) this.options.warn?.(`[openscout-runtime] reconciled stale local delivery ${delivery.id}: ${reason}`);
+    }, { activeOnly: true });
   };
 
   readonly reconcileStaleWorkingFlights = async (): Promise<void> => {
@@ -411,10 +431,8 @@ export class BrokerFlightLifecycleService {
     }
 
     const updatedAt = flight.completedAt ?? this.now();
-    const deliveries = this.options.journal
-      .listDeliveries({ limit: 5000 })
-      .filter((delivery) => (
-        delivery.messageId === invocation.messageId
+    await this.options.journal.visitDeliveries(async (delivery) => {
+      if (!(delivery.messageId === invocation.messageId
         && delivery.targetId === flight.targetAgentId
         && delivery.status !== status
         && (
@@ -425,9 +443,7 @@ export class BrokerFlightLifecycleService {
             && (status === "running" || status === "completed")
           )
         )
-      ));
-
-    for (const delivery of deliveries) {
+      )) return;
       const recoveringFalseStaleFailure = delivery.status === "failed"
         && delivery.metadata?.reconciledStaleDelivery === true
         && (status === "running" || status === "completed");
@@ -450,7 +466,7 @@ export class BrokerFlightLifecycleService {
         leaseOwner: null,
         leaseExpiresAt: null,
       });
-    }
+    });
   }
 
   private now(): number {

@@ -2,7 +2,7 @@
 
 export const SCOUT_RUNTIME_CATALOG_DATA = {
   "schemaVersion": "openscout.runtime-catalog.v1",
-  "revision": "2026-09-05.1",
+  "revision": "2026-09-10.1",
   "harnesses": [
     {
       "id": "claude",
@@ -161,7 +161,7 @@ export const SCOUT_RUNTIME_CATALOG_DATA = {
         "high",
         "xhigh"
       ],
-      "defaultReasoningEffort": "medium",
+      "defaultReasoningEffort": "high",
       "models": [
         {
           "id": "grok-4.6",
@@ -177,14 +177,8 @@ export const SCOUT_RUNTIME_CATALOG_DATA = {
           "label": "Grok 4.5",
           "enabled": true,
           "family": "Grok",
-          "version": "4.5"
-        },
-        {
-          "id": "grok-4.3",
-          "label": "Grok 4.3",
-          "enabled": true,
-          "family": "Grok",
-          "version": "4.3"
+          "version": "4.5",
+          "contextWindowTokens": 500000
         }
       ]
     },
@@ -192,7 +186,13 @@ export const SCOUT_RUNTIME_CATALOG_DATA = {
       "id": "grok-acp",
       "label": "Grok",
       "enabled": true,
-      "reasoningEfforts": null,
+      "reasoningEfforts": [
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
+      "defaultReasoningEffort": "high",
       "models": [
         {
           "id": "grok-4.6",
@@ -208,14 +208,8 @@ export const SCOUT_RUNTIME_CATALOG_DATA = {
           "label": "Grok 4.5",
           "enabled": true,
           "family": "Grok",
-          "version": "4.5"
-        },
-        {
-          "id": "grok-4.3",
-          "label": "Grok 4.3",
-          "enabled": true,
-          "family": "Grok",
-          "version": "4.3"
+          "version": "4.5",
+          "contextWindowTokens": 500000
         }
       ]
     },

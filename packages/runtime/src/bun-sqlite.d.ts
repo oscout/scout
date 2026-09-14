@@ -6,7 +6,7 @@ declare module "bun:sqlite" {
   }
 
   export class Database {
-    constructor(filename?: string, options?: { create?: boolean; strict?: boolean });
+    constructor(filename?: string, options?: { readonly?: boolean; create?: boolean; strict?: boolean });
     exec(sql: string): void;
     run(sql: string, ...params: unknown[]): unknown;
     query<T = unknown>(sql: string): Statement<T>;

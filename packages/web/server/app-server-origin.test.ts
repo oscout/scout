@@ -15,13 +15,15 @@ function writeTailscaleFixture(body: unknown): { directory: string; filePath: st
 describe("resolveOpenScoutWebApplicationServerIdentity", () => {
   test("uses scout.local as the portal and a node host as the advertised host", () => {
     expect(
-      resolveOpenScoutWebApplicationServerIdentity({}, "Hudson-Mini.local", { webLocalName: "m1.scout.local" }),
+      resolveOpenScoutWebApplicationServerIdentity({}, "Hudson-Mini.local", { webLocalName: "m1.scout.local" }, []),
     ).toEqual({
       advertisedHost: "m1.scout.local",
       portalHost: "scout.local",
       publicOrigin: undefined,
       trustedHosts: ["m1.scout.local", "scout.local", "dev.scout.local", "hudson-mini.local"],
       trustedOrigins: [],
+      frontDoorOrigins: [],
+      frontDoorPeers: [],
     });
   });
 
@@ -35,6 +37,7 @@ describe("resolveOpenScoutWebApplicationServerIdentity", () => {
         },
         "hudson-mini",
         { webLocalName: "m1.scout.local" },
+        [],
       ),
     ).toEqual({
       advertisedHost: "m1.scout.local",
@@ -52,6 +55,8 @@ describe("resolveOpenScoutWebApplicationServerIdentity", () => {
         "https://scout.local",
         "http://scout.backup.local:43120",
       ],
+      frontDoorOrigins: [],
+      frontDoorPeers: [],
     });
   });
 
@@ -61,6 +66,7 @@ describe("resolveOpenScoutWebApplicationServerIdentity", () => {
         {},
         "Workstation-Mini.local",
         { webLocalName: "m1.scout.local" },
+        [],
       ),
     ).toEqual({
       advertisedHost: "m1.scout.local",
@@ -68,6 +74,8 @@ describe("resolveOpenScoutWebApplicationServerIdentity", () => {
       publicOrigin: undefined,
       trustedHosts: ["m1.scout.local", "scout.local", "dev.scout.local", "workstation-mini.local"],
       trustedOrigins: [],
+      frontDoorOrigins: [],
+      frontDoorPeers: [],
     });
   });
 
@@ -86,12 +94,53 @@ describe("resolveOpenScoutWebApplicationServerIdentity", () => {
         {},
         "Workstation-Mini.local",
         {},
+        [],
       ),
     ).toMatchObject({
       advertisedHost: "workstation-mini.scout.local",
       portalHost: "scout.local",
       trustedHosts: ["workstation-mini.scout.local", "scout.local", "dev.scout.local", "workstation-mini.local"],
     });
+  });
+
+  test("trusts this machine's own LAN addresses so a bare-IP browser passes the host gate", () => {
+    expect(
+      resolveOpenScoutWebApplicationServerIdentity({}, "M1.local", {}, ["192.168.1.20", "10.0.0.5"]),
+    ).toMatchObject({
+      trustedHosts: [
+        "m1.scout.local",
+        "scout.local",
+        "dev.scout.local",
+        "m1.local",
+        "192.168.1.20",
+        "10.0.0.5",
+      ],
+    });
+  });
+
+  test("drops LAN address trust when the operator opts out", () => {
+    const identity = resolveOpenScoutWebApplicationServerIdentity(
+      { OPENSCOUT_WEB_TRUST_LAN_ADDRESSES: "0" },
+      "M1.local",
+      {},
+      ["192.168.1.20"],
+    );
+    expect(identity.trustedHosts).not.toContain("192.168.1.20");
+  });
+
+  test("folds declared front doors into the trusted host and origin sets", () => {
+    const identity = resolveOpenScoutWebApplicationServerIdentity(
+      { OPENSCOUT_WEB_FRONT_DOORS: "https://scout.oscout.net, studio-lab-3.exe.xyz" },
+      "M1.local",
+      {},
+      [],
+    );
+    expect(identity.frontDoorOrigins).toEqual([
+      "https://scout.oscout.net",
+      "https://studio-lab-3.exe.xyz",
+    ]);
+    expect(identity.trustedHosts).toContain("scout.oscout.net");
+    expect(identity.trustedOrigins).toContain("https://scout.oscout.net");
   });
 
   test("trusts running Tailscale self hosts", () => {
@@ -117,6 +166,7 @@ describe("resolveOpenScoutWebApplicationServerIdentity", () => {
           { OPENSCOUT_TAILSCALE_STATUS_JSON: filePath },
           "M1.local",
           {},
+          [],
         ),
       ).toMatchObject({
         trustedHosts: [

@@ -1,11 +1,14 @@
+import { writeBrokerSnapshot } from "./broker-snapshot-response.js";
 import type { RuntimeHttpRequestLike, RuntimeHttpResponseLike } from "./portable-types.js";
 import { performance } from "node:perf_hooks";
 
 import type {
   A2AJsonRpcRequest,
+  ActorIdentity,
   AgentEndpoint,
   CollaborationRecord,
   ControlCommand,
+  ConversationDefinition,
   ConversationReadCursor,
   DeliveryIntent,
   DurableAction,
@@ -83,8 +86,13 @@ import type {
   ManagedPairingAttachBody,
   ManagedPairingDetachBody,
 } from "./broker-managed-session-http-service.js";
+import {
+  MachineInventoryUnavailableError,
+  type BrokerMachineService,
+} from "./broker-machine-service.js";
 import type { BrokerMeshDiscoveryService } from "./broker-mesh-discovery-service.js";
 import type { BrokerMeshHttpService } from "./broker-mesh-http-service.js";
+import { brokerActorDisplayName } from "./broker-conversation-helpers.js";
 import type { BrokerRepoTailService } from "./broker-repo-tail-service.js";
 import type { BrokerRendezvousService } from "./broker-rendezvous-service.js";
 import type { BrokerWebControlService } from "./broker-web-control-service.js";
@@ -116,9 +124,10 @@ import {
   type TrustEndpointRateLimiter,
   type TrustedPeerGrant,
 } from "./mesh-trust-enrollment.js";
+import { normalizeConversationTitle } from "./conversation-title.js";
 
 export type BrokerHttpRuntime = {
-  snapshot: () => { nodes: Record<string, NodeDefinition> };
+  snapshot: () => { nodes: Record<string, NodeDefinition>; conversations: Record<string, ConversationDefinition> };
   recentEvents: (limit: number) => unknown;
   collaborationRecord: (recordId: string) => CollaborationRecord | undefined;
   flightForInvocation: (invocationId: string) => FlightRecord | undefined;
@@ -140,6 +149,8 @@ export type BrokerHttpJournal = {
 };
 
 export type BrokerHttpRouterDeps = {
+  encodedSnapshotBodies?: boolean;
+  onSnapshotFlushedBytes?: (bytes: number) => void;
   host: string;
   port: number;
   nodeId: string;
@@ -162,6 +173,20 @@ export type BrokerHttpRouterDeps = {
   managedSessionHttpService: BrokerManagedSessionHttpService;
   meshDiscoveryService: BrokerMeshDiscoveryService;
   meshHttpService: BrokerMeshHttpService;
+  /**
+   * Mesh session wake (T4 rung of flat session dispatch): run this node's
+   * local harness-store wake on behalf of an enrolled peer and return the
+   * registered endpoint so the peer can adopt it. Local wake only — the
+   * handler must never fan out to other peers.
+   */
+  wakeMeshHarnessSession?: (input: {
+    nativeSessionId: string;
+    harness?: string;
+    projectPath?: string;
+  }) => Promise<
+    | { ok: true; endpoint: AgentEndpoint; actor?: ActorIdentity }
+    | { ok: false; reason: string; detail: string; remediation?: string }
+  >;
   threadEvents: ThreadEventPlane;
   handleCommand: (command: ControlCommand) => Promise<unknown>;
   handleInvocationRequest: (payload: InvocationRequest & BrokerRouteTargetInput) => Promise<unknown>;
@@ -180,6 +205,8 @@ export type BrokerHttpRouterDeps = {
     },
   ) => Promise<ConversationReadCursor>;
   recordReadCursor: (cursor: ConversationReadCursor) => Promise<void>;
+  /** Canonical field mutation; reads current conversation inside the writer. */
+  setConversationTitle: (conversationId: string, named: string) => Promise<ConversationDefinition | null>;
   acknowledgeDeliveriesForReadCursor: (cursor: ConversationReadCursor) => Promise<unknown>;
   deliveryAcceptanceService: BrokerDeliveryAcceptanceService;
   rendezvousService: BrokerRendezvousService;
@@ -220,6 +247,12 @@ export type BrokerHttpRouterDeps = {
       revokeTrustedPeer: (keyId: string, at: number) => boolean;
     } | null;
   };
+  /**
+   * Machine inventory (see machines.ts in @openscout/protocol). Absent when
+   * broker SQLite persistence is disabled — the routes then answer 503, since
+   * the roster is durable by definition and cannot be served from memory.
+   */
+  machines?: BrokerMachineService;
   /**
    * P1.5 restart-free bind flip (docs/proposals/mesh-trust-cone.md §11.5).
    * When absent, POST /v1/mesh/bind 404s.
@@ -339,6 +372,7 @@ export function createBrokerHttpRouter(
     managedSessionHttpService,
     meshDiscoveryService,
     meshHttpService,
+    wakeMeshHarnessSession,
     threadEvents,
     handleCommand,
     handleInvocationRequest,
@@ -347,11 +381,13 @@ export function createBrokerHttpRouter(
     listReadCursorsForConversation,
     resolveReadCursor,
     recordReadCursor,
+    setConversationTitle,
     acknowledgeDeliveriesForReadCursor,
     deliveryAcceptanceService,
     rendezvousService,
     routeAliasService,
     forwardRouteAliasRequest,
+    machines,
     meshTrust,
     meshBind,
   } = deps;
@@ -524,6 +560,9 @@ export function createBrokerHttpRouter(
     : null;
   const readCursorsMatch = method === "GET" || method === "POST"
     ? url.pathname.match(/^\/v1\/conversations\/([^/]+)\/read-cursors$/)
+    : null;
+  const conversationTitleMatch = method === "POST"
+    ? url.pathname.match(/^\/v1\/conversations\/([^/]+)\/title$/)
     : null;
   const threadWatchStreamMatch = method === "GET"
     ? url.pathname.match(/^\/v1\/thread-watches\/([^/]+)\/stream$/)
@@ -928,10 +967,13 @@ export function createBrokerHttpRouter(
       : requestedScope === "conversations" || requestedScope === "agents"
         ? requestedScope
         : undefined;
-    json(response, 200, await brokerService.readSnapshot({
-      since: parseSince(url),
-      scope,
-    }));
+    const controller=new AbortController();const abort=()=>controller.abort(new Error('Snapshot request closed'));
+    response.on('close',abort);response.on('error',abort);request.on('aborted',abort);
+    try{
+      const query={since:parseSince(url),scope:scope as "agents"|"conversations"|undefined};
+      if(brokerService.withSnapshot)await brokerService.withSnapshot(query,snapshot=>writeBrokerSnapshot(response,snapshot,{encodedBodies:deps.encodedSnapshotBodies,onFlushedBytes:deps.onSnapshotFlushedBytes,signal:controller.signal}),{signal:controller.signal});
+      else await writeBrokerSnapshot(response,await brokerService.readSnapshot(query),{encodedBodies:deps.encodedSnapshotBodies,onFlushedBytes:deps.onSnapshotFlushedBytes});
+    }finally{response.off?.('close',abort);response.off?.('error',abort);}
     return;
   }
 
@@ -1114,6 +1156,31 @@ export function createBrokerHttpRouter(
       await recordReadCursor(cursor);
       const acknowledgedDeliveries = await acknowledgeDeliveriesForReadCursor(cursor);
       json(response, 200, { ok: true, cursor, acknowledgedDeliveries });
+    } catch (error) {
+      badRequest(response, error);
+    }
+    return;
+  }
+
+  /**
+   * Name a conversation. An empty title hands it back to automatic naming.
+   *
+   * Goes out as an ordinary `conversation.upsert` so it journals, replicates
+   * and reaches every surface the same way any other conversation change does.
+   * The operator mark rides on metadata, and the derivation side reads it back
+   * (see conversation-title.ts) so nothing automatic renames it again.
+   */
+  if (conversationTitleMatch) {
+    try {
+      const conversationId = decodeURIComponent(conversationTitleMatch[1] ?? "");
+      const body = await readRequestBody<{ title?: unknown }>(request);
+      const named = normalizeConversationTitle(body.title);
+      const next = await setConversationTitle(conversationId, named);
+      if (!next) {
+        json(response, 404, { error: "unknown conversation", conversationId });
+        return;
+      }
+      json(response, 200, { ok: true, conversation: next, titled: Boolean(named) });
     } catch (error) {
       badRequest(response, error);
     }
@@ -1417,8 +1484,105 @@ export function createBrokerHttpRouter(
     return;
   }
 
+  // ── Machines (docs/eng/sco-104-machines.md) ────────────────────────────
+  // The roster is durable, so every route here needs the store; without it the
+  // honest answer is 503, not an empty list that reads like "no machines".
+  if (url.pathname === "/v1/machines" || url.pathname.startsWith("/v1/machines/")) {
+    if (!machines?.available) {
+      json(response, 503, {
+        error: "machines_unavailable",
+        detail: "machine inventory requires broker SQLite persistence",
+      });
+      return;
+    }
+
+    try {
+      if (method === "GET" && url.pathname === "/v1/machines") {
+        // `?refresh=1` is the scan; the bare GET serves the cached roster so a
+        // polling page never drives the probes.
+        const refresh = parseBooleanQueryParam(url.searchParams.get("refresh")) === true;
+        json(response, 200, await machines.list({ refresh }));
+        return;
+      }
+
+      if (method === "POST" && url.pathname === "/v1/machines/scan") {
+        json(response, 200, await machines.scan({ refresh: true }));
+        return;
+      }
+
+      const machineMatch = method === "GET" || method === "PATCH" || method === "DELETE"
+        ? url.pathname.match(/^\/v1\/machines\/([^/]+)$/)
+        : null;
+      if (machineMatch) {
+        const reference = decodeURIComponent(machineMatch[1] ?? "");
+        const resolved = machines.resolve(reference);
+        if (!resolved) {
+          notFound(response);
+          return;
+        }
+        if ("ambiguous" in resolved) {
+          json(response, 400, {
+            error: "ambiguous_machine",
+            detail: `"${reference}" matches ${resolved.ambiguous.length} machines; use an exact id`,
+            candidates: resolved.ambiguous,
+          });
+          return;
+        }
+
+        if (method === "GET") {
+          json(response, 200, resolved.machine);
+          return;
+        }
+
+        if (method === "PATCH") {
+          const body = await readRequestBody<{
+            displayName?: string | null;
+            notes?: string | null;
+            pinned?: boolean;
+          }>(request);
+          const updated = machines.annotate(resolved.machine.id, {
+            ...(body?.displayName !== undefined ? { displayName: body.displayName } : {}),
+            ...(body?.notes !== undefined ? { notes: body.notes } : {}),
+            ...(typeof body?.pinned === "boolean" ? { pinned: body.pinned } : {}),
+          });
+          if (!updated) {
+            notFound(response);
+            return;
+          }
+          json(response, 200, updated);
+          return;
+        }
+
+        if (method === "DELETE") {
+          json(response, 200, { forgotten: machines.forget(resolved.machine.id) });
+          return;
+        }
+      }
+    } catch (error) {
+      if (error instanceof MachineInventoryUnavailableError) {
+        json(response, 503, { error: "machines_unavailable", detail: error.message });
+        return;
+      }
+      badRequest(response, error);
+      return;
+    }
+  }
+
   if (method === "GET" && url.pathname === "/v1/mesh/nodes") {
     json(response, 200, runtime.snapshot().nodes);
+    return;
+  }
+
+  // Observe-tier compact node state (mesh trust cone §4). The remote-tier twin
+  // of the local-only home feed: identity plus bounded workload state for the
+  // agents homed HERE, so a peer's Network view can distinguish "broker
+  // answered" from "workload unknown" without any local route being widened.
+  if (method === "GET" && url.pathname === "/v1/mesh/node-state") {
+    if (!brokerService.readMeshNodeState) {
+      notFound(response);
+      return;
+    }
+    json(response, 200, await brokerService.readMeshNodeState());
     return;
   }
 
@@ -1580,6 +1744,39 @@ export function createBrokerHttpRouter(
       const bundle = await readRequestBody<MeshInvocationBundle>(request);
       const result = await meshHttpService.receiveInvocationBundle(bundle);
       json(response, result.status, result.body);
+    } catch (error) {
+      badRequest(response, error);
+    }
+    return;
+  }
+
+  if (method === "POST" && url.pathname === "/v1/mesh/sessions/wake") {
+    try {
+      const input = await readRequestBody<{
+        nativeSessionId?: string;
+        harness?: string;
+        projectPath?: string;
+      }>(request);
+      const nativeSessionId = input?.nativeSessionId?.trim();
+      if (!nativeSessionId) {
+        json(response, 400, { error: "nativeSessionId is required" });
+        return;
+      }
+      if (!wakeMeshHarnessSession) {
+        json(response, 200, {
+          ok: false,
+          reason: "session_unknown",
+          detail: "this broker does not support mesh session wake",
+        });
+        return;
+      }
+      // Domain misses ride a 200 {ok:false} body so callers can tell them
+      // apart from transport failures (which surface as non-2xx).
+      json(response, 200, await wakeMeshHarnessSession({
+        nativeSessionId,
+        ...(input?.harness?.trim() ? { harness: input.harness.trim() } : {}),
+        ...(input?.projectPath?.trim() ? { projectPath: input.projectPath.trim() } : {}),
+      }));
     } catch (error) {
       badRequest(response, error);
     }

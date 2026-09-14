@@ -122,7 +122,7 @@ describe("broker daemon durability routes", () => {
       }>(harness.baseUrl, "/health");
       expect(health).toEqual(expect.objectContaining({
         ok: true,
-        startup: { state: "restoring", mutationsAdmitted: false },
+        startup: expect.objectContaining({ state: "restoring", mutationsAdmitted: false }),
       }));
 
       const webStatus = await broker.getJson<{
@@ -164,6 +164,70 @@ describe("broker daemon durability routes", () => {
     }
   }, 15_000);
 
+  test("accepted registration survives process interruption during progressive fill", async () => {
+    const controlHome = mkdtempSync(join(tmpdir(), "scout-progressive-interruption-"));
+    const first = await broker.startBroker({ controlHome, waitForMutationReady: false, env: {
+      OPENSCOUT_BROKER_DISK_HISTORY: "1", OPENSCOUT_TEST_STARTUP_BOUNDARY_DELAY_MS: "1500",
+      OPENSCOUT_CORE_AGENTS: "", OPENSCOUT_RUNTIME_CATALOG_REFRESH_MS: "0",
+    } });
+    await broker.waitFor(
+      () => broker.getJson<{ startup?: { coreReady?: boolean } }>(first.baseUrl, "/health"),
+      health => health.startup?.coreReady === true,
+    );
+    const actor = { id: "interrupted-registration", kind: "agent", displayName: "Accepted before fill" };
+    const accepted = await broker.requestJson(first.baseUrl, "/v1/actors", {
+      method: "POST", body: JSON.stringify(actor),
+    });
+    expect(accepted.status).toBe(200);
+    const pending = await broker.requestJson(first.baseUrl, "/v1/messages", {
+      method: "POST", body: JSON.stringify({ id: "not-accepted" }),
+    });
+    expect(pending.status).toBe(503);
+    // Deliberate owned-process fault injection: recovery must use the journal,
+    // including startup events whose SQLite projection never ran.
+    first.child.kill("SIGKILL");
+    await first.child.exited;
+    broker.harnesses.delete(first);
+    await Promise.all(first.outputDrain);
+    const second = await broker.startBroker({ controlHome, env: {
+      OPENSCOUT_BROKER_DISK_HISTORY: "1", OPENSCOUT_CORE_AGENTS: "",
+      OPENSCOUT_RUNTIME_CATALOG_REFRESH_MS: "0",
+    } });
+    const snapshot = await broker.getJson<{ actors: Record<string, unknown>; messages: Record<string, unknown> }>(second.baseUrl, "/v1/snapshot");
+    expect(snapshot.actors[actor.id]).toEqual(actor);
+    expect(snapshot.messages["not-accepted"]).toBeUndefined();
+    const db = new Database(join(controlHome, "control-plane.sqlite"), { readonly: true });
+    try { expect(db.query("SELECT display_name FROM actors WHERE id = ?").get(actor.id)).toEqual({ display_name: actor.displayName }); }
+    finally { db.close(); }
+  }, 15_000);
+
+  test("keeps canonical registration available after a historical projection failure", async () => {
+    const controlHome = mkdtempSync(join(tmpdir(), "scout-degraded-startup-"));
+    const env = { OPENSCOUT_CORE_AGENTS: "", OPENSCOUT_RUNTIME_CATALOG_REFRESH_MS: "0" };
+    const original = await broker.startBroker({ controlHome, env: { ...env, OPENSCOUT_DISABLE_SQLITE: "1" } });
+    // This shape was accepted by the existing API; do not silently rewrite
+    // canonical history to make a derived SQLite constraint succeed.
+    await broker.postJson(original.baseUrl, "/v1/agents", { id: "legacy-no-kind", displayName: "Legacy agent" });
+    original.child.kill(); await original.child.exited; await Promise.all(original.outputDrain); broker.harnesses.delete(original);
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const degraded = await broker.startBroker({ controlHome, waitForMutationReady: false, env });
+      const health = await broker.waitFor(
+        () => broker.getJson<{ startup: { phase: string; coreReady: boolean; historyReady: boolean; mutationsAdmitted: boolean; error?: string } }>(degraded.baseUrl, "/health"),
+        value => value.startup.phase === "degraded",
+      );
+      expect(health.startup).toMatchObject({ phase: "degraded", coreReady: true, historyReady: true, mutationsAdmitted: false });
+      expect(health.startup.error).toBeTruthy();
+      expect(degraded.child.exitCode).toBeNull();
+      for (const path of ["/v1/activity", "/v1/home", "/v1/thread-events"]) expect((await fetch(degraded.baseUrl + path)).status).toBe(503);
+      for (const path of ["/v1/messages", "/v1/invocations"]) expect((await broker.requestJson(degraded.baseUrl, path, { method: "POST", body: "{}" })).status).toBe(503);
+      if (attempt === 0) await broker.postJson(degraded.baseUrl, "/v1/actors", { id: "accepted-while-degraded", kind: "agent", displayName: "Durable" });
+      const snapshot = await broker.getJson<{ actors: Record<string, { displayName: string }> }>(degraded.baseUrl, "/v1/snapshot");
+      expect(snapshot.actors["accepted-while-degraded"]?.displayName).toBe("Durable");
+      degraded.child.kill(); await degraded.child.exited; await Promise.all(degraded.outputDrain); broker.harnesses.delete(degraded);
+    }
+    broker.temporaryDirectories.add(controlHome);
+  }, 15_000);
+
   test("keeps route-alias authority stable when the live hostname suffix changes", async () => {
     const controlHome = mkdtempSync(join(tmpdir(), "openscout-stable-authority-test-"));
     const projectRoot = "/work/studio";
@@ -179,6 +243,7 @@ describe("broker daemon durability routes", () => {
     const studioAgentId = "studio.main.arts-mac-mini-372-local";
     await broker.postJson(first.baseUrl, "/v1/agents", {
       id: studioAgentId,
+      kind: "agent",
       definitionId: "studio",
       displayName: "Studio",
       handle: "studio",

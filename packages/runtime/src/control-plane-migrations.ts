@@ -9,6 +9,7 @@ import {
   CONTROL_PLANE_RUNTIME_SESSION_SQLITE_SCHEMA,
   CONTROL_PLANE_SCHEMA_VERSION,
   CONTROL_PLANE_SQLITE_SCHEMA,
+  MACHINES_SQLITE_SCHEMA,
   CONTROL_PLANE_TERMINAL_SESSION_SQLITE_SCHEMA,
   CONTROL_PLANE_TERMINAL_WORKSPACE_SQLITE_SCHEMA,
 } from "./schema.js";
@@ -336,6 +337,17 @@ WHERE latest.invocation_id = inv.id
           database.query("UPDATE trusted_peers SET node_id = ?1 WHERE node_id = ?2").run(canonicalId, row.id);
           database.query("DELETE FROM nodes WHERE id = ?1").run(row.id);
         }
+      }
+    },
+  },
+  {
+    // Additive table, so no CONTROL_PLANE_SCHEMA_VERSION bump — same reasoning
+    // as the entries above: an older build simply never reads it.
+    id: "machines-inventory",
+    description: "Creates the durable machine inventory (mesh nodes, tailnet peers, and LAN sightings joined into one record per physical machine).",
+    apply(database) {
+      if (!hasTable(database, "machines")) {
+        database.exec(MACHINES_SQLITE_SCHEMA);
       }
     },
   },

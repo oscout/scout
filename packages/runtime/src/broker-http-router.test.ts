@@ -1,3 +1,4 @@
+import { clearOperatorTitle, markOperatorTitled } from "./conversation-title.js";
 import { EventEmitter } from "node:events";
 import { generateKeyPairSync } from "node:crypto";
 import { PassThrough } from "node:stream";
@@ -5,7 +6,7 @@ import { PassThrough } from "node:stream";
 import { describe, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
 
-import type { TrustedPeerRecord } from "@openscout/protocol";
+import type { ConversationDefinition, TrustedPeerRecord } from "@openscout/protocol";
 
 import {
   createBrokerHttpRouter,
@@ -43,6 +44,8 @@ class FakeResponse extends EventEmitter {
 }
 
 type Harness = {
+  conversations: Record<string, ConversationDefinition>;
+  conversationWrites: ConversationDefinition[];
   cursorBodies: unknown[];
   deliverCalls: Array<{ payload: unknown; signal?: AbortSignal }>;
   invocationCalls: unknown[];
@@ -51,6 +54,8 @@ type Harness = {
 };
 
 function createHarness(overrides: Partial<BrokerHttpRouterDeps> = {}): Harness {
+  const conversations: Record<string, ConversationDefinition> = {};
+  const conversationWrites: ConversationDefinition[] = [];
   const cursorBodies: unknown[] = [];
   const deliverCalls: Array<{ payload: unknown; signal?: AbortSignal }> = [];
   const invocationCalls: unknown[] = [];
@@ -74,7 +79,7 @@ function createHarness(overrides: Partial<BrokerHttpRouterDeps> = {}): Harness {
     meshId: "mesh-1",
     operatorActorId: "operator",
     runtime: {
-      snapshot: () => ({ nodes: { [node.id]: node } }),
+      snapshot: () => ({ nodes: { [node.id]: node }, conversations }),
       recentEvents: (limit: number) => [{ id: "evt-1", limit }],
       collaborationRecord: () => undefined,
       flightForInvocation: () => undefined,
@@ -176,6 +181,15 @@ function createHarness(overrides: Partial<BrokerHttpRouterDeps> = {}): Harness {
       return cursor;
     },
     recordReadCursor: async () => {},
+    setConversationTitle: async (conversationId: string, named: string) => {
+      const current = conversations[conversationId];
+      if (!current) return null;
+      const conversation = { ...current, title: named || current.title,
+        metadata: named ? markOperatorTitled(current.metadata, Date.now()) : clearOperatorTitle(current.metadata) };
+      conversationWrites.push(conversation);
+      conversations[conversation.id] = conversation;
+      return conversation;
+    },
     acknowledgeDeliveriesForReadCursor: async () => ["delivery-1"],
     deliveryAcceptanceService: {
       accept: async () => ({ kind: "delivery", deliveryId: "fallback-delivery" }),
@@ -194,6 +208,8 @@ function createHarness(overrides: Partial<BrokerHttpRouterDeps> = {}): Harness {
   } as unknown as BrokerHttpRouterDeps;
 
   return {
+    conversations,
+    conversationWrites,
     cursorBodies,
     deliverCalls,
     invocationCalls,
@@ -208,6 +224,7 @@ async function requestRouter(
   path: string,
   options: {
     body?: unknown;
+    beforeBody?: () => Promise<void>;
     rawBody?: string;
     transportContext?: { transport: "unix-socket" | "loopback" | "remote"; remoteAddress?: string };
   } = {},
@@ -227,6 +244,7 @@ async function requestRouter(
   const response = new FakeResponse();
 
   const routed = harness.routed(request as never, response as never);
+  await options.beforeBody?.();
   if (options.rawBody !== undefined) {
     request.end(options.rawBody);
   } else if (options.body !== undefined) {
@@ -244,6 +262,124 @@ async function requestRouter(
 }
 
 describe("createBrokerHttpRouter", () => {
+
+  function seedConversation(harness: Harness): ConversationDefinition {
+    const conversation: ConversationDefinition = {
+      id: "conversation-rename",
+      kind: "direct",
+      title: "Derived title",
+      visibility: "private",
+      shareMode: "local",
+      authorityNodeId: "node-1",
+      participantIds: ["operator", "agent-1"],
+      metadata: { surface: "broker", naturalKey: "direct:agent-1,operator" },
+    };
+    harness.conversations[conversation.id] = conversation;
+    return conversation;
+  }
+
+  test("conversation title HTTP rename waits for the durable writer before success", async () => {
+    let releaseWrite!: () => void;
+    let enteredWrite!: () => void;
+    const writeStarted = new Promise<void>((resolve) => { enteredWrite = resolve; });
+    const writeReleased = new Promise<void>((resolve) => { releaseWrite = resolve; });
+    const harness = createHarness({
+      setConversationTitle: async (conversationId, named) => {
+        enteredWrite();
+        await writeReleased;
+        const current = harness.conversations[conversationId];
+        if (!current) return null;
+        const conversation = { ...current, title: named || current.title,
+          metadata: markOperatorTitled(current.metadata, Date.now()) };
+        harness.conversationWrites.push(conversation);
+        harness.conversations[conversation.id] = conversation;
+        return conversation;
+      },
+    });
+    const original = seedConversation(harness);
+    let completed = false;
+    const request = requestRouter(harness, "POST", "/v1/conversations/conversation-rename/title", {
+      body: { title: "  Terminal polish  " },
+    }).then((result) => { completed = true; return result; });
+    try {
+      await writeStarted;
+      await Promise.resolve();
+      expect(completed).toBe(false);
+      expect(harness.conversations[original.id]).toBe(original);
+    } finally {
+      releaseWrite();
+    }
+    const result = await request;
+    expect(result.response.status).toBe(200);
+    expect(harness.conversationWrites).toHaveLength(1);
+    const persisted = harness.conversationWrites[0]!;
+    expect(persisted).toMatchObject({
+      ...original,
+      title: "Terminal polish",
+      metadata: { ...original.metadata, titleSource: "operator", titleSetAt: expect.any(Number) },
+    });
+    expect(original.title).toBe("Derived title");
+    expect(original.metadata).not.toHaveProperty("titleSource");
+    expect(result.body).toEqual({ ok: true, conversation: persisted, titled: true });
+  });
+
+  test("conversation title HTTP retains coordination changes made while its body is pending", async () => {
+    const harness = createHarness();
+    const original = seedConversation(harness);
+    const changed: ConversationDefinition = { ...original, participantIds: [...original.participantIds, "new-agent"],
+      shareMode: "shared", metadata: { ...original.metadata, routingEpoch: 2 } };
+    const result = await requestRouter(harness, "POST", "/v1/conversations/conversation-rename/title", {
+      body: { title: "Current title" },
+      beforeBody: async () => { harness.conversations[original.id] = changed; },
+    });
+    expect(result.response.status).toBe(200);
+    expect(harness.conversationWrites[0]).toMatchObject({ ...changed, title: "Current title",
+      metadata: { ...changed.metadata, titleSource: "operator" } });
+  });
+
+  test("conversation title HTTP clear preserves text and unrelated metadata", async () => {
+    const harness = createHarness();
+    const original = seedConversation(harness);
+    original.title = "Operator title";
+    original.metadata = { ...original.metadata, titleSource: "operator", titleSetAt: 123 };
+    const result = await requestRouter(harness, "POST", "/v1/conversations/conversation-rename/title", {
+      body: { title: "" },
+    });
+    expect(result.response.status).toBe(200);
+    expect(harness.conversationWrites).toHaveLength(1);
+    const persisted = harness.conversationWrites[0]!;
+    expect(persisted.title).toBe("Operator title");
+    expect(persisted.metadata).toEqual({ surface: "broker", naturalKey: "direct:agent-1,operator" });
+    expect(persisted.participantIds).toEqual(original.participantIds);
+    expect(result.body).toEqual({ ok: true, conversation: persisted, titled: false });
+  });
+
+  test("conversation title HTTP returns 404 without writing an unknown conversation", async () => {
+    const harness = createHarness();
+    const result = await requestRouter(harness, "POST", "/v1/conversations/missing/title", {
+      body: { title: "Do not create" },
+    });
+    expect(result.response.status).toBe(404);
+    expect(result.body).toEqual({ error: "unknown conversation", conversationId: "missing" });
+    expect(harness.conversationWrites).toEqual([]);
+    expect(harness.conversations).toEqual({});
+  });
+
+  test("conversation title HTTP never reports success when persistence fails", async () => {
+    const harness = createHarness({
+      setConversationTitle: async () => { throw new Error("journal write failed"); },
+    });
+    const original = seedConversation(harness);
+    const result = await requestRouter(harness, "POST", "/v1/conversations/conversation-rename/title", {
+      body: { title: "Unpersisted" },
+    });
+    expect(result.response.status).not.toBe(200);
+    expect(result.body).not.toMatchObject({ ok: true });
+    expect(harness.conversations[original.id]).toBe(original);
+    expect(original.title).toBe("Derived title");
+  });
+
+
   test("passes snapshot cutoffs to the broker service", async () => {
     const queries: unknown[] = [];
     const harness = createHarness({

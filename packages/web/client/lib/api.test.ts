@@ -149,3 +149,74 @@ describe("api GET dedupe", () => {
     await expect(api("/api/fleet")).rejects.toThrow("unauthorized");
   });
 });
+
+describe("owned API request cancellation", () => {
+  const originalFetch = globalThis.fetch;
+  beforeEach(() => clearApiGetCache());
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+    clearApiGetCache();
+  });
+
+  test("owned cancellation never cancels a concurrent shared GET, in either arrival order", async () => {
+    for (const ownedFirst of [false, true]) {
+      clearApiGetCache();
+      const pending: { signal?: AbortSignal | null; resolve: (response: Response) => void }[] = [];
+      globalThis.fetch = ((_path, init) => new Promise<Response>((resolve, reject) => {
+        pending.push({ signal: init?.signal, resolve });
+        init?.signal?.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")), { once: true });
+      })) as typeof fetch;
+      const controller = new AbortController();
+      const owned = ownedFirst ? api("/api/owned", { signal: controller.signal }) : undefined;
+      const shared = api("/api/owned");
+      const cancelled = owned ?? api("/api/owned", { signal: controller.signal });
+      const otherShared = api("/api/owned");
+      expect(pending.length).toBe(2);
+      const rejection = cancelled.catch((error: Error) => error);
+      controller.abort();
+      expect((await rejection as Error).message).toBe("Aborted");
+      const sharedFetch = pending.find((request) => !request.signal)!;
+      sharedFetch.resolve(new Response(JSON.stringify({ source: "shared" })));
+      await expect(shared).resolves.toEqual({ source: "shared" });
+      await expect(otherShared).resolves.toEqual({ source: "shared" });
+    }
+  });
+
+  test("successful signal-bearing GETs do not populate or overwrite shared settled cache", async () => {
+    let value = 0;
+    globalThis.fetch = (async () => new Response(JSON.stringify({ value: ++value }))) as unknown as typeof fetch;
+    const path = "/api/owned-cache";
+    await api(path, { signal: new AbortController().signal });
+    expect(peekApiGet(path, 30_000)).toBeNull();
+    await api(path);
+    await api(path, { signal: new AbortController().signal });
+    expect(peekApiGet<{ value: number }>(path, 30_000)).toEqual({ value: 2 });
+  });
+
+  test("a reply watch aborts its actual API transport on deadline and disposal", async () => {
+    const { watchAgentReply } = await import("../screens/ops/agent-reply-watch.ts");
+    for (const timeout of [false, true]) {
+      const timers = new Map<number, () => void>();
+      let transportAborts = 0;
+      globalThis.fetch = ((_path, init) => new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener("abort", () => {
+          transportAborts++;
+          reject(new DOMException("Aborted", "AbortError"));
+        }, { once: true });
+      })) as typeof fetch;
+      const states: string[] = [];
+      const dispose = watchAgentReply(0, (signal) => api("/api/messages?conversationId=owned", { signal }), (state) => states.push(state.status), (fn, delay) => {
+        timers.set(delay, fn);
+        return () => { timers.delete(delay); };
+      });
+      timers.get(2500)!();
+      if (timeout) timers.get(300_000)!();
+      else dispose();
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(transportAborts).toBe(1);
+      expect(timers.size).toBe(0);
+      expect(states).toEqual(timeout ? ["waiting", "timed-out"] : ["waiting"]);
+    }
+  });
+});

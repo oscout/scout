@@ -3,6 +3,7 @@ import { describe, expect, test } from "bun:test";
 import {
   type ActorIdentity,
   type AgentDefinition,
+  type AgentEndpoint,
   type CollaborationEvent,
   type CollaborationRecord,
   type ConversationDefinition,
@@ -224,8 +225,10 @@ function createHarness(input: {
   messages?: Record<string, MessageRecord>;
   flights?: Record<string, FlightRecord>;
   records?: Record<string, CollaborationRecord>;
+  localEndpoints?: Record<string, AgentEndpoint>;
 } = {}) {
   const agents = input.agents ?? {};
+  const localEndpoints = input.localEndpoints ?? {};
   const messages = input.messages ?? {};
   const flights = input.flights ?? {};
   const records = input.records ?? {};
@@ -280,6 +283,7 @@ function createHarness(input: {
     rememberInvocation(nextInvocation) {
       rememberedInvocations.push(nextInvocation);
     },
+    localEndpointForActor: (actorId) => localEndpoints[actorId],
     async runDispatchJob(job, nextInvocation) {
       runDispatchJobs.push({ job, invocation: nextInvocation });
     },
@@ -388,6 +392,60 @@ describe("BrokerMeshHttpService", () => {
     expect(harness.flights["invocation-from-bundle"]).toEqual(expect.objectContaining({
       invocationId: "invocation-from-bundle",
     }));
+  });
+
+  test("accepts cardless session invocations when this node owns the session endpoint", async () => {
+    const sessionActorId = "flat-claude-4fad8bb9";
+    const nextInvocation = invocation({
+      id: "invocation-cardless",
+      targetAgentId: sessionActorId,
+    });
+    const bundle = invocationBundle({
+      agents: [],
+      actors: [actor(), actor({ id: sessionActorId, kind: "session" })],
+      invocation: nextInvocation,
+    });
+    const harness = createHarness({
+      localEndpoints: {
+        [sessionActorId]: {
+          id: "endpoint-cardless",
+          agentId: sessionActorId,
+          nodeId: "node-local",
+          harness: "claude",
+          transport: "claude_stream_json",
+          state: "idle",
+          sessionId: sessionActorId,
+          metadata: { cardless: true },
+        } as AgentEndpoint,
+      },
+    });
+
+    const result = await harness.service.receiveInvocationBundle(bundle);
+
+    expect(result.status).toBe(200);
+    expect(harness.rememberedInvocations).toEqual([nextInvocation]);
+    expect(harness.runDispatchJobs).toEqual([
+      expect.objectContaining({
+        invocation: nextInvocation,
+        job: expect.objectContaining({ targetAgentId: sessionActorId }),
+      }),
+    ]);
+  });
+
+  test("rejects cardless session invocations with no local endpoint", async () => {
+    const bundle = invocationBundle({
+      agents: [],
+      invocation: invocation({
+        id: "invocation-unknown",
+        targetAgentId: "flat-claude-nowhere",
+      }),
+    });
+    const harness = createHarness();
+
+    await expect(harness.service.receiveInvocationBundle(bundle))
+      .rejects.toThrow("unknown target agent flat-claude-nowhere");
+    expect(harness.rememberedInvocations).toEqual([]);
+    expect(harness.runDispatchJobs).toEqual([]);
   });
 
   test("returns duplicate mesh invocations without appending invocation entries", async () => {

@@ -1,6 +1,21 @@
 import { useSyncExternalStore } from "react";
+import {
+  MISSION_ACTIVITY_WINDOWS,
+  resolveMissionTimeFilter,
+  type MissionActivityFilter,
+  type MissionActivityWindow,
+  type MissionTimeFilterId,
+} from "./mission-control-time.ts";
 
-export type MissionActivityFilter = "active" | "live" | "all";
+export {
+  MISSION_ACTIVITY_WINDOWS,
+  MISSION_TIME_FILTERS,
+  missionTimeFilterId,
+  type MissionActivityFilter,
+  type MissionTimeFilter,
+  type MissionTimeFilterId,
+} from "./mission-control-time.ts";
+
 export type MissionSourceFilter = "all" | "scout" | "native";
 export type MissionGroupMode =
   | "activity"
@@ -9,15 +24,6 @@ export type MissionGroupMode =
   | "state"
   | "source";
 export type MissionActivityState = "active" | "recent" | "idle";
-
-export const MISSION_ACTIVITY_WINDOWS = [
-  { label: "5m", value: 5 * 60_000 },
-  { label: "30m", value: 30 * 60_000 },
-  { label: "4h", value: 4 * 60 * 60_000 },
-  { label: "24h", value: 24 * 60 * 60_000 },
-] as const;
-
-type MissionActivityWindow = (typeof MISSION_ACTIVITY_WINDOWS)[number]["value"];
 
 export type MissionVisibleAgent = {
   id: string;
@@ -91,6 +97,14 @@ export function setMissionActivityWindow(activityWindowMs: MissionActivityWindow
 
 export const MISSION_RECENT_WINDOWS = MISSION_ACTIVITY_WINDOWS;
 export const setMissionRecentWindow = setMissionActivityWindow;
+
+/** Step the single time axis (see mission-control-time.ts). */
+export function setMissionTimeFilter(id: MissionTimeFilterId): void {
+  const next = resolveMissionTimeFilter(_state, id);
+  if (next === _state) return;
+  _state = { ..._state, ...next };
+  _notify();
+}
 
 export function setMissionGroupMode(groupMode: MissionGroupMode): void {
   if (_state.groupMode === groupMode) return;
@@ -169,6 +183,11 @@ function _subscribe(fn: () => void): () => void {
 }
 
 function _getSnapshot(): MissionControlState {
+  return _state;
+}
+
+/** Current state outside React (tests, imperative callers). */
+export function getMissionControlState(): MissionControlState {
   return _state;
 }
 

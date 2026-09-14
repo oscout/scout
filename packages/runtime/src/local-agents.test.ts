@@ -31,6 +31,7 @@ import {
   resolveLocalAgentContextWindowUsage,
   stripLocalAgentReplyMetadata,
 } from "./local-agents";
+import { buildCardlessSessionEndpoint } from "./broker-cardless-session";
 import { DEFAULT_BROKER_URL } from "./broker-process-manager";
 import { shutdownCodexAppServerAgent } from "./codex-app-server";
 
@@ -242,6 +243,42 @@ describe("local agent prompts", () => {
       expect(scoutBackgroundOptions.env?.CODEX_HOME).toBe(backgroundHome);
       expect(scoutBackgroundOptions.env?.OPENSCOUT_CODEX_AUTH_SOURCE)
         .toBe(join(operatorCodexHome, "auth.json"));
+    }
+  });
+
+  test("resumes flat-dispatched Codex threads in the operator home while retaining managed background ownership", () => {
+    const supportDirectory = mkdtempSync(join(tmpdir(), "openscout-flat-codex-home-"));
+    const operatorCodexHome = join(supportDirectory, "operator-codex");
+    tempPaths.add(supportDirectory);
+    process.env.OPENSCOUT_SUPPORT_DIRECTORY = supportDirectory;
+    process.env.OPENSCOUT_CODEX_HOME_SOURCE = operatorCodexHome;
+
+    // Exercise the real endpoint builder: both paths carry the same Scout
+    // source marker and acquire provider IDs, but only flat dispatch resumes
+    // a thread that already belonged to the operator's harness.
+    for (const flatDispatch of [true, false]) {
+      const threadId = flatDispatch ? "desktop-existing-thread" : "scout-created-thread";
+      const endpoint = buildCardlessSessionEndpoint({
+        sessionId: `session-${threadId}`,
+        transport: "codex_app_server",
+        harness: "codex",
+        cwd: supportDirectory,
+        nodeId: "node-1",
+        externalSessionId: threadId,
+        nativeSessionId: threadId,
+        flatDispatch,
+      });
+      expect(endpoint.metadata?.source).toBe("scout-cardless-session");
+      expect(endpoint.metadata?.placement).toBe("background");
+      const options = buildCodexEndpointSessionOptions(endpoint);
+      expect(options.threadId).toBe(threadId);
+      expect(options.requireExistingThread).toBe(true);
+      expect(options.env?.CODEX_HOME).toBe(flatDispatch
+        ? operatorCodexHome
+        : join(supportDirectory, "runtime", "codex-background-home"));
+      expect(options.env?.OPENSCOUT_CODEX_AUTH_SOURCE).toBe(flatDispatch
+        ? undefined
+        : join(operatorCodexHome, "auth.json"));
     }
   });
 
@@ -713,6 +750,29 @@ describe("local agent prompts", () => {
       expect(prompt).toContain("- screenshot.png (image/png): http://127.0.0.1:3200/api/blobs/blob-1");
       expect(prompt).toContain("Fetch/open the attachment URL");
       expect(prompt).not.toContain(SCOUT_MESSAGE_ATTACHMENTS_CONTEXT_KEY);
+    }
+  });
+
+  test("Scoutbot attachment prompts expose stable IDs and its bounded text/code reader", () => {
+    const invocation = {
+      id: "inv-scoutbot-attachment", requesterId: "operator", requesterNodeId: "node-1",
+      targetAgentId: "scoutbot", action: "consult", task: "Explain this code",
+      context: { [SCOUT_MESSAGE_ATTACHMENTS_CONTEXT_KEY]: [{
+        id: "att-source", mediaType: "text/plain", fileName: "example.ts",
+        url: "http://127.0.0.1:3200/api/blobs/blob-source",
+      }] },
+      conversationId: "c.scoutbot", messageId: "msg-source", ensureAwake: true,
+      stream: false, createdAt: 1,
+    } as const;
+    for (const prompt of [
+      buildLocalAgentNudge("scoutbot", invocation, "flt-source"),
+      buildLocalAgentDirectInvocationPrompt("scoutbot", invocation),
+    ]) {
+      expect(prompt).toContain("- example.ts (text/plain): http://127.0.0.1:3200/api/blobs/blob-source");
+      expect(prompt).toContain("attachmentId=att-source");
+      expect(prompt).toContain("Use attachments_read with attachmentId");
+      expect(prompt).toContain("Binary/image inspection is unavailable");
+      expect(prompt).not.toContain("Fetch/open the attachment URL");
     }
   });
 

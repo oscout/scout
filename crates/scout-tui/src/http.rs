@@ -16,6 +16,18 @@ pub fn request(
     extra_headers: &[(&str, &str)],
     timeout: Duration,
 ) -> Result<HttpResponse, String> {
+    request_with_body(host, port, method, path, extra_headers, None, timeout)
+}
+
+pub fn request_with_body(
+    host: &str,
+    port: u16,
+    method: &str,
+    path: &str,
+    extra_headers: &[(&str, &str)],
+    body: Option<&[u8]>,
+    timeout: Duration,
+) -> Result<HttpResponse, String> {
     let mut stream = TcpStream::connect((host, port)).map_err(|err| format!("connect {err}"))?;
     stream
         .set_read_timeout(Some(timeout))
@@ -25,10 +37,19 @@ pub fn request(
     for (name, value) in extra_headers {
         req.push_str(&format!("{name}: {value}\r\n"));
     }
+    if let Some(bytes) = body {
+        req.push_str("Content-Type: application/json\r\n");
+        req.push_str(&format!("Content-Length: {}\r\n", bytes.len()));
+    }
     req.push_str("\r\n");
     stream
         .write_all(req.as_bytes())
         .map_err(|err| format!("write {err}"))?;
+    if let Some(bytes) = body {
+        stream
+            .write_all(bytes)
+            .map_err(|err| format!("write {err}"))?;
+    }
     let mut buf = Vec::new();
     stream
         .read_to_end(&mut buf)

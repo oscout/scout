@@ -8,7 +8,7 @@ import type { ActivityItem } from "./sqlite-store.js";
 function createReadOnlyBrokerCoreService(
   snapshot: RuntimeRegistrySnapshot,
   projectionStatus?: ScoutBrokerProjectionStatus,
-  startupStatus?: { state: "restoring" | "ready"; mutationsAdmitted: boolean },
+  startupStatus?: { state: "restoring" | "ready"; mutationsAdmitted: boolean; historyReady?: boolean },
   runtimeCalls?: string[],
 ) {
   return createBrokerCoreService({
@@ -864,4 +864,11 @@ describe("createBrokerCoreService", () => {
       summary: "composer did not submit",
     });
   });
+});
+
+
+test("health does not report an empty history while coverage is pending", async () => {
+  const service = createReadOnlyBrokerCoreService(createRuntimeRegistrySnapshot(), undefined,
+    { state: "restoring", mutationsAdmitted: false, historyReady: false });
+  expect((await service.readHealth()).counts?.messages).toBeNull();
 });

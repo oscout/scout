@@ -64,6 +64,7 @@ import {
 import { dismissOperatorAttention } from "../../lib/operator-attention.ts";
 import {
   routeMachineId,
+  useBrowserLocation,
 } from "../../lib/router.ts";
 import {
   forwardScoutbotUiActionToNativeHost,
@@ -96,10 +97,14 @@ import "../ops/ops-screen.css";
 import {
   AddParticipantForm,
   ConversationHeader,
+  type ConversationView,
   ConversationIdentityRow,
   type ConversationHeaderOperator,
   type ConversationHeaderParticipant,
 } from "./ConversationHeader.tsx";
+import { CommsFlowPane } from "./CommsFlowGraph.tsx";
+import type { BesideControl } from "./CommsSelection.tsx";
+import { useStage } from "./use-beside.ts";
 import {
   ConversationComposer,
   type ConversationReplyTarget,
@@ -249,6 +254,8 @@ export function ConversationScreen({
   navigate,
   embedded,
   showBackNav = true,
+  beside,
+  backLabel,
   treatment = "standard",
 }: {
   conversationId: string;
@@ -256,6 +263,10 @@ export function ConversationScreen({
   navigate: (r: Route) => void;
   embedded?: boolean;
   showBackNav?: boolean;
+  /** The Comms page's kept-beside columns, when this conversation is on one. */
+  beside?: BesideControl;
+  /** Names where the back pill goes; defaults to a bare "Back". */
+  backLabel?: string;
   /// How the thread is presented — see the "Presentations" block in
   /// conversation-screen.css. "standard" is the shipping bordered card;
   /// ledger/rail/document come from the readability study.
@@ -1186,6 +1197,47 @@ export function ConversationScreen({
         });
       }
     : undefined;
+  // Which drawing is on screen. Seeded from the URL so a flow can be linked to,
+  // and written back with replaceState so switching never adds a history entry.
+  //
+  // Only the page's own conversation owns `?view=`. Embedded — on the agent
+  // surface's stage, or in a column kept beside it — the param is the host's
+  // (the agent surface names its drawings the same way), so an embedded
+  // conversation opens on its thread and never touches the URL.
+  const [view, setView] = useState<ConversationView>(() => {
+    if (embedded || typeof window === "undefined") return "thread";
+    const asked = new URLSearchParams(window.location.search).get("view");
+    return asked === "flow" || asked === "map" || asked === "canvas" ? asked : "thread";
+  });
+  const changeView = useCallback((next: ConversationView) => setView(next), []);
+  // A conversation the selection in a drawing leads to goes on the stage —
+  // this page's own included, in which case the drawing gives way to it.
+  const toStage = useStage(navigate, routeMachineId(route) ?? undefined);
+  const stageFromDrawing = useCallback((conversationId: string) => {
+    setView("thread");
+    toStage(conversationId);
+  }, [toStage]);
+
+  // `view` is route-local state: it says what you are looking at, not which
+  // page you are on, so it rides the URL by replaceState and never pushes a
+  // history entry.
+  //
+  // The router owns the canonical URL and strips params it does not know, ONCE
+  // on mount and after the first effects have run — so seeding alone loses the
+  // param and a linked drawing arrives on the thread. Watching the location as
+  // well as the state puts it back. This cannot loop: a bare replaceState does
+  // not go through the location store, so only a real navigation retriggers it.
+  const viewLocation = useBrowserLocation();
+  useEffect(() => {
+    if (embedded || typeof window === "undefined") return;
+    const url = new URL(window.location.href);
+    const want = view === "thread" ? "" : view;
+    if ((url.searchParams.get("view") ?? "") === want) return;
+    if (want) url.searchParams.set("view", want);
+    else url.searchParams.delete("view");
+    window.history.replaceState(window.history.state, "", `${url.pathname}${url.search}${url.hash}`);
+  }, [embedded, view, viewLocation.searchStr]);
+
   const headerParticipants = useMemo<ConversationHeaderParticipant[]>(() => {
     const participantIds = sessionMeta
       ? sessionMeta.participantIds.filter((id) => id !== "operator")
@@ -2255,6 +2307,11 @@ export function ConversationScreen({
         {!embedded && (
           <ConversationHeader
             showBackNav={showBackNav}
+            backLabel={backLabel}
+            beside={beside && canonicalConversationId ? {
+              on: beside.has(canonicalConversationId),
+              toggle: () => beside.toggle(canonicalConversationId),
+            } : undefined}
             isDm={isDm}
             navigate={navigate}
             route={route}
@@ -2266,6 +2323,8 @@ export function ConversationScreen({
             participants={headerParticipants}
             operator={headerOperator}
             canAddParticipants={canAddParticipants}
+            view={view}
+            onChangeView={changeView}
             onToggleAddParticipant={() => {
               setAddParticipantError(null);
               setAddParticipantOpen((open) => !open);
@@ -2330,6 +2389,17 @@ export function ConversationScreen({
 
         {error && <p className="s-thread-error">{error}</p>}
 
+        {/* The same messages, two arrangements: in order, or by who was
+            waiting on whom. The composer stays put under both. */}
+        {view !== "thread" ? (
+          <CommsFlowPane
+            messages={messages}
+            view={view}
+            participants={sessionMeta?.participants}
+            onStage={stageFromDrawing}
+            beside={beside}
+          />
+        ) : (
         <div
           className="s-thread-feed"
           data-conversation-id={conversationId}
@@ -2422,7 +2492,7 @@ export function ConversationScreen({
                 !isYou
                   ? resolveMessageAgent(message, scopedAgents, agentId)
                   : null;
-              const messageParticipant = participantMetaById.get(message.actorId);
+              const messageParticipant = message.actorId ? participantMetaById.get(message.actorId) : undefined;
               const scopedReplyHandle = messageParticipant?.scopedAlias?.trim() || null;
               const displayActorName = !isYou && scopedReplyHandle
                 ? scopedReplyHandle
@@ -2900,6 +2970,7 @@ export function ConversationScreen({
 
           <div ref={bottomRef} />
         </div>
+        )}
 
         {presence.showTyping && (
           <div className={presenceLineClassName}>

@@ -15,6 +15,7 @@ import type {
 import { BackToPicker } from "../../scout/slots/BackToPicker.tsx";
 import { ConversationScreen } from "../chat/ConversationScreen.tsx";
 import { SessionObserve, SessionObserveContextRail } from "./SessionObserve.tsx";
+import { NATIVE_SESSION_ORIGIN_LABEL } from "./SessionObserveEvidence.tsx";
 import {
   activeSessionRefLookupState,
   brokerEventMayAffectSessionRef,
@@ -272,6 +273,8 @@ export function SessionRefScreen({
           showRail={showObserveRail}
           observeSource={lookup.observe.source}
           observeFidelity={lookup.observe.fidelity}
+          originLabel={NATIVE_SESSION_ORIGIN_LABEL}
+          defaultPresentation="conversation"
         />
       </>
     );

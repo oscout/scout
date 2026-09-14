@@ -1,0 +1,66 @@
+.floor-world {
+  position: absolute; isolation: isolate; color: var(--floor-ink);
+  background: var(--floor-bg); border: 1px solid var(--floor-line-2); border-radius: 18px;
+  box-shadow: 0 25px 65px -35px var(--floor-shadow-strong);
+}
+.floor-world__passage {
+  position: absolute; top: 295px; height: 55px; left: 20px; right: 20px;
+  display: flex; align-items: center; justify-content: space-between; padding: 0 22px;
+  border-block: 1px dashed var(--floor-line-2); color: var(--floor-muted);
+  font-size: 10px; letter-spacing: .1em;
+  background: repeating-linear-gradient(90deg, transparent 0 45px, var(--floor-line-soft) 45px 46px);
+}
+.floor-world__spine { position: absolute; left: 450px; width: 60px; top: 20px; bottom: 20px; border-inline: 1px dashed var(--floor-line-2); }
+.floor-world__room { position: absolute; width: 410px; height: 265px; background: var(--floor-face-1); border: 1px solid var(--floor-line-2); border-top: 7px solid var(--floor-face-3); border-radius: 8px; box-shadow: 0 7px 0 var(--floor-shadow); }
+.floor-world__room::after { content: ""; position: absolute; inset: 58px 0 0; pointer-events: none; background-image: linear-gradient(var(--floor-line-soft) 1px, transparent 1px), linear-gradient(90deg,var(--floor-line-soft) 1px, transparent 1px); background-size: 47px 47px; opacity: .4; }
+.floor-world__room header { position: relative; border-bottom: 1px solid var(--floor-line-soft); }
+.floor-world__room header button { display: flex; align-items: center; gap: 12px; padding: 12px 18px; width: 100%; border: 0; background: transparent; color: inherit; text-align: left; cursor: zoom-in; }
+.floor-world__room header button:hover { background: var(--floor-face-2); }
+.floor-world__room header button:focus-visible { outline: 2px solid var(--floor-accent); outline-offset: -3px; }
+.floor-world__room header strong { display: block; font-size: 15px; font-weight: 600; }
+.floor-world__room header small { display: block; font-size: 10px; margin-top: 3px; color: var(--floor-muted); }
+.floor-world__room header button > svg { color: var(--floor-muted); }
+.floor-world__room-count { margin-left: auto; font: 18px var(--floor-mono); color: var(--floor-muted); }
+.floor-world__room.is-active { border-top-color: var(--floor-accent); }
+.floor-world__room.is-active header button > svg, .floor-world__room.is-active .floor-world__room-count { color: var(--floor-accent); }
+.floor-world__console { position: absolute; width: 66px; height: 31px; margin-left: -33px; border-radius: 4px 4px 2px 2px; background: var(--floor-face-3); border: 1px solid var(--floor-line-2); box-shadow: 0 5px 0 var(--floor-shadow); }
+.floor-world__screen { position: absolute; left: 8px; top: -7px; width: 49px; height: 22px; border: 2px solid var(--floor-line-2); border-radius: 3px; background: var(--floor-bg); padding: 3px 5px; display: flex; flex-direction: column; gap: 2px; }
+.floor-world__screen i { display: block; height: 2px; background: var(--floor-line-2); width: 80%; }
+.floor-world__screen i:nth-child(2) { width: 50%; }
+.floor-world__screen i:nth-child(3) { width: 65%; }
+.floor-world__console.is-occupied .floor-world__screen i { background: var(--floor-accent); }
+.floor-world__keyboard { position: absolute; width: 27px; height: 5px; left: 19px; bottom: 5px; border-block: 1px solid var(--floor-line-2); }
+.floor-world__room.is-home .floor-world__console { width: 45px; margin-left: -22px; border-radius: 12px; height: 28px; background: var(--floor-face-2); border-bottom: 5px solid var(--floor-face-3); }
+.floor-world__room.is-home .floor-world__screen, .floor-world__room.is-home .floor-world__keyboard { display: none; }
+.floor-world__room.is-message .floor-world__console { border-radius: 50%; width: 58px; height: 38px; margin-left: -29px; }
+.floor-world__room.is-message .floor-world__screen { left: 20px; top: 6px; width: 16px; height: 16px; border-radius: 50%; padding: 2px; }
+.floor-world__room.is-message .floor-world__keyboard, .floor-world__room.is-message .floor-world__screen i { display: none; }
+.floor-world__room.is-edit .floor-world__screen { transform: rotate(-5deg); border-color: var(--floor-ok-line); }
+.floor-world__door { position: absolute; width: 72px; height: 7px; bottom: -1px; left: 165px; background: var(--floor-bg); border-inline: 3px solid var(--floor-line-2); }
+.floor-world__room.is-edit .floor-world__door, .floor-world__room.is-message .floor-world__door { top: -7px; bottom: auto; }
+.floor-world__center-mark { position: absolute; left: 457px; top: 302px; width: 46px; height: 46px; display: grid; place-items: center; color: var(--floor-accent); background: var(--floor-bg); border: 1px solid var(--floor-line-2); border-radius: 50%; }
+.floor-world__actor { position: absolute; left: 0; top: 0; width: 82px; height: 75px; margin: -21px 0 0 -41px; padding: 0; background: none; border: none; color: var(--floor-ink); z-index: 3; cursor: pointer; text-align: center; }
+.floor-world__sprite { position: relative; display: block; width: 44px; height: 44px; margin: 0 auto; filter: drop-shadow(0 4px 2px var(--floor-shadow)); }
+.floor-world__actor-shadow { position: absolute; left: 22px; top: 32px; width: 38px; height: 13px; border-radius: 50%; background: var(--floor-shadow); }
+.floor-world__ring { position: absolute; top: 26px; left: 17px; width: 48px; height: 22px; border: 1px solid var(--floor-line-2); border-radius: 50%; }
+.floor-world__actor.is-working .floor-world__ring { border-color: var(--floor-accent); }
+.floor-world__actor.is-selected { z-index: 10; }
+.floor-world__actor.is-selected .floor-world__ring { border: 2px solid var(--floor-accent); outline: 1px dashed var(--floor-ink); outline-offset: 4px; }
+.floor-world__actor:focus-visible { outline: 2px solid var(--floor-accent); outline-offset: 4px; border-radius: 4px; }
+.floor-world__actor-name { display: flex; align-items: baseline; justify-content: center; gap: 3px; font-size: 11px; white-space: nowrap; background: var(--floor-bg); border-radius: 3px; padding: 2px 3px; }
+.floor-world__actor-name small { color: var(--floor-muted); font-size: 8px; }
+.floor-world__actor-action { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 82px; font-size: 9px; color: var(--floor-muted); padding-top: 2px; }
+.floor-world__actor.is-working .floor-world__actor-action { color: var(--floor-accent); }
+.floor-world__thought { position: absolute; width: 220px; left: -69px; bottom: 82px; padding: 10px 12px; border: 1px solid var(--floor-line-2); border-radius: 6px; background: var(--floor-bg); color: var(--floor-ink); font-size: 12px; line-height: 1.5; text-align: left; box-shadow: 0 8px 20px var(--floor-shadow); pointer-events: none; }
+.floor-world__alert { position: absolute; top: -10px; right: 13px; width: 19px; height: 19px; border-radius: 50%; color: var(--floor-bg); background: var(--yellow, #e9b958); font-weight: 800; }
+.floor-world__actor.is-attention .floor-world__ring, .floor-world__actor.is-blocked .floor-world__ring { border-color: var(--yellow, #e9b958); }
+@keyframes floor-world-walk { 0%, 100% { transform: translateY(0) rotate(-4deg); } 50% { transform: translateY(-4px) rotate(4deg); } }
+@keyframes floor-world-screen { 50% { opacity: .5; } }
+@media (prefers-reduced-motion: no-preference) {
+  .floor-world__actor.is-moving .floor-world__sprite { animation: floor-world-walk 280ms ease-in-out infinite; }
+  .floor-world__room.is-active .floor-world__console.is-occupied .floor-world__screen i { animation: floor-world-screen 1.8s steps(2) infinite; }
+}
+.agent-floor__view-switch { display: flex; gap: 2px; padding: 3px; border: 1px solid var(--floor-line-2); border-radius: 6px; background: var(--floor-bg); }
+.agent-floor__view-switch button { padding: 5px 12px; background: transparent; border: 0; border-radius: 3px; color: var(--floor-muted); font-size: 11px; cursor: pointer; }
+.agent-floor__view-switch button[aria-pressed="true"] { color: var(--floor-ink); background: var(--floor-face-3); }
+.agent-floor__command-bar { top: 14px; left: 14px; padding: 6px 10px; border: 1px solid var(--floor-line-2); border-radius: 7px; background: var(--floor-bg); }

@@ -144,12 +144,28 @@ describe("setup inventory", () => {
 
     const defaults = await readOpenScoutSettings();
     expect(defaults.voice.realtimeEnabled).toBe(false);
+    expect(defaults.voice.playback).toBe("browser");
 
     const updated = await writeOpenScoutSettings({
       voice: { realtimeEnabled: true },
     });
     expect(updated.voice.realtimeEnabled).toBe(true);
+    expect(updated.voice.playback).toBe("browser");
     expect((await readOpenScoutSettings()).voice.realtimeEnabled).toBe(true);
+
+    const spokenOnHost = await writeOpenScoutSettings({
+      voice: { playback: "host" },
+    });
+    expect(spokenOnHost.voice).toEqual({ realtimeEnabled: true, playback: "host" });
+    expect((await readOpenScoutSettings()).voice.playback).toBe("host");
+
+    // Unknown modes normalize to the default like every other field; the
+    // bogus string is never persisted.
+    const rejected = await writeOpenScoutSettings({
+      voice: { playback: "phone" as unknown as "host" },
+    });
+    expect(rejected.voice.playback).toBe("browser");
+    expect((await readOpenScoutSettings()).voice.playback).toBe("browser");
   });
 
   test("persists OpenScout Network discovery settings", async () => {

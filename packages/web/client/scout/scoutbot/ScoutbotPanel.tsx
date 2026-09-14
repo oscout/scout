@@ -145,6 +145,7 @@ export function ScoutbotPanel({
   const [configError, setConfigError] = useState<string | null>(null);
   const [configStatus, setConfigStatus] = useState<string | null>(null);
   const [modelDraft, setModelDraft] = useState("");
+  const [modelOptions, setModelOptions] = useState<{ id: string; label: string }[]>([]);
   const [promptDraft, setPromptDraft] = useState("");
   const [voiceDefaults, setVoiceDefaults] = useState<ScoutbotVoiceDefaults | null>(null);
   const [chatExpanded, setChatExpanded] = useState(false);
@@ -216,7 +217,9 @@ export function ScoutbotPanel({
     void speech.promise
       .catch((err) => {
         if (!isScoutSpeechStopped(err)) {
-          setError(err instanceof Error ? err.message : "Scout voice speech failed.");
+          console.warn("[scoutbot] reply speech unavailable", {
+            message: err instanceof Error ? err.message : String(err),
+          });
         }
       })
       .finally(() => {
@@ -337,6 +340,7 @@ export function ScoutbotPanel({
     try {
       const config = await api<ScoutbotAgentConfig>("/api/scoutbot/config");
       setModelDraft(config.model);
+      setModelOptions(config.modelOptions ?? []);
       setPromptDraft(config.systemPrompt);
       setConfigStatus(null);
     } catch (err) {
@@ -387,6 +391,7 @@ export function ScoutbotPanel({
         },
       );
       setModelDraft(result.config.model);
+      setModelOptions(result.config.modelOptions ?? []);
       setPromptDraft(result.config.systemPrompt);
       setConfigStatus("Saved");
     } catch (err) {
@@ -895,6 +900,7 @@ export function ScoutbotPanel({
             voiceDefaults={voiceDefaults}
             modelDraft={modelDraft}
             onModelDraft={setModelDraft}
+            modelOptions={modelOptions}
             promptDraft={promptDraft}
             onPromptDraft={setPromptDraft}
             configLoading={configLoading}
@@ -998,6 +1004,7 @@ export function ScoutbotPanel({
           voiceDefaults={voiceDefaults}
           modelDraft={modelDraft}
           onModelDraft={setModelDraft}
+          modelOptions={modelOptions}
           promptDraft={promptDraft}
           onPromptDraft={setPromptDraft}
           configLoading={configLoading}

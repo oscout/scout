@@ -96,7 +96,9 @@ describe("route fixtures", () => {
       route: { view: "messages", conversationId: "chan-1" },
       canonical: "/messages/chan-1",
     },
-    { url: "/mesh", route: { view: "mesh" }, canonical: "/mesh" },
+    { url: "/network", route: { view: "mesh" }, canonical: "/network" },
+    // The old path still resolves; it just canonicalizes to the new one.
+    { url: "/mesh", route: { view: "mesh" }, canonical: "/network" },
     { url: "/dispatch", route: { view: "broker" }, canonical: "/dispatch" },
     {
       url: "/code?root=repo-a&file=repo-a%2Fsrc%2Fa.ts&fromConversation=c.thread",
@@ -207,7 +209,7 @@ describe("planNavigation URL policy", () => {
       { pathname: "/ops/tail", searchStr: "?q=thread-1&layout=grid&tab=observe&select=a-1&session=s-1" },
       { view: "mesh" },
     );
-    expect(href).toBe("/mesh");
+    expect(href).toBe("/network");
   });
 
   test("whitelisted global feature-flag params carry across navigation", () => {
@@ -215,7 +217,7 @@ describe("planNavigation URL policy", () => {
       { pathname: "/ops/tail", searchStr: "?q=thread-1&ffBundle=max-pro&no-ops&ff.ops.control=off&studioMode=after" },
       { view: "mesh" },
     );
-    expect(href).toBe("/mesh?ffBundle=max-pro&no-ops=&ff.ops.control=off&studioMode=after");
+    expect(href).toBe("/network?ffBundle=max-pro&no-ops=&ff.ops.control=off&studioMode=after");
   });
 
   test("preserveSearch:false drops even whitelisted params", () => {
@@ -224,7 +226,7 @@ describe("planNavigation URL policy", () => {
       { view: "mesh" },
       { preserveSearch: false },
     );
-    expect(href).toBe("/mesh");
+    expect(href).toBe("/network");
   });
 
   test("hash clears by default and sets only on explicit request", () => {
@@ -318,7 +320,7 @@ describe("planNavigation URL policy", () => {
       { pathname: "/scope/lanes", searchStr: "" },
       { view: "mesh" },
     );
-    expect(mesh.href).toBe("/mesh");
+    expect(mesh.href).toBe("/network");
   });
 });
 

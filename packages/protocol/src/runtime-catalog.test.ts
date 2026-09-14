@@ -11,7 +11,7 @@ describe("runtime catalog", () => {
     const parsed = parseScoutRuntimeCatalog(SCOUT_RUNTIME_CATALOG);
     expect(parsed.ok).toBe(true);
     if (!parsed.ok) return;
-    expect(parsed.catalog.revision).toBe("2026-09-05.1");
+    expect(parsed.catalog.revision).toBe("2026-09-10.1");
     expect(parsed.catalog.harnesses.find((entry) => entry.id === "codex")?.models[0])
       .toEqual(expect.objectContaining({
         id: "gpt-6-astra",
@@ -26,6 +26,21 @@ describe("runtime catalog", () => {
     expect(parsed.catalog.harnesses.find((entry) => entry.id === "grok")?.models[0]?.contextWindowTokens)
       .toBe(500_000);
     expect(parsed.catalog.harnesses.find((entry) => entry.id === "grok")?.listed).toBe(false);
+  });
+
+  test("offers only the Grok models the CLI actually serves, with effort on both entries", () => {
+    const parsed = parseScoutRuntimeCatalog(SCOUT_RUNTIME_CATALOG);
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+    // grok-4.3 was never a real model id: `session/set_model` answers it with
+    // -32602 "unknown model id", which fails the whole session start.
+    for (const id of ["grok", "grok-acp"]) {
+      const harness = parsed.catalog.harnesses.find((entry) => entry.id === id);
+      expect(harness?.models.map((model) => model.id)).toEqual(["grok-4.6", "grok-4.5"]);
+      expect(harness?.models.every((model) => model.contextWindowTokens === 500_000)).toBe(true);
+      expect(harness?.reasoningEfforts).toEqual(["low", "medium", "high", "xhigh"]);
+      expect(harness?.defaultReasoningEffort).toBe("high");
+    }
   });
 
   test("rejects malformed revisions without partially accepting them", () => {

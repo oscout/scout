@@ -1,10 +1,26 @@
 /* ── Ops screen: shared shell + sub-tab toggle ── */
 
 .s-ops {
+  position: relative;
   display: flex;
   flex-direction: column;
   height: 100%;
   min-height: 0;
+}
+
+/* The page status bar floats over the bottom edge rather than taking a row.
+   As a flex row it mounted a 22px strip on hover, which shrank .s-ops-body,
+   retiled the wall, and — with the pointer near the bottom row — bounced the
+   hovered pane out from under the cursor, hiding the strip again: a flicker
+   loop. Pointer events pass through so it can never steal the hover it is
+   describing. */
+.s-ops > .s-page-status {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 5;
+  pointer-events: none;
 }
 
 .s-ops-header {

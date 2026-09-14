@@ -46,6 +46,13 @@ export type LocalConfig = {
   host?: string;
   webLocalName?: string;
   ports?: LocalPortsConfig;
+  /**
+   * How much of the web surface the LAN-bound listener serves to non-loopback
+   * peers. "pairing" (the default) answers only GET /pair; "full" serves the
+   * app, with every /api route still requiring a credential. Operator-tunable
+   * here so enabling LAN/tailnet access does not mean editing a launchd plist.
+   */
+  webLanScope?: "full" | "pairing";
 };
 
 export const DEFAULT_LOCAL_CONFIG = {
@@ -152,6 +159,9 @@ function validateLocalConfig(input: unknown): LocalConfig {
   }
   if (typeof raw.webLocalName === "string" && raw.webLocalName.trim().length > 0) {
     out.webLocalName = raw.webLocalName.trim();
+  }
+  if (raw.webLanScope === "full" || raw.webLanScope === "pairing") {
+    out.webLanScope = raw.webLanScope;
   }
   if (raw.ports && typeof raw.ports === "object") {
     const ports = raw.ports as Record<string, unknown>;

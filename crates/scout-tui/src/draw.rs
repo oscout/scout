@@ -11,11 +11,15 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::app::{
     event_ts_ms, format_age, format_clock, letterspace, pad_right, truncate, truncate_path,
-    twin_visible_columns, Agent, App, Composition, FileState, Machine, ModuleKind, Row, Take,
+    twin_visible_columns, Agent, App, Composition, FileState, HarvestFile, HitKind, Machine,
+    ModuleKind, Row, Take,
 };
 use crate::classify::Class;
 use crate::machines::normalize_host;
-use crate::theme::{ASH, BONE, GROUND, HAIR, HEARTH, PHOSPHOR, SIGNAL, SMOKE};
+use crate::theme::{
+    AGE0, AGE1, AGE2, AGE3, AGE4, ASH, BONE, EMBER, EMBER_DIM, GROUND, HAIR, HEARTH, PHOSPHOR,
+    SIGNAL, SMOKE,
+};
 
 const SPARK_BARS: &[char] = &[' ', ' ', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
 const EIGHTHS: &[char] = &[' ', '▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
@@ -52,6 +56,14 @@ fn wrap_text(text: &str, width: usize, max_lines: usize) -> Vec<String> {
         }
     }
     lines
+}
+
+fn notice_prefix(ok: bool) -> Span<'static> {
+    if ok {
+        Span::styled("ASKED · ", Style::default().fg(EMBER))
+    } else {
+        Span::styled("NOT SENT · ", Style::default().fg(SIGNAL))
+    }
 }
 
 /// Pad `lines` with blanks so `tail` renders on the bottom rows of an `height`-row pane.
@@ -91,8 +103,54 @@ fn now_ms() -> u64 {
         .as_millis() as u64
 }
 
+fn register_hit(app: &mut App, area: Rect, kind: HitKind) {
+    app.push_hit(area.x, area.y, area.width, area.height, kind);
+}
+
+/// Field | rule | dossier. `left_pct` is the field's share of the whole area.
+fn split_dossier(area: Rect, left_pct: u16) -> (Rect, Rect, Rect) {
+    let inner = area.width.saturating_sub(1);
+    let min_side = 12u16.min(inner / 3);
+    let left_w = ((u32::from(inner) * u32::from(left_pct.clamp(28, 75))) / 100)
+        .clamp(u32::from(min_side), u32::from(inner.saturating_sub(min_side)))
+        as u16;
+    let right_w = inner.saturating_sub(left_w);
+    (
+        Rect {
+            x: area.x,
+            y: area.y,
+            width: left_w,
+            height: area.height,
+        },
+        Rect {
+            x: area.x.saturating_add(left_w),
+            y: area.y,
+            width: 1,
+            height: area.height,
+        },
+        Rect {
+            x: area.x.saturating_add(left_w).saturating_add(1),
+            y: area.y,
+            width: right_w,
+            height: area.height,
+        },
+    )
+}
+
+fn paint_split(frame: &mut Frame, app: &mut App, sep: Rect) {
+    let color = if app.split_drag { EMBER } else { HAIR };
+    let lines: Vec<Line> = (0..sep.height)
+        .map(|_| Line::from(Span::styled("│", Style::default().fg(color))))
+        .collect();
+    frame.render_widget(Paragraph::new(lines), sep);
+    let hit_x = sep.x.saturating_sub(1);
+    let hit_w = sep.width.saturating_add(if sep.x > 0 { 2 } else { 1 });
+    register_hit(app, Rect::new(hit_x, sep.y, hit_w, sep.height), HitKind::Split);
+}
+
 pub fn draw(frame: &mut Frame, app: &mut App) {
     let area = frame.area();
+    app.clear_hits();
     frame.render_widget(Block::default().style(Style::default().bg(GROUND)), area);
 
     if area.height < 6 || area.width < 30 {
@@ -122,6 +180,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     let mast_area = chunks[0];
     let body_area = chunks[2];
     let footer_area = chunks[3];
+    app.set_body(body_area.x, body_area.width);
 
     let agents = app.agents();
     if app.take == Take::Twin {
@@ -156,13 +215,16 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     draw_footer(frame, app, footer_area, selected.as_ref());
 }
 
-fn draw_mast(frame: &mut Frame, app: &App, area: Rect, agents: &[Agent], selected: Option<&Agent>) {
+fn draw_mast(frame: &mut Frame, app: &mut App, area: Rect, agents: &[Agent], selected: Option<&Agent>) {
     let width = area.width as usize;
     let live_count = agents.iter().filter(|a| a.live).count();
     let need_count = agents.iter().filter(|a| a.needs).count();
 
     let mut left_spans = Vec::new();
-    left_spans.push(Span::styled("S c o u t", Style::default().fg(SMOKE)));
+    left_spans.push(Span::styled(
+        letterspace("SCOUT"),
+        Style::default().fg(SMOKE),
+    ));
     left_spans.push(Span::styled("   ", Style::default()));
 
     if app.take == Take::Grid {
@@ -224,20 +286,31 @@ fn draw_mast(frame: &mut Frame, app: &App, area: Rect, agents: &[Agent], selecte
             .iter()
             .flat_map(|t| t.files.iter().map(|f| f.dels))
             .sum();
+        let fruit_trees = trees.iter().filter(|t| !t.files.is_empty()).count();
+        let rest_trees = trees.len().saturating_sub(fruit_trees);
         left_spans.push(Span::styled(
-            if total_adds == 0 && total_dels == 0 {
+            if trees.is_empty() {
+                "harvest · orchard empty".to_string()
+            } else if total_files == 0 {
                 format!(
-                    "harvest · {} file{} touched · no diff against HEAD",
+                    "harvest · orchard at rest · {} tree{}",
+                    trees.len(),
+                    if trees.len() == 1 { "" } else { "s" }
+                )
+            } else if total_adds == 0 && total_dels == 0 {
+                format!(
+                    "harvest · {} fruit · {} tree{} at rest",
                     total_files,
-                    if total_files == 1 { "" } else { "s" }
+                    rest_trees,
+                    if rest_trees == 1 { "" } else { "s" }
                 )
             } else {
                 format!(
-                    "harvest · {} file{} · +{} −{} in the working trees",
+                    "harvest · {} fruit · +{} −{} · {} at rest",
                     total_files,
-                    if total_files == 1 { "" } else { "s" },
                     total_adds,
-                    total_dels
+                    total_dels,
+                    rest_trees
                 )
             },
             Style::default().fg(BONE),
@@ -288,18 +361,30 @@ fn draw_mast(frame: &mut Frame, app: &App, area: Rect, agents: &[Agent], selecte
         (Take::Grid, "7 Grid"),
     ];
 
+    let mut take_chip_widths: Vec<(Take, u16)> = Vec::new();
     for (take, label) in takes {
         let is_active = app.take == take;
+        let spine = matches!(take, Take::Now | Take::Horizon | Take::Mesh | Take::Harvest);
+        let text = if is_active {
+            format!(" [{label}] ")
+        } else {
+            format!(" {label} ")
+        };
+        let chip_w = UnicodeWidthStr::width(text.as_str()) as u16;
+        take_chip_widths.push((take, chip_w));
         if is_active {
             right_spans.push(Span::styled(
-                format!(" [{label}] "),
+                text,
                 Style::default()
-                    .fg(BONE)
+                    .fg(EMBER)
                     .bg(HEARTH)
                     .add_modifier(Modifier::BOLD),
             ));
         } else {
-            right_spans.push(Span::styled(format!(" {label} "), Style::default().fg(ASH)));
+            right_spans.push(Span::styled(
+                text,
+                Style::default().fg(if spine { ASH } else { HAIR }),
+            ));
         }
     }
 
@@ -334,8 +419,26 @@ fn draw_mast(frame: &mut Frame, app: &App, area: Rect, agents: &[Agent], selecte
             line_spans.push(Span::styled(" ".repeat(gap), Style::default()));
         }
         line_spans.extend(right_spans);
+        let mut chip_x = area.x.saturating_add((total_so_far + gap) as u16);
+        for (take, chip_w) in take_chip_widths {
+            register_hit(
+                app,
+                Rect::new(chip_x, area.y, chip_w, 1),
+                HitKind::Take(take),
+            );
+            chip_x = chip_x.saturating_add(chip_w);
+        }
     } else {
         line_spans = right_spans;
+        let mut chip_x = area.x;
+        for (take, chip_w) in take_chip_widths {
+            register_hit(
+                app,
+                Rect::new(chip_x, area.y, chip_w, 1),
+                HitKind::Take(take),
+            );
+            chip_x = chip_x.saturating_add(chip_w);
+        }
     }
 
     frame.render_widget(Paragraph::new(Line::from(line_spans)), area);
@@ -344,7 +447,7 @@ fn draw_mast(frame: &mut Frame, app: &App, area: Rect, agents: &[Agent], selecte
 /// TAKE 1 · NOW (Hero, Fleet Floor Plan & Leaded Trace Stream)
 fn draw_take_now(
     frame: &mut Frame,
-    app: &App,
+    app: &mut App,
     area: Rect,
     agents: &[Agent],
     selected: Option<&Agent>,
@@ -406,7 +509,11 @@ fn draw_take_now(
         .constraints([hero_w, chips_w, side_w])
         .split(band1_area);
 
-    // 1. Hero Tile
+    // 1. Hero Tile — hearth fill is the only tile in the frame.
+    frame.render_widget(
+        Block::default().style(Style::default().bg(HEARTH)),
+        band1_cols[0],
+    );
     draw_hero_card(frame, agent, band1_cols[0]);
 
     // 2. Floor Plan Chips
@@ -416,7 +523,7 @@ fn draw_take_now(
 
     // 3. Also Moving Kicker
     if band1_cols[2].width > 0 {
-        draw_also_moving_side(frame, agents, agent.id.as_str(), band1_cols[2]);
+        draw_also_moving_side(frame, app, agents, agent.id.as_str(), band1_cols[2]);
     }
 
     // --- BAND 2: LEADED TRACE STREAM ---
@@ -429,7 +536,7 @@ fn draw_take_now(
 /// TAKE 2 · HORIZON (Time Axis Tracks Across Fleet)
 fn draw_take_horizon(
     frame: &mut Frame,
-    app: &App,
+    app: &mut App,
     area: Rect,
     agents: &[Agent],
     selected: Option<&Agent>,
@@ -438,24 +545,8 @@ fn draw_take_horizon(
         return;
     }
 
-    let chunks = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Percentage(58),
-            Constraint::Length(1), // Gutter / separator
-            Constraint::Percentage(41),
-        ])
-        .split(area);
-
-    let tracks_area = chunks[0];
-    let sep_area = chunks[1];
-    let inspect_area = chunks[2];
-
-    // Subtle vertical separator
-    let sep_lines: Vec<Line> = (0..area.height)
-        .map(|_| Line::from(Span::styled("│", Style::default().fg(HAIR))))
-        .collect();
-    frame.render_widget(Paragraph::new(sep_lines), sep_area);
+    let (tracks_area, sep_area, inspect_area) = split_dossier(area, app.detail_split);
+    paint_split(frame, app, sep_area);
 
     let width = tracks_area.width as usize;
 
@@ -544,6 +635,16 @@ fn draw_take_horizon(
 
     for (i, agent) in agents.iter().enumerate().skip(start_idx).take(max_visible) {
         let is_selected = app.cursor == i;
+        register_hit(
+            app,
+            Rect::new(
+                list_area.x,
+                list_area.y.saturating_add(lines.len() as u16),
+                list_area.width,
+                lane_h as u16,
+            ),
+            HitKind::Agent(i),
+        );
         let mark = if is_selected { "▸" } else { " " };
         let mut row_spans = Vec::new();
 
@@ -556,9 +657,9 @@ fn draw_take_horizon(
             row_spans.push(Span::styled(
                 format!("{:<15}", truncate(&agent.handle, 15)),
                 if is_selected {
-                    Style::default().fg(BONE).add_modifier(Modifier::BOLD)
+                    Style::default().fg(EMBER).add_modifier(Modifier::BOLD)
                 } else if agent.live {
-                    Style::default().fg(PHOSPHOR)
+                    Style::default().fg(EMBER)
                 } else {
                     Style::default().fg(SMOKE)
                 },
@@ -571,9 +672,9 @@ fn draw_take_horizon(
             row_spans.push(Span::styled(
                 format!("{:<14}", truncate(&agent.handle, 14)),
                 if is_selected {
-                    Style::default().fg(BONE).add_modifier(Modifier::BOLD)
+                    Style::default().fg(EMBER).add_modifier(Modifier::BOLD)
                 } else if agent.live {
-                    Style::default().fg(PHOSPHOR)
+                    Style::default().fg(EMBER)
                 } else {
                     Style::default().fg(SMOKE)
                 },
@@ -597,10 +698,10 @@ fn draw_take_horizon(
             } else if agent.live && idx >= track_w.saturating_sub(3) {
                 row_spans.push(Span::styled(
                     ch.to_string(),
-                    Style::default().fg(PHOSPHOR).add_modifier(Modifier::BOLD),
+                    Style::default().fg(EMBER).add_modifier(Modifier::BOLD),
                 ));
             } else if agent.live {
-                row_spans.push(Span::styled(ch.to_string(), Style::default().fg(PHOSPHOR)));
+                row_spans.push(Span::styled(ch.to_string(), Style::default().fg(EMBER_DIM)));
             } else {
                 row_spans.push(Span::styled(ch.to_string(), Style::default().fg(SMOKE)));
             }
@@ -674,9 +775,6 @@ fn draw_fleet_pulse(frame: &mut Frame, app: &App, agents: &[Agent], area: Rect) 
     }
     let peak = buckets.iter().copied().max().unwrap_or(0).max(1);
     let bar_rows = h.saturating_sub(3).max(1);
-    // Columns inside the last five minutes burn phosphor; older ones settle to smoke.
-    let recent_from = w.saturating_sub(w / 6);
-
     let mut lines = Vec::new();
     lines.push(Line::from(vec![
         Span::styled(
@@ -707,7 +805,18 @@ fn draw_fleet_pulse(frame: &mut Frame, app: &App, agents: &[Agent], area: Rect) 
                     spans.push(Span::styled(" ", Style::default()));
                 }
             } else {
-                let color = if col >= recent_from { PHOSPHOR } else { SMOKE };
+                let t = col as f32 / w.max(1) as f32;
+                let color = if t > 0.85 {
+                    AGE0
+                } else if t > 0.65 {
+                    AGE1
+                } else if t > 0.45 {
+                    AGE2
+                } else if t > 0.25 {
+                    AGE3
+                } else {
+                    AGE4
+                };
                 spans.push(Span::styled(
                     EIGHTHS[cell].to_string(),
                     Style::default().fg(color),
@@ -930,25 +1039,27 @@ fn draw_deck_column(
     let mut dock_spans = Vec::new();
     if is_focus {
         if app.composing {
-            dock_spans.push(Span::styled("› ", Style::default().fg(SIGNAL)));
+            dock_spans.push(Span::styled("› ", Style::default().fg(EMBER)));
             dock_spans.push(Span::styled(
                 format!("Draft for {}: ", agent.handle),
                 Style::default().fg(BONE).add_modifier(Modifier::BOLD),
             ));
             dock_spans.push(Span::styled(app.draft.clone(), Style::default().fg(BONE)));
-            dock_spans.push(Span::styled("█", Style::default().fg(PHOSPHOR)));
+            dock_spans.push(Span::styled("█", Style::default().fg(EMBER)));
         } else if let Some(notice) = &app.composer_notice {
-            dock_spans.push(Span::styled("NOT SENT · ", Style::default().fg(SIGNAL)));
+            dock_spans.push(notice_prefix(app.composer_ok));
             dock_spans.push(Span::styled(notice.clone(), Style::default().fg(ASH)));
-            dock_spans.push(Span::styled(
-                " · [i] edit retained draft",
-                Style::default().fg(BONE),
-            ));
+            if !app.composer_ok {
+                dock_spans.push(Span::styled(
+                    " · [i] edit retained draft",
+                    Style::default().fg(BONE),
+                ));
+            }
         } else {
-            dock_spans.push(Span::styled("› ", Style::default().fg(SIGNAL)));
+            dock_spans.push(Span::styled("› ", Style::default().fg(EMBER)));
             dock_spans.push(Span::styled(
                 format!(
-                    "Press [i] to draft for {}   ·   ask not wired ",
+                    "Press [i] to draft for {}   ·   Enter sends ",
                     agent.handle
                 ),
                 Style::default().fg(BONE),
@@ -971,7 +1082,7 @@ fn draw_deck_column(
 /// TAKE 4 · MESH (Connected machines: this host, tailnet peers, scout mesh nodes)
 fn draw_take_mesh(
     frame: &mut Frame,
-    app: &App,
+    app: &mut App,
     area: Rect,
     agents: &[Agent],
     _selected: Option<&Agent>,
@@ -991,22 +1102,10 @@ fn draw_take_mesh(
 
     // Wide terminals get list beside detail; narrow ones stack the two.
     if area.width >= 92 {
-        let cols = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([
-                Constraint::Percentage(57),
-                Constraint::Length(1),
-                Constraint::Percentage(42),
-            ])
-            .split(area);
-
-        let vsep: Vec<Line> = (0..area.height)
-            .map(|_| Line::from(Span::styled("│", Style::default().fg(HAIR))))
-            .collect();
-        frame.render_widget(Paragraph::new(vsep), cols[1]);
-
-        draw_machine_list(frame, app, agents, cols[0]);
-        draw_machine_detail(frame, app, agents, cols[2]);
+        let (list_area, sep_area, detail_area) = split_dossier(area, app.detail_split);
+        paint_split(frame, app, sep_area);
+        draw_machine_list(frame, app, agents, list_area);
+        draw_machine_detail(frame, app, agents, detail_area);
     } else {
         let rows = Layout::default()
             .direction(Direction::Vertical)
@@ -1046,7 +1145,7 @@ fn fmt_bytes(n: u64) -> String {
     }
 }
 
-fn draw_machine_list(frame: &mut Frame, app: &App, agents: &[Agent], area: Rect) {
+fn draw_machine_list(frame: &mut Frame, app: &mut App, agents: &[Agent], area: Rect) {
     let w = area.width as usize;
     let online = app.machines.iter().filter(|m| m.online).count();
     let scouts = app.machines.iter().filter(|m| m.scout.is_some()).count();
@@ -1100,8 +1199,10 @@ fn draw_machine_list(frame: &mut Frame, app: &App, agents: &[Agent], area: Rect)
     let show_os = w >= 66;
     let show_link = w >= 78;
 
+    let mut mesh_hits: Vec<(u16, usize)> = Vec::new();
     for (i, m) in app.machines.iter().enumerate().skip(start).take(visible) {
         let is_sel = i == app.mesh_cursor;
+        mesh_hits.push((area.y.saturating_add(lines.len() as u16), i));
         let mut spans = Vec::new();
         spans.push(Span::styled(
             if is_sel { "▸ " } else { "  " }.to_string(),
@@ -1232,6 +1333,10 @@ fn draw_machine_list(frame: &mut Frame, app: &App, agents: &[Agent], area: Rect)
             truncate(err, w.saturating_sub(2)),
             Style::default().fg(SIGNAL),
         )));
+    }
+
+    for (y, i) in mesh_hits {
+        register_hit(app, Rect::new(area.x, y, area.width, lane as u16), HitKind::Mesh(i));
     }
 
     frame.render_widget(Paragraph::new(lines), area);
@@ -1390,7 +1495,7 @@ fn draw_machine_detail(frame: &mut Frame, app: &App, agents: &[Agent], area: Rec
         "[p] ping · [a] announce this machine · [x] withdraw · [r] refresh".to_string()
     };
     let tail = vec![Line::from(vec![
-        Span::styled("  › ", Style::default().fg(SIGNAL)),
+        Span::styled("  › ", Style::default().fg(EMBER)),
         Span::styled(
             truncate(&dock, w.saturating_sub(6)),
             Style::default().fg(ASH),
@@ -1451,21 +1556,16 @@ fn quota_gap(app: &App) -> Option<(&'static str, String)> {
 }
 
 /// TAKE 6 · QUOTA (Provider Fuel Gauges & Budget Windows)
-fn draw_take_quota(frame: &mut Frame, app: &App, area: Rect, _agents: &[Agent]) {
-    let plans = app.plans();
+fn draw_take_quota(frame: &mut Frame, app: &mut App, area: Rect, _agents: &[Agent]) {
     if let Some((headline, detail)) = quota_gap(app) {
         draw_gap_state(frame, area, headline, &detail);
         return;
     }
 
-    let chunks = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(55), Constraint::Percentage(45)])
-        .split(area);
+    let (left_area, sep_area, right_area) = split_dossier(area, app.detail_split);
+    paint_split(frame, app, sep_area);
 
-    let left_area = chunks[0];
-    let right_area = chunks[1];
-
+    let plans = app.plans();
     let selected_plan = app.selected_plan();
 
     let mut left_lines = Vec::new();
@@ -1718,13 +1818,13 @@ fn draw_take_quota(frame: &mut Frame, app: &App, area: Rect, _agents: &[Agent]) 
 
         let tail = vec![
             Line::from(Span::styled(
-                "POLICY CONTROL",
-                Style::default().fg(SIGNAL).add_modifier(Modifier::BOLD),
+                "POLICY",
+                Style::default().fg(ASH).add_modifier(Modifier::BOLD),
             )),
             Line::from(vec![
-                Span::styled("  › ", Style::default().fg(SIGNAL)),
+                Span::styled("  ", Style::default()),
                 Span::styled(
-                    format!("Budget policy controls for {} are not wired here", p.id),
+                    format!("Read-only here. Change {} budget in Scout web.", p.id),
                     Style::default().fg(ASH),
                 ),
             ]),
@@ -1735,171 +1835,195 @@ fn draw_take_quota(frame: &mut Frame, app: &App, area: Rect, _agents: &[Agent]) 
     }
 }
 
-/// TAKE 7 · HARVEST (Living Orchard Churn Wall & File Yields)
-fn draw_take_harvest(frame: &mut Frame, app: &App, area: Rect) {
+fn orchard_slot(abs: &str, width: usize) -> usize {
+    if width == 0 {
+        return 0;
+    }
+    let mut hash: u64 = 0xcbf29ce484222325;
+    for byte in abs.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    (hash as usize) % width
+}
+
+/// One row of ground (`·`) with writes planted as fruit. Selected fruit is `◆`.
+fn plant_yield(
+    files: &[HarvestFile],
+    width: usize,
+    selected_abs: Option<&str>,
+) -> Vec<(char, Style)> {
+    let mut cells: Vec<(char, Style)> = vec![('·', Style::default().fg(HAIR)); width];
+    if width == 0 {
+        return cells;
+    }
+    let mut taken = vec![false; width];
+    for file in files {
+        let mut pos = orchard_slot(&file.abs, width);
+        for _ in 0..width {
+            if !taken[pos] {
+                break;
+            }
+            pos = (pos + 1) % width;
+        }
+        taken[pos] = true;
+        let selected = selected_abs == Some(file.abs.as_str());
+        let (ch, color) = if selected {
+            ('◆', EMBER)
+        } else if file.fresh {
+            ('■', EMBER)
+        } else {
+            ('▪', EMBER_DIM)
+        };
+        cells[pos] = (ch, Style::default().fg(color));
+    }
+    cells
+}
+
+/// TAKE 7 · HARVEST (grove of trees; fruit is writes)
+fn draw_take_harvest(frame: &mut Frame, app: &mut App, area: Rect) {
     let trees = app.harvest_trees();
     if trees.is_empty() {
         draw_gap_state(
             frame,
             area,
-            "No file churn in the window.",
-            "Harvest shows files the fleet actually touched. No session has reported an edit yet.",
+            "No working trees on the floor.",
+            "Harvest plots the fleet as an orchard. Sessions appear as rows; writes appear as fruit.",
         );
         return;
     }
 
-    let chunks = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(55), Constraint::Percentage(45)])
-        .split(area);
-
-    let left_area = chunks[0];
-    let right_area = chunks[1];
+    // Same column grammar as Horizon / Mesh: field left, dossier right.
+    let (left_area, sep_area, right_area) = split_dossier(area, app.detail_split);
+    paint_split(frame, app, sep_area);
 
     let selected_item = app.selected_harvest_item();
-
-    let max_visible_lines = (left_area.height as usize).saturating_sub(2);
-    let mut all_rows: Vec<(usize, Line)> = Vec::new();
-
-    // Path column and churn bars stretch with the pane instead of pinning at 34 chars.
     let lw = left_area.width as usize;
-    // Row budget: indent + path + diff column + bars + meta, with a gutter so
-    // nothing ever runs into the pane edge.
-    const META_W: usize = 20;
-    const DIFF_W: usize = 13;
-    const BAR_W: usize = 8;
-    let path_w = lw
-        .saturating_sub(5 + DIFF_W + META_W + BAR_W + 2)
-        .clamp(14, 60);
-    let bar_cap = lw
-        .saturating_sub(path_w + 5 + DIFF_W + META_W + 2)
-        .clamp(0, 24);
-    let max_churn = trees
-        .iter()
-        .flat_map(|t| t.files.iter().map(|f| f.adds.max(f.dels)))
-        .max()
-        .unwrap_or(1)
-        .max(1);
-    // Blank row between working trees when everything fits with room to spare.
-    let total_rows: usize = trees.iter().map(|t| 1 + t.files.len()).sum();
-    let airy = max_visible_lines >= total_rows + trees.len() + 2;
+    let lh = left_area.height as usize;
+    let show_project = lw >= 56;
+    let meta_w = if show_project { 30 } else { 16 };
+    let field_w = lw.saturating_sub(meta_w).max(8);
 
-    let mut flat_idx = 0;
-    for t in &trees {
-        let is_tree_sel = flat_idx == app.harvest_cursor;
-        let tree_mark = if is_tree_sel { "▸" } else { " " };
-        let tree_style = if is_tree_sel {
-            Style::default().fg(BONE).add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(SMOKE)
-        };
-
-        let mut tree_line = Line::from(vec![
-            Span::styled(
-                format!("{tree_mark} "),
-                Style::default().fg(if is_tree_sel { PHOSPHOR } else { ASH }),
-            ),
-            Span::styled(format!("{} ", t.handle), tree_style),
-            Span::styled(format!("({})", t.project), Style::default().fg(ASH)),
-            Span::styled(
-                format!(" · {} events · {}", t.turns, t.source),
-                Style::default().fg(ASH),
-            ),
-        ]);
-        if is_tree_sel {
-            tree_line = tree_line.style(Style::default().bg(HEARTH));
-        }
-        all_rows.push((flat_idx, tree_line));
-        flat_idx += 1;
-
-        for f in &t.files {
-            let is_file_sel = flat_idx == app.harvest_cursor;
-            let f_mark = if is_file_sel { "▸" } else { " " };
-
-            let meta = format!(
-                " · {} touch{} · {}",
-                f.touches,
-                if f.touches == 1 { "" } else { "es" },
-                f.age
-            );
-
-            let mut file_spans = Vec::new();
-            file_spans.push(Span::styled(
-                format!("   {f_mark} "),
-                Style::default().fg(if is_file_sel { PHOSPHOR } else { ASH }),
-            ));
-            file_spans.push(Span::styled(
-                pad_right(&truncate_path(&f.path, path_w), path_w + 1),
-                if is_file_sel {
-                    Style::default().fg(BONE).add_modifier(Modifier::BOLD)
-                } else {
-                    Style::default().fg(SMOKE)
-                },
-            ));
-            if f.state == FileState::Changed {
-                file_spans.push(Span::styled(
-                    format!("+{:<6}", f.adds),
-                    Style::default().fg(PHOSPHOR),
-                ));
-                file_spans.push(Span::styled(
-                    format!("−{:<7}", f.dels),
-                    Style::default().fg(ASH),
-                ));
-                // Bars take the slack the meta column leaves, scaled to the
-                // biggest real diff on screen so rows stay comparable.
-                let used: usize = file_spans.iter().map(|s| s.content.chars().count()).sum();
-                let room = lw.saturating_sub(used + META_W + 1).min(bar_cap);
-                if room >= 2 {
-                    let adds_cells = scale_bar(f.adds, max_churn, room * 2 / 3);
-                    let dels_cells = scale_bar(f.dels, max_churn, room - adds_cells);
-                    file_spans.push(Span::styled(
-                        pad_right(
-                            &format!("{}{}", "■".repeat(adds_cells), "─".repeat(dels_cells)),
-                            room,
-                        ),
-                        Style::default().fg(PHOSPHOR),
-                    ));
-                }
-            } else {
-                file_spans.push(Span::styled(
-                    pad_right(file_state_label(f.state), DIFF_W),
-                    Style::default().fg(ASH),
-                ));
-            }
-            file_spans.push(Span::styled(
-                pad_right(&truncate(&meta, META_W), META_W),
-                Style::default().fg(ASH),
-            ));
-
-            let mut file_line = Line::from(file_spans);
-            if is_file_sel {
-                file_line = file_line.style(Style::default().bg(HEARTH));
-            }
-            all_rows.push((flat_idx, file_line));
-            flat_idx += 1;
-        }
-
-        if airy {
-            all_rows.push((usize::MAX, Line::from("")));
-        }
+    let mut lines = Vec::new();
+    let mut axis = Vec::new();
+    if show_project {
+        axis.push(Span::styled(
+            "AGENT            PROJECT      ",
+            Style::default().fg(ASH),
+        ));
+    } else {
+        axis.push(Span::styled("AGENT           ", Style::default().fg(ASH)));
     }
+    axis.push(Span::styled("yield", Style::default().fg(ASH)));
+    axis.push(Span::styled(
+        format!("{:>pad$}", "fruit", pad = field_w.saturating_sub(5)),
+        Style::default().fg(HAIR),
+    ));
+    lines.push(Line::from(axis));
+    lines.push(Line::from(""));
 
-    let sel_pos = all_rows
-        .iter()
-        .position(|(idx, _)| *idx == app.harvest_cursor)
-        .unwrap_or(0);
-    let start_pos = if sel_pos >= max_visible_lines {
-        sel_pos.saturating_sub(max_visible_lines - 1)
+    let avail = lh.saturating_sub(2);
+    let lane_h = if !trees.is_empty() && avail >= trees.len() * 2 {
+        2
+    } else {
+        1
+    };
+    let max_visible = (avail / lane_h).max(1);
+
+    let selected_tree = app.harvest_cursor.min(trees.len().saturating_sub(1));
+    let start_idx = if selected_tree >= max_visible {
+        selected_tree.saturating_sub(max_visible - 1)
     } else {
         0
     };
 
-    let mut left_lines = Vec::new();
-    for (_, line) in all_rows.into_iter().skip(start_pos).take(max_visible_lines) {
-        left_lines.push(line);
+    for (tree_idx, t) in trees.iter().enumerate().skip(start_idx).take(max_visible) {
+        register_hit(
+            app,
+            Rect::new(
+                left_area.x,
+                left_area.y.saturating_add(lines.len() as u16),
+                left_area.width,
+                lane_h as u16,
+            ),
+            HitKind::Harvest(tree_idx),
+        );
+        let row_selected = tree_idx == selected_tree;
+        let selected_abs = if row_selected {
+            t.files.first().map(|f| f.abs.as_str())
+        } else {
+            None
+        };
+        let mark = if row_selected { "▸" } else { " " };
+        let mut row = Vec::new();
+        row.push(Span::styled(
+            format!("{mark} "),
+            Style::default().fg(if row_selected { EMBER } else { ASH }),
+        ));
+        if show_project {
+            row.push(Span::styled(
+                format!("{:<15}", truncate(&t.handle, 15)),
+                if row_selected {
+                    Style::default().fg(EMBER).add_modifier(Modifier::BOLD)
+                } else if !t.files.is_empty() {
+                    Style::default().fg(SMOKE)
+                } else {
+                    Style::default().fg(ASH)
+                },
+            ));
+            row.push(Span::styled(
+                format!("{:>12} ", truncate(&format!("({})", t.project), 12)),
+                Style::default().fg(ASH),
+            ));
+        } else {
+            row.push(Span::styled(
+                format!("{:<14}", truncate(&t.handle, 14)),
+                if row_selected {
+                    Style::default().fg(EMBER).add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(SMOKE)
+                },
+            ));
+        }
+        for (ch, style) in plant_yield(&t.files, field_w, selected_abs) {
+            row.push(Span::styled(ch.to_string(), style));
+        }
+        let mut row_line = Line::from(row);
+        if row_selected {
+            row_line = row_line.style(Style::default().bg(HEARTH));
+        }
+        lines.push(row_line);
+
+        if lane_h >= 2 {
+            let sub = if let Some(abs) = selected_abs {
+                t.files
+                    .iter()
+                    .find(|f| f.abs == abs)
+                    .map(|f| truncate_path(&f.path, lw.saturating_sub(meta_w + 2)))
+                    .unwrap_or_default()
+            } else if t.files.is_empty() {
+                "at rest".to_string()
+            } else {
+                format!(
+                    "{} fruit",
+                    t.files.len()
+                )
+            };
+            let mut sub_line = Line::from(vec![
+                Span::styled(" ".repeat(meta_w), Style::default()),
+                Span::styled(
+                    sub,
+                    Style::default().fg(if row_selected { SMOKE } else { ASH }),
+                ),
+            ]);
+            if row_selected {
+                sub_line = sub_line.style(Style::default().bg(HEARTH));
+            }
+            lines.push(sub_line);
+        }
     }
 
-    frame.render_widget(Paragraph::new(left_lines), left_area);
+    frame.render_widget(Paragraph::new(lines), left_area);
 
     // Right: Harvest Inspection / File Diff Card
     if let Some((t, maybe_file)) = selected_item {
@@ -1967,17 +2091,14 @@ fn draw_take_harvest(frame: &mut Frame, app: &App, area: Rect) {
 
             let tail = vec![
                 Line::from(Span::styled(
-                    "RESPONSE CONTROL",
-                    Style::default().fg(SIGNAL).add_modifier(Modifier::BOLD),
+                    "NEXT",
+                    Style::default().fg(ASH).add_modifier(Modifier::BOLD),
                 )),
                 Line::from(vec![
-                    Span::styled("  › ", Style::default().fg(SIGNAL)),
+                    Span::styled("  ", Style::default()),
                     Span::styled(
-                        format!(
-                            "Sending is unavailable · inspect {} on {}",
-                            t.handle, f.path
-                        ),
-                        Style::default().fg(ASH),
+                        format!("i drafts to {} · Enter sends", t.handle),
+                        Style::default().fg(SMOKE),
                     ),
                 ]),
             ];
@@ -2072,7 +2193,7 @@ fn draw_take_harvest(frame: &mut Frame, app: &App, area: Rect) {
             }
 
             let tail = vec![Line::from(vec![
-                Span::styled("  › ", Style::default().fg(SIGNAL)),
+                Span::styled("  › ", Style::default().fg(EMBER)),
                 Span::styled(
                     format!("Sending is unavailable · [j/k] walk {}'s yield", t.handle),
                     Style::default().fg(ASH),
@@ -2675,12 +2796,12 @@ fn draw_hero_card(frame: &mut Frame, agent: &Agent, area: Rect) {
             } else if agent.live && idx >= track_w.saturating_sub(3) {
                 track_spans.push(Span::styled(
                     ch.to_string(),
-                    Style::default().fg(PHOSPHOR).add_modifier(Modifier::BOLD),
+                    Style::default().fg(EMBER).add_modifier(Modifier::BOLD),
                 ));
             } else {
                 track_spans.push(Span::styled(
                     ch.to_string(),
-                    Style::default().fg(if agent.live { PHOSPHOR } else { SMOKE }),
+                    Style::default().fg(if agent.live { EMBER_DIM } else { SMOKE }),
                 ));
             }
         }
@@ -2690,7 +2811,7 @@ fn draw_hero_card(frame: &mut Frame, agent: &Agent, area: Rect) {
     frame.render_widget(Paragraph::new(lines), area);
 }
 
-fn draw_floor_plan_chips(frame: &mut Frame, app: &App, agents: &[Agent], area: Rect) {
+fn draw_floor_plan_chips(frame: &mut Frame, app: &mut App, agents: &[Agent], area: Rect) {
     let w = area.width as usize;
     let h = area.height as usize;
     let mut lines = Vec::new();
@@ -2717,16 +2838,28 @@ fn draw_floor_plan_chips(frame: &mut Frame, app: &App, agents: &[Agent], area: R
     let shown = agents.len().min(capacity);
     for (i, a) in agents.iter().take(shown).enumerate() {
         let is_sel = app.cursor == i;
+        let row = 1 + i / per_row;
+        let col = (i % per_row) * cell_w;
+        register_hit(
+            app,
+            Rect::new(
+                area.x.saturating_add(col as u16),
+                area.y.saturating_add(row as u16),
+                cell_w as u16,
+                1,
+            ),
+            HitKind::Agent(i),
+        );
         let mark = if is_sel { "▸" } else { " " };
         let style = if is_sel {
             Style::default()
-                .fg(BONE)
+                .fg(EMBER)
                 .bg(HEARTH)
                 .add_modifier(Modifier::BOLD)
         } else if a.needs {
             Style::default().fg(SIGNAL)
         } else if a.live {
-            Style::default().fg(PHOSPHOR)
+            Style::default().fg(EMBER)
         } else {
             Style::default().fg(SMOKE)
         };
@@ -2755,7 +2888,13 @@ fn draw_floor_plan_chips(frame: &mut Frame, app: &App, agents: &[Agent], area: R
     frame.render_widget(Paragraph::new(lines), area);
 }
 
-fn draw_also_moving_side(frame: &mut Frame, agents: &[Agent], cur_id: &str, area: Rect) {
+fn draw_also_moving_side(
+    frame: &mut Frame,
+    app: &mut App,
+    agents: &[Agent],
+    cur_id: &str,
+    area: Rect,
+) {
     let w = area.width as usize;
     let h = area.height as usize;
     let mut lines = Vec::new();
@@ -2782,11 +2921,23 @@ fn draw_also_moving_side(frame: &mut Frame, agents: &[Agent], cur_id: &str, area
 
     let max_rows = h.saturating_sub(1).max(1);
     for a in recent.into_iter().take(max_rows) {
+        if let Some(index) = agents.iter().position(|agent| agent.id == a.id) {
+            register_hit(
+                app,
+                Rect::new(
+                    area.x,
+                    area.y.saturating_add(lines.len() as u16),
+                    area.width,
+                    1,
+                ),
+                HitKind::Agent(index),
+            );
+        }
         let head_len = a.handle.chars().count() + a.age.chars().count() + 4;
         lines.push(Line::from(vec![
             Span::styled(
                 format!("{} ", a.handle),
-                Style::default().fg(if a.live { PHOSPHOR } else { BONE }),
+                Style::default().fg(if a.live { EMBER_DIM } else { BONE }),
             ),
             Span::styled(format!("({}) ", a.age), Style::default().fg(ASH)),
             Span::styled(
@@ -2799,49 +2950,82 @@ fn draw_also_moving_side(frame: &mut Frame, agents: &[Agent], cur_id: &str, area
     frame.render_widget(Paragraph::new(lines), area);
 }
 
+fn is_stream_ash_noise(row: &Row) -> bool {
+    match row.cls {
+        Class::Sys | Class::Machine | Class::Json => {
+            let text = row.text.to_ascii_lowercase();
+            text.contains("phase")
+                || text.contains("first token")
+                || text.contains("waiting_for_model")
+                || text.contains("loop ")
+                || text.contains("permission requested")
+                || text.contains("permission allow")
+                || text.contains("permission_prompt")
+        }
+        _ => false,
+    }
+}
+
 fn draw_trace_stream(frame: &mut Frame, app: &App, session_id: &str, area: Rect) {
     let mut lines = Vec::new();
     let max_lines = area.height as usize;
+    let width = area.width as usize;
 
     let matching: Vec<&Row> = app
         .events
         .iter()
-        .filter(|r| r.event.session_id == session_id)
-        .take(max_lines)
+        .filter(|r| r.event.session_id == session_id && !is_stream_ash_noise(r))
+        .take(max_lines.saturating_mul(3).max(max_lines))
         .collect();
 
-    for r in matching.iter().rev() {
+    for r in matching.iter().rev().take(max_lines) {
         let time = format_clock(r.event.ts);
         let mut spans = Vec::new();
         spans.push(Span::styled(format!("{time}  "), Style::default().fg(ASH)));
 
         match r.cls {
             Class::Human => {
+                spans.push(Span::styled("› ", Style::default().fg(EMBER)));
                 spans.push(Span::styled(
-                    "human   ",
+                    truncate(&r.text, width.saturating_sub(12)),
                     Style::default().fg(BONE).add_modifier(Modifier::BOLD),
                 ));
-                spans.push(Span::styled(r.text.clone(), Style::default().fg(BONE)));
             }
             Class::Convo => {
-                spans.push(Span::styled("convo   ", Style::default().fg(SMOKE)));
-                spans.push(Span::styled(r.text.clone(), Style::default().fg(SMOKE)));
+                spans.push(Span::styled("· ", Style::default().fg(SMOKE)));
+                spans.push(Span::styled(
+                    truncate(&r.text, width.saturating_sub(12)),
+                    Style::default().fg(BONE),
+                ));
             }
             Class::Plan => {
-                spans.push(Span::styled("plan    ", Style::default().fg(PHOSPHOR)));
-                spans.push(Span::styled(r.text.clone(), Style::default().fg(PHOSPHOR)));
+                spans.push(Span::styled("· ", Style::default().fg(ASH)));
+                spans.push(Span::styled(
+                    truncate(&r.text, width.saturating_sub(12)),
+                    Style::default().fg(SMOKE),
+                ));
             }
             Class::Tool => {
+                spans.push(Span::styled("  ▸ ", Style::default().fg(ASH)));
                 let tool_name = r.tool.as_deref().unwrap_or("tool");
                 spans.push(Span::styled(
-                    format!("{:<8}", tool_name),
+                    truncate(&format!("{tool_name} {text}", text = r.text), width.saturating_sub(14)),
                     Style::default().fg(ASH),
                 ));
-                spans.push(Span::styled(r.text.clone(), Style::default().fg(SMOKE)));
+            }
+            Class::ToolResult => {
+                spans.push(Span::styled("  ↳ ", Style::default().fg(HAIR)));
+                spans.push(Span::styled(
+                    truncate(&r.text, width.saturating_sub(14)),
+                    Style::default().fg(ASH),
+                ));
             }
             _ => {
-                spans.push(Span::styled("sys     ", Style::default().fg(HAIR)));
-                spans.push(Span::styled(r.text.clone(), Style::default().fg(HAIR)));
+                spans.push(Span::styled("  ◦ ", Style::default().fg(HAIR)));
+                spans.push(Span::styled(
+                    truncate(&r.text, width.saturating_sub(14)),
+                    Style::default().fg(HAIR),
+                ));
             }
         }
 
@@ -2861,24 +3045,26 @@ fn draw_trace_stream(frame: &mut Frame, app: &App, session_id: &str, area: Rect)
 fn draw_dock(frame: &mut Frame, app: &App, handle: &str, area: Rect) {
     let mut spans = Vec::new();
     if app.composing {
-        spans.push(Span::styled("› ", Style::default().fg(SIGNAL)));
+        spans.push(Span::styled("› ", Style::default().fg(EMBER)));
         spans.push(Span::styled(
             format!("Draft for {handle}: "),
             Style::default().fg(BONE).add_modifier(Modifier::BOLD),
         ));
         spans.push(Span::styled(app.draft.clone(), Style::default().fg(BONE)));
-        spans.push(Span::styled("█", Style::default().fg(PHOSPHOR)));
+        spans.push(Span::styled("█", Style::default().fg(EMBER)));
     } else if let Some(notice) = &app.composer_notice {
-        spans.push(Span::styled("NOT SENT · ", Style::default().fg(SIGNAL)));
+        spans.push(notice_prefix(app.composer_ok));
         spans.push(Span::styled(notice.clone(), Style::default().fg(ASH)));
-        spans.push(Span::styled(
-            " · [i] edit retained draft",
-            Style::default().fg(BONE),
-        ));
+        if !app.composer_ok {
+            spans.push(Span::styled(
+                " · [i] edit retained draft",
+                Style::default().fg(BONE),
+            ));
+        }
     } else {
-        spans.push(Span::styled("› ", Style::default().fg(SIGNAL)));
+        spans.push(Span::styled("› ", Style::default().fg(EMBER)));
         spans.push(Span::styled(
-            format!("Press [i] to draft for {handle}   ·   ask not wired"),
+            format!("Press [i] to draft for {handle}   ·   Enter sends"),
             Style::default().fg(BONE),
         ));
     }
@@ -2979,8 +3165,19 @@ fn draw_agent_detail_card(frame: &mut Frame, app: &App, agent: &Agent, area: Rec
 
 fn draw_footer(frame: &mut Frame, app: &App, area: Rect, selected: Option<&Agent>) {
     let mut spans = Vec::new();
-    if let Some(notice) = &app.composer_notice {
-        spans.push(Span::styled("NOT SENT · ", Style::default().fg(SIGNAL)));
+    if app.composing {
+        spans.push(Span::styled("Esc", Style::default().fg(BONE)));
+        spans.push(Span::styled(" cancel  ", Style::default().fg(ASH)));
+        spans.push(Span::styled("Enter", Style::default().fg(BONE)));
+        spans.push(Span::styled(" send ask  ", Style::default().fg(ASH)));
+        if let Some(agent) = selected {
+            spans.push(Span::styled(
+                format!("to {}", agent.handle),
+                Style::default().fg(EMBER),
+            ));
+        }
+    } else if let Some(notice) = &app.composer_notice {
+        spans.push(notice_prefix(app.composer_ok));
         spans.push(Span::styled(notice.clone(), Style::default().fg(ASH)));
     } else if app.take == Take::Grid {
         let mods = app.composition.modules();
@@ -3035,7 +3232,7 @@ fn draw_footer(frame: &mut Frame, app: &App, area: Rect, selected: Option<&Agent
         spans.push(Span::styled("i", Style::default().fg(BONE)));
         spans.push(Span::styled(" draft", Style::default().fg(ASH)));
         spans.push(Span::styled(" · ", Style::default().fg(HAIR)));
-        spans.push(Span::styled("ask not wired", Style::default().fg(SMOKE)));
+        spans.push(Span::styled("Enter sends", Style::default().fg(SMOKE)));
         spans.push(Span::styled(
             if area.width < 96 { "  " } else { "    " },
             Style::default().fg(ASH),
@@ -3060,31 +3257,41 @@ fn draw_footer(frame: &mut Frame, app: &App, area: Rect, selected: Option<&Agent
             spans.push(Span::styled(" withdraw  ", Style::default().fg(ASH)));
             spans.push(Span::styled("r", Style::default().fg(BONE)));
             spans.push(Span::styled(" refresh  ", Style::default().fg(ASH)));
+            spans.push(Span::styled("[ ]", Style::default().fg(BONE)));
+            spans.push(Span::styled(" split  ", Style::default().fg(ASH)));
             spans.push(Span::styled("? ", Style::default().fg(BONE)));
             spans.push(Span::styled("help", Style::default().fg(ASH)));
         }
     } else if app.take == Take::Quota {
         spans.push(Span::styled("j/k", Style::default().fg(BONE)));
         spans.push(Span::styled(" select plan  ", Style::default().fg(ASH)));
+        spans.push(Span::styled("[ ]", Style::default().fg(BONE)));
+        spans.push(Span::styled(" split  ", Style::default().fg(ASH)));
         spans.push(Span::styled("1-7", Style::default().fg(BONE)));
         spans.push(Span::styled(" takes  ", Style::default().fg(ASH)));
-        spans.push(Span::styled("send unavailable  ", Style::default().fg(ASH)));
         spans.push(Span::styled("? ", Style::default().fg(BONE)));
         spans.push(Span::styled("help", Style::default().fg(ASH)));
     } else if app.take == Take::Harvest {
         spans.push(Span::styled("j/k", Style::default().fg(BONE)));
-        spans.push(Span::styled(
-            " navigate yield/file  ",
-            Style::default().fg(ASH),
-        ));
-        spans.push(Span::styled("1-7", Style::default().fg(BONE)));
-        spans.push(Span::styled(" takes  ", Style::default().fg(ASH)));
-        spans.push(Span::styled("send unavailable  ", Style::default().fg(ASH)));
+        spans.push(Span::styled(" trees  ", Style::default().fg(ASH)));
+        spans.push(Span::styled("click", Style::default().fg(BONE)));
+        spans.push(Span::styled(" row  ", Style::default().fg(ASH)));
+        spans.push(Span::styled("[ ]", Style::default().fg(BONE)));
+        spans.push(Span::styled(" split  ", Style::default().fg(ASH)));
+        spans.push(Span::styled("i", Style::default().fg(BONE)));
+        spans.push(Span::styled(" draft", Style::default().fg(ASH)));
+        spans.push(Span::styled(" · ", Style::default().fg(HAIR)));
+        spans.push(Span::styled("Enter sends", Style::default().fg(SMOKE)));
+        spans.push(Span::styled("  ", Style::default().fg(ASH)));
         spans.push(Span::styled("? ", Style::default().fg(BONE)));
         spans.push(Span::styled("help", Style::default().fg(ASH)));
     } else {
         spans.push(Span::styled("j/k", Style::default().fg(BONE)));
         spans.push(Span::styled(" select  ", Style::default().fg(ASH)));
+        if app.take.splits_detail() {
+            spans.push(Span::styled("[ ]", Style::default().fg(BONE)));
+            spans.push(Span::styled(" split  ", Style::default().fg(ASH)));
+        }
         if area.width >= 110 {
             spans.push(Span::styled("1-7", Style::default().fg(BONE)));
             spans.push(Span::styled(" takes  ", Style::default().fg(ASH)));
@@ -3101,7 +3308,7 @@ fn draw_footer(frame: &mut Frame, app: &App, area: Rect, selected: Option<&Agent
         spans.push(Span::styled("i", Style::default().fg(BONE)));
         spans.push(Span::styled(" draft", Style::default().fg(ASH)));
         spans.push(Span::styled(" · ", Style::default().fg(HAIR)));
-        spans.push(Span::styled("ask not wired", Style::default().fg(SMOKE)));
+        spans.push(Span::styled("Enter sends", Style::default().fg(SMOKE)));
         spans.push(Span::styled(
             if area.width < 110 { "  " } else { "    " },
             Style::default().fg(ASH),
@@ -3159,22 +3366,32 @@ fn draw_help(frame: &mut Frame, area: Rect) {
         ),
     ];
     let controls: &[(&str, &str)] = &[
-        ("j / k", "Navigate sessions / machines / harvest files"),
+        ("j / k", "Navigate sessions / machines / harvest trees"),
+        (
+            "click",
+            "Select a row, or a take in the mast (1–7)",
+        ),
+        ("scroll", "Same as j / k"),
+        (
+            "[ / ]",
+            "Narrow / widen the left field (Horizon, Mesh, Harvest, Quota)",
+        ),
+        ("drag │", "Resize the dossier column"),
         (
             "h / j / k / l",
             "Move to the neighboring Grid slot, or Twin column",
         ),
         (
             "Tab",
-            "Cycle takes (or wrap slot focus in Grid, column in Twin)",
+            "Cycle spine takes (Now, Horizon, Mesh, Harvest, Quota)",
         ),
         (
             "Shift+Tab",
-            "Reverse slot focus in Grid or column focus in Twin",
+            "Reverse spine; Twin columns or Grid slots on those takes",
         ),
         (
             "g",
-            "Cycle Grid composition (Focus → Watch → Review → Quad)",
+            "Cycle Horizon → Mesh → Harvest; on Grid, cycle composition",
         ),
         (
             "p / Enter",
@@ -3184,7 +3401,10 @@ fn draw_help(frame: &mut Frame, area: Rect) {
             "a / x / r",
             "Announce, withdraw, or refresh this machine on the mesh",
         ),
-        ("i / Enter", "Draft in Now/Twin  ·  ask not wired"),
+        (
+            "i / Enter",
+            "Draft for the selected session · Enter sends through /api/ask",
+        ),
         ("?", "Toggle this help"),
         ("q / Esc", "Quit, or fall back to Now"),
     ];
@@ -3274,7 +3494,7 @@ fn draw_empty_state(frame: &mut Frame, area: Rect) {
         Style::default().fg(ASH),
     )));
     lines.push(Line::from(Span::styled(
-        "Then Now → [i] drafts to it  ·  ask not wired.",
+        "Then Now → [i] drafts · Enter sends.",
         Style::default().fg(ASH),
     )));
     frame.render_widget(Paragraph::new(lines).alignment(Alignment::Center), area);
@@ -3345,7 +3565,7 @@ mod tests {
         let rendered = rendered_text(&terminal);
         assert!(rendered.contains("EMPTY DECK STREAM"));
         assert!(rendered.contains("cycle column focus"));
-        assert!(rendered.contains("ask not wired"));
+        assert!(rendered.contains("Enter sends") || rendered.contains("draft"));
         assert!(!rendered.contains("cycle take"));
     }
 
@@ -3367,8 +3587,8 @@ mod tests {
                 "missing column-focus hint at width {width}: {footer:?}"
             );
             assert!(
-                footer.contains("ask not wired"),
-                "missing ask status at width {width}: {footer:?}"
+                footer.contains("Enter sends") || footer.contains("draft"),
+                "missing draft hint at width {width}: {footer:?}"
             );
             assert!(
                 footer.contains("? help"),
@@ -3393,7 +3613,7 @@ mod tests {
             .expect("ordinary-width Now should render");
 
         let footer = rendered_footer(&terminal);
-        assert!(footer.contains("ask not wired"));
+        assert!(footer.contains("Enter sends") || footer.contains("draft"));
         assert!(footer.contains("? help"));
         assert!(
             footer.contains(&format!("selected: {selected}")),
@@ -3414,8 +3634,28 @@ mod tests {
 
         let rendered = rendered_text(&terminal);
         assert!(rendered.contains("i / Enter"));
-        assert!(rendered.contains("Draft in Now/Twin"));
-        assert!(rendered.contains("ask not wired"));
+        assert!(rendered.contains("Draft for the selected session"));
+        assert!(rendered.contains("harvest trees"));
+        assert!(rendered.contains("Cycle Horizon"));
+        assert!(rendered.contains("Enter sends") || rendered.contains("draft"));
+    }
+
+    #[test]
+    fn harvest_footer_names_trees_and_does_not_claim_send_is_unavailable() {
+        let backend = TestBackend::new(120, 24);
+        let mut terminal = Terminal::new(backend).expect("test terminal");
+        let mut app = App::new(Take::Harvest);
+        app.ingest_event(event(1, "session-a", 1_700_000_000_000));
+
+        terminal
+            .draw(|frame| draw(frame, &mut app))
+            .expect("harvest should render");
+
+        let footer = rendered_footer(&terminal);
+        assert!(footer.contains("trees"), "missing tree hint: {footer:?}");
+        assert!(footer.contains("Enter sends") || footer.contains("draft"));
+        assert!(!footer.contains("send unavailable"));
+        assert!(!footer.contains("navigate"));
     }
 
     #[test]
@@ -3448,5 +3688,62 @@ mod tests {
             .draw(|frame| draw(frame, &mut app))
             .expect("narrow Twin should render");
         assert_eq!(app.deck_focus, 0);
+    }
+
+    #[test]
+    fn harvest_draws_resting_trees_as_a_grove_not_a_gap() {
+        let backend = TestBackend::new(100, 24);
+        let mut terminal = Terminal::new(backend).expect("test terminal");
+        let mut app = App::new(Take::Harvest);
+        app.ingest_event(event(1, "session-a", 1_700_000_000_000));
+        app.ingest_event(event(2, "session-b", 1_700_000_000_100));
+
+        terminal
+            .draw(|frame| draw(frame, &mut app))
+            .expect("harvest should render a resting grove");
+
+        let rendered = rendered_text(&terminal);
+        assert!(
+            rendered.contains("orchard at rest") || rendered.contains("at rest"),
+            "resting orchard label missing: {rendered}"
+        );
+        assert!(
+            !rendered.contains("No file churn"),
+            "gap state should not hide resting trees: {rendered}"
+        );
+        assert!(
+            rendered.contains('·'),
+            "grove ground dots missing: {rendered}"
+        );
+    }
+
+    #[test]
+    fn mast_letterspaces_the_scout_mark() {
+        let backend = TestBackend::new(120, 24);
+        let mut terminal = Terminal::new(backend).expect("test terminal");
+        let mut app = App::new(Take::Horizon);
+        app.ingest_event(event(1, "session-a", 1_700_000_000_000));
+
+        terminal
+            .draw(|frame| draw(frame, &mut app))
+            .expect("horizon should render");
+
+        let rendered = rendered_text(&terminal);
+        assert!(
+            rendered.contains("S C O U T"),
+            "letterspaced mark missing: {rendered}"
+        );
+    }
+
+    #[test]
+    fn dossier_split_covers_the_area_without_gaps() {
+        let area = Rect::new(2, 4, 100, 20);
+        let (left, sep, right) = split_dossier(area, 58);
+        assert_eq!(sep.width, 1);
+        assert_eq!(left.width + sep.width + right.width, area.width);
+        assert_eq!(left.x, area.x);
+        assert_eq!(right.x + right.width, area.x + area.width);
+        assert_eq!(left.y, area.y);
+        assert_eq!(sep.height, area.height);
     }
 }

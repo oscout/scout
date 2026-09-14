@@ -399,7 +399,9 @@ function rejectUnsupportedRuntimeProfileEffort(
   profile: string,
   reasoningEffort: string | undefined,
 ): void {
-  if (reasoningEffort && (profile === "grok" || profile === "kimi" || profile === "oc" || profile === "opencode")) {
+  // Grok takes effort over ACP on `session/set_model`; the others expose no
+  // equivalent through their transports.
+  if (reasoningEffort && (profile === "kimi" || profile === "oc" || profile === "opencode")) {
     throw new ScoutCliError(
       `reasoning_effort_harness_mismatch: ${profile} runtime profile does not support reasoning effort through its ACP transport`,
     );

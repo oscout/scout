@@ -28,7 +28,7 @@ const OPS_SURFACES: OpsSurface[] = [
     active: (route) => route.view === "broker",
   },
   {
-    name: "Mesh",
+    name: "Network",
     route: { view: "mesh" },
     active: (route) => route.view === "mesh",
   },

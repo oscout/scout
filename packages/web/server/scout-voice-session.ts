@@ -4,7 +4,10 @@ export type ScoutVoiceSessionEventName =
   | "session.partial"
   | "session.final"
   | "session.error"
-  | "session.cancelled";
+  | "session.cancelled"
+  | "speech.started"
+  | "speech.result"
+  | "speech.error";
 
 export type ScoutVoiceSessionEvent = {
   event: ScoutVoiceSessionEventName;
@@ -37,6 +40,23 @@ export type ScoutVoiceSettings = {
   permissions?: ScoutVoicePermissionStatus[];
 };
 
+export type ScoutVoiceSpeechTimingCueRequest = {
+  id: string;
+  textStart?: number;
+  textEnd?: number;
+  text?: string;
+};
+
+export type ScoutVoiceSpeechTimingRequest = {
+  enabled: true;
+  modelId?: string;
+  strict?: boolean;
+  cues?: ScoutVoiceSpeechTimingCueRequest[];
+};
+
+/** Where the requesting surface wants a `speech.synthesize` heard. */
+export type ScoutVoiceSpeechPlayback = "browser" | "host";
+
 export type ScoutVoiceHostCommand =
   | {
     type: "session.start";
@@ -49,6 +69,25 @@ export type ScoutVoiceHostCommand =
   }
   | { type: "session.stop"; sessionId: string }
   | { type: "session.cancel"; sessionId: string }
+  | {
+    type: "speech.synthesize";
+    sessionId: string;
+    text: string;
+    /**
+     * Omitted only for host playback, where Scout Menu's own Settings › Voice
+     * choice is the default. Browser playback always names the model.
+     */
+    modelId?: string;
+    voiceId?: string;
+    speed?: number;
+    instructions?: string;
+    originAppId?: string;
+    utteranceId?: string;
+    speechTiming?: ScoutVoiceSpeechTimingRequest;
+    /** Defaults to `browser` for hosts that predate the field. */
+    playback?: ScoutVoiceSpeechPlayback;
+  }
+  | { type: "speech.cancel"; sessionId: string }
   | {
     type: "settings.apply";
     preference?: ScoutVoicePreference;
@@ -79,6 +118,7 @@ type SessionStatus = "pending" | "active" | "processing" | "done" | "cancelled" 
 
 type VoiceSession = {
   id: string;
+  kind: "dictation" | "speech";
   clientId: string;
   surface: string;
   language: string;
@@ -114,6 +154,12 @@ type VoiceHostCommandWaiter = {
 const HOST_STALE_MS = 45_000;
 const SESSION_TTL_MS = 10 * 60_000;
 const MAX_EVENTS_PER_SESSION = 200;
+const SPEECH_TIMEOUT_MS = 90_000;
+/**
+ * Host playback resolves when the Mac finishes speaking, so the budget grows
+ * with the text instead of assuming a render-and-return round trip.
+ */
+const HOST_PLAYBACK_MS_PER_CHARACTER = 100;
 
 const sessions = new Map<string, VoiceSession>();
 const hosts = new Map<string, VoiceHost>();
@@ -178,7 +224,7 @@ export function getScoutVoiceSettingsSnapshot(): {
   settings: ScoutVoiceSettings;
   devices: ScoutVoiceInputDevice[];
 } {
-  const host = pickLiveVoiceHost();
+  const host = pickLiveVoiceHostById("scout-menu");
   return {
     settings: host?.settings ?? DEFAULT_VOICE_SETTINGS,
     devices: host?.devices ?? [],
@@ -196,7 +242,6 @@ export function openScoutVoicePrivacySettings(
       503,
     );
   }
-  host.lastSeenAt = Date.now();
   queueHostCommand(host.hostId, { type: "permissions.open", kind });
   return { ok: true };
 }
@@ -212,7 +257,6 @@ export function requestScoutVoicePermissions(
       503,
     );
   }
-  host.lastSeenAt = Date.now();
   queueHostCommand(host.hostId, { type: "permissions.request", kind });
   return { ok: true };
 }
@@ -242,7 +286,6 @@ export function updateScoutVoiceSettings(input: {
     nextSettings.inputDeviceName = device?.name ?? (input.inputDeviceId ? nextSettings.inputDeviceName : null);
   }
   host.settings = nextSettings;
-  host.lastSeenAt = Date.now();
   queueHostCommand(host.hostId, {
     type: "settings.apply",
     preference: nextSettings.preference,
@@ -372,6 +415,14 @@ export function pushScoutVoiceHostEvent(input: {
     throw new ScoutVoiceSessionError("session_host_mismatch", "Voice session belongs to another host.", 409);
   }
 
+  if (session.kind === "speech" && isTerminalSessionStatus(session.status)) {
+    throw new ScoutVoiceSessionError(
+      "session_terminal",
+      "Voice session has already finished.",
+      409,
+    );
+  }
+
   session.assignedHostId = host.hostId;
   return appendSessionEvent(session, input.event, input.data ?? {});
 }
@@ -397,6 +448,7 @@ export function createScoutVoiceSession(input: {
   const now = Date.now();
   const session: VoiceSession = {
     id: sessionId,
+    kind: "dictation",
     clientId: input.clientId?.trim() || "openscout-web",
     surface: input.surface?.trim() || "web",
     language: input.language?.trim() || "en",
@@ -422,6 +474,203 @@ export function createScoutVoiceSession(input: {
 
   appendSessionEvent(session, "session.started", { state: "starting" });
   return { sessionId, capture: "native" };
+}
+
+export type ScoutVoiceSpeechResult = {
+  /** Empty when the utterance was spoken on the host instead of rendered. */
+  contentType: string;
+  audioBase64: string;
+  modelId: string;
+  voiceId: string;
+  audioBytes: number;
+  route: "scout-menu";
+  /**
+   * Scout Menu spoke the text live on the Mac; no audio travels back and the
+   * result resolves when playback ends. `interrupted` marks an operator cut
+   * (hold-to-talk, a newer utterance) rather than a failure.
+   */
+  playedOnHost?: boolean;
+  interrupted?: boolean;
+  metrics?: Record<string, unknown>;
+  originAppId?: string;
+  utteranceId?: string;
+};
+
+export async function synthesizeScoutVoiceSpeech(input: {
+  text: string;
+  modelId?: string;
+  voiceId?: string;
+  speed?: number;
+  instructions?: string;
+  originAppId?: string;
+  utteranceId?: string;
+  speechTiming?: ScoutVoiceSpeechTimingRequest;
+  playback?: ScoutVoiceSpeechPlayback;
+  signal?: AbortSignal;
+  /** Narrow test seam; production callers use the bounded host timeout. */
+  timeoutMs?: number;
+}): Promise<ScoutVoiceSpeechResult> {
+  pruneExpiredSessions();
+  const host = pickLiveVoiceHostById("scout-menu");
+  if (!host) {
+    throw new ScoutVoiceSessionError(
+      "host_unavailable",
+      "Scout Menu voice host is not running.",
+      503,
+    );
+  }
+
+  const sessionId = `scout-speech:${crypto.randomUUID()}`;
+  const now = Date.now();
+  const session: VoiceSession = {
+    id: sessionId,
+    kind: "speech",
+    clientId: "openscout-web",
+    surface: "speech",
+    language: "en",
+    status: "pending",
+    createdAt: now,
+    updatedAt: now,
+    assignedHostId: host.hostId,
+    events: [],
+    error: null,
+  };
+  sessions.set(sessionId, session);
+  const playback: ScoutVoiceSpeechPlayback = input.playback ?? "browser";
+  if (playback === "browser" && !input.modelId) {
+    throw new ScoutVoiceSessionError(
+      "speech_model_required",
+      "Browser playback needs a resolved speech model.",
+      500,
+    );
+  }
+  queueHostCommand(host.hostId, {
+    type: "speech.synthesize",
+    sessionId,
+    text: input.text,
+    ...(input.modelId ? { modelId: input.modelId } : {}),
+    ...(input.voiceId ? { voiceId: input.voiceId } : {}),
+    ...(playback === "host" ? { playback } : {}),
+    ...(input.speed !== undefined ? { speed: input.speed } : {}),
+    ...(input.instructions ? { instructions: input.instructions } : {}),
+    ...(input.originAppId ? { originAppId: input.originAppId } : {}),
+    ...(input.utteranceId ? { utteranceId: input.utteranceId } : {}),
+    ...(input.speechTiming ? { speechTiming: input.speechTiming } : {}),
+  });
+  appendSessionEvent(session, "speech.started", {});
+
+  return await new Promise<ScoutVoiceSpeechResult>((resolve, reject) => {
+    let settled = false;
+    let unsubscribe = () => {};
+    const finish = (error?: unknown, result?: ScoutVoiceSpeechResult) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      input.signal?.removeEventListener("abort", abort);
+      unsubscribe();
+      if (error) reject(error);
+      else if (result) resolve(result);
+    };
+    const abort = () => {
+      if (!settled && session.status !== "done" && session.status !== "error") {
+        try {
+          dispatchSessionCommand(session, { type: "speech.cancel", sessionId });
+        } catch {
+          // The host may disappear while the request is being cancelled.
+        }
+        appendSessionEvent(session, "session.cancelled", { reason: "client" });
+      }
+      const error = new Error("Scout speech synthesis was stopped.");
+      error.name = "AbortError";
+      finish(error);
+    };
+    const timeout = setTimeout(() => {
+      if (session.status !== "done" && session.status !== "error") {
+        try {
+          dispatchSessionCommand(session, { type: "speech.cancel", sessionId });
+        } catch {
+          // The timeout remains authoritative if the host disappeared.
+        }
+      }
+      const error = new ScoutVoiceSessionError(
+        "speech_timeout",
+        "Scout Menu speech synthesis timed out.",
+        504,
+      );
+      finish(error);
+      if (session.status !== "done" && session.status !== "error") {
+        appendSessionEvent(session, "speech.error", { message: error.message });
+      }
+    }, input.timeoutMs ?? (
+      playback === "host"
+        ? SPEECH_TIMEOUT_MS + input.text.length * HOST_PLAYBACK_MS_PER_CHARACTER
+        : SPEECH_TIMEOUT_MS
+    ));
+
+    unsubscribe = subscribeScoutVoiceSession(sessionId, (event) => {
+      if (event.event === "speech.error") {
+        finish(new ScoutVoiceSessionError(
+          "speech_failed",
+          typeof event.data.message === "string" ? event.data.message : "Scout Menu speech synthesis failed.",
+          503,
+        ));
+        return;
+      }
+      if (event.event !== "speech.result") return;
+      const audioBase64 = typeof event.data.audioBase64 === "string" ? event.data.audioBase64 : "";
+      const contentType = typeof event.data.contentType === "string" ? event.data.contentType : "";
+      const modelId = typeof event.data.modelId === "string" ? event.data.modelId : "";
+      const voiceId = typeof event.data.voiceId === "string" ? event.data.voiceId : "";
+      const audioBytes = typeof event.data.audioBytes === "number" ? event.data.audioBytes : 0;
+      const originAppId = typeof event.data.originAppId === "string" ? event.data.originAppId : input.originAppId;
+      const utteranceId = typeof event.data.utteranceId === "string" ? event.data.utteranceId : input.utteranceId;
+      const metrics = event.data.metrics && typeof event.data.metrics === "object"
+        ? { metrics: event.data.metrics as Record<string, unknown> }
+        : {};
+      const correlation = {
+        ...(originAppId ? { originAppId } : {}),
+        ...(utteranceId ? { utteranceId } : {}),
+      };
+      if (event.data.playedOnHost === true) {
+        // Spoken live on the Mac: the host reports what it actually said,
+        // never bytes. A host that ignores `playback` still answers with
+        // audio below, so older menus degrade to browser playback.
+        if (!modelId || !voiceId) {
+          finish(new ScoutVoiceSessionError("speech_result_invalid", "Scout Menu returned an invalid host playback receipt.", 502));
+          return;
+        }
+        finish(undefined, {
+          audioBase64: "",
+          contentType: "",
+          modelId,
+          voiceId,
+          audioBytes: 0,
+          route: "scout-menu",
+          playedOnHost: true,
+          ...(event.data.interrupted === true ? { interrupted: true } : {}),
+          ...metrics,
+          ...correlation,
+        });
+        return;
+      }
+      if (!audioBase64 || !contentType || !modelId || !voiceId || audioBytes <= 0) {
+        finish(new ScoutVoiceSessionError("speech_result_invalid", "Scout Menu returned invalid speech audio.", 502));
+        return;
+      }
+      finish(undefined, {
+        audioBase64,
+        contentType,
+        modelId,
+        voiceId,
+        audioBytes,
+        route: "scout-menu",
+        ...metrics,
+        ...correlation,
+      });
+    });
+    input.signal?.addEventListener("abort", abort, { once: true });
+    if (input.signal?.aborted) abort();
+  });
 }
 
 export function stopScoutVoiceSession(sessionId: string): void {
@@ -573,7 +822,13 @@ export function getScoutVoiceHealthSnapshot(now = Date.now()): ScoutVoiceHealthS
 }
 
 export function isTerminalScoutVoiceSessionEvent(event: ScoutVoiceSessionEvent): boolean {
-  if (event.event === "session.final" || event.event === "session.error" || event.event === "session.cancelled") {
+  if (
+    event.event === "session.final"
+    || event.event === "session.error"
+    || event.event === "session.cancelled"
+    || event.event === "speech.result"
+    || event.event === "speech.error"
+  ) {
     return true;
   }
   if (event.event !== "session.state") return false;
@@ -612,13 +867,17 @@ function pickLiveVoiceHost(now = Date.now()): VoiceHost | null {
   return selected;
 }
 
+function pickLiveVoiceHostById(hostId: string, now = Date.now()): VoiceHost | null {
+  const host = hosts.get(hostId);
+  return host && now - host.lastSeenAt <= HOST_STALE_MS ? host : null;
+}
+
 function queueHostCommand(hostId: string, command: ScoutVoiceHostCommand): void {
   const host = hosts.get(hostId);
   if (!host) {
     throw new ScoutVoiceSessionError("host_unknown", "Voice host is not registered.", 404);
   }
   host.pendingCommands.push(command);
-  host.lastSeenAt = Date.now();
   deliverPendingScoutVoiceHostCommand(host);
 }
 
@@ -658,17 +917,20 @@ function appendSessionEvent(
   event: ScoutVoiceSessionEventName,
   data: Record<string, unknown>,
 ): ScoutVoiceSessionEvent {
-  const payload: ScoutVoiceSessionEvent = {
+  const transientPayload: ScoutVoiceSessionEvent = {
     event,
     sessionId: session.id,
     data,
     ts: Date.now(),
   };
-  session.events.push(payload);
+  const storedPayload = event === "speech.result"
+    ? withoutTransientSpeechAudio(transientPayload)
+    : transientPayload;
+  session.events.push(storedPayload);
   if (session.events.length > MAX_EVENTS_PER_SESSION) {
     session.events.splice(0, session.events.length - MAX_EVENTS_PER_SESSION);
   }
-  session.updatedAt = payload.ts;
+  session.updatedAt = storedPayload.ts;
 
   if (event === "session.state") {
     const state = data.state;
@@ -679,17 +941,37 @@ function appendSessionEvent(
     if (state === "error") session.status = "error";
   }
   if (event === "session.final") session.status = "done";
+  if (event === "speech.result") session.status = "done";
   if (event === "session.error") {
     session.status = "error";
     session.error = typeof data.message === "string" ? data.message : "Scout voice session failed.";
+  }
+  if (event === "speech.error") {
+    session.status = "error";
+    session.error = typeof data.message === "string" ? data.message : "Scout speech synthesis failed.";
   }
   if (event === "session.cancelled") session.status = "cancelled";
 
   const subscribers = sessionSubscribers.get(session.id);
   if (subscribers) {
-    for (const handler of subscribers) handler(payload);
+    for (const handler of subscribers) handler(transientPayload);
   }
-  return payload;
+  return storedPayload;
+}
+
+function withoutTransientSpeechAudio(event: ScoutVoiceSessionEvent): ScoutVoiceSessionEvent {
+  const { audioBase64, ...metadata } = event.data;
+  return {
+    ...event,
+    data: {
+      ...metadata,
+      audioTransferred: typeof audioBase64 === "string" && audioBase64.length > 0,
+    },
+  };
+}
+
+function isTerminalSessionStatus(status: SessionStatus): boolean {
+  return status === "done" || status === "cancelled" || status === "error";
 }
 
 function pruneExpiredSessions(now = Date.now()): void {
@@ -702,6 +984,7 @@ function pruneExpiredSessions(now = Date.now()): void {
 
 function cancelStaleHostSessions(hostId: string, nextSessionId: string): void {
   for (const session of sessions.values()) {
+    if (session.kind !== "dictation") continue;
     if (session.id === nextSessionId) continue;
     if (session.assignedHostId !== hostId) continue;
     if (session.status === "done" || session.status === "cancelled" || session.status === "error") continue;

@@ -12,10 +12,10 @@ import {
 export type { TopNavItem, TopNavKey };
 export { ROUTE_VIEW_LABELS, routeBreadcrumbForRoute };
 
-// Single-personality nav (Model B · Work nouns): Home · Crew · Sessions ·
-// Chat. The ops/retrieval cluster (Search, Terminals, Tail, Dispatch, and the
-// ops surfaces) lives one level down in the System dropdown
-// (nav-system-menu.tsx). There is no lean/full switch — `nav.clean` is gone.
+// Flat single-row nav: Home · Chat · Agents · Terminals · Broker · Search ·
+// Ops. Every primary surface is one click from chrome — the System dropdown
+// is gone; the ops cluster's mode surfaces live on the Ops screens' own
+// secondary strip. There is no lean/full switch — `nav.clean` is gone.
 //
 // Tab rows are projected from the destination catalog (nav-destinations.ts).
 // Breadcrumb labels live in route-breadcrumb.ts (SCO-083) so they survive
@@ -25,30 +25,7 @@ export const TOP_NAV_ITEMS: TopNavItem[] = projectTopNavItems();
 /** @deprecated Prefer ROUTE_VIEW_LABELS from route-breadcrumb.ts */
 export const TOP_NAV_VIEW_LABELS: Record<string, string> = {
   ...ROUTE_VIEW_LABELS,
-  // Historical chrome label for ops under the System dropdown.
-  ops: "System",
 };
-
-const SYSTEM_VIEWS = new Set<Route["view"]>([
-  "ops",
-  "broker",
-  "harnesses",
-  "mesh",
-  "mesh-ops",
-  "terminal",
-  "search",
-  "work",
-  "follow",
-  "settings",
-  "voice",
-]);
-
-/** True for the chrome/ops surfaces that live under the System dropdown. */
-export function isSystemRoute(route: Route): boolean {
-  // Agent config lives under the Crew tab, not System.
-  if (route.view === "settings" && route.section === "agents") return false;
-  return SYSTEM_VIEWS.has(route.view);
-}
 
 export function topNavItems(): TopNavItem[] {
   return TOP_NAV_ITEMS;
@@ -65,20 +42,25 @@ export function topNavKeyForRoute(route: Route): TopNavKey {
     case "repo-diff":
     case "code":
       return "agents";
+    // Harness session transcripts live under the Terminals tab.
     case "sessions":
-      return "sessions";
+    case "terminal":
+      return "terminals";
     case "conversation":
     case "messages":
       return "chat";
-    case "ops":
     case "broker":
+    case "work":
+    case "follow":
+      return "broker";
+    case "search":
+      return "search";
+    case "ops":
     case "harnesses":
     case "mesh":
     case "mesh-ops":
-    case "terminal":
-    case "search":
-    case "work":
-    case "follow":
+      return "ops";
+    // Settings/voice sit outside the tab row; no tab highlights on them.
     case "settings":
     case "voice":
       return "system";
@@ -110,7 +92,6 @@ export function topNavBreadcrumbForRoute(route: Route): string | null {
     case "harnesses":
     case "mesh":
     case "mesh-ops":
-    case "broker":
     case "work":
       return TOP_NAV_VIEW_LABELS[route.view] ?? route.view;
     default:

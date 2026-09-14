@@ -40,7 +40,7 @@ describe("primary areas (SCO-083 IA model)", () => {
       "search",
     ]);
     expect(systemPrimaryAreas().map((a) => a.id)).toEqual(["ops", "settings"]);
-    expect(getPrimaryArea("projects").label).toBe("Crew");
+    expect(getPrimaryArea("projects").label).toBe("Agents");
   });
 
   test("ROUTE_AREA_BY_VIEW has exactly 22 keys and 8 non-empty buckets", () => {

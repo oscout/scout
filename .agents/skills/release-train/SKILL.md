@@ -43,7 +43,11 @@ Live state belongs under
 `~/.openscout/control-plane/release-train/runs/<run-id>/checkpoint.json`, not in
 Git. Override with `OPENSCOUT_RELEASE_TRAIN_HOME` or `--state-dir` for tests.
 The runner resumes the newest incomplete checkpoint before creating a new
-09:00/17:00 America/Montreal slot.
+09:00/17:00 America/Montreal slot. Explicit interactive runs may add a short
+name before the repository hash, for example `rt-20260913-17-local-84cf9160`.
+They share the same repository lock and resume the newest incomplete run.
+Never use a new name to evade an active or frozen run; terminally preserve a
+superseded scope first.
 
 ## Execute one resumable cycle
 
@@ -81,7 +85,7 @@ recording or advancing.
 - `S60`: reuse, open, or update coherent PRs idempotently.
 - `S70`: record `SELF`, `INDEPENDENT`, or `MULTI_AGENT` review. Changes loop to
   `S40` or `S50`.
-- `S80`: require green CI, current base, mergeability, and no blocking feedback.
+- `S80`: require exact-revision validation evidence, current base, mergeability, and no blocking feedback. Local receipts are authoritative by default; hosted CI requires explicit operator opt-in.
   Failures loop to `S40` or `S50`.
 - `S90`: merge and verify the canonical release decision. `AMBIGUOUS` stops.
 - `S100`: poll participating owners and reconcile only authorized READY work.
@@ -146,3 +150,7 @@ bun .agents/skills/release-train/scripts/release-train.ts init
 Forward-test risky changes with an independent Scout reviewer using the compact
 brief in `references/recipes.md`. Record the Scout flight/conversation/work ref
 and classify findings as `must_fix`, `should_fix`, `follow_up`, or `reject`.
+
+For the exact local validation contract and release limits, read
+[local-delivery.md](references/local-delivery.md). Historical receipts remain
+readable; a legacy bare `checks: PASS` cannot authorize a new merge.
