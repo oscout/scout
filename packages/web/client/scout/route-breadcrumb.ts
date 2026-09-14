@@ -63,6 +63,7 @@ export function routeBreadcrumbForRoute(route: Route): string | null {
     case "ops": {
       if (route.mode === "tail") return "Live Activity";
       if (route.mode === "lanes") return "Agent Lanes";
+      if (route.mode === "world") return "World";
       if (route.mode === "atop") return "Runtime Monitor";
       if (route.mode === "advisor") return "Host Advisor";
       if (route.mode === "mission" || route.mode === "issues" || route.mode === undefined) {

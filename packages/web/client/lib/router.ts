@@ -85,6 +85,7 @@ function parseOpsMode(value: string | undefined): OpsMode | undefined {
     case "tail":
     case "atop":
     case "lanes":
+    case "world":
       return value;
     default:
       return undefined;
@@ -189,7 +190,7 @@ function isTailCoreSurface(mode: string | undefined): boolean {
 // Lanes is shared with the native app and chrome-free embeds, so direct links are
 // not gated with the broader Ops cluster.
 function isLanesCoreSurface(mode: string | undefined): boolean {
-  return mode === "lanes";
+  return mode === "lanes" || mode === "world";
 }
 
 function isUngatedOpsSurface(mode: string | undefined): boolean {
@@ -278,6 +279,17 @@ function routeScopeKey(route: Route): string {
 export function routeFromUrl(urlLike: string | URL): Route {
   const url = resolveAppUrl(urlLike);
   const parts = url.pathname.replace(/^\/+/, "").split("/").filter(Boolean);
+  if (parts[0] === "embed" && ["home", "search", "ops"].includes(parts[1] ?? "")) {
+    const canonical = new URL(url);
+    const area = parts[1]!;
+    const mode = url.searchParams.get("mode");
+    canonical.pathname = area === "home" ? "/" : `/${area}${mode ? `/${encodeURIComponent(mode)}` : ""}`;
+    canonical.searchParams.delete("mode");
+    const route = routeFromUrl(canonical);
+    // The Ops entry has a core Tail fallback when its power surfaces are off,
+    // matching the primary-area default rather than giving the provider Inbox.
+    return area === "ops" && route.view === "inbox" ? { ...route, view: "ops", mode: "tail" } : route;
+  }
   const machineId = parseMachineId(url);
   const scoped = <T extends Route>(route: T): T => withMachineScope(route, machineId);
   const scopeRoute = parseScopeRouteFromUrl(parts, url, scoped);
@@ -1315,7 +1327,25 @@ export function planNavigation(
   const currentRoute = routeFromLocation(current.pathname, current.searchStr);
   const nextRoute = resolveNavigatedMachineScope(requestedRoute, currentRoute);
   const preservedSearch = options.preserveSearch === false ? "" : current.searchStr;
-  const canonicalPath = preserveLocationSearch(routePath(nextRoute, current.pathname), preservedSearch);
+  let path = routePath(nextRoute, current.pathname);
+  const nativeAreaView: Record<string, Route["view"]> = {
+    "/embed/home": "inbox", "/embed/search": "search", "/embed/ops": "ops",
+  };
+  if (nativeAreaView[current.pathname] === nextRoute.view) {
+    // Keep the native document entry point across local filters/mode changes
+    // and reloads. The query carries the same canonical route state.
+    const embedded = resolveAppUrl(path);
+    const mode = embedded.pathname.split("/").filter(Boolean)[1];
+    embedded.pathname = current.pathname;
+    const nativeParams = new URLSearchParams(current.searchStr);
+    for (const key of ["embed", "profile", "theme", "themeVars", "_nav"]) {
+      const value = nativeParams.get(key);
+      if (value !== null) embedded.searchParams.set(key, value);
+    }
+    if (mode) embedded.searchParams.set("mode", mode);
+    path = embedded.pathname + embedded.search;
+  }
+  const canonicalPath = preserveLocationSearch(path, preservedSearch);
   const hash = normalizeHashOption(options.hash);
   return { route: nextRoute, href: `${canonicalPath}${hash ? `#${hash}` : ""}` };
 }

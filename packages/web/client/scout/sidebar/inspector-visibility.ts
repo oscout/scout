@@ -28,7 +28,7 @@ export function routeHasMeaningfulInspector(
     case "work":
       return true;
     case "ops":
-      return route.mode !== "lanes";
+      return route.mode !== "lanes" && route.mode !== "world";
     case "sessions":
       return !route.flightId;
     case "messages":

@@ -13,6 +13,8 @@ import {
 } from "react";
 import { isComposerSendShortcut } from "../../lib/compose-shortcuts.ts";
 import { DictationMic, type MicStatus } from "../DictationMic.tsx";
+import { useRouter } from "../../lib/router.ts";
+import { executeScoutVoiceIssueAction } from "../../lib/scout-voice.ts";
 import { useMessageComposerEmbedded } from "./MessageComposerEmbedBoundary.tsx";
 import { VoiceWaveform } from "./VoiceWaveform.tsx";
 import "./message-composer.css";
@@ -263,6 +265,8 @@ function MessageComposerControl({
 }: Omit<MessageComposerProps, "renderWhenEmbedded">) {
   const localRef = useRef<HTMLTextAreaElement | null>(null);
   const [voiceStatus, setVoiceStatus] = useState<MicStatus | null>(null);
+  const [voiceActionPending, setVoiceActionPending] = useState(false);
+  const [voiceActionError, setVoiceActionError] = useState<string | null>(null);
 
   const setTextareaRef = useCallback(
     (node: HTMLTextAreaElement | null) => {
@@ -343,6 +347,7 @@ function MessageComposerControl({
 
   const handleDictationStatus = useCallback((next: MicStatus) => {
     setVoiceStatus(next);
+    if (!next.issue) setVoiceActionError(null);
     onDictationStatusChange?.(next);
   }, [onDictationStatusChange]);
 
@@ -390,8 +395,12 @@ function MessageComposerControl({
     .filter(Boolean)
     .join(" ");
 
+  const { navigate } = useRouter();
   const isError = voiceStatus?.tone === "error";
   const partialText = voiceStatus?.partial?.trim() || null;
+  // A structured failure gets the block treatment below; everything else is a
+  // single compact line that must not push the composer around.
+  const voiceIssue = isError ? voiceStatus?.issue ?? null : null;
   const statusCopy = isError
     ? voiceStatus?.message
     : processing
@@ -442,7 +451,36 @@ function MessageComposerControl({
               <span className="s-msg-compose-voice-label">
                 {voiceStatus ? voiceLabel(voiceStatus) : "Voice"}
               </span>
-              {statusCopy ? (
+              {voiceIssue ? (
+                /* Four fields, four slots. Flattening them into one nowrap line
+                   is what turned a fixable error into clipped red text. */
+                <span className="s-msg-compose-voice-issue">
+                  <span className="s-msg-compose-voice-issue-title">{voiceIssue.title}</span>
+                  {voiceIssue.hint ? (
+                    <span className="s-msg-compose-voice-issue-hint">{voiceIssue.hint}</span>
+                  ) : null}
+                  {voiceIssue.action !== "none" && voiceIssue.actionLabel ? (
+                    <button
+                      type="button"
+                      className="s-msg-compose-voice-issue-action"
+                      disabled={voiceActionPending}
+                      onClick={() => {
+                        setVoiceActionError(null);
+                        if (voiceIssue.action === "open_voice_settings") navigate({ view: "settings", section: "voice" });
+                        else {
+                          setVoiceActionPending(true);
+                          void executeScoutVoiceIssueAction(voiceIssue.action)
+                            .catch((error) => setVoiceActionError(error instanceof Error ? error.message : String(error)))
+                            .finally(() => setVoiceActionPending(false));
+                        }
+                      }}
+                    >
+                      {voiceIssue.actionLabel}
+                    </button>
+                  ) : null}
+                  {voiceActionError ? <span>{voiceActionError}</span> : null}
+                </span>
+              ) : statusCopy ? (
                 <span className="s-msg-compose-voice-text">{statusCopy}</span>
               ) : null}
             </div>

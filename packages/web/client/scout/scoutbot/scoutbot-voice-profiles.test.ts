@@ -4,6 +4,7 @@ import {
   DEFAULT_SCOUTBOT_CUSTOM_SPEECH,
   SCOUTBOT_SPEECH_MODEL_ID,
   SCOUTBOT_SPEECH_PROFILES,
+  isScoutbotSpeechSelectionId,
   resolveScoutbotSpeechVoice,
 } from "./scoutbot-voice-profiles.ts";
 
@@ -47,5 +48,36 @@ describe("Scoutbot Direct Voice profiles", () => {
       voiceId: "",
       instructions: "\n",
     })).toEqual(DEFAULT_SCOUTBOT_CUSTOM_SPEECH);
+  });
+
+  test("every profile names the provider that actually speaks it", () => {
+    expect(SCOUTBOT_SPEECH_PROFILES.every((profile) => profile.provider === "openai")).toBe(true);
+  });
+
+  test("marks the British profiles as prompted accents, not separate voices", () => {
+    const byId = Object.fromEntries(SCOUTBOT_SPEECH_PROFILES.map((p) => [p.id, p]));
+    // Both British cards reuse a US voice, so the panel must not imply that a
+    // distinct British voice is installed.
+    expect(byId["british-woman"]!.speech.voiceId).toBe(byId["us-woman"]!.speech.voiceId);
+    expect(byId["british-man"]!.speech.voiceId).toBe(byId["us-man"]!.speech.voiceId);
+    expect(SCOUTBOT_SPEECH_PROFILES.filter((p) => p.accentFromPrompt).map((p) => p.id))
+      .toEqual(["british-woman", "british-man"]);
+  });
+
+  test("the device selection names no model or voice so Scout Menu keeps its own pick", () => {
+    // Blank ids are what let Kokoro through: `/api/voice/speak` treats them as
+    // absent and defers to the Mac's Settings > Voice choice.
+    expect(isScoutbotSpeechSelectionId("device")).toBe(true);
+    expect(resolveScoutbotSpeechVoice("device")).toEqual({
+      modelId: "",
+      voiceId: "",
+      instructions: "",
+      playback: "host",
+    });
+  });
+
+  test("only the device selection overrides playback", () => {
+    expect(resolveScoutbotSpeechVoice("us-woman").playback).toBeUndefined();
+    expect(resolveScoutbotSpeechVoice("custom").playback).toBeUndefined();
   });
 });

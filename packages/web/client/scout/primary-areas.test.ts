@@ -56,17 +56,18 @@ describe("primary areas (SCO-083 IA model)", () => {
     }
 
     // Partition matches the revised SCO-083 table.
-    expect(buckets.home.sort()).toEqual(["activity", "briefings", "inbox"].sort());
-    expect(buckets.projects.sort()).toEqual(
-      ["agent-info", "agents-v2", "code", "repo-diff", "repos"].sort(),
+    const sortedViews = (views: Route["view"][]) => [...views].sort();
+    expect(sortedViews(buckets.home)).toEqual(sortedViews(["activity", "briefings", "inbox"]));
+    expect(sortedViews(buckets.projects)).toEqual(
+      sortedViews(["agent-info", "agents-v2", "code", "repo-diff", "repos"]),
     );
-    expect(buckets.sessions.sort()).toEqual(["sessions", "terminal"].sort());
+    expect(sortedViews(buckets.sessions)).toEqual(sortedViews(["sessions", "terminal"]));
     // Route unification: channels are conversations, not their own view.
-    expect(buckets.chat.sort()).toEqual(["conversation", "messages"].sort());
-    expect(buckets.dispatch.sort()).toEqual(["broker", "follow", "work"].sort());
-    expect(buckets.search).toEqual(["search"]);
-    expect(buckets.ops.sort()).toEqual(["harnesses", "mesh", "mesh-ops", "ops"].sort());
-    expect(buckets.settings.sort()).toEqual(["settings", "voice"].sort());
+    expect(sortedViews(buckets.chat)).toEqual(sortedViews(["conversation", "messages"]));
+    expect(sortedViews(buckets.dispatch)).toEqual(sortedViews(["broker", "follow", "work"]));
+    expect(buckets.search).toEqual(["search"] satisfies Route["view"][]);
+    expect(sortedViews(buckets.ops)).toEqual(sortedViews(["harnesses", "mesh", "mesh-ops", "ops"]));
+    expect(sortedViews(buckets.settings)).toEqual(sortedViews(["settings", "voice"]));
   });
 
   test("every Route view maps through primaryAreaForRoute", () => {

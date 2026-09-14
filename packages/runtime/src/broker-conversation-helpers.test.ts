@@ -273,6 +273,11 @@ describe("broker conversation helpers", () => {
       projectRoot: "/repo",
       sessionId: "session-1",
     }));
+    // A project identity can have a Claude home endpoint while its current
+    // caller is Codex. Explicit caller context must win over that endpoint.
+    expect(buildBrokerReturnAddressForActor(snapshot, "agent-1", {
+      sessionId: "codex-caller-thread",
+    }).sessionId).toBe("codex-caller-thread");
   });
 
   test("summarizes endpoint state and preserves visibility rules", () => {

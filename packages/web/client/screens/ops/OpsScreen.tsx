@@ -16,17 +16,19 @@ export function OpsScreen({
   navigate,
   mode = "mission",
   tailQuery,
+  showSecondaryNav,
 }: {
   navigate: (r: Route) => void;
   mode?: OpsMode;
   tailQuery?: string;
+  showSecondaryNav?: boolean;
 }) {
   const { agents, route } = useScout();
   const contentOwnsSecondaryNav = useContentOwnsSecondaryNav();
 
   return (
     <div className="s-ops">
-      {contentOwnsSecondaryNav ? (
+      {(showSecondaryNav ?? contentOwnsSecondaryNav) ? (
         <div className="s-ops-header">
           <OpsSubnav activeRoute={route} navigate={navigate} />
         </div>
@@ -49,7 +51,7 @@ export function OpsScreen({
           />
         )}
         {mode === "atop" && <AtopView />}
-        {mode === "lanes" && <AgentLanesView navigate={navigate} agents={agents} />}
+        {(mode === "lanes" || mode === "world") && <AgentLanesView navigate={navigate} agents={agents} />}
       </div>
       <PageStatusBar />
     </div>

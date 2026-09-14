@@ -223,6 +223,17 @@ describe("BrokerOperatorAttentionService", () => {
     expect(harness.alerts).toEqual([]);
   });
 
+  test("blocking questions never put authored content in APNs", async () => {
+    const harness = createHarness();
+    await harness.service.sendOperatorSignalAlert({
+      signal: { kind: "need", blocking: true, replyExpectation: "required", question: "Should I use /private/customer-data?" },
+      messageId: "msg-need", conversationId: "dm", requesterId: "agent", requesterNodeId: "node",
+    });
+    expect(harness.alerts[0]?.urgency).toBe("interrupt");
+    expect(harness.alerts[0]?.body).toContain("needs your answer");
+    expect(JSON.stringify(harness.alerts)).not.toContain("customer-data");
+  });
+
   test("pushes a generic non-blocking alert for an agent-authored operator signal", async () => {
     const harness = createHarness();
 

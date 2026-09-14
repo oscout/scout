@@ -352,6 +352,28 @@ describe("getScoutConversations", () => {
     }
   });
 
+  test("observes the worker in an agent-to-agent ask, not the first participant or return address", async () => {
+    const snapshot = baseSnapshot();
+    const requesterId = "aaa-requester";
+    snapshot.actors[requesterId] = { id: requesterId, displayName: "Requester" };
+    snapshot.agents[requesterId] = { ...snapshot.agents["hudson.main.mini"], id: requesterId };
+    snapshot.conversations["chat_hudson-main"].participantIds = [requesterId, "hudson.main.mini"];
+    snapshot.messages["msg-1"].actorId = requesterId;
+    snapshot.messages["msg-1"].metadata = { returnAddress: { sessionId: "codex-requester" } };
+    snapshot.invocations = {
+      "inv-worker": {
+        id: "inv-worker", requesterId, requesterNodeId: "node-1",
+        targetAgentId: "hudson.main.mini", action: "consult", task: "review",
+        conversationId: "chat_hudson-main", messageId: "msg-1",
+        execution: { targetSessionId: "worker-session" },
+        ensureAwake: true, stream: false, createdAt: 1_779_461_700_100,
+      },
+    };
+    brokerContextResult = brokerContext(snapshot);
+    const conversations = await getScoutConversations();
+    expect(conversations[0]).toMatchObject({ agentId: "hudson.main.mini", sessionId: "worker-session" });
+  });
+
   test("projects runtime from the conversation session instead of the agent's newest endpoint", async () => {
     const snapshot = baseSnapshot();
     snapshot.actors["session-codex-chat"] = {
@@ -1036,9 +1058,7 @@ describe("getScoutConversations", () => {
       policy: "durable",
       createdAt: 1_779_461_800_000,
       metadata: {
-        returnAddress: {
-          sessionId: "relay-hudson-claude",
-        },
+        responderSessionId: "relay-hudson-claude",
       },
     };
     brokerContextResult = {

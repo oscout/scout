@@ -1,39 +1,45 @@
-/* World map: one orbital viewport, one painted outpost per workspace, crew on a
-   remembered grid, camera and minimap chrome in the corners. Written last-wins:
+/* World map: one orbital viewport, one painted outpost per workspace, crew
+   standing on that outpost's deck, camera and minimap chrome in the corners. Written last-wins:
    each selector appears once with its resolved values. Rules marked "layout"
    are mirrored by constants in shared-floor-layout.ts; change both together. */
 
 .shared-floor { position: absolute; inset: 80px 14px 14px; color: var(--floor-ink); }
-.shared-floor.is-map { display: flex; flex-direction: column; overflow: hidden; border-radius: 12px; }
+.shared-floor.is-map { container-type: inline-size; display: flex; flex-direction: column; overflow: hidden; border-radius: 12px; }
 .agent-floor:has(.shared-floor) .agent-floor__dock, .agent-floor:has(.shared-floor) .agent-floor__legend { display: none; }
 /* The lane trace panel opens bottom-right on actor select; lift it clear of the camera cluster. */
 .agent-floor:has(.shared-floor) .agent-floor__trace-panel { bottom: 72px; max-height: calc(100% - 140px); }
 .shared-floor button:focus-visible { outline: 2px solid var(--floor-accent); outline-offset: 3px; }
 @media (prefers-reduced-motion: reduce) { .shared-floor__wanderer { transition: none; } }
 
-/* Viewport: quiet orbital atmosphere; the world stays in world coordinates. */
-.shared-floor__viewport { position: relative; flex: 1; min-height: 0; overflow: hidden; touch-action: none; cursor: grab; background-color: #090f17; background-image: radial-gradient(ellipse at 18% 80%, #28404c38, transparent 55%), radial-gradient(ellipse at 84% 15%, #44406325, transparent 48%); }
+/* Viewport: the sky canvas fills this box and reads the camera directly. */
+.shared-floor__viewport { position: relative; flex: 1; min-height: 0; overflow: hidden; touch-action: none; cursor: grab; background-color: #05070d; }
 .shared-floor__viewport:active { cursor: grabbing; }
-.shared-floor__viewport::before { content: ""; position: absolute; inset: 0; pointer-events: none; opacity: .48; background-image: radial-gradient(circle at 8% 17%, #d3e6df 0 1px, transparent 1.5px), radial-gradient(circle at 24% 63%, #d3e6df 0 .7px, transparent 1.3px), radial-gradient(circle at 43% 9%, #d3e6df 0 1px, transparent 1.5px), radial-gradient(circle at 67% 82%, #d3e6df 0 .7px, transparent 1.3px), radial-gradient(circle at 89% 36%, #d3e6df 0 1px, transparent 1.5px); background-size: 431px 347px; }
-.shared-floor__benches { position: absolute; left: 50%; top: 50%; transform-origin: center; }
+/* The sky is drawn on a canvas at device pixel density (see WorldSky.tsx), so
+   it carries no transform: parallax and depth are baked into what is painted
+   and stay sharp at every zoom instead of scaling a fixed-resolution image. */
+.shared-floor__sky-canvas { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; z-index: 0; }
+.shared-floor__benches { position: absolute; left: 50%; top: 50%; z-index: 1; transform-origin: center; }
 .shared-floor__connections { position: absolute; inset: 0; pointer-events: none; overflow: visible; }
 .shared-floor__connections path { fill: none; stroke: var(--floor-accent); stroke-width: 1.5; opacity: .4; }
 .shared-floor__connections .is-shared { stroke-dasharray: 5 6; }
 
-/* Islands: painting and caption share one upright plane (billboarded in Iso);
-   the crew sit on the projected grid. */
+/* Islands: the island box is the painting; caption and tether share its upright
+   plane (billboarded in Iso) and the crew stand on its painted deck. */
 .shared-floor__island { position: absolute; }
 .has-boundaries .shared-floor__island { border: 1px dashed var(--floor-line-2); border-radius: 25px; }
 .shared-floor__place-presentation { position: absolute; inset: 0; pointer-events: none; transform-origin: center; }
 .is-iso .shared-floor__place-presentation { transform: matrix(.57735027, -.57735027, 1, 1, 0, 0); }
-/* layout: one 647×809 panel at the group width plus a 40px bleed per side, centred on the group.
-   The mask reaches full transparency at the panel edge so no rectangle ghosts through. */
-.shared-floor__outpost { position: absolute; left: -40px; top: 50%; width: calc(100% + 80px); aspect-ratio: 647 / 809; transform: translateY(-50%); pointer-events: none; background-size: 300% 100%; background-repeat: no-repeat; opacity: .9; mask-image: radial-gradient(ellipse 50% 50% at center, #000 60%, transparent 100%); }
-/* layout: platform socket, bottom-centre, independent of caption size. */
-.shared-floor__label-anchor { position: absolute; left: 50%; top: calc(50% + 352px); width: 1px; height: 70px; background: linear-gradient(#c0d5d580, #c0d5d530); pointer-events: none; }
+/* Unique crop of the 2k star map around each outpost; black is already transparent. */
+.shared-floor__sky { position: absolute; inset: 0; pointer-events: none; background-repeat: no-repeat; background-size: 240% auto; opacity: .9; mask-image: radial-gradient(ellipse 52% 52% at center, #000 30%, transparent 100%); }
+/* layout: the island box is the 647×809 panel itself, so the crew's deck
+   coordinates (shared-floor-layout.ts) stay true at any island size. The mask
+   reaches full transparency at the panel edge so no rectangle ghosts through. */
+.shared-floor__outpost { position: absolute; inset: 0; pointer-events: none; background-size: 300% 100%; background-repeat: no-repeat; opacity: .9; mask-image: radial-gradient(ellipse 50% 50% at center, #000 60%, transparent 100%); }
+/* layout: platform socket, hung under the panel, independent of caption size. */
+.shared-floor__label-anchor { position: absolute; left: 50%; top: 89.4%; width: 1px; height: 7.8%; background: linear-gradient(#c0d5d580, #c0d5d530); pointer-events: none; }
 .shared-floor__label-anchor::before { content: ""; position: absolute; top: -2px; left: -2px; width: 5px; height: 5px; border-radius: 50%; background: #b6ccc7; }
 /* layout: the workspace caption hangs below the painting, outside its playable surface. */
-.shared-floor__island button.shared-floor__gathering-label { position: absolute; top: calc(50% + 430px); left: 50%; transform: translateX(-50%); transform-origin: top center; z-index: 3; display: flex; flex-direction: column; align-items: center; gap: 4px; width: max-content; max-width: 460px; padding: 8px 12px; border: 0; border-radius: 8px; background: transparent; color: #e4ece5; font-family: inherit; font-size: 16px; letter-spacing: .025em; text-align: center; text-shadow: 0 2px 5px #03090c; opacity: .8; cursor: pointer; pointer-events: auto; }
+.shared-floor__island button.shared-floor__gathering-label { position: absolute; top: 98.1%; left: 50%; transform: translateX(-50%); transform-origin: top center; z-index: 3; display: flex; flex-direction: column; align-items: center; gap: 4px; width: max-content; max-width: 460px; padding: 8px 12px; border: 0; border-radius: 8px; background: transparent; color: #e4ece5; font-family: inherit; font-size: 16px; letter-spacing: .025em; text-align: center; text-shadow: 0 2px 5px #03090c; opacity: .8; cursor: pointer; pointer-events: auto; }
 .shared-floor__island button.shared-floor__gathering-label:hover { background: #adcac012; }
 .shared-floor__island button.shared-floor__gathering-label:focus-visible { outline: 2px solid #c7d79e; outline-offset: 4px; }
 .shared-floor__gathering-label strong { font-weight: 500; font-size: 16px; }
@@ -51,6 +57,7 @@
 .shared-floor__crew { position: relative; width: 100%; height: 100%; }
 .shared-floor__wanderer { position: absolute; width: 84px; height: 94px; z-index: 2; touch-action: none; user-select: none; transition: opacity 180ms ease; }
 .shared-floor__wanderer:hover { z-index: 6; }
+.shared-floor__wanderer.is-pinned:hover { z-index: 11; }
 .is-iso .shared-floor__wanderer { transform: matrix(.57735027, -.57735027, 1, 1, 0, 0); }
 .has-selection .shared-floor__wanderer:not(.is-selected):not(.is-connected) { opacity: .8; }
 .shared-floor__wanderer.is-selected::after { content: ""; position: absolute; top: 57px; left: -5px; width: 94px; height: 37px; border: 0; border-radius: 50%; background: radial-gradient(ellipse, #ffffff38 0%, #ffffff18 35%, #ffffff00 72%); filter: blur(5px); mix-blend-mode: screen; pointer-events: none; z-index: -1; }
@@ -86,6 +93,10 @@
 .shared-floor__camera button, .shared-floor__layers > button, .shared-floor__teams > button { padding: 7px 9px; border: 0; border-radius: 4px; background: transparent; color: var(--floor-muted); cursor: pointer; font-size: 11px; }
 .shared-floor__camera [role="group"] { display: flex; gap: 3px; padding-right: 5px; border-right: 1px solid var(--floor-line-soft); }
 .shared-floor__camera button[aria-pressed="true"] { color: var(--floor-accent); background: var(--floor-face-2); }
+/* How far out the camera is, as a ratio. Over a range this wide the buttons
+   alone give no sense of where you are — 1:2,500 does. Tabular figures so the
+   control does not twitch as the digits change under a scroll. */
+.shared-floor__zoom-readout { align-self: center; min-width: 58px; padding: 0 7px 0 6px; border-left: 1px solid var(--floor-line-soft); color: var(--floor-muted); font-size: 10px; font-variant-numeric: tabular-nums; text-align: right; }
 .shared-floor__layers { position: absolute; z-index: 10; top: 0; right: 12px; font-size: 11px; }
 .shared-floor__layers > button { display: block; margin-left: auto; }
 .shared-floor__layers > div { margin-top: 5px; padding: 10px; border: 1px solid var(--floor-line-2); border-radius: 6px; background: var(--floor-bg); }
@@ -152,3 +163,10 @@
 .shared-floor__back { align-self: flex-start; flex: none; margin-bottom: 10px; padding: 8px 10px; color: var(--floor-muted); background: none; border: 0; font-size: 11px; cursor: pointer; }
 .shared-floor__experiment > .work-run { flex: 1; min-height: 0; }
 .shared-floor__run-link { padding: 8px; margin-top: 5px; width: 100%; text-align: left; border: 0; border-top: 1px solid var(--floor-line-soft); background: none; color: var(--floor-accent); font-size: 11px; cursor: pointer; }
+
+/* Keep the minimap clear of camera controls in narrow panes, including embeds. */
+@container (max-width: 560px) {
+  .shared-floor__minimap { bottom: 62px; }
+  .shared-floor__camera { left: 12px; right: 12px; justify-content: flex-end; }
+  .shared-floor__camera button { padding-inline: 6px; }
+}

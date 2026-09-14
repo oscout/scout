@@ -46,6 +46,90 @@ function createTestAdmission(options: {
 }
 
 describe("Scout Realtime voice", () => {
+  test.each([
+    {session:{id:"known-live"}},
+    {session:{id:"known-live"},transport:{type:"sip",sdp:"v=0\r\nanswer"}},
+  ])("invalid transport retains the learned provider handle for route cleanup: %p", async payload => {
+    const db = new Database(":memory:"); const admission = new ScoutRealtimeVoiceAdmission({database:db});
+    const app = new Hono(); const closed: string[] = [];
+    const dispose = mountScoutVoiceRoutes(app, {realtimeVoiceEnabled:()=>true,realtimeVoiceAdmission:admission,
+      resolveOpenAIApiKey:async()=>"fixture-key",
+      createRealtimeVoiceCall:input=>createScoutRealtimeVoiceCall({...input,fetchImpl:(async()=>Response.json(payload)) as typeof fetch}),
+      finalizeLiveSession:async id=>{closed.push(id);return {state:"confirmed",reason:"close_requested",seconds:1};},
+    });
+    try {
+      const response = await app.request(SCOUT_REALTIME_VOICE_CALL_PATH,{method:"POST",body:"v=0\r\noffer"});
+      expect(response.status).toBe(502); expect(closed).toEqual(["known-live"]);
+      expect(db.query("SELECT session_id, state, attempts FROM live_provider_sessions").get()).toEqual({session_id:"known-live",state:"confirmed",attempts:1});
+      expect(await response.text()).not.toContain("known-live");
+    } finally { dispose(); db.close(); }
+  });
+
+  test("cancelled setup and repeated DELETE obey one shared retry cap and backoff", async () => {
+    let now = 0; let closes = 0;
+    const admission = createTestAdmission({now:()=>now}); const controller = new AbortController(); const app = new Hono();
+    const dispose = mountScoutVoiceRoutes(app,{realtimeVoiceEnabled:()=>true,realtimeVoiceAdmission:admission,
+      resolveOpenAIApiKey:async()=>"fixture-key",
+      createRealtimeVoiceCall:async()=>{controller.abort();return {answerSdp:"v=0\r\nanswer",sessionId:"cancelled-live"};},
+      finalizeLiveSession:async()=>{closes++;return {state:"unconfirmed",reason:"timeout"};},
+    });
+    const remove = () => app.request(`${SCOUT_REALTIME_VOICE_LEASE_PATH}/lease-00000001`,{method:"DELETE"});
+    try {
+      await app.fetch(new Request("http://localhost"+SCOUT_REALTIME_VOICE_CALL_PATH,{method:"POST",body:"v=0\r\noffer",signal:controller.signal}));
+      expect(closes).toBe(1);
+      for(let i=0;i<4;i++) expect((await remove()).status).toBe(204);
+      expect(closes).toBe(1);
+      now=30001; await remove(); expect(closes).toBe(2);
+      now=60002; await remove(); expect(closes).toBe(3);
+      now=90003; await remove(); expect(closes).toBe(3); expect(admission.activeLeaseCount()).toBe(0);
+    } finally { dispose(); }
+  });
+
+  test("rejected cleanup credentials consume the reserved attempt without exposing diagnostics", async () => {
+    const db = new Database(":memory:"); const admission = new ScoutRealtimeVoiceAdmission({database:db});
+    const lease = admission.admit(); admission.bindSession(lease.id,"known-live"); const app = new Hono(); let calls=0;
+    const dispose = mountScoutVoiceRoutes(app,{realtimeVoiceEnabled:()=>false,realtimeVoiceAdmission:admission,
+      resolveOpenAIApiKey:async()=>{calls++;throw new Error("private credential details");},
+    });
+    try {
+      for(let i=0;i<3;i++) expect((await app.request(`${SCOUT_REALTIME_VOICE_LEASE_PATH}/${lease.id}`,{method:"DELETE"})).status).toBe(204);
+      expect(calls).toBe(1);
+      expect(db.query("SELECT state, reason, attempts FROM live_provider_sessions").get()).toEqual({state:"unconfirmed",reason:"cleanup_exception",attempts:1});
+    } finally { dispose(); db.close(); }
+  });
+
+  test("browser abort after provider creation still closes the retained session", async () => {
+    const admission = createTestAdmission(); const controller = new AbortController();
+    const closed: string[] = []; const app = new Hono();
+    const dispose = mountScoutVoiceRoutes(app, {
+      realtimeVoiceEnabled: () => true, realtimeVoiceAdmission: admission,
+      resolveOpenAIApiKey: async () => "fixture-key",
+      createRealtimeVoiceCall: async input => {
+        controller.abort(); expect(input.signal?.aborted).toBe(false);
+        return { answerSdp: "v=0\r\nanswer", sessionId: "aborted-live" };
+      },
+      finalizeLiveSession: async id => { closed.push(id); return {state:"confirmed",reason:"close_requested",seconds:1}; },
+    });
+    try {
+      const response = await app.fetch(new Request("http://localhost"+SCOUT_REALTIME_VOICE_CALL_PATH, {method:"POST",body:"v=0\r\noffer",signal:controller.signal}));
+      expect(response.status).toBe(409); expect(closed).toEqual(["aborted-live"]); expect(admission.activeLeaseCount()).toBe(0);
+    } finally { dispose(); }
+  });
+
+  test("cleanup remains available after disable and retains browser finalization separately", async () => {
+    const db = new Database(":memory:");
+    const admission = new ScoutRealtimeVoiceAdmission({database:db});
+    const lease = admission.admit(); admission.bindSession(lease.id,"live-disabled");
+    const app = new Hono();
+    const dispose = mountScoutVoiceRoutes(app, {realtimeVoiceEnabled:()=>false,realtimeVoiceAdmission:admission,
+      resolveOpenAIApiKey:async()=>"fixture-key",finalizeLiveSession:async()=>({state:"unconfirmed",reason:"gone"})});
+    try {
+      const response = await app.request(`${SCOUT_REALTIME_VOICE_LEASE_PATH}/${lease.id}`, {method:"DELETE",headers:{"content-type":"application/json"},body:JSON.stringify({state:"confirmed",reason:"close_requested",seconds:12})});
+      expect(response.status).toBe(204); expect(admission.activeLeaseCount()).toBe(0);
+      expect(db.query("SELECT state, client_state, client_usage_seconds FROM live_provider_sessions").get()).toEqual({state:"unconfirmed",client_state:"confirmed",client_usage_seconds:12});
+    } finally { dispose(); db.close(); }
+  });
+
   test("keeps the server call route closed unless the host enables it", async () => {
     const app = new Hono();
     let resolvedApiKey = false;
@@ -86,7 +170,8 @@ describe("Scout Realtime voice", () => {
       realtimeVoiceEnvironment: {},
       realtimeVoiceAdmission: admission,
       resolveOpenAIApiKey: async () => "sk-test",
-      createRealtimeVoiceCall: async () => "v=0\r\nanswer\r\n",
+      finalizeLiveSession: async () => ({state:"confirmed",reason:"close_requested",seconds:10}),
+      createRealtimeVoiceCall: async () => ({ answerSdp: "v=0\r\nanswer\r\n", sessionId: "live_test" }),
     });
 
     const initial = await app.request(SCOUT_REALTIME_VOICE_SETTINGS_PATH);
@@ -164,7 +249,8 @@ describe("Scout Realtime voice", () => {
       realtimeVoiceEnabled: () => true,
       realtimeVoiceAdmission: admission,
       resolveOpenAIApiKey: async () => "sk-test",
-      createRealtimeVoiceCall: async () => "v=0\r\nanswer\r\n",
+      finalizeLiveSession: async () => ({state:"confirmed",reason:"close_requested",seconds:10}),
+      createRealtimeVoiceCall: async () => ({ answerSdp: "v=0\r\nanswer\r\n", sessionId: "live_test" }),
     });
 
     const first = await app.request(SCOUT_REALTIME_VOICE_CALL_PATH, {
@@ -206,8 +292,9 @@ describe("Scout Realtime voice", () => {
       realtimeVoiceEnabled: () => true,
       realtimeVoiceAdmission: admission,
       resolveOpenAIApiKey: async () => "sk-test",
+      finalizeLiveSession: async () => ({state:"confirmed",reason:"close_requested",seconds:10}),
       createRealtimeVoiceCall: async () => {
-        throw new ScoutRealtimeVoiceError("Could not reach OpenAI Realtime.", 502);
+        throw new ScoutRealtimeVoiceError("Could not reach OpenAI Live.", 502);
       },
     });
 
@@ -304,7 +391,7 @@ describe("Scout Realtime voice", () => {
     });
     expect(response.status).toBe(502);
     expect(await response.json()).toEqual({
-      error: "Realtime voice admission is temporarily unavailable. Try again shortly.",
+      error: "Live voice setup is temporarily unavailable. Try again shortly.",
     });
   });
 
@@ -334,65 +421,82 @@ describe("Scout Realtime voice", () => {
 
   test("sends the browser offer and Scout-owned session config through the server", async () => {
     const calls: Array<{ url: string; init?: RequestInit }> = [];
-    const answer = await createScoutRealtimeVoiceCall({
+    const call = await createScoutRealtimeVoiceCall({
       offerSdp: "v=0\r\noffer",
       apiKey: "sk-test",
       config: {
-        model: "gpt-test-realtime",
+        model: "gpt-test-live",
         voice: "marin",
         instructions: "Use concise replies.",
       },
       fetchImpl: async (url, init) => {
         calls.push({ url: String(url), init });
-        return new Response("v=0\r\nanswer", { status: 200 });
+        return Response.json({
+          session: { id: "live_abc123" },
+          transport: { type: "webrtc", sdp: "v=0\r\nanswer" },
+        });
       },
     });
 
-    expect(answer).toBe("v=0\r\nanswer");
+    expect(call).toEqual({ answerSdp: "v=0\r\nanswer", sessionId: "live_abc123" });
     expect(calls).toHaveLength(1);
-    expect(calls[0]?.url).toBe("https://api.openai.com/v1/realtime/calls");
+    expect(calls[0]?.url).toBe("https://api.openai.com/v1/live/sessions");
     expect(new Headers(calls[0]?.init?.headers).get("authorization")).toBe("Bearer sk-test");
-    expect(calls[0]?.init?.body).toBeInstanceOf(FormData);
-    const form = calls[0]?.init?.body as FormData;
-    expect(form.get("sdp")).toBe("v=0\r\noffer");
-    expect(JSON.parse(String(form.get("session")))).toEqual({
-      type: "realtime",
-      model: "gpt-test-realtime",
-      audio: {
-        input: {
-          noise_reduction: { type: "far_field" },
-          turn_detection: {
-            type: "server_vad",
-            threshold: 0.6,
-            prefix_padding_ms: 300,
-            silence_duration_ms: 500,
-            create_response: true,
-            interrupt_response: true,
-          },
-        },
-        output: { voice: "marin" },
+    expect(new Headers(calls[0]?.init?.headers).get("content-type")).toBe("application/json");
+    expect(JSON.parse(String(calls[0]?.init?.body))).toEqual({
+      session: {
+        model: "gpt-test-live",
+        audio: { output: { voice: "marin" } },
+        instructions: "Use concise replies.",
+        delegation: { type: "client" },
       },
-      instructions: "Use concise replies.",
-      tools: [
-        {
-          type: "function",
-          name: "ask_scoutbot",
-          description: expect.stringContaining("live Scoutbot control-plane assistant"),
-          parameters: {
-            type: "object",
-            properties: {
-              request: {
-                type: "string",
-                description: expect.stringContaining("operator's complete request"),
-              },
-            },
-            required: ["request"],
-            additionalProperties: false,
-          },
-        },
-      ],
-      tool_choice: "auto",
+      transport: { type: "webrtc", sdp: "v=0\r\noffer" },
     });
+  });
+
+  test("keeps host-local state out of an API-managed backend", async () => {
+    let body: Record<string, unknown> = {};
+    await createScoutRealtimeVoiceCall({
+      offerSdp: "v=0\r\noffer",
+      apiKey: "sk-test",
+      fetchImpl: async (_url, init) => {
+        body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+        return Response.json({
+          session: { id: "live_abc123" },
+          transport: { type: "webrtc", sdp: "v=0\r\nanswer" },
+        });
+      },
+    });
+
+    // Scout's fleet state never leaves the host, so a Responses backend could
+    // not answer a delegation. Session-level tools are gone with it.
+    const session = body.session as Record<string, unknown>;
+    expect(session.delegation).toEqual({ type: "client" });
+    expect(session).not.toHaveProperty("tools");
+    expect(session).not.toHaveProperty("tool_choice");
+    // Live is full-duplex and rejects an input VAD profile outright.
+    expect(session.audio).toEqual({ output: { voice: "marin" } });
+  });
+
+  test("fails loudly when Live answers without a usable WebRTC session", async () => {
+    for (const payload of [
+      "",
+      "not json",
+      JSON.stringify({ session: { id: "live_abc123" } }),
+      "null",
+      JSON.stringify({ session:{id:"live_wrong"}, transport:{type:"sip",sdp:"v=0\r\nanswer"} }),
+      JSON.stringify({ transport: { type: "webrtc", sdp: "v=0\r\nanswer" } }),
+    ]) {
+      const error = await createScoutRealtimeVoiceCall({
+        offerSdp: "v=0\r\noffer",
+        apiKey: "sk-test",
+        fetchImpl: async () => new Response(payload, { status: 200 }),
+      }).catch((caught) => caught);
+      expect(error).toEqual(expect.objectContaining({
+        name: "ScoutRealtimeVoiceError",
+        status: 502,
+      }));
+    }
   });
 
   test("does not leak an upstream error response through the browser route", async () => {
@@ -420,11 +524,11 @@ describe("Scout Realtime voice", () => {
 
   test("keeps the documented defaults configurable at the server boundary", () => {
     expect(resolveScoutRealtimeVoiceConfig({
-      OPENSCOUT_REALTIME_MODEL: "gpt-test-realtime",
+      OPENSCOUT_REALTIME_MODEL: "gpt-test-live",
       OPENSCOUT_REALTIME_VOICE: "cedar",
       OPENSCOUT_REALTIME_INSTRUCTIONS: "Be direct.",
     })).toEqual({
-      model: "gpt-test-realtime",
+      model: "gpt-test-live",
       voice: "cedar",
       instructions: "Be direct.",
     });

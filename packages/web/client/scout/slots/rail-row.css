@@ -500,3 +500,8 @@
   border: 1px solid var(--s-accent); border-radius: 4px; outline: none;
 }
 .rr-row-name-field::selection { background: var(--s-accent-soft); }
+
+/* A row action that is a toggle and is on. Ink, not hue. */
+.rr-row-action--on {
+  color: var(--ink);
+}

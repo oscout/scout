@@ -454,7 +454,7 @@ describe("ConversationProjectionStore", () => {
     const snapshot = projection.snapshot();
     expect(snapshot).toMatchObject({
       projectionId: "projection-test-1",
-      projectionVersion: 1,
+      projectionVersion: 2,
       sequence: 1,
       total: 1,
       hasMore: false,
@@ -714,6 +714,35 @@ describe("ConversationProjectionStore", () => {
     expect(projection.applyBrokerBatch([
       { kind: "agent.endpoint.upsert", endpoint: completedEndpoint },
     ])?.delta.upserted[0]?.activityState).toBe("idle");
+  });
+
+  test("projects the asked worker in an agent-to-agent DM, regardless of participant order", () => {
+    const { db, projection } = setup();
+    const requester = seedAgent(db, { id: "aaa-requester" });
+    const worker = seedAgent(db, { id: "zzz-worker" });
+    seedEndpoint(db, { id: "requester-endpoint", agentId: requester.id, sessionId: "relay-wrong-claude" });
+    seedEndpoint(db, { id: "worker-endpoint", agentId: worker.id, sessionId: "worker-session" });
+    const conversation = seedConversation(db, {
+      id: "chat_agent-to-agent",
+      participantIds: [requester.id, worker.id],
+    });
+    const message = seedMessage(db, {
+      id: "request", conversationId: conversation.id, actorId: requester.id,
+      createdAt: BASE + 200,
+      metadata: { returnAddress: { sessionId: "codex-requester-session" } },
+    });
+    const invocation = seedInvocation(db, {
+      id: "inv-agent-to-agent", targetAgentId: worker.id,
+      conversationId: conversation.id, createdAt: BASE + 300,
+    });
+    projection.applyBrokerBatch([
+      entryForConversation(conversation), entryForMessage(message),
+      { kind: "invocation.record", invocation },
+    ]);
+    expect(projection.snapshot().items[0]).toMatchObject({
+      agentId: worker.id,
+      runtimeSessionId: "worker-session",
+    });
   });
 
   test("projects queued, running, waiting, and completed flight state ahead of endpoint presence", () => {

@@ -89,6 +89,21 @@ scout search query "xcodebuild" --harness kimi --hours 12
 Indexing is never ambient. If query reports not warmed, run `index` for that
 span first. Full guide: `docs/session-search.md`.
 
+## Work status and deliberate operator contact
+
+Use `scout status <handle>` or `scout status --all --blocked --json` to inspect
+broker-owned work without changing it. Filter ownership with `--next-actor
+operator`, `self`, or an exact actor id; failures use `--failed` instead of
+`--blocked`. Unknown ownership remains unknown, and remote nodes are not polled.
+
+Use `scout notify --message "..." [--image /absolute/path.png]` for an authorized,
+agent-judged operator update, independent of turn completion. Use `scout ask
+--operator --question "..." [--option choice ...] [--permission]` for an answer
+required from the operator. Notification receipts confirm durable recording,
+not display. The permission flag labels a question, not a harness grant. Images
+use the paired attachment store and expire after six hours. `need` and
+`attention` are retired public commands.
+
 ## Remote onboarding (OpenScout product context)
 
 When you need OpenScout semantics before routing locally:

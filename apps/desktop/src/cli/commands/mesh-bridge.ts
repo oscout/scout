@@ -37,7 +37,8 @@ Options (run + install):
   --config <path>     JSON config file; flags override its values
 `;
 
-const LAUNCH_AGENT_LABEL = "app.openscout.mcp-bridge";
+/** The launchd job that owns the suite's own mesh bridge. */
+export const LAUNCH_AGENT_LABEL = "app.openscout.mcp-bridge";
 
 function supportDirectory(): string {
   return join(homedir(), "Library", "Application Support", "OpenScout");

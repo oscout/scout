@@ -6,17 +6,55 @@ import {
   registerScoutVoiceHost,
   resetScoutVoiceSessionStateForTests,
 } from "./scout-voice-session.ts";
+import { SCOUT_VOICE_HOST_REGISTRATION_GRACE_MS } from "../shared/voice-issues.ts";
 
 afterEach(() => {
   resetScoutVoiceSessionStateForTests();
 });
 
 describe("engageScoutVoiceDictation", () => {
-  test("reports host offline when Scout Menu is not registered", () => {
+  // A web restart empties the in-process host registry while Scout Menu keeps
+  // running, so "nothing registered" is only evidence of a missing host once
+  // the host has had a registration cycle to check back in.
+  test("reports reconnecting while the registry is still within its grace", () => {
     const result = engageScoutVoiceDictation();
+    expect(result.ready).toBe(false);
+    expect(result.issue?.code).toBe("host_reconnecting");
+    expect(result.issue?.action).toBe("none");
+  });
+
+  test("reports host offline once the grace has passed with no registration", () => {
+    const result = engageScoutVoiceDictation(
+      {},
+      Date.now() + SCOUT_VOICE_HOST_REGISTRATION_GRACE_MS + 1_000,
+    );
     expect(result.ready).toBe(false);
     expect(result.issue?.code).toBe("host_offline");
     expect(result.issue?.action).toBe("launch_host");
+    expect(result.issue?.actionLabel).toBe("Launch Scout Menu");
+  });
+
+  // Allow a bounded grace after a missed check-in.
+  test("a stale registration reads as reconnecting, not offline", () => {
+    registerScoutVoiceHost({ hostId: "scout-menu", platform: "macos" });
+    const result = engageScoutVoiceDictation(
+      {},
+      Date.now() + 46_000,
+    );
+    expect(result.issue?.code).toBe("host_reconnecting");
+  });
+
+  test("offers launch again after a stale host exhausts its reconnect grace", () => {
+    registerScoutVoiceHost({ hostId: "scout-menu", platform: "macos", devices: [{ id: "mic", name: "Mic", isDefault: true }] });
+    const result = engageScoutVoiceDictation({}, Date.now() + 90_000);
+    expect(result.hostOnline).toBe(false);
+    expect(result.issue?.code).toBe("host_offline");
+    expect(result.issue?.action).toBe("launch_host");
+  });
+
+  test("a connected host with no device gets the microphone action", () => {
+    registerScoutVoiceHost({ hostId: "scout-menu", platform: "macos" });
+    expect(engageScoutVoiceDictation().issue?.code).toBe("no_input_device");
   });
 
   test("reports microphone denied with open settings action", () => {

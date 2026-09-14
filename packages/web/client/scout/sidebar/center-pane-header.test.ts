@@ -18,6 +18,7 @@ describe("center-pane header seam projections (SCO-085 / SCO-086)", () => {
     expect(routeBreadcrumbForRoute({ view: "repos" })).toBe("Repositories");
     expect(routeBreadcrumbForRoute({ view: "code" })).toBe("Code Browser");
     expect(routeBreadcrumbForRoute({ view: "ops", mode: "lanes" })).toBe("Agent Lanes");
+    expect(routeBreadcrumbForRoute({ view: "ops", mode: "world" })).toBe("World");
   });
 
   test("breadcrumb is null on top-level area landings that need no crumb", () => {

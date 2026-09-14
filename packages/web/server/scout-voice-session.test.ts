@@ -8,6 +8,7 @@ import {
   pushScoutVoiceHostEvent,
   registerScoutVoiceHost,
   resetScoutVoiceSessionStateForTests,
+  parseScoutVoiceSettingsPatch,
   stopScoutVoiceSession,
   subscribeScoutVoiceSession,
   synthesizeScoutVoiceSpeech,
@@ -456,5 +457,63 @@ describe("scout voice native sessions", () => {
 
     expect(settled).toBe(true);
     await expect(waiting).resolves.toEqual({ command: null });
+  });
+});
+
+describe("parseScoutVoiceSettingsPatch", () => {
+  test("drops permission rows without a concrete kind", () => {
+    expect(parseScoutVoiceSettingsPatch({
+      preference: "apple",
+      permissions: [
+        { kind: "microphone", status: "authorized", granted: true, canRequest: false },
+        { status: "denied", granted: false },
+        { kind: "speechRecognition", status: "denied", granted: false, canRequest: false },
+      ],
+    })).toEqual({
+      preference: "apple",
+      permissions: [
+        { kind: "microphone", status: "authorized", granted: true, canRequest: false },
+        { kind: "speechRecognition", status: "denied", granted: false, canRequest: false },
+      ],
+    });
+  });
+
+  test("ignores unknown JSON instead of widening the settings type", () => {
+    expect(parseScoutVoiceSettingsPatch(undefined)).toBeUndefined();
+    expect(parseScoutVoiceSettingsPatch("nope")).toBeUndefined();
+    expect(parseScoutVoiceSettingsPatch({ preference: "nope", modelReady: true }))
+      .toEqual({ modelReady: true });
+  });
+
+  test("accepts only JSON literal booleans for granted and canRequest", () => {
+    expect(parseScoutVoiceSettingsPatch({
+      permissions: [
+        { kind: "microphone", status: "authorized", granted: true, canRequest: false },
+        { kind: "speechRecognition", status: "denied", granted: false, canRequest: true },
+      ],
+    })).toEqual({
+      permissions: [
+        { kind: "microphone", status: "authorized", granted: true, canRequest: false },
+        { kind: "speechRecognition", status: "denied", granted: false, canRequest: true },
+      ],
+    });
+  });
+
+  test("malformed granted and canRequest values do not become true", () => {
+    expect(parseScoutVoiceSettingsPatch({
+      permissions: [
+        { kind: "microphone", status: "authorized", granted: "false", canRequest: "true" },
+        { kind: "speechRecognition", status: "authorized", granted: 1, canRequest: 0 },
+        { kind: "microphone", status: "authorized", granted: { ok: true }, canRequest: null },
+        { kind: "speechRecognition", status: "notDetermined" },
+      ],
+    })).toEqual({
+      permissions: [
+        { kind: "microphone", status: "authorized", granted: false, canRequest: false },
+        { kind: "speechRecognition", status: "authorized", granted: false, canRequest: false },
+        { kind: "microphone", status: "authorized", granted: false, canRequest: false },
+        { kind: "speechRecognition", status: "notDetermined", granted: false, canRequest: false },
+      ],
+    });
   });
 });

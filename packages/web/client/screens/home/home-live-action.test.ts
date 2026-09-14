@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import type { Agent, ObserveData } from "../../lib/types.ts";
+import type { Agent, ObserveData, ObserveEvent } from "../../lib/types.ts";
 import {
   contextActivityLine,
   homeCardPeekEnabled,
@@ -59,6 +59,20 @@ function agent(overrides: Partial<Agent> = {}): Agent {
   };
 }
 
+function observeData(
+  events: Array<Partial<ObserveEvent> & Pick<ObserveEvent, "kind">>,
+): ObserveData {
+  return {
+    events: events.map((event, index) => ({
+      id: `evt-${index}`,
+      t: index,
+      text: "",
+      ...event,
+    })),
+    files: [],
+  };
+}
+
 describe("isPlaceholderText / usefulHeadline", () => {
   test("drops discovery, turn lifecycle, and tool-count noise", () => {
     expect(isPlaceholderText("Native claude transcript discovered.")).toBe(true);
@@ -88,39 +102,31 @@ describe("prettifyToolLine", () => {
 
 describe("liveActionSummary", () => {
   test("prefers checkpoint over observe events", () => {
-    const observeData: ObserveData = {
-      events: [{ kind: "tool", tool: "Read", arg: "content.tsx" }],
-      files: [],
-    };
     expect(
       liveActionSummary({
         checkpoint: "Indexing home surface",
-        observeData,
+        observeData: observeData([{ kind: "tool", tool: "Read", arg: "content.tsx" }]),
       }),
     ).toBe("Indexing home surface");
   });
 
   test("uses latest meaningful observe event", () => {
-    const observeData: ObserveData = {
-      events: [
+    expect(liveActionSummary({
+      observeData: observeData([
         { kind: "system", text: "session started" },
         { kind: "tool", tool: "Grep", arg: "home-moving" },
-      ],
-      files: [],
-    };
-    expect(liveActionSummary({ observeData })).toBe("Grep · home-moving");
+      ]),
+    })).toBe("Grep · home-moving");
   });
 
   test("prettifies path-heavy file tools to basename", () => {
-    const observeData: ObserveData = {
-      events: [{
+    expect(liveActionSummary({
+      observeData: observeData([{
         kind: "tool",
         tool: "ReadMediaFile",
         arg: "/var/tmp/study-a-detail2.png",
-      }],
-      files: [],
-    };
-    expect(liveActionSummary({ observeData })).toBe("ReadMediaFile · study-a-detail2.png");
+      }]),
+    })).toBe("ReadMediaFile · study-a-detail2.png");
   });
 
   test("falls back to task when live", () => {
@@ -133,14 +139,11 @@ describe("liveActionSummary", () => {
   });
 
   test("does not surface empty session-trace placeholders", () => {
-    const observeData: ObserveData = {
-      events: [{
-        kind: "system",
-        text: "No session trace is available for this agent yet.",
-      }],
-      files: [],
-    };
-    expect(liveActionSummary({ observeData })).toBeNull();
+    const data = observeData([{
+      kind: "system",
+      text: "No session trace is available for this agent yet.",
+    }]);
+    expect(liveActionSummary({ observeData: data })).toBeNull();
     expect(
       liveActionSummary({
         fallbackTask: "No session trace is available for this agent yet.",
@@ -150,73 +153,59 @@ describe("liveActionSummary", () => {
   });
 
   test("skips native transcript discovery and turn lifecycle noise", () => {
-    const observeData: ObserveData = {
-      events: [
-        { kind: "system", text: "Native claude transcript discovered." },
-        { kind: "note", text: "Turn complete" },
-      ],
-      files: [],
-    };
-    expect(liveActionSummary({ observeData, skipLifecycleTokens: true })).toBeNull();
-    expect(liveActionSummary({ observeData })).toBeNull();
+    const data = observeData([
+      { kind: "system", text: "Native claude transcript discovered." },
+      { kind: "note", text: "Turn complete" },
+    ]);
+    expect(liveActionSummary({ observeData: data, skipLifecycleTokens: true })).toBeNull();
+    expect(liveActionSummary({ observeData: data })).toBeNull();
   });
 
   test("prefers a real tool line over transcript discovery", () => {
-    const observeData: ObserveData = {
-      events: [
+    expect(liveActionSummary({
+      observeData: observeData([
         { kind: "system", text: "Native claude transcript discovered." },
         { kind: "tool", tool: "ReadMediaFile", arg: "img/study-a-detail2.png" },
         { kind: "note", text: "Turn complete" },
-      ],
-      files: [],
-    };
-    expect(liveActionSummary({ observeData, skipLifecycleTokens: true }))
-      .toBe("ReadMediaFile · study-a-detail2.png");
+      ]),
+      skipLifecycleTokens: true,
+    })).toBe("ReadMediaFile · study-a-detail2.png");
   });
 
   test("skips bare bash without args and falls through to context-worthy null", () => {
-    const observeData: ObserveData = {
-      events: [
+    expect(liveActionSummary({
+      observeData: observeData([
         { kind: "system", text: "Native claude transcript discovered." },
         { kind: "tool", tool: "bash", arg: "" },
         { kind: "note", text: "Turn complete · 0 tool calls" },
-      ],
-      files: [],
-    };
-    expect(liveActionSummary({ observeData, skipLifecycleTokens: true })).toBeNull();
+      ]),
+      skipLifecycleTokens: true,
+    })).toBeNull();
   });
 
   test("humanizes a bare protocol token instead of surfacing the raw bracket", () => {
-    const observeData: ObserveData = {
-      events: [{ kind: "system", text: "[turn_ended]" }],
-      files: [],
-    };
-    expect(liveActionSummary({ observeData })).toBe("turn ended");
-    expect(liveActionSummary({ observeData, skipLifecycleTokens: true })).toBeNull();
+    const data = observeData([{ kind: "system", text: "[turn_ended]" }]);
+    expect(liveActionSummary({ observeData: data })).toBe("turn ended");
+    expect(liveActionSummary({ observeData: data, skipLifecycleTokens: true })).toBeNull();
   });
 
   test("prefers a real meaningful line over a trailing protocol token", () => {
-    const observeData: ObserveData = {
-      events: [
+    expect(liveActionSummary({
+      observeData: observeData([
         { kind: "tool", tool: "Edit", arg: "home-now-card.tsx" },
         { kind: "system", text: "[turn_ended]" },
-      ],
-      files: [],
-    };
-    expect(liveActionSummary({ observeData })).toBe("Edit · home-now-card.tsx");
+      ]),
+    })).toBe("Edit · home-now-card.tsx");
   });
 
   test("when live, prefers current tool over older conversation", () => {
-    const observeData: ObserveData = {
-      events: [
-        { kind: "ask", text: "Please polish the home signal list" },
-        { kind: "tool", tool: "Edit", arg: "home-moving-signal.tsx" },
-      ],
-      files: [],
-    };
-    expect(liveActionSummary({ observeData, observeLive: true }))
+    const data = observeData([
+      { kind: "ask", text: "Please polish the home signal list" },
+      { kind: "tool", tool: "Edit", arg: "home-moving-signal.tsx" },
+    ]);
+    expect(liveActionSummary({ observeData: data, observeLive: true }))
       .toBe("Edit · home-moving-signal.tsx");
-    expect(liveActionSummary({ observeData, observeLive: false }))
+    expect(liveActionSummary({ observeData: data, observeLive: false }))
       .toBe("Please polish the home signal list");
   });
 });

@@ -32,7 +32,7 @@ const baseRelaySendInput = mock((_value: string) => {});
 const baseRelaySendLine = mock((_value: string) => {});
 const baseRelayRestart = mock(() => {});
 
-const useTerminalRelayMock = mock(() => ({
+const useTerminalRelayMock = mock((_options?: Record<string, unknown>) => ({
   status: "disconnected" as const,
   sessionId: null,
   error: null,

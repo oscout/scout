@@ -1235,16 +1235,17 @@ describe("web db message filtering", () => {
         authorityNodeId: "node-1",
         participantIds: ["operator"],
       });
-      // An ask delivered to the agent that it has not answered: no membership
-      // row, nothing authored. The delivery is the only record it was asked.
+      // An ask the agent has not answered. The broker puts a target into
+      // participantIds when it opens the conversation, so membership is what
+      // carries this case — nothing is authored by the agent yet.
       store.upsertConversation({
         id: "c.conv-unanswered",
-        kind: "channel",
+        kind: "direct",
         title: "Unanswered",
         visibility: "private",
         shareMode: "local",
         authorityNodeId: "node-1",
-        participantIds: ["operator"],
+        participantIds: ["agent-1", "operator"],
       });
       // Unrelated fleet traffic — the global tail this page must not return.
       store.upsertConversation({
@@ -1280,9 +1281,11 @@ describe("web db message filtering", () => {
         });
       }
 
+      // A routing receipt alone must not add an unrelated conversation to
+      // this agent's map.
       store.recordDeliveries([{
-        id: "delivery-unanswered",
-        messageId: "msg-unanswered",
+        id: "delivery-routing-only",
+        messageId: "msg-elsewhere",
         targetId: "agent-1",
         targetKind: "agent",
         transport: "local_socket",
@@ -1297,8 +1300,8 @@ describe("web db message filtering", () => {
       expect(ids).toContain("msg-addressed");
       expect(ids).toContain("msg-spoken");
       expect(ids).toContain("msg-spoken-reply");
-      // Addressed but unanswered, with no membership row: the delivery leg is
-      // the only thing that brings this back.
+      // Asked and not yet answered: membership brings this back before the
+      // agent has said anything in it.
       expect(ids).toContain("msg-unanswered");
       // The whole point: unrelated traffic stays out, however recent it is.
       expect(ids).not.toContain("msg-elsewhere");

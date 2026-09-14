@@ -147,7 +147,7 @@ type SessionConversationRow = {
   last_message_at: number | null;
 };
 
-function parseMetadataJson(raw: string | null): Record<string, unknown> {
+function parseMetadataJson(raw: string | null | undefined): Record<string, unknown> {
   if (!raw) return {};
   try {
     const parsed = JSON.parse(raw) as unknown;

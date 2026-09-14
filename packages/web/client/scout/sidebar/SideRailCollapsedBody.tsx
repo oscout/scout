@@ -179,7 +179,7 @@ function ProjectsCollapsedStrip({ onExpand }: { onExpand?: () => void }) {
   const projects = useMemo(() => {
     const map = new Map<string, { name: string; needs: number; working: number; latest: number }>();
     for (const agent of scoped) {
-      const name = (agent.project ?? pathLeaf(agent.workspaceRoot) ?? agent.name ?? "project").trim();
+      const name = (agent.project ?? pathLeaf(agent.projectRoot) ?? agent.name ?? "project").trim();
       const key = name.toLowerCase();
       const cur = map.get(key) ?? { name, needs: 0, working: 0, latest: 0 };
       const state = normalizeAgentState(agent.state);

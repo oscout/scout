@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 
 import {
+  executeScoutVoiceIssueAction,
   reconcileScoutSpeechSelection,
   startScoutSystemSpeech,
   type ScoutSpeechCatalog,
@@ -111,4 +112,20 @@ describe("Scout speech catalog selection", () => {
       voiceId: "aria",
     });
   });
+});
+
+
+test("launch-host action opens Scout without requesting any service restart", async () => {
+  const originalFetch = globalThis.fetch;
+  let requests = 0;
+  const location = { href: "" };
+  Object.defineProperty(globalThis, "window", { configurable: true, value: { location } });
+  globalThis.fetch = (async () => { requests += 1; throw new Error("Unexpected network action"); }) as unknown as typeof fetch;
+  try {
+    await executeScoutVoiceIssueAction("launch_host");
+    expect(location.href).toBe("scout://hud/show");
+    expect(requests).toBe(0);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });

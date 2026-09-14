@@ -63,6 +63,7 @@ export type ScoutOperatorSignal =
       replyExpectation: "required";
       /** What the agent is asking for. Never empty — that is the whole point. */
       question: string;
+      requestKind?: "permission";
       /** Optional discrete choices, when the answer is a selection. */
       options?: string[];
       /** Why the agent cannot continue without it. */

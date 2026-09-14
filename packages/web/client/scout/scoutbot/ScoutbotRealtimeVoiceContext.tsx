@@ -16,7 +16,6 @@ import { api } from "../../lib/api.ts";
 import { fetchScoutVoiceSettings } from "../../lib/scout-voice.ts";
 import {
   startScoutRealtimeVoiceCall,
-  isActiveResponseError,
   type ScoutRealtimeVoiceCall,
   type ScoutRealtimeVoiceConnectionState,
   type ScoutRealtimeVoiceReplyActions,
@@ -234,20 +233,23 @@ export function ScoutbotRealtimeVoiceProvider({ children }: { children: ReactNod
     };
   }, []);
 
-  const applyReplyActions = useCallback(async (body: string): Promise<ScoutRealtimeVoiceReplyActions> => {
+  const applyReplyActions = useCallback(async (body: string, isCurrent: () => boolean): Promise<ScoutRealtimeVoiceReplyActions> => {
+    if (!isCurrent()) return { agentRequests: { requested: 0, sent: 0, failed: 0 } };
     window.dispatchEvent(new CustomEvent(SCOUTBOT_REALTIME_REPLY_EVENT, { detail: { body } }));
     const spokenBody = body.replace(/```[\s\S]*?```/gu, "").trim();
     if (spokenBody) appendTrace("Scoutbot replied", spokenBody.slice(0, 2_000), "scoutbot");
     let requested = 0;
     let sent = 0;
     let failed = 0;
+    let unknown = 0;
     for (const action of extractScoutbotUiActions(body)) {
+      if (!isCurrent()) break;
       if (action.type === "ask-agent") {
         requested += 1;
-        if (await sendScoutbotAsk(action, appendTrace, setError)) {
+        if (await sendScoutbotAsk(action, appendTrace, setError) === "sent") {
           sent += 1;
         } else {
-          failed += 1;
+          unknown += 1;
         }
       } else if (action.type !== "reminder") {
         const detail = describeActionDetail(action);
@@ -263,8 +265,8 @@ export function ScoutbotRealtimeVoiceProvider({ children }: { children: ReactNod
         );
       }
     }
-    await loadChatState().catch(() => null);
-    return { agentRequests: { requested, sent, failed } };
+    if (isCurrent()) await loadChatState().catch(() => null);
+    return { agentRequests: { requested, sent, failed, unknown } };
   }, [appendTrace, loadChatState]);
 
   const openVoiceSettings = useCallback(() => {
@@ -318,14 +320,15 @@ export function ScoutbotRealtimeVoiceProvider({ children }: { children: ReactNod
         onState: (next) => {
           if (!disposedRef.current && generationRef.current === generation) {
             setState(next);
+            if (next === "ended" || next === "error") {
+              generationRef.current += 1;
+              callRef.current = null;
+              setLeaseId(null);
+            }
           }
         },
         onError: (message) => {
           if (disposedRef.current || generationRef.current !== generation) return;
-          if (isActiveResponseError(message)) {
-            appendTrace("Scoutbot reply queued", "Waiting for the current spoken response to finish", "scoutbot");
-            return;
-          }
           setError(message);
           appendTrace("Voice issue", message, "error");
         },
@@ -334,9 +337,9 @@ export function ScoutbotRealtimeVoiceProvider({ children }: { children: ReactNod
             setTrace((current) => [...current, event].slice(-100));
           }
         },
-        onScoutbotReply: (body) => {
+        onScoutbotReply: (body, taskIsCurrent) => {
           if (!disposedRef.current && generationRef.current === generation) {
-            return applyReplyActions(body);
+            return applyReplyActions(body, () => taskIsCurrent() && !disposedRef.current && generationRef.current === generation);
           }
           return { agentRequests: { requested: 0, sent: 0, failed: 0 } };
         },
@@ -527,7 +530,7 @@ async function sendScoutbotAsk(
   action: Extract<ScoutbotUiAction, { type: "ask-agent" }>,
   appendTrace: (label: string, detail?: string, kind?: ScoutRealtimeVoiceTraceKind) => void,
   setError: (message: string | null) => void,
-): Promise<boolean> {
+): Promise<"sent" | "unknown"> {
   appendTrace("Scoutbot is coordinating", `Asking ${action.targetLabel}`, "agent");
   try {
     const result = await api<ScoutbotAskAgentResult>("/api/scoutbot/actions/ask", {
@@ -546,11 +549,11 @@ async function sendScoutbotAsk(
         : result.targetAgentId ?? result.targetLabel,
       "agent",
     );
-    return true;
+    return "sent";
   } catch (caught) {
     const message = caught instanceof Error ? caught.message : "Could not send to agent.";
-    appendTrace("Scoutbot could not send the request", message, "error");
+    appendTrace("Scoutbot request delivery is unconfirmed", message, "error");
     setError(message);
-    return false;
+    return "unknown";
   }
 }

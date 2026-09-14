@@ -25,3 +25,8 @@ export function routeEmbeddedNavigation(
   if (!isInternalRoute(route) && forwardToNative({ type: "navigate", route })) return;
   navigate(route);
 }
+
+/** Native Ops owns these sibling seats, so the web Ops embed must hand them back. */
+export function nativeOpsOwnsInternalRoute(route: Route): boolean {
+  return route.view === "ops" && !["tail", "atop", "lanes", "agents"].includes(route.mode ?? "");
+}

@@ -1,10 +1,11 @@
-import { lazy, Suspense, useCallback, useMemo } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo } from "react";
 import { useBrowserLocation } from "../lib/router.ts";
 import type { Route } from "../lib/types.ts";
 import { useScout } from "../scout/Provider.tsx";
 import { routeEmbeddedNavigation } from "./embed-navigation.ts";
 import type { RegisteredSurface } from "./types.ts";
 import { resolveEmbedChrome } from "./types.ts";
+import { installNativeAreaKeyboard } from "./native-area-keyboard.ts";
 
 type RoutedSurfaceFallbackProps = Pick<
   ReturnType<typeof useScout>,
@@ -36,14 +37,19 @@ export function DiscoveredEmbedHost({ surface }: { surface: RegisteredSurface })
   const ownsInternalRoutes = Boolean(surface.embed?.ownsInternalRoutes);
   const isInternalRoute = useCallback(
     (destination: Route) =>
-      ownsInternalRoutes && routeMatchesSurfaceRoute(destination, surface.route),
-    [ownsInternalRoutes, surface.route],
+      ownsInternalRoutes && routeMatchesSurfaceRoute(destination, surface.route)
+      && (embed.isInternalRoute?.(destination) ?? true),
+    [ownsInternalRoutes, surface.route, embed.isInternalRoute],
   );
   const navigateFromEmbed = useCallback(
     (destination: Route) =>
       routeEmbeddedNavigation(destination, navigate, undefined, isInternalRoute),
     [isInternalRoute, navigate],
   );
+  useEffect(() => {
+    if (!["/embed/home", "/embed/search", "/embed/ops"].includes(window.location.pathname)) return;
+    return installNativeAreaKeyboard(navigateFromEmbed);
+  }, [navigateFromEmbed]);
   const shouldRenderSurface =
     typeof window === "undefined"
     || surface.embedPaths.includes(window.location.pathname)

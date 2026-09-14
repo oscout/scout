@@ -271,9 +271,8 @@ function terminateRelayPid(pid: number): boolean {
 
 async function terminateOwnedRelayListener(port: number, keepPid: number | null): Promise<boolean> {
   const pid = await tcpListenerPid(port);
-  if (!await relayPidOwnedByThisWebProcess(pid) || pid === keepPid) {
-    return false;
-  }
+  if (pid === null || pid === keepPid) return false;
+  if (!await relayPidOwnedByThisWebProcess(pid)) return false;
   return terminateRelayPid(pid);
 }
 

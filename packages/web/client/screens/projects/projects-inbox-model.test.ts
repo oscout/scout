@@ -436,7 +436,7 @@ describe("project aggregation + dormancy", () => {
           command: "claude --verbose",
           etime: "00:10",
           cwd: "/Users/test/dev/openscout",
-          harness: "claude",
+          harness: "unattributed",
           parentChain: [],
           source: "claude",
         },

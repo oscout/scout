@@ -37,6 +37,8 @@ const outputFile = resolve(outputDirectory, "main.mjs");
 const nodeOutputDirectory = resolve(outputDirectory, "node");
 const nodeOutputFile = resolve(nodeOutputDirectory, "main.mjs");
 const statuslineOutput = resolve(outputDirectory, "statusline.mjs");
+const updateHelperEntry = resolve(packageDirectory, "src/update-helper.ts");
+const updateHelperOutput = resolve(outputDirectory, "update-helper.mjs");
 const webServerOutput = resolve(outputDirectory, "scout-web-server.mjs");
 const controlPlaneWebOutput = resolve(outputDirectory, "scout-control-plane-web.mjs");
 const terminalRelayOutput = resolve(outputDirectory, "openscout-terminal-relay.mjs");
@@ -125,6 +127,9 @@ const statuslineResult = spawnSync(
 if ((statuslineResult.status ?? 1) !== 0) {
   process.exit(statuslineResult.status ?? 1);
 }
+
+const updateHelperResult = spawnSync("bun", ["build", updateHelperEntry, "--target=bun", "--format=esm", "--outfile", updateHelperOutput, REFLECT_METADATA_BANNER], { cwd: packageDirectory, stdio: "inherit" });
+if ((updateHelperResult.status ?? 1) !== 0 || !verifyBundleStaticChecks(updateHelperOutput)) process.exit(1);
 
 rmSync(nodeOutputDirectory, { recursive: true, force: true });
 mkdirSync(nodeOutputDirectory, { recursive: true });

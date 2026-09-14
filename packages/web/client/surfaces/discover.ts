@@ -19,6 +19,10 @@ const screenModules = import.meta.glob<SurfaceModule>([
 // embed select one lazy module without evaluating every screen just to inspect
 // its scoutSurface export. The lazy registry verifies both copies agree.
 const lazySurfaceModules = [
+  { modulePath: "../screens/home/NativeAreaScreen.tsx", embedPaths: ["/embed/home"] },
+  { modulePath: "../screens/search/NativeAreaScreen.tsx", embedPaths: ["/embed/search"] },
+  { modulePath: "../screens/ops/NativeAreaScreen.tsx", embedPaths: ["/embed/ops"] },
+
   {
     modulePath: "../screens/broker/BrokerScreen.tsx",
     embedPaths: ["/embed/dispatch"],

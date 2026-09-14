@@ -1,3 +1,8 @@
+import {
+  SCOUT_VOICE_HOST_REGISTRATION_GRACE_MS,
+  type ScoutVoiceHostPresence,
+} from "../shared/voice-issues.ts";
+
 export type ScoutVoiceSessionEventName =
   | "session.started"
   | "session.state"
@@ -163,6 +168,12 @@ const HOST_PLAYBACK_MS_PER_CHARACTER = 100;
 
 const sessions = new Map<string, VoiceSession>();
 const hosts = new Map<string, VoiceHost>();
+/**
+ * The host registry is per-process: a web restart empties it while Scout Menu
+ * keeps running. This lets `scoutVoiceHostPresence` tell "nothing has
+ * checked in yet" apart from "nothing is out there".
+ */
+let registryStartedAt = Date.now();
 const sessionSubscribers = new Map<string, Set<SessionSubscriber>>();
 const hostCommandWaiters = new Map<string, VoiceHostCommandWaiter>();
 let nextHostPollId = 1;
@@ -180,6 +191,7 @@ export function resetScoutVoiceSessionStateForTests(): void {
   hostCommandWaiters.clear();
   sessions.clear();
   hosts.clear();
+  registryStartedAt = Date.now();
   sessionSubscribers.clear();
   nextHostPollId = 1;
 }
@@ -220,11 +232,19 @@ export function registerScoutVoiceHost(input: {
   return { ok: true, hostId, pollMs: 500 };
 }
 
-export function getScoutVoiceSettingsSnapshot(): {
+/** A stale host gets one bounded registration grace before being called absent. */
+export function scoutVoiceHostPresence(now = Date.now()): ScoutVoiceHostPresence {
+  if (pickLiveVoiceHost(now)) return "connected";
+  const latestSeenAt = Math.max(0, ...Array.from(hosts.values(), (host) => host.lastSeenAt));
+  const graceStart = latestSeenAt > 0 ? latestSeenAt + HOST_STALE_MS : registryStartedAt;
+  return now - graceStart < SCOUT_VOICE_HOST_REGISTRATION_GRACE_MS ? "reconnecting" : "absent";
+}
+
+export function getScoutVoiceSettingsSnapshot(now = Date.now()): {
   settings: ScoutVoiceSettings;
   devices: ScoutVoiceInputDevice[];
 } {
-  const host = pickLiveVoiceHostById("scout-menu");
+  const host = pickLiveVoiceHostById("scout-menu", now) ?? pickLiveVoiceHost(now);
   return {
     settings: host?.settings ?? DEFAULT_VOICE_SETTINGS,
     devices: host?.devices ?? [],
@@ -1019,6 +1039,47 @@ function findLastTranscript(events: ScoutVoiceSessionEvent[]): string | null {
     }
   }
   return null;
+}
+
+function parseLiteralBoolean(value: unknown, fallback = false): boolean {
+  if (value === true) return true;
+  if (value === false) return false;
+  return fallback;
+}
+
+export function parseScoutVoiceSettingsPatch(raw: unknown): Partial<ScoutVoiceSettings> | undefined {
+  if (raw == null) return undefined;
+  if (typeof raw !== "object" || Array.isArray(raw)) return undefined;
+  const value = raw as Record<string, unknown>;
+  const patch: Partial<ScoutVoiceSettings> = {};
+
+  if (value.preference === "auto" || value.preference === "parakeet" || value.preference === "apple") {
+    patch.preference = value.preference;
+  }
+  if (value.inputDeviceId === null || typeof value.inputDeviceId === "string") {
+    patch.inputDeviceId = value.inputDeviceId;
+  }
+  if (value.inputDeviceName === null || typeof value.inputDeviceName === "string") {
+    patch.inputDeviceName = value.inputDeviceName;
+  }
+  if (typeof value.modelReady === "boolean") patch.modelReady = value.modelReady;
+  if (typeof value.modelInstalled === "boolean") patch.modelInstalled = value.modelInstalled;
+  if (Array.isArray(value.permissions)) {
+    const permissions: ScoutVoicePermissionStatus[] = [];
+    for (const entry of value.permissions) {
+      if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
+      const permission = entry as Record<string, unknown>;
+      if (permission.kind !== "microphone" && permission.kind !== "speechRecognition") continue;
+      permissions.push({
+        kind: permission.kind,
+        status: typeof permission.status === "string" ? permission.status : "unknown",
+        granted: parseLiteralBoolean(permission.granted),
+        canRequest: parseLiteralBoolean(permission.canRequest),
+      });
+    }
+    patch.permissions = permissions;
+  }
+  return patch;
 }
 
 function mergeVoiceSettings(

@@ -10,6 +10,7 @@ describe("go shortcuts", () => {
     expect(goShortcutForKey("r")?.route).toEqual({ view: "repos" });
     expect(goShortcutForKey("f")?.route).toEqual({ view: "search" });
     expect(goShortcutForKey("l")?.route).toEqual({ view: "ops", mode: "tail" });
+    expect(goShortcutForKey("w")?.route).toEqual({ view: "ops", mode: "world" });
     expect(goShortcutForKey("o")?.route).toEqual({ view: "ops" });
     expect(goShortcutForKey("d")?.route).toEqual({ view: "broker" });
   });

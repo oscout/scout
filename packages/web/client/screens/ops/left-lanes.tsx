@@ -3,7 +3,7 @@ import "../../scout/slots/ctx-panel.css";
 import { timeAgo } from "../../lib/time.ts";
 import { useScout } from "../../scout/Provider.tsx";
 import { RailRow } from "../../scout/slots/RailRow.tsx";
-import { SpriteAvatar } from "../../components/SpriteAvatar.tsx";
+import { HarnessMark } from "../../components/HarnessMark.tsx";
 import { focusDeckLane } from "./lane-focus.ts";
 import { buildFallbackLaneRoster } from "./lane-roster-fallback.ts";
 import {
@@ -19,7 +19,12 @@ import {
  *  rendered; until it does (the rail can mount a beat early), we show an interim
  *  fleet-derived list so the rail isn't blank. When the FLOOR layout publishes,
  *  entries carry a rich ledger projection (action line, activity strip, counts)
- *  and rows hover-link to the floor's lanes through the store. */
+ *  and rows hover-link to the floor's lanes through the store.
+ *
+ *  Floor rows are titled the way the floor titles its people — harness mark,
+ *  then the name or the harness plus the lane's last four — with the workspace
+ *  underneath. Titling them by workspace instead put the same word on every row
+ *  of a repo, which is a list you cannot pick anything out of. */
 export function OpsLanesLeft() {
   const { agents, navigate } = useScout();
   const published = useLaneRoster();
@@ -61,8 +66,13 @@ export function OpsLanesLeft() {
               onPointerLeave={() => getFloorLedgerHandlers()?.onHover(null)}
             >
               <span className="agent-floor__ledger-id">
-                <SpriteAvatar name={entry.label} size={16} tile />
-                <span className="agent-floor__ledger-name">{entry.label}</span>
+                <HarnessMark harness={entry.floor.harness} size={15} title={null} />
+                <span className="agent-floor__ledger-lines">
+                  <span className="agent-floor__ledger-name">{entry.floor.identity}</span>
+                  {entry.floor.project ? (
+                    <span className="agent-floor__ledger-where">{entry.floor.project}</span>
+                  ) : null}
+                </span>
                 <span className={`agent-floor__card-dot${entry.floor.live ? " is-live" : ""}`} />
               </span>
               <span className="agent-floor__ledger-strip">

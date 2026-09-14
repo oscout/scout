@@ -1,0 +1,19 @@
+      1     0 20-04:31:09 /sbin/launchd
+  46579     1 10:02:11 /Applications/OpenScout.app/Contents/MacOS/OpenScout
+  90001     1 08:14:03 /Users/operator/.local/bin/claude --project /Users/operator/dev/openscout
+  90002     1 06:22:40 /Users/operator/.bun/bin/codex
+  19412 90001 03:40:52 /Users/operator/.bun/bin/bun /Users/operator/dev/openscout/packages/cli/bin/scout.mjs mcp
+  19914 90001 03:40:35 sh -c cat >> "/Users/operator/Library/Application Support/OpenScout/runtime/agents/session-xxxx/logs/stdout.log"
+  20747 90002 03:40:11 sh -c cat >> "/Users/operator/Library/Application Support/OpenScout/runtime/agents/session-xxxx/logs/stdout.log"
+  33555 90001 13:42:17 sh -c cat >> "/Users/operator/Library/Application Support/OpenScout/runtime/agents/session-xxxx/logs/stdout.log"
+  47688 90002 20-13:41:57 tmux new-session -dP -x 160 -y 48 -F #{pane_id} -s session-mt7cojtb-bxnfht -c /Users/operator/dev/linea exec bash "/Users/operator/Library/Application Support/OpenScout/runtime/agents/session-xxxx/launch.sh"
+  51908 90002 01-11:11:27 /Users/operator/.bun/bin/bun /Users/operator/dev/openscout/packages/cli/bin/scout.mjs mcp
+  52745 90001 01-14:29:52 sh -c cat >> "/Users/operator/Library/Application Support/OpenScout/runtime/agents/session-xxxx/logs/stdout.log"
+  60612 90001 05:40:52 /Users/operator/.bun/bin/bun /Users/operator/dev/openscout/packages/cli/bin/scout.mjs mcp
+  33812 90001 13:42:16 bun /Users/operator/.bun/bin/../install/global/node_modules/@openscout/scout/bin/scout.mjs channel
+  56153 90002 03-00:08:04 bun /Users/operator/.bun/bin/../install/global/node_modules/@openscout/scout/bin/scout.mjs channel
+    425 90001 20-04:31:09 bun /Users/operator/.bun/bin/../install/global/node_modules/@openscout/scout/bin/scout.mjs channel
+  11255 90002 01-05:46:17 /Users/operator/.bun/bin/bun /Users/operator/dev/openscout/apps/desktop/bin/scout.ts mcp
+    995     1 02:28:46 /Users/operator/.bun/bin/bun /Users/operator/dev/openscout/apps/desktop/bin/scout.ts mesh bridge --config /Users/operator/Library/Application Support/OpenScout/mcp-bridge.json
+  61000     1 00:10:00 /usr/bin/pip
+  61001 61000 00:09:59 bun /Users/operator/dev/openscout/packages/cli/bin/scout.mjs channel

@@ -5,7 +5,7 @@ import { resolveScoutSenderId, sendScoutMessage } from "../../core/broker/servic
 const HELP_FLAGS = new Set(["--help", "-h"]);
 
 /**
- * `scout need` — the agent's way to say it cannot proceed without the operator.
+ * `scout ask --operator` — the agent's way to say it cannot proceed without the operator.
  *
  * This is the *declared* half of the needs-you surface. Everything else that
  * raises the operator is inferred: a permission prompt spotted in a harness
@@ -24,18 +24,17 @@ const HELP_FLAGS = new Set(["--help", "-h"]);
  * exit codes. Rejecting at the boundary is what makes the empty ask
  * structurally impossible instead of filtered downstream.
  */
-export function renderNeedCommandHelp(): string {
+export function renderOperatorQuestionHelp(): string {
   return [
-    "Usage: scout need --question <text> [--option <choice> ...] [--because <reason>] [--as <sender>]",
+    "Usage: scout ask --operator --question <text> [--option <choice> ...] [--because <reason>] [--as <sender>]",
     "",
     "Tell your operator you are blocked and need an answer to continue.",
     "",
-    "Use this when you cannot make further progress on your own. It is the only",
-    "signal that marks you as waiting on the human; it interrupts them, so the",
-    "question has to be one they can actually answer.",
+    "Use this when progress requires an operator answer. Notification delivery",
+    "is best-effort; the receipt confirms that the question was recorded.",
     "",
     "Do not use it for:",
-    "  progress updates                 -> scout send",
+    "  operator updates                 -> scout notify --message <text>",
     "  work handed to another agent     -> scout ask",
     "  a decision you can default       -> make the call, say what you chose",
     "",
@@ -44,22 +43,24 @@ export function renderNeedCommandHelp(): string {
     "  --option <choice>   a discrete choice; repeat for each. Prefer these when",
     "                      the answer is a selection — they are far faster to answer",
     "  --because <reason>  why you cannot continue without it",
+    "  --permission       label this as a permission question; does not grant harness permissions",
     "  --as <sender>       send under an explicit agent identity",
     "",
     "Examples:",
-    '  scout need --question "Which database should the export target?" \\',
+    '  scout ask --operator --question "Which database should the export target?" \\',
     '    --option "postgres (prod)" --option "sqlite (local fixture)"',
-    '  scout need --question "The staging deploy key is missing. Where should I get it?" \\',
+    '  scout ask --operator --question "The staging deploy key is missing. Where should I get it?" \\',
     '    --because "cannot run the smoke suite without it"',
   ].join("\n");
 }
 
-export type ParsedNeedOptions = {
+export type OperatorQuestionOptions = {
   question: string;
   options: string[];
   because?: string;
   agentName?: string;
   currentDirectory?: string;
+  permission?: boolean;
 };
 
 /**
@@ -67,28 +68,32 @@ export type ParsedNeedOptions = {
  * for a human scanning a terminal: each one names the flag to pass and shows
  * the shape. An error a model cannot act on just burns a turn.
  */
-export class NeedValidationError extends Error {}
+export class OperatorQuestionValidationError extends Error {}
 
-export function parseNeedCommandOptions(args: string[]): ParsedNeedOptions {
+export function parseOperatorQuestionOptions(args: string[]): OperatorQuestionOptions {
   let question: string | undefined;
   let because: string | undefined;
   let agentName: string | undefined;
   let currentDirectory: string | undefined;
   const options: string[] = [];
   const positional: string[] = [];
+  let permission = false;
 
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index] ?? "";
     const takeValue = (flag: string): string => {
       const value = args[index + 1];
       if (value === undefined || value.startsWith("--")) {
-        throw new NeedValidationError(`${flag} needs a value.`);
+        throw new OperatorQuestionValidationError(`${flag} needs a value.`);
       }
       index += 1;
       return value;
     };
 
     switch (arg) {
+      case "--permission":
+        permission = true;
+        break;
       case "--question":
       case "-q":
         question = takeValue(arg);
@@ -108,8 +113,8 @@ export function parseNeedCommandOptions(args: string[]): ParsedNeedOptions {
         break;
       default:
         if (arg.startsWith("--")) {
-          throw new NeedValidationError(
-            `unknown flag ${arg}. Run \`scout need --help\` for the accepted flags.`,
+          throw new OperatorQuestionValidationError(
+            `unknown flag ${arg}. Run \`scout ask --operator --help\` for the accepted flags.`,
           );
         }
         positional.push(arg);
@@ -117,7 +122,7 @@ export function parseNeedCommandOptions(args: string[]): ParsedNeedOptions {
     }
   }
 
-  // A bare `scout need "why is this failing?"` is the mistake an agent is most
+  // A bare `scout ask --operator "why is this failing?"` is the mistake an agent is most
   // likely to make, so accept the positional form rather than refusing a
   // perfectly clear question on a technicality.
   if (question === undefined && positional.length > 0) {
@@ -126,9 +131,9 @@ export function parseNeedCommandOptions(args: string[]): ParsedNeedOptions {
 
   const trimmedQuestion = question?.trim() ?? "";
   if (!trimmedQuestion) {
-    throw new NeedValidationError(
-      "a need has no question. Pass --question \"<what you need from the operator>\".\n"
-        + "Example: scout need --question \"Which database should the export target?\" "
+    throw new OperatorQuestionValidationError(
+      "an operator question is missing its text. Pass --question \"<what you need from the operator>\".\n"
+        + "Example: scout ask --operator --question \"Which database should the export target?\" "
         + "--option \"postgres\" --option \"sqlite\"",
     );
   }
@@ -136,8 +141,8 @@ export function parseNeedCommandOptions(args: string[]): ParsedNeedOptions {
   // "help" / "?" / "blocked" tell the operator nothing and cannot be answered.
   // Catching them here costs one turn; letting them through costs an alert the
   // operator opens, cannot act on, and learns to ignore.
-  if (trimmedQuestion.length < 8 || !/[a-z]/i.test(trimmedQuestion)) {
-    throw new NeedValidationError(
+  if (trimmedQuestion.length < 8 || !/\p{L}/u.test(trimmedQuestion)) {
+    throw new OperatorQuestionValidationError(
       `"${trimmedQuestion}" is not a question your operator can answer. `
         + "Say what you need in a full sentence — what you were doing, and what you want them to decide.",
     );
@@ -147,10 +152,10 @@ export function parseNeedCommandOptions(args: string[]): ParsedNeedOptions {
     .map((option) => option.trim())
     .filter((option) => option.length > 0);
   if (trimmedOptions.length !== options.length) {
-    throw new NeedValidationError("--option cannot be empty. Drop it, or give it a real choice.");
+    throw new OperatorQuestionValidationError("--option cannot be empty. Drop it, or give it a real choice.");
   }
   if (trimmedOptions.length === 1) {
-    throw new NeedValidationError(
+    throw new OperatorQuestionValidationError(
       "a single --option is not a choice. Give at least two, or drop --option and ask an open question.",
     );
   }
@@ -159,6 +164,7 @@ export function parseNeedCommandOptions(args: string[]): ParsedNeedOptions {
 
   return {
     question: trimmedQuestion,
+    permission,
     options: trimmedOptions,
     ...(trimmedBecause ? { because: trimmedBecause } : {}),
     ...(agentName ? { agentName } : {}),
@@ -170,7 +176,7 @@ export function parseNeedCommandOptions(args: string[]): ParsedNeedOptions {
  * The body the operator reads. The question leads because it is the thing
  * being answered; the reason and choices follow it.
  */
-export function renderNeedBody(parsed: ParsedNeedOptions): string {
+export function renderOperatorQuestionBody(parsed: OperatorQuestionOptions): string {
   const lines = [parsed.question];
   if (parsed.because) {
     lines.push("", `Blocked: ${parsed.because}`);
@@ -181,46 +187,49 @@ export function renderNeedBody(parsed: ParsedNeedOptions): string {
   return lines.join("\n");
 }
 
-export async function runNeedCommand(
+export async function runOperatorQuestionCommand(
   context: ScoutCommandContext,
   args: string[],
 ): Promise<void> {
   if (args.length === 0 || args.some((arg) => HELP_FLAGS.has(arg))) {
-    context.output.writeText(renderNeedCommandHelp());
+    context.output.writeText(renderOperatorQuestionHelp());
     return;
   }
 
-  const parsed = parseNeedCommandOptions(args);
+  const parsed = parseOperatorQuestionOptions(args);
   const currentDirectory = parsed.currentDirectory ?? defaultScoutContextDirectory(context);
   const senderId = await resolveScoutSenderId(parsed.agentName, currentDirectory, context.env);
-  const body = renderNeedBody(parsed);
+  const body = renderOperatorQuestionBody(parsed);
 
   const result = await sendScoutMessage({
     senderId,
     body,
     targetLabel: "operator",
     currentDirectory,
-    source: "scout-need",
+    source: "scout-ask-operator",
     operatorSignal: {
       kind: "need",
       blocking: true,
       replyExpectation: "required",
       question: parsed.question,
+      ...(parsed.permission ? { requestKind: "permission" as const } : {}),
       ...(parsed.options.length > 0 ? { options: parsed.options } : {}),
       ...(parsed.because ? { blockedReason: parsed.because } : {}),
     },
   });
 
   if (!result.usedBroker) {
-    throw new Error("broker is not reachable; your need was not filed.");
+    throw new Error("broker is not reachable; your question was not recorded.");
   }
-  if (result.unresolvedTargets.length > 0) {
-    throw new Error("could not reach your operator; your need was not filed.");
+  if (result.unresolvedTargets.length > 0 || result.routingError || !result.messageId) {
+    throw new Error("could not reach your operator; your question was not recorded.");
   }
 
   context.output.writeValue(
     {
       senderId,
+      status: "recorded",
+      notificationDelivery: "unconfirmed",
       question: parsed.question,
       options: parsed.options,
       blockedReason: parsed.because,
@@ -230,7 +239,9 @@ export async function runNeedCommand(
     (value) =>
       [
         `Your operator has been asked: ${value.question}`,
-        "They have been interrupted for this, so wait for their answer rather than guessing.",
+        "Question recorded; notification delivery is unconfirmed. Do not proceed without an answer.",
+        `Message: ${value.messageId}. Conversation: ${value.conversationId}.`,
+        `Inspect: scout status ${value.messageId}`,
       ].join("\n"),
   );
 }

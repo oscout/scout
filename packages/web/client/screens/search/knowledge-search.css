@@ -11,6 +11,12 @@
  * ────────────────────────────────────────────────────────────────────────── */
 
 .ks-page {
+  /* The column every band on this page agrees to: hero, field, filter bar,
+     results, and the status foot. Declared here because the foot is a sibling
+     of the scrolling shell, not a child of it, and used to drift 260px left of
+     everything else. */
+  --ks-measure: 1080px;
+  --ks-gutter: clamp(var(--space-2xl), 2.5vw, var(--space-5xl));
   flex: 1 1 auto;
   min-height: 0;
   height: 100%;
@@ -25,9 +31,9 @@
 .ks-shell {
   flex: 1 1 auto;
   min-height: 0;
-  width: min(100%, 1080px);
+  width: min(100%, var(--ks-measure));
   margin: 0 auto;
-  padding: var(--space-3xl) clamp(var(--space-2xl), 2.5vw, var(--space-5xl)) var(--space-4xl);
+  padding: var(--space-3xl) var(--ks-gutter) var(--space-4xl);
   display: flex;
   flex-direction: column;
   gap: var(--space-2xl);
@@ -68,6 +74,7 @@
   line-height: var(--leading-display);
   letter-spacing: 0;
   color: var(--ink);
+  text-wrap: balance;
 }
 
 .ks-header-titles p {
@@ -75,7 +82,11 @@
   font-size: var(--text-md);
   line-height: var(--leading-snug);
   color: var(--muted);
-  max-width: 64ch;
+  /* Wide enough to sit under the field without looking bolted on, still short
+     of a wall of text. `pretty` keeps the last line from orphaning when the
+     day count changes the sentence length. */
+  max-width: min(100%, 78ch);
+  text-wrap: pretty;
 }
 
 /* ── Search form ──────────────────────────────────────────────────────── */
@@ -390,8 +401,7 @@
   justify-content: space-between;
   gap: var(--space-md);
   padding: var(--space-sm) 0;
-  background: color-mix(in srgb, var(--bg) 88%, transparent);
-  backdrop-filter: blur(6px);
+  background: var(--bg);
   color: var(--ink);
   font-size: var(--text-md);
   font-weight: 620;
@@ -409,6 +419,77 @@
   display: flex;
   flex-direction: column;
   gap: var(--space-2xl);
+}
+
+/* ── Searching ──────────────────────────────────────────────────────── *
+ * A cold search had nothing to show but the word "Searching…", so the page
+ * collapsed to a header floating over an empty window. These bars stand in for
+ * the session cards that are about to arrive — same widths, same rhythm — so
+ * the layout is already the right height when the answer lands.
+ * A refined search keeps its previous results instead; only the first one is
+ * blank, and only that one needs this.
+ * ──────────────────────────────────────────────────────────────────────── */
+.ks-skeleton {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2xl);
+  pointer-events: none;
+}
+
+.ks-skeleton-session {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+  padding: var(--space-lg) 0;
+  border-top: 1px solid color-mix(in srgb, var(--ink) 8%, transparent);
+}
+
+.ks-skeleton-session:first-child {
+  border-top: 0;
+}
+
+.ks-skeleton-moments {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-md);
+  padding: var(--space-md) var(--space-2xl);
+  border-radius: var(--radius-md);
+  border: 1px solid color-mix(in srgb, var(--ink) 7%, transparent);
+  background: color-mix(in srgb, var(--surface) 86%, transparent);
+}
+
+.ks-skeleton-line {
+  display: block;
+  height: 10px;
+  border-radius: var(--radius-sm);
+  background: linear-gradient(
+    90deg,
+    color-mix(in srgb, var(--border) 60%, transparent) 0%,
+    color-mix(in srgb, var(--border) 95%, transparent) 50%,
+    color-mix(in srgb, var(--border) 60%, transparent) 100%
+  );
+  background-size: 200% 100%;
+  animation: ks-skeleton-shimmer 1400ms linear infinite;
+}
+
+/* Each row is offset so the sweep reads as one pass over the list rather than
+   every bar pulsing in lockstep. */
+.ks-skeleton-session:nth-child(2) .ks-skeleton-line { animation-delay: 120ms; }
+.ks-skeleton-session:nth-child(3) .ks-skeleton-line { animation-delay: 240ms; }
+
+.ks-skeleton-line--meta { width: 210px; height: 8px; }
+.ks-skeleton-line--goal { width: min(100%, 420px); height: 15px; }
+.ks-skeleton-line--title { width: min(100%, 320px); height: 12px; }
+.ks-skeleton-line--snippet { width: 100%; }
+.ks-skeleton-line--snippet-short { width: 62%; }
+
+@keyframes ks-skeleton-shimmer {
+  0%   { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ks-skeleton-line { animation: none; }
 }
 
 /* ── Session card ───────────────────────────────────────────────────── */
@@ -652,10 +733,7 @@
 .ks-foot-status {
   flex: none;
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-md);
-  padding: var(--space-md) var(--space-2xl);
+  padding: 0;
   border-top: 1px solid color-mix(in srgb, var(--ink) 7%, transparent);
   background: color-mix(in srgb, var(--surface) 70%, transparent);
   color: var(--muted);
@@ -663,6 +741,17 @@
   font-size: var(--text-xs);
   font-weight: 600;
   letter-spacing: 0;
+}
+
+.ks-foot-status-shell {
+  width: min(100%, var(--ks-measure));
+  margin: 0 auto;
+  padding: var(--space-md) var(--ks-gutter);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-md);
+  min-width: 0;
 }
 
 .ks-foot-status-facts {

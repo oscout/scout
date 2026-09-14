@@ -1060,6 +1060,18 @@ afterEach(() => {
 });
 
 describe("createOpenScoutWebServer", () => {
+  test("operator signals paginate equal timestamps and report unavailable brokers", async () => {
+    const server = await createOpenScoutWebServer({ currentDirectory: "/tmp/openscout", assetMode: "static", staticRoot: makeStaticRoot() });
+    const url = "http://localhost/api/operator-signals?since=100&afterId=msg-a";
+    expect((await server.app.request(url)).status).toBe(503);
+    const message = (id: string, actorId = "agent") => ({ id, actorId, conversationId: "dm", body: "Review this", createdAt: 100, metadata: { operatorSignal: { kind: "notify" } } });
+    scoutBrokerSnapshotResult = { messages: { a: message("msg-a"), b: message("msg-b"), c: message("msg-c", "operator") } };
+    const response = await server.app.request(url);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ signals: [{ id: "msg-b", body: "Review this", conversationId: "dm" }] });
+    expect((await server.app.request("http://localhost/api/operator-signals?since=bad")).status).toBe(400);
+  });
+
   test("serves /api/build from warmed git.buildInfo without rerunning the probe", async () => {
     const repo = mkdtempSync(join(tmpdir(), "openscout-web-build-info-"));
     testDirectories.add(repo);
@@ -3453,6 +3465,49 @@ describe("createOpenScoutWebServer", () => {
       "message-bridge",
     ]);
   });
+
+  test("failure reports require valid web credentials before launching a Codex ask", async () => {
+    const server = await createOpenScoutWebServer({
+      currentDirectory: "/tmp/openscout",
+      assetMode: "static",
+      staticRoot: makeStaticRoot(),
+      authToken: "report-test-current-token",
+      resolvePeerAddress: () => "127.0.0.1",
+    });
+    const body = JSON.stringify({ attempt: {
+      id: "failed-query-auth-test",
+      kind: "failed_query",
+      status: "failed",
+      ts: 1_700_000_000_000,
+      detail: "Target is ambiguous",
+    } });
+    for (const cookie of [undefined, "openscout_web_session=expired-test-token"]) {
+      const response = await server.app.request("http://localhost/api/broker/dispatch-review", {
+        method: "POST",
+        headers: { "content-type": "application/json", ...(cookie ? { cookie } : {}) },
+        body,
+      });
+      expect(response.status).toBe(401);
+      expect(response.headers.get("www-authenticate")).toBe('Bearer realm="OpenScout Web"');
+      expect(askScoutQuestionCalls).toHaveLength(0);
+    }
+    const response = await server.app.request("http://localhost/api/broker/dispatch-review", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        cookie: "openscout_web_session=report-test-current-token",
+      },
+      body,
+    });
+    expect(response.status).toBe(200);
+    expect(askScoutQuestionCalls).toHaveLength(1);
+    expect(askScoutQuestionCalls[0]).toMatchObject({
+      executionHarness: "codex",
+      target: { kind: "project_path", projectPath: "/tmp/openscout" },
+      projectAgent: { persistence: "one_time" },
+    });
+  });
+
 
   test("routes failed dispatch review to a project-scoped Codex ask", async () => {
     process.env.OPENSCOUT_OPERATOR_NAME = "operator";
@@ -6621,6 +6676,44 @@ describe("createOpenScoutWebServer", () => {
     expect(payload.defaults.directory).toBe(projectRoot);
     expect(payload.projects).toContainEqual(expect.objectContaining({ root: projectRoot }));
     expect(payload.projects.some((project) => project.root === launcherDirectory)).toBe(false);
+  });
+
+  for (const harness of ["grok", "grok-acp", "kimi", "opencode", "codex"] as const) {
+    test(`preserves ${harness} through session, ask, and in-chat execution payloads`, async () => {
+      process.env.OPENSCOUT_OPERATOR_NAME = "operator";
+      queryAgentsResult = [{ id: "agent-1", definitionId: "agent-1", name: "Agent One", projectRoot: "/tmp/openscout", cwd: "/tmp/openscout", harness: "claude" }];
+      querySessionByIdImpl = () => ({ kind: "direct", agentId: "agent-1", participantIds: ["operator", "agent-1"] });
+      const server = await createOpenScoutWebServer({ currentDirectory: "/tmp/openscout", assetMode: "static", staticRoot: makeStaticRoot() });
+      const session = await server.app.request("http://localhost/api/sessions", {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ target: { agentId: "agent-1" }, execution: { harness }, seed: { instructions: "Use the requested harness." } }),
+      });
+      expect(session.status).toBe(200);
+      expect(askScoutQuestionCalls.at(-1)).toMatchObject({ executionHarness: harness });
+      const ask = await server.app.request("http://localhost/api/ask", {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ targetAgentId: "agent-1", body: "Keep this harness.", execution: { harness } }),
+      });
+      expect(ask.status).toBe(200);
+      expect(askScoutQuestionCalls.at(-1)).toMatchObject({ executionHarness: harness });
+      const send = await server.app.request("http://localhost/api/send", {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ chatId: "c.agent-1", body: "Continue here.", intent: "invoke", execution: { harness } }),
+      });
+      expect(send.status).toBe(200);
+      expect(sendScoutConversationSteerCalls.at(-1)).toMatchObject({ conversationId: "c.agent-1", execution: { harness } });
+    });
+  }
+
+  test("omitted ask harness retains the target agent fallback", async () => {
+    queryAgentsResult = [{ id: "agent-1", definitionId: "agent-1", name: "Agent One", harness: "claude" }];
+    const server = await createOpenScoutWebServer({ currentDirectory: "/tmp/openscout", assetMode: "static", staticRoot: makeStaticRoot() });
+    const response = await server.app.request("http://localhost/api/ask", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ targetAgentId: "agent-1", body: "Use the target default." }),
+    });
+    expect(response.status).toBe(200);
+    expect(askScoutQuestionCalls.at(-1)).toMatchObject({ executionHarness: "claude" });
   });
 
   test("routes session initiation effort and fork source through askScoutQuestion", async () => {

@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import type { Agent, ObserveData } from "../../lib/types.ts";
+import type { Agent, ObserveData, ObserveEvent } from "../../lib/types.ts";
 import { homeNowCardHasDetail, homeNowCardLaneModel } from "./home-now-card-model.ts";
 
 function agent(overrides: Partial<Agent> = {}): Agent {
@@ -43,16 +43,29 @@ function agent(overrides: Partial<Agent> = {}): Agent {
   };
 }
 
+function observeEvent(
+  event: Partial<ObserveEvent> & Pick<ObserveEvent, "kind">,
+): ObserveEvent {
+  return {
+    id: "evt",
+    t: 0,
+    text: "",
+    ...event,
+  };
+}
+
 describe("homeNowCardLaneModel", () => {
   test("builds stats and pops from observe data", () => {
     const observeData: ObserveData = {
       events: [
-        { kind: "tool", tool: "Read", arg: "packages/web/client/screens/home/content.tsx" },
-        { kind: "tool", tool: "Grep", arg: "home-moving" },
+        observeEvent({ kind: "tool", tool: "Read", arg: "packages/web/client/screens/home/content.tsx" }),
+        observeEvent({ kind: "tool", tool: "Grep", arg: "home-moving" }),
       ],
       files: [{
         path: "packages/web/client/screens/home/content.tsx",
         state: "read",
+        touches: 1,
+        lastT: 0,
       }],
     };
     const model = homeNowCardLaneModel(agent(), observeData, true, Date.now());
@@ -73,6 +86,6 @@ describe("homeNowCardHasDetail", () => {
         files: { rows: [], more: 0 },
       },
       context: null,
-    } as ReturnType<typeof homeNowCardLaneModel>)).toBe(true);
+    })).toBe(true);
   });
 });

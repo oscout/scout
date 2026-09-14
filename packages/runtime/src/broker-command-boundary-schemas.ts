@@ -180,6 +180,7 @@ export const brokerOperatorSignalSchema: z.ZodType<ScoutOperatorSignal> =
       blocking: z.literal(true),
       replyExpectation: z.literal("required"),
       question: trimmedNonEmptyString,
+      requestKind: z.literal("permission").optional(),
       options: z.array(trimmedNonEmptyString).nonempty().optional(),
       blockedReason: trimmedNonEmptyString.optional(),
     }).strict(),

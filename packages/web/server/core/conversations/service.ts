@@ -298,8 +298,7 @@ function metadataSessionId(metadata: Record<string, unknown> | undefined): strin
     ?? metadataString(metadata, "responderSessionId")
     ?? metadataString(metadata, "sessionId")
     ?? metadataString(metadata, "externalSessionId")
-    ?? metadataString(metadata, "threadId")
-    ?? metadataString(metadataObject(metadata, "returnAddress"), "sessionId");
+    ?? metadataString(metadata, "threadId");
 }
 
 function executionResolutionDimension(
@@ -952,9 +951,15 @@ function directConversationAgent(
   endpoints: AgentEndpointIndex,
   operatorActorIds: ReadonlySet<string>,
   participantIds: string[],
+  invocations: InvocationRequest[],
 ): { agentId: string | null; actor: ActorIdentity | null; agent: AgentDefinition | null; endpoint: AgentEndpoint | null } {
+  const targetAgentId = [...invocations].sort((left, right) =>
+    (normalizeTimestampMs(right.createdAt) ?? 0) - (normalizeTimestampMs(left.createdAt) ?? 0)
+    || right.id.localeCompare(left.id)
+  )[0]?.targetAgentId;
   const agentId =
-    participantIds.find((participantId) =>
+    participantIds.find((participantId) => participantId === targetAgentId && !operatorActorIds.has(participantId))
+    ?? participantIds.find((participantId) =>
       !operatorActorIds.has(participantId) && Boolean(snapshot.agents[participantId])
     )
     ?? participantIds.find((participantId) => Boolean(snapshot.agents[participantId]))
@@ -1214,6 +1219,7 @@ export async function getScoutConversations(
           endpointsByAgent,
           operatorIds,
           participantIds,
+          invocations,
         );
         if (
           !agentId

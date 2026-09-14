@@ -1,36 +1,22 @@
 import {
   getScoutVoiceSettingsSnapshot,
   requestScoutVoicePermissions,
+  scoutVoiceHostPresence,
   type ScoutVoiceInputDevice,
-  type ScoutVoicePermissionStatus,
   type ScoutVoiceSettings,
 } from "./scout-voice-session.ts";
+import {
+  voiceIssueHostOffline,
+  voiceIssueHostReconnecting,
+  voiceIssueMicrophone,
+  voiceIssueNoInputDevice,
+  voiceIssueSpeechRecognition,
+  type ScoutVoiceIssue,
+  type ScoutVoiceIssueAction,
+  type ScoutVoiceIssueCode,
+} from "../shared/voice-issues.ts";
 
-export type ScoutVoiceIssueCode =
-  | "host_offline"
-  | "microphone_not_requested"
-  | "microphone_denied"
-  | "speech_not_requested"
-  | "speech_denied"
-  | "no_input_device"
-  | "ready";
-
-export type ScoutVoiceIssueAction =
-  | "launch_host"
-  | "request_microphone"
-  | "open_microphone_settings"
-  | "request_speech"
-  | "open_speech_settings"
-  | "open_voice_settings"
-  | "none";
-
-export type ScoutVoiceIssue = {
-  code: ScoutVoiceIssueCode;
-  title: string;
-  message: string;
-  hint: string | null;
-  action: ScoutVoiceIssueAction;
-};
+export type { ScoutVoiceIssue, ScoutVoiceIssueAction, ScoutVoiceIssueCode };
 
 export type ScoutVoiceEngageInput = {
   surface?: string;
@@ -48,20 +34,29 @@ export type ScoutVoiceEngageResult = {
   hostOnline: boolean;
 };
 
-export function engageScoutVoiceDictation(input: ScoutVoiceEngageInput = {}): ScoutVoiceEngageResult {
-  const snapshot = getScoutVoiceSettingsSnapshot();
+/** `now` is injectable so the registration grace is testable without waiting it out. */
+export function engageScoutVoiceDictation(
+  input: ScoutVoiceEngageInput = {},
+  now = Date.now(),
+): ScoutVoiceEngageResult {
+  const snapshot = getScoutVoiceSettingsSnapshot(now);
   const settings = snapshot.settings;
   const devices = snapshot.devices;
-  const hostOnline = devices.length > 0 || (settings.permissions?.length ?? 0) > 0;
+  const hostOnline = scoutVoiceHostPresence(now) === "connected";
 
   const mic = settings.permissions?.find((entry) => entry.kind === "microphone") ?? null;
   const speech = settings.permissions?.find((entry) => entry.kind === "speechRecognition") ?? null;
   const inputDevice = resolveInputDevice(settings, devices);
 
   if (!hostOnline) {
+    // An empty registry is not proof Scout Menu is gone — this process may
+    // simply have restarted out from under a host that re-registers on its own
+    // loop. Say which of the two we are actually looking at.
     return buildResult({
       ready: false,
-      issue: issueHostOffline(),
+      issue: scoutVoiceHostPresence(now) === "absent"
+        ? voiceIssueHostOffline()
+        : voiceIssueHostReconnecting(),
       settings,
       devices,
       inputDevice,
@@ -80,7 +75,7 @@ export function engageScoutVoiceDictation(input: ScoutVoiceEngageInput = {}): Sc
     }
   }
 
-  const micIssue = microphoneIssue(mic);
+  const micIssue = voiceIssueMicrophone(mic);
   if (micIssue) {
     return buildResult({
       ready: false,
@@ -95,7 +90,7 @@ export function engageScoutVoiceDictation(input: ScoutVoiceEngageInput = {}): Sc
   if (!inputDevice) {
     return buildResult({
       ready: false,
-      issue: issueNoInputDevice(),
+      issue: voiceIssueNoInputDevice(),
       settings,
       devices,
       inputDevice: null,
@@ -104,7 +99,7 @@ export function engageScoutVoiceDictation(input: ScoutVoiceEngageInput = {}): Sc
   }
 
   const warnings = [
-    speechRecognitionIssue(speech),
+    voiceIssueSpeechRecognition(speech),
   ].filter((entry): entry is ScoutVoiceIssue => entry !== null);
 
   return buildResult({
@@ -141,74 +136,5 @@ function buildResult(
   return {
     ...input,
     warnings: input.warnings ?? [],
-  };
-}
-
-function issueHostOffline(): ScoutVoiceIssue {
-  return {
-    code: "host_offline",
-    title: "Scout Menu is not running",
-    message: "Launch Scout Menu on this Mac to dictate in web chat.",
-    hint: "The browser never records audio. Scout Menu is the voice host.",
-    action: "launch_host",
-  };
-}
-
-function microphoneIssue(permission: ScoutVoicePermissionStatus | null): ScoutVoiceIssue | null {
-  if (!permission || permission.granted) return null;
-  if (permission.canRequest) {
-    return {
-      code: "microphone_not_requested",
-      title: "Microphone access needed",
-      message: "Scout Menu needs microphone access before dictation can start.",
-      hint: "Request access or tap the mic again to show the macOS prompt.",
-      action: "request_microphone",
-    };
-  }
-  if (permission.status === "denied") {
-    return {
-      code: "microphone_denied",
-      title: "Microphone blocked",
-      message: "Scout Menu cannot record because microphone access is off.",
-      hint: "Scout is opening macOS Microphone settings and will detect the change automatically.",
-      action: "open_microphone_settings",
-    };
-  }
-  return {
-    code: "microphone_denied",
-    title: "Microphone unavailable",
-    message: "Scout Menu cannot access the microphone on this Mac.",
-    hint: "Open Privacy & Security → Microphone to review it.",
-    action: "open_microphone_settings",
-  };
-}
-
-function speechRecognitionIssue(permission: ScoutVoicePermissionStatus | null): ScoutVoiceIssue | null {
-  if (!permission || permission.granted) return null;
-  if (permission.canRequest) {
-    return {
-      code: "speech_not_requested",
-      title: "Speech recognition needed",
-      message: "Scout Menu needs speech recognition for live partials and Apple Speech fallback.",
-      hint: "Request access to show the macOS prompt.",
-      action: "request_speech",
-    };
-  }
-  return {
-    code: "speech_denied",
-    title: "Speech recognition blocked",
-    message: "Speech recognition is off for Scout Menu.",
-    hint: "Choose Retry access to reopen macOS Speech Recognition settings.",
-    action: "open_speech_settings",
-  };
-}
-
-function issueNoInputDevice(): ScoutVoiceIssue {
-  return {
-    code: "no_input_device",
-    title: "No microphone detected",
-    message: "Scout Menu did not report any audio input devices.",
-    hint: "Plug in a microphone, check Sound settings, then refresh Settings → Voice.",
-    action: "open_voice_settings",
   };
 }

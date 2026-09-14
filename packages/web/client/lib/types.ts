@@ -21,8 +21,11 @@ export type Agent = {
   capabilities: string[];
   project: string | null;
   branch: string | null;
+  /** Canonical git remote identity (`host/org/repo`) when the server resolved one. */
+  repoKey?: string | null;
   role: string | null;
   model: string | null;
+  modelProvider?: string | null;
   reasoningEffort?: string | null;
   harnessSessionId: string | null;
   terminalSurface: TerminalSurfaceDescriptor | null;
@@ -732,6 +735,8 @@ export type SessionEntry = {
     agentId?: string | null;
     sessionId?: string | null;
     harness?: string | null;
+    model?: string | null;
+    reasoningEffort?: string | null;
     transport?: string | null;
     workspaceRoot?: string | null;
   }>;
@@ -1515,7 +1520,7 @@ export type Route =
 	    };
 
 export type AgentTab = "profile" | "config" | "observe" | "message";
-export type OpsMode = "advisor" | "mission" | "issues" | "agents" | "tail" | "atop" | "lanes";
+export type OpsMode = "advisor" | "mission" | "issues" | "agents" | "tail" | "atop" | "lanes" | "world";
 export type FollowPreferredView = "tail" | "session" | "chat" | "work";
 /** URL-addressable settings surface sections (SCO-082 Phase B). */
 export type SettingsSection =

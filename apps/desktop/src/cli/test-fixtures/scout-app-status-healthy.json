@@ -1,0 +1,66 @@
+{
+  "action": "status",
+  "bundlePath": "/Applications/OpenScout.app",
+  "menuBundlePath": "/Applications/OpenScout.app/Contents/Library/LoginItems/ScoutMenu.app",
+  "running": true,
+  "layers": [
+    {
+      "layer": "scoutd",
+      "pids": [
+        46579
+      ]
+    },
+    {
+      "layer": "base",
+      "pids": [
+        46587
+      ]
+    },
+    {
+      "layer": "probes",
+      "pids": [
+        46588
+      ]
+    },
+    {
+      "layer": "broker",
+      "pids": [
+        46597
+      ]
+    },
+    {
+      "layer": "edge",
+      "pids": [
+        46602
+      ]
+    },
+    {
+      "layer": "web",
+      "pids": [
+        46632
+      ]
+    },
+    {
+      "layer": "pairing",
+      "pids": [
+        46603
+      ]
+    },
+    {
+      "layer": "menu",
+      "pids": [
+        45810
+      ]
+    },
+    {
+      "layer": "app",
+      "pids": [
+        45793
+      ]
+    }
+  ],
+  "foreign": [],
+  "problems": [],
+  "steps": [],
+  "message": "OpenScout is running and correctly owned."
+}

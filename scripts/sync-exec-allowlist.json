@@ -84,6 +84,13 @@
     "owner": "desktop"
   },
   {
+    "path": "apps/desktop/src/cli/machine-update-remote.test.ts",
+    "symbol": "spawnSync",
+    "category": "test",
+    "reason": "Runs the remote staging Python fixture with an isolated temporary HOME and a 10-second timeout; never a server request path.",
+    "owner": "desktop"
+  },
+  {
     "path": "apps/desktop/src/cli/main.ts",
     "symbol": "spawnSync",
     "category": "cli",

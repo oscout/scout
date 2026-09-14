@@ -9,6 +9,7 @@ import { FLOOR_ROOMS } from "./agent-floor-world-layout.ts";
 import { FloorContextSheet } from "./FloorContextSheet.tsx";
 import { AgentFloorWorld, FLOOR_WORLD_WIDTH, FLOOR_WORLD_HEIGHT } from "./AgentFloorWorld.tsx";
 import { floorActorState, type FloorActorStation } from "./agent-floor-actor.ts";
+import { floorCharacterName } from "./floor-character-name.ts";
 
 import {
   useCallback,
@@ -255,11 +256,12 @@ function classifiedCount(counts: Record<FloorBlockKind, number>): number {
 function activityMixLabel(counts: Record<FloorBlockKind, number>): string {
   const total = classifiedCount(counts);
   if (total === 0) return "quiet";
-  const ranked = ([
+  const ranked: Array<["tool-led" | "edit-heavy" | "conversation-led", number]> = [
     ["tool-led", counts.tool],
     ["edit-heavy", counts.edit],
     ["conversation-led", counts.msg],
-  ] as const).sort((left, right) => right[1] - left[1]);
+  ];
+  ranked.sort((left, right) => right[1] - left[1]);
   return ranked[0][1] === ranked[1][1] ? "balanced" : ranked[0][0];
 }
 
@@ -962,6 +964,8 @@ export function AgentFloorView({ lanes, now: suppliedNow, onOpenTrace, railLedge
         floor: {
           live: entry.live,
           harness: entry.lane.agent.harness,
+          identity: floorCharacterName(entry.lane).label,
+          project: entry.lane.agent.project?.trim() || null,
           actionGlyph: fields.glyph,
           actionLabel: fields.label,
           actionMeta: fields.meta,

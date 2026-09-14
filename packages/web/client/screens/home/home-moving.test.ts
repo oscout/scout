@@ -56,6 +56,41 @@ function agent(overrides: Partial<Agent> = {}): Agent {
   };
 }
 
+function tailEvent(overrides: Partial<TailEvent> & Pick<TailEvent, "id" | "ts" | "kind" | "source" | "sessionId" | "summary">): TailEvent {
+  return {
+    pid: 1,
+    parentPid: null,
+    project: "openscout",
+    cwd: "/Users/dev/openscout",
+    harness: "unattributed",
+    ...overrides,
+  };
+}
+
+function fleetAsk(overrides: Partial<FleetAsk> = {}): FleetAsk {
+  return {
+    invocationId: "inv-1",
+    flightId: null,
+    agentId: "agent-1",
+    agentName: null,
+    conversationId: null,
+    collaborationRecordId: null,
+    task: "",
+    status: "working",
+    statusLabel: "working",
+    acknowledgedAt: null,
+    attention: "silent",
+    agentState: "working",
+    harness: null,
+    transport: null,
+    summary: null,
+    startedAt: null,
+    completedAt: null,
+    updatedAt: Date.now(),
+    ...overrides,
+  };
+}
+
 describe("harnessTailSource", () => {
   test("maps grok harness variants to grok tail source", () => {
     expect(harnessTailSource("grok-acp")).toBe("grok");
@@ -117,17 +152,14 @@ describe("isHomeObserveCandidate", () => {
 
   test("includes grok-acp agents with recent grok tail activity", () => {
     const nowMs = Date.parse("2026-06-30T12:00:00.000Z");
-    const tailEvents: TailEvent[] = [{
+    const tailEvents: TailEvent[] = [tailEvent({
       id: "tail-grok",
       ts: nowMs - 20_000,
       kind: "tool",
       source: "grok",
-      harness: "unattributed",
-      project: "openscout",
-      cwd: "/Users/dev/openscout",
       sessionId: "sess-grok",
       summary: "Grep · home-moving",
-    }];
+    })];
 
     expect(
       isHomeObserveCandidate(
@@ -155,6 +187,7 @@ describe("isHomeAgentMoving", () => {
           updatedAt: nowMs,
           data: {
             live: true,
+            files: [],
             events: [{
               id: "evt-1",
               t: 0,
@@ -171,17 +204,14 @@ describe("isHomeAgentMoving", () => {
   });
 
   test("shows agents with recent tail activity for their session", () => {
-    const tailEvents: TailEvent[] = [{
+    const tailEvents: TailEvent[] = [tailEvent({
       id: "tail-1",
       ts: nowMs - 60_000,
-      kind: "tool-call",
+      kind: "tool",
       source: "codex",
-      harness: "codex",
-      project: "openscout",
-      cwd: "/Users/dev/openscout",
       sessionId: "sess-1",
       summary: "grep home-moving",
-    }];
+    })];
 
     expect(
       isHomeAgentMoving({
@@ -193,17 +223,14 @@ describe("isHomeAgentMoving", () => {
   });
 
   test("hides callable agents with only broad workspace tail activity", () => {
-    const tailEvents: TailEvent[] = [{
+    const tailEvents: TailEvent[] = [tailEvent({
       id: "tail-1",
       ts: nowMs - 60_000,
-      kind: "tool-call",
+      kind: "tool",
       source: "codex",
-      harness: "codex",
-      project: "openscout",
-      cwd: "/Users/dev/openscout",
       sessionId: "other-session",
       summary: "grep home-moving",
-    }];
+    })];
 
     expect(
       isHomeAgentMoving({
@@ -228,12 +255,9 @@ describe("isHomeAgentMoving", () => {
   });
 
   test("shows agents with fresh moving asks", () => {
-    const movingAsk: FleetAsk = {
-      invocationId: "inv-1",
-      agentId: "agent-1",
-      status: "working",
+    const movingAsk = fleetAsk({
       updatedAt: nowMs - 5_000,
-    };
+    });
 
     expect(
       isHomeAgentMoving({
@@ -249,17 +273,14 @@ describe("isHomeAgentMoving", () => {
 describe("agentHasRecentTailActivity", () => {
   test("requires a concrete session match for managed agent tail activity", () => {
     const nowMs = Date.parse("2026-06-30T12:00:00.000Z");
-    const events: TailEvent[] = [{
+    const events: TailEvent[] = [tailEvent({
       id: "tail-1",
       ts: nowMs - 30_000,
-      kind: "message",
+      kind: "assistant",
       source: "codex",
-      harness: "codex",
-      project: "openscout",
-      cwd: "/Users/dev/openscout",
       sessionId: "other-session",
       summary: "working",
-    }];
+    })];
 
     expect(
       agentHasRecentTailActivity(
@@ -282,34 +303,28 @@ describe("agentHasRecentTailActivity", () => {
 
   test("ignores tail events when the agent harness is unknown", () => {
     const nowMs = Date.parse("2026-06-30T12:00:00.000Z");
-    const events: TailEvent[] = [{
+    const events: TailEvent[] = [tailEvent({
       id: "tail-grok",
       ts: nowMs - 20_000,
       kind: "tool",
       source: "grok",
-      harness: "unattributed",
-      project: "openscout",
-      cwd: "/Users/dev/openscout",
       sessionId: "sess-grok",
       summary: "Shell · curl",
-    }];
+    })];
 
     expect(agentHasRecentTailActivity(agent({ harness: null }), events, nowMs)).toBe(false);
   });
 
   test("does not match unrelated harnesses sharing the same workspace", () => {
     const nowMs = Date.parse("2026-06-30T12:00:00.000Z");
-    const events: TailEvent[] = [{
+    const events: TailEvent[] = [tailEvent({
       id: "tail-grok",
       ts: nowMs - 20_000,
       kind: "tool",
       source: "grok",
-      harness: "unattributed",
-      project: "openscout",
-      cwd: "/Users/dev/openscout",
       sessionId: "sess-grok",
       summary: "Shell · curl",
-    }];
+    })];
 
     expect(
       agentHasRecentTailActivity(agent({ harness: "claude" }), events, nowMs),
@@ -318,17 +333,15 @@ describe("agentHasRecentTailActivity", () => {
 
   test("matches grok tail events to grok-acp scout agents by session id", () => {
     const nowMs = Date.parse("2026-06-30T12:00:00.000Z");
-    const events: TailEvent[] = [{
+    const events: TailEvent[] = [tailEvent({
       id: "tail-grok",
       ts: nowMs - 15_000,
       kind: "tool",
       source: "grok",
       harness: "scout-managed",
-      project: "openscout",
-      cwd: "/Users/dev/openscout",
       sessionId: "sess-grok",
       summary: "Read · home-moving.ts",
-    }];
+    })];
 
     expect(
       agentHasRecentTailActivity(
@@ -414,17 +427,14 @@ describe("buildHomeNativeMovingLanes", () => {
   test("includes native grok sessions with substantive tool activity", () => {
     const lanes = buildHomeNativeMovingLanes({
       agents: [],
-      tailEvents: [{
+      tailEvents: [tailEvent({
         id: "tail-grok",
         ts: nowMs - 10_000,
         kind: "tool",
         source: "grok",
-        harness: "unattributed",
-        project: "openscout",
-        cwd: "/Users/dev/openscout",
         sessionId: "sess-grok",
         summary: "Grep · pattern",
-      }],
+      })],
       transcripts: [{
         source: "grok",
         transcriptPath: "/Users/art/.grok/sessions/openscout/sess-grok/events.jsonl",
@@ -444,17 +454,14 @@ describe("buildHomeNativeMovingLanes", () => {
   });
 
   test("respects the selected moving horizon", () => {
-    const tailEvents: TailEvent[] = [{
+    const tailEvents: TailEvent[] = [tailEvent({
       id: "tail-grok",
       ts: nowMs - 10 * 60_000,
       kind: "tool",
       source: "grok",
-      harness: "unattributed",
-      project: "openscout",
-      cwd: "/Users/dev/openscout",
       sessionId: "sess-grok",
       summary: "Grep · pattern",
-    }];
+    })];
     const transcripts = [{
       source: "grok",
       transcriptPath: "/Users/art/.grok/sessions/openscout/sess-grok/events.jsonl",
@@ -485,17 +492,14 @@ describe("buildHomeNativeMovingLanes", () => {
   test("excludes native grok sessions with only streaming phase noise", () => {
     const lanes = buildHomeNativeMovingLanes({
       agents: [],
-      tailEvents: [{
+      tailEvents: [tailEvent({
         id: "tail-grok-noise",
         ts: nowMs - 10_000,
         kind: "system",
         source: "grok",
-        harness: "unattributed",
-        project: "openscout",
-        cwd: "/Users/dev/openscout",
         sessionId: "sess-grok",
         summary: "phase · streaming_reasoning",
-      }],
+      })],
       transcripts: [{
         source: "grok",
         transcriptPath: "/Users/art/.grok/sessions/openscout/sess-grok/events.jsonl",

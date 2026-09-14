@@ -1157,10 +1157,14 @@ export async function readScoutBrokerTailDiscovery(
 
 export async function readScoutBrokerSnapshot(
   baseUrl = resolveScoutBrokerUrl(),
-  options: { signal?: AbortSignal } = {},
+  options: { signal?: AbortSignal; since?: number; scope?: "conversations" | "agents" } = {},
 ): Promise<ScoutBrokerSnapshot | null> {
   try {
-    return await brokerReadJson<ScoutBrokerSnapshot>(baseUrl, scoutBrokerPaths.v1.snapshot, options);
+    const query = new URLSearchParams();
+    if (options.since !== undefined) query.set("since", String(options.since));
+    if (options.scope) query.set("scope", options.scope);
+    const path = scoutBrokerPaths.v1.snapshot + (query.size ? `?${query}` : "");
+    return await brokerReadJson<ScoutBrokerSnapshot>(baseUrl, path, { signal: options.signal });
   } catch {
     return null;
   }

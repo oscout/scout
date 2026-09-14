@@ -764,13 +764,7 @@ export async function createScoutbotWebServices(
     const configuredKey = config?.openaiApiKey?.trim();
     return configuredKey || scoutbotCredentials.getOpenAIKey()?.trim() || undefined;
   };
-  const tailRuntime: WebTailRuntime = {
-    getTailDiscovery,
-    refreshTailDiscovery,
-    readRecentTranscriptEvents,
-    snapshotRecentEvents,
-    ...options.tailRuntime,
-  };
+  const tailRuntime = options.tailRuntime;
   const scoutbotAssistant = createScoutbotAssistantService({
     currentDirectory,
     loadContext: async (route) => ({

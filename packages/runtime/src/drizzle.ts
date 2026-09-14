@@ -6,7 +6,7 @@ import type { ControlPlaneSqliteDatabase } from "./sqlite-adapter.js";
 
 export type ControlPlaneBriefingRow = {
   id: string;
-  kind: string;
+  kind: "fleet-home" | "tour";
   title: string;
   summary: string;
   recommendation: string | null;

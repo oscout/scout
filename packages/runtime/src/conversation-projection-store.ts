@@ -250,8 +250,7 @@ function metadataSessionId(metadata: Record<string, unknown>): string | null {
     ?? metadataString(metadata, "responderSessionId")
     ?? metadataString(metadata, "sessionId")
     ?? metadataString(metadata, "externalSessionId")
-    ?? metadataString(metadata, "threadId")
-    ?? metadataString(metadataObject(metadata, "returnAddress"), "sessionId");
+    ?? metadataString(metadata, "threadId");
 }
 
 function truncatePreview(value: string | null | undefined, maxChars = 240): string | null {
@@ -1739,8 +1738,20 @@ export class ConversationProjectionStore {
          LIMIT 1`,
       ).get(...conversationIds, ...this.operatorActorIds),
     );
+    // In an agent-to-agent DM neither participant is the operator. The ask's
+    // target is the worker to observe; alphabetical member order is not routing.
+    const targetAgentId = row.kind === "direct"
+      ? this.db.query<{ target_agent_id: string }>(
+        `SELECT target_agent_id FROM invocations
+         WHERE conversation_id IN (${placeholders})
+         ORDER BY CASE WHEN created_at > 0 AND created_at < ${EPOCH_MILLISECONDS_FLOOR}
+           THEN created_at * 1000 ELSE created_at END DESC, id DESC
+         LIMIT 1`,
+      ).get(...conversationIds)?.target_agent_id
+      : undefined;
     const directParticipant = row.kind === "direct"
-      ? participants.find((participant) => !operatorIds.has(participant.actor_id) && participant.agent_id !== null)
+      ? participants.find((participant) => participant.actor_id === targetAgentId && !operatorIds.has(participant.actor_id))
+        ?? participants.find((participant) => !operatorIds.has(participant.actor_id) && participant.agent_id !== null)
         ?? participants.find((participant) => participant.agent_id !== null)
         ?? participants.find((participant) => !operatorIds.has(participant.actor_id))
         ?? null

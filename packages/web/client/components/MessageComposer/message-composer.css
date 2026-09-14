@@ -1000,3 +1000,40 @@
   opacity: 0.5;
   cursor: default;
 }
+
+/* ── Voice issue block ──────────────────────────────────────────── */
+/* An engagement failure is the one voice status that earns more than a line:
+   it names a cause and offers a fix, and clipping either to an ellipsis is
+   what made a solvable problem unreadable. */
+.s-msg-compose-voice-issue {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  min-width: 0;
+}
+
+.s-msg-compose-voice-issue-title {
+  font-weight: 600;
+}
+
+.s-msg-compose-voice-issue-hint {
+  /* Wraps on purpose — the hint is the actionable half. */
+  white-space: normal;
+  opacity: 0.78;
+}
+
+.s-msg-compose-voice-issue-action {
+  margin-top: 2px;
+  padding: 2px 8px;
+  border: 1px solid currentColor;
+  border-radius: 4px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+.s-msg-compose-voice-issue-action:hover {
+  background: color-mix(in srgb, currentColor 12%, transparent);
+}

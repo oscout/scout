@@ -7,6 +7,7 @@ import {
   renameSync as fsRenameSync,
   rmSync as fsRmSync,
   writeFileSync as fsWriteFileSync,
+  readFileSync,
 } from "node:fs";
 import { tmpdir as osTmpdir } from "node:os";
 import { join } from "node:path";
@@ -40,6 +41,8 @@ export type ScoutInstallOptions = {
   force: boolean;
   version: string | null;
   restart: boolean;
+  candidate?: string;
+  dmg?: string;
 };
 
 export type GithubReleaseAsset = {
@@ -134,6 +137,7 @@ export function renderInstallCommandHelp(): string {
     "  scout install --version <tag> # install a specific release (e.g. v0.2.70)",
     "  scout install --force         # reinstall even if already up to date",
     "  scout install --no-restart    # do not relaunch OpenScout after installing",
+    "  scout install --candidate <receipt.json> --dmg <file> # explicit local signed candidate",
     "",
     "Behavior:",
     "  Downloads the signed + notarized OpenScout.dmg from the GitHub release,",
@@ -160,6 +164,12 @@ export function parseInstallArgs(args: string[]): ScoutInstallOptions {
 
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
+    if (arg === "--candidate" || arg === "--dmg") {
+      const value = args[++index];
+      if (!value || value.startsWith("-")) throw new ScoutCliError(`${arg} requires a path`);
+      options[arg === "--candidate" ? "candidate" : "dmg"] = value;
+      continue;
+    }
     if (arg === "--json") {
       // Global flag is handled by the argv parser; tolerate a stray pass-through.
       continue;
@@ -204,7 +214,32 @@ export function parseInstallArgs(args: string[]): ScoutInstallOptions {
     throw new ScoutCliError(`unknown option for install: ${arg} (try: scout install --help)`);
   }
 
+  if (Boolean(options.candidate) !== Boolean(options.dmg)) {
+    throw new ScoutCliError("--candidate and --dmg must be provided together");
+  }
+  if (options.candidate && options.version) throw new ScoutCliError("Use either --candidate or --version");
   return options;
+}
+
+/** A local candidate remains unpublished. Receipt integrity supplements, never
+ * replaces, the installer's pinned Apple identity and Gatekeeper checks. */
+export function loadInstallCandidate(receiptPath: string, dmgPath: string): GithubRelease {
+  const receipt = JSON.parse(readFileSync(receiptPath, "utf8"));
+  if (receipt.schema !== "openscout-native-candidate-v1"
+    || receipt.source?.repository !== "arach/openscout"
+    || !/^[a-f0-9]{40}$/.test(receipt.source?.commit ?? "")
+    || receipt.verification?.release !== true
+    || receipt.verification?.team !== OPENSCOUT_SIGNING_TEAM_ID
+    || !/^[a-f0-9]{64}$/.test(receipt.artifact?.sha256 ?? "")) {
+    throw new ScoutCliError("Invalid signed native candidate receipt");
+  }
+  const version = normalizeReleaseVersion(receipt.version);
+  const asset = {
+    name: `OpenScout-${version}.dmg`, browser_download_url: dmgPath,
+    size: receipt.artifact.size, digest: `sha256:${receipt.artifact.sha256}`,
+  };
+  verifyDownloadedAsset(readFileSync(dmgPath), asset);
+  return { tag_name: `v${version}`, name: `Local candidate ${version}`, assets: [asset] };
 }
 
 function stripLeadingV(tag: string): string {
@@ -843,7 +878,9 @@ async function runCheck(
   options: ScoutInstallOptions,
   deps: ResolvedInstallDependencies,
 ): Promise<void> {
-  const release = await fetchRelease(options.version, deps);
+  const release = options.candidate && options.dmg
+    ? loadInstallCandidate(options.candidate, options.dmg)
+    : await fetchRelease(options.version, deps);
   const target = normalizeReleaseVersion(release.tag_name);
   let installed = getInstalledVersion(deps);
 
@@ -903,8 +940,11 @@ export async function runInstallCommand(
     return;
   }
 
-  context.stderr(options.version ? `Fetching release ${options.version}…` : "Fetching the latest OpenScout release…");
-  const release = await fetchRelease(options.version, deps);
+  context.stderr(options.candidate ? "Verifying explicit local candidate (unpublished)…"
+    : options.version ? `Fetching release ${options.version}…` : "Fetching the latest OpenScout release…");
+  const release = options.candidate && options.dmg
+    ? loadInstallCandidate(options.candidate, options.dmg)
+    : await fetchRelease(options.version, deps);
   const target = normalizeReleaseVersion(release.tag_name);
   const releaseInstallLock = acquireInstallLock(deps);
 
@@ -949,7 +989,13 @@ export async function runInstallCommand(
     let installedAfter = "";
 
     try {
-      await downloadDmg(asset, dmgPath, context, deps);
+      if (options.dmg) {
+        const bytes = readFileSync(options.dmg);
+        verifyDownloadedAsset(bytes, asset);
+        deps.writeFileSync(dmgPath, bytes);
+      } else {
+        await downloadDmg(asset, dmgPath, context, deps);
+      }
       context.stderr(`Installing OpenScout ${target} to ${deps.appPath}…`);
       verifyDownloadedDmg(dmgPath, deps);
       mountDmg(dmgPath, mountPoint, deps);

@@ -4,7 +4,8 @@ export type ScoutCommandHandler = (context: ScoutCommandContext, args: string[])
 
 export type ScoutCommandName =
   | "app"
-  | "attention"
+  | "status"
+  | "notify"
   | "ask"
   | "alias"
   | "broadcast"
@@ -29,7 +30,6 @@ export type ScoutCommandName =
   | "menu"
   | "mesh"
   | "monitor"
-  | "need"
   | "pair"
   | "ps"
   | "providers"
@@ -46,6 +46,7 @@ export type ScoutCommandName =
   | "tail"
   | "tui"
   | "up"
+  | "update"
   | "wait"
   | "watch"
   | "who"
@@ -55,8 +56,10 @@ export async function loadScoutCommandHandler(name: ScoutCommandName): Promise<S
   switch (name) {
     case "app":
       return (await import("./app.ts")).runAppCommand;
-    case "attention":
-      return (await import("./attention.ts")).runAttentionCommand;
+    case "status":
+      return (await import("./status.ts")).runStatusCommand;
+    case "notify":
+      return (await import("./notify.ts")).runNotifyCommand;
     case "ask":
       return (await import("./ask.ts")).runAskCommand;
     case "alias":
@@ -119,8 +122,6 @@ export async function loadScoutCommandHandler(name: ScoutCommandName): Promise<S
       return (await import("./runtimes.ts")).runRuntimesCommand;
     case "search":
       return (await import("./search.ts")).runSearchCommand;
-    case "need":
-      return (await import("./need.ts")).runNeedCommand;
     case "send":
       return (await import("./send.ts")).runSendCommand;
     case "session":
@@ -139,6 +140,8 @@ export async function loadScoutCommandHandler(name: ScoutCommandName): Promise<S
       return (await import("./tui.ts")).runTuiCommand;
     case "up":
       return (await import("./up.ts")).runUpCommand;
+    case "update":
+      return (await import("./update.ts")).runUpdateCommand;
     case "wait":
       return (await import("./wait.ts")).runWaitCommand;
     case "watch":
