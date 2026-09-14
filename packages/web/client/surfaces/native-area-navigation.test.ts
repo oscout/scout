@@ -1,10 +1,14 @@
 import { expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { nativeOpsOwnsInternalRoute, routeEmbeddedNavigation } from "./embed-navigation.ts";
 import { PRIMARY_AREAS } from "../scout/primary-areas.ts";
 import { installNativeAreaKeyboard } from "./native-area-keyboard.ts";
 
 const read = (path: string) => readFileSync(new URL(path, import.meta.url), "utf8");
+
+// Native Swift sources are intentionally absent from the public core export.
+// Gate on the package so a missing source file in a native checkout still fails.
+const nativeTest = existsSync(new URL("../../../../apps/macos/Package.swift", import.meta.url)) ? test : test.skip;
 
 test("embedded area chords route once and relinquish typing, terminal, modal and blur ownership", () => {
   const oldWindow = Object.getOwnPropertyDescriptor(globalThis, "window");
@@ -40,7 +44,7 @@ test("embedded area chords route once and relinquish typing, terminal, modal and
   }
 });
 
-test("native primary navigation follows the web area order", () => {
+nativeTest("native primary navigation follows the web area order", () => {
   const navigation = read("../../../../apps/macos/Sources/Scout/ScoutSidebarNavigation.swift");
   const sections = navigation.match(/static let destinations: \[ScoutSection\] = \[([^\]]+)/)![1]
     .match(/\.\w+/g)!.map((value) => value.slice(1));
@@ -52,15 +56,20 @@ test("native primary navigation follows the web area order", () => {
     .toEqual(PRIMARY_AREAS.filter((area) => area.id !== "settings").map((area) => area.id));
 });
 
-test("new area embeds are registered in both hosts and have native navigation ingress", () => {
+test("new area embeds are discoverable with web route ownership", () => {
   const discovery = read("./discover.ts");
-  const registry = read("../../../../apps/macos/Sources/Scout/ScoutEmbedSurface.swift");
-  const host = read("../../../../apps/macos/Sources/Scout/ScoutWebEmbedView.swift");
   for (const area of ["home", "search", "ops"]) {
     const screen = read(`../screens/${area}/NativeAreaScreen.tsx`);
     expect(discovery).toContain(`../screens/${area}/NativeAreaScreen.tsx`);
     expect(screen).toContain(`path: "/embed/${area}"`);
     expect(screen).toContain("ownsInternalRoutes: true");
+  }
+});
+
+nativeTest("new area embeds are registered in the native host and have navigation ingress", () => {
+  const registry = read("../../../../apps/macos/Sources/Scout/ScoutEmbedSurface.swift");
+  const host = read("../../../../apps/macos/Sources/Scout/ScoutWebEmbedView.swift");
+  for (const area of ["home", "search", "ops"]) {
     expect(registry).toContain(`embedPath: "/embed/${area}"`);
     expect(host).toContain(`|| surface == .${area}`);
   }
@@ -79,7 +88,7 @@ test("Ops internal routing hands native siblings back without dropping World", (
   }
 });
 
-test("native primary chords agree with shared web destinations", () => {
+nativeTest("native primary chords agree with shared web destinations", () => {
   const keyMap = read("../../../../apps/macos/Sources/Scout/ScoutKeyMap.swift");
   for (const [section, chord] of [["home", "h"], ["comms", "c"], ["agents", "p"], ["terminals", "t"], ["dispatch", "d"], ["search", "f"], ["ops", "o"], ["tail", "l"], ["code", "b"]]) {
     expect(keyMap).toContain(`Destination(section: .${section}, chord: "${chord}")`);
