@@ -29,6 +29,7 @@ import {
   normalizeLocalAgentSystemPrompt,
   renderLocalAgentSystemPromptTemplate,
   resolveLocalAgentContextWindowUsage,
+  resolveLocalAgentScoutCliPath,
   stripLocalAgentReplyMetadata,
 } from "./local-agents";
 import { buildCardlessSessionEndpoint } from "./broker-cardless-session";
@@ -48,6 +49,30 @@ const originalOperatorName = process.env.OPENSCOUT_OPERATOR_NAME;
 const originalOperatorHandle = process.env.OPENSCOUT_OPERATOR_HANDLE;
 const originalCodexHomeSource = process.env.OPENSCOUT_CODEX_HOME_SOURCE;
 const tempPaths = new Set<string>();
+
+describe("local agent Scout CLI path", () => {
+  test("published bundle uses its installed CLI even when a workspace entry also exists", () => {
+    const root = mkdtempSync(join(tmpdir(), "scout-packaged-cli-"));
+    tempPaths.add(root);
+    const packageRoot = join(root, "node_modules", "@openscout", "scout");
+    const cli = join(packageRoot, "bin", "scout.mjs");
+    mkdirSync(dirname(cli), { recursive: true });
+    writeFileSync(cli, "// installed CLI\n");
+    const incorrectWorkspaceCli = join(root, "node_modules", "@openscout", "packages", "cli", "bin", "scout.mjs");
+    mkdirSync(dirname(incorrectWorkspaceCli), { recursive: true });
+    writeFileSync(incorrectWorkspaceCli, "// unrelated checkout\n");
+    expect(resolveLocalAgentScoutCliPath(join(packageRoot, "dist", "runtime"))).toBe(cli);
+  });
+
+  test.each(["src", "dist"])("workspace %s runtime retains the monorepo CLI", (directory) => {
+    const root = mkdtempSync(join(tmpdir(), "scout-workspace-cli-"));
+    tempPaths.add(root);
+    const cli = join(root, "packages", "cli", "bin", "scout.mjs");
+    mkdirSync(dirname(cli), { recursive: true });
+    writeFileSync(cli, "// workspace CLI\n");
+    expect(resolveLocalAgentScoutCliPath(join(root, "packages", "runtime", directory))).toBe(cli);
+  });
+});
 
 function useTestOperatorIdentity(name = "operator", handle = "operator"): void {
   const home = mkdtempSync(join(tmpdir(), "openscout-user-config-"));

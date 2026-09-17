@@ -27,6 +27,10 @@ export const OPENSCOUT_PORTS = {
   pairingRelay: 43131,
   pairingFileServer: 43132,
   studio: 43140,
+  // Opt-in JetStream sidecar. Deliberately not 4222: an operator's own
+  // nats-server must never be adopted, restarted, or collided with.
+  jetstream: 43150,
+  jetstreamMonitor: 43151,
 } as const;
 export const OPENSCOUT_WORKTREE_PORT_BASES = {
   web: 43200,
@@ -49,10 +53,11 @@ export type LocalConfig = {
   /**
    * How much of the web surface the LAN-bound listener serves to non-loopback
    * peers. "pairing" (the default) answers only GET /pair; "full" serves the
-   * app, with every /api route still requiring a credential. Operator-tunable
+   * app; "chat" exposes room pages, assets and room APIs only. API handlers
+   * retain their credential and invitation checks. Operator-tunable
    * here so enabling LAN/tailnet access does not mean editing a launchd plist.
    */
-  webLanScope?: "full" | "pairing";
+  webLanScope?: "full" | "pairing" | "chat";
 };
 
 export const DEFAULT_LOCAL_CONFIG = {
@@ -160,7 +165,7 @@ function validateLocalConfig(input: unknown): LocalConfig {
   if (typeof raw.webLocalName === "string" && raw.webLocalName.trim().length > 0) {
     out.webLocalName = raw.webLocalName.trim();
   }
-  if (raw.webLanScope === "full" || raw.webLanScope === "pairing") {
+  if (raw.webLanScope === "full" || raw.webLanScope === "pairing" || raw.webLanScope === "chat") {
     out.webLanScope = raw.webLanScope;
   }
   if (raw.ports && typeof raw.ports === "object") {

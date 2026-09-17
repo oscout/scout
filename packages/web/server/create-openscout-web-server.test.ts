@@ -1,5 +1,6 @@
 import { afterAll, beforeEach, afterEach, describe, expect, mock, test } from "bun:test";
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import {
   existsSync,
   mkdtempSync,
@@ -15,9 +16,16 @@ import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ActionBlock, BlockState, QuestionBlock, SessionState } from "@openscout/agent-sessions";
 import {
+  CHANNEL_NATURAL_KEY_METADATA,
+  CHANNEL_SPACE_SLUG_METADATA,
   SCOUT_RUNTIME_CATALOG,
+  namedChannelNaturalKey,
+  spaceNaturalKey,
+  spacedChannelNaturalKey,
+  stableChannelId,
   type ConversationProjectionItem,
   type ConversationProjectionSnapshot,
+  type MachineRecord,
 } from "@openscout/protocol";
 import type { DiscoverySnapshot } from "@openscout/runtime/tail";
 import {
@@ -25,6 +33,7 @@ import {
   writeRelayAgentOverrides,
 } from "@openscout/runtime/setup";
 import { encodeMessageHistoryCursor } from "../shared/message-pagination.ts";
+import { encodeChannelPollCursor } from "./core/conversations/channel-polling.ts";
 
 // Before anything captures the ambient environment. The server builds a shared
 // pair-request store keyed on `~/.openscout`, and a pairing test here once
@@ -291,6 +300,7 @@ mock.module("./core/broker/service.ts", () => ({
     if (loadScoutBrokerContextGate) await loadScoutBrokerContextGate;
     return scoutBrokerContextResult;
   },
+  invalidateScoutBrokerContextCache: () => {},
   loadScoutReadCursors: async () => ({}),
   loadScoutRelayConfig: async () => scoutRelayConfigResult,
   markScoutConversationRead: async () => null,
@@ -370,6 +380,8 @@ const { createOpenScoutWebServer } =
   await import("./create-openscout-web-server.ts");
 const { resetScoutVoiceSessionStateForTests } =
   await import("./scout-voice-session.ts");
+const { CHANNEL_MEMBER_COOKIE, channelMemberCookie, createChannelMemberSessionAuthority } =
+  await import("./core/conversations/channel-member-session.ts");
 const {
   gitBuildInfoProbe,
   resetScoutdProbeClientForTests,
@@ -392,6 +404,28 @@ function makeStaticRoot(): string {
     "utf8",
   );
   return root;
+}
+
+function makePortalPeerMachine(overrides: Partial<MachineRecord> & { name: string }): MachineRecord {
+  const now = Date.now();
+  return {
+    id: `mach-${overrides.name}`,
+    displayName: null,
+    name: overrides.name,
+    platform: "macos",
+    identityKeys: [],
+    isSelf: false,
+    hostNames: [],
+    addresses: [],
+    macAddresses: [],
+    capabilities: [],
+    routes: [],
+    evidence: [],
+    pinned: false,
+    firstSeenAt: now - 86_400_000,
+    lastSeenAt: now,
+    ...overrides,
+  };
 }
 
 function git(cwd: string, args: string[]): string {
@@ -5764,6 +5798,7 @@ describe("createOpenScoutWebServer", () => {
       staticRoot: makeStaticRoot(),
       advertisedHost: "m1.scout.local",
       portalHost: "scout.local",
+      portalMachines: async () => [],
     });
 
     const response = await server.app.request("http://127.0.0.1:4321/", {
@@ -5797,6 +5832,387 @@ describe("createOpenScoutWebServer", () => {
     expect(body).not.toContain("class=\"orb-l\"");
     expect(body).not.toContain("--accent");
     expect(body).not.toContain("nothing leaves this network");
+  });
+
+  test("the local portal lists other scout-enabled machines with their doorways", async () => {
+    const NOW = Date.now();
+    const machine = makePortalPeerMachine;
+
+    const server = await createOpenScoutWebServer({
+      currentDirectory: "/tmp/openscout",
+      assetMode: "static",
+      staticRoot: makeStaticRoot(),
+      advertisedHost: "m1.scout.local",
+      portalHost: "scout.local",
+      portalMachines: async () => [
+        // The row above is this machine already; never listed again.
+        machine({
+          name: "m1",
+          isSelf: true,
+          scoutNodeId: "node-self",
+          capabilities: ["scout-broker", "scout-web"],
+        }),
+        // Same LAN: the peer advertises its doorway name, and `*.scout.local`
+        // resolves to the viewer's own loopback — the local edge proxies the
+        // name to the peer's live LAN route, so the name is the link.
+        machine({
+          name: "studio-mini",
+          scoutNodeId: "node-studio",
+          capabilities: ["scout-broker", "scout-web"],
+          routes: [{ kind: "lan", host: "192.168.1.40", lastSeenAt: NOW }],
+          evidence: [{
+            kind: "scout",
+            observedAt: NOW,
+            nodeId: "node-studio",
+            nodeName: "studio-mini",
+            hostName: "Studio-Mini.local",
+            brokerUrl: "https://192.168.1.40:43110",
+            webUrl: "http://127.0.0.1:43120",
+            webHost: "studio-mini.scout.local",
+          }],
+        }),
+        // Tailnet-only: a doorway name derived from the node name is still the
+        // better link — the local edge proxies it over the tailnet route.
+        machine({
+          name: "workbench",
+          scoutNodeId: "node-workbench",
+          capabilities: ["scout-broker"],
+          routes: [{ kind: "tailnet", host: "workbench.tail-abc.ts.net", lastSeenAt: NOW }],
+          evidence: [{
+            kind: "scout",
+            observedAt: NOW,
+            nodeId: "node-workbench",
+            nodeName: "workbench",
+            brokerUrl: "https://100.64.0.12:43110",
+          }],
+        }),
+        // A LAN route but no name evidence: the bare address is the link.
+        machine({
+          name: "noname",
+          scoutNodeId: "node-noname",
+          capabilities: ["scout-broker"],
+          routes: [{ kind: "lan", host: "192.168.1.41", lastSeenAt: NOW }],
+          evidence: [{
+            kind: "scout",
+            observedAt: NOW,
+            nodeId: "node-noname",
+            nodeName: "",
+          }],
+        }),
+        // A node that announces a real web URL is linked exactly as announced.
+        machine({
+          name: "relay",
+          scoutNodeId: "node-relay",
+          capabilities: ["scout-web"],
+          evidence: [{
+            kind: "scout",
+            observedAt: NOW,
+            nodeId: "node-relay",
+            nodeName: "relay",
+            webUrl: "https://scout.example.com/",
+          }],
+        }),
+        // Registered but with no dialable route: listed, not linked.
+        machine({
+          name: "ghost",
+          scoutNodeId: "node-ghost",
+          capabilities: ["scout-broker"],
+          lastSeenAt: NOW - 3 * 60 * 60_000,
+          evidence: [{
+            kind: "scout",
+            observedAt: NOW - 3 * 60 * 60_000,
+            nodeId: "node-ghost",
+            nodeName: "ghost",
+          }],
+        }),
+        // A LAN machine that runs no Scout is not a portal row.
+        machine({
+          name: "printer",
+          capabilities: ["smb"],
+          routes: [{ kind: "lan", host: "192.168.1.50", lastSeenAt: NOW }],
+        }),
+      ],
+    });
+
+    const response = await server.app.request("http://127.0.0.1:4321/", {
+      headers: { host: "scout.local:4321" },
+    });
+
+    expect(response.status).toBe(200);
+    const body = await response.text();
+    expect(body).toContain("This machine");
+    expect(body).toContain('href="http://studio-mini.scout.local:4321/"');
+    expect(body).toContain('href="http://workbench.scout.local:4321/"');
+    expect(body).toContain("LAN · online");
+    expect(body).toContain("Tailnet · online");
+    expect(body).toContain('href="http://192.168.1.41/"');
+    expect(body).toContain("LAN · online · noname");
+    expect(body).toContain('href="https://scout.example.com/"');
+    expect(body).toContain("Mesh · online");
+    expect(body).toContain(">ghost</span>");
+    expect(body).toContain("registered · offline");
+    expect(body).not.toContain("printer");
+  });
+
+  test("a peer doorway host proxies to the peer's live route", async () => {
+    const NOW = Date.now();
+    const calls: Array<{ url: string; host: string | null; cookie: string | null }> = [];
+    const server = await createOpenScoutWebServer({
+      currentDirectory: "/tmp/openscout",
+      assetMode: "static",
+      staticRoot: makeStaticRoot(),
+      advertisedHost: "m1.scout.local",
+      portalHost: "scout.local",
+      resolvePeerAddress: () => "127.0.0.1",
+      portalMachines: async () => [
+        makePortalPeerMachine({
+          name: "studio-mini",
+          scoutNodeId: "node-studio",
+          capabilities: ["scout-broker", "scout-web"],
+          routes: [{ kind: "lan", host: "192.168.1.40", lastSeenAt: NOW }],
+          evidence: [{
+            kind: "scout",
+            observedAt: NOW,
+            nodeId: "node-studio",
+            nodeName: "studio-mini",
+            webUrl: "http://127.0.0.1:43120",
+            webHost: "studio-mini.scout.local",
+          }],
+        }),
+      ],
+      portalFetch: (async (input: unknown, init?: RequestInit) => {
+        const url = typeof input === "string"
+          ? input
+          : input instanceof URL ? input.toString() : (input as Request).url;
+        const headers = new Headers(init?.headers);
+        calls.push({ url, host: headers.get("host"), cookie: headers.get("cookie") });
+        if (new URL(url).pathname === "/go") {
+          return new Response(null, {
+            status: 302,
+            headers: { location: "http://192.168.1.40/home" },
+          });
+        }
+        return new Response(`peer:${new URL(url).pathname}`, { status: 200 });
+      }) as typeof fetch,
+    });
+
+    const response = await server.app.request(
+      "http://studio-mini.scout.local/sessions/abc?x=1",
+      { headers: { host: "studio-mini.scout.local", cookie: "openscout_web=session-cookie" } },
+    );
+
+    expect(response.status).toBe(200);
+    expect(await response.text()).toBe("peer:/sessions/abc");
+    expect(calls).toEqual([{
+      url: "http://192.168.1.40/sessions/abc?x=1",
+      host: "studio-mini.scout.local",
+      cookie: "openscout_web=session-cookie",
+    }]);
+
+    // Same-origin redirects come back pointing at the doorway, not the LAN IP.
+    const redirect = await server.app.request("http://studio-mini.scout.local/go", {
+      headers: { host: "studio-mini.scout.local" },
+    });
+    expect(redirect.status).toBe(302);
+    expect(redirect.headers.get("location")).toBe("http://studio-mini.scout.local/home");
+  });
+
+  test("chat.scout.local is this node's own surface, never a peer doorway", async () => {
+    const NOW = Date.now();
+    const calls: string[] = [];
+    const server = await createOpenScoutWebServer({
+      currentDirectory: "/tmp/openscout",
+      assetMode: "static",
+      staticRoot: makeStaticRoot(),
+      advertisedHost: "m1.scout.local",
+      portalHost: "scout.local",
+      resolvePeerAddress: () => "127.0.0.1",
+      // A machine actually named `chat` is on the mesh and advertises the
+      // doorway name. Reserving the label must beat it: otherwise anyone who
+      // renames a laptop can capture the chat surface for the whole network.
+      portalMachines: async () => [
+        makePortalPeerMachine({
+          name: "chat",
+          scoutNodeId: "node-chat",
+          capabilities: ["scout-broker", "scout-web"],
+          routes: [{ kind: "lan", host: "192.168.1.50", lastSeenAt: NOW }],
+          evidence: [{
+            kind: "scout",
+            observedAt: NOW,
+            nodeId: "node-chat",
+            nodeName: "chat",
+            webUrl: "http://127.0.0.1:43120",
+            webHost: "chat.scout.local",
+          }],
+        }),
+      ],
+      portalFetch: (async (input: unknown) => {
+        const url = typeof input === "string"
+          ? input
+          : input instanceof URL ? input.toString() : (input as Request).url;
+        calls.push(url);
+        return new Response("peer", { status: 200 });
+      }) as typeof fetch,
+    });
+
+    const response = await server.app.request("http://chat.scout.local/api/health", {
+      headers: { host: "chat.scout.local" },
+    });
+
+    // Served locally: nothing was proxied to the peer that claimed the name.
+    expect(calls).toEqual([]);
+    expect(await response.text()).not.toBe("peer");
+  });
+
+  test("an advertised webUrl peer keeps its own host and origin upstream", async () => {
+    const NOW = Date.now();
+    const calls: Array<{ url: string; host: string | null; origin: string | null }> = [];
+    const server = await createOpenScoutWebServer({
+      currentDirectory: "/tmp/openscout",
+      assetMode: "static",
+      staticRoot: makeStaticRoot(),
+      advertisedHost: "m1.scout.local",
+      portalHost: "scout.local",
+      resolvePeerAddress: () => "127.0.0.1",
+      portalMachines: async () => [
+        makePortalPeerMachine({
+          name: "relay",
+          scoutNodeId: "node-relay",
+          capabilities: ["scout-web"],
+          evidence: [{
+            kind: "scout",
+            observedAt: NOW,
+            nodeId: "node-relay",
+            nodeName: "relay",
+            webUrl: "https://scout.example.com/",
+            webHost: "relay.scout.local",
+          }],
+        }),
+      ],
+      portalFetch: (async (input: unknown, init?: RequestInit) => {
+        const url = typeof input === "string"
+          ? input
+          : input instanceof URL ? input.toString() : (input as Request).url;
+        const headers = new Headers(init?.headers);
+        calls.push({ url, host: headers.get("host"), origin: headers.get("origin") });
+        return new Response("peer", { status: 200 });
+      }) as typeof fetch,
+    });
+
+    const response = await server.app.request("http://relay.scout.local/api/state", {
+      headers: { host: "relay.scout.local", origin: "http://relay.scout.local" },
+    });
+
+    expect(response.status).toBe(200);
+    expect(calls).toEqual([{
+      url: "https://scout.example.com/api/state",
+      host: null,
+      origin: "https://scout.example.com",
+    }]);
+  });
+
+  test("a doorway host without a dialable route never serves the local app", async () => {
+    const NOW = Date.now();
+    const server = await createOpenScoutWebServer({
+      currentDirectory: "/tmp/openscout",
+      assetMode: "static",
+      staticRoot: makeStaticRoot(),
+      advertisedHost: "m1.scout.local",
+      portalHost: "scout.local",
+      resolvePeerAddress: () => "127.0.0.1",
+      portalMachines: async () => [
+        makePortalPeerMachine({
+          name: "ghost",
+          scoutNodeId: "node-ghost",
+          capabilities: ["scout-broker"],
+          evidence: [{
+            kind: "scout",
+            observedAt: NOW,
+            nodeId: "node-ghost",
+            nodeName: "ghost",
+          }],
+        }),
+      ],
+    });
+
+    const response = await server.app.request("http://ghost.scout.local/", {
+      headers: { host: "ghost.scout.local" },
+    });
+
+    expect(response.status).toBe(503);
+    expect(await response.text()).toContain("ghost");
+  });
+
+  test("an unknown doorway host and a LAN client never reach the peer proxy", async () => {
+    const NOW = Date.now();
+    let proxied = 0;
+    const portalFetch = (async () => {
+      proxied += 1;
+      return new Response("peer", { status: 200 });
+    }) as typeof fetch;
+    const make = (resolvePeerAddress: () => string) => createOpenScoutWebServer({
+      currentDirectory: "/tmp/openscout",
+      assetMode: "static",
+      staticRoot: makeStaticRoot(),
+      advertisedHost: "m1.scout.local",
+      portalHost: "scout.local",
+      resolvePeerAddress,
+      portalMachines: async () => [
+        makePortalPeerMachine({
+          name: "studio-mini",
+          scoutNodeId: "node-studio",
+          capabilities: ["scout-web"],
+          routes: [{ kind: "lan", host: "192.168.1.40", lastSeenAt: NOW }],
+          evidence: [{
+            kind: "scout",
+            observedAt: NOW,
+            nodeId: "node-studio",
+            nodeName: "studio-mini",
+            webHost: "studio-mini.scout.local",
+          }],
+        }),
+      ],
+      portalFetch,
+    });
+
+    // Unknown doorway name: the local app answers, nothing is proxied.
+    const local = await make(() => "127.0.0.1");
+    const miss = await local.app.request("http://stranger.scout.local/", {
+      headers: { host: "stranger.scout.local" },
+    });
+    expect(miss.status).toBe(200);
+    expect(await miss.text()).toContain("<body>ok</body>");
+
+    // A LAN client with a peer doorway Host header is not a doorway request.
+    const remote = await make(() => "192.168.1.99");
+    const lan = await remote.app.request("http://studio-mini.scout.local/", {
+      headers: { host: "studio-mini.scout.local" },
+    });
+    expect(lan.status).toBe(200);
+    expect(await lan.text()).toContain("<body>ok</body>");
+    expect(proxied).toBe(0);
+  });
+
+  test("the local portal still renders when the machine roster is unavailable", async () => {
+    const server = await createOpenScoutWebServer({
+      currentDirectory: "/tmp/openscout",
+      assetMode: "static",
+      staticRoot: makeStaticRoot(),
+      advertisedHost: "m1.scout.local",
+      portalHost: "scout.local",
+      portalMachines: async () => {
+        throw new Error("broker offline");
+      },
+    });
+
+    const response = await server.app.request("http://127.0.0.1:4321/", {
+      headers: { host: "scout.local:4321" },
+    });
+
+    expect(response.status).toBe(200);
+    const body = await response.text();
+    expect(body).toContain("Scout local");
+    expect(body).toContain("m1.scout.local");
   });
 
   test("serves the web app directly for the node host without a portal redirect", async () => {
@@ -8245,5 +8661,1878 @@ describe("herdr topology routes", () => {
     );
 
     expect(response.status).toBe(400);
+  });
+});
+
+describe("channel invitations over HTTP", () => {
+  const CHANNEL_ID = "chn-0123456789abcdef0123456789abcdef";
+  const NOW = 1_800_000_000_000;
+  // Raw token in the fixture, with the digest the broker actually stores. The
+  // record never holds the token itself, so the test has to hash it the same
+  // way production does.
+  const TOKEN = "vx3k9dqm-portable-invite";
+  const TOKEN_HASH = createHash("sha256").update(TOKEN).digest("hex");
+
+  const seedInvitedChannel = (overrides?: Record<string, unknown>) => {
+    scoutBrokerContextResult = {
+      baseUrl: "http://broker.test",
+      node: { id: "node-1" },
+      snapshot: {
+        conversations: {
+          [CHANNEL_ID]: {
+            id: CHANNEL_ID,
+            kind: "channel",
+            title: "release-train",
+            topic: "Coordination for the openscout release train.",
+            participantIds: ["person-art", "agent-kepler"],
+            metadata: {
+              channelInvites: [
+                {
+                  id: "cinv-1",
+                  channelId: CHANNEL_ID,
+                  scope: "channel_participation",
+                  tokenHash: TOKEN_HASH,
+                  tokenHint: "vx3k",
+                  createdAt: NOW - 1000,
+                  createdByActorId: "person-art",
+                  expiresAt: NOW + 7 * 24 * 60 * 60 * 1000,
+                  maxRedemptions: null,
+                  route: {
+                    authorityNodeId: "node-1",
+                    host: "chat.scout.local",
+                    baseUrl: "http://chat.scout.local",
+                    reachability: "unknown",
+                    caveat: "chat.scout.local resolves to 127.0.0.1 on every machine.",
+                  },
+                  redemptions: [
+                    {
+                      id: "crdm-1",
+                      actorId: "agent-kepler",
+                      agentId: "agent-kepler",
+                      sessionId: "sess.kepler",
+                      redeemedAt: NOW - 500,
+                    },
+                  ],
+                  ...(overrides ?? {}),
+                },
+              ],
+            },
+          },
+        },
+        actors: {
+          "person-art": { id: "person-art", kind: "person", displayName: "Art" },
+          "agent-kepler": { id: "agent-kepler", kind: "agent", displayName: "Kepler" },
+        },
+        agents: {
+          "agent-kepler": {
+            id: "agent-kepler",
+            kind: "agent",
+            displayName: "Kepler",
+            authorityNodeId: "node-1",
+            ownerId: "person-art",
+          },
+        },
+        endpoints: {},
+      },
+    };
+  };
+
+  const makeServer = async () => createOpenScoutWebServer({
+    currentDirectory: "/tmp/openscout",
+    assetMode: "static",
+    staticRoot: makeStaticRoot(),
+    advertisedHost: "m1.scout.local",
+    portalHost: "scout.local",
+    resolvePeerAddress: () => "127.0.0.1",
+  });
+
+  test("describing an invitation is a pure read that never joins anyone", async () => {
+    seedInvitedChannel();
+    const server = await makeServer();
+
+    const response = await server.app.request(`http://localhost/api/invites/${TOKEN}`);
+    expect(response.status).toBe(200);
+    const body = await response.json() as Record<string, any>;
+
+    expect(body.channel.title).toBe("release-train");
+    expect(body.invite.state).toBe("active");
+    // Membership is untouched by reading the link.
+    expect(body.channel.memberCount).toBe(2);
+    // The digest is the stored secret material; it must not travel to a client.
+    expect(JSON.stringify(body)).not.toContain(TOKEN_HASH);
+    expect(JSON.stringify(body)).not.toContain(TOKEN);
+  });
+
+  test("an unknown token is refused without revealing whether the channel exists", async () => {
+    seedInvitedChannel();
+    const server = await makeServer();
+
+    const response = await server.app.request(
+      "http://localhost/api/invites/definitely-not-a-real-invite-token",
+    );
+    expect(response.status).toBe(404);
+    const body = await response.json() as { error: string };
+    expect(body.error).toBe("This invitation link is not valid.");
+    expect(body.error).not.toContain("release-train");
+  });
+
+  test("the agent document is self-sufficient and carries no stored digest", async () => {
+    seedInvitedChannel();
+    const server = await makeServer();
+
+    const response = await server.app.request(
+      `http://localhost/invite/${TOKEN}/agent.md`,
+    );
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toContain("text/markdown");
+    // The document embeds a live capability; shared caches must not keep it.
+    expect(response.headers.get("cache-control")).toBe("no-store");
+
+    const markdown = await response.text();
+    expect(markdown).toContain("release-train");
+    expect(markdown).toContain(CHANNEL_ID);
+    // The four things an agent handed only this document needs.
+    expect(markdown.toLowerCase()).toContain("redeem");
+    expect(markdown.toLowerCase()).toContain("retry");
+    expect(markdown).toContain("Membership is not reception");
+    expect(markdown).not.toContain(TOKEN_HASH);
+  });
+
+  test("members report reception from evidence, not from membership", async () => {
+    seedInvitedChannel();
+    const server = await makeServer();
+
+    const response = await server.app.request(
+      `http://localhost/api/channels/${CHANNEL_ID}/members`,
+    );
+    expect(response.status).toBe(200);
+    const body = await response.json() as { members: Array<Record<string, any>> };
+
+    expect(body.members).toHaveLength(2);
+    const kepler = body.members.find((member) => member.actorId === "agent-kepler");
+    // Redeemed, in the roster, and with no endpoint at all: being a member is
+    // not evidence that anything is listening.
+    expect(kepler?.reception.listening).toBe(false);
+    expect(kepler?.reception.state).not.toBe("ready_to_receive");
+    expect(kepler?.reception.detail).toBeTruthy();
+    // Ownership is what lets the UI say "Art's Kepler".
+    expect(kepler?.owner).toEqual({ actorId: "person-art", displayName: "Art" });
+  });
+
+  test("a revoked invitation is refused and says so", async () => {
+    seedInvitedChannel({ revokedAt: NOW - 100, revokedByActorId: "person-art" });
+    const server = await makeServer();
+
+    const describe = await server.app.request(`http://localhost/api/invites/${TOKEN}`);
+    const body = await describe.json() as Record<string, any>;
+    expect(body.invite.state).toBe("revoked");
+
+    const redeem = await server.app.request(
+      `http://localhost/api/invites/${TOKEN}/redeem`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ actorId: "agent-newcomer", sessionId: "sess.new" }),
+      },
+    );
+    // Gone for good, not "try again".
+    expect(redeem.status).toBe(410);
+  });
+
+  test("redeeming without an identity is refused before any broker write", async () => {
+    seedInvitedChannel();
+    const server = await makeServer();
+
+    const response = await server.app.request(
+      `http://localhost/api/invites/${TOKEN}/redeem`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ sessionId: "sess.anonymous" }),
+      },
+    );
+    expect(response.status).toBe(403);
+    const body = await response.json() as { reason?: string };
+    expect(body.reason).toBe("missing_identity");
+  });
+
+  test("listing invitations exposes hints, never digests", async () => {
+    seedInvitedChannel();
+    const server = await makeServer();
+
+    const response = await server.app.request(
+      `http://localhost/api/channels/${CHANNEL_ID}/invites`,
+    );
+    expect(response.status).toBe(200);
+    const raw = await response.text();
+    expect(raw).toContain("vx3k");
+    expect(raw).not.toContain(TOKEN_HASH);
+  });
+});
+
+
+describe("the Scout Chat surface over HTTP", () => {
+  const CHANNEL_ID = "chn-0123456789abcdef0123456789abcdef";
+  const THREAD_ID = "chn-aaaabbbbccccddddeeeeffff00001111";
+  const NOW = 1_800_000_000_000;
+
+  const seedChatChannel = () => {
+    scoutBrokerContextResult = {
+      baseUrl: "http://broker.test",
+      node: { id: "node-1" },
+      snapshot: {
+        // A real snapshot always carries these maps; the chat feed reads both.
+        messages: {
+          "m-root": {
+            id: "m-root", conversationId: CHANNEL_ID, actorId: "person-art",
+            originNodeId: "node-1", class: "agent", body: "cut the tag?",
+            visibility: "workspace", policy: "durable", createdAt: NOW - 400,
+          },
+          "m-reply": {
+            id: "m-reply", conversationId: THREAD_ID, actorId: "agent-kepler",
+            originNodeId: "node-1", class: "agent", body: "on it",
+            visibility: "workspace", policy: "durable", createdAt: NOW - 300,
+          },
+        },
+        conversations: {
+          [CHANNEL_ID]: {
+            id: CHANNEL_ID,
+            kind: "channel",
+            title: "release-train",
+            visibility: "workspace",
+            shareMode: "shared",
+            authorityNodeId: "node-1",
+            participantIds: ["person-art", "agent-kepler", "agent-vega"],
+            metadata: {
+              channelInvites: [
+                {
+                  id: "cinv-1",
+                  channelId: CHANNEL_ID,
+                  scope: "channel_participation",
+                  tokenHash: "d1ge57",
+                  tokenHint: "vx3k",
+                  createdAt: NOW - 1000,
+                  createdByActorId: "person-art",
+                  expiresAt: null,
+                  maxRedemptions: null,
+                  route: {
+                    authorityNodeId: "node-1",
+                    host: "chat.scout.local",
+                    baseUrl: "http://chat.scout.local",
+                    reachability: "unknown",
+                  },
+                  // Kepler redeemed from a concrete session. Vega is in the
+                  // room but never redeemed, so nothing attaches it here.
+                  redemptions: [
+                    {
+                      id: "crdm-1",
+                      actorId: "agent-kepler",
+                      agentId: "agent-kepler",
+                      sessionId: "sess.kepler",
+                      redeemedAt: NOW - 500,
+                    },
+                  ],
+                },
+              ],
+            },
+          },
+          [THREAD_ID]: {
+            id: THREAD_ID,
+            kind: "thread",
+            title: "Re: cut the tag",
+            visibility: "workspace",
+            shareMode: "shared",
+            authorityNodeId: "node-1",
+            parentConversationId: CHANNEL_ID,
+            messageId: "m-root",
+            participantIds: ["person-art", "agent-kepler"],
+          },
+        },
+        actors: {
+          "person-art": { id: "person-art", kind: "person", displayName: "Art" },
+          "agent-kepler": { id: "agent-kepler", kind: "agent", displayName: "Kepler" },
+          "agent-vega": { id: "agent-vega", kind: "agent", displayName: "Vega" },
+        },
+        agents: {
+          "agent-kepler": {
+            id: "agent-kepler", kind: "agent", displayName: "Kepler",
+            authorityNodeId: "node-1", ownerId: "person-art",
+          },
+          "agent-vega": {
+            id: "agent-vega", kind: "agent", displayName: "Vega",
+            authorityNodeId: "node-1", ownerId: "person-art",
+          },
+        },
+        endpoints: {
+          "ep-kepler": {
+            id: "ep-kepler",
+            agentId: "agent-kepler",
+            state: "idle",
+            transport: "codex_app_server",
+            sessionId: "sess.kepler",
+            metadata: { lastSeenAt: NOW },
+          },
+        },
+        flights: {
+          "flt-1": {
+            id: "flt-1",
+            invocationId: "inv-1",
+            requesterId: "person-art",
+            targetAgentId: "agent-kepler",
+            state: "running",
+            metadata: { conversationId: CHANNEL_ID },
+          },
+          "flt-elsewhere": {
+            id: "flt-elsewhere",
+            invocationId: "inv-2",
+            requesterId: "person-art",
+            targetAgentId: "agent-vega",
+            state: "running",
+            metadata: { conversationId: "chn-99999999999999999999999999999999" },
+          },
+        },
+        invocations: {
+          "inv-1": { id: "inv-1", conversationId: CHANNEL_ID, messageId: "m-root" },
+          "inv-2": {
+            id: "inv-2",
+            conversationId: "chn-99999999999999999999999999999999",
+            messageId: "m-other",
+          },
+        },
+      },
+    };
+  };
+
+  const makeServer = async () => createOpenScoutWebServer({
+    currentDirectory: "/tmp/openscout",
+    assetMode: "static",
+    staticRoot: makeStaticRoot(),
+    advertisedHost: "m1.scout.local",
+    portalHost: "scout.local",
+    resolvePeerAddress: () => "127.0.0.1",
+  });
+
+  test("bootstrap names the viewer and the channels they can see", async () => {
+    seedChatChannel();
+    const server = await makeServer();
+
+    const response = await server.app.request("http://localhost/api/chat/bootstrap");
+    expect(response.status).toBe(200);
+    const body = await response.json() as Record<string, any>;
+    expect(body.viewer.isOperator).toBe(true);
+    // Only channels. A thread is a conversation underneath one, not a room in
+    // its own right, and listing it would double the sidebar.
+    expect(body.channels.map((channel: { id: string }) => channel.id)).toEqual([CHANNEL_ID]);
+  });
+
+  test("the feed folds thread replies onto the message they answer", async () => {
+    seedChatChannel();
+    queryRecentMessagesResult = [];
+    const server = await makeServer();
+
+    const response = await server.app.request(
+      `http://localhost/api/channels/${CHANNEL_ID}/feed`,
+    );
+    expect(response.status).toBe(200);
+    const body = await response.json() as Record<string, any>;
+    // One tracked request, from the flight in this channel. The flight in
+    // another conversation is not this room's business.
+    expect(body.requests).toEqual([
+      { messageId: "m-root", flightId: "flt-1", state: "running", targetActorId: "agent-kepler" },
+    ]);
+
+    // The reply lives in a thread conversation underneath the channel. The feed
+    // hands the client one flat list anchored by `replyToMessageId`, so it never
+    // has to know that threads are separate conversations.
+    const byId = new Map(body.messages.map((message: { id: string }) => [message.id, message]));
+    expect(byId.get("m-root")?.replyToMessageId).toBeNull();
+    expect(byId.get("m-reply")?.replyToMessageId).toBe("m-root");
+    // Every message reports the root channel, whichever conversation holds it.
+    expect(body.messages.every((message: { channelId: string }) => message.channelId === CHANNEL_ID))
+      .toBe(true);
+  });
+
+  test("a plain post reaches the room without asking anyone for work", async () => {
+    seedChatChannel();
+    sendScoutMessageResult = {
+      usedBroker: true,
+      conversationId: CHANNEL_ID,
+      messageId: "m-posted",
+      invokedTargets: [],
+      unresolvedTargets: [],
+    };
+    const server = await makeServer();
+
+    const response = await server.app.request(
+      `http://localhost/api/channels/${CHANNEL_ID}/messages`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ requestId: "req-1", body: "@kepler said the tag is cut" }),
+      },
+    );
+    expect(response.status).toBe(200);
+    const call = sendScoutConversationMessageCalls.at(-1)!;
+    expect(call.notifyParticipantAgents).toBe(false);
+    // The body is payload. Quoting a name must not notify or wake that agent,
+    // which is the whole difference between a room and a dispatcher.
+    expect(call.resolveMentionsFromBody).toBe(false);
+    expect(call.clientMessageId).toBe("req-1");
+  });
+
+  test("an ask routes to the redeemed session and to nobody else", async () => {
+    seedChatChannel();
+    sendScoutMessageResult = {
+      usedBroker: true,
+      conversationId: CHANNEL_ID,
+      messageId: "m-asked",
+      flights: [{ id: "flt-new", invocationId: "inv-new", state: "queued" }],
+      invokedTargets: ["agent-kepler"],
+      unresolvedTargets: [],
+    };
+    const server = await makeServer();
+
+    const response = await server.app.request(
+      `http://localhost/api/channels/${CHANNEL_ID}/asks`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          requestId: "req-2",
+          body: "cut the tag, and cc @vega when it lands",
+          targetActorId: "agent-kepler",
+        }),
+      },
+    );
+    expect(response.status).toBe(200);
+    const body = await response.json() as Record<string, any>;
+
+    const call = sendScoutConversationSteerCalls.at(-1)!;
+    expect(call.targetParticipantIds).toEqual(["agent-kepler"]);
+    // The session comes from the redemption, not from the request and not from
+    // a fresh launch.
+    expect(call.execution).toEqual({ session: "existing", targetSessionId: "sess.kepler" });
+    // "@vega" in the text is prose. One selected actor is the whole address.
+    expect(call.resolveMentionsFromBody).toBe(false);
+
+    expect(body.request.flightId).toBe("flt-new");
+    expect(body.request.targetActorId).toBe("agent-kepler");
+    // Readiness, never a receipt.
+    expect(body.request.note).toContain("Queued");
+    expect(body.request.note).not.toContain("Delivered");
+    expect(body.request.reception.state).toBe("ready_to_receive");
+  });
+
+  test("asking an agent that never redeemed is refused, not quietly queued", async () => {
+    seedChatChannel();
+    const server = await makeServer();
+
+    const response = await server.app.request(
+      `http://localhost/api/channels/${CHANNEL_ID}/asks`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ requestId: "req-3", body: "ping", targetActorId: "agent-vega" }),
+      },
+    );
+    // Vega is in the room but nothing attaches a session to it here. Creating a
+    // request anyway would show a pending row that can never be delivered.
+    expect(response.status).toBe(409);
+    const body = await response.json() as Record<string, any>;
+    expect(body.reason).toBe("no_attached_session");
+    expect(sendScoutConversationSteerCalls).toHaveLength(0);
+  });
+
+  test("an ask for an agent outside the channel never reaches it", async () => {
+    seedChatChannel();
+    const server = await makeServer();
+
+    const response = await server.app.request(
+      `http://localhost/api/channels/${CHANNEL_ID}/asks`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ requestId: "req-4", body: "ping", targetActorId: "agent-outsider" }),
+      },
+    );
+    expect(response.status).toBe(409);
+    expect((await response.json() as Record<string, any>).reason).toBe("not_a_member");
+    expect(sendScoutConversationSteerCalls).toHaveLength(0);
+  });
+
+  test("the reserved chat name opens chat, and only at its root", async () => {
+    seedChatChannel();
+    const server = await makeServer();
+
+    // `chat.scout.local` is advertised as this node's chat entry point, so its
+    // root has to land on chat rather than on the operator shell.
+    const root = await server.app.request("http://localhost/", {
+      headers: { host: "chat.scout.local" },
+    });
+    expect(root.status).toBe(302);
+    expect(root.headers.get("location")).toBe("/chat");
+
+    // Only the root. An invitation link issued under that name must keep
+    // working on it.
+    const invite = await server.app.request("http://localhost/api/chat/bootstrap", {
+      headers: { host: "chat.scout.local" },
+    });
+    expect(invite.status).toBe(200);
+
+    // And no other host is redirected.
+    const shell = await server.app.request("http://localhost/", {
+      headers: { host: "m1.scout.local" },
+    });
+    expect(shell.status).not.toBe(302);
+  });
+
+  test("creating a channel converges on one record for one name", async () => {
+    seedChatChannel();
+    const server = await makeServer();
+
+    const response = await server.app.request("http://localhost/api/chat/channels", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ title: "design-review" }),
+    });
+    expect(response.status).toBe(200);
+    const body = await response.json() as Record<string, any>;
+    expect(body.conversation.kind).toBe("channel");
+    expect(body.conversation.participantIds).toEqual(["operator"]);
+    expect(body.existed).toBe(false);
+
+    // A title with no name is not a channel.
+    const empty = await server.app.request("http://localhost/api/chat/channels", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ title: "   " }),
+    });
+    expect(empty.status).toBe(400);
+  });
+});
+
+describe("who the member cookie says you are", () => {
+  const CHANNEL_ID = "chn-0123456789abcdef0123456789abcdef";
+  const OPERATOR_TOKEN = "member-identity-operator-token";
+  const MAYA = "person-maya-identity";
+  const NOW = 1_800_000_000_000;
+
+  const seedChannel = (participantIds: string[]) => {
+    scoutBrokerContextResult = {
+      baseUrl: "http://broker.test",
+      node: { id: "node-1" },
+      snapshot: {
+        messages: {},
+        conversations: {
+          [CHANNEL_ID]: {
+            id: CHANNEL_ID,
+            kind: "channel",
+            title: "release-train",
+            visibility: "workspace",
+            shareMode: "shared",
+            authorityNodeId: "node-1",
+            participantIds,
+            metadata: { channelInvites: [] },
+          },
+        },
+        actors: {}, agents: {}, endpoints: {}, flights: {},
+      },
+    } as never;
+  };
+
+  const makeServer = async () => createOpenScoutWebServer({
+    currentDirectory: "/tmp/openscout",
+    assetMode: "static",
+    staticRoot: makeStaticRoot(),
+    advertisedHost: "m1.scout.local",
+    portalHost: "scout.local",
+    authToken: OPERATOR_TOKEN,
+    resolvePeerAddress: () => "127.0.0.1",
+  });
+
+  /**
+   * The cookie a member is really holding. Minting it outside the server is
+   * the point: grants are signed rather than stored, so this is the same path
+   * a teammate takes when their cookie outlives the process that issued it.
+   */
+  const memberCookie = () => {
+    const { token } = createChannelMemberSessionAuthority({ signingSecret: OPERATOR_TOKEN })
+      .mint({ actorId: MAYA, displayName: "Maya", channelId: CHANNEL_ID, nowMs: NOW });
+    return { cookie: channelMemberCookie(token, false).split(";")[0]! };
+  };
+
+  test("a member is named along with the room they are actually in", async () => {
+    seedChannel(["person-art", MAYA]);
+    const server = await makeServer();
+
+    const response = await server.app.request("http://localhost/api/member/me", {
+      headers: memberCookie(),
+    });
+    expect(response.status).toBe(200);
+    const body = await response.json() as { member: Record<string, unknown> };
+    expect(body.member.actorId).toBe(MAYA);
+    expect(body.member.displayName).toBe("Maya");
+    expect(body.member.channelIds).toEqual([CHANNEL_ID]);
+  });
+
+  test("a removed member keeps their identity and loses the room", async () => {
+    // Removal lives only in the roster. The cookie is signed, unexpired, and
+    // still names the channel -- echoing it back is what sent a removed
+    // teammate to "Open room" and then straight back to the invitation page.
+    seedChannel(["person-art"]);
+    const server = await makeServer();
+
+    const response = await server.app.request("http://localhost/api/member/me", {
+      headers: memberCookie(),
+    });
+    expect(response.status).toBe(200);
+    const body = await response.json() as { member: Record<string, unknown> };
+    expect(body.member.actorId).toBe(MAYA);
+    expect(body.member.displayName).toBe("Maya");
+    expect(body.member.channelIds).toEqual([]);
+  });
+
+  test("being invited back restores the room on the same cookie", async () => {
+    seedChannel(["person-art"]);
+    const server = await makeServer();
+    const held = memberCookie();
+
+    expect(((await (await server.app.request("http://localhost/api/member/me", {
+      headers: held,
+    })).json()) as { member: { channelIds: string[] } }).member.channelIds).toEqual([]);
+
+    seedChannel(["person-art", MAYA]);
+    expect(((await (await server.app.request("http://localhost/api/member/me", {
+      headers: held,
+    })).json()) as { member: { channelIds: string[] } }).member.channelIds).toEqual([CHANNEL_ID]);
+  });
+
+  test("an unreadable roster says so instead of signing a member out", async () => {
+    seedChannel(["person-art", MAYA]);
+    const server = await makeServer();
+    const held = memberCookie();
+    scoutBrokerContextResult = null;
+
+    // Reporting no channels here would be a claim of removal the server cannot
+    // support. The surface already treats a failed identity read as simply not
+    // recognising the visitor, which is the honest outcome.
+    const response = await server.app.request("http://localhost/api/member/me", {
+      headers: held,
+    });
+    expect(response.status).toBe(502);
+  });
+
+  test("without a credential there is nothing to answer", async () => {
+    seedChannel(["person-art", MAYA]);
+    const server = await makeServer();
+    expect((await server.app.request("http://localhost/api/member/me")).status).toBe(401);
+  });
+});
+
+
+describe("lightweight API participation over HTTP", () => {
+  const CHANNEL_ID = "chn-0123456789abcdef0123456789abcdef";
+  const OTHER_CHANNEL_ID = "chn-fedcba9876543210fedcba9876543210";
+  const NOW = 1_800_000_000_000;
+  const OPERATOR_TOKEN = "operator-token-for-api-participation";
+  const TOKEN = "vx3k9dqm-no-install-invite";
+  const TOKEN_HASH = createHash("sha256").update(TOKEN).digest("hex");
+
+  const brokerWrites: Array<{ url: string; body: any }> = [];
+
+  const seedChannel = (inviteOverrides?: Record<string, unknown>) => {
+    scoutBrokerContextResult = {
+      baseUrl: "http://broker.test",
+      node: { id: "node-1" },
+      snapshot: {
+        messages: {
+          "m-root": {
+            id: "m-root", conversationId: CHANNEL_ID, actorId: "person-art",
+            originNodeId: "node-1", class: "agent", body: "cut the tag?",
+            visibility: "workspace", policy: "durable", createdAt: NOW - 400,
+          },
+          "m-second": {
+            id: "m-second", conversationId: CHANNEL_ID, actorId: "person-art",
+            originNodeId: "node-1", class: "agent", body: "any objections?",
+            visibility: "workspace", policy: "durable", createdAt: NOW - 300,
+          },
+        },
+        conversations: {
+          [CHANNEL_ID]: {
+            id: CHANNEL_ID,
+            kind: "channel",
+            title: "release-train",
+            topic: "Coordination for the openscout release train.",
+            visibility: "workspace",
+            shareMode: "shared",
+            authorityNodeId: "node-1",
+            participantIds: ["person-art"],
+            metadata: {
+              channelInvites: [
+                {
+                  id: "cinv-1",
+                  channelId: CHANNEL_ID,
+                  scope: "channel_participation",
+                  tokenHash: TOKEN_HASH,
+                  tokenHint: "vx3k",
+                  createdAt: NOW - 1000,
+                  createdByActorId: "person-art",
+                  expiresAt: NOW + 7 * 24 * 60 * 60 * 1000,
+                  maxRedemptions: null,
+                  route: {
+                    authorityNodeId: "node-1",
+                    host: "chat.scout.local",
+                    baseUrl: "http://chat.scout.local",
+                    reachability: "unknown",
+                  },
+                  redemptions: [],
+                  ...(inviteOverrides ?? {}),
+                },
+              ],
+            },
+          },
+          [OTHER_CHANNEL_ID]: {
+            id: OTHER_CHANNEL_ID,
+            kind: "channel",
+            title: "private-room",
+            visibility: "workspace",
+            shareMode: "shared",
+            authorityNodeId: "node-1",
+            participantIds: ["person-art"],
+          },
+        },
+        actors: {
+          "person-art": { id: "person-art", kind: "person", displayName: "Art" },
+        },
+        agents: {},
+        endpoints: {},
+        flights: {},
+        invocations: {},
+      },
+    };
+  };
+
+  /**
+   * A broker that accepts the two writes this flow makes, and applies the one
+   * consequence the rest of the flow depends on: a redeemed participant is on
+   * the roster. Without that the next request is refused as a removed member,
+   * which is exactly right and would hide whether the join worked at all.
+   */
+  const stubBroker = (options?: { alreadyRedeemed?: boolean }) => {
+    brokerWrites.length = 0;
+    globalThis.fetch = (async (input: any, init?: any) => {
+      const url = typeof input === "string" ? input : String(input?.url ?? input);
+      const body = init?.body ? JSON.parse(String(init.body)) : null;
+      brokerWrites.push({ url, body });
+      if (url.includes("/v1/actors")) {
+        // The broker stores the actor, so the snapshot the next read sees has
+        // it. Skipping this would leave the roster naming a participant with
+        // no record, which is a different bug than the one under test.
+        (scoutBrokerContextResult as any).snapshot.actors[body.id] = body;
+        return Response.json({ ok: true });
+      }
+      if (url.includes("/v1/commands") && body?.kind === "channel.invite.redeem") {
+        const actorId = body.request.actorId as string;
+        const conversation = (scoutBrokerContextResult as any).snapshot
+          .conversations[CHANNEL_ID];
+        if (!conversation.participantIds.includes(actorId)) {
+          conversation.participantIds.push(actorId);
+        }
+        const invite = conversation.metadata.channelInvites[0];
+        const redemption = {
+          id: "crdm-1",
+          actorId,
+          redeemedAt: NOW,
+        };
+        if (!options?.alreadyRedeemed) invite.redemptions.push(redemption);
+        return Response.json({
+          ok: true,
+          invite: { ...invite, redemptionCount: invite.redemptions.length },
+          redemption,
+          alreadyRedeemed: Boolean(options?.alreadyRedeemed),
+          participantIds: conversation.participantIds,
+          conversationId: CHANNEL_ID,
+        });
+      }
+      return Response.json({ ok: false, error: `unexpected broker call: ${url}` }, { status: 500 });
+    }) as typeof fetch;
+  };
+
+  const makeServer = async () => createOpenScoutWebServer({
+    currentDirectory: "/tmp/openscout",
+    assetMode: "static",
+    staticRoot: makeStaticRoot(),
+    authToken: OPERATOR_TOKEN,
+    advertisedHost: "m1.scout.local",
+    portalHost: "scout.local",
+    resolvePeerAddress: () => "127.0.0.1",
+  });
+
+  const participate = async (
+    server: { app: { request: (url: string, init?: any) => Promise<Response> } },
+    body: Record<string, unknown> = { participantKey: "key-1", displayName: "release-bot" },
+  ) => server.app.request(`http://localhost/api/invites/${TOKEN}/participate`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+
+  test("an agent with nothing installed joins, posts, and polls", async () => {
+    seedChannel();
+    stubBroker();
+    queryRecentMessagesResult = [];
+    sendScoutMessageResult = {
+      usedBroker: true,
+      conversationId: CHANNEL_ID,
+      messageId: "m-posted",
+      invokedTargets: [],
+      unresolvedTargets: [],
+    };
+    const server = await makeServer();
+
+    // 1. Join. No identity is sent and none is assumed.
+    const joined = await participate(server);
+    expect(joined.status).toBe(200);
+    const join = await joined.json() as Record<string, any>;
+    expect(join.ok).toBe(true);
+    expect(join.participation).toBe("api");
+    expect(join.actorId.startsWith("apia-")).toBe(true);
+    expect(join.conversationId).toBe(CHANNEL_ID);
+    // The one thing this mode must never overstate.
+    expect(join.attached).toBe(false);
+    expect(join.credential.scheme).toBe("Bearer");
+    expect(typeof join.credential.token).toBe("string");
+
+    const auth = { authorization: `Bearer ${join.credential.token}` };
+
+    // 2. Post. It reaches the room and invokes nobody.
+    const posted = await server.app.request(
+      `http://localhost/api/channels/${CHANNEL_ID}/messages`,
+      {
+        method: "POST",
+        headers: { ...auth, "content-type": "application/json" },
+        body: JSON.stringify({ requestId: "req-1", body: "reading the room" }),
+      },
+    );
+    expect(posted.status).toBe(200);
+    const postCall = sendScoutConversationMessageCalls.at(-1)!;
+    // The sender is derived from the credential, never from the body.
+    expect(postCall.senderId).toBe(join.actorId);
+    expect(postCall.notifyParticipantAgents).toBe(false);
+    expect(postCall.resolveMentionsFromBody).toBe(false);
+
+    // 3. Poll. First call needs no cursor and answers with the retained window.
+    const first = await server.app.request(
+      `http://localhost/api/channels/${CHANNEL_ID}/poll`,
+      { headers: auth },
+    );
+    expect(first.status).toBe(200);
+    const page = await first.json() as Record<string, any>;
+    expect(page.messages.map((message: { id: string }) => message.id)).toEqual([
+      "m-root",
+      "m-second",
+    ]);
+    expect(page.hasMore).toBe(false);
+    expect(typeof page.recommendedPollIntervalMs).toBe("number");
+
+    // 4. Poll again from the cursor: nothing new, and the position holds.
+    const second = await server.app.request(
+      `http://localhost/api/channels/${CHANNEL_ID}/poll?cursor=${encodeURIComponent(page.nextCursor)}`,
+      { headers: auth },
+    );
+    expect(second.status).toBe(200);
+    const caughtUp = await second.json() as Record<string, any>;
+    expect(caughtUp.messages).toEqual([]);
+    expect(caughtUp.nextCursor).toBe(page.nextCursor);
+
+    // 5. A message arrives; the next poll returns exactly it.
+    (scoutBrokerContextResult as any).snapshot.messages["m-third"] = {
+      id: "m-third", conversationId: CHANNEL_ID, actorId: "person-art",
+      originNodeId: "node-1", class: "agent", body: "shipping now",
+      visibility: "workspace", policy: "durable", createdAt: NOW - 100,
+    };
+    const third = await server.app.request(
+      `http://localhost/api/channels/${CHANNEL_ID}/poll?cursor=${encodeURIComponent(page.nextCursor)}`,
+      { headers: auth },
+    );
+    const delta = await third.json() as Record<string, any>;
+    expect(delta.messages.map((message: { id: string }) => message.id)).toEqual(["m-third"]);
+  });
+
+  test("a cursor the retained window no longer covers fails rather than skipping", async () => {
+    seedChannel();
+    stubBroker();
+    queryRecentMessagesResult = [];
+    const server = await makeServer();
+    const join = await (await participate(server)).json() as Record<string, any>;
+    const auth = { authorization: `Bearer ${join.credential.token}` };
+
+    const page = await (await server.app.request(
+      `http://localhost/api/channels/${CHANNEL_ID}/poll`,
+      { headers: auth },
+    )).json() as Record<string, any>;
+
+    // History rolls: everything the cursor named is gone from the window, and
+    // only newer messages remain. Serving those would lose the middle.
+    (scoutBrokerContextResult as any).snapshot.messages = {
+      "m-later": {
+        id: "m-later", conversationId: CHANNEL_ID, actorId: "person-art",
+        originNodeId: "node-1", class: "agent", body: "much later",
+        visibility: "workspace", policy: "durable", createdAt: NOW + 5_000,
+      },
+    };
+
+    const response = await server.app.request(
+      `http://localhost/api/channels/${CHANNEL_ID}/poll?cursor=${encodeURIComponent(page.nextCursor)}`,
+      { headers: auth },
+    );
+    expect(response.status).toBe(409);
+    const body = await response.json() as Record<string, any>;
+    expect(body.reason).toBe("stale");
+    // And it says what to do instead of implying a retry will work.
+    expect(body.error).toContain("feed");
+  });
+
+  test("a malformed cursor is named, never answered with an empty page", async () => {
+    seedChannel();
+    stubBroker();
+    const server = await makeServer();
+    const join = await (await participate(server)).json() as Record<string, any>;
+
+    const response = await server.app.request(
+      `http://localhost/api/channels/${CHANNEL_ID}/poll?cursor=1783915198766%7Cmsg-1`,
+      { headers: { authorization: `Bearer ${join.credential.token}` } },
+    );
+    // A chat-history cursor is a different grammar, and reading it as
+    // end-of-history is how a poller silently stops seeing the room.
+    expect(response.status).toBe(400);
+    expect((await response.json() as Record<string, any>).reason).toBe("malformed");
+  });
+
+  test("the join refuses to be told who is joining", async () => {
+    seedChannel();
+    stubBroker();
+    const server = await makeServer();
+
+    const response = await participate(server, { actorId: "person-art" });
+    expect(response.status).toBe(400);
+    const body = await response.json() as Record<string, any>;
+    expect(body.reason).toBe("identity_not_accepted");
+    // Nothing was written: an impersonation attempt must not leave a redemption.
+    expect(brokerWrites).toEqual([]);
+  });
+
+  test("a session id is refused rather than quietly attached", async () => {
+    seedChannel();
+    stubBroker();
+    const server = await makeServer();
+
+    const response = await participate(server, { sessionId: "sess.kepler" });
+    expect(response.status).toBe(400);
+    expect((await response.json() as Record<string, any>).reason)
+      .toBe("identity_not_accepted");
+    expect(brokerWrites).toEqual([]);
+  });
+
+  test("the same key replayed resumes the same participant", async () => {
+    seedChannel();
+    stubBroker();
+    const server = await makeServer();
+
+    const first = await participate(server);
+    const firstBody = await first.json() as Record<string, any>;
+
+    // The broker recognises the actor and reports the original redemption
+    // rather than consuming a second use.
+    stubBroker({ alreadyRedeemed: true });
+    const again = await participate(server);
+    const againBody = await again.json() as Record<string, any>;
+
+    expect(againBody.actorId).toBe(firstBody.actorId);
+    expect(againBody.alreadyMember).toBe(true);
+  });
+
+  test("a different key is a different participant", async () => {
+    seedChannel();
+    stubBroker();
+    const server = await makeServer();
+
+    const first = await participate(server, { participantKey: "key-1" });
+    const second = await participate(server, { participantKey: "key-2" });
+    expect((await first.json() as Record<string, any>).actorId)
+      .not.toBe((await second.json() as Record<string, any>).actorId);
+  });
+
+  test("a revoked invitation refuses participation and says it is gone", async () => {
+    seedChannel({ revokedAt: NOW - 100, revokedByActorId: "person-art" });
+    stubBroker();
+    const server = await makeServer();
+
+    const response = await participate(server);
+    expect(response.status).toBe(410);
+    // Refused before any write, so no participant identity is left behind.
+    expect(brokerWrites).toEqual([]);
+  });
+
+  test("an expired invitation refuses participation", async () => {
+    seedChannel({ expiresAt: Date.now() - 1000 });
+    stubBroker();
+    const server = await makeServer();
+
+    expect((await participate(server)).status).toBe(410);
+    expect(brokerWrites).toEqual([]);
+  });
+
+  test("a single-use invitation is spent, not reusable by a second participant", async () => {
+    seedChannel({
+      maxRedemptions: 1,
+      redemptions: [{ id: "crdm-0", actorId: "apia-someone-else", redeemedAt: NOW - 50 }],
+    });
+    stubBroker();
+    const server = await makeServer();
+
+    const response = await participate(server, { participantKey: "a-new-key" });
+    expect(response.status).toBe(410);
+    expect((await response.json() as Record<string, any>).reason).toBe("exhausted");
+    expect(brokerWrites).toEqual([]);
+  });
+
+  test("the credential opens the channel it joined and nothing else", async () => {
+    seedChannel();
+    stubBroker();
+    const server = await makeServer();
+    const join = await (await participate(server)).json() as Record<string, any>;
+    const auth = { authorization: `Bearer ${join.credential.token}` };
+
+    expect((await server.app.request(
+      `http://localhost/api/channels/${OTHER_CHANNEL_ID}/poll`,
+      { headers: auth },
+    )).status).toBe(401);
+    // Nor does it reach the operator's control plane.
+    expect((await server.app.request("http://localhost/api/agents", { headers: auth })).status)
+      .toBe(401);
+  });
+
+  test("a cursor from another channel is refused rather than answered", async () => {
+    seedChannel();
+    stubBroker();
+    const server = await makeServer();
+    const join = await (await participate(server)).json() as Record<string, any>;
+    const auth = { authorization: `Bearer ${join.credential.token}` };
+
+    const foreign = encodeChannelPollCursor({
+      channelId: OTHER_CHANNEL_ID,
+      createdAt: NOW - 400,
+      id: "m-root",
+    });
+    const response = await server.app.request(
+      `http://localhost/api/channels/${CHANNEL_ID}/poll?cursor=${encodeURIComponent(foreign)}`,
+      { headers: auth },
+    );
+    expect(response.status).toBe(400);
+    expect((await response.json() as Record<string, any>).reason).toBe("wrong_channel");
+  });
+
+  test("addressing an API participant refuses instead of launching anything", async () => {
+    seedChannel();
+    stubBroker();
+    const server = await makeServer();
+    const join = await (await participate(server)).json() as Record<string, any>;
+
+    sendScoutConversationSteerCalls.length = 0;
+    const response = await server.app.request(
+      `http://localhost/api/channels/${CHANNEL_ID}/asks`,
+      {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${OPERATOR_TOKEN}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          requestId: "req-ask",
+          body: "can you cut the tag?",
+          targetActorId: join.actorId,
+        }),
+      },
+    );
+
+    expect(response.status).toBe(409);
+    const body = await response.json() as Record<string, any>;
+    expect(body.reason).toBe("api_participant");
+    // The guarantee this test exists for: nothing was dispatched, and no fresh
+    // session was started to receive it.
+    expect(sendScoutConversationSteerCalls).toEqual([]);
+  });
+
+  test("the roster declares which members participate over the API", async () => {
+    seedChannel();
+    stubBroker();
+    const server = await makeServer();
+    const join = await (await participate(server)).json() as Record<string, any>;
+
+    const response = await server.app.request(
+      `http://localhost/api/channels/${CHANNEL_ID}/members`,
+      { headers: { authorization: `Bearer ${OPERATOR_TOKEN}` } },
+    );
+    const body = await response.json() as { members: Array<Record<string, any>> };
+    const participant = body.members.find((member) => member.actorId === join.actorId);
+    expect(participant?.participation).toBe("api");
+    // Membership is not reception, and a polling member is not listening.
+    expect(participant?.reception.listening).toBe(false);
+  });
+
+  test("the no-install document is self-sufficient and carries no digest", async () => {
+    seedChannel();
+    stubBroker();
+    const server = await makeServer();
+
+    const response = await server.app.request(`http://localhost/invite/${TOKEN}/api.md`);
+    expect(response.status).toBe(200);
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    const markdown = await response.text();
+    expect(markdown).toContain(CHANNEL_ID);
+    expect(markdown).toContain("/participate");
+    expect(markdown).toContain("/poll");
+    expect(markdown).not.toContain(TOKEN_HASH);
+    // The session-bound document points here for a reader with no session.
+    const agentDoc = await (await server.app.request(
+      `http://localhost/invite/${TOKEN}/agent.md`,
+    )).text();
+    expect(agentDoc).toContain("api.md");
+  });
+  test("a cursor older than a truncated read fails rather than skipping the middle", async () => {
+    seedChannel();
+    stubBroker();
+    queryRecentMessagesResult = [];
+    const server = await makeServer();
+    const join = await (await participate(server)).json() as Record<string, any>;
+    const auth = { authorization: `Bearer ${join.credential.token}` };
+
+    // Each conversation is read as its own newest slice. Here the root
+    // transcript is longer than one read, and a thread under it carries a
+    // message older than everything that read can still reach -- so the merged
+    // array's oldest row is the thread's, several hundred root messages *after*
+    // the root read stopped. That is a hole in the middle, not a suffix, and a
+    // cursor pointing into it must be refused rather than paged across.
+    const snapshot = (scoutBrokerContextResult as any).snapshot;
+    const THREAD_ID = "chn-aaaabbbbccccddddeeeeffff00001111";
+    snapshot.conversations[THREAD_ID] = {
+      id: THREAD_ID,
+      kind: "thread",
+      parentConversationId: CHANNEL_ID,
+      title: "cut the tag?",
+      visibility: "workspace",
+      shareMode: "shared",
+      authorityNodeId: "node-1",
+      participantIds: ["person-art"],
+      messageId: "m-root-000",
+    };
+    snapshot.messages = {
+      "m-thread-old": {
+        id: "m-thread-old", conversationId: THREAD_ID, actorId: "person-art",
+        originNodeId: "node-1", class: "agent", body: "older than the root read",
+        visibility: "workspace", policy: "durable", createdAt: NOW - 200_000,
+      },
+    };
+    for (let index = 0; index < 420; index += 1) {
+      const id = `m-root-${String(index).padStart(3, "0")}`;
+      snapshot.messages[id] = {
+        id, conversationId: CHANNEL_ID, actorId: "person-art",
+        originNodeId: "node-1", class: "agent", body: `root ${index}`,
+        visibility: "workspace", policy: "durable", createdAt: NOW - 100_000 + index,
+      };
+    }
+
+    // A position among the root messages the read left behind.
+    const cursor = encodeChannelPollCursor({
+      channelId: CHANNEL_ID,
+      createdAt: NOW - 100_000 + 5,
+      id: "m-root-005",
+    });
+    const response = await server.app.request(
+      `http://localhost/api/channels/${CHANNEL_ID}/poll?cursor=${encodeURIComponent(cursor)}`,
+      { headers: auth },
+    );
+    expect(response.status).toBe(409);
+    expect((await response.json() as Record<string, any>).reason).toBe("stale");
+  });
+
+  test("a participant reads a human reply and answers it", async () => {
+    seedChannel();
+    stubBroker();
+    queryRecentMessagesResult = [];
+    sendScoutMessageResult = {
+      usedBroker: true,
+      conversationId: CHANNEL_ID,
+      messageId: "m-participant-hello",
+      invokedTargets: [],
+      unresolvedTargets: [],
+    };
+    const server = await makeServer();
+    const join = await (await participate(server)).json() as Record<string, any>;
+    const auth = { authorization: `Bearer ${join.credential.token}` };
+
+    // Drain to the present, the way a joining participant does.
+    let cursor: string | null = null;
+    for (let page = 0; page < 5; page += 1) {
+      const response = await server.app.request(
+        `http://localhost/api/channels/${CHANNEL_ID}/poll${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ""}`,
+        { headers: auth },
+      );
+      expect(response.status).toBe(200);
+      const body = await response.json() as Record<string, any>;
+      cursor = body.nextCursor;
+      if (!body.hasMore) break;
+    }
+
+    // Say hello.
+    expect((await server.app.request(
+      `http://localhost/api/channels/${CHANNEL_ID}/messages`,
+      {
+        method: "POST",
+        headers: { ...auth, "content-type": "application/json" },
+        body: JSON.stringify({ requestId: "req-hello", body: "hello from an HTTP client" }),
+      },
+    )).status).toBe(200);
+
+    // A person answers in the room.
+    (scoutBrokerContextResult as any).snapshot.messages["m-human-reply"] = {
+      id: "m-human-reply", conversationId: CHANNEL_ID, actorId: "person-art",
+      originNodeId: "node-1", class: "agent", body: "welcome -- can you see this?",
+      visibility: "workspace", policy: "durable", createdAt: NOW - 50,
+      replyToMessageId: "m-participant-hello",
+    };
+
+    // The next poll carries exactly that reply, attributed to the person.
+    const next = await server.app.request(
+      `http://localhost/api/channels/${CHANNEL_ID}/poll?cursor=${encodeURIComponent(cursor!)}`,
+      { headers: auth },
+    );
+    const page = await next.json() as Record<string, any>;
+    const reply = page.messages.find((message: { id: string }) => message.id === "m-human-reply");
+    expect(reply).toBeTruthy();
+    expect(reply.actorId).toBe("person-art");
+
+    // And the participant answers under it.
+    sendScoutMessageResult = {
+      usedBroker: true,
+      conversationId: CHANNEL_ID,
+      messageId: "m-participant-answer",
+      invokedTargets: [],
+      unresolvedTargets: [],
+    };
+    const answered = await server.app.request(
+      `http://localhost/api/channels/${CHANNEL_ID}/messages`,
+      {
+        method: "POST",
+        headers: { ...auth, "content-type": "application/json" },
+        body: JSON.stringify({
+          requestId: "req-answer",
+          body: "I can. Polling every two seconds.",
+          replyToMessageId: "m-human-reply",
+        }),
+      },
+    );
+    expect(answered.status).toBe(200);
+    const answerCall = sendScoutConversationMessageCalls.at(-1)!;
+    expect(answerCall.senderId).toBe(join.actorId);
+    expect(answerCall.replyToMessageId).toBe("m-human-reply");
+    // Answering is a post. Nothing was invoked by it.
+    expect(sendScoutConversationSteerCalls).toEqual([]);
+  });
+  test("an expired invitation still renews an existing participant's credential", async () => {
+    seedChannel();
+    stubBroker();
+    const server = await makeServer();
+
+    const first = await (await participate(server)).json() as Record<string, any>;
+
+    // The invitation lapses. A credential expires long before the room does, so
+    // the participant must be able to come back for a fresh one -- and the
+    // redemption they already hold is what says they may. A *new* joiner is
+    // still refused (covered above); revocation is the switch that stops both.
+    const invite = (scoutBrokerContextResult as any).snapshot
+      .conversations[CHANNEL_ID].metadata.channelInvites[0];
+    invite.expiresAt = Date.now() - 1000;
+    stubBroker({ alreadyRedeemed: true });
+    (scoutBrokerContextResult as any).snapshot.conversations[CHANNEL_ID]
+      .metadata.channelInvites[0] = invite;
+
+    const again = await participate(server);
+    expect(again.status).toBe(200);
+    const renewed = await again.json() as Record<string, any>;
+    expect(renewed.actorId).toBe(first.actorId);
+    expect(renewed.alreadyMember).toBe(true);
+    expect(typeof renewed.credential.token).toBe("string");
+  });
+  test("the credential cannot mint invitations or dispatch work", async () => {
+    seedChannel();
+    stubBroker();
+    const server = await makeServer();
+    const join = await (await participate(server)).json() as Record<string, any>;
+    const auth = { authorization: `Bearer ${join.credential.token}` };
+
+    // The sharp one. A joiner able to issue further invitations would defeat
+    // the `maxRedemptions` of the invitation that admitted it.
+    expect((await server.app.request(
+      `http://localhost/api/channels/${CHANNEL_ID}/invites`,
+      {
+        method: "POST",
+        headers: { ...auth, "content-type": "application/json" },
+        body: JSON.stringify({ scope: "channel_participation" }),
+      },
+    )).status).toBe(401);
+
+    // And addressing an agent dispatches tracked work to somebody else's
+    // session, which the no-install document does not promise either.
+    sendScoutConversationSteerCalls.length = 0;
+    expect((await server.app.request(
+      `http://localhost/api/channels/${CHANNEL_ID}/asks`,
+      {
+        method: "POST",
+        headers: { ...auth, "content-type": "application/json" },
+        body: JSON.stringify({
+          requestId: "req-ask-out",
+          body: "cut the tag",
+          targetActorId: "person-art",
+        }),
+      },
+    )).status).toBe(401);
+    expect(sendScoutConversationSteerCalls).toEqual([]);
+
+    // Posting, which is what it *was* granted, still works.
+    sendScoutMessageResult = {
+      usedBroker: true,
+      conversationId: CHANNEL_ID,
+      messageId: "m-still-posts",
+      invokedTargets: [],
+      unresolvedTargets: [],
+    };
+    expect((await server.app.request(
+      `http://localhost/api/channels/${CHANNEL_ID}/messages`,
+      {
+        method: "POST",
+        headers: { ...auth, "content-type": "application/json" },
+        body: JSON.stringify({ requestId: "req-post", body: "still here" }),
+      },
+    )).status).toBe(200);
+  });
+});
+
+describe("chat spaces scope what a request can reach", () => {
+  const OPERATOR_TOKEN = "chat-spaces-operator-token";
+  const NOW = 1_800_000_000_000;
+  const TOKEN = "vx3k9dqm-personal-invite";
+  const TOKEN_HASH = createHash("sha256").update(TOKEN).digest("hex");
+  const MAYA = "person-maya-spaces";
+
+  // Ids are derived exactly as the server derives them, so a drift in the
+  // natural-key grammar fails here rather than silently splitting a room.
+  const LEGACY_CHANNEL = stableChannelId(namedChannelNaturalKey("release-train"));
+  const WORK_GENERAL = stableChannelId(spacedChannelNaturalKey("work", "general"));
+  const PERSONAL_GENERAL = stableChannelId(spacedChannelNaturalKey("personal", "general"));
+
+  const spacedChannel = (space: string, name: string, extra: Record<string, unknown> = {}) => {
+    const naturalKey = spacedChannelNaturalKey(space, name);
+    return {
+      id: stableChannelId(naturalKey),
+      kind: "channel",
+      title: name,
+      visibility: "workspace",
+      shareMode: "shared",
+      authorityNodeId: "node-1",
+      participantIds: ["operator", MAYA],
+      metadata: {
+        [CHANNEL_NATURAL_KEY_METADATA]: naturalKey,
+        [CHANNEL_SPACE_SLUG_METADATA]: space,
+        channelInvites: [],
+        ...extra,
+      },
+    };
+  };
+
+  const spaceRecord = (slug: string, title: string) => {
+    const naturalKey = spaceNaturalKey(slug);
+    return {
+      id: stableChannelId(naturalKey),
+      kind: "system",
+      title,
+      visibility: "system",
+      shareMode: "local",
+      authorityNodeId: "node-1",
+      participantIds: ["operator"],
+      metadata: {
+        [CHANNEL_NATURAL_KEY_METADATA]: naturalKey,
+        [CHANNEL_SPACE_SLUG_METADATA]: slug,
+        surface: "chat-space",
+      },
+    };
+  };
+
+  const seedSpaces = () => {
+    const legacyKey = namedChannelNaturalKey("release-train");
+    scoutBrokerContextResult = {
+      baseUrl: "http://broker.test",
+      node: { id: "node-1" },
+      snapshot: {
+        messages: {},
+        conversations: {
+          // A channel from before spaces existed: no marker, legacy key, and
+          // the id it has always had.
+          [LEGACY_CHANNEL]: {
+            id: LEGACY_CHANNEL,
+            kind: "channel",
+            title: "release-train",
+            visibility: "workspace",
+            shareMode: "shared",
+            authorityNodeId: "node-1",
+            participantIds: ["operator", MAYA],
+            metadata: {
+              [CHANNEL_NATURAL_KEY_METADATA]: legacyKey,
+              channelInvites: [],
+            },
+          },
+          [WORK_GENERAL]: spacedChannel("work", "general"),
+          [PERSONAL_GENERAL]: spacedChannel("personal", "general", {
+            channelInvites: [
+              {
+                id: "cinv-personal",
+                channelId: PERSONAL_GENERAL,
+                scope: "channel_participation",
+                tokenHash: TOKEN_HASH,
+                tokenHint: "vx3k",
+                createdAt: NOW - 1000,
+                createdByActorId: "operator",
+                expiresAt: NOW + 7 * 24 * 60 * 60 * 1000,
+                maxRedemptions: null,
+                route: {
+                  authorityNodeId: "node-1",
+                  host: "chat.scout.local",
+                  baseUrl: "http://chat.scout.local",
+                  reachability: "unknown",
+                  caveat: "chat.scout.local resolves to 127.0.0.1 on every machine.",
+                },
+                redemptions: [],
+              },
+            ],
+          }),
+          [stableChannelId(spaceNaturalKey("work"))]: spaceRecord("work", "Work"),
+          [stableChannelId(spaceNaturalKey("personal"))]: spaceRecord("personal", "Personal"),
+        },
+        actors: {
+          operator: { id: "operator", kind: "person", displayName: "Art" },
+          [MAYA]: { id: MAYA, kind: "person", displayName: "Maya" },
+        },
+        agents: {}, endpoints: {}, flights: {}, invocations: {},
+      },
+    } as never;
+  };
+
+  const makeServer = async () => createOpenScoutWebServer({
+    currentDirectory: "/tmp/openscout",
+    assetMode: "static",
+    staticRoot: makeStaticRoot(),
+    advertisedHost: "m1.scout.local",
+    portalHost: "scout.local",
+    authToken: OPERATOR_TOKEN,
+    resolvePeerAddress: () => "127.0.0.1",
+  });
+
+  const asOperator = { headers: { authorization: `Bearer ${OPERATOR_TOKEN}` } };
+
+  /**
+   * The broker's write side, for the two routes that actually join somebody.
+   * Redemption has to land in the seeded snapshot, or the next read would see
+   * a roster naming a participant with no record -- a different bug than the
+   * one under test.
+   */
+  const stubBrokerWrites = () => {
+    globalThis.fetch = (async (input: any, init?: any) => {
+      const url = typeof input === "string" ? input : String(input?.url ?? input);
+      const body = init?.body ? JSON.parse(String(init.body)) : null;
+      if (url.includes("/v1/actors")) {
+        (scoutBrokerContextResult as any).snapshot.actors[body.id] = body;
+        return Response.json({ ok: true });
+      }
+      if (url.includes("/v1/commands") && body?.kind === "channel.invite.redeem") {
+        const actorId = body.request.actorId as string;
+        const conversation = (scoutBrokerContextResult as any).snapshot
+          .conversations[PERSONAL_GENERAL];
+        if (!conversation.participantIds.includes(actorId)) {
+          conversation.participantIds.push(actorId);
+        }
+        const invite = conversation.metadata.channelInvites[0];
+        const redemption = { id: "crdm-personal", actorId, redeemedAt: NOW };
+        invite.redemptions.push(redemption);
+        return Response.json({
+          ok: true,
+          invite: { ...invite, redemptionCount: invite.redemptions.length },
+          redemption,
+          alreadyRedeemed: false,
+          participantIds: conversation.participantIds,
+          conversationId: PERSONAL_GENERAL,
+        });
+      }
+      return Response.json({ ok: false, error: `unexpected broker call: ${url}` }, { status: 500 });
+    }) as typeof fetch;
+  };
+
+  /** A member credential bound to one channel in one space. */
+  const memberToken = (channelId: string, spaceSlug: string | null) =>
+    createChannelMemberSessionAuthority({ signingSecret: OPERATOR_TOKEN }).mint({
+      actorId: MAYA,
+      displayName: "Maya",
+      channelId,
+      nowMs: NOW,
+      ...(spaceSlug ? { spaceSlug } : {}),
+    }).token;
+
+  const asMember = (token: string) => ({
+    headers: { cookie: channelMemberCookie(token, false).split(";")[0]! },
+  });
+
+  test("the operator in one space cannot reach a room in another, by any route", async () => {
+    seedSpaces();
+    const server = await makeServer();
+
+    // Every channel read and write goes through one resolver, so the boundary
+    // is the same on all of them. A laxer second path to the same conversation
+    // is how a namespace turns into a suggestion.
+    const reads = ["feed", "poll", "events", "members", "invites"];
+    for (const suffix of reads) {
+      const response = await server.app.request(
+        `http://localhost/api/channels/${PERSONAL_GENERAL}/${suffix}?space=work`,
+        asOperator,
+      );
+      expect([suffix, response.status]).toEqual([suffix, 404]);
+      // 404, not 403: "exists, but not in the space you named" would make the
+      // refusal a directory of the rooms you are not in.
+      expect([suffix, (await response.json() as { error: string }).error])
+        .toEqual([suffix, "channel not found"]);
+    }
+
+    for (const suffix of ["messages", "asks", "invites"]) {
+      const response = await server.app.request(
+        `http://localhost/api/channels/${PERSONAL_GENERAL}/${suffix}?space=work`,
+        {
+          method: "POST",
+          headers: { ...asOperator.headers, "content-type": "application/json" },
+          body: JSON.stringify({ requestId: "req-x", body: "hello", targetActorId: "operator" }),
+        },
+      );
+      expect([suffix, response.status]).toEqual([suffix, 404]);
+    }
+    // Nothing was written on the way to the refusal.
+    expect(sendScoutConversationMessageCalls).toHaveLength(0);
+    expect(sendScoutConversationSteerCalls).toHaveLength(0);
+  });
+
+  test("the same room is reachable when the selector names its own space", async () => {
+    seedSpaces();
+    const server = await makeServer();
+
+    const named = await server.app.request(
+      `http://localhost/api/channels/${PERSONAL_GENERAL}/members?space=personal`,
+      asOperator,
+    );
+    expect(named.status).toBe(200);
+
+    // And an absent selector is the default space, which is what keeps every
+    // URL that predates spaces working unchanged.
+    const legacy = await server.app.request(
+      `http://localhost/api/channels/${LEGACY_CHANNEL}/members`,
+      asOperator,
+    );
+    expect(legacy.status).toBe(200);
+
+    // A default-space URL cannot reach a spaced room, even with the right id.
+    const bare = await server.app.request(
+      `http://localhost/api/channels/${WORK_GENERAL}/members`,
+      asOperator,
+    );
+    expect(bare.status).toBe(404);
+  });
+
+  test("a malformed space is refused rather than repaired into another one", async () => {
+    seedSpaces();
+    const server = await makeServer();
+
+    const response = await server.app.request(
+      `http://localhost/api/channels/${WORK_GENERAL}/feed?space=work%2Fsecret`,
+      asOperator,
+    );
+    // Falling back to the default on a typo would quietly serve a different
+    // room and call it success.
+    expect(response.status).toBe(400);
+  });
+
+  test("the header is another spelling of the selector, and no more", async () => {
+    seedSpaces();
+    const server = await makeServer();
+
+    // An HTTP client handed a bare endpoint can select with a header...
+    const selected = await server.app.request(
+      `http://localhost/api/channels/${WORK_GENERAL}/members`,
+      { headers: { ...asOperator.headers, "x-scout-space": "work" } },
+    );
+    expect(selected.status).toBe(200);
+
+    // ...but a member credential bound to `work` is not widened by a header
+    // naming `personal`. The credential decides; the selector only narrows.
+    const token = memberToken(WORK_GENERAL, "work");
+    const forged = await server.app.request(
+      `http://localhost/api/channels/${PERSONAL_GENERAL}/members`,
+      {
+        headers: {
+          ...asMember(token).headers,
+          "x-scout-space": "personal",
+        },
+      },
+    );
+    expect(forged.status).not.toBe(200);
+  });
+
+  test("bootstrap answers for one space, and lists only the spaces you are in", async () => {
+    seedSpaces();
+    const server = await makeServer();
+
+    const work = await server.app.request(
+      "http://localhost/api/chat/bootstrap?space=work",
+      asOperator,
+    );
+    expect(work.status).toBe(200);
+    const workBody = await work.json() as Record<string, any>;
+    expect(workBody.space).toBe("work");
+    expect(workBody.channels.map((channel: { id: string }) => channel.id)).toEqual([WORK_GENERAL]);
+    // The space record itself is never a room. It is `kind: "system"`, which is
+    // what keeps it out of every conversation list in the product.
+    expect(JSON.stringify(workBody.channels)).not.toContain(stableChannelId(spaceNaturalKey("work")));
+    expect(workBody.spaces.map((space: { slug: string }) => space.slug))
+      .toEqual(["home", "personal", "work"]);
+
+    // The default space is what an absent selector means, and it holds exactly
+    // the channels that predate spaces.
+    const home = await server.app.request("http://localhost/api/chat/bootstrap", asOperator);
+    const homeBody = await home.json() as Record<string, any>;
+    expect(homeBody.space).toBe("home");
+    expect(homeBody.channels.map((channel: { id: string }) => channel.id)).toEqual([LEGACY_CHANNEL]);
+
+    // A member sees their own space and is not told the others exist.
+    const token = memberToken(WORK_GENERAL, "work");
+    const member = await server.app.request(
+      "http://localhost/api/chat/bootstrap",
+      asMember(token),
+    );
+    expect(member.status).toBe(200);
+    const memberBody = await member.json() as Record<string, any>;
+    expect(memberBody.viewer.isOperator).toBe(false);
+    expect(memberBody.space).toBe("work");
+    expect(memberBody.channels.map((channel: { id: string }) => channel.id)).toEqual([WORK_GENERAL]);
+    expect(memberBody.spaces.map((space: { slug: string }) => space.slug)).toEqual(["work"]);
+    expect(JSON.stringify(memberBody)).not.toContain("Personal");
+  });
+
+  test("a legacy channel keeps its exact id and stays in the default space", async () => {
+    seedSpaces();
+    const server = await makeServer();
+
+    // The id is a pure function of the natural key, and the default space's key
+    // is byte-identical to the one that existed before spaces. Nothing moved,
+    // so nothing had to be migrated.
+    expect(LEGACY_CHANNEL).toBe(stableChannelId("channel:release-train"));
+    expect(spacedChannelNaturalKey("home", "release-train")).toBe("channel:release-train");
+
+    const feed = await server.app.request(
+      `http://localhost/api/channels/${LEGACY_CHANNEL}/members`,
+      asOperator,
+    );
+    expect(feed.status).toBe(200);
+
+    // A credential minted before `spaceSlug` existed still reaches it.
+    const legacyToken = memberToken(LEGACY_CHANNEL, null);
+    const asLegacyMember = await server.app.request(
+      `http://localhost/api/channels/${LEGACY_CHANNEL}/members`,
+      asMember(legacyToken),
+    );
+    expect(asLegacyMember.status).toBe(200);
+    // And it is not a key to a space that did not exist when it was issued.
+    const intoWork = await server.app.request(
+      `http://localhost/api/channels/${WORK_GENERAL}/members?space=work`,
+      asMember(legacyToken),
+    );
+    expect(intoWork.status).not.toBe(200);
+  });
+
+  test("listing spaces tells a member about their own, and the host about all", async () => {
+    seedSpaces();
+    const server = await makeServer();
+
+    const operator = await server.app.request("http://localhost/api/chat/spaces", asOperator);
+    expect(operator.status).toBe(200);
+    expect(((await operator.json()) as Record<string, any>).spaces
+      .map((space: { slug: string }) => space.slug)).toEqual(["home", "personal", "work"]);
+
+    const token = memberToken(PERSONAL_GENERAL, "personal");
+    const member = await server.app.request("http://localhost/api/chat/spaces", asMember(token));
+    expect(member.status).toBe(200);
+    const body = await member.json() as Record<string, any>;
+    expect(body.spaces.map((space: { slug: string }) => space.slug)).toEqual(["personal"]);
+    expect(JSON.stringify(body)).not.toContain("Work");
+  });
+
+  test("only the host carves out a new space, and it never lands empty", async () => {
+    seedSpaces();
+    const server = await makeServer();
+
+    const token = memberToken(WORK_GENERAL, "work");
+    const refused = await server.app.request("http://localhost/api/chat/spaces", {
+      method: "POST",
+      headers: { ...asMember(token).headers, "content-type": "application/json" },
+      body: JSON.stringify({ title: "Widened" }),
+    });
+    // A scoped credential joins rooms; it does not carve out namespaces.
+    expect([401, 403]).toContain(refused.status);
+
+    upsertScoutConversationCalls.length = 0;
+    const created = await server.app.request("http://localhost/api/chat/spaces", {
+      method: "POST",
+      headers: { ...asOperator.headers, "content-type": "application/json" },
+      body: JSON.stringify({ title: "Ops", channel: "incidents" }),
+    });
+    expect(created.status).toBe(200);
+    const body = await created.json() as Record<string, any>;
+    expect(body.space.slug).toBe("ops");
+    expect(body.space.title).toBe("Ops");
+    // The first channel is created with the space: a space with no room in it
+    // is a dead end the operator has to notice and fix.
+    expect(body.channel.title).toBe("incidents");
+    expect(body.channel.id).toBe(stableChannelId(spacedChannelNaturalKey("ops", "incidents")));
+    expect(body.channel.metadata[CHANNEL_SPACE_SLUG_METADATA]).toBe("ops");
+
+    // Two writes: the space record, then its first room.
+    expect(upsertScoutConversationCalls.map((call) => call.kind)).toEqual(["system", "channel"]);
+
+    // And the name that already means "everything that existed before spaces"
+    // cannot be claimed.
+    const conflict = await server.app.request("http://localhost/api/chat/spaces", {
+      method: "POST",
+      headers: { ...asOperator.headers, "content-type": "application/json" },
+      body: JSON.stringify({ title: "Home" }),
+    });
+    expect(conflict.status).toBe(409);
+  });
+
+  test("a channel is created into the space the request names", async () => {
+    seedSpaces();
+    const server = await makeServer();
+
+    const created = await server.app.request("http://localhost/api/chat/channels?space=work", {
+      method: "POST",
+      headers: { ...asOperator.headers, "content-type": "application/json" },
+      body: JSON.stringify({ title: "design-review" }),
+    });
+    expect(created.status).toBe(200);
+    const body = await created.json() as Record<string, any>;
+    expect(body.space).toBe("work");
+    expect(body.conversation.id)
+      .toBe(stableChannelId(spacedChannelNaturalKey("work", "design-review")));
+
+    // The same name in the default space is a different room, all the way down
+    // to the id -- which is what makes two spaces two feeds rather than one
+    // shared one.
+    const home = await server.app.request("http://localhost/api/chat/channels", {
+      method: "POST",
+      headers: { ...asOperator.headers, "content-type": "application/json" },
+      body: JSON.stringify({ title: "design-review" }),
+    });
+    const homeBody = await home.json() as Record<string, any>;
+    expect(homeBody.space).toBe("home");
+    expect(homeBody.conversation.id).not.toBe(body.conversation.id);
+    expect(homeBody.conversation.id).toBe(stableChannelId("channel:design-review"));
+  });
+
+  test("redeeming into a second space mints a second credential, not a wider one", async () => {
+    seedSpaces();
+    stubBrokerWrites();
+    const server = await makeServer();
+
+    // Maya is already holding a `work` credential when she opens a `personal`
+    // invitation. Widening the held grant would turn one cookie into a key for
+    // both spaces.
+    const workToken = memberToken(WORK_GENERAL, "work");
+    const response = await server.app.request(
+      `http://localhost/api/invites/${TOKEN}/redeem`,
+      {
+        method: "POST",
+        headers: {
+          ...asMember(workToken).headers,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ actorId: MAYA, displayName: "Maya", sessionId: "sess.maya" }),
+      },
+    );
+    expect(response.status).toBe(200);
+    const body = await response.json() as Record<string, any>;
+    expect(body.space).toEqual({ slug: "personal", title: "Personal" });
+
+    const issued = response.headers.get("set-cookie") ?? "";
+    expect(issued).toContain(`${CHANNEL_MEMBER_COOKIE}=`);
+    const issuedToken = decodeURIComponent(
+      issued.split(`${CHANNEL_MEMBER_COOKIE}=`)[1]!.split(";")[0]!,
+    );
+    expect(issuedToken).not.toBe(workToken);
+
+    // The new credential is bound to `personal` and names only that channel.
+    const reader = createChannelMemberSessionAuthority({ signingSecret: OPERATOR_TOKEN });
+    const fresh = reader.validate(issuedToken);
+    expect(fresh?.spaceSlug).toBe("personal");
+    expect(fresh?.channelIds).toEqual([PERSONAL_GENERAL]);
+    expect(fresh?.channelIds).not.toContain(WORK_GENERAL);
+
+    // And the credential she was already holding is untouched -- neither
+    // revoked as the price of refusing to widen it, nor extended.
+    const held = reader.validate(workToken);
+    expect(held?.spaceSlug).toBe("work");
+    expect(held?.channelIds).toEqual([WORK_GENERAL]);
+  });
+
+  test("a returned poll URL carries the space it was issued for", async () => {
+    seedSpaces();
+    stubBrokerWrites();
+    const server = await makeServer();
+
+    const response = await server.app.request(
+      `http://localhost/api/invites/${TOKEN}/participate`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ displayName: "release-bot" }),
+      },
+    );
+    expect(response.status).toBe(200);
+    const body = await response.json() as Record<string, any>;
+    expect(body.space).toEqual({ slug: "personal", title: "Personal" });
+    // A bare poll URL would 404 against the default space. The one we hand out
+    // has to be the one that works.
+    expect(body.poll.url).toBe(`/api/channels/${PERSONAL_GENERAL}/poll?space=personal`);
+  });
+
+  test("the invitation document and api.md carry working space context", async () => {
+    seedSpaces();
+    const server = await makeServer();
+
+    const preview = await server.app.request(`http://localhost/api/invites/${TOKEN}`);
+    expect(preview.status).toBe(200);
+    expect(((await preview.json()) as Record<string, any>).space)
+      .toEqual({ slug: "personal", title: "Personal" });
+
+    const api = await server.app.request(`http://localhost/invite/${TOKEN}/api.md`);
+    expect(api.status).toBe(200);
+    const markdown = await api.text();
+    // Every URL in the document is one a client can paste.
+    expect(markdown).toContain(`/api/channels/${PERSONAL_GENERAL}/poll?space=personal`);
+    expect(markdown).toContain("space=personal");
+    // And it says what the selector is, so nobody reads it as the credential.
+    expect(markdown.toLowerCase()).toContain("selector");
   });
 });

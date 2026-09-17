@@ -82,6 +82,7 @@ export type DeliveryTransport =
   | "kimi_acp"
   | "cursor_acp"
   | "opencode_acp"
+  | "devin_acp"
   | "tmux"
   | "cursor_exec"
   | "cursor_cli_text"

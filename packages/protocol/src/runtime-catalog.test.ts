@@ -11,7 +11,7 @@ describe("runtime catalog", () => {
     const parsed = parseScoutRuntimeCatalog(SCOUT_RUNTIME_CATALOG);
     expect(parsed.ok).toBe(true);
     if (!parsed.ok) return;
-    expect(parsed.catalog.revision).toBe("2026-09-10.1");
+    expect(parsed.catalog.revision).toBe("2026-09-14.1");
     expect(parsed.catalog.harnesses.find((entry) => entry.id === "codex")?.models[0])
       .toEqual(expect.objectContaining({
         id: "gpt-6-astra",
@@ -26,6 +26,10 @@ describe("runtime catalog", () => {
     expect(parsed.catalog.harnesses.find((entry) => entry.id === "grok")?.models[0]?.contextWindowTokens)
       .toBe(500_000);
     expect(parsed.catalog.harnesses.find((entry) => entry.id === "grok")?.listed).toBe(false);
+    expect(parsed.catalog.harnesses.find((entry) => entry.id === "devin")?.models.map((model) => model.id))
+      .toEqual(["swe-2-high", "swe-2-medium", "swe-2-max"]);
+    expect(parsed.catalog.harnesses.find((entry) => entry.id === "devin")?.models[0])
+      .toEqual(expect.objectContaining({ id: "swe-2-high", default: true }));
   });
 
   test("offers only the Grok models the CLI actually serves, with effort on both entries", () => {

@@ -392,6 +392,42 @@ export function writeScoutAppearanceDetails(details: ScoutAppearanceDetails): vo
   }
 }
 
+/**
+ * Record the viewer's stated light/dark preference.
+ *
+ * The stored appearance is one blob shared with `writeScoutAppearanceDetails`,
+ * so this merges into it rather than replacing it. A `?theme=` in the URL
+ * outranks storage in `resolveScoutStartupTheme`, and writing underneath one
+ * would put the viewer's choice somewhere they cannot see it take effect.
+ */
+export function writeScoutThemePreference(preference: ScoutThemePreference): void {
+  if (typeof window === "undefined") return;
+  if (normalizeScoutThemePreference(new URLSearchParams(window.location.search).get("theme"))) return;
+  try {
+    const raw = window.localStorage.getItem(SCOUT_THEME_STORAGE_KEY);
+    const parsed = raw ? (JSON.parse(raw) as unknown) : null;
+    const existing = parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? parsed as Record<string, unknown>
+      : {};
+    window.localStorage.setItem(SCOUT_THEME_STORAGE_KEY, JSON.stringify({
+      ...existing,
+      theme: preference,
+    }));
+  } catch {
+    // The choice stays active in memory when device storage is unavailable.
+  }
+}
+
+/** The preference as stated, before the OS gets a say. */
+export function resolveScoutStartupThemePreference(): ScoutThemePreference {
+  if (typeof window === "undefined") return "system";
+  const queryTheme = normalizeScoutThemePreference(
+    new URLSearchParams(window.location.search).get("theme"),
+  );
+  if (queryTheme) return queryTheme;
+  return readStoredAppearance().theme ?? "system";
+}
+
 export function applyScoutThemeToDocument(
   theme: ScoutTheme,
   template: string = resolveScoutStartupTemplate(),

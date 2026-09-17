@@ -316,6 +316,10 @@ export function harnessFromAdapterType(
     case "opencode":
     case "opencode_acp":
       return "opencode";
+    case "devin":
+    case "devin-acp":
+    case "devin_acp":
+      return "devin";
     default:
       return undefined;
   }

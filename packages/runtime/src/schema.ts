@@ -4,7 +4,7 @@ export { CONTROL_PLANE_SCHEMA_VERSION } from "./schema-version.js";
 export const CONTROL_PLANE_RUNTIME_SESSION_SQLITE_SCHEMA = `
 CREATE TABLE IF NOT EXISTS runtime_sessions (
   id TEXT PRIMARY KEY,
-  agent_id TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+  agent_id TEXT NOT NULL REFERENCES actors(id) ON DELETE CASCADE,
   endpoint_id TEXT NOT NULL REFERENCES agent_endpoints(id) ON DELETE CASCADE,
   node_id TEXT NOT NULL REFERENCES nodes(id) ON DELETE RESTRICT,
   harness TEXT NOT NULL,
@@ -27,7 +27,7 @@ CREATE TABLE IF NOT EXISTS runtime_session_aliases (
   alias TEXT NOT NULL,
   session_id TEXT NOT NULL REFERENCES runtime_sessions(id) ON DELETE CASCADE,
   alias_kind TEXT NOT NULL,
-  agent_id TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+  agent_id TEXT NOT NULL REFERENCES actors(id) ON DELETE CASCADE,
   endpoint_id TEXT NOT NULL REFERENCES agent_endpoints(id) ON DELETE CASCADE,
   node_id TEXT NOT NULL REFERENCES nodes(id) ON DELETE RESTRICT,
   harness TEXT NOT NULL,
@@ -318,7 +318,7 @@ CREATE TABLE IF NOT EXISTS agents (
 
 CREATE TABLE IF NOT EXISTS agent_endpoints (
   id TEXT PRIMARY KEY,
-  agent_id TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+  agent_id TEXT NOT NULL REFERENCES actors(id) ON DELETE CASCADE,
   node_id TEXT NOT NULL REFERENCES nodes(id) ON DELETE RESTRICT,
   harness TEXT NOT NULL,
   transport TEXT NOT NULL,
@@ -492,7 +492,7 @@ CREATE TABLE IF NOT EXISTS invocations (
   id TEXT PRIMARY KEY,
   requester_id TEXT NOT NULL REFERENCES actors(id) ON DELETE RESTRICT,
   requester_node_id TEXT NOT NULL REFERENCES nodes(id) ON DELETE RESTRICT,
-  target_agent_id TEXT NOT NULL REFERENCES agents(id) ON DELETE RESTRICT,
+  target_agent_id TEXT NOT NULL REFERENCES actors(id) ON DELETE RESTRICT,
   target_node_id TEXT REFERENCES nodes(id) ON DELETE SET NULL,
   action TEXT NOT NULL,
   task TEXT NOT NULL,
@@ -522,7 +522,7 @@ CREATE TABLE IF NOT EXISTS flights (
   id TEXT PRIMARY KEY,
   invocation_id TEXT NOT NULL REFERENCES invocations(id) ON DELETE CASCADE,
   requester_id TEXT NOT NULL REFERENCES actors(id) ON DELETE RESTRICT,
-  target_agent_id TEXT NOT NULL REFERENCES agents(id) ON DELETE RESTRICT,
+  target_agent_id TEXT NOT NULL REFERENCES actors(id) ON DELETE RESTRICT,
   state TEXT NOT NULL,
   summary TEXT,
   output TEXT,
@@ -744,7 +744,7 @@ CREATE TABLE IF NOT EXISTS activity_items (
   record_id TEXT REFERENCES collaboration_records(id) ON DELETE CASCADE,
   actor_id TEXT REFERENCES actors(id) ON DELETE SET NULL,
   counterpart_id TEXT REFERENCES actors(id) ON DELETE SET NULL,
-  agent_id TEXT REFERENCES agents(id) ON DELETE SET NULL,
+  agent_id TEXT REFERENCES actors(id) ON DELETE SET NULL,
   workspace_root TEXT,
   session_id TEXT,
   title TEXT,

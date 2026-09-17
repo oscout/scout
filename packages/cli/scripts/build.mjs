@@ -100,6 +100,9 @@ const scoutdSignScript = resolve(repoRoot, "scripts", "sign-scoutd.sh");
 mkdirSync(outputDirectory, { recursive: true });
 rmSync(buildManifestOutput, { force: true });
 
+const chatResult = spawnSync("bun", ["build", resolve(packageDirectory, "src/chat-main.ts"), "--target=node", "--format=esm", "--outfile", resolve(outputDirectory, "chat.mjs")], { cwd: packageDirectory, stdio: "inherit" });
+if ((chatResult.status ?? 1) !== 0) process.exit(chatResult.status ?? 1);
+
 // Use --outdir so bun can emit WASM/asset side-files alongside the main bundle
 const result = spawnSync(
   "bun",

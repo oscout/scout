@@ -51,10 +51,10 @@ describe("control-plane managed migrations", () => {
     expect(baseline.hash).toMatch(/^[0-9a-f]{64}$/);
   });
 
-  test("preserves the historical schema v14 context migration identity at schema v17", () => {
+  test("preserves the historical schema v14 context migration identity at schema v18", () => {
     const contextMigration = migrations.find((migration) => migration.folderMillis === 1783665705710);
 
-    expect(CONTROL_PLANE_SCHEMA_VERSION).toBe(17);
+    expect(CONTROL_PLANE_SCHEMA_VERSION).toBe(18);
     expect(contextMigration?.hash).toBe("e576221a4547e38a8d92027deb1124055459bf800c12c562840cdcf6fbb8b560");
   });
 

@@ -40,7 +40,50 @@ function hasTable(database: ControlPlaneSqliteDatabase, tableName: string): bool
   return Boolean(row);
 }
 
+// The legacy column names also carry cardless session actors. Requiring an
+// agents row rejects valid broker-owned sessions and cascades into lost flight
+// projections. Keep the actor foreign key; do not manufacture agent cards.
+const ACTOR_TARGET_TABLES = [
+  "agent_endpoints", "runtime_sessions", "runtime_session_aliases",
+  "invocations", "flights", "activity_items",
+] as const;
+
+function hasLegacyAgentTarget(database: ControlPlaneSqliteDatabase, table: string): boolean {
+  return (database.query(`PRAGMA foreign_key_list("${table}")`).all() as Array<{ table: string }>)
+    .some((foreignKey) => foreignKey.table === "agents");
+}
+
+function repairSessionActorTargets(database: ControlPlaneSqliteDatabase): void {
+  for (const table of ACTOR_TARGET_TABLES) {
+    if (!hasLegacyAgentTarget(database, table)) continue;
+    const foreignKeys = database.query("PRAGMA foreign_keys").get() as { foreign_keys: number };
+    if (foreignKeys.foreign_keys !== 0) {
+      throw new Error("Session actor target repair requires the control-plane migration transaction with foreign keys suspended.");
+    }
+    const original = database.query("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?1")
+      .get(table) as { sql: string };
+    const dependents = database.query("SELECT sql FROM sqlite_master WHERE tbl_name = ?1 AND type IN ('index', 'trigger') AND sql IS NOT NULL")
+      .all(table) as Array<{ sql: string }>;
+    const columns = (database.query(`PRAGMA table_info("${table}")`).all() as Array<{ name: string }>)
+      .map(({ name }) => `"${name.replaceAll('"', '""')}"`).join(", ");
+    const temporary = `__session_actor_${table}`;
+    const create = original.sql
+      .replace(/^CREATE TABLE\s+(?:IF NOT EXISTS\s+)?(?:"[^"]+"|`[^`]+`|\w+)/i, `CREATE TABLE "${temporary}"`)
+      .replace(/REFERENCES\s+["`]?agents["`]?\s*\(/gi, 'REFERENCES "actors"(');
+    database.exec(create);
+    database.exec(`INSERT INTO "${temporary}" (${columns}) SELECT ${columns} FROM "${table}"`);
+    database.exec(`DROP TABLE "${table}"`);
+    database.exec(`ALTER TABLE "${temporary}" RENAME TO "${table}"`);
+    for (const dependent of dependents) database.exec(dependent.sql);
+  }
+}
+
 export const CONTROL_PLANE_SCHEMA_MIGRATIONS: ControlPlaneSchemaMigration[] = [
+  {
+    id: "session-actor-target-foreign-keys",
+    description: "Allows canonical session actors in endpoint and work target references without creating agent cards.",
+    apply: repairSessionActorTargets,
+  },
   {
     id: "runtime-session-mapping-read-model",
     description: "Creates the Scout-owned runtime session and session alias indexes.",
@@ -639,8 +682,17 @@ export function migrateControlPlaneDatabaseSchema(database: ControlPlaneSqliteDa
   // test databases the WAL attempt is a silent no-op.
   database.exec(`PRAGMA busy_timeout = ${MIGRATION_LOCK_TIMEOUT_MS};`);
   database.exec("PRAGMA journal_mode = WAL;");
-  database.exec("BEGIN IMMEDIATE");
+  const previousForeignKeys = (database.query("PRAGMA foreign_keys").get() as { foreign_keys: number }).foreign_keys;
+  const previousVersion = (database.query("PRAGMA user_version").get() as { user_version: number }).user_version;
+  const rebuildsActorTargets = previousVersion < 18
+    || ACTOR_TARGET_TABLES.some((table) => hasLegacyAgentTarget(database, table));
+  // SQLite ignores foreign_keys changes within a transaction. Table rebuilds
+  // with enforcement enabled can cascade-delete unrelated child records when
+  // DROP TABLE runs. Suspend before BEGIN, validate before COMMIT, and always
+  // restore the caller's enforcement setting, including lock/rollback failures.
+  if (rebuildsActorTargets) database.exec("PRAGMA foreign_keys = OFF;");
   try {
+    database.exec("BEGIN IMMEDIATE");
     // Checked under the lock so a newer build that migrated while we waited
     // is seen before we touch anything.
     assertControlPlaneSchemaNotNewer(database);
@@ -652,6 +704,9 @@ export function migrateControlPlaneDatabaseSchema(database: ControlPlaneSqliteDa
     applyControlPlaneDrizzleMigrations(database);
     database.exec(CONTROL_PLANE_SQLITE_SCHEMA);
     applyControlPlaneSchemaMigrations(database);
+    if (rebuildsActorTargets && database.query("PRAGMA foreign_key_check").get()) {
+      throw new Error("Control-plane actor target migration failed foreign-key validation; rolling back.");
+    }
     stampControlPlaneSchemaVersion(database);
     database.exec("COMMIT");
   } catch (error) {
@@ -663,6 +718,7 @@ export function migrateControlPlaneDatabaseSchema(database: ControlPlaneSqliteDa
     }
     throw error;
   } finally {
+    database.exec(`PRAGMA foreign_keys = ${previousForeignKeys ? "ON" : "OFF"};`);
     // Back to the standing runtime timeout configureControlPlaneDatabase sets.
     database.exec("PRAGMA busy_timeout = 5000;");
   }

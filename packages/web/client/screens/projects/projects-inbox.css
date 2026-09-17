@@ -136,18 +136,33 @@
   min-width: 0;
 }
 
-.s-discovered-embed.s-projects-embed .pi-inboxTitle,
 .s-discovered-embed.s-projects-embed .pi-projectTitle,
-.pi-projectsEmbedShell .pi-inboxTitle,
 .pi-projectsEmbedShell .pi-projectTitle {
   display: none;
 }
 
+/* The stage head. The native header above this embed is gone, so this band
+   is the stage's first title: one 38px line, the title in the seat's sans
+   register with the count as a faint mono aside, and no rule under it — the
+   toolbar's own line height is the break. (studio: scout-projects-lists,
+   "Stage · project rows", StageHead) */
 .s-discovered-embed.s-projects-embed .pi-inboxHead,
 .pi-projectsEmbedShell .pi-inboxHead {
-  min-height: 0;
-  padding-block: 6px;
+  min-height: 38px;
+  padding: 0 var(--space-2xl);
+  border-bottom: none;
   align-items: center;
+}
+.s-discovered-embed.s-projects-embed .pi-inboxTitle,
+.pi-projectsEmbedShell .pi-inboxTitle {
+  display: block;
+  font-size: var(--text-lg);
+  font-weight: 500;
+  letter-spacing: 0;
+}
+.s-discovered-embed.s-projects-embed .pi-inboxDigest,
+.pi-projectsEmbedShell .pi-inboxDigest {
+  font-size: var(--text-2xs);
 }
 
 .s-discovered-embed.s-projects-embed .pi-projectHead,

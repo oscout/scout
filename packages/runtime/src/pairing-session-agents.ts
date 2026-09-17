@@ -512,6 +512,9 @@ function pairingHarness(adapterType: string): AgentHarness {
   if (normalized.includes("opencode")) {
     return "opencode";
   }
+  if (normalized === "devin-acp" || normalized.includes("devin")) {
+    return "devin";
+  }
   if (normalized.includes("claude")) {
     return "claude";
   }

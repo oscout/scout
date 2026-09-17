@@ -1,7 +1,7 @@
 import type { RuntimeEnv } from "./portable-types.js";
 const TRUTHY = new Set(["1", "true", "yes", "on"]);
 
-export type CodingAgentHarness = "scout" | "cursor" | "claude" | "codex";
+export type CodingAgentHarness = "scout" | "cursor" | "claude" | "codex" | "devin";
 
 export type CodingAgentHostMatch = {
   harness: CodingAgentHarness;
@@ -100,6 +100,14 @@ const HARNESS_SIGNALS: HarnessSignal[] = [
     harness: "codex",
     signal: "CODEX_SANDBOX",
     matches: (env) => hasNonEmpty(env.CODEX_SANDBOX),
+  },
+  {
+    // Devin CLI exports CHISEL_SESSION_DB (its session database path) into the
+    // shells it spawns. Require a devin-scoped value so an unrelated chisel
+    // variable cannot misattribute the host.
+    harness: "devin",
+    signal: "CHISEL_SESSION_DB",
+    matches: (env) => hasNonEmpty(env.CHISEL_SESSION_DB) && env.CHISEL_SESSION_DB!.includes("devin"),
   },
 ];
 

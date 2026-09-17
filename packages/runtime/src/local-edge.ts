@@ -72,6 +72,19 @@ function normalizeRouteHost(value: string | undefined): string | null {
   return normalized;
 }
 
+/** Explicit names advertised by the local edge; mDNS has no wildcard records. */
+export function resolveOpenScoutLocalEdgeDiscoveryHosts(input: {
+  portalHost: string;
+  nodeHost: string;
+}): string[] {
+  const portalHost = normalizeRouteHost(input.portalHost);
+  return [...new Set([
+    portalHost,
+    normalizeRouteHost(input.nodeHost),
+    portalHost ? `chat.${portalHost}` : null,
+  ].filter((host): host is string => host !== null))];
+}
+
 function uniqRoutes(routes: OpenScoutLocalEdgeRoute[]): OpenScoutLocalEdgeRoute[] {
   const seen = new Set<string>();
   const out: OpenScoutLocalEdgeRoute[] = [];

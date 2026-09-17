@@ -10,6 +10,7 @@ import { homedir, hostname as osHostname } from "node:os";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { resolveOpenScoutWebRoutes } from "../shared/runtime-config.js";
+import { resolveOpenScoutLocalEdgeDiscoveryHosts } from "@openscout/runtime/local-edge";
 import {
   renderScoutAsciiMarkHtml,
   renderScoutAsciiMarkScript,
@@ -731,20 +732,14 @@ function spawnLocalEdge({
   const mdns = edgeSchemes(scheme).flatMap((currentScheme) => {
     const edgePort = currentScheme === "https" ? 443 : 80;
     const suffix = currentScheme.toUpperCase();
-    return [
+    return resolveOpenScoutLocalEdgeDiscoveryHosts({ portalHost, nodeHost: advertisedHost }).map((host) =>
       spawnMdnsProxy({
-        name: `Scout Local Dev ${suffix}`,
-        host: portalHost,
+        name: host === portalHost ? `Scout Local Dev ${suffix}` : `Scout ${host} Dev ${suffix}`,
+        host,
         port: edgePort,
         scheme: currentScheme,
       }),
-      spawnMdnsProxy({
-        name: `Scout ${advertisedHost} Dev ${suffix}`,
-        host: advertisedHost,
-        port: edgePort,
-        scheme: currentScheme,
-      }),
-    ];
+    );
   });
 
   const caddy = spawn(caddyBin, [

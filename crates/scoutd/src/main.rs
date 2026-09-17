@@ -55,6 +55,20 @@ const SHARED_SERVICE_LABEL: &str = "app.openscout";
 const ALLOW_SHARED_SERVICE_REPOINT_ENV: &str = "OPENSCOUT_ALLOW_SHARED_SERVICE_REPOINT";
 static SHUTDOWN_REQUESTED: AtomicBool = AtomicBool::new(false);
 const OPTIONAL_LAUNCH_ENV_KEYS: &[&str] = &[
+    // Persist the opt-in transport configuration across launchd restarts.
+    "OPENSCOUT_JETSTREAM_ENABLED",
+    "OPENSCOUT_JETSTREAM_MANAGE_SERVER",
+    "OPENSCOUT_JETSTREAM_HOST",
+    "OPENSCOUT_JETSTREAM_PORT",
+    "OPENSCOUT_JETSTREAM_MONITOR_PORT",
+    "OPENSCOUT_JETSTREAM_BINARY",
+    "OPENSCOUT_JETSTREAM_HOME",
+    "OPENSCOUT_JETSTREAM_STREAM",
+    "OPENSCOUT_JETSTREAM_START",
+    "OPENSCOUT_JETSTREAM_DUPLICATE_WINDOW_MS",
+    "OPENSCOUT_JETSTREAM_MAX_AGE_MS",
+    "OPENSCOUT_JETSTREAM_MAX_BYTES",
+    "OPENSCOUT_JETSTREAM_CHECKPOINT_MS",
     "OPENSCOUT_MESH_ID",
     "OPENSCOUT_MESH_SEEDS",
     "OPENSCOUT_MESH_DISCOVERY_INTERVAL_MS",
@@ -2510,6 +2524,13 @@ fn ensure_daemon_directories(config: &Config) -> Result<(), String> {
 }
 
 fn render_launch_agent_plist(config: &Config) -> String {
+    render_launch_agent_plist_with_optional_env(config, env_nonempty)
+}
+
+fn render_launch_agent_plist_with_optional_env(
+    config: &Config,
+    optional_env: impl Fn(&str) -> Option<String>,
+) -> String {
     let mut env_entries = vec![
         ("OPENSCOUT_BROKER_PORT", config.broker_port.to_string()),
         (
@@ -2551,11 +2572,11 @@ fn render_launch_agent_plist(config: &Config) -> String {
         ("PATH", launch_agent_path_env()),
     ];
     for &key in OPTIONAL_LAUNCH_ENV_KEYS {
-        if let Some(value) = env_nonempty(key) {
+        if let Some(value) = optional_env(key) {
             env_entries.push((key, value));
         }
     }
-    if let Some(core_agents) = env_nonempty("OPENSCOUT_CORE_AGENTS") {
+    if let Some(core_agents) = optional_env("OPENSCOUT_CORE_AGENTS") {
         env_entries.push(("OPENSCOUT_CORE_AGENTS", core_agents));
     }
     let env_block = env_entries
@@ -4303,6 +4324,32 @@ mod tests {
         assert!(plist.contains(&format!(
             "<key>ExitTimeOut</key>\n  <integer>{LAUNCHD_EXIT_TIMEOUT_SECONDS}</integer>",
         )));
+    }
+
+    #[test]
+    fn launch_agent_preserves_jetstream_opt_in_without_enabling_it_by_default() {
+        let config = test_config(
+            "/stable/packages/cli",
+            "/stable/packages/cli/bin/scoutd",
+            SHARED_SERVICE_LABEL,
+        );
+        let default_plist = super::render_launch_agent_plist_with_optional_env(&config, |_| None);
+        assert!(!default_plist.contains("OPENSCOUT_JETSTREAM_"));
+
+        let plist = super::render_launch_agent_plist_with_optional_env(&config, |key| match key {
+            "OPENSCOUT_JETSTREAM_ENABLED" => Some("1".into()),
+            "OPENSCOUT_JETSTREAM_PORT" => Some("43150".into()),
+            "OPENSCOUT_JETSTREAM_HOME" => Some("/data/scout & events".into()),
+            "OPENSCOUT_JETSTREAM_START" => Some("now".into()),
+            _ => None,
+        });
+        assert!(plist.contains("<key>OPENSCOUT_JETSTREAM_ENABLED</key>\n    <string>1</string>"));
+        assert!(plist.contains("<key>OPENSCOUT_JETSTREAM_PORT</key>\n    <string>43150</string>"));
+        assert!(plist.contains(
+            "<key>OPENSCOUT_JETSTREAM_HOME</key>\n    <string>/data/scout &amp; events</string>"
+        ));
+        assert!(plist.contains("<key>OPENSCOUT_JETSTREAM_START</key>\n    <string>now</string>"));
+        assert!(!plist.contains("<key>OPENSCOUT_JETSTREAM_MANAGE_SERVER</key>"));
     }
 
     #[test]

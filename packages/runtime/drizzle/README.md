@@ -75,6 +75,25 @@ Run these from `packages/runtime`.
 - When in doubt: generated migration for the new-database shape, plus an
   imperative-array entry for old-database repair.
 
+## Session actor targets (schema v18)
+
+The legacy `agent_id` / `target_agent_id` columns in endpoints, runtime sessions,
+aliases, invocations, flights and activity items also hold cardless session actor
+IDs. Migration `0019_session_actor_targets` references `actors(id)` so these
+canonical records do not require a fabricated agent card. The imperative repair
+applies the same change to pre-ledger databases.
+
+These table rebuilds must run through `migrateControlPlaneDatabaseSchema`, which
+suspends foreign keys before the transaction, validates them before committing,
+and restores enforcement afterward. SQLite ignores the generated migration's
+foreign-key pragmas inside a transaction; rebuilding with enforcement enabled
+can cascade-delete child records.
+
+This schema change permits future writes and replay. It does not rewind the
+projection checkpoint or recover previously skipped journal entries by itself.
+Historical recovery must preserve canonical journal authority and be verified
+separately after the fix ships.
+
 ## Version pin
 
 drizzle-kit is pinned exactly to `0.31.10` (`../package.json` devDependencies).

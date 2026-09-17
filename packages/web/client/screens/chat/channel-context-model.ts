@@ -1,3 +1,5 @@
+import type { ChannelReception } from "@openscout/protocol";
+
 import { normalizeAgentState } from "../../lib/agent-state.ts";
 import type { Agent, SessionEntry } from "../../lib/types.ts";
 
@@ -16,8 +18,21 @@ export type ChannelMemberProfile = {
   name: string;
   detail: string;
   status: ChannelMemberStatus;
+  /**
+   * The connection plane, kept deliberately separate from `status`.
+   *
+   * `status` is the activity plane (working/waiting): what this member is
+   * doing. `connection` is whether a message would reach them at all. Blending
+   * the two is how a surface ends up claiming an unreachable agent is
+   * "available", so they never share a field.
+   */
+  connection: ChannelReception | null;
   lastActivityAt: number | null;
   isOperator: boolean;
+  /** A human member. Agents and sessions are not people. */
+  isPerson: boolean;
+  /** True only for the viewer's own actor. This, not `isOperator`, renders "You". */
+  isSelf: boolean;
   agentId: string | null;
   sessionId: string | null;
   preferredRoute: "agent" | "session" | null;
@@ -58,8 +73,19 @@ const MEMBER_STATUS_RANK: Record<ChannelMemberStatus, number> = {
   offline: 5,
 };
 
+/**
+ * Group key for one participant.
+ *
+ * People are grouped by their own actor id. The previous behaviour folded
+ * every `kind === "person"` participant into a single "operator" group, which
+ * is right for the single-operator shell and wrong the moment a channel has
+ * two humans in it: a teammate would have been absorbed into the viewer.
+ * `"operator"` survives as a key only for the literal local operator actor,
+ * so operator-shell data groups exactly as it did before.
+ */
 function participantGroupKey(participant: RichParticipant): string {
-  if (participant.actorId === "operator" || participant.kind === "person") return "operator";
+  if (participant.actorId === "operator") return "operator";
+  if (participant.kind === "person") return `person:${participant.actorId}`;
   if (participant.sessionId?.trim()) return `session:${participant.sessionId.trim()}`;
   if (participant.agentId?.trim()) return `agent:${participant.agentId.trim()}`;
   return `actor:${participant.actorId}`;
@@ -116,19 +142,39 @@ export function channelDisplayLabel(session: SessionEntry | null, channelId: str
 }
 
 export function sharedChannelWorkspace(members: ChannelMemberProfile[]): string | null {
+  // People have no workspace. Filtering on `isOperator` used to be equivalent
+  // because every person was the operator; with distinct humans it would let a
+  // second teammate's empty workspace break the inference.
   const roots = uniqueStrings(
-    members.filter((member) => !member.isOperator).map((member) => member.workspaceRoot),
+    members.filter((member) => !member.isPerson).map((member) => member.workspaceRoot),
   );
   if (roots.length !== 1) return null;
   return roots[0]!.split(/[\\/]/).filter(Boolean).at(-1) ?? roots[0]!;
 }
 
+/**
+ * Build the member list for a channel, from the viewer's point of view.
+ *
+ * `viewerActorId` decides only which member renders as "You" -- it never
+ * changes who is a member or how participants group. The operator shell passes
+ * nothing and gets the local operator, which reproduces its previous output
+ * exactly. `receptionByActorId` carries the connection plane when the caller
+ * has it; without it members simply have no connection claim, which is the
+ * honest default.
+ */
 export function buildChannelMembers(
   session: SessionEntry | null,
   agents: Agent[],
   activity: ChannelMemberActivity[],
+  options?: {
+    viewerActorId?: string | null;
+    receptionByActorId?: Record<string, ChannelReception>;
+  },
 ): ChannelMemberProfile[] {
   if (!session) return [];
+
+  const viewerActorId = options?.viewerActorId?.trim() || "operator";
+  const receptionByActorId = options?.receptionByActorId ?? {};
 
   const richByActorId = new Map(
     (session.participants ?? []).map((participant) => [participant.actorId, participant]),
@@ -155,6 +201,12 @@ export function buildChannelMembers(
       (item) => item.active && item.actorId && actorIdSet.has(item.actorId),
     );
     const isOperator = id === "operator";
+    const isPerson = group.some((participant) => participant.kind === "person")
+      || isOperator;
+    const isSelf = actorIds.includes(viewerActorId);
+    const connection = actorIds
+      .map((candidate) => receptionByActorId[candidate])
+      .find((candidate): candidate is ChannelReception => Boolean(candidate)) ?? null;
     const channelStatus = activityStatus(memberActivity);
     const rawAgentState = agent?.state?.trim().toLowerCase();
     const fallbackStatus: ChannelMemberStatus = !agent
@@ -162,14 +214,14 @@ export function buildChannelMembers(
       : normalizeAgentState(agent.state, agent) === "blocked" || rawAgentState === "offline"
         ? "offline"
         : "available";
-    const status: ChannelMemberStatus = isOperator
+    const status: ChannelMemberStatus = isSelf
       ? "you"
       : (channelStatus ?? fallbackStatus);
-    const name = isOperator
+    const name = isSelf
       ? "You"
       : (primary.scopedAlias?.trim() || primary.displayName.trim() || primary.actorId);
     const detailParts = uniqueStrings([
-      !isOperator && primary.displayName.trim() !== name ? primary.displayName : null,
+      !isSelf && primary.displayName.trim() !== name ? primary.displayName : null,
       primary.harness,
     ]);
     const primaryIsSession = primary.kind === "session";
@@ -180,15 +232,18 @@ export function buildChannelMembers(
       id,
       actorIds,
       name,
-      detail: isOperator ? "In channel" : (detailParts.join(" · ") || primary.label),
+      detail: isSelf ? "In channel" : (detailParts.join(" · ") || primary.label),
       status,
       lastActivityAt: memberActivity.length > 0
         ? Math.max(...memberActivity.map((item) => item.updatedAt))
         : agent?.updatedAt ?? null,
       isOperator,
+      isPerson,
+      isSelf,
+      connection,
       agentId,
       sessionId,
-      preferredRoute: isOperator
+      preferredRoute: isSelf
         ? null
         : primaryIsSession && sessionId
           ? "session"

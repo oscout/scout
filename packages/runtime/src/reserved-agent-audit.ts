@@ -9,6 +9,10 @@ export function assertNoReservedStoredAgentNames(
   options: { localNodeId?: string } = {},
 ): void {
   for (const agent of Object.values(agents)) {
+    // The journal retains retired identities for historical references. They
+    // are excluded from the current fleet and cannot block an upgrade merely
+    // because a former name is now reserved. Reactivation is audited normally.
+    if (agent.metadata?.retiredFromFleet === true) continue;
     const authorityNodeId = agent.authorityNodeId || agent.homeNodeId;
     if (
       options.localNodeId

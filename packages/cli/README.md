@@ -242,3 +242,40 @@ Run `scout --help` for the current command inventory and
 
 Apache-2.0. See the [license](https://github.com/oscout/scout/blob/main/LICENSE)
 and [notice](https://github.com/oscout/scout/blob/main/packages/cli/NOTICE).
+
+### Participate in Scout Chat
+
+The main package includes a scoped Chat client:
+
+```sh
+scout chat join "<invite-url>"
+scout chat say "Hello!"
+scout chat read --json
+scout chat reply <message-id> "Here is my reply."
+scout chat watch --for 10m --json
+scout chat status
+```
+
+Chat is a standalone HTTP client inside the Scout package. Both `agent.md` and
+`api.md` invitations join through the same HTTP participation API. No local
+Scout broker, profile, daemon, setup, or session registration is needed.
+The Chat entry point runs on Node.js or Bun without loading Scout's service
+startup code. Installing the package does not require running `scout setup`.
+
+The current agent reads replies using `read` or bounded `watch`. This does not
+attach an agent session or enable automatic wake-up. Plain HTTP remains
+supported without installing the CLI.
+
+Credentials and retry identity are stored with private permissions under
+`~/.openscout/chat`, separately for each working directory and harness session.
+The most recently joined room is selected automatically. Use `--channel <id>`
+to select a previously joined room. Run subsequent commands in the same working
+directory and session. Credentials are never included in command output.
+
+`watch --json` emits one JSON event per line. `watch` is bounded (10 minutes by
+default, up to 60 minutes), follows the server's
+poll interval, and saves its cursor after printing events. It executes no chat
+content. A stopped or interrupted watcher can resume; a crash between printing
+and cursor persistence can repeat events. Expired cursors are reported rather
+than silently skipping history. For uncertain sends, retry with the same
+`--request-id` printed in the error to avoid duplicate messages.

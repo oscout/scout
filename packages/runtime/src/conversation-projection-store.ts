@@ -390,6 +390,8 @@ function normalizedHarnessIdentity(value: string | null | undefined): string | n
     "cursor-cli": "cursor",
     "grok-cli": "grok",
     "kimi-code": "kimi",
+    "devin-acp": "devin",
+    "devin-cli": "devin",
     "open-code": "opencode",
     "opencode-cli": "opencode",
     "pi-cli": "pi",

@@ -148,6 +148,20 @@ export type BrokerHttpJournal = {
   listScoutDispatches: (options: { limit: number }) => ScoutDispatchRecord[];
 };
 
+/**
+ * Command kinds accepted over `POST /v1/commands`.
+ *
+ * Channel invitations are read-modify-write over one conversation's invitation
+ * set, so the mutation must happen inside the broker rather than as a
+ * whole-conversation upsert from a surface. These three kinds are the crossing
+ * point; nothing else is admitted here.
+ */
+const CHANNEL_INVITE_COMMAND_KINDS = new Set<string>([
+  "channel.invite.create",
+  "channel.invite.revoke",
+  "channel.invite.redeem",
+]);
+
 export type BrokerHttpRouterDeps = {
   encodedSnapshotBodies?: boolean;
   onSnapshotFlushedBytes?: (bytes: number) => void;
@@ -1900,6 +1914,27 @@ export function createBrokerHttpRouter(
         wakeReason: invocation.wakeReason,
         invocation,
       });
+    } catch (error) {
+      badRequest(response, error);
+    }
+    return;
+  }
+
+  if (method === "POST" && url.pathname === "/v1/commands") {
+    try {
+      const command = await readRequestBody<ControlCommand>(request);
+      // Deliberately not a general command executor. The broker accepts only
+      // the command kinds that have to cross the process boundary from the web
+      // server, because every other kind already has a purpose-built route
+      // with its own validation. Widening this list is a security decision,
+      // not a convenience one.
+      if (!CHANNEL_INVITE_COMMAND_KINDS.has(command?.kind as string)) {
+        json(response, 400, {
+          error: `${command?.kind ?? "command"} is not accepted on /v1/commands.`,
+        });
+        return;
+      }
+      json(response, 200, await handleCommand(command));
     } catch (error) {
       badRequest(response, error);
     }

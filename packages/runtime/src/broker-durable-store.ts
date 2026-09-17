@@ -17,6 +17,19 @@ export type BrokerThreadEventPublisher = {
   publish(events: ThreadEventEnvelope[]): void;
 };
 
+/**
+ * A recoverable external publisher fed from the canonical commit path.
+ *
+ * Deliberately hooked here rather than onto the projection queue: that queue is
+ * abandoned on every clean shutdown by design, because SQLite projections are
+ * rebuildable. An event transport is not, so it is handed the entries the
+ * journal has just durably accepted. The call must not block — it registers
+ * intent, and the publisher's own journal rescan is what makes it recoverable.
+ */
+export type BrokerCommittedEntryPublisher = {
+  notifyCommitted(entries: BrokerJournalEntry[]): void;
+};
+
 export type BrokerDurableStoreOptions = {
   memoryMaintenance?: BrokerMemoryMaintenance;
   deferProjection?: () => boolean;
@@ -24,6 +37,7 @@ export type BrokerDurableStoreOptions = {
   journal: BrokerJournalWriter;
   projection: BrokerProjectionWriter;
   threadEvents: BrokerThreadEventPublisher;
+  eventPublisher?: BrokerCommittedEntryPublisher;
 };
 
 export type BrokerDurableCommitOptions = {
@@ -61,6 +75,13 @@ export class BrokerDurableStore {
     );
     if (entries.length === 0) {
       return [];
+    }
+    // After the journal accepted them, before anything rebuildable runs. A
+    // throwing publisher must not fail an already-durable write.
+    try {
+      this.options.eventPublisher?.notifyCommitted(entries);
+    } catch (error) {
+      console.warn("[openscout-runtime] committed-entry publisher rejected a batch:", error);
     }
     await applyRuntime(entries);
     await this.options.afterRuntime?.();

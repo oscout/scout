@@ -6,7 +6,7 @@ import type { Context, Hono } from "hono";
 import { getConnInfo, serveStatic } from "hono/bun";
 
 export type ScoutWebAssetMode = "vite-proxy" | "static";
-export type ScoutWebLanAccessScope = "full" | "pairing";
+export type ScoutWebLanAccessScope = "full" | "pairing" | "chat";
 
 const LOOPBACK_IPV4_HOST_PATTERN = /^127(?:\.\d{1,3}){3}$/;
 const FINGERPRINTED_ASSET_PATH_PATTERN = /^\/assets\/[^/]+-[A-Za-z0-9_-]{8,}(?:\.[^/]+)+$/u;
@@ -34,7 +34,7 @@ export function resolveScoutWebBindHost(env: NodeJS.ProcessEnv): string {
 export function resolveScoutWebLanAccessScope(env: NodeJS.ProcessEnv): ScoutWebLanAccessScope {
   const scope = env.OPENSCOUT_WEB_LAN_SCOPE?.trim().toLowerCase();
   if (!scope || scope === "full") return "full";
-  if (scope === "pairing") return "pairing";
+  if (scope === "pairing" || scope === "chat") return scope;
   throw new Error(`Unsupported OPENSCOUT_WEB_LAN_SCOPE: ${scope}`);
 }
 
@@ -62,6 +62,15 @@ export type ScoutApiTrustOptions = {
    * so a leaked cookie is revocable without rotating the machine credential.
    */
   sessions?: ScoutWebSessionAuthority;
+  /**
+   * Secondary credential for people who joined through a channel invitation.
+   *
+   * Consulted only when the operator credential is absent or invalid, and it
+   * can only ever *grant* a request that the operator gate already refused --
+   * it never widens operator access. Returning false leaves the 401 in place,
+   * so a surface that does not pass this option behaves exactly as before.
+   */
+  memberAccess?: (request: Request, method: string, path: string) => boolean;
   trustedHosts?: string[];
   trustedOrigins?: string[];
   /**
@@ -82,7 +91,7 @@ function constantTimeTokenMatch(candidate: string | null | undefined, expected: 
     && timingSafeEqual(candidateBytes, expectedBytes);
 }
 
-function cookieValue(request: Request, name: string): string | null {
+export function cookieValue(request: Request, name: string): string | null {
   const cookie = request.headers.get("cookie");
   if (!cookie) return null;
   for (const part of cookie.split(";")) {
@@ -334,6 +343,22 @@ export function isScoutWebRequestAllowedFromPeer(
     return true;
   }
   const url = new URL(request.url);
+  if (scope === "chat" && request.headers.get("upgrade") === null) {
+    const path = url.pathname;
+    const read = request.method === "GET" || request.method === "HEAD";
+    // This is a network exposure boundary, not authentication. Room API
+    // handlers still enforce the invitation/member/operator grants.
+    if (read && (path === "/chat" || path === "/pair"
+      || /^\/invite\/[^/]+(?:\/(?:agent|api)\.md)?$/.test(path)
+      || path.startsWith("/assets/"))) return true;
+    if ((request.method === "GET" || request.method === "POST")
+      && (path === "/api/chat/bootstrap" || path === "/api/chat/channels"
+        || path === "/api/chat/spaces"
+        || path === "/api/member/me" || path === "/api/logout"
+        || /^\/api\/invites\/[^/]+(?:\/(?:join|redeem|participate))?$/.test(path)
+        || /^\/api\/channels\/[^/]+\/(?:feed|poll|events|messages|asks|members|invites)(?:\/[^/]+\/revoke)?$/.test(path))) return true;
+    return false;
+  }
   return request.method === "GET"
     && url.pathname === "/pair"
     && request.headers.get("upgrade") === null;
@@ -622,6 +647,21 @@ async function readScoutWebLoginBody(request: Request): Promise<unknown> {
   return JSON.parse(new TextDecoder().decode(bytes));
 }
 
+/**
+ * Path segments that are capabilities rather than identifiers.
+ *
+ * An invitation token is a bearer credential: anyone holding it can act on the
+ * invitation. It travels in the URL because that is what makes an invitation
+ * copyable, which means the request path itself is secret material and must not
+ * reach perf records, slow-request logs, or any other general diagnostic.
+ * Identifiers around it stay intact so the route remains recognisable.
+ */
+export function redactScoutApiPath(path: string): string {
+  return path
+    .replace(/^(\/api\/invites\/)[^/]+/, "$1:token")
+    .replace(/^(\/invite\/)[^/]+/, "$1:token");
+}
+
 export function installScoutApiMiddleware(
   app: Hono,
   label = "api",
@@ -639,6 +679,10 @@ export function installScoutApiMiddleware(
       !isLoginAttempt
       && options.authToken !== undefined
       && !isAuthenticatedScoutRequest(c.req.raw, options.authToken, options.sessions?.validate)
+      // An invited member is not an operator. They carry their own credential,
+      // which admits them to the channels they joined and nothing else, so it
+      // is checked here rather than by widening the operator token's reach.
+      && !options.memberAccess?.(c.req.raw, c.req.method, c.req.path)
     ) {
       c.header("WWW-Authenticate", 'Bearer realm="OpenScout Web"');
       return c.json({ error: "unauthorized" }, 401);
@@ -650,17 +694,18 @@ export function installScoutApiMiddleware(
     const startedAt = performance.now();
     const finish = (status: number): number => {
       const ms = performance.now() - startedAt;
+      const loggedPath = redactScoutApiPath(c.req.path);
       recordScoutApiTiming({
         method: c.req.method,
-        path: c.req.path,
+        path: loggedPath,
         status,
         ms: roundMs(ms),
         at: Date.now(),
       });
       if (ms > SCOUT_API_SLOW_THRESHOLD_MS) {
-        console.warn("[scout-perf] slow api", c.req.method, c.req.path, status, `${Math.round(ms)}ms`);
+        console.warn("[scout-perf] slow api", c.req.method, loggedPath, status, `${Math.round(ms)}ms`);
       } else if (SCOUT_API_LOG_ALL) {
-        console.log("[scout-perf] api", c.req.method, c.req.path, status, `${Math.round(ms)}ms`);
+        console.log("[scout-perf] api", c.req.method, loggedPath, status, `${Math.round(ms)}ms`);
       }
       return ms;
     };
@@ -679,7 +724,7 @@ export function installScoutApiMiddleware(
     } catch (error) {
       finish(500);
       const message = error instanceof Error ? error.message : String(error);
-      console.error(`[${label}] ${c.req.method} ${c.req.path} failed:`, message);
+      console.error(`[${label}] ${c.req.method} ${redactScoutApiPath(c.req.path)} failed:`, message);
       return c.json({ error: message }, 500);
     }
   });

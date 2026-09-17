@@ -82,6 +82,8 @@ export interface ScoutMachineEvidence extends MachineEvidenceBase {
   hostName?: string;
   brokerUrl?: string;
   webUrl?: string;
+  /** The node's named web doorway (`m1.scout.local`) — see NodeDefinition.webHost. */
+  webHost?: string;
   advertiseScope?: AdvertiseScope;
   tailnetName?: string;
   isSelf?: boolean;

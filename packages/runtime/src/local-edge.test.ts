@@ -3,9 +3,22 @@ import { describe, expect, test } from "bun:test";
 import {
   renderOpenScoutCaddyfile,
   resolveOpenScoutLocalEdgeConfig,
+  resolveOpenScoutLocalEdgeDiscoveryHosts,
 } from "./local-edge.ts";
 
 describe("OpenScout local edge", () => {
+  test("advertises the chat doorway explicitly because mDNS has no wildcard", () => {
+    expect(resolveOpenScoutLocalEdgeDiscoveryHosts({
+      portalHost: "scout.local", nodeHost: "m1.scout.local",
+    })).toEqual(["scout.local", "m1.scout.local", "chat.scout.local"]);
+  });
+
+  test("uses the configured portal domain and advertises each name once", () => {
+    expect(resolveOpenScoutLocalEdgeDiscoveryHosts({
+      portalHost: " TEAM.LOCAL. ", nodeHost: "chat.team.local",
+    })).toEqual(["team.local", "chat.team.local"]);
+  });
+
   test("preserves optional operator-owned site imports outside generated routes", () => {
     const output = renderOpenScoutCaddyfile(resolveOpenScoutLocalEdgeConfig({}), "/path with spaces/sites/*.caddy");
     expect(output).toEndWith('\nimport "/path with spaces/sites/*.caddy"\n');

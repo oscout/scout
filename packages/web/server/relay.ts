@@ -49,6 +49,12 @@ export interface RelayWSData {
   pending: UpstreamPayload[];
   upstreamProtocol: string | null;
   upstreamUrl: string | null;
+  /**
+   * Headers to send on the upstream handshake — a peer doorway bridge needs
+   * to forward `host`, `origin`, and `cookie` so the peer's own gates see a
+   * first-party, authenticated request for its advertised name.
+   */
+  upstreamHeaders?: Record<string, string>;
   upstreamAttempts?: number;
   upstreamRetryTimer?: ReturnType<typeof setTimeout>;
 }
@@ -112,9 +118,14 @@ function connectRelayUpstream(ws: RelayProxySocket) {
     return;
   }
 
-  const upstream = ws.data.upstreamProtocol
-    ? new WebSocket(targetUrl, ws.data.upstreamProtocol)
-    : new WebSocket(targetUrl);
+  const upstream = ws.data.upstreamHeaders
+    ? new WebSocket(targetUrl, {
+        ...(ws.data.upstreamProtocol ? { protocols: [ws.data.upstreamProtocol] } : {}),
+        headers: ws.data.upstreamHeaders,
+      } as never)
+    : ws.data.upstreamProtocol
+      ? new WebSocket(targetUrl, ws.data.upstreamProtocol)
+      : new WebSocket(targetUrl);
   upstream.binaryType = "arraybuffer";
   ws.data.upstream = upstream;
   let upstreamOpened = false;
@@ -191,6 +202,7 @@ export function createRelayWebSocketProxy() {
       ws.data.pending.length = 0;
       ws.data.upstreamProtocol = null;
       ws.data.upstreamUrl = null;
+      ws.data.upstreamHeaders = undefined;
       ws.data.upstreamAttempts = undefined;
       if (!upstream) {
         return;

@@ -331,6 +331,17 @@ export class InMemoryControlRuntime implements ControlRuntime {
         return;
       case "stream.subscribe":
         return;
+      case "channel.invite.create":
+      case "channel.invite.revoke":
+      case "channel.invite.redeem":
+        // Invitation writes are a read-modify-write of one channel's
+        // invitation set and must stay inside the durable broker's serialized
+        // command queue. This in-memory registry has no durable conversation
+        // writer, so routing one here would silently drop a concurrent write
+        // rather than fail.
+        throw new Error(
+          `${command.kind} must be executed by the durable broker command service, not the in-memory registry.`,
+        );
       default: {
         const exhaustive: never = command;
         return exhaustive;

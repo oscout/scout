@@ -40,6 +40,7 @@ export const SCOUT_COMMANDS: ScoutCommandRegistration[] = [
   { name: "who", summary: "List agents and last activity" },
   { name: "latest", summary: "Show the latest Scout activity" },
   { name: "mcp", summary: "Run a Scout MCP server over stdio" },
+  { name: "chat", summary: "Join Chat invitations, read, post, reply, and watch" },
   { name: "channel", summary: "Read channel messages or run a Claude Code channel server" },
   { name: "broadcast", summary: "Broadcast to channel.shared" },
   { name: "up", summary: "Spawn a local agent for a project" },

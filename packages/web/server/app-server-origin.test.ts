@@ -3,6 +3,8 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+import { isTrustedScoutApiRequest } from "./server-core.ts";
+
 import { resolveOpenScoutWebApplicationServerIdentity } from "./app-server-origin.ts";
 
 function writeTailscaleFixture(body: unknown): { directory: string; filePath: string } {
@@ -20,11 +22,24 @@ describe("resolveOpenScoutWebApplicationServerIdentity", () => {
       advertisedHost: "m1.scout.local",
       portalHost: "scout.local",
       publicOrigin: undefined,
-      trustedHosts: ["m1.scout.local", "scout.local", "dev.scout.local", "hudson-mini.local"],
+      trustedHosts: ["m1.scout.local", "scout.local", "chat.scout.local", "dev.scout.local", "hudson-mini.local"],
       trustedOrigins: [],
       frontDoorOrigins: [],
       frontDoorPeers: [],
     });
+  });
+
+  test("admits the configured chat hostname while rejecting unrelated subdomains", () => {
+    const identity = resolveOpenScoutWebApplicationServerIdentity(
+      { OPENSCOUT_WEB_PORTAL_HOST: "team.scout.local" }, "M1.local", {}, [],
+    );
+    for (const host of ["chat.team.scout.local", "untrusted.team.scout.local"]) {
+      const request = new Request(`http://${host}/api/chat/bootstrap`, {
+        headers: { origin: `http://${host}` },
+      });
+      expect(isTrustedScoutApiRequest(request, identity, "127.0.0.1"))
+        .toBe(host === "chat.team.scout.local");
+    }
   });
 
   test("trusts the public origin host and explicit trusted hosts", () => {
@@ -46,6 +61,7 @@ describe("resolveOpenScoutWebApplicationServerIdentity", () => {
       trustedHosts: [
         "m1.scout.local",
         "scout.local",
+        "chat.scout.local",
         "dev.scout.local",
         "hudson-mini.local",
         "scout.backup.local",
@@ -72,7 +88,7 @@ describe("resolveOpenScoutWebApplicationServerIdentity", () => {
       advertisedHost: "m1.scout.local",
       portalHost: "scout.local",
       publicOrigin: undefined,
-      trustedHosts: ["m1.scout.local", "scout.local", "dev.scout.local", "workstation-mini.local"],
+      trustedHosts: ["m1.scout.local", "scout.local", "chat.scout.local", "dev.scout.local", "workstation-mini.local"],
       trustedOrigins: [],
       frontDoorOrigins: [],
       frontDoorPeers: [],
@@ -99,7 +115,7 @@ describe("resolveOpenScoutWebApplicationServerIdentity", () => {
     ).toMatchObject({
       advertisedHost: "workstation-mini.scout.local",
       portalHost: "scout.local",
-      trustedHosts: ["workstation-mini.scout.local", "scout.local", "dev.scout.local", "workstation-mini.local"],
+      trustedHosts: ["workstation-mini.scout.local", "scout.local", "chat.scout.local", "dev.scout.local", "workstation-mini.local"],
     });
   });
 
@@ -110,6 +126,7 @@ describe("resolveOpenScoutWebApplicationServerIdentity", () => {
       trustedHosts: [
         "m1.scout.local",
         "scout.local",
+        "chat.scout.local",
         "dev.scout.local",
         "m1.local",
         "192.168.1.20",
@@ -172,6 +189,7 @@ describe("resolveOpenScoutWebApplicationServerIdentity", () => {
         trustedHosts: [
           "m1.scout.local",
           "scout.local",
+          "chat.scout.local",
           "dev.scout.local",
           "m1.local",
           "m1.tailnet.ts.net",

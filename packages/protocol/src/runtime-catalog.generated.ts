@@ -2,7 +2,7 @@
 
 export const SCOUT_RUNTIME_CATALOG_DATA = {
   "schemaVersion": "openscout.runtime-catalog.v1",
-  "revision": "2026-09-10.1",
+  "revision": "2026-09-14.1",
   "harnesses": [
     {
       "id": "claude",
@@ -312,6 +312,39 @@ export const SCOUT_RUNTIME_CATALOG_DATA = {
       "enabled": true,
       "reasoningEfforts": null,
       "models": []
+    },
+    {
+      "id": "devin",
+      "label": "Devin",
+      "enabled": true,
+      "reasoningEfforts": null,
+      "models": [
+        {
+          "id": "swe-2-high",
+          "label": "SWE-2 High",
+          "enabled": true,
+          "default": true,
+          "family": "SWE",
+          "version": "2 High",
+          "contextWindowTokens": 262000
+        },
+        {
+          "id": "swe-2-medium",
+          "label": "SWE-2 Medium",
+          "enabled": true,
+          "family": "SWE",
+          "version": "2 Medium",
+          "contextWindowTokens": 262000
+        },
+        {
+          "id": "swe-2-max",
+          "label": "SWE-2 Max",
+          "enabled": true,
+          "family": "SWE",
+          "version": "2 Max",
+          "contextWindowTokens": 262000
+        }
+      ]
     }
   ]
 } as const;

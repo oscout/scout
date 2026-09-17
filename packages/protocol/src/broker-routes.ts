@@ -25,6 +25,7 @@ export const scoutBrokerPaths = {
     messages: "/v1/messages",
     brokerMessages: "/v1/broker/messages",
     eventsStream: "/v1/events/stream",
+    commands: "/v1/commands",
     actors: "/v1/actors",
     agents: "/v1/agents",
     endpoints: "/v1/endpoints",

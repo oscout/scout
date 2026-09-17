@@ -17,7 +17,7 @@
     },
     "apps/desktop": {
       "name": "@scout/app",
-      "version": "0.2.103",
+      "version": "0.2.104",
       "bin": {
         "scout": "./bin/scout.ts",
         "pairing-runtime-controller": "./bin/pairing-runtime-controller.ts",
@@ -49,7 +49,7 @@
     },
     "packages/agent-sessions": {
       "name": "@openscout/agent-sessions",
-      "version": "0.2.103",
+      "version": "0.2.104",
       "dependencies": {
         "@opencode-ai/client": "0.0.0-next-17226",
       },
@@ -61,7 +61,7 @@
     },
     "packages/cli": {
       "name": "@openscout/scout",
-      "version": "0.2.103",
+      "version": "0.2.104",
       "bin": {
         "scout": "./bin/scout",
         "openscout-runtime": "./bin/openscout-runtime.mjs",
@@ -79,18 +79,20 @@
     },
     "packages/protocol": {
       "name": "@openscout/protocol",
-      "version": "0.2.103",
+      "version": "0.2.104",
       "devDependencies": {
         "typescript": "^5",
       },
     },
     "packages/runtime": {
       "name": "@openscout/runtime",
-      "version": "0.2.103",
+      "version": "0.2.104",
       "bin": {
         "openscout-runtime": "./bin/openscout-runtime.mjs",
       },
       "dependencies": {
+        "@nats-io/jetstream": "3.4.0",
+        "@nats-io/transport-node": "3.4.0",
         "@openscout/agent-sessions": "workspace:*",
         "@openscout/protocol": "workspace:*",
         "@peculiar/x509": "1.12.3",
@@ -113,7 +115,7 @@
     },
     "packages/session-trace": {
       "name": "@openscout/session-trace",
-      "version": "0.2.103",
+      "version": "0.2.104",
       "dependencies": {
         "@openscout/agent-sessions": "workspace:*",
       },
@@ -123,7 +125,7 @@
     },
     "packages/session-trace-react": {
       "name": "@openscout/session-trace-react",
-      "version": "0.2.103",
+      "version": "0.2.104",
       "dependencies": {
         "@openscout/session-trace": "workspace:*",
       },
@@ -137,7 +139,7 @@
     },
     "packages/web": {
       "name": "@openscout/web",
-      "version": "0.2.103",
+      "version": "0.2.104",
       "bin": {
         "openscout-web": "./bin/openscout-web.mjs",
       },
@@ -415,6 +417,16 @@
     "@msgpackr-extract/msgpackr-extract-linux-x64": ["@msgpackr-extract/msgpackr-extract-linux-x64@3.0.4", "", { "os": "linux", "cpu": "x64" }, "sha512-8TNXMEjJc3QEy7R/x1INhgiU+XakDAFUzBhaz7+Rbrs8NH5UQeHQxxmzsSBJGyV6I1jW79undiQm8tOI+D+8FQ=="],
 
     "@msgpackr-extract/msgpackr-extract-win32-x64": ["@msgpackr-extract/msgpackr-extract-win32-x64@3.0.4", "", { "os": "win32", "cpu": "x64" }, "sha512-CmCXPQrkbwExx3j946/PtHWHbYJiCRBRDl4BlkRQcJB/YOwQxJRTpoo7aTsortjgoJ1x7opzTSxn7C+ASSLVjQ=="],
+
+    "@nats-io/jetstream": ["@nats-io/jetstream@3.4.0", "", { "dependencies": { "@nats-io/nats-core": "3.4.0" } }, "sha512-GzHQodNJ942+R5LRb8PuZ5ugVWVWMRiufxUYLLVWkXKfwDXYN+Owo0d7L/b9O7BPyrbYD7jQWAC6+ZVuXa9Gyw=="],
+
+    "@nats-io/nats-core": ["@nats-io/nats-core@3.4.0", "", { "dependencies": { "@nats-io/nkeys": "2.0.3", "@nats-io/nuid": "3.0.0" } }, "sha512-QMDM86EUNm+wudlKC67HLar/KHHQUvJGLfb4jbahje3pUk3K9afeck9fwsxBZF0eUFox6T/TA6m/t+lQqf+QsQ=="],
+
+    "@nats-io/nkeys": ["@nats-io/nkeys@2.0.3", "", { "dependencies": { "tweetnacl": "^1.0.3" } }, "sha512-JVt56GuE6Z89KUkI4TXUbSI9fmIfAmk6PMPknijmuL72GcD+UgIomTcRWiNvvJKxA01sBbmIPStqJs5cMRBC3A=="],
+
+    "@nats-io/nuid": ["@nats-io/nuid@3.0.0", "", {}, "sha512-QbXZDrxmYlrn5AD06gYcUTmEHwxn96HBQMIk7XTjDlEcx6FPzVBBPjp4AMRh1lEv6B4iJ6Xb/Uz61JugPXFRQg=="],
+
+    "@nats-io/transport-node": ["@nats-io/transport-node@3.4.0", "", { "dependencies": { "@nats-io/nats-core": "3.4.0", "@nats-io/nkeys": "2.0.3", "@nats-io/nuid": "3.0.0" } }, "sha512-hH7u7ejIBTFEJIZ8rIcMrHJI6wl+HhpO5sVFs1+ppmXa8RuB2+Lh1+UwTzZ5xTNNm1TKcRkYy+2qCV56qp8RxA=="],
 
     "@noble/ciphers": ["@noble/ciphers@2.1.1", "", {}, "sha512-bysYuiVfhxNJuldNXlFEitTVdNnYUc+XNJZd7Qm2a5j1vZHgY+fazadNFWFaMK/2vye0JVlxV3gHmC0WDfAOQw=="],
 
@@ -1461,6 +1473,8 @@
     "tsyringe": ["tsyringe@4.10.0", "", { "dependencies": { "tslib": "^1.9.3" } }, "sha512-axr3IdNuVIxnaK5XGEUFTu3YmAQ6lllgrvqfEoR16g/HGnYY/6We4oWENtAnzK6/LpJ2ur9PAb80RBt7/U4ugw=="],
 
     "tunnel-agent": ["tunnel-agent@0.6.0", "", { "dependencies": { "safe-buffer": "^5.0.1" } }, "sha512-McnNiV1l8RYeY8tBgEpuodCC1mLUdbSN+CYBL7kJsJNInOP8UjDDEwdk6Mw60vdLLrr5NHKZhMAOSrR2NZuQ+w=="],
+
+    "tweetnacl": ["tweetnacl@1.0.3", "", {}, "sha512-6rt+RN7aOi1nGMyC4Xa5DdYiukl2UWCbcJft7YhxReBGQD7OAM8Pbxw6YMo4r2diNEA8FEmu32YOn9rhaiE5yw=="],
 
     "type-is": ["type-is@2.0.1", "", { "dependencies": { "content-type": "^1.0.5", "media-typer": "^1.1.0", "mime-types": "^3.0.0" } }, "sha512-OZs6gsjF4vMp32qrCbiVSkrFmXtG/AZhY3t0iAMrMBiAZyV9oALtXO8hsrHbMXF9x6L3grlFuwW2oAz7cav+Gw=="],
 

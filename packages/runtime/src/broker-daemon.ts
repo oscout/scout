@@ -157,7 +157,12 @@ import {
   repoWatchHintsFromTailDiscovery,
 } from "./repo-watch/index.js";
 import { readTailscaleSelfWebHostsSync } from "./tailscale.js";
+import {
+  resolveConfiguredScoutWebHostname,
+  resolveScoutWebNamedHostname,
+} from "./local-config.js";
 import { BrokerWebControlService } from "./broker-web-control-service.js";
+import { BrokerJetStreamService, resolveJetStreamConfig } from "./jetstream/index.js";
 import { BrokerA2AService } from "./broker-a2a-service.js";
 import { BrokerCapabilityMatrixService } from "./broker-capability-matrix-service.js";
 import {
@@ -209,6 +214,7 @@ import { BrokerConversationService } from "./broker-conversation-service.js";
 import { BrokerMessageService } from "./broker-message-service.js";
 import { BrokerInvocationDispatchService } from "./broker-invocation-dispatch-service.js";
 import { BrokerCommandService } from "./broker-command-service.js";
+import { BrokerChannelInviteService } from "./broker-channel-invite-service.js";
 import { BrokerDispatchRecoveryService } from "./broker-dispatch-recovery-service.js";
 import {
   brokerActorDisplayName as resolveBrokerActorDisplayName,
@@ -310,6 +316,13 @@ const brokerSocketPath = process.env.OPENSCOUT_BROKER_SOCKET_PATH
   ?? resolveBrokerServiceConfig().brokerSocketPath;
 let nodeId = process.env.OPENSCOUT_NODE_ID?.trim() ?? "";
 const tailnetWebHosts = readTailscaleSelfWebHostsSync();
+// The named web doorway this node answers for — same resolution the local edge
+// and the web server use for `advertisedHost`. Peers read it to open this
+// node's Scout by name (the local edge proxies `<webHost>` to a live route).
+const localWebHost = process.env.OPENSCOUT_WEB_ADVERTISED_HOST?.trim()
+  || (process.env.OPENSCOUT_WEB_LOCAL_NAME?.trim()
+    ? resolveScoutWebNamedHostname(process.env.OPENSCOUT_WEB_LOCAL_NAME)
+    : resolveConfiguredScoutWebHostname());
 const nodeLocalProductAgentIds = new Set([
   SCOUT_DISPATCHER_AGENT_ID,
   OPENSCOUT_COORDINATOR_AGENT_ID,
@@ -516,6 +529,31 @@ const threadEvents = new ThreadEventPlane({
   runtime,
   projection,
 });
+// Opt-in event transport. Disabled by default; constructing it is cheap and
+// `start()` is the only thing that touches a process, a socket, or a file.
+const jetStreamConfig = (() => {
+  try {
+    return resolveJetStreamConfig();
+  } catch (error) {
+    // A malformed opt-in configuration disables the transport; it never stops
+    // the broker, which remains the canonical writer with or without JetStream.
+    console.error("[openscout-jetstream] configuration rejected; transport disabled:", error);
+    return null;
+  }
+})();
+const jetStreamService = jetStreamConfig?.enabled
+  ? new BrokerJetStreamService({
+      config: jetStreamConfig,
+      journal,
+      publisherNodeId: nodeId,
+      // scout-base owns the sidecar process when it started one. A bare broker
+      // run (no base supervisor) manages its own.
+      manageSidecar: jetStreamConfig.manageServer,
+      log: (message, detail) => (detail === undefined ? console.log(message) : console.log(message, detail)),
+      warn: (message, detail) => (detail === undefined ? console.warn(message) : console.warn(message, detail)),
+      error: (message, detail) => (detail === undefined ? console.error(message) : console.error(message, detail)),
+    })
+  : null;
 const durableStore = new BrokerDurableStore({
   memoryMaintenance,
   deferProjection: () => deferStartupProjection,
@@ -523,7 +561,14 @@ const durableStore = new BrokerDurableStore({
   journal,
   projection,
   threadEvents,
+  ...(jetStreamService ? { eventPublisher: jetStreamService } : {}),
 });
+// Before the broker admits a single write: a first-enable `now` boundary has
+// to be committed ahead of the records it is meant to exclude, not after the
+// transport happens to come up.
+if (jetStreamService) {
+  await jetStreamService.establishStartBoundary();
+}
 messageHistory?.setCaptureGate(durableStore.runWrite);
 const runDurableWrite = durableStore.runWrite;
 const commitDurableEntries = durableStore.commitEntries;
@@ -952,6 +997,7 @@ const localNode: NodeDefinition = {
   advertiseScope,
   brokerUrl,
   webUrl: webControl.url(),
+  webHost: localWebHost,
   ...(localIrohEntrypoint ? { meshEntrypoints: [localIrohEntrypoint] } : {}),
   tailnetName,
   capabilities: ["broker", "mesh", "local_runtime"],
@@ -976,6 +1022,7 @@ function currentHostInfo() {
     tailnetName,
     brokerUrl,
     webUrl,
+    webHost: localWebHost,
     brokerSocketPath,
     supportDirectory: supportPaths.supportDirectory,
     runtimeDirectory: supportPaths.runtimeDirectory,
@@ -1776,8 +1823,14 @@ const dispatchRecoveryService = new BrokerDispatchRecoveryService({
   warn: (message) => console.warn(message),
 });
 
+const channelInviteService = new BrokerChannelInviteService({
+  runtime,
+  upsertConversation: upsertConversationDurably,
+});
+
 const commandService = new BrokerCommandService({
   runtime,
+  channelInvites: channelInviteService,
   mesh: meshForwardingService,
   upsertNode: upsertNodeDurably,
   upsertActor: upsertActorDurably,
@@ -1873,7 +1926,10 @@ const brokerService = createBrokerCoreService({
   journal,
   threadEvents,
   isReconciledStaleFlightActivityItem,
-  readChildServices: () => webControl.readChildServiceSnapshots(),
+  readChildServices: () => ({
+    ...webControl.readChildServiceSnapshots(),
+    ...(jetStreamService ? { jetstream: jetStreamService.status() } : {}),
+  }),
   readProjectionStatus: () => projection.statusSnapshot(),
   readMemoryStatus: () => ({ maintenance: memoryMaintenance?.status() ?? { enabled: false }, messageBodies: journal.messageBodyCacheStatus(), messageHistory: messageHistory?.status() ?? {enabled:false} }),
   readStartupStatus: () => ({ ...startupTrafficGate.snapshot(), journal: journal.startupStatus() }),
@@ -2404,6 +2460,12 @@ function sweepAndCompactMeshNodes(): void {
   }
 }
 
+// Opt-in event transport. `start()` swallows its own failures: an absent or
+// broken NATS must degrade the transport, never the broker.
+if (jetStreamService) {
+  void jetStreamService.start();
+}
+
 // Heartbeat for relay-agent watchdogs: relays self-terminate once this file's
 // mtime goes stale, so a dead runtime cannot leave live relay processes behind.
 try {
@@ -2493,6 +2555,11 @@ async function shutdownBroker(exitCode = 0): Promise<void> {
     routeAliasSweepTimer = null;
   }
   await webControl.stop();
+  // Publisher-first, transport-last: the final checkpoint pass needs a live
+  // server to ack against, and an owned sidecar must outlive the broker's drain.
+  await jetStreamService?.stop().catch((error) => {
+    console.warn("[openscout-runtime] jetstream shutdown failed:", error);
+  });
   peerDelivery.stop();
   meshRendezvousPublisher?.stop();
   await meshBindController?.stop().catch(() => undefined);

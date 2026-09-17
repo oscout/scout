@@ -250,7 +250,7 @@ export function classifyScoutBridge(command: string): ScoutBridgeKind | null {
 }
 
 /** Harnesses that hold Scout MCP and channel bridges open. */
-const CLIENT_MARKERS = new Set(["claude", "codex", "cursor", "grok", "kimi", "opencode", "pi"]);
+const CLIENT_MARKERS = new Set(["claude", "codex", "cursor", "grok", "kimi", "opencode", "devin", "pi"]);
 
 /**
  * The suite's own mesh bridge runs under launchd, not a harness session.

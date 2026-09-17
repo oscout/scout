@@ -171,16 +171,45 @@ const CONTEXT_TAG_TOKEN = /<\/?([a-zA-Z][\w.-]*)(\s[^<>]*?)?\s*\/?>/g;
 const CONTEXT_TAG_NAME = /[-_]/;
 const TAG_ATTR = /([\w.-]+)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+))/g;
 
+/* Transport envelopes: the payload IS the request, so unwrap them silently --
+   no chip, nothing dropped. `<input>` carries no dash or underscore, so the
+   heuristic above can never reach it and both delimiters rendered verbatim in
+   the card; naming the outer envelope tells a reader nothing the card doesn't
+   already say. Same set floor-preview-text.ts unwraps for its previews. */
+const ENVELOPE_TAGS = new Set(["realtime_delegation", "input"]);
+
+/* Wrappers whose body is injected context rather than the operator's words.
+   The wrapper still earns a chip, but the body is dropped: stripping only the
+   delimiters promoted a replayed transcript into the prose, so the card showed
+   `assistant: ...` text nobody typed. Mirrors floor-preview-text.ts's blocks. */
+const CONTEXT_PAYLOAD_TAGS = ["transcript_delta"];
+
+const CONTEXT_TAG_LABELS: Record<string, string> = {
+  "transcript_delta": "Transcript",
+  "in-app-browser-context": "Browser context",
+  "environment_context": "Environment",
+  "app-context": "App context",
+  "system-reminder": "Reminder",
+  "recommended_plugins": "Plugins",
+  "local-command-caveat": "Command note",
+};
+
+/** Chip text for a context wrapper: curated where we know it, else the element
+ *  name as words. The model keeps `name` as the identity; this is presentation. */
+export function laneAskContextTagLabel(name: string): string {
+  const known = CONTEXT_TAG_LABELS[name];
+  if (known) return known;
+  const words = name.replace(/[-_]+/g, " ").trim();
+  return words ? words.charAt(0).toUpperCase() + words.slice(1) : name;
+}
+
 function extractContextTags(value: string): { tags: LaneAskContextTag[]; text: string } {
   const tags: LaneAskContextTag[] = [];
   const byName = new Map<string, LaneAskContextTag>();
 
-  const text = value.replace(CONTEXT_TAG_TOKEN, (raw, name: string, attrs?: string) => {
-    if (!CONTEXT_TAG_NAME.test(name)) return raw;
-
-    const key = name.toLowerCase();
+  const record = (key: string, raw: string, attrs?: string) => {
     let detail: string | undefined;
-    if (attrs && !raw.startsWith("</")) {
+    if (attrs) {
       let firstValue: string | undefined;
       for (const match of attrs.matchAll(TAG_ATTR)) {
         const attrValue = match[2] ?? match[3] ?? match[4] ?? "";
@@ -199,12 +228,32 @@ function extractContextTags(value: string): { tags: LaneAskContextTag[]; text: s
         existing.detail = detail;
         existing.raw = raw;
       }
-    } else {
-      const tag: LaneAskContextTag = { name: key, raw };
-      if (detail) tag.detail = detail;
-      byName.set(key, tag);
-      tags.push(tag);
+      return;
     }
+    const tag: LaneAskContextTag = { name: key, raw };
+    if (detail) tag.detail = detail;
+    byName.set(key, tag);
+    tags.push(tag);
+  };
+
+  /* Body-dropping wrappers first, so the pass below never sees their contents.
+     An unterminated block runs to the end of the source -- a request truncated
+     mid-transcript must not spill the partial dump into the card either. */
+  let carrier = value;
+  for (const tag of CONTEXT_PAYLOAD_TAGS) {
+    const block = new RegExp(`<${tag}\\b([^<>]*?)\\s*>([\\s\\S]*?)(?:<\\/${tag}\\s*>|$)`, "gi");
+    carrier = carrier.replace(block, (_match, attrs: string | undefined) => {
+      record(tag, `<${tag}${attrs ?? ""}>`, attrs || undefined);
+      return "";
+    });
+    carrier = carrier.replace(new RegExp(`<\\/${tag}\\s*>`, "gi"), "");
+  }
+
+  const text = carrier.replace(CONTEXT_TAG_TOKEN, (raw, name: string, attrs?: string) => {
+    const key = name.toLowerCase();
+    if (ENVELOPE_TAGS.has(key)) return "";
+    if (!CONTEXT_TAG_NAME.test(name)) return raw;
+    record(key, raw, raw.startsWith("</") ? undefined : attrs);
     return "";
   });
 

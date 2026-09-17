@@ -1,6 +1,6 @@
 {
   "name": "openscout",
-  "version": "0.2.103",
+  "version": "0.2.104",
   "description": "Your personal agent cloud: a local control plane and mesh network for coding agents",
   "private": true,
   "packageManager": "bun@1.3.13",

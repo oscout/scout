@@ -722,3 +722,35 @@ describe("operator login endpoint", () => {
     expect(response.status).toBe(401);
   });
 });
+
+
+describe("chat-only LAN access", () => {
+  const allowed = (path: string, method = "GET", headers = {}) =>
+    isScoutWebRequestAllowedFromPeer(new Request(`http://mac.local${path}`, { method, headers }), "100.123.16.74", "chat");
+  test("allows chat assets and room endpoints while retaining handler auth", () => {
+    expect(resolveScoutWebLanAccessScope({ OPENSCOUT_WEB_LAN_SCOPE: "chat" })).toBe("chat");
+    for (const path of ["/chat", "/assets/chat.js", "/invite/token", "/invite/token/api.md", "/api/chat/bootstrap", "/api/member/me", "/api/channels/room/poll"]) expect(allowed(path)).toBe(true);
+    for (const path of ["/api/invites/token/participate", "/api/channels/room/messages", "/api/channels/room/asks"]) expect(allowed(path, "POST")).toBe(true);
+  });
+  test("admits the space switcher without widening the surface", () => {
+    // A member on the LAN has to be able to read which space they are in, or
+    // the switcher renders an unnamed room. Reading the list is not a
+    // permission: the handler still scopes it to the spaces their own
+    // credential puts them in.
+    expect(allowed("/api/chat/spaces")).toBe(true);
+    // Creating one reaches the handler, which refuses a member credential.
+    // This gate is a network boundary, not the authorization.
+    expect(allowed("/api/chat/spaces", "POST")).toBe(true);
+    // The space selector rides on the paths that were already open; it opens
+    // no new ones.
+    expect(allowed("/api/channels/room/feed?space=work")).toBe(true);
+    expect(allowed("/api/chat/spaces/work")).toBe(false);
+    expect(allowed("/api/chat/spaces", "DELETE")).toBe(false);
+  });
+  test("keeps operator bootstrap, terminals and unrelated APIs closed", () => {
+    for (const path of ["/", "/login", "/api/bootstrap.js", "/api/agents", "/api/terminal/ws", "/.host-info", "/api/channels/room/unknown", "/invite/token/other"]) expect(allowed(path)).toBe(false);
+    expect(allowed("/api/channels/room/poll", "DELETE")).toBe(false);
+    expect(allowed("/chat", "GET", { upgrade: "websocket" })).toBe(false);
+    expect(isScoutWebRequestAllowedFromPeer(new Request("http://mac.local/api/agents", {headers:{"x-forwarded-for":"100.123.16.74"}}), "127.0.0.1", "chat")).toBe(false);
+  });
+});

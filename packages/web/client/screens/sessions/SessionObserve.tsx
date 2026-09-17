@@ -51,7 +51,7 @@ import {
   laneTraceWindowStats,
   observeEventWallMs,
 } from "../../lib/lane-observe.ts";
-import { buildLaneAskDisplay } from "../../lib/lane-ask-display.ts";
+import { buildLaneAskDisplay, laneAskContextTagLabel } from "../../lib/lane-ask-display.ts";
 import { actorColor } from "../../lib/colors.ts";
 import { api } from "../../lib/api.ts";
 import { renderWithMentions } from "../../lib/mentions.tsx";
@@ -1058,7 +1058,7 @@ function AskLine({
           {ask.contextTags.map((tag) => (
             <span key={tag.name} className="s-observe-ask-tag" title={tag.raw}>
               <Tag size={10} strokeWidth={2} aria-hidden="true" />
-              <span className="s-observe-ask-tag-name">{tag.name}</span>
+              <span className="s-observe-ask-tag-name">{laneAskContextTagLabel(tag.name)}</span>
               {tag.detail ? (
                 <span className="s-observe-ask-tag-detail">{tag.detail}</span>
               ) : null}
