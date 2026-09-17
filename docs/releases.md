@@ -102,14 +102,70 @@ tag, verifies both against retained candidates, and only then promotes the pair
 to `latest`. A fresh release must advance the current versions and begin with
 both package versions unused. A matching completed release is idempotent. A
 complete immutable pair may resume missing dist-tag promotion only with its
-exact retained receipt. A partial local pair, changed artifact, wrong source,
-missing receipt, or foreign authority fails closed; choose a newly reviewed
-unused version instead of repairing historical candidates manually.
+exact retained receipt. The ordinary publisher still rejects a partial local pair. A protocol-first
+local interruption may use the explicit retained recovery command below. Changed
+artifacts, wrong source, missing receipt, foreign authority, and historical
+candidates remain forbidden.
 
 After registry verification succeeds, the command creates or verifies the final
 public GitHub release and attaches `receipt.json`. Existing receipts are never
 clobbered: their size and anonymously downloaded SHA-256 must match the retained
 receipt. An upload command succeeding alone is not a verified release.
+
+## Recover a retained local release
+
+If npm accepts protocol but it becomes visible only after the publication wait
+expires, keep the original signed candidate bundle. Do not rebuild it or bump a
+version solely because registry propagation exceeded the wait. The ordinary
+publisher still rejects partial local state; recovery is a separate explicit
+command in reviewed public tooling (see [issue #23](https://github.com/oscout/scout/issues/23)).
+
+The recovery tooling can be merged after the candidate: run it from clean public
+`main` equal to remote `main`. Supply the **original** release SHA and original
+receipt SHA-256, not the tooling commit. The original local and remote version
+tag must still resolve to that source, and the source must be an ancestor of the
+reviewed tooling. The command locates the bundle in the shared Git directory at
+`scout-release/npm/<version>-<original-source-sha>/`; it does not accept a rebuilt
+bundle or an alternate state-directory override.
+
+```bash
+# Inspect and record the original receipt digest before requesting execution.
+shasum -a 256 .git/scout-release/npm/<version>-<original-source-sha>/receipt.json
+node scripts/recover-local-npm-release.mjs \
+  --version <version> --source <original-source-sha> \
+  --receipt-sha256 <original-receipt-sha256>
+
+# After review and explicit authorization, use the operator's existing npm login.
+# Run in an interactive terminal so npm can present any browser/OTP challenge.
+node scripts/recover-local-npm-release.mjs \
+  --version <version> --source <original-source-sha> \
+  --receipt-sha256 <original-receipt-sha256> \
+  --execute --yes --auth npm-login
+```
+
+Authentication is the operator's existing local npm configuration, including a
+browser login established with `npm login` separately. Recovery calls `npm
+whoami` and inherits terminal input/output for mutations; it never logs in,
+reads or writes credential files, copies tokens, invokes secret-store helpers,
+or falls back to hosted authority. Local provenance remains disabled.
+
+Recovery verifies the receipt's repository, source, version, local authority,
+and both tarballs' size, SHA-256, SRI, and package manifests before proceeding.
+Registry protocol must already match those exact values and its staging tag or
+`latest`; CLI-first state, an absent protocol, unknown registry errors, newer
+`latest`, and split older baselines fail closed. It can upload **only** the
+missing retained CLI tarball, with lifecycle scripts disabled. Both immutable
+artifacts must match before either `latest` tag is changed. An exact complete
+pair can resume an interrupted promotion without re-uploading anything.
+
+The command holds the same candidate lock as the ordinary publisher and
+preserves the original receipt. It waits up to 15 minutes for registry
+propagation (`--wait-seconds` accepts 5–3600). A timeout or uncertain upload does
+not cause an automatic upload retry: retain the bundle and rerun the identical
+command after checking registry state. A later-visible matching CLI is verified
+and skipped. Versions through `0.2.90` remain frozen. Staging tags are left as
+harmless recovery evidence. GitHub release creation and attaching/verifying the
+original receipt remain separate steps after the pair succeeds.
 
 ## Explicit hosted publication
 
