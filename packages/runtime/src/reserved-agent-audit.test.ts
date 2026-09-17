@@ -29,6 +29,24 @@ describe("stored reserved agent audit", () => {
     })).toThrow('reserved_name_existing: stored agent max.main.node uses reserved effort name "max"');
   });
 
+  test("retired identities preserve history without blocking startup; reactivation is audited", () => {
+    const retired = agent("devin");
+    retired.metadata = { retiredFromFleet: true, retiredAt: 1789416952526 };
+    expect(() => assertNoReservedStoredAgentNames({ devin: retired }, { localNodeId: "node" }))
+      .not.toThrow();
+    expect(retired.definitionId).toBe("devin");
+    retired.metadata.retiredFromFleet = false;
+    expect(() => assertNoReservedStoredAgentNames({ devin: retired }, { localNodeId: "node" }))
+      .toThrow(/reserved_name_existing/);
+  });
+
+  test("stale but unretired identities still require reserved-name repair", () => {
+    const stale = agent("devin");
+    stale.metadata = { staleLocalRegistration: true };
+    expect(() => assertNoReservedStoredAgentNames({ devin: stale }, { localNodeId: "node" }))
+      .toThrow(/reserved_name_existing/);
+  });
+
   test("allows ordinary, built-in, and product identities", () => {
     expect(() => assertNoReservedStoredAgentNames({
       ranger: agent("ranger"),

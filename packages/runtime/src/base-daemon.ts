@@ -32,9 +32,15 @@ import {
 import {
   renderOpenScoutCaddyfile,
   resolveOpenScoutLocalEdgeConfig,
+  resolveOpenScoutLocalEdgeDiscoveryHosts,
   type OpenScoutLocalEdgeConfig,
   type OpenScoutLocalEdgeScheme,
 } from "./local-edge.js";
+import {
+  NatsJetStreamSidecar,
+  resolveJetStreamConfig,
+  type JetStreamRuntimeConfig,
+} from "./jetstream/index.js";
 import { openScoutNetworkServiceEnvironment } from "./open-scout-network.js";
 import { readTailscaleSelfWebHostsSync } from "./tailscale.js";
 
@@ -147,6 +153,15 @@ function resolveWebTrustedHostsEnv(): string | undefined {
   return appendCsvValues(process.env.OPENSCOUT_WEB_TRUSTED_HOSTS, resolveTailnetWebHosts());
 }
 
+let jetStreamSidecar: NatsJetStreamSidecar | null = null;
+/**
+ * Env the broker child needs so the two never disagree about the sidecar.
+ *
+ * Populated only once the base sidecar has actually resolved, because the
+ * answer differs between "base owns it" and "base tried and failed".
+ */
+let jetStreamBrokerEnv: Record<string, string> = {};
+
 function ensureDirectory(path: string): void {
   mkdirSync(path, { recursive: true });
 }
@@ -193,6 +208,7 @@ function spawnBroker(): void {
       OPENSCOUT_CONTROL_HOME: config.controlHome,
       OPENSCOUT_ADVERTISE_SCOPE: config.advertiseScope,
       ...openScoutNetworkServiceEnvironment(process.env),
+      ...jetStreamBrokerEnv,
       ...(webTrustedHostsEnv ? { OPENSCOUT_WEB_TRUSTED_HOSTS: webTrustedHostsEnv } : {}),
     },
     stdio: ["ignore", stdout, stderr],
@@ -307,6 +323,59 @@ function spawnMdnsProxy(input: {
   });
 }
 
+/**
+ * Opt-in NATS JetStream sidecar, supervised beside the local edge.
+ *
+ * It sits here rather than in the broker because it is an external binary with
+ * its own lifetime, and because a broker restart must not cycle the transport
+ * underneath a web consumer that is also attached to it.
+ */
+async function startJetStreamSidecar(): Promise<void> {
+  let jetStreamConfig: JetStreamRuntimeConfig;
+  try {
+    jetStreamConfig = resolveJetStreamConfig();
+  } catch (error) {
+    warn("jetstream configuration rejected; sidecar disabled", String(error));
+    jetStreamBrokerEnv = { OPENSCOUT_JETSTREAM_ENABLED: "0" };
+    return;
+  }
+  // Disabled, or an operator-managed server the broker attaches to on its own
+  // terms. Either way base adds nothing and the child keeps the inherited env.
+  if (!jetStreamConfig.enabled || !jetStreamConfig.manageServer) {
+    return;
+  }
+  const sidecar = new NatsJetStreamSidecar({
+    config: jetStreamConfig,
+    log: (message, detail) => log(message, detail),
+    warn: (message, detail) => warn(message, detail),
+    error: (message, detail) => warn(message, detail),
+  });
+  jetStreamSidecar = sidecar;
+  try {
+    // A missing binary or an occupied port is terminal and actionable; it must
+    // not become an invisible restart loop the way an ENOENT caddy would.
+    await sidecar.start();
+    // Base owns the process; the broker connects as a client instead of racing
+    // it for the port.
+    jetStreamBrokerEnv = { OPENSCOUT_JETSTREAM_MANAGE_SERVER: "0" };
+    log("jetstream sidecar started", sidecar.status());
+  } catch (error) {
+    jetStreamSidecar = null;
+    // Critically *not* MANAGE_SERVER=0. The usual reason a managed start fails
+    // is that something else already holds the port, and telling the broker to
+    // attach there would silently adopt a stranger's NATS server and create
+    // SCOUT_EVENTS inside it. Attaching to a server OpenScout does not own is
+    // an explicit operator decision, never a fallback. The feature stays off
+    // for this run and the operator gets one actionable message.
+    jetStreamBrokerEnv = { OPENSCOUT_JETSTREAM_ENABLED: "0" };
+    warn(
+      "jetstream sidecar unavailable; the broker will run with events disabled "
+        + "rather than attach to a NATS server OpenScout does not manage",
+      error instanceof Error ? error.message : String(error),
+    );
+  }
+}
+
 function stopEdgeProcesses(): void {
   for (const processRef of mdnsProcesses) {
     if (!processRef.killed) {
@@ -340,20 +409,14 @@ function startLocalEdge(): void {
   mdnsProcesses = schemes.flatMap((scheme) => {
     const edgePort = scheme === "https" ? 443 : 80;
     const suffix = scheme.toUpperCase();
-    return [
+    return resolveOpenScoutLocalEdgeDiscoveryHosts(edgeConfig).map((host) =>
       spawnMdnsProxy({
-        name: `Scout Local ${suffix}`,
-        host: edgeConfig.portalHost,
+        name: host === edgeConfig.portalHost ? `Scout Local ${suffix}` : `Scout ${host} ${suffix}`,
+        host,
         port: edgePort,
         scheme,
       }),
-      spawnMdnsProxy({
-        name: `Scout ${edgeConfig.nodeHost} ${suffix}`,
-        host: edgeConfig.nodeHost,
-        port: edgePort,
-        scheme,
-      }),
-    ];
+    );
   });
 
   caddyProcess = spawn(resolveCaddyExecutable(), [
@@ -768,6 +831,15 @@ async function shutdown(exitCode = 0): Promise<void> {
     terminateChildProcess(brokerProcess, "broker"),
     terminateChildProcess(activeCaddyProcess, "local edge", 2_000),
   ]);
+  // Strictly after the broker: its final publisher checkpoint needs a live
+  // server to acknowledge against, and the broker's drain budget is longer
+  // than the edge's.
+  if (jetStreamSidecar) {
+    await jetStreamSidecar.stop().catch((error) => {
+      warn("jetstream sidecar shutdown failed", String(error));
+    });
+    jetStreamSidecar = null;
+  }
   if (pairingSupervisionClaimed) {
     releaseScoutPairingSupervision(process.pid, pairingPaths.supervisorPidPath);
     pairingSupervisionClaimed = false;
@@ -829,6 +901,11 @@ log("starting Scout base service", {
   bootout: `launchctl bootout ${config.serviceTarget}`,
 });
 anchorBaseDaemonLifetime();
+// Awaited before the broker: the child's env depends on whether the sidecar
+// actually came up, and guessing that would either race it for the port or
+// silently attach it to a foreign server. Resolves immediately when the
+// feature is off, which is the default.
+await startJetStreamSidecar();
 spawnBroker();
 startLocalEdge();
 startPairingSupervision();

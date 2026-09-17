@@ -82,6 +82,7 @@ export type {
 } from "./adapters/claude-code/subagent-topology.js";
 export { createAdapter as createCodexAdapter } from "./adapters/codex/index.js";
 export { createAdapter as createCursorAcpAdapter } from "./adapters/cursor-acp/index.js";
+export { createAdapter as createDevinAcpAdapter } from "./adapters/devin-acp/index.js";
 export {
   CodexObservedTopologyTracker,
 } from "./adapters/codex/topology.js";

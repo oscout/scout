@@ -134,6 +134,13 @@
       "when": 1789259661558,
       "tag": "0018_message_epoch_order",
       "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "6",
+      "when": 1789504676266,
+      "tag": "0019_session_actor_targets",
+      "breakpoints": true
     }
   ]
 }

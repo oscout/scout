@@ -5,7 +5,7 @@
    named role definitions. Runtime sessions remain in the Sessions surface. */
 
 import { useMemo, useState } from "react";
-import { Folder, FolderOpen, FolderPlus, MessageSquare, Rows3, Search, SlidersHorizontal, Telescope, Users } from "lucide-react";
+import { Folder, FolderOpen, MessageSquare, Plus, Search, Telescope } from "lucide-react";
 import { AgentAvatar } from "../../components/AgentAvatar.tsx";
 import { HarnessMark } from "../../components/HarnessMark.tsx";
 import { timeAgo } from "../../lib/time.ts";
@@ -30,10 +30,11 @@ import "./crew-workspaces.css";
 type Navigate = (route: Route) => void;
 type DirectoryMode = "projects" | "agents";
 
+/* Three lenses, as words. A declared ask already shows on its row as the one
+   accent capsule and in the eyebrow's count, so it is not a lens here. */
 const STATUS_FILTERS: Array<{ id: CrewStatusFilter; label: string }> = [
   { id: "all", label: "All" },
-  { id: "active", label: "Active" },
-  { id: "needs", label: "Needs attention" },
+  { id: "active", label: "Live" },
   { id: "idle", label: "Idle" },
 ];
 
@@ -123,7 +124,6 @@ export function CrewWorkspaces({
             onClick={() => setMode("projects")}
             title="Browse tracked projects"
           >
-            <Rows3 size={13} strokeWidth={1.9} aria-hidden />
             Projects
           </button>
           <button
@@ -133,13 +133,12 @@ export function CrewWorkspaces({
             onClick={() => setMode("agents")}
             title="Browse durable agent identities"
           >
-            <Users size={13} strokeWidth={1.9} aria-hidden />
             Agents
           </button>
         </div>
 
         <label className="cw-search" role="search">
-          <Search size={13} strokeWidth={1.8} aria-hidden />
+          <Search size={12} strokeWidth={1.8} aria-hidden />
           <input
             type="search"
             value={query}
@@ -150,7 +149,6 @@ export function CrewWorkspaces({
         </label>
 
         <div className="cw-filters" aria-label="Status filter">
-          <SlidersHorizontal size={12} strokeWidth={1.9} aria-hidden className="cw-filtersIcon" />
           {STATUS_FILTERS.map((filter) => (
             <button
               key={filter.id}
@@ -170,7 +168,7 @@ export function CrewWorkspaces({
           aria-expanded={addingProject}
           onClick={() => setAddingProject((open) => !open)}
         >
-          <FolderPlus size={13} strokeWidth={1.9} aria-hidden />
+          <Plus size={11} strokeWidth={1.9} aria-hidden />
           Add project
         </button>
       </div>
@@ -182,11 +180,11 @@ export function CrewWorkspaces({
           <>
             <span>{model.projects.length} projects</span>
             <span className="cw-digestSep">·</span>
-            <span data-tone={activeProjects > 0 ? "live" : undefined}>{activeProjects} active</span>
+            <span data-tone={activeProjects > 0 ? "live" : undefined}>{activeProjects} live</span>
             {needsProjects > 0 ? (
               <>
                 <span className="cw-digestSep">·</span>
-                <span data-tone="needs">{needsProjects} need you</span>
+                <span data-tone="needs">{needsProjects} {needsProjects === 1 ? "ask" : "asks"}</span>
               </>
             ) : null}
           </>
@@ -200,11 +198,11 @@ export function CrewWorkspaces({
               </>
             ) : null}
             <span className="cw-digestSep">·</span>
-            <span data-tone={activeAgents > 0 ? "live" : undefined}>{activeAgents} active</span>
+            <span data-tone={activeAgents > 0 ? "live" : undefined}>{activeAgents} live</span>
             {needsAgents > 0 ? (
               <>
                 <span className="cw-digestSep">·</span>
-                <span data-tone="needs">{needsAgents} need you</span>
+                <span data-tone="needs">{needsAgents} {needsAgents === 1 ? "ask" : "asks"}</span>
               </>
             ) : null}
           </>
@@ -282,7 +280,7 @@ function ProjectList({
           className="cw-showMore"
           onClick={() => setShowAll((open) => !open)}
         >
-          {showAll ? "Show fewer projects" : `Show ${hidden} more`}
+          {showAll ? "Show fewer" : `Show ${hidden} more`}
         </button>
       ) : null}
     </div>
@@ -304,19 +302,23 @@ function ProjectRow({
   return (
     <article className="cw-workspace" data-state={project.needs > 0 ? "needs" : active ? "live" : undefined}>
       <button type="button" className="cw-workspaceHead" onClick={() => openProject(navigate, route, project.slug)}>
-        <span className="cw-workspaceTitle">
-          <Folder size={13} strokeWidth={1.7} aria-hidden />
-          /{project.title}
-        </span>
+        <span className="cw-workspaceTitle">/{project.title}</span>
         <span className="cw-workspaceRoot" title={project.root ?? undefined}>
           {project.root ? shortHomePath(project.root) : "Discovered project"}
         </span>
         <span className="cw-workspaceMeta">
-          {project.needs > 0 ? <b data-tone="needs">Needs you</b> : null}
-          {active ? <b data-tone="live">Active</b> : null}
-          <span>{project.worktreeCount} {project.worktreeCount === 1 ? "worktree" : "worktrees"}</span>
-          <span>{project.sessionCount} {project.sessionCount === 1 ? "session" : "sessions"}</span>
-          <time>{project.lastActivityAt ? timeAgo(project.lastActivityAt, nowMs) : "no activity"}</time>
+          <span>
+            {project.worktreeCount} {project.worktreeCount === 1 ? "worktree" : "worktrees"}
+            {" · "}
+            {project.sessionCount} {project.sessionCount === 1 ? "session" : "sessions"}
+          </span>
+          {project.needs > 0 ? (
+            <span className="cw-workspaceAsks">{project.needs} {project.needs === 1 ? "ask" : "asks"}</span>
+          ) : (
+            <time data-tone={active ? "live" : undefined}>
+              {active ? "now" : project.lastActivityAt ? timeAgo(project.lastActivityAt, nowMs) : "no activity"}
+            </time>
+          )}
         </span>
       </button>
     </article>

@@ -18,6 +18,8 @@ ports, while staying well above privileged system ports.
 | Pairing relay | `43131` | Defaults to pairing bridge + 1 |
 | Pairing file server | `43132` | Defaults to pairing bridge + 2 |
 | Design studio | `43140` | `design/studio` Next dev server |
+| NATS JetStream | `43150` | Opt-in; loopback only; `OPENSCOUT_JETSTREAM_PORT` overrides |
+| NATS monitoring | `43151` | Opt-in; loopback only; `OPENSCOUT_JETSTREAM_MONITOR_PORT` overrides |
 
 ### Shared local edge
 

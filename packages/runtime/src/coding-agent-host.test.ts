@@ -68,6 +68,14 @@ describe("detectCodingAgentHost", () => {
     });
   });
 
+  test("detects Devin CLI shells via the exported session-db path", () => {
+    expect(detectCodingAgentHost({ CHISEL_SESSION_DB: "/Users/x/.local/share/devin/cli/sessions.db" } as NodeJS.ProcessEnv)).toEqual({
+      harness: "devin",
+      signal: "CHISEL_SESSION_DB",
+    });
+    expect(detectCodingAgentHost({ CHISEL_SESSION_DB: "/tmp/unrelated.db" } as NodeJS.ProcessEnv)).toBeNull();
+  });
+
   test("prefers Scout binding over vendor flags", () => {
     expect(detectCodingAgentHost({
       OPENSCOUT_AGENT: "openscout.main.mini",

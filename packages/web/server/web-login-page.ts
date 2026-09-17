@@ -5,7 +5,7 @@ import { SCOUT_WEB_LOGIN_API_PATH } from "./server-core.ts";
  * covers (Tailscale, LAN). Deliberately independent of the client bundle so
  * it works before any credential exists and never needs a vite build.
  */
-export function renderScoutWebLoginPage(): string {
+export function renderScoutWebLoginPage(bootstrapPath = "/api/bootstrap.js"): string {
   return `<!doctype html>
 <html lang="en">
 <head>
@@ -85,6 +85,8 @@ export function renderScoutWebLoginPage(): string {
   }
   button[disabled] { opacity: 0.6; cursor: default; }
   .error { color: var(--danger); font-size: 13px; margin-top: 12px; min-height: 1.2em; }
+  summary { cursor: pointer; }
+  details p { margin: 10px 0 0; }
   .hint { font-size: 12px; color: var(--muted); margin-top: 18px; }
   code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; }
 </style>
@@ -93,24 +95,63 @@ export function renderScoutWebLoginPage(): string {
 <main>
   <div class="mark" aria-hidden="true"></div>
   <h1>Sign in to Scout</h1>
-  <p>This portal needs the operator token once. It stays signed in after that.</p>
+  <p id="sign-in-status" role="status">On this Mac, Scout signs you in automatically.</p>
   <form id="login-form">
-    <label for="token">Operator token</label>
-    <input id="token" name="token" type="password" autocomplete="off" autofocus required>
+    <input name="username" type="hidden" autocomplete="username" value="Scout host">
+    <label for="token">Host access key</label>
+    <input id="token" name="token" type="password" autocomplete="current-password" required>
     <button type="submit">Sign in</button>
     <div class="error" id="error" role="alert"></div>
   </form>
-  <div class="hint">
-    On the host, the token is at
-    <code>&lt;support&gt;/runtime/web-auth-token</code>
-    (or <code>$OPENSCOUT_WEB_AUTH_TOKEN</code>).
-  </div>
+  <details class="hint" id="sign-in-help">
+    <summary>Need help signing in?</summary>
+    <p>Joining a channel? Open the invitation link your host sent you.</p>
+    <p>If you run this Scout, open Chat on that Mac to sign in automatically.
+    From another device, use the host access key (also called the operator token)
+    saved at <code>~/Library/Application Support/OpenScout/runtime/web-auth-token</code>.</p>
+  </details>
 </main>
 <script>
   const form = document.getElementById("login-form");
   const input = document.getElementById("token");
   const error = document.getElementById("error");
   const button = form.querySelector("button");
+  const status = document.getElementById("sign-in-status");
+  const help = document.getElementById("sign-in-help");
+  const automaticSignIn = new AbortController();
+  const next = new URL(location.href).searchParams.get("next");
+  let destination = "/";
+  if (next) {
+    try {
+      const target = new URL(next, location.origin);
+      if (target.origin === location.origin && target.pathname !== "/login") {
+        destination = target.pathname + target.search + target.hash;
+      }
+    } catch { /* Keep the local home destination. */ }
+  }
+  async function tryAutomaticSignIn() {
+    form.hidden = true;
+    help.hidden = true;
+    status.textContent = "Signing you in…";
+    const timeout = setTimeout(() => automaticSignIn.abort(), 5000);
+    try {
+      const response = await fetch(${JSON.stringify(bootstrapPath).replace(/</g, "\\u003c")}, {
+        credentials: "same-origin",
+        cache: "no-store",
+        signal: automaticSignIn.signal,
+      });
+      if (response.ok) {
+        location.replace(destination);
+        return;
+      }
+    } catch { /* The key form remains available if local sign-in is unavailable. */ }
+    finally { clearTimeout(timeout); }
+    status.textContent = "Enter your host access key to sign in from this browser.";
+    form.hidden = false;
+    help.hidden = false;
+    input.focus();
+  }
+  void tryAutomaticSignIn();
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
     error.textContent = "";
@@ -123,11 +164,11 @@ export function renderScoutWebLoginPage(): string {
         body: JSON.stringify({ token: input.value.trim() }),
       });
       if (response.ok) {
-        location.replace("/");
+        location.replace(destination);
         return;
       }
       const body = await response.json().catch(() => null);
-      error.textContent = (body && body.error) || ("Sign-in failed (" + response.status + ")");
+      error.textContent = response.status === 401 ? "That key did not match. Check it and try again." : ((body && body.error) || "Could not sign in. Please try again.");
     } catch {
       error.textContent = "Sign-in failed — the server is unreachable.";
     } finally {

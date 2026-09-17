@@ -14,6 +14,10 @@ import {
 
 import type { BrokerJournalEntry } from "./broker-journal.js";
 import type {
+  ChannelInviteCommandResult,
+  ChannelInviteRedeemResult,
+} from "./broker-channel-invite-service.js";
+import type {
   MeshAuthorityForwardResult,
   MeshMessageAuthorityForwardResult,
   PeerForwardResult,
@@ -34,8 +38,15 @@ export type BrokerCommandMesh = {
   forwardPeerBrokerDeliveries(message: MessageRecord, deliveries: DeliveryIntent[]): Promise<PeerForwardResult>;
 };
 
+export type BrokerChannelInviteCommands = {
+  create: (command: Extract<ControlCommand, { kind: "channel.invite.create" }>) => Promise<ChannelInviteCommandResult>;
+  revoke: (command: Extract<ControlCommand, { kind: "channel.invite.revoke" }>) => Promise<ChannelInviteCommandResult>;
+  redeem: (command: Extract<ControlCommand, { kind: "channel.invite.redeem" }>) => Promise<ChannelInviteRedeemResult>;
+};
+
 export type BrokerCommandServiceDeps = {
   runtime: BrokerCommandRuntime;
+  channelInvites: BrokerChannelInviteCommands;
   mesh: BrokerCommandMesh;
   upsertNode: (node: NodeDefinition) => Promise<void>;
   upsertActor: (actor: ActorIdentity) => Promise<void>;
@@ -91,6 +102,12 @@ export class BrokerCommandService {
         return await this.executeCollaborationUpsert(command.record);
       case "collaboration.event.append":
         return await this.executeCollaborationEventAppend(command.event);
+      case "channel.invite.create":
+        return await this.deps.channelInvites.create(command);
+      case "channel.invite.revoke":
+        return await this.deps.channelInvites.revoke(command);
+      case "channel.invite.redeem":
+        return await this.deps.channelInvites.redeem(command);
       case "conversation.post":
         return await this.executeConversationPost(command.message);
       case "agent.invoke":

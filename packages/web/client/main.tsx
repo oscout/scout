@@ -40,6 +40,17 @@ const isRepoDiffEmbed = pathname === "/embed/repo-diff";
 const isSessionEmbed = pathname === "/embed/session";
 const isTerminalEmbed = pathname === "/embed/terminal";
 const isScoutDeck = pathname === "/deck" || pathname === "/deck/";
+/* Scout Chat's two standalone surfaces. Both mount without the operator shell:
+   a teammate holding a channel credential cannot make the shell's API calls,
+   and an invitation must render for somebody who has no identity here yet. */
+/* The reserved `chat.<portalHost>` root opens the same surface as `/chat`
+   (docs/eng/chat-channel-invites-api.md, "Entry and design"). The server may
+   also redirect that root; this keeps the surface correct either way. */
+const isChatServiceHost = window.location.hostname.toLowerCase().startsWith("chat.");
+const isChatSpace = pathname === "/chat"
+  || pathname === "/chat/"
+  || (isChatServiceHost && (pathname === "/" || pathname === ""));
+const inviteLandingMatch = pathname.match(/^\/invite\/([^/]+)\/?$/);
 const useDiscoveredEmbed = shouldBootstrapDiscoveredEmbed(pathname);
 
 class ScoutBootErrorBoundary extends Component<
@@ -74,7 +85,13 @@ class ScoutBootErrorBoundary extends Component<
 async function renderShell() {
   let content: ReactNode;
 
-  if (isScoutDeck) {
+  if (isChatSpace) {
+    const { ChatSpaceSurface } = await import("./screens/chat-space/ChatSpaceSurface.tsx");
+    content = <ChatSpaceSurface />;
+  } else if (inviteLandingMatch) {
+    const { InviteLandingScreen } = await import("./screens/chat-space/InviteLandingScreen.tsx");
+    content = <InviteLandingScreen token={decodeURIComponent(inviteLandingMatch[1]!)} />;
+  } else if (isScoutDeck) {
     const { ScoutDeckSurface } = await import("./native-surfaces/deck/ScoutDeckSurface.tsx");
     content = <ScoutDeckSurface />;
   } else if (isScoutbotFxLab) {

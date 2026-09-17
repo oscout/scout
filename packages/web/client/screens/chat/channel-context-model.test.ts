@@ -166,3 +166,86 @@ describe("channel context profiles", () => {
     expect(members.find((member) => member.name === "Tesla")?.status).toBe("offline");
   });
 });
+
+describe("distinct team members", () => {
+  // A team channel has several humans in it. The model used to fold every
+  // person into a single "operator" member, which silently merged teammates
+  // into the viewer.
+  const teamChannel: SessionEntry = {
+    ...channel,
+    participantIds: ["person-maya", "person-art", "agent-kepler"],
+    participants: [
+      { actorId: "person-maya", kind: "person", displayName: "Maya", label: "Maya" },
+      { actorId: "person-art", kind: "person", displayName: "Art", label: "Art" },
+      {
+        actorId: "agent-kepler",
+        kind: "agent",
+        displayName: "Openscout",
+        label: "Openscout · Kepler",
+        scopedAlias: "Kepler",
+        agentId: "agent-kepler",
+        sessionId: "session-tesla",
+        harness: "codex",
+        workspaceRoot: "/workspace/openscout",
+      },
+    ],
+  };
+
+  test("two humans are two members, not one merged operator", () => {
+    const members = buildChannelMembers(teamChannel, [], [], {
+      viewerActorId: "person-art",
+    });
+    const people = members.filter((member) => member.isPerson);
+    expect(people).toHaveLength(2);
+    expect(people.map((member) => member.name).sort()).toEqual(["Maya", "You"]);
+  });
+
+  test("exactly one member is the viewer, and the viewer decides which", () => {
+    const asArt = buildChannelMembers(teamChannel, [], [], { viewerActorId: "person-art" });
+    expect(asArt.filter((member) => member.isSelf)).toHaveLength(1);
+    expect(asArt.find((member) => member.isSelf)?.actorIds).toContain("person-art");
+
+    // The same channel seen by the other teammate: membership is identical,
+    // only the "You" moves.
+    const asMaya = buildChannelMembers(teamChannel, [], [], { viewerActorId: "person-maya" });
+    expect(asMaya.filter((member) => member.isSelf)).toHaveLength(1);
+    expect(asMaya.find((member) => member.isSelf)?.actorIds).toContain("person-maya");
+    expect(asMaya).toHaveLength(asArt.length);
+  });
+
+  test("a viewer who is not in the channel makes nobody 'You'", () => {
+    const members = buildChannelMembers(teamChannel, [], [], {
+      viewerActorId: "person-stranger",
+    });
+    expect(members.filter((member) => member.isSelf)).toHaveLength(0);
+    expect(members.map((member) => member.name)).not.toContain("You");
+  });
+
+  test("a second human does not break workspace inference", () => {
+    const members = buildChannelMembers(teamChannel, [], [], {
+      viewerActorId: "person-art",
+    });
+    expect(sharedChannelWorkspace(members)).toBe("openscout");
+  });
+
+  test("the connection plane stays separate from the activity status", () => {
+    const members = buildChannelMembers(teamChannel, [], [], {
+      viewerActorId: "person-art",
+      receptionByActorId: {
+        "agent-kepler": {
+          state: "unavailable",
+          routeKind: "none",
+          listening: false,
+          summary: "No route",
+          detail: "No delivery route is registered for this member.",
+          evidenceAt: null,
+        },
+      },
+    });
+    const kepler = members.find((member) => member.actorIds.includes("agent-kepler"));
+    expect(kepler?.connection?.state).toBe("unavailable");
+    expect(kepler?.connection?.listening).toBe(false);
+    // The activity plane is untouched by the connection plane.
+    expect(kepler?.status).not.toBe("unavailable");
+  });
+});

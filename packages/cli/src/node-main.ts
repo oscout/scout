@@ -172,7 +172,7 @@ function parseSetupOptions(args: string[]): SetupOptions {
     }
     if (arg === "--default-harness" || arg.startsWith("--default-harness=")) {
       const value = parseFlagValue(parsed.rest, index, "--default-harness");
-      if (!["claude", "codex", "cursor", "grok", "pi"].includes(value.value)) {
+      if (!["claude", "codex", "cursor", "grok", "pi", "opencode", "devin"].includes(value.value)) {
         throw new Error(`invalid default harness: ${value.value}`);
       }
       defaultHarness = value.value;

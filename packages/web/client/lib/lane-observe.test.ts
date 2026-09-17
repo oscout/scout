@@ -279,6 +279,15 @@ describe("fmtLaneAgeLabel", () => {
     expect(fmtLaneAgeLabel(NOW - 12 * 60_000, NOW)).toBe("12m ago");
     expect(fmtLaneAgeLabel(NOW - 3_000, NOW)).toBe("now");
   });
+
+  test("reads a remote clock running ahead as skew, never 'in 29s ago'", () => {
+    expect(fmtLaneAgeLabel(NOW + 29_000, NOW)).toBe("now");
+    expect(fmtLaneAgeLabel(NOW + 90_000, NOW)).toBe("now");
+  });
+
+  test("keeps a genuinely future timestamp unaffixed", () => {
+    expect(fmtLaneAgeLabel(NOW + 40 * 60_000, NOW)).toBe("in 40m");
+  });
 });
 
 describe("fmtLaneWallGapLabel", () => {

@@ -9,7 +9,7 @@ import type { RuntimeTimer } from "./portable-types.js";
 import { RequesterWaitTimeoutError } from "./requester-timeout.js";
 
 export interface AcpAgentInvocationOptions {
-  adapterType: "grok-acp" | "kimi-acp" | "cursor-acp" | "opencode-acp";
+  adapterType: "grok-acp" | "kimi-acp" | "cursor-acp" | "opencode-acp" | "devin-acp";
   label: string;
   /** Stable broker/runtime session id. It is not an ACP provider session id. */
   sessionId: string;
@@ -52,6 +52,7 @@ function harnessForAdapter(adapterType: AcpAgentInvocationOptions["adapterType"]
   if (adapterType === "grok-acp") return "grok";
   if (adapterType === "kimi-acp") return "kimi";
   if (adapterType === "opencode-acp") return "opencode";
+  if (adapterType === "devin-acp") return "devin";
   return "cursor";
 }
 
@@ -59,6 +60,7 @@ function transportForAdapter(adapterType: AcpAgentInvocationOptions["adapterType
   if (adapterType === "grok-acp") return "grok_acp";
   if (adapterType === "kimi-acp") return "kimi_acp";
   if (adapterType === "opencode-acp") return "opencode_acp";
+  if (adapterType === "devin-acp") return "devin_acp";
   return "cursor_acp";
 }
 

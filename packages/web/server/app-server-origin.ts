@@ -117,6 +117,7 @@ export function resolveOpenScoutWebApplicationServerIdentity(
     trustedHosts: uniq([
       advertisedHost,
       portalHost,
+      `chat.${portalHost}`,
       resolveScoutWebDevHostname(portalHost),
       mdnsHost,
       publicOriginHost,

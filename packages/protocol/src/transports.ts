@@ -5,6 +5,11 @@ import type { InvocationRequest } from "./invocations.js";
 import type { NodeDefinition } from "./mesh.js";
 import type { MessageRecord } from "./messages.js";
 import type { CollaborationEvent, CollaborationRecord } from "./collaboration.js";
+import type {
+  ChannelInviteRedemptionRequest,
+  ChannelInviteRoute,
+  ChannelInviteInvitee,
+} from "./channel-invites.js";
 
 export interface SubscriptionRequest {
   actorId: ScoutId;
@@ -77,6 +82,46 @@ export interface CollaborationEventAppendCommand {
   event: CollaborationEvent;
 }
 
+/**
+ * Invitation writes are broker commands rather than conversation upserts so
+ * the read-modify-write of a channel's invitation set happens inside the
+ * broker's serialized command queue. Two operators minting an invitation at
+ * the same instant must not clobber each other's record.
+ */
+export interface ChannelInviteCreateCommand {
+  kind: "channel.invite.create";
+  channelId: ScoutId;
+  inviteId: ScoutId;
+  /** Digest only. The raw token never crosses this boundary. */
+  tokenHash: string;
+  tokenHint: string;
+  createdByActorId: ScoutId;
+  createdAt: number;
+  expiresAt: number | null;
+  maxRedemptions: number | null;
+  route: ChannelInviteRoute;
+  invitee?: ChannelInviteInvitee;
+  metadata?: MetadataMap;
+}
+
+export interface ChannelInviteRevokeCommand {
+  kind: "channel.invite.revoke";
+  channelId: ScoutId;
+  inviteId: ScoutId;
+  revokedByActorId: ScoutId;
+  revokedAt: number;
+}
+
+export interface ChannelInviteRedeemCommand {
+  kind: "channel.invite.redeem";
+  channelId: ScoutId;
+  /** Digest of the presented token; the broker matches, never the caller. */
+  tokenHash: string;
+  redemptionId: ScoutId;
+  redeemedAt: number;
+  request: ChannelInviteRedemptionRequest;
+}
+
 export type ControlCommand =
   | NodeUpsertCommand
   | ActorUpsertCommand
@@ -86,6 +131,9 @@ export type ControlCommand =
   | BindingUpsertCommand
   | CollaborationUpsertCommand
   | CollaborationEventAppendCommand
+  | ChannelInviteCreateCommand
+  | ChannelInviteRevokeCommand
+  | ChannelInviteRedeemCommand
   | PostMessageCommand
   | InvokeAgentCommand
   | EnsureAwakeCommand

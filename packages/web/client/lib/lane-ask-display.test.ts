@@ -1,6 +1,11 @@
 import { describe, expect, test } from "bun:test";
 
-import { buildLaneAskDisplay, laneAskHeadline, laneAskPreview } from "./lane-ask-display.ts";
+import {
+  buildLaneAskDisplay,
+  laneAskContextTagLabel,
+  laneAskHeadline,
+  laneAskPreview,
+} from "./lane-ask-display.ts";
 import type { ObserveEvent } from "./types.ts";
 
 function ask(text: string, overrides: Partial<ObserveEvent> = {}): ObserveEvent {
@@ -136,6 +141,44 @@ Do the thing.`));
     expect(model.preview).toContain("one");
     expect(model.preview).toContain("Do the thing.");
     expect(model.preview).not.toContain("</system-reminder>");
+  });
+
+  test("unwraps a realtime delegation envelope down to the operator's words", () => {
+    const model = buildLaneAskDisplay(ask(
+      "<realtime_delegation><input>Hey, just wanted to do a light follow-up here</input>"
+      + "<transcript_delta>assistant: Opus has the complementary part queued too</transcript_delta>"
+      + "</realtime_delegation>",
+    ));
+
+    expect(model.title).toBe("Hey, just wanted to do a light follow-up here");
+    expect(model.preview).toBe("Hey, just wanted to do a light follow-up here");
+    // The delimiters carry no dash or underscore, so the chip heuristic alone
+    // left them rendering verbatim in the card.
+    expect(model.preview).not.toContain("<input>");
+    expect(model.preview).not.toContain("</input>");
+    // The replayed transcript is context, not something the operator typed.
+    expect(model.preview).not.toContain("assistant:");
+    expect(model.preview).not.toContain("Opus has the complementary part");
+    // The envelope names itself; only the real attachment earns a chip.
+    expect(model.contextTags.map((tag) => tag.name)).toEqual(["transcript_delta"]);
+    expect(model.fullText).toContain("<realtime_delegation>");
+  });
+
+  test("drops a transcript delta that never closes", () => {
+    const model = buildLaneAskDisplay(ask(
+      "<realtime_delegation><input>Ship it</input>"
+      + "<transcript_delta>user: an earlier turn that got cut off mid-",
+    ));
+
+    expect(model.title).toBe("Ship it");
+    expect(model.preview).not.toContain("an earlier turn");
+    expect(model.contextTags.map((tag) => tag.name)).toEqual(["transcript_delta"]);
+  });
+
+  test("names context chips in words, keeping the element name as the identity", () => {
+    expect(laneAskContextTagLabel("transcript_delta")).toBe("Transcript");
+    expect(laneAskContextTagLabel("in-app-browser-context")).toBe("Browser context");
+    expect(laneAskContextTagLabel("some_new_wrapper")).toBe("Some new wrapper");
   });
 
   test("leaves prose angle-bracket mentions in place", () => {

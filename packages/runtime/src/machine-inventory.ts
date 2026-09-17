@@ -68,6 +68,7 @@ function scoutEvidence(
     ...(node.hostName ? { hostName: node.hostName } : {}),
     ...(node.brokerUrl ? { brokerUrl: node.brokerUrl } : {}),
     ...(node.webUrl ? { webUrl: node.webUrl } : {}),
+    ...(node.webHost ? { webHost: node.webHost } : {}),
     ...(node.advertiseScope ? { advertiseScope: node.advertiseScope } : {}),
     ...(node.tailnetName ? { tailnetName: node.tailnetName } : {}),
     ...(localNodeId && node.id === localNodeId ? { isSelf: true } : {}),

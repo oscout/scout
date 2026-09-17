@@ -52,7 +52,19 @@
   </head>
   <body>
     <div id="root"></div>
-    <script src="/api/bootstrap.js"></script>
+    <script>
+      // Invited members use the channel API, without the operator bootstrap.
+      // Keep the ordinary shell's bootstrap synchronous before main.tsx runs.
+      (() => {
+        const path = window.location.pathname;
+        const standalone = /^\/chat\/?$/.test(path)
+          || /^\/invite\/[^/]+\/?$/.test(path)
+          || (path === "/" && window.location.hostname.toLowerCase().startsWith("chat."));
+        if (!standalone) {
+          document.write('<script src="/api/bootstrap.js"><\/script>');
+        }
+      })();
+    </script>
     <script type="module" src="/main.tsx"></script>
   </body>
 </html>

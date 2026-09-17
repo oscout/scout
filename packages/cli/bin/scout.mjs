@@ -23,6 +23,12 @@ if (command === "--version" || command === "-v" || command === "version") {
   process.exit(0);
 }
 
+// Chat is a standalone HTTP client: do not load broker/setup entrypoints.
+if (command === "chat") {
+  await import(pathToFileURL(resolve(binDir, "../dist/chat.mjs")).href);
+  process.exit(process.exitCode ?? 0);
+}
+
 const wantsHelp = !command || command === "--help" || command === "-h" || command === "help";
 const wantsStatusline = command === "statusline" && process.argv[3] === "claude";
 const preferredHost = normalizeHost(process.env.OPENSCOUT_RUNTIME_HOST);

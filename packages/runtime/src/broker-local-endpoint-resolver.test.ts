@@ -502,6 +502,41 @@ describe("BrokerLocalEndpointResolver", () => {
     expect(resolved?.id).toBe("isolated-tmux");
   });
 
+  test("trusts the runtime Scout provisioned while a fresh tmux session is still pending", async () => {
+    // The process has not attached yet, so observation is impossible; the
+    // pending-launch window trusts what the broker itself just provisioned.
+    const harness = createResolver({
+      now: 9_000 + 60_000,
+      observe: async () => null,
+    });
+    await harness.runtime.upsertEndpoint(pendingTmuxEndpoint());
+
+    const resolved = await harness.resolver.resolveLocalEndpointForInvocation(testInvocation({
+      execution: { session: "existing", targetSessionId: "session-mtus22pe", harness: "claude", model: "claude-opus-5" },
+      ensureAwake: true,
+    }));
+    expect(resolved?.id).toBe("isolated-tmux");
+
+    // A conflicting request is still refused on the provisioned values.
+    await expect(harness.resolver.resolveLocalEndpointForInvocation(testInvocation({
+      execution: { session: "existing", targetSessionId: "session-mtus22pe", harness: "claude", model: "claude-sonnet-5" },
+      ensureAwake: true,
+    }))).rejects.toThrow("session_runtime_mismatch");
+  });
+
+  test("an exact runtime stays unobserved for a pending session past the provisioning grace", async () => {
+    const harness = createResolver({
+      now: 9_000 + PENDING_PROVISIONED_RUNTIME_TRUST_MS + 1_000,
+      observe: async () => null,
+    });
+    await harness.runtime.upsertEndpoint(pendingTmuxEndpoint());
+
+    await expect(harness.resolver.resolveLocalEndpointForInvocation(testInvocation({
+      execution: { session: "existing", targetSessionId: "session-mtus22pe", harness: "claude", model: "claude-opus-5" },
+      ensureAwake: true,
+    }))).rejects.toThrow("session_runtime_unobserved");
+  });
+
   test("correlates each pending endpoint against its own harness record", async () => {
     const harness = createResolver({
       now: 10_000_000,

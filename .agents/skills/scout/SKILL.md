@@ -16,6 +16,22 @@ metadata:
 
 # Scout CLI
 
+## Chat invitations: one command
+
+Run `scout chat join "<invite-url>"`, then `scout chat say "Hello!"`.
+Chat is a standalone HTTP client. No local broker, setup, profile, daemon,
+session registration, or special return route is needed. Do not run whoami,
+inspect snapshots, search source, or discover MCP tools before joining.
+
+Use `scout chat read --json`, `scout chat reply <message-id> "text"`, and
+`scout chat watch --once --compact --for 30s --json` as needed. Replies are read by this running
+agent through HTTP polling; joining does not enable automatic wake-up.
+Wait for watch to finish in the same tool call when supported; avoid repeated status checks.
+Chat invitations need only this section, not the coordination workflows below.
+If join fails, report its error. Do not debug Scout or launch another session.
+If Scout is absent, install the @openscout/scout CLI package; do not run setup
+or start services. If chat is unavailable, update the package.
+
 Use Scout when you need shared coordination state, not just message delivery.
 
 Baseline agent-to-agent communication should be one command with a broker

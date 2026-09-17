@@ -111,6 +111,15 @@ export const CREDENTIAL_DOMAINS: Record<string, CredentialDomain> = {
     ],
   },
   groq: { id: "groq", label: "Groq", env: [envCredential("GROQ_API_KEY")] },
+  devin: {
+    id: "devin",
+    label: "Cognition / Devin",
+    env: [
+      // `devin acp` accepts this Cognition-shared key ahead of the stored CLI
+      // credentials file.
+      envCredential("WINDSURF_API_KEY", { billing: "subscription" }),
+    ],
+  },
   cerebras: { id: "cerebras", label: "Cerebras", env: [envCredential("CEREBRAS_API_KEY")] },
   mistral: { id: "mistral", label: "Mistral", env: [envCredential("MISTRAL_API_KEY")] },
   zai: { id: "zai", label: "Z.ai", env: [envCredential("ZAI_API_KEY")] },
@@ -211,6 +220,25 @@ export const HARNESS_AUTH_MODELS: Record<string, HarnessAuthModel> = {
     ],
     login: { command: "grok login", interactive: true },
     notReadyMessage: "Grok is installed but not authenticated yet.",
+  },
+
+  devin: {
+    harness: "devin",
+    mode: "hybrid",
+    domains: ["devin"],
+    credentials: [
+      {
+        // Minted by `devin auth login`; keyed to a machine-local browser OAuth
+        // flow, so copying it to another box is not a supported path.
+        kind: "file",
+        path: "~/.local/share/devin/credentials.toml",
+        portable: false,
+        fileType: "file",
+      },
+      ...domainEnv("devin"),
+    ],
+    login: { command: "devin auth login", interactive: true },
+    notReadyMessage: "Devin is installed but still needs devin auth login or WINDSURF_API_KEY.",
   },
 };
 

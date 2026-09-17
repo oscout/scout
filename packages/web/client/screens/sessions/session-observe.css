@@ -2095,12 +2095,12 @@
 
 .s-observe--conversation .s-observe-evidence-banner {
   max-width: min(720px, 100%);
-  margin: 0 auto var(--space-xl);
+  margin: 0 auto var(--space-xl) 0;
 }
 
 .s-observe--conversation .s-observe-source {
   max-width: min(720px, 100%);
-  margin: 0 auto var(--space-lg);
+  margin: 0 auto var(--space-lg) 0;
 }
 
 .s-observe--conversation .s-observe-stream {
@@ -2108,7 +2108,7 @@
   flex-direction: column;
   gap: var(--space-lg);
   max-width: min(720px, 100%);
-  margin: 0 auto;
+  margin: 0 auto 0 0;
   padding-left: 0;
 }
 
@@ -2646,7 +2646,9 @@
   border: 1px solid color-mix(in srgb, var(--ink) 13%, transparent);
   border-radius: 999px;
   background: color-mix(in srgb, var(--ink) 4%, transparent);
-  font-family: var(--font-mono);
+  /* Words now, not element names — mono was right for `transcript_delta`, it
+     is not for \"Transcript\". The detail below stays mono: it is a raw value. */
+  font-family: var(--font-sans);
   font-size: var(--text-2xs);
   line-height: 1.5;
   color: color-mix(in srgb, var(--dim) 84%, var(--muted));
@@ -2667,6 +2669,7 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  font-family: var(--font-mono);
   color: color-mix(in srgb, var(--ink) 62%, var(--dim));
 }
 

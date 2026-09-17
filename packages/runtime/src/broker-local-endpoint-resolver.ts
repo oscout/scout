@@ -395,7 +395,12 @@ ForInvocation` settles that debt for the transports that can be asked directly
       if (quarantined !== endpoint) await this.options.persistEndpoint(quarantined);
       const target = invocationTargetSessionId(options.invocation);
       const exactNative = target && target !== endpoint.id && target !== endpoint.sessionId;
-      if (!adopted && tmuxClaude && (options.invocation.execution?.model || options.invocation.execution?.reasoningEffort)) {
+      if (
+        !adopted
+        && tmuxClaude
+        && (options.invocation.execution?.model || options.invocation.execution?.reasoningEffort)
+        && !provisionedRuntimeForPendingEndpoint(endpoint, this.now())
+      ) {
         throw new Error(`session_runtime_unobserved: session ${target ?? endpoint.sessionId ?? endpoint.id} has no current model or effort observation`);
       }
       if (!adopted && exactNative && endpoint.transport === "tmux" && endpoint.harness === "claude") {

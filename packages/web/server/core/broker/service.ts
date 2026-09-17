@@ -112,7 +112,7 @@ type ScoutBrokerContextCacheEntry = {
 
 const scoutBrokerContextCache = new Map<string, ScoutBrokerContextCacheEntry>();
 
-function invalidateScoutBrokerContextCache(baseUrl: string): void {
+export function invalidateScoutBrokerContextCache(baseUrl: string): void {
   const prefix = [baseUrl, resolveBrokerSocketPathForBaseUrl(baseUrl) ?? "http"].join("\u0000") + "\u0000";
   for (const key of scoutBrokerContextCache.keys()) {
     if (key.startsWith(prefix)) scoutBrokerContextCache.delete(key);
@@ -2543,6 +2543,15 @@ export async function sendScoutConversationMessage(input: {
   source?: string;
   /** A shared Chat post reaches its agent participants without requesting work. */
   notifyParticipantAgents?: boolean;
+  /**
+   * Whether an `@name` written in the body may route the message.
+   *
+   * The operator shell types addresses into prose, so this defaults to true and
+   * its behaviour is unchanged. A surface whose targets are chosen structurally
+   * -- Scout Chat picks an actor id from the roster -- passes `false`, and the
+   * body is then payload only: quoting "@kepler said" must not reach Kepler.
+   */
+  resolveMentionsFromBody?: boolean;
 }): Promise<ScoutMessagePostResult> {
   const broker = await loadScoutBrokerContext();
   if (!broker) {
@@ -2563,11 +2572,10 @@ export async function sendScoutConversationMessage(input: {
     input.senderId,
     currentDirectory,
   );
-  const mentionResolution = await resolveMentionTargets(
-    broker.snapshot,
-    input.body,
-    currentDirectory,
-  );
+  const routeBodyMentions = input.resolveMentionsFromBody !== false;
+  const mentionResolution = routeBodyMentions
+    ? await resolveMentionTargets(broker.snapshot, input.body, currentDirectory)
+    : { resolved: [], unresolved: [], ambiguous: [] };
   const mentionedTargetIds = new Set(mentionResolution.resolved.map((target) => target.agentId));
   const participantTargetIds = input.notifyParticipantAgents
     && (
@@ -2677,6 +2685,14 @@ export async function sendScoutConversationSteer(input: {
   createdAtMs?: number;
   currentDirectory?: string;
   source?: string;
+  /**
+   * Whether an `@name` or selector written in the body may add targets.
+   *
+   * Defaults to true for the operator shell, where addressing is prose. Scout
+   * Chat passes `false`: the caller names exactly one actor id, and a quoted
+   * name in the message must never widen that into a second invocation.
+   */
+  resolveMentionsFromBody?: boolean;
 }): Promise<ScoutMessagePostResult> {
   const broker = await loadScoutBrokerContext();
   if (!broker) {
@@ -2702,12 +2718,11 @@ export async function sendScoutConversationSteer(input: {
     input.senderId,
     currentDirectory,
   );
-  const mentionResolution = await resolveMentionTargets(
-    broker.snapshot,
-    input.body,
-    currentDirectory,
-  );
-  const selectors = extractAgentSelectors(input.body);
+  const routeBodyMentions = input.resolveMentionsFromBody !== false;
+  const mentionResolution = routeBodyMentions
+    ? await resolveMentionTargets(broker.snapshot, input.body, currentDirectory)
+    : { resolved: [], unresolved: [], ambiguous: [] };
+  const selectors = routeBodyMentions ? extractAgentSelectors(input.body) : [];
   const scopedAliasTargets = scopedAliasTargetsForConversation(
     broker.snapshot,
     conversation,
@@ -2752,7 +2767,11 @@ export async function sendScoutConversationSteer(input: {
       )),
     )
   ).filter((target): target is ScoutMentionTarget => Boolean(target));
-  const explicitTargetAttempted = explicitTargetIds.length > 0 || selectors.length > 0;
+  // With body routing off the caller's list is the whole address book for this
+  // send. Treating it as an explicit attempt even when empty is what stops an
+  // unroutable ask from falling back to steering the entire room.
+  const explicitTargetAttempted =
+    !routeBodyMentions || explicitTargetIds.length > 0 || selectors.length > 0;
   const explicitAvailableTargets = (
     await Promise.all(
       explicitTargetIds.map(async (targetId) => (

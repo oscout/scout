@@ -15,11 +15,19 @@ export type LaneTraceWindowStats = {
 
 const LANE_WALL_GAP_MIN_MS = 2 * 60_000;
 const LANE_TRUNCATION_SLACK_MS = 90_000;
+/** Lead over the local clock still read as skew rather than a future event. */
+const LANE_CLOCK_SKEW_TOLERANCE_MS = 2 * 60_000;
 
-/** Lane trace age label — always reads as wall-clock age, never session elapsed. */
+/** Lane trace age label — always reads as wall-clock age, never session elapsed.
+ *  A lane replays another machine's session, so its clock can sit slightly ahead
+ *  of the browser's; `timeAgo` then returns an already-affixed "in 29s" and
+ *  blindly appending produced "in 29s ago". Nothing in a trace has yet to
+ *  happen, so treat a small lead as skew and read it as "now". */
 export function fmtLaneAgeLabel(wallMs: number, nowMs = Date.now()): string {
+  if (wallMs > nowMs && wallMs - nowMs <= LANE_CLOCK_SKEW_TOLERANCE_MS) return "now";
   const ago = timeAgo(wallMs, nowMs);
-  return ago === "now" ? "now" : `${ago} ago`;
+  if (!ago || ago === "now") return ago || "now";
+  return ago.startsWith("in ") ? ago : `${ago} ago`;
 }
 
 export function fmtLaneAgeTitle(wallMs: number): string {

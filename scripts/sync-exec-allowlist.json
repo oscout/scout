@@ -572,5 +572,19 @@
     "category": "build-script",
     "reason": "Vite config build-time git metadata",
     "owner": "web"
+  },
+  {
+    "path": "packages/runtime/src/jetstream/sidecar.ts",
+    "symbol": "node:child_process",
+    "category": "process-lifecycle",
+    "reason": "Opt-in NATS sidecar uses asynchronous spawn with owned child shutdown and isolated loopback endpoints.",
+    "owner": "runtime"
+  },
+  {
+    "path": "packages/runtime/src/jetstream/test-support.ts",
+    "symbol": "node:child_process",
+    "category": "test",
+    "reason": "Isolated live-NATS test harness launches and disposes its own server process.",
+    "owner": "runtime"
   }
 ]

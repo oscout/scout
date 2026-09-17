@@ -21,7 +21,14 @@ function metadataTimestampMs(value: unknown): number | null {
   return epochMs(value);
 }
 
-function endpointFreshnessMs(endpoint: AgentEndpoint): number {
+/**
+ * Newest moment any evidence says this endpoint was real.
+ *
+ * Endpoint records carry no `lastSeenAt` field; freshness lives in metadata and
+ * is written by whichever subsystem last observed the endpoint. Reading it
+ * through one helper keeps every caller's idea of "fresh" identical.
+ */
+export function endpointFreshnessMs(endpoint: AgentEndpoint): number {
   const metadata = endpointMetadataRecord(endpoint);
   return Math.max(
     metadataTimestampMs(metadata.lastSeenAt) ?? 0,

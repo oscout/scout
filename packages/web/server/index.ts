@@ -14,6 +14,7 @@ import {
   isAuthenticatedScoutRequest,
   isAuthorizedScoutWebSocketRequest,
   isForwardedHttpsScoutRequest,
+  isSameMacScoutRequest,
   isScoutWebRequestAllowedFromPeer,
   isTrustedScoutApiRequest,
   createScoutRequestPeerAddressRegistry,
@@ -95,6 +96,15 @@ function toWebSocketUrl(httpUrl: string, pathname: string, search = ""): string 
   target.protocol = target.protocol === "https:" ? "wss:" : "ws:";
   target.search = search;
   return target.toString();
+}
+
+/** Host header reduced to the bare name (lower-cased, port and brackets dropped). */
+function requestHostName(value: string | null): string {
+  const trimmed = value?.trim().toLowerCase() ?? "";
+  if (trimmed.startsWith("[")) {
+    return trimmed.slice(1, trimmed.indexOf("]"));
+  }
+  return trimmed.split(":")[0] ?? "";
 }
 
 async function bootstrapProviderTelemetry(): Promise<void> {
@@ -219,43 +229,67 @@ try {
 
       if (req.headers.get("upgrade")?.toLowerCase() === "websocket") {
         let upstreamUrl: string | null = null;
+        let upstreamHeaders: Record<string, string> | undefined;
 
-        // Block cross-origin (drive-by) upgrades to the privileged proxy sockets.
-        // The vite HMR socket is exempt (dev-only, its own origin).
-        const guardsOrigin =
-          url.pathname === routes.terminalRelayPath
-          || url.pathname === routes.tailStreamPath
-          || url.pathname === routes.eventsStreamPath;
-        if (
-          guardsOrigin
-          && (
-            !isAuthorizedScoutWebSocketRequest(req, webAuthToken, {
-              trustedHosts: applicationServerIdentity.trustedHosts,
-              trustedOrigins: applicationServerIdentity.trustedOrigins,
-              sessions: webSessions,
-            }, peerAddress)
-          )
-        ) {
-          return new Response("Unauthorized", {
-            status: 401,
-            headers: { "WWW-Authenticate": 'Bearer realm="OpenScout Web"' },
-          });
-        }
+        // A `*.scout.local` peer doorway: bridge the socket to the peer's web
+        // server. The peer's own gates apply upstream — the doorway name is
+        // its advertised host, and the browser's session cookie flows through
+        // for that origin. Same-Mac only, like the HTTP doorway proxy.
+        const requestHost = requestHostName(req.headers.get("host"));
+        const peer = requestHost && isSameMacScoutRequest(req, peerAddress)
+          ? await web.resolvePortalPeerUpstream(requestHost).catch(() => null)
+          : null;
 
-        if (url.pathname === routes.terminalRelayPath) {
-          const relay = await ensureTerminalRelay();
-          upstreamUrl = relay?.targetWebSocketUrl
-            ? `${relay.targetWebSocketUrl}${url.search}`
-            : null;
-          if (!upstreamUrl) {
-            return new Response("Terminal relay unavailable", { status: 503 });
-          }
-        } else if (url.pathname === routes.tailStreamPath || url.pathname === routes.eventsStreamPath) {
-          upstreamUrl = toWebSocketUrl(resolveScoutBrokerUrl(), "/trpc", url.search);
-        } else if (viteDevUrl && url.pathname === routes.viteHmrPath) {
-          upstreamUrl = toWebSocketUrl(viteDevUrl, url.pathname, url.search);
+        if (peer?.kind === "proxy") {
+          const upstream = peer.upstream;
+          upstreamUrl = toWebSocketUrl(upstream.base, url.pathname, url.search);
+          upstreamHeaders = {
+            host: upstream.preserveDoorwayHost
+              ? requestHost
+              : new URL(upstream.base).host,
+            ...(req.headers.get("origin") ? { origin: req.headers.get("origin")! } : {}),
+            ...(req.headers.get("cookie") ? { cookie: req.headers.get("cookie")! } : {}),
+          };
+        } else if (peer?.kind === "offline") {
+          return new Response(`${peer.label} is not reachable right now.`, { status: 503 });
         } else {
-          return new Response("WebSocket endpoint not found", { status: 404 });
+          // Block cross-origin (drive-by) upgrades to the privileged proxy sockets.
+          // The vite HMR socket is exempt (dev-only, its own origin).
+          const guardsOrigin =
+            url.pathname === routes.terminalRelayPath
+            || url.pathname === routes.tailStreamPath
+            || url.pathname === routes.eventsStreamPath;
+          if (
+            guardsOrigin
+            && (
+              !isAuthorizedScoutWebSocketRequest(req, webAuthToken, {
+                trustedHosts: applicationServerIdentity.trustedHosts,
+                trustedOrigins: applicationServerIdentity.trustedOrigins,
+                sessions: webSessions,
+              }, peerAddress)
+            )
+          ) {
+            return new Response("Unauthorized", {
+              status: 401,
+              headers: { "WWW-Authenticate": 'Bearer realm="OpenScout Web"' },
+            });
+          }
+
+          if (url.pathname === routes.terminalRelayPath) {
+            const relay = await ensureTerminalRelay();
+            upstreamUrl = relay?.targetWebSocketUrl
+              ? `${relay.targetWebSocketUrl}${url.search}`
+              : null;
+            if (!upstreamUrl) {
+              return new Response("Terminal relay unavailable", { status: 503 });
+            }
+          } else if (url.pathname === routes.tailStreamPath || url.pathname === routes.eventsStreamPath) {
+            upstreamUrl = toWebSocketUrl(resolveScoutBrokerUrl(), "/trpc", url.search);
+          } else if (viteDevUrl && url.pathname === routes.viteHmrPath) {
+            upstreamUrl = toWebSocketUrl(viteDevUrl, url.pathname, url.search);
+          } else {
+            return new Response("WebSocket endpoint not found", { status: 404 });
+          }
         }
 
         const ok = server.upgrade(req, {
@@ -264,6 +298,7 @@ try {
             pending: [],
             upstreamProtocol: req.headers.get("sec-websocket-protocol"),
             upstreamUrl,
+            upstreamHeaders,
           },
         });
         return ok

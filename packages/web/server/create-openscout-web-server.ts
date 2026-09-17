@@ -1,15 +1,23 @@
+import { ChannelEventStreams } from "./channel-event-stream.ts";
 import { worldBrokerMessages } from "../shared/world-broker-messages.ts";
 import { createReadStream, existsSync, readFileSync, readdirSync, realpathSync, rmSync, statSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 import { homedir } from "node:os";
+import { isIP } from "node:net";
 import { performance } from "node:perf_hooks";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 
 import { Hono, type Context } from "hono";
 import {
+  CHANNEL_NATURAL_KEY_METADATA,
+  CHANNEL_SPACE_SLUG_METADATA,
+  DEFAULT_CHAT_SPACE_SLUG,
   channelNaturalKeyFromMetadata,
+  channelSpaceSlug,
+  normalizeChatSpaceSlug,
+  spacedChannelNaturalKey,
   digestHerdrTopology,
   directChannelNaturalKey,
   epochMs,
@@ -18,6 +26,9 @@ import {
   isScoutRuntimeHarnessEnabled,
   parseScoutRuntimeCatalog,
   isOpaqueChannelId,
+  machineLabel,
+  machinePresence,
+  normalizeMachineHostName,
   reconcileTerminalWorkspace,
   resolveAgentIdentity,
   AGENT_HARNESSES,
@@ -30,6 +41,8 @@ import {
   scoutRuntimeDefaultsByHarness,
   scoutRuntimeEffortCatalog,
   scoutRuntimeModelCatalog,
+  namedChannelNaturalKey,
+  stableChannelId,
   scoutRuntimeReasoningEfforts,
   type AgentEndpoint,
   type AgentHarness,
@@ -37,6 +50,7 @@ import {
   type CollaborationKind,
   type ConversationDefinition,
   type ConversationKind,
+  type MachineRecord,
   type ScoutRuntimeCapabilityCatalog,
   type ScoutOwnedRuntimeCatalog,
   type TerminalWorkspaceRecord,
@@ -79,7 +93,9 @@ import { startScoutPairLanBeacon } from "./pairing-lan-beacon.ts";
 import {
   coalesce,
   createCachedSnapshot,
+  cookieValue,
   installScoutApiMiddleware,
+  isForwardedHttpsScoutRequest,
   isLoopbackScoutAddress,
   isSameMacScoutRequest,
   isScoutWebRequestAllowedFromPeer,
@@ -94,6 +110,7 @@ import {
 } from "./server-core.ts";
 import { renderScoutWebLoginPage } from "./web-login-page.ts";
 import {
+  endpointFreshnessMs,
   endpointMetadataRecord,
   selectPreferredAgentEndpoint,
   type EndpointPreference,
@@ -203,10 +220,77 @@ import {
   sendScoutDirectMessage,
   sendScoutMessage,
   upsertScoutCollaborationRecord,
+  invalidateScoutBrokerContextCache,
   upsertScoutConversation,
   upsertScoutFlight,
 } from "./core/broker/service.ts";
 import { scoutBrokerPaths } from "./core/broker/paths.ts";
+import {
+  channelAskDispatchNote,
+  planChannelAsks,
+} from "./core/conversations/channel-ask.ts";
+import {
+  CHANNEL_MEMBER_COOKIE,
+  channelMemberBearerToken,
+  channelMemberCookie,
+  channelMemberMayAccess,
+  createChannelMemberSessionAuthority,
+  type ChannelMemberGrant,
+} from "./core/conversations/channel-member-session.ts";
+import {
+  apiParticipantActor,
+  apiParticipantActorId,
+  apiParticipantDisplayName,
+  isApiParticipantActor,
+  readApiParticipantJoinRequest,
+  renderChannelApiParticipantInstructions,
+} from "./core/conversations/channel-api-participants.ts";
+import {
+  CHANNEL_POLL_INTERVAL_CAUGHT_UP_MS,
+  ChannelPollCursorError,
+  ChannelPollError,
+  DEFAULT_CHANNEL_POLL_LIMIT,
+  MAX_CHANNEL_POLL_LIMIT,
+  clampChannelPollLimit,
+  pageChannelPoll,
+} from "./core/conversations/channel-polling.ts";
+import {
+  CHANNEL_INVITE_TOKEN_PATTERN,
+  DEFAULT_CHANNEL_INVITE_TTL_MS,
+  channelInviteReachabilityNote,
+  hashChannelInviteToken,
+  channelInviteRedeemUrl,
+  channelInviteUrl,
+  channelInviteViews,
+  channelMemberRosterDecision,
+  currentChannelMemberships,
+  channelInvitesForConversation,
+  channelMemberReception,
+  renderChannelInviteAgentInstructions,
+  type ChannelInviteRouteInput,
+} from "./core/conversations/channel-invites.ts";
+import {
+  createChannelInvite,
+  joinChannelInviteAsApiParticipant,
+  joinChannelInviteAsPerson,
+  redeemChannelInvite,
+  resolveChannelInviteByToken,
+  revokeChannelInvite,
+} from "./core/conversations/channel-invite-service.ts";
+import {
+  CHAT_SPACE_HEADER,
+  CHAT_SPACE_QUERY_KEY,
+  chatChannelSpaceDecision,
+  chatSpaceChannels,
+  chatSpaceRosterAddition,
+  createChatSpace,
+  DEFAULT_CHAT_SPACE_TITLE,
+  findChatSpaceRecord,
+  listChatSpaces,
+  memberVisibleSpaceSlugs,
+  resolveChatSpaceSelection,
+  type ChatSpaceSelection,
+} from "./core/conversations/chat-spaces.ts";
 import {
   getScoutConversationById,
   getScoutConversationMessages,
@@ -373,6 +457,7 @@ import {
   DEFAULT_MESSAGE_PAGE_LIMIT,
   MessageCursorError,
   clampMessagePageLimit,
+  compareMessagesAsc,
   encodeMessageHistoryCursor,
   parseMessageHistoryCursor,
 } from "../shared/message-pagination.ts";
@@ -522,6 +607,13 @@ export type CreateOpenScoutWebServerOptions = {
   /** Run process-wide discovery/watch services. Embedded and test hosts can
    * disable these to avoid owning UDP beacons and filesystem watchers. */
   backgroundServices?: boolean;
+  /**
+   * Machines the scout.local doorway lists. Defaults to the broker machine
+   * roster (`/v1/machines`); injectable so tests never need a live broker.
+   */
+  portalMachines?: () => Promise<MachineRecord[]>;
+  /** Fetch used to proxy `*.portalHost` peer doorway requests. For tests. */
+  portalFetch?: typeof fetch;
   // Injectable for tests; defaults to the runtime native diff producer.
   repoDiffSnapshot?: (options: RepoDiffSnapshotOptions) => Promise<ScoutRepoDiffSnapshot>;
   repoPullRequests?: (options: RepoPullRequestLoadOptions) => Promise<RepoPullRequestSnapshot>;
@@ -560,6 +652,15 @@ export type OpenScoutWebServer = {
   app: Hono;
   warmupCaches: () => Promise<void>;
   stop: () => Promise<void>;
+  /**
+   * Resolve a `*.portalHost` peer doorway host: a dialable upstream, a known
+   * peer with no live route, or null when the host is not a known Scout peer.
+   * The Bun.serve layer uses this to bridge WebSocket upgrades to the peer's
+   * web server.
+   */
+  resolvePortalPeerUpstream: (
+    requestHost: string,
+  ) => Promise<ScoutPortalPeerResolution>;
 };
 
 type OperatorAttentionItem = {
@@ -4330,10 +4431,335 @@ async function buildOperatorAttentionState(
 }
 
 
+/* ── scout.local portal peers ── */
+
+export type ScoutPortalPeer = {
+  /** What the row links to — the doorway host, or the machine name unlinked. */
+  label: string;
+  href: string | null;
+  detail: string;
+};
+
+/**
+ * The doorway page does not wait on a cold roster scan. `/v1/machines` is
+ * cached broker-side, but a cold pass holds an mDNS browse open for ~2.5s —
+ * beyond that the doorway renders this machine alone and the roster is warm
+ * for the next visit.
+ */
+const SCOUT_PORTAL_PEER_TIMEOUT_MS = 3_500;
+
+function isScoutEnabledMachine(machine: MachineRecord): boolean {
+  return !machine.isSelf
+    && (Boolean(machine.scoutNodeId)
+      || machine.capabilities.some((capability) => capability.startsWith("scout-")));
+}
+
+function bracketIPv6(host: string): string {
+  return host.includes(":") ? `[${host}]` : host;
+}
+
+const SCOUT_DOORWAY_LABEL_PATTERN = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
+
+/** The portal host or any of its subdomains — always a doorway, never a route. */
+/**
+ * Doorway labels this node serves itself rather than proxying to a peer.
+ *
+ * `chat.scout.local` is the Scout Chat space. Reserving the label keeps peer
+ * routing intact for every other name while guaranteeing the chat host always
+ * means this node's chat surface.
+ */
+export const RESERVED_SCOUT_SERVICE_LABELS: readonly string[] = ["chat"];
+
+export function isReservedScoutServiceHost(host: string, portalHost: string): boolean {
+  const normalized = host.trim().toLowerCase().replace(/\.$/, "");
+  return RESERVED_SCOUT_SERVICE_LABELS.some(
+    (label) => normalized === `${label}.${portalHost}`,
+  );
+}
+
+function isScoutDoorwayHost(host: string, portalHost: string): boolean {
+  return host === portalHost || host.endsWith(`.${portalHost}`);
+}
+
+/**
+ * Every `*.${portalHost}` doorway name evidence says a machine answers to.
+ * The advertised `webHost` is authoritative; the derived names let peers
+ * running older builds still be found by their hostname. The mDNS mesh
+ * advert's `openscout-<keyid>.local` instance is a key fingerprint, not a
+ * doorway name, so it is deliberately skipped.
+ */
+function portalPeerDoorwayHosts(machine: MachineRecord, portalHost: string): string[] {
+  const hosts = new Set<string>();
+  const addName = (value: string | null | undefined) => {
+    const short = normalizeMachineHostName(value);
+    if (SCOUT_DOORWAY_LABEL_PATTERN.test(short) && !short.startsWith("openscout-")) {
+      hosts.add(`${short}.${portalHost}`);
+    }
+  };
+  for (const item of machine.evidence) {
+    if (item.kind === "scout") {
+      const webHost = item.webHost?.trim().replace(/\.$/, "").toLowerCase();
+      if (webHost && webHost !== portalHost && webHost.endsWith(`.${portalHost}`)) {
+        hosts.add(webHost);
+      }
+      addName(item.hostName);
+      addName(item.nodeName);
+    } else if (item.kind === "tailnet") {
+      addName(item.hostName);
+      addName(item.dnsName);
+    } else if (item.kind === "lan") {
+      addName(item.hostName);
+      addName(item.instanceName);
+    }
+  }
+  // A peer never answers to a reserved service label, however it is named.
+  return [...hosts].filter((host) => !isReservedScoutServiceHost(host, portalHost));
+}
+
+type ScoutPortalLink = {
+  href: string;
+  label: string;
+  via: "lan" | "tailnet" | "mesh";
+};
+
+export type ScoutPortalPeerUpstream = {
+  /** Base URL to dial — always an address, never a `*.scout.local` name. */
+  base: string;
+  via: "lan" | "tailnet" | "mesh";
+  /**
+   * True when `base` is a bare address route: the request keeps the doorway
+   * name as its upstream Host — it is the peer's own advertised name, which
+   * its web server already trusts. Advertised webUrl upstreams keep their own
+   * host instead, so a front door's vhost routing still works.
+   */
+  preserveDoorwayHost: boolean;
+};
+
+/**
+ * What a `*.portalHost` request host resolves to: a peer to proxy to, a peer
+ * we know but cannot currently dial (never fall through to the local app —
+ * silently serving this machine under a peer's name is the failure the
+ * doorway exists to prevent), or nothing we recognize.
+ */
+export type ScoutPortalPeerResolution =
+  | { kind: "proxy"; upstream: ScoutPortalPeerUpstream }
+  | { kind: "offline"; label: string }
+  | null;
+
+/**
+ * The address a machine can actually be dialed on: an advertised non-loopback
+ * webUrl, a LAN address (the local edge answers port 80 for all of a
+ * machine's own interface addresses), or a tailnet name/address. Never a
+ * `*.scout.local` doorway name and never loopback — both resolve back to
+ * this machine.
+ */
+function portalMachineUpstream(
+  machine: MachineRecord,
+  portalHost: string,
+): ScoutPortalPeerUpstream | null {
+  for (const item of machine.evidence) {
+    if (item.kind !== "scout" || !item.webUrl) continue;
+    try {
+      const url = new URL(item.webUrl);
+      const host = url.hostname.replace(/\.$/, "").toLowerCase();
+      // Nodes today advertise their own loopback (http://127.0.0.1:43120),
+      // which reaches nobody — but a non-loopback webUrl is the node's own
+      // word for its doorway and always wins when present. A doorway-named
+      // webUrl is not a route: the name resolves to this machine's loopback
+      // and dialing it would proxy in a circle.
+      if (!isLoopbackScoutAddress(host) && !isScoutDoorwayHost(host, portalHost)) {
+        return { base: url.origin, via: "mesh", preserveDoorwayHost: false };
+      }
+    } catch {
+      // A malformed advertised URL is the peer's problem; keep looking.
+    }
+  }
+
+  const lanRoute = machine.routes.find((route) => route.kind === "lan");
+  if (lanRoute) {
+    return { base: `http://${bracketIPv6(lanRoute.host)}`, via: "lan", preserveDoorwayHost: true };
+  }
+
+  // MagicDNS names read better than CGNAT literals; both reach the edge.
+  const tailnetHost = machine.routes.find(
+    (route) => route.kind === "tailnet" && isIP(route.host) === 0,
+  )?.host ?? machine.routes.find((route) => route.kind === "tailnet")?.host;
+  if (tailnetHost) {
+    return { base: `http://${bracketIPv6(tailnetHost)}`, via: "tailnet", preserveDoorwayHost: true };
+  }
+
+  return null;
+}
+
+/**
+ * What the portal links to for a peer. On this LAN a `*.scout.local` doorway
+ * name is the preferred link: it resolves to loopback wherever the peer's
+ * mDNS advert reaches, and the local edge proxies it to the peer's live
+ * route — so the name survives address changes. Without a doorway name the
+ * link is the raw route; without any route the peer is listed, not linked.
+ *
+ * `portSuffix` is the incoming request's port — through the edge that is :80
+ * (empty), but a dev server on :43120 answers `foo.scout.local:43120`
+ * directly, so doorway links carry it. Raw-address links do not: their port
+ * belongs to the *peer's* edge.
+ */
+function portalMachineLink(
+  machine: MachineRecord,
+  portalHost: string,
+  portSuffix: string,
+): ScoutPortalLink | null {
+  const upstream = portalMachineUpstream(machine, portalHost);
+  if (upstream?.via === "mesh") {
+    return { href: `${upstream.base}/`, label: new URL(upstream.base).host, via: "mesh" };
+  }
+
+  // A `webHost` that is not a `*.portalHost` name is a real DNS doorway —
+  // link it verbatim rather than routing through the local edge.
+  for (const item of machine.evidence) {
+    if (item.kind !== "scout") continue;
+    const webHost = item.webHost?.trim().replace(/\.$/, "").toLowerCase();
+    if (webHost && webHost !== portalHost && !webHost.endsWith(`.${portalHost}`)) {
+      return { href: `http://${webHost}/`, label: webHost, via: "mesh" };
+    }
+  }
+
+  if (!upstream) return null;
+
+  // Any dialable route can carry a doorway name — the local edge proxies it —
+  // so the stable name beats a raw LAN IP or MagicDNS name for links too.
+  const doorway = portalPeerDoorwayHosts(machine, portalHost)
+    .find((host) => host.endsWith(`.${portalHost}`));
+  if (doorway) {
+    return { href: `http://${doorway}${portSuffix}/`, label: doorway, via: upstream.via };
+  }
+  return { href: `${upstream.base}/`, label: new URL(upstream.base).host, via: upstream.via };
+}
+
+function scoutPortalPeerViews(
+  machines: readonly MachineRecord[],
+  portalHost: string,
+  portSuffix: string,
+): ScoutPortalPeer[] {
+  const peers: ScoutPortalPeer[] = [];
+  for (const machine of machines) {
+    if (!isScoutEnabledMachine(machine)) continue;
+    const link = portalMachineLink(machine, portalHost, portSuffix);
+    const presence = machinePresence(machine);
+    const name = machineLabel(machine);
+    const parts = link ? [link.via === "lan" ? "LAN" : link.via === "tailnet" ? "Tailnet" : "Mesh", presence] : ["registered", presence];
+    // When the row's label is a bare address the derived name is the only
+    // human handle — keep it in the sub line rather than losing it.
+    if (link && isIP(link.label) !== 0 && name && isIP(name) === 0 && name !== link.label) {
+      parts.push(name);
+    }
+    peers.push({
+      label: link?.label ?? name,
+      href: link?.href ?? null,
+      detail: parts.join(" · "),
+    });
+  }
+  return peers;
+}
+
+async function loadScoutPortalPeers(
+  options: CreateOpenScoutWebServerOptions,
+  portalHost: string,
+  portSuffix: string,
+): Promise<ScoutPortalPeer[]> {
+  const read = options.portalMachines ?? (async () => (await loadMachines()).machines);
+  const machines = await Promise.race([
+    read(),
+    new Promise<null>((resolve) => setTimeout(resolve, SCOUT_PORTAL_PEER_TIMEOUT_MS, null)),
+  ]);
+  return machines ? scoutPortalPeerViews(machines, portalHost, portSuffix) : [];
+}
+
+const SCOUT_PEER_PROXY_STRIP_HEADERS = [
+  "connection",
+  "keep-alive",
+  "proxy-authenticate",
+  "proxy-authorization",
+  "te",
+  "trailer",
+  "transfer-encoding",
+  "upgrade",
+];
+
+/**
+ * Forward one request to a peer doorway's dialable route. The peer enforces
+ * its own auth; this is a pipe, not a credential. The doorway name travels as
+ * the upstream Host on address routes (it is the peer's own advertised name),
+ * which keeps the browser's Origin same-origin on the far side.
+ */
+async function proxyScoutPortalPeerRequest(
+  c: Context,
+  upstream: ScoutPortalPeerUpstream,
+  requestHost: string,
+  peerAddress: string | undefined,
+  fetchImpl: typeof fetch,
+): Promise<Response> {
+  const incoming = new URL(c.req.url);
+  const upstreamUrl = new URL(`${incoming.pathname}${incoming.search}`, upstream.base);
+  const headers = new Headers(c.req.raw.headers);
+  for (const name of SCOUT_PEER_PROXY_STRIP_HEADERS) headers.delete(name);
+  headers.delete("content-length");
+  if (upstream.preserveDoorwayHost) {
+    headers.set("host", requestHost);
+  } else {
+    headers.delete("host");
+    if (headers.has("origin")) headers.set("origin", upstream.base);
+    const referer = headers.get("referer");
+    if (referer) {
+      try {
+        const ref = new URL(referer);
+        headers.set("referer", `${upstream.base}${ref.pathname}${ref.search}${ref.hash}`);
+      } catch {
+        headers.delete("referer");
+      }
+    }
+  }
+  const forwardedFor = [c.req.header("x-forwarded-for"), peerAddress]
+    .filter(Boolean)
+    .join(", ");
+  if (forwardedFor) headers.set("x-forwarded-for", forwardedFor);
+  headers.set("x-forwarded-proto", incoming.protocol.replace(/:$/, ""));
+  headers.set("x-forwarded-host", c.req.header("host") ?? requestHost);
+
+  const method = c.req.method.toUpperCase();
+  const init: RequestInit = { method, headers, redirect: "manual" };
+  if (method !== "GET" && method !== "HEAD") {
+    (init as { duplex?: string }).duplex = "half";
+    init.body = c.req.raw.body;
+  }
+  const response = await fetchImpl(upstreamUrl, init);
+  const outHeaders = new Headers(response.headers);
+  for (const name of [...SCOUT_PEER_PROXY_STRIP_HEADERS, "content-length", "content-encoding"]) {
+    outHeaders.delete(name);
+  }
+  // Keep redirects inside the doorway when the upstream points at itself.
+  const location = outHeaders.get("location");
+  if (location) {
+    try {
+      const target = new URL(location, upstream.base);
+      if (target.origin === new URL(upstream.base).origin) {
+        target.protocol = incoming.protocol;
+        target.host = incoming.host;
+        outHeaders.set("location", target.toString());
+      }
+    } catch { /* leave the upstream's Location untouched */ }
+  }
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers: outHeaders,
+  });
+}
+
 function renderScoutLocalPortal(input: {
   requestUrl: string;
   portalHost: string;
   nodeHost: string;
+  peers: ScoutPortalPeer[];
 }): string {
   const url = new URL(input.requestUrl);
   const port = url.port ? `:${url.port}` : "";
@@ -4341,6 +4767,28 @@ function renderScoutLocalPortal(input: {
   const nodeHost = escapeHtml(input.nodeHost);
   const portalHost = escapeHtml(input.portalHost);
   const escapedNodeUrl = escapeHtml(nodeUrl);
+  const peerRows = input.peers
+    .map((peer, index) => {
+      const delay = Math.min(250 + index * 45, 880);
+      const inner = `
+        <span class="node__id">
+          <span class="node__host">${escapeHtml(peer.label)}</span>
+          <span class="node__sub">${escapeHtml(peer.detail)}</span>
+        </span>
+        ${peer.href ? `<span class="node__open" aria-hidden="true">Open</span>` : ""}`;
+      return peer.href
+        ? `        <a class="node rise" style="animation-delay: ${delay}ms" href="${escapeHtml(peer.href)}">${inner}\n        </a>`
+        : `        <div class="node node--off rise" style="animation-delay: ${delay}ms">${inner}\n        </div>`;
+    })
+    .join("\n");
+  // The mesh recedes behind one quiet label; the count keeps the label honest.
+  const peersBlock = input.peers.length > 0
+    ? `      <div class="peers">
+        <div class="peers__label rise" style="animation-delay: 210ms">Elsewhere · ${input.peers.length}</div>
+${peerRows}
+      </div>`
+    : "";
+  const trustDelay = Math.min(300 + input.peers.length * 45, 940);
   // Quiet ledger doorway (design study: design/portal-studies/scout-local-quiet-ledger.html).
   // One identity cluster, one live wavefront instrument, one ledger line per
   // node, one trust line. No accent hue: ink plus stepped warm greys only.
@@ -4489,6 +4937,45 @@ function renderScoutLocalPortal(input: {
         outline: 1px solid var(--ink-2);
         outline-offset: 3px;
       }
+      .node--off:hover { background: none; }
+      /* This machine leads: one eyebrow, a stronger rule, a size step up. */
+      .node--self {
+        padding-block: 22px;
+        border-top-color: var(--edge-2);
+        border-bottom-color: var(--edge-2);
+      }
+      .node__eyebrow {
+        font-family: var(--mono);
+        font-size: 10px;
+        letter-spacing: 0.14em;
+        text-transform: uppercase;
+        color: var(--ink-3);
+      }
+      .node--self .node__host { font-size: 16px; }
+      .node--self .node__open { color: var(--ink-2); }
+      /* The rest of the mesh: same ledger grammar, one notch quieter. The
+         Open affordance waits for hover/focus instead of reading per row. */
+      .peers { margin-top: 38px; }
+      .peers__label {
+        padding: 0 6px 2px;
+        font-family: var(--mono);
+        font-size: 10px;
+        letter-spacing: 0.14em;
+        text-transform: uppercase;
+        color: var(--ink-3);
+      }
+      .peers .node {
+        padding-block: 13px;
+        border-bottom: none;
+      }
+      .peers .node:last-child { border-bottom: 1px solid var(--edge); }
+      .peers .node__host { color: var(--ink-2); font-size: 13px; }
+      .peers .node:hover .node__host,
+      .peers .node:focus-visible .node__host { color: var(--ink); }
+      .peers .node--off .node__host { color: var(--ink-3); }
+      .peers .node__open { opacity: 0; transition: color 140ms ease, opacity 140ms ease; }
+      .peers .node:hover .node__open,
+      .peers .node:focus-visible .node__open { opacity: 1; }
       .node__id { display: grid; gap: 4px; min-width: 0; }
       .node__host {
         font-family: var(--mono);
@@ -4566,14 +5053,15 @@ function renderScoutLocalPortal(input: {
           <pre class="field__layer" data-t="4" aria-hidden="true"></pre>
         </a>
       </div>
-      <a class="node rise rise-2" href="${escapedNodeUrl}">
+      <a class="node node--self rise rise-2" href="${escapedNodeUrl}">
         <span class="node__id">
+          <span class="node__eyebrow">This machine</span>
           <span class="node__host">${nodeHost}</span>
-          <span class="node__sub">Local web node</span>
         </span>
         <span class="node__open">Open</span>
       </a>
-      <div class="trust rise rise-3">
+${peersBlock}
+      <div class="trust rise" style="animation-delay: ${trustDelay}ms">
         <a href="https://openscout.app/docs" target="_blank" rel="noopener noreferrer">Docs</a>
         <span class="sep" aria-hidden="true">/</span>
         <a href="https://github.com/oscout/scout" target="_blank" rel="noopener noreferrer">GitHub</a>
@@ -5262,6 +5750,64 @@ export async function createOpenScoutWebServer(
     }
     await next();
   });
+
+  // `<peer>.scout.local` resolves to this machine's loopback for every LAN
+  // browser — each node's mDNS advert says 127.0.0.1. When the host names a
+  // roster peer the doorway means "that machine's Scout": proxy to its live
+  // route so the name is true everywhere it resolves. Same-Mac only — a LAN
+  // client crafting the Host header must not turn this edge into a relay.
+  const readPortalMachineRoster = coalesce(
+    async () => options.portalMachines
+      ? options.portalMachines()
+      : (await loadMachines()).machines,
+    5_000,
+  );
+  const resolvePortalPeerUpstream = async (
+    requestHost: string,
+  ): Promise<ScoutPortalPeerResolution> => {
+    const portalHost = options.portalHost?.trim().toLowerCase();
+    const nodeHost = options.advertisedHost?.trim().toLowerCase();
+    if (
+      !portalHost
+      || requestHost === portalHost
+      || (nodeHost && requestHost === nodeHost)
+      || !requestHost.endsWith(`.${portalHost}`)
+    ) {
+      return null;
+    }
+    // Reserved service labels are this node's own surfaces, not peer doorways.
+    // The check sits ahead of the roster lookup on purpose: a machine that
+    // happens to be named `chat` must not be able to shadow `chat.scout.local`
+    // by joining the mesh.
+    if (isReservedScoutServiceHost(requestHost, portalHost)) return null;
+    const machines = await readPortalMachineRoster().catch(() => null);
+    if (!machines) return null;
+    const machine = machines.find((candidate) =>
+      isScoutEnabledMachine(candidate)
+      && portalPeerDoorwayHosts(candidate, portalHost).includes(requestHost));
+    if (!machine) return null;
+    const upstream = portalMachineUpstream(machine, portalHost);
+    return upstream
+      ? { kind: "proxy", upstream }
+      : { kind: "offline", label: machineLabel(machine) };
+  };
+  app.use("*", async (c, next) => {
+    const requestHost = normalizeRequestHost(c.req.header("host"));
+    const peerAddress = (options.resolvePeerAddress ?? resolveScoutRequestPeerAddress)(c);
+    if (!isSameMacScoutRequest(c.req.raw, peerAddress)) return next();
+    const peer = await resolvePortalPeerUpstream(requestHost).catch(() => null);
+    if (!peer) return next();
+    if (peer.kind === "offline") {
+      return c.text(`${peer.label} is not reachable right now.`, 503);
+    }
+    return proxyScoutPortalPeerRequest(
+      c,
+      peer.upstream,
+      requestHost,
+      peerAddress,
+      options.portalFetch ?? fetch,
+    );
+  });
   installHttpsEdgeSecurityHeaders(app, options.publicOrigin);
   const shellStateCache = createCachedSnapshot<OpenScoutWebShellState>(
     loadOpenScoutWebShellState,
@@ -5362,19 +5908,46 @@ export async function createOpenScoutWebServer(
   const tailDiscoveryCaches = new Map<string, BrokerJsonCache<DiscoverySnapshot>>();
   const tailRecentCaches = new Map<string, BrokerJsonCache<TailRecentPayload>>();
 
+  // Credentials for people admitted by a channel invitation. Separate from the
+  // operator session authority on purpose: a teammate must never hold the
+  // operator's token, and this grant cannot reach beyond the channels they
+  // joined.
+  // Derived from the host's API token, never equal to it: a member cookie must
+  // survive a restart without ever being replayable as an operator credential.
+  // With no token configured there is nothing to derive from, and the authority
+  // falls back to memory only rather than signing with a guessable key.
+  const channelMemberSessions = createChannelMemberSessionAuthority({
+    signingSecret: options.authToken ?? null,
+  });
+  // Two ways to carry the same grant. A browser has the cookie; an HTTP client
+  // that joined over the API has a bearer token, because expecting a
+  // no-install agent to keep a cookie jar is how the credential gets dropped.
+  // Both are validated by signature, so neither can be forged into the other,
+  // and an operator bearer arriving here simply fails member validation.
+  const readChannelMemberGrant = (request: Request): ChannelMemberGrant | null =>
+    channelMemberSessions.validate(cookieValue(request, CHANNEL_MEMBER_COOKIE))
+    ?? channelMemberSessions.validate(
+      channelMemberBearerToken(request.headers.get("authorization")),
+    );
+
   installScoutApiMiddleware(app, "openscout-web api", {
     trustedHosts: options.trustedHosts,
     trustedOrigins: options.trustedOrigins,
     authToken: options.authToken,
     sessions: options.sessions,
     resolvePeerAddress: options.resolvePeerAddress,
+    memberAccess: (request, method, path) => channelMemberMayAccess({
+      grant: readChannelMemberGrant(request),
+      method,
+      path,
+    }),
   });
 
   // Server-rendered operator login for browsers that no auto-issuance path
   // covers — a Tailscale or LAN client reaching this host by address or name.
   app.get(SCOUT_WEB_LOGIN_PAGE_PATH, (c) => {
     c.header("cache-control", "no-store");
-    return c.html(renderScoutWebLoginPage());
+    return c.html(renderScoutWebLoginPage(routes.bootstrapScriptPath));
   });
 
   mountScoutDeckSurfaceRoutes(app, {
@@ -5743,11 +6316,15 @@ export async function createOpenScoutWebServer(
     const nodeHost = options.advertisedHost?.trim().toLowerCase();
     const requestHost = normalizeRequestHost(c.req.header("host"));
     if (portalHost && nodeHost && requestHost === portalHost && portalHost !== nodeHost) {
+      const port = new URL(c.req.url).port;
+      const portSuffix = port ? `:${port}` : "";
+      const peers = await loadScoutPortalPeers(options, portalHost, portSuffix).catch(() => []);
       return new Response(
         renderScoutLocalPortal({
           requestUrl: c.req.url,
           portalHost,
           nodeHost,
+          peers,
         }),
         {
           headers: {
@@ -8000,6 +8577,1567 @@ export async function createOpenScoutWebServer(
     return c.json({ ok: true, ...next });
   });
 
+
+  /* -- channel invitations ------------------------------------------------- */
+
+  // The invitation route is resolved per request rather than cached: the node's
+  // reachability can change under us (a tailnet coming up, a public origin being
+  // configured), and an invitation that overstates its reach is the exact
+  // failure this feature must not ship.
+  const resolveInviteRouteInput = (
+    authorityNodeId: string,
+  ): ChannelInviteRouteInput => ({
+    authorityNodeId,
+    advertisedHost: options.advertisedHost ?? null,
+    portalHost: options.portalHost ?? null,
+    publicOrigin: options.publicOrigin ?? null,
+    webPort: options.webPort ?? null,
+    // Only a configured public origin is treated as routable off-network. The
+    // portal's LAN/tailnet links are peer-resolution hints, not a promise that
+    // a given URL resolves for the person holding the invitation.
+    meshBaseUrl: null,
+  });
+
+  /**
+   * How long an authorization read may take before it is refused.
+   *
+   * Failing closed on a slow or unreachable broker is the point: the roster is
+   * what says a member still belongs here, and guessing "yes" because the read
+   * did not come back is exactly the wrong guess.
+   */
+  const CHANNEL_ROSTER_READ_TIMEOUT_MS = 5_000;
+
+  /**
+   * Refuse a member who is no longer on a channel's roster.
+   *
+   * A member's cookie carries the channels they joined, which is durable by
+   * design -- it survives a restart. Being *removed* from a channel is equally
+   * durable and lives only in the broker, so membership has to be re-read
+   * rather than inferred from the credential, or a removed teammate would keep
+   * the room until their cookie expired.
+   *
+   * The read deliberately bypasses the snapshot cache. Passing a signal makes
+   * `loadScoutBrokerContext` skip the cache for this call alone, which is what
+   * is wanted here: an authorization decision must not be answered from a
+   * snapshot that predates the removal, and forcing a refresh instead would
+   * evict the operator's caches as a side effect of a guest's request.
+   *
+   * The operator is not a member and is not checked here; their own credential
+   * is what authorizes them.
+   */
+  const denyRemovedChannelMember = async (
+    request: Request,
+    channelId: string,
+  ): Promise<{ status: 403 | 502; error: string } | null> => {
+    const grant = readChannelMemberGrant(request);
+    if (!grant) return null;
+    const fresh = await loadScoutBrokerContext(undefined, {
+      scope: "conversations",
+      signal: AbortSignal.timeout(CHANNEL_ROSTER_READ_TIMEOUT_MS),
+    }).catch(() => null);
+    return channelMemberRosterDecision({
+      grant,
+      brokerReachable: Boolean(fresh),
+      conversation: (fresh?.snapshot.conversations?.[channelId] as
+        | ConversationDefinition
+        | undefined) ?? null,
+    });
+  };
+
+  /**
+   * This node's reserved chat name. Invitations advertise it, and its root
+   * redirects to the chat surface.
+   */
+  const chatServiceHost = (): string => {
+    const portalHost = options.portalHost?.trim().toLowerCase();
+    return portalHost ? `chat.${portalHost}` : "chat.scout.local";
+  };
+
+  /** The operator's actor id in the broker. Members are distinct person actors. */
+  const CHAT_OPERATOR_ACTOR_ID = "operator";
+
+  type ChatViewer = { actorId: string; displayName: string; isOperator: boolean };
+
+  const chatViewerFor = (request: Request): ChatViewer => {
+    const member = readChannelMemberGrant(request);
+    if (member) {
+      return { actorId: member.actorId, displayName: member.displayName, isOperator: false };
+    }
+    // Reaching a handler means the middleware already accepted the request, so
+    // anything that is not a member credential is the operator.
+    return {
+      actorId: CHAT_OPERATOR_ACTOR_ID,
+      displayName: resolveOperatorName().trim() || "Operator",
+      isOperator: true,
+    };
+  };
+
+  /**
+   * Which space this request is about.
+   *
+   * `?space=` and `X-Scout-Space` are two spellings of the same *selector*: a
+   * browser puts it in the URL so a link carries it, and an HTTP client that
+   * was handed a bare endpoint can set the header instead. Neither is a
+   * credential. The rules live in `resolveChatSpaceSelection`, and the one that
+   * matters is that an absent selector resolves to the caller's own narrowest
+   * space -- their credential's, or the default -- never to "all of them".
+   */
+  const resolveChatSpaceFor = (request: Request): ChatSpaceSelection => {
+    const url = new URL(request.url);
+    const grant = readChannelMemberGrant(request);
+    return resolveChatSpaceSelection({
+      requested: url.searchParams.get(CHAT_SPACE_QUERY_KEY)
+        ?? request.headers.get(CHAT_SPACE_HEADER),
+      grantSpaceSlug: grant?.spaceSlug ?? (grant ? DEFAULT_CHAT_SPACE_SLUG : null),
+    });
+  };
+
+  type ChatChannelResolution =
+    | {
+        ok: true;
+        broker: ScoutBrokerContext;
+        conversation: ConversationDefinition;
+        viewer: ChatViewer;
+        spaceSlug: string;
+      }
+    | { ok: false; status: 400 | 403 | 404 | 502; error: string };
+
+  /**
+   * Resolve a channel for a chat request, and refuse it unless the caller is a
+   * member of that exact channel, in that exact space.
+   *
+   * The scoped-credential middleware already limits a member to the channels
+   * their cookie names. This is the second, independent check, and it is the
+   * one that matters for removal: it re-reads the broker's roster past the
+   * snapshot cache, so a member taken out of a channel loses it on their next
+   * request rather than when their cookie expires.
+   *
+   * It is also the one choke point every channel read and write passes
+   * through -- feed, poll, events, messages, asks, members and invitations --
+   * which is what makes the space boundary real rather than cosmetic. A
+   * channel in another space answers 404 here even when the client hand-crafts
+   * the request with the right id, and it answers 404 rather than 403 so the
+   * refusal is not a directory of the rooms you are not in.
+   */
+  const resolveChatChannel = async (
+    request: Request,
+    channelId: string,
+  ): Promise<ChatChannelResolution> => {
+    if (!isOpaqueChannelId(channelId)) {
+      return { ok: false, status: 400, error: "channelId must be an opaque chat id" };
+    }
+    const space = resolveChatSpaceFor(request);
+    if (!space.ok) return { ok: false, status: 400, error: space.error };
+    const denial = await denyRemovedChannelMember(request, channelId);
+    if (denial) return { ok: false, status: denial.status, error: denial.error };
+    const broker = await loadScoutBrokerContext();
+    if (!broker) return { ok: false, status: 502, error: "broker unreachable" };
+    const conversation = broker.snapshot.conversations?.[channelId] as
+      | ConversationDefinition
+      | undefined;
+    if (!conversation || conversation.kind !== "channel") {
+      return { ok: false, status: 404, error: "channel not found" };
+    }
+    const grant = readChannelMemberGrant(request);
+    const spaceDenial = chatChannelSpaceDecision({
+      channelSpaceSlug: channelSpaceSlug(conversation),
+      selectedSpaceSlug: space.slug,
+      grantSpaceSlug: grant ? grant.spaceSlug ?? DEFAULT_CHAT_SPACE_SLUG : null,
+    });
+    if (spaceDenial) return { ok: false, status: spaceDenial.status, error: spaceDenial.error };
+    return {
+      ok: true,
+      broker,
+      conversation,
+      viewer: chatViewerFor(request),
+      spaceSlug: channelSpaceSlug(conversation),
+    };
+  };
+
+  /**
+   * The space an invitation's channel lives in, and what to call it.
+   *
+   * Read from the channel record, never from the request: a channel is in
+   * exactly one space, so an invitation is space-scoped for free and there is
+   * nothing for a caller to name. This is what lets the acceptance routes bind
+   * a credential to one space without trusting anything the joiner sent.
+   */
+  const chatSpaceForChannelId = async (
+    channelId: string,
+  ): Promise<{ slug: string; title: string }> => {
+    const broker = await loadScoutBrokerContext().catch(() => null);
+    const conversations = broker?.snapshot.conversations as
+      Record<string, ConversationDefinition | undefined> | undefined;
+    const conversation = conversations?.[channelId];
+    // An unreadable channel reads as the default space rather than as "no
+    // space". A credential is about to be bound to this answer, and the
+    // narrowest answer is the only safe one to guess.
+    const slug = conversation ? channelSpaceSlug(conversation) : DEFAULT_CHAT_SPACE_SLUG;
+    if (slug === DEFAULT_CHAT_SPACE_SLUG) {
+      return { slug, title: DEFAULT_CHAT_SPACE_TITLE };
+    }
+    const record = findChatSpaceRecord(conversations, slug);
+    return { slug, title: record?.title.trim() || slug };
+  };
+
+  /**
+   * Put a joiner on the space's roster.
+   *
+   * Space membership is derived, not invited: being let into a channel is what
+   * puts you in its space. Best-effort on purpose -- the roster is a label, and
+   * a failed write here must never turn a successful join into a failure.
+   */
+  const addActorToChatSpaceRoster = async (spaceSlug: string, actorId: string): Promise<void> => {
+    if (spaceSlug === DEFAULT_CHAT_SPACE_SLUG) return;
+    try {
+      const broker = await loadScoutBrokerContext().catch(() => null);
+      if (!broker) return;
+      const next = chatSpaceRosterAddition({
+        conversations: broker.snapshot.conversations as
+          Record<string, ConversationDefinition | undefined> | undefined,
+        spaceSlug,
+        actorId,
+      });
+      if (!next) return;
+      await upsertScoutConversation(next);
+      invalidateScoutBrokerContextCache(broker.baseUrl);
+    } catch {
+      // The join already succeeded. A missing roster label is a cosmetic gap.
+    }
+  };
+
+  /**
+   * A channel API path carrying its space.
+   *
+   * Every URL this server hands to a client goes through here, so a document,
+   * a poll URL and a redirect cannot drift into three different spellings of
+   * the same rule. The default space is written bare, which keeps every URL
+   * that exists today byte-identical.
+   */
+  const chatChannelPath = (channelId: string, suffix: string, spaceSlug: string): string => {
+    const base = `/api/channels/${encodeURIComponent(channelId)}/${suffix}`;
+    return spaceSlug === DEFAULT_CHAT_SPACE_SLUG
+      ? base
+      : `${base}?${CHAT_SPACE_QUERY_KEY}=${encodeURIComponent(spaceSlug)}`;
+  };
+
+  app.get("/api/channels/:id/invites", async (c) => {
+    const channelId = c.req.param("id");
+    // Through the same resolver as the feed. An invitation list is a read of
+    // the room, so a room in another space must be as unreachable here as it
+    // is there -- a second, laxer path to the same conversation is how a
+    // namespace boundary turns into a suggestion.
+    const resolved = await resolveChatChannel(c.req.raw, channelId);
+    if (!resolved.ok) return c.json({ error: resolved.error }, resolved.status);
+    return c.json({ invites: channelInviteViews(resolved.conversation, Date.now()) });
+  });
+
+  app.post("/api/channels/:id/invites", async (c) => {
+    const channelId = c.req.param("id");
+    const resolved = await resolveChatChannel(c.req.raw, channelId);
+    if (!resolved.ok) return c.json({ error: resolved.error }, resolved.status);
+    const body = (await c.req.json().catch(() => null)) as
+      | {
+          createdByActorId?: string;
+          invitee?: { actorId?: string; displayName?: string };
+          expiresInMs?: number | null;
+          maxRedemptions?: number | null;
+        }
+      | null;
+    // Authorship comes from the credential. A member may invite their own agent
+    // into the channel they joined, but neither they nor a crafted body may
+    // attribute that invitation to the operator.
+    const inviter = readChannelMemberGrant(c.req.raw);
+    const createdByActorId = inviter
+      ? inviter.actorId
+      : body?.createdByActorId?.trim() || "operator";
+    const broker = resolved.broker;
+
+    const nowMs = Date.now();
+    const expiresInMs = body?.expiresInMs === null
+      ? null
+      : body?.expiresInMs ?? DEFAULT_CHANNEL_INVITE_TTL_MS;
+    const outcome = await createChannelInvite({
+      channelId,
+      createdByActorId,
+      ...(body?.invitee?.displayName?.trim()
+        ? {
+            invitee: {
+              ...(body.invitee.actorId?.trim() ? { actorId: body.invitee.actorId.trim() } : {}),
+              displayName: body.invitee.displayName.trim(),
+            },
+          }
+        : {}),
+      expiresAt: expiresInMs === null ? null : nowMs + expiresInMs,
+      maxRedemptions: body?.maxRedemptions ?? null,
+      route: resolveInviteRouteInput(broker.node.id),
+      nowMs,
+      createId: () => `cinv-${randomUUID()}`,
+    });
+    if (!outcome.ok) return c.json({ error: outcome.error }, outcome.status);
+
+    // The raw token is returned exactly once, to whoever created the invitation,
+    // and is never written to a log line or a broker record.
+    return c.json({
+      invite: outcome.invite,
+      token: outcome.token,
+      inviteUrl: outcome.inviteUrl,
+      agentInstructionsUrl: `${outcome.inviteUrl}/agent.md`,
+      reachability: channelInviteReachabilityNote(outcome.invite.route),
+      serviceHost: chatServiceHost(),
+    });
+  });
+
+  app.post("/api/channels/:id/invites/:inviteId/revoke", async (c) => {
+    const channelId = c.req.param("id");
+    const inviteId = c.req.param("inviteId");
+    const resolved = await resolveChatChannel(c.req.raw, channelId);
+    if (!resolved.ok) return c.json({ error: resolved.error }, resolved.status);
+    const body = (await c.req.json().catch(() => null)) as
+      | { revokedByActorId?: string }
+      | null;
+    // Revocation authorship follows creation authorship: from the credential,
+    // never the body.
+    const revoker = readChannelMemberGrant(c.req.raw);
+    if (revoker) {
+      // A member who can hand out an invitation must be able to take it back,
+      // or they can let someone into the room and then not undo it. What they
+      // must not do is revoke the host's invitations, so authorship is checked
+      // against the stored record rather than trusted from the request.
+      const invite = channelInvitesForConversation(resolved.conversation)
+        .find((record) => record.id === inviteId);
+      if (!invite) return c.json({ error: "invitation not found" }, 404);
+      if (invite.createdByActorId !== revoker.actorId) {
+        return c.json({ error: "Only the person who created this invitation can revoke it." }, 403);
+      }
+    }
+    const outcome = await revokeChannelInvite({
+      channelId,
+      inviteId,
+      revokedByActorId: revoker?.actorId ?? body?.revokedByActorId?.trim() ?? "operator",
+    });
+    if (!outcome.ok) return c.json({ error: outcome.error }, outcome.status);
+    return c.json({ ok: true, invite: outcome.invite });
+  });
+
+  app.get("/api/channels/:id/members", async (c) => {
+    const channelId = c.req.param("id");
+    const resolved = await resolveChatChannel(c.req.raw, channelId);
+    if (!resolved.ok) return c.json({ error: resolved.error }, resolved.status);
+    const { broker, conversation } = resolved;
+    const nowMs = Date.now();
+    const invites = channelInvitesForConversation(conversation);
+    const endpoints = Object.values(broker.snapshot.endpoints ?? {}) as AgentEndpoint[];
+    const members = conversation.participantIds.map((actorId) => {
+      const actor = broker.snapshot.actors?.[actorId];
+      const agent = broker.snapshot.agents?.[actorId];
+      // Freshest endpoint for this actor. Reception itself decides whether the
+      // endpoint is evidence for the *attached* session -- picking the newest
+      // here only avoids judging a member by a stale record.
+      const endpoint = endpoints
+        .filter((candidate) => candidate.agentId === actorId)
+        .sort((left, right) => endpointFreshnessMs(right) - endpointFreshnessMs(left))[0]
+        ?? null;
+      // Ownership is what makes an agent render as "Maya's Codex" rather than
+      // as a free-floating participant. It comes from the agent definition, so
+      // an agent with no owner stays unowned rather than being adopted by the
+      // local operator.
+      const owner = agent?.ownerId ? broker.snapshot.actors?.[agent.ownerId] : undefined;
+      return {
+        actorId,
+        kind: actor?.kind ?? (agent ? "agent" : "unknown"),
+        displayName: actor?.displayName ?? agent?.displayName ?? actorId,
+        // Declared, so a surface never has to infer it from an absent session.
+        // "api" means readable and postable, never invocable.
+        participation: isApiParticipantActor({
+          id: actorId,
+          metadata: (actor as { metadata?: Record<string, unknown> } | undefined)?.metadata
+            ?? null,
+        })
+          ? "api"
+          : "session",
+        ...(agent?.ownerId
+          ? {
+              owner: {
+                actorId: agent.ownerId,
+                displayName: owner?.displayName ?? agent.ownerId,
+              },
+            }
+          : {}),
+        // Harness and workspace describe the concrete endpoint, not the durable
+        // agent, so they are read from the endpoint or omitted.
+        ...(endpoint?.harness ? { harness: endpoint.harness } : {}),
+        ...(endpoint?.projectRoot ? { projectRoot: endpoint.projectRoot } : {}),
+        reception: channelMemberReception({
+          actorId,
+          invites,
+          endpoint: endpoint
+            ? {
+                state: endpoint.state,
+                transport: endpoint.transport,
+                sessionId: endpoint.sessionId ?? null,
+                // 0 means "no evidence at all", which reception must read as
+                // never-observed rather than as the epoch.
+                lastSeenAt: endpointFreshnessMs(endpoint) || null,
+              }
+            : null,
+          nowMs,
+        }),
+      };
+    });
+    return c.json({ channelId, members });
+  });
+
+  /**
+   * Describe an invitation. A pure read: opening a link must never join a
+   * channel, so there is no mutating GET anywhere in this feature.
+   */
+  app.get("/api/invites/:token", async (c) => {
+    const token = c.req.param("token");
+    if (!CHANNEL_INVITE_TOKEN_PATTERN.test(token)) {
+      return c.json({ error: "This invitation link is not valid." }, 404);
+    }
+    const resolved = await resolveChannelInviteByToken(token);
+    if (!resolved) return c.json({ error: "This invitation link is not valid." }, 404);
+    const previewSpace = await chatSpaceForChannelId(resolved.conversation.id);
+    return c.json({
+      channel: {
+        id: resolved.conversation.id,
+        title: resolved.conversation.title,
+        ...(resolved.conversation.topic ? { topic: resolved.conversation.topic } : {}),
+        memberCount: resolved.conversation.participantIds.length,
+      },
+      invite: resolved.view,
+      reachability: channelInviteReachabilityNote(resolved.view.route),
+      // Which room, when two spaces can hold the same name. A landing page that
+      // cannot say this leaves the joiner to guess.
+      space: { slug: previewSpace.slug, title: previewSpace.title },
+    });
+  });
+
+  app.post("/api/invites/:token/redeem", async (c) => {
+    const token = c.req.param("token");
+    if (!CHANNEL_INVITE_TOKEN_PATTERN.test(token)) {
+      return c.json({ error: "This invitation link is not valid." }, 404);
+    }
+    const body = (await c.req.json().catch(() => null)) as
+      | {
+          actorId?: string;
+          agentId?: string;
+          sessionId?: string;
+          endpointId?: string;
+          nodeId?: string;
+          harness?: string;
+          projectRoot?: string;
+          displayName?: string;
+        }
+      | null;
+    const actorId = body?.actorId?.trim();
+    if (!actorId) {
+      return c.json({ error: "actorId is required", reason: "missing_identity" }, 403);
+    }
+    // An agent redemption must name the session it is attaching, and redeeming
+    // without one is not a safe half-step: a sessionless redemption is recorded
+    // against the actor and consumes a use, and because session identity is
+    // decisive, a later redemption carrying the real session is a *different*
+    // joiner -- so on a single-use invitation it is rejected as exhausted.
+    // Refusing here costs nothing; redeeming early costs the invitation.
+    //
+    // People join sessionless through `/join`, which mints a person actor and
+    // has no session to attach.
+    const sessionId = body?.sessionId?.trim();
+    if (!sessionId) {
+      return c.json(
+        {
+          error: "sessionId is required: name the session you are running now."
+            + " Redeeming without one consumes this invitation and cannot be"
+            + " upgraded to your real session afterwards.",
+          reason: "missing_session",
+        },
+        400,
+      );
+    }
+    // A placeholder left in from a copied example is worse still: it records an
+    // attachment to a session that does not exist, so the channel reports the
+    // member as attached while every ask routes into nothing.
+    if (/^[<{].*[>}]$/.test(sessionId)) {
+      return c.json(
+        {
+          error: "sessionId looks like a placeholder from an example."
+            + " Send the id of the session you are actually running.",
+          reason: "placeholder_session",
+        },
+        400,
+      );
+    }
+    const outcome = await redeemChannelInvite({
+      token,
+      actorId,
+      ...(body?.agentId?.trim() ? { agentId: body.agentId.trim() } : {}),
+      ...(sessionId ? { sessionId } : {}),
+      ...(body?.endpointId?.trim() ? { endpointId: body.endpointId.trim() } : {}),
+      ...(body?.nodeId?.trim() ? { nodeId: body.nodeId.trim() } : {}),
+      ...(body?.harness?.trim() ? { harness: body.harness.trim() } : {}),
+      ...(body?.projectRoot?.trim() ? { projectRoot: body.projectRoot.trim() } : {}),
+      ...(body?.displayName?.trim() ? { displayName: body.displayName.trim() } : {}),
+      createId: () => `crdm-${randomUUID()}`,
+    });
+    if (!outcome.ok) {
+      return c.json(
+        { error: outcome.error, ...(outcome.reason ? { reason: outcome.reason } : {}) },
+        outcome.status,
+      );
+    }
+    // Redemption hands back a credential, the same as a person's join does.
+    // Without one an invited agent could be added to the roster and then be
+    // unable to read the channel or answer in it -- membership with no way to
+    // participate, which is not what the invitation offers.
+    //
+    // The grant is the same narrow kind: this actor, this channel, nothing
+    // else. An agent redeeming a second invitation widens it by one channel.
+    //
+    // A cookie already in the jar is only widened when it belongs to *this*
+    // actor. A browser or a shared jar can easily be carrying a person's grant
+    // or another agent's, and widening that one would hand this channel to
+    // whoever the cookie names instead of to the agent that just redeemed.
+    const redeemSpace = await chatSpaceForChannelId(outcome.conversationId);
+    const existingGrantToken = cookieValue(c.req.raw, CHANNEL_MEMBER_COOKIE);
+    const existingGrant = existingGrantToken
+      ? channelMemberSessions.validate(existingGrantToken)
+      : null;
+    // Widening stops at the space boundary. `grantChannel` refuses rather than
+    // widening when the new channel is in a different space, and the refusal
+    // falls through to a fresh credential -- so a second space is a second
+    // credential, and the first one is left untouched rather than quietly
+    // turned into a key for both.
+    const issued = (existingGrant?.actorId === actorId && existingGrantToken
+      ? channelMemberSessions.grantChannel(existingGrantToken, outcome.conversationId, {
+          spaceSlug: redeemSpace.slug,
+        })
+      : null)
+      ?? channelMemberSessions.mint({
+        actorId,
+        displayName: body?.displayName?.trim() || actorId,
+        channelId: outcome.conversationId,
+        spaceSlug: redeemSpace.slug,
+      });
+    c.header(
+      "set-cookie",
+      channelMemberCookie(issued.token, isForwardedHttpsScoutRequest(c.req.raw)),
+    );
+    await addActorToChatSpaceRoster(redeemSpace.slug, actorId);
+
+    return c.json({
+      ok: true,
+      space: { slug: redeemSpace.slug, title: redeemSpace.title },
+      // `alreadyRedeemed` is the idempotency signal: a retry from the same
+      // session returns the original redemption rather than a second one.
+      alreadyRedeemed: outcome.alreadyRedeemed,
+      conversationId: outcome.conversationId,
+      channelTitle: outcome.channelTitle,
+      redemption: outcome.redemption,
+      invite: outcome.invite,
+      participantIds: outcome.participantIds,
+      // Stated rather than implied: this path always attaches a session, and
+      // the field is what a client checks instead of assuming it did.
+      attached: Boolean(outcome.redemption.sessionId),
+      // Named so a non-browser client knows which cookie to keep. The value is
+      // in the Set-Cookie header only; it is never echoed in the body.
+      credential: { cookie: CHANNEL_MEMBER_COOKIE, expiresAt: issued.grant.expiresAt },
+    });
+  });
+
+  /**
+   * Admit a teammate. This is the human half of the invitation: they arrive
+   * with a link and a name, and leave with a member credential scoped to the
+   * one channel they joined -- never the operator's token.
+   */
+  app.post("/api/invites/:token/join", async (c) => {
+    const token = c.req.param("token");
+    if (!CHANNEL_INVITE_TOKEN_PATTERN.test(token)) {
+      return c.json({ error: "This invitation link is not valid." }, 404);
+    }
+    const body = (await c.req.json().catch(() => null)) as
+      | { displayName?: string }
+      | null;
+    const displayName = body?.displayName?.trim();
+    if (!displayName) {
+      return c.json({ error: "A name is required to join." }, 400);
+    }
+
+    // A returning member keeps the actor they already have, so re-joining does
+    // not mint a second person for the same human.
+    const existing = readChannelMemberGrant(c.req.raw);
+    const outcome = await joinChannelInviteAsPerson({
+      token,
+      displayName,
+      existingActorId: existing?.actorId ?? null,
+      createId: () => randomUUID(),
+    });
+    if (!outcome.ok) {
+      return c.json(
+        { error: outcome.error, ...(outcome.reason ? { reason: outcome.reason } : {}) },
+        outcome.status,
+      );
+    }
+
+    const joinSpace = await chatSpaceForChannelId(outcome.conversationId);
+    const cookie = cookieValue(c.req.raw, CHANNEL_MEMBER_COOKIE);
+    // Widening a grant re-mints the token, so either branch hands back a cookie
+    // and the browser always leaves this route holding the current one. Across
+    // a space boundary the widening is refused and the fresh mint is what the
+    // browser leaves with -- the previous space's credential is not revoked and
+    // not extended.
+    const issued = (cookie
+      ? channelMemberSessions.grantChannel(cookie, outcome.conversationId, {
+          spaceSlug: joinSpace.slug,
+        })
+      : null)
+      ?? channelMemberSessions.mint({
+        actorId: outcome.actorId,
+        displayName: outcome.displayName,
+        channelId: outcome.conversationId,
+        spaceSlug: joinSpace.slug,
+      });
+    c.header(
+      "set-cookie",
+      channelMemberCookie(issued.token, isForwardedHttpsScoutRequest(c.req.raw)),
+    );
+    await addActorToChatSpaceRoster(joinSpace.slug, outcome.actorId);
+
+    return c.json({
+      ok: true,
+      actorId: outcome.actorId,
+      displayName: outcome.displayName,
+      conversationId: outcome.conversationId,
+      channelTitle: outcome.channelTitle,
+      alreadyMember: outcome.alreadyMember,
+      space: { slug: joinSpace.slug, title: joinSpace.title },
+    });
+  });
+
+  /**
+   * Accept an invitation as a lightweight API participant.
+   *
+   * The third acceptance path, and the one with no identity behind it. `/join`
+   * admits a person who types a name; `/redeem` attaches an agent's running
+   * session; this admits an HTTP client that has neither and does not intend to
+   * install anything to get one.
+   *
+   * What separates it from the other two is that the *server* decides who
+   * joined. The invitation is authority to enter a room, never authority to be
+   * somebody already in it, so a body naming an `actorId` or a `sessionId` is
+   * refused rather than honoured -- and refused loudly, because a caller whose
+   * identity field was quietly dropped would go on believing it took effect.
+   *
+   * Nothing here attaches a session, and nothing here pretends to. The member
+   * that comes out is readable and can post; it cannot be invoked, and
+   * `/asks` says so by name rather than queueing work against it.
+   */
+  app.post("/api/invites/:token/participate", async (c) => {
+    const token = c.req.param("token");
+    if (!CHANNEL_INVITE_TOKEN_PATTERN.test(token)) {
+      return c.json({ error: "This invitation link is not valid." }, 404);
+    }
+    const raw = (await c.req.json().catch(() => null)) as Record<string, unknown> | null;
+    const request = readApiParticipantJoinRequest(raw);
+    if (!request.ok) {
+      return c.json({ error: request.error, reason: request.reason }, request.status);
+    }
+
+    // Derived, never accepted. `participantKey` is an idempotency key mixed
+    // into an HMAC the caller cannot compute, so replaying the join with the
+    // same key returns the same participant instead of spending another use of
+    // the invitation -- and a key learned from one invitation cannot be aimed
+    // at another, because the token digest is mixed in too.
+    const actorId = apiParticipantActorId({
+      tokenHash: hashChannelInviteToken(token),
+      participantKey: request.participantKey,
+      signingSecret: options.authToken ?? null,
+    });
+    const displayName = apiParticipantDisplayName(request.displayName, actorId);
+
+    const outcome = await joinChannelInviteAsApiParticipant({
+      token,
+      actorId,
+      displayName,
+      createId: () => `crdm-${randomUUID()}`,
+      buildActor: apiParticipantActor,
+    });
+    if (!outcome.ok) {
+      return c.json(
+        { error: outcome.error, ...(outcome.reason ? { reason: outcome.reason } : {}) },
+        outcome.status,
+      );
+    }
+
+    // The space the channel is in, read from the channel. Nothing the caller
+    // sent has any say in it.
+    const participateSpace = await chatSpaceForChannelId(outcome.conversationId);
+
+    // A fresh grant every time, never a widening of a cookie already in the
+    // jar. This route can be called by anything, and widening whatever
+    // credential happened to arrive would hand this channel to whoever that
+    // credential names instead of to the participant that just joined.
+    const issued = channelMemberSessions.mint({
+      actorId: outcome.actorId,
+      displayName: outcome.displayName,
+      channelId: outcome.conversationId,
+      // Bound to one space as well as one channel. A second space means a
+      // second credential; this one can never be widened into it.
+      spaceSlug: participateSpace.slug,
+      // Signed into the credential, so it narrows what the credential can do
+      // rather than merely describing it: read, post and reply in this one
+      // channel, which is exactly what `api.md` promised the joiner. Minting
+      // further invitations and dispatching tracked work are not in that
+      // promise, and a marker the client cannot strip is what keeps them out.
+      participation: "api",
+    });
+    // The cookie is set as a convenience for a client that keeps a jar. The
+    // bearer token below is the credential this mode is built around, and
+    // unlike the browser paths it is returned in the body -- there is no
+    // HttpOnly benefit to a caller that is not a browser, and a credential the
+    // client cannot read is a credential it cannot send.
+    c.header(
+      "set-cookie",
+      channelMemberCookie(issued.token, isForwardedHttpsScoutRequest(c.req.raw)),
+    );
+    await addActorToChatSpaceRoster(participateSpace.slug, outcome.actorId);
+
+    return c.json({
+      ok: true,
+      participation: "api",
+      actorId: outcome.actorId,
+      displayName: outcome.displayName,
+      conversationId: outcome.conversationId,
+      channelTitle: outcome.channelTitle,
+      alreadyMember: outcome.alreadyMember,
+      // Stated, not implied. This mode never attaches a session, so the field
+      // that means "something can receive here" is constant and false.
+      attached: false,
+      credential: {
+        scheme: "Bearer",
+        header: "authorization",
+        token: issued.token,
+        expiresAt: issued.grant.expiresAt,
+        cookie: CHANNEL_MEMBER_COOKIE,
+      },
+      space: { slug: participateSpace.slug, title: participateSpace.title },
+      poll: {
+        // The space rides in the URL. A client handed a bare path would have
+        // its request resolved against the default space and get a 404 for a
+        // room it is legitimately in -- so the URL we hand out is the one that
+        // works, rather than one the reader has to know to repair.
+        url: chatChannelPath(outcome.conversationId, "poll", participateSpace.slug),
+        intervalMs: CHANNEL_POLL_INTERVAL_CAUGHT_UP_MS,
+      },
+    });
+  });
+
+  /**
+   * Who the member cookie says you are, and which channels you are still in.
+   *
+   * Identity is read from the credential; membership is re-read from the
+   * broker on every call. The grant outlives removal by design, so echoing its
+   * channel ids back would tell a removed teammate to open a room that will
+   * turn them away -- and the invitation page would loop them between the two.
+   */
+  app.get("/api/member/me", async (c) => {
+    const grant = readChannelMemberGrant(c.req.raw);
+    if (!grant) return c.json({ member: null });
+    const fresh = await loadScoutBrokerContext(undefined, {
+      scope: "conversations",
+      signal: AbortSignal.timeout(CHANNEL_ROSTER_READ_TIMEOUT_MS),
+    }).catch(() => null);
+    const channelIds = currentChannelMemberships({
+      grant,
+      conversations: (fresh?.snapshot.conversations as
+        | Record<string, ConversationDefinition | undefined>
+        | undefined) ?? null,
+    });
+    // Unverifiable is not the same as "in nothing", and the surface already
+    // treats a failed identity read as simply not recognising the visitor.
+    if (!channelIds) return c.json({ error: "broker unreachable" }, 502);
+    return c.json({
+      member: {
+        actorId: grant.actorId,
+        displayName: grant.displayName,
+        channelIds,
+      },
+    });
+  });
+
+  app.get("/invite/:token/agent.md", async (c) => {
+    const token = c.req.param("token");
+    if (!CHANNEL_INVITE_TOKEN_PATTERN.test(token)) {
+      return c.text("This invitation link is not valid.", 404);
+    }
+    const resolved = await resolveChannelInviteByToken(token);
+    if (!resolved) return c.text("This invitation link is not valid.", 404);
+    const broker = await loadScoutBrokerContext();
+    const inviterActor = broker?.snapshot.actors?.[resolved.invite.createdByActorId];
+    const agentSpace = await chatSpaceForChannelId(resolved.conversation.id);
+    const markdown = renderChannelInviteAgentInstructions({
+      channelId: resolved.conversation.id,
+      // Omitted for the default space, which keeps this document byte-identical
+      // for every channel that predates spaces.
+      ...(agentSpace.slug === DEFAULT_CHAT_SPACE_SLUG ? {} : { space: agentSpace }),
+      channelTitle: resolved.conversation.title,
+      channelTopic: resolved.conversation.topic ?? null,
+      inviterDisplayName:
+        inviterActor?.displayName ?? resolved.invite.createdByActorId,
+      inviteeDisplayName: resolved.invite.invitee?.displayName ?? null,
+      invite: resolved.view,
+      inviteUrl: channelInviteUrl(resolved.view.route, token),
+      redeemUrl: channelInviteRedeemUrl(resolved.view.route, token),
+      apiBaseUrl: resolved.view.route.baseUrl.replace(/\/$/, ""),
+      brokerBaseUrl: resolved.view.route.baseUrl,
+    });
+    return c.body(markdown, 200, {
+      "content-type": "text/markdown; charset=utf-8",
+      // The document embeds the token. Keep it out of shared caches.
+      "cache-control": "no-store",
+    });
+  });
+
+  /**
+   * The same invitation, read by something that will not be installing
+   * anything.
+   *
+   * Kept as a separate document rather than a section of `agent.md` because
+   * the two describe genuinely different memberships, and interleaving them is
+   * how a reader ends up attempting the session-bound path with no session --
+   * which costs them the invitation. Each document is complete on its own and
+   * says plainly which one the reader wants.
+   */
+  app.get("/invite/:token/api.md", async (c) => {
+    const token = c.req.param("token");
+    if (!CHANNEL_INVITE_TOKEN_PATTERN.test(token)) {
+      return c.text("This invitation link is not valid.", 404);
+    }
+    const resolved = await resolveChannelInviteByToken(token);
+    if (!resolved) return c.text("This invitation link is not valid.", 404);
+    const broker = await loadScoutBrokerContext();
+    const inviterActor = broker?.snapshot.actors?.[resolved.invite.createdByActorId];
+    const apiBaseUrl = resolved.view.route.baseUrl.replace(/\/$/, "");
+    const apiSpace = await chatSpaceForChannelId(resolved.conversation.id);
+    const markdown = renderChannelApiParticipantInstructions({
+      channelId: resolved.conversation.id,
+      ...(apiSpace.slug === DEFAULT_CHAT_SPACE_SLUG ? {} : { space: apiSpace }),
+      channelTitle: resolved.conversation.title,
+      channelTopic: resolved.conversation.topic ?? null,
+      inviterDisplayName:
+        inviterActor?.displayName ?? resolved.invite.createdByActorId,
+      invite: resolved.view,
+      apiBaseUrl,
+      participateUrl:
+        `${apiBaseUrl}/api/invites/${encodeURIComponent(token)}/participate`,
+    });
+    return c.body(markdown, 200, {
+      "content-type": "text/markdown; charset=utf-8",
+      // The document embeds the token. Keep it out of shared caches.
+      "cache-control": "no-store",
+    });
+  });
+
+
+  /* -- the chat surface ----------------------------------------------------- */
+
+  /**
+   * Scout Chat's own HTTP surface, shaped by docs/eng/chat-channel-invites-api.md.
+   *
+   * Two things are deliberately kept apart here. A post to a channel is an
+   * update and invokes nobody; addressing one agent is a separate route that
+   * raises a tracked request. Collapsing them would turn every remark in a busy
+   * room into work for whoever happens to be in it.
+   */
+
+  /**
+   * One message as the chat surface reads it.
+   *
+   * This is the projection the rest of the web API already serves for messages,
+   * so the client has one shape to render: the broker record plus the resolved
+   * author name and the reply anchor. `channelId` is the *root* channel even
+   * when the record itself lives in a thread conversation, which is what lets
+   * the surface show a reply under the message it answers without knowing that
+   * threads are separate conversations underneath.
+   */
+  const chatMessageProjection = (
+    message: {
+      id: string;
+      conversationId: string;
+      actorId: string;
+      actorName?: string;
+      body: string;
+      createdAt: number;
+      class?: string;
+      metadata?: Record<string, unknown> | null;
+      replyToMessageId?: string | null;
+      threadConversationId?: string | null;
+      attachments?: unknown[];
+    },
+    channelId: string,
+    replyToMessageId: string | null,
+  ) => ({
+    id: message.id,
+    channelId,
+    conversationId: message.conversationId,
+    actorId: message.actorId,
+    actorName: message.actorName ?? message.actorId,
+    body: message.body,
+    createdAt: message.createdAt,
+    class: message.class ?? "agent",
+    metadata: message.metadata ?? null,
+    // A message posted into a thread conversation is projected as a reply to
+    // that thread's anchor, so `replyToMessageId` is the single thing the
+    // client threads on.
+    replyToMessageId: replyToMessageId ?? message.replyToMessageId ?? null,
+    threadConversationId: message.threadConversationId ?? null,
+    attachments: message.attachments ?? [],
+  });
+
+  /**
+   * Read one conversation's messages, broker first and SQLite behind it.
+   *
+   * The broker snapshot is a rolling window; a conversation older than the
+   * window would otherwise read as empty rather than as unpaged, which is the
+   * difference between "nothing was said" and "we cannot see it from here".
+   */
+  const loadChatConversationMessages = async (conversationId: string, limit: number) => {
+    const brokerContext = await loadScoutBrokerContext(undefined, {
+      scope: "conversations",
+      waitForInitial: false,
+      initialRefreshDelayMs: 750,
+    }).catch(() => null);
+    const brokerMessages = await getScoutConversationMessages(
+      conversationId,
+      limit,
+      undefined,
+      brokerContext,
+    );
+    return brokerMessages ?? queryRecentMessages(limit, { conversationId });
+  };
+
+  /**
+   * Create a channel inside a space, or return the one already there.
+   *
+   * The id is minted from the *spaced* natural key, which is what puts the
+   * channel in the space: `home` returns the byte-identical legacy key, so a
+   * channel created today and a channel created before spaces existed land on
+   * the same id for the same name. Nothing is migrated because nothing moves.
+   */
+  const ensureChatSpaceChannel = async (input: {
+    broker: ScoutBrokerContext;
+    spaceSlug: string;
+    title: string;
+    topic?: string | null;
+  }): Promise<{ conversation: ConversationDefinition; existed: boolean }> => {
+    const naturalKey = spacedChannelNaturalKey(input.spaceSlug, input.title);
+    const existing = (Object.values(input.broker.snapshot.conversations ?? {}) as ConversationDefinition[])
+      .find((candidate) => channelNaturalKeyFromMetadata(candidate.metadata) === naturalKey);
+    if (existing) return { conversation: existing, existed: true };
+
+    const conversation: ConversationDefinition = {
+      id: stableChannelId(naturalKey),
+      kind: "channel",
+      title: input.title,
+      visibility: "workspace",
+      shareMode: "shared",
+      authorityNodeId: input.broker.node.id,
+      participantIds: [CHAT_OPERATOR_ACTOR_ID],
+      ...(input.topic?.trim() ? { topic: input.topic.trim() } : {}),
+      metadata: {
+        [CHANNEL_NATURAL_KEY_METADATA]: naturalKey,
+        // Written for the default space too. The marker is redundant there --
+        // `channelSpaceSlug` derives `home` from the key anyway -- but writing
+        // it makes a record self-describing rather than requiring the reader to
+        // know the key grammar.
+        [CHANNEL_SPACE_SLUG_METADATA]: normalizeChatSpaceSlug(input.spaceSlug)
+          ?? DEFAULT_CHAT_SPACE_SLUG,
+      },
+    };
+    await upsertScoutConversation(conversation);
+    return { conversation, existed: false };
+  };
+
+  app.get("/api/chat/bootstrap", async (c) => {
+    const viewer = chatViewerFor(c.req.raw);
+    const grant = readChannelMemberGrant(c.req.raw);
+    const space = resolveChatSpaceFor(c.req.raw);
+    if (!space.ok) return c.json({ error: space.error }, space.status);
+    const broker = await loadScoutBrokerContext(undefined, grant ? {
+      scope: "conversations",
+      signal: AbortSignal.timeout(CHANNEL_ROSTER_READ_TIMEOUT_MS),
+    } : {});
+    if (!broker) return c.json({ error: "broker unreachable" }, 502);
+    const conversations = broker.snapshot.conversations as
+      Record<string, ConversationDefinition | undefined> | undefined;
+    const memberChannels = new Set(grant ? currentChannelMemberships({
+      grant,
+      conversations: conversations as Record<string, ConversationDefinition>,
+    }) ?? [] : []);
+
+    // Which rooms this viewer could see at all, before the space narrows it.
+    // Membership decides it for a member; the operator sees the channels on
+    // this node.
+    const visibleChannelIds = viewer.isOperator ? null : memberChannels;
+
+    // E4: the space narrows the *server's* answer, not just the sidebar. This
+    // is the read the operator relies on today, and it is now scoped -- which
+    // is exactly why the boundary is also enforced per channel in
+    // `resolveChatChannel`: a list is a convenience, never a permission.
+    const channels = chatSpaceChannels(conversations, space.slug)
+      .filter((conversation) => viewer.isOperator || memberChannels.has(conversation.id))
+      .sort((left, right) => left.title.localeCompare(right.title));
+
+    const spaces = listChatSpaces(conversations, { visibleChannelIds })
+      // A member sees the spaces their own channels put them in. They cannot
+      // enumerate the rest and are not told the rest exist.
+      .filter((entry) => viewer.isOperator
+        || entry.slug === space.slug
+        || entry.channelCount > 0);
+
+    return c.json({ viewer, space: space.slug, spaces, channels });
+  });
+
+  /**
+   * The spaces this viewer can open, and creating one.
+   *
+   * A space is a broker conversation with `kind: "system"`, so listing them is
+   * a scan of the snapshot rather than a new broker route, and creating one is
+   * the conversation upsert that already exists. Nothing new is stored
+   * anywhere.
+   */
+  app.get("/api/chat/spaces", async (c) => {
+    const viewer = chatViewerFor(c.req.raw);
+    const grant = readChannelMemberGrant(c.req.raw);
+    const broker = await loadScoutBrokerContext(undefined, grant ? {
+      scope: "conversations",
+      signal: AbortSignal.timeout(CHANNEL_ROSTER_READ_TIMEOUT_MS),
+    } : {});
+    if (!broker) return c.json({ error: "broker unreachable" }, 502);
+    const conversations = broker.snapshot.conversations as
+      Record<string, ConversationDefinition | undefined> | undefined;
+    if (!viewer.isOperator && grant) {
+      const memberChannels = new Set(currentChannelMemberships({
+        grant,
+        conversations: conversations as Record<string, ConversationDefinition>,
+      }) ?? []);
+      const slugs = memberVisibleSpaceSlugs(conversations, memberChannels);
+      return c.json({
+        spaces: listChatSpaces(conversations, { visibleChannelIds: memberChannels })
+          .filter((entry) => slugs.has(entry.slug)),
+      });
+    }
+    return c.json({ spaces: listChatSpaces(conversations) });
+  });
+
+  app.post("/api/chat/spaces", async (c) => {
+    // Operator-only, for the same reason channel creation is: a member
+    // credential joins rooms, it does not carve out new namespaces, and it
+    // must never be able to widen its own reach.
+    if (readChannelMemberGrant(c.req.raw)) {
+      return c.json({ error: "Only the host can create spaces." }, 403);
+    }
+    const body = (await c.req.json().catch(() => null)) as
+      | { title?: string; slug?: string; channel?: string; channelTopic?: string }
+      | null;
+    const title = body?.title?.trim();
+    if (!title) return c.json({ error: "title is required" }, 400);
+
+    const broker = await loadScoutBrokerContext();
+    if (!broker) return c.json({ error: "broker unreachable" }, 502);
+    const conversations = broker.snapshot.conversations as
+      Record<string, ConversationDefinition | undefined> | undefined;
+
+    const outcome = await createChatSpace({
+      title,
+      slug: body?.slug ?? null,
+      authorityNodeId: broker.node.id,
+      participantIds: [CHAT_OPERATOR_ACTOR_ID],
+      conversations,
+      upsert: (conversation) => upsertScoutConversation(conversation),
+    });
+    if (!outcome.ok) return c.json({ error: outcome.error }, outcome.status);
+
+    // A space with no room in it is a dead end the operator has to notice and
+    // fix, so the first channel is created with it rather than after it. The
+    // name is theirs to choose; `general` is only the fallback.
+    const channelTitle = body?.channel?.trim() || "general";
+    const channel = await ensureChatSpaceChannel({
+      broker,
+      spaceSlug: outcome.space.slug,
+      title: channelTitle,
+      topic: body?.channelTopic?.trim() || null,
+    });
+
+    invalidateScoutBrokerContextCache(broker.baseUrl);
+    return c.json({
+      space: { ...outcome.space, channelCount: outcome.space.channelCount || 1 },
+      existed: outcome.existed,
+      channel: channel.conversation,
+      channelExisted: channel.existed,
+    });
+  });
+
+  app.post("/api/chat/channels", async (c) => {
+    // Operator-only for this slice. A member credential joins channels; it does
+    // not create them, and it must not be able to widen its own reach.
+    if (readChannelMemberGrant(c.req.raw)) {
+      return c.json({ error: "Only the host can create channels." }, 403);
+    }
+    const body = (await c.req.json().catch(() => null)) as
+      | { title?: string; topic?: string; space?: string }
+      | null;
+    const title = body?.title?.trim();
+    if (!title) return c.json({ error: "title is required" }, 400);
+
+    // E5: a channel is always created *into* a space. The body may name it so
+    // a client can create without a URL selector; otherwise the request's own
+    // selector decides, and an absent selector is the default space -- which is
+    // where `POST /api/chat/channels` put every channel before this existed.
+    const space = resolveChatSpaceSelection({
+      requested: body?.space ?? new URL(c.req.raw.url).searchParams.get(CHAT_SPACE_QUERY_KEY)
+        ?? c.req.raw.headers.get(CHAT_SPACE_HEADER),
+    });
+    if (!space.ok) return c.json({ error: space.error }, space.status);
+
+    const broker = await loadScoutBrokerContext();
+    if (!broker) return c.json({ error: "broker unreachable" }, 502);
+
+    const { conversation, existed } = await ensureChatSpaceChannel({
+      broker,
+      spaceSlug: space.slug,
+      title,
+      topic: body?.topic ?? null,
+    });
+    if (!existed) invalidateScoutBrokerContextCache(broker.baseUrl);
+    return c.json({ conversation, existed, space: space.slug });
+  });
+
+  /**
+   * The channel feed: its messages, replies included, plus the tracked requests
+   * raised in it.
+   *
+   * Replies live in thread conversations underneath the channel. They are
+   * normalized here onto the thread's anchor message, so the client renders one
+   * flat feed of roots with replies hanging off `replyToMessageId` and never has
+   * to know that a thread is a conversation of its own.
+   */
+  const channelEventStreams = new ChannelEventStreams();
+  app.get("/api/channels/:id/events", async (c) => {
+    const channelId = c.req.param("id");
+    const initial = await resolveChatChannel(c.req.raw, channelId);
+    if (!initial.ok) return c.json({ error: initial.error }, initial.status);
+    const originalMember = readChannelMemberGrant(c.req.raw);
+    return channelEventStreams.open(c.req.raw, {
+      channelId,
+      readScope: async () => {
+        const empty = { allowed: false, conversationIds: new Set<string>() };
+        const grant = readChannelMemberGrant(c.req.raw);
+        // An expired member cookie must never be reclassified as an operator.
+        if (originalMember && (!grant || grant.actorId !== originalMember.actorId)) return empty;
+        const fresh = await loadScoutBrokerContext(undefined, {
+          scope: "conversations",
+          signal: AbortSignal.timeout(CHANNEL_ROSTER_READ_TIMEOUT_MS),
+        }).catch(() => null);
+        const conversation = fresh?.snapshot.conversations?.[channelId] as ConversationDefinition | undefined;
+        if (!fresh || !conversation || conversation.kind !== "channel") return empty;
+        if (grant && channelMemberRosterDecision({ grant, brokerReachable: true, conversation })) return empty;
+        const threads = (Object.values(fresh.snapshot.conversations) as ConversationDefinition[])
+          .filter(item => item.kind === "thread" && item.parentConversationId === channelId);
+        return { allowed: true, conversationIds: new Set([channelId, ...threads.map(item => item.id)]) };
+      },
+    });
+  });
+
+  /**
+   * The channel as one transcript: its own messages plus every reply living in
+   * a thread under it, in one ascending order, with the tracked requests the
+   * broker actually has flights for.
+   *
+   * Shared by the feed and the poll so the two cannot drift. A poller that saw
+   * a different set of messages -- or the same messages in a different order --
+   * than the feed would be handed a cursor from one and a page from the other.
+   */
+  const loadChatChannelProjection = async (
+    broker: ScoutBrokerContext,
+    channelId: string,
+    limit: number,
+  ) => {
+    const threads = (Object.values(broker.snapshot.conversations ?? {}) as ConversationDefinition[])
+      .filter((candidate) => candidate.kind === "thread"
+        && candidate.parentConversationId === channelId);
+
+    const rootMessages = (await loadChatConversationMessages(channelId, limit))
+      .map((message) => chatMessageProjection(message, channelId, null));
+    const threadReads = await Promise.all(threads.map(async (thread) => {
+      const anchorMessageId = thread.messageId ?? null;
+      const messages = await loadChatConversationMessages(thread.id, limit);
+      return messages.map((message) => chatMessageProjection(
+        message,
+        channelId,
+        message.replyToMessageId ?? anchorMessageId,
+      ));
+    }));
+
+    // The earliest position this projection can be *trusted* from.
+    //
+    // Every conversation is read as its own newest slice, so a read that came
+    // back full has older rows behind it that the merge does not contain. A
+    // thread whose messages predate the root's slice therefore drags the merged
+    // array's oldest row back past where the root read stopped -- and the
+    // stretch in between is a hole, not history. The anchor is the newest of
+    // the full reads' oldest rows: at or after it, the merge is a genuine
+    // suffix with nothing missing. A read that did not fill bounds nothing,
+    // because it is everything this host can see for that conversation.
+    let retainedFrom: { createdAt: number; id: string } | null = null;
+    for (const rows of [rootMessages, ...threadReads]) {
+      if (rows.length < limit) continue;
+      const oldest = rows.reduce((left, right) =>
+        compareMessagesAsc(left, right) <= 0 ? left : right);
+      if (!retainedFrom || compareMessagesAsc(oldest, retainedFrom) > 0) {
+        retainedFrom = { createdAt: oldest.createdAt, id: oldest.id };
+      }
+    }
+
+    const messages = [...rootMessages, ...threadReads.flat()]
+      .sort((left, right) => compareMessagesAsc(left, right));
+
+    // Tracked requests come from flight records only. A request the broker has
+    // no flight for is not listed: inventing one here is exactly the "looks
+    // dispatched" failure this feature exists to avoid.
+    const threadIds = new Set(threads.map((thread) => thread.id));
+    const requests = queryBrokerFlightsForWeb(broker, {})
+      .filter((flight) => flight.conversationId === channelId
+        || (flight.conversationId ? threadIds.has(flight.conversationId) : false))
+      .map((flight) => ({
+        messageId: flight.messageId ?? null,
+        flightId: flight.id,
+        state: flight.state,
+        targetActorId: flight.agentId,
+      }));
+
+    return { messages, requests, retainedFrom };
+  };
+
+  /**
+   * How wide a poll reads, fixed rather than derived from the caller's page
+   * size.
+   *
+   * The window is what decides whether a cursor is stale, so deriving it from
+   * `limit` would make staleness a property of the page size the caller
+   * happened to ask for: a client that shrank its page would be told history
+   * moved past it when nothing had. Four maximum pages is wide enough that a
+   * poller keeping up never meets the boundary.
+   */
+  const CHANNEL_POLL_READ_WIDTH = clampMessagePageLimit(MAX_CHANNEL_POLL_LIMIT * 4);
+
+  app.get("/api/channels/:id/feed", async (c) => {
+    const channelId = c.req.param("id");
+    const resolved = await resolveChatChannel(c.req.raw, channelId);
+    if (!resolved.ok) return c.json({ error: resolved.error }, resolved.status);
+
+    const limit = clampMessagePageLimit(
+      parseOptionalPositiveInt(c.req.query("limit"), DEFAULT_MESSAGE_PAGE_LIMIT),
+      DEFAULT_MESSAGE_PAGE_LIMIT,
+    );
+    const { messages, requests } = await loadChatChannelProjection(
+      resolved.broker,
+      channelId,
+      limit,
+    );
+    return c.json({ channelId, messages, requests });
+  });
+
+  /**
+   * Bounded polling for a member reading this channel over HTTP.
+   *
+   * This is the read half of lightweight API participation, and it is only a
+   * read. Nothing here wakes an agent, dispatches work, or acknowledges any:
+   * the page is what the host can currently see, and `requests` rides along as
+   * the *current state* of tracked flights rather than as a stream of events
+   * about them.
+   *
+   * The page is fetched wider than it is served so the cursor can be checked
+   * against real history rather than against the page we were about to return.
+   * If the visible window no longer reaches back to the caller's cursor,
+   * `channelPollPage` refuses with `stale_cursor` instead of handing back the
+   * tail with the middle quietly missing.
+   */
+  app.get("/api/channels/:id/poll", async (c) => {
+    const channelId = c.req.param("id");
+    const resolved = await resolveChatChannel(c.req.raw, channelId);
+    if (!resolved.ok) return c.json({ error: resolved.error }, resolved.status);
+
+    const limit = clampChannelPollLimit(
+      parseOptionalPositiveInt(c.req.query("limit"), DEFAULT_CHANNEL_POLL_LIMIT),
+    );
+    // Read several pages' worth. The extra is not served; it is what gives the
+    // paging module a window wide enough to tell "you are behind" from "the
+    // history you are asking to continue from is gone".
+    const { messages, requests, retainedFrom } = await loadChatChannelProjection(
+      resolved.broker,
+      channelId,
+      CHANNEL_POLL_READ_WIDTH,
+    );
+    // Only the trusted suffix is offered to the pager. Rows older than the
+    // anchor are real messages, but the window does not hold everything between
+    // them and the anchor, so paging across that boundary would hand back a page
+    // with the difference silently missing. Refusing the cursor and sending the
+    // caller back to `/feed` is the answer; a short page is not.
+    const windowStart = retainedFrom;
+    const events = windowStart
+      ? messages.filter((message) => compareMessagesAsc(message, windowStart) >= 0)
+      : messages;
+
+    try {
+      const page = pageChannelPoll({
+        channelId,
+        events,
+        cursor: c.req.query("cursor") ?? null,
+        limit,
+        // "suffix", never "complete". What was loaded above is the newest slice
+        // of a rolling snapshot, so its oldest row is the earliest position this
+        // host can still serve -- not the start of the transcript. Asserting
+        // completeness here is what would turn a cursor the window no longer
+        // covers into a page with the middle quietly missing.
+        completeness: "suffix",
+      });
+      return c.json({
+        channelId,
+        messages: page.events,
+        nextCursor: page.nextCursor,
+        hasMore: page.hasMore,
+        recommendedPollIntervalMs: page.recommendedPollIntervalMs,
+        // Current state of this channel's tracked flights, not a stream of
+        // events about them. A poller that missed a transition is not told of
+        // it, and nothing here acknowledges work.
+        requests,
+      });
+    } catch (error) {
+      if (error instanceof ChannelPollCursorError) {
+        // `stale` is the one that is not the caller's mistake: history moved
+        // past them. It is a different answer from a bad cursor, so it gets a
+        // different status and a different instruction.
+        return c.json(
+          {
+            error: error.reason === "stale"
+              ? "History moved past that cursor. Re-read this channel's feed and"
+                + " restart polling without a cursor. Deduplicate by message id; older history may be unavailable."
+              : error.message,
+            reason: error.reason,
+          },
+          error.reason === "stale" ? 409 : 400,
+        );
+      }
+      if (error instanceof ChannelPollError) {
+        return c.json({ error: error.message, reason: "invalid_poll" }, 400);
+      }
+      throw error;
+    }
+  });
+
+  /**
+   * A plain channel post. It invokes nobody, including the agents in the room.
+   */
+  app.post("/api/channels/:id/messages", async (c) => {
+    const channelId = c.req.param("id");
+    const body = (await c.req.json().catch(() => null)) as
+      | { requestId?: string; body?: string; replyToMessageId?: string }
+      | null;
+    const text = body?.body?.trim();
+    if (!text) return c.json({ error: "body is required" }, 400);
+
+    const resolved = await resolveChatChannel(c.req.raw, channelId);
+    if (!resolved.ok) return c.json({ error: resolved.error }, resolved.status);
+    const { viewer } = resolved;
+
+    const createdAtMs = Date.now();
+    const replyToMessageId = body?.replyToMessageId?.trim() || null;
+    const posted = await sendScoutConversationMessage({
+      conversationId: channelId,
+      senderId: viewer.actorId,
+      body: text,
+      // `requestId` makes a retry after an uncertain failure land on the same
+      // record rather than posting the message twice.
+      clientMessageId: body?.requestId?.trim() || null,
+      ...(replyToMessageId ? { replyToMessageId } : {}),
+      // The whole point of this route: a post reaches the room without asking
+      // anyone in it for work.
+      notifyParticipantAgents: false,
+      // And the body is payload, not an address. Quoting "@kepler said ..." in
+      // a channel must not notify or wake Kepler.
+      resolveMentionsFromBody: false,
+      createdAtMs,
+      currentDirectory,
+      source: "scout-chat",
+    });
+    if (!posted.usedBroker || !posted.messageId) {
+      return c.json({ error: "broker unreachable" }, 502);
+    }
+
+    return c.json({
+      message: chatMessageProjection(
+        {
+          id: posted.messageId,
+          conversationId: channelId,
+          actorId: viewer.actorId,
+          actorName: viewer.displayName,
+          body: text,
+          createdAt: createdAtMs,
+        },
+        channelId,
+        replyToMessageId,
+      ),
+    });
+  });
+
+  /**
+   * Address one agent. This is the only way a channel post becomes work.
+   *
+   * The target session comes from that channel's redemption -- never from the
+   * request body, and never by launching something new. The invitation attached
+   * one concrete session, and that session is what this room can reach.
+   */
+  app.post("/api/channels/:id/asks", async (c) => {
+    const channelId = c.req.param("id");
+    const body = (await c.req.json().catch(() => null)) as
+      | {
+          requestId?: string;
+          body?: string;
+          targetActorId?: string;
+          replyToMessageId?: string;
+        }
+      | null;
+    const text = body?.body?.trim();
+    // Routing is by actor id. A display name typed into the body is prose, not
+    // an address, and is never resolved into a target here.
+    const targetActorId = body?.targetActorId?.trim();
+    if (!text) return c.json({ error: "body is required" }, 400);
+    if (!targetActorId) return c.json({ error: "targetActorId is required" }, 400);
+
+    const resolved = await resolveChatChannel(c.req.raw, channelId);
+    if (!resolved.ok) return c.json({ error: resolved.error }, resolved.status);
+    const { broker, conversation, viewer } = resolved;
+
+    const nowMs = Date.now();
+    const endpoints = Object.values(broker.snapshot.endpoints ?? {}) as AgentEndpoint[];
+    const agent = broker.snapshot.agents?.[targetActorId];
+    const actor = broker.snapshot.actors?.[targetActorId];
+    const endpoint = endpoints
+      .filter((candidate) => candidate.agentId === targetActorId)
+      .sort((left, right) => endpointFreshnessMs(right) - endpointFreshnessMs(left))[0]
+      ?? null;
+
+    const plan = planChannelAsks({
+      mentionedActorIds: [targetActorId],
+      participantIds: conversation.participantIds,
+      invites: channelInvitesForConversation(conversation),
+      nowMs,
+      candidates: [{
+        actorId: targetActorId,
+        isAgent: Boolean(agent) || actor?.kind === "agent",
+        // A member who joined over HTTP is an agent with nowhere to route to.
+        // Marking it here is what keeps this route from reading "no attached
+        // session yet" -- a state that resolves on its own -- over a member
+        // whose whole mode is that it never attaches one.
+        //
+        // The id is passed alongside the record because the record is the part
+        // that can be missing: a snapshot taken before the actor write lands
+        // still has the participant on the roster, and answering "that is a
+        // person" then would be a worse answer than the prefix gives.
+        isApiParticipant: isApiParticipantActor({
+          id: targetActorId,
+          metadata: (actor as { metadata?: Record<string, unknown> } | undefined)?.metadata
+            ?? null,
+        }),
+        label: agent?.displayName ?? actor?.displayName ?? targetActorId,
+        endpoint: endpoint
+          ? {
+              state: endpoint.state,
+              transport: endpoint.transport,
+              sessionId: endpoint.sessionId ?? null,
+              lastSeenAt: endpointFreshnessMs(endpoint) || null,
+            }
+          : null,
+      }],
+    });
+
+    const ask = plan.asks[0];
+    if (!ask) {
+      // An unroutable target fails with something the asker can act on, rather
+      // than creating a request that can never be delivered.
+      const skipped = plan.skipped[0];
+      return c.json(
+        {
+          error: skipped?.detail ?? "That agent cannot be asked in this channel.",
+          ...(skipped?.reason ? { reason: skipped.reason } : {}),
+        },
+        409,
+      );
+    }
+
+    const replyToMessageId = body?.replyToMessageId?.trim() || null;
+    const dispatched = await sendScoutConversationSteer({
+      conversationId: channelId,
+      senderId: viewer.actorId,
+      body: text,
+      targetParticipantIds: [ask.actorId],
+      intent: "invoke",
+      // The exact session the invitation attached. `existing` is what keeps a
+      // reply coming back into this session and this thread instead of starting
+      // a fresh one somewhere else.
+      execution: { session: "existing", targetSessionId: ask.sessionId },
+      // One selected actor id is the entire address. A name written in the
+      // message text is prose and never widens this into a second invocation.
+      resolveMentionsFromBody: false,
+      clientMessageId: body?.requestId?.trim() || null,
+      ...(replyToMessageId ? { replyToMessageId } : {}),
+      createdAtMs: nowMs,
+      currentDirectory,
+      source: "scout-chat",
+    });
+    if (!dispatched.usedBroker || !dispatched.messageId) {
+      return c.json({ error: "broker unreachable" }, 502);
+    }
+    const flight = dispatched.flights?.[0] ?? dispatched.flight ?? null;
+    if (!flight) {
+      // No flight means no tracked request. Saying otherwise would put a
+      // pending row on the surface for work the broker never accepted.
+      return c.json(
+        { error: `The broker did not accept a request for ${ask.label}.` },
+        502,
+      );
+    }
+
+    return c.json({
+      message: chatMessageProjection(
+        {
+          id: dispatched.messageId,
+          conversationId: channelId,
+          actorId: viewer.actorId,
+          actorName: viewer.displayName,
+          body: text,
+          createdAt: nowMs,
+        },
+        channelId,
+        replyToMessageId,
+      ),
+      request: {
+        messageId: dispatched.messageId,
+        flightId: flight.id,
+        state: flight.state,
+        targetActorId: ask.actorId,
+        // The reachability reading travels with the request so the surface can
+        // say what the route actually is. It is not a delivery receipt, and
+        // the note below never claims one.
+        reception: ask.reception,
+        note: channelAskDispatchNote(ask.reception, ask.label),
+      },
+    });
+  });
+
   app.get("/api/sessions", (c) => c.json(querySessions()));
   app.get("/api/session-ref/:id", async (c) => {
     const refId = c.req.param("id");
@@ -9467,6 +11605,24 @@ export async function createOpenScoutWebServer(
 
   app.all("/api/*", (c) => c.json({ error: `unknown api route: ${c.req.path}` }, 404));
 
+  /**
+   * The reserved chat name opens chat, not the operator shell.
+   *
+   * `chat.<portalHost>` is advertised as this node's chat entry point, so its
+   * root has to land on the chat surface; serving the shell there would make
+   * the advertised name a lie for everyone who typed it. Only `/` is
+   * redirected -- every other path on that host still resolves normally, so an
+   * invitation link keeps working on the name it was issued under.
+   *
+   * It sits ahead of the asset handler because that one answers `/` with the
+   * SPA for every host.
+   */
+  app.get("/", (c, next) => {
+    const requestHost = (c.req.header("host") ?? "").split(":")[0]?.trim().toLowerCase() ?? "";
+    if (!requestHost || requestHost !== chatServiceHost()) return next();
+    return c.redirect("/chat", 302);
+  });
+
   await registerScoutWebAssets(app, {
     assetMode: options.assetMode,
     staticRoot: resolveStaticRoot(options.staticRoot),
@@ -9493,10 +11649,11 @@ export async function createOpenScoutWebServer(
     });
 
   const stop = async () => {
+    await channelEventStreams.stop();
     lanPairBeacon?.stop();
     pendingPairRequests.dispose();
     await scoutbot.stopRunner();
   };
 
-  return { app, warmupCaches, stop };
+  return { app, warmupCaches, stop, resolvePortalPeerUpstream };
 }

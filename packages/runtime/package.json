@@ -1,6 +1,6 @@
 {
   "name": "@openscout/runtime",
-  "version": "0.2.103",
+  "version": "0.2.104",
   "description": "Local runtime foundation for the OpenScout control plane",
   "type": "module",
   "bin": {
@@ -12,6 +12,12 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js",
       "default": "./dist/index.js"
+    },
+    "./jetstream": {
+      "bun": "./src/jetstream/index.ts",
+      "types": "./dist/jetstream/index.d.ts",
+      "import": "./dist/jetstream/index.js",
+      "default": "./dist/jetstream/index.js"
     },
     "./repo-watch": {
       "bun": "./src/repo-watch/index.ts",
@@ -319,6 +325,7 @@
     "test": "bun test src/*.test.ts",
     "test:conformance": "OPENSCOUT_CONFORMANCE=1 bun test src/system-probes.test.ts --test-name-pattern='scoutd conformance diff harness'",
     "test:scenarios": "bun test src/scenario-suite.test.ts",
+    "test:live:jetstream": "bun test src/jetstream/*live.test.ts",
     "test:live:codex-app-server": "bun test src/codex-app-server-live.test.ts",
     "test:live:opencode-acp": "bun test src/opencode-acp-live.test.ts",
     "test:e2e:local-agent-pass": "bash ../../scripts/run-live-local-agent-pass.sh",
@@ -328,6 +335,8 @@
     "postpublish": "node ../../scripts/restore-publish-manifest.mjs ."
   },
   "dependencies": {
+    "@nats-io/jetstream": "3.4.0",
+    "@nats-io/transport-node": "3.4.0",
     "@openscout/agent-sessions": "workspace:*",
     "@openscout/protocol": "workspace:*",
     "@peculiar/x509": "1.12.3",

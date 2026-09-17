@@ -89,6 +89,14 @@ export interface NodeDefinition {
   advertiseScope: AdvertiseScope;
   brokerUrl?: string;
   webUrl?: string;
+  /**
+   * The node's named web doorway (e.g. `m1.scout.local`), matching the edge's
+   * advertisedHost. `*.scout.local` names resolve to 127.0.0.1 on every LAN
+   * machine; the local edge recognizes them as peer doorways and proxies to
+   * this node's reachable route, so the name is a stable way to open a peer's
+   * Scout regardless of its current address.
+   */
+  webHost?: string;
   meshEntrypoints?: NodeMeshEntrypoint[];
   tailnetName?: string;
   capabilities?: string[];

@@ -1,7 +1,12 @@
 .s-secondary-nav {
   display: flex;
   align-items: center;
-  justify-content: center;
+  /* `safe` is load-bearing, not decoration. Plain `center` on a scroll
+     container pushes overflow out BOTH ends, and no browser puts start-side
+     overflow in the scrollable region — so the first item was sheared off
+     ("ent Lanes") and unreachable at any scroll position. `safe center`
+     centers while it fits and falls back to start alignment once it does not. */
+  justify-content: safe center;
   gap: var(--space-sm);
   min-width: 0;
   max-width: 100%;
@@ -24,8 +29,11 @@
   min-height: 44px;
   display: flex;
   align-items: center;
-  justify-content: center;
-  padding: 0 var(--space-3xl);
+  /* Same trap one level up: this centres the nav, so it clips it the same way
+     when the nav is wider than the bar. The generous inline padding is what
+     makes that reachable at ordinary window widths, so it yields first. */
+  justify-content: safe center;
+  padding: 0 var(--space-md);
   border-bottom: 1px solid var(--border);
   background: color-mix(in srgb, var(--surface) 52%, transparent);
 }

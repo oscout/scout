@@ -585,7 +585,7 @@ export function parseSetupCommandOptions(
     }
     if (current === "--default-harness" || current.startsWith("--default-harness=")) {
       const value = parseFlagValue(parsed.args, index, "--default-harness");
-      if (!["claude", "codex", "cursor", "grok", "pi", "opencode"].includes(value.value)) {
+      if (!["claude", "codex", "cursor", "grok", "pi", "opencode", "devin"].includes(value.value)) {
         throw new ScoutCliError(`invalid default harness: ${value.value}`);
       }
       defaultHarness = value.value;

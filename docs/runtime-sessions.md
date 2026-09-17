@@ -355,6 +355,19 @@ metadata; it does not mean "reuse whatever thread was last attached." Scout
 should consult session reachability diagnostics only when the request names an exact
 `targetSessionId`/`session:<id>` and that session cannot be reached.
 
+A Scout-provisioned session cannot report observed runtime before its first
+invocation executes — the harness process has not attached yet. During that
+narrow pending-launch window (currently two minutes), the broker trusts the
+exact harness/model/effort it just provisioned on the session's own endpoint,
+so a fresh profile or exact-runtime ask can reach execution instead of failing
+`session_runtime_unobserved` on a verification that is impossible by
+construction. The trust applies only to endpoints the broker itself registered
+(`scout-cardless-session` / `scout-isolated-agent-session` sources), only to
+the endpoint matching the requested session, and only inside the window — a
+conflicting request fails `session_runtime_mismatch` on the provisioned
+values, and once the grace expires or the provider attaches, observed runtime
+is again the only authority.
+
 `session: "new"` may also target an existing agent card. In that shape, the card
 supplies the identity, project, harness profile, and return-address metadata;
 the session policy says the work should enter fresh target context instead of

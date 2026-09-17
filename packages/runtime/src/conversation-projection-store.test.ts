@@ -9,7 +9,11 @@ import type {
   InvocationRequest,
   MessageRecord,
 } from "@openscout/protocol";
-import { stableChannelId } from "@openscout/protocol";
+import {
+  spaceNaturalKey,
+  spacedChannelNaturalKey,
+  stableChannelId,
+} from "@openscout/protocol";
 
 import type { BrokerJournalEntry } from "./broker-journal.js";
 import type { ObservedSessionProjectionUpdate } from "./observed-session-reducer.js";
@@ -894,6 +898,94 @@ describe("ConversationProjectionStore", () => {
       entryForConversation(canonical),
       entryForMessage(latest),
     ])).toBeNull();
+  });
+
+  // T4. The regression guard for spaces. The store reduces every `kind:
+  // "channel"` row sharing a natural key to ONE canonical feed, so two spaces
+  // each holding `#general` would merge into a single transcript if the space
+  // lived anywhere but inside the key. Asserting two groups here is asserting
+  // that the separation is enforced by the store rather than by a sidebar
+  // filter above it.
+  test("the same channel name in two spaces stays two feeds", () => {
+    const { db, projection } = setup();
+    const workKey = spacedChannelNaturalKey("work", "general");
+    const personalKey = spacedChannelNaturalKey("personal", "general");
+    expect(workKey).not.toBe(personalKey);
+
+    const work = seedConversation(db, {
+      id: stableChannelId(workKey),
+      kind: "channel",
+      title: "general",
+      participantIds: [OPERATOR_ID],
+      metadata: { naturalKey: workKey, spaceSlug: "work" },
+    });
+    const personal = seedConversation(db, {
+      id: stableChannelId(personalKey),
+      kind: "channel",
+      title: "general",
+      participantIds: [OPERATOR_ID],
+      metadata: { naturalKey: personalKey, spaceSlug: "personal" },
+    });
+    seedMessage(db, {
+      id: "message-work-general",
+      conversationId: work.id,
+      actorId: OPERATOR_ID,
+      body: "Work room",
+      createdAt: BASE + 100,
+    });
+    seedMessage(db, {
+      id: "message-personal-general",
+      conversationId: personal.id,
+      actorId: OPERATOR_ID,
+      body: "Personal room",
+      createdAt: BASE + 200,
+    });
+
+    const delta = projection.reconcileAll();
+    const feedIds = (delta?.delta.upserted ?? []).map((item) => item.feedId).sort();
+    expect(feedIds).toEqual([`conv:${personal.id}`, `conv:${work.id}`].sort());
+    // Two groups, not one coalesced group: neither room borrowed the other's
+    // transcript.
+    const byFeed = new Map(
+      (delta?.delta.upserted ?? []).map((item) => [item.feedId, item]),
+    );
+    expect(byFeed.get(`conv:${work.id}`)?.preview).toBe("Work room");
+    expect(byFeed.get(`conv:${personal.id}`)?.preview).toBe("Personal room");
+    expect(byFeed.get(`conv:${work.id}`)?.messageCount).toBe(1);
+    expect(byFeed.get(`conv:${personal.id}`)?.messageCount).toBe(1);
+    // And nothing was redirected onto anything else.
+    expect(delta?.delta.identityRedirects ?? []).toEqual([]);
+  });
+
+  // A space is stored as a `kind: "system"` conversation precisely so it is
+  // invisible to every surface that reads this projection. If that ever stops
+  // being true, a space record shows up as a stray row in Comms on macOS, iOS,
+  // and the web shell at once.
+  test("a space record never becomes a visible feed", () => {
+    const { db, projection } = setup();
+    const naturalKey = spaceNaturalKey("work");
+    const space = seedConversation(db, {
+      id: stableChannelId(naturalKey),
+      kind: "system",
+      title: "Work",
+      participantIds: [OPERATOR_ID],
+      metadata: { naturalKey, spaceSlug: "work", surface: "chat-space" },
+    });
+    seedMessage(db, {
+      id: "message-in-space-record",
+      conversationId: space.id,
+      actorId: OPERATOR_ID,
+      body: "should never surface",
+      createdAt: BASE + 100,
+    });
+
+    const delta = projection.reconcileAll();
+    expect((delta?.delta.upserted ?? []).map((item) => item.feedId)).not.toContain(
+      `conv:${space.id}`,
+    );
+    expect(projection.snapshot().items.map((item) => item.feedId)).not.toContain(
+      `conv:${space.id}`,
+    );
   });
 
   test("full reconciliation is idempotent and the launch snapshot defaults to 32 items", () => {
