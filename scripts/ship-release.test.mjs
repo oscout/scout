@@ -919,6 +919,15 @@ test("the isolated retained Scout candidate is normalized and passes the exact a
       writeFileSync(output, "fixture runtime art\n");
     }
     writeFileSync(join(fixture, "candidate/README.md"), "# Scout\n");
+    const migrationSql = "CREATE TABLE retained (id INTEGER PRIMARY KEY);\n";
+    const migrationJournal = JSON.stringify({ entries: [{ tag: "0000_retained", when: 1, breakpoints: false }] });
+    mkdirSync(join(fixture, "candidate/dist/drizzle/meta"), { recursive: true });
+    mkdirSync(join(fixture, "packages/runtime/drizzle/meta"), { recursive: true });
+    writeFileSync(join(fixture, "candidate/dist/drizzle/0000_retained.sql"), migrationSql);
+    writeFileSync(join(fixture, "candidate/dist/drizzle/meta/_journal.json"), migrationJournal);
+    writeFileSync(join(fixture, "candidate/dist/drizzle/meta/0000_snapshot.json"), "{}");
+    writeFileSync(join(fixture, "packages/runtime/drizzle/meta/0000_snapshot.json"), "source schema snapshot");
+
 
     const normalize = spawnSync(
       process.execPath,
@@ -937,6 +946,18 @@ test("the isolated retained Scout candidate is normalized and passes the exact a
     );
     assert.equal(pack.status, 0, pack.stderr);
     const tarball = join(fixture, "openscout-scout-0.2.99.tgz");
+    const packedFiles = spawnSync("tar", ["-tzf", tarball], { encoding: "utf8" });
+    assert.equal(packedFiles.status, 0, packedFiles.stderr);
+    assert.doesNotMatch(packedFiles.stdout, /_snapshot\.json/);
+    for (const [name, expected] of [
+      ["0000_retained.sql", migrationSql], ["meta/_journal.json", migrationJournal],
+    ]) {
+      const extracted = spawnSync("tar", ["-xOf", tarball, `package/dist/drizzle/${name}`], { encoding: "utf8" });
+      assert.equal(extracted.status, 0, extracted.stderr);
+      assert.equal(extracted.stdout, expected);
+    }
+    assert.equal(readFileSync(join(fixture, "packages/runtime/drizzle/meta/0000_snapshot.json"), "utf8"), "source schema snapshot");
+
     const audit = spawnSync(
       process.execPath,
       ["scripts/check-packed-manifests.mjs", "--tarball", tarball],

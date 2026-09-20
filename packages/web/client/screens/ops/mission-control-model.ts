@@ -5,6 +5,18 @@ import type { MissionGroupMode } from "../../lib/mission-control-store.ts";
 /** A log that has not emitted inside this window is no longer "live". */
 export const ACTIVE_EVENT_WINDOW_MS = 60_000;
 
+export const MISSION_CONTROL_RECENT_TAIL_LIMIT = 1_500;
+
+export function missionControlRecentTailPath(
+  limit = MISSION_CONTROL_RECENT_TAIL_LIMIT,
+): string {
+  const params = new URLSearchParams({
+    limit: String(limit),
+    transcripts: "true",
+  });
+  return `/api/tail/recent?${params.toString()}`;
+}
+
 export type MissionGroupFields = {
   activityLabel: string;
   workspace: string | null | undefined;

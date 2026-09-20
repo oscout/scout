@@ -14,6 +14,7 @@ import {
   resolveScoutWebBindHost,
   resolveScoutWebLanAccessScope,
   SCOUT_WEB_AUTH_COOKIE,
+  scoutWebAuthCookie,
   SCOUT_WEB_LOGIN_API_PATH,
   SCOUT_WEB_LOGOUT_API_PATH,
   shouldIssueFrontDoorScoutWebCredential,
@@ -626,6 +627,11 @@ describe("operator login endpoint", () => {
     expect(cookie).toContain("SameSite=Strict");
     expect(cookie).toContain("Max-Age=");
     expect(cookie).not.toContain("Secure");
+  });
+
+  test("shares the session cookie across scout.local and chat.scout.local", () => {
+    expect(scoutWebAuthCookie("sws_x", false, 60, "chat.scout.local")).toContain("Domain=scout.local");
+    expect(scoutWebAuthCookie("sws_x", false, 60, "localhost")).not.toContain("Domain=");
   });
 
   test("marks the cookie Secure behind a forwarded-HTTPS edge", async () => {

@@ -1,6 +1,11 @@
 import { describe, expect, test } from "bun:test";
 
-import { missionGroupLabel, stateChipColor } from "./mission-control-model.ts";
+import {
+  MISSION_CONTROL_RECENT_TAIL_LIMIT,
+  missionControlRecentTailPath,
+  missionGroupLabel,
+  stateChipColor,
+} from "./mission-control-model.ts";
 
 describe("stateChipColor", () => {
   test("uses the shared color for every normalized agent posture", () => {
@@ -42,5 +47,14 @@ describe("missionGroupLabel", () => {
       source: "native",
     }, "harness")).toBe("Unknown harness");
     expect(missionGroupLabel({ ...subject, source: "native" }, "source")).toBe("Native sessions");
+  });
+});
+
+describe("missionControlRecentTailPath", () => {
+  test("asks the broker for transcript history, not only the live buffer", () => {
+    const url = new URL(missionControlRecentTailPath(), "http://scout.local");
+    expect(url.pathname).toBe("/api/tail/recent");
+    expect(url.searchParams.get("transcripts")).toBe("true");
+    expect(Number(url.searchParams.get("limit"))).toBe(MISSION_CONTROL_RECENT_TAIL_LIMIT);
   });
 });

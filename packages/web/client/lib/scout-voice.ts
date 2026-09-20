@@ -16,6 +16,7 @@ import {
   type ScoutVoiceIssueAction,
   type ScoutVoiceIssueCode,
 } from "../../shared/voice-issues.ts";
+import { beginScoutSpeech, endScoutSpeech } from "./scout-audio-owners.ts";
 
 export {
   formatScoutVoiceIssue,
@@ -93,6 +94,8 @@ export type ScoutSpeechOptions = {
   speechTiming?: ScoutSpeechTimingRequest;
   /** Override the operator's "spoken on host" setting for this utterance. */
   playback?: ScoutVoicePlayback;
+  /** Fires when audio actually starts moving — after generation, at playback start. */
+  onPlaybackStart?: () => void;
 };
 
 export type ScoutSpeechCatalogModel = {
@@ -1008,6 +1011,122 @@ export function reconcileScoutSpeechSelection(
   return { modelId, voiceId: next?.id ?? voiceId };
 }
 
+let primedSpeechContext: AudioContext | null = null;
+
+function speechAudioContextCtor(): (typeof AudioContext) | null {
+  if (typeof window === "undefined") return null;
+  return window.AudioContext
+    ?? (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext
+    ?? null;
+}
+
+/** Call from a tap. Keeps an AudioContext unlocked so TTS after STT still plays. */
+export function primeScoutSpeechPlayback(): void {
+  const Ctor = speechAudioContextCtor();
+  if (!Ctor) return;
+  let src: AudioBufferSourceNode | null = null;
+  try {
+    if (!primedSpeechContext || primedSpeechContext.state === "closed") {
+      primedSpeechContext = new Ctor();
+    }
+    void primedSpeechContext.resume().catch(() => { /* best-effort unlock */ });
+    const silent = primedSpeechContext.createBuffer(1, 1, primedSpeechContext.sampleRate);
+    src = primedSpeechContext.createBufferSource();
+    src.buffer = silent;
+    src.connect(primedSpeechContext.destination);
+    const silentSource = src;
+    src.onended = () => silentSource.disconnect();
+    src.start(0);
+  } catch {
+    src?.disconnect();
+    // Best-effort; later play() still tries HTML Audio.
+  }
+}
+
+/** Neither autoplay permission nor decoding is allowed to retain a stopped turn. */
+function awaitSpeechPreparation<T>(prepare: () => Promise<T>, signal?: AbortSignal): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(stoppedSpeechError());
+      return;
+    }
+    const cleanup = () => {
+      clearTimeout(timeout);
+      signal?.removeEventListener("abort", onAbort);
+    };
+    const onAbort = () => {
+      cleanup();
+      reject(stoppedSpeechError());
+    };
+    const timeout = setTimeout(() => {
+      cleanup();
+      reject(new Error("Scout audio preparation timed out."));
+    }, 1500);
+    signal?.addEventListener("abort", onAbort, { once: true });
+    try {
+      void prepare().then((value) => {
+        cleanup();
+        resolve(value);
+      }, (error: unknown) => {
+        cleanup();
+        reject(error);
+      });
+    } catch (error) {
+      cleanup();
+      reject(error);
+    }
+  });
+}
+
+async function playScoutSpeechBuffer(
+  result: ScoutSpeechResult,
+  options: { signal?: AbortSignal; onPlaybackStart?: () => void },
+): Promise<void> {
+  const ctx = primedSpeechContext;
+  if (!ctx || ctx.state === "closed" || !result.audioBase64) throw new Error("no primed context");
+  if (ctx.state !== "running") {
+    await awaitSpeechPreparation(() => ctx.resume(), options.signal);
+  }
+  if (ctx.state !== "running") throw new Error("primed context is unavailable");
+  const binary = atob(result.audioBase64);
+  const bytes = Uint8Array.from(binary, (character) => character.charCodeAt(0));
+  // Decode on the unlocked context: the effects helper owns a different context.
+  const buffer = await awaitSpeechPreparation(() => ctx.decodeAudioData(bytes.buffer), options.signal);
+  if (options.signal?.aborted) throw stoppedSpeechError();
+  const src = ctx.createBufferSource();
+  src.buffer = buffer;
+  src.connect(ctx.destination);
+  await new Promise<void>((resolve, reject) => {
+    const cleanup = () => {
+      src.onended = null;
+      options.signal?.removeEventListener("abort", stop);
+      src.disconnect();
+    };
+    const stop = () => {
+      cleanup();
+      try { src.stop(); } catch { /* not started or already stopped */ }
+      reject(stoppedSpeechError());
+    };
+    if (options.signal?.aborted) {
+      stop();
+      return;
+    }
+    options.signal?.addEventListener("abort", stop, { once: true });
+    src.onended = () => {
+      cleanup();
+      resolve();
+    };
+    try {
+      src.start(0);
+      options.onPlaybackStart?.();
+    } catch (error) {
+      cleanup();
+      try { src.stop(); } catch { /* not started */ }
+      reject(error);
+    }
+  });
+}
+
 export async function playPreparedScoutSpeech(
   result: ScoutSpeechResult,
   options: { signal?: AbortSignal; onPlaybackStart?: () => void } = {},
@@ -1019,6 +1138,17 @@ export async function playPreparedScoutSpeech(
     options.onPlaybackStart?.();
     return result;
   }
+  if (!result.audioBase64) {
+    throw new Error("Scout voice returned no audio to play.");
+  }
+  try {
+    await playScoutSpeechBuffer(result, options);
+    return result;
+  } catch (error) {
+    if (isScoutSpeechStopped(error)) throw error;
+    // Fall through to HTML Audio when the primed context isn't ready.
+  }
+  if (options.signal?.aborted) throw stoppedSpeechError();
   const audio = new Audio(`data:${result.contentType};base64,${result.audioBase64}`);
   const stopPlayback = () => {
     audio.pause();
@@ -1064,8 +1194,13 @@ export async function speakWithScoutVoice(
   text: string,
   options: ScoutSpeechOptions = {},
 ): Promise<ScoutSpeechResult> {
-  const result = await prepareScoutSpeech(text, options);
-  return await playPreparedScoutSpeech(result, { signal: options.signal });
+  beginScoutSpeech();
+  try {
+    const result = await prepareScoutSpeech(text, options);
+    return await playPreparedScoutSpeech(result, { signal: options.signal, onPlaybackStart: options.onPlaybackStart });
+  } finally {
+    endScoutSpeech();
+  }
 }
 
 export function startScoutSpeech(text: string, options: Omit<ScoutSpeechOptions, "signal"> = {}): ScoutSpeechHandle {
@@ -1085,14 +1220,23 @@ export async function speakWithEffects(
   text: string,
   options: ScoutSpeakWithEffectsOptions = {},
 ): Promise<ScoutSpeechResult> {
-  const result = await prepareScoutSpeech(text, options);
-  if (options.signal?.aborted) throw stoppedSpeechError();
-  if (result.playedOnHost) return result;
-  const buffer = await decodeAudioFromBase64(result.audioBase64, result.contentType);
-  const params = resolveVoiceFxParams(options.presetId, options.params);
-  const handle = playWithVoiceFx(buffer, { params, signal: options.signal });
-  await handle.promise;
-  return result;
+  beginScoutSpeech();
+  try {
+    const result = await prepareScoutSpeech(text, options);
+    if (options.signal?.aborted) throw stoppedSpeechError();
+    if (result.playedOnHost) {
+      options.onPlaybackStart?.();
+      return result;
+    }
+    const buffer = await decodeAudioFromBase64(result.audioBase64, result.contentType);
+    const params = resolveVoiceFxParams(options.presetId, options.params);
+    const handle = playWithVoiceFx(buffer, { params, signal: options.signal });
+    options.onPlaybackStart?.();
+    await handle.promise;
+    return result;
+  } finally {
+    endScoutSpeech();
+  }
 }
 
 export async function playPreparedScoutSpeechWithEffects(

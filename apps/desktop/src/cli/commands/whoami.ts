@@ -13,6 +13,7 @@ import type { ScoutCommandContext } from "../context.ts";
 import { defaultScoutContextDirectory } from "../context.ts";
 import { parseContextRootCommandOptions } from "../options.ts";
 import {
+  resolveHerdrAgentName,
   resolveScoutBrokerUrl,
   resolveScoutSenderId,
 } from "../../core/broker/service.ts";
@@ -22,6 +23,7 @@ const HELP_FLAGS = new Set(["--help", "-h"]);
 type ScoutWhoAmIReport = {
   defaultSenderId: string;
   envAgent: string | null;
+  herdrAgentName: string | null;
   codingAgentHost: CodingAgentHostMatch | null;
   currentDirectory: string;
   projectRoot: string | null;
@@ -58,6 +60,7 @@ async function loadScoutWhoAmIReport(
   return {
     defaultSenderId,
     envAgent: context.env.OPENSCOUT_AGENT?.trim() || null,
+    herdrAgentName: resolveHerdrAgentName(context.env),
     codingAgentHost: detectCodingAgentHost(context.env),
     currentDirectory,
     projectRoot,
@@ -75,6 +78,10 @@ function renderScoutWhoAmIReport(report: ScoutWhoAmIReport): string {
 
   if (report.envAgent) {
     lines.push(`OPENSCOUT_AGENT: ${report.envAgent}`);
+  }
+
+  if (report.herdrAgentName) {
+    lines.push(`Herdr Agent: ${report.herdrAgentName}`);
   }
 
   if (report.codingAgentHost) {

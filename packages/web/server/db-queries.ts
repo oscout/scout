@@ -64,6 +64,7 @@ export {
   queryMeshOpsWorkRecord,
 } from "./db/mesh-ops.ts";
 export {
+  ATTENTION_STALE_AFTER_MS,
   queryFleet,
   queryFleetActivity,
   queryFleetAskRows,

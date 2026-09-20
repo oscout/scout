@@ -1527,6 +1527,166 @@ describe("getScoutConversations", () => {
     expect(dm?.unreadCount).toBe(2);
   });
 
+  test("recovers a group_direct workspace from its single session participant", async () => {
+    const snapshot = baseSnapshot();
+    const chatId = "chat_group-workspace";
+    snapshot.actors["session-only"] = {
+      id: "session-only",
+      kind: "session",
+      displayName: "openscout-verdi",
+      metadata: {
+        sessionId: "session-only",
+        projectRoot: "/Users/arach/dev/openscout",
+      },
+    };
+    snapshot.conversations[chatId] = {
+      id: chatId,
+      kind: "group_direct",
+      title: "Operator <> session-only",
+      visibility: "private",
+      shareMode: "local",
+      authorityNodeId: "node-1",
+      participantIds: ["operator", "session-only"],
+    };
+    snapshot.messages["msg-group-workspace"] = {
+      id: "msg-group-workspace",
+      conversationId: chatId,
+      actorId: "operator",
+      originNodeId: "node-1",
+      class: "operator",
+      body: "hi",
+      visibility: "private",
+      policy: "durable",
+      createdAt: 1_779_461_900_000,
+    };
+    brokerContextResult = brokerContext(snapshot);
+
+    const conversations = await getScoutConversations();
+
+    expect(conversations.find((entry) => entry.id === chatId)).toEqual(
+      expect.objectContaining({
+        workspaceRoot: "/Users/arach/dev/openscout",
+      }),
+    );
+  });
+
+  test("keeps a group_direct workspace null across multiple participant roots without a selected session", async () => {
+    const snapshot = baseSnapshot();
+    const chatId = "chat_group-multi-root";
+    for (const [id, root] of [["session-a", "/work/alpha"], ["session-b", "/work/beta"]] as const) {
+      snapshot.actors[id] = {
+        id,
+        kind: "session",
+        displayName: `openscout-${id}`,
+        metadata: {
+          sessionId: id,
+          projectRoot: root,
+        },
+      };
+    }
+    snapshot.conversations[chatId] = {
+      id: chatId,
+      kind: "group_direct",
+      title: "Operator <> sessions",
+      visibility: "private",
+      shareMode: "local",
+      authorityNodeId: "node-1",
+      participantIds: ["operator", "session-a", "session-b"],
+    };
+    snapshot.messages["msg-group-multi-root"] = {
+      id: "msg-group-multi-root",
+      conversationId: chatId,
+      actorId: "operator",
+      originNodeId: "node-1",
+      class: "operator",
+      body: "hi",
+      visibility: "private",
+      policy: "durable",
+      createdAt: 1_779_461_900_000,
+    };
+    brokerContextResult = brokerContext(snapshot);
+
+    const conversations = await getScoutConversations();
+
+    expect(conversations.find((entry) => entry.id === chatId)?.workspaceRoot).toBeNull();
+  });
+
+  test("uses the selected session participant's workspace over another participant's", async () => {
+    const snapshot = baseSnapshot();
+    const chatId = "chat_group-selected-root";
+    for (const [id, root] of [["session-a", "/work/alpha"], ["session-b", "/work/beta"]] as const) {
+      snapshot.actors[id] = {
+        id,
+        kind: "session",
+        displayName: `openscout-${id}`,
+        metadata: {
+          sessionId: id,
+          projectRoot: root,
+        },
+      };
+    }
+    snapshot.conversations[chatId] = {
+      id: chatId,
+      kind: "group_direct",
+      title: "Operator <> sessions",
+      visibility: "private",
+      shareMode: "local",
+      authorityNodeId: "node-1",
+      participantIds: ["operator", "session-a", "session-b"],
+    };
+    snapshot.messages["msg-group-selected-root"] = {
+      id: "msg-group-selected-root",
+      conversationId: chatId,
+      actorId: "operator",
+      originNodeId: "node-1",
+      class: "operator",
+      body: "hi",
+      visibility: "private",
+      policy: "durable",
+      createdAt: 1_779_461_900_000,
+      metadata: {
+        responderSessionId: "session-b",
+      },
+    };
+    brokerContextResult = brokerContext(snapshot);
+
+    const conversations = await getScoutConversations();
+
+    expect(conversations.find((entry) => entry.id === chatId)).toEqual(
+      expect.objectContaining({
+        sessionId: "session-b",
+        workspaceRoot: "/work/beta",
+      }),
+    );
+  });
+
+  test("recovers a direct workspace from actor metadata after endpoint retirement", async () => {
+    const snapshot = baseSnapshot();
+    snapshot.endpoints["ep-hudson-main"] = {
+      id: "ep-hudson-main",
+      agentId: "hudson.main.mini",
+      nodeId: "node-1",
+      harness: "claude",
+      transport: "claude_stream_json",
+      state: "offline",
+      metadata: {
+        staleLocalRegistration: true,
+      },
+    };
+    snapshot.actors["hudson.main.mini"]!.metadata = {
+      projectRoot: "/Users/arach/dev/hudson-recovered",
+    };
+    brokerContextResult = brokerContext(snapshot);
+
+    const conversations = await getScoutConversations();
+
+    expect(conversations.find((entry) => entry.id === "chat_hudson-main")).toEqual(
+      expect.objectContaining({
+        workspaceRoot: "/Users/arach/dev/hudson-recovered",
+      }),
+    );
+  });
+
   test("adapts the compact launch projection without treating observed sessions as chats", () => {
     const shared = {
       runtimeSessionId: null,
@@ -1609,6 +1769,259 @@ describe("getScoutConversations", () => {
       workspaceRoot: "/work/openscout",
       participantIds: ["operator", "hudson.main.mini"],
     });
+  });
+
+  test("reports the execution endpoint host rather than the conversation authority node", async () => {
+    const snapshot = baseSnapshot();
+    snapshot.nodes["node-2"] = { id: "node-2", name: "Devon Mini" };
+    snapshot.actors["session-remote"] = {
+      id: "session-remote",
+      kind: "session",
+      displayName: "openscout-remote",
+    };
+    snapshot.endpoints["ep-remote"] = {
+      id: "ep-remote",
+      agentId: "session-remote",
+      nodeId: "node-2",
+      harness: "codex",
+      transport: "codex_app_server",
+      state: "active",
+      sessionId: "session-remote",
+      projectRoot: "/work/remote-project",
+    };
+    snapshot.messages["msg-remote-session"] = {
+      id: "msg-remote-session",
+      conversationId: "chat_hudson-main",
+      actorId: "hudson.main.mini",
+      originNodeId: "node-1",
+      class: "agent",
+      body: "session reply",
+      visibility: "private",
+      policy: "durable",
+      createdAt: 1_779_461_800_000,
+      metadata: { sessionId: "session-remote" },
+    };
+    brokerContextResult = brokerContext(snapshot);
+
+    const conversations = await getScoutConversations();
+
+    expect(conversations.find((entry) => entry.id === "chat_hudson-main")).toEqual(
+      expect.objectContaining({
+        authorityNodeId: "node-1",
+        authorityNodeName: "node-1",
+        executionNodeId: "node-2",
+        executionNodeName: "Devon Mini",
+        workspaceRoot: "/work/remote-project",
+      }),
+    );
+  });
+
+  test("leaves the execution host null when several endpoints claim the session", async () => {
+    const snapshot = baseSnapshot();
+    snapshot.nodes["node-2"] = { id: "node-2", name: "Devon Mini" };
+    snapshot.endpoints["ep-remote-a"] = {
+      id: "ep-remote-a",
+      agentId: "session-remote",
+      nodeId: "node-2",
+      harness: "codex",
+      transport: "codex_app_server",
+      state: "active",
+      sessionId: "session-remote",
+    };
+    snapshot.endpoints["ep-remote-b"] = {
+      id: "ep-remote-b",
+      agentId: "session-remote-shadow",
+      nodeId: "node-2",
+      harness: "codex",
+      transport: "codex_app_server",
+      state: "idle",
+      sessionId: "session-remote",
+    };
+    snapshot.messages["msg-remote-session"] = {
+      id: "msg-remote-session",
+      conversationId: "chat_hudson-main",
+      actorId: "hudson.main.mini",
+      originNodeId: "node-1",
+      class: "agent",
+      body: "session reply",
+      visibility: "private",
+      policy: "durable",
+      createdAt: 1_779_461_800_000,
+      metadata: { sessionId: "session-remote" },
+    };
+    brokerContextResult = brokerContext(snapshot);
+
+    const conversations = await getScoutConversations();
+
+    expect(conversations.find((entry) => entry.id === "chat_hudson-main")).toEqual(
+      expect.objectContaining({
+        authorityNodeId: "node-1",
+        executionNodeId: null,
+        executionNodeName: null,
+      }),
+    );
+  });
+
+  test("does not infer a host name when the endpoint node is unknown", async () => {
+    const snapshot = baseSnapshot();
+    snapshot.endpoints["ep-remote"] = {
+      id: "ep-remote",
+      agentId: "session-remote",
+      nodeId: "node-missing",
+      harness: "codex",
+      transport: "codex_app_server",
+      state: "active",
+      sessionId: "session-remote",
+    };
+    snapshot.messages["msg-remote-session"] = {
+      id: "msg-remote-session",
+      conversationId: "chat_hudson-main",
+      actorId: "hudson.main.mini",
+      originNodeId: "node-1",
+      class: "agent",
+      body: "session reply",
+      visibility: "private",
+      policy: "durable",
+      createdAt: 1_779_461_800_000,
+      metadata: { sessionId: "session-remote" },
+    };
+    brokerContextResult = brokerContext(snapshot);
+
+    const conversations = await getScoutConversations();
+
+    expect(conversations.find((entry) => entry.id === "chat_hudson-main")).toEqual(
+      expect.objectContaining({
+        authorityNodeName: "node-1",
+        executionNodeId: "node-missing",
+        executionNodeName: null,
+      }),
+    );
+  });
+
+  test("prefers the exact execution endpoint root over a session participant root", async () => {
+    const snapshot = baseSnapshot();
+    snapshot.nodes["node-2"] = { id: "node-2", name: "Devon Mini" };
+    snapshot.actors["session-historical"] = {
+      id: "session-historical",
+      kind: "session",
+      displayName: "Historical session",
+      metadata: { projectRoot: "/work/participant-root" },
+    };
+    snapshot.conversations["chat_hudson-main"].participantIds = [
+      "operator",
+      "hudson.main.mini",
+      "session-historical",
+    ];
+    snapshot.endpoints["ep-historical"] = {
+      id: "ep-historical",
+      agentId: "session-historical",
+      nodeId: "node-2",
+      harness: "codex",
+      transport: "codex_app_server",
+      state: "offline",
+      sessionId: "session-historical",
+      projectRoot: "/work/historical",
+    };
+    snapshot.messages["msg-historical-session"] = {
+      id: "msg-historical-session",
+      conversationId: "chat_hudson-main",
+      actorId: "hudson.main.mini",
+      originNodeId: "node-1",
+      class: "agent",
+      body: "session reply",
+      visibility: "private",
+      policy: "durable",
+      createdAt: 1_779_461_800_000,
+      metadata: { sessionId: "session-historical" },
+    };
+    brokerContextResult = brokerContext(snapshot);
+
+    const conversations = await getScoutConversations();
+
+    expect(conversations.find((entry) => entry.id === "chat_hudson-main")).toEqual(
+      expect.objectContaining({
+        executionNodeId: "node-2",
+        executionNodeName: "Devon Mini",
+        workspaceRoot: "/work/historical",
+      }),
+    );
+  });
+
+  test("leaves host and workspace null when two endpoints of one session actor claim the session", async () => {
+    const snapshot = baseSnapshot();
+    snapshot.nodes["node-2"] = { id: "node-2", name: "Devon Mini" };
+    snapshot.endpoints["ep-remote-a"] = {
+      id: "ep-remote-a",
+      agentId: "session-remote",
+      nodeId: "node-2",
+      harness: "codex",
+      transport: "codex_app_server",
+      state: "active",
+      sessionId: "session-remote",
+      projectRoot: "/work/remote-a",
+    };
+    snapshot.endpoints["ep-remote-b"] = {
+      id: "ep-remote-b",
+      agentId: "session-remote",
+      nodeId: "node-1",
+      harness: "codex",
+      transport: "codex_app_server",
+      state: "idle",
+      sessionId: "session-remote",
+      projectRoot: "/work/remote-b",
+    };
+    snapshot.messages["msg-remote-session"] = {
+      id: "msg-remote-session",
+      conversationId: "chat_hudson-main",
+      actorId: "hudson.main.mini",
+      originNodeId: "node-1",
+      class: "agent",
+      body: "session reply",
+      visibility: "private",
+      policy: "durable",
+      createdAt: 1_779_461_800_000,
+      metadata: { sessionId: "session-remote" },
+    };
+    brokerContextResult = brokerContext(snapshot);
+
+    const conversations = await getScoutConversations();
+
+    expect(conversations.find((entry) => entry.id === "chat_hudson-main")).toEqual(
+      expect.objectContaining({
+        executionNodeId: null,
+        executionNodeName: null,
+        workspaceRoot: null,
+      }),
+    );
+  });
+
+  test("does not inherit the current agent host path or harness for an unmatched session", async () => {
+    const snapshot = baseSnapshot();
+    snapshot.messages["msg-foreign-session"] = {
+      id: "msg-foreign-session",
+      conversationId: "chat_hudson-main",
+      actorId: "hudson.main.mini",
+      originNodeId: "node-1",
+      class: "agent",
+      body: "session reply",
+      visibility: "private",
+      policy: "durable",
+      createdAt: 1_779_461_800_000,
+      metadata: { sessionId: "session-elsewhere" },
+    };
+    brokerContextResult = brokerContext(snapshot);
+
+    const conversations = await getScoutConversations();
+
+    expect(conversations.find((entry) => entry.id === "chat_hudson-main")).toEqual(
+      expect.objectContaining({
+        sessionId: "session-elsewhere",
+        executionNodeId: null,
+        executionNodeName: null,
+        workspaceRoot: null,
+        harness: null,
+      }),
+    );
   });
 
 });

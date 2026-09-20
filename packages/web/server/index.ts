@@ -364,8 +364,9 @@ try {
               webSessions.mint({ label: "front-door" }),
               secure,
               SCOUT_WEB_SESSION_MAX_AGE_SECONDS,
+              req.headers.get("host"),
             )
-          : scoutWebAuthCookie(webAuthToken, secure));
+          : scoutWebAuthCookie(webAuthToken, secure, undefined, req.headers.get("host")));
       } catch {
         void response.body?.cancel().catch(() => {});
         return Response.json({ error: "session storage unavailable" }, {

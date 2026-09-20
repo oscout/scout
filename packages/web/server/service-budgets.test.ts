@@ -274,6 +274,165 @@ describe("service budgets", () => {
     rawDb.close();
   });
 
+  test("keeps a recently reset Claude 5-hour window beside a live weekly reading", async () => {
+    const root = mkdtempSync(join(tmpdir(), "openscout-service-budgets-claude-mixed-reset-"));
+    tempPaths.add(root);
+    const controlHome = join(root, "control-plane");
+    const home = join(root, "home");
+    process.env.OPENSCOUT_CONTROL_HOME = controlHome;
+    process.env.HOME = home;
+    process.env.OPENSCOUT_SUPPORT_DIRECTORY = join(home, "Library", "Application Support", "OpenScout");
+    process.env.PATH = "";
+    mkdirSync(controlHome, { recursive: true });
+
+    const rawDb = new Database(join(controlHome, "control-plane.sqlite"));
+    createQuotaTable(rawDb);
+
+    const statuslineDir = join(home, "Library", "Application Support", "OpenScout", "runtime", "statusline");
+    mkdirSync(statuslineDir, { recursive: true });
+    const now = Date.now();
+    writeFileSync(join(statuslineDir, "claude-latest.json"), JSON.stringify({
+      session_id: "claude-statusline-session",
+      rate_limits: {
+        seven_day: {
+          used_percentage: 34,
+          resets_at: Math.floor((now + 4 * 24 * 60 * 60 * 1000) / 1000),
+        },
+      },
+      openscoutCapturedAt: now,
+    }), "utf8");
+    writeFileSync(join(statuslineDir, "claude-history.jsonl"), JSON.stringify({
+      session_id: "claude-statusline-session",
+      rate_limits: {
+        five_hour: {
+          used_percentage: 4,
+          resets_at: Math.floor((now - 8 * 60 * 60 * 1000) / 1000),
+        },
+        seven_day: {
+          used_percentage: 34,
+          resets_at: Math.floor((now + 4 * 24 * 60 * 60 * 1000) / 1000),
+        },
+      },
+      openscoutCapturedAt: now - 11 * 60 * 60 * 1000,
+    }) + "\n", "utf8");
+
+    const response = await loadServiceBudgets(true);
+    const claude = response.gauges.find((gauge) => gauge.id === "claude");
+    expect(claude && claude.kind === "quota" ? claude.windows : []).toEqual([
+      expect.objectContaining({ label: "5h", usedLabel: "—", awaitingReset: true, fill: 0 }),
+      expect.objectContaining({ label: "7d", usedLabel: "34%" }),
+    ]);
+    rawDb.close();
+  });
+
+  test("maps Claude monthly statusline windows when the provider reports them", async () => {
+    const root = mkdtempSync(join(tmpdir(), "openscout-service-budgets-claude-monthly-"));
+    tempPaths.add(root);
+    const controlHome = join(root, "control-plane");
+    const home = join(root, "home");
+    process.env.OPENSCOUT_CONTROL_HOME = controlHome;
+    process.env.HOME = home;
+    process.env.OPENSCOUT_SUPPORT_DIRECTORY = join(home, "Library", "Application Support", "OpenScout");
+    process.env.PATH = "";
+    mkdirSync(controlHome, { recursive: true });
+
+    const rawDb = new Database(join(controlHome, "control-plane.sqlite"));
+    createQuotaTable(rawDb);
+
+    const statuslineDir = join(home, "Library", "Application Support", "OpenScout", "runtime", "statusline");
+    mkdirSync(statuslineDir, { recursive: true });
+    const now = Date.now();
+    writeFileSync(join(statuslineDir, "claude-latest.json"), JSON.stringify({
+      session_id: "claude-statusline-session",
+      rate_limits: {
+        five_hour: {
+          used_percentage: 12,
+          resets_at: Math.floor((now + 4 * 60 * 60 * 1000) / 1000),
+        },
+        seven_day: {
+          used_percentage: 40,
+          resets_at: Math.floor((now + 3 * 24 * 60 * 60 * 1000) / 1000),
+        },
+        monthly: {
+          used_percentage: 22,
+          resets_at: Math.floor((now + 20 * 24 * 60 * 60 * 1000) / 1000),
+        },
+      },
+      openscoutCapturedAt: now,
+    }), "utf8");
+
+    const response = await loadServiceBudgets(true);
+    const claude = response.gauges.find((gauge) => gauge.id === "claude");
+    expect(claude && claude.kind === "quota" ? claude.windows : []).toEqual([
+      expect.objectContaining({ label: "5h", usedLabel: "12%" }),
+      expect.objectContaining({ label: "7d", usedLabel: "40%" }),
+      expect.objectContaining({ label: "30d", usedLabel: "22%" }),
+    ]);
+    rawDb.close();
+  });
+
+  test("does not revive a week-old Codex 5-hour window when the account only reports weekly", async () => {
+    const root = mkdtempSync(join(tmpdir(), "openscout-service-budgets-codex-stale-5h-"));
+    tempPaths.add(root);
+    const controlHome = join(root, "control-plane");
+    const home = join(root, "home");
+    process.env.OPENSCOUT_CONTROL_HOME = controlHome;
+    process.env.HOME = home;
+    process.env.OPENSCOUT_SUPPORT_DIRECTORY = join(home, "Library", "Application Support", "OpenScout");
+    process.env.PATH = "";
+    mkdirSync(controlHome, { recursive: true });
+
+    const rawDb = new Database(join(controlHome, "control-plane.sqlite"));
+    createQuotaTable(rawDb);
+    const insert = rawDb.query(`
+      INSERT INTO budget_quota_window_snapshots (
+        id, source, provider, harness, transport, label, window_kind,
+        used_percent, percent_remaining, reset_at, window_ms, captured_at,
+        metadata_json, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+    const now = Date.now();
+    insert.run(
+      "codex-old-5h",
+      "provider_reported",
+      "openai",
+      "codex",
+      "codex_app_server",
+      "5h",
+      "primary",
+      40,
+      60,
+      now - 6 * 24 * 60 * 60 * 1000,
+      5 * 60 * 60 * 1000,
+      now - 6 * 24 * 60 * 60 * 1000,
+      "{}",
+      now - 6 * 24 * 60 * 60 * 1000,
+    );
+    insert.run(
+      "codex-live-7d",
+      "provider_reported",
+      "openai",
+      "codex",
+      "codex_app_server",
+      "7d",
+      "primary",
+      87,
+      13,
+      now + 2 * 24 * 60 * 60 * 1000,
+      7 * 24 * 60 * 60 * 1000,
+      now - 60_000,
+      "{}",
+      now - 60_000,
+    );
+    rawDb.close();
+
+    const response = await loadServiceBudgets();
+    const codex = response.gauges.find((gauge) => gauge.id === "codex");
+    expect(codex && codex.kind === "quota" ? codex.windows : []).toEqual([
+      expect.objectContaining({ label: "7d", usedLabel: "87%" }),
+    ]);
+  });
+
   test("does not expose Claude context-window data as a subscription budget", async () => {
     const root = mkdtempSync(join(tmpdir(), "openscout-service-budgets-claude-context-only-"));
     tempPaths.add(root);

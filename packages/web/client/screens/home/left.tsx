@@ -85,10 +85,8 @@ export function HomeLeft({ prepend }: HomeLeftProps) {
     () => (scopedFleet?.activity ?? []).slice(0, RECENT_ACTIVITY_LIMIT),
     [scopedFleet],
   );
-  const needsAttention = useMemo(
-    () => (scopedFleet?.needsAttention ?? [])
-      .filter((item) => !dismissed.has(item.recordId))
-      .slice(0, NEEDS_ATTENTION_LIMIT),
+  const attentionSelection = useMemo(
+    () => selectNeedsAttentionItems(scopedFleet?.needsAttention ?? [], dismissed),
     [scopedFleet, dismissed],
   );
 
@@ -134,7 +132,8 @@ export function HomeLeft({ prepend }: HomeLeftProps) {
       />
 
       <NeedsAttentionSection
-        items={needsAttention}
+        items={attentionSelection.items}
+        totalCount={attentionSelection.totalCount}
         loading={!fleetLoaded}
         onSelect={(item) => navigate(routeForOperatorAttention(item))}
         onDismiss={(item) => void dismissAttention(item)}
@@ -232,13 +231,15 @@ function RecentActivitySection({
   );
 }
 
-function NeedsAttentionSection({
+export function NeedsAttentionSection({
   items,
+  totalCount,
   loading,
   onSelect,
   onDismiss,
 }: {
   items: FleetAttentionItem[];
+  totalCount: number;
   loading: boolean;
   onSelect: (item: FleetAttentionItem) => void;
   onDismiss: (item: FleetAttentionItem) => void;
@@ -254,7 +255,7 @@ function NeedsAttentionSection({
     <section className="ctx-panel-section base-rail-section">
       <SectionLabel
         title="Needs attention"
-        meta={items.length > 0 ? `${items.length}` : undefined}
+        meta={totalCount > 0 ? `${totalCount}` : undefined}
       />
       {loading ? (
         <RailLoadingRows rows={2} />
@@ -290,6 +291,22 @@ function NeedsAttentionSection({
       )}
     </section>
   );
+}
+
+export function selectNeedsAttentionItems(
+  items: FleetAttentionItem[],
+  dismissed: ReadonlySet<string>,
+  limit = NEEDS_ATTENTION_LIMIT,
+): { items: FleetAttentionItem[]; totalCount: number } {
+  const ordered = [...items]
+    .filter((item) => !dismissed.has(item.recordId))
+    .sort((left, right) =>
+      left.updatedAt - right.updatedAt || left.recordId.localeCompare(right.recordId));
+
+  return {
+    items: ordered.slice(0, limit),
+    totalCount: ordered.length,
+  };
 }
 
 function RailLoadingRows({ rows = 3 }: { rows?: number }) {

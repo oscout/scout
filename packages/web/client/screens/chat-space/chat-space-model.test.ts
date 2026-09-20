@@ -35,8 +35,10 @@ import {
   memberOrFallback,
   memberReceptionView,
   memberTrailingFact,
+  applyOptimisticReaction,
   newRequestId,
   normalizeAskState,
+  mergeChannelRoster,
   peopleAgentLabel,
   projectFeed,
   reachabilityView,
@@ -196,6 +198,50 @@ describe("identity", () => {
     expect(peopleAgentLabel(members)).toBe("2 people · 1 agent");
     expect(peopleAgentLabel([members[0]!])).toBe("1 person · 0 agents");
   });
+
+  test("a thin roster poll does not erase agents already in the room", () => {
+    const maya = member({ actorId: "actor-maya", displayName: "Maya" });
+    const arc = member({
+      actorId: "arc.master.arts-mini",
+      kind: "agent",
+      displayName: "Arc",
+      owner: { actorId: "actor-maya", displayName: "Maya" },
+    });
+    const merged = mergeChannelRoster([maya, arc], [
+      { ...maya, kind: "unknown" as const },
+    ]);
+    expect(merged.map((item) => item.actorId)).toEqual(["actor-maya", "arc.master.arts-mini"]);
+    expect(merged[1]?.kind).toBe("agent");
+    expect(peopleAgentLabel(merged)).toBe("1 person · 1 agent");
+  });
+
+  test("a later one-person poll cannot snatch a four-person room", () => {
+    const maya = member({ actorId: "actor-maya", displayName: "Maya" });
+    const arc = member({
+      actorId: "arc.master.arts-mini",
+      kind: "agent",
+      displayName: "Arc",
+      owner: { actorId: "actor-maya", displayName: "Maya" },
+    });
+    const host = member({
+      actorId: "arc-host.master.arts-mini",
+      kind: "agent",
+      displayName: "Arc Host",
+    });
+    const author = member({
+      actorId: "arc-author.master.arts-mini",
+      kind: "agent",
+      displayName: "Arc Author",
+    });
+    const once = mergeChannelRoster([maya, arc, host, author], [maya]);
+    expect(once.map((item) => item.actorId)).toEqual([
+      "actor-maya",
+      "arc.master.arts-mini",
+      "arc-host.master.arts-mini",
+      "arc-author.master.arts-mini",
+    ]);
+    expect(peopleAgentLabel(once)).toBe("1 person · 3 agents");
+  });
 });
 
 describe("the connection plane", () => {
@@ -334,9 +380,10 @@ describe("tracked asks", () => {
 
   test("the chip names the target and the state", () => {
     const chip = askChip(trackedRequest(), { label: "Maya's Codex", reception: reception() });
-    expect(chip.textWithTarget).toBe("▸ Maya's Codex · running");
-    expect(chip.text).toBe("▸ running");
+    expect(chip.textWithTarget).toBe("▸ Maya's Codex · working");
+    expect(chip.text).toBe("▸ working");
     expect(chip.tone).toBe("owed");
+    expect(chip.canStop).toBe(true);
   });
 
   test("a wake_on_delivery route keeps its lifecycle word", () => {
@@ -345,7 +392,7 @@ describe("tracked asks", () => {
       reception: reception({ routeKind: "wake_on_delivery", listening: false }),
     });
     expect(chip.state).toBe("queued");
-    expect(chip.textWithTarget).toBe("▸ Maya's Codex · queued");
+    expect(chip.textWithTarget).toBe("▸ Maya's Codex · working");
   });
 
   test("an owed ask at an unreachable member explains itself", () => {
@@ -353,7 +400,7 @@ describe("tracked asks", () => {
       label: "Maya's Codex",
       reception: reception({ routeKind: "none", listening: false, state: "unavailable" }),
     });
-    expect(stranded.text).toBe("running — Maya's Codex isn't listening right now");
+    expect(stranded.text).toBe("blocked — Maya's Codex isn't listening right now");
     expect(stranded.textWithTarget).toBe(stranded.text);
 
     const disconnected = askChip(trackedRequest(), {
@@ -372,7 +419,7 @@ describe("tracked asks", () => {
 
   test("an unknown target falls back to the actor id, never to a guess", () => {
     const chip = askChip(trackedRequest({ targetActorId: "actor-ghost" }), null);
-    expect(chip.textWithTarget).toBe("▸ actor-ghost · running");
+    expect(chip.textWithTarget).toBe("▸ actor-ghost · working");
   });
 });
 
@@ -770,5 +817,18 @@ describe("channels and fallbacks", () => {
     const first = newRequestId();
     expect(first.startsWith("req-")).toBe(true);
     expect(first).not.toBe(newRequestId());
+  });
+
+  test("optimistic reactions add, fill me, and remove without reshuffling others", () => {
+    const added = applyOptimisticReaction([], "👍", false);
+    expect(added).toEqual([{ emoji: "👍", count: 1, me: true }]);
+    const second = applyOptimisticReaction([{ emoji: "👍", count: 1, me: false }], "👍", false);
+    expect(second).toEqual([{ emoji: "👍", count: 2, me: true }]);
+    const removed = applyOptimisticReaction(
+      [{ emoji: "👍", count: 2, me: true }, { emoji: "🎉", count: 1, me: false }],
+      "👍",
+      true,
+    );
+    expect(removed).toEqual([{ emoji: "👍", count: 1, me: false }, { emoji: "🎉", count: 1, me: false }]);
   });
 });

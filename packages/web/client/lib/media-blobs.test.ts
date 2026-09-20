@@ -28,6 +28,7 @@ describe("media blob routing", () => {
   test("accepts image, video, markdown, and code mime types", () => {
     expect(isRoutableMediaType("image/png")).toBe(true);
     expect(isRoutableMediaType("video/mp4")).toBe(true);
+    expect(isRoutableMediaType("text/html", "note.html")).toBe(true);
     expect(isRoutableMediaType("text/markdown")).toBe(true);
     expect(isRoutableMediaType("text/plain", "router.ts")).toBe(true);
     expect(isRoutableMediaType("text/plain", "notes.txt")).toBe(true);
@@ -37,6 +38,8 @@ describe("media blob routing", () => {
   test("accepts routable files by type or capture extension", () => {
     expect(isRoutableMediaFile({ type: "image/jpeg", name: "shot.png" })).toBe(true);
     expect(isRoutableMediaFile({ type: "application/pdf", name: "brief.pdf" })).toBe(false);
+    expect(isRoutableMediaFile({ type: "", name: "Screenshot.png" })).toBe(true);
+    expect(isRoutableMediaFile({ type: "application/octet-stream", name: "clip.mp4" })).toBe(true);
     expect(isRoutableMediaFile({ type: "", name: "plan.md" })).toBe(true);
     expect(isRoutableMediaFile({ type: "", name: "src/router.ts" })).toBe(true);
     expect(isMarkdownFileName("docs/README.markdown")).toBe(true);

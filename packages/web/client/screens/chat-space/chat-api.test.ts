@@ -68,11 +68,29 @@ describe("transport", () => {
 
   test("a body request declares JSON", async () => {
     stubFetch(() => json({ message: { id: "m1" } }));
-    await chatApi.postMessage("conv-1", { requestId: "req-1", body: "hi" });
+    await chatApi.postMessage("conv-1", {
+      requestId: "req-1",
+      body: "hi",
+      attachments: [{ id: "att-1", mediaType: "image/png", fileName: "shot.png", url: "/api/blobs/att-1" }],
+    });
 
     const call = lastCall();
     expect(call.init?.method).toBe("POST");
     expect(headersOf(call)["content-type"]).toBe("application/json");
+    expect(sentBody().attachments).toEqual([
+      { id: "att-1", mediaType: "image/png", fileName: "shot.png", url: "/api/blobs/att-1" },
+    ]);
+  });
+
+  test("reactions POST add and remove, never a toggle", async () => {
+    stubFetch(() => json({ ok: true, replayed: false }));
+    await chatApi.addReaction("chn-1", { messageId: "m1", emoji: "👍", requestId: "r1" });
+    expect(lastCall().url).toBe("/api/channels/chn-1/reactions");
+    expect(sentBody()).toEqual({ messageId: "m1", emoji: "👍", requestId: "r1" });
+
+    stubFetch(() => json({ ok: true, replayed: true }));
+    await chatApi.removeReaction("chn-1", { messageId: "m1", emoji: "👍", requestId: "r2", space: "work" });
+    expect(lastCall().url).toBe("/api/channels/chn-1/reactions/remove?space=work");
   });
 
   test("opaque ids are encoded into the path", async () => {

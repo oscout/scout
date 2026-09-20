@@ -7,9 +7,10 @@
  * and this panel is where the difference is visible.
  */
 
-import type { ChannelInvitePublicView, ConversationDefinition, MessageRecord } from "@openscout/protocol";
+import type { ChannelInvitePublicView, ConversationDefinition } from "@openscout/protocol";
 
-import type { ChannelMemberView, TrackedRequest } from "./chat-api.ts";
+import type { ChannelMemberView, ChatMessage, TrackedRequest } from "./chat-api.ts";
+import { useChatCapabilities } from "./chat-transport.tsx";
 import { MemberAvatar } from "./ChatAvatar.tsx";
 import { ChannelComposer } from "./ChannelComposer.tsx";
 import { CopyAction, Field, ReceptionBlock, Turn } from "./ChatBits.tsx";
@@ -128,6 +129,10 @@ export function ChatRightPanel({
   threadDraft,
   onThreadDraftChange,
   onSendThreadReply,
+  onReact,
+  onCopyLink,
+  onStopAsk,
+  focusMessageId,
   threadSending,
   threadError,
   onClose,
@@ -148,12 +153,16 @@ export function ChatRightPanel({
   viewerActorId: string;
   viewerIsOperator: boolean;
   nowMs: number;
-  threadRoot: MessageRecord | null;
-  threadReplies: MessageRecord[];
+  threadRoot: ChatMessage | null;
+  threadReplies: ChatMessage[];
   threadRequest: TrackedRequest | null;
   threadDraft: string;
   onThreadDraftChange: (value: string) => void;
-  onSendThreadReply: () => void;
+  onSendThreadReply: (files: File[]) => void | boolean | Promise<boolean | void>;
+  onReact?: (messageId: string, emoji: string, remove: boolean) => void;
+  onCopyLink?: (messageId: string) => void;
+  onStopAsk?: (flightId: string) => void;
+  focusMessageId?: string | null;
   threadSending: boolean;
   threadError: string | null;
   onClose: () => void;
@@ -164,6 +173,10 @@ export function ChatRightPanel({
   onInvite: () => void;
   overlay: boolean;
 }) {
+  // Read before the early return: what this server can do is not conditional on
+  // which panel happens to be open.
+  const capabilities = useChatCapabilities();
+
   if (view.kind === "none") return null;
 
   const scope = channelLabel(channel.title);
@@ -187,6 +200,10 @@ export function ChatRightPanel({
                 nowMs={nowMs}
                 request={threadRequest}
                 withTargetOnChip={false}
+                onReact={onReact}
+                onCopyLink={onCopyLink}
+                onStopAsk={onStopAsk}
+                focused={focusMessageId === threadRoot.id}
               />
             </div>
           ) : (
@@ -195,7 +212,15 @@ export function ChatRightPanel({
             </p>
           )}
           {threadReplies.map((reply) => (
-            <Turn key={reply.id} message={reply} members={membersById} nowMs={nowMs} />
+            <Turn
+              key={reply.id}
+              message={reply}
+              members={membersById}
+              nowMs={nowMs}
+              onReact={onReact}
+              onCopyLink={onCopyLink}
+              focused={focusMessageId === reply.id}
+            />
           ))}
           {threadReplies.length === 0 && threadRoot ? (
             <p className="chat-feed-notice">No replies yet.</p>
@@ -335,7 +360,14 @@ export function ChatRightPanel({
         <div className="chat-psec">
           <span className="label-sm">Invited</span>
           {inviteError ? <p className="chat-sheet-error">{inviteError}</p> : null}
-          {outstanding.length === 0 && !inviteError ? (
+          {/* "Not listed here" and "none outstanding" are different claims, and
+              only one of them is true on a server with no listing endpoint. */}
+          {!capabilities.inviteList ? (
+            <p className="chat-feed-notice">
+              This server does not list outstanding invitations. A link is shown once,
+              when you create it.
+            </p>
+          ) : outstanding.length === 0 && !inviteError ? (
             <p className="chat-feed-notice">No outstanding invitations.</p>
           ) : (
             outstanding.map((invite) => (
@@ -345,7 +377,7 @@ export function ChatRightPanel({
                 nowMs={nowMs}
                 onRevoke={onRevokeInvite}
                 busy={revokingInviteId === invite.id}
-                canRevoke={canRevokeInvite(invite, {
+                canRevoke={capabilities.inviteRevoke && canRevokeInvite(invite, {
                   actorId: viewerActorId,
                   isOperator: viewerIsOperator,
                 })}

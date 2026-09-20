@@ -2,8 +2,8 @@
  * The composer's polish is only polish if the boundary still shows and every
  * control in the toolbar is real. These tests pin both: the structure a person
  * sees (roomy field, quiet toolbar, round send) and the promise the surface
- * makes (no affordance that does nothing, no formatting the feed cannot
- * render, no send that fires on an empty draft).
+ * makes (no affordance that does nothing, formatting the feed can paint,
+ * no send that fires on an empty draft).
  */
 
 import { describe, expect, mock, test } from "bun:test";
@@ -86,18 +86,21 @@ describe("ChannelComposer toolbar", () => {
 
   test("carries no affordance that does nothing", () => {
     const html = composer().toLowerCase();
-    // No upload, emoji, or voice control: none of them is wired to anything.
-    for (const absent of ["attach", "upload", "emoji", "record", "microphone", "voice"]) {
+    expect(html).toContain("attach a file");
+    // No emoji or voice control: none of them is wired to anything.
+    for (const absent of ["emoji", "record", "microphone", "voice"]) {
       expect(html).not.toContain(absent);
     }
-    // No formatting row either — the feed renderer emits text and mention
-    // spans only, so a bold button would post literal asterisks.
-    for (const absent of ["bold", "italic", "strikethrough", "blockquote", "code block"]) {
+    for (const absent of ["strikethrough", "blockquote", "code block"]) {
       expect(html).not.toContain(absent);
     }
+    expect(html).toContain('aria-label="bold"');
+    expect(html).toContain('aria-label="italic"');
+    expect(html).toContain('aria-label="code"');
+    expect(html).toContain('aria-label="list"');
   });
 
-  test("the send does not fire on an empty draft, and wakes on text", () => {
+  test("the send does not fire on an empty draft without files, and wakes on text", () => {
     expect(composer({ draft: "" })).toContain(
       '<button type="button" class="chat-composer-send" disabled=""',
     );
@@ -121,8 +124,8 @@ describe("ChannelComposer toolbar", () => {
     expect(html).toContain("chat-composer-spin");
     expect(html).toContain('aria-label="Sending…"');
     expect(html).toContain('class="chat-composer-send" disabled=""');
-    // The textarea and the tools go with it — no half-editable composer.
-    expect(html).toMatch(/<textarea class="chat-composer-input"[^>]*disabled=""/u);
+    // The field and the tools go with it — no half-editable composer.
+    expect(html).toMatch(/class="chat-composer-input"[^>]*aria-disabled="true"/u);
     expect(html).toMatch(/class="chat-composer-tool chat-composer-tool--icon" disabled=""/u);
   });
 

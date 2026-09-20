@@ -155,6 +155,19 @@ async function main() {
   const pkgText = await fs.readFile(pkgPath, "utf8");
   const pkg = JSON.parse(pkgText);
 
+  // Drizzle snapshots are inputs to schema generation, not executable migrations.
+  // Prune only the built Scout package copy; source snapshots remain in the repo.
+  if (pkg.name === "@openscout/scout") {
+    const metadataDir = path.join(packageDir, "dist", "drizzle", "meta");
+    if (existsSync(metadataDir)) {
+      for (const entry of await fs.readdir(metadataDir, { withFileTypes: true })) {
+        if (entry.isFile() && /^\d+_snapshot\.json$/.test(entry.name)) {
+          await fs.unlink(path.join(metadataDir, entry.name));
+        }
+      }
+    }
+  }
+
   if (!rewriteWorkspaceDependencies(pkg, versions)) {
     return;
   }

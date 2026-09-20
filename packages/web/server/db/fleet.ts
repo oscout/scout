@@ -15,7 +15,7 @@
 import { resolveOperatorName } from "@openscout/runtime/user-config";
 
 import { db } from "./internal/db.ts";
-import { normalizeTimestampMs } from "./internal/parse.ts";
+import { jsonBoolean, normalizeTimestampMs } from "./internal/parse.ts";
 import { compact } from "./internal/paths.ts";
 import {
   agentFlightPhaseFromFlightState,
@@ -77,6 +77,8 @@ type FleetAskRow = {
   recovered_after_failure_at: number | string | null;
   dispatch_outcome_status: string | null;
   dispatch_outcome_reason: string | null;
+  requester_timed_out: number | string | null;
+  timeout_scope: string | null;
   status_kind: string | null;
   status_title: string | null;
   status_summary: string | null;
@@ -217,6 +219,7 @@ export function queryFleetActivity(opts?: {
 
 const TERMINAL_FLIGHT_STATES = new Set(["completed", "failed", "cancelled"]);
 const FLEET_RECENT_COMPLETED_MAX_AGE_MS = 3 * 24 * 60 * 60 * 1000;
+export const ATTENTION_STALE_AFTER_MS = 7 * 24 * 60 * 60 * 1000;
 
 function fleetRequesterIds(): string[] {
   const operatorName = resolveOperatorName().trim() || "operator";
@@ -261,6 +264,8 @@ export function queryFleetAskRows(requesterIds: string[], limit: number): FleetA
        json_extract(inv.flight_metadata_json, '$.failureSeverity') AS failure_severity,
        json_extract(inv.flight_metadata_json, '$.dispatchOutcome.status') AS dispatch_outcome_status,
        json_extract(inv.flight_metadata_json, '$.dispatchOutcome.reason') AS dispatch_outcome_reason,
+       json_extract(inv.flight_metadata_json, '$.requesterTimedOut') AS requester_timed_out,
+       json_extract(inv.flight_metadata_json, '$.timeoutScope') AS timeout_scope,
        (
          SELECT MAX(COALESCE(recovery_inv.completed_at, recovery_inv.started_at, 0))
          FROM invocations recovery_inv
@@ -354,11 +359,20 @@ function projectFleetAsk(row: FleetAskRow, requesterIdSet: Set<string>): WebFlee
     && row.flight_state !== null
     && !TERMINAL_FLIGHT_STATES.has(row.flight_state)
     && isStaleActiveFlight(row.started_at, row.created_at);
+  // The requester stopped waiting for a synchronous result. The agent may
+  // still be running, but the operator's ask is no longer live, so it must not
+  // present as an active "working" ask — that is what left a finished turn
+  // reading "working" for as long as the flight record survived.
+  const requesterStoppedWaiting = hasFlight
+    && row.flight_state !== null
+    && !TERMINAL_FLIGHT_STATES.has(row.flight_state)
+    && (jsonBoolean(row.requester_timed_out) || row.timeout_scope === "requester_wait");
   const isActiveFlight = hasFlight
     && row.flight_state !== null
     && !TERMINAL_FLIGHT_STATES.has(row.flight_state)
     && !failed
-    && !staleActiveFlight;
+    && !staleActiveFlight
+    && !requesterStoppedWaiting;
   // Collaboration state is authoritative. Reading a conversation or starting
   // unrelated work cannot silently resolve a handback; only an explicit record
   // transition or next-move reassignment can do that.
@@ -422,7 +436,9 @@ function projectFleetAsk(row: FleetAskRow, requesterIdSet: Set<string>): WebFlee
     collaborationRecordId: row.collaboration_record_id,
     task: row.task,
     status,
-    statusLabel: status === "working" && replied
+    statusLabel: requesterStoppedWaiting && status === "completed"
+      ? "Stopped waiting"
+      : status === "working" && replied
       ? "Acknowledged"
       : status === "failed" && queuedUntilOnline
         ? "Not delivered"
@@ -457,36 +473,58 @@ function projectFleetAsk(row: FleetAskRow, requesterIdSet: Set<string>): WebFlee
 
 export function queryFleetAttentionRows(requesterIds: string[], limit: number): FleetAttentionRow[] {
   const requesterClause = sqlPlaceholders(requesterIds.length);
+  const staleBefore = Date.now() - ATTENTION_STALE_AFTER_MS;
   return db().prepare(
-    `SELECT
-       cr.kind AS record_kind,
-       cr.id AS record_id,
+    // Retirement and dismissal are projection filters. Rank duplicates only
+    // after both so an ineligible historical row cannot hide a live handback.
+    `WITH live_attention AS (
+       SELECT
+         cr.kind AS record_kind,
+         cr.id AS record_id,
+         cr.title,
+         cr.summary,
+         cr.conversation_id,
+         cr.state,
+         cr.acceptance_state,
+         cr.updated_at,
+         cr.owner_id AS agent_id,
+         ROW_NUMBER() OVER (
+           PARTITION BY cr.title, cr.owner_id
+           ORDER BY cr.updated_at DESC, cr.id DESC
+         ) AS duplicate_rank
+       FROM collaboration_records cr
+       WHERE (
+           (cr.kind = 'work_item' AND cr.state IN ('open', 'working', 'waiting', 'review'))
+           OR (cr.kind = 'question' AND cr.state IN ('open', 'answered'))
+         )
+         AND cr.next_move_owner_id IN (${requesterClause})
+         AND cr.updated_at >= ?
+         AND NOT EXISTS (
+           SELECT 1
+           FROM collaboration_events dismissed
+           WHERE dismissed.record_id = cr.id
+             AND dismissed.kind = 'dismissed'
+             AND dismissed.actor_id IN (${requesterClause})
+             AND dismissed.created_at >= cr.updated_at
+         )
+     )
+     SELECT
+       cr.record_kind,
+       cr.record_id,
        cr.title,
        cr.summary,
        cr.conversation_id,
        cr.state,
        cr.acceptance_state,
        cr.updated_at,
-       cr.owner_id AS agent_id,
+       cr.agent_id,
        owner.display_name AS agent_name
-     FROM collaboration_records cr
-     LEFT JOIN actors owner ON owner.id = cr.owner_id
-     WHERE (
-         (cr.kind = 'work_item' AND cr.state IN ('open', 'working', 'waiting', 'review'))
-         OR (cr.kind = 'question' AND cr.state IN ('open', 'answered'))
-       )
-       AND cr.next_move_owner_id IN (${requesterClause})
-       AND NOT EXISTS (
-         SELECT 1
-         FROM collaboration_events dismissed
-         WHERE dismissed.record_id = cr.id
-           AND dismissed.kind = 'dismissed'
-           AND dismissed.actor_id IN (${requesterClause})
-           AND dismissed.created_at >= cr.updated_at
-       )
+     FROM live_attention cr
+     LEFT JOIN actors owner ON owner.id = cr.agent_id
+     WHERE cr.duplicate_rank = 1
      ORDER BY cr.updated_at DESC
      LIMIT ?`,
-  ).all(...requesterIds, ...requesterIds, limit) as Array<FleetAttentionRow>;
+  ).all(...requesterIds, staleBefore, ...requesterIds, limit) as Array<FleetAttentionRow>;
 }
 
 /**

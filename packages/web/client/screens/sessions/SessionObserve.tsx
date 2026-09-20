@@ -70,6 +70,7 @@ import {
   type ObserveEvidenceSource,
 } from "../../lib/observe-fidelity.ts";
 import { queueTakeover } from "../../lib/terminal-takeover.ts";
+import { SessionHopMenu } from "../../components/SessionHopMenu.tsx";
 import {
   invokeSession,
   resumableHarnessFromAdapterType,
@@ -2441,6 +2442,13 @@ function SessionHeader({
               {sent ? "Sent" : "Takeover"}
             </button>
           )}
+          <SessionHopMenu
+            className="s-observe-takeover-btn"
+            label="Terminal ▾"
+            hints={{ agentId, sessionRefs: [displayId, sessionId] }}
+            navigate={navigate}
+            returnTo={route}
+          />
         </div>
       </div>
 

@@ -2582,6 +2582,133 @@ describe("resolveScoutSenderId", () => {
     expect(senderId.startsWith("ranger.")).toBe(true);
     expect(senderId.startsWith("openscout.")).toBe(false);
   });
+
+  test("keeps explicit and OPENSCOUT_AGENT senders ahead of Herdr identity", async () => {
+    const home = useIsolatedOpenScoutHome();
+    const repo = join(home, "dev", "openscout");
+    mkdirSync(join(repo, ".git"), { recursive: true });
+    const env = {
+      HERDR_ENV: "1",
+      HERDR_PANE_ID: "w1:p2",
+      HERDR_AGENT_NAME: "worker",
+      OPENSCOUT_AGENT: "vox.main.mini",
+    } as NodeJS.ProcessEnv;
+
+    expect(await resolveScoutSenderId("explicit.main.mini", repo, env)).toBe(
+      "explicit.main.mini",
+    );
+    expect(await resolveScoutSenderId(null, repo, env)).toBe("vox.main.mini");
+  });
+
+  test("resolves the exact project card matching the Herdr managed name", async () => {
+    const home = useIsolatedOpenScoutHome();
+    const repo = join(home, "dev", "openscout");
+    mkdirSync(join(repo, ".git"), { recursive: true });
+    await writeProjectConfig(repo, {
+      version: 1,
+      project: {
+        id: "openscout",
+        name: "OpenScout",
+      },
+      agent: {
+        id: "ranger",
+      },
+    });
+    await writeRelayAgentOverrides({
+      "openscout-canvas-nav.main.mini": {
+        agentId: "openscout-canvas-nav.main.mini",
+        definitionId: "openscout-canvas-nav",
+        projectName: "OpenScout",
+        projectRoot: repo,
+        source: "manual",
+      },
+      "ranger.main.mini": {
+        agentId: "ranger.main.mini",
+        definitionId: "ranger",
+        projectName: "OpenScout",
+        projectRoot: repo,
+        source: "manual",
+      },
+      "worker.main.mini": {
+        agentId: "worker.main.mini",
+        definitionId: "worker",
+        projectName: "OpenScout",
+        projectRoot: repo,
+        source: "manual",
+      },
+    });
+
+    const senderId = await resolveScoutSenderId(null, repo, {
+      HERDR_ENV: "1",
+      HERDR_PANE_ID: "w1:p2",
+      HERDR_AGENT_NAME: "worker",
+    } as NodeJS.ProcessEnv);
+
+    expect(senderId.startsWith("worker.")).toBe(true);
+    expect(senderId.startsWith("ranger.")).toBe(false);
+    expect(senderId.startsWith("openscout-canvas-nav.")).toBe(false);
+  });
+
+  test("derives a project-qualified sender from the Herdr name when no card matches", async () => {
+    const home = useIsolatedOpenScoutHome();
+    const repo = join(home, "dev", "openscout");
+    mkdirSync(join(repo, ".git"), { recursive: true });
+    await writeProjectConfig(repo, {
+      version: 1,
+      project: {
+        id: "openscout",
+        name: "OpenScout",
+      },
+      agent: {
+        id: "ranger",
+      },
+    });
+    await writeRelayAgentOverrides({
+      "ranger.main.mini": {
+        agentId: "ranger.main.mini",
+        definitionId: "ranger",
+        projectName: "OpenScout",
+        projectRoot: repo,
+        source: "manual",
+      },
+    });
+
+    const senderId = await resolveScoutSenderId(null, repo, {
+      HERDR_ENV: "1",
+      HERDR_PANE_ID: "w1:p2",
+      HERDR_AGENT_NAME: "Worker One",
+    } as NodeJS.ProcessEnv);
+
+    expect(senderId.startsWith("worker-one.")).toBe(true);
+    expect(senderId).not.toBe("ranger.main.mini");
+  });
+
+  test("ignores Herdr identity when its markers are incomplete", async () => {
+    const home = useIsolatedOpenScoutHome();
+    const repo = join(home, "dev", "openscout");
+    mkdirSync(join(repo, ".git"), { recursive: true });
+    await writeProjectConfig(repo, {
+      version: 1,
+      project: {
+        id: "openscout",
+        name: "OpenScout",
+      },
+      agent: {
+        id: "ranger",
+      },
+    });
+
+    for (const env of [
+      { HERDR_PANE_ID: "w1:p2", HERDR_AGENT_NAME: "worker" },
+      { HERDR_ENV: "0", HERDR_PANE_ID: "w1:p2", HERDR_AGENT_NAME: "worker" },
+      { HERDR_ENV: "1", HERDR_AGENT_NAME: "worker" },
+      { HERDR_ENV: "1", HERDR_PANE_ID: "w1:p2" },
+      { HERDR_ENV: "1", HERDR_PANE_ID: "w1:p2", HERDR_AGENT_NAME: "  " },
+    ]) {
+      const senderId = await resolveScoutSenderId(null, repo, env as NodeJS.ProcessEnv);
+      expect(senderId.startsWith("ranger.")).toBe(true);
+    }
+  });
 });
 
 describe("resolveScoutMatchParticipantId", () => {

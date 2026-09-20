@@ -1557,11 +1557,6 @@ export function BrokerAttemptInspector({
           <strong className={`sys-broker-state sys-broker-state--${tone}`}>{dispatchStateLabel(attempt)}</strong>
           <code title={reference}>{reference}</code>
           <CopyIconButton
-            value={reference}
-            subject="message id"
-            className="sys-broker-inspector-copy"
-          />
-          <CopyIconButton
             value={contextText}
             subject="dispatch context"
             className="sys-broker-inspector-copy"

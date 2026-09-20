@@ -1,19 +1,29 @@
 import { Database } from "bun:sqlite";
 import { expect, test } from "bun:test";
 import { readMigrationFiles } from "drizzle-orm/migrator";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { buildCardlessSessionActor, buildCardlessSessionEndpoint } from "./broker-cardless-session.js";
 import { migrateControlPlaneDatabaseSchema, resolveControlPlaneDrizzleMigrationsFolder } from "./control-plane-migrations.js";
 import { SQLiteControlPlaneStore } from "./sqlite-store.js";
 
-const migrations = readMigrationFiles({ migrationsFolder: resolveControlPlaneDrizzleMigrationsFolder() });
+const migrationsFolder = resolveControlPlaneDrizzleMigrationsFolder();
+const migrations = readMigrationFiles({ migrationsFolder });
+const journal = JSON.parse(readFileSync(join(migrationsFolder, "meta", "_journal.json"), "utf8")) as {
+  entries: Array<{ tag: string; when: number }>;
+};
+const actorTargetMigration = journal.entries.find((entry) => entry.tag === "0019_session_actor_targets");
+if (!actorTargetMigration) throw new Error("Missing actor-target migration fixture boundary");
+// This fixture must stay before the actor-target rebuild even after later
+// migrations are appended. Dropping only the newest migration silently made
+// the supposed legacy fixture already use actor foreign keys after 0020 landed.
+const legacyMigrations = migrations.filter((migration) => migration.folderMillis < actorTargetMigration.when);
 
 function legacyDatabase(ledger: boolean): Database {
   const db = new Database(":memory:");
   db.exec('CREATE TABLE "__drizzle_migrations" (id SERIAL PRIMARY KEY, hash text NOT NULL, created_at numeric)');
-  for (const migration of migrations.slice(0, -1)) {
+  for (const migration of legacyMigrations) {
     for (const sql of migration.sql) db.exec(sql);
     if (ledger) db.query('INSERT INTO "__drizzle_migrations" (hash, created_at) VALUES (?, ?)')
       .run(migration.hash, migration.folderMillis);
@@ -39,6 +49,8 @@ function legacyDatabase(ledger: boolean): Database {
     INSERT INTO activity_items (id, kind, ts, invocation_id, flight_id, agent_id)
       VALUES ('activity', 'flight', 1, 'invocation', 'flight', 'agent');
   `);
+  expect((db.query("PRAGMA foreign_key_list(agent_endpoints)").all() as Array<{ table: string }>)
+    .some((fk) => fk.table === "agents")).toBe(true);
   return db;
 }
 
@@ -71,10 +83,14 @@ test("failed migration rolls back data, schema and ledger and restores foreign k
   try {
     db.exec("PRAGMA foreign_keys=OFF; UPDATE agent_endpoints SET node_id='missing'; PRAGMA foreign_keys=ON;");
     const ledger = db.query('SELECT * FROM "__drizzle_migrations"').all();
+    const schema = db.query("SELECT type, name, tbl_name, sql FROM sqlite_master ORDER BY type, name").all();
+    const endpoint = db.query("SELECT * FROM agent_endpoints").all();
     expect(() => migrateControlPlaneDatabaseSchema(db)).toThrow(/foreign-key validation/);
     expect(db.query("PRAGMA user_version").get()).toEqual({ user_version: 17 });
     expect(db.query("PRAGMA foreign_keys").get()).toEqual({ foreign_keys: 1 });
     expect(db.query('SELECT * FROM "__drizzle_migrations"').all()).toEqual(ledger);
+    expect(db.query("SELECT type, name, tbl_name, sql FROM sqlite_master ORDER BY type, name").all()).toEqual(schema);
+    expect(db.query("SELECT * FROM agent_endpoints").all()).toEqual(endpoint);
     expect((db.query("PRAGMA foreign_key_list(agent_endpoints)").all() as Array<{ table: string }>).some((fk) => fk.table === "agents")).toBe(true);
     expect(db.query("SELECT output FROM flights").get()).toEqual({ output: "preserve output" });
   } finally { db.close(); }

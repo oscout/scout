@@ -1,11 +1,13 @@
 import { describe, expect, test } from "bun:test";
-import type { Message } from "../../lib/types.ts";
+import type { Flight, Message } from "../../lib/types.ts";
 import {
   SLASH_COMMANDS,
   WORKING_DURATION_THRESHOLDS_MS,
   buildConversationFeedRows,
   canOpenConversationTerminal,
+  conversationContextSessionId,
   conversationIdentityRoute,
+  conversationSessionRoute,
   directConversationSessionId,
   feedRowCreatedAt,
   shouldShowThreadDayDivider,
@@ -13,9 +15,11 @@ import {
   hasOutstandingConversationReply,
   invocationTargetsConversation,
   mapEventFlight,
+  mergeLatestConversationFlight,
   resolveComposeAction,
   resolveConversationAutoscroll,
   resolveThreadEmbedProps,
+  selectLatestConversationFlight,
 } from "./conversation-model.ts";
 
 describe("conversation invocation routing", () => {
@@ -116,6 +120,48 @@ describe("conversation identity navigation", () => {
       sessionId: "session-last-active",
       participants: [],
     })).toBeNull();
+  });
+});
+
+describe("conversation context session", () => {
+  test("honors an explicit session id on group-direct conversations", () => {
+    expect(conversationContextSessionId({
+      kind: "group_direct",
+      sessionId: "session-mu79evpc-kxbokv",
+      participants: [],
+    })).toBe("session-mu79evpc-kxbokv");
+  });
+
+  test("does not guess a session for a channel without an explicit id", () => {
+    expect(conversationContextSessionId({
+      kind: "channel",
+      sessionId: null,
+      participants: [],
+    })).toBeNull();
+    expect(conversationContextSessionId({
+      kind: "channel",
+      participants: [{
+        actorId: "agent-1",
+        kind: "agent",
+        displayName: "Agent One",
+        label: "agent-1",
+        sessionId: null,
+      }],
+    })).toBeNull();
+  });
+
+  test("falls back to the direct conversation session resolution", () => {
+    expect(conversationContextSessionId({
+      kind: "direct",
+      sessionId: null,
+      participants: [{
+        actorId: "session-cardless",
+        kind: "session",
+        displayName: "Dewey",
+        label: "dewey",
+        sessionId: "session-cardless",
+      }],
+    })).toBe("session-cardless");
   });
 });
 
@@ -456,6 +502,96 @@ describe("conversation feed autoscroll", () => {
       initialScrollDone: false,
       nearBottom: false,
     })).toBe("none");
+  });
+});
+
+describe("conversation latest flight selection", () => {
+  function flight(overrides: Partial<Flight> & Pick<Flight, "id">): Flight {
+    return {
+      invocationId: `inv-${overrides.id}`,
+      agentId: "agent-1",
+      agentName: "Agent One",
+      conversationId: "chn-1",
+      collaborationRecordId: null,
+      state: "completed",
+      summary: null,
+      startedAt: null,
+      completedAt: null,
+      sessions: [],
+      ...overrides,
+    };
+  }
+
+  test("surfaces the latest terminal outcome when nothing is active", () => {
+    const flights = [
+      flight({ id: "flt-old", state: "completed", startedAt: 1_700_000_000_000, completedAt: 1_700_000_010_000 }),
+      flight({ id: "flt-failed", state: "failed", startedAt: 1_700_000_020_000, completedAt: 1_700_000_030_000 }),
+    ];
+    expect(selectLatestConversationFlight(flights)?.id).toBe("flt-failed");
+  });
+
+  test("lets a newer active invocation win over an older terminal flight", () => {
+    const flights = [
+      flight({ id: "flt-failed", state: "failed", startedAt: 1_700_000_000_000, completedAt: 1_700_000_010_000 }),
+      flight({ id: "flt-live", state: "running", startedAt: 1_700_000_020_000 }),
+    ];
+    expect(selectLatestConversationFlight(flights)?.id).toBe("flt-live");
+  });
+
+  test("lets a queued flight with no timestamps win over an older failure", () => {
+    const flights = [
+      flight({ id: "flt-failed", state: "failed", startedAt: 1_700_000_000_000, completedAt: 1_700_000_010_000 }),
+      flight({ id: "flt-queued", state: "queued", startedAt: null, completedAt: null }),
+    ];
+    expect(selectLatestConversationFlight(flights)?.id).toBe("flt-queued");
+  });
+
+  test("replaces the prior record when the same flight reports a new state", () => {
+    const previous = flight({
+      id: "flt-live",
+      state: "running",
+      startedAt: 1_700_000_020_000,
+      summary: "Working",
+    });
+    const updated = flight({
+      id: "flt-live",
+      state: "failed",
+      startedAt: 1_700_000_020_000,
+      completedAt: 1_700_000_030_000,
+      summary: "Stale running flight reconciled",
+    });
+    const merged = mergeLatestConversationFlight(previous, updated);
+    expect(merged?.id).toBe("flt-live");
+    expect(merged?.state).toBe("failed");
+    expect(merged?.summary).toBe("Stale running flight reconciled");
+  });
+
+  test("keeps the outstanding flight when a different event arrives", () => {
+    const active = flight({ id: "flt-live", state: "running", startedAt: 1_700_000_020_000 });
+    const unrelated = flight({ id: "flt-older", state: "failed", startedAt: 1_700_000_000_000, completedAt: 1_700_000_010_000 });
+    expect(mergeLatestConversationFlight(active, unrelated)?.id).toBe("flt-live");
+  });
+
+  test("returns null for an empty list", () => {
+    expect(selectLatestConversationFlight([])).toBeNull();
+  });
+});
+
+describe("conversation session route", () => {
+  test("routes to the exact session while preserving machine scope", () => {
+    expect(conversationSessionRoute({
+      sessionId: "session-mu79evpc-kxbokv",
+      machineId: "node-1",
+    })).toEqual({
+      view: "sessions",
+      sessionId: "session-mu79evpc-kxbokv",
+      machineId: "node-1",
+    });
+  });
+
+  test("returns null without a session id", () => {
+    expect(conversationSessionRoute({ sessionId: "  ", machineId: "node-1" })).toBeNull();
+    expect(conversationSessionRoute({})).toBeNull();
   });
 });
 

@@ -19,6 +19,7 @@ mock.module("../../lib/api.ts", () => ({
   api: async () => {
     throw new Error("Unexpected API call during static observe rendering.");
   },
+  peekApiGet: () => null,
 }));
 mock.module("../../lib/sse.ts", () => ({ useBrokerEvents: () => undefined }));
 mock.module("../../scout/Provider.tsx", () => ({

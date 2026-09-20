@@ -19,6 +19,8 @@ import {
 } from "@openscout/protocol";
 import { configuredOperatorActorIds } from "@openscout/runtime/conversations/legacy-ids";
 
+import { endpointSessionAliases } from "../agent-endpoints.ts";
+
 import {
   loadScoutBrokerContext,
   type ScoutBrokerContext,
@@ -94,6 +96,13 @@ export type ScoutConversationSummary = {
   participantCount: number;
   authorityNodeId: string | null;
   authorityNodeName: string | null;
+  /// Operator-facing name of the *machine* that node runs on, from the broker's
+  /// machine inventory. Optional: the inventory is a separate read and may be
+  /// cold or unavailable, in which case consumers fall back to
+  /// `authorityNodeName`.
+  hostLabel?: string | null;
+  executionNodeId?: string | null;
+  executionNodeName?: string | null;
   agentId: string | null;
   agentName: string | null;
   harness: string | null;
@@ -369,7 +378,7 @@ function latestConversationRuntime(input: {
     ) ?? null
     : null;
   const latestInvocation = input.invocations.at(-1) ?? null;
-  const invocation = matchingInvocation ?? latestInvocation;
+  const invocation = input.sessionId ? matchingInvocation : latestInvocation;
   const trace = flightSessionRuntime(input.flights, input.sessionId);
   const resolution = matchingInvocation?.executionResolution
     ?? trace?.resolution
@@ -398,6 +407,62 @@ function latestConversationRuntime(input: {
       ?? input.endpoint?.transport
       ?? null,
   };
+}
+
+function conversationWorkspaceRoot(input: {
+  sessionId: string | null;
+  participants: ScoutConversationParticipant[];
+  endpoint: AgentEndpoint | null;
+  actor: ActorIdentity | null;
+  agent: AgentDefinition | null;
+}): string | null {
+  const sessionId = input.sessionId?.trim() || null;
+  if (sessionId) {
+    const endpointRoot = input.endpoint?.projectRoot?.trim()
+      || input.endpoint?.cwd?.trim();
+    if (endpointRoot) return endpointRoot;
+    const matching = input.participants.find((participant) => (
+      participant.sessionId === sessionId
+      || (participant.kind === "session" && participant.actorId === sessionId)
+    )) ?? null;
+    const participantRoot = matching?.workspaceRoot?.trim();
+    if (participantRoot) return participantRoot;
+    if (input.actor?.kind === "session" && input.actor.id === sessionId) {
+      const actorRoot = metadataString(input.actor.metadata, "projectRoot")
+        ?? metadataString(input.actor.metadata, "cwd");
+      if (actorRoot) return actorRoot;
+    }
+    return null;
+  }
+  const directRoot = input.endpoint?.projectRoot?.trim()
+    || input.endpoint?.cwd?.trim()
+    || metadataString(input.actor?.metadata, "projectRoot")
+    || metadataString(input.actor?.metadata, "cwd")
+    || metadataString(input.agent?.metadata, "projectRoot")
+    || metadataString(input.agent?.metadata, "cwd");
+  if (directRoot) return directRoot;
+  const roots = [...new Set(
+    input.participants
+      .map((participant) => participant.workspaceRoot?.trim())
+      .filter((root): root is string => Boolean(root)),
+  )];
+  return roots.length === 1 ? roots[0]! : null;
+}
+
+function conversationExecutionEndpoint(
+  endpoints: AgentEndpoint[],
+  sessionId: string | null,
+  directEndpoint: AgentEndpoint | null,
+  actors?: Record<string, ActorIdentity>,
+): AgentEndpoint | null {
+  if (!sessionId) return directEndpoint;
+  const trimmed = sessionId.trim();
+  const normalized = trimmed.toLowerCase();
+  const candidates = endpoints.filter((endpoint) => (
+    endpointSessionAliases(endpoint).has(normalized)
+    || (endpoint.agentId === trimmed && actors?.[endpoint.agentId]?.kind === "session")
+  ));
+  return candidates.length === 1 ? candidates[0]! : null;
 }
 
 function formatChannelAlias(value: string): string {
@@ -1233,12 +1298,18 @@ export async function getScoutConversations(
         }
         const title = agentDisplayName(snapshot, endpointsByAgent, agentId);
         const identityFields = conversationIdentityFields(conversation);
+        const executionEndpoint = conversationExecutionEndpoint(
+          Object.values(snapshot.endpoints ?? {}),
+          sessionId,
+          endpoint,
+          snapshot.actors,
+        );
         const runtime = latestConversationRuntime({
           sessionId,
           participants,
           invocations,
           flights,
-          endpoint,
+          endpoint: sessionId ? executionEndpoint : endpoint,
         });
         return [{
           id: conversation.id,
@@ -1252,6 +1323,10 @@ export async function getScoutConversations(
           participantCount: participantIds.length,
           authorityNodeId: conversation.authorityNodeId ?? null,
           authorityNodeName: snapshot.nodes?.[conversation.authorityNodeId]?.name ?? null,
+          executionNodeId: executionEndpoint?.nodeId ?? null,
+          executionNodeName: executionEndpoint
+            ? snapshot.nodes?.[executionEndpoint.nodeId]?.name ?? null
+            : null,
           agentId,
           agentName: title,
           harness: runtime.harness,
@@ -1262,6 +1337,8 @@ export async function getScoutConversations(
           currentBranch:
             metadataString(endpoint?.metadata, "branch")
             ?? metadataString(endpoint?.metadata, "workspaceQualifier")
+            ?? metadataString(actor?.metadata, "branch")
+            ?? metadataString(actor?.metadata, "workspaceQualifier")
             ?? metadataString(agent?.metadata, "branch")
             ?? metadataString(agent?.metadata, "workspaceQualifier"),
           parentConversationId: conversation.parentConversationId ?? null,
@@ -1269,7 +1346,13 @@ export async function getScoutConversations(
           preview: truncatedPreview(latestMessage?.body),
           messageCount,
           lastMessageAt: normalizeTimestampMs(latestMessage?.createdAt),
-          workspaceRoot: endpoint?.projectRoot ?? endpoint?.cwd ?? null,
+          workspaceRoot: conversationWorkspaceRoot({
+            sessionId,
+            participants,
+            endpoint: sessionId ? executionEndpoint : endpoint,
+            actor,
+            agent,
+          }),
           unreadCount,
           ...askField,
           ...(turn ? { turn } : {}),
@@ -1290,12 +1373,18 @@ export async function getScoutConversations(
       }
 
       const identityFields = conversationIdentityFields(conversation);
+      const executionEndpoint = conversationExecutionEndpoint(
+        Object.values(snapshot.endpoints ?? {}),
+        sessionId,
+        null,
+        snapshot.actors,
+      );
       const runtime = latestConversationRuntime({
         sessionId,
         participants,
         invocations,
         flights,
-        endpoint: null,
+        endpoint: executionEndpoint,
       });
 
       return [{
@@ -1310,6 +1399,10 @@ export async function getScoutConversations(
         participantCount: participantIds.length,
         authorityNodeId: conversation.authorityNodeId ?? null,
         authorityNodeName: snapshot.nodes?.[conversation.authorityNodeId]?.name ?? null,
+        executionNodeId: executionEndpoint?.nodeId ?? null,
+        executionNodeName: executionEndpoint
+          ? snapshot.nodes?.[executionEndpoint.nodeId]?.name ?? null
+          : null,
         agentId: null,
         agentName: null,
         harness: runtime.harness,
@@ -1323,7 +1416,13 @@ export async function getScoutConversations(
         preview: truncatedPreview(latestMessage?.body),
         messageCount,
         lastMessageAt: normalizeTimestampMs(latestMessage?.createdAt),
-        workspaceRoot: null,
+        workspaceRoot: conversationWorkspaceRoot({
+          sessionId,
+          participants,
+          endpoint: executionEndpoint,
+          actor: null,
+          agent: null,
+        }),
         unreadCount,
         ...askField,
         ...(turn ? { turn } : {}),

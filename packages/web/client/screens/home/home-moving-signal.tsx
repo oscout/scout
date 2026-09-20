@@ -374,7 +374,9 @@ export function HomeMovingSignalList({
   navigate: (route: Route) => void;
 }) {
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [hover, setHover] = useState<{ id: string; top: number; left: number } | null>(null);
+  const [hover, setHover] = useState<
+    { id: string; top: number | null; bottom: number | null; left: number } | null
+  >(null);
   const hoverTimer = useRef<number | null>(null);
   const stageRef = useRef<HTMLDivElement | null>(null);
 
@@ -406,12 +408,25 @@ export function HomeMovingSignalList({
     if (hoverTimer.current !== null) window.clearTimeout(hoverTimer.current);
     hoverTimer.current = window.setTimeout(() => {
       const cardWidth = 360;
+      // Enough for the tallest card; only ever used to pick a side.
       const cardHeightGuess = 220;
       const left = Math.max(16, Math.min(rect.left + 96, window.innerWidth - cardWidth - 16));
-      const top = rect.bottom + 8 + cardHeightGuess > window.innerHeight
-        ? Math.max(16, rect.top - 8 - cardHeightGuess)
-        : rect.bottom + 8;
-      setHover({ id, top, left });
+      // The card's height is its content's, not a constant. Flipping used to
+      // subtract the guess from the row's top, so a short card came to rest
+      // `cardHeightGuess - actualHeight` clear of the line it describes -- 147px
+      // on a three-line card. Pin the card's own bottom edge to the row instead
+      // and its height never enters the sum. A `translateY(-100%)` would do the
+      // same, except `s-hover-in` animates `transform`, and an animated property
+      // outranks the inline style for its 140ms: the card would land a full card
+      // height low and then jump.
+      const above = rect.bottom + 8 + cardHeightGuess > window.innerHeight
+        && rect.top > cardHeightGuess;
+      setHover({
+        id,
+        left,
+        top: above ? null : rect.bottom + 8,
+        bottom: above ? window.innerHeight - (rect.top - 8) : null,
+      });
     }, 180);
   }, [selectedId]);
 
@@ -530,6 +545,7 @@ export function HomeMovingSignalList({
         <SignalHoverCard
           row={signals.find((r) => r.id === hover.id) ?? null}
           top={hover.top}
+          bottom={hover.bottom}
           left={hover.left}
         />
       )}
@@ -798,10 +814,13 @@ function DockedSidecarInspector({
 function SignalHoverCard({
   row,
   top,
+  bottom,
   left,
 }: {
   row: SignalRowModel | null;
-  top: number;
+  /** Exactly one of `top` / `bottom` is set: the edge pinned to the row. */
+  top: number | null;
+  bottom: number | null;
   left: number;
 }) {
   if (!row) return null;
@@ -809,7 +828,7 @@ function SignalHoverCard({
   return (
     <div
       className="s-moving-signal-hovercard"
-      style={{ top, left }}
+      style={top === null ? { bottom: bottom ?? 16, left } : { top, left }}
       role="tooltip"
       aria-hidden="true"
     >

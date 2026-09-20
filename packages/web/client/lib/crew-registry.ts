@@ -140,20 +140,40 @@ export function rendererCoverage(style: "crew" | "chip" | "sprite"): { covered: 
   return { covered: style === "chip" ? CHIP_CAST.length : Object.keys(CREW_ART).length, total };
 }
 
+/**
+ * The eye roles every animated sheet ships: two blink frames and the full
+ * 3×3 gaze grid (rest is the master itself). `crew-gaze.ts` turns a pointer
+ * vector into one of these; a sheet missing a role rests instead of guessing.
+ */
+export const GAZE_ROLES = [
+  "blink-half",
+  "blink-shut",
+  "look-left",
+  "look-right",
+  "look-up",
+  "look-down",
+  "look-up-left",
+  "look-up-right",
+  "look-down-left",
+  "look-down-right",
+];
+
 export const CREW_SHEETS: Record<string, Sheet> = {
   sprout: {
-    patch: [210, 133, 96, 29],
-    roles: ["blink-half", "blink-shut", "look-left", "look-right", "look-up"],
+    // Grown 6px top and bottom on 2026-09-16 so look-up and look-down pupils
+    // stay whole; the frames were re-cut with master pixels in the new rows.
+    patch: [210, 127, 96, 41],
+    roles: GAZE_ROLES,
     dir: "sheets/sprout",
   },
   lulu: {
     patch: [...LULU_FACE.origin, ...LULU_FACE.size],
-    roles: ["blink-half", "blink-shut", "look-left", "look-right", "look-up"],
+    roles: GAZE_ROLES,
     dir: `sheets/${EYE_MODULE.id}`,
   },
   nori: {
     patch: [...NORI_FACE.origin, ...NORI_FACE.size],
-    roles: ["blink-half", "blink-shut", "look-left", "look-right", "look-up"],
+    roles: GAZE_ROLES,
     dir: `sheets/${EYE_MODULE.id}`,
   },
 };
@@ -178,7 +198,46 @@ export const SHEET_FRAMES = [
   { role: "look-left", note: "eyes left" },
   { role: "look-right", note: "eyes right" },
   { role: "look-up", note: "eyes up" },
+  { role: "look-down", note: "eyes down" },
+  { role: "look-up-left", note: "eyes up and left" },
+  { role: "look-up-right", note: "eyes up and right" },
+  { role: "look-down-left", note: "eyes down and left" },
+  { role: "look-down-right", note: "eyes down and right" },
 ];
+
+/**
+ * Pose frames — whole-body alternates of a member's master, drawn on the SAME
+ * canvas and baseline as the bust, so every coin crop and figure crop applies
+ * unchanged. Poses are personality (a turn, a wave, a run) and never carry
+ * state: the ring says what a member is doing, the pose only says how it
+ * stands. Only Sprout has a set today; Wrench took the same five cleanly, so a
+ * new member's poses are an art order, not a code change.
+ */
+export type PoseName = "turn-left" | "turn-right" | "wave" | "run-a" | "run-b";
+
+export const POSE_NAMES: readonly PoseName[] = ["turn-left", "turn-right", "wave", "run-a", "run-b"];
+
+export const CREW_POSES: Record<string, { dir: string; poses: readonly PoseName[] }> = {
+  sprout: { dir: "poses/sprout", poses: POSE_NAMES },
+};
+
+export function hasPose(slug: string | undefined | null, pose: PoseName): boolean {
+  if (!slug) return false;
+  return CREW_POSES[slug.toLowerCase()]?.poses.includes(pose) ?? false;
+}
+
+/**
+ * Pack-relative path for a member's pose, or the master bust when the member
+ * has no such frame. A missing pose reads as rest — a member that has not
+ * moved yet — never as a different pose or a different member.
+ */
+export function poseAsset(slug: string, pose?: PoseName | "rest" | null): string {
+  const key = slug.toLowerCase();
+  if (pose && pose !== "rest" && hasPose(key, pose)) {
+    return `${CREW_POSES[key]!.dir}/${pose}.webp`;
+  }
+  return `${key}-bust.webp`;
+}
 
 /**
  * Calculates framing coordinates for master bust in a circle of `size` px.
@@ -218,7 +277,7 @@ export function projectHue(project?: string | null): number {
  * the edge and flips band when a re-encode moves a member two hundredths. The
  * nearest are wrench's bust at 0.52 and vex's chip at 0.49.
  */
-const GROUND_SPLIT = 0.45;
+export const GROUND_SPLIT = 0.45;
 
 /**
  * Ground radial gradient for cast coins.

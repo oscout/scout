@@ -23,6 +23,8 @@ export const scoutBrokerPaths = {
     machines: "/v1/machines",
     machinesScan: "/v1/machines/scan",
     messages: "/v1/messages",
+    messageReactions: "/v1/message-reactions",
+    messageReactionsRemove: "/v1/message-reactions/remove",
     brokerMessages: "/v1/broker/messages",
     eventsStream: "/v1/events/stream",
     commands: "/v1/commands",

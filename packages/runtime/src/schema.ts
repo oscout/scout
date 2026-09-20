@@ -379,6 +379,16 @@ CREATE TABLE IF NOT EXISTS message_mentions (
   PRIMARY KEY (message_id, actor_id)
 );
 
+CREATE TABLE IF NOT EXISTS message_reactions (
+  message_id TEXT NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+  actor_id TEXT NOT NULL REFERENCES actors(id) ON DELETE RESTRICT,
+  emoji TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY (message_id, actor_id, emoji)
+);
+CREATE INDEX IF NOT EXISTS idx_message_reactions_message
+  ON message_reactions (message_id);
+
 CREATE TABLE IF NOT EXISTS message_attachments (
   id TEXT PRIMARY KEY,
   message_id TEXT NOT NULL REFERENCES messages(id) ON DELETE CASCADE,

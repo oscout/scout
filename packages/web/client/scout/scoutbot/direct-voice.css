@@ -1,0 +1,139 @@
+/* Direct Voice ("Local Live") room theme.
+   Light pins the warm-paper room; dark re-rooms the same panel in the hue-260
+   slate of the surrounding control room, so the mode switch stops being a
+   full-viewport luminance flip. Every color the panel consumes lands here as a
+   token — the TSX reads vars, never literals. */
+
+.dvp-room {
+  --scout-chrome-bg: #f3f0e9;
+  --scout-chrome-ink: #2a2d2f;
+  --scout-chrome-ink-strong: #171a1c;
+  --scout-chrome-ink-faint: #6f716e;
+  --scout-chrome-ink-ghost: #9b9a94;
+  --scout-chrome-border-soft: #d9d4ca;
+  --scout-chrome-hover: #e9e5dc;
+  --scout-chrome-active: #ded8cc;
+  --scout-accent: #b58a3f;
+  --hud-bg: #f3f0e9;
+  --hud-surface: #faf8f1;
+  --hud-ink: #2a2d2f;
+  --hud-muted: #6f716e;
+  --hud-dim: #9b9a94;
+  --hud-border: #d9d4ca;
+  --hud-accent: #b58a3f;
+  --hud-accent-soft: color-mix(in srgb, #b58a3f 12%, transparent);
+
+  --dvp-bg: #f3f0e9;
+  --dvp-ink: #2a2d2f;
+  --dvp-heading: #171a1c;
+  --dvp-body: #25292a;
+  --dvp-muted: #6f716e;
+  --dvp-dim: #9b9a94;
+  --dvp-border: #d9d4ca;
+  --dvp-divider: #d6d1c7;
+  --dvp-hover: #e9e5dc;
+  --dvp-well: #eeeae2;
+  --dvp-accent: #b58a3f;
+  --dvp-accent-ink: #765923;
+  --dvp-accent-soft: #e1d5bd;
+  --dvp-focus: #9c7736;
+  --dvp-meta: #575a59;
+  --dvp-meta-dim: #8a8983;
+  --dvp-you-meta: #9a7a40;
+  --dvp-phase: #24282a;
+  --dvp-helper: #7a7b76;
+  --dvp-mic-label: #7b6a49;
+  --dvp-mic-icon: #8b7350;
+  --dvp-footer: #747570;
+  --dvp-stage-active: #5e4821;
+  --dvp-stage-dim: #96948e;
+  --dvp-error: #93483f;
+  --dvp-dot-off: #a25549;
+  --dvp-dot-idle: #a7a49d;
+  --dvp-btn: #4f5352;
+  --dvp-btn-hover-ink: #191c1e;
+  --dvp-switch-border: #cbc5ba;
+  --dvp-switch-bg: #e8e3da;
+  --dvp-switch-active-bg: #202426;
+  --dvp-switch-active-ink: #ffffff;
+  --dvp-switch-idle: #6a6c69;
+  --dvp-switch-hover: color-mix(in srgb, #ffffff 65%, transparent);
+  --dvp-dial-bg: #ffffff;
+  --dvp-dial-ink: #232729;
+  --dvp-dial-border: #d4cfc5;
+  --dvp-dial-border-hover: #b9b2a6;
+  --dvp-dial-shadow: 0 14px 34px rgba(55, 48, 38, 0.12);
+  --dvp-dial-shadow-hover: 0 17px 38px rgba(55, 48, 38, 0.16);
+  --dvp-ring: #d2cec6;
+  --dvp-wave: #a5a198;
+  --dvp-wave-active: #817b71;
+  --dvp-orb: #a5a198;
+  --dvp-orb-active: #b98a3b;
+}
+
+:root[data-scout-theme="dark"] .dvp-room {
+  --scout-chrome-bg: oklch(0.118 0.004 260);
+  --scout-chrome-ink: oklch(0.975 0.006 260);
+  --scout-chrome-ink-strong: oklch(0.975 0.006 260);
+  --scout-chrome-ink-faint: oklch(0.8 0.008 260);
+  --scout-chrome-ink-ghost: oklch(0.7 0.007 260);
+  --scout-chrome-border-soft: oklch(0.975 0.006 260 / 0.08);
+  --scout-chrome-hover: oklch(0.975 0.006 260 / 0.05);
+  --scout-chrome-active: oklch(0.975 0.006 260 / 0.09);
+  --scout-accent: oklch(0.86 0.17 125);
+  --hud-bg: oklch(0.118 0.004 260);
+  --hud-surface: oklch(0.205 0.005 260);
+  --hud-ink: oklch(0.975 0.006 260);
+  --hud-muted: oklch(0.8 0.008 260);
+  --hud-dim: oklch(0.7 0.007 260);
+  --hud-border: oklch(0.975 0.006 260 / 0.08);
+  --hud-accent: oklch(0.86 0.17 125);
+  --hud-accent-soft: oklch(0.86 0.17 125 / 0.08);
+
+  --dvp-bg: oklch(0.118 0.004 260);
+  --dvp-ink: oklch(0.975 0.006 260);
+  --dvp-heading: oklch(0.975 0.006 260);
+  --dvp-body: oklch(0.9 0.006 260);
+  --dvp-muted: oklch(0.8 0.008 260);
+  --dvp-dim: oklch(0.7 0.007 260);
+  --dvp-border: oklch(0.975 0.006 260 / 0.1);
+  --dvp-divider: oklch(0.975 0.006 260 / 0.12);
+  --dvp-hover: oklch(0.975 0.006 260 / 0.05);
+  --dvp-well: oklch(0.16 0.004 260);
+  --dvp-accent: oklch(0.86 0.17 125);
+  --dvp-accent-ink: color-mix(in srgb, oklch(0.86 0.17 125) 70%, oklch(0.975 0.006 260));
+  --dvp-accent-soft: oklch(0.86 0.17 125 / 0.16);
+  --dvp-focus: oklch(0.86 0.17 125);
+  --dvp-meta: oklch(0.8 0.008 260);
+  --dvp-meta-dim: oklch(0.7 0.007 260);
+  --dvp-you-meta: color-mix(in srgb, oklch(0.86 0.17 125) 60%, oklch(0.975 0.006 260));
+  --dvp-phase: oklch(0.975 0.006 260);
+  --dvp-helper: oklch(0.7 0.007 260);
+  --dvp-mic-label: color-mix(in srgb, oklch(0.86 0.17 125) 55%, oklch(0.975 0.006 260));
+  --dvp-mic-icon: color-mix(in srgb, oklch(0.86 0.17 125) 50%, oklch(0.975 0.006 260));
+  --dvp-footer: oklch(0.7 0.007 260);
+  --dvp-stage-active: color-mix(in srgb, oklch(0.86 0.17 125) 70%, oklch(0.975 0.006 260));
+  --dvp-stage-dim: oklch(0.62 0.007 260);
+  --dvp-error: color-mix(in srgb, oklch(0.72 0.18 25) 70%, oklch(0.975 0.006 260));
+  --dvp-dot-off: oklch(0.72 0.18 25);
+  --dvp-dot-idle: oklch(0.975 0.006 260 / 0.35);
+  --dvp-btn: oklch(0.8 0.008 260);
+  --dvp-btn-hover-ink: oklch(0.975 0.006 260);
+  --dvp-switch-border: oklch(0.975 0.006 260 / 0.12);
+  --dvp-switch-bg: oklch(0.975 0.006 260 / 0.06);
+  --dvp-switch-active-bg: oklch(0.975 0.006 260);
+  --dvp-switch-active-ink: oklch(0.118 0.004 260);
+  --dvp-switch-idle: oklch(0.8 0.008 260);
+  --dvp-switch-hover: oklch(0.975 0.006 260 / 0.08);
+  --dvp-dial-bg: oklch(0.205 0.005 260);
+  --dvp-dial-ink: oklch(0.975 0.006 260);
+  --dvp-dial-border: oklch(0.975 0.006 260 / 0.14);
+  --dvp-dial-border-hover: oklch(0.975 0.006 260 / 0.24);
+  --dvp-dial-shadow: 0 14px 34px oklch(0.08 0.004 260 / 0.42);
+  --dvp-dial-shadow-hover: 0 17px 38px oklch(0.08 0.004 260 / 0.5);
+  --dvp-ring: oklch(0.975 0.006 260 / 0.2);
+  --dvp-wave: oklch(0.975 0.006 260 / 0.35);
+  --dvp-wave-active: oklch(0.975 0.006 260 / 0.6);
+  --dvp-orb: oklch(0.975 0.006 260 / 0.35);
+  --dvp-orb-active: oklch(0.86 0.17 125);
+}

@@ -67,11 +67,57 @@ describe("queryAgentFlightPhases", () => {
       CREATE TABLE invocations (
         id TEXT PRIMARY KEY,
         target_agent_id TEXT NOT NULL,
-        state TEXT
+        state TEXT,
+        flight_metadata_json TEXT,
+        started_at INTEGER,
+        created_at INTEGER
       );
     `);
 
     expect(() => queryAgentFlightPhases(db)).not.toThrow();
+    db.close();
+  });
+
+  test("a requester-timed-out flight does not pin its agent to a live turn", () => {
+    const db = new Database(":memory:");
+    db.exec(`
+      CREATE TABLE invocations (
+        id TEXT PRIMARY KEY,
+        target_agent_id TEXT NOT NULL,
+        state TEXT,
+        flight_metadata_json TEXT,
+        started_at INTEGER,
+        created_at INTEGER
+      );
+    `);
+    const insert = db.prepare(
+      `INSERT INTO invocations
+         (id, target_agent_id, state, flight_metadata_json, started_at, created_at)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+    );
+    insert.run("live", "agent-live", "running", "{}", 1_000, 1_000);
+    insert.run(
+      "stopped-waiting",
+      "agent-stopped-waiting",
+      "running",
+      JSON.stringify({ requesterTimedOut: true, timeoutScope: "requester_wait" }),
+      1_000,
+      1_000,
+    );
+    insert.run(
+      "scope-only",
+      "agent-scope-only",
+      "queued",
+      JSON.stringify({ timeoutScope: "requester_wait" }),
+      1_000,
+      1_000,
+    );
+
+    const phases = queryAgentFlightPhases(db);
+
+    expect(phases.get("agent-live")).toBe("in_turn");
+    expect(phases.has("agent-stopped-waiting")).toBe(false);
+    expect(phases.has("agent-scope-only")).toBe(false);
     db.close();
   });
 });

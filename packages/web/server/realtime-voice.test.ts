@@ -12,6 +12,8 @@ import {
   SCOUT_REALTIME_VOICE_SETTINGS_PATH,
 } from "../shared/realtime-voice.ts";
 import {
+  DEFAULT_REALTIME_MODEL,
+  DEFAULT_REALTIME_VOICE,
   ScoutRealtimeVoiceAdmission,
   ScoutRealtimeVoiceAdmissionError,
   ScoutRealtimeVoiceError,
@@ -181,6 +183,8 @@ describe("Scout Realtime voice", () => {
       configuredEnabled: false,
       source: "settings",
       locked: false,
+      model: DEFAULT_REALTIME_MODEL,
+      voice: DEFAULT_REALTIME_VOICE,
     });
 
     const enabled = await app.request(SCOUT_REALTIME_VOICE_SETTINGS_PATH, {
@@ -231,6 +235,8 @@ describe("Scout Realtime voice", () => {
       configuredEnabled: true,
       source: "environment",
       locked: true,
+      model: DEFAULT_REALTIME_MODEL,
+      voice: DEFAULT_REALTIME_VOICE,
     });
 
     const update = await app.request(SCOUT_REALTIME_VOICE_SETTINGS_PATH, {
@@ -542,14 +548,20 @@ describe("Scout Realtime voice", () => {
       configuredEnabled: true,
       source: "settings",
       locked: false,
+      model: DEFAULT_REALTIME_MODEL,
+      voice: DEFAULT_REALTIME_VOICE,
     });
     expect(resolveScoutRealtimeVoiceSettings(false, {
       OPENSCOUT_REALTIME_VOICE_ENABLED: "on",
+      OPENSCOUT_REALTIME_MODEL: "gpt-test-live",
+      OPENSCOUT_REALTIME_VOICE: "cedar",
     })).toEqual({
       enabled: true,
       configuredEnabled: false,
       source: "environment",
       locked: true,
+      model: "gpt-test-live",
+      voice: "cedar",
     });
     expect(resolveScoutRealtimeVoiceSettings(true, {
       OPENSCOUT_REALTIME_VOICE_ENABLED: "off",
@@ -558,6 +570,8 @@ describe("Scout Realtime voice", () => {
       configuredEnabled: true,
       source: "environment",
       locked: true,
+      model: DEFAULT_REALTIME_MODEL,
+      voice: DEFAULT_REALTIME_VOICE,
     });
   });
 

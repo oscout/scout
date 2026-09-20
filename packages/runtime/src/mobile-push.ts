@@ -203,6 +203,11 @@ function resolvePushRelayConfig(): PushRelayConfig | null {
   };
 }
 
+// The device id the relay transport puts on its OWN failures. A failure the
+// relay reports back from APNS carries the real device id instead, which is
+// what keeps the two apart below.
+const PUSH_RELAY_TRANSPORT_DEVICE_ID = "push-relay";
+
 function relayAuthHeader(sessionToken: string): string {
   return sessionToken.startsWith("osn_session_")
     ? `Bearer ${sessionToken}`
@@ -289,7 +294,7 @@ async function broadcastPushRelayAlert(alert: MobilePushAlert): Promise<MobilePu
       retryAfterSeconds: retryAfter ? Number.parseInt(retryAfter, 10) || null : null,
       rateLimitWindow: window,
       failures: [{
-        deviceId: "push-relay",
+        deviceId: PUSH_RELAY_TRANSPORT_DEVICE_ID,
         tokenSuffix: "relay",
         status: 429,
         reason: detail || `HTTP 429 (window=${window ?? "unknown"})`,
@@ -305,7 +310,7 @@ async function broadcastPushRelayAlert(alert: MobilePushAlert): Promise<MobilePu
       failedCount: 1,
       configMissing: false,
       failures: [{
-        deviceId: "push-relay",
+        deviceId: PUSH_RELAY_TRANSPORT_DEVICE_ID,
         tokenSuffix: "relay",
         status: response.status,
         reason: detail || `HTTP ${response.status}`,
@@ -736,18 +741,51 @@ async function sendApnsAlertToRegistration(
   });
 }
 
+// A relay that rejects our credential will reject the next alert too -- an
+// expired mesh session does not heal on retry. That is the one relay failure
+// worth falling through for. It must be the TRANSPORT's own refusal: a relay
+// that accepted the alert and reported a per-device 403 has already delivered
+// to everyone else, and falling through there would push to them twice.
+function relayRejectedOurCredential(result: MobilePushBroadcastResult): boolean {
+  return result.failures.some(
+    failure => failure.deviceId === PUSH_RELAY_TRANSPORT_DEVICE_ID
+      && (failure.status === 401 || failure.status === 403),
+  );
+}
+
+// `loadApnsCredentials` reads OPENSCOUT_APNS_PRIVATE_KEY_PATH from disk and
+// throws when it is missing. On the direct path that throw is caught per
+// registration; here it would escape the whole broadcast, so ask the question
+// without letting it.
+function hasDirectApnsCredentials(): boolean {
+  try {
+    return loadApnsCredentials() !== null;
+  } catch {
+    return false;
+  }
+}
+
 export async function broadcastApnsAlertToActiveMobileDevices(
   alert: MobilePushAlert,
 ): Promise<MobilePushBroadcastResult> {
+  // Carried forward so a relay refusal is still reported even when the direct
+  // path then delivers: silently succeeding is how a dead relay session stays
+  // dead for weeks.
+  let relayFailures: MobilePushBroadcastResult["failures"] = [];
+
   if (resolvePushRelayConfig()) {
-    return broadcastPushRelayAlert(alert);
+    const relayResult = await broadcastPushRelayAlert(alert);
+    if (!relayRejectedOurCredential(relayResult) || !hasDirectApnsCredentials()) {
+      return relayResult;
+    }
+    relayFailures = relayResult.failures;
   }
 
   const registrations = listActiveMobilePushRegistrations();
   let deliveredCount = 0;
   let skippedCount = 0;
   let configMissing = false;
-  const failures: MobilePushBroadcastResult["failures"] = [];
+  const failures: MobilePushBroadcastResult["failures"] = [...relayFailures];
 
   for (const registration of registrations) {
     try {

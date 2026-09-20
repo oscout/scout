@@ -127,7 +127,7 @@ const EMPTY_LAYERS = (): Record<LifecycleLayerName, LifecycleProcess[]> => ({
 });
 
 /**
- * `OpenScout.app` ships with `CFBundleExecutable = Scout` — the release bundle
+ * `Scout.app` ships with `CFBundleExecutable = Scout` — the release bundle
  * is renamed but the binary is not — so the executable name has to be read,
  * not inferred from the bundle it lives in.
  */

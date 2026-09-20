@@ -111,8 +111,8 @@ export function ScoutbotSettingsPanel({
                   : "border-[var(--scout-chrome-border-soft)] bg-[var(--hud-bg)] text-[var(--scout-chrome-ink-faint)] hover:bg-[var(--scout-chrome-hover)]"
               }`}
             >
-              <span className="font-bold uppercase tracking-[0.1em]">This Mac&apos;s voice</span>
-              <span className="ml-2 text-[var(--scout-chrome-ink-ghost)]">
+              <span className="block font-bold uppercase tracking-[0.1em]">This Mac&apos;s voice</span>
+              <span className="mt-1 block leading-relaxed text-[var(--scout-chrome-ink-ghost)]">
                 Speaks through Scout Menu in its own Settings &rsaquo; Voice pick. The only way to hear installed voices such as Kokoro.
               </span>
             </button>
@@ -127,8 +127,8 @@ export function ScoutbotSettingsPanel({
                   : "border-[var(--scout-chrome-border-soft)] bg-[var(--hud-bg)] text-[var(--scout-chrome-ink-faint)] hover:bg-[var(--scout-chrome-hover)]"
               }`}
             >
-              <span className="font-bold uppercase tracking-[0.1em]">Custom voice</span>
-              <span className="ml-2 text-[var(--scout-chrome-ink-ghost)]">Use any supported model, voice, and style.</span>
+              <span className="block font-bold uppercase tracking-[0.1em]">Custom voice</span>
+              <span className="mt-1 block leading-relaxed text-[var(--scout-chrome-ink-ghost)]">Use any supported model, voice, and style.</span>
             </button>
             {speechSelectionId === "custom" && (
               <div className="grid gap-2 rounded border border-[var(--scout-chrome-border-soft)] bg-[var(--hud-bg)] p-2.5">

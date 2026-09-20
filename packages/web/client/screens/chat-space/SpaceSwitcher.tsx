@@ -20,6 +20,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import type { ChatSpaceView } from "./chat-api.ts";
+import { useChatCapabilities } from "./chat-transport.tsx";
 
 /** The rail has room for one glyph. A space gets its initial. */
 function spaceGlyph(title: string): string {
@@ -33,6 +34,7 @@ export function SpaceSwitcher({
   railed,
   onSelect,
   onCreate,
+  onDelete,
   onExpandRail,
 }: {
   spaces: ChatSpaceView[];
@@ -41,19 +43,31 @@ export function SpaceSwitcher({
   railed: boolean;
   onSelect: (slug: string) => void;
   onCreate: (input: { title: string; channel: string }) => Promise<void>;
+  /** Absent where the server has no deletion endpoint; the item is not drawn. */
+  onDelete: ((slug: string) => Promise<void>) | null;
   onExpandRail: () => void;
 }) {
+  const capabilities = useChatCapabilities();
   const [menuOpen, setMenuOpen] = useState(false);
   const [creating, setCreating] = useState(false);
   const [title, setTitle] = useState("");
   const [channel, setChannel] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Deleting a space is irreversible, so it is armed by name rather than by a
+  // single click: the item asks, and the second press is the one that acts.
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
   const rootRef = useRef<HTMLDivElement | null>(null);
 
   const active = spaces.find((space) => space.slug === activeSlug)
     ?? spaces[0]
     ?? null;
+
+  // Closing the menu disarms the confirmation; a menu reopened later must not
+  // still be one click away from deleting something.
+  useEffect(() => {
+    if (!menuOpen) setConfirmingDelete(false);
+  }, [menuOpen]);
 
   useEffect(() => {
     if (!menuOpen) return;
@@ -147,9 +161,13 @@ export function SpaceSwitcher({
               }}
             >
               <span className="chat-space-menu-name">{space.title}</span>
-              <span className="label-sm chat-space-menu-count">
-                {space.channelCount}
-              </span>
+              {/* A server that does not count another space's channels gets no
+                  number here, rather than a zero that reads as "empty". */}
+              {space.channelCount === undefined ? null : (
+                <span className="label-sm chat-space-menu-count">
+                  {space.channelCount}
+                </span>
+              )}
             </button>
           ))}
 
@@ -175,19 +193,24 @@ export function SpaceSwitcher({
                       }
                     }}
                   />
-                  <input
-                    className="chat-input"
-                    value={channel}
-                    placeholder="First channel (general)"
-                    aria-label="First channel"
-                    onChange={(event) => setChannel(event.target.value)}
-                    onKeyDown={(event) => {
-                      if (event.key === "Enter") {
-                        event.preventDefault();
-                        void submit();
-                      }
-                    }}
-                  />
+                  {/* Offered only where the server honors it. Where the server
+                      names the first channel itself, a field whose value is
+                      discarded is worse than no field. */}
+                  {capabilities.namedFirstChannel ? (
+                    <input
+                      className="chat-input"
+                      value={channel}
+                      placeholder="First channel (general)"
+                      aria-label="First channel"
+                      onChange={(event) => setChannel(event.target.value)}
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter") {
+                          event.preventDefault();
+                          void submit();
+                        }
+                      }}
+                    />
+                  ) : null}
                   {error ? <p className="chat-space-error">{error}</p> : null}
                   <div className="chat-create-actions">
                     <button
@@ -216,6 +239,43 @@ export function SpaceSwitcher({
                   + New space
                 </button>
               )}
+            </>
+          ) : null}
+
+          {onDelete && capabilities.spaceDelete ? (
+            <>
+              <div className="chat-space-menu-rule" />
+              <button
+                type="button"
+                className="chat-space-menu-item chat-space-menu-danger"
+                disabled={busy}
+                onClick={() => {
+                  if (!confirmingDelete) {
+                    setConfirmingDelete(true);
+                    return;
+                  }
+                  setBusy(true);
+                  setError(null);
+                  void onDelete(active.slug)
+                    .then(() => {
+                      setConfirmingDelete(false);
+                      setMenuOpen(false);
+                    })
+                    .catch((cause: unknown) => {
+                      setConfirmingDelete(false);
+                      setError(
+                        cause instanceof Error
+                          ? cause.message
+                          : "That space could not be deleted.",
+                      );
+                    })
+                    .finally(() => setBusy(false));
+                }}
+              >
+                {confirmingDelete
+                  ? `Delete ${active.title} and everything in it`
+                  : "Delete this space"}
+              </button>
             </>
           ) : null}
         </div>

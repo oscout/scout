@@ -142,7 +142,7 @@ function subscribeLaneFocusId(listener: () => void): () => void {
   };
 }
 
-function getLaneFocusIdSnapshot(): string | null {
+export function getLaneFocusIdSnapshot(): string | null {
   return focusedLaneId;
 }
 

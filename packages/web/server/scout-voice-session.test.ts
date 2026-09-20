@@ -151,6 +151,71 @@ describe("scout voice native sessions", () => {
     });
   });
 
+  test("rejects a second live instance on the same hostId instead of livelocking", async () => {
+    registerScoutVoiceHost({
+      hostId: "scout-menu",
+      instanceId: "menu-process-a",
+      platform: "macos",
+    });
+
+    // Two Scout Menu processes (installed + dev build) can share one
+    // hostId; a flip-flopping instanceId makes every long poll return
+    // instantly and spins both run loops hot. The live incumbent wins.
+    expect(() =>
+      registerScoutVoiceHost({
+        hostId: "scout-menu",
+        instanceId: "menu-process-b",
+        platform: "macos",
+      }),
+    ).toThrowError(/different voice host instance/i);
+
+    // The incumbent keeps ownership and can still dequeue commands.
+    const { sessionId } = createScoutVoiceSession({ surface: "macos.native-composer" });
+    await expect(awaitScoutVoiceHostCommand("scout-menu", 1_000, "menu-process-a")).resolves.toMatchObject({
+      command: { type: "session.start", sessionId },
+    });
+
+    // The challenger's poll short-circuits without consuming commands.
+    await expect(awaitScoutVoiceHostCommand("scout-menu", 1_000, "menu-process-b")).resolves.toEqual({
+      command: null,
+    });
+    await expect(awaitScoutVoiceHostCommand("scout-menu", 1_000, "menu-process-a")).resolves.toEqual({
+      command: null,
+    });
+  });
+
+  test("lets the same instance re-register and a stale host be replaced", () => {
+    registerScoutVoiceHost({
+      hostId: "scout-menu",
+      instanceId: "menu-process-a",
+      platform: "macos",
+    });
+
+    // Same-instance heartbeat register stays welcome.
+    expect(() =>
+      registerScoutVoiceHost({
+        hostId: "scout-menu",
+        instanceId: "menu-process-a",
+        platform: "macos",
+      }),
+    ).not.toThrow();
+
+    // Once the incumbent goes stale a replacement may take over —
+    // e.g. the menu app restarted with a fresh instance id.
+    const realNow = Date.now;
+    const registered = Date.now();
+    Date.now = () => registered + 46_000;
+    try {
+      registerScoutVoiceHost({
+        hostId: "scout-menu",
+        instanceId: "menu-process-b",
+        platform: "macos",
+      });
+    } finally {
+      Date.now = realNow;
+    }
+  });
+
   test("routes speech synthesis through the registered Scout Menu host", async () => {
     registerScoutVoiceHost({
       hostId: "scout-menu",
@@ -324,11 +389,20 @@ describe("scout voice native sessions", () => {
     });
     const stalePoll = awaitScoutVoiceHostCommand("scout-menu", 1_000, "old-process");
 
-    registerScoutVoiceHost({
-      hostId: "scout-menu",
-      instanceId: "new-process",
-      platform: "macos",
-    });
+    // A live incumbent cannot be displaced; takeover is legitimate only
+    // once the old helper has gone stale (it stopped polling).
+    const realNow = Date.now;
+    const registered = Date.now();
+    Date.now = () => registered + 46_000;
+    try {
+      registerScoutVoiceHost({
+        hostId: "scout-menu",
+        instanceId: "new-process",
+        platform: "macos",
+      });
+    } finally {
+      Date.now = realNow;
+    }
     const { sessionId } = createScoutVoiceSession({ surface: "macos.native-composer" });
 
     await expect(stalePoll).resolves.toEqual({ command: null });

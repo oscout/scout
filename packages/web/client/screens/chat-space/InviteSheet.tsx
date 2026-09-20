@@ -20,7 +20,8 @@ import { Bot, Users, Link2, Monitor, Globe, CircleHelp, Webhook } from "lucide-r
 import { useFocusTrap } from "../../lib/keyboard-nav.ts";
 import type { ConversationDefinition } from "@openscout/protocol";
 
-import { chatApi, ChatApiError, type CreatedChannelInvite } from "./chat-api.ts";
+import { ChatApiError, type CreatedChannelInvite } from "./chat-api.ts";
+import { useChatApi, useChatCapabilities } from "./chat-transport.tsx";
 import { CopyAction } from "./ChatBits.tsx";
 import {
   channelLabel,
@@ -203,7 +204,12 @@ export function InviteSheet({
   onClose: () => void;
   onInvitesChanged: () => void;
 }) {
-  const [kind, setKind] = useState<InviteKind>("teammate");
+  const chatApi = useChatApi();
+  const capabilities = useChatCapabilities();
+  // Only the kinds this server has a redemption path for. A tab whose invitation
+  // nothing can redeem is a control with no endpoint behind it.
+  const offered = capabilities.inviteKinds;
+  const [kind, setKind] = useState<InviteKind>(() => offered[0] ?? "teammate");
   const { ref: dialogRef } = useFocusTrap<HTMLDivElement>();
   const [invites, setInvites] = useState<Record<InviteKind, SheetInvite>>({
     teammate: null,
@@ -242,7 +248,7 @@ export function InviteSheet({
         setPending(null);
       }
     },
-    [channel.id, space, onInvitesChanged, viewerActorId, viewerName],
+    [channel.id, chatApi, space, onInvitesChanged, viewerActorId, viewerName],
   );
 
   useEffect(() => {
@@ -284,17 +290,25 @@ export function InviteSheet({
           </button>
         </div>
 
-        <div className="chat-invite-switch" role="group" aria-label="Who are you inviting?">
-          <button type="button" aria-pressed={kind === "teammate"} onClick={() => setKind("teammate")}>
-            <Users size={16} aria-hidden="true" /> Teammate
-          </button>
-          <button type="button" aria-pressed={kind === "agent"} onClick={() => setKind("agent")}>
-            <Bot size={16} aria-hidden="true" /> Agent
-          </button>
-          <button type="button" aria-pressed={kind === "api"} onClick={() => setKind("api")}>
-            <Webhook size={16} aria-hidden="true" /> No install
-          </button>
-        </div>
+        {offered.length > 1 ? (
+          <div className="chat-invite-switch" role="group" aria-label="Who are you inviting?">
+            {offered.includes("teammate") ? (
+              <button type="button" aria-pressed={kind === "teammate"} onClick={() => setKind("teammate")}>
+                <Users size={16} aria-hidden="true" /> Teammate
+              </button>
+            ) : null}
+            {offered.includes("agent") ? (
+              <button type="button" aria-pressed={kind === "agent"} onClick={() => setKind("agent")}>
+                <Bot size={16} aria-hidden="true" /> Agent
+              </button>
+            ) : null}
+            {offered.includes("api") ? (
+              <button type="button" aria-pressed={kind === "api"} onClick={() => setKind("api")}>
+                <Webhook size={16} aria-hidden="true" /> No install
+              </button>
+            ) : null}
+          </div>
+        ) : null}
         <InviteSection
           key={kind}
           kind={kind}
@@ -305,7 +319,9 @@ export function InviteSheet({
           pending={pending !== null}
           onMint={() => void mint(kind)}
         />
-        <p className="chat-sheet-foot">Manage or revoke invitations in Members.</p>
+        {capabilities.inviteList ? (
+          <p className="chat-sheet-foot">Manage or revoke invitations in Members.</p>
+        ) : null}
       </div>
     </div>
   );

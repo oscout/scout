@@ -14,10 +14,13 @@ import {
   stripScoutbotUiFences,
 } from "../../lib/scoutbot.ts";
 import { toSpokenScoutText } from "../../lib/spoken-text.ts";
+import { streamScoutbotChat } from "../../lib/scoutbot-chat-stream.ts";
+import { startScoutbotSpeechPipeline } from "../../lib/scoutbot-speech-pipeline.ts";
 import {
   isScoutSpeechStopped,
   ensureScoutVoiceAutoProbe,
   getSharedScoutVoiceClient,
+  primeScoutSpeechPlayback,
   startScoutSpeech,
   startScoutSpeechWithEffects,
   subscribeScoutVoiceProbe,
@@ -34,14 +37,17 @@ import {
   type ScoutbotPublicState,
 } from "./ScoutbotStateContext.tsx";
 import { ChatHistory, ChatInput } from "./ScoutbotChat.tsx";
-import { DirectVoicePanel } from "./DirectVoicePanel.tsx";
+import { DirectVoicePanel, type DirectVoicePhase } from "./DirectVoicePanel.tsx";
+import { actionTickLabel, type VoiceLedgerEvent } from "../../lib/voice-turn-ledger.ts";
 import { ScoutbotIconButton, ScoutVoiceSetupPanel } from "./ScoutbotControls.tsx";
 import { ScoutbotSettingsPanel } from "./ScoutbotSettingsPanel.tsx";
 import {
   DEFAULT_SCOUTBOT_CUSTOM_SPEECH,
   DEFAULT_SCOUTBOT_SPEECH_PROFILE_ID,
   isScoutbotSpeechSelectionId,
+  resolveScoutbotSpeechIdentity,
   resolveScoutbotSpeechVoice,
+  type ScoutbotSpeechIdentity,
 } from "./scoutbot-voice-profiles.ts";
 import {
   SCOUTBOT_REALTIME_REPLY_EVENT,
@@ -82,12 +88,33 @@ export function ScoutbotPanel({
   fill = false,
   presentation = "chat",
   onOpenLive,
+  voiceModeSwitch = true,
+  voiceTitle,
+  voiceHeading = true,
+  voiceTranscript = true,
+  onVoicePhaseChange,
+  onSpeechIdentityChange,
+  onLedgerEvent,
 }: {
   height?: number;
   forceExpanded?: boolean;
   fill?: boolean;
   presentation?: "chat" | "direct-voice";
   onOpenLive?: () => void;
+  /** Set false when the surrounding page already owns the voice mode switch. */
+  voiceModeSwitch?: boolean;
+  /** Header title for the direct-voice presentation. */
+  voiceTitle?: string;
+  /** Set false when the surrounding page already owns the title. */
+  voiceHeading?: boolean;
+  /** Set false when the surrounding page draws the turn instead of the transcript. */
+  voiceTranscript?: boolean;
+  /** Direct-voice turn phase, lifted for surfaces that visualize the turn. */
+  onVoicePhaseChange?: (phase: DirectVoicePhase) => void;
+  /** Who speaks replies (provider, model, voice), lifted for voice identity readouts. */
+  onSpeechIdentityChange?: (identity: ScoutbotSpeechIdentity) => void;
+  /** Turn-timeline events for the /voice instrument. */
+  onLedgerEvent?: (event: VoiceLedgerEvent) => void;
 } = {}) {
   const {
     applyScoutbotUiAction,
@@ -163,19 +190,27 @@ export function ScoutbotPanel({
     }),
     [customSpeechInstructions, customSpeechModelId, customSpeechVoiceId, speechSelectionId],
   );
+  const speechIdentity = useMemo(
+    () => resolveScoutbotSpeechIdentity(speechSelectionId, {
+      modelId: customSpeechModelId,
+      voiceId: customSpeechVoiceId,
+      instructions: customSpeechInstructions,
+    }),
+    [customSpeechInstructions, customSpeechModelId, customSpeechVoiceId, speechSelectionId],
+  );
   const clientRef = useRef(getSharedScoutVoiceClient());
   const mountedRef = useRef(false);
   const liveRef = useRef<ScoutVoiceLiveHandle | null>(null);
   const liveCancelReasonRef = useRef<ScoutVoiceCancelReason | null>(null);
+  const askAbortRef = useRef<AbortController | null>(null);
   const speechRef = useRef<{ promise: Promise<unknown>; stop: () => void } | null>(null);
   const voiceRepliesRef = useRef(voiceReplies);
   voiceRepliesRef.current = voiceReplies;
-
-  useEffect(() => {
-    if (presentation !== "direct-voice") return;
-    voiceRepliesRef.current = true;
-    setVoiceReplies(true);
-  }, [presentation, setVoiceReplies]);
+  const ledgerRef = useRef(onLedgerEvent);
+  ledgerRef.current = onLedgerEvent;
+  const emitTurn = useCallback((event: VoiceLedgerEvent) => {
+    ledgerRef.current?.(event);
+  }, []);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -185,10 +220,15 @@ export function ScoutbotPanel({
       const live = liveRef.current;
       liveRef.current = null;
       if (live) void releaseScoutVoiceLive(live, { allowCurrentSession: true });
+      askAbortRef.current?.abort();
       speechRef.current?.stop();
       speechRef.current = null;
     };
   }, []);
+
+  useEffect(() => {
+    onSpeechIdentityChange?.(speechIdentity);
+  }, [onSpeechIdentityChange, speechIdentity]);
 
   const stopSpeech = useCallback(() => {
     speechRef.current?.stop();
@@ -200,6 +240,14 @@ export function ScoutbotPanel({
     if (!text) return;
     stopSpeech();
     const spokenText = toSpokenScoutText(text);
+    emitTurn({
+      t: "prep-open",
+      at: Date.now(),
+      label: speechVoice.playback === "host" ? "speech on this Mac" : "tts",
+    });
+    const onPlaybackStart = () => {
+      emitTurn({ t: "speak-open", at: Date.now(), text: spokenText.slice(0, 180) });
+    };
     const speech = presentation === "direct-voice"
       ? startScoutSpeech(spokenText, {
           speed: voiceSpeed,
@@ -207,29 +255,33 @@ export function ScoutbotPanel({
           voiceId: speechVoice.voiceId,
           instructions: speechVoice.instructions,
           playback: speechVoice.playback,
+          onPlaybackStart,
         })
       : startScoutSpeechWithEffects(spokenText, {
           speed: voiceSpeed,
           presetId: voicePresetId,
           params: resolveScoutbotFxParams(voicePresetId, onlineCount),
+          onPlaybackStart,
         });
     speechRef.current = speech;
     setSpeaking(true);
     void speech.promise
       .catch((err) => {
         if (!isScoutSpeechStopped(err)) {
-          console.warn("[scoutbot] reply speech unavailable", {
-            message: err instanceof Error ? err.message : String(err),
-          });
+          const message = err instanceof Error ? err.message : String(err);
+          console.warn("[scoutbot] reply speech unavailable", { message });
+          setError(message);
         }
       })
       .finally(() => {
         if (speechRef.current === speech) {
           speechRef.current = null;
           setSpeaking(false);
+          emitTurn({ t: "speak-close", at: Date.now() });
+          emitTurn({ t: "close", at: Date.now() });
         }
       });
-  }, [stopSpeech, voiceSpeed, speechVoice, onlineCount, presentation, voicePresetId]);
+  }, [emitTurn, stopSpeech, voiceSpeed, speechVoice, onlineCount, presentation, voicePresetId]);
 
   const speakScoutbotText = useCallback((text: string) => {
     if (!voiceRepliesRef.current) return;
@@ -406,6 +458,7 @@ export function ScoutbotPanel({
     if (!id || switchingSessionId) return;
     setSwitchingSessionId(id);
     setError(null);
+    askAbortRef.current?.abort();
     stopSpeech();
     try {
       const state = await api<ScoutbotAssistantSessionState>("/api/scoutbot/session/switch", {
@@ -425,7 +478,8 @@ export function ScoutbotPanel({
   }, [stopSpeech, switchingSessionId, syncLastMessages]);
 
   const resetScoutbotSession = useCallback(async () => {
-    if (resettingSession || sending) return;
+    if (resettingSession) return;
+    askAbortRef.current?.abort();
     if (sessionState?.session.messages.length === 0) {
       setDraft("");
       setError(null);
@@ -456,12 +510,13 @@ export function ScoutbotPanel({
     } finally {
       setResettingSession(false);
     }
-  }, [resettingSession, sending, sessionState, stopSpeech]);
+  }, [resettingSession, sessionState, stopSpeech]);
 
   const archiveScoutbotSession = useCallback(async (id: string) => {
     if (!id || archivingSessionId) return;
     setArchivingSessionId(id);
     setError(null);
+    askAbortRef.current?.abort();
     stopSpeech();
     try {
       const state = await api<ScoutbotAssistantSessionState>("/api/scoutbot/session/archive", {
@@ -525,10 +580,10 @@ export function ScoutbotPanel({
     }, 2400);
   }, [probeVoice]);
 
-  const handleScoutbotReply = useCallback((body: string) => {
-    const replyText = stripScoutbotUiFences(body);
-    setLastReply(replyText);
+  const applyScoutbotActions = useCallback((body: string) => {
     for (const action of extractScoutbotUiActions(body)) {
+      if (action.type === "reminder") continue;
+      emitTurn({ t: "action", at: Date.now(), label: actionTickLabel(action) });
       if (action.type === "ask-agent") {
         setAskStatus(`Sending to ${action.targetLabel}`);
         void api<ScoutbotAskAgentResult>("/api/scoutbot/actions/ask", {
@@ -549,12 +604,20 @@ export function ScoutbotPanel({
           setAskStatus(null);
           setError(err instanceof Error ? err.message : "Could not send to agent.");
         });
-      } else if (action.type !== "reminder") {
+      } else {
         applyScoutbotUiAction(action);
       }
     }
+  }, [applyScoutbotUiAction, emitTurn]);
+
+  const handleScoutbotReply = useCallback((body: string) => {
+    const replyText = stripScoutbotUiFences(body);
+    setLastReply(replyText);
+    emitTurn({ t: "bot-close", at: Date.now() });
+    applyScoutbotActions(body);
+    if (!voiceRepliesRef.current) emitTurn({ t: "close", at: Date.now() });
     speakScoutbotText(replyText);
-  }, [applyScoutbotUiAction, speakScoutbotText]);
+  }, [applyScoutbotActions, emitTurn, speakScoutbotText]);
 
   useEffect(() => {
     const handleRealtimeReply = () => {
@@ -573,25 +636,128 @@ export function ScoutbotPanel({
     };
   }, [loadScoutbotSession]);
 
-  const askScoutbot = useCallback(async (body: string) => {
+  // Voice-turn fast path: stream the reply as sentences and pipeline TTS so
+  // the first sentence speaks while the rest generates. Ledger spans mirror
+  // runSpeech — one prep-open at first prepare, one speak-open at first
+  // playback, speak-close + close when the queue drains after the final event.
+  const runStreamedVoiceReply = useCallback(async (trimmed: string, controller: AbortController) => {
+    stopSpeech();
+    const pipeline = startScoutbotSpeechPipeline({
+      speed: voiceSpeed,
+      modelId: speechVoice.modelId,
+      voiceId: speechVoice.voiceId,
+      instructions: speechVoice.instructions,
+      playback: speechVoice.playback,
+      toSpoken: toSpokenScoutText,
+    }, {
+      onPrepareStart: () => {
+        setSpeaking(true);
+        emitTurn({
+          t: "prep-open",
+          at: Date.now(),
+          label: speechVoice.playback === "host" ? "speech on this Mac" : "tts",
+        });
+      },
+      onPlaybackStart: (text) => {
+        emitTurn({ t: "speak-open", at: Date.now(), text: text.slice(0, 180) });
+      },
+    });
+    const speech = { promise: pipeline.promise, stop: pipeline.stop };
+    speechRef.current = speech;
+    void pipeline.promise
+      .catch((err) => {
+        if (!isScoutSpeechStopped(err)) {
+          const message = err instanceof Error ? err.message : String(err);
+          console.warn("[scoutbot] reply speech unavailable", { message });
+          setError(message);
+        }
+      })
+      .finally(() => {
+        if (speechRef.current === speech) {
+          speechRef.current = null;
+          setSpeaking(false);
+          emitTurn({ t: "speak-close", at: Date.now() });
+          emitTurn({ t: "close", at: Date.now() });
+        }
+      });
+
+    let receivedFinal = false;
+    let streamFailure: Error | null = null;
+    try {
+      await streamScoutbotChat({
+        body: trimmed,
+        route,
+        uiContext: { ...scoutbotUiContext("web"), usageMode: presentation === "direct-voice" ? "local" : "chat" },
+        signal: controller.signal,
+      }, {
+        onSentence: (text) => pipeline.push(text),
+        onFinal: (reply) => {
+          receivedFinal = true;
+          // Let the queued sentences drain; the pipeline settle emits closes.
+          pipeline.finish();
+          if (controller.signal.aborted) return;
+          setSessionState({
+            session: reply.session,
+            sessions: reply.sessions,
+            config: reply.config,
+          });
+          setAskStatus("Reply received");
+          setLastReply(stripScoutbotUiFences(reply.reply.body));
+          emitTurn({ t: "bot-close", at: Date.now() });
+          applyScoutbotActions(reply.reply.body);
+        },
+        onError: ({ message }) => {
+          // Mid-stream failure: queued sentences still drain, then the outer
+          // catch surfaces the error line and closes the turn.
+          streamFailure = new Error(message);
+          emitTurn({ t: "bot-close", at: Date.now() });
+          pipeline.finish();
+        },
+      });
+    } catch (err) {
+      pipeline.finish();
+      throw err;
+    }
+    if (streamFailure) throw streamFailure;
+    if (!receivedFinal && !controller.signal.aborted) {
+      pipeline.finish();
+      throw new Error("Scoutbot reply stream ended before the reply completed.");
+    }
+  }, [applyScoutbotActions, emitTurn, presentation, route, speechVoice, stopSpeech, voiceSpeed]);
+
+  const askScoutbot = useCallback(async (body: string, options?: { streamVoiceReply?: boolean }) => {
     const trimmed = body.trim();
     if (!trimmed || sending) return;
+    const controller = new AbortController();
+    askAbortRef.current = controller;
     setSending(true);
     setError(null);
     setLastAsk(trimmed);
     setLastReply(null);
     setAskStatus("Sending");
+    emitTurn({
+      t: "bot-open",
+      at: Date.now(),
+      label: sessionState?.config.model ?? sessionState?.session.model ?? "reply",
+    });
     setDraft((current) => current.trim() === trimmed ? "" : current);
     try {
       await ensureOpenAIKeyOnServer().catch(() => null);
+      if (controller.signal.aborted) return;
+      if (options?.streamVoiceReply) {
+        await runStreamedVoiceReply(trimmed, controller);
+        return;
+      }
       const result = await api<ScoutbotAssistantReply>("/api/scoutbot/chat", {
         method: "POST",
         body: JSON.stringify({
           body: trimmed,
           route,
-          uiContext: scoutbotUiContext("web"),
+          uiContext: { ...scoutbotUiContext("web"), usageMode: presentation === "direct-voice" ? "local" : "chat" },
         }),
+        signal: controller.signal,
       });
+      if (controller.signal.aborted) return;
       setSessionState({
         session: result.session,
         sessions: result.sessions,
@@ -601,11 +767,18 @@ export function ScoutbotPanel({
       handleScoutbotReply(result.reply.body);
     } catch (err) {
       setAskStatus(null);
-      setError(err instanceof Error ? err.message : "Could not send.");
+      if (!controller.signal.aborted && !isScoutSpeechStopped(err)) {
+        setError(err instanceof Error ? err.message : "Could not send.");
+      }
     } finally {
+      if (askAbortRef.current === controller) askAbortRef.current = null;
       setSending(false);
+      if (controller.signal.aborted) {
+        emitTurn({ t: "bot-close", at: Date.now() });
+        emitTurn({ t: "close", at: Date.now() });
+      }
     }
-  }, [handleScoutbotReply, route, sending]);
+  }, [emitTurn, handleScoutbotReply, presentation, route, runStreamedVoiceReply, sending, sessionState]);
 
   const startVoice = useCallback(async () => {
     if (recording) return;
@@ -614,6 +787,7 @@ export function ScoutbotPanel({
     setError(null);
     setPartial("");
     setVoiceState("starting");
+    primeScoutSpeechPlayback();
 
     if (voiceAvailable !== true) {
       const ok = await probeVoice(true);
@@ -648,17 +822,29 @@ export function ScoutbotPanel({
       }
       liveRef.current = live;
       setRecording(true);
+      emitTurn({ t: "you-open", at: Date.now() });
       const final = await live.result;
       await cleanupLive();
       if (!mountedRef.current) return;
       setRecording(false);
       setPartial("");
+      emitTurn({ t: "you-close", at: Date.now(), text: final.text });
+      emitTurn({ t: "host-close", at: Date.now() });
       if (liveCancelReasonRef.current) {
+        emitTurn({ t: "close", at: Date.now() });
         return;
       }
       setVoiceState("done");
       if (final.text) {
-        await askScoutbot(final.text);
+        // Direct voice turns with speakable browser playback stream the reply
+        // sentence-by-sentence; host playback (device voice) and typed chat
+        // keep the whole-reply path.
+        const streamVoiceReply = presentation === "direct-voice"
+          && voiceRepliesRef.current
+          && speechVoice.playback !== "host";
+        await askScoutbot(final.text, streamVoiceReply ? { streamVoiceReply: true } : undefined);
+      } else {
+        emitTurn({ t: "close", at: Date.now() });
       }
     } catch (err) {
       const cancelReason = liveCancelReasonRef.current;
@@ -671,6 +857,8 @@ export function ScoutbotPanel({
         return;
       }
       setVoiceState(wasCancellation ? null : "error");
+      emitTurn({ t: "host-close", at: Date.now() });
+      emitTurn({ t: "close", at: Date.now() });
       if (!wasCancellation) {
         setError(err instanceof Error ? err.message : "Scout voice recording failed.");
       }
@@ -678,12 +866,14 @@ export function ScoutbotPanel({
       if (mountedRef.current) await cleanupLive();
       liveCancelReasonRef.current = null;
     }
-  }, [askScoutbot, presentation, probeVoice, recording, voiceAvailable]);
+  }, [askScoutbot, emitTurn, presentation, probeVoice, recording, speechVoice, voiceAvailable]);
 
   const stopVoice = useCallback(async () => {
     const live = liveRef.current;
     if (!live) return;
     setVoiceState("processing");
+    emitTurn({ t: "you-close", at: Date.now(), text: partial });
+    emitTurn({ t: "host-open", at: Date.now(), label: "transcribe" });
     try {
       await withTimeout(
         live.stop(),
@@ -691,17 +881,33 @@ export function ScoutbotPanel({
         "Scout voice did not finish processing the recording.",
       );
     } catch (err) {
-      liveCancelReasonRef.current = "stop-failed";
+      const discarded = liveCancelReasonRef.current === "discard";
+      liveCancelReasonRef.current ??= "stop-failed";
       await releaseScoutVoiceLive(live, { allowCurrentSession: true });
       if (liveRef.current === live) {
         liveRef.current = null;
         setRecording(false);
         setPartial("");
-        setVoiceState("error");
+        setVoiceState(discarded ? null : "error");
       }
-      setError(err instanceof Error ? `Scout voice recording did not finish: ${err.message}` : "Scout voice recording did not finish.");
+      if (!discarded) {
+        setError(err instanceof Error ? `Scout voice recording did not finish: ${err.message}` : "Scout voice recording did not finish.");
+      }
     }
+  }, [emitTurn, partial]);
+
+  const discardVoice = useCallback(async () => {
+    const live = liveRef.current;
+    if (!live) return;
+    liveCancelReasonRef.current = "discard";
+    await releaseScoutVoiceLive(live, { allowCurrentSession: true });
   }, []);
+
+  const cancelTurn = useCallback(async () => {
+    askAbortRef.current?.abort();
+    stopSpeech();
+    await discardVoice();
+  }, [discardVoice, stopSpeech]);
 
   useEffect(() => {
     const openHandler = () => setCollapsed(false);
@@ -875,6 +1081,7 @@ export function ScoutbotPanel({
         voiceReplies={voiceReplies}
         settingsOpen={settingsOpen}
         assistantModel={sessionState?.session.model ?? sessionState?.config.model ?? null}
+        speechIdentity={speechIdentity}
         setupPanel={voiceAvailable === false ? (
           <ScoutVoiceSetupPanel
             issue={voiceIssue}
@@ -913,7 +1120,9 @@ export function ScoutbotPanel({
           />
         )}
         onPrimaryAction={() => {
-          if (speaking) {
+          if (sending || (recording && voiceState === "processing")) {
+            void cancelTurn();
+          } else if (speaking) {
             stopSpeech();
           } else if (recording) {
             void stopVoice();
@@ -930,10 +1139,18 @@ export function ScoutbotPanel({
           if (!next) stopSpeech();
         }}
         onToggleSettings={() => setSettingsOpen((open) => !open)}
+        onDiscardTake={() => void discardVoice()}
         onNewChat={() => {
-          if (!resettingSession) void resetScoutbotSession();
+          void cancelTurn().finally(() => {
+            if (!resettingSession) void resetScoutbotSession();
+          });
         }}
         onOpenLive={onOpenLive}
+        showModeSwitch={voiceModeSwitch}
+        showHeading={voiceHeading}
+        showTranscript={voiceTranscript}
+        title={voiceTitle}
+        onVoicePhaseChange={onVoicePhaseChange}
       />
     );
   }

@@ -1,9 +1,10 @@
-import type { ObserveEvent } from "../../lib/types.ts";
+import type { ObserveData, ObserveEvent, Route, SessionEntry } from "../../lib/types.ts";
 import type {
   ObserveEvidenceFidelity,
   ObserveEvidencePresentation,
   ObserveEvidenceSource,
 } from "../../lib/observe-fidelity.ts";
+import { SessionContextStrip } from "../../components/SessionContextStrip.tsx";
 
 function shortObserveSessionId(value: string | null | undefined): string {
   if (!value) return "no session";
@@ -12,6 +13,70 @@ function shortObserveSessionId(value: string | null | undefined): string {
 
 export const NATIVE_SESSION_ORIGIN_LABEL = "Native session";
 export const SCOUT_MANAGED_CHAT_ORIGIN_LABEL = "Scout-managed chat";
+
+export function sessionRefObserveOriginLabel(observe: {
+  kind: string;
+  source: string;
+}): string {
+  return observe.kind === "broker" || observe.source === "broker"
+    ? SCOUT_MANAGED_CHAT_ORIGIN_LABEL
+    : NATIVE_SESSION_ORIGIN_LABEL;
+}
+
+export function SessionRefObserveHeader({
+  session,
+  observe,
+  machineId,
+  navigate,
+}: {
+  session: SessionEntry | null;
+  observe: {
+    refId: string;
+    sessionId: string | null;
+    data?: ObserveData;
+  };
+  machineId?: string | null;
+  navigate: (route: Route) => void;
+}) {
+  const sessionMeta = observe.data?.metadata?.session;
+  const observeSessionIds = new Set(
+    [observe.refId, observe.sessionId]
+      .map((value) => value?.trim())
+      .filter((value): value is string => Boolean(value)),
+  );
+  const sessionMatchesObserve = Boolean(
+    session && (
+      (session.sessionId?.trim() && observeSessionIds.has(session.sessionId.trim()))
+      || (session.harnessSessionId?.trim()
+        && observeSessionIds.has(session.harnessSessionId.trim()))
+    ),
+  );
+  const factsSession = sessionMatchesObserve ? session : null;
+  const workspaceRoot = sessionMeta?.cwd?.trim()
+    || factsSession?.workspaceRoot?.trim()
+    || null;
+  const projectName = workspaceRoot
+    ? workspaceRoot.split(/[\\/]/).filter(Boolean).at(-1) ?? workspaceRoot
+    : null;
+  const hostName = sessionMeta?.hostName?.trim()
+    || factsSession?.executionNodeName?.trim()
+    || null;
+  const sessionIdentity = observe.sessionId?.trim() || observe.refId;
+  return (
+    <SessionContextStrip
+      title={factsSession?.title?.trim() || projectName || sessionIdentity}
+      harness={sessionMeta?.adapterType?.trim() || factsSession?.harness || null}
+      model={sessionMeta?.model?.trim() || factsSession?.model?.trim() || null}
+      hostName={hostName}
+      workspaceRoot={workspaceRoot}
+      sessionId={sessionIdentity}
+      machineId={machineId}
+      conversationId={session?.id?.trim() || null}
+      showSessionAction={false}
+      navigate={navigate}
+    />
+  );
+}
 
 /** Compact embed header backed by the same evidence contract as the observer. */
 export function SessionObserveEmbedStatus({

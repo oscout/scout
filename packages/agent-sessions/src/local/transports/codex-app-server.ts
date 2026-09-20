@@ -93,6 +93,10 @@ export type CodexAppServerSessionOptions = {
   threadId?: string;
   requireExistingThread?: boolean;
   clientInfo?: CodexAppServerClientInfo;
+  /** Called with each agent-message delta as the active turn streams. */
+  onDelta?: (delta: string) => void;
+  /** Optional owner lifetime; checked before launching or starting a turn. */
+  signal?: AbortSignal;
 };
 
 export type CodexAppServerInvocationOptions = CodexAppServerSessionOptions & {
@@ -985,6 +989,7 @@ export class CodexAppServerTransport {
   }
 
   private async ensureStarted(): Promise<void> {
+    this.options.signal?.throwIfAborted();
     if (this.isAlive() && this.threadId) {
       return;
     }
@@ -1015,6 +1020,7 @@ export class CodexAppServerTransport {
       throw failure;
     }
 
+    this.options.signal?.throwIfAborted();
     const codexExecutable = resolveCodexExecutable();
     const launchArgs = normalizeCodexAppServerLaunchArgs(this.options.launchArgs);
     const env = this.options.processEnv ?? mergeEnvironmentOverrides(process.env, this.options.env);
@@ -1403,6 +1409,7 @@ export class CodexAppServerTransport {
 }
 
 type ActiveTurn = {
+  onDelta?: (delta: string) => void;
   turnId: string;
   startedAt: number;
   messageOrder: string[];
@@ -1466,14 +1473,18 @@ export class CodexAppServerClient {
   }
 
   async invoke(prompt: string, timeoutMs?: number): Promise<CodexAppServerTurnResult> {
+    const onDelta = this.options.onDelta;
+    const signal = this.options.signal;
     return this.enqueue(async () => {
+      signal?.throwIfAborted();
       await this.transport.ensureOnline();
+      signal?.throwIfAborted();
       if (!this.transport.currentThreadId) {
         throw new Error(`Codex app-server session for ${this.options.agentName} has no active thread.`);
       }
 
       const outputPromise = new Promise<string>(async (resolve, reject) => {
-        const turn = this.createActiveTurn(resolve, reject);
+        const turn = this.createActiveTurn(resolve, reject, onDelta);
 
         try {
           const response = await this.transport.startTurn(prompt);
@@ -1498,8 +1509,12 @@ export class CodexAppServerClient {
    * interrupt, and snapshot calls observe the same turn.
    */
   async start(prompt: string): Promise<CodexAppServerTurnStartResult> {
+    const onDelta = this.options.onDelta;
+    const signal = this.options.signal;
     return this.enqueue(async () => {
+      signal?.throwIfAborted();
       await this.transport.ensureOnline();
+      signal?.throwIfAborted();
       if (!this.transport.currentThreadId) {
         throw new Error(`Codex app-server session for ${this.options.agentName} has no active thread.`);
       }
@@ -1509,7 +1524,7 @@ export class CodexAppServerClient {
 
       let turn!: ActiveTurn;
       const completion = new Promise<string>((resolve, reject) => {
-        turn = this.createActiveTurn(resolve, reject);
+        turn = this.createActiveTurn(resolve, reject, onDelta);
       });
       // This path intentionally does not await the final reply. Keep the
       // completion promise observed while notifications finish the turn.
@@ -1622,12 +1637,14 @@ export class CodexAppServerClient {
   private createActiveTurn(
     resolve: (output: string) => void,
     reject: (error: Error) => void,
+    onDelta?: (delta: string) => void,
   ): ActiveTurn {
     if (this.activeTurn) {
       throw new Error(`Codex app-server session for ${this.options.agentName} already has an active turn.`);
     }
 
     const turn: ActiveTurn = {
+      onDelta,
       turnId: "",
       startedAt: Date.now(),
       messageOrder: [],
@@ -1717,6 +1734,7 @@ export class CodexAppServerClient {
         this.activeTurn.messageByItemId.set(itemId, "");
       }
       this.activeTurn.messageByItemId.set(itemId, (this.activeTurn.messageByItemId.get(itemId) ?? "") + delta);
+      if (delta) this.activeTurn.onDelta?.(delta);
       return;
     }
 

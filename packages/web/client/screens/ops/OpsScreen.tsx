@@ -11,6 +11,7 @@ import { TailView } from "../shared/TailView.tsx";
 import type { OpsMode, Route } from "../../lib/types.ts";
 import { useContentOwnsSecondaryNav } from "../../scout/sidebar/useContentSecondaryNav.ts";
 import { OpsSubnav } from "./OpsSubnav.tsx";
+import { FleetRollCallHud } from "./FleetRollCallHud.tsx";
 
 export function OpsScreen({
   navigate,
@@ -34,6 +35,7 @@ export function OpsScreen({
         </div>
       ) : null}
       <div className="s-ops-body">
+        {(mode === "lanes" || mode === "world") && <FleetRollCallHud />}
         {mode === "mission" && <MissionControlView navigate={navigate} agents={agents} />}
         {mode === "agents" && <OpsAgentsView navigate={navigate} agents={agents} />}
         {mode === "advisor" && (

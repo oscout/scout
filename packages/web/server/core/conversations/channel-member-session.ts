@@ -338,6 +338,13 @@ export function channelMemberMayAccess(input: {
 
   if (!grant) return false;
 
+  // Blobs are how a message carries a file. A member who can post must be
+  // able to upload and then read the bytes back on the same origin; the id
+  // is unguessable and the grant is already a live membership.
+  if (path === "/api/blobs" && method === "POST") return true;
+  if (/^\/api\/blobs\/[^/]+$/.test(path) && method === "GET") return true;
+  if (path === "/api/link-preview" && method === "GET") return true;
+
   // Their own identity, and the channel list that identity can see.
   if (path === "/api/member/me" && method === "GET") return true;
   if (path === "/api/chat/bootstrap" && method === "GET") return true;
@@ -359,6 +366,9 @@ export function channelMemberMayAccess(input: {
     if (method === "POST") {
       // Posting is the whole of what a lightweight participant may write.
       if (rest === "messages") return true;
+      if (rest === "blobs") return true;
+      // Same access as posting: a reaction is an acknowledgment in the room.
+      if (rest === "reactions" || rest === "reactions/remove") return true;
       // Everything below widens the room rather than speaking in it, and a
       // lightweight participant was not granted that. Minting invitations is
       // the sharp one: a joiner able to issue more would defeat the
@@ -369,6 +379,7 @@ export function channelMemberMayAccess(input: {
       // Addressing one agent, and minting an invitation so a teammate can
       // bring their own agent into the room they are already in.
       if (rest === "asks" || rest === "invites") return true;
+      if (/^asks\/[^/]+\/cancel$/.test(rest)) return true;
       // Revoking, but only an invitation they created -- being able to let
       // someone in without being able to take it back is not a permission, it
       // is a trap. Whose invitation it is cannot be decided from the path, so
@@ -430,13 +441,22 @@ export function channelMemberBearerToken(
  * operator cookie is: a member credential is a capability, and no script or
  * cross-site form should be able to read or replay it.
  */
-export function channelMemberCookie(token: string, secure: boolean): string {
+export function channelMemberCookie(
+  token: string,
+  secure: boolean,
+  host?: string | null,
+): string {
+  const hostname = (host ?? "").split(":")[0]?.toLowerCase() ?? "";
+  const domain = hostname === "scout.local" || hostname.endsWith(".scout.local")
+    ? "scout.local"
+    : null;
   return [
     `${CHANNEL_MEMBER_COOKIE}=${encodeURIComponent(token)}`,
     "Path=/",
     "HttpOnly",
     "SameSite=Strict",
     `Max-Age=${Math.floor(CHANNEL_MEMBER_SESSION_TTL_MS / 1000)}`,
+    ...(domain ? [`Domain=${domain}`] : []),
     ...(secure ? ["Secure"] : []),
   ].join("; ");
 }

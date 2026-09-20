@@ -517,7 +517,7 @@ export function AgentProfileSessionsCenter({
       <header className="s-sess-head">
         <div className="s-sess-id">
           <span className="s-sess-avatar">
-            <AgentAvatar agent={agent} size={46} tile presence={false} />
+            <AgentAvatar agent={agent} placement="hero" size={46} />
           </span>
           <div className="s-sess-id-copy">
             <div className="s-sess-name-row">
@@ -865,11 +865,9 @@ function SessionProfileCenter({
   const cwdShort = agent.cwd ? (shortCwd(agent.cwd) ?? agent.cwd) : null;
   const hostShort = agent.homeNodeName ? agent.homeNodeName.replace(/\.local$/i, "") : null;
   const handle = agent.handle?.trim().replace(/^@+/, "") || null;
-  const profileTitle = handle ? `@${handle}` : name;
-  const profileSubtitle =
-    handle && name.toLowerCase() !== handle.toLowerCase()
-      ? name
-      : [agent.project ? `/${agent.project}` : null, agent.branch, modelShort].filter(Boolean).join(" · ");
+  const profileTitle = name;
+  const profileSubtitle = [agent.project ? `/${agent.project}` : null, agent.branch, modelShort]
+    .filter(Boolean).join(" · ");
 
   const agentRoute = (patch: Partial<Extract<Route, { view: "agents-v2" }>>): Route =>
     route.view === "agents-v2"
@@ -919,7 +917,7 @@ function SessionProfileCenter({
   return (
     <div className="ap-profile">
       <header className="ap-profileHead">
-        <AgentAvatar agent={agent} size={48} tile presence={false} />
+        <AgentAvatar agent={agent} placement="hero" size={48} />
         <div className="ap-profileIdent">
           <div className="ap-profileTop">
             {agent.harness ? (
@@ -934,9 +932,9 @@ function SessionProfileCenter({
           <span className="ap-profileSub" title={profileSubtitle}>
             {profileSubtitle || cwdShort || "—"}
           </span>
-          {handle && name.toLowerCase() !== handle.toLowerCase() ? (
+          {handle ? (
             <span className="ap-profileId" title={agent.id}>
-              {name}
+              @{handle}
             </span>
           ) : null}
         </div>

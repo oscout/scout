@@ -10,6 +10,7 @@ import { performance } from "node:perf_hooks";
 import { createHash, randomUUID } from "node:crypto";
 
 import { Hono, type Context } from "hono";
+import type { ContentfulStatusCode } from "hono/utils/http-status";
 import {
   CHANNEL_NATURAL_KEY_METADATA,
   CHANNEL_SPACE_SLUG_METADATA,
@@ -26,11 +27,16 @@ import {
   isScoutRuntimeHarnessEnabled,
   parseScoutRuntimeCatalog,
   isOpaqueChannelId,
+  legacyTerminalSurfaceKey,
   machineLabel,
   machinePresence,
   normalizeMachineHostName,
+  parseTerminalSurfaceId,
   reconcileTerminalWorkspace,
   resolveAgentIdentity,
+  resolveSessionTerminalSurface,
+  terminalSurfaceIdForSurface,
+  terminalSurfaceMatchesId,
   AGENT_HARNESSES,
   SCOUT_LAUNCHABLE_HARNESSES,
   SCOUT_RUNTIME_CATALOG,
@@ -42,6 +48,8 @@ import {
   scoutRuntimeEffortCatalog,
   scoutRuntimeModelCatalog,
   namedChannelNaturalKey,
+  isAllowedReactionEmoji,
+  projectMessageReactionChips,
   stableChannelId,
   scoutRuntimeReasoningEfforts,
   type AgentEndpoint,
@@ -51,6 +59,7 @@ import {
   type ConversationDefinition,
   type ConversationKind,
   type MachineRecord,
+  type MessageRecord,
   type ScoutRuntimeCapabilityCatalog,
   type ScoutOwnedRuntimeCatalog,
   type TerminalWorkspaceRecord,
@@ -116,6 +125,7 @@ import {
   type EndpointPreference,
 } from "./core/agent-endpoints.ts";
 import { resolveTerminalSurface } from "./core/terminal-surfaces.ts";
+import { openLocalTerminalAttach } from "./local-terminal-open.ts";
 import { cachedRepoKeysByRoot } from "./core/repo-identity.ts";
 import {
   queryDiscoveredTerminalSessions,
@@ -138,10 +148,16 @@ import {
   terminalHostSupportsControl,
 } from "./terminal-hosts/index.ts";
 import {
+  blobServeHeaders,
   getImageBlob,
   ImageBlobError,
   putImageBlob,
 } from "./image-blob-store.ts";
+import {
+  localPathFromBlobKey,
+  resolveChatAttachments,
+} from "./chat-attachments.ts";
+import { fetchLinkPreview } from "./link-preview.ts";
 import {
   queryAgentById,
   queryAgents,
@@ -216,6 +232,8 @@ import {
   type ScoutBrokerHomeAgentRecord,
   type ScoutBrokerHomePayload,
   sendScoutConversationMessage,
+  listScoutMessageReactions,
+  sendScoutMessageReaction,
   sendScoutConversationSteer,
   sendScoutDirectMessage,
   sendScoutMessage,
@@ -373,6 +391,7 @@ import type { ScoutbotCodexAssistantInvoker } from "./scoutbot-assistant.ts";
 import {
   SCOUTBOT_DEFAULT_THREAD_ID,
 } from "./scoutbot/role.ts";
+import { attachBudgetAdvice } from "./service-budget-advice.ts";
 import { importProviderDashboardUsage, loadServiceBudgets } from "./service-budgets.ts";
 import {
   buildWorkMaterialsInventory,
@@ -596,9 +615,13 @@ export type CreateOpenScoutWebServerOptions = {
   destroyTerminalRelaySurface?: (backend: "tmux" | "zellij" | "herdr", sessionName: string) => Promise<number>;
   terminalRelayHealthcheck?: () => Promise<boolean>;
   revealPath?: (targetPath: string) => Promise<void> | void;
+  /** Injectable for tests; spawns a surface's attach argv in a real terminal app. */
+  openLocalTerminal?: (argv: readonly string[], options: { cwd?: string | null }) => Promise<{ app: string }> | { app: string };
   captureTmuxPane?: (request: TmuxPanePeekRequest) => Promise<TmuxPanePeekCapture | null> | TmuxPanePeekCapture | null;
   scoutbotAssistant?: {
     invokeCodex?: ScoutbotCodexAssistantInvoker;
+    /** Injectable for tests; defaults to the cached codex-executable probe. */
+    agentAvailable?: () => boolean;
   };
   scoutbot?: {
     enabled?: boolean;
@@ -1022,12 +1045,14 @@ function serveRawFile(
     const message = error instanceof Error ? error.message : "could not read file";
     return c.json({ error: message }, 500);
   }
-  return new Response(Bun.file(resolved.realPath), {
-    headers: {
-      "content-type": mediaTypeFor(resolved.realPath),
-      "cache-control": "private, max-age=60",
-    },
+  const mediaType = mediaTypeFor(resolved.realPath);
+  const headers = blobServeHeaders({
+    mediaType,
+    size: Bun.file(resolved.realPath).size,
+    fileName: basename(resolved.realPath),
   });
+  headers["cache-control"] = "private, max-age=15";
+  return new Response(Bun.file(resolved.realPath), { headers });
 }
 
 type BrokerJsonCache<T> = {
@@ -3709,6 +3734,17 @@ async function defaultRevealLocalPath(targetPath: string): Promise<void> {
   await execSystemFile("xdg-open", [directory], { timeoutMs: 1_500 });
 }
 
+/**
+ * The full attachable inventory for hop resolution and local open: durable
+ * registrations reconciled with whatever the hosts report live. Discovery
+ * failure costs the discovered rows only — registered surfaces still resolve.
+ */
+async function terminalSessionInventoryForHop() {
+  const registered = queryTerminalSessions({ limit: 500 });
+  const discovered = await queryDiscoveredTerminalSessions({ limit: 1000 }).catch(() => []);
+  return reconcileTerminalSessionInventory(registered, discovered, 1500);
+}
+
 function escapeHtml(value: string): string {
   return value
     .replaceAll("&", "&amp;")
@@ -5888,6 +5924,7 @@ export async function createOpenScoutWebServer(
     ),
     loadBuildInfo: loadOpenScoutBuildInfo,
     invokeCodex: options.scoutbotAssistant?.invokeCodex,
+    agentAvailable: options.scoutbotAssistant?.agentAvailable,
     scoutbot: options.scoutbot,
   });
   const resolveSessionRequestConversationId = async (conversationId: string): Promise<string | null> => {
@@ -6936,6 +6973,79 @@ export async function createOpenScoutWebServer(
       sessions: visibleSessions,
     });
   });
+
+  // Session → live terminal surface resolution, shared by every client that
+  // renders an agent/session and wants to offer "hop into terminal": the web
+  // hop menu, the macOS HUD, future thin clients. The same resolver also runs
+  // client-side over this inventory; the endpoint exists for clients that
+  // should not ship the matching rules.
+  app.get("/api/terminal-sessions/resolve", async (c) => {
+    const refs = c.req.queries("ref") ?? [];
+    const agentId = c.req.query("agentId")?.trim() || undefined;
+    const sessions = await terminalSessionInventoryForHop();
+    const hit = resolveSessionTerminalSurface(sessions, { agentId, sessionRefs: refs });
+    if (!hit) return c.json({ ok: true, target: null });
+    const surfaceId = terminalSurfaceIdForSurface(hit.surface);
+    const address = parseTerminalSurfaceId(surfaceId);
+    // The native app routes only on the legacy backend:name key — never send
+    // it the opaque form, or the link silently opens nothing.
+    const legacySurface = address ? legacyTerminalSurfaceKey(address) : null;
+    return c.json({
+      ok: true,
+      target: {
+        sessionId: hit.session.id,
+        via: hit.via,
+        surfaceId,
+        legacySurface,
+        deepLink: legacySurface
+          ? `scout://terminal?${new URLSearchParams({
+              session: hit.session.id,
+              surface: legacySurface,
+              mode: "takeover",
+            }).toString()}`
+          : null,
+        backend: hit.surface.backend,
+        sessionName: hit.surface.sessionName,
+        paneId: hit.surface.paneId,
+        state: hit.surface.state ?? null,
+        attachCommand: hit.surface.attachCommand,
+        cwd: hit.session.cwd || null,
+      },
+    });
+  });
+
+  // The real-terminal hop behind one route so no client needs per-app launch
+  // code. The client names a surface, never argv: the command comes off the
+  // resolved surface, so this route cannot be aimed at anything a host
+  // adapter did not already declare attachable.
+  app.post("/api/terminal-sessions/open-local", async (c) => {
+    const body = await c.req.json<{ surface?: unknown }>().catch(() => null);
+    const handle = typeof body?.surface === "string" ? body.surface.trim() : "";
+    if (!handle) return c.json({ error: "surface is required" }, 400);
+    const sessions = await terminalSessionInventoryForHop();
+    let matched: { session: (typeof sessions)[number]; surface: (typeof sessions)[number]["surfaces"][number] } | null = null;
+    for (const session of sessions) {
+      const surface = session.surfaces.find((candidate) => terminalSurfaceMatchesId(candidate, handle));
+      if (surface) {
+        matched = { session, surface };
+        break;
+      }
+    }
+    if (!matched) return c.json({ error: "terminal surface not found" }, 404);
+    if (matched.surface.state === "exited") return c.json({ error: "terminal surface has exited" }, 409);
+    if (matched.surface.attachCommand.length === 0) {
+      return c.json({ error: "terminal surface has no attach command" }, 409);
+    }
+    try {
+      const open = options.openLocalTerminal ?? openLocalTerminalAttach;
+      const result = await open(matched.surface.attachCommand, { cwd: matched.session.cwd });
+      return c.json({ ok: true, app: result.app });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "failed to open a terminal";
+      return c.json({ ok: false, error: message }, 502);
+    }
+  });
+
   app.get("/api/terminal-sessions/peek", async (c) => {
     const backend = parseTerminalSessionBackend(c.req.query("backend"));
     const sessionName = firstMetadataString(c.req.query("sessionName"));
@@ -7677,7 +7787,11 @@ export async function createOpenScoutWebServer(
   app.get("/api/heartrate", (c) => c.json(queryHeartrate()));
   app.get("/api/service-budgets", async (c) => {
     const refresh = c.req.query("refresh");
-    return c.json(await loadServiceBudgets(refresh === "1" || refresh === "true"));
+    const budgets = await loadServiceBudgets(refresh === "1" || refresh === "true");
+    const advice = await attachBudgetAdvice(budgets, {
+      completeCheap: (input) => scoutbot.assistant.completeCheap(input),
+    });
+    return c.json({ ...budgets, advice });
   });
   app.post("/api/service-budgets/dashboard-import", async (c) => {
     const body = await c.req.json<{ provider?: unknown; text?: unknown }>().catch(() => null);
@@ -8226,6 +8340,51 @@ export async function createOpenScoutWebServer(
       }),
     );
   });
+  // ── Host labels on conversation rows (design/studio Scout Chat · Hosts) ──
+  // A conversation already carries `authorityNodeId`; the *machine* label for
+  // that node lives in the broker's machine inventory. Native Chat groups its
+  // sidebar by host, so the row needs the operator-facing name, not the node
+  // name. The inventory is a broker round trip, so it is cached and refreshed
+  // out of band: a list read never waits on it, and a cold first read simply
+  // ships rows without `hostLabel` (both the web and native decoders treat it
+  // as optional) until the next poll.
+  const MACHINE_LABEL_TTL_MS = 60_000;
+  let machineLabelsByNode = new Map<string, string>();
+  let machineLabelsReadAt = 0;
+  let machineLabelRefresh: Promise<void> | null = null;
+  const refreshMachineLabels = () => {
+    if (machineLabelRefresh) return machineLabelRefresh;
+    machineLabelRefresh = (async () => {
+      try {
+        const { machines } = await loadMachines();
+        const next = new Map<string, string>();
+        for (const machine of machines) {
+          if (machine.scoutNodeId) next.set(machine.scoutNodeId, machineLabel(machine));
+        }
+        machineLabelsByNode = next;
+        machineLabelsReadAt = Date.now();
+      } catch {
+        // No inventory is a normal state (broker restarting, mesh off). Keep
+        // the last map and retry on the next read rather than clearing labels.
+        machineLabelsReadAt = Date.now();
+      } finally {
+        machineLabelRefresh = null;
+      }
+    })();
+    return machineLabelRefresh;
+  };
+  const withHostLabels = <T>(items: T[]): T[] => {
+    if (Date.now() - machineLabelsReadAt > MACHINE_LABEL_TTL_MS) void refreshMachineLabels();
+    if (machineLabelsByNode.size === 0) return items;
+    return items.map((item) => {
+      // Rows reach this list from two projections; only one of them carries an
+      // authority node, and a row without one keeps exactly the shape it had.
+      const nodeId = (item as { authorityNodeId?: string | null }).authorityNodeId;
+      const label = nodeId ? machineLabelsByNode.get(nodeId) : undefined;
+      return label ? ({ ...item, hostLabel: label } as T) : item;
+    });
+  };
+
   const readCommsList = async (
     c: Context,
     options: { preferMaterialized?: boolean } = {},
@@ -8336,7 +8495,7 @@ export async function createOpenScoutWebServer(
     if (!listReady) {
       return unavailableConversationList(c);
     }
-    return c.json(items.map((item) => ({
+    return c.json(withHostLabels<(typeof items)[number]>(items).map((item) => ({
       ...item,
       chatId: item.id,
       cId: item.id,
@@ -8346,7 +8505,7 @@ export async function createOpenScoutWebServer(
   app.get("/api/conversations", async (c) => {
     const { items, listReady } = await readCommsList(c);
     return listReady
-      ? c.json(items)
+      ? c.json(withHostLabels<(typeof items)[number]>(items))
       : unavailableConversationList(c);
   });
 
@@ -8924,11 +9083,29 @@ export async function createOpenScoutWebServer(
     const channelId = c.req.param("id");
     const resolved = await resolveChatChannel(c.req.raw, channelId);
     if (!resolved.ok) return c.json({ error: resolved.error }, resolved.status);
-    const { broker, conversation } = resolved;
+    const { conversation } = resolved;
+    // Membership is durable. Do not read it from the rolling 24h snapshot;
+    // that window is for messages. A later thin snapshot was wiping the roster.
+    const broker = await loadScoutBrokerContext(undefined, { since: null }) ?? resolved.broker;
     const nowMs = Date.now();
-    const invites = channelInvitesForConversation(conversation);
+    const durable = (broker.snapshot.conversations?.[channelId] as ConversationDefinition | undefined)
+      ?? conversation;
+    const invites = channelInvitesForConversation(durable);
     const endpoints = Object.values(broker.snapshot.endpoints ?? {}) as AgentEndpoint[];
-    const members = conversation.participantIds.map((actorId) => {
+    const memberIds = new Set(durable.participantIds);
+    // Snapshot windows can omit a member who has not spoken recently.
+    // Anyone who posted in this channel (or a thread of it) still belongs.
+    const conversations = broker.snapshot.conversations ?? {};
+    for (const message of Object.values(broker.snapshot.messages ?? {}) as MessageRecord[]) {
+      const home = message.conversationId;
+      if (home === channelId) {
+        memberIds.add(message.actorId);
+        continue;
+      }
+      const parent = conversations[home]?.parentConversationId;
+      if (parent === channelId) memberIds.add(message.actorId);
+    }
+    const members = [...memberIds].map((actorId) => {
       const actor = broker.snapshot.actors?.[actorId];
       const agent = broker.snapshot.agents?.[actorId];
       // Freshest endpoint for this actor. Reception itself decides whether the
@@ -9123,7 +9300,11 @@ export async function createOpenScoutWebServer(
       });
     c.header(
       "set-cookie",
-      channelMemberCookie(issued.token, isForwardedHttpsScoutRequest(c.req.raw)),
+      channelMemberCookie(
+        issued.token,
+        isForwardedHttpsScoutRequest(c.req.raw),
+        c.req.header("host"),
+      ),
     );
     await addActorToChatSpaceRoster(redeemSpace.slug, actorId);
 
@@ -9201,7 +9382,11 @@ export async function createOpenScoutWebServer(
       });
     c.header(
       "set-cookie",
-      channelMemberCookie(issued.token, isForwardedHttpsScoutRequest(c.req.raw)),
+      channelMemberCookie(
+        issued.token,
+        isForwardedHttpsScoutRequest(c.req.raw),
+        c.req.header("host"),
+      ),
     );
     await addActorToChatSpaceRoster(joinSpace.slug, outcome.actorId);
 
@@ -9300,7 +9485,11 @@ export async function createOpenScoutWebServer(
     // client cannot read is a credential it cannot send.
     c.header(
       "set-cookie",
-      channelMemberCookie(issued.token, isForwardedHttpsScoutRequest(c.req.raw)),
+      channelMemberCookie(
+        issued.token,
+        isForwardedHttpsScoutRequest(c.req.raw),
+        c.req.header("host"),
+      ),
     );
     await addActorToChatSpaceRoster(participateSpace.slug, outcome.actorId);
 
@@ -9474,7 +9663,8 @@ export async function createOpenScoutWebServer(
       metadata?: Record<string, unknown> | null;
       replyToMessageId?: string | null;
       threadConversationId?: string | null;
-      attachments?: unknown[];
+      attachments?: MessageRecord["attachments"];
+      reactions?: ReturnType<typeof projectMessageReactionChips>;
     },
     channelId: string,
     replyToMessageId: string | null,
@@ -9494,6 +9684,7 @@ export async function createOpenScoutWebServer(
     replyToMessageId: replyToMessageId ?? message.replyToMessageId ?? null,
     threadConversationId: message.threadConversationId ?? null,
     attachments: message.attachments ?? [],
+    ...(message.reactions ? { reactions: message.reactions } : {}),
   });
 
   /**
@@ -9764,6 +9955,7 @@ export async function createOpenScoutWebServer(
     broker: ScoutBrokerContext,
     channelId: string,
     limit: number,
+    viewerActorId?: string,
   ) => {
     const threads = (Object.values(broker.snapshot.conversations ?? {}) as ConversationDefinition[])
       .filter((candidate) => candidate.kind === "thread"
@@ -9801,7 +9993,26 @@ export async function createOpenScoutWebServer(
       }
     }
 
+    const reactionRows = await listScoutMessageReactions(channelId);
+    const reactionsByMessage = new Map<string, NonNullable<typeof reactionRows>>();
+    if (reactionRows && viewerActorId) {
+      for (const row of reactionRows) {
+        const list = reactionsByMessage.get(row.messageId) ?? [];
+        list.push(row);
+        reactionsByMessage.set(row.messageId, list);
+      }
+    }
+
+    const attachReactions = <T extends { id: string }>(row: T): T => {
+      if (!viewerActorId || reactionRows === null) return row;
+      return {
+        ...row,
+        reactions: projectMessageReactionChips(reactionsByMessage.get(row.id) ?? [], viewerActorId),
+      };
+    };
+
     const messages = [...rootMessages, ...threadReads.flat()]
+      .map((row) => attachReactions(row))
       .sort((left, right) => compareMessagesAsc(left, right));
 
     // Tracked requests come from flight records only. A request the broker has
@@ -9846,6 +10057,7 @@ export async function createOpenScoutWebServer(
       resolved.broker,
       channelId,
       limit,
+      resolved.viewer.actorId,
     );
     return c.json({ channelId, messages, requests });
   });
@@ -9880,6 +10092,7 @@ export async function createOpenScoutWebServer(
       resolved.broker,
       channelId,
       CHANNEL_POLL_READ_WIDTH,
+      resolved.viewer.actorId,
     );
     // Only the trusted suffix is offered to the pager. Rows older than the
     // anchor are real messages, but the window does not hold everything between
@@ -9941,17 +10154,69 @@ export async function createOpenScoutWebServer(
   /**
    * A plain channel post. It invokes nobody, including the agents in the room.
    */
+  app.get("/api/channels/:id/attachments/:attachmentId", async (c) => {
+    const channelId = c.req.param("id");
+    const attachmentId = c.req.param("attachmentId");
+    const resolved = await resolveChatChannel(c.req.raw, channelId);
+    if (!resolved.ok) return c.json({ error: resolved.error }, resolved.status);
+    const { messages } = await loadChatChannelProjection(
+      resolved.broker,
+      channelId,
+      CHANNEL_POLL_READ_WIDTH,
+      resolved.viewer.actorId,
+    );
+    const attachment = messages
+      .flatMap((message) => message.attachments ?? [])
+      .find((item) => item.id === attachmentId);
+    if (!attachment) return c.json({ error: "attachment not found" }, 404);
+    const localPath = localPathFromBlobKey(attachment.blobKey);
+    if (localPath) {
+      return serveRawFile(c, currentDirectory, localPath);
+    }
+    const blobId = attachment.url?.match(/\/api\/blobs\/([^/?#]+)/)?.[1]
+      ?? attachment.blobKey?.trim();
+    if (!blobId) return c.json({ error: "attachment has no bytes" }, 404);
+    const entry = getImageBlob(blobId);
+    if (!entry) return c.json({ error: "attachment expired" }, 404);
+    return new Response(Bun.file(entry.path), { headers: blobServeHeaders(entry) });
+  });
+
   app.post("/api/channels/:id/messages", async (c) => {
     const channelId = c.req.param("id");
     const body = (await c.req.json().catch(() => null)) as
-      | { requestId?: string; body?: string; replyToMessageId?: string }
+      | {
+        requestId?: string;
+        body?: string;
+        replyToMessageId?: string;
+        attachments?: Array<{
+          id?: string;
+          mediaType?: string;
+          fileName?: string;
+          url?: string;
+          blobKey?: string;
+          localPath?: string;
+        }>;
+      }
       | null;
-    const text = body?.body?.trim();
-    if (!text) return c.json({ error: "body is required" }, 400);
+    const text = body?.body?.trim() ?? "";
+    const incomingAttachments = Array.isArray(body?.attachments) ? body.attachments : [];
+    if (!text && incomingAttachments.length === 0) {
+      return c.json({ error: "body or attachments is required" }, 400);
+    }
 
     const resolved = await resolveChatChannel(c.req.raw, channelId);
     if (!resolved.ok) return c.json({ error: resolved.error }, resolved.status);
     const { viewer } = resolved;
+    const resolvedAttachments = resolveChatAttachments(incomingAttachments, {
+      channelId,
+      currentDirectory,
+      allowLocalPaths: viewer.isOperator,
+      requestOrigin: new URL(c.req.url).origin,
+    });
+    if (!resolvedAttachments.ok) {
+      return c.json({ error: resolvedAttachments.error }, resolvedAttachments.status);
+    }
+    const attachments = resolvedAttachments.attachments;
 
     const createdAtMs = Date.now();
     const replyToMessageId = body?.replyToMessageId?.trim() || null;
@@ -9959,6 +10224,7 @@ export async function createOpenScoutWebServer(
       conversationId: channelId,
       senderId: viewer.actorId,
       body: text,
+      ...(attachments.length > 0 ? { attachments } : {}),
       // `requestId` makes a retry after an uncertain failure land on the same
       // record rather than posting the message twice.
       clientMessageId: body?.requestId?.trim() || null,
@@ -9986,11 +10252,98 @@ export async function createOpenScoutWebServer(
           actorName: viewer.displayName,
           body: text,
           createdAt: createdAtMs,
+          reactions: [],
+          ...(attachments.length > 0 ? { attachments } : {}),
         },
         channelId,
         replyToMessageId,
       ),
     });
+  });
+
+  const reactionMethodNotAllowed = (c: Context) =>
+    c.json({ error: "method not allowed" }, 405);
+
+  app.get("/api/channels/:id/reactions", reactionMethodNotAllowed);
+  app.get("/api/channels/:id/reactions/remove", reactionMethodNotAllowed);
+
+  const readReactionBody = async (c: Context) => {
+    const body = (await c.req.json().catch(() => null)) as
+      | { messageId?: string; emoji?: string; requestId?: string; actorId?: string }
+      | null;
+    if (body && "actorId" in body && body.actorId !== undefined) {
+      return { error: "identity_not_accepted" as const, status: 400 as const };
+    }
+    const messageId = body?.messageId?.trim();
+    const emoji = body?.emoji?.trim();
+    if (!messageId) return { error: "messageId is required" as const, status: 400 as const };
+    if (!emoji || !isAllowedReactionEmoji(emoji)) {
+      return { error: "invalid_emoji" as const, status: 400 as const };
+    }
+    return { messageId, emoji, requestId: body?.requestId?.trim() || null };
+  };
+
+  app.post("/api/channels/:id/reactions", async (c) => {
+    const channelId = c.req.param("id");
+    const parsed = await readReactionBody(c);
+    if ("error" in parsed) {
+      return c.json(
+        { error: parsed.error, ...(parsed.error === "invalid_emoji" || parsed.error === "identity_not_accepted" ? { reason: parsed.error } : {}) },
+        parsed.status,
+      );
+    }
+    const resolved = await resolveChatChannel(c.req.raw, channelId);
+    if (!resolved.ok) return c.json({ error: resolved.error }, resolved.status);
+    try {
+      const posted = await sendScoutMessageReaction({
+        channelId,
+        messageId: parsed.messageId,
+        actorId: resolved.viewer.actorId,
+        emoji: parsed.emoji,
+      });
+      if (!posted.usedBroker) return c.json({ error: "broker unreachable" }, 502);
+      return c.json({ ok: true, replayed: posted.replayed });
+    } catch (error) {
+      const reason = (error as { reason?: string }).reason;
+      const status = (error as { status?: number }).status;
+      if (reason === "wrong_channel" || reason === "message_not_found") {
+        return c.json({ error: "message is not in this channel", reason: "wrong_channel" }, 404);
+      }
+      if (typeof status === "number" && Number.isInteger(status) && status >= 400 && status <= 599) {
+        return c.json({ error: error instanceof Error ? error.message : String(error), reason }, status as ContentfulStatusCode);
+      }
+      throw error;
+    }
+  });
+
+  app.post("/api/channels/:id/reactions/remove", async (c) => {
+    const channelId = c.req.param("id");
+    const parsed = await readReactionBody(c);
+    if ("error" in parsed) {
+      return c.json(
+        { error: parsed.error, ...(parsed.error === "invalid_emoji" || parsed.error === "identity_not_accepted" ? { reason: parsed.error } : {}) },
+        parsed.status,
+      );
+    }
+    const resolved = await resolveChatChannel(c.req.raw, channelId);
+    if (!resolved.ok) return c.json({ error: resolved.error }, resolved.status);
+    try {
+      const posted = await sendScoutMessageReaction({
+        channelId,
+        messageId: parsed.messageId,
+        actorId: resolved.viewer.actorId,
+        emoji: parsed.emoji,
+        remove: true,
+      });
+      if (!posted.usedBroker) return c.json({ error: "broker unreachable" }, 502);
+      return c.json({ ok: true, replayed: posted.replayed });
+    } catch (error) {
+      const reason = (error as { reason?: string }).reason;
+      if (reason === "wrong_channel" || reason === "message_not_found") {
+        return c.json({ error: "message is not in this channel", reason: "wrong_channel" }, 404);
+      }
+      throw error;
+    }
   });
 
   /**
@@ -10134,6 +10487,49 @@ export async function createOpenScoutWebServer(
         // the note below never claims one.
         reception: ask.reception,
         note: channelAskDispatchNote(ask.reception, ask.label),
+      },
+    });
+  });
+
+  app.post("/api/channels/:id/asks/:flightId/cancel", async (c) => {
+    const channelId = c.req.param("id");
+    const flightId = c.req.param("flightId");
+    const resolved = await resolveChatChannel(c.req.raw, channelId);
+    if (!resolved.ok) return c.json({ error: resolved.error }, resolved.status);
+    const { broker } = resolved;
+    const flight = broker.snapshot.flights?.[flightId];
+    if (!flight) return c.json({ error: "not found" }, 404);
+    const web = brokerFlightToWebFlight(broker, flight);
+    const threadIds = new Set(
+      (Object.values(broker.snapshot.conversations ?? {}) as ConversationDefinition[])
+        .filter((item) => item.kind === "thread" && item.parentConversationId === channelId)
+        .map((item) => item.id),
+    );
+    const inChannel = web.conversationId === channelId
+      || (web.conversationId ? threadIds.has(web.conversationId) : false);
+    if (!inChannel) return c.json({ error: "not found" }, 404);
+    const state = String(flight.state ?? "").toLowerCase();
+    const terminal = state === "completed" || state === "cancelled" || state === "canceled" || state === "failed";
+    if (!terminal) {
+      await upsertScoutFlight({
+        ...flight,
+        state: "cancelled",
+        completedAt: Date.now(),
+        summary: flight.summary ?? "Cancelled from Chat.",
+        metadata: {
+          ...(flight.metadata ?? {}),
+          cancelledFrom: "scout-chat",
+        },
+      });
+    }
+    return c.json({
+      ok: true,
+      replayed: terminal,
+      request: {
+        messageId: web.messageId ?? null,
+        flightId,
+        state: terminal ? (state === "canceled" ? "cancelled" : state) : "cancelled",
+        targetActorId: flight.targetAgentId,
       },
     });
   });
@@ -10856,9 +11252,9 @@ export async function createOpenScoutWebServer(
     }
   });
 
-  // Ephemeral image attachments. Bytes are uploaded here, stored in a cache
-  // dir with a TTL, and handed back as an absolute URL that any consumer (the
-  // browser, the Mac app, or an agent) can fetch. Nothing lands in the DB.
+  // Chat attachments. Bytes live under Application Support (chat-blobs) so a
+  // scout-web restart still serves the still in the thread. The id is the
+  // record; nothing else lands in sqlite.
   app.post("/api/blobs", async (c) => {
     const body = (await c.req.json().catch(() => null)) as {
       data?: string;
@@ -10891,21 +11287,20 @@ export async function createOpenScoutWebServer(
     }
   });
 
+  app.get("/api/link-preview", async (c) => {
+    const preview = await fetchLinkPreview(c.req.query("url") ?? "");
+    if (!preview) return c.json({ error: "no preview" }, 404);
+    return c.json({ preview });
+  });
+
   app.get("/api/blobs/:id", (c) => {
     const entry = getImageBlob(c.req.param("id"));
     if (!entry) {
       return c.json({ error: "not found" }, 404);
     }
-    const headers: Record<string, string> = {
-      "content-type": entry.mediaType,
-      "cache-control": "private, max-age=3600",
-      "content-length": String(entry.size),
-    };
-    if (entry.fileName) {
-      headers["content-disposition"] =
-        `inline; filename="${entry.fileName.replace(/"/g, "")}"`;
-    }
-    return new Response(Bun.file(entry.path), { headers });
+    // Bun answers a Range request against a BunFile body with a 206 of its
+    // own, so a video served from here seeks without any help from us.
+    return new Response(Bun.file(entry.path), { headers: blobServeHeaders(entry) });
   });
 
   type ChatMessageDispatchInput = {
@@ -11350,6 +11745,7 @@ export async function createOpenScoutWebServer(
   });
 
   mountScoutVoiceRoutes(app, {
+    usage: scoutbot.usage,
     resolveOpenAIApiKey: scoutbot.resolveOpenAIApiKey,
     readRealtimeVoiceEnabled: async () => (
       await readOpenScoutSettings({ currentDirectory })
@@ -11653,6 +12049,7 @@ export async function createOpenScoutWebServer(
     lanPairBeacon?.stop();
     pendingPairRequests.dispose();
     await scoutbot.stopRunner();
+    scoutbot.closeUsage?.();
   };
 
   return { app, warmupCaches, stop, resolvePortalPeerUpstream };

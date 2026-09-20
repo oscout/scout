@@ -4,9 +4,9 @@ import type { InboxProject, InboxSession } from "./projects-inbox-model.ts";
 import { formatTerminalSurfaceId } from "@openscout/protocol";
 import type { TerminalSessionRecord } from "@openscout/protocol";
 import {
-  nativeTerminalDeepLink,
-  resolveProjectSessionTmuxTarget,
-} from "./project-session-terminal.ts";
+  resolveSessionTerminalTarget,
+  terminalHopDeepLink,
+} from "../../lib/session-terminal-hop.ts";
 
 // @ts-expect-error Bun tests load React's runtime entrypoint directly to avoid local TS path aliases.
 const React = await import("../../../node_modules/react/index.js");
@@ -255,32 +255,33 @@ describe("ProjectsInbox ThreadRow", () => {
       metadata: { registryState: "discovered" },
     }];
 
-    const target = resolveProjectSessionTmuxTarget(terminalSessions, {
+    const target = resolveSessionTerminalTarget(terminalSessions, {
       agentId: "session-ms0hf3f7-3ngln1.main.arts-mac-mini-local",
       sessionRefs: ["chn-0050e6389d0d48bab991d5cb9a3c4ecd"],
     });
 
-    expect(target).toEqual({
-      terminalSessionId: "discovered.tmux.pomo",
-      terminalSurfaceKey: formatTerminalSurfaceId({ backend: "tmux", hostSession: "session-ms0hf3f7-3ngln1" }),
-      sessionName: "session-ms0hf3f7-3ngln1",
+    expect(target).toMatchObject({
+      via: "sessionName",
+      session: { id: "discovered.tmux.pomo" },
+      surfaceKey: formatTerminalSurfaceId({ backend: "tmux", hostSession: "session-ms0hf3f7-3ngln1" }),
+      surface: { sessionName: "session-ms0hf3f7-3ngln1" },
     });
     // The deep link carries the LEGACY key, not the opaque handle. macOS's
     // handler accepts only `tmux:`/`zellij:` prefixes and returns nil for
     // anything else, so an opaque handle here is a link that silently does
     // nothing — and macOS cannot be updated in step with a web release.
-    expect(nativeTerminalDeepLink(target!, "takeover")).toBe(
+    expect(terminalHopDeepLink(target!, "takeover")).toBe(
       "scout://terminal?session=discovered.tmux.pomo&surface=tmux%3Asession-ms0hf3f7-3ngln1&mode=takeover",
     );
-    expect(decodeURIComponent(nativeTerminalDeepLink(target!, "takeover")!))
+    expect(decodeURIComponent(terminalHopDeepLink(target!, "takeover")!))
       .toContain("surface=tmux:session-ms0hf3f7-3ngln1");
   });
 
   test("no native link at all when the surface handle will not parse", () => {
-    expect(nativeTerminalDeepLink({
-      terminalSessionId: "ts.1",
-      terminalSurfaceKey: "not-a-handle",
-      sessionName: "whatever",
-    }, "takeover")).toBeNull();
+    expect(terminalHopDeepLink({
+      session: { id: "ts.1" },
+      surfaceKey: "not-a-handle",
+      surface: { sessionName: "whatever" },
+    } as never, "takeover")).toBeNull();
   });
 });

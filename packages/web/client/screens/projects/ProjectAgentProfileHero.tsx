@@ -15,6 +15,7 @@ import type {
 } from "../../lib/types.ts";
 import { newSessionPayloadForAgent, type SessionInitiationResult } from "../agents/model.ts";
 import { harnessOf } from "./model.ts";
+import "../system-surfaces-redesign.css";
 
 function shortCwd(cwd: string | null | undefined): string | null {
   if (!cwd) return null;
@@ -141,8 +142,11 @@ export function ProjectAgentProfileHero({
   };
 
   return (
-    <header className="av2-profileHero">
-      <AgentAvatar agent={agent} size={56} tile presence />
+    <header className="av2-profileHero sys-profile-hero">
+      {/* Hero rung, not a row tile: the profile header is the one place the
+          face is the subject, so it loses the list wash and the corner dot the
+          state chip beside the title already says. */}
+      <AgentAvatar agent={agent} placement="hero" size={56} />
       <div className="av2-profileHeroCore">
         <div className="av2-profileHeroTop">
           <div className="av2-profileHeroIdent">

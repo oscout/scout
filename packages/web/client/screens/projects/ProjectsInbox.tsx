@@ -1,6 +1,7 @@
 import { memo, useEffect, useMemo, useRef, useState, type CSSProperties, type FormEvent, type ReactNode } from "react";
-import { ArrowRight, ArrowUpRight, ChevronRight, ExternalLink, Folder, FolderPlus, Search } from "lucide-react";
+import { ArrowRight, ArrowUpRight, ChevronRight, Folder, FolderPlus, Search } from "lucide-react";
 import { AgentAvatar } from "../../components/AgentAvatar.tsx";
+import { CrewPhoto, ProjectEmptyStage } from "../../components/CrewPhoto.tsx";
 import { HarnessMark } from "../../components/HarnessMark.tsx";
 import { api } from "../../lib/api.ts";
 import type { RepoPullRequestItem } from "../../scout/repo-watch/api.ts";
@@ -8,20 +9,16 @@ import type { RepoWatchProject, RepoWatchWorktree } from "../../scout/repo-watch
 import { agentLive, reviewChurnOf } from "../../scout/repo-watch/ui.ts";
 import type { ScoutRepoDiffSnapshot } from "../../scout/repo-diff/types.ts";
 import { formatClockTimestamp, normalizeTimestampMs, timeAgo } from "../../lib/time.ts";
-import { fetchTerminalSessions } from "../../lib/terminal-sessions.ts";
 import type { Agent, ObserveData, ObserveUsageMeta, Route } from "../../lib/types.ts";
-import { useScout } from "../../scout/Provider.tsx";
+import { useOptionalScout, useScout } from "../../scout/Provider.tsx";
 import { openContent } from "../../scout/slots/openContent.ts";
 import { pathLeaf } from "../agents/model.ts";
 import { SessionRefScreen, type SessionRefLookup } from "../sessions/SessionRefScreen.tsx";
 import { AddProjectForm } from "./AddProjectForm.tsx";
 import { CrewWorkspaces, ProjectAgentDirectory } from "./CrewWorkspaces.tsx";
+import { buildCrewMembers } from "./crew-workspaces-model.ts";
 import { shortHomePath } from "./project-overview-helpers.ts";
-import {
-  nativeTerminalDeepLink,
-  resolveProjectSessionTmuxTarget,
-  type ProjectSessionTmuxTarget,
-} from "./project-session-terminal.ts";
+import { SessionHopActions } from "../../components/SessionHopMenu.tsx";
 import { refreshProjectsInbox, useProjectsInbox } from "./useProjectsInbox.ts";
 import { useEmbedHeadline } from "../../surfaces/useEmbedHeadline.ts";
 import { useProjectRepositoryState } from "./useProjectRepositoryState.ts";
@@ -42,6 +39,7 @@ import {
   type ProjectsInboxModel,
   threadsForProject,
 } from "./projects-inbox-model.ts";
+import "../system-surfaces-redesign.css";
 import "./projects-inbox.css";
 
 type Navigate = (route: Route) => void;
@@ -213,8 +211,20 @@ function ProjectScopeHeader({
   repoProject: RepoWatchProject | null;
 }) {
   const project = model.projects.find((entry) => entry.slug === slug) ?? null;
-  const projectThreads = threadsForProject(model.threads, slug);
-  const agentThreads = projectThreads.filter((thread) => thread.kind === "agent");
+  const projectThreads = useMemo(() => threadsForProject(model.threads, slug), [model.threads, slug]);
+  const agentThreads = useMemo(
+    () => projectThreads.filter((thread) => thread.kind === "agent"),
+    [projectThreads],
+  );
+  /* Optional: this header also renders under `renderToStaticMarkup` in tests,
+     with no provider around it. No scout simply means no crew to photograph. */
+  const scout = useOptionalScout();
+  const crew = useMemo(
+    () => (project
+      ? buildCrewMembers([project], projectThreads, scout?.agents ?? EMPTY_AGENTS, route.machineId ?? null)
+      : []),
+    [project, projectThreads, route.machineId, scout?.agents],
+  );
   const title = project?.title ?? slug;
   const root = project?.root ?? null;
   const showAgentFacet = (project?.agentCount ?? agentThreads.length) > 0;
@@ -240,6 +250,8 @@ function ProjectScopeHeader({
           </div>
         </div>
       </div>
+
+      <CrewPhoto subjects={crew} projectSlug={slug} />
 
       <div className="pi-projectFacets" aria-label="Project sections">
         <button
@@ -675,7 +687,6 @@ function ProjectSessionOverview({
   navigate: Navigate;
   nowMs: number;
 }) {
-  const [terminalTarget, setTerminalTarget] = useState<ProjectSessionTmuxTarget | null>(null);
   const agentName = session?.agentName ?? route.selectedAgentId ?? route.agentId ?? "Session";
   const harness = session?.harness ?? "session";
   const data = lookup?.kind === "observe" ? lookup.observe.data : null;
@@ -709,38 +720,10 @@ function ProjectSessionOverview({
     refLabel,
   ].filter((item): item is string => Boolean(item) && item !== "—");
 
-  useEffect(() => {
-    let active = true;
-    setTerminalTarget(null);
-    if (!terminalAgentId && !terminalLookupRef && !sessionRef) return () => { active = false; };
-
-    void fetchTerminalSessions({ includeDiscovered: true })
-      .then((terminalSessions) => {
-        if (!active) return;
-        setTerminalTarget(resolveProjectSessionTmuxTarget(terminalSessions, {
-          agentId: terminalAgentId,
-          sessionRefs: [sessionRef, terminalLookupRef, session?.sessionId],
-        }));
-      })
-      .catch(() => {
-        if (active) setTerminalTarget(null);
-      });
-
-    return () => { active = false; };
-  }, [session?.sessionId, sessionRef, terminalAgentId, terminalLookupRef]);
-
-  const openWebTerminal = () => {
-    if (!terminalTarget) return;
-    openContent(navigate, {
-      view: "terminal",
-      terminalSessionId: terminalTarget.terminalSessionId,
-      terminalSurfaceKey: terminalTarget.terminalSurfaceKey,
-      mode: "takeover",
-    }, { returnTo: route });
-  };
-  // Null when the surface handle will not parse. Better no link than one the
-  // native handler drops on the floor.
-  const nativeDeepLink = terminalTarget ? nativeTerminalDeepLink(terminalTarget, "takeover") : null;
+  const hopHints = useMemo(() => ({
+    agentId: terminalAgentId,
+    sessionRefs: [sessionRef, terminalLookupRef, session?.sessionId],
+  }), [session?.sessionId, sessionRef, terminalAgentId, terminalLookupRef]);
 
   return (
     <section className="pi-sessionOverview" aria-label="Session overview">
@@ -761,20 +744,12 @@ function ProjectSessionOverview({
             </span>
           ))}
         </div>
-        {terminalTarget ? (
-          <div className="pi-sessionTerminalActions" aria-label="tmux terminal actions">
-            <span className="pi-sessionTerminalName" title={terminalTarget.sessionName}>
-              tmux · {terminalTarget.sessionName}
-            </span>
-            <button type="button" onClick={openWebTerminal}>Open in web terminal</button>
-            {nativeDeepLink ? (
-              <a href={nativeDeepLink}>
-                Open in native terminal
-                <ExternalLink size={11} strokeWidth={1.8} aria-hidden />
-              </a>
-            ) : null}
-          </div>
-        ) : null}
+        <SessionHopActions
+          hints={hopHints}
+          navigate={navigate}
+          returnTo={route}
+          className="pi-sessionTerminalActions"
+        />
       </section>
 
       <ProjectSessionGlance
@@ -2043,6 +2018,23 @@ export function ProjectsInbox({
               </div>
             ) : waiting ? (
               <div className="pi-empty">Loading…</div>
+            ) : scoped && mode !== "agents" && canonicalProjectSlug ? (
+              /* A project with no sessions is not a missing list — it is a
+                 stage nobody has walked onto yet. Whoever worked here last
+                 stands on it; if nobody ever did, the figure is decoration
+                 and stays unnamed. */
+              <ProjectEmptyStage
+                subjects={scopedProject
+                  ? buildCrewMembers(
+                    [scopedProject],
+                    threadsForProject(model.threads, canonicalProjectSlug),
+                    agents,
+                    route.machineId ?? null,
+                  )
+                  : []}
+                projectSlug={canonicalProjectSlug}
+                onStart={() => navigate({ view: "messages", ...(route.machineId ? { machineId: route.machineId } : {}) })}
+              />
             ) : (
               <ProjectSurfaceState
                 title={emptyLabel(scoped, mode)}

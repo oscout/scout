@@ -715,6 +715,21 @@ describe("resolveMachineSshDestination", () => {
     }))).toThrow(/unambiguous/);
   });
 
+  test("an alias reaches a tailnet-only Mac that advertises no ssh", () => {
+    // `ssh` is derived from a Bonjour `_ssh._tcp` advert, which never crosses
+    // the LAN. Mini is real, reachable, and named in the ssh config; without
+    // this the gate would refuse every Mac that is not on this subnet.
+    const host = resolveMachineSshDestination(
+      machine({
+        name: "mini",
+        capabilities: ["scout-broker", "scout-web"],
+        routes: [{ kind: "tailnet", host: "mini.tail1234.ts.net" }],
+      }),
+      { aliases },
+    );
+    expect(host).toBe("mini");
+  });
+
   test("refuses a machine that does not advertise ssh", () => {
     expect(() => resolveMachineSshDestination(machine({ name: "Studio", capabilities: [] })))
       .toThrow(/does not advertise ssh/);

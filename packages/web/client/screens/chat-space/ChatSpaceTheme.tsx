@@ -9,13 +9,15 @@
  * and `var()` resolves where it is declared, so the element that carries the
  * attribute has to carry the token values too. That is all this component is.
  *
- * Nothing here hard-codes a color: the maps come from `scout/Provider.tsx`, so
- * a palette or accent change moves these surfaces with the rest of the app.
+ * Nothing here hard-codes a color: the maps come from `lib/theme-vars.ts` — the
+ * same leaf module `scout/Provider.tsx` reads — so a palette or accent change
+ * moves these surfaces with the rest of the app, and importing them here costs
+ * the standalone bundle nothing of the operator shell.
  */
 
 import { useCallback, useEffect, useMemo, useState, type CSSProperties, type ReactNode } from "react";
 
-import { DARK_THEME_VARS, LIGHT_THEME_VARS } from "../../scout/Provider.tsx";
+import { DARK_THEME_VARS, LIGHT_THEME_VARS } from "../../lib/theme-vars.ts";
 import {
   applyScoutThemeToDocument,
   resolveScoutNativeThemeVars,
@@ -79,6 +81,7 @@ export function ChatSpaceTheme({
   className,
   compactView,
   railed,
+  style: extraStyle,
   children,
 }: {
   theme: ScoutTheme;
@@ -91,6 +94,7 @@ export function ChatSpaceTheme({
    * same `--sidebar-w` the grid below uses.
    */
   railed?: boolean;
+  style?: CSSProperties;
   children: ReactNode;
 }) {
   // A native host (WKWebView) passes its resolved palette on the query string;
@@ -100,8 +104,9 @@ export function ChatSpaceTheme({
     () => ({
       ...(theme === "light" ? LIGHT_THEME_VARS : DARK_THEME_VARS),
       ...(nativeVars ?? {}),
+      ...extraStyle,
     }) as CSSProperties,
-    [theme, nativeVars],
+    [theme, nativeVars, extraStyle],
   );
   return (
     <div

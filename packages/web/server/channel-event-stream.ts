@@ -16,14 +16,44 @@ export type ChannelEventStreamOptions = {
   open?: () => Promise<{ connection: ConsumerConnection; consumer: ScoutEventConsumer }>;
 };
 
+function idleChannelEventStream(request: Request, heartbeatMs = 15_000): Response {
+  const encoder = new TextEncoder();
+  const stream = new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(encoder.encode("event: ready\ndata: {}\n\n"));
+      const heartbeat = setInterval(() => {
+        try { controller.enqueue(encoder.encode(": keep-alive\n\n")); }
+        catch { clearInterval(heartbeat); }
+      }, heartbeatMs);
+      request.signal.addEventListener("abort", () => {
+        clearInterval(heartbeat);
+        try { controller.close(); } catch { /* already closed */ }
+      });
+    },
+  });
+  return new Response(stream, {
+    headers: {
+      "content-type": "text/event-stream; charset=utf-8",
+      "cache-control": "no-cache, no-transform",
+      connection: "keep-alive",
+    },
+  });
+}
+
 /** Server-owned streams. Every browser receives only a channel invalidation. */
 export class ChannelEventStreams {
   private readonly active = new Set<() => Promise<void>>();
   private stopped = false;
 
   async open(request: Request, options: ChannelEventStreamOptions): Promise<Response> {
-    if (this.stopped || (!options.open && !/^(1|true|yes|on)$/i.test(process.env.OPENSCOUT_JETSTREAM_ENABLED ?? ''))) {
+    if (this.stopped) {
       return Response.json({ error: 'Channel live updates are unavailable.' }, { status: 503 });
+    }
+    // JetStream is optional locally. A 503 here made EventSource retry and
+    // filled the console while the poll already owns correctness. Serve an
+    // idle stream instead so the socket opens and stays quiet.
+    if (!options.open && !/^(1|true|yes|on)$/i.test(process.env.OPENSCOUT_JETSTREAM_ENABLED ?? '')) {
+      return idleChannelEventStream(request, options.heartbeatMs);
     }
     const initial = await options.readScope().catch(() => null);
     if (!initial?.allowed) return Response.json({ error: 'Channel access denied.' }, { status: 403 });
@@ -41,7 +71,8 @@ export class ChannelEventStreams {
       }
     } catch {
       await connection?.close().catch(() => undefined);
-      return Response.json({ error: 'Channel live updates are unavailable.' }, { status: 503 });
+      // NATS down is the same as JetStream off: poll owns the feed.
+      return idleChannelEventStream(request, options.heartbeatMs);
     }
     let closed = false;
     let controller: ReadableStreamDefaultController<Uint8Array>;

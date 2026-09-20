@@ -1,11 +1,9 @@
 import { useEffect, useCallback } from "react";
 import { AlertTriangle, Check, CornerDownLeft, ShieldAlert, Sparkles, X } from "lucide-react";
 import { compactAgentId } from "../../lib/agent-labels.ts";
-import type { Agent, FleetAsk } from "../../lib/types.ts";
-import {
-  presenceColor,
-  type ConversationPresence,
-} from "./conversation-model.ts";
+import { AgentAvatar } from "../../components/AgentAvatar.tsx";
+import type { Agent, FleetAsk, Flight } from "../../lib/types.ts";
+import { type ConversationPresence } from "./conversation-model.ts";
 
 // One breath of the dispatch for the "Re:" context line — never the wall.
 function firstLineExcerpt(text: string): string {
@@ -43,13 +41,14 @@ export function PinnedAskCard({
   const isApproval = /\b(?:approve|approval|permission|allow|proceed|confirm|gate)\b/i.test(
     headline,
   );
-  const kindLabel = isApproval
-    ? "Approval Gate"
-    : headline.includes("?")
-      ? "Question"
-      : pinnedAsk.statusLabel;
   const agentDisplayName =
     pinnedAsk.agentName ?? compactAgentId(pinnedAsk.agentId) ?? pinnedAsk.agentId;
+  // The eyebrow names who is asking and what kind of answer they want. It is
+  // the only place the card says either, so the chips that used to repeat the
+  // name and the kind are gone with it.
+  const eyebrow = isApproval
+    ? `${agentDisplayName} needs approval`
+    : `${agentDisplayName} asks`;
 
   const handleApproveOrAnswer = useCallback(() => {
     if (onApprove) {
@@ -105,31 +104,27 @@ export function PinnedAskCard({
       role="alert"
       aria-live="assertive"
     >
-      <div className="s-thread-pinned-ask-header">
-        <div className="s-thread-pinned-ask-beacon" aria-hidden="true">
-          <span className="dot dot--sm dot--warning dot--pulse dot--glow" />
-        </div>
-        <div className="s-thread-pinned-ask-kicker">
-          <span className="label-sm s-thread-pinned-ask-eyebrow">Operator Attention Required</span>
-          <span className="chip chip--sm chip--mono chip--warning">
-            {kindLabel}
-          </span>
-        </div>
-        <div className="s-thread-pinned-ask-routing">
-          <span className="s-thread-pinned-ask-agent-name chip chip--sm chip--mono chip--neutral">
-            @{agentDisplayName}
-          </span>
-          <span className="s-thread-pinned-ask-routing-arrow" aria-hidden="true">
-            →
-          </span>
-          <span className="chip chip--sm chip--mono chip--working">You</span>
-        </div>
-      </div>
+      {/* The ring says needs, the eyes say attention — so the card itself
+          keeps quiet: no beacon, no "Operator Attention Required". */}
+      <AgentAvatar
+        agent={{
+          id: pinnedAsk.agentId,
+          name: agentDisplayName,
+          harness: pinnedAsk.harness,
+          state: "needs",
+        }}
+        size={44}
+        placement="row"
+        presence
+        gaze="up"
+        className="s-thread-pinned-ask-coin"
+      />
 
       <div className="s-thread-pinned-ask-body">
+        <span className="s-thread-pinned-ask-eyebrow">{eyebrow}</span>
         <p className="s-thread-pinned-ask-text">{headline}</p>
         {showTaskContext && (
-          <p className="s-thread-pinned-ask-context text-muted">Re: {taskLine}</p>
+          <p className="s-thread-pinned-ask-context">Re: {taskLine}</p>
         )}
       </div>
 
@@ -147,7 +142,7 @@ export function PinnedAskCard({
 
         <button
           type="button"
-          className="btn btn--accent s-thread-pinned-ask-btn"
+          className="btn btn--ghost s-thread-pinned-ask-btn"
           onClick={handleSteer}
           title="Provide guidance or steer [S]"
         >
@@ -169,8 +164,6 @@ export function PinnedAskCard({
           </button>
         )}
       </div>
-
-      <div className="s-thread-pinned-ask-strip" aria-hidden="true" />
     </div>
   );
 }
@@ -202,13 +195,7 @@ export function ApprovalGateCard({
           <span className="label-sm text-amber">Execution Approval Gate</span>
           {risk && (
             <span
-              className={`chip chip--sm chip--mono ${
-                risk === "high"
-                  ? "chip--danger"
-                  : risk === "medium"
-                    ? "chip--warning"
-                    : "chip--info"
-              }`}
+              className="chip chip--sm chip--mono chip--neutral"
             >
               {risk.toUpperCase()} RISK
             </span>
@@ -272,14 +259,12 @@ export function ApprovalGateCard({
 
 export function ConversationStatusStrip({
   presence,
-  agent,
 }: {
   presence: ConversationPresence;
   agent: Agent | null;
 }) {
   if (!presence.showStrip) return null;
   const isWorking = presence.tone === "working";
-  const isPending = presence.tone === "pending";
 
   return (
     <div
@@ -289,21 +274,98 @@ export function ConversationStatusStrip({
       <span className="s-thread-status-dot-wrap" aria-hidden="true">
         <span
           className={`dot dot--sm ${
-            isWorking
-              ? "dot--working dot--pulse dot--glow"
-              : isPending
-                ? "dot--warning dot--pulse dot--glow"
-                : "dot--neutral"
+            isWorking ? "dot--working dot--pulse" : "dot--neutral"
           }`}
-          style={{
-            color: presenceColor(presence, agent?.state ?? null),
-          }}
         />
       </span>
       <div className="s-thread-status-copy">
         <span className="s-thread-status-label label-xs">{presence.label}</span>
         <span className="s-thread-status-detail">{presence.detail}</span>
       </div>
+    </div>
+  );
+}
+
+function flightOutcomeHeading(state: string): string {
+  switch (state) {
+    case "completed":
+      return "Invocation completed";
+    case "failed":
+      return "Invocation failed";
+    case "cancelled":
+      return "Invocation cancelled";
+    case "queued":
+      return "Invocation queued";
+    case "waking":
+      return "Invocation waking";
+    case "waiting":
+      return "Invocation waiting";
+    case "running":
+      return "Invocation running";
+    default:
+      return `Invocation ${state.replace(/_/g, " ")}`;
+  }
+}
+
+function flightOutcomeTone(state: string): string {
+  switch (state) {
+    case "failed":
+      return "failed";
+    case "cancelled":
+      return "cancelled";
+    case "completed":
+      return "completed";
+    default:
+      return "active";
+  }
+}
+
+export function ConversationFlightOutcome({
+  flight,
+  onOpenSession,
+}: {
+  flight: Flight;
+  onOpenSession?: () => void;
+}) {
+  const tone = flightOutcomeTone(flight.state);
+  const summary = flight.summary?.trim() || null;
+  const Icon = tone === "failed"
+    ? AlertTriangle
+    : tone === "cancelled"
+      ? X
+      : Check;
+
+  return (
+    <div
+      className={`s-thread-flight-outcome s-thread-flight-outcome--${tone}`}
+      role="status"
+      aria-live="polite"
+    >
+      <div className="s-thread-flight-outcome-head">
+        <span className="s-thread-flight-outcome-mark" aria-hidden="true">
+          <Icon size={12} strokeWidth={2.2} />
+        </span>
+        <span className="label-sm s-thread-flight-outcome-title">
+          {flightOutcomeHeading(flight.state)}
+        </span>
+      </div>
+      {summary && (
+        <p className="s-thread-flight-outcome-summary">{summary}</p>
+      )}
+      <p className="s-thread-flight-outcome-note text-muted">
+        Broker outcome · observed turns are shown in the session when available.
+      </p>
+      {onOpenSession && (
+        <div className="s-thread-flight-outcome-actions">
+          <button
+            type="button"
+            className="btn btn--ghost"
+            onClick={onOpenSession}
+          >
+            <span>Open session</span>
+          </button>
+        </div>
+      )}
     </div>
   );
 }

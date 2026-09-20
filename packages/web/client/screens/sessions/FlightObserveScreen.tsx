@@ -200,6 +200,7 @@ export function FlightObserveScreen({
           <SessionRefScreen
             sessionRef={selectedSessionId}
             navigate={navigate}
+            machineId={route.machineId}
           />
         </main>
       )}
@@ -220,6 +221,7 @@ export function FlightObserveScreen({
               <SessionRefScreen
                 sessionRef={selected.sessionId}
                 navigate={navigate}
+                machineId={route.machineId}
                 showObserveRail={false}
               />
             </div>
@@ -235,6 +237,7 @@ export function FlightObserveScreen({
               <SessionRefScreen
                 sessionRef={compared.sessionId}
                 navigate={navigate}
+                machineId={route.machineId}
                 showObserveRail={false}
               />
             </div>

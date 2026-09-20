@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import "./agents-detail-redesign.css";
+import "./agents-screen.css";
 import { agentStateCssToken, agentStateLabel } from "../../lib/agent-state.ts";
 import {
   compactAgentId,
   minimalAgentHandle,
 } from "../../lib/agent-labels.ts";
-import { actorColor, stateColor } from "../../lib/colors.ts";
+import { stateColor } from "../../lib/colors.ts";
 import { api } from "../../lib/api.ts";
 import { useBrokerEvents } from "../../lib/sse.ts";
 import { fullTimestamp, timeAgo } from "../../lib/time.ts";
@@ -14,6 +15,10 @@ import { useScout } from "../../scout/Provider.tsx";
 import { openContent } from "../../scout/slots/openContent.ts";
 import { BackToPicker } from "../../scout/slots/BackToPicker.tsx";
 import { AgentLiveActions } from "../../components/AgentLiveActions.tsx";
+import { castSlugForAgent } from "../../components/AgentAvatar.tsx";
+import { CrewStage } from "../../components/CrewStage.tsx";
+import { CREW_ART, CREW_ASSETS_AVAILABLE, projectHue } from "../../lib/crew-registry.ts";
+import { SessionHopMenu } from "../../components/SessionHopMenu.tsx";
 import { ObservedTopologyPanel } from "../../components/ObservedTopologyPanel.tsx";
 import type { Agent, Route, SessionEntry } from "../../lib/types.ts";
 import { projectIdentityForAgent } from "./model.ts";
@@ -179,6 +184,45 @@ function ProfileCard({
   );
 }
 
+function AgentHeroStage({
+  slug,
+  hue,
+}: {
+  slug: string;
+  hue: number;
+}) {
+  const [open, setOpen] = useState(false);
+
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      setOpen(false);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [open]);
+
+  return (
+    <div
+      className="s-agent-hero-stage-box"
+      data-open={open ? "true" : "false"}
+    >
+      <CrewStage
+        className="s-agent-hero-stage"
+        slug={slug}
+        open={open}
+        onToggle={() => setOpen((value) => !value)}
+        coin={96}
+        figure={224}
+        radius={14}
+        floor
+        hue={hue}
+      />
+    </div>
+  );
+}
+
 export function AgentInfoScreen({
   conversationId,
   navigate,
@@ -186,7 +230,8 @@ export function AgentInfoScreen({
   conversationId: string;
   navigate: (r: Route) => void;
 }) {
-  const { agents, route } = useScout();
+  const scout = useScout();
+  const { agents, route } = scout;
   const [session, setSession] = useState<SessionEntry | null>(null);
   // The session → agent resolution is a two-stage waterfall; track how far it
   // has settled so the screen shows a loading state — not "Agent not found" —
@@ -294,6 +339,18 @@ export function AgentInfoScreen({
   const hasExternalCardIdentity = Boolean(agent.providerName || protocol || skills.length > 0);
   const projectIdentity = projectIdentityForAgent(agent);
   const projectTitle = projectIdentity.title;
+  /* A cast face is something this agent IS, resolved exactly the way its coin
+     resolves everywhere else. An agent the cast does not name keeps the letter
+     disc: handing it a member's face at random aliases two identities into one.
+     An operator who has turned the cast off keeps the disc too. */
+  const { castSlug } = castSlugForAgent(scout, { agent: { id: agent.id, name: agent.name } });
+  const heroCastSlug =
+    CREW_ASSETS_AVAILABLE
+    && scout.appearanceDetails?.avatarStyle !== "sprite"
+    && castSlug
+    && CREW_ART[castSlug]
+      ? castSlug
+      : null;
   const aliasTitle = aliasTitleForAgent(agent, session, projectTitle, projectIdentity.slug);
   const profileTitle = aliasTitle ? `${projectTitle} · ${aliasTitle}` : projectTitle;
   const participant = session?.participants?.find((entry) =>
@@ -409,12 +466,18 @@ export function AgentInfoScreen({
       <section className="s-agent-profile-hero">
         <div className="s-agent-profile-hero-main">
           <div className="s-agent-profile-hero-title-row">
-            <div
-              className="s-avatar s-agent-profile-hero-avatar"
-              style={{ background: actorColor(agent.name) }}
-            >
-              {agent.name[0].toUpperCase()}
-            </div>
+            {heroCastSlug ? (
+              <AgentHeroStage
+                slug={heroCastSlug}
+                hue={projectHue(agent.project ?? "openscout")}
+              />
+            ) : (
+              <div
+                className="s-avatar s-agent-profile-hero-avatar"
+              >
+                {agent.name[0].toUpperCase()}
+              </div>
+            )}
             <div className="s-agent-profile-hero-copy">
               <div className="s-agent-casefile-title-meta">
                 <span className="s-agent-casefile-record">
@@ -451,6 +514,16 @@ export function AgentInfoScreen({
         <div className="s-agent-profile-hero-actions">
           <AgentLiveActions
             agent={agent}
+            navigate={navigate}
+            returnTo={route}
+          />
+          <SessionHopMenu
+            className="s-btn"
+            label="Terminal"
+            hints={{
+              agentId: agent.id,
+              sessionRefs: [agent.harnessSessionId, session?.harnessSessionId, session?.id],
+            }}
             navigate={navigate}
             returnTo={route}
           />

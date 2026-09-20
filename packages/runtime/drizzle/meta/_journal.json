@@ -141,6 +141,13 @@
       "when": 1789504676266,
       "tag": "0019_session_actor_targets",
       "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "6",
+      "when": 1789778404718,
+      "tag": "0020_message_reactions",
+      "breakpoints": true
     }
   ]
 }

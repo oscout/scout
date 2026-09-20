@@ -119,3 +119,35 @@ export function clampFloorPan(
 export function minimapZoom(zoom:number, pan:{x:number;y:number}, delta:number) {
   return zoomAboutPoint(zoom, pan, Math.exp(-delta*.002));
 }
+
+/** How long a guided camera glide takes. Continuous gestures stay 1:1 and never use this. */
+export const CAMERA_TRAVEL_MS = 420;
+
+/** Camera travel easing: fast departure, gentle arrival. */
+export function easeTravel(t: number) {
+  return 1 - Math.pow(1 - Math.min(1, Math.max(0, t)), 3);
+}
+
+/**
+ * Interpolate one camera toward another. Zoom travels in log space — zoom is
+ * multiplicative, so a linear midpoint between 1:1 and 1:16 would spend most of
+ * the journey visually arrived; the log midpoint is 1:4, which is what halfway
+ * looks like on a map.
+ */
+export function travelCamera(
+  from: { zoom: number; pan: { x: number; y: number } },
+  to: { zoom: number; pan: { x: number; y: number } },
+  amount: number,
+) {
+  // Endpoints land exactly — a gliding zoom must finish at 1:1, not 1:0.999…
+  if (amount <= 0) return { zoom: from.zoom, pan: { ...from.pan } };
+  if (amount >= 1) return { zoom: to.zoom, pan: { ...to.pan } };
+  const t = easeTravel(amount);
+  return {
+    zoom: Math.exp(Math.log(from.zoom) + (Math.log(to.zoom) - Math.log(from.zoom)) * t),
+    pan: {
+      x: from.pan.x + (to.pan.x - from.pan.x) * t,
+      y: from.pan.y + (to.pan.y - from.pan.y) * t,
+    },
+  };
+}

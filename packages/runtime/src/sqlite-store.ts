@@ -50,6 +50,7 @@ import type {
   InvocationRequest,
   MessageAttachment,
   MessageMention,
+  MessageReactionRecord,
   MessageRecord,
   NodeDefinition,
   ScoutDispatchRecord,
@@ -3037,6 +3038,109 @@ export class SQLiteControlPlaneStore {
         : [];
     })(message, activityItem, threadMessageEvent);
     return threadEvents;
+  }
+
+  upsertMessageReaction(input: {
+    channelId: string;
+    messageId: string;
+    actorId: string;
+    emoji: string;
+    createdAt: number;
+  }): { replayed: boolean } {
+    const message = this.db.query(
+      `SELECT id, conversation_id FROM messages WHERE id = ?1`,
+    ).get(input.messageId) as { id: string; conversation_id: string } | null;
+    if (!message) {
+      throw Object.assign(new Error("message not found"), { status: 404, reason: "message_not_found" });
+    }
+    if (message.conversation_id !== input.channelId) {
+      const conversation = this.db.query(
+        `SELECT kind, parent_conversation_id FROM conversations WHERE id = ?1`,
+      ).get(message.conversation_id) as
+        | { kind: string; parent_conversation_id: string | null }
+        | null;
+      if (
+        conversation?.kind !== "thread"
+        || conversation.parent_conversation_id !== input.channelId
+      ) {
+        throw Object.assign(new Error("message is not in this channel"), {
+          status: 404,
+          reason: "wrong_channel",
+        });
+      }
+    }
+    const actor = this.db.query(`SELECT id FROM actors WHERE id = ?1`).get(input.actorId) as
+      | { id: string }
+      | null;
+    if (!actor) {
+      throw Object.assign(new Error("actor not found"), { status: 404, reason: "actor_not_found" });
+    }
+    const result = this.db.query(
+      `INSERT OR IGNORE INTO message_reactions (message_id, actor_id, emoji, created_at)
+       VALUES (?1, ?2, ?3, ?4)`,
+    ).run(input.messageId, input.actorId, input.emoji, input.createdAt) as { changes: number | bigint };
+    return { replayed: Number(result.changes) === 0 };
+  }
+
+  removeMessageReaction(input: {
+    channelId: string;
+    messageId: string;
+    actorId: string;
+    emoji: string;
+  }): { replayed: boolean } {
+    const message = this.db.query(
+      `SELECT id, conversation_id FROM messages WHERE id = ?1`,
+    ).get(input.messageId) as { id: string; conversation_id: string } | null;
+    if (!message) {
+      throw Object.assign(new Error("message not found"), { status: 404, reason: "message_not_found" });
+    }
+    if (message.conversation_id !== input.channelId) {
+      const conversation = this.db.query(
+        `SELECT kind, parent_conversation_id FROM conversations WHERE id = ?1`,
+      ).get(message.conversation_id) as
+        | { kind: string; parent_conversation_id: string | null }
+        | null;
+      if (
+        conversation?.kind !== "thread"
+        || conversation.parent_conversation_id !== input.channelId
+      ) {
+        throw Object.assign(new Error("message is not in this channel"), {
+          status: 404,
+          reason: "wrong_channel",
+        });
+      }
+    }
+    const result = this.db.query(
+      `DELETE FROM message_reactions
+       WHERE message_id = ?1 AND actor_id = ?2 AND emoji = ?3`,
+    ).run(input.messageId, input.actorId, input.emoji) as { changes: number | bigint };
+    return { replayed: Number(result.changes) === 0 };
+  }
+
+  listMessageReactions(channelId: string): MessageReactionRecord[] {
+    const rows = queryAll<{
+      message_id: string;
+      actor_id: string;
+      emoji: string;
+      created_at: number;
+    }, [string]>(
+      this.readDb,
+      `SELECT r.message_id, r.actor_id, r.emoji, r.created_at
+       FROM message_reactions r
+       JOIN messages m ON m.id = r.message_id
+       WHERE m.conversation_id = ?1
+          OR m.conversation_id IN (
+            SELECT id FROM conversations WHERE parent_conversation_id = ?1
+          )
+       ORDER BY r.created_at ASC, r.emoji ASC`,
+      channelId,
+    );
+    return rows.map((row) => ({
+      messageId: row.message_id,
+      actorId: row.actor_id,
+      emoji: row.emoji,
+      createdAt: row.created_at,
+    }));
   }
 
   upsertReadCursor(cursor: ConversationReadCursor): void {

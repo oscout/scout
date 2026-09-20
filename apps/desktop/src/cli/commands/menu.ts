@@ -31,15 +31,16 @@ type ScoutMenuResult = {
 const MENU_BUNDLE_ID = "app.openscout.scout.menu";
 const MENU_BUNDLE_NAME = "ScoutMenu.app";
 const MENU_PROCESS_NAME = "ScoutMenu";
-// Installed builds ship the menu bar app as a helper embedded inside OpenScout.app.
+// Installed builds ship the menu bar app as a helper embedded inside Scout.app.
 const APP_BUNDLE_ID = "app.openscout.scout";
-const APP_BUNDLE_NAME = "OpenScout.app";
+const APP_BUNDLE_NAME = "Scout.app";
+/** Shipped as this through 0.2.105; still on every machine that installed one. */
+const LEGACY_APP_BUNDLE_NAMES = ["OpenScout.app"] as const;
 const EMBEDDED_MENU_RELATIVE_PATH = join("Contents", "Library", "LoginItems", "ScoutMenu.app");
 const HELP_FLAGS = new Set(["help", "--help", "-h"]);
-const COMMON_APP_BUNDLE_PATHS = [
-  join("/Applications", APP_BUNDLE_NAME),
-  join(homedir(), "Applications", APP_BUNDLE_NAME),
-] as const;
+const COMMON_APP_BUNDLE_PATHS = [APP_BUNDLE_NAME, ...LEGACY_APP_BUNDLE_NAMES].flatMap(
+  (name) => [join("/Applications", name), join(homedir(), "Applications", name)],
+);
 
 export function renderMenuCommandHelp(): string {
   return [
@@ -59,8 +60,8 @@ export function renderMenuCommandHelp(): string {
     "  quit   = stop",
     "",
     "Behavior:",
-    "  On macOS, `scout menu` loads the menu bar app from the installed OpenScout.app",
-    "  (the menu ships as an embedded helper). If OpenScout.app is not installed, a",
+    "  On macOS, `scout menu` loads the menu bar app from the installed Scout.app",
+    "  (the menu ships as an embedded helper). If Scout.app is not installed, a",
     "  repo checkout can fall back to `apps/macos/bin/openscout-menu.ts` for local",
     "  development. `scout menu build` and `scout menu dmg` always require a checkout.",
     "",

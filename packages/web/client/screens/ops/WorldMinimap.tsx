@@ -2,8 +2,8 @@ import { useEffect, useRef } from 'react';
 import { projectFloorPoint, type MapProjection } from './shared-floor-camera.ts';
 import { minimapGeometry, minimapZoom } from './floor-minimap.ts';
 type Point={x:number;y:number};
-type Props={width:number;height:number;projection:MapProjection;size:{width:number;height:number};scale:number;zoom:number;pan:Point;workspaces:{id:string;label:string;x:number;y:number}[];onPan:(pan:Point)=>void;onZoom:(zoom:number)=>void};
-export function WorldMinimap({width,height,projection,size,scale,zoom,pan,workspaces,onPan,onZoom}:Props){
+type Props={width:number;height:number;projection:MapProjection;size:{width:number;height:number};scale:number;zoom:number;pan:Point;workspaces:{id:string;label:string;x:number;y:number}[];onPan:(pan:Point)=>void;onZoom:(zoom:number)=>void;onLocate:(pan:Point)=>void};
+export function WorldMinimap({width,height,projection,size,scale,zoom,pan,workspaces,onPan,onZoom,onLocate}:Props){
  const root=useRef<HTMLElement>(null);
  const drag=useRef<{x:number;y:number;pan:Point;pointer:number}|null>(null);
  const moved=useRef(false);
@@ -11,7 +11,7 @@ export function WorldMinimap({width,height,projection,size,scale,zoom,pan,worksp
  const center=geo.point(-pan.x/scale,-pan.y/scale);
  const camera={x:center.x-size.width/scale*geo.ratio/2,y:center.y-size.height/scale*geo.ratio/2,width:size.width/scale*geo.ratio,height:size.height/scale*geo.ratio};
  useEffect(()=>{const el=root.current;if(!el)return;const wheel=(e:WheelEvent)=>{e.preventDefault();e.stopPropagation();const d=e.deltaY*(e.deltaMode===1?16:e.deltaMode===2?112:1);const next=minimapZoom(zoom,pan,d);onPan(next.pan);onZoom(next.zoom);};el.addEventListener('wheel',wheel,{passive:false});return()=>el.removeEventListener('wheel',wheel);},[zoom,pan,onPan,onZoom]);
- const locate=(p:Point)=>onPan({x:-p.x*scale,y:-p.y*scale});
+ const locate=(p:Point)=>onLocate({x:-p.x*scale,y:-p.y*scale});
  return <aside ref={root} className="shared-floor__minimap" aria-label="World minimap" title="Drag to move · Scroll to zoom" onPointerDown={e=>{
   if(e.button!==0||drag.current)return;e.stopPropagation();moved.current=false;
   const box=e.currentTarget.getBoundingClientRect();const x=(e.clientX-box.left)*176/box.width,y=(e.clientY-box.top)*112/box.height;

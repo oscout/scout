@@ -65,6 +65,22 @@ Host-level unblock attention still needs explicit ingress:
 - MCP client pre-tool permission prompts.
 - Local system permissions needed by Scout itself, such as notifications or APNs setup.
 
+## Attention Retirement
+
+Attention means a human is blocking work now, not that a collaboration record
+was alertable at some point in its history. The web fleet projection therefore
+retires collaboration-record attention when the record has not moved for seven
+days (`ATTENTION_STALE_AFTER_MS`). A retired record keeps its state, history,
+and conversation link and remains available through work and follow surfaces;
+retirement neither deletes it nor changes a broker-owned record.
+
+The projection applies this age bound to every eligible collaboration state,
+including `waiting` and `review`. Any later broker-owned movement updates the
+record and, if it remains otherwise alertable, makes it eligible for attention
+again. Rows with the same title and owner are collapsed after the age bound,
+keeping the most recently updated live row, so an old duplicate cannot hide a
+current handback.
+
 ## Current Coverage
 
 Implemented now:

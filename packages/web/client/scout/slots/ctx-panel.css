@@ -1147,11 +1147,11 @@
 .ctx-panel-ops-mode-card {
   min-width: 0;
   display: grid;
-  gap: var(--space-3xs);
-  padding: var(--space-lg) var(--space-lg);
-  border: 1px solid color-mix(in srgb, var(--accent) 24%, var(--border));
-  border-radius: var(--radius-md);
-  background: color-mix(in srgb, var(--accent) 6%, var(--surface));
+  gap: 1px;
+  padding: var(--space-sm) 0 var(--space-xs);
+  border: 0;
+  border-radius: 0;
+  background: transparent;
 }
 
 .ctx-panel-plan-summary {
@@ -1281,16 +1281,28 @@
   font-size: var(--text-md);
 }
 
-.ctx-panel-ops-mode-card span,
-.ctx-panel-ops-mode-card small {
+.ctx-panel-ops-mode-card span {
   min-width: 0;
   overflow: hidden;
   color: var(--dim);
   font-family: var(--font-mono);
   font-size: var(--text-2xs);
-  letter-spacing: var(--tracking-lg);
+  font-weight: 600;
+  letter-spacing: var(--tracking-xl);
   text-overflow: ellipsis;
   text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.ctx-panel-ops-mode-card small {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  letter-spacing: var(--tracking-xs);
+  text-overflow: ellipsis;
+  text-transform: none;
   white-space: nowrap;
 }
 
@@ -1298,12 +1310,12 @@
   min-width: 0;
   overflow: hidden;
   color: var(--ink);
-  font-family: var(--font-mono);
-  font-size: var(--text-2xl);
-  font-weight: 650;
-  letter-spacing: var(--tracking-sm);
+  font-family: var(--font-accent-title, var(--font));
+  font-size: var(--text-xl);
+  font-weight: 500;
+  letter-spacing: -0.02em;
   text-overflow: ellipsis;
-  text-transform: uppercase;
+  text-transform: none;
   white-space: nowrap;
 }
 
@@ -1315,23 +1327,23 @@
 
 .ctx-panel-stat {
   min-width: 0;
-  min-height: 54px;
+  min-height: 0;
   display: grid;
-  align-content: center;
-  gap: var(--space-3xs);
-  padding: var(--space-sm) var(--space-md);
-  border: 1px solid color-mix(in srgb, var(--border) 64%, transparent);
-  border-radius: var(--radius-md);
-  background: color-mix(in srgb, var(--bg) 70%, transparent);
+  align-content: start;
+  gap: 1px;
+  padding: var(--space-2xs) 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
 }
 
 .ctx-panel-stat--ok {
-  border-color: color-mix(in srgb, var(--green) 34%, var(--border));
+  border-color: transparent;
 }
 
 .ctx-panel-stat--warn {
-  border-color: color-mix(in srgb, var(--amber) 50%, var(--border));
-  background: color-mix(in srgb, var(--amber) 5%, var(--surface));
+  border-color: transparent;
+  background: transparent;
 }
 
 .ctx-panel-stat span {
@@ -1416,13 +1428,13 @@
 }
 
 .ctx-panel-pulse-dot--available {
-  background: var(--accent);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 12%, transparent);
+  background: color-mix(in srgb, var(--ink) 38%, transparent);
+  box-shadow: none;
 }
 
 .ctx-panel-pulse-dot--working {
-  background: var(--amber);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--amber) 12%, transparent);
+  background: var(--accent);
+  box-shadow: none;
 }
 
 .ctx-panel-pulse-dot--offline {
@@ -1660,6 +1672,34 @@
   letter-spacing: 0;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.ctx-panel-session-id--button {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-sm);
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: none;
+  text-align: left;
+  cursor: pointer;
+}
+
+.ctx-panel-session-id--button > span:first-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ctx-panel-session-id-action {
+  flex-shrink: 0;
+  color: var(--accent);
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  font-weight: 650;
+  letter-spacing: var(--tracking-md);
+  text-transform: uppercase;
 }
 
 .ctx-panel-session-meta {
@@ -2520,68 +2560,101 @@
   color: var(--dim);
 }
 
-/* ── Ops inspector: contrast + rhythm ──
+/* ── Ops inspector ──
  *
- * Scoped to `--ops-inspector` on purpose. The base rail is shared with Chat,
- * Agents and Terminal; what follows is the ops reading of it, where the panel
- * sits beside a dense monospace wall and has to hold its own against it.
- *
- * The recurring light-mode failure in here is `color-mix(… var(--bg) …)` for a
- * well: on paper --bg IS near-white, so a "recessed" card computes to the same
- * value as the panel behind it and the whole rail flattens. Wells are mixed off
- * --ink instead, which reads as a lift in dark and a recess in light.
+ * Same rail as Chat / Agents / Terminal. Do not restyle it as a dashboard:
+ * no accent wells, no amber tiles, no status rainbow. Hairline + type only.
+ * Warn is a number color, working is the one brand accent pip.
  */
 
 .ctx-panel--ops-inspector .ctx-panel-section {
-  border-bottom-color: color-mix(in srgb, var(--ink) 10%, transparent);
+  border-bottom-color: color-mix(in srgb, var(--border) 40%, transparent);
 }
 
 .ctx-panel--ops-inspector .ctx-panel-section-label {
-  color: color-mix(in srgb, var(--ink) 80%, transparent);
+  color: var(--dim);
+  font-weight: 600;
 }
 
 .ctx-panel--ops-inspector .ctx-panel-count {
-  color: var(--ink);
-  background: color-mix(in srgb, var(--ink) 9%, transparent);
-  border-color: color-mix(in srgb, var(--ink) 16%, transparent);
+  color: var(--dim);
+  background: transparent;
+  border-color: color-mix(in srgb, var(--border) 55%, transparent);
 }
 
-/* Stat wells: a real tonal step in both themes, and the label demoted so the
-   number is what the eye lands on first. */
+.ctx-panel--ops-inspector .ctx-panel-stat-grid {
+  gap: var(--space-md) var(--space-lg);
+  padding: var(--space-2xs) var(--space-3xs) var(--space-xs);
+}
+
 .ctx-panel--ops-inspector .ctx-panel-stat {
-  border-color: color-mix(in srgb, var(--ink) 13%, transparent);
-  background: color-mix(in srgb, var(--ink) 4%, transparent);
+  border: 0;
+  background: transparent;
+  min-height: 0;
+  padding: 0;
 }
 
 .ctx-panel--ops-inspector .ctx-panel-stat span {
-  color: color-mix(in srgb, var(--ink) 62%, transparent);
+  color: var(--dim);
+}
+
+.ctx-panel--ops-inspector .ctx-panel-stat strong {
+  font-size: var(--text-lg);
+  font-weight: 500;
+  letter-spacing: -0.02em;
 }
 
 .ctx-panel--ops-inspector .ctx-panel-stat--ok {
-  border-color: color-mix(in srgb, var(--green) 38%, transparent);
+  border: 0;
+  background: transparent;
 }
 
 .ctx-panel--ops-inspector .ctx-panel-stat--warn {
-  border-color: color-mix(in srgb, var(--amber) 55%, transparent);
-  background: color-mix(in srgb, var(--amber) 12%, transparent);
+  border: 0;
+  background: transparent;
+}
+
+.ctx-panel--ops-inspector .ctx-panel-stat--warn strong {
+  color: var(--amber);
 }
 
 .ctx-panel--ops-inspector .ctx-panel-ops-mode-card {
-  border-color: color-mix(in srgb, var(--accent) 34%, transparent);
-  background: color-mix(in srgb, var(--accent) 8%, transparent);
+  border: 0;
+  background: transparent;
+  padding: var(--space-2xs) var(--space-3xs) var(--space-sm);
 }
 
-/* Queue and Runs rows: the rail's own rhythm, one notch tighter than the Chat
-   rail's conversation rows, with a separator that is actually visible on paper.
-   Three cues fit above the fold instead of two and a half. */
 .ctx-panel--ops-inspector .ctx-panel-item {
   gap: var(--space-md);
-  padding: var(--space-md) var(--space-lg);
-  border-bottom-color: color-mix(in srgb, var(--ink) 8%, transparent);
+  padding: var(--space-sm) var(--space-lg);
+  border-bottom-color: color-mix(in srgb, var(--border) 28%, transparent);
+}
+
+.ctx-panel--ops-inspector .ctx-panel-item--attention {
+  background: transparent;
+  border-left-color: transparent;
+  padding-left: calc(var(--space-lg) + 8px);
+}
+
+.ctx-panel--ops-inspector .ctx-panel-item--attention::before {
+  content: "";
+  position: absolute;
+  left: var(--space-sm);
+  top: 50%;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--amber);
+  transform: translateY(-50%);
+}
+
+.ctx-panel--ops-inspector .ctx-panel-item--attention:hover {
+  background: color-mix(in srgb, var(--ink) 5%, transparent);
 }
 
 .ctx-panel--ops-inspector .ctx-panel-name {
   font-size: var(--text-md);
+  font-weight: 500;
 }
 
 .ctx-panel--ops-inspector .ctx-panel-sub,
@@ -2589,21 +2662,20 @@
   font-family: var(--font-mono);
   font-size: var(--text-2xs);
   letter-spacing: var(--tracking-xs);
-  color: color-mix(in srgb, var(--ink) 60%, transparent);
+  color: var(--muted);
 }
 
 .ctx-panel--ops-inspector .ctx-panel-empty {
-  color: color-mix(in srgb, var(--ink) 55%, transparent);
+  color: var(--muted);
+  font-style: normal;
 }
 
-/* Recent activity: name and state share one baseline grid, so the column of
-   states reads as a column instead of drifting with each name's length. */
 .ctx-panel--ops-inspector .ctx-panel-pulse-row {
-  border-bottom-color: color-mix(in srgb, var(--ink) 7%, transparent);
+  border-bottom-color: color-mix(in srgb, var(--border) 28%, transparent);
 }
 
 .ctx-panel--ops-inspector .ctx-panel-pulse-row:hover {
-  background: color-mix(in srgb, var(--ink) 5%, transparent);
+  background: color-mix(in srgb, var(--ink) 4%, transparent);
 }
 
 .ctx-panel--ops-inspector .ctx-panel-pulse-row span:not(.ctx-panel-pulse-dot) {
@@ -2611,7 +2683,7 @@
 }
 
 .ctx-panel--ops-inspector .ctx-panel-pulse-row small {
-  color: color-mix(in srgb, var(--ink) 58%, transparent);
+  color: var(--muted);
 }
 
 /* ── Messages rail view toggle (Agents map · Sessions queue) ── */

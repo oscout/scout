@@ -6,14 +6,21 @@ import {
   Volume2,
   VolumeX,
 } from "lucide-react";
-import { useEffect, useRef, type CSSProperties, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 
 import { stripScoutbotUiFences } from "../../lib/scoutbot.ts";
+import { ScoutbotMarkdown } from "../../lib/scoutbot-markdown.tsx";
 import type { ScoutVoiceSessionState } from "../../lib/scout-voice.ts";
+import {
+  VoiceControlWell,
+  localLiveWellSpec,
+} from "../../screens/voice/VoiceControlWell.tsx";
 import type {
   ScoutbotAssistantMessage,
   VoiceProbeState,
 } from "./scoutbot-model.ts";
+import type { ScoutbotSpeechIdentity } from "./scoutbot-voice-profiles.ts";
+import "./direct-voice.css";
 
 type DirectVoicePanelProps = {
   messages: ScoutbotAssistantMessage[];
@@ -33,14 +40,27 @@ type DirectVoicePanelProps = {
   setupPanel: ReactNode;
   settingsPanel: ReactNode;
   assistantModel: string | null;
+  speechIdentity?: ScoutbotSpeechIdentity | null;
   onPrimaryAction: () => void;
   onToggleVoiceReplies: () => void;
   onToggleSettings: () => void;
   onNewChat: () => void;
+  /** Drops the in-flight take without sending it (the mic gate while recording). */
+  onDiscardTake?: () => void;
   onOpenLive?: () => void;
+  /** Set false when the surrounding page already owns the voice mode switch. */
+  showModeSwitch?: boolean;
+  /** Set false when the surrounding page already owns the title. */
+  showHeading?: boolean;
+  /** Set false when the surrounding page draws the turn instead of the transcript column. */
+  showTranscript?: boolean;
+  /** Header title; defaults to "Local Live". */
+  title?: string;
+  /** Reports the resolved turn phase as it changes (listening, thinking, …). */
+  onVoicePhaseChange?: (phase: DirectVoicePhase) => void;
 };
 
-type DirectVoicePhase =
+export type DirectVoicePhase =
   | "checking"
   | "unavailable"
   | "listening"
@@ -49,17 +69,9 @@ type DirectVoicePhase =
   | "speaking"
   | "ready";
 
-const DIRECT_VOICE_THEME = {
-  "--scout-chrome-bg": "#f3f0e9",
-  "--scout-chrome-ink": "#2a2d2f",
-  "--scout-chrome-ink-strong": "#171a1c",
-  "--scout-chrome-ink-faint": "#6f716e",
-  "--scout-chrome-ink-ghost": "#9b9a94",
-  "--scout-chrome-border-soft": "#d9d4ca",
-  "--scout-chrome-hover": "#e9e5dc",
-  "--scout-chrome-active": "#ded8cc",
-  "--scout-accent": "#b58a3f",
-} as CSSProperties;
+/* The room's palette lives in direct-voice.css as the .dvp-room token set:
+   paper in light mode, the hue-260 control room in dark. The panel reads
+   vars only, so the theme swap is a cascade, not a re-render. */
 
 const WAVEFORM_AMPLITUDES = [
   2, 4, 7, 5, 3, 6, 9, 5, 3, 4, 8, 6,
@@ -145,9 +157,9 @@ function primaryLabel(phase: DirectVoicePhase): string {
     case "checking":
       return "Checking voice";
     case "processing":
-      return "Transcribing voice turn";
+      return "Cancel turn";
     case "thinking":
-      return "Scout is thinking";
+      return "Cancel turn";
     case "ready":
       return "Start voice turn";
   }
@@ -186,10 +198,10 @@ function VoiceControl({
         disabled={disabled}
         aria-label={actionLabel}
         title={actionLabel}
-        className="group grid h-28 w-28 place-items-center rounded-full border border-[#d4cfc5] bg-white text-[#232729] shadow-[0_14px_34px_rgba(55,48,38,0.12)] outline-none transition-[border-color,box-shadow,transform] duration-200 hover:border-[#b9b2a6] hover:shadow-[0_17px_38px_rgba(55,48,38,0.16)] focus-visible:ring-2 focus-visible:ring-[#9c7736] focus-visible:ring-offset-4 focus-visible:ring-offset-[#f3f0e9] active:scale-[0.98] disabled:cursor-wait disabled:opacity-65"
+        className="group grid h-28 w-28 place-items-center rounded-full border border-[var(--dvp-dial-border)] bg-[var(--dvp-dial-bg)] text-[var(--dvp-dial-ink)] shadow-[var(--dvp-dial-shadow)] outline-none transition-[border-color,box-shadow,transform] duration-200 hover:border-[var(--dvp-dial-border-hover)] hover:shadow-[var(--dvp-dial-shadow-hover)] focus-visible:ring-2 focus-visible:ring-[var(--dvp-focus)] focus-visible:ring-offset-4 focus-visible:ring-offset-[var(--dvp-bg)] active:scale-[0.98] disabled:cursor-wait disabled:opacity-65"
       >
         <svg viewBox="0 0 72 72" className="h-[72px] w-[72px]" aria-hidden="true">
-          <circle cx="36" cy="36" r="24" fill="none" stroke="#d2cec6" strokeWidth="0.8" />
+          <circle cx={36} cy={36} r={24} fill="none" stroke="var(--dvp-ring)" strokeWidth={0.8} />
           {WAVEFORM_SEGMENTS.map((segment, index) => (
             <line
               key={index}
@@ -197,12 +209,12 @@ function VoiceControl({
               y1={segment.y1}
               x2={segment.x2}
               y2={segment.y2}
-              stroke={active ? "#817b71" : "#a5a198"}
+              stroke={active ? "var(--dvp-wave-active)" : "var(--dvp-wave)"}
               strokeWidth="1.15"
               strokeLinecap="round"
             />
           ))}
-          <circle cx="36" cy="36" r="7.5" fill={active ? "#b98a3b" : "#d3b16d"} />
+          <circle cx={36} cy={36} r={7.5} fill={active ? "var(--dvp-orb-active)" : "var(--dvp-orb)"} />
         </svg>
       </button>
     </motion.div>
@@ -233,11 +245,18 @@ export function DirectVoicePanel({
   setupPanel,
   settingsPanel,
   assistantModel,
+  speechIdentity,
   onPrimaryAction,
   onToggleVoiceReplies,
   onToggleSettings,
   onNewChat,
+  onDiscardTake,
   onOpenLive,
+  showModeSwitch = true,
+  showHeading = true,
+  showTranscript = true,
+  title = "Direct Voice",
+  onVoicePhaseChange,
 }: DirectVoicePanelProps) {
   const reduceMotion = useReducedMotion();
   const transcriptEndRef = useRef<HTMLDivElement>(null);
@@ -250,50 +269,103 @@ export function DirectVoicePanel({
     voiceState,
   });
   const copy = PHASE_COPY[phase];
-  const busy = phase === "checking" || phase === "processing" || phase === "thinking";
-  const inputSourceLabel = voiceInputSource
-    ?? (voiceAvailable === true ? "Default input from Scout Menu" : "Checking microphone…");
+  const busy = phase === "checking";
+  const inputSourceLabel = voiceAvailable === false
+    ? "No microphone available"
+    : voiceInputSource ?? (voiceAvailable === true
+      ? "Default input from Scout Menu"
+      : "Checking microphone…");
   const recentMessages = messages.slice(-12);
   const activeTurn = partial || (sending && recentMessages.at(-1)?.body !== pendingAsk ? pendingAsk : null);
   const empty = recentMessages.length === 0 && !activeTurn;
   const currentStage = activeStage(phase);
   const modelLabel = assistantModel?.trim() || "Turn-based voice";
-  const micLabel = voiceAvailable === false
-    ? "Mic offline"
-    : voiceAvailable === null
-      ? "Checking mic"
-      : "Mic active";
   const statusDot = phase === "unavailable"
-    ? "bg-[#a25549]"
+    ? "bg-[var(--dvp-dot-off)]"
     : phase === "ready" || phase === "checking"
-      ? "bg-[#a7a49d]"
-      : "bg-[#b58a3f]";
+      ? "bg-[var(--dvp-dot-idle)]"
+      : "bg-[var(--dvp-accent)]";
+  const [recordStartedAt, setRecordStartedAt] = useState<number | null>(null);
+  const [recordElapsedMs, setRecordElapsedMs] = useState(0);
+
+  useEffect(() => {
+    if (!recording) {
+      setRecordStartedAt(null);
+      setRecordElapsedMs(0);
+      return;
+    }
+    const started = Date.now();
+    setRecordStartedAt(started);
+    const tick = window.setInterval(() => setRecordElapsedMs(Date.now() - started), 100);
+    return () => window.clearInterval(tick);
+  }, [recording]);
+
+  const recordingClock = recording && recordStartedAt !== null
+    ? `${(recordElapsedMs / 1000).toFixed(1)}s`
+    : undefined;
+  const wellSpec = showTranscript
+    ? null
+    : localLiveWellSpec({
+        phase,
+        voiceReplies,
+        inputLabel: inputSourceLabel,
+        inputWarn: voiceAvailable === false,
+        speechIdentity: speechIdentity ?? null,
+        assistantModel,
+        recordingClock,
+      });
+  const wellLayout = phase === "listening" || phase === "processing" || phase === "thinking" || phase === "speaking"
+    ? "row"
+    : "card";
+  const handleWellFlag = (key: string) => {
+    if (key === "mic") {
+      onDiscardTake?.();
+    } else if (key === "speaker") {
+      onToggleVoiceReplies();
+    }
+  };
+  const handleWellTail = (key: "new-chat" | "settings") => {
+    if (key === "new-chat") {
+      onNewChat();
+    } else {
+      onToggleSettings();
+    }
+  };
 
   useEffect(() => {
     transcriptEndRef.current?.scrollIntoView({ block: "nearest" });
   }, [messages.length, pendingAsk]);
 
+  useEffect(() => {
+    onVoicePhaseChange?.(phase);
+  }, [onVoicePhaseChange, phase]);
+
   return (
     <section
-      className="relative flex h-full min-h-0 w-full flex-col overflow-hidden bg-[#f3f0e9] text-[#2a2d2f]"
-      style={DIRECT_VOICE_THEME}
-      aria-label="Direct voice conversation"
+      className={`dvp-room relative flex min-h-0 w-full flex-col bg-[var(--dvp-bg)] text-[var(--dvp-ink)] ${showTranscript ? "h-full overflow-hidden" : "dvp-room--instrument overflow-visible"}`}
+      aria-label={`${title} conversation`}
     >
-      <header className="flex min-h-14 shrink-0 items-center justify-between gap-2 border-b border-[#d9d4ca] px-3 py-2.5 sm:gap-4 sm:px-7">
+      {(showHeading || showTranscript) && (
+      <header className="flex min-h-14 shrink-0 items-center justify-between gap-2 border-b border-[var(--dvp-border)] px-3 py-2.5 sm:gap-4 sm:px-7">
+        {showHeading ? (
         <div className="flex min-w-0 items-center gap-3">
-          <h1 className="truncate font-[var(--font-accent-title)] text-[15px] font-semibold tracking-[-0.018em] text-[#171a1c] sm:text-[17px]">
-            Direct Voice
+          <h1 className="truncate font-[var(--font-accent-title)] text-sm font-semibold tracking-[-0.018em] text-[var(--dvp-heading)] sm:text-base">
+            {title}
           </h1>
-          <span className="hidden h-4 w-px bg-[#d6d1c7] sm:block" aria-hidden="true" />
+          <span className="hidden h-4 w-px bg-[var(--dvp-divider)] sm:block" aria-hidden="true" />
           <div className="hidden min-w-0 items-center gap-2 sm:flex" aria-live="polite">
             <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${statusDot}`} aria-hidden="true" />
-            <span className="truncate text-xs text-[#6f716e]">{copy.label}</span>
+            <span className="truncate text-xs text-[var(--dvp-muted)]">{copy.label}</span>
           </div>
         </div>
+        ) : (
+          <div className="min-w-0 flex-1" />
+        )}
 
         <div className="flex shrink-0 items-center gap-1.5 sm:gap-2">
+          {showModeSwitch && (
           <div
-            className="flex rounded-md border border-[#cbc5ba] bg-[#e8e3da] p-0.5"
+            className="flex rounded-md border border-[var(--dvp-switch-border)] bg-[var(--dvp-switch-bg)] p-0.5"
             role="tablist"
             aria-label="Voice mode"
           >
@@ -301,9 +373,9 @@ export function DirectVoicePanel({
               type="button"
               role="tab"
               aria-selected="true"
-              className="rounded-[4px] bg-[#202426] px-2 py-1.5 text-[11px] font-medium text-white shadow-[0_1px_2px_rgba(0,0,0,0.14)] sm:px-3"
+              className="rounded-[4px] bg-[var(--dvp-switch-active-bg)] px-2 py-1.5 text-[11px] font-medium text-[var(--dvp-switch-active-ink)] shadow-[0_1px_2px_rgba(0,0,0,0.14)] sm:px-3"
             >
-              Direct
+              Local
             </button>
             <button
               type="button"
@@ -311,16 +383,17 @@ export function DirectVoicePanel({
               aria-selected="false"
               onClick={onOpenLive}
               disabled={!onOpenLive}
-              className="rounded-[4px] px-2 py-1.5 text-[11px] font-medium text-[#6a6c69] transition-colors hover:bg-white/65 hover:text-[#232628] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#9c7736] disabled:cursor-default disabled:opacity-45 sm:px-3"
+              className="rounded-[4px] px-2 py-1.5 text-[11px] font-medium text-[var(--dvp-switch-idle)] transition-colors hover:bg-[var(--dvp-switch-hover)] hover:text-[var(--dvp-heading)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--dvp-focus)] disabled:cursor-default disabled:opacity-45 sm:px-3"
             >
               Live
             </button>
           </div>
+          )}
 
           <button
             type="button"
             onClick={onNewChat}
-            className="hidden h-8 items-center gap-1.5 rounded-md px-2 text-xs font-medium text-[#4f5352] transition-colors hover:bg-[#e7e2d9] hover:text-[#191c1e] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#9c7736] min-[430px]:flex sm:px-2.5"
+            className="hidden h-8 items-center gap-1.5 rounded-md px-2 text-xs font-medium text-[var(--dvp-btn)] transition-colors hover:bg-[var(--dvp-hover)] hover:text-[var(--dvp-btn-hover-ink)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--dvp-focus)] min-[430px]:flex sm:px-2.5"
             aria-label="Start a new voice conversation"
             title="New conversation"
           >
@@ -330,10 +403,10 @@ export function DirectVoicePanel({
           <button
             type="button"
             onClick={onToggleVoiceReplies}
-            className={`grid h-8 w-8 place-items-center rounded-md transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#9c7736] ${
+            className={`grid h-8 w-8 place-items-center rounded-md transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--dvp-focus)] ${
               voiceReplies
-                ? "bg-[#e1d5bd] text-[#765923]"
-                : "text-[#6e706d] hover:bg-[#e7e2d9] hover:text-[#191c1e]"
+                ? "bg-[var(--dvp-switch-active-bg)] text-[var(--dvp-switch-active-ink)]"
+                : "text-[var(--dvp-btn)] hover:bg-[var(--dvp-hover)] hover:text-[var(--dvp-btn-hover-ink)]"
             }`}
             aria-pressed={voiceReplies}
             aria-label={voiceReplies ? "Mute spoken replies" : "Enable spoken replies"}
@@ -344,10 +417,10 @@ export function DirectVoicePanel({
           <button
             type="button"
             onClick={onToggleSettings}
-            className={`grid h-8 w-8 place-items-center rounded-md transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#9c7736] ${
+            className={`grid h-8 w-8 place-items-center rounded-md transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--dvp-focus)] ${
               settingsOpen
-                ? "bg-[#e1d5bd] text-[#765923]"
-                : "text-[#6e706d] hover:bg-[#e7e2d9] hover:text-[#191c1e]"
+                ? "bg-[var(--dvp-accent-soft)] text-[var(--dvp-accent-ink)]"
+                : "text-[var(--dvp-btn)] hover:bg-[var(--dvp-hover)] hover:text-[var(--dvp-btn-hover-ink)]"
             }`}
             aria-expanded={settingsOpen}
             aria-label="Voice and Scoutbot settings"
@@ -357,16 +430,18 @@ export function DirectVoicePanel({
           </button>
         </div>
       </header>
+      )}
 
+      {showTranscript ? (
       <div className="min-h-0 flex-1 overflow-y-auto">
         <div className="mx-auto flex min-h-full w-full max-w-[880px] flex-col px-6 py-8 sm:px-10 sm:py-10 lg:px-14">
           <div className="w-full max-w-[720px]">
             {empty ? (
               <div className="pt-1">
-                <p className="font-mono text-[10px] font-semibold uppercase tracking-[0.12em] text-[#8b8983]">
+                <p className="font-mono text-[10px] font-semibold uppercase tracking-[0.12em] text-[var(--dvp-meta-dim)]">
                   Conversation
                 </p>
-                <p className="mt-2 max-w-[38ch] text-sm leading-6 text-[#737570]">
+                <p className="mt-2 max-w-[38ch] text-sm leading-6 text-[var(--dvp-muted)]">
                   Your voice turns and Scout’s replies will appear here.
                 </p>
               </div>
@@ -377,16 +452,22 @@ export function DirectVoicePanel({
                   return (
                     <article key={message.id} className="max-w-[68ch]">
                       <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
-                        <span className="font-mono text-[10px] font-semibold uppercase tracking-[0.12em] text-[#575a59]">
+                        <span className="font-mono text-[10px] font-semibold uppercase tracking-[0.12em] text-[var(--dvp-meta)]">
                           {fromScout ? "Scout" : "You"}
                         </span>
                         {fromScout && (
-                          <span className="text-[10px] text-[#8a8983]">{modelLabel}</span>
+                          <span className="text-[10px] text-[var(--dvp-meta-dim)]">{modelLabel}</span>
                         )}
                       </div>
-                      <p className="mt-1.5 whitespace-pre-wrap text-[15px] leading-6 text-[#25292a] sm:text-base sm:leading-7">
-                        {fromScout ? stripScoutbotUiFences(message.body) : message.body}
-                      </p>
+                      {fromScout ? (
+                        <div className="dvp-markdown mt-1.5 text-sm leading-6 text-[var(--dvp-body)] sm:text-base sm:leading-7">
+                          <ScoutbotMarkdown text={stripScoutbotUiFences(message.body)} />
+                        </div>
+                      ) : (
+                        <p className="mt-1.5 whitespace-pre-wrap text-sm leading-6 text-[var(--dvp-body)] sm:text-base sm:leading-7">
+                          {message.body}
+                        </p>
+                      )}
                     </article>
                   );
                 })}
@@ -394,14 +475,14 @@ export function DirectVoicePanel({
                 {activeTurn && (
                   <article className="max-w-[68ch]" aria-live="polite">
                     <div className="flex items-center gap-2">
-                      <span className="font-mono text-[10px] font-semibold uppercase tracking-[0.12em] text-[#765923]">
+                      <span className="font-mono text-[10px] font-semibold uppercase tracking-[0.12em] text-[var(--dvp-accent-ink)]">
                         You
                       </span>
-                      <span className="text-[10px] text-[#9a7a40]">
+                      <span className="text-[10px] text-[var(--dvp-you-meta)]">
                         {partial ? "Listening" : "Sending"}
                       </span>
                     </div>
-                    <p className="mt-1.5 whitespace-pre-wrap text-[15px] leading-6 text-[#25292a] sm:text-base sm:leading-7">
+                    <p className="mt-1.5 whitespace-pre-wrap text-sm leading-6 text-[var(--dvp-body)] sm:text-base sm:leading-7">
                       {activeTurn}
                     </p>
                   </article>
@@ -412,18 +493,19 @@ export function DirectVoicePanel({
           </div>
         </div>
       </div>
+      ) : null}
 
       <AnimatePresence initial={false}>
-        {(setupPanel || settingsOpen || error) && (
+        {(setupPanel || settingsOpen || (error && showTranscript)) && (
           <motion.div
             initial={reduceMotion ? false : { opacity: 0, y: 6 }}
             animate={{ opacity: 1, y: 0 }}
             exit={reduceMotion ? undefined : { opacity: 0, y: 6 }}
-            className="max-h-[34vh] shrink-0 overflow-y-auto border-y border-[#d9d4ca] bg-[#eeeae2]"
+            className="max-h-[34vh] shrink-0 overflow-y-auto border-y border-[var(--dvp-border)] bg-[var(--dvp-well)]"
           >
             <div className="mx-auto w-full max-w-[880px] px-6 py-4 sm:px-10 lg:px-14">
-              {error && (
-                <p className="mb-3 text-sm leading-6 text-[#93483f]">{error}</p>
+              {error && showTranscript && (
+                <p className="mb-3 text-sm leading-6 text-[var(--dvp-error)]">{error}</p>
               )}
               {setupPanel}
               {settingsOpen && settingsPanel}
@@ -432,22 +514,32 @@ export function DirectVoicePanel({
         )}
       </AnimatePresence>
 
-      <div className="shrink-0 px-5 pb-4 pt-3 sm:px-8 sm:pb-5">
+      <div className={!showTranscript ? "dvp-instrument-stage" : `shrink-0 px-5 pb-4 pt-3 sm:px-8 sm:pb-5`}>
+        {!showTranscript && wellSpec ? (
+          <>
+            <VoiceControlWell
+              spec={wellSpec}
+              layout={wellLayout}
+              onCta={onPrimaryAction}
+              onFlag={handleWellFlag}
+              onTail={handleWellTail}
+            />
+            {error && <p className="dvp-instrument-error">{error}</p>}
+          </>
+        ) : (
+        <>
         <div className="flex flex-col items-center text-center">
           <VoiceControl phase={phase} disabled={busy} onClick={onPrimaryAction} />
           <div className="mt-3" aria-live="polite">
-            <p className="text-sm font-semibold text-[#24282a]">{copy.label}</p>
-            <p className="mt-0.5 text-xs text-[#7a7b76]">{copy.helper}</p>
-          </div>
-          <div className="mt-2 flex items-center gap-1.5 text-[11px] text-[#7b6a49]">
-            <span className="h-1.5 w-1.5 rounded-full bg-[#b58a3f]" aria-hidden="true" />
-            <span>{micLabel}</span>
+            <p className="text-sm font-semibold text-[var(--dvp-phase)]">{copy.label}</p>
+            <p className="mt-0.5 text-xs text-[var(--dvp-helper)]">{copy.helper}</p>
           </div>
         </div>
 
-        <footer className="mx-auto mt-4 flex w-full max-w-[880px] flex-col items-stretch justify-between gap-2 border-t border-[#d9d4ca] pt-3 text-[11px] text-[#747570] sm:flex-row sm:items-center sm:gap-4">
+        {showTranscript && (
+        <footer className="mx-auto mt-4 flex w-full max-w-[880px] flex-col items-stretch justify-between gap-2 border-t border-[var(--dvp-border)] pt-3 text-[11px] text-[var(--dvp-footer)] sm:flex-row sm:items-center sm:gap-4">
           <div className="flex min-w-0 items-center gap-2">
-            <Mic size={12} className="shrink-0 text-[#8b7350]" aria-hidden="true" />
+            <Mic size={12} className="shrink-0 text-[var(--dvp-mic-icon)]" aria-hidden="true" />
             <span className="truncate">Input: {inputSourceLabel}</span>
           </div>
           <div className="flex shrink-0 items-center justify-between gap-3 sm:justify-start" aria-label={`Voice turn state: ${copy.label}`}>
@@ -456,7 +548,8 @@ export function DirectVoicePanel({
               return (
                 <span
                   key={stage.id}
-                  className={active ? "font-medium text-[#5e4821]" : "text-[#96948e]"}
+                  className={active ? "font-medium text-[var(--dvp-stage-active)]" : "text-[var(--dvp-stage-dim)]"}
+                  aria-current={active ? "step" : undefined}
                 >
                   {stage.label}
                 </span>
@@ -464,9 +557,12 @@ export function DirectVoicePanel({
             })}
           </div>
           {status && !sending && phase !== "listening" && (
-            <span className="hidden max-w-48 truncate text-right text-[#96948e] lg:block">{status}</span>
+            <span className="hidden max-w-48 truncate text-right text-[var(--dvp-stage-dim)] lg:block">{status}</span>
           )}
         </footer>
+        )}
+        </>
+        )}
       </div>
     </section>
   );

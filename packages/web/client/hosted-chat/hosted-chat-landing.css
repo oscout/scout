@@ -1,0 +1,593 @@
+/* Hosted Scout Chat — the signed-out door.
+ *
+ * Owned entirely by `HostedChatLanding.tsx`; every selector is `hcl-` prefixed
+ * so nothing here can reach the shared Chat surface, and nothing in
+ * `chat-space.css` has to know this file exists.
+ *
+ * Every color is a live token. The single lime accent is spent once, on the
+ * sign-in button: the example room beside it carries no accent at all, which is
+ * what keeps the eye landing on the one thing there is to do. Surfaces are flat
+ * at rest, separated by 1px hairlines and a tonal step, per DESIGN.md.
+ */
+
+/* The plane is the scroll container, and the band scrolls with it rather than
+   being a fixed row above a scrolling pane. Two reasons, and the second is the
+   one that bites: a header on an entrance is a header, not app chrome that must
+   survive the scroll; and a band outside the scrolling element does not lose
+   the scrollbar's width, so on any platform with classic scrollbars the brand
+   would sit ~15px left of the column it is supposed to head. */
+.hcl {
+  position: fixed;
+  inset: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--font-sans);
+  font-size: var(--text-lg);
+  line-height: var(--leading-normal);
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+
+.hcl *,
+.hcl *::before,
+.hcl *::after { box-sizing: border-box; }
+
+/* The shared surfaces strip the outline and restore an equivalent ring; this
+   plane does not inherit theirs, so it declares its own. */
+.hcl :focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+/* ── top band ─────────────────────────────────────────────────────────────── */
+
+/* The same 40px band, hairline and surface wash the app's own topbar uses. Its
+   inner measure is the shell's, so the brand sits over the door and the posture
+   word over the example room's right edge at every width. */
+.hcl-bar {
+  height: 40px;
+  display: flex;
+  align-items: center;
+  padding: 0 clamp(20px, 4vw, 64px);
+  border-bottom: 1px solid var(--border);
+  background: color-mix(in srgb, var(--surface) 55%, var(--bg));
+}
+.hcl-bar-inner {
+  width: 100%;
+  max-width: 1380px;
+  margin: 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3xl);
+}
+.hcl-bar-brand {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-sm);
+  font-size: var(--text-md);
+  color: var(--ink);
+}
+.hcl-bar-brand b { font-weight: 600; }
+.hcl-mark { width: 15px; height: 15px; flex: none; color: var(--accent); }
+/* --muted, not --dim: on the warm paper canvas --dim measures 3.22:1, which is
+   fine for chrome inside a picture of the app and not fine for a line the
+   visitor is meant to read. The same reason governs the note, the slip host,
+   the readout keys and the example caption below. */
+.hcl-bar-posture {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--muted);
+}
+/* The band's right side: the posture word, then the door's one control that
+   is not the sign-in. */
+.hcl-bar-side {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-3xl);
+  flex: none;
+}
+
+/* Day / night / auto, as a segmented pill rather than a menu. The signed-in
+   sidebar keeps the same three states behind the identity menu because it is
+   a working surface; the door is a surface you look at, and the theme is part
+   of what is being shown, so the control stays on the bar.
+   The active segment takes the neutral chrome fill, not the lime — the accent
+   is spent on the sign-in, and a lime segment would read as a third action. */
+.hcl-themes {
+  display: inline-flex;
+  align-items: center;
+  padding: var(--space-3xs);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  background: color-mix(in srgb, var(--surface) 45%, var(--bg));
+}
+.hcl-theme {
+  appearance: none;
+  margin: 0;
+  border: 0;
+  border-radius: var(--radius-pill);
+  background: transparent;
+  padding: var(--space-2xs) var(--space-md);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  line-height: var(--leading-tight);
+  letter-spacing: var(--tracking-sm);
+  color: var(--muted);
+  cursor: pointer;
+  transition:
+    color var(--motion-duration-hover) var(--motion-ease-standard),
+    background-color var(--motion-duration-hover) var(--motion-ease-standard);
+}
+.hcl-theme:hover { color: var(--ink); }
+.hcl-theme[data-active="true"] {
+  background: var(--scout-chrome-active);
+  color: var(--ink);
+}
+
+/* ── shell ────────────────────────────────────────────────────────────────── */
+
+.hcl-shell {
+  /* Fill what the band leaves, so a short page still centres in the plane and a
+     tall one simply grows past it. */
+  min-height: calc(100vh - 40px);
+  min-height: calc(100dvh - 40px);
+  display: grid;
+  justify-items: center;
+  align-content: center;
+  /* `safe` keeps the top reachable when the content is taller than the plane;
+     plain `center` would clip it above the scroll origin. */
+  align-content: safe center;
+  padding: clamp(24px, 3.5vw, 56px) clamp(20px, 4vw, 64px);
+}
+
+/* Two planes, capped at a measure. The previous page put a 340px column in a
+   3440px field; the cap is what stops the content drifting, and the second
+   plane is what makes the width earned rather than padded.
+
+   Named areas rather than source order, because the stacked order is not the
+   side-by-side order: on one column the room has to come *before* the readout,
+   or the only picture of the product on the page lands below 1100px of text. */
+.hcl-grid {
+  width: 100%;
+  max-width: 1380px;
+  display: grid;
+  grid-template-columns: minmax(0, 440px) minmax(0, 1fr);
+  grid-template-areas:
+    "door room"
+    "read room";
+  column-gap: clamp(32px, 5vw, 72px);
+  row-gap: var(--space-6xl);
+  align-items: start;
+}
+.hcl-door { grid-area: door; }
+.hcl-read { grid-area: read; }
+.hcl-room { grid-area: room; align-self: center; }
+
+/* ── the door ─────────────────────────────────────────────────────────────── */
+
+.hcl-door {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  min-width: 0;
+}
+
+/* The brand, alive. Ink rather than accent: the accent is spent on the one
+   action below, and a lime dot field would compete with it. The hex carries the
+   identity; the colour does not have to. */
+.hcl-shimmer {
+  margin-bottom: var(--space-5xl);
+  color: var(--ink);
+}
+
+/* The address slip: where the visitor already is, in the machine's own voice. */
+.hcl-slip {
+  margin: 0 0 var(--space-4xl);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-2xs);
+  font-family: var(--font-mono);
+  font-size: var(--text-md);
+  line-height: var(--leading-tight);
+}
+.hcl-slip-host { color: var(--muted); }
+.hcl-slip-path {
+  color: var(--ink);
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.hcl-slip-note {
+  flex: 1 0 100%;
+  margin-top: var(--space-xs);
+  font-family: var(--font-sans);
+  font-size: var(--text-md);
+  color: var(--muted);
+}
+
+.hcl-head {
+  margin: 0;
+  font-family: var(--font-accent-title);
+  font-size: var(--display-md);
+  font-weight: 600;
+  line-height: var(--leading-display);
+  letter-spacing: -0.02em;
+  text-wrap: balance;
+}
+
+.hcl-lede {
+  margin: var(--space-3xl) 0 0;
+  max-width: 62ch;
+  font-size: var(--text-xl);
+  line-height: var(--leading-snug);
+  color: var(--muted);
+  text-wrap: pretty;
+}
+
+/* ── the action ───────────────────────────────────────────────────────────── */
+
+.hcl-act {
+  margin-top: var(--space-6xl);
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-lg);
+  max-width: 62ch;
+}
+
+/* `.btn--primary` — the solid ink slab DESIGN.md calls "the one highest-contrast
+   action" — rather than `.btn--accent`. The accent button is lime text on a 15%
+   lime wash, which measures 13.9:1 on the dark canvas and 2.27:1 on the warm
+   paper one; a page whose whole job is one sign-in cannot have its single
+   control fail in a theme. The lime stays on the page as the mark and the focus
+   ring, where it is legible in both.
+
+   A hero action is not an app control: the `.btn` sizes are toolbar sizes, so
+   the door widens one in place rather than inventing a second button family.
+   Two classes deliberately — CSS order between `primitives.css` and a
+   per-component sheet is decided by the entry's import order, and a size that
+   only wins on source order is a size that will quietly lose one day. */
+.hcl .hcl-cta {
+  padding: var(--space-lg) var(--space-4xl);
+  font-size: var(--text-xl);
+  font-weight: 600;
+  gap: var(--space-md);
+  text-decoration: none;
+}
+.hcl .hcl-cta[data-busy="true"] {
+  opacity: 0.55;
+  cursor: progress;
+}
+.hcl-gh { width: 16px; height: 16px; flex: none; }
+
+.hcl-message {
+  margin: 0;
+  font-size: var(--text-lg);
+  color: var(--muted);
+}
+.hcl-note {
+  margin: 0;
+  font-size: var(--text-md);
+  line-height: var(--leading-snug);
+  color: var(--muted);
+}
+.hcl-error {
+  margin: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-lg);
+  font-size: var(--text-lg);
+  color: color-mix(in srgb, var(--red) 86%, var(--ink));
+}
+.hcl-retry { flex: none; }
+
+/* ── links ────────────────────────────────────────────────────────────────── */
+
+/* Four quiet destinations under the action, ruled off so they read as the
+   page's margin and not as a second toolbar. The door asks for exactly one
+   thing; these must not look like a second one. */
+.hcl-links {
+  margin-top: var(--space-5xl);
+  width: 100%;
+  max-width: 62ch;
+  padding-top: var(--space-2xl);
+  border-top: 1px solid var(--border);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-lg) var(--space-3xl);
+}
+.hcl-link {
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  color: var(--muted);
+  text-decoration: none;
+  border-bottom: 1px solid transparent;
+  transition:
+    color var(--motion-duration-hover) var(--motion-ease-standard),
+    border-color var(--motion-duration-hover) var(--motion-ease-standard);
+}
+.hcl-link:hover {
+  color: var(--ink);
+  border-bottom-color: var(--border);
+}
+
+/* ── the readout ──────────────────────────────────────────────────────────── */
+
+/* Three definitions on hairlines, not three cards: these are what the words
+   mean here, and a card trio would claim they are features of equal weight. */
+.hcl-read {
+  margin: 0;
+  width: 100%;
+  border-top: 1px solid var(--border);
+}
+.hcl-read-row {
+  display: grid;
+  grid-template-columns: 86px minmax(0, 1fr);
+  gap: var(--space-2xl);
+  align-items: baseline;
+  padding: var(--space-lg) 0;
+  border-bottom: 1px solid var(--border);
+}
+.hcl-read-k {
+  margin: 0;
+  color: var(--muted);
+  /* The eyebrow tiers set size and tracking; only the baseline nudge is local. */
+  padding-top: 2px;
+}
+.hcl-read-v {
+  margin: 0;
+  max-width: 62ch;
+  font-size: var(--text-lg);
+  line-height: var(--leading-snug);
+  color: var(--muted);
+}
+
+/* ── the example room ─────────────────────────────────────────────────────── */
+
+.hcl-room {
+  margin: 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-lg);
+}
+
+/* Inert by construction: it is a picture of the product, and a picture must not
+   accept a click, a caret or a text selection. */
+.hcl-room-frame {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-2xl);
+  background: var(--bg);
+  overflow: hidden;
+  pointer-events: none;
+  user-select: none;
+  display: grid;
+  grid-template-rows: 40px minmax(0, 1fr);
+  min-height: min(540px, 68vh);
+  /* The one standing shadow on the page: this plane is a window over the
+     canvas, which is the case DESIGN.md reserves window chrome for. */
+  box-shadow: 0 12px 34px var(--shadow-soft);
+}
+
+.hcl-room-bar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-lg);
+  padding: 0 var(--space-lg);
+  border-bottom: 1px solid var(--border);
+  background: color-mix(in srgb, var(--surface) 55%, var(--bg));
+}
+.hcl-room-brand {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-xs);
+  font-size: var(--text-md);
+}
+.hcl-room-brand b { font-weight: 600; }
+.hcl-room-brand .hcl-mark { width: 12px; height: 12px; }
+.hcl-room-addr {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--dim);
+}
+.hcl-room-faces {
+  display: flex;
+  align-items: center;
+  margin-left: auto;
+  flex: none;
+}
+.hcl-room-faces > * {
+  position: relative;
+  margin-left: -8px;
+  box-shadow: 0 0 0 2px var(--bg);
+  border-radius: 50%;
+}
+.hcl-room-faces > *:first-child { margin-left: 0; }
+.hcl-room .xc-badge-mark { z-index: 2; }
+
+.hcl-room-body {
+  display: grid;
+  grid-template-columns: 168px minmax(0, 1fr);
+  min-height: 0;
+  height: 100%;
+}
+
+.hcl-room-rail {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2xs);
+  padding: var(--space-lg) var(--space-md);
+  border-right: 1px solid var(--border);
+  background: color-mix(in srgb, var(--surface) 40%, var(--bg));
+}
+.hcl-room-group {
+  color: var(--dim);
+  padding: var(--space-xs) var(--space-sm) var(--space-2xs);
+}
+.hcl-room-chan {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  padding: var(--space-xs) var(--space-sm);
+  border-radius: var(--radius-md);
+  font-size: var(--text-md);
+  color: var(--muted);
+  white-space: nowrap;
+}
+.hcl-room-chan i { font-style: normal; color: var(--dim); }
+.hcl-room-chan[data-on="true"] {
+  background: var(--scout-chrome-active);
+  color: var(--ink);
+  font-weight: 500;
+}
+.hcl-room-rule {
+  height: 1px;
+  margin: var(--space-md) var(--space-sm);
+  background: var(--border);
+}
+.hcl-room-who {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  padding: var(--space-2xs) var(--space-sm);
+  font-size: var(--text-md);
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.hcl-room-feed {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2xl);
+  padding: var(--space-3xl) var(--space-3xl) var(--space-lg);
+  min-width: 0;
+  height: 100%;
+}
+
+/* The real feed's turn: a 40px avatar column and the body beside it. */
+.hcl-turn {
+  display: grid;
+  grid-template-columns: 40px minmax(0, 1fr);
+  gap: var(--space-lg);
+}
+.hcl-turn > :first-child { align-self: start; }
+.hcl-turn-meta {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-sm);
+}
+.hcl-turn-who { font-size: var(--text-md); font-weight: 600; }
+.hcl-turn-when {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--dim);
+}
+.hcl-turn-body {
+  margin: var(--space-3xs) 0 0;
+  font-size: var(--text-lg);
+  line-height: var(--leading-snug);
+  color: color-mix(in srgb, var(--ink) 92%, transparent);
+}
+/* What the hosted roster actually reports of an invited agent. */
+.hcl-turn-sub {
+  margin: var(--space-xs) 0 0;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--dim);
+}
+.hcl-mention {
+  font-weight: 600;
+  background: var(--scout-chrome-hover);
+  border-radius: var(--radius-xs);
+  padding: 0 3px;
+}
+
+.hcl-room-composer {
+  margin-top: auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-lg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xl);
+  padding: var(--space-md) var(--space-md) var(--space-md) var(--space-lg);
+  font-size: var(--text-lg);
+  color: var(--dim);
+}
+.hcl-room-send {
+  border-radius: var(--radius-md);
+  padding: var(--space-2xs) var(--space-md);
+  background: var(--scout-chrome-active);
+  color: var(--muted);
+  font-size: var(--text-md);
+  font-weight: 500;
+}
+
+.hcl-room-cap {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-md);
+  font-size: var(--text-md);
+  line-height: var(--leading-snug);
+  color: var(--muted);
+}
+.hcl-room-cap .label-md { flex: none; color: var(--ink); }
+
+/* ── motion ───────────────────────────────────────────────────────────────── */
+
+/* One authored moment: the room settles in, turn by turn, the way it does when
+   a channel loads. It starts visible — the animation adds the arrival, it is
+   never what makes the content appear. */
+@keyframes hcl-settle {
+  from { opacity: 0.35; transform: translateY(6px); }
+  to { opacity: 1; transform: none; }
+}
+.hcl-turn {
+  animation: hcl-settle var(--motion-duration-enter) var(--motion-ease-emphasis) both;
+  animation-delay: calc(var(--i, 0) * 90ms + 120ms);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .hcl-turn { animation: none; }
+}
+
+/* ── responsive ───────────────────────────────────────────────────────────── */
+
+/* Below 1100 the two planes stop being a spread: the door leads, the room
+   follows it down the page at full width. */
+@media (max-width: 1099px) {
+  .hcl-shell { align-content: start; padding-top: clamp(32px, 6vw, 64px); }
+  /* The band follows the shell's narrower measure so the brand stays over the
+     door rather than 30px to its left. */
+  .hcl-bar-inner { max-width: 640px; }
+  .hcl-grid {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-areas: "door" "room" "read";
+    max-width: 640px;
+    row-gap: var(--space-8xl);
+  }
+}
+
+/* Below 720 the room's own sidebar is the first thing to go — a 148px rail on a
+   phone leaves no measure for the messages it is there to introduce. */
+@media (max-width: 719px) {
+  /* The posture word is decoration; the theme switch is a control. On a phone
+     width the word yields so brand and control both keep their measure. */
+  .hcl-bar-posture { display: none; }
+  .hcl-head { letter-spacing: -0.01em; }
+  .hcl-act { margin-top: var(--space-5xl); }
+  .hcl-cta { width: 100%; justify-content: center; }
+  .hcl-read-row {
+    grid-template-columns: minmax(0, 1fr);
+    gap: var(--space-xs);
+  }
+  .hcl-room-frame { min-height: 420px; }
+  .hcl-room-body { grid-template-columns: minmax(0, 1fr); }
+  .hcl-room-rail { display: none; }
+  .hcl-room-faces { display: none; }
+  .hcl-room-feed { padding: var(--space-2xl) var(--space-2xl) var(--space-lg); gap: var(--space-2xl); }
+  .hcl-room-cap { flex-direction: column; gap: var(--space-xs); }
+}

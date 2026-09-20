@@ -1,6 +1,6 @@
 {
   "name": "@openscout/web",
-  "version": "0.2.105",
+  "version": "0.2.106",
   "private": true,
   "description": "Standalone lightweight Scout web UI with its own bundled Bun server",
   "license": "Apache-2.0",
@@ -18,6 +18,7 @@
     "check": "node ./scripts/typecheck.mjs",
     "check:update": "node ./scripts/typecheck.mjs --update",
     "build:client": "vite build",
+    "build:hosted-chat": "vite build --config vite.hosted-chat.config.ts",
     "build:native-surfaces": "node ./scripts/build-native-surfaces.mjs",
     "check:native-surfaces": "node ./scripts/validate-native-surfaces.mjs ../../apps/ios/Scout/Resources/WebSurfaces",
     "build:server": "node ./scripts/sync-terminal-relay-session.mjs --check && bun build ./server/index.ts --target=bun --format=esm --outfile ./dist/openscout-web-server.mjs && bun build ./server/pairing-runtime-controller.ts --target=bun --format=esm --outfile ./dist/pairing-runtime-controller.mjs && bun build ./server/knowledge-index-child.ts --target=bun --format=esm --outfile ./dist/knowledge-index-child.mjs && bun build ./server/terminal-relay-node.ts --target=node --format=esm --outfile ./dist/openscout-terminal-relay.mjs --external @lydell/node-pty",

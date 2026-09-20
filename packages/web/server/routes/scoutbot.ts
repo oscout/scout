@@ -1,4 +1,6 @@
+import { runScoutbotCodexTurn } from "../scoutbot-codex-turn.ts";
 import type { Hono } from "hono";
+import { ScoutbotUsageStore } from "../scoutbot-usage.ts";
 import {
   getTailDiscovery,
   readRecentTranscriptEvents,
@@ -7,10 +9,10 @@ import {
 } from "@openscout/runtime/tail";
 import { resolveOperatorName } from "@openscout/runtime/user-config";
 import {
-  interruptCodexAppServerLocalAgent,
-  invokeCodexAppServerLocalAgent,
+  type CodexAppServerSessionOptions,
   normalizeCodexAppServerLaunchArgs,
 } from "@openscout/agent-sessions/local";
+import { resolveCodexExecutableInventory } from "@openscout/agent-sessions";
 import { relayAgentLogsDirectory, relayAgentRuntimeDirectory } from "@openscout/runtime/support-paths";
 
 import {
@@ -47,6 +49,8 @@ import {
   type ScoutbotBriefReference,
   type ScoutbotCodexAssistantInvoker,
 } from "../scoutbot-assistant.ts";
+import { SESSION_RECAP_SYSTEM_PROMPT, buildSessionRecap } from "../session-recap.ts";
+import { loadSessionRefObservePayload } from "../core/observe/service.ts";
 import {
   createScoutbotReminderStore,
   ScoutbotReminderError,
@@ -87,10 +91,13 @@ export type ScoutbotLoadBuildInfo = (currentDirectory: string) => ScoutbotBuildI
 
 export type ScoutbotServicesOptions = {
   currentDirectory: string;
+  usage?: () => ScoutbotUsageStore;
   tailRuntime: WebTailRuntime;
   loadOperatorAttention: ScoutbotLoadOperatorAttention;
   loadBuildInfo: ScoutbotLoadBuildInfo;
   invokeCodex?: ScoutbotCodexAssistantInvoker;
+  /** Injectable for tests; defaults to the cached codex-executable probe. */
+  agentAvailable?: () => boolean;
   scoutbot?: {
     enabled?: boolean;
     brokerBaseUrl?: string;
@@ -98,6 +105,8 @@ export type ScoutbotServicesOptions = {
 };
 
 export type ScoutbotWebServices = {
+  usage: () => ScoutbotUsageStore;
+  closeUsage?: () => void;
   assistant: ReturnType<typeof createScoutbotAssistantService>;
   reminders: ReturnType<typeof createScoutbotReminderStore>;
   credentials: ReturnType<typeof createScoutbotCredentialStore>;
@@ -696,49 +705,48 @@ function buildScoutbotCodexProcessEnv(currentDirectory: string): NodeJS.ProcessE
 
 function createDefaultScoutbotCodexInvoker(currentDirectory: string): ScoutbotCodexAssistantInvoker {
   return async (input) => {
-    const runtimeName = `scoutbot-assistant-${sanitizeSupportPathSegment(input.sessionId)}`;
-    const invocation: Parameters<typeof invokeCodexAppServerLocalAgent>[0] = {
-      agentName: "scoutbot-assistant",
-      sessionId: input.sessionId,
-      cwd: currentDirectory,
-      systemPrompt: input.systemPrompt,
-      runtimeDirectory: relayAgentRuntimeDirectory(runtimeName),
-      logsDirectory: relayAgentLogsDirectory(runtimeName),
-      launchArgs: buildScoutbotAssistantCodexLaunchArgs(process.env),
-      processEnv: buildScoutbotCodexProcessEnv(currentDirectory),
-      ...(input.threadId ? { threadId: input.threadId } : {}),
-      prompt: input.prompt,
-      timeoutMs: input.timeoutMs,
-      approvalPolicy: "never",
-      sandbox: "read-only",
-    };
-    if (input.signal?.aborted) throw new DOMException("aborted", "AbortError");
-    const interrupt = () => {
-      void interruptCodexAppServerLocalAgent(invocation).catch(() => {});
-    };
-    input.signal?.addEventListener("abort", interrupt, { once: true });
-    let result;
-    try {
-      result = await invokeCodexAppServerLocalAgent(invocation);
-      if (input.signal?.aborted) throw new DOMException("aborted", "AbortError");
-    } finally {
-      input.signal?.removeEventListener("abort", interrupt);
-    }
-    return {
-      output: result.output,
-      threadId: result.threadId,
-    };
+    return runScoutbotCodexTurn(input, (turnId, signal, onDelta): CodexAppServerSessionOptions => {
+      const runtimeName = `scoutbot-assistant-${sanitizeSupportPathSegment(turnId)}`;
+      return {
+        agentName: "scoutbot-assistant",
+        sessionId: turnId,
+        cwd: currentDirectory,
+        systemPrompt: input.systemPrompt,
+        runtimeDirectory: relayAgentRuntimeDirectory(runtimeName),
+        logsDirectory: relayAgentLogsDirectory(runtimeName),
+        launchArgs: buildScoutbotAssistantCodexLaunchArgs(process.env, input.model),
+        processEnv: buildScoutbotCodexProcessEnv(currentDirectory),
+        approvalPolicy: "never",
+        sandbox: "read-only",
+        signal,
+        onDelta,
+      };
+    });
   };
 }
 
-function buildScoutbotAssistantCodexLaunchArgs(env: NodeJS.ProcessEnv): string[] {
+function buildScoutbotAssistantCodexLaunchArgs(env: NodeJS.ProcessEnv, modelOverride?: string | null): string[] {
   const args: string[] = [];
-  const model = env.OPENSCOUT_SCOUTBOT_CODEX_MODEL?.trim();
+  const model = modelOverride?.trim() || env.OPENSCOUT_SCOUTBOT_CODEX_MODEL?.trim();
   const reasoningEffort = env.OPENSCOUT_SCOUTBOT_CODEX_REASONING_EFFORT?.trim()
     || SCOUTBOT_REASONING_EFFORT;
   if (model) args.push("--model", model);
   if (reasoningEffort) args.push("--reasoning-effort", reasoningEffort);
   return normalizeCodexAppServerLaunchArgs(args);
+}
+
+/**
+ * Launch check for the Scout-managed agent path: a codex executable the
+ * app-server transport can spawn. Probed lazily on first use; the result is
+ * cached for the life of the service so a missing harness never re-probes.
+ */
+function createScoutbotAgentAvailabilityProbe(): () => boolean {
+  let cached: boolean | null = null;
+  return () => {
+    if (cached !== null) return cached;
+    cached = resolveCodexExecutableInventory(process.env).selected !== null;
+    return cached;
+  };
 }
 
 function sanitizeSupportPathSegment(value: string): string {
@@ -765,8 +773,15 @@ export async function createScoutbotWebServices(
     return configuredKey || scoutbotCredentials.getOpenAIKey()?.trim() || undefined;
   };
   const tailRuntime = options.tailRuntime;
+  let usageStore: ScoutbotUsageStore | undefined;
+  const usage = options.usage ?? (() => usageStore ??= new ScoutbotUsageStore());
+  // The probe guards the real default transport. An explicitly injected
+  // invoker (tests, embedded hosts) vouches for the agent path itself.
+  const agentAvailable = options.agentAvailable
+    ?? (options.invokeCodex ? () => true : createScoutbotAgentAvailabilityProbe());
   const scoutbotAssistant = createScoutbotAssistantService({
     currentDirectory,
+    usage,
     loadContext: async (route) => ({
       ...(await buildScoutbotAssistantControlState(currentDirectory, tailRuntime, loadOperatorAttention, loadBuildInfo, route)),
       reminders: scoutbotReminders.getState(),
@@ -774,6 +789,7 @@ export async function createScoutbotWebServices(
     resolveApiKey: resolveOpenAIApiKey,
     invokeCodex: options.invokeCodex
       ?? createDefaultScoutbotCodexInvoker(currentDirectory),
+    agentAvailable,
   });
   let scoutbotRunner: ScoutbotRunnerHandle | null = null;
   let scoutbotRunnerStart: Promise<ScoutbotRunnerHandle | null> | null = null;
@@ -854,6 +870,8 @@ export async function createScoutbotWebServices(
 
   return {
     assistant: scoutbotAssistant,
+    usage,
+    closeUsage: () => { usageStore?.close(); usageStore = undefined; },
     reminders: scoutbotReminders,
     credentials: scoutbotCredentials,
     resolveOpenAIApiKey,
@@ -966,16 +984,111 @@ export function mountScoutbotRoutes(
     credentials.deleteOpenAIKey();
     return c.json(await resolveScoutbotCredentialState(credentials));
   });
+  app.post("/api/scoutbot/session-recap", async (c) => {
+    const body = (await c.req.json().catch(() => ({}))) as {
+      sessionRef?: unknown;
+      harness?: unknown;
+    };
+    try {
+      const recap = await buildSessionRecap({
+        sessionRef: body.sessionRef,
+        harness: body.harness,
+        loadObserve: (ref) => loadSessionRefObservePayload(ref),
+        summarize: (payload, signal) => assistant.summarizeSessionRecap({
+          body: JSON.stringify(payload),
+          systemPrompt: SESSION_RECAP_SYSTEM_PROMPT,
+          signal,
+        }),
+        signal: c.req.raw.signal,
+      });
+      return c.json(recap);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Scoutbot session recap failed";
+      const status = error instanceof ScoutbotAssistantError ? error.status : 500;
+      return c.json({ error: message }, status as 400 | 408 | 500 | 502 | 503 | 504);
+    }
+  });
   app.post("/api/scoutbot/chat", async (c) => {
     const body = (await c.req.json().catch(() => ({}))) as {
       body?: string;
       route?: unknown;
       uiContext?: unknown;
       voiceTurn?: unknown;
+      stream?: unknown;
+      usageMode?: unknown;
     };
     const voiceTurn = normalizeVoiceTurn(body.voiceTurn);
     if (body.voiceTurn !== undefined && !voiceTurn) {
       return c.json({ error: "voiceTurn requires non-negative integer turn and gen" }, 400);
+    }
+
+    // Advisory UI attribution only, never a routing or authorization input.
+    // The stream helper already forwards uiContext; canonical prompt context
+    // discards this telemetry field. Explicit API delegation takes precedence.
+    const contextMode = body.uiContext && typeof body.uiContext === "object"
+      ? (body.uiContext as Record<string, unknown>).usageMode : undefined;
+    const usageMode = voiceTurn || body.usageMode === "api" ? "api"
+      : body.usageMode === "local" || contextMode === "local" ? "local" : "chat";
+
+    if (body.stream === true) {
+      // Sentence-streamed variant for voice turns: sentences arrive as SSE
+      // `sentence` events while the reply generates, then one `final` event
+      // carrying the exact payload the non-streaming path returns (voiceTurn
+      // echo included). Failures arrive as an in-band `error` event with the
+      // same status semantics; the stream always ends after final or error.
+      const encoder = new TextEncoder();
+      const streamAbort = new AbortController();
+      const signal = AbortSignal.any([c.req.raw.signal, streamAbort.signal]);
+      const stream = new ReadableStream<Uint8Array>({
+        cancel() { streamAbort.abort(); },
+        start(controller) {
+          let closed = false;
+          const send = (event: string, data: unknown) => {
+            if (closed) return;
+            try {
+              controller.enqueue(encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`));
+            } catch {
+              closed = true;
+            }
+          };
+          const close = () => {
+            if (closed) return;
+            closed = true;
+            try {
+              controller.close();
+            } catch {
+              /* already closed */
+            }
+          };
+          void (async () => {
+            try {
+              const reply = await assistant.respondStream({
+                body: body.body ?? "",
+                route: body.route,
+                uiContext: body.uiContext,
+                usageMode,
+                signal,
+                onSentence: (text) => send("sentence", { text }),
+              });
+              send("final", { ...reply, ...(voiceTurn ? { voiceTurn } : {}) });
+            } catch (error) {
+              const message = error instanceof Error ? error.message : "Scoutbot assistant failed";
+              const status = error instanceof ScoutbotAssistantError ? error.status : 500;
+              send("error", { error: message, status });
+            } finally {
+              close();
+            }
+          })();
+        },
+      });
+      return new Response(stream, {
+        headers: {
+          "content-type": "text/event-stream",
+          "cache-control": "no-cache, no-transform",
+          connection: "keep-alive",
+          "x-accel-buffering": "no",
+        },
+      });
     }
 
     try {
@@ -983,6 +1096,7 @@ export function mountScoutbotRoutes(
         body: body.body ?? "",
         route: body.route,
         uiContext: body.uiContext,
+        usageMode,
         signal: c.req.raw.signal,
       });
       return c.json({ ...reply, ...(voiceTurn ? { voiceTurn } : {}) });

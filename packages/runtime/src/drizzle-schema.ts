@@ -361,6 +361,17 @@ export const messageMentionsTable = sqliteTable("message_mentions", {
   primaryKey({ columns: [table.messageId, table.actorId] }),
 ]);
 
+// -- message_reactions -------------------------------------------------------
+export const messageReactionsTable = sqliteTable("message_reactions", {
+  messageId: text("message_id").notNull().references(() => messagesTable.id, { onDelete: "cascade" }),
+  actorId: text("actor_id").notNull().references(() => actorsTable.id, { onDelete: "restrict" }),
+  emoji: text("emoji").notNull(),
+  createdAt: integer("created_at").notNull(),
+}, (table) => [
+  primaryKey({ columns: [table.messageId, table.actorId, table.emoji] }),
+  index("idx_message_reactions_message").on(table.messageId),
+]);
+
 // -- message_attachments -----------------------------------------------------
 export const messageAttachmentsTable = sqliteTable("message_attachments", {
   id: text("id").primaryKey(),
@@ -1110,6 +1121,7 @@ export const controlPlaneDrizzleSchema = {
   conversationMembers: conversationMembersTable,
   messages: messagesTable,
   messageMentions: messageMentionsTable,
+  messageReactions: messageReactionsTable,
   messageAttachments: messageAttachmentsTable,
   conversationReadCursors: conversationReadCursorsTable,
   brokerJournalProjectionCheckpoints: brokerJournalProjectionCheckpointsTable,

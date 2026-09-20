@@ -1,0 +1,59 @@
+.s-session-context-strip {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-md);
+  padding: var(--space-2xs) 0 var(--space-sm);
+  font-size: var(--text-sm);
+  color: var(--dim);
+  flex-wrap: wrap;
+}
+
+.s-session-context-strip-main {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-sm);
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.s-session-context-strip-title {
+  color: var(--ink);
+  font-weight: 600;
+}
+
+.s-session-context-strip-workspace {
+  display: inline-flex;
+  align-items: baseline;
+  gap: var(--space-2xs);
+  min-width: 0;
+}
+
+.s-session-context-strip-identity {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  user-select: all;
+  overflow-wrap: anywhere;
+}
+
+.s-session-context-strip-path {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  user-select: all;
+  overflow-wrap: anywhere;
+}
+
+.s-session-context-strip-workspace--missing {
+  font-style: normal;
+}
+
+.s-session-context-strip-copy {
+  flex-shrink: 0;
+}
+
+.s-session-context-strip-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2xs);
+  flex-shrink: 0;
+}
