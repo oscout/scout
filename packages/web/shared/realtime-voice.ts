@@ -16,6 +16,10 @@ export type ScoutRealtimeVoiceSettings = {
   source: "settings" | "environment";
   /** Environment-controlled states cannot be changed from Settings. */
   locked: boolean;
+  /** The speech-to-speech model a call will use (OPENSCOUT_REALTIME_MODEL). */
+  model?: string;
+  /** The OpenAI voice a call will speak with (OPENSCOUT_REALTIME_VOICE). */
+  voice?: string;
 };
 
 // Live is full-duplex and owns turn-taking itself, so there is no server VAD or

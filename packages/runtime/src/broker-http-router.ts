@@ -1097,6 +1097,21 @@ export function createBrokerHttpRouter(
     return;
   }
 
+  if (method === "GET" && url.pathname === "/v1/message-reactions") {
+    const channelId = url.searchParams.get("conversationId")?.trim()
+      || url.searchParams.get("channelId")?.trim();
+    if (!channelId) {
+      badRequest(response, new Error("conversationId is required"));
+      return;
+    }
+    try {
+      json(response, 200, await brokerService.listMessageReactions?.(channelId) ?? []);
+    } catch (error) {
+      badRequest(response, error);
+    }
+    return;
+  }
+
   if (method === "GET" && url.pathname === "/v1/messages") {
     json(response, 200, await brokerService.readMessages?.({
       conversationId: url.searchParams.get("conversationId")?.trim() || undefined,
@@ -1989,6 +2004,52 @@ export function createBrokerHttpRouter(
       const result = await brokerService.postConversationMessage?.(message);
       json(response, 200, result);
     } catch (error) {
+      badRequest(response, error);
+    }
+    return;
+  }
+
+  if (
+    method === "POST"
+    && (url.pathname === "/v1/message-reactions"
+      || url.pathname === "/v1/message-reactions/remove")
+  ) {
+    try {
+      const body = await readRequestBody<{
+        channelId?: string;
+        messageId?: string;
+        actorId?: string;
+        emoji?: string;
+        createdAt?: number;
+      }>(request);
+      const channelId = body.channelId?.trim();
+      const messageId = body.messageId?.trim();
+      const actorId = body.actorId?.trim();
+      const emoji = body.emoji?.trim();
+      if (!channelId || !messageId || !actorId || !emoji) {
+        throw new Error("channelId, messageId, actorId, and emoji are required");
+      }
+      const removing = url.pathname === "/v1/message-reactions/remove";
+      const result = removing
+        ? await brokerService.removeMessageReaction?.({ channelId, messageId, actorId, emoji })
+        : await brokerService.upsertMessageReaction?.({
+          channelId,
+          messageId,
+          actorId,
+          emoji,
+          createdAt: typeof body.createdAt === "number" ? body.createdAt : Date.now(),
+        });
+      json(response, 200, result ?? { replayed: false });
+    } catch (error) {
+      const status = (error as { status?: number }).status;
+      const reason = (error as { reason?: string }).reason;
+      if (typeof status === "number" && typeof reason === "string") {
+        json(response, status, {
+          error: reason,
+          detail: error instanceof Error ? error.message : String(error),
+        });
+        return;
+      }
       badRequest(response, error);
     }
     return;

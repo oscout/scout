@@ -90,7 +90,11 @@ export function isActiveConversationFlight(
 }
 
 export function shouldShowConversationWorkingTurn(
-  flight: (Pick<Flight, "state"> & Partial<Pick<Flight, "summary" | "dispatchOutcome">>) | null | undefined,
+  flight:
+    | (Pick<Flight, "state">
+        & Partial<Pick<Flight, "summary" | "dispatchOutcome" | "requesterWaitTimedOut">>)
+    | null
+    | undefined,
 ): boolean {
   return isActiveConversationFlight(flight)
     && !isRequesterWaitTimeoutConversationFlight(flight);
@@ -102,12 +106,24 @@ export function isQueuedUntilOnlineConversationFlight(
   return flight?.dispatchOutcome?.status === "queued_until_online";
 }
 
+/**
+ * The requester stopped waiting for a synchronous result.
+ *
+ * The structured marker (`requesterWaitTimedOut`, projected from the broker's
+ * `requesterTimedOut` / `timeoutScope: requester_wait`) is the source of
+ * truth: the broker writes it on the timeout path, whose summary is the plain
+ * "<agent> is still working." — a sentence that names none of the prose
+ * phrases below. The prose check stays only for records written before the
+ * marker was projected.
+ */
 export function isRequesterWaitTimeoutConversationFlight(
-  flight: Partial<Pick<Flight, "summary">> | null | undefined,
+  flight: Partial<Pick<Flight, "summary" | "requesterWaitTimedOut">> | null | undefined,
 ): boolean {
+  if (!flight) return false;
+  if (flight.requesterWaitTimedOut === true) return true;
   return Boolean(
-    flight?.summary?.includes("Scout stopped waiting for a synchronous result")
-      || flight?.summary?.includes("the requester stopped waiting after"),
+    flight.summary?.includes("Scout stopped waiting for a synchronous result")
+      || flight.summary?.includes("the requester stopped waiting after"),
   );
 }
 

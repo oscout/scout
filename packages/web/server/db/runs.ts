@@ -42,7 +42,7 @@ import {
   configuredOperatorActorIds,
   conversationIdAliases,
 } from "./internal/conversation-ids.ts";
-import { coerceNumber, parseJson } from "./internal/parse.ts";
+import { coerceNumber, jsonBoolean, parseJson } from "./internal/parse.ts";
 import { resolveHarnessSessionId } from "./internal/paths.ts";
 import {
   ACTIVE_FLIGHT_MAX_AGE_MS,
@@ -430,6 +430,8 @@ export function queryFlights(opts?: {
     json_extract(inv.flight_metadata_json, '$.dispatchOutcome.status') AS dispatch_outcome_status,
     json_extract(inv.flight_metadata_json, '$.dispatchOutcome.reason') AS dispatch_outcome_reason,
     json_extract(inv.flight_metadata_json, '$.dispatchOutcome.checkedAt') AS dispatch_outcome_checked_at,
+    json_extract(inv.flight_metadata_json, '$.requesterTimedOut') AS requester_timed_out,
+    json_extract(inv.flight_metadata_json, '$.timeoutScope') AS timeout_scope,
     ${flightStartedAtExpression} AS started_at,
     ${flightCompletedAtExpression} AS completed_at
   FROM invocations inv
@@ -459,6 +461,8 @@ export function queryFlights(opts?: {
     dispatch_outcome_status: string | null;
     dispatch_outcome_reason: string | null;
     dispatch_outcome_checked_at: number | string | null;
+    requester_timed_out: number | string | null;
+    timeout_scope: string | null;
     started_at: number | null;
     completed_at: number | null;
   }>;
@@ -486,6 +490,9 @@ export function queryFlights(opts?: {
       completedAt: r.completed_at,
       sessions: flightSessionTrace(parseJson<Record<string, unknown>>(r.flight_metadata_json, {})),
       ...(dispatchOutcome ? { dispatchOutcome } : {}),
+      ...(jsonBoolean(r.requester_timed_out) || r.timeout_scope === "requester_wait"
+        ? { requesterWaitTimedOut: true }
+        : {}),
     };
   });
 }

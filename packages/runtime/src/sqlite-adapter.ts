@@ -1,5 +1,7 @@
 import type { RuntimeTypedArray } from "./portable-types.js";
 import { createRequire } from "node:module";
+import { observeSqliteDatabase } from "./sqlite-observation.js";
+export { observeSqliteDatabase } from "./sqlite-observation.js";
 
 import { planRuntimeAdapters, type RuntimeDatabaseAdapterKind } from "./runtime-adapters.js";
 
@@ -86,16 +88,16 @@ export function openRuntimeSqliteDatabase(
   const adapter = controlPlaneSqliteAdapterKind();
   if (adapter === "bun-sqlite") {
     const { Database } = require("bun:sqlite") as { Database: ControlPlaneSqliteDatabaseConstructor };
-    return new Database(path, options);
+    return observeSqliteDatabase(new Database(path, options), { database: "runtime" });
   }
 
   const { DatabaseSync } = require("node:sqlite") as NodeSqliteModule;
-  return new NodeSqliteDatabaseAdapter(
+  return observeSqliteDatabase(new NodeSqliteDatabaseAdapter(
     new DatabaseSync(path, {
       open: true,
       readOnly: options?.readonly === true,
     }),
-  );
+  ), { database: "runtime" });
 }
 
 type NodeSqlitePreparedSql = {

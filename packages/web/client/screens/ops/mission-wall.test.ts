@@ -196,6 +196,52 @@ describe("buildMissionLogs", () => {
     expect(logs[0].source).toBe("codex");
   });
 
+  test("keeps a Devin ATIF transcript and firehose events as source devin", () => {
+    const logs = buildMissionLogs({
+      events: [
+        tailEvent({
+          id: "devin:zealous-noun:step:1:message",
+          sessionId: "zealous-noun",
+          ts: 5,
+          source: "devin",
+          project: "(unknown)",
+          cwd: "",
+          kind: "user",
+          summary: "inspect the runtime tail registry",
+        }),
+        tailEvent({
+          id: "devin:zealous-noun:step:2:tool:exec_176#abc",
+          sessionId: "zealous-noun",
+          ts: 6,
+          source: "devin",
+          project: "(unknown)",
+          cwd: "",
+          kind: "tool",
+          summary: "cd /Users/art/dev/openscout && git status",
+        }),
+      ],
+      transcripts: [
+        transcript({
+          sessionId: "zealous-noun",
+          source: "devin",
+          transcriptPath: "/Users/art/.local/share/devin/cli/transcripts/zealous-noun.json",
+          cwd: null,
+          project: "(unknown)",
+        }),
+      ],
+      agents: [],
+      now,
+      liveWindowMs: 60_000,
+    });
+
+    expect(logs).toHaveLength(1);
+    expect(logs[0].source).toBe("devin");
+    expect(logs[0].sessionId).toBe("zealous-noun");
+    expect(logs[0].logPath).toBe("/Users/art/.local/share/devin/cli/transcripts/zealous-noun.json");
+    expect(logs[0].lines).toHaveLength(2);
+    expect(logs[0].lines.every((line) => line.source === "devin")).toBe(true);
+  });
+
   test("attaches a Scout agent by any of its session ids", () => {
     const logs = buildMissionLogs({
       events: [tailEvent({ sessionId: "obs-1", ts: 5 })],

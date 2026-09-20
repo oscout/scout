@@ -33,7 +33,9 @@ export type ScoutAppAction = "status" | "stop" | "start" | "restart";
 
 const HELP_FLAGS = new Set(["help", "--help", "-h"]);
 const INSTALLED_APP_BUNDLE_ID = "app.openscout.scout";
-const INSTALLED_APP_BUNDLE_NAME = "OpenScout.app";
+const INSTALLED_APP_BUNDLE_NAME = "Scout.app";
+/** Shipped as this through 0.2.105; still on every machine that installed one. */
+const LEGACY_INSTALLED_APP_BUNDLE_NAMES = ["OpenScout.app"] as const;
 const READY_TIMEOUT_MS = 30_000;
 // `scoutd start` historically waited this long for broker health before the
 // lifecycle command performed its final app/tree check. Opening Scout earlier
@@ -147,25 +149,35 @@ function findRepoDistDirectory(startDirectory: string): string | null {
   }
 }
 
+/** `<checkout>/apps/macos/dist/Scout.app` — a build, not an install. */
+function isRepoBuildOutput(bundlePath: string): boolean {
+  const distDir = dirname(bundlePath);
+  return basename(distDir) === "dist" && basename(dirname(distDir)) === "macos";
+}
+
 export function selectInstalledAppBundle(
   indexedPaths: string[],
   home: string,
   pathExists: (path: string) => boolean = existsSync,
 ): string | null {
-  // Prefer the two conventional install locations. Repo builds share the same
-  // bundle identifier, so an unfiltered Spotlight result can otherwise select
-  // an arbitrary worktree's `Scout.app` when the caller meant the installed
-  // `OpenScout.app`.
-  for (const candidate of [
-    join("/Applications", INSTALLED_APP_BUNDLE_NAME),
-    join(home, "Applications", INSTALLED_APP_BUNDLE_NAME),
-  ]) {
-    if (pathExists(candidate)) return candidate;
+  // Prefer the conventional install locations, current name first.
+  const names = [INSTALLED_APP_BUNDLE_NAME, ...LEGACY_INSTALLED_APP_BUNDLE_NAMES];
+  for (const name of names) {
+    for (const root of ["/Applications", join(home, "Applications")]) {
+      const candidate = join(root, name);
+      if (pathExists(candidate)) return candidate;
+    }
   }
 
+  // Repo builds share the bundle identifier, so an unfiltered Spotlight result
+  // can select an arbitrary worktree's bundle when the caller meant the
+  // installed one. Before the rename the names alone separated them; now they
+  // do not, so a checkout's build is excluded by where it is built instead —
+  // which still leaves a relocated install (an external volume, say) findable.
   return indexedPaths
     .map((line) => line.trim())
-    .filter((candidate) => basename(candidate) === INSTALLED_APP_BUNDLE_NAME)
+    .filter((candidate) => names.includes(basename(candidate)))
+    .filter((candidate) => !isRepoBuildOutput(candidate))
     .find(pathExists) ?? null;
 }
 
@@ -191,7 +203,7 @@ function resolveBundlePaths(context: ScoutCommandContext): AppBundlePaths {
   if (installed) return resolveAppBundlePaths(installed);
 
   throw new ScoutCliError(
-    "No OpenScout app bundle found. Build one with `bun run scout:build` from a checkout, or install with `scout install`.",
+    "No Scout app bundle found. Build one with `bun run scout:build` from a checkout, or install with `scout install`.",
   );
 }
 

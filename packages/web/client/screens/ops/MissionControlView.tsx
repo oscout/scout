@@ -33,7 +33,7 @@ import { MissionContextRail } from "./MissionContextRail.tsx";
 import { FocusOverlay } from "./MissionFocusOverlay.tsx";
 import { MissionLogPane } from "./MissionLogPane.tsx";
 import { observeDataFromTail, type AgentLane } from "./agent-lanes-model.ts";
-import { ACTIVE_EVENT_WINDOW_MS } from "./mission-control-model.ts";
+import { ACTIVE_EVENT_WINDOW_MS, missionControlRecentTailPath } from "./mission-control-model.ts";
 import { moveWallCursor, wallCursorMoveForKey } from "./mission-cursor.ts";
 import {
   WALL_GAP,
@@ -53,7 +53,6 @@ const TAIL_BUFFER = 4_000;
 /** Live events arrive one at a time; repaint the wall on a fixed cadence instead. */
 const FLUSH_INTERVAL_MS = 250;
 const DISCOVERY_REFRESH_MS = 30_000;
-const RECENT_TAIL_LIMIT = 1_500;
 const REVEAL_FLASH_MS = 1_800;
 
 /* ── Identity ── */
@@ -222,7 +221,7 @@ export function MissionControlView({
   // the same history and stall the wall.
   useEffect(() => {
     let cancelled = false;
-    void api<{ events: TailEvent[] }>(`/api/tail/recent?limit=${RECENT_TAIL_LIMIT}`)
+    void api<{ events: TailEvent[] }>(missionControlRecentTailPath())
       .then((payload) => {
         if (cancelled) return;
         const seed = payload.events ?? [];

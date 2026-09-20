@@ -13,6 +13,7 @@ import type {
   ConversationDefinition,
   ConversationProjectionSnapshot,
   InvocationRequest,
+  MessageReactionRecord,
   MessageRecord,
   NodeDefinition,
   ScoutCapabilityAvailabilityDecision,
@@ -231,6 +232,20 @@ export type ActiveScoutBrokerService = {
   ) => Promise<{ ok: boolean; watchId: string }>;
   executeCommand: (command: ControlCommand) => Promise<unknown>;
   postConversationMessage?: (message: MessageRecord) => Promise<unknown>;
+  upsertMessageReaction?: (input: {
+    channelId: string;
+    messageId: string;
+    actorId: string;
+    emoji: string;
+    createdAt: number;
+  }) => Promise<{ replayed: boolean }>;
+  removeMessageReaction?: (input: {
+    channelId: string;
+    messageId: string;
+    actorId: string;
+    emoji: string;
+  }) => Promise<{ replayed: boolean }>;
+  listMessageReactions?: (channelId: string) => Promise<MessageReactionRecord[]>;
   deliver?: (
     request: ScoutDeliverRequest,
     options?: { signal?: AbortSignal },

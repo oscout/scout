@@ -1,6 +1,7 @@
 import { Activity, BookOpen, Clipboard, Code2, ExternalLink, FileText, FolderTree, MessageSquare, Radio } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { DocumentFocusViewer, type DocumentFocusKind } from "../../components/DocumentFocusViewer.tsx";
+import { SessionHopMenu } from "../../components/SessionHopMenu.tsx";
 import { StatusPill } from "../../components/StatusPill.tsx";
 import { createTextDocument } from "../../components/TextDocumentSurface.tsx";
 import { WorkFilesViewer } from "./WorkFilesViewer.tsx";
@@ -322,6 +323,13 @@ function WorkAskOverview({
         {ask?.resolvedSessionId && (
           <WorkActionButton icon={<Radio aria-hidden="true" size={13} strokeWidth={1.8} />} onClick={() => openContent(navigate, { view: "sessions", sessionId: ask.resolvedSessionId! }, { returnTo: route })}>Open session</WorkActionButton>
         )}
+        <SessionHopMenu
+          className="s-work-action-button"
+          label="Terminal"
+          hints={{ agentId: ask?.targetAgentId, sessionRefs: [ask?.resolvedSessionId, ask?.targetSessionId] }}
+          navigate={navigate}
+          returnTo={route}
+        />
         <WorkActionButton icon={<Activity aria-hidden="true" size={13} strokeWidth={1.8} />} onClick={() => openContent(navigate, tailRoute, { returnTo: route })}>Scout tail</WorkActionButton>
         {ids && <WorkActionButton icon={<Clipboard aria-hidden="true" size={13} strokeWidth={1.8} />} onClick={() => copyText(ids)}>Copy MCP ids</WorkActionButton>}
         {detail.conversationId && (

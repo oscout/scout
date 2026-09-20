@@ -6,22 +6,21 @@
  * holding something addressed to the viewer that is still owed. Ordinary
  * traffic reorders quietly and decorates nothing.
  *
+ * Pin, archive, sort, latest-only, search, and a docked DM well live in the
+ * Studio study `/studies/chat-space-rails`, not here, until that direction
+ * is picked. Collapse and resize live on the column's header band
+ * (ChatSpaceSurface), the same law as Scout's Hudson rails.
+ *
  * The foot carries who you are. Identity used to sit in the top bar, which put
  * it as far from the channel list as the window allows; it belongs at the
- * bottom of the column it governs. The menu behind it offers only what this
- * surface can actually do — a member card, the light/dark choice, and signing
- * out. There is no settings page here to link to, so there is no Settings item.
- *
- * Collapse is NOT here. Scout puts one chevron in the column's header band, in
- * the same cell whether the column is open or shut, so collapse happens in
- * place — see `RailToggle` and `railToggleOffset`. The chat topbar is this
- * surface's band, so the control lives there (ChatSpaceSurface).
+ * bottom of the column it governs.
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { ConversationDefinition } from "@openscout/protocol";
 
 import type { ScoutThemePreference } from "../../lib/theme.ts";
+import { useChatCapabilities } from "./chat-transport.tsx";
 import { MemberCoin } from "./ChatAvatar.tsx";
 import { SpaceSwitcher } from "./SpaceSwitcher.tsx";
 import type { ChatSpaceView } from "./chat-api.ts";
@@ -73,6 +72,7 @@ function SidebarIdentity({
   onThemePreference: (next: ScoutThemePreference) => void;
   onSignOut: () => void;
 }) {
+  const capabilities = useChatCapabilities();
   const [menuOpen, setMenuOpen] = useState(false);
   const footRef = useRef<HTMLDivElement | null>(null);
 
@@ -139,14 +139,18 @@ function SidebarIdentity({
               ))}
             </div>
           </div>
-          <div className="chat-you-menu-rule" />
-          <button
-            type="button"
-            className="chat-you-menu-item"
-            onClick={() => choose(onSignOut)}
-          >
-            Sign out
-          </button>
+          {capabilities.signOut ? (
+            <>
+              <div className="chat-you-menu-rule" />
+              <button
+                type="button"
+                className="chat-you-menu-item"
+                onClick={() => choose(onSignOut)}
+              >
+                Sign out
+              </button>
+            </>
+          ) : null}
         </div>
       ) : null}
 
@@ -188,6 +192,7 @@ export function ChannelSidebar({
   onSelectSpace,
   onCreate,
   onCreateSpace,
+  onDeleteSpace,
   onInvite,
   onExpandRail,
   onOpenProfile,
@@ -209,6 +214,7 @@ export function ChannelSidebar({
   onSelect: (id: string) => void;
   onSelectSpace: (slug: string) => void;
   onCreate: (input: { title: string; topic: string }) => Promise<void>;
+  onDeleteSpace: ((slug: string) => Promise<void>) | null;
   onCreateSpace: (input: { title: string; channel: string }) => Promise<void>;
   onInvite: () => void;
   onExpandRail: () => void;
@@ -217,6 +223,7 @@ export function ChannelSidebar({
   onThemePreference: (next: ScoutThemePreference) => void;
   onSignOut: () => void;
 }) {
+  const capabilities = useChatCapabilities();
   const listRef = useRef<HTMLElement | null>(null);
   const [creating, setCreating] = useState(false);
   const [title, setTitle] = useState("");
@@ -287,10 +294,11 @@ export function ChannelSidebar({
     <SpaceSwitcher
       spaces={spaces}
       activeSlug={activeSpace}
-      canCreate={canCreate}
+      canCreate={canCreate && capabilities.spaceCreate}
       railed={railed}
       onSelect={onSelectSpace}
       onCreate={onCreateSpace}
+      onDelete={canCreate ? onDeleteSpace : null}
       onExpandRail={onExpandRail}
     />
   ) : null;
@@ -344,7 +352,7 @@ export function ChannelSidebar({
       <div className="chat-side-list">
         <div className="chat-side-section">
           <span className="label-md">Channels</span>
-          {canCreate ? (
+          {canCreate && capabilities.channelCreate ? (
             <button
               type="button"
               className="chat-side-add"

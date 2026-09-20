@@ -1,5 +1,5 @@
 import { useWorldMessages } from "./use-world-messages.ts";
-import { clampFloorPan, wheelZoomFactor, worldDetailFade, zoomAboutPoint, ZOOM_STEP } from "./floor-minimap.ts";
+import { clampFloorPan, CAMERA_TRAVEL_MS, travelCamera, wheelZoomFactor, worldDetailFade, zoomAboutPoint, ZOOM_STEP } from "./floor-minimap.ts";
 import { WorldMinimap } from "./WorldMinimap.tsx";
 import { WorldSky, type SkyBeacon } from "./WorldSky.tsx";
 import { WorldActorTalk } from "./WorldActorTalk.tsx";
@@ -12,7 +12,8 @@ import { floorPreviewText } from "./floor-preview-text.ts";
 import { FloorMessagePasses } from "./FloorMessagePasses.tsx";
 import { floorCharacterName } from "./floor-character-name.ts";
 import { WorkRunView } from "./WorkRunView.tsx";
-import { buildSharedFloorLayout, type SharedFloorLayoutMemory } from "./shared-floor-layout.ts";
+import { buildSharedFloorLayout, floorDragMoved, islandDragPosition, type SharedFloorIslandPositions, type SharedFloorLayoutMemory } from "./shared-floor-layout.ts";
+import { readWorldIslandLayout, writeWorldIslandLayout } from "./world-island-layout.ts";
 import { floorRelations } from "./floor-memory.ts";
 import { buildLaneSessionStats } from "./agent-lane-detail.ts";
 import { floorContextEvents } from "./floor-context-model.ts";
@@ -97,6 +98,14 @@ export function SharedWorkFloor({ lanes, now, onActor }: { lanes: AgentLane[]; n
   const [draggingActor, setDraggingActor] = useState<string | null>(null);
   const actorDrag = useRef<{ id: string; sx: number; sy: number; x: number; y: number; baseX: number; baseY: number; moved: boolean } | null>(null);
   const suppressActorClick = useRef(false);
+  // Operator-placed island positions (durable via localStorage); empty = pure shelf pack.
+  const [islandLayout, setIslandLayout] = useState<SharedFloorIslandPositions>(readWorldIslandLayout);
+  const [draggingIsland, setDraggingIsland] = useState<string | null>(null);
+  // During a drag the island is lifted out of the pack: `hold` pins every
+  // sibling at its pre-drag spot so the world cannot ripple mid-gesture, and
+  // `before` restores the durable map on cancel. The pack settles around the
+  // dropped island once, on release.
+  const islandDrag = useRef<{ key: string; sx: number; sy: number; baseX: number; baseY: number; moved: boolean; before: SharedFloorIslandPositions; hold: SharedFloorIslandPositions; last?: { x: number; y: number } } | null>(null);
   const drag = useRef<{ x: number; y: number; px: number; py: number } | null>(null);
   useEffect(() => {
     if (!viewport.current) return;
@@ -104,7 +113,13 @@ export function SharedWorkFloor({ lanes, now, onActor }: { lanes: AgentLane[]; n
     observer.observe(viewport.current); return () => observer.disconnect();
   }, [workRun]);
   const layoutMemory = useRef<SharedFloorLayoutMemory | undefined>(undefined);
-  const spatial = useMemo(() => buildSharedFloorLayout(lanes, layoutMemory.current), [lanes]);
+  const spatial = useMemo(
+    () => buildSharedFloorLayout(lanes, layoutMemory.current, {
+      positions: islandLayout,
+      targetAspect: size.width / Math.max(size.height, 1),
+    }),
+    [lanes, islandLayout, size],
+  );
   useEffect(() => { layoutMemory.current = spatial.memory; }, [spatial]);
   const groups = new Map(spatial.groups.map((group) => [group.key, group]));
   const entries = [...groups];
@@ -153,12 +168,45 @@ export function SharedWorkFloor({ lanes, now, onActor }: { lanes: AgentLane[]; n
     const at = Math.max(.12, fit) * atZoom;
     return clampFloorPan(value, { width: projectedWidth * at, height: projectedHeight * at }, size);
   };
-  const applyZoom = (factor: number, focus?: { x: number; y: number }) => {
-    const next = zoomAboutPoint(camera.current.zoom, camera.current.pan, factor, focus);
-    next.pan = clampPan(next.pan, next.zoom);
+  const commitCamera = (next: { zoom: number; pan: { x: number; y: number } }) => {
     camera.current = next;
     setZoom(next.zoom);
     setPan(next.pan);
+  };
+  // Camera travel: discrete jumps (minimap locate, −/+/Fit) glide so the
+  // direction of travel stays readable; continuous gestures (wheel, drags)
+  // stay 1:1 and cancel any glide in flight.
+  const travelFrame = useRef<number | null>(null);
+  const cancelTravel = () => {
+    if (travelFrame.current !== null) {
+      cancelAnimationFrame(travelFrame.current);
+      travelFrame.current = null;
+    }
+  };
+  const travelCameraTo = (target: { zoom: number; pan: { x: number; y: number } }) => {
+    cancelTravel();
+    const destination = { zoom: target.zoom, pan: clampPan(target.pan, target.zoom) };
+    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      commitCamera(destination);
+      return;
+    }
+    const from = { zoom: camera.current.zoom, pan: camera.current.pan };
+    const started = performance.now();
+    const step = (now: number) => {
+      const t = Math.min(1, (now - started) / CAMERA_TRAVEL_MS);
+      const next = travelCamera(from, destination, t);
+      next.pan = clampPan(next.pan, next.zoom);
+      commitCamera(next);
+      travelFrame.current = t < 1 ? requestAnimationFrame(step) : null;
+    };
+    travelFrame.current = requestAnimationFrame(step);
+  };
+  useEffect(() => cancelTravel, []);
+  const applyZoom = (factor: number, focus?: { x: number; y: number }) => {
+    cancelTravel();
+    const next = zoomAboutPoint(camera.current.zoom, camera.current.pan, factor, focus);
+    next.pan = clampPan(next.pan, next.zoom);
+    commitCamera(next);
   };
   // React delegates wheel listeners as passive. Own this listener so zoom can
   // consume the gesture without also scrolling an enclosing native/web pane.
@@ -217,15 +265,15 @@ export function SharedWorkFloor({ lanes, now, onActor }: { lanes: AgentLane[]; n
     {exchangePair ? <FloorExchangePanel key={exchangePair.join(":")} pair={exchangePair} lanes={lanes} now={now} onClose={()=>setExchangePair(null)} onFile={openFilePreview} onSpeaker={setSpeakingActor} /> : null}
     {familyPreview ? <CharacterFamilyPreview onClose={() => setFamilyPreview(false)} /> : null}
     <div className="shared-floor__teams"><button type="button" aria-expanded={teamsOpen} onClick={() => setTeamsOpen(!teamsOpen)}>Agent teams{familyEdges.length ? ` · ${familyEdges.length}` : ""}</button>{teamsOpen ? <section aria-label="Agent families"><strong>Parent → subagents</strong>{parents.length ? parents.map((parent) => <div key={parent.id}><button type="button" onClick={() => focusActor(parent)}>{actorName(parent)}</button>{familyEdges.filter((edge) => edge.parent.id === parent.id).map(({ child }) => <button className="shared-floor__team-child" type="button" key={child.id} onClick={() => focusActor(child)}>↳ {actorName(child)}<small>{floorActorState(child, now).label}</small></button>)}</div>) : <p>No parent links reported in this roster yet.</p>}</section> : null}</div>
-    <div className="shared-floor__layers"><button type="button" aria-expanded={layersOpen} onClick={() => setLayersOpen(!layersOpen)}>Layers</button>{layersOpen ? <div><label><input type="checkbox" aria-label="Work surfaces" checked={furniture} onChange={(event) => setFurniture(event.target.checked)} />Work surfaces</label><label><input type="checkbox" aria-label="Boundaries" checked={boundaries} onChange={(event) => setBoundaries(event.target.checked)} />Boundaries</label><label><input type="checkbox" aria-label="Playful motion" checked={playful} onChange={(event) => setPlayful(event.target.checked)} />Playful motion</label><label>Characters<select aria-label="Map character style" value={castStyle} onChange={event => setCastStyle(event.target.value as typeof castStyle)}><option value="crew">Crew</option><option value="chip">Pixel Chip</option><option value="prototype">Prototype rigs</option></select></label>{castStyle === "prototype" ? <label><input type="checkbox" aria-label="Character rig" checked={riggedCharacters} onChange={(event) => setRiggedCharacters(event.target.checked)} />Character rig</label> : null}<button type="button" onClick={() => { setFamilyPreview(true); setLayersOpen(false); }}>Preview character family →</button><button type="button" onClick={() => { setModelStudio(true); setLayersOpen(false); }}>3D character studio →</button>{castStyle === "prototype" ? <label><input type="checkbox" aria-label="Rendered characters" checked={renderedPrototype} onChange={(event) => setRenderedPrototype(event.target.checked)} />Rendered characters</label> : null}<button type="button" className="shared-floor__run-link" onClick={() => { setLayersOpen(false); setWorkRun(true); }}>Try Work run →</button></div> : null}</div>
+    <div className="shared-floor__layers"><button type="button" aria-expanded={layersOpen} onClick={() => setLayersOpen(!layersOpen)}>Layers</button>{layersOpen ? <div><div className="shared-floor__layout-actions" role="group" aria-label="Island layout"><button type="button" onClick={() => { writeWorldIslandLayout({}); setIslandLayout({}); }}>Auto-arrange islands</button><small>Drag an island's backdrop to place it; auto-arrange repacks.</small></div><label><input type="checkbox" aria-label="Work surfaces" checked={furniture} onChange={(event) => setFurniture(event.target.checked)} />Work surfaces</label><label><input type="checkbox" aria-label="Boundaries" checked={boundaries} onChange={(event) => setBoundaries(event.target.checked)} />Boundaries</label><label><input type="checkbox" aria-label="Playful motion" checked={playful} onChange={(event) => setPlayful(event.target.checked)} />Playful motion</label><label>Characters<select aria-label="Map character style" value={castStyle} onChange={event => setCastStyle(event.target.value as typeof castStyle)}><option value="crew">Crew</option><option value="chip">Pixel Chip</option><option value="prototype">Prototype rigs</option></select></label>{castStyle === "prototype" ? <label><input type="checkbox" aria-label="Character rig" checked={riggedCharacters} onChange={(event) => setRiggedCharacters(event.target.checked)} />Character rig</label> : null}<button type="button" onClick={() => { setFamilyPreview(true); setLayersOpen(false); }}>Preview character family →</button><button type="button" onClick={() => { setModelStudio(true); setLayersOpen(false); }}>3D character studio →</button>{castStyle === "prototype" ? <label><input type="checkbox" aria-label="Rendered characters" checked={renderedPrototype} onChange={(event) => setRenderedPrototype(event.target.checked)} />Rendered characters</label> : null}<button type="button" className="shared-floor__run-link" onClick={() => { setLayersOpen(false); setWorkRun(true); }}>Try Work run →</button></div> : null}</div>
     <div className="shared-floor__camera" aria-label="Map camera">
       <button type="button" aria-pressed={paused} onClick={() => setPaused(!paused)}>{paused ? "Resume" : "Pause"}</button><div role="group" aria-label="Map projection">{(["flat", "iso"] as const).map((mode) => <button type="button" key={mode} aria-pressed={projection === mode} onClick={() => setProjection(mode)}>{mode === "iso" ? "Iso" : "Flat"}</button>)}</div>
-      <button type="button" aria-label="Zoom shared map out" onClick={() => applyZoom(1 / ZOOM_STEP)}>−</button><button type="button" onClick={() => { setZoom(1); setPan({ x: 0, y: 0 }); }}>Fit</button><button type="button" aria-label="Zoom shared map in" onClick={() => applyZoom(ZOOM_STEP)}>+</button><output className="shared-floor__zoom-readout" aria-label={`Zoom ${formatZoom(zoom)}`}>{formatZoom(zoom)}</output>
+      <button type="button" aria-label="Zoom shared map out" onClick={() => travelCameraTo(zoomAboutPoint(camera.current.zoom, camera.current.pan, 1 / ZOOM_STEP))}>−</button><button type="button" onClick={() => travelCameraTo({ zoom: 1, pan: { x: 0, y: 0 } })}>Fit</button><button type="button" aria-label="Zoom shared map in" onClick={() => travelCameraTo(zoomAboutPoint(camera.current.zoom, camera.current.pan, ZOOM_STEP))}>+</button><output className="shared-floor__zoom-readout" aria-label={`Zoom ${formatZoom(zoom)}`}>{formatZoom(zoom)}</output>
     </div>
-    <WorldMinimap width={worldWidth} height={worldHeight} projection={projection} size={size} scale={scale} zoom={zoom} pan={pan} onPan={(next) => setPan(clampPan(next, zoom))} onZoom={setZoom} workspaces={[...groups].map(([id,g])=>({id,label:`Locate workspace ${g.cwd || "unknown"}, ${g.lanes.length} actors`,x:g.x+g.width/2,y:g.y+g.height/2}))} />
+    <WorldMinimap width={worldWidth} height={worldHeight} projection={projection} size={size} scale={scale} zoom={zoom} pan={pan} onPan={(next) => { cancelTravel(); setPan(clampPan(next, camera.current.zoom)); }} onZoom={(next) => { cancelTravel(); setZoom(next); }} onLocate={(next) => travelCameraTo({ zoom: camera.current.zoom, pan: next })} workspaces={[...groups].map(([id,g])=>({id,label:`Locate workspace ${g.cwd || "unknown"}, ${g.lanes.length} actors`,x:g.x+g.width/2,y:g.y+g.height/2}))} />
     {workspaceKey && groups.has(workspaceKey) ? <aside className="shared-floor__workspace-panel" aria-label="Workspace details"><header><strong>{groups.get(workspaceKey)!.cwd.split("/").filter(Boolean).at(-1) || "Workspace"}</strong><button type="button" aria-label="Close workspace details" onClick={() => setWorkspaceKey(null)}>×</button></header><p>{groups.get(workspaceKey)!.cwd}</p><h4>Reported branches</h4><small>{[...new Set(groups.get(workspaceKey)!.lanes.map(lane => lane.facts?.branch || buildLaneSessionStats(lane).branch).filter(Boolean))].join(" · ") || "Branch not reported"}</small><h4>Actors in this workspace</h4>{groups.get(workspaceKey)!.lanes.map(lane => <button className="shared-floor__workspace-actor" type="button" key={lane.id} onClick={() => focusActor(lane)}><span className="shared-floor__workspace-actor-heading"><strong>{actorName(lane)}</strong><small>{floorActorState(lane, now).label}</small></span><span className="shared-floor__workspace-runtime">{[lane.agent.harness, lane.facts?.model || buildLaneSessionStats(lane).model].filter(Boolean).join(" · ") || "Runtime not reported"}</span><span className="shared-floor__workspace-task">{floorPreviewText(lane.facts?.currentTask) || "No task reported"}</span><span className="shared-floor__workspace-runtime">{lane.facts?.branch || buildLaneSessionStats(lane).branch || "Branch not reported"} · {lane.id.slice(-5)}</span></button>)}</aside> : null}
     <div className="shared-floor__viewport" ref={viewport}
-      onPointerDown={(event) => { if (event.button !== 0 || (event.target as Element).closest("button")) return; drag.current = { x: event.clientX, y: event.clientY, px: pan.x, py: pan.y }; event.currentTarget.setPointerCapture(event.pointerId); }}
+      onPointerDown={(event) => { if (event.button !== 0 || (event.target as Element).closest("button")) return; cancelTravel(); drag.current = { x: event.clientX, y: event.clientY, px: camera.current.pan.x, py: camera.current.pan.y }; event.currentTarget.setPointerCapture(event.pointerId); }}
       onPointerMove={(event) => { if (drag.current) setPan(clampPan({ x: drag.current.px + event.clientX - drag.current.x, y: drag.current.py + event.clientY - drag.current.y }, zoom)); }}
       onPointerUp={(event) => { if (drag.current && Math.hypot(event.clientX - drag.current.x, event.clientY - drag.current.y) < 4) { setSelectedId(null); setExchangePair(null); } drag.current = null; }} onPointerCancel={() => { drag.current = null; }}>
     <WorldSky zoom={zoom} pan={pan} beacons={beacons} beaconStrength={detail.beacons} />
@@ -243,7 +291,59 @@ export function SharedWorkFloor({ lanes, now, onActor }: { lanes: AgentLane[]; n
     {sourcePoint ? <svg className="shared-floor__connections" width={worldWidth} height={worldHeight} aria-hidden="true">{[...connections].map(([id, connection]) => { const target = positions.get(id); return target ? <path key={id} className={connection.reason === "Shared file activity" ? "is-shared" : "is-lineage"} d={`M ${sourcePoint.x} ${sourcePoint.y} Q ${(sourcePoint.x + target.x) / 2} ${Math.min(sourcePoint.y, target.y) - 35} ${target.x} ${target.y}`} /> : null; })}</svg> : null}
     {[...groups].map(([key, group]) => {
       const art = islandArt(key);
-      return <section className={`shared-floor__island${group.actors.length > 1 || furniture ? " has-place" : ""}${workspaceKey === key ? " is-open" : ""}`} key={key} aria-label={group.cwd || "Agent gathering"} style={{ left: layout.get(key)!.x, top: layout.get(key)!.y, height: layout.get(key)!.height, width: layout.get(key)!.width }}>
+      return <section className={`shared-floor__island${group.actors.length > 1 || furniture ? " has-place" : ""}${workspaceKey === key ? " is-open" : ""}${draggingIsland === key ? " is-dragging" : ""}`} key={key} aria-label={group.cwd || "Agent gathering"} style={{ left: layout.get(key)!.x, top: layout.get(key)!.y, height: layout.get(key)!.height, width: layout.get(key)!.width, zIndex: draggingIsland === key ? 5 : undefined }}
+        onPointerDown={(event) => {
+          // Dragging an island by its backdrop. Actors and the caption button
+          // stop propagation first; the viewport pan never sees this gesture.
+          if (event.button !== 0) return;
+          if ((event.target as Element).closest("button")) return;
+          // The painted outpost is a central ellipse inside a rectangular box;
+          // its transparent corners are sky — a press there pans the viewport.
+          const bounds = event.currentTarget.getBoundingClientRect();
+          const nx = (event.clientX - bounds.left) / bounds.width - 0.5;
+          const ny = (event.clientY - bounds.top) / bounds.height - 0.5;
+          if (nx * nx + ny * ny > 0.25) return;
+          event.stopPropagation();
+          cancelTravel();
+          const hold: SharedFloorIslandPositions = {};
+          for (const [otherKey, other] of groups) if (otherKey !== key) hold[otherKey] = { x: other.x, y: other.y };
+          islandDrag.current = { key, sx: event.clientX, sy: event.clientY, baseX: group.x, baseY: group.y, moved: false, before: islandLayout, hold };
+          event.currentTarget.setPointerCapture(event.pointerId);
+        }}
+        onPointerMove={(event) => {
+          const active = islandDrag.current;
+          if (!active || active.key !== key) return;
+          event.stopPropagation();
+          const dx = event.clientX - active.sx, dy = event.clientY - active.sy;
+          if (!active.moved && !floorDragMoved(dx, dy)) return;
+          active.moved = true;
+          setDraggingIsland(key);
+          active.last = islandDragPosition({ x: active.baseX, y: active.baseY }, dx, dy, scale, projection);
+          setIslandLayout({ ...active.hold, [key]: active.last });
+        }}
+        onPointerUp={(event) => {
+          const active = islandDrag.current;
+          if (!active || active.key !== key) return;
+          event.stopPropagation();
+          islandDrag.current = null;
+          setDraggingIsland(null);
+          if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+          // A press that never moved is still a backdrop click: clear the selection.
+          if (!active.moved) { setSelectedId(null); setExchangePair(null); return; }
+          // Drop: the pack settles once around the island where it landed.
+          const next = { ...active.before, [key]: active.last ?? { x: active.baseX, y: active.baseY } };
+          writeWorldIslandLayout(next);
+          setIslandLayout(next);
+        }}
+        onPointerCancel={() => {
+          const active = islandDrag.current;
+          if (!active || active.key !== key) return;
+          islandDrag.current = null;
+          setDraggingIsland(null);
+          // A cancelled drag is no drag: put every island back where it was.
+          setIslandLayout(active.before);
+        }}
+      >
       <div className="shared-floor__place-presentation">
       <div className="shared-floor__sky" aria-hidden="true" style={{ backgroundImage: `url(${starPointsUrl})`, backgroundPosition: art.skyPosition }} />
       <div className="shared-floor__outpost" aria-hidden="true" style={{ backgroundImage: `url(${outpostsUrl})`, backgroundPosition: art.outpostPosition }} />

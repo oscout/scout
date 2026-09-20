@@ -5,6 +5,9 @@
 
 .shared-floor { position: absolute; inset: 80px 14px 14px; color: var(--floor-ink); }
 .shared-floor.is-map { container-type: inline-size; display: flex; flex-direction: column; overflow: hidden; border-radius: 12px; }
+/* The chrome-free app embed gives the world the whole section — no 80px/14px slice. */
+.s-discovered-embed .shared-floor { inset: 0; border-radius: 0; }
+.s-discovered-embed .shared-floor__teams { top: 60px; }
 .agent-floor:has(.shared-floor) .agent-floor__dock, .agent-floor:has(.shared-floor) .agent-floor__legend { display: none; }
 /* The lane trace panel opens bottom-right on actor select; lift it clear of the camera cluster. */
 .agent-floor:has(.shared-floor) .agent-floor__trace-panel { bottom: 72px; max-height: calc(100% - 140px); }
@@ -25,7 +28,8 @@
 
 /* Islands: the island box is the painting; caption and tether share its upright
    plane (billboarded in Iso) and the crew stand on its painted deck. */
-.shared-floor__island { position: absolute; }
+.shared-floor__island { position: absolute; cursor: grab; touch-action: none; }
+.shared-floor__island.is-dragging { cursor: grabbing; filter: drop-shadow(0 18px 28px #0009); }
 .has-boundaries .shared-floor__island { border: 1px dashed var(--floor-line-2); border-radius: 25px; }
 .shared-floor__place-presentation { position: absolute; inset: 0; pointer-events: none; transform-origin: center; }
 .is-iso .shared-floor__place-presentation { transform: matrix(.57735027, -.57735027, 1, 1, 0, 0); }
@@ -39,8 +43,8 @@
 .shared-floor__label-anchor { position: absolute; left: 50%; top: 89.4%; width: 1px; height: 7.8%; background: linear-gradient(#c0d5d580, #c0d5d530); pointer-events: none; }
 .shared-floor__label-anchor::before { content: ""; position: absolute; top: -2px; left: -2px; width: 5px; height: 5px; border-radius: 50%; background: #b6ccc7; }
 /* layout: the workspace caption hangs below the painting, outside its playable surface. */
-.shared-floor__island button.shared-floor__gathering-label { position: absolute; top: 98.1%; left: 50%; transform: translateX(-50%); transform-origin: top center; z-index: 3; display: flex; flex-direction: column; align-items: center; gap: 4px; width: max-content; max-width: 460px; padding: 8px 12px; border: 0; border-radius: 8px; background: transparent; color: #e4ece5; font-family: inherit; font-size: 16px; letter-spacing: .025em; text-align: center; text-shadow: 0 2px 5px #03090c; opacity: .8; cursor: pointer; pointer-events: auto; }
-.shared-floor__island button.shared-floor__gathering-label:hover { background: #adcac012; }
+.shared-floor__island button.shared-floor__gathering-label { position: absolute; top: 98.1%; left: 50%; transform: translateX(-50%); transform-origin: top center; z-index: 3; display: flex; flex-direction: column; align-items: center; gap: 4px; width: max-content; max-width: 460px; padding: 8px 12px; border: 0; border-radius: 8px; background: transparent; color: #e4ece5; font-family: inherit; font-size: 16px; letter-spacing: .025em; text-align: center; text-shadow: 0 2px 5px #03090c; opacity: .8; cursor: pointer; pointer-events: auto; transition: opacity 160ms ease, background 160ms ease; }
+.shared-floor__island button.shared-floor__gathering-label:hover { background: #adcac024; opacity: 1; }
 .shared-floor__island button.shared-floor__gathering-label:focus-visible { outline: 2px solid #c7d79e; outline-offset: 4px; }
 .shared-floor__gathering-label strong { font-weight: 500; font-size: 16px; }
 .shared-floor__gathering-label small { font-size: 11px; line-height: 1.4; letter-spacing: 0; overflow-wrap: anywhere; color: #b0c2ce; }
@@ -75,7 +79,12 @@
 .shared-floor__crew .shared-floor-character::before { content: ""; position: absolute; left: 50%; top: 75px; width: 66px; height: 22px; transform: translateX(-50%); z-index: 0; border-radius: 50%; background: #b7dbeb16; border: 1px solid #d9efff28; box-shadow: inset 0 1px 0 #ffffff12, 0 3px 8px #03101925; backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px); pointer-events: none; }
 .shared-floor__crew .shared-floor-character__sprite { z-index: 1; }
 .shared-floor__crew .shared-floor-character__runtime-mark { z-index: 2; }
-.shared-floor__crew .shared-floor-character .shared-floor-character__label { position: absolute; top: 99px; left: 50%; transform: translateX(-50%); z-index: 2; padding: 4px 9px; line-height: 1.4; opacity: 1; visibility: visible; background: #10212c30; border: 1px solid #e5f4ff0d; border-radius: 7px; box-shadow: none; text-shadow: none; backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px); }
+.shared-floor__crew .shared-floor-character .shared-floor-character__label { position: absolute; top: 99px; left: 50%; transform: translateX(-50%); z-index: 2; padding: 4px 9px; line-height: 1.4; opacity: 1; visibility: visible; background: #0d1b2514; border: 1px solid #e5f4ff08; border-radius: 7px; box-shadow: none; text-shadow: none; backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px); transition: background 160ms ease, border-color 160ms ease; }
+/* Resting labels stay barely tinted so the art carries the island; hover,
+   focus, and selection pour the tint back on for legibility. */
+.shared-floor__crew .shared-floor-character:hover .shared-floor-character__label,
+.shared-floor__crew .shared-floor-character:focus-visible .shared-floor-character__label,
+.shared-floor__crew .is-selected .shared-floor-character__label { background: #0d1b2545; border-color: #e5f4ff24; backdrop-filter: blur(22px); -webkit-backdrop-filter: blur(22px); }
 .shared-floor__crew .shared-floor-character .shared-floor-character__label strong { font-size: 12px; font-weight: 500; text-transform: capitalize; color: #e7ecee; }
 .shared-floor__crew .shared-floor-character .shared-floor-character__label small { display: none; font-size: 12px; color: var(--actor-status-ink); }
 .shared-floor__crew .shared-floor-character:hover .shared-floor-character__label small,
@@ -88,7 +97,9 @@
 .shared-floor__talk-follow span { margin-left: 6px; color: #bdc8d0; }
 
 /* Chrome: teams top-left, layers top-right, camera bottom-right, minimap or
-   workspace panel bottom-left. One 11px type size across the corner controls. */
+   workspace panel bottom-left. One 11px type size across the corner controls.
+   In the app embed the floor is full-bleed and teams drops below the floating
+   command bar (see the .s-discovered-embed rules above). */
 .shared-floor__camera { position: absolute; z-index: 10; bottom: 12px; right: 12px; display: flex; gap: 4px; padding: 5px; background: var(--floor-bg); border: 1px solid var(--floor-line-soft); border-radius: 7px; }
 .shared-floor__camera button, .shared-floor__layers > button, .shared-floor__teams > button { padding: 7px 9px; border: 0; border-radius: 4px; background: transparent; color: var(--floor-muted); cursor: pointer; font-size: 11px; }
 .shared-floor__camera [role="group"] { display: flex; gap: 3px; padding-right: 5px; border-right: 1px solid var(--floor-line-soft); }
@@ -102,6 +113,9 @@
 .shared-floor__layers > div { margin-top: 5px; padding: 10px; border: 1px solid var(--floor-line-2); border-radius: 6px; background: var(--floor-bg); }
 .shared-floor__layers label { display: flex; align-items: center; gap: 8px; padding: 5px; }
 .shared-floor__layers input { accent-color: var(--floor-accent); }
+.shared-floor__layout-actions { padding: 5px 5px 9px; margin-bottom: 7px; border-bottom: 1px solid var(--floor-line-2); }
+.shared-floor__layout-actions button { padding: 7px 9px; border: 1px solid var(--floor-line-soft); border-radius: 4px; background: var(--floor-face-2); color: var(--floor-ink); cursor: pointer; font-size: 11px; }
+.shared-floor__layout-actions small { display: block; padding-top: 6px; color: var(--floor-muted); font-size: 10px; max-width: 210px; }
 .shared-floor__teams { position: absolute; top: 10px; left: 18px; z-index: 20; }
 .shared-floor__teams section { width: 230px; max-height: 300px; overflow: auto; background: #111715f5; border: 1px solid #ffffff20; border-radius: 12px; padding: 12px; }
 .shared-floor__teams section > strong { display: block; font-size: 11px; color: var(--floor-muted); margin-bottom: 8px; }

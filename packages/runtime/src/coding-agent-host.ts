@@ -1,7 +1,7 @@
 import type { RuntimeEnv } from "./portable-types.js";
 const TRUTHY = new Set(["1", "true", "yes", "on"]);
 
-export type CodingAgentHarness = "scout" | "cursor" | "claude" | "codex" | "devin";
+export type CodingAgentHarness = "scout" | "cursor" | "claude" | "codex" | "devin" | "kimi" | "pi";
 
 export type CodingAgentHostMatch = {
   harness: CodingAgentHarness;
@@ -28,6 +28,13 @@ function envEquals(env: RuntimeEnv, key: string, expected: string): boolean {
   return env[key]?.trim().toLowerCase() === expected;
 }
 
+function isHerdrManagedAgent(env: RuntimeEnv, kind: string): boolean {
+  return isTruthyFlag(env.HERDR_ENV)
+    && hasNonEmpty(env.HERDR_PANE_ID)
+    && hasNonEmpty(env.HERDR_AGENT_NAME)
+    && envEquals(env, "HERDR_AGENT", kind);
+}
+
 /** Vendor-documented subprocess/host signals for the top harnesses Scout routes.
  *  Order matters: Scout binding wins, then the most specific vendor flags. */
 const HARNESS_SIGNALS: HarnessSignal[] = [
@@ -40,6 +47,36 @@ const HARNESS_SIGNALS: HarnessSignal[] = [
     harness: "scout",
     signal: "OPENSCOUT_MANAGED_AGENT",
     matches: (env) => isTruthyFlag(env.OPENSCOUT_MANAGED_AGENT),
+  },
+  {
+    harness: "cursor",
+    signal: "HERDR_AGENT_NAME",
+    matches: (env) => isHerdrManagedAgent(env, "cursor"),
+  },
+  {
+    harness: "claude",
+    signal: "HERDR_AGENT_NAME",
+    matches: (env) => isHerdrManagedAgent(env, "claude"),
+  },
+  {
+    harness: "codex",
+    signal: "HERDR_AGENT_NAME",
+    matches: (env) => isHerdrManagedAgent(env, "codex"),
+  },
+  {
+    harness: "devin",
+    signal: "HERDR_AGENT_NAME",
+    matches: (env) => isHerdrManagedAgent(env, "devin"),
+  },
+  {
+    harness: "kimi",
+    signal: "HERDR_AGENT_NAME",
+    matches: (env) => isHerdrManagedAgent(env, "kimi"),
+  },
+  {
+    harness: "pi",
+    signal: "HERDR_AGENT_NAME",
+    matches: (env) => isHerdrManagedAgent(env, "pi"),
   },
   {
     harness: "cursor",

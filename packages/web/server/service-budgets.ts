@@ -40,7 +40,9 @@ import { execSystemFile } from "@openscout/runtime/system-probes";
 import { db, resolveDbPath } from "./db/internal/db.ts";
 
 const CACHE_TTL_MS = 60 * 1000;
+const FIVE_HOUR_MS = 5 * 3600 * 1000;
 const WEEK_MS = 7 * 24 * 3600 * 1000;
+const MONTH_MS = 30 * 24 * 3600 * 1000;
 const CODEX_LOOKBACK_DAYS = 3;
 const CODEX_JSONL_TAIL_MAX_BYTES = 2 * 1024 * 1024;
 const CODEX_INITIAL_FILE_LIMIT = 32;
@@ -86,6 +88,8 @@ export type ServiceQuotaWindowGauge = {
   capturedAt?: number;
   source?: string;
   history?: ServiceQuotaHistoryPoint[];
+  /** True when the last reading's reset elapsed and no post-reset observation exists. */
+  awaitingReset?: boolean;
 };
 
 export type ServiceGauge =
@@ -607,25 +611,49 @@ function readClaudeStatuslineHistory(minCapturedAt: number): ClaudeStatuslineSna
   return out;
 }
 
+function claudeStatuslineWindowSpec(key: string): {
+  label: string;
+  windowKind: string;
+  windowMs: number;
+} | null {
+  const raw = key.trim();
+  if (!raw) return null;
+  const normalized = raw.toLowerCase().replace(/[-_\s]/gu, "");
+  if (["fivehour", "fivehours", "primary", "5h"].includes(normalized)) {
+    return { label: "5h", windowKind: "primary", windowMs: FIVE_HOUR_MS };
+  }
+  if (["sevenday", "weekly", "secondary", "7d"].includes(normalized)) {
+    return { label: "7d", windowKind: "secondary", windowMs: WEEK_MS };
+  }
+  if (["monthly", "month", "thirtyday", "30d"].includes(normalized)) {
+    return { label: "30d", windowKind: "monthly", windowMs: MONTH_MS };
+  }
+  if (normalized.includes("month")) {
+    return { label: "30d", windowKind: "monthly", windowMs: MONTH_MS };
+  }
+  if (normalized.includes("fivehour") || normalized.endsWith("5h")) {
+    return { label: raw.replace(/_/gu, " "), windowKind: raw, windowMs: FIVE_HOUR_MS };
+  }
+  if (normalized.startsWith("sevenday") || normalized.includes("weekly")) {
+    return { label: raw.replace(/_/gu, " "), windowKind: raw, windowMs: WEEK_MS };
+  }
+  return { label: raw.replace(/_/gu, " "), windowKind: raw, windowMs: WEEK_MS };
+}
+
 function claudeQuotaSnapshotsFromStatusline(record: ClaudeStatuslineSnapshot): ServiceQuotaSnapshot[] {
   const rateLimits = recordValue(record.rate_limits);
   if (!rateLimits) return [];
 
   const capturedAt = claudeStatuslineCapturedAt(record);
-  return [
-    claudeQuotaSnapshotFromStatuslineWindow(record, rateLimits.five_hour, {
-      label: "5h",
-      windowKind: "primary",
-      windowMs: 5 * 3600 * 1000,
+  return Object.entries(rateLimits).flatMap(([key, value]) => {
+    const spec = claudeStatuslineWindowSpec(key);
+    if (!spec) return [];
+    const snapshot = claudeQuotaSnapshotFromStatuslineWindow(record, value, {
+      ...spec,
       capturedAt,
-    }),
-    claudeQuotaSnapshotFromStatuslineWindow(record, rateLimits.seven_day, {
-      label: "7d",
-      windowKind: "secondary",
-      windowMs: WEEK_MS,
-      capturedAt,
-    }),
-  ].filter((entry): entry is ServiceQuotaSnapshot => entry !== null);
+    });
+    return snapshot ? [snapshot] : [];
+  });
 }
 
 function claudeQuotaSnapshotFromStatuslineWindow(
@@ -745,22 +773,18 @@ function loadPersistedProviderQuotaSnapshots(input: {
   }));
 }
 
-function quotaGaugeFromSnapshots(input: {
-  id: string;
-  label: string;
-  maxCurrentAgeMs?: number;
-  allowExpiredWindows?: boolean;
-}, snapshots: ServiceQuotaSnapshot[]): ServiceGauge | null {
+function selectLatestQuotaSnapshots(
+  snapshots: ServiceQuotaSnapshot[],
+  input: {
+    minCurrentCapturedAt: number;
+    now: number;
+    allowExpiredWindows?: boolean;
+  },
+): Map<string, ServiceQuotaSnapshot> {
   const latestByWindow = new Map<string, ServiceQuotaSnapshot>();
-  const historyByWindow = quotaHistoryByWindow(snapshots);
-  const now = Date.now();
-  const minCurrentCapturedAt = input.maxCurrentAgeMs === undefined
-    ? Number.NEGATIVE_INFINITY
-    : now - input.maxCurrentAgeMs;
-
   for (const row of snapshots) {
-    if (row.capturedAt < minCurrentCapturedAt) continue;
-    if (!input.allowExpiredWindows && quotaSnapshotIsExpired(row, now)) continue;
+    if (row.capturedAt < input.minCurrentCapturedAt) continue;
+    if (!input.allowExpiredWindows && quotaSnapshotIsExpired(row, input.now)) continue;
     const key = quotaSnapshotWindowKey(row);
     const existing = latestByWindow.get(key);
     if (!existing) {
@@ -793,9 +817,52 @@ function quotaGaugeFromSnapshots(input: {
       latestByWindow.set(key, row);
     }
   }
+  return latestByWindow;
+}
+
+function quotaGaugeFromSnapshots(input: {
+  id: string;
+  label: string;
+  maxCurrentAgeMs?: number;
+  allowExpiredWindows?: boolean;
+}, snapshots: ServiceQuotaSnapshot[]): ServiceGauge | null {
+  const historyByWindow = quotaHistoryByWindow(snapshots);
+  const now = Date.now();
+  const minCurrentCapturedAt = input.maxCurrentAgeMs === undefined
+    ? Number.NEGATIVE_INFINITY
+    : now - input.maxCurrentAgeMs;
+
+  const latestByWindow = selectLatestQuotaSnapshots(snapshots, {
+    minCurrentCapturedAt,
+    now,
+    allowExpiredWindows: input.allowExpiredWindows,
+  });
+  const awaitingKeys = new Set<string>();
+
+  // A live weekly window must not hide a supported 5-hour window that just
+  // reset. Keep the latest expired sibling when it was observed recently, but
+  // do not present the pre-reset percentage as current usage.
+  if (latestByWindow.size > 0 && !input.allowExpiredWindows) {
+    const expiredSiblings = selectLatestQuotaSnapshots(snapshots, {
+      minCurrentCapturedAt,
+      now,
+      allowExpiredWindows: true,
+    });
+    for (const [key, row] of expiredSiblings) {
+      if (latestByWindow.has(key)) continue;
+      if (!quotaSnapshotIsExpired(row, now)) continue;
+      if (!shouldRetainExpiredWindow(row, now)) continue;
+      latestByWindow.set(key, row);
+      awaitingKeys.add(key);
+    }
+  }
 
   const windows = [...latestByWindow.values()]
-    .map((snapshot) => storedQuotaWindowGauge(snapshot, historyByWindow.get(quotaSnapshotWindowKey(snapshot)) ?? []))
+    .map((snapshot) => storedQuotaWindowGauge(
+      snapshot,
+      historyByWindow.get(quotaSnapshotWindowKey(snapshot)) ?? [],
+      { awaitingReset: awaitingKeys.has(quotaSnapshotWindowKey(snapshot)), now },
+    ))
     .filter((window): window is ServiceQuotaWindowGauge => Boolean(window))
     .sort((a, b) => quotaWindowSortRank(a.label) - quotaWindowSortRank(b.label) || a.label.localeCompare(b.label));
   if (windows.length === 0) return null;
@@ -878,6 +945,30 @@ function quotaSnapshotIsExpired(row: ServiceQuotaSnapshot, now: number): boolean
   return resetAt !== undefined && resetAt <= now;
 }
 
+function inferredQuotaWindowMs(row: ServiceQuotaSnapshot): number | undefined {
+  const explicit = finiteNumber(row.windowMs);
+  if (explicit !== undefined) return explicit;
+  const label = row.label.trim().toLowerCase();
+  if (label === "5h" || row.windowKind === "primary") return FIVE_HOUR_MS;
+  if (label === "7d" || label === "weekly" || row.windowKind === "secondary") return WEEK_MS;
+  if (label === "30d" || label === "monthly" || row.windowKind === "monthly") return MONTH_MS;
+  return undefined;
+}
+
+function shouldRetainExpiredWindow(row: ServiceQuotaSnapshot, now: number): boolean {
+  const windowMs = inferredQuotaWindowMs(row) ?? FIVE_HOUR_MS;
+  const silenceMs = Math.min(WEEK_MS, Math.max(24 * 3600 * 1000, windowMs * 2));
+  return row.capturedAt >= now - silenceMs;
+}
+
+function forwardedResetAt(resetAt: number | undefined, windowMs: number | undefined, now: number): number | undefined {
+  if (resetAt === undefined) return undefined;
+  if (resetAt > now) return resetAt;
+  if (windowMs === undefined || windowMs <= 0) return resetAt;
+  const cycles = Math.floor((now - resetAt) / windowMs) + 1;
+  return resetAt + cycles * windowMs;
+}
+
 function quotaSnapshotUsage(row: ServiceQuotaSnapshot): {
   fill: number;
   usedLabel: string;
@@ -908,22 +999,32 @@ function quotaSnapshotUsage(row: ServiceQuotaSnapshot): {
 function storedQuotaWindowGauge(
   row: ServiceQuotaSnapshot,
   history: ServiceQuotaHistoryPoint[] = [],
+  options: { awaitingReset?: boolean; now?: number } = {},
 ): ServiceQuotaWindowGauge | null {
   const usage = quotaSnapshotUsage(row);
   if (!usage) return null;
-  const windowMs = finiteNumber(row.windowMs);
-  const resetAt = finiteNumber(row.resetAt)
+  const windowMs = finiteNumber(row.windowMs) ?? inferredQuotaWindowMs(row);
+  const now = options.now ?? Date.now();
+  const rawResetAt = finiteNumber(row.resetAt)
     ?? (windowMs === undefined ? undefined : row.capturedAt + windowMs)
-    ?? Date.now();
+    ?? now;
+  const awaitingReset = options.awaitingReset === true;
+  const resetAt = awaitingReset
+    ? forwardedResetAt(rawResetAt, windowMs, now) ?? rawResetAt
+    : rawResetAt;
 
   return {
     label: formatStoredQuotaWindowLabel(row),
-    ...usage,
+    fill: awaitingReset ? 0 : usage.fill,
+    usedLabel: awaitingReset ? "—" : usage.usedLabel,
+    capLabel: usage.capLabel,
+    unitLabel: usage.unitLabel,
     resetAt,
     ...(windowMs === undefined ? {} : { windowMs }),
     capturedAt: row.capturedAt,
     source: quotaSnapshotSourceLabel(row),
     ...(history.length === 0 ? {} : { history }),
+    ...(awaitingReset ? { awaitingReset: true } : {}),
   };
 }
 
@@ -960,6 +1061,7 @@ function formatStoredQuotaWindowLabel(row: ServiceQuotaSnapshot): string {
   if (fromDuration) return fromDuration;
 
   const label = explicitDuration.toLowerCase();
+  if (label === "monthly" || label === "month" || row.windowKind === "monthly") return "30d";
   if (label === "weekly" || label === "week" || row.windowKind === "secondary") return "7d";
   if (label === "primary" || row.windowKind === "primary") return "5h";
   return row.label;
@@ -974,7 +1076,8 @@ function formatWindowMs(windowMs: number | undefined): string | null {
 function quotaWindowSortRank(label: string): number {
   if (label === "5h") return 0;
   if (label === "7d") return 1;
-  return 2;
+  if (label === "30d" || label === "monthly") return 2;
+  return 3;
 }
 
 /* ── kimi ───────────────────────────────────────────────────────────── */

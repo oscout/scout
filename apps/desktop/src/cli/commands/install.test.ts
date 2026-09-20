@@ -108,6 +108,8 @@ type World = {
   root: string;
   workDir: string;
   appPath: string;
+  /** `<Applications>/OpenScout.app` — the bundle shipped before the rename. */
+  legacyAppPath: string;
   calls: Array<{ command: string; args: string[] }>;
   body: Buffer;
   release: GithubRelease;
@@ -115,6 +117,7 @@ type World = {
 
 function createWorld(input: {
   installed?: boolean;
+  legacyInstalled?: boolean;
   running?: boolean;
   digest?: string | null;
   assets?: GithubReleaseAsset[];
@@ -129,6 +132,11 @@ function createWorld(input: {
     mkdirSync(join(appPath, "Contents"), { recursive: true });
     writeFileSync(join(appPath, "Contents", "Info.plist"), "old");
   }
+  const legacyAppPath = join(applications, "OpenScout.app");
+  if (input.legacyInstalled) {
+    mkdirSync(join(legacyAppPath, "Contents"), { recursive: true });
+    writeFileSync(join(legacyAppPath, "Contents", "Info.plist"), "pre-rename");
+  }
 
   const body = Buffer.from("signed-openscout-dmg");
   const digest = input.digest === undefined ? sha256(body) : input.digest;
@@ -142,6 +150,7 @@ function createWorld(input: {
     root,
     workDir,
     appPath,
+    legacyAppPath,
     calls: [],
     body,
     release: {
@@ -159,6 +168,8 @@ function createHarness(
     fetchRelease?: "ok" | "fail";
     downloadBody?: Buffer;
     attachAppName?: string;
+    legacyRunning?: boolean;
+    legacyKillFails?: boolean;
     mountedPlistBody?: string;
     codesignVerify?: ScoutInstallCommandResult;
     codesignDetails?: ScoutInstallCommandResult;
@@ -179,6 +190,7 @@ function createHarness(
 ): ScoutInstallDependencies {
   let running = input.running ?? false;
   let staleMenuRunning = input.staleMenuRunning ?? false;
+  let legacyRunning = input.legacyRunning ?? false;
   let dittoCount = 0;
   let deepVerifyCount = 0;
   let psCount = 0;
@@ -279,17 +291,23 @@ function createHarness(
             "  456 /Users/dev/openscout/apps/macos/dist/Scout.app/Contents/Library/LoginItems/ScoutMenu.app/Contents/MacOS/ScoutMenu\n",
           );
         }
+        if (legacyRunning) {
+          lines.push(`  789 ${world.legacyAppPath}/Contents/MacOS/Scout\n`);
+        }
         if (lines.length === 0) return ok("");
         return ok(lines.join(""));
       }
       if (command === "kill") {
+        if (input.legacyKillFails && args.includes("789")) return failed("operation not permitted");
         if (args[0] === "-9" || termStops) {
           if (args[0] === "-9") {
             if (args[1] === "123") running = false;
             if (args[1] === "456") staleMenuRunning = false;
+            if (args[1] === "789") legacyRunning = false;
           } else {
             if (args[0] === "123") running = false;
             if (args[0] === "456") staleMenuRunning = false;
+            if (args[0] === "789") legacyRunning = false;
           }
         }
         return ok();
@@ -318,7 +336,7 @@ describe("install command helpers", () => {
     expect(`${OPENSCOUT_RELEASE_OWNER}/${OPENSCOUT_RELEASE_REPOSITORY}`).toBe(
       "oscout/scout",
     );
-    expect(DEFAULT_OPENSCOUT_APP_PATH).toBe("/Applications/OpenScout.app");
+    expect(DEFAULT_OPENSCOUT_APP_PATH).toBe("/Applications/Scout.app");
     expect(OPENSCOUT_APP_BUNDLE_ID).toBe("app.openscout.scout");
     expect(OPENSCOUT_SIGNING_TEAM_ID).toBe("2U83JFPW66");
     expect(() => parseInstallArgs(["--team-id", "ABCD123456"])).toThrow(/unknown option/);
@@ -397,7 +415,7 @@ describe("findAppDmgAsset", () => {
         releaseAsset("OpenScout-beta.dmg"),
       ],
     };
-    expect(() => findAppDmgAsset(release)).toThrow(/no OpenScout\.app DMG/);
+    expect(() => findAppDmgAsset(release)).toThrow(/no product DMG/);
   });
 
   test("does not regex-pick a different versioned OpenScout DMG", () => {
@@ -410,7 +428,7 @@ describe("findAppDmgAsset", () => {
         releaseAsset("OpenScoutMenu-0.2.70.dmg"),
       ],
     };
-    expect(() => findAppDmgAsset(release)).toThrow(/no OpenScout\.app DMG/);
+    expect(() => findAppDmgAsset(release)).toThrow(/no product DMG/);
   });
 
   test("requires exact publication casing", () => {
@@ -419,7 +437,7 @@ describe("findAppDmgAsset", () => {
       name: "OpenScout v0.2.70",
       assets: [releaseAsset("openscout-0.2.70.dmg"), releaseAsset("openscout.dmg")],
     };
-    expect(() => findAppDmgAsset(release)).toThrow(/no OpenScout\.app DMG/);
+    expect(() => findAppDmgAsset(release)).toThrow(/no product DMG/);
   });
 
   test("rejects a non-release tag instead of deriving an asset path", () => {
@@ -428,7 +446,7 @@ describe("findAppDmgAsset", () => {
       name: "invalid",
       assets: [releaseAsset("OpenScout.dmg")],
     };
-    expect(() => findAppDmgAsset(release)).toThrow(/unsupported OpenScout release tag/);
+    expect(() => findAppDmgAsset(release)).toThrow(/unsupported Scout release tag/);
   });
 });
 
@@ -732,7 +750,7 @@ describe("runInstallCommand", () => {
       installed: null,
       target: "0.2.70",
       bundlePath: world.appPath,
-      message: "OpenScout is not installed — run `scout install`.",
+      message: "Scout is not installed — run `scout install`.",
     });
 
     mkdirSync(join(world.appPath, "Contents"), { recursive: true });
@@ -789,7 +807,7 @@ describe("runInstallCommand", () => {
       status: "updated",
       installed: "0.2.70",
     });
-    expect(parseJsonOutput(stdout).message).toContain("Repaired OpenScout 0.2.70");
+    expect(parseJsonOutput(stdout).message).toContain("Repaired Scout 0.2.70");
     expect(stderr.join("\n")).toContain("failed verification; repairing");
     expect(world.calls.some((call) => call.command === "hdiutil" && call.args[0] === "attach")).toBe(true);
   });
@@ -812,7 +830,7 @@ describe("runInstallCommand", () => {
     expect(existsSync(world.appPath)).toBe(false);
   });
 
-  test("installs a verified OpenScout.app transactionally and preserves JSON output", async () => {
+  test("installs a verified Scout.app transactionally and preserves JSON output", async () => {
     const world = createWorld();
     const { context, stdout } = captureContext();
     await runInstallCommand(context, [], createHarness(world));
@@ -823,7 +841,7 @@ describe("runInstallCommand", () => {
       installed: "0.2.70",
       target: "0.2.70",
       bundlePath: world.appPath,
-      message: `Installed OpenScout 0.2.70 → ${world.appPath}`,
+      message: `Installed Scout 0.2.70 → ${world.appPath}`,
     });
     expect(existsSync(join(world.appPath, "Contents", "Info.plist"))).toBe(true);
     expect(existsSync(`${world.appPath}.openscout-install.lock`)).toBe(false);
@@ -877,6 +895,73 @@ describe("runInstallCommand", () => {
     expect(existsSync(world.appPath)).toBe(false);
   });
 
+  test("installs a pre-rename DMG payload under the current bundle name", async () => {
+    const world = createWorld();
+    const { context } = captureContext();
+
+    // Every release up to 0.2.105 ships `OpenScout.app`; `--version v0.2.103`
+    // must still work, and must land as Scout.app like any other install.
+    await runInstallCommand(context, [], createHarness(world, { attachAppName: "OpenScout.app" }));
+
+    expect(world.appPath.endsWith("/Scout.app")).toBe(true);
+    expect(existsSync(world.appPath)).toBe(true);
+    expect(existsSync(world.legacyAppPath)).toBe(false);
+  });
+
+  test("retires the pre-rename bundle once the new one is installed", async () => {
+    const world = createWorld({ legacyInstalled: true });
+    const { context } = captureContext();
+
+    await runInstallCommand(context, [], createHarness(world));
+
+    expect(existsSync(world.appPath)).toBe(true);
+    // Both carry app.openscout.scout, so leaving it behind gives
+    // LaunchServices two candidates and the operator two menu helpers.
+    expect(existsSync(world.legacyAppPath)).toBe(false);
+  });
+
+  test("stops and relaunches when the pre-rename bundle was the running copy", async () => {
+    const world = createWorld({ legacyInstalled: true });
+    const { context } = captureContext();
+
+    // `stopRunningApp` only knows the new path, so without the retirement pass
+    // this install would leave the old app running and never relaunch.
+    await runInstallCommand(context, [], createHarness(world, { legacyRunning: true }));
+
+    expect(world.calls.some((call) => call.command === "kill" && call.args.includes("789"))).toBe(true);
+    expect(existsSync(world.legacyAppPath)).toBe(false);
+    expect(world.calls.some((call) => call.command === "open" && call.args[0] === world.appPath)).toBe(true);
+  });
+
+  test("retains a legacy app that survives KILL and skips relaunch", async () => {
+    const world = createWorld({ legacyInstalled: true });
+    const { context, stdout, stderr } = captureContext();
+    await runInstallCommand(context, [], createHarness(world, {
+      legacyRunning: true, legacyKillFails: true,
+    }));
+    expect(existsSync(world.appPath)).toBe(true);
+    expect(existsSync(world.legacyAppPath)).toBe(true);
+    expect(world.calls.some((call) => call.command === "kill" && call.args[0] === "-9" && call.args[1] === "789")).toBe(true);
+    expect(world.calls.some((call) => call.command === "open")).toBe(false);
+    expect(stderr.join("\n")).toContain("automatic relaunch skipped");
+    expect(parseJsonOutput(stdout).message).toContain("cleanup incomplete");
+  });
+
+  test("keeps the pre-rename bundle when the install fails", async () => {
+    const world = createWorld({ legacyInstalled: true });
+    const { context } = captureContext();
+
+    await expect(runInstallCommand(
+      context,
+      [],
+      createHarness(world, { spctl: failed("Gatekeeper rejected") }),
+    )).rejects.toThrow();
+
+    // Retirement runs only after the replacement is staged, moved and
+    // verified — a failed install must never cost the operator their app.
+    expect(existsSync(world.legacyAppPath)).toBe(true);
+  });
+
   test("still enforces exact size when GitHub omits the digest", async () => {
     const world = createWorld({ digest: null });
     world.release.assets = world.release.assets.map((asset) => ({
@@ -888,14 +973,14 @@ describe("runInstallCommand", () => {
     await expect(runInstallCommand(context, [], createHarness(world))).rejects.toThrow(/size mismatch/);
   });
 
-  test("requires exactly OpenScout.app in the mounted image", async () => {
+  test("requires a Scout.app or legacy OpenScout.app in the mounted image", async () => {
     const world = createWorld();
     const { context } = captureContext();
     await expect(runInstallCommand(
       context,
       [],
       createHarness(world, { attachAppName: "Other.app" }),
-    )).rejects.toThrow(/no OpenScout\.app found/);
+    )).rejects.toThrow(/no Scout\.app or OpenScout\.app found/);
     expect(existsSync(world.appPath)).toBe(false);
   });
 
@@ -1005,7 +1090,7 @@ describe("runInstallCommand", () => {
       context,
       ["--force"],
       createHarness(world, { running: true, psFailuresAt: [1] }),
-    )).rejects.toThrow(/could not inspect running OpenScout processes/);
+    )).rejects.toThrow(/could not inspect running Scout processes/);
     expect(readFileSync(join(world.appPath, "Contents", "Info.plist"), "utf8")).toBe("old");
   });
 
@@ -1016,7 +1101,7 @@ describe("runInstallCommand", () => {
       context,
       ["--force"],
       createHarness(world, { running: true, psFailuresAt: [2] }),
-    )).rejects.toThrow(/could not inspect running OpenScout processes/);
+    )).rejects.toThrow(/could not inspect running Scout processes/);
     expect(world.calls.some((call) => call.command === "kill" && call.args[0] === "123")).toBe(true);
     expect(readFileSync(join(world.appPath, "Contents", "Info.plist"), "utf8")).toBe("old");
   });
@@ -1028,7 +1113,7 @@ describe("runInstallCommand", () => {
     expect(world.calls.some((call) => call.command === "kill" && call.args[0] === "123")).toBe(true);
     expect(world.calls.some((call) => call.command === "osascript")).toBe(false);
     expect(world.calls.some((call) => call.command === "open")).toBe(false);
-    expect(parseJsonOutput(stdout).message).toContain("restart OpenScout");
+    expect(parseJsonOutput(stdout).message).toContain("restart Scout");
   });
 
   test("opens only the installed path and reports no relaunch when open fails", async () => {

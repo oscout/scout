@@ -26,6 +26,7 @@ import { openProjectAgentProfile } from "./model.ts";
 import { shortHomePath } from "./project-overview-helpers.ts";
 import type { InboxProject, InboxThread, ProjectsInboxModel } from "./projects-inbox-model.ts";
 import "./crew-workspaces.css";
+import "../system-surfaces-redesign.css";
 
 type Navigate = (route: Route) => void;
 type DirectoryMode = "projects" | "agents";
@@ -376,34 +377,64 @@ function AgentSection({
         <span>{members.length}</span>
       </div>
       <div className="cw-grid">
-        {members.map((member) => (
-          <AgentCard key={member.key} member={member} route={route} navigate={navigate} nowMs={nowMs} />
+        {members.map((member, index) => (
+          <AgentCard key={member.key} member={member} index={index} route={route} navigate={navigate} nowMs={nowMs} />
         ))}
       </div>
     </section>
   );
 }
 
+/**
+ * A card's member is turned a little away until you come to it.
+ *
+ * At rest the head is `turn-left` and the coin breathes, phase-shifted by the
+ * card's place in the grid so a wall of cards never bobs in unison. Point at
+ * the CARD — not the coin — or focus anything inside it and the member turns to
+ * camera, which is the rest pose, and the pointer-follow gaze takes over from
+ * there (`CrewAvatar` only draws eyes at rest; a pose frame has its own).
+ *
+ * Only Sprout has turn frames today. `poseAsset` falls every other member back
+ * to the rest bust, so they simply do not turn — nothing to special-case.
+ */
 function AgentCard({
   member,
+  index,
   route,
   navigate,
   nowMs,
 }: {
   member: CrewMember;
+  index: number;
   route: Extract<Route, { view: "agents-v2" }>;
   navigate: Navigate;
   nowMs: number;
 }) {
   const primary = member.primary;
+  const [facing, setFacing] = useState(false);
   return (
-    <article className="cw-card" data-status={member.status} data-kind={member.kind}>
+    <article
+      className="cw-card sys-panel"
+      data-status={member.status}
+      data-kind={member.kind}
+      onPointerEnter={() => setFacing(true)}
+      onPointerLeave={() => setFacing(false)}
+      /* React's onFocus/onBlur are focusin/focusout, so these are focus-WITHIN:
+         a keyboard operator tabbing into the card's buttons turns the head the
+         same way a pointer over the card does. */
+      onFocus={() => setFacing(true)}
+      onBlur={() => setFacing(false)}
+    >
       <header className="cw-cardHead">
         <AgentAvatar
           agent={{ name: member.name, state: statusToAvatarState(member.status) }}
           placement="hero"
-          size={46}
+          size={44}
           presence
+          gaze="pointer"
+          pose={facing ? "rest" : "turn-left"}
+          className="xc-breathe"
+          style={{ ["--xc-breathe-delay" as string]: `${-((index * 1.1) % 3.4)}s` }}
         />
         <div className="cw-cardIdentity">
           <div className="cw-cardNameRow">

@@ -87,10 +87,13 @@ function readyChat(title: string, model: string): ScoutbotAssistantSessionState 
   } as unknown as ScoutbotAssistantSessionState;
 }
 
-function render(overrides: Partial<VoiceContext> = {}): string {
+function render(
+  overrides: Partial<VoiceContext> = {},
+  props: { instrument?: boolean; meterLine?: string; clock?: string; layout?: "compact" | "page" } = {},
+): string {
   contextValue = baseContext(overrides);
   return renderToStaticMarkup(
-    createElement(ScoutbotRealtimeVoiceCall, { dictationActive: false }),
+    createElement(ScoutbotRealtimeVoiceCall, { dictationActive: false, ...props }),
   );
 }
 
@@ -129,5 +132,59 @@ describe("ScoutbotRealtimeVoiceCall live chat states", () => {
     });
     expect(markup).toContain("Untitled chat");
     expect(markup).not.toContain("Loading chat…");
+  });
+});
+
+describe("ScoutbotRealtimeVoiceCall instrument layout", () => {
+  test("shows the plate and activity together without a tab bar", () => {
+    const markup = render({
+      enabled: true,
+      state: "idle",
+      chatStatus: "ready",
+      chatState: readyChat("Dispatch failures", "gpt-5.6-luna"),
+    }, {
+      instrument: true,
+      layout: "page",
+      meterLine: "OpenAI gpt-realtime · marin · metered",
+    });
+    expect(markup).toContain("Start live voice");
+    expect(markup).toContain("OpenAI gpt-realtime · marin · metered");
+    expect(markup).toContain("the meter starts on connect");
+    expect(markup).toContain("Session activity");
+    expect(markup).not.toContain("Live conversation");
+    expect(markup).not.toContain("Live voice views");
+    expect(markup).not.toContain("Microphone and spoken replies are active.");
+  });
+
+  test("puts the elapsed clock on End live voice", () => {
+    const markup = render({
+      enabled: true,
+      state: "live",
+      chatStatus: "ready",
+      chatState: readyChat("Dispatch failures", "gpt-5.6-luna"),
+    }, {
+      instrument: true,
+      layout: "page",
+      meterLine: "OpenAI gpt-realtime · marin · metered",
+      clock: "00:12",
+    });
+    expect(markup).toContain("End live voice");
+    expect(markup).toContain("00:12");
+    expect(markup).toContain("voice-cta-clock");
+    expect(markup).not.toContain("the meter starts on connect");
+  });
+
+  test("writes a receipt row when the call has ended", () => {
+    const markup = render({
+      enabled: true,
+      state: "ended",
+      chatStatus: "ready",
+      chatState: readyChat("Dispatch failures", "gpt-5.6-luna"),
+    }, {
+      instrument: true,
+      layout: "page",
+      clock: "01:04",
+    });
+    expect(markup).toContain("call · 01:04 · metered · ended");
   });
 });

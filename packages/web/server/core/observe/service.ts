@@ -22,7 +22,12 @@ import {
   refreshTailDiscovery,
   type DiscoverySnapshot,
 } from "@openscout/runtime/tail";
-import { epochMs, flightSessionTrace, type AgentEndpoint } from "@openscout/protocol";
+import {
+  epochMs,
+  flightSessionTrace,
+  type AgentEndpoint,
+  type FlightRecord,
+} from "@openscout/protocol";
 
 import {
   canonicalSessionHarness,
@@ -98,6 +103,8 @@ export interface ObserveSessionMeta {
   adapterType?: string;
   model?: string;
   cwd?: string;
+  nodeId?: string;
+  hostName?: string;
   sessionStart?: number;
   turnCount?: number;
   externalSessionId?: string;
@@ -2175,19 +2182,85 @@ function snapshotHasTraceActivity(snapshot: SessionState | null): snapshot is Se
   return Boolean(snapshot?.turns.some((turn) => turn.blocks.length > 0));
 }
 
+const TERMINAL_BROKER_FLIGHT_STATES = new Set<FlightRecord["state"]>([
+  "completed",
+  "failed",
+  "cancelled",
+]);
+
+function brokerSessionObserveFlight(input: {
+  snapshot: NonNullable<ObserveBrokerContext>["snapshot"];
+  endpoint: AgentEndpoint;
+  refId: string;
+}): FlightRecord | null {
+  const aliases = new Set(
+    [...endpointSessionAliases(input.endpoint), normalizedSessionAlias(input.refId)]
+      .filter((alias): alias is string => Boolean(alias)),
+  );
+  const allowAgentMatch = input.snapshot.actors?.[input.endpoint.agentId]?.kind === "session";
+  const matched = Object.values(input.snapshot.flights ?? {}).filter((flight) => {
+    const traceMatches = flightSessionTrace(flight).some((entry) => {
+      if (entry.endpointId === input.endpoint.id) return true;
+      const sessionId = normalizedSessionAlias(entry.sessionId);
+      return Boolean(sessionId && aliases.has(sessionId));
+    });
+    if (traceMatches) return true;
+    const invocation = input.snapshot.invocations?.[flight.invocationId];
+    const invocationMatches = [
+      invocation?.execution?.targetSessionId,
+      invocation?.executionResolution?.sessionId,
+      metadataString(invocation?.metadata, "targetSessionId"),
+      metadataString(invocation?.metadata, "sessionId"),
+    ].some((value) => {
+      const sessionId = normalizedSessionAlias(value);
+      return Boolean(sessionId && aliases.has(sessionId));
+    });
+    if (invocationMatches) return true;
+    return allowAgentMatch && flight.targetAgentId === input.endpoint.agentId;
+  });
+  if (matched.length === 0) return null;
+  return [...matched].sort((left, right) => {
+    const leftCreatedAt = epochMs(input.snapshot.invocations?.[left.invocationId]?.createdAt) ?? 0;
+    const rightCreatedAt = epochMs(input.snapshot.invocations?.[right.invocationId]?.createdAt) ?? 0;
+    return rightCreatedAt - leftCreatedAt
+      || (epochMs(right.startedAt) ?? epochMs(right.completedAt) ?? 0)
+        - (epochMs(left.startedAt) ?? epochMs(left.completedAt) ?? 0)
+      || (epochMs(right.completedAt) ?? 0) - (epochMs(left.completedAt) ?? 0)
+      || right.id.localeCompare(left.id);
+  })[0] ?? null;
+}
+
 function brokerSessionObserveData(input: {
   refId: string;
   endpoint: AgentEndpoint;
   actorName?: string | null;
+  flight?: FlightRecord | null;
 }): ObserveData {
   const metadata = endpointMetadataRecord(input.endpoint);
+  const flight = input.flight ?? null;
   const startedAt = Number(metadata.startedAt);
-  const sessionStart = Number.isFinite(startedAt) && startedAt > 0 ? startedAt : Date.now();
+  const flightStartedAt = epochMs(flight?.startedAt);
+  const sessionStart = Number.isFinite(startedAt) && startedAt > 0
+    ? startedAt
+    : flightStartedAt && flightStartedAt > 0
+      ? flightStartedAt
+      : Date.now();
+  const hasRecordedStart = (Number.isFinite(startedAt) && startedAt > 0)
+    || Boolean(flightStartedAt && flightStartedAt > 0);
   const handle = metadataString(metadata, "handle");
   const displayName = input.actorName?.trim() || metadataString(metadata, "displayName") || handle || input.refId;
   const externalSessionId = metadataString(metadata, "externalSessionId");
   const pending = metadata.pendingExternalSession === true && !externalSessionId;
-  const reachable = metadata.staleLocalRegistration !== true && (
+  const flightTerminal = Boolean(flight && TERMINAL_BROKER_FLIGHT_STATES.has(flight.state));
+  const flightOutcomeText = flightTerminal
+    ? flight?.state === "failed"
+      ? "Invocation failed; no harness turns were captured."
+      : flight?.state === "cancelled"
+        ? "Invocation cancelled; no harness turns were captured."
+        : "Invocation completed; no harness turns were captured."
+    : null;
+  const flightDetail = flight?.error?.trim() || flight?.summary?.trim() || null;
+  const reachable = !flightTerminal && metadata.staleLocalRegistration !== true && (
     input.endpoint.state === "attaching"
       || input.endpoint.state === "waking"
       || input.endpoint.state === "idle"
@@ -2195,13 +2268,17 @@ function brokerSessionObserveData(input: {
       || input.endpoint.state === "waiting"
       || input.endpoint.state === "working"
   );
-  const handoffText = !reachable
+  const handoffText = flightOutcomeText ?? (!reachable
     ? "Harness session is not currently reachable; no trace events were captured."
     : pending
       ? "Waiting for the harness to attach and emit its first turn."
       : externalSessionId
         ? "Harness session attached; waiting for trace events."
-        : "Broker endpoint is reachable; waiting for the harness session to attach.";
+        : "Broker endpoint is reachable; waiting for the harness session to attach.");
+  const handoffAt = epochMs(flight?.completedAt) ?? Date.now();
+  const handoffT = hasRecordedStart
+    ? Math.max(0, (handoffAt - sessionStart) / 1000)
+    : 1;
   return {
     events: [
       {
@@ -2218,11 +2295,12 @@ function brokerSessionObserveData(input: {
       },
       {
         id: `${input.refId}:handoff`,
-        t: 1,
-        at: Date.now(),
+        t: handoffT,
+        at: handoffAt,
         kind: "system",
         text: handoffText,
         detail: [
+          flightDetail,
           externalSessionId ? `external session: ${externalSessionId}` : null,
           `endpoint state: ${input.endpoint.state}`,
           metadata.staleLocalRegistration === true ? "registration is stale" : null,
@@ -2277,6 +2355,17 @@ async function loadBrokerSessionRefObservePayload(
   const storedAgent = queryAgentById(endpoint.agentId);
   const actor = broker.snapshot.actors?.[endpoint.agentId];
   const endpointRoot = endpoint.projectRoot ?? endpoint.cwd ?? null;
+  const withHost = (data: ObserveData): ObserveData => ({
+    ...data,
+    metadata: {
+      ...data.metadata,
+      session: {
+        ...data.metadata?.session,
+        nodeId: endpoint.nodeId,
+        hostName: broker.snapshot.nodes?.[endpoint.nodeId]?.name ?? undefined,
+      },
+    },
+  });
   if (storedAgent) {
     const agent: WebAgent = {
       ...storedAgent,
@@ -2303,7 +2392,7 @@ async function loadBrokerSessionRefObservePayload(
         historyPath: observed.historyPath,
         sessionId: observed.sessionId,
         updatedAt: observed.updatedAt,
-        data: observed.data,
+        data: withHost(observed.data),
       };
     }
   }
@@ -2326,11 +2415,11 @@ async function loadBrokerSessionRefObservePayload(
       historyPath: history.historyPath,
       sessionId: historySessionId ?? providerSessionId,
       updatedAt: Date.now(),
-      data: buildObserveDataFromSnapshot(
+      data: withHost(buildObserveDataFromSnapshot(
         history.snapshot,
         history.timedEvents,
         live || isLiveSessionSnapshot(history.snapshot),
-      ),
+      )),
     };
   }
 
@@ -2344,7 +2433,7 @@ async function loadBrokerSessionRefObservePayload(
       historyPath: null,
       sessionId: providerSessionId,
       updatedAt: Date.now(),
-      data: buildObserveDataFromSnapshot(liveSnapshot, [], live),
+      data: withHost(buildObserveDataFromSnapshot(liveSnapshot, [], live)),
     };
   }
 
@@ -2361,7 +2450,7 @@ async function loadBrokerSessionRefObservePayload(
       historyPath: nativeTail.transcript.transcriptPath,
       sessionId,
       updatedAt: Date.now(),
-      data: buildObserveDataFromTail(nativeTail.transcript, nativeTail.events, current),
+      data: withHost(buildObserveDataFromTail(nativeTail.transcript, nativeTail.events, current)),
     };
   }
 
@@ -2389,11 +2478,16 @@ async function loadBrokerSessionRefObservePayload(
     historyPath: null,
     sessionId: providerSessionId,
     updatedAt: Date.now(),
-    data: brokerSessionObserveData({
+    data: withHost(brokerSessionObserveData({
       refId: normalizedRef,
       endpoint: observedEndpoint,
       actorName: actor?.displayName ?? null,
-    }),
+      flight: brokerSessionObserveFlight({
+        snapshot: broker.snapshot,
+        endpoint,
+        refId: normalizedRef,
+      }),
+    })),
   };
 }
 

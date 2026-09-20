@@ -5,10 +5,11 @@ import { dirname, join } from "node:path";
 
 import { type ScoutRealtimeVoiceSettings } from "../shared/realtime-voice.ts";
 import { resolveDbPath } from "./db/internal/db.ts";
+import { validUsageNumber, type LiveCallUsage } from "../shared/voice-usage.ts";
 
 const OPENAI_LIVE_SESSIONS_URL = "https://api.openai.com/v1/live/sessions";
-const DEFAULT_REALTIME_MODEL = "gpt-live-1";
-const DEFAULT_REALTIME_VOICE = "marin";
+export const DEFAULT_REALTIME_MODEL = "gpt-live-1";
+export const DEFAULT_REALTIME_VOICE = "marin";
 const MAX_SDP_BYTES = 64 * 1024;
 const DEFAULT_MAX_CONCURRENT_CALLS = 1;
 const DEFAULT_STARTS_PER_MINUTE = 4;
@@ -122,6 +123,14 @@ export class ScoutRealtimeVoiceAdmission {
       CREATE INDEX IF NOT EXISTS realtime_voice_starts_started_at
         ON realtime_voice_starts(started_at);
     `);
+    // Operational usage metadata lives beside the existing lease receipts,
+    // never in the broker's coordination database. Historical times stay null.
+    this.database.transaction(() => {
+      const columns = new Set((this.database.query("PRAGMA table_info(live_provider_sessions)").all() as Array<{ name: string }>).map(row => row.name));
+      for (const [name, type] of [["started_at", "INTEGER"], ["ended_at", "INTEGER"], ["model", "TEXT"], ["voice", "TEXT"]]) {
+        if (!columns.has(name)) this.database.exec(`ALTER TABLE live_provider_sessions ADD COLUMN ${name} ${type}`);
+      }
+    }).immediate();
   }
 
   admit(): ScoutRealtimeVoiceLease {
@@ -202,8 +211,17 @@ export class ScoutRealtimeVoiceAdmission {
     return row.count;
   }
 
-  bindSession(leaseId: string, sessionId: string): void {
-    this.database.query("INSERT INTO live_provider_sessions (lease_id, session_id, state, updated_at) VALUES (?1, ?2, 'active', ?3)").run(leaseId, sessionId, this.now());
+  bindSession(leaseId: string, sessionId: string, config?: Pick<ScoutRealtimeVoiceConfig, "model" | "voice">): void {
+    this.database.query("INSERT INTO live_provider_sessions (lease_id, session_id, state, updated_at, started_at, model, voice) VALUES (?1, ?2, 'active', ?3, ?3, ?4, ?5)")
+      .run(leaseId, sessionId, this.now(), config?.model ?? null, config?.voice ?? null);
+  }
+
+  usageHistory(): LiveCallUsage[] {
+    return this.database.query(`SELECT session_id AS sessionId, lease_id AS leaseId, state,
+      started_at AS startedAt, ended_at AS endedAt, model, voice,
+      CASE WHEN state='confirmed' THEN usage_seconds ELSE NULL END AS providerSeconds,
+      CASE WHEN client_state='confirmed' THEN client_usage_seconds ELSE NULL END AS clientReportedSeconds
+      FROM live_provider_sessions ORDER BY COALESCE(started_at, updated_at) DESC LIMIT 40`).all() as LiveCallUsage[];
   }
 
   sessionForLease(leaseId: string): { sessionId: string; state: string } | null {
@@ -224,8 +242,9 @@ export class ScoutRealtimeVoiceAdmission {
 
   recordClientFinalization(leaseId: string, result: LiveFinalization): void {
     this.database.query(`UPDATE live_provider_sessions SET client_state = ?1,
-      client_reason = ?2, client_usage_seconds = ?3 WHERE lease_id = ?4`)
-      .run(result.state, result.reason ?? null, result.seconds ?? null, leaseId);
+      client_reason = ?2, client_usage_seconds = ?3, ended_at = COALESCE(ended_at, ?5)
+      WHERE lease_id = ?4 AND (client_state IS NULL OR client_state != 'confirmed')`)
+      .run(result.state, result.reason ?? null, validUsageNumber(result.seconds), leaseId, this.now());
   }
 
   reserveFinalization(leaseId: string): { sessionId: string; attempt: number } | null {
@@ -241,8 +260,10 @@ export class ScoutRealtimeVoiceAdmission {
 
   recordFinalization(leaseId: string, result: LiveFinalization, attempt: number): void {
     this.database.query(`UPDATE live_provider_sessions SET state = ?1, reason = ?2,
-      usage_seconds = ?3, updated_at = ?4 WHERE lease_id = ?5 AND attempts = ?6 AND state != 'confirmed'`)
-      .run(result.state, result.reason ?? null, result.seconds ?? null, this.now(), leaseId, attempt);
+      usage_seconds = ?3, updated_at = ?4,
+      ended_at = CASE WHEN ?1 = 'confirmed' THEN COALESCE(ended_at, ?4) ELSE ended_at END
+      WHERE lease_id = ?5 AND attempts = ?6 AND state != 'confirmed'`)
+      .run(result.state, result.reason ?? null, validUsageNumber(result.seconds), this.now(), leaseId, attempt);
   }
 
   close(): void {
@@ -282,6 +303,7 @@ export function resolveScoutRealtimeVoiceSettings(
   configuredEnabled: boolean,
   env: NodeJS.ProcessEnv = process.env,
 ): ScoutRealtimeVoiceSettings {
+  const config = resolveScoutRealtimeVoiceConfig(env);
   const environmentOverride = scoutRealtimeVoiceEnvironmentOverride(env);
   if (environmentOverride !== null) {
     return {
@@ -289,6 +311,8 @@ export function resolveScoutRealtimeVoiceSettings(
       configuredEnabled,
       source: "environment",
       locked: true,
+      model: config.model,
+      voice: config.voice,
     };
   }
   return {
@@ -296,6 +320,8 @@ export function resolveScoutRealtimeVoiceSettings(
     configuredEnabled,
     source: "settings",
     locked: false,
+    model: config.model,
+    voice: config.voice,
   };
 }
 

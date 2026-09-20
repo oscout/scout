@@ -636,6 +636,12 @@ export type Flight = {
     reason: string | null;
     checkedAt: number | null;
   } | null;
+  /**
+   * The requester stopped waiting for a synchronous result. The agent may
+   * still be running, but nobody is waiting on this turn any more, so it must
+   * not present as an active "working" turn.
+   */
+  requesterWaitTimedOut?: boolean;
 };
 
 export type FlightSessionTrace = {
@@ -747,9 +753,12 @@ export type SessionEntry = {
   participantCount?: number;
   authorityNodeId?: string | null;
   authorityNodeName?: string | null;
+  executionNodeId?: string | null;
+  executionNodeName?: string | null;
   agentId: string | null;
   agentName: string | null;
   harness: string | null;
+  model?: string | null;
   /** Broker-owned session identity for a session-backed conversation. */
   sessionId?: string | null;
   harnessSessionId: string | null;
@@ -812,6 +821,8 @@ export type ObserveSessionMeta = {
   adapterType?: string;
   model?: string;
   cwd?: string;
+  nodeId?: string;
+  hostName?: string;
   sessionStart?: number;
   turnCount?: number;
   externalSessionId?: string;

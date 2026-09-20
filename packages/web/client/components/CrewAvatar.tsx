@@ -10,8 +10,20 @@ import {
   crewAssetUrl,
   crewGround,
   displayCoin,
+  poseAsset,
   projectHue,
 } from "../lib/crew-registry.ts";
+import type { PoseName } from "../lib/crew-registry.ts";
+import {
+  GAZE_GLANCE_MS,
+  GAZE_IDLE_MS,
+  createGazeTracker,
+  gazeRole,
+  glanceToward,
+  subscribeAttention,
+  subscribePointer,
+} from "../lib/crew-gaze.ts";
+import type { GazeDir } from "../lib/crew-gaze.ts";
 import "./crew-avatar.css";
 
 export type CrewMascotState =
@@ -33,6 +45,24 @@ export interface CrewAvatarProps {
   ring?: boolean;
   chip?: boolean;
   glow?: boolean;
+  /**
+   * Where the eyes look. `"pointer"` follows the cursor while it is near the
+   * coin (see `crew-gaze.ts`); a direction pins them. Blinks still win, and a
+   * sheet without the frame for a direction rests instead of guessing.
+   */
+  gaze?: "pointer" | GazeDir;
+  /**
+   * A whole-body pose frame in place of the rest bust (see `CREW_POSES`). A
+   * member without the frame draws rest. Eyes are only drawn at rest: a turned
+   * head has its own eyes in the art.
+   */
+  pose?: PoseName | "rest";
+  /**
+   * Pack-relative bust URL override. Hosted Chat's landing imports a few coins
+   * as bundled assets because that build has no `/crew` public tree. A custom
+   * bust skips eye-sheet overlays — those files are not in the override.
+   */
+  bustSrc?: string;
   className?: string;
   style?: CSSProperties;
   title?: string;
@@ -77,7 +107,13 @@ function normalizeCrewState(rawState?: string | null): CrewMascotState {
   return "idle";
 }
 
-function useSheetFrame(framesCount: number): number {
+/**
+ * Blink scheduler: frames 1 → 2 → 1 → 0 at 40/90/130ms, every 2.8–7.3s on the
+ * member's own clock. `blinkNonce` asks for one now — the end of a glance —
+ * without disturbing the schedule. Exported so the full figure blinks the same
+ * way the coin does.
+ */
+export function useBlinkFrame(framesCount: number, blinkNonce = 0): number {
   const [frame, setFrame] = useState(0);
   const timers = useRef<number[]>([]);
 
@@ -110,7 +146,97 @@ function useSheetFrame(framesCount: number): number {
     };
   }, [framesCount]);
 
+  useEffect(() => {
+    if (blinkNonce === 0 || framesCount < 3) return;
+    if (typeof window === "undefined") return;
+    if (window.matchMedia?.("(prefers-reduced-motion: reduce)").matches) return;
+    const ids = [
+      window.setTimeout(() => setFrame(1), 0),
+      window.setTimeout(() => setFrame(2), 40),
+      window.setTimeout(() => setFrame(1), 90),
+      window.setTimeout(() => setFrame(0), 130),
+    ];
+    return () => ids.forEach((id) => window.clearTimeout(id));
+  }, [blinkNonce, framesCount]);
+
   return framesCount < 3 ? 0 : frame;
+}
+
+/**
+ * Where one coin looks. Two claims on the eyes, resolved in order:
+ *
+ * - the POINTER, while it is within the coin's follow radius — the closer
+ *   claim, so it wins; rests after `GAZE_IDLE_MS` of silence or when the
+ *   pointer leaves the page;
+ * - the ATTENTION target (`setAttentionTarget`, e.g. the composer taking
+ *   focus): a glance toward it held for `GAZE_GLANCE_MS`, then one blink and
+ *   rest. Every coin hears the same event, so the crew turns together.
+ *
+ * Subscribes only while enabled, re-renders only when the quantised direction
+ * changes, and does nothing under reduced motion.
+ */
+function useCrewGaze(
+  ref: { current: HTMLElement | null },
+  enabled: boolean,
+  size: number,
+): { dir: GazeDir; blinkNonce: number } {
+  const [dir, setDir] = useState<GazeDir>("rest");
+  const [blinkNonce, setBlinkNonce] = useState(0);
+
+  useEffect(() => {
+    if (!enabled) {
+      setDir("rest");
+      return;
+    }
+    if (typeof window === "undefined") return;
+    if (window.matchMedia?.("(prefers-reduced-motion: reduce)").matches) return;
+
+    const tracker = createGazeTracker(size);
+    const measure = () => ref.current?.getBoundingClientRect() ?? null;
+    let pointer: GazeDir = "rest";
+    let glance: GazeDir = "rest";
+    let current: GazeDir = "rest";
+    let idleTimer = 0;
+    let glanceTimer = 0;
+    const apply = () => {
+      const next = pointer !== "rest" ? pointer : glance;
+      if (next === current) return;
+      current = next;
+      setDir(next);
+    };
+
+    const unsubscribePointer = subscribePointer((sample) => {
+      pointer = tracker.sample(sample, measure);
+      apply();
+      window.clearTimeout(idleTimer);
+      if (pointer !== "rest") {
+        idleTimer = window.setTimeout(() => {
+          pointer = "rest";
+          apply();
+        }, GAZE_IDLE_MS);
+      }
+    });
+    const unsubscribeAttention = subscribeAttention((target) => {
+      window.clearTimeout(glanceTimer);
+      glance = target ? glanceToward(target, measure()) : "rest";
+      apply();
+      if (glance !== "rest") {
+        glanceTimer = window.setTimeout(() => {
+          glance = "rest";
+          apply();
+          setBlinkNonce((n) => n + 1);
+        }, GAZE_GLANCE_MS);
+      }
+    });
+    return () => {
+      unsubscribePointer();
+      unsubscribeAttention();
+      window.clearTimeout(idleTimer);
+      window.clearTimeout(glanceTimer);
+    };
+  }, [enabled, size, ref]);
+
+  return { dir: enabled ? dir : "rest", blinkNonce };
 }
 
 export function CrewAvatar({
@@ -124,18 +250,28 @@ export function CrewAvatar({
   ring = true,
   chip = false,
   glow = false,
+  gaze,
+  pose = "rest",
+  bustSrc,
   className,
   style,
   title,
 }: CrewAvatarProps) {
   const key = slug.toLowerCase();
   const art = CREW_ART[key];
-  const sheet = CREW_SHEETS[key];
+  const sheet = bustSrc ? undefined : CREW_SHEETS[key];
   const crewState = normalizeCrewState(state);
   const st = STATE_CONFIG[crewState];
 
-  const frameIdx = useSheetFrame(sheet ? sheet.roles.length + 1 : 1);
-  const role = sheet && frameIdx > 0 ? SHEET_FRAMES[frameIdx]?.role : undefined;
+  const shellRef = useRef<HTMLSpanElement>(null);
+  const atRest = pose === "rest";
+  const { dir: pointerDir, blinkNonce } = useCrewGaze(shellRef, gaze === "pointer" && atRest && Boolean(sheet), size ?? 40);
+  const frameIdx = useBlinkFrame(sheet && atRest ? sheet.roles.length + 1 : 1, blinkNonce);
+  const blinkRole = sheet && frameIdx > 0 ? SHEET_FRAMES[frameIdx]?.role : undefined;
+  const gazeDir: GazeDir = gaze === "pointer" ? pointerDir : (gaze ?? "rest");
+  // A blink interrupts a look, never the other way round: mid-blink frames win.
+  // A pose frame carries its own eyes, so no patch is drawn over it.
+  const role = atRest ? (blinkRole ?? gazeRole(gazeDir, sheet?.roles)) : undefined;
 
   const pHue = useMemo(() => projectHue(project), [project]);
   // The ground is picked from the ink of the cut ACTUALLY being drawn. Bust and
@@ -176,6 +312,7 @@ export function CrewAvatar({
       title={hoverTitle}
     >
       <span
+        ref={shellRef}
         className="xc-avatar-shell"
         style={{
           background: bg,
@@ -201,7 +338,7 @@ export function CrewAvatar({
         ) : (
           <>
             <img
-              src={crewAssetUrl(`${slug.toLowerCase()}-bust.webp`)}
+              src={bustSrc ?? crewAssetUrl(poseAsset(key, pose))}
               alt=""
               className="xc-avatar-img"
               style={{

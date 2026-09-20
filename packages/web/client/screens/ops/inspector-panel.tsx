@@ -149,7 +149,7 @@ export function OpsInspectorPanel({
         <div className="ctx-panel-ops-mode-card">
           <span>Current</span>
           <strong>{OPS_MODE_LABELS[mode]}</strong>
-          <small>{fleet ? `${timeAgo(fleet.generatedAt)} refresh` : "loading"}</small>
+          <small>{fleet ? `refreshed ${timeAgo(fleet.generatedAt)}` : "loading"}</small>
         </div>
         <div className="ctx-panel-stat-grid">
           <OpsStat label="Needs" value={needsAttention.length} tone={needsAttention.length > 0 ? "warn" : "ok"} />

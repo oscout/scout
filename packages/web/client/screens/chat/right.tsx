@@ -32,8 +32,11 @@ import {
 import { isActiveConversationFlight } from "../../lib/conversations.ts";
 import { routeMachineId } from "../../lib/router.ts";
 import {
+  conversationContextSessionId,
   conversationIdentityRoute,
+  conversationSessionRoute,
   directConversationSessionId,
+  selectLatestConversationFlight,
 } from "./conversation-model.ts";
 import {
   buildTailRouteQuery,
@@ -112,6 +115,9 @@ function flightStateLabel(state: string): string {
     case "waking": return "Waking";
     case "waiting": return "Thinking";
     case "running": return "Working";
+    case "completed": return "Completed";
+    case "failed": return "Failed";
+    case "cancelled": return "Cancelled";
     default: return state.replace(/_/g, " ");
   }
 }
@@ -131,6 +137,8 @@ export function ConversationInspector() {
   const [flights, setFlights] = useState<Flight[]>([]);
   const [latestMessage, setLatestMessage] = useState<Message | null>(null);
   const [loaded, setLoaded] = useState(false);
+  const activeConversationIdRef = useRef(conversationId);
+  activeConversationIdRef.current = conversationId;
 
   const load = useCallback(async () => {
     if (!conversationId) {
@@ -141,20 +149,21 @@ export function ConversationInspector() {
       return;
     }
     try {
-      const [sessionMeta, activeFlights, recentMessages] = await Promise.all([
+      const [sessionMeta, conversationFlights, recentMessages] = await Promise.all([
         api<SessionEntry>(
           `/api/session/${encodeURIComponent(conversationId)}`,
         ).catch(() => null),
         api<Flight[]>(
-          `/api/flights?conversationId=${encodeURIComponent(conversationId)}`,
+          `/api/flights?conversationId=${encodeURIComponent(conversationId)}&active=false`,
         ).catch(() => [] as Flight[]),
         api<Message[]>(
           `/api/messages?conversationId=${encodeURIComponent(conversationId)}&limit=8`,
         ).catch(() => [] as Message[]),
       ]);
+      if (activeConversationIdRef.current !== conversationId) return;
       setMeta((previous) => keepPreviousIfJsonEqual(previous, sessionMeta));
       setFlights((previous) =>
-        keepPreviousIfJsonEqual(previous, activeFlights ?? []),
+        keepPreviousIfJsonEqual(previous, conversationFlights ?? []),
       );
       setLatestMessage((previous) =>
         keepPreviousIfJsonEqual(
@@ -185,6 +194,7 @@ export function ConversationInspector() {
   );
   const resolvedAgentId = agent?.id ?? null;
   const conversationSessionId = directConversationSessionId(meta);
+  const contextSessionId = conversationContextSessionId(meta);
   const identityRoute = conversationIdentityRoute({
     resolvedAgentId,
     sessionId: conversationSessionId,
@@ -261,6 +271,10 @@ export function ConversationInspector() {
         .sort((l, r) => (r.startedAt ?? 0) - (l.startedAt ?? 0))[0] ?? null,
     [flights],
   );
+  const latestFlight = useMemo(
+    () => selectLatestConversationFlight(flights),
+    [flights],
+  );
 
   useEffect(() => {
     trackedInvocationIdsRef.current = new Set(
@@ -328,9 +342,9 @@ export function ConversationInspector() {
     }
   });
 
-  const activeSessionId = catalog?.activeSessionId
+  const activeSessionId = conversationSessionId
+    ?? catalog?.activeSessionId
     ?? agent?.harnessSessionId
-    ?? conversationSessionId
     ?? meta?.harnessSessionId
     ?? null;
   const harnessSessionId = agent?.harnessSessionId ?? meta?.harnessSessionId ?? null;
@@ -508,7 +522,20 @@ export function ConversationInspector() {
   }
 
   const kindLabel = meta?.kind ? KIND_LABELS[meta.kind] ?? meta.kind : "Conversation";
-  const workspaceRoot = meta?.workspaceRoot ?? null;
+  const workspaceParticipant = contextSessionId
+    ? meta?.participants?.find((participant) =>
+        participant.sessionId === contextSessionId
+        || (participant.kind === "session" && participant.actorId === contextSessionId)
+      ) ?? null
+    : null;
+  const agentOwnsSession = !conversationSessionId
+    || agent?.harnessSessionId === conversationSessionId;
+  const workspaceRoot = meta?.workspaceRoot?.trim()
+    || workspaceParticipant?.workspaceRoot?.trim()
+    || (agentOwnsSession
+      ? agent?.projectRoot?.trim() || agent?.cwd?.trim() || null
+      : null)
+    || null;
   const workspaceName = pathLeaf(workspaceRoot);
   const workspacePath = compactPath(workspaceRoot);
   const branch = meta?.currentBranch ?? null;
@@ -530,7 +557,7 @@ export function ConversationInspector() {
     : null;
   const previewActor = latestFailureNotice ? null : latestMessage?.actorName ?? null;
   const liveSessionLabel = compactSessionId(activeSessionId);
-  const primarySessionId = activeSessionId ?? harnessSessionId;
+  const primarySessionId = contextSessionId ?? activeSessionId ?? harnessSessionId;
   const primarySessionLabel = compactSessionId(primarySessionId);
   const harnessSessionLabel = compactSessionId(harnessSessionId);
   const showHarnessSessionDetail = Boolean(
@@ -547,12 +574,13 @@ export function ConversationInspector() {
     || (agent?.transport === "tmux" && agent.harnessSessionId),
   );
   const workInMotion = Boolean(activeFlight || isAgentBusy(agentState, agent));
-  const activityTitle = workInMotion
-    ? activeFlight
-      ? flightStateLabel(activeFlight.state)
-      : "In motion"
-    : "At rest";
-  const activitySubtitle = activeFlight?.summary?.trim()
+  const outcomeFlight = activeFlight ?? latestFlight;
+  const activityTitle = outcomeFlight
+    ? flightStateLabel(outcomeFlight.state)
+    : workInMotion
+      ? "In motion"
+      : "At rest";
+  const activitySubtitle = outcomeFlight?.summary?.trim()
     ?? (lastAt
       ? `Last update ${timeAgo(lastAt) ?? "recently"}`
       : "No recent activity recorded");
@@ -573,7 +601,7 @@ export function ConversationInspector() {
       : "Activity";
   const liveSummary = activeFlight?.summary?.trim()
     ?? (activeSessionId && !showTmuxPeek
-      ? "Terminal session is live."
+      ? "Session linked."
       : visibleTailPreviewEvents.length > 0 && !showTmuxPeek
         ? "Streaming matching Tail events."
         : null);
@@ -597,6 +625,16 @@ export function ConversationInspector() {
       .filter(Boolean)
       .join(" · ")
     : activeFlight?.summary?.trim() ?? liveSummary ?? null;
+  const sessionRoute = conversationSessionRoute({
+    sessionId: primarySessionId,
+    machineId,
+  });
+  const goToSession = sessionRoute
+    ? () => {
+        openContent(navigate, sessionRoute, { returnTo: route });
+      }
+    : undefined;
+
   const goToIdentity = () => {
     if (!identityRoute) return;
     openContent(
@@ -705,9 +743,22 @@ export function ConversationInspector() {
                   <div className="ctx-panel-session-kind">{sessionKindLabel}</div>
                 )}
                 {primarySessionId && (
-                  <div className="ctx-panel-session-id" title={primarySessionId}>
-                    {primarySessionLabel ?? primarySessionId}
-                  </div>
+                  goToSession ? (
+                    <button
+                      type="button"
+                      className="btn btn--ghost ctx-panel-session-id ctx-panel-session-id--button"
+                      aria-label={`Open session ${primarySessionId}`}
+                      title={primarySessionId}
+                      onClick={goToSession}
+                    >
+                      <span>{primarySessionLabel ?? primarySessionId}</span>
+                      <span className="ctx-panel-session-id-action">Open session</span>
+                    </button>
+                  ) : (
+                    <div className="ctx-panel-session-id" title={primarySessionId}>
+                      {primarySessionLabel ?? primarySessionId}
+                    </div>
+                  )
                 )}
               </div>
             </div>

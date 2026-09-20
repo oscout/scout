@@ -68,6 +68,51 @@ describe("detectCodingAgentHost", () => {
     });
   });
 
+  test("detects Herdr-managed coding agents by kind", () => {
+    const base = {
+      HERDR_ENV: "1",
+      HERDR_PANE_ID: "w1:p2",
+      HERDR_AGENT_NAME: "worker",
+    } as NodeJS.ProcessEnv;
+    expect(detectCodingAgentHost({ ...base, HERDR_AGENT: "kimi" })).toEqual({
+      harness: "kimi",
+      signal: "HERDR_AGENT_NAME",
+    });
+    expect(detectCodingAgentHost({ ...base, HERDR_AGENT: "pi" })).toEqual({
+      harness: "pi",
+      signal: "HERDR_AGENT_NAME",
+    });
+    expect(detectCodingAgentHost({ ...base, HERDR_AGENT: "claude" })).toEqual({
+      harness: "claude",
+      signal: "HERDR_AGENT_NAME",
+    });
+  });
+
+  test("rejects incomplete or unknown Herdr managed-agent markers", () => {
+    expect(detectCodingAgentHost({
+      HERDR_ENV: "1",
+      HERDR_PANE_ID: "w1:p2",
+      HERDR_AGENT: "kimi",
+    } as NodeJS.ProcessEnv)).toBeNull();
+    expect(detectCodingAgentHost({
+      HERDR_ENV: "1",
+      HERDR_AGENT: "kimi",
+      HERDR_AGENT_NAME: "worker",
+    } as NodeJS.ProcessEnv)).toBeNull();
+    expect(detectCodingAgentHost({
+      HERDR_ENV: "0",
+      HERDR_PANE_ID: "w1:p2",
+      HERDR_AGENT: "kimi",
+      HERDR_AGENT_NAME: "worker",
+    } as NodeJS.ProcessEnv)).toBeNull();
+    expect(detectCodingAgentHost({
+      HERDR_ENV: "1",
+      HERDR_PANE_ID: "w1:p2",
+      HERDR_AGENT: "unknown-kind",
+      HERDR_AGENT_NAME: "worker",
+    } as NodeJS.ProcessEnv)).toBeNull();
+  });
+
   test("detects Devin CLI shells via the exported session-db path", () => {
     expect(detectCodingAgentHost({ CHISEL_SESSION_DB: "/Users/x/.local/share/devin/cli/sessions.db" } as NodeJS.ProcessEnv)).toEqual({
       harness: "devin",
@@ -81,6 +126,19 @@ describe("detectCodingAgentHost", () => {
       OPENSCOUT_AGENT: "openscout.main.mini",
       CURSOR_AGENT: "1",
       CLAUDECODE: "1",
+    } as NodeJS.ProcessEnv)).toEqual({
+      harness: "scout",
+      signal: "OPENSCOUT_AGENT",
+    });
+  });
+
+  test("prefers Scout binding over Herdr managed-agent markers", () => {
+    expect(detectCodingAgentHost({
+      OPENSCOUT_AGENT: "openscout.main.mini",
+      HERDR_ENV: "1",
+      HERDR_PANE_ID: "w1:p2",
+      HERDR_AGENT: "kimi",
+      HERDR_AGENT_NAME: "worker",
     } as NodeJS.ProcessEnv)).toEqual({
       harness: "scout",
       signal: "OPENSCOUT_AGENT",

@@ -8,15 +8,13 @@
  * addresses, and parsing one would be the "fake participant" bug wearing a
  * different hat.
  *
- * Shape: a roomy text field over a quiet toolbar, closed by a round send.
- * Every control in the toolbar does something — the `@` button opens the real
- * member list, the selector opens the real agent list, and send sends. There
- * is no formatting row because the feed renderer has no formatting to show
- * (`bodySegments` emits text and mention spans, nothing else), and a bold
- * button that yields literal asterisks would be a lie in a toolbar.
+ * Shape: a roomy rich field over a quiet toolbar, closed by a round send.
+ * Formatting marks the feed can actually paint (bold, italic, code, list) live
+ * on the toolbar; the wire is still markdown. `@` opens the real member list,
+ * the selector opens the real agent list, and send sends.
  */
 
-import { ArrowUp, AtSign, ChevronDown, Loader2 } from "lucide-react";
+import { ArrowUp, AtSign, Bold, ChevronDown, Code, Italic, List, Loader2, Paperclip, X } from "lucide-react";
 import {
   useCallback,
   useEffect,
@@ -26,7 +24,11 @@ import {
   type KeyboardEvent as ReactKeyboardEvent,
 } from "react";
 
+import { useComposerAttachments } from "../../components/MessageComposer/ComposerAttachments.tsx";
+
+import { ChatRichInput, type ChatRichInputHandle } from "./ChatRichInput.tsx";
 import type { ChannelMemberView } from "./chat-api.ts";
+import { useChatCapabilities } from "./chat-transport.tsx";
 import { MemberAvatar } from "./ChatAvatar.tsx";
 import {
   composerHint,
@@ -86,23 +88,29 @@ export function ChannelComposer({
   onDraftChange: (value: string) => void;
   askTargetId: string | null;
   onAskTargetChange: (actorId: string | null) => void;
-  onSend: () => void;
+  onSend: (files: File[]) => void | boolean | Promise<boolean | void>;
   sending: boolean;
   error: string | null;
   placeholder: string;
   variant?: "channel" | "thread";
   autoFocus?: boolean;
 }) {
-  const inputRef = useRef<HTMLTextAreaElement | null>(null);
+  const inputRef = useRef<ChatRichInputHandle | null>(null);
   const pickerButtonRef = useRef<HTMLButtonElement | null>(null);
   const [query, setQuery] = useState<MentionQuery | null>(null);
   const [activeIndex, setActiveIndex] = useState(0);
   const [pickerOpen, setPickerOpen] = useState(false);
+  const capabilities = useChatCapabilities();
+  const attachments = useComposerAttachments();
 
   // The picker offers only members `/asks` will actually route to. An API
   // participant is listed inertly below — hiding the one agent in the room
-  // would be worse than saying why it cannot be asked.
-  const askable = useMemo(() => members.filter(isAskableMember), [members]);
+  // would be worse than saying why it cannot be asked. Where the server has no
+  // `/asks` at all, nobody is askable and the control is not offered.
+  const askable = useMemo(
+    () => (capabilities.asks ? members.filter(isAskableMember) : []),
+    [capabilities.asks, members],
+  );
   const apiParticipants = useMemo(() => members.filter(isApiParticipant), [members]);
   const target = useMemo(
     () => members.find((member) => member.actorId === askTargetId) ?? null,
@@ -130,17 +138,6 @@ export function ChannelComposer({
     inputRef.current?.focus();
   }, [autoFocus]);
 
-  const resize = useCallback(() => {
-    const node = inputRef.current;
-    if (!node) return;
-    node.style.height = "auto";
-    node.style.height = `${Math.min(node.scrollHeight, 180)}px`;
-  }, []);
-
-  useEffect(() => {
-    resize();
-  }, [draft, resize]);
-
   const closePicker = useCallback((returnFocus: "toggle" | "input") => {
     setPickerOpen(false);
     if (returnFocus === "toggle") pickerButtonRef.current?.focus();
@@ -149,30 +146,24 @@ export function ChannelComposer({
 
   const applyMention = useCallback(
     (member: ChannelMemberView) => {
-      const node = inputRef.current;
-      const caret = node?.selectionStart ?? draft.length;
-      const active = query ?? readMentionQuery(draft, caret);
+      const editor = inputRef.current;
+      const before = editor?.textBeforeCaret() ?? draft;
+      const active = query ?? readMentionQuery(before, before.length);
       const label = memberDisplayName(member);
-      if (!active) {
+      if (!editor) {
         onDraftChange(`${draft}${draft.endsWith(" ") || draft === "" ? "" : " "}@${label} `);
+      } else if (!active) {
+        editor.insertText(`${before.endsWith(" ") || before === "" ? "" : " "}@${label} `);
       } else {
-        const next = `${draft.slice(0, active.start)}@${label} ${draft.slice(caret)}`;
-        onDraftChange(next);
+        editor.replaceMention(active.start, label);
       }
       // The selection — not the text — is what addresses the agent. An API
       // participant is never armed as a target: `/asks` refuses it by name,
       // and a mention of it is an ordinary post it reads on its next poll.
-      if (isAskableMember(member)) onAskTargetChange(member.actorId);
+      if (capabilities.asks && isAskableMember(member)) onAskTargetChange(member.actorId);
       setQuery(null);
-      requestAnimationFrame(() => {
-        const input = inputRef.current;
-        if (!input) return;
-        input.focus();
-        const position = (active?.start ?? draft.length) + label.length + 2;
-        input.setSelectionRange(position, position);
-      });
     },
-    [draft, onAskTargetChange, onDraftChange, query],
+    [capabilities.asks, draft, onAskTargetChange, onDraftChange, query],
   );
 
   /**
@@ -181,21 +172,33 @@ export function ChannelComposer({
    * leaves the query open on an empty needle so the whole roster is showing.
    */
   const openMentionList = useCallback(() => {
-    const node = inputRef.current;
-    const { next, caret } = mentionInsertion(draft, node?.selectionStart ?? draft.length);
-    onDraftChange(next);
+    const editor = inputRef.current;
+    const before = editor?.textBeforeCaret() ?? draft;
+    const spacer = before.length > 0 && !/\s$/u.test(before) ? " " : "";
+    editor?.insertText(`${spacer}@`);
+    if (!editor) {
+      const { next, caret } = mentionInsertion(draft, draft.length);
+      onDraftChange(next);
+      setQuery({ start: caret - 1, text: "" });
+    } else {
+      const nextBefore = editor.textBeforeCaret();
+      setQuery({ start: Math.max(0, nextBefore.length - 1), text: "" });
+    }
     setPickerOpen(false);
-    setQuery({ start: caret - 1, text: "" });
-    requestAnimationFrame(() => {
-      const input = inputRef.current;
-      if (!input) return;
-      input.focus();
-      input.setSelectionRange(caret, caret);
-    });
+    requestAnimationFrame(() => inputRef.current?.focus());
   }, [draft, onDraftChange]);
 
+  const canSend = !sending && (draft.trim().length > 0 || attachments.hasFiles);
+  const submit = useCallback(() => {
+    if (sending || (!draft.trim() && !attachments.hasFiles)) return;
+    const files = attachments.files;
+    void Promise.resolve(onSend(files)).then((sent) => {
+      if (sent !== false) attachments.clear();
+    });
+  }, [attachments, draft, onSend, sending]);
+
   const onKeyDown = useCallback(
-    (event: ReactKeyboardEvent<HTMLTextAreaElement>) => {
+    (event: ReactKeyboardEvent<HTMLDivElement>) => {
       // IME confirmation belongs to the text input, including while a mention
       // list is open. Some WebKit versions expose only the legacy 229 code.
       if (event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229) return;
@@ -230,16 +233,30 @@ export function ChannelComposer({
         setPickerOpen(false);
         return;
       }
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "b") {
+        event.preventDefault();
+        inputRef.current?.applyFormat("bold");
+        return;
+      }
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "i") {
+        event.preventDefault();
+        inputRef.current?.applyFormat("italic");
+        return;
+      }
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "e") {
+        event.preventDefault();
+        inputRef.current?.applyFormat("code");
+        return;
+      }
       if (event.key === "Enter" && !event.shiftKey) {
         event.preventDefault();
-        if (!sending && draft.trim()) onSend();
+        if (canSend) submit();
       }
     },
-    [activeIndex, applyMention, draft, matches, onSend, pickerOpen, query, sending],
+    [activeIndex, applyMention, canSend, matches, pickerOpen, query, sending, submit],
   );
 
   const hint = composerHint(target ? memberDisplayName(target) : null);
-  const canSend = !sending && draft.trim().length > 0;
   const sendTitle = target
     ? `Send — asks ${memberDisplayName(target)}`
     : variant === "thread"
@@ -247,7 +264,12 @@ export function ChannelComposer({
       : "Send to the channel";
 
   return (
-    <div className="chat-composer" data-variant={variant}>
+    <div
+      className="chat-composer"
+      data-variant={variant}
+      data-drag={capabilities.attachments && attachments.dragActive ? "true" : undefined}
+      {...(capabilities.attachments ? attachments.dropHandlers : {})}
+    >
       {variant === "channel" && target ? (
         <div className="chat-ask-target">
           <span className="label-sm" style={{ color: "var(--dim)" }}>Asking</span>
@@ -267,21 +289,58 @@ export function ChannelComposer({
         </div>
       ) : null}
 
-      <textarea
+      <ChatRichInput
         ref={inputRef}
-        className="chat-composer-input"
-        rows={1}
         value={draft}
         placeholder={placeholder}
-        aria-label={placeholder}
         disabled={sending}
-        onChange={(event) => {
-          onDraftChange(event.target.value);
-          setQuery(readMentionQuery(event.target.value, event.target.selectionStart ?? 0));
+        onChange={(markdown) => {
+          onDraftChange(markdown);
+          const before = inputRef.current?.textBeforeCaret() ?? markdown;
+          setQuery(readMentionQuery(before, before.length));
         }}
         onKeyDown={onKeyDown}
+        onPaste={capabilities.attachments ? attachments.onPaste : undefined}
+        onDragOver={capabilities.attachments ? attachments.dropHandlers.onDragOver : undefined}
+        onDrop={capabilities.attachments ? attachments.dropHandlers.onDrop : undefined}
         onBlur={() => setQuery(null)}
       />
+      {capabilities.attachments ? (
+        <>
+          <input
+            ref={attachments.inputRef}
+            type="file"
+            multiple
+            accept="image/*,video/*,audio/*,.mp4,.webm,.mov,.mp3,.wav,.m4a,.html,.htm,text/html,text/markdown,.md,.markdown,text/plain,.txt"
+            className="chat-composer-file-input"
+            aria-hidden="true"
+            tabIndex={-1}
+            onChange={(event) => {
+              attachments.stage([...(event.target.files ?? [])]);
+              event.target.value = "";
+            }}
+          />
+          {attachments.files.length > 0 ? (
+            <div className="chat-composer-files" aria-label="Attached files">
+              {attachments.files.map((file) => (
+                <span key={`${file.name}:${file.size}:${file.lastModified}`} className="chat-composer-file">
+                  <span>{file.name}</span>
+                  <button
+                    type="button"
+                    aria-label={`Remove ${file.name}`}
+                    onClick={() => attachments.remove(file)}
+                  >
+                    <X size={12} strokeWidth={2} aria-hidden />
+                  </button>
+                </span>
+              ))}
+            </div>
+          ) : null}
+          {attachments.error ? (
+            <p className="chat-send-error" role="alert">{attachments.error}</p>
+          ) : null}
+        </>
+      ) : null}
 
       {query && matches.length > 0 ? (
         <div className="chat-mention-popup" role="listbox" aria-label="Mention a member">
@@ -309,7 +368,7 @@ export function ChannelComposer({
         </div>
       ) : null}
 
-      {pickerOpen && variant === "channel" ? (
+      {pickerOpen && variant === "channel" && capabilities.asks ? (
         <div
           className="chat-mention-popup"
           role="listbox"
@@ -376,6 +435,18 @@ export function ChannelComposer({
 
       <div className="chat-composer-foot">
         <span className="chat-composer-tools">
+          {capabilities.attachments ? (
+            <button
+              type="button"
+              className="chat-composer-tool chat-composer-tool--icon"
+              onClick={attachments.openPicker}
+              disabled={sending}
+              aria-label="Attach a file"
+              title="Attach a file"
+            >
+              <Paperclip size={14} strokeWidth={2} aria-hidden />
+            </button>
+          ) : null}
           <button
             type="button"
             className="chat-composer-tool chat-composer-tool--icon"
@@ -386,7 +457,59 @@ export function ChannelComposer({
           >
             <AtSign size={14} strokeWidth={2} aria-hidden />
           </button>
-          {variant === "channel" ? (
+          <button
+            type="button"
+            className="chat-composer-tool chat-composer-tool--icon"
+            onMouseDown={(event) => {
+              event.preventDefault();
+              inputRef.current?.applyFormat("bold");
+            }}
+            disabled={sending}
+            aria-label="Bold"
+            title="Bold"
+          >
+            <Bold size={14} strokeWidth={2} aria-hidden />
+          </button>
+          <button
+            type="button"
+            className="chat-composer-tool chat-composer-tool--icon"
+            onMouseDown={(event) => {
+              event.preventDefault();
+              inputRef.current?.applyFormat("italic");
+            }}
+            disabled={sending}
+            aria-label="Italic"
+            title="Italic"
+          >
+            <Italic size={14} strokeWidth={2} aria-hidden />
+          </button>
+          <button
+            type="button"
+            className="chat-composer-tool chat-composer-tool--icon"
+            onMouseDown={(event) => {
+              event.preventDefault();
+              inputRef.current?.applyFormat("code");
+            }}
+            disabled={sending}
+            aria-label="Code"
+            title="Code"
+          >
+            <Code size={14} strokeWidth={2} aria-hidden />
+          </button>
+          <button
+            type="button"
+            className="chat-composer-tool chat-composer-tool--icon"
+            onMouseDown={(event) => {
+              event.preventDefault();
+              inputRef.current?.applyFormat("list");
+            }}
+            disabled={sending}
+            aria-label="List"
+            title="List"
+          >
+            <List size={14} strokeWidth={2} aria-hidden />
+          </button>
+          {variant === "channel" && capabilities.asks ? (
             <button
               ref={pickerButtonRef}
               type="button"
@@ -409,7 +532,7 @@ export function ChannelComposer({
           <button
             type="button"
             className="chat-composer-send"
-            onClick={onSend}
+            onClick={submit}
             disabled={!canSend}
             aria-label={sending ? "Sending…" : sendTitle}
             title={sending ? "Sending…" : sendTitle}

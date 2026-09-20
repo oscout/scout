@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react
 import { api } from "../../lib/api.ts";
 import { filterAgentsByMachineScope } from "../../lib/machine-scope.ts";
 import { routeMachineId } from "../../lib/router.ts";
-import { useBrokerEvents } from "../../lib/sse.ts";
+import { useBrokerEventsRefresh } from "../../lib/sse.ts";
 import { useScout } from "../../scout/Provider.tsx";
 import type { AgentTab, Route, SessionEntry } from "../../lib/types.ts";
 import { AgentsSubnav } from "../agents/AgentsSubnav.tsx";
@@ -13,6 +13,7 @@ import "../ops/ops-atop.css";
 import "../ops/ops-screen.css";
 import { ProjectAgentProfileBar } from "./ProjectAgentProfileBar.tsx";
 import "./projects.css";
+import "../system-surfaces-redesign.css";
 
 export function ProjectAgentProfile({
   route,
@@ -37,7 +38,10 @@ export function ProjectAgentProfile({
   useEffect(() => {
     void load();
   }, [load]);
-  useBrokerEvents(() => {
+  // Debounced: a burst of broker events used to fan out into one full
+  // conversations refetch per event, and every caller of the deduped request
+  // re-parsed the same multi-hundred-KB body — enough to pin the main thread.
+  useBrokerEventsRefresh(() => true, () => {
     void load();
   });
 
@@ -74,7 +78,7 @@ export function ProjectAgentProfile({
     route.tab ?? (route.conversationId ? "message" : "profile");
 
   return (
-    <div className="s-av2-profileShell">
+    <div className="s-av2-profileShell sys-project-profile">
       <ProjectRouteFrame
         activeRoute={route}
         navigate={navigate}

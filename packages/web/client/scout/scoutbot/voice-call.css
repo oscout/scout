@@ -1,0 +1,99 @@
+/* Live-call panel tones — color-mix off semantic tokens so every state reads
+   in both themes. Lime is "working" (Signal-Not-Status), the status triad is
+   earned state, and trace kinds use the categorical palette. */
+
+.svc-tone-working {
+  border-color: color-mix(in srgb, var(--hud-accent) 35%, transparent);
+  background: color-mix(in srgb, var(--hud-accent) 10%, transparent);
+  color: color-mix(in srgb, var(--hud-accent) 60%, var(--hud-ink));
+}
+
+.svc-tone-connecting {
+  border-color: color-mix(in srgb, var(--hud-status-warn) 35%, transparent);
+  background: color-mix(in srgb, var(--hud-status-warn) 9%, transparent);
+  color: color-mix(in srgb, var(--hud-status-warn) 65%, var(--hud-ink));
+}
+
+.svc-tone-error {
+  border-color: color-mix(in srgb, var(--hud-status-error) 35%, transparent);
+  background: color-mix(in srgb, var(--hud-status-error) 10%, transparent);
+  color: color-mix(in srgb, var(--hud-status-error) 70%, var(--hud-ink));
+}
+
+.svc-action-start {
+  border-color: color-mix(in srgb, var(--hud-accent) 40%, transparent);
+  background: color-mix(in srgb, var(--hud-accent) 12%, transparent);
+  color: color-mix(in srgb, var(--hud-accent) 60%, var(--hud-ink));
+}
+
+.svc-action-start:hover {
+  background: color-mix(in srgb, var(--hud-accent) 18%, transparent);
+}
+
+.svc-action-connecting {
+  border-color: color-mix(in srgb, var(--hud-status-warn) 35%, transparent);
+  background: color-mix(in srgb, var(--hud-status-warn) 10%, transparent);
+  color: color-mix(in srgb, var(--hud-status-warn) 65%, var(--hud-ink));
+}
+
+.svc-action-connecting:hover {
+  background: color-mix(in srgb, var(--hud-status-warn) 16%, transparent);
+}
+
+.svc-action-end {
+  border-color: color-mix(in srgb, var(--hud-status-error) 35%, transparent);
+  background: color-mix(in srgb, var(--hud-status-error) 10%, transparent);
+  color: color-mix(in srgb, var(--hud-status-error) 70%, var(--hud-ink));
+}
+
+.svc-action-end:hover {
+  background: color-mix(in srgb, var(--hud-status-error) 16%, transparent);
+}
+
+.svc-note-error {
+  border-color: color-mix(in srgb, var(--hud-status-error) 30%, transparent);
+  background: color-mix(in srgb, var(--hud-status-error) 8%, transparent);
+  color: color-mix(in srgb, var(--hud-status-error) 70%, var(--hud-ink));
+}
+
+.svc-note-warn {
+  color: color-mix(in srgb, var(--hud-status-warn) 65%, var(--hud-ink));
+}
+
+.svc-live-ping {
+  background: color-mix(in srgb, var(--hud-accent) 35%, transparent);
+}
+
+.svc-live-dot {
+  background: color-mix(in srgb, var(--hud-accent) 90%, transparent);
+}
+
+.svc-trace-accent {
+  border-color: color-mix(in srgb, var(--hud-accent) 25%, transparent);
+  background: color-mix(in srgb, var(--hud-accent) 6%, transparent);
+  color: color-mix(in srgb, var(--hud-accent) 55%, var(--hud-ink));
+}
+
+.svc-trace-sky {
+  border-color: color-mix(in srgb, var(--cat-sky) 30%, transparent);
+  background: color-mix(in srgb, var(--cat-sky) 8%, transparent);
+  color: color-mix(in srgb, var(--cat-sky) 60%, var(--hud-ink));
+}
+
+.svc-trace-purple {
+  border-color: color-mix(in srgb, var(--cat-purple) 30%, transparent);
+  background: color-mix(in srgb, var(--cat-purple) 8%, transparent);
+  color: color-mix(in srgb, var(--cat-purple) 60%, var(--hud-ink));
+}
+
+.svc-trace-gold {
+  border-color: color-mix(in srgb, var(--cat-gold) 30%, transparent);
+  background: color-mix(in srgb, var(--cat-gold) 8%, transparent);
+  color: color-mix(in srgb, var(--cat-gold) 60%, var(--hud-ink));
+}
+
+.svc-trace-error {
+  border-color: color-mix(in srgb, var(--hud-status-error) 30%, transparent);
+  background: color-mix(in srgb, var(--hud-status-error) 8%, transparent);
+  color: color-mix(in srgb, var(--hud-status-error) 70%, var(--hud-ink));
+}

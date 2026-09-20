@@ -9,7 +9,16 @@ import {
 } from "react";
 
 import { DataTable, type DataTableColumn } from "../../components/DataTable/DataTable.tsx";
+import { useContextMenu } from "../../components/ContextMenu.tsx";
+import { sessionHopMenuItems } from "../../components/SessionHopMenu.tsx";
 import { api, peekApiGet } from "../../lib/api.ts";
+import {
+  getTerminalSessionInventory,
+  peekTerminalSessionInventory,
+  resolveSessionTerminalTarget,
+  terminalHopRoute,
+  warmTerminalSessionInventory,
+} from "../../lib/session-terminal-hop.ts";
 import {
   formatAbsoluteTimestamp,
   normalizeTimestampMs,
@@ -263,6 +272,7 @@ export function RawSessionsTable({
   navigate: (r: Route) => void;
 }) {
   const { route } = useScout();
+  const showContextMenu = useContextMenu();
   const [initialDiscovery] = useState(() =>
     peekApiGet<TailDiscoverySnapshot>(DISCOVERY_PATH, ROUTE_CACHE_MAX_AGE_MS),
   );
@@ -355,6 +365,31 @@ export function RawSessionsTable({
     openContent(navigate, { view: "sessions", sessionId: row.refId }, { returnTo: route });
   }, [navigate, route]);
 
+  // One warm inventory serves both the `t` hop and the row context menu.
+  useEffect(() => {
+    warmTerminalSessionInventory();
+  }, []);
+
+  const rowHints = useCallback((row: RawSessionRow) => ({
+    sessionRefs: [row.sessionId, row.refId, row.transcriptPath],
+  }), []);
+
+  const hopToTerminal = useCallback((row: RawSessionRow | undefined) => {
+    if (!row) return;
+    const open = (target: ReturnType<typeof resolveSessionTerminalTarget>) => {
+      const hopRoute = terminalHopRoute(target, null);
+      if (hopRoute) openContent(navigate, hopRoute, { returnTo: route });
+    };
+    const peeked = peekTerminalSessionInventory();
+    if (peeked) {
+      open(resolveSessionTerminalTarget(peeked, rowHints(row)));
+      return;
+    }
+    void getTerminalSessionInventory()
+      .then((sessions) => open(resolveSessionTerminalTarget(sessions, rowHints(row))))
+      .catch(() => {});
+  }, [navigate, route, rowHints]);
+
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       const target = event.target as HTMLElement | null;
@@ -384,6 +419,11 @@ export function RawSessionsTable({
         setSelectedIdx((idx) => Math.max(0, idx - 1));
         return;
       }
+      if (event.key === "t") {
+        event.preventDefault();
+        hopToTerminal(filtered[selectedIdx]);
+        return;
+      }
       if (event.key === "Enter" || event.key === "o") {
         event.preventDefault();
         openSelected(filtered[selectedIdx]);
@@ -391,7 +431,7 @@ export function RawSessionsTable({
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [filtered, selectedIdx, openSelected]);
+  }, [filtered, selectedIdx, openSelected, hopToTerminal]);
 
   const visibleRows = error ? [] : filtered;
   const rowId = useCallback((row: RawSessionRow) => `${row.source}:${row.transcriptPath}`, []);
@@ -399,6 +439,19 @@ export function RawSessionsTable({
     () => new Map(filtered.map((row, index) => [rowId(row), index])),
     [filtered, rowId],
   );
+
+  const openRowMenu = (event: React.MouseEvent, id: string) => {
+    const index = indexById.get(id);
+    const row = index != null ? filtered[index] : undefined;
+    if (!row) return;
+    const sessions = peekTerminalSessionInventory();
+    const target = sessions ? resolveSessionTerminalTarget(sessions, rowHints(row)) : null;
+    showContextMenu(event, [
+      { kind: "action", label: "Open session", onSelect: () => openSelected(row) },
+      { kind: "separator" },
+      ...sessionHopMenuItems({ target, navigate, returnTo: route }),
+    ]);
+  };
 
   return (
     <div className="s-atop s-atop--sessions">
@@ -453,6 +506,7 @@ export function RawSessionsTable({
             const index = indexById.get(id);
             if (index != null) setSelectedIdx(index);
           },
+          onContextMenu: (event: React.MouseEvent) => openRowMenu(event, id),
         })}
         onRowClick={(row) => openSelected(row)}
         rowClassName={(row) => (indexById.get(rowId(row)) === selectedIdx ? "s-atop-row--selected" : undefined)}
@@ -472,6 +526,7 @@ export function RawSessionsTable({
         <span><kbd>/</kbd>filter</span>
         <span><kbd>j/k</kbd>select</span>
         <span><kbd>enter</kbd>open</span>
+        <span><kbd>t</kbd>terminal</span>
         <span className="s-atop-keys-spacer" />
         <span className="s-atop-keys-count">
           <strong>{filtered.length}</strong> sessions

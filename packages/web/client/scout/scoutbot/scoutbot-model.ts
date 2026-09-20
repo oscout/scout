@@ -50,7 +50,9 @@ export type ScoutbotAgentConfig = {
   model: string;
   /** Routing preference the server resolved for this config; mirrors
    * ScoutbotAssistantProviderPreference in server/scoutbot-assistant.ts. */
-  provider?: "auto" | "openai" | "codex";
+  provider?: "auto" | "agent" | "openai" | "codex";
+  /** Provider actually serving replies (auto's ladder pick once resolved). */
+  effectiveProvider?: "openai" | "codex" | null;
   systemPrompt: string;
   /** Selectable reply models; the active model is always present. */
   modelOptions?: { id: string; label: string }[];

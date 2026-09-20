@@ -212,6 +212,25 @@ export function registerScoutVoiceHost(input: {
   const now = Date.now();
   const previous = hosts.get(hostId);
   const instanceId = input.instanceId?.trim() || null;
+  // Two live host processes sharing one hostId livelock the command
+  // channel: each registration flips `instanceId`, which makes the other
+  // process's long poll return instantly, and its next register flips
+  // ownership back — a hot spin that can also deliver commands to the
+  // process that does not own the session. A live incumbent keeps the
+  // hostId; the challenger retries until the incumbent goes stale.
+  if (
+    previous
+    && previous.instanceId !== null
+    && instanceId !== null
+    && previous.instanceId !== instanceId
+    && now - previous.lastSeenAt <= HOST_STALE_MS
+  ) {
+    throw new ScoutVoiceSessionError(
+      "host_conflict",
+      "A different voice host instance is already registered and live.",
+      409,
+    );
+  }
   if (previous && previous.instanceId !== instanceId) {
     finishScoutVoiceHostCommandWaiter(hostId, null);
   }

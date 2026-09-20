@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useScout } from "../../scout/Provider.tsx";
 import { openContent } from "../../scout/slots/openContent.ts";
+import { SessionHopMenu } from "../../components/SessionHopMenu.tsx";
 import { api } from "../../lib/api.ts";
 import { copyTextToClipboard } from "../../lib/clipboard.ts";
 import { timeAgo } from "../../lib/time.ts";
@@ -357,6 +358,13 @@ function SessionDetail({
         <button type="button" className="ap-sx-resume" onClick={takeover}>
           {status === "running" ? "Send" : "Take over"}
         </button>
+        <SessionHopMenu
+          className="ap-sx-resume"
+          label="Terminal ▾"
+          hints={{ agentId, sessionRefs: [ref, session.id] }}
+          navigate={navigate}
+          returnTo={route}
+        />
         <button
           type="button"
           className="ap-sx-copyAll"

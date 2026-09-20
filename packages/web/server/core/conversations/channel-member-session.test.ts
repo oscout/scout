@@ -40,6 +40,11 @@ function createApp() {
   app.get("/api/chat/bootstrap", (c) => c.json({ channels: [] }));
   app.post("/api/chat/channels", (c) => c.json({ created: true }));
   app.post(`/api/channels/:id/messages`, (c) => c.json({ posted: true }));
+  app.post(`/api/channels/:id/reactions`, (c) => c.json({ ok: true }));
+  app.post(`/api/channels/:id/reactions/remove`, (c) => c.json({ ok: true }));
+  app.post("/api/blobs", (c) => c.json({ id: "blob-1" }));
+  app.get("/api/blobs/:id", (c) => c.json({ id: c.req.param("id") }));
+  app.get("/api/link-preview", (c) => c.json({ preview: { url: c.req.query("url") } }));
   app.post(`/api/channels/:id/asks`, (c) => c.json({ asked: true }));
   app.post(`/api/channels/:id/invites/:inviteId/revoke`, (c) => c.json({ revoked: true }));
   return { app, members };
@@ -65,6 +70,7 @@ describe("the invited member boundary", () => {
     const { app } = createApp();
     expect((await app.request("http://localhost/api/agents")).status).toBe(401);
     expect((await app.request("http://localhost/api/member/me")).status).toBe(401);
+    expect((await app.request("http://localhost/api/link-preview")).status).toBe(401);
     expect(
       (await app.request(`http://localhost/api/channels/${CHANNEL}/members`)).status,
     ).toBe(401);
@@ -152,6 +158,16 @@ describe("the invited member boundary", () => {
         method: "POST",
         ...withCookie(token),
       }),
+      app.request(`http://localhost/api/channels/${CHANNEL}/reactions`, {
+        method: "POST",
+        ...withCookie(token),
+      }),
+      app.request("http://localhost/api/blobs", {
+        method: "POST",
+        ...withCookie(token),
+      }),
+      app.request("http://localhost/api/blobs/blob-1", withCookie(token)),
+      app.request("http://localhost/api/link-preview?url=https://github.com/arach/openscout", withCookie(token)),
       app.request(`http://localhost/api/channels/${CHANNEL}/asks`, {
         method: "POST",
         ...withCookie(token),
@@ -173,7 +189,7 @@ describe("the invited member boundary", () => {
       }),
     ]).then((responses) => {
       expect(responses.map((response) => response.status))
-        .toEqual([200, 200, 200, 200, 200]);
+        .toEqual([200, 200, 200, 200, 200, 200, 200, 200, 200]);
     });
   });
 
@@ -499,6 +515,13 @@ describe("a credential belongs to one space", () => {
     // A member has to be able to read the switcher, or the surface has no way
     // to name the space they are in.
     expect(channelMemberMayAccess({ grant, method: "GET", path: "/api/chat/spaces" })).toBe(true);
+    expect(channelMemberMayAccess({ grant, method: "GET", path: "/api/link-preview" })).toBe(true);
+    expect(channelMemberMayAccess({
+      grant,
+      method: "POST",
+      path: `/api/channels/${WORK_CHANNEL}/asks/flt-1/cancel`,
+    })).toBe(true);
+    expect(channelMemberMayAccess({ grant: null, method: "GET", path: "/api/link-preview" })).toBe(false);
     // Creating one is the host's. A scoped credential must never be able to
     // widen its own reach, and a new namespace is the widest widening there is.
     expect(channelMemberMayAccess({ grant, method: "POST", path: "/api/chat/spaces" })).toBe(false);

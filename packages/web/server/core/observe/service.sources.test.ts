@@ -11,7 +11,8 @@ let queryAgentsResult: WebAgent[] = [];
 let brokerContextResult: {
   snapshot: {
     endpoints: Record<string, Record<string, unknown>>;
-    actors?: Record<string, { displayName?: string }>;
+    actors?: Record<string, { kind?: string; displayName?: string }>;
+    nodes?: Record<string, { name?: string }>;
     agents?: Record<string, { displayName?: string }>;
     invocations?: Record<string, InvocationRequest>;
     flights?: Record<string, FlightRecord>;
@@ -1783,6 +1784,371 @@ describe("loadSessionRefObservePayload", () => {
     ))).toBe(true);
     expect(attached?.data.events.some((event) => (
       event.text.includes("newer same-cwd decoy history")
+    ))).toBe(false);
+  });
+
+  test("surfaces a matching failed flight instead of claiming a pending session is live", async () => {
+    const actorId = "session-pending-failed";
+    const completedAt = Date.parse("2026-04-22T12:03:00.000Z");
+    brokerContextResult = {
+      snapshot: {
+        actors: {
+          [actorId]: { kind: "session", displayName: "Pending failed flight" },
+        },
+        nodes: {
+          "node-1": { name: "devon-mini" },
+        },
+        endpoints: {
+          "endpoint-1": {
+            id: "endpoint-1",
+            agentId: actorId,
+            nodeId: "node-1",
+            harness: "claude",
+            state: "active",
+            sessionId: actorId,
+            transport: "tmux",
+            cwd: "/Users/art/dev/project",
+            projectRoot: "/Users/art/dev/project",
+            metadata: {
+              pendingExternalSession: true,
+              handle: "project-pending-failed",
+            },
+          },
+        },
+        invocations: {
+          "inv-1": {
+            id: "inv-1",
+            requesterId: "operator",
+            requesterNodeId: "node-1",
+            targetAgentId: actorId,
+            action: "execute",
+            task: "Run the pending work.",
+            ensureAwake: true,
+            stream: true,
+            createdAt: completedAt - 60_000,
+          },
+        },
+        flights: {
+          "flt-1": {
+            id: "flt-1",
+            invocationId: "inv-1",
+            requesterId: "operator",
+            targetAgentId: actorId,
+            state: "failed",
+            error: "Stale running flight reconciled without a live broker task",
+            startedAt: completedAt - 30_000,
+            completedAt,
+            metadata: {
+              sessionTrace: [{
+                sessionId: actorId,
+                endpointId: "endpoint-1",
+                startedAt: completedAt - 30_000,
+                lastAcknowledgedAt: completedAt,
+                endedAt: completedAt,
+              }],
+            },
+          },
+        },
+      },
+    };
+
+    const payload = await loadSessionRefObservePayload(actorId);
+
+    expect(payload?.kind).toBe("broker");
+    expect(payload?.source).toBe("broker");
+    expect(payload?.data.live).toBe(false);
+    const handoff = payload?.data.events.find((event) => event.id === `${actorId}:handoff`);
+    expect(handoff?.text).toBe("Invocation failed; no harness turns were captured.");
+    expect(handoff?.at).toBe(completedAt);
+    expect(handoff?.t).toBe(30);
+    expect(handoff?.detail).toContain(
+      "Stale running flight reconciled without a live broker task",
+    );
+    const registered = payload?.data.events.find((event) => event.id === `${actorId}:registered`);
+    expect(registered?.at).toBe(completedAt - 30_000);
+    expect(payload?.data.metadata?.session?.sessionStart).toBe(completedAt - 30_000);
+    expect(payload?.data.events.some((event) => (
+      event.text.includes("Waiting for the harness")
+    ))).toBe(false);
+    expect(payload?.data.metadata?.session?.nodeId).toBe("node-1");
+    expect(payload?.data.metadata?.session?.hostName).toBe("devon-mini");
+  });
+
+  test("does not attach an unrelated failed flight to a pending session", async () => {
+    const actorId = "session-pending-unrelated";
+    const completedAt = Date.parse("2026-04-22T12:03:00.000Z");
+    brokerContextResult = {
+      snapshot: {
+        actors: {
+          [actorId]: { kind: "session", displayName: "Pending flight" },
+        },
+        endpoints: {
+          "endpoint-1": {
+            id: "endpoint-1",
+            agentId: actorId,
+            nodeId: "node-1",
+            harness: "claude",
+            state: "active",
+            sessionId: actorId,
+            transport: "tmux",
+            cwd: "/Users/art/dev/project",
+            projectRoot: "/Users/art/dev/project",
+            metadata: {
+              pendingExternalSession: true,
+              handle: "project-pending-unrelated",
+            },
+          },
+        },
+        invocations: {
+          "inv-other": {
+            id: "inv-other",
+            requesterId: "operator",
+            requesterNodeId: "node-1",
+            targetAgentId: "agent-other",
+            action: "execute",
+            task: "Unrelated work for a different session.",
+            ensureAwake: true,
+            stream: true,
+            createdAt: completedAt - 60_000,
+            execution: { targetSessionId: "session-other" },
+          },
+        },
+        flights: {
+          "flt-other": {
+            id: "flt-other",
+            invocationId: "inv-other",
+            requesterId: "operator",
+            targetAgentId: "agent-other",
+            state: "failed",
+            error: "Unrelated flight failure",
+            startedAt: completedAt - 30_000,
+            completedAt,
+            metadata: {
+              sessionTrace: [{
+                sessionId: "session-other",
+                endpointId: "endpoint-other",
+                startedAt: completedAt - 30_000,
+                lastAcknowledgedAt: completedAt,
+                endedAt: completedAt,
+              }],
+            },
+          },
+        },
+      },
+    };
+
+    const payload = await loadSessionRefObservePayload(actorId);
+
+    expect(payload?.kind).toBe("broker");
+    expect(payload?.source).toBe("broker");
+    expect(payload?.data.live).toBe(true);
+    const handoff = payload?.data.events.find((event) => event.id === `${actorId}:handoff`);
+    expect(handoff?.text).toBe("Waiting for the harness to attach and emit its first turn.");
+    expect(handoff?.t).toBe(1);
+    expect(handoff?.detail ?? "").not.toContain("Unrelated flight failure");
+  });
+
+  test("prefers a newer matching active flight over an older matching failure", async () => {
+    const actorId = "session-pending-superseded";
+    const failedAt = Date.parse("2026-04-22T12:03:00.000Z");
+    const restartedAt = Date.parse("2026-04-22T12:10:00.000Z");
+    brokerContextResult = {
+      snapshot: {
+        actors: {
+          [actorId]: { kind: "session", displayName: "Pending superseded flight" },
+        },
+        endpoints: {
+          "endpoint-1": {
+            id: "endpoint-1",
+            agentId: actorId,
+            nodeId: "node-1",
+            harness: "claude",
+            state: "active",
+            sessionId: actorId,
+            transport: "tmux",
+            cwd: "/Users/art/dev/project",
+            projectRoot: "/Users/art/dev/project",
+            metadata: {
+              pendingExternalSession: true,
+              handle: "project-pending-superseded",
+            },
+          },
+        },
+        invocations: {
+          "inv-failed": {
+            id: "inv-failed",
+            requesterId: "operator",
+            requesterNodeId: "node-1",
+            targetAgentId: actorId,
+            action: "execute",
+            task: "First attempt.",
+            ensureAwake: true,
+            stream: true,
+            createdAt: failedAt - 60_000,
+          },
+          "inv-active": {
+            id: "inv-active",
+            requesterId: "operator",
+            requesterNodeId: "node-1",
+            targetAgentId: actorId,
+            action: "execute",
+            task: "Retried attempt.",
+            ensureAwake: true,
+            stream: true,
+            createdAt: restartedAt - 1_000,
+          },
+        },
+        flights: {
+          "flt-failed": {
+            id: "flt-failed",
+            invocationId: "inv-failed",
+            requesterId: "operator",
+            targetAgentId: actorId,
+            state: "failed",
+            error: "First flight failure",
+            startedAt: failedAt - 30_000,
+            completedAt: failedAt,
+            metadata: {
+              sessionTrace: [{
+                sessionId: actorId,
+                endpointId: "endpoint-1",
+                startedAt: failedAt - 30_000,
+                lastAcknowledgedAt: failedAt,
+                endedAt: failedAt,
+              }],
+            },
+          },
+          "flt-active": {
+            id: "flt-active",
+            invocationId: "inv-active",
+            requesterId: "operator",
+            targetAgentId: actorId,
+            state: "running",
+            startedAt: restartedAt,
+            metadata: {
+              sessionTrace: [{
+                sessionId: actorId,
+                endpointId: "endpoint-1",
+                startedAt: restartedAt,
+                lastAcknowledgedAt: restartedAt,
+              }],
+            },
+          },
+        },
+      },
+    };
+
+    const payload = await loadSessionRefObservePayload(actorId);
+
+    expect(payload?.kind).toBe("broker");
+    expect(payload?.data.live).toBe(true);
+    const handoff = payload?.data.events.find((event) => event.id === `${actorId}:handoff`);
+    expect(handoff?.text).toBe("Waiting for the harness to attach and emit its first turn.");
+    expect(handoff?.detail ?? "").not.toContain("First flight failure");
+  });
+
+  test("keeps exact native history authoritative over a matching failed flight", async () => {
+    const actorId = "session-native-authoritative";
+    const providerSessionId = "claude-native-authoritative";
+    const completedAt = Date.parse("2026-04-22T12:03:00.000Z");
+    const tempRoot = makeTempDir("openscout-observe-flight-native-");
+    const historyPath = join(tempRoot, `${providerSessionId}.jsonl`);
+    writeClaudeHistory(historyPath, "native turns outrank synthetic broker receipts", {
+      sessionId: providerSessionId,
+    });
+    brokerContextResult = {
+      snapshot: {
+        actors: {
+          [actorId]: { kind: "session", displayName: "Native authoritative flight" },
+        },
+        endpoints: {
+          "endpoint-1": {
+            id: "endpoint-1",
+            agentId: actorId,
+            nodeId: "node-1",
+            harness: "claude",
+            state: "active",
+            sessionId: actorId,
+            transport: "tmux",
+            cwd: "/Users/art/dev/project",
+            projectRoot: "/Users/art/dev/project",
+            metadata: {
+              pendingExternalSession: false,
+              externalSessionId: providerSessionId,
+              handle: "project-native-authoritative",
+            },
+          },
+        },
+        invocations: {
+          "inv-1": {
+            id: "inv-1",
+            requesterId: "operator",
+            requesterNodeId: "node-1",
+            targetAgentId: actorId,
+            action: "execute",
+            task: "Work with native history.",
+            ensureAwake: true,
+            stream: true,
+            createdAt: completedAt - 60_000,
+          },
+        },
+        flights: {
+          "flt-1": {
+            id: "flt-1",
+            invocationId: "inv-1",
+            requesterId: "operator",
+            targetAgentId: actorId,
+            state: "failed",
+            error: "Stale running flight reconciled without a live broker task",
+            startedAt: completedAt - 30_000,
+            completedAt,
+            metadata: {
+              sessionTrace: [{
+                sessionId: actorId,
+                endpointId: "endpoint-1",
+                startedAt: completedAt - 30_000,
+                lastAcknowledgedAt: completedAt,
+                endedAt: completedAt,
+              }],
+            },
+          },
+        },
+      },
+    };
+    tailDiscoveryResult = {
+      generatedAt: Date.now(),
+      processes: [],
+      transcripts: [
+        {
+          source: "claude",
+          transcriptPath: historyPath,
+          sessionId: providerSessionId,
+          cwd: "/Users/art/dev/project",
+          project: "project",
+          harness: "scout-managed",
+          mtimeMs: Date.now(),
+          size: 1_000,
+        },
+      ],
+      totals: {
+        total: 0,
+        scoutManaged: 0,
+        hudsonManaged: 0,
+        unattributed: 0,
+        transcripts: 1,
+      },
+    };
+
+    const payload = await loadSessionRefObservePayload(actorId);
+
+    expect(payload?.kind).toBe("broker");
+    expect(payload?.source).toBe("history");
+    expect(payload?.historyPath).toBe(historyPath);
+    expect(payload?.data.events.some((event) => (
+      event.text.includes("native turns outrank synthetic broker receipts")
+    ))).toBe(true);
+    expect(payload?.data.events.some((event) => (
+      event.text.includes("Invocation failed")
     ))).toBe(false);
   });
 

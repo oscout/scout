@@ -78,6 +78,21 @@ describe("Chat invitation safety", () => {
     output.length = 0;
     await runChatCommand(context, ["watch", "--once", "--reset-cursor", "--for", "1s"]);
     expect(JSON.parse(output[0]!).id).toBe("retained");
+    output.length = 0;
+    globalThis.fetch = (async (url: any, init: RequestInit) => {
+      requests.push({ url: String(url), init });
+      return new Response(JSON.stringify({ ok: true, replayed: false }));
+    }) as typeof fetch;
+    await runChatCommand(context, ["react", "incoming-one", "👍", "--request-id", "react-one"]);
+    const react = requests.at(-1)!;
+    expect(react.url).toBe("https://chat.example/api/channels/chn-test/reactions?space=work");
+    expect(JSON.parse(react.init.body as string)).toEqual({
+      requestId: "react-one",
+      messageId: "incoming-one",
+      emoji: "👍",
+    });
+    await runChatCommand(context, ["unreact", "incoming-one", "👍", "--request-id", "unreact-one"]);
+    expect(requests.at(-1)!.url).toBe("https://chat.example/api/channels/chn-test/reactions/remove?space=work");
     expect(JSON.parse(await readFile(join(root, scope, cursorFiles[0]!), "utf8")).cursor).toBe("cursor-three");
   });
 });

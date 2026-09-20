@@ -18,6 +18,10 @@ const originalFetch = globalThis.fetch;
 const originalRelayUrl = process.env.OPENSCOUT_PUSH_RELAY_URL;
 const originalRelaySession = process.env.OPENSCOUT_PUSH_RELAY_SESSION;
 const originalRelayMeshId = process.env.OPENSCOUT_PUSH_RELAY_MESH_ID;
+const originalApnsTeamId = process.env.OPENSCOUT_APNS_TEAM_ID;
+const originalApnsKeyId = process.env.OPENSCOUT_APNS_KEY_ID;
+const originalApnsPrivateKey = process.env.OPENSCOUT_APNS_PRIVATE_KEY;
+const originalApnsPrivateKeyPath = process.env.OPENSCOUT_APNS_PRIVATE_KEY_PATH;
 
 afterEach(() => {
   closeMobilePushDb();
@@ -31,6 +35,10 @@ afterEach(() => {
     ["OPENSCOUT_PUSH_RELAY_URL", originalRelayUrl],
     ["OPENSCOUT_PUSH_RELAY_SESSION", originalRelaySession],
     ["OPENSCOUT_PUSH_RELAY_MESH_ID", originalRelayMeshId],
+    ["OPENSCOUT_APNS_TEAM_ID", originalApnsTeamId],
+    ["OPENSCOUT_APNS_KEY_ID", originalApnsKeyId],
+    ["OPENSCOUT_APNS_PRIVATE_KEY", originalApnsPrivateKey],
+    ["OPENSCOUT_APNS_PRIVATE_KEY_PATH", originalApnsPrivateKeyPath],
   ] as const) {
     if (value === undefined) delete process.env[key];
     else process.env[key] = value;
@@ -199,5 +207,137 @@ describe("mobile push relay", () => {
     });
     expect(JSON.stringify(requestBody)).not.toContain("This content");
     expect(JSON.stringify(requestBody)).not.toContain("human-readable-agent-name");
+  });
+  test("reports the relay's refusal and stops there when there is no APNs key", async () => {
+    createControlPlaneRoot();
+    process.env.OPENSCOUT_PUSH_RELAY_URL = "https://push.example.test";
+    process.env.OPENSCOUT_PUSH_RELAY_SESSION = "osn_session_expired";
+    delete process.env.OPENSCOUT_APNS_TEAM_ID;
+    delete process.env.OPENSCOUT_APNS_KEY_ID;
+    delete process.env.OPENSCOUT_APNS_PRIVATE_KEY;
+
+    let calls = 0;
+    globalThis.fetch = (async () => {
+      calls += 1;
+      return Response.json({ error: "unauthorized" }, { status: 401 });
+    }) as typeof fetch;
+
+    const result = await broadcastApnsAlertToActiveMobileDevices({
+      title: "An agent needs you",
+      body: "Open Scout for details.",
+      sound: "default",
+      urgency: "interrupt",
+      payload: { destination: "inbox", kind: "operator_signal", messageId: "msg-9" },
+    });
+
+    expect(calls).toBe(1);
+    expect(result.deliveredCount).toBe(0);
+    expect(result.failures.map(failure => failure.status)).toEqual([401]);
+  });
+
+  test("falls through to direct APNs when the relay rejects our credential", async () => {
+    createControlPlaneRoot();
+    syncMobilePushRegistration({
+      deviceId: "device-fallback",
+      platform: "ios",
+      appBundleId: "app.openscout.scout",
+      apnsEnvironment: "development",
+      authorizationStatus: "authorized",
+      pushToken: "deadbeef",
+    });
+
+    process.env.OPENSCOUT_PUSH_RELAY_URL = "https://push.example.test";
+    process.env.OPENSCOUT_PUSH_RELAY_SESSION = "osn_session_expired";
+    process.env.OPENSCOUT_APNS_TEAM_ID = "TEAM123456";
+    process.env.OPENSCOUT_APNS_KEY_ID = "KEY1234567";
+    process.env.OPENSCOUT_APNS_PRIVATE_KEY = "-----BEGIN PRIVATE KEY-----\nnot-a-real-key\n-----END PRIVATE KEY-----";
+
+    globalThis.fetch = (async (input) => {
+      if (String(input).startsWith("https://push.example.test")) {
+        return Response.json({ error: "unauthorized" }, { status: 401 });
+      }
+      return Response.json({ reason: "BadDeviceToken" }, { status: 400 });
+    }) as typeof fetch;
+
+    const result = await broadcastApnsAlertToActiveMobileDevices({
+      title: "An agent needs you",
+      body: "Open Scout for details.",
+      sound: "default",
+      urgency: "interrupt",
+      payload: { destination: "inbox", kind: "operator_signal", messageId: "msg-10" },
+    });
+
+    // The registered device was actually tried, and the relay's refusal is
+    // still on the record rather than swallowed by the fallback.
+    expect(result.attemptedCount).toBe(1);
+    expect(result.failures.some(failure => failure.status === 401)).toBe(true);
+    expect(result.failures.length).toBeGreaterThan(1);
+  });
+  test("does not re-send directly when the relay delivered but reported a per-device 403", async () => {
+    createControlPlaneRoot();
+    syncMobilePushRegistration({
+      deviceId: "device-a",
+      platform: "ios",
+      appBundleId: "app.openscout.scout",
+      apnsEnvironment: "development",
+      authorizationStatus: "authorized",
+      pushToken: "aaaaaaaa",
+    });
+
+    process.env.OPENSCOUT_PUSH_RELAY_URL = "https://push.example.test";
+    process.env.OPENSCOUT_PUSH_RELAY_SESSION = "osn_session_live";
+    process.env.OPENSCOUT_APNS_TEAM_ID = "TEAM123456";
+    process.env.OPENSCOUT_APNS_KEY_ID = "KEY1234567";
+    process.env.OPENSCOUT_APNS_PRIVATE_KEY = "-----BEGIN PRIVATE KEY-----\nnot-a-real-key\n-----END PRIVATE KEY-----";
+
+    let apnsCalls = 0;
+    globalThis.fetch = (async (input) => {
+      if (String(input).startsWith("https://push.example.test")) {
+        // The relay accepted the alert; one of ITS devices came back 403.
+        return Response.json({
+          attemptedCount: 2,
+          deliveredCount: 1,
+          failedCount: 1,
+          failures: [{ deviceId: "device-b", status: 403, reason: "InvalidProviderToken" }],
+        });
+      }
+      apnsCalls += 1;
+      return Response.json({}, { status: 200 });
+    }) as typeof fetch;
+
+    const result = await broadcastApnsAlertToActiveMobileDevices({
+      title: "An agent needs you",
+      body: "Open Scout for details.",
+      sound: "default",
+      urgency: "interrupt",
+      payload: { destination: "inbox", kind: "operator_signal", messageId: "msg-11" },
+    });
+
+    expect(apnsCalls).toBe(0);
+    expect(result.deliveredCount).toBe(1);
+    expect(result.failures.map(failure => failure.deviceId)).toEqual(["device-b"]);
+  });
+
+  test("treats an unreadable APNs key path as no key rather than throwing", async () => {
+    createControlPlaneRoot();
+    process.env.OPENSCOUT_PUSH_RELAY_URL = "https://push.example.test";
+    process.env.OPENSCOUT_PUSH_RELAY_SESSION = "osn_session_expired";
+    delete process.env.OPENSCOUT_APNS_PRIVATE_KEY;
+    process.env.OPENSCOUT_APNS_TEAM_ID = "TEAM123456";
+    process.env.OPENSCOUT_APNS_KEY_ID = "KEY1234567";
+    process.env.OPENSCOUT_APNS_PRIVATE_KEY_PATH = join(tmpdir(), "openscout-missing-apns-key.p8");
+
+    globalThis.fetch = (async () =>
+      Response.json({ error: "unauthorized" }, { status: 401 })) as typeof fetch;
+
+    const result = await broadcastApnsAlertToActiveMobileDevices({
+      title: "An agent needs you",
+      body: "Open Scout for details.",
+      sound: "default",
+      urgency: "interrupt",
+      payload: { destination: "inbox", kind: "operator_signal", messageId: "msg-12" },
+    });
+
+    expect(result.failures.map(failure => failure.status)).toEqual([401]);
   });
 });

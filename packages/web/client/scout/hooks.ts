@@ -21,6 +21,9 @@ import {
 } from "./topNavConfig.ts";
 import { paletteNavCommandOptions } from "./nav-destinations.ts";
 import { renderNavCenter } from "./nav-center.tsx";
+import { getRecapLanes, subscribeRecapLanes } from "../lib/session-recap-lanes.ts";
+import { speakLatestVisibleTurn, stopSessionRecaps, toggleFleetRollCall } from "../lib/session-recap-queue.ts";
+import { fleetRecapCommands } from "./fleet-recap-commands.ts";
 
 export type ScoutStatusBarState = {
   status: { label: string; color: StatusColor };
@@ -41,6 +44,8 @@ export function useScoutCommands(): CommandOption[] {
   const { navigate, agents, reload, applyScoutbotUiAction, openContextCapture } = useScout();
   const opsEnabled = useOptionalFlag("ops.control", true);
   const scoutbotEnabled = useOptionalFlag("surface.scoutbot", true);
+  const [recapCount, setRecapCount] = useState(() => getRecapLanes().length);
+  useEffect(() => subscribeRecapLanes(() => setRecapCount(getRecapLanes().length)), []);
 
   const askScoutbotForState = useCallback(() => {
     applyScoutbotUiAction({ type: "open-scoutbot", mode: "ask" });
@@ -67,6 +72,9 @@ export function useScoutCommands(): CommandOption[] {
         action: () => navigate({ view: "settings", section: "appearance" }),
         shortcut: "Cmd+,",
       },
+      ...(recapCount > 0 ? fleetRecapCommands({
+        toggleFleetRollCall, speakLatestVisibleTurn, stopSessionRecaps,
+      }) : []),
       ...(scoutbotEnabled ? [{
         id: "scoutbot:open",
         label: "Open Scout",
@@ -119,7 +127,7 @@ export function useScoutCommands(): CommandOption[] {
     }
 
     return commands;
-  }, [agents, applyScoutbotUiAction, askScoutbotForState, navigate, openContextCapture, opsEnabled, scoutbotEnabled, reload]);
+  }, [agents, applyScoutbotUiAction, askScoutbotForState, navigate, openContextCapture, opsEnabled, recapCount, scoutbotEnabled, reload]);
 }
 
 export function useScoutStatusBarState(): ScoutStatusBarState {

@@ -1,5 +1,33 @@
 /** Shared allowlists for routed capture attachments (native + web). */
 
+export const IMAGE_EXTENSIONS = new Set([
+  "png",
+  "jpg",
+  "jpeg",
+  "gif",
+  "webp",
+  "avif",
+  "heic",
+  "heif",
+  "bmp",
+]);
+
+export const VIDEO_EXTENSIONS = new Set([
+  "mp4",
+  "webm",
+  "mov",
+  "m4v",
+]);
+
+export const AUDIO_EXTENSIONS = new Set([
+  "mp3",
+  "wav",
+  "m4a",
+  "aac",
+  "ogg",
+  "oga",
+]);
+
 export const MARKDOWN_EXTENSIONS = new Set([
   "md",
   "markdown",
@@ -191,11 +219,24 @@ export function resolveTextCaptureMediaType(
   return "text/plain";
 }
 
+export function isImageFileName(fileName: string): boolean {
+  return IMAGE_EXTENSIONS.has(captureFileExtension(fileName));
+}
+
+export function isVideoFileName(fileName: string): boolean {
+  return VIDEO_EXTENSIONS.has(captureFileExtension(fileName));
+}
+
+export function isAudioFileName(fileName: string): boolean {
+  return AUDIO_EXTENSIONS.has(captureFileExtension(fileName));
+}
+
 export function isRoutableCaptureMediaType(mediaType: string, fileName?: string): boolean {
   const type = mediaType.trim().toLowerCase();
-  if (type.startsWith("image/") || type.startsWith("video/")) return true;
+  if (type.startsWith("image/") || type.startsWith("video/") || type.startsWith("audio/")) return true;
   if (type === "text/markdown" || type === "text/x-markdown") return true;
   if (!fileName) return false;
+  if (isImageFileName(fileName) || isVideoFileName(fileName) || isAudioFileName(fileName)) return true;
   if (resolveTextCaptureMediaType(type, fileName)) return true;
   if (!type || type === "application/octet-stream") {
     return isTextCaptureFileName(fileName);
@@ -205,6 +246,23 @@ export function isRoutableCaptureMediaType(mediaType: string, fileName?: string)
 
 export function resolvedCaptureUploadMediaType(file: Pick<File, "type" | "name">): string {
   const type = file.type.trim().toLowerCase();
-  if (type.startsWith("image/") || type.startsWith("video/")) return type;
+  if (type.startsWith("image/") || type.startsWith("video/") || type.startsWith("audio/")) return type;
+  const ext = captureFileExtension(file.name);
+  if (IMAGE_EXTENSIONS.has(ext)) {
+    if (ext === "jpg" || ext === "jpeg") return "image/jpeg";
+    if (ext === "svg") return "image/svg+xml";
+    return `image/${ext}`;
+  }
+  if (VIDEO_EXTENSIONS.has(ext)) {
+    if (ext === "mov") return "video/quicktime";
+    if (ext === "m4v") return "video/mp4";
+    return `video/${ext}`;
+  }
+  if (AUDIO_EXTENSIONS.has(ext)) {
+    if (ext === "mp3") return "audio/mpeg";
+    if (ext === "m4a") return "audio/mp4";
+    if (ext === "oga") return "audio/ogg";
+    return `audio/${ext}`;
+  }
   return resolveTextCaptureMediaType(type, file.name) ?? type;
 }

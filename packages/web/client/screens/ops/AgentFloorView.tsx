@@ -40,6 +40,7 @@ import {
   setFloorLedgerHandlers,
   type LaneRosterEntry,
 } from "./lane-roster-store.ts";
+import { publishRecapFocus } from "../../lib/session-recap-lanes.ts";
 
 /**
  * AgentFloorView — the "floor" lane treatment, shared across surfaces. A
@@ -992,7 +993,11 @@ export function AgentFloorView({ lanes, now: suppliedNow, onOpenTrace, railLedge
   useEffect(() => {
     if (!railLedger) return;
     publishLaneFocusId(effectiveFocus);
-    return () => publishLaneFocusId(null);
+    publishRecapFocus(effectiveFocus);
+    return () => {
+      publishLaneFocusId(null);
+      publishRecapFocus(null);
+    };
   }, [railLedger, effectiveFocus]);
 
   const seamX = (slotIndex: number) => (flip

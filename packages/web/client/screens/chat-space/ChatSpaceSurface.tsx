@@ -21,11 +21,10 @@
  *    typing is client state and is never touched by a refresh.
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { ChannelInvitePublicView, ConversationDefinition } from "@openscout/protocol";
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
+import type { ChannelInvitePublicView, ConversationDefinition, MessageAttachment } from "@openscout/protocol";
 
 import {
-  chatApi,
   ChatApiError,
   DEFAULT_CHAT_SPACE,
   type ChannelFeed,
@@ -33,7 +32,14 @@ import {
   type ChatBootstrap,
   type ChatSpaceView,
 } from "./chat-api.ts";
+import { useChatAddress, useChatApi, useChatCapabilities } from "./chat-transport.tsx";
 import { RailToggle } from "../../components/RailToggle.tsx";
+import {
+  SIDEBAR_EXPANDED_WIDTH,
+  SLACK_SIDEBAR_COLLAPSED_WIDTH,
+  useSidebarCollapse,
+} from "../../scout/sidebar/useSidebarCollapse.ts";
+
 import { ChatSpaceTheme, useScoutStandaloneAppearance } from "./ChatSpaceTheme.tsx";
 import { ChannelSidebar } from "./ChannelSidebar.tsx";
 import { ChannelComposer } from "./ChannelComposer.tsx";
@@ -51,75 +57,78 @@ import {
   channelLabel,
   isAskableMember,
   memberDisplayName,
+  applyOptimisticReaction,
+  mergeChannelRoster,
   newRequestId,
   peopleAgentLabel,
   projectFeed,
   sortChannels,
 } from "./chat-space-model.ts";
+import { uploadMediaFiles } from "../../lib/media-blobs.ts";
+import { copyTextToClipboard } from "../../lib/clipboard.ts";
+import { chatMessageHref } from "./chat-address.ts";
 
-const CHANNEL_QUERY_KEY = "channel";
 /**
  * The space rides in the URL beside the channel, so a link carries the whole
  * address. It is a selector, not a credential: pasting a link to a space you
  * are not in lands on a 404 from the server, never on somebody else's room.
+ *
+ * How it is spelled belongs to the transport (`chat-address.ts`): local Scout
+ * puts both selectors in the query string, hosted Chat gives the space its own
+ * `/c/<slug>` path. This component only ever asks for them and sets them.
  */
-const SPACE_QUERY_KEY = "space";
 
 /**
- * Whether the sidebar is collapsed to its rail. Per browser, not per account:
- * it is a window-shape preference, and a teammate reaching this Scout from a
- * second machine has a different window.
+ * Chat defaults the column open. Scout's shared hook defaults it railed.
+ * Seed the persisted key once from the old `openscout.chat.rail` flag so the
+ * first paint matches what this surface used to do.
  */
-const CHAT_RAIL_STORAGE_KEY = "openscout.chat.rail";
+const CHAT_SIDEBAR_COLLAPSE_KEY = "appshell.chat.sidebar.manualCollapsed";
+const CHAT_PANEL_WIDTH_KEY = "openscout.chat.panel.width";
+const CHAT_PANEL_DEFAULT = 360;
+const CHAT_PANEL_MIN = 280;
+const CHAT_PANEL_MAX = 520;
 
-function readRailPreference(): boolean {
-  if (typeof window === "undefined") return false;
-  try {
-    return window.localStorage.getItem(CHAT_RAIL_STORAGE_KEY) === "1";
-  } catch {
-    return false;
-  }
-}
-
-function writeRailPreference(railed: boolean): void {
+function seedChatSidebarCollapse(): void {
   if (typeof window === "undefined") return;
   try {
-    window.localStorage.setItem(CHAT_RAIL_STORAGE_KEY, railed ? "1" : "0");
+    if (window.localStorage.getItem(CHAT_SIDEBAR_COLLAPSE_KEY) != null) return;
+    const railed = window.localStorage.getItem("openscout.chat.rail") === "1";
+    window.localStorage.setItem(CHAT_SIDEBAR_COLLAPSE_KEY, JSON.stringify(railed));
   } catch {
-    // The collapse holds for this visit when device storage is unavailable.
+    // First paint uses the hook default when storage is unavailable.
   }
 }
 
-function readChannelFromLocation(): string | null {
-  if (typeof window === "undefined") return null;
-  const value = new URLSearchParams(window.location.search).get(CHANNEL_QUERY_KEY);
-  return value?.trim() || null;
+function readPanelWidth(): number {
+  if (typeof window === "undefined") return CHAT_PANEL_DEFAULT;
+  try {
+    const raw = Number(window.localStorage.getItem(CHAT_PANEL_WIDTH_KEY));
+    if (!Number.isFinite(raw) || raw <= 0) return CHAT_PANEL_DEFAULT;
+    return Math.max(CHAT_PANEL_MIN, Math.min(CHAT_PANEL_MAX, Math.round(raw)));
+  } catch {
+    return CHAT_PANEL_DEFAULT;
+  }
 }
 
-function readSpaceFromLocation(): string {
-  if (typeof window === "undefined") return DEFAULT_CHAT_SPACE;
-  const value = new URLSearchParams(window.location.search).get(SPACE_QUERY_KEY);
-  return value?.trim() || DEFAULT_CHAT_SPACE;
-}
-
-function writeLocation(
-  input: { channelId: string | null; space: string },
-  replace: boolean,
-) {
+function writePanelWidth(width: number): void {
   if (typeof window === "undefined") return;
-  const url = new URL(window.location.href);
-  if (input.channelId) url.searchParams.set(CHANNEL_QUERY_KEY, input.channelId);
-  else url.searchParams.delete(CHANNEL_QUERY_KEY);
-  // The default space is written as an absent parameter, so every link to a
-  // room that predates spaces is exactly the link it has always been.
-  if (input.space && input.space !== DEFAULT_CHAT_SPACE) {
-    url.searchParams.set(SPACE_QUERY_KEY, input.space);
-  } else {
-    url.searchParams.delete(SPACE_QUERY_KEY);
+  try {
+    window.localStorage.setItem(CHAT_PANEL_WIDTH_KEY, String(width));
+  } catch {
+    // Width holds for this visit when device storage is unavailable.
   }
-  const next = `${url.pathname}${url.search}`;
-  if (replace) window.history.replaceState(null, "", next);
-  else window.history.pushState(null, "", next);
+}
+
+function useViewportWidth(): number {
+  const [width, setWidth] = useState(() =>
+    typeof window !== "undefined" ? window.innerWidth : 1280);
+  useEffect(() => {
+    const onResize = () => setWidth(window.innerWidth);
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
+  return width;
 }
 
 function useMediaQuery(query: string): boolean {
@@ -194,15 +203,54 @@ function useChannelLive(
 
 type Phase = "loading" | "ready" | "gate" | "error";
 
+/**
+ * What a signed-out visitor is shown, when the deployment wants its own door.
+ *
+ * Hosted Chat passes this to mount its own entrance; local `/chat` omits it and
+ * keeps the card it has always had. `signInHref` arrives already carrying the
+ * return address, so the sign-in grammar is composed in exactly one place.
+ */
+export interface ChatSpaceSignedOutView {
+  signInHref: string;
+  signInLabel: string;
+  note: string | null;
+  message: string | null;
+}
+
+export interface ChatSpaceSurfaceProps {
+  /** Rendered instead of the default gate when the visitor has no session. */
+  signedOut?: (view: ChatSpaceSignedOutView) => ReactNode;
+}
+
+type StagedOutgoing = MessageAttachment & { localPath?: string };
+
 interface PendingSend {
   channelId: string;
   body: string;
   replyToMessageId: string | null;
   targetActorId: string | null;
   requestId: string;
+  attachments?: StagedOutgoing[];
 }
 
-export function ChatSpaceSurface() {
+async function outgoingChatAttachments(
+  files: File[],
+  uploadRemote: (files: File[]) => Promise<StagedOutgoing[]>,
+): Promise<StagedOutgoing[]> {
+  // Browser File objects always upload. A Finder path is often Desktop/Downloads,
+  // which is outside Scout's trusted roots — sending it as localPath 403s and
+  // looks like "attach did nothing".
+  if (files.length === 0) return [];
+  return uploadRemote(files);
+}
+
+export function ChatSpaceSurface({ signedOut }: ChatSpaceSurfaceProps = {}) {
+  // Which server this surface is talking to. Absent a provider it is the local
+  // Scout server, which is what `/chat` has always mounted.
+  const chatApi = useChatApi();
+  const capabilities = useChatCapabilities();
+  const address = useChatAddress();
+
   const {
     theme,
     preference: themePreference,
@@ -212,8 +260,11 @@ export function ChatSpaceSurface() {
   const [phase, setPhase] = useState<Phase>("loading");
   const [gateMessage, setGateMessage] = useState<string | null>(null);
   const [bootstrap, setBootstrap] = useState<ChatBootstrap | null>(null);
-  const [channelId, setChannelId] = useState<string | null>(() => readChannelFromLocation());
-  const [space, setSpace] = useState<string>(readSpaceFromLocation);
+  const [channelId, setChannelId] = useState<string | null>(() => address.read().channelId);
+  const [focusMessageId, setFocusMessageId] = useState<string | null>(() => address.read().messageId);
+  // An absent selector means "whichever space the server answers for"; the
+  // local default is named so that links predating spaces stay byte-identical.
+  const [space, setSpace] = useState<string>(() => address.read().space ?? DEFAULT_CHAT_SPACE);
   const [feed, setFeed] = useState<ChannelFeed | null>(null);
   const [members, setMembers] = useState<ChannelMemberView[]>([]);
   const [invites, setInvites] = useState<ChannelInvitePublicView[]>([]);
@@ -233,12 +284,25 @@ export function ChatSpaceSurface() {
   const [threadError, setThreadError] = useState<string | null>(null);
   const [nowMs, setNowMs] = useState(() => Date.now());
   const [compactView, setCompactView] = useState<"list" | "channel" | "panel">(
-    () => (readChannelFromLocation() ? "channel" : "list"),
+    () => (address.read().channelId ? "channel" : "list"),
   );
-  const [railPreference, setRailPreference] = useState<boolean>(readRailPreference);
+  seedChatSidebarCollapse();
+  const viewportWidth = useViewportWidth();
+  const isCompact = useMediaQuery("(max-width: 899px)");
+  const isMidWidth = useMediaQuery("(max-width: 1199px)");
+  const sidebarCollapse = useSidebarCollapse(
+    "chat",
+    isCompact ? 1600 : viewportWidth,
+    SLACK_SIDEBAR_COLLAPSED_WIDTH,
+  );
+  const sidebarDragTargetRef = useRef(sidebarCollapse.width);
+  const [panelWidth, setPanelWidth] = useState(readPanelWidth);
+  const panelDragTargetRef = useRef(panelWidth);
+  const [panelDragWidth, setPanelDragWidth] = useState<number | null>(null);
 
   const pendingSend = useRef<PendingSend | null>(null);
   const feedScrollRef = useRef<HTMLDivElement | null>(null);
+  const rosterForChannel = useRef<string | null>(null);
   // Every channel read is stamped with the selection that started it. A
   // response that outlives its selection is dropped rather than applied —
   // including the A→B→A case, where the channel id alone would look current
@@ -250,9 +314,6 @@ export function ChatSpaceSurface() {
     bootstrapSpace.current = space;
     bootstrapSelection.reset();
   }
-
-  const isCompact = useMediaQuery("(max-width: 899px)");
-  const isMidWidth = useMediaQuery("(max-width: 1199px)");
 
   /* ── identity and channel list ─────────────────────────────────────────── */
 
@@ -275,6 +336,13 @@ export function ChatSpaceSurface() {
     } catch (error) {
       if (!isCurrent()) return;
       if (error instanceof ChatApiError && error.isUnauthenticated) {
+        // A later poll 401 must not kick a working room to the login gate.
+        // That is how a cookie blip turned a multiplayer channel into an
+        // empty solo view.
+        if (!initial && phase === "ready") {
+          setStale(true);
+          return;
+        }
         setPhase("gate");
         setGateMessage(error.message);
         return;
@@ -288,7 +356,7 @@ export function ChatSpaceSurface() {
         setStale(true);
       }
     }
-  }, [space, bootstrapSelection]);
+  }, [bootstrapSelection, chatApi, phase, space]);
 
   useEffect(() => {
     void loadBootstrap(true);
@@ -336,20 +404,21 @@ export function ChatSpaceSurface() {
     const fallback = channels[0]?.id ?? directs[0]?.id ?? null;
     if (fallback === channelId) return;
     setChannelId(fallback);
-    writeLocation({ channelId: fallback, space }, true);
-  }, [channelId, channels, directs, phase, selectableIds, space]);
+    address.write({ channelId: fallback, space, messageId: null }, true);
+  }, [address, channelId, channels, directs, phase, selectableIds, space]);
 
   useEffect(() => {
     const onPopState = () => {
-      const next = readChannelFromLocation();
-      setChannelId(next);
-      setSpace(readSpaceFromLocation());
+      const here = address.read();
+      setChannelId(here.channelId);
+      setSpace(here.space ?? DEFAULT_CHAT_SPACE);
+      setFocusMessageId(here.messageId);
       setPanel({ kind: "none" });
-      setCompactView(next ? "channel" : "list");
+      setCompactView(here.channelId ? "channel" : "list");
     };
     window.addEventListener("popstate", onPopState);
     return () => window.removeEventListener("popstate", onPopState);
-  }, []);
+  }, [address]);
 
   const channel = useMemo(
     () => [...channels, ...directs].find((item) => item.id === channelId) ?? null,
@@ -377,7 +446,7 @@ export function ChatSpaceSurface() {
       }
       setStale(true);
     }
-  }, [channelId, selection, space]);
+  }, [channelId, chatApi, selection, space]);
 
   const loadRoster = useCallback(async () => {
     if (!channelId) return;
@@ -385,15 +454,27 @@ export function ChatSpaceSurface() {
     try {
       const next = await chatApi.members(channelId, space);
       if (!isCurrent()) return;
-      setMembers(next.members ?? []);
+      setMembers((current) => {
+        const incoming = next.members ?? [];
+        if (incoming.length === 0) return current;
+        // First successful read for this channel may replace. Every later
+        // read merges — a thin snapshot finishing last was wiping Arc.
+        if (rosterForChannel.current !== channelId) {
+          rosterForChannel.current = channelId;
+          return incoming;
+        }
+        return mergeChannelRoster(current, incoming);
+      });
     } catch {
       if (!isCurrent()) return;
       setStale(true);
     }
-  }, [channelId, selection, space]);
+  }, [channelId, chatApi, selection, space]);
 
   const loadInvites = useCallback(async () => {
-    if (!channelId) return;
+    // A server that does not list invitations is not a server with none. The
+    // panel says so; this read is simply not made.
+    if (!channelId || !capabilities.inviteList) return;
     const isCurrent = selection.begin();
     try {
       const next = await chatApi.invites(channelId, space);
@@ -411,21 +492,27 @@ export function ChatSpaceSurface() {
             : "Invitations could not be read.",
       );
     }
-  }, [channelId, selection, space]);
+  }, [capabilities.inviteList, channelId, chatApi, selection, space]);
 
   useEffect(() => {
-    // Abandon everything in flight before the new channel's reads start.
+    // Wipe feed/invites on channel change, but keep the last roster until
+    // the new one arrives so the facepile does not collapse to nobody.
     selection.reset();
     setFeed(null);
-    setMembers([]);
     setInvites([]);
     setFeedError(null);
     setPanel({ kind: "none" });
+    if (rosterForChannel.current !== channelId) {
+      rosterForChannel.current = null;
+    }
+  }, [channelId, selection]);
+
+  useEffect(() => {
     if (!channelId) return;
     void loadFeed();
     void loadRoster();
     void loadInvites();
-  }, [channelId, loadFeed, loadInvites, loadRoster, selection]);
+  }, [channelId, loadFeed, loadInvites, loadRoster]);
 
   usePoll(loadFeed, FEED_POLL_MS, phase === "ready" && Boolean(channelId));
   usePoll(loadRoster, ROSTER_POLL_MS, phase === "ready" && Boolean(channelId));
@@ -434,7 +521,12 @@ export function ChatSpaceSurface() {
   // stay exactly as they were: they remain the fallback when no stream is
   // served, and they are still the only reader of roster and reception, which
   // the current stream contract says nothing about.
-  useChannelLive(channelId, phase === "ready", loadFeed, space);
+  useChannelLive(
+    channelId,
+    phase === "ready" && capabilities.liveStream,
+    loadFeed,
+    space,
+  );
 
   useEffect(() => {
     const timer = setInterval(() => setNowMs(Date.now()), 30_000);
@@ -499,10 +591,16 @@ export function ChatSpaceSurface() {
   );
 
   const send = useCallback(
-    async (input: { body: string; replyToMessageId: string | null; targetActorId: string | null }) => {
+    async (input: {
+      body: string;
+      replyToMessageId: string | null;
+      targetActorId: string | null;
+      files?: File[];
+    }) => {
       if (!channelId) return false;
       const body = input.body.trim();
-      if (!body) return false;
+      const files = input.files ?? [];
+      if (!body && files.length === 0) return false;
 
       // One logical send keeps one request id across retries, so a failure we
       // cannot interpret does not turn into two posts.
@@ -513,12 +611,21 @@ export function ChatSpaceSurface() {
         && previous.replyToMessageId === input.replyToMessageId
         && previous.targetActorId === input.targetActorId;
       const requestId = sameSend ? previous!.requestId : newRequestId();
+      const attachments = sameSend && previous?.attachments
+        ? previous.attachments
+        : files.length > 0
+          ? await outgoingChatAttachments(files, (remote) =>
+            chatApi.uploadAttachments
+              ? chatApi.uploadAttachments(channelId, remote, space)
+              : uploadMediaFiles(remote))
+          : undefined;
       pendingSend.current = {
         channelId,
         body,
         replyToMessageId: input.replyToMessageId,
         targetActorId: input.targetActorId,
         requestId,
+        attachments,
       };
 
       if (input.targetActorId) {
@@ -535,6 +642,7 @@ export function ChatSpaceSurface() {
           body,
           space,
           ...(input.replyToMessageId ? { replyToMessageId: input.replyToMessageId } : {}),
+          ...(attachments && attachments.length > 0 ? { attachments } : {}),
         });
       }
       // Only a definite success clears the retry slot.
@@ -543,19 +651,68 @@ export function ChatSpaceSurface() {
       void loadRoster();
       return true;
     },
-    [channelId, loadFeed, loadRoster, space],
+    [channelId, chatApi, loadFeed, loadRoster, space],
   );
 
-  const onSendChannel = useCallback(() => {
-    if (!channelId || sending) return;
+  const onReact = useCallback((messageId: string, emoji: string, remove: boolean) => {
+    if (!channelId) return;
+    const previous = feed;
+    setFeed((current) => {
+      if (!current) return current;
+      return {
+        ...current,
+        messages: current.messages.map((message) =>
+          message.id === messageId
+            ? { ...message, reactions: applyOptimisticReaction(message.reactions, emoji, remove) }
+            : message),
+      };
+    });
+    const requestId = newRequestId();
+    const write = remove ? chatApi.removeReaction : chatApi.addReaction;
+    void write(channelId, { messageId, emoji, requestId, space })
+      .then(() => {
+        void loadFeed();
+      })
+      .catch((error: unknown) => {
+        setFeed(previous);
+        setFeedError(
+          error instanceof ChatApiError
+            ? error.message
+            : "That reaction did not save.",
+        );
+      });
+  }, [channelId, chatApi, feed, loadFeed, space]);
+
+  const onStopAsk = useCallback((flightId: string) => {
+    if (!channelId) return;
+    void chatApi.cancelAsk(channelId, flightId, space)
+      .then((result) => {
+        setFeed((current) => {
+          if (!current) return current;
+          return {
+            ...current,
+            requests: current.requests.map((item) =>
+              item.flightId === flightId ? { ...item, state: result.request.state } : item
+            ),
+          };
+        });
+      })
+      .catch(() => {
+        void loadFeed();
+      });
+  }, [channelId, chatApi, loadFeed, space]);
+
+  const onSendChannel = useCallback((files: File[] = []) => {
+    if (!channelId || sending) return Promise.resolve(false);
     setSendError(null);
     setSending(true);
-    void send({ body: draft, replyToMessageId: null, targetActorId: askTargetId })
+    return send({ body: draft, replyToMessageId: null, targetActorId: askTargetId, files })
       .then((sent) => {
         if (sent) {
           setDrafts((current) => ({ ...current, [channelId]: "" }));
           setAskTargets((current) => ({ ...current, [channelId]: null }));
         }
+        return sent;
       })
       .catch((error: unknown) => {
         setSendError(
@@ -563,6 +720,7 @@ export function ChatSpaceSurface() {
             ? error.message
             : "That did not send. The text is still here — try again.",
         );
+        return false;
       })
       .finally(() => setSending(false));
   }, [askTargetId, channelId, draft, send, sending]);
@@ -570,18 +728,20 @@ export function ChatSpaceSurface() {
   const threadRootId = panel.kind === "thread" ? panel.rootMessageId : null;
   const threadDraft = threadRootId ? threadDrafts[threadRootId] ?? "" : "";
 
-  const onSendThreadReply = useCallback(() => {
-    if (!threadRootId || threadSending) return;
+  const onSendThreadReply = useCallback((files: File[] = []) => {
+    if (!threadRootId || threadSending) return Promise.resolve(false);
     setThreadError(null);
     setThreadSending(true);
-    void send({ body: threadDraft, replyToMessageId: threadRootId, targetActorId: null })
+    return send({ body: threadDraft, replyToMessageId: threadRootId, targetActorId: null, files })
       .then((sent) => {
         if (sent) setThreadDrafts((current) => ({ ...current, [threadRootId]: "" }));
+        return sent;
       })
       .catch((error: unknown) => {
         setThreadError(
           error instanceof ChatApiError ? error.message : "That reply did not send.",
         );
+        return false;
       })
       .finally(() => setThreadSending(false));
   }, [send, threadDraft, threadRootId, threadSending]);
@@ -590,10 +750,11 @@ export function ChatSpaceSurface() {
 
   const selectChannel = useCallback((id: string) => {
     setChannelId(id);
-    writeLocation({ channelId: id, space }, false);
+    address.write({ channelId: id, space, messageId: null }, false);
+    setFocusMessageId(null);
     setPanel({ kind: "none" });
     setCompactView("channel");
-  }, [space]);
+  }, [address, space]);
 
   /**
    * Switch spaces.
@@ -613,13 +774,44 @@ export function ChatSpaceSurface() {
     setInvites([]);
     setPanel({ kind: "none" });
     setCompactView("list");
-    writeLocation({ channelId: null, space: slug }, false);
-  }, [space]);
+    address.write({ channelId: null, space: slug, messageId: null }, false);
+    setFocusMessageId(null);
+  }, [address, space]);
+
+  const onCopyLink = useCallback((messageId: string) => {
+    if (!channelId) return;
+    const href = chatMessageHref(window.location.href, {
+      channelId,
+      messageId,
+      space,
+    });
+    address.write({ channelId, space, messageId }, true);
+    setFocusMessageId(messageId);
+    void copyTextToClipboard(href);
+  }, [address, channelId, space]);
 
   const openPanel = useCallback((next: PanelView) => {
     setPanel(next);
     setCompactView(next.kind === "none" ? "channel" : "panel");
   }, []);
+
+  const scrolledToMessage = useRef<string | null>(null);
+  useEffect(() => {
+    if (!focusMessageId || !feed) return;
+    const target = feed.messages.find((message) => message.id === focusMessageId);
+    if (!target) return;
+    if (target.replyToMessageId) {
+      setPanel({ kind: "thread", rootMessageId: target.replyToMessageId });
+      setCompactView("panel");
+    }
+    if (scrolledToMessage.current === focusMessageId) return;
+    scrolledToMessage.current = focusMessageId;
+    const frame = window.requestAnimationFrame(() => {
+      const node = document.querySelector(`[data-message-id="${CSS.escape(focusMessageId)}"]`);
+      node?.scrollIntoView({ block: "center", behavior: "smooth" });
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [feed, focusMessageId]);
 
   const closePanel = useCallback(() => {
     setPanel({ kind: "none" });
@@ -627,11 +819,80 @@ export function ChatSpaceSurface() {
   }, []);
 
   const toggleRail = useCallback(() => {
-    setRailPreference((current) => {
-      writeRailPreference(!current);
-      return !current;
-    });
-  }, []);
+    sidebarCollapse.toggleCollapsed();
+  }, [sidebarCollapse]);
+
+  const handleSidebarResizePointerDown = useCallback((event: ReactPointerEvent) => {
+    event.preventDefault();
+    event.stopPropagation();
+    const startedCollapsed = sidebarCollapse.effectiveCollapsed;
+    const startX = event.clientX;
+    const startWidth = startedCollapsed
+      ? SLACK_SIDEBAR_COLLAPSED_WIDTH
+      : sidebarCollapse.expandedWidth;
+    sidebarDragTargetRef.current = startWidth;
+    sidebarCollapse.beginResize(startWidth, startedCollapsed);
+    const cleanup = () => {
+      document.removeEventListener("pointermove", onMove);
+      document.removeEventListener("pointerup", onUp);
+      document.removeEventListener("pointercancel", onCancel);
+      window.removeEventListener("blur", onCancel);
+    };
+    const onMove = (ev: PointerEvent) => {
+      const raw = startWidth + (ev.clientX - startX);
+      sidebarDragTargetRef.current = raw;
+      sidebarCollapse.updateResize(raw);
+    };
+    const onUp = () => {
+      sidebarCollapse.commitDrag(sidebarDragTargetRef.current ?? startWidth, startedCollapsed);
+      cleanup();
+    };
+    const onCancel = () => {
+      sidebarCollapse.clearDrag();
+      cleanup();
+    };
+    document.addEventListener("pointermove", onMove);
+    document.addEventListener("pointerup", onUp);
+    document.addEventListener("pointercancel", onCancel);
+    window.addEventListener("blur", onCancel);
+  }, [sidebarCollapse]);
+
+  const handlePanelResizePointerDown = useCallback((event: ReactPointerEvent) => {
+    event.preventDefault();
+    event.stopPropagation();
+    const startX = event.clientX;
+    const startWidth = panelWidth;
+    panelDragTargetRef.current = startWidth;
+    setPanelDragWidth(startWidth);
+    const cleanup = () => {
+      document.removeEventListener("pointermove", onMove);
+      document.removeEventListener("pointerup", onUp);
+      document.removeEventListener("pointercancel", onCancel);
+      window.removeEventListener("blur", onCancel);
+    };
+    const clamp = (raw: number) =>
+      Math.max(CHAT_PANEL_MIN, Math.min(CHAT_PANEL_MAX, Math.round(raw)));
+    const onMove = (ev: PointerEvent) => {
+      const raw = clamp(startWidth - (ev.clientX - startX));
+      panelDragTargetRef.current = raw;
+      setPanelDragWidth(raw);
+    };
+    const onUp = () => {
+      const next = clamp(panelDragTargetRef.current ?? startWidth);
+      setPanelWidth(next);
+      writePanelWidth(next);
+      setPanelDragWidth(null);
+      cleanup();
+    };
+    const onCancel = () => {
+      setPanelDragWidth(null);
+      cleanup();
+    };
+    document.addEventListener("pointermove", onMove);
+    document.addEventListener("pointerup", onUp);
+    document.addEventListener("pointercancel", onCancel);
+    window.addEventListener("blur", onCancel);
+  }, [panelWidth]);
 
   const signOut = useCallback(() => {
     void (async () => {
@@ -644,7 +905,7 @@ export function ChatSpaceSurface() {
         setFeedError(error instanceof Error ? error.message : "Could not sign out. Try again.");
       }
     })();
-  }, []);
+  }, [chatApi]);
 
   const createChannel = useCallback(
     async (input: { title: string; topic: string }) => {
@@ -658,7 +919,7 @@ export function ChatSpaceSurface() {
       await loadBootstrap(false);
       selectChannel(created.conversation.id);
     },
-    [loadBootstrap, selectChannel, space],
+    [chatApi, loadBootstrap, selectChannel, space],
   );
 
   /**
@@ -682,12 +943,40 @@ export function ChatSpaceSurface() {
       setChannelId(created.channel?.id ?? null);
       setPanel({ kind: "none" });
       setCompactView(created.channel ? "channel" : "list");
-      writeLocation(
-        { channelId: created.channel?.id ?? null, space: created.space.slug },
+      address.write(
+        { channelId: created.channel?.id ?? null, space: created.space.slug, messageId: null },
         false,
       );
     },
-    [],
+    [address, chatApi],
+  );
+
+  /**
+   * Delete a space.
+   *
+   * Irreversible, and the server owns the refusal — a space that is not yours
+   * fails there, not here. Afterwards the surface drops everything it was
+   * holding for that space and re-bootstraps onto whatever is left, rather than
+   * rendering a room the server has just destroyed.
+   */
+  const deleteSpace = useMemo(
+    () =>
+      capabilities.spaceDelete && chatApi.deleteSpace
+        ? async (slug: string) => {
+            await chatApi.deleteSpace!(slug);
+            setBootstrap(null);
+            setFeed(null);
+            setMembers([]);
+            setInvites([]);
+            setChannelId(null);
+            setPanel({ kind: "none" });
+            setCompactView("list");
+            setSpace(DEFAULT_CHAT_SPACE);
+            address.write({ channelId: null, space: DEFAULT_CHAT_SPACE, messageId: null }, false);
+            await loadBootstrap(true);
+          }
+        : null,
+    [address, capabilities.spaceDelete, chatApi, loadBootstrap],
   );
 
   const revokeInvite = useCallback(
@@ -703,7 +992,7 @@ export function ChatSpaceSurface() {
         setRevokingInviteId(null);
       }
     },
-    [channelId, loadInvites, space, viewer],
+    [channelId, chatApi, loadInvites, space, viewer],
   );
 
   const mentionMember = useCallback(
@@ -717,11 +1006,12 @@ export function ChatSpaceSurface() {
         return { ...current, [channelId]: `${existing}${separator}@${label} ` };
       });
       // Mentioning arms an ask target only for a member `/asks` can route to;
-      // an API participant's mention stays an ordinary post.
-      if (isAskableMember(member)) setAskTarget(actorId);
+      // an API participant's mention stays an ordinary post, and so does every
+      // mention on a server with no `/asks`.
+      if (capabilities.asks && isAskableMember(member)) setAskTarget(actorId);
       closePanel();
     },
-    [channelId, closePanel, membersById, setAskTarget],
+    [capabilities.asks, channelId, closePanel, membersById, setAskTarget],
   );
 
   /* ── keyboard (§11) ────────────────────────────────────────────────────── */
@@ -771,6 +1061,19 @@ export function ChatSpaceSurface() {
     );
   }
 
+  // The deployment's own entrance, when it has one. Only the gate takes this
+  // path: an error is a failure to report, not a door to open.
+  if (phase === "gate" && signedOut) {
+    return signedOut({
+      signInHref: `${capabilities.signIn.startPath}?${capabilities.signIn.returnToParam}=${
+        encodeURIComponent(window.location.pathname + window.location.search)
+      }`,
+      signInLabel: capabilities.signIn.label,
+      note: capabilities.signIn.note ?? null,
+      message: gateMessage,
+    });
+  }
+
   if (phase === "gate" || phase === "error") {
     const isGate = phase === "gate";
     return (
@@ -780,15 +1083,25 @@ export function ChatSpaceSurface() {
           <h1>{isGate ? "You are not signed in" : "Scout Chat is unavailable"}</h1>
           <p>
             {isGate
-              ? "Open the invitation you were sent to join a channel, or sign in as the host of this Scout."
+              ? capabilities.signIn.prompt
               : gateMessage ?? "The chat service did not answer."}
           </p>
           {isGate ? (
             <>
-              <a className="btn btn--accent" href={`/login?next=${encodeURIComponent(window.location.pathname + window.location.search)}`}>Sign in as the host</a>
-              <p className="chat-card-note">
-                Your invitation link signs you into the channel shared with you.
-              </p>
+              {/* The door belongs to the deployment: local Scout's own login,
+                  hosted Chat's GitHub OAuth. Both come off the transport so the
+                  sentence beside the button is true of the door it opens. */}
+              <a
+                className="btn btn--accent"
+                href={`${capabilities.signIn.startPath}?${capabilities.signIn.returnToParam}=${
+                  encodeURIComponent(window.location.pathname + window.location.search)
+                }`}
+              >
+                {capabilities.signIn.label}
+              </a>
+              {capabilities.signIn.note ? (
+                <p className="chat-card-note">{capabilities.signIn.note}</p>
+              ) : null}
             </>
           ) : (
             <button type="button" className="btn" onClick={() => void loadBootstrap(true)}>
@@ -802,9 +1115,19 @@ export function ChatSpaceSurface() {
   }
 
   const viewerName = viewer?.displayName ?? "you";
-  const countLabel = peopleAgentLabel(members);
+  // A roster that has not come back yet is not a roster of nobody. The viewer
+  // is always in their own channel, so an empty list can only mean the first
+  // read is still out — say so rather than asserting "0 people · 0 agents" and
+  // then correcting it a beat later.
+  const countLabel = members.length > 0 ? peopleAgentLabel(members) : "reading…";
   // Under 900 the sidebar IS the screen; there is no column left to collapse.
-  const railed = railPreference && !isCompact;
+  const railed = sidebarCollapse.effectiveCollapsed && !isCompact;
+  const sidebarWidth = railed ? SLACK_SIDEBAR_COLLAPSED_WIDTH : sidebarCollapse.width;
+  const livePanelWidth = panelDragWidth ?? panelWidth;
+  const chromeStyle = {
+    "--sidebar-w": `${sidebarWidth}px`,
+    "--panel-w": `${livePanelWidth}px`,
+  } as CSSProperties;
   const panelOpen = panel.kind !== "none";
   const threadRoot = threadRootId
     ? (feed?.messages ?? []).find((message) => message.id === threadRootId) ?? null
@@ -815,7 +1138,13 @@ export function ChatSpaceSurface() {
     : null;
 
   return (
-    <ChatSpaceTheme theme={theme} className="chat-space" compactView={compactView} railed={railed}>
+    <ChatSpaceTheme
+      theme={theme}
+      className="chat-space"
+      compactView={compactView}
+      railed={railed}
+      style={chromeStyle}
+    >
       <header className="chat-topbar">
         {/* The sidebar's header band. One chevron, the same cell in both states:
             tucked against the column's inner edge when it is open, centred when
@@ -861,6 +1190,7 @@ export function ChatSpaceSurface() {
           onSelectSpace={selectSpace}
           onCreate={createChannel}
           onCreateSpace={createSpace}
+          onDeleteSpace={deleteSpace}
           onInvite={() => setSheetOpen(true)}
           onExpandRail={toggleRail}
           onOpenProfile={channel && viewer
@@ -944,6 +1274,10 @@ export function ChatSpaceSurface() {
                     lastReplyAt={entry.lastReplyAt}
                     onOpenThread={() => openPanel({ kind: "thread", rootMessageId: entry.message.id })}
                     onOpenMember={(actorId) => openPanel({ kind: "member", actorId })}
+                    onReact={onReact}
+                    onCopyLink={onCopyLink}
+                    onStopAsk={onStopAsk}
+                    focused={focusMessageId === entry.message.id}
                   />
                 );
               })}
@@ -979,6 +1313,56 @@ export function ChatSpaceSurface() {
           <div className="chat-panel-scrim" role="presentation" onClick={closePanel} />
         ) : null}
 
+        {!isCompact ? (
+          <div
+            data-scout-sidebar-resize-handle=""
+            role="separator"
+            aria-orientation="vertical"
+            aria-label={railed ? "Expand sidebar (drag out)" : "Resize or collapse sidebar"}
+            title={railed
+              ? "Drag out to expand · double-click to expand"
+              : "Drag to resize · drag in to collapse · double-click to reset"}
+            onPointerDown={handleSidebarResizePointerDown}
+            onDoubleClick={(event) => {
+              event.preventDefault();
+              if (railed) {
+                sidebarCollapse.setExpandedWidth(SIDEBAR_EXPANDED_WIDTH);
+                sidebarCollapse.setCollapsed(false);
+              } else {
+                sidebarCollapse.resetExpandedWidth();
+              }
+            }}
+            style={{
+              position: "absolute",
+              left: Math.max(0, sidebarWidth - 3),
+              top: 0,
+              bottom: 0,
+              width: 6,
+              zIndex: 50,
+              cursor: "ew-resize",
+              touchAction: "none",
+            }}
+          />
+        ) : null}
+
+        {sidebarCollapse.isSidebarResizing && sidebarCollapse.dragGhostWidth != null ? (
+          <div
+            data-scout-sidebar-resize-ghost=""
+            aria-hidden="true"
+            className="scout-sidebar-resize-ghost"
+            style={{
+              position: "absolute",
+              left: sidebarCollapse.dragGhostWidth,
+              top: 0,
+              bottom: 0,
+              width: 2,
+              transform: "translateX(-50%)",
+              zIndex: 55,
+              pointerEvents: "none",
+            }}
+          />
+        ) : null}
+
         {channel && viewer ? (
           <ChatRightPanel
             view={panel}
@@ -1000,6 +1384,10 @@ export function ChatSpaceSurface() {
               setThreadDrafts((current) => ({ ...current, [threadRootId]: value }));
             }}
             onSendThreadReply={onSendThreadReply}
+            onReact={onReact}
+            onCopyLink={onCopyLink}
+            onStopAsk={onStopAsk}
+            focusMessageId={focusMessageId}
             threadSending={threadSending}
             threadError={threadError}
             onClose={closePanel}
@@ -1009,6 +1397,32 @@ export function ChatSpaceSurface() {
             onRevokeInvite={(inviteId) => void revokeInvite(inviteId)}
             onInvite={() => setSheetOpen(true)}
             overlay={isMidWidth}
+          />
+        ) : null}
+
+        {channel && panelOpen && !isMidWidth && !isCompact ? (
+          <div
+            data-scout-sidebar-resize-handle=""
+            role="separator"
+            aria-orientation="vertical"
+            aria-label="Resize inspector"
+            title="Drag to resize · double-click to reset"
+            onPointerDown={handlePanelResizePointerDown}
+            onDoubleClick={(event) => {
+              event.preventDefault();
+              setPanelWidth(CHAT_PANEL_DEFAULT);
+              writePanelWidth(CHAT_PANEL_DEFAULT);
+            }}
+            style={{
+              position: "absolute",
+              right: Math.max(0, livePanelWidth - 3),
+              top: 0,
+              bottom: 0,
+              width: 6,
+              zIndex: 50,
+              cursor: "ew-resize",
+              touchAction: "none",
+            }}
           />
         ) : null}
       </div>

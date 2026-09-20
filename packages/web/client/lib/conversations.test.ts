@@ -36,6 +36,21 @@ describe("conversation flight presence", () => {
     expect(shouldShowConversationWorkingTurn(timeoutFlight)).toBe(false);
   });
 
+  test("reads the requester-timeout marker, not just the summary prose", () => {
+    // The broker's timeout path writes "<agent> is still working." as the
+    // summary — a sentence naming none of the prose phrases — and records the
+    // timeout only in flight metadata. Keying on the prose alone left a
+    // finished turn reading "working" for hours.
+    const timeoutFlight = {
+      state: "running",
+      summary: "Devon 1 Openscout is still working.",
+      requesterWaitTimedOut: true,
+    };
+
+    expect(isActiveConversationFlight(timeoutFlight)).toBe(true);
+    expect(shouldShowConversationWorkingTurn(timeoutFlight)).toBe(false);
+  });
+
   test("clears working state after terminal flights", () => {
     for (const state of ["completed", "failed", "cancelled"]) {
       const terminalFlight = { state };

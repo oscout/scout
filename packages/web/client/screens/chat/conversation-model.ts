@@ -216,6 +216,14 @@ export function directConversationSessionId(
     ?.trim() || null;
 }
 
+export function conversationContextSessionId(
+  session: Pick<SessionEntry, "kind" | "sessionId" | "participants"> | null | undefined,
+): string | null {
+  const explicit = session?.sessionId?.trim();
+  if (explicit) return explicit;
+  return directConversationSessionId(session);
+}
+
 /** Only return destinations backed by an entity the caller actually resolved. */
 export function conversationIdentityRoute(input: {
   resolvedAgentId?: string | null;
@@ -590,6 +598,39 @@ export function selectCurrentFlight(flights: Flight[]): Flight | null {
   );
 }
 
+export function selectLatestConversationFlight(flights: Flight[]): Flight | null {
+  return selectCurrentFlight(flights)
+    ?? [...flights].sort((left, right) =>
+    (normalizeTimestampMs(right.startedAt) ?? normalizeTimestampMs(right.completedAt) ?? 0)
+      - (normalizeTimestampMs(left.startedAt) ?? normalizeTimestampMs(left.completedAt) ?? 0)
+    || (normalizeTimestampMs(right.completedAt) ?? 0) - (normalizeTimestampMs(left.completedAt) ?? 0)
+    || right.id.localeCompare(left.id)
+  )[0] ?? null;
+}
+
+export function mergeLatestConversationFlight(
+  previous: Flight | null,
+  next: Flight,
+): Flight | null {
+  return previous?.id === next.id
+    ? next
+    : selectLatestConversationFlight(previous ? [previous, next] : [next]);
+}
+
+export function conversationSessionRoute(input: {
+  sessionId?: string | null;
+  machineId?: string | null;
+}): Route | null {
+  const sessionId = input.sessionId?.trim();
+  if (!sessionId) return null;
+  const machineId = input.machineId?.trim();
+  return {
+    view: "sessions",
+    sessionId,
+    ...(machineId ? { machineId } : {}),
+  };
+}
+
 export function keepPreviousIfJsonEqual<T>(previous: T, next: T): T {
   try {
     return JSON.stringify(previous) === JSON.stringify(next) ? previous : next;
@@ -625,6 +666,19 @@ function readFlightDispatchOutcome(
 }
 
 /**
+ * The broker marks one dispatch attempt when the requester stops waiting for a
+ * synchronous result. Mirrors the server projection so the SSE path and the
+ * fetched record agree.
+ */
+function readRequesterWaitTimedOut(
+  metadata: Record<string, unknown> | null | undefined,
+): boolean {
+  if (!metadata) return false;
+  if (metadata["requesterTimedOut"] === true) return true;
+  return metadata["timeoutScope"] === "requester_wait";
+}
+
+/**
  * Control events carry flight state, not the flight's session traces. Blanking
  * `sessions` on every update would strand the surfaces that join a turn to its
  * live trace by session id, so a same-flight update keeps what the fetched
@@ -650,6 +704,7 @@ export function mapEventFlight(
     completedAt: flight.completedAt ?? null,
     sessions: carried?.sessions ?? [],
     dispatchOutcome: readFlightDispatchOutcome(flight.metadata),
+    ...(readRequesterWaitTimedOut(flight.metadata) ? { requesterWaitTimedOut: true } : {}),
   };
 }
 

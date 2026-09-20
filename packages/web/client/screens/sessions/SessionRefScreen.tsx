@@ -15,7 +15,10 @@ import type {
 import { BackToPicker } from "../../scout/slots/BackToPicker.tsx";
 import { ConversationScreen } from "../chat/ConversationScreen.tsx";
 import { SessionObserve, SessionObserveContextRail } from "./SessionObserve.tsx";
-import { NATIVE_SESSION_ORIGIN_LABEL } from "./SessionObserveEvidence.tsx";
+import {
+  SessionRefObserveHeader,
+  sessionRefObserveOriginLabel,
+} from "./SessionObserveEvidence.tsx";
 import {
   activeSessionRefLookupState,
   brokerEventMayAffectSessionRef,
@@ -233,12 +236,14 @@ export function SessionRefContextRail({ sessionRef }: { sessionRef: string }) {
 export function SessionRefScreen({
   sessionRef,
   navigate,
+  machineId,
   renderBeforeContent,
   showObserveRail = true,
   onLookup,
 }: {
   sessionRef: string;
   navigate: (r: Route) => void;
+  machineId?: string | null;
   renderBeforeContent?: (lookup: SessionRefLookup) => ReactNode;
   showObserveRail?: boolean;
   onLookup?: (lookup: SessionRefLookup) => void;
@@ -265,6 +270,12 @@ export function SessionRefScreen({
     return (
       <>
         {renderBeforeContent?.(lookup)}
+        <SessionRefObserveHeader
+          session={lookup.session}
+          observe={lookup.observe}
+          machineId={machineId}
+          navigate={navigate}
+        />
         <SessionObserve
           data={lookup.observe.data}
           agentId={lookup.observe.agentId ?? lookup.session?.agentId ?? undefined}
@@ -273,7 +284,7 @@ export function SessionRefScreen({
           showRail={showObserveRail}
           observeSource={lookup.observe.source}
           observeFidelity={lookup.observe.fidelity}
-          originLabel={NATIVE_SESSION_ORIGIN_LABEL}
+          originLabel={sessionRefObserveOriginLabel(lookup.observe)}
           defaultPresentation="conversation"
         />
       </>

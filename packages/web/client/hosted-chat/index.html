@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#0b0c0c" />
+    <title>Scout Chat</title>
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <!--
+      No operator bootstrap script and no import map: hosted Chat mounts the
+      standalone chat surface only, exactly as local `/chat` does, and loads no
+      runtime-fetched component library.
+    -->
+    <!--
+      Nothing inline. The Worker serves this document under a Content-Security-
+      Policy of `script-src 'self'; style-src 'self' fonts.googleapis.com`, so an
+      inline <style> block or an `onload=` attribute would be silently dropped.
+      Local `client/index.html` uses the preload + onload swap and a first-paint
+      style block; both are unnecessary here — `app.css` already sets the same
+      html/body/#root plane (theme-aware, which the inline copy was not), and it
+      is a render-blocking stylesheet in this same head, so the font sheet below
+      is loaded the plain way and paints at the same moment.
+    -->
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@400;500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap" />
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="./main.tsx"></script>
+  </body>
+</html>

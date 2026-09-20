@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import { CHIP_ART, CREW_ART, crewGround, displayCoin } from "./crew-registry.ts";
+import { CHIP_ART, CREW_ART, crewGround, displayCoin, hasPose, poseAsset } from "./crew-registry.ts";
 
 describe("displayCoin", () => {
   test("keeps the authored crop at the crew floor", () => {
@@ -65,5 +65,22 @@ describe("crewGround", () => {
   test("holds the hue fixed across the band split — crew is hue, not lightness", () => {
     expect(crewGround(210, 0.9)).toContain(" 210)");
     expect(crewGround(210, 0.1)).toContain(" 210)");
+  });
+});
+
+describe("poses", () => {
+
+  test("a member with the frame draws it from its pose set", () => {
+    expect(poseAsset("sprout", "wave")).toBe("poses/sprout/wave.webp");
+    expect(poseAsset("Sprout", "run-a")).toBe("poses/sprout/run-a.webp");
+    expect(hasPose("sprout", "turn-left")).toBe(true);
+  });
+
+  test("rest, and a member without the frame, draw the master bust", () => {
+    expect(poseAsset("sprout", "rest")).toBe("sprout-bust.webp");
+    expect(poseAsset("sprout")).toBe("sprout-bust.webp");
+    expect(poseAsset("milo", "wave")).toBe("milo-bust.webp");
+    expect(hasPose("milo", "wave")).toBe(false);
+    expect(hasPose(null, "wave")).toBe(false);
   });
 });

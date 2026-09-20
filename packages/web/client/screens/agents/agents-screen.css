@@ -285,20 +285,15 @@
   position: relative;
   display: inline-flex;
   flex: none;
-  border-radius: 12px;
-  /* Lift the sprite tile off the panel with a thin neutral ring + shallow drop. */
-  box-shadow:
-    0 0 0 1px color-mix(in srgb, var(--ink) 10%, transparent),
-    0 5px 14px color-mix(in srgb, #000 32%, transparent);
-  transition: box-shadow 0.16s ease;
+  border-radius: 50%;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  transition: border-color var(--motion-duration-hover) ease, background var(--motion-duration-hover) ease;
 }
 
 .s-sess-avatar:hover {
-  /* Accentuate the lighting on hover — a sober white lift, no color. */
-  box-shadow:
-    0 0 0 1px color-mix(in srgb, var(--ink) 22%, transparent),
-    0 0 16px color-mix(in srgb, var(--ink) 10%, transparent),
-    0 8px 20px color-mix(in srgb, #000 38%, transparent);
+  border-color: var(--scout-chrome-ink-faint);
+  background: var(--surface-hover);
 }
 
 .s-sess-id-copy {
@@ -318,11 +313,12 @@
 }
 
 .s-sess-name {
-  font-family: var(--font-accent-title);
-  font-size: var(--text-4xl);
-  font-weight: 400;
-  line-height: var(--leading-none);
-  letter-spacing: -0.01em;
+  font-family: var(--hud-font-sans);
+  font-size: var(--text-5xl);
+  font-weight: 600;
+  line-height: var(--leading-tight);
+  letter-spacing: 0;
+  overflow-wrap: anywhere;
   color: var(--ink);
 }
 
@@ -478,6 +474,7 @@
 
 .s-sess-name-row {
   display: flex;
+  flex-wrap: wrap;
   align-items: baseline;
   gap: var(--space-sm);
   min-width: 0;
@@ -4411,4 +4408,101 @@
   font-family: var(--font-mono);
   font-size: var(--text-2xs);
   color: var(--dim);
+}
+
+/* ── Agent profile hero — coin to stage ───────────────────────────────── */
+
+/*
+ * The hero rung reserves the COIN, never the figure.
+ *
+ * A box that grew to 224px when the member stood up would push the title, the
+ * chips and the context paragraph down the card on hover — the layout would
+ * twitch every time the pointer crossed the avatar. So the box is the coin's
+ * 96px for the whole morph and the stage breaks out of it: absolutely
+ * positioned, anchored top-left so the disc stays exactly where it was, and
+ * lifted over the hero copy it now overlaps.
+ */
+.s-agent-hero-stage-box {
+  position: relative;
+  flex: none;
+  width: 96px;
+  height: 96px;
+  z-index: 2;
+}
+
+.s-agent-hero-stage-box > .s-agent-hero-stage {
+  position: absolute;
+  top: 0;
+  left: 0;
+  align-items: flex-start;
+  justify-content: flex-start;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  /* The floor is drawn inline by CrewStage, so its fade has to be killed here
+     alongside the morph transitions crew-avatar.css already stops. */
+  .s-agent-hero-stage .xc-stage-floor {
+    transition: none !important;
+  }
+}
+
+.s-agent-profile-page .s-agent-profile-hero,
+.s-agent-profile-page .s-agent-profile-card {
+  background: var(--surface);
+  border-color: var(--border);
+}
+
+.s-agent-profile-page .s-agent-profile-hero-actions {
+  background: var(--bg);
+  border-color: var(--border);
+  border-radius: var(--radius-lg);
+}
+
+.s-agent-profile-page .s-agent-profile-hero-avatar {
+  width: 96px;
+  height: 96px;
+  flex: none;
+  background: var(--surface-hover);
+  border: 1px solid var(--border);
+  color: var(--ink);
+  box-shadow: none;
+  font-family: var(--hud-font-sans);
+}
+
+.s-agent-profile-page .s-agent-profile-hero-title,
+.ap-profile .ap-profileName {
+  font-family: var(--hud-font-sans);
+  font-size: var(--text-5xl);
+  font-weight: 600;
+  line-height: var(--leading-tight);
+  letter-spacing: 0;
+  text-transform: none;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+
+.s-agent-profile-page .s-agent-profile-chip-label,
+.s-agent-profile-page .s-agent-profile-chip-value,
+.s-agent-profile-page .s-agent-meta-label,
+.s-agent-profile-page .s-agent-meta-value,
+.s-agent-profile-page .s-agent-token,
+.s-agent-profile-page .s-agent-profile-hero-context,
+.s-agent-profile-page .s-agent-profile-card-subtitle,
+.ap-profile .ap-profileSub {
+  font-family: var(--hud-font-sans);
+  font-size: var(--text-md);
+  line-height: var(--leading-snug);
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.s-agent-profile-page .s-agent-casefile-record,
+.s-agent-profile-page .s-agent-code-value,
+.ap-profile .ap-profileId {
+  font-family: var(--hud-font-mono);
+  font-size: var(--text-md);
+  line-height: var(--leading-snug);
+  letter-spacing: 0;
+  text-transform: none;
+  overflow-wrap: anywhere;
 }

@@ -1,16 +1,18 @@
 import { Database } from "bun:sqlite";
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 
 import {
+  ATTENTION_STALE_AFTER_MS,
   closeDb,
   queryActivity,
   queryAgentById,
   queryAgents,
   queryBrokerDiagnostics,
   queryFleet,
+  queryFleetAttentionRows,
   queryFlightRecordById,
   queryFollowTarget,
   queryFlights,
@@ -373,6 +375,51 @@ describe("web db query flights", () => {
             },
           }),
         ]));
+    } finally {
+      store.close();
+    }
+  });
+
+  test("surfaces the requester-timeout marker on flights", () => {
+    const store = createSeededStore();
+    const now = Date.now();
+
+    try {
+      store.recordInvocation({
+        id: "inv-requester-timeout",
+        requesterId: "operator",
+        requesterNodeId: "node-1",
+        targetAgentId: "agent-1",
+        action: "consult",
+        task: "Just saying hi.",
+        conversationId: "c.conv-1",
+        ensureAwake: true,
+        stream: false,
+        createdAt: now - 1_000,
+      });
+      store.recordFlight({
+        id: "flight-requester-timeout",
+        invocationId: "inv-requester-timeout",
+        requesterId: "operator",
+        targetAgentId: "agent-1",
+        state: "running",
+        summary: "Agent One is still working.",
+        startedAt: now,
+        metadata: {
+          requesterTimedOut: true,
+          timeoutMs: 300_000,
+          timeoutScope: "requester_wait",
+        },
+      });
+
+      const [flight] = queryFlights({ conversationId: "c.conv-1", activeOnly: true })
+        .filter((candidate) => candidate.id === "flight-requester-timeout");
+
+      expect(flight).toMatchObject({
+        id: "flight-requester-timeout",
+        state: "running",
+        requesterWaitTimedOut: true,
+      });
     } finally {
       store.close();
     }
@@ -2778,6 +2825,86 @@ describe("web db query agents", () => {
 });
 
 describe("web db query fleet", () => {
+  test("retires stale attention and collapses live duplicate title-owner rows", () => {
+    const store = createSeededStore();
+    const now = 1_900_000_000_000;
+    const clock = spyOn(Date, "now").mockImplementation(() => now);
+
+    const record = ({
+      id,
+      title,
+      state = "review",
+      updatedAt,
+    }: {
+      id: string;
+      title: string;
+      state?: "review" | "waiting";
+      updatedAt: number;
+    }) => {
+      store.recordCollaborationRecord({
+        id,
+        kind: "work_item",
+        title,
+        createdById: "operator",
+        ownerId: "agent-1",
+        nextMoveOwnerId: "operator",
+        conversationId: "c.conv-1",
+        state,
+        acceptanceState: "pending",
+        requestedById: "operator",
+        createdAt: updatedAt - 1_000,
+        updatedAt,
+      });
+    };
+
+    try {
+      record({
+        id: "attention-stale-review",
+        title: "Stale review",
+        updatedAt: now - ATTENTION_STALE_AFTER_MS - 1,
+      });
+      record({
+        id: "attention-live-review",
+        title: "Live review",
+        updatedAt: now - ATTENTION_STALE_AFTER_MS + 1,
+      });
+      record({
+        id: "attention-stale-waiting",
+        title: "Stale waiting",
+        state: "waiting",
+        updatedAt: now - ATTENTION_STALE_AFTER_MS - 1,
+      });
+      record({
+        id: "attention-live-waiting",
+        title: "Live waiting",
+        state: "waiting",
+        updatedAt: now - 10_000,
+      });
+      record({
+        id: "attention-duplicate-older",
+        title: "Duplicate handback",
+        updatedAt: now - 20_000,
+      });
+      record({
+        id: "attention-duplicate-newer",
+        title: "Duplicate handback",
+        updatedAt: now - 5_000,
+      });
+
+      const ids = queryFleetAttentionRows(["operator"], 20).map((row) => row.record_id);
+
+      expect(ids).toContain("attention-live-review");
+      expect(ids).toContain("attention-live-waiting");
+      expect(ids).not.toContain("attention-stale-review");
+      expect(ids).not.toContain("attention-stale-waiting");
+      expect(ids).toContain("attention-duplicate-newer");
+      expect(ids).not.toContain("attention-duplicate-older");
+    } finally {
+      clock.mockRestore();
+      store.close();
+    }
+  });
+
   test("focuses on active asks, recent completions, and attention owned by the operator", () => {
     const store = createSeededStore();
     const now = Date.now();
@@ -3929,6 +4056,88 @@ describe("web db query fleet", () => {
     } finally {
       store.close();
     }
+  });
+
+  test("a requester-timed-out running ask is not presented as active work", () => {
+    const store = createSeededStore();
+    const now = Date.now();
+
+    try {
+      store.recordInvocation({
+        id: "inv-stopped-waiting",
+        requesterId: "operator",
+        requesterNodeId: "node-1",
+        targetAgentId: "agent-1",
+        action: "consult",
+        task: "Just saying hi.",
+        conversationId: "c.conv-1",
+        ensureAwake: true,
+        stream: false,
+        createdAt: now - 120_000,
+      });
+      store.recordFlight({
+        id: "flight-stopped-waiting",
+        invocationId: "inv-stopped-waiting",
+        requesterId: "operator",
+        targetAgentId: "agent-1",
+        state: "running",
+        // The broker's timeout path writes exactly this sentence, which names
+        // none of the prose phrases the client used to sniff for.
+        summary: "Agent One is still working.",
+        startedAt: now - 119_000,
+        metadata: {
+          requesterTimedOut: true,
+          timeoutMs: 300_000,
+          timeoutScope: "requester_wait",
+        },
+      });
+
+      const fleet = queryFleet({ limit: 10, activityLimit: 20 });
+      const ask = [...fleet.activeAsks, ...fleet.recentCompleted]
+        .find((candidate) => candidate.invocationId === "inv-stopped-waiting");
+
+      expect(fleet.activeAsks.some((candidate) => candidate.invocationId === "inv-stopped-waiting"))
+        .toBe(false);
+      expect(ask).toMatchObject({
+        invocationId: "inv-stopped-waiting",
+        status: "completed",
+        statusLabel: "Stopped waiting",
+        attention: "silent",
+      });
+    } finally {
+      store.close();
+    }
+  });
+
+  test("requester timeout preserves an explicit operator review handback", () => {
+    const store = createSeededStore();
+    const now = Date.now();
+    try {
+      store.recordCollaborationRecord({
+        id: "work-timeout-review", kind: "work_item", title: "Review the result",
+        createdById: "operator", ownerId: "agent-1", nextMoveOwnerId: "operator",
+        conversationId: "c.conv-1", state: "review", acceptanceState: "pending",
+        requestedById: "operator", createdAt: now - 120_000, updatedAt: now - 1_000,
+      });
+      store.recordInvocation({
+        id: "inv-timeout-review", requesterId: "operator", requesterNodeId: "node-1",
+        targetAgentId: "agent-1", action: "consult", task: "Review work",
+        collaborationRecordId: "work-timeout-review", conversationId: "c.conv-1",
+        ensureAwake: true, stream: false, createdAt: now - 120_000,
+      });
+      store.recordFlight({
+        id: "flight-timeout-review", invocationId: "inv-timeout-review",
+        requesterId: "operator", targetAgentId: "agent-1", state: "running",
+        summary: "Agent One is still working.", startedAt: now - 119_000,
+        metadata: { requesterTimedOut: true, timeoutScope: "requester_wait" },
+      });
+      const fleet = queryFleet({ limit: 10, activityLimit: 20 });
+      const ask = [...fleet.activeAsks, ...fleet.recentCompleted]
+        .find((item) => item.invocationId === "inv-timeout-review");
+      expect(ask?.status).toBe("needs_attention");
+      expect(ask?.statusLabel).not.toBe("Stopped waiting");
+      expect(ask?.attention).toBe("badge");
+    } finally { store.close(); }
   });
 
   test("projects queued-until-online asks as not delivered instead of active work", () => {

@@ -8,6 +8,7 @@ import { redactSecrets, redactSecretsDeep } from "@openscout/agent-sessions/secr
 import { ClaudeSource } from "./claude-source.js";
 import { CodexSource } from "./codex-source.js";
 import { CursorSource } from "./cursor-source.js";
+import { DevinSource } from "./devin-source.js";
 import { GrokSource } from "./grok-source.js";
 import { KimiSource } from "./kimi-source.js";
 import { OpenCodeSource } from "./opencode-source.js";
@@ -198,7 +199,7 @@ type Watcher = {
   pumpInFlight: Promise<void> | null;
 };
 
-const sources: TranscriptSource[] = [GrokSource, KimiSource, ClaudeSource, CodexSource, CursorSource, OpenCodeSource, PiSource];
+const sources: TranscriptSource[] = [GrokSource, KimiSource, ClaudeSource, CodexSource, CursorSource, OpenCodeSource, PiSource, DevinSource];
 
 const watchers = new Map<string, Watcher>(); // key = `${source}:${transcriptPath}` (one watcher per file, regardless of how many processes share it)
 const aggregateBuffer: TailEvent[] = [];

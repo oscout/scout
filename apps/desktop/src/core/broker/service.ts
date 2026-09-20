@@ -111,6 +111,7 @@ import type {
   ScoutAskWorkspace,
 } from "./ask-types.ts";
 export {
+  resolveHerdrAgentName,
   resolveHumanAskSenderName,
   resolveScoutAgentName,
   resolveScoutMatchParticipantId,

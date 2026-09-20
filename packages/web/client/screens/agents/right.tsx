@@ -3,7 +3,7 @@ import { useScout } from "../../scout/Provider.tsx";
 import { openAgent } from "../../scout/slots/openAgent.ts";
 import { openContent } from "../../scout/slots/openContent.ts";
 import { agentStateLabel, isAgentOnline, normalizeAgentState, isAgentBusy } from "../../lib/agent-state.ts";
-import { actorColor, stateColor } from "../../lib/colors.ts";
+import { stateColor } from "../../lib/colors.ts";
 import { compareTimestampsDesc, timeAgo } from "../../lib/time.ts";
 import { formatLabel } from "../../lib/text.ts";
 import { api } from "../../lib/api.ts";
@@ -19,6 +19,11 @@ import {
 } from "../../lib/session-catalog.ts";
 import { pathLeaf } from "./model.ts";
 import { useContextMenu, type MenuItem } from "../../components/ContextMenu.tsx";
+import { sessionHopMenuItems } from "../../components/SessionHopMenu.tsx";
+import {
+  peekTerminalSessionInventory,
+  resolveSessionTerminalTarget,
+} from "../../lib/session-terminal-hop.ts";
 import { AgentAvatar } from "../../components/AgentAvatar.tsx";
 import { AgentLiveActions } from "../../components/AgentLiveActions.tsx";
 import { TmuxPeekPanel } from "../../scout/inspector/TmuxPeek.tsx";
@@ -726,8 +731,8 @@ function AgentContextPanel({
             {agent.name}
           </span>
           {agent.handle && (
-            <span className="text-xs font-mono text-[var(--scout-chrome-ink-faint)]">
-              @{agent.handle}
+            <span className="truncate text-md font-mono text-[var(--scout-chrome-ink-faint)]" title={agent.handle}>
+              @{agent.handle.replace(/^@+/, "")}
             </span>
           )}
         </div>
@@ -980,6 +985,27 @@ function RunningSessions({
         label: "Takeover terminal",
         onSelect: runTakeover,
       });
+    }
+    // Native/local hops: resolved against the shared terminal inventory so the
+    // Scout-app link and the real-terminal attach land on the same surface the
+    // web hop would. Web destinations are already covered above.
+    const inventory = peekTerminalSessionInventory();
+    const hopTarget = inventory
+      ? resolveSessionTerminalTarget(inventory, {
+          agentId: agent.id,
+          sessionRefs: [session.id, agent.harnessSessionId],
+        })
+      : null;
+    const hopItems = sessionHopMenuItems({
+      target: hopTarget,
+      agentId: agent.id,
+      navigate,
+      returnTo,
+      includeWeb: false,
+      emptyFallback: false,
+    });
+    if (hopItems.length > 0) {
+      items.push({ kind: "separator" }, ...hopItems);
     }
     if (items.length > 0) {
       items.push({ kind: "separator" });
@@ -1539,7 +1565,7 @@ function InspectorMesh({
                 cy={n.y}
                 r={r + 5}
                 fill="none"
-                stroke={actorColor(n.agent.name)}
+                stroke="var(--accent)"
                 strokeWidth={0.8}
                 opacity={0.3}
               >
@@ -1561,7 +1587,7 @@ function InspectorMesh({
               cx={n.x}
               cy={n.y}
               r={r}
-              fill={actorColor(n.agent.name)}
+              fill="var(--hud-surface)"
               stroke={n.focused ? "var(--accent)" : "var(--surface)"}
               strokeWidth={n.focused ? 1.5 : 1}
             />
@@ -1570,10 +1596,10 @@ function InspectorMesh({
               y={n.y}
               dy="0.35em"
               textAnchor="middle"
-              fontFamily="var(--font-mono)"
+              fontFamily="var(--hud-font-sans)"
               fontSize={n.focused ? 10 : 8}
               fontWeight={600}
-              fill="var(--scout-chrome-avatar-ink)"
+              fill="var(--scout-chrome-ink-strong)"
             >
               {n.agent.name[0].toUpperCase()}
             </text>
@@ -1581,7 +1607,7 @@ function InspectorMesh({
               x={n.x}
               y={n.y + r + 10}
               textAnchor="middle"
-              fontFamily="var(--font-mono)"
+              fontFamily="var(--hud-font-sans)"
               fontSize={8}
               fill="var(--dim)"
               letterSpacing="0.04em"
@@ -1608,9 +1634,9 @@ function InspectorMesh({
                   <span
                     aria-hidden
                     className="shrink-0 w-2 h-2 rounded-full"
-                    style={{ background: actorColor(peer.name) }}
+                    style={{ background: "var(--scout-chrome-ink-faint)" }}
                   />
-                  <span className="flex-1 truncate text-sm font-mono text-[var(--scout-chrome-ink)]">
+                  <span className="flex-1 truncate text-md font-sans text-[var(--scout-chrome-ink)]">
                     {peer.name}
                   </span>
                   <span
@@ -1687,7 +1713,7 @@ function Section({
 }) {
   return (
     <div className="flex flex-col">
-      <div className="mb-1.5 text-2xs font-mono uppercase tracking-[0.15em] text-[var(--scout-chrome-ink-faint)]">
+      <div className="mb-1.5 text-md font-sans font-medium text-[var(--scout-chrome-ink-faint)]">
         {label}
       </div>
       {children}

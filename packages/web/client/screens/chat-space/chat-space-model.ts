@@ -17,13 +17,14 @@ import type {
   ChannelInviteRoute,
   ChannelReception,
   ConversationDefinition,
-  MessageRecord,
+  MessageReactionChip,
 } from "@openscout/protocol";
 
 import type {
   ChannelMemberView,
   InviteReachabilityNote,
   TrackedRequest,
+  ChatMessage,
 } from "./chat-api.ts";
 
 /* ── polling ─────────────────────────────────────────────────────────────── */
@@ -157,6 +158,40 @@ export function memberDisplayName(member: ChannelMemberView): string {
 /** "You" is viewer-relative and appears exactly once per viewer. */
 export function isSelfMember(member: ChannelMemberView, viewerActorId: string): boolean {
   return member.actorId === viewerActorId;
+}
+
+/**
+ * Membership is durable; reception is live. A thin snapshot poll must not
+ * erase people who were already in the room. Update reception in place, keep
+ * identity if the next reading only has `unknown`.
+ */
+export function mergeChannelRoster(
+  previous: ChannelMemberView[],
+  next: ChannelMemberView[],
+): ChannelMemberView[] {
+  if (next.length === 0 && previous.length > 0) return previous;
+  const byId = new Map<string, ChannelMemberView>();
+  for (const member of previous) byId.set(member.actorId, member);
+  for (const member of next) {
+    const prior = byId.get(member.actorId);
+    if (!prior) {
+      byId.set(member.actorId, member);
+      continue;
+    }
+    const kind = member.kind === "unknown" ? prior.kind : member.kind;
+    byId.set(member.actorId, {
+      ...prior,
+      ...member,
+      kind,
+      displayName: member.displayName.trim() || prior.displayName,
+      owner: member.owner ?? prior.owner,
+    });
+  }
+  const order = [...next.map((member) => member.actorId)];
+  for (const member of previous) {
+    if (!order.includes(member.actorId)) order.push(member.actorId);
+  }
+  return order.map((id) => byId.get(id)!).filter(Boolean);
 }
 
 export function peopleAgentLabel(members: ChannelMemberView[]): string {
@@ -326,6 +361,17 @@ export interface AskChip {
   /** Chip text with the target, for the feed. */
   textWithTarget: string;
   ariaLabel: string;
+  /** Owed work can be stopped from the turn. */
+  canStop: boolean;
+}
+
+/** The verb on the chip — working / waiting / blocked — not the raw broker word. */
+export function askVerb(state: string, stranded: boolean): string {
+  if (stranded) return "blocked";
+  const normalized = normalizeAskState(state);
+  if (normalized === "running" || normalized === "waking" || normalized === "queued") return "working";
+  if (normalized === "waiting") return "waiting";
+  return normalized;
 }
 
 /**
@@ -348,24 +394,28 @@ export function askChip(
     && (reception.routeKind === "none"
       || reception.state === "unavailable"
       || reception.state === "disconnected");
+  const verb = askVerb(state, stranded);
+  const canStop = tone === "owed";
 
   if (stranded) {
-    const text = `${state} — ${label} isn't listening right now`;
+    const text = `${verb} — ${label} isn't listening right now`;
     return {
       state,
       tone,
       text,
       textWithTarget: text,
-      ariaLabel: `Tracked request for ${label}, ${state}, not listening right now`,
+      ariaLabel: `Tracked request for ${label}, ${verb}, not listening right now`,
+      canStop,
     };
   }
 
   return {
     state,
     tone,
-    text: `▸ ${state}`,
-    textWithTarget: `▸ ${label} · ${state}`,
-    ariaLabel: `Tracked request for ${label}, ${state}`,
+    text: `▸ ${verb}`,
+    textWithTarget: `▸ ${label} · ${verb}`,
+    ariaLabel: `Tracked request for ${label}, ${verb}`,
+    canStop,
   };
 }
 
@@ -378,12 +428,12 @@ export const STATUS_VISIBLE_TAIL = 2;
 
 export type FeedEntry =
   | { kind: "day"; id: string; label: string; at: number }
-  | { kind: "status"; id: string; message: MessageRecord }
-  | { kind: "status-fold"; id: string; label: string; count: number; messages: MessageRecord[] }
+  | { kind: "status"; id: string; message: ChatMessage }
+  | { kind: "status-fold"; id: string; label: string; count: number; messages: ChatMessage[] }
   | {
       kind: "turn";
       id: string;
-      message: MessageRecord;
+      message: ChatMessage;
       request: TrackedRequest | null;
       replyCount: number;
       lastReplyAt: number | null;
@@ -392,17 +442,17 @@ export type FeedEntry =
 export interface FeedProjection {
   entries: FeedEntry[];
   /** Replies keyed by the root message they are anchored to. */
-  repliesByRoot: Map<string, MessageRecord[]>;
+  repliesByRoot: Map<string, ChatMessage[]>;
   requestsByMessage: Map<string, TrackedRequest>;
   lastMessageAt: number | null;
 }
 
-function byCreatedAt(left: MessageRecord, right: MessageRecord): number {
+function byCreatedAt(left: ChatMessage, right: ChatMessage): number {
   if (left.createdAt !== right.createdAt) return left.createdAt - right.createdAt;
   return left.id < right.id ? -1 : left.id > right.id ? 1 : 0;
 }
 
-export function isStatusMessage(message: MessageRecord): boolean {
+export function isStatusMessage(message: ChatMessage): boolean {
   return STATUS_CLASSES.has(message.class);
 }
 
@@ -415,13 +465,13 @@ export function isStatusMessage(message: MessageRecord): boolean {
  * morning of invitations never buries the conversation.
  */
 export function projectFeed(input: {
-  messages: MessageRecord[];
+  messages: ChatMessage[];
   requests: TrackedRequest[];
   nowMs: number;
 }): FeedProjection {
   const sorted = [...input.messages].sort(byCreatedAt);
-  const repliesByRoot = new Map<string, MessageRecord[]>();
-  const roots: MessageRecord[] = [];
+  const repliesByRoot = new Map<string, ChatMessage[]>();
+  const roots: ChatMessage[] = [];
 
   for (const message of sorted) {
     const rootId = message.replyToMessageId;
@@ -441,7 +491,7 @@ export function projectFeed(input: {
 
   const entries: FeedEntry[] = [];
   let lastDay: number | null = null;
-  let run: MessageRecord[] = [];
+  let run: ChatMessage[] = [];
 
   const flushStatusRun = () => {
     if (run.length === 0) return;
@@ -511,7 +561,7 @@ export function projectFeed(input: {
 export function threadReplies(
   projection: FeedProjection,
   rootMessageId: string,
-): MessageRecord[] {
+): ChatMessage[] {
   return projection.repliesByRoot.get(rootMessageId) ?? [];
 }
 
@@ -565,7 +615,7 @@ function escapeRegExp(value: string): string {
  * where those labels sit in the plain-text body. A bare "@someone" that is not
  * on the record renders as ordinary text, because it addressed nobody.
  */
-export function bodySegments(message: MessageRecord, fallbackLabels: string[] = []): BodySegment[] {
+export function bodySegments(message: ChatMessage, fallbackLabels: string[] = []): BodySegment[] {
   const labels = [
     ...(message.mentions ?? []).map((mention) => mention.label ?? mention.actorId),
     ...fallbackLabels,
@@ -857,4 +907,26 @@ export function newRequestId(): string {
   const cryptoRef = globalThis.crypto;
   if (cryptoRef?.randomUUID) return `req-${cryptoRef.randomUUID()}`;
   return `req-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+/** Optimistic chip row before the next poll reconciles it. */
+export function applyOptimisticReaction(
+  chips: MessageReactionChip[] | undefined,
+  emoji: string,
+  remove: boolean,
+): MessageReactionChip[] {
+  const current = chips ?? [];
+  if (remove) {
+    return current.flatMap((chip) => {
+      if (chip.emoji !== emoji) return [chip];
+      if (!chip.me) return [chip];
+      if (chip.count <= 1) return [];
+      return [{ ...chip, count: chip.count - 1, me: false }];
+    });
+  }
+  const existing = current.find((chip) => chip.emoji === emoji);
+  if (!existing) return [...current, { emoji, count: 1, me: true }];
+  if (existing.me) return current;
+  return current.map((chip) =>
+    chip.emoji === emoji ? { ...chip, count: chip.count + 1, me: true } : chip);
 }

@@ -317,6 +317,12 @@ export type WebFlight = {
     reason: string | null;
     checkedAt: number | null;
   } | null;
+  /**
+   * The requester stopped waiting for a synchronous result (broker
+   * `requesterTimedOut` / `timeoutScope: requester_wait`). The agent may still
+   * be running; the operator's turn is no longer live.
+   */
+  requesterWaitTimedOut?: boolean;
 };
 
 export type WebWorkInvocation = {

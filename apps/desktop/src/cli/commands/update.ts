@@ -246,10 +246,6 @@ export function resolveMachineSshDestination(
   options: { sshUser?: string | null; aliases?: Set<string> } = {},
 ): string {
   const label = machineLabel(machine);
-  if (!machine.capabilities.includes("ssh")) {
-    throw new ScoutCliError(`${label} does not advertise ssh — cannot read its versions.`);
-  }
-
   const aliases = options.aliases ?? new Set<string>();
   const names = [machine.displayName ?? "", machine.name, ...machine.hostNames]
     .map((name) => name.trim())
@@ -258,6 +254,17 @@ export function resolveMachineSshDestination(
     // Return the alias verbatim: ssh applies its User, IdentityFile, and
     // HostName itself, which is the whole point of using it.
     if (aliases.has(name.toLowerCase())) return name;
+  }
+
+  // The `ssh` capability is only ever observed from a Bonjour `_ssh._tcp`
+  // advert, and this Mac only hears those on its own LAN — a Mac reached over
+  // the tailnet never carries it however reachable it is, so the gate alone
+  // would put every off-LAN machine permanently out of the command's reach.
+  // A Host entry is the operator's own statement that the machine takes ssh,
+  // which is why it is read first; the advert stays the only evidence for a
+  // machine nothing in the ssh config names.
+  if (!machine.capabilities.includes("ssh")) {
+    throw new ScoutCliError(`${label} does not advertise ssh — cannot read its versions.`);
   }
 
   const tiers: string[][] = [

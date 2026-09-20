@@ -171,7 +171,7 @@ describe("Scout Realtime voice client", () => {
 
     expect(new Headers(fetchCalls[0]?.init?.headers).get("content-type")).toBe("application/sdp");
     expect(fetchCalls[1]?.url).toBe("/api/scoutbot/chat");
-    expect(JSON.parse(String(fetchCalls[1]?.init?.body))).toEqual({body:expect.stringContaining("What is happening in the fleet?"),route:{view:"fleet"},uiContext:{host:"macos"}});
+    expect(JSON.parse(String(fetchCalls[1]?.init?.body))).toEqual({body:expect.stringContaining("What is happening in the fleet?"),route:{view:"fleet"},uiContext:{host:"macos"},usageMode:"api"});
     expect(replies).toEqual([expect.stringContaining("The fleet is healthy.")]);
     expect(trace).toEqual(expect.arrayContaining([
       "Live session ready",
@@ -673,4 +673,30 @@ test.each([
   const result = events.sent.map(value=>JSON.parse(value)).find(value=>value.delegation_id==="failed-send");
   expect(result.content).toContain(`${outcome.sent} of ${outcome.requested} requests sent automatically; ${outcome.failed} failed; ${outcome.unknown} unconfirmed.`); expect(result.content).not.toContain("Everything succeeded");
   expect(new TextEncoder().encode(result.content).length).toBeLessThanOrEqual(400); await call.stop();
+});
+
+test("armed mute is applied before tracks attach and setup controls stay live", async () => {
+  const track = { enabled: true, stop() {}, addEventListener() {} };
+  let attachedEnabled: boolean | undefined;
+  let controls: { setMicMuted: (value: boolean) => void; setPlaybackMuted: (value: boolean) => void } | undefined;
+  class MutedPeer extends FakePeerConnection {
+    addTrack(): RTCRtpSender { attachedEnabled = track.enabled; return {} as RTCRtpSender; }
+  }
+  Object.defineProperty(globalThis, "RTCPeerConnection", { configurable: true, value: MutedPeer });
+  Object.defineProperty(globalThis, "Audio", { configurable: true, value: FakeAudio });
+  Object.defineProperty(globalThis, "navigator", { configurable: true, value: {
+    mediaDevices: { getUserMedia: async () => ({ getTracks: () => [track] }) },
+  } });
+  globalThis.fetch = (async (url) => {
+    if (String(url) === SCOUT_REALTIME_VOICE_SETTINGS_PATH) return enabledSettingsResponse();
+    return new Response("v=0\r\nanswer\r\n", { status: 200, headers: { [SCOUT_REALTIME_VOICE_LEASE_HEADER]: "lease-muted" } });
+  }) as typeof fetch;
+  const call = await startScoutRealtimeVoiceCall({
+    getAudioMuteState: () => ({ micMuted: true, playbackMuted: true }),
+    onAudioControls: (next) => { controls = next; },
+  });
+  expect(attachedEnabled).toBe(false);
+  controls!.setMicMuted(false);
+  expect(track.enabled).toBe(true);
+  await call.stop();
 });

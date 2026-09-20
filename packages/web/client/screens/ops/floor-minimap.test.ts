@@ -1,5 +1,5 @@
 import { expect, test } from 'bun:test';
-import { clampFloorPan, MAX_FLOOR_ZOOM, MIN_FLOOR_ZOOM, minimapGeometry, minimapZoom, scaleFloorZoom, wheelZoomFactor, worldDetailFade, zoomAboutPoint, ZOOM_STEP } from './floor-minimap.ts';
+import { clampFloorPan, easeTravel, MAX_FLOOR_ZOOM, MIN_FLOOR_ZOOM, minimapGeometry, minimapZoom, scaleFloorZoom, travelCamera, wheelZoomFactor, worldDetailFade, zoomAboutPoint, ZOOM_STEP } from './floor-minimap.ts';
 import { projectFloorPoint } from './shared-floor-camera.ts';
 
 for (const mode of ['flat', 'iso'] as const) {
@@ -190,4 +190,26 @@ test("a world smaller than the margin is still reachable, not pinned", () => {
   // And a degenerate viewport does not produce NaN.
   expect(clampFloorPan({ x: 10, y: 10 }, speck, { width: 0, height: 0 })).toEqual({ x: 2, y: 1.5 });
   expect(clampFloorPan({ x: Number.NaN, y: 5 }, speck, view).x).toBe(0);
+});
+
+test("camera travel eases out and lands exactly on the destination", () => {
+  expect(easeTravel(0)).toBe(0);
+  expect(easeTravel(1)).toBe(1);
+  // Ease-out: the first half of the journey covers most of the distance.
+  expect(easeTravel(0.5)).toBeGreaterThan(0.8);
+  expect(easeTravel(-2)).toBe(0);
+  expect(easeTravel(4)).toBe(1);
+});
+
+test("travelCamera interpolates pan linearly and zoom in log space", () => {
+  const from = { zoom: 1, pan: { x: 0, y: 0 } };
+  const to = { zoom: 16, pan: { x: 200, y: -100 } };
+  expect(travelCamera(from, to, 0)).toEqual(from);
+  expect(travelCamera(from, to, 1)).toEqual(to);
+  // The amount whose eased value is exactly half: t = 1 - 0.5^(1/3).
+  const half = travelCamera(from, to, 1 - Math.pow(0.5, 1 / 3));
+  expect(half.pan.x).toBeCloseTo(100, 10);
+  expect(half.pan.y).toBeCloseTo(-50, 10);
+  // Halfway through a 16x zoom is 4x, not 8.5x — multiplicative travel.
+  expect(half.zoom).toBeCloseTo(4, 10);
 });

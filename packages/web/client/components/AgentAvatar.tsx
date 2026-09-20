@@ -3,6 +3,8 @@ import { useOptionalScout } from "../scout/Provider.tsx";
 import { SpriteAvatar, agentSpriteProps } from "./SpriteAvatar.tsx";
 import { CrewAvatar } from "./CrewAvatar.tsx";
 import { CREW_ART, CREW_ASSETS_AVAILABLE, assignCastSlug, hasChipArt, matchCastSlug } from "../lib/crew-registry.ts";
+import type { PoseName } from "../lib/crew-registry.ts";
+import type { GazeDir } from "../lib/crew-gaze.ts";
 import { stateColor } from "../lib/colors.ts";
 import { isAgentInTurn, isAgentOnline } from "../lib/agent-state.ts";
 import {
@@ -145,6 +147,14 @@ export interface AgentAvatarProps {
   presence?: boolean;
   /** Force the tile wash on/off (defaults to the placement). */
   tile?: boolean;
+  /**
+   * Where crew eyes look (crew art only): `"pointer"` follows the cursor while
+   * it is near the coin and glances at the attention target; a direction pins
+   * them (the ask card uses `"up"`).
+   */
+  gaze?: "pointer" | GazeDir;
+  /** A whole-body pose frame in place of the rest bust (crew art only; see `CREW_POSES`). */
+  pose?: PoseName | "rest";
   /** Reroll entropy / the salt a claimed identity keeps. */
   salt?: string;
   /** Wrapper class — sizing for fill placements (e.g. `s-profile-identity-avatar`). */
@@ -155,41 +165,18 @@ export interface AgentAvatarProps {
   title?: string;
 }
 
-export function AgentAvatar({
-  agent,
-  name,
-  slug,
-  avatarStyle,
-  project,
-  harness,
-  state,
-  kind = "agent",
-  placement = "row",
-  size,
-  scaleWithPreference = true,
-  presence,
-  tile,
-  salt,
-  className,
-  channelClassName,
-  style,
-  title,
-}: AgentAvatarProps) {
-  const label = agent?.name ?? name ?? "?";
-
-  if (kind === "channel") {
-    return (
-      <span
-        className={channelClassName ?? className}
-        style={style}
-        title={title ?? label}
-      >
-        #
-      </span>
-    );
-  }
-
-  const scout = useOptionalScout();
+/**
+ * Which cast member an agent IS — or nobody. Exported so the surfaces that
+ * draw a member beyond the coin (the crew photo, the profile stage) resolve
+ * identity exactly the way the coin does, and can decline to draw a member
+ * that has none.
+ */
+export function castSlugForAgent(
+  scout: ReturnType<typeof useOptionalScout>,
+  input: { agent?: AgentAvatarProps["agent"]; name?: string; slug?: string },
+): { castSlug: string | undefined; isOperator: boolean } {
+  const { agent, slug } = input;
+  const label = agent?.name ?? input.name ?? "?";
   /* The cached name first: it is the same value the server will confirm, and it
      is here in frame one. Without it every avatar labelled with the operator's
      real name fails the isOperator test on first paint and renders as somebody
@@ -208,7 +195,6 @@ export function AgentAvatar({
     || label.toLowerCase() === "art";
 
   const operatorCharacter = scout?.appearanceDetails?.operatorCharacter || "milo";
-  const activeAvatarStyle = avatarStyle ?? scout?.appearanceDetails?.avatarStyle ?? "crew";
 
   /**
    * A cast slug is something you ARE, not something you get handed.
@@ -234,6 +220,50 @@ export function AgentAvatar({
       ? (matchCastSlug(operatorCharacter) ?? assignCastSlug(operatorCharacter))
       : (matchCastSlug(assignedCharacter)
         ?? matchCastSlug(agent?.slug || label));
+
+  return { castSlug, isOperator };
+}
+
+export function AgentAvatar({
+  agent,
+  name,
+  slug,
+  avatarStyle,
+  project,
+  harness,
+  state,
+  kind = "agent",
+  placement = "row",
+  size,
+  scaleWithPreference = true,
+  presence,
+  tile,
+  gaze,
+  pose,
+  salt,
+  className,
+  channelClassName,
+  style,
+  title,
+}: AgentAvatarProps) {
+  const label = agent?.name ?? name ?? "?";
+
+  if (kind === "channel") {
+    return (
+      <span
+        className={channelClassName ?? className}
+        style={style}
+        title={title ?? label}
+      >
+        #
+      </span>
+    );
+  }
+
+  const scout = useOptionalScout();
+
+  const { castSlug, isOperator } = castSlugForAgent(scout, { agent, name, slug });
+  const activeAvatarStyle = avatarStyle ?? scout?.appearanceDetails?.avatarStyle ?? "crew";
 
   /**
    * Pixel Chip covers a subset of the cast. A member with no chip art falls
@@ -270,6 +300,8 @@ export function AgentAvatar({
         ring={presence ?? (placement === "hero" || placement === "turn" ? false : t.presence)}
         chip={activeAvatarStyle === "chip"}
         glow={t.glow}
+        gaze={gaze}
+        pose={pose}
         title={title ?? label}
       />
     );

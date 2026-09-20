@@ -18,6 +18,17 @@ mock.module("react/jsx-dev-runtime", () => ReactJsxDevRuntime);
 const { HarnessMark, harnessLabel, normalizeHarnessKey } = await import("./HarnessMark.tsx");
 
 describe("HarnessMark", () => {
+  test("renders the Devin mark for its native and ACP aliases", () => {
+    for (const harness of ["devin", "devin-acp", "devin_acp", "cognition"]) {
+      const html = renderToStaticMarkup(createElement(HarnessMark, { harness, size: 14 }));
+      expect(normalizeHarnessKey(harness)).toBe("devin");
+      expect(html).toContain('aria-label="Devin"');
+      expect(html).toContain('viewBox="0 0 1400 1600"');
+      expect(html).toContain('<path');
+      expect(html).not.toContain('<text');
+    }
+  });
+
   test("folds Kimi Code and Moonshot aliases into one harness identity", () => {
     expect(normalizeHarnessKey("kimi-acp")).toBe("kimi");
     expect(normalizeHarnessKey("Kimi Code")).toBe("kimi");

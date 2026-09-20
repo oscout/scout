@@ -74,7 +74,7 @@ export function renderScoutHelp(version = "0.2.19"): string {
     "  scout server open",
     "",
     "macOS app:",
-    "  scout install         # download + install OpenScout.app from the latest signed release",
+    "  scout install         # download + install Scout.app from the latest signed release",
     "  scout install --check # compare the installed app against the latest release",
     "",
     "Lifecycle:",

@@ -1,0 +1,38 @@
+/* The Scout shimmer mark — see `ScoutShimmerMark.tsx`.
+ *
+ * Only opacity moves, so the field stays on the compositor. The colour is
+ * inherited: the surface decides whether the mark is ink or accent, which is
+ * what lets the same component sit in a rail, a door and a light theme.
+ */
+
+.scout-shimmer {
+  position: relative;
+  display: block;
+  flex: none;
+  color: inherit;
+}
+
+.scout-shimmer-dot {
+  position: absolute;
+  display: block;
+  border-radius: 999px;
+  background: currentColor;
+  /* The readable floor: the hex holds its shape between crests. */
+  opacity: calc(var(--shimmer-peak, 0.6) * 0.4);
+  animation: scout-shimmer-wave 8s linear infinite;
+}
+
+/* One crest, ~1s wide, crossing an 8s cycle. Flat either side of it, so the
+   wave reads as a wave and not as a pulse of the whole field. */
+@keyframes scout-shimmer-wave {
+  0%, 44% { opacity: calc(var(--shimmer-peak, 0.6) * 0.4); }
+  50% { opacity: var(--shimmer-peak, 0.6); }
+  56%, 100% { opacity: calc(var(--shimmer-peak, 0.6) * 0.4); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .scout-shimmer-dot {
+    animation: none;
+    opacity: var(--shimmer-peak, 0.6);
+  }
+}

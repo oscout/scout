@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { Database } from "bun:sqlite";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -7,6 +8,7 @@ import { resetTailThinkingModeCache } from "../user-config.js";
 import { ClaudeSource } from "./claude-source.js";
 import { CodexSource } from "./codex-source.js";
 import { CursorSource } from "./cursor-source.js";
+import { DevinSource } from "./devin-source.js";
 import { isTailNoiseEvent } from "./display.js";
 import { GrokSource } from "./grok-source.js";
 import { KimiSource } from "./kimi-source.js";
@@ -22,6 +24,8 @@ const originalKimiRoot = process.env.OPENSCOUT_TAIL_KIMI_SESSIONS_ROOT;
 const originalOpenCodeRoot = process.env.OPENSCOUT_TAIL_OPENCODE_STORAGE_ROOT;
 const originalOpenCodeMessages = process.env.OPENSCOUT_TAIL_OPENCODE_MESSAGES_PER_SESSION;
 const originalPiRoot = process.env.OPENSCOUT_TAIL_PI_SESSIONS_ROOT;
+const originalDevinRoot = process.env.OPENSCOUT_TAIL_DEVIN_TRANSCRIPTS_ROOT;
+const originalDevinDb = process.env.OPENSCOUT_TAIL_DEVIN_SESSIONS_DB;
 const originalWindow = process.env.OPENSCOUT_TAIL_DISCOVERY_WINDOW_MS;
 const originalLimit = process.env.OPENSCOUT_TAIL_DISCOVERY_LIMIT;
 
@@ -44,6 +48,10 @@ function restoreEnv(): void {
   else process.env.OPENSCOUT_TAIL_OPENCODE_MESSAGES_PER_SESSION = originalOpenCodeMessages;
   if (originalPiRoot === undefined) delete process.env.OPENSCOUT_TAIL_PI_SESSIONS_ROOT;
   else process.env.OPENSCOUT_TAIL_PI_SESSIONS_ROOT = originalPiRoot;
+  if (originalDevinRoot === undefined) delete process.env.OPENSCOUT_TAIL_DEVIN_TRANSCRIPTS_ROOT;
+  else process.env.OPENSCOUT_TAIL_DEVIN_TRANSCRIPTS_ROOT = originalDevinRoot;
+  if (originalDevinDb === undefined) delete process.env.OPENSCOUT_TAIL_DEVIN_SESSIONS_DB;
+  else process.env.OPENSCOUT_TAIL_DEVIN_SESSIONS_DB = originalDevinDb;
   if (originalWindow === undefined) delete process.env.OPENSCOUT_TAIL_DISCOVERY_WINDOW_MS;
   else process.env.OPENSCOUT_TAIL_DISCOVERY_WINDOW_MS = originalWindow;
   if (originalLimit === undefined) delete process.env.OPENSCOUT_TAIL_DISCOVERY_LIMIT;
@@ -84,6 +92,8 @@ beforeEach(() => {
   process.env.OPENSCOUT_TAIL_DISCOVERY_WINDOW_MS = String(60 * 60 * 1000);
   process.env.OPENSCOUT_TAIL_DISCOVERY_LIMIT = "20";
   process.env.OPENSCOUT_TAIL_PI_SESSIONS_ROOT = join(tempRoot, "pi-sessions");
+  process.env.OPENSCOUT_TAIL_DEVIN_TRANSCRIPTS_ROOT = join(tempRoot, "devin-cli", "transcripts");
+  process.env.OPENSCOUT_TAIL_DEVIN_SESSIONS_DB = join(tempRoot, "devin-cli", "sessions.db");
 });
 
 afterEach(() => {
@@ -1098,6 +1108,294 @@ describe("tail transcript sources", () => {
       ]),
     }));
     expect(isTailNoiseEvent(event!)).toBe(true);
+  });
+});
+
+const DEVIN_TOOL_DEFINITION_LEAK = "TOOL_DEFINITION_SCHEMA_MUST_NOT_LEAK";
+
+function writeDevinTranscript(
+  sessionId: string,
+  steps: unknown[],
+  options: { extra?: Record<string, unknown> } = {},
+): string {
+  const transcriptsDir = process.env.OPENSCOUT_TAIL_DEVIN_TRANSCRIPTS_ROOT!;
+  mkdirSync(transcriptsDir, { recursive: true });
+  const path = join(transcriptsDir, `${sessionId}.json`);
+  writeFileSync(path, JSON.stringify({
+    schema_version: "ATIF-v1.7",
+    session_id: sessionId,
+    agent: {
+      name: "devin",
+      version: "3000.10.27",
+      model_name: "SWE-2 High",
+      tool_definitions: [
+        {
+          type: "function",
+          function: {
+            name: "ask_user_question",
+            description: DEVIN_TOOL_DEFINITION_LEAK,
+          },
+        },
+      ],
+      extra: { backend: "Windsurf", ...(options.extra ?? {}) },
+    },
+    steps,
+    final_metrics: { total_steps: steps.length },
+  }), "utf8");
+  return path;
+}
+
+function writeDevinSessionsDb(rows: Array<{ id: string; cwd: string }>): void {
+  mkdirSync(join(tempRoot, "devin-cli"), { recursive: true });
+  const db = new Database(process.env.OPENSCOUT_TAIL_DEVIN_SESSIONS_DB!);
+  db.run("CREATE TABLE IF NOT EXISTS sessions (id TEXT PRIMARY KEY, working_directory TEXT NOT NULL)");
+  const insert = db.prepare("INSERT INTO sessions (id, working_directory) VALUES (?, ?)");
+  for (const row of rows) insert.run(row.id, row.cwd);
+  db.close();
+}
+
+function parseDevin(transcript: DiscoveredTranscript, text?: string) {
+  const parsed = DevinSource.parseFile?.(
+    text ?? readFileSync(transcript.transcriptPath, "utf8"),
+    makeContext("devin", transcript),
+  );
+  return Array.isArray(parsed) ? parsed : parsed ? [parsed] : [];
+}
+
+describe("Devin ATIF transcript source", () => {
+  afterEach(() => {
+    delete process.env.OPENSCOUT_TAIL_THINKING;
+    resetTailThinkingModeCache();
+  });
+
+  const userStep = {
+    step_id: 1,
+    timestamp: "2026-09-16T20:47:20.603366+00:00",
+    source: "user",
+    message: "inspect the runtime tail registry",
+    extra: { telemetry: { source: "user" } },
+  };
+  const agentStep = {
+    step_id: 2,
+    timestamp: "2026-09-16T20:47:21.557406+00:00",
+    source: "agent",
+    message: "Checking the tail source registry.",
+    model_name: "swe-2-high",
+    reasoning_content: "Look at the registered sources first.",
+    tool_calls: [
+      {
+        tool_call_id: "exec_176#abc",
+        function_name: "exec",
+        arguments: { command: "cd /Users/art/dev/openscout && git status" },
+      },
+    ],
+    observation: {
+      results: [
+        {
+          source_call_id: "exec_176#abc",
+          content: "On branch herdr-scout-agent-profile\nnothing to commit",
+        },
+      ],
+    },
+    extra: { telemetry: { source: "assistant" } },
+  };
+
+  test("discovers native Devin identity without process discovery", () => {
+    writeDevinTranscript("zealous-noun", [userStep, agentStep]);
+
+    const transcripts = DevinSource.discoverTranscripts([]);
+    expect(transcripts).toHaveLength(1);
+    expect(transcripts[0]).toEqual(expect.objectContaining({
+      source: "devin",
+      sessionId: "zealous-noun",
+      cwd: null,
+      project: "(unknown)",
+    }));
+    expect(transcripts[0]?.transcriptPath).toMatch(/zealous-noun\.json$/);
+  });
+
+  test("uses sessions.db working_directory as proven cwd and leaves missing metadata unknown", () => {
+    writeDevinTranscript("zealous-noun", [userStep]);
+    writeDevinTranscript("cyan-ornament", [userStep]);
+    writeDevinSessionsDb([{ id: "zealous-noun", cwd: "/Users/art/dev/openscout" }]);
+
+    const transcripts = DevinSource.discoverTranscripts([])
+      .sort((left, right) => (left.sessionId ?? "").localeCompare(right.sessionId ?? ""));
+    expect(transcripts).toHaveLength(2);
+
+    const known = transcripts.find((row) => row.sessionId === "zealous-noun");
+    const unknown = transcripts.find((row) => row.sessionId === "cyan-ornament");
+    expect(known).toEqual(expect.objectContaining({
+      cwd: "/Users/art/dev/openscout",
+      project: "openscout",
+      source: "devin",
+    }));
+    expect(unknown).toEqual(expect.objectContaining({
+      cwd: null,
+      project: "(unknown)",
+      source: "devin",
+    }));
+  });
+
+  test("refreshes session metadata after WAL commits while the writer remains open", () => {
+    writeDevinTranscript("zealous-noun", [userStep]);
+    writeDevinSessionsDb([]);
+    // Prime the main-file cache before WAL mode starts.
+    expect(DevinSource.discoverTranscripts([])[0]?.cwd).toBeNull();
+    const dbPath = process.env.OPENSCOUT_TAIL_DEVIN_SESSIONS_DB!;
+    const db = new Database(dbPath);
+    try {
+      db.run("PRAGMA journal_mode = WAL");
+      db.run("PRAGMA wal_autocheckpoint = 0");
+      expect(DevinSource.discoverTranscripts([])[0]?.cwd).toBeNull();
+      const before = statSync(dbPath);
+      db.prepare("INSERT INTO sessions (id, working_directory) VALUES (?, ?)")
+        .run("zealous-noun", "/projects/first");
+      expect(statSync(dbPath).mtimeMs).toBe(before.mtimeMs);
+      expect(statSync(dbPath).size).toBe(before.size);
+      expect(DevinSource.discoverTranscripts([])[0]).toEqual(expect.objectContaining({
+        cwd: "/projects/first", project: "first",
+      }));
+      db.prepare("UPDATE sessions SET working_directory = ? WHERE id = ?")
+        .run("/projects/second", "zealous-noun");
+      expect(DevinSource.discoverTranscripts([])[0]?.cwd).toBe("/projects/second");
+    } finally {
+      db.close();
+    }
+    expect(DevinSource.discoverTranscripts([])[0]?.cwd).toBe("/projects/second");
+  });
+
+  test("does not invent thinking events for steps without reasoning in tag mode", () => {
+    process.env.OPENSCOUT_TAIL_THINKING = "tag";
+    resetTailThinkingModeCache();
+    const { reasoning_content: _, ...withoutReasoning } = agentStep;
+    writeDevinTranscript("zealous-noun", [userStep, withoutReasoning]);
+    const events = parseDevin(DevinSource.discoverTranscripts([])[0]!);
+    expect(events.map((event) => event.kind)).toEqual([
+      "user", "assistant", "tool", "tool-result",
+    ]);
+  });
+
+  test("parses user/agent text, correlates tool calls and results, and never emits tool definitions", () => {
+    writeDevinTranscript("zealous-noun", [userStep, agentStep]);
+    const transcript = DevinSource.discoverTranscripts([])[0]!;
+    const events = parseDevin(transcript);
+
+    expect(events.length).toBeGreaterThanOrEqual(4);
+    expect(events.every((event) => event.source === "devin")).toBe(true);
+    expect(events.every((event) => event.sessionId === "zealous-noun")).toBe(true);
+    expect(events.map((event) => event.kind)).toEqual([
+      "user",
+      "system",
+      "assistant",
+      "tool",
+      "tool-result",
+    ]);
+    expect(events[0]?.summary).toBe("inspect the runtime tail registry");
+    expect(events[1]?.summary).toBe("[thinking] Look at the registered sources first.");
+    expect(events[2]?.summary).toBe("Checking the tail source registry.");
+    expect(events[3]?.kind).toBe("tool");
+    expect(events[3]?.id).toContain("exec_176#abc");
+    expect(events[3]?.summary).toContain("git status");
+    expect(events[4]?.kind).toBe("tool-result");
+    expect(events[4]?.id).toContain("exec_176#abc");
+    expect(events[4]?.summary).toContain("nothing to commit");
+    expect(events[4]?.summary).toContain("git status");
+
+    const serialized = JSON.stringify(events);
+    expect(serialized).not.toContain(DEVIN_TOOL_DEFINITION_LEAK);
+    expect(serialized).not.toContain("tool_definitions");
+    expect(events.every((event) => event.cwd === "")).toBe(true);
+    expect(events.every((event) => event.project === "(unknown)")).toBe(true);
+  });
+
+  test("does not guess cwd from tool command text", () => {
+    writeDevinTranscript("zealous-noun", [agentStep]);
+    const transcript = DevinSource.discoverTranscripts([])[0]!;
+    const events = parseDevin(transcript);
+    expect(transcript.cwd).toBeNull();
+    expect(events.every((event) => event.cwd === "")).toBe(true);
+    expect(events.some((event) => event.summary.includes("git status"))).toBe(true);
+  });
+
+  test("keeps event ids stable across whole-file rewrites and appended steps", () => {
+    writeDevinTranscript("zealous-noun", [userStep, agentStep]);
+    const transcript = DevinSource.discoverTranscripts([])[0]!;
+    const first = parseDevin(transcript);
+    const second = parseDevin(transcript);
+    expect(second.map((event) => event.id)).toEqual(first.map((event) => event.id));
+
+    const followup = {
+      step_id: 3,
+      timestamp: "2026-09-16T20:47:30.000Z",
+      source: "user",
+      message: "keep going",
+      extra: {},
+    };
+    writeDevinTranscript("zealous-noun", [userStep, agentStep, followup]);
+    const appended = parseDevin(transcript);
+    expect(appended.slice(0, first.length).map((event) => event.id)).toEqual(first.map((event) => event.id));
+    expect(appended).toHaveLength(first.length + 1);
+    expect(appended.at(-1)?.id).toBe("devin:zealous-noun:step:3:message");
+    expect(appended.at(-1)?.summary).toBe("keep going");
+  });
+
+  test("recovers from malformed and partial files without throwing", () => {
+    const path = writeDevinTranscript("zealous-noun", [userStep]);
+    const transcript = DevinSource.discoverTranscripts([])[0]!;
+    expect(() => DevinSource.parseFile?.("{", makeContext("devin", transcript))).not.toThrow();
+
+    const recoveredFromTruncation = parseDevin(transcript, '{"schema_version":"ATIF-v1.7"');
+    expect(recoveredFromTruncation).toHaveLength(1);
+    expect(recoveredFromTruncation[0]?.source).toBe("devin");
+
+    writeFileSync(path, "{", "utf8");
+    expect(() => parseDevin(transcript, "{")).not.toThrow();
+    expect(parseDevin(transcript, "{")).toEqual([]);
+    expect(parseDevin(transcript, '{"schema_version":"ATIF-v1.7","session_id":"zealous-noun","steps":[')).toEqual([]);
+
+    writeDevinTranscript("zealous-noun", [userStep]);
+    const recovered = parseDevin(transcript, '{"schema_version":"ATIF-v1.7"');
+    expect(recovered).toHaveLength(1);
+    expect(recovered[0]?.summary).toBe("inspect the runtime tail registry");
+    expect(recovered[0]?.source).toBe("devin");
+  });
+
+  test("does not parse ATIF documents as JSONL", () => {
+    const stepLine = JSON.stringify(userStep);
+    writeDevinTranscript("zealous-noun", [userStep]);
+    const transcript = DevinSource.discoverTranscripts([])[0]!;
+    expect(DevinSource.parseLine(stepLine, makeContext("devin", transcript))).toBeNull();
+  });
+
+  test("honors thinking visibility for empty reasoning and always renders reasoning text", () => {
+    const emptyReasoning = {
+      ...agentStep,
+      message: "Done.",
+      reasoning_content: "   ",
+      tool_calls: [],
+      observation: undefined,
+    };
+    writeDevinTranscript("zealous-noun", [emptyReasoning]);
+    const transcript = DevinSource.discoverTranscripts([])[0]!;
+
+    resetTailThinkingModeCache();
+    delete process.env.OPENSCOUT_TAIL_THINKING;
+    const hidden = parseDevin(transcript);
+    expect(hidden.map((event) => event.kind)).toEqual(["assistant"]);
+    expect(hidden[0]?.summary).toBe("Done.");
+
+    process.env.OPENSCOUT_TAIL_THINKING = "tag";
+    resetTailThinkingModeCache();
+    const tagged = parseDevin(transcript);
+    expect(tagged.map((event) => event.kind)).toEqual(["system", "assistant"]);
+    expect(tagged[0]?.summary).toBe("[thinking]");
+
+    writeDevinTranscript("zealous-noun", [agentStep]);
+    delete process.env.OPENSCOUT_TAIL_THINKING;
+    resetTailThinkingModeCache();
+    const withText = parseDevin(DevinSource.discoverTranscripts([])[0]!);
+    expect(withText.some((event) => event.summary === "[thinking] Look at the registered sources first.")).toBe(true);
   });
 });
 

@@ -1,4 +1,6 @@
 import { finalizeLiveSession } from "../live-finalization.ts";
+import type { ScoutbotUsageStore } from "../scoutbot-usage.ts";
+import type { VoiceUsageSnapshot } from "../../shared/voice-usage.ts";
 import type { Hono } from "hono";
 
 import {
@@ -17,6 +19,7 @@ import {
   createScoutRealtimeVoiceCall,
   readScoutRealtimeOffer,
   resolveScoutRealtimeVoiceSettings,
+  resolveScoutRealtimeVoiceConfig,
 } from "../realtime-voice.ts";
 import {
   SCOUT_REALTIME_VOICE_CALL_PATH,
@@ -156,6 +159,7 @@ function parseScoutVoiceAudioFormat(value: string | undefined): "mp3" | "wav" | 
 }
 
 export type ScoutVoiceRouteDeps = {
+  usage?: () => ScoutbotUsageStore;
   resolveOpenAIApiKey?: () => Promise<string | undefined>;
   /** Legacy/test override. Production uses the persisted preference callbacks. */
   realtimeVoiceEnabled?: () => boolean;
@@ -176,6 +180,18 @@ export function mountScoutVoiceRoutes(app: Hono, deps: ScoutVoiceRouteDeps = {})
   const realtimeVoiceAdmission = () => deps.realtimeVoiceAdmission
     ?? (defaultRealtimeVoiceAdmission ??= createScoutRealtimeVoiceAdmission());
   const closing = new Map<string, Promise<void>>();
+  app.get("/api/voice/usage", (c) => {
+    c.header("cache-control", "no-store");
+    try {
+      const snapshot: VoiceUsageSnapshot = {
+        llm: deps.usage?.().snapshot() ?? null,
+        calls: realtimeVoiceAdmission().usageHistory(),
+      };
+      return c.json(snapshot);
+    } catch {
+      return c.json({ error: "Voice usage is unavailable. Retry to load recorded measurements." }, 503);
+    }
+  });
   const closeLease = (leaseId: string): Promise<void> => {
     const existing = closing.get(leaseId); if (existing) return existing;
     const work = (async () => {
@@ -691,13 +707,15 @@ export function mountScoutVoiceRoutes(app: Hono, deps: ScoutVoiceRouteDeps = {})
       startCleanup();
       const lease = realtimeVoiceAdmission().admit();
       leaseId = lease.id;
+      const config = resolveScoutRealtimeVoiceConfig(deps.realtimeVoiceEnvironment);
       const call = await (deps.createRealtimeVoiceCall ?? createScoutRealtimeVoiceCall)({
         offerSdp,
         apiKey,
+        config,
         signal: AbortSignal.timeout(15000),
       });
       // Keep ownership even if the browser vanished after provider creation.
-      realtimeVoiceAdmission().bindSession(lease.id, call.sessionId);
+      realtimeVoiceAdmission().bindSession(lease.id, call.sessionId, config);
       if (c.req.raw.signal.aborted || !(await realtimeVoiceSettings()).enabled) {
         await closeLease(lease.id);
         throw new ScoutRealtimeVoiceError("Live call setup was cancelled.", 409);

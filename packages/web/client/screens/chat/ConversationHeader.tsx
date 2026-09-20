@@ -171,7 +171,7 @@ export function ConversationHeader({
   const [rosterOpen, setRosterOpen] = useState(false);
   useFacepileAttention(pileRef);
 
-  const visibleParticipants = participants.slice(0, 4);
+  const visibleParticipants = participants.slice(0, 3);
   const desktopOverflowCount = Math.max(participants.length - visibleParticipants.length, 0);
   const compactOverflowCount = Math.max(participants.length - 2, 0);
   const narrowOverflowCount = Math.max(participants.length - 1, 0);
@@ -288,7 +288,7 @@ export function ConversationHeader({
             {threadTitle}
           </button>
         ) : (
-          <span className="s-thread-center-header-name">{threadTitle}</span>
+          <span className="s-thread-center-header-name" title={threadTitle}>{threadTitle}</span>
         )}
       </div>
 
@@ -349,6 +349,7 @@ export function ConversationHeader({
                       placement="turn"
                       size={28}
                       className="s-thread-participant-avatar"
+                      gaze="pointer"
                     />
                   </span>
                   {participant.harness ? (
@@ -443,6 +444,7 @@ export function ConversationHeader({
                     placement="turn"
                     size={28}
                     className="s-thread-participant-avatar"
+                    gaze="pointer"
                   />
                 </span>
                 <ParticipantCard

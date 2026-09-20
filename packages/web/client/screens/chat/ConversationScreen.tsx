@@ -125,13 +125,16 @@ import {
   summarizeTurnSteps,
 } from "./turn-steps.ts";
 import { useTurnSteps } from "./use-turn-steps.ts";
-import { ConversationStatusStrip, PinnedAskCard } from "./ConversationStatus.tsx";
+import { ConversationFlightOutcome, ConversationStatusStrip, PinnedAskCard } from "./ConversationStatus.tsx";
+import { SessionContextStrip } from "../../components/SessionContextStrip.tsx";
 import {
   SLASH_COMMANDS,
   WORKING_DURATION_THRESHOLDS_MS,
   buildTurnSnapshot,
   canOpenConversationTerminal,
+  conversationContextSessionId,
   conversationIdentityRoute,
+  conversationSessionRoute,
   directConversationSessionId,
   deriveWorkingDurationStage,
   deriveDisplayTitle,
@@ -145,6 +148,7 @@ import {
   latestAgentMessageAt,
   mapEventFlight,
   mergeCanonicalMessagesPreservingPending,
+  mergeLatestConversationFlight,
   matchMentionTrigger,
   matchSlashTrigger,
   messageClassLabel,
@@ -166,6 +170,7 @@ import {
   type BusySendIntent,
   type QueuedDraft,
   selectCurrentFlight,
+  selectLatestConversationFlight,
   selectOperatorPendingAsk,
   selectTurnActivity,
   selectTurnAsk,
@@ -341,6 +346,7 @@ export function ConversationScreen({
   }, [conversationId]);
   const stagedFlight = pendingConversationFlight(conversationId);
   const [currentFlight, setCurrentFlight] = useState<Flight | null>(stagedFlight);
+  const [latestFlight, setLatestFlight] = useState<Flight | null>(null);
   const [turnActivity, setTurnActivity] = useState<FleetActivity[]>([]);
   const [turnObserve, setTurnObserve] = useState<AgentObservePayload | null>(null);
   const [turnAsk, setTurnAsk] = useState<FleetAsk | null>(null);
@@ -401,6 +407,7 @@ export function ConversationScreen({
     setExpandedFanOutKeys(new Set());
     optimisticMessageIdByClientIdRef.current.clear();
     setCurrentFlight(pendingConversationFlight(conversationId));
+    setLatestFlight(null);
     setDismissedFailureMessageIds(loadDismissedConversationFailureIds(conversationId));
   }, [conversationId]);
 
@@ -485,6 +492,7 @@ export function ConversationScreen({
     [scopedAgents, agentId],
   );
   const conversationSessionId = directConversationSessionId(sessionMeta);
+  const contextSessionId = conversationContextSessionId(sessionMeta);
   const conversationDetailRoute = conversationIdentityRoute({
     resolvedAgentId: agent?.id,
     sessionId: conversationSessionId,
@@ -554,7 +562,7 @@ export function ConversationScreen({
 
       const secondaryState = Promise.all([
         api<Flight[]>(
-          `/api/flights?conversationId=${encodeURIComponent(canonicalConversationId)}`,
+          `/api/flights?conversationId=${encodeURIComponent(canonicalConversationId)}&active=false`,
         ).catch(() => []),
         api<FleetState>("/api/fleet?limit=24&activityLimit=160").catch(() =>
           emptyFleetState(),
@@ -598,13 +606,13 @@ export function ConversationScreen({
       // Transcript arrival is the user-visible ready point. Flights and fleet
       // decorate the live-turn rail; a slow roster scan must never hold the
       // history skeleton or composer geometry on screen.
-      const [activeFlights, fleet] = await secondaryState;
+      const [conversationFlights, fleet] = await secondaryState;
       if (activeConversationIdRef.current !== conversationId) return;
-      const projectedCurrentFlight = selectCurrentFlight(activeFlights);
+      const projectedCurrentFlight = selectCurrentFlight(conversationFlights);
       const stagedCurrentFlight = pendingConversationFlight(canonicalConversationId);
       const nextCurrentFlight = projectedCurrentFlight ?? stagedCurrentFlight;
       trackedInvocationIdsRef.current = new Set([
-        ...activeFlights.map((flight) => flight.invocationId),
+        ...conversationFlights.map((flight) => flight.invocationId),
         ...(stagedCurrentFlight?.invocationId?.startsWith("pending:")
           ? []
           : stagedCurrentFlight?.invocationId
@@ -629,6 +637,12 @@ export function ConversationScreen({
       );
       setCurrentFlight((previous) =>
         keepPreviousIfJsonEqual(previous, nextCurrentFlight),
+      );
+      setLatestFlight((previous) =>
+        keepPreviousIfJsonEqual(
+          previous,
+          selectLatestConversationFlight(conversationFlights),
+        ),
       );
       setTurnActivity((previous) =>
         keepPreviousIfJsonEqual(previous, nextTurnActivity),
@@ -1051,6 +1065,29 @@ export function ConversationScreen({
       turnActivity.length > 0 ||
       turnAsk !== null ||
       awaitingResponseSince !== null);
+  const outcomeFlight =
+    latestFlight && TERMINAL_CONVERSATION_FLIGHT_STATES.has(latestFlight.state)
+      ? latestFlight
+      : null;
+  const outcomeFlightSuppressed = Boolean(
+    outcomeFlight && messages.some((message) =>
+      conversationFailureNotice(message) !== null
+      && message.metadata?.["flightId"] === outcomeFlight.id,
+    ),
+  );
+  const outcomeSessionId = outcomeFlight?.sessions.at(-1)?.sessionId
+    ?? contextSessionId;
+  const openOutcomeSession = outcomeFlight && outcomeSessionId
+    ? () => {
+        const target = conversationSessionRoute({
+          sessionId: outcomeSessionId,
+          machineId,
+        });
+        if (target) {
+          openContent(navigate, target, { returnTo: route });
+        }
+      }
+    : undefined;
   const operatorIsParticipant = useMemo(() => {
     if (sessionMeta) return sessionMeta.participantIds.includes("operator");
     return isDm;
@@ -1414,6 +1451,7 @@ export function ConversationScreen({
           setTurnActivity([]);
           setTurnAsk(null);
           setAwaitingResponseSince((current) => current ?? Date.now());
+          void load({ messageMode: "none", includeMetadata: false });
           return;
         }
 
@@ -1433,11 +1471,21 @@ export function ConversationScreen({
           const flight = (
             event.payload as { flight?: EventFlightRecord } | undefined
           )?.flight;
-          if (!flight || flight.targetAgentId !== agentId) return;
+          if (!flight) return;
           const isTracked =
             trackedInvocationIdsRef.current.has(flight.invocationId) ||
             currentFlightRef.current?.id === flight.id;
           if (!isTracked) return;
+
+          const mappedFlight = mapEventFlight(
+            flight,
+            conversationId,
+            agentId ?? "",
+            currentFlightRef.current,
+          );
+          setLatestFlight((previous) =>
+            mergeLatestConversationFlight(previous, mappedFlight),
+          );
 
           if (TERMINAL_CONVERSATION_FLIGHT_STATES.has(flight.state)) {
             settlePendingConversationFlight(conversationId, flight.id);
@@ -1453,12 +1501,6 @@ export function ConversationScreen({
 
           trackedInvocationIdsRef.current.add(flight.invocationId);
           const sameTurn = currentFlightRef.current?.id === flight.id;
-          const mappedFlight = mapEventFlight(
-            flight,
-            conversationId,
-            agentId ?? "",
-            currentFlightRef.current,
-          );
           if (isRequesterWaitTimeoutConversationFlight(mappedFlight)) {
             setAwaitingResponseSince(null);
           }
@@ -2387,6 +2429,18 @@ export function ConversationScreen({
 
         <ConversationStatusStrip presence={presence} agent={agent} />
 
+        {sessionMeta && (
+          <SessionContextStrip
+            harness={sessionMeta.harness}
+            model={sessionMeta.model}
+            hostName={sessionMeta.executionNodeName}
+            workspaceRoot={sessionMeta.workspaceRoot}
+            sessionId={contextSessionId}
+            machineId={machineId}
+            navigate={navigate}
+          />
+        )}
+
         {error && <p className="s-thread-error">{error}</p>}
 
         {/* The same messages, two arrangements: in order, or by who was
@@ -2682,6 +2736,7 @@ export function ConversationScreen({
                                   size={28}
                                   className="s-thread-msg-avatar"
                                   title={avatarName}
+                                  gaze="pointer"
                                 />
                               );
                               return profileNav ? (
@@ -2824,7 +2879,7 @@ export function ConversationScreen({
                           </button>
                         )}
 
-                        <div className="s-thread-msg-body" title={absoluteTime}>
+                        <div className="s-thread-msg-body">
                           <MessageMarkup text={displayBody} />
                         </div>
 
@@ -2869,6 +2924,15 @@ export function ConversationScreen({
             })
           )}
 
+          {outcomeFlight && !outcomeFlightSuppressed && (
+            <div className="s-thread-feed-block">
+              <ConversationFlightOutcome
+                flight={outcomeFlight}
+                onOpenSession={openOutcomeSession}
+              />
+            </div>
+          )}
+
           {presence.showTyping && !showEmptyMotionPanel && (
             <div className="s-thread-feed-block">
               <div className="s-thread-msg" aria-live="polite">
@@ -2880,6 +2944,7 @@ export function ConversationScreen({
                     size={28}
                     className="s-thread-msg-avatar s-thread-msg-avatar--working"
                     title={agentName}
+                    gaze="pointer"
                   />
                   <div className="s-thread-msg-card-content">
                     <div className="s-thread-msg-header">

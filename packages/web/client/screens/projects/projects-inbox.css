@@ -8,8 +8,8 @@
   --pi-ink: var(--scout-chrome-ink-strong);
   --pi-muted: var(--scout-chrome-ink-soft);
   --pi-dim: var(--scout-chrome-ink-faint);
-  --pi-hairline: color-mix(in srgb, var(--hud-ink) 8%, transparent);
-  --pi-hairline-strong: color-mix(in srgb, var(--hud-ink) 15%, transparent);
+  --pi-hairline: var(--sys-hairline, var(--hud-border));
+  --pi-hairline-strong: var(--border);
   --pi-accent: var(--accent);
   --pi-accent-soft: var(--hud-accent-soft);
   --pi-surface: color-mix(in srgb, var(--hud-surface) 58%, var(--pi-bg));
@@ -435,8 +435,6 @@
   margin: 7px 10px 7px 35px;
 }
 .pi-projectGroup[data-selected] {
-  padding: 3px;
-  margin-inline: -3px;
   border-radius: 8px;
   background: color-mix(in srgb, var(--hud-ink) 4%, transparent);
 }
@@ -814,9 +812,7 @@
   flex-direction: column;
   height: 100%;
   min-height: 0;
-  background:
-    radial-gradient(1100px 380px at 6% -10%, color-mix(in srgb, var(--pi-accent) 4%, transparent), transparent 58%),
-    var(--pi-bg);
+  background: var(--pi-bg);
 }
 
 /* all-scope header */
@@ -1625,7 +1621,8 @@
   background: color-mix(in srgb, var(--pi-accent) 8%, transparent);
   color: var(--pi-ink);
 }
-.pi-sessionTerminalName {
+.pi-sessionTerminalName,
+.pi-sessionTerminalActions .s-hop-target {
   min-width: 0;
   max-width: 260px;
   overflow: hidden;
@@ -2060,14 +2057,14 @@
   border-bottom: 1px solid var(--pi-hairline);
 }
 .pi-sectionLabel {
+  font-family: var(--pi-mono);
   font-size: var(--text-2xs);
-  font-weight: 700;
+  font-weight: 500;
   letter-spacing: 0.08em;
   text-transform: uppercase;
   color: var(--pi-muted);
 }
-.pi-sectionHead[data-tone="needs"] .pi-sectionLabel,
-.pi-sectionHead[data-tone="working"] .pi-sectionLabel { color: var(--pi-accent); }
+.pi-sectionHead[data-tone="needs"] .pi-sectionLabel { color: var(--hud-status-warn); }
 .pi-sectionCount {
   font-size: var(--text-2xs);
   font-family: var(--pi-mono);
@@ -2107,14 +2104,15 @@
   width: 36px;
   height: 7px;
 }
-.pi-row:hover,
-.pi-row:focus-visible {
-  outline: none;
-  background: color-mix(in srgb, var(--hud-surface) 72%, transparent);
-  box-shadow: inset 0 0 0 1px var(--pi-hairline-strong);
+.pi-row:hover {
+  background: var(--sys-row-hover);
 }
-.pi-row[data-selected] { background: color-mix(in srgb, var(--pi-accent-soft) 24%, var(--pi-surface)); }
-.pi-row[data-cursor]:not([data-selected]) { background: color-mix(in srgb, var(--hud-surface) 58%, transparent); }
+.pi-row[data-selected] { background: var(--sys-row-selected); }
+.pi-row[data-cursor]:not([data-selected]) { background: var(--sys-row-hover); }
+.pi-row:focus-visible {
+  outline: 2px solid var(--pi-accent);
+  outline-offset: -2px;
+}
 
 .pi-rowDot {
   flex: none;
@@ -2135,13 +2133,15 @@
 
 .pi-rowBody { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
 .pi-rowWork {
-  font-size: var(--text-lg);
-  color: var(--pi-muted);
+  font-family: var(--pi-sans);
+  font-size: var(--text-md);
+  font-weight: 500;
+  line-height: var(--leading-snug);
+  color: var(--pi-ink);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.pi-row[data-needs] .pi-rowWork { color: var(--pi-ink); font-weight: 620; }
 .pi-row[data-selected] .pi-rowWork { color: var(--pi-ink); }
 .pi-row:hover .pi-rowWork,
 .pi-row:focus-visible .pi-rowWork { color: var(--pi-ink); }
@@ -2150,8 +2150,9 @@
 .pi-rowAvatar { flex: none; display: inline-flex; }
 .pi-rowAgent {
   flex: none;
+  font-family: var(--pi-sans);
   font-size: var(--text-sm);
-  font-weight: 600;
+  font-weight: 400;
   color: var(--pi-muted);
   max-width: 40%;
   overflow: hidden;
@@ -2214,14 +2215,10 @@
   border-radius: 999px;
 }
 .pi-rowLiveTag {
-  font-size: var(--text-3xs);
-  font-weight: 650;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
+  font-family: var(--pi-mono);
+  font-size: var(--text-2xs);
+  font-weight: 500;
   color: var(--pi-accent);
-  border: 1px solid color-mix(in srgb, var(--pi-accent) 50%, transparent);
-  padding: 0 5px;
-  border-radius: 999px;
 }
 .pi-rowOpen {
   flex: none;
@@ -2237,8 +2234,7 @@
 }
 .pi-rowOpen span {
   opacity: 0;
-  transform: translateX(3px);
-  transition: opacity 0.12s var(--pi-ease), transform 0.12s var(--pi-ease);
+  transition: opacity 0.12s var(--pi-ease);
 }
 .pi-row:hover .pi-rowOpen,
 .pi-row:focus-visible .pi-rowOpen,
@@ -2249,7 +2245,6 @@
 .pi-row:focus-visible .pi-rowOpen span,
 .pi-row[data-selected] .pi-rowOpen span {
   opacity: 1;
-  transform: translateX(0);
 }
 
 .pi-empty {

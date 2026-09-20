@@ -4244,6 +4244,21 @@ a.s-inline-link {
   background: var(--bg);
 }
 
+/* Ops embed (the macOS app seat): below this root, .s-ops and its descendants
+   fill height with flex chains keyed off height:100% — which collapses under a
+   plain min-height:100vh block and leaves the world view at its 480px minimum.
+   Give the root a definite height so the floor fills the window. */
+.s-discovered-embed[data-scout-surface="ops"] {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+}
+
+.s-discovered-embed[data-scout-surface="ops"] .s-ops {
+  height: auto;
+  flex: 1 1 auto;
+}
+
 @media (prefers-reduced-motion: reduce) {
   [data-scout-theme] *,
   [data-scout-theme] *::before,

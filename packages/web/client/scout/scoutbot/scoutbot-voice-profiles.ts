@@ -150,3 +150,60 @@ export function resolveScoutbotSpeechVoice(
   return SCOUTBOT_SPEECH_PROFILES.find((profile) => profile.id === selectionId)?.speech
     ?? SCOUTBOT_SPEECH_PROFILES.find((profile) => profile.id === DEFAULT_SCOUTBOT_SPEECH_PROFILE_ID)!.speech;
 }
+
+/**
+ * Who actually speaks a reply, resolved for display. The voice page surfaces
+ * this so the operator can tell "which voice is that?" — and which meter is
+ * running — without opening Settings.
+ */
+export type ScoutbotSpeechIdentity = {
+  selectionId: ScoutbotSpeechSelectionId;
+  /** Human voice name, e.g. "Marin". "This Mac" for the device selection. */
+  voiceLabel: string;
+  provider: ScoutbotSpeechProviderId;
+  providerLabel: string;
+  /** Empty for the device selection — the model pick lives in Scout Menu. */
+  modelId: string;
+  voiceId: string;
+  /** True when each spoken reply is a paid API request. */
+  metered: boolean;
+};
+
+export function resolveScoutbotSpeechIdentity(
+  selectionId: ScoutbotSpeechSelectionId,
+  custom: Partial<ScoutbotSpeechVoice> = {},
+): ScoutbotSpeechIdentity {
+  if (selectionId === "device") {
+    return {
+      selectionId,
+      voiceLabel: "This Mac",
+      provider: "system",
+      providerLabel: SCOUTBOT_SPEECH_PROVIDER_LABELS.system,
+      modelId: "",
+      voiceId: "",
+      metered: false,
+    };
+  }
+  const profile = SCOUTBOT_SPEECH_PROFILES.find((entry) => entry.id === selectionId);
+  if (profile) {
+    return {
+      selectionId,
+      voiceLabel: profile.voiceName,
+      provider: profile.provider,
+      providerLabel: SCOUTBOT_SPEECH_PROVIDER_LABELS[profile.provider],
+      modelId: profile.speech.modelId,
+      voiceId: profile.speech.voiceId,
+      metered: profile.provider !== "system",
+    };
+  }
+  const voice = resolveScoutbotSpeechVoice("custom", custom);
+  return {
+    selectionId: "custom",
+    voiceLabel: voice.voiceId || "Custom",
+    provider: "openai",
+    providerLabel: SCOUTBOT_SPEECH_PROVIDER_LABELS.openai,
+    modelId: voice.modelId,
+    voiceId: voice.voiceId,
+    metered: true,
+  };
+}

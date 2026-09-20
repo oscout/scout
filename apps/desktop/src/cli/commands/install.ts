@@ -10,14 +10,23 @@ import {
   readFileSync,
 } from "node:fs";
 import { tmpdir as osTmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 import type { ScoutCommandContext } from "../context.ts";
 import { ScoutCliError } from "../errors.ts";
 
 export const OPENSCOUT_RELEASE_OWNER = "oscout";
 export const OPENSCOUT_RELEASE_REPOSITORY = "scout";
-export const OPENSCOUT_APP_NAME = "OpenScout.app";
+export const OPENSCOUT_APP_NAME = "Scout.app";
+/**
+ * Bundle names shipped before the rename. A CLI this new can still be pointed
+ * at one of those releases (`--version v0.2.103`), and every machine that
+ * installed one still has it in /Applications — so both are read, and the old
+ * bundle is retired rather than left beside the new one. They share
+ * `app.openscout.scout`, so two bundles means two LaunchServices candidates
+ * and two login-item menu helpers for one product.
+ */
+export const LEGACY_APP_BUNDLE_NAMES = ["OpenScout.app"] as const;
 /** Verified OpenScout product bundle id. Not user-configurable. */
 export const OPENSCOUT_APP_BUNDLE_ID = "app.openscout.scout";
 /** Verified Developer ID TeamIdentifier. Not user-configurable. */
@@ -129,20 +138,20 @@ type ResolvedInstallDependencies = {
 
 export function renderInstallCommandHelp(): string {
   return [
-    "scout install — download and install the OpenScout macOS app",
+    "scout install — download and install the Scout macOS app",
     "",
     "Usage:",
     "  scout install                 # install or update to the latest signed release",
     "  scout install --check         # report installed vs latest, install nothing",
     "  scout install --version <tag> # install a specific release (e.g. v0.2.70)",
     "  scout install --force         # reinstall even if already up to date",
-    "  scout install --no-restart    # do not relaunch OpenScout after installing",
+    "  scout install --no-restart    # do not relaunch Scout after installing",
     "  scout install --candidate <receipt.json> --dmg <file> # explicit local signed candidate",
     "",
     "Behavior:",
     "  Downloads the signed + notarized OpenScout.dmg from the GitHub release,",
     "  verifies the published byte size and sha256 digest when GitHub provides one,",
-    "  then codesign and Gatekeeper-assess the DMG before mounting. OpenScout.app",
+    "  then codesign and Gatekeeper-assess the DMG before mounting. Scout.app",
     "  must match the pinned bundle id and Team ID, pass codesign --deep --strict,",
     "  and pass Gatekeeper execute after staging. A running copy of the installed",
     "  app and any stale ScoutMenu helpers from other checkouts are stopped first;",
@@ -250,7 +259,7 @@ function stripLeadingV(tag: string): string {
 function normalizeReleaseVersion(tag: string): string {
   const version = stripLeadingV(tag);
   if (!/^\d+\.\d+\.\d+$/.test(version)) {
-    throw new ScoutCliError(`unsupported OpenScout release tag: ${tag}`);
+    throw new ScoutCliError(`unsupported Scout release tag: ${tag}`);
   }
   return version;
 }
@@ -396,7 +405,7 @@ export function findAppDmgAsset(release: GithubRelease): GithubReleaseAsset {
   if (latestAlias) return latestAlias;
 
   throw new ScoutCliError(
-    `no OpenScout.app DMG found in release ${release.tag_name}. Assets: ${
+    `no product DMG found in release ${release.tag_name}. Assets: ${
       assets.map((asset) => asset.name).join(", ") || "(none)"
     }`,
   );
@@ -451,7 +460,7 @@ async function fetchRelease(
   throw new ScoutCliError(
     version
       ? `release "${version}" not found on GitHub (${OPENSCOUT_RELEASE_OWNER}/${OPENSCOUT_RELEASE_REPOSITORY})`
-      : `could not fetch the latest OpenScout release from GitHub (${OPENSCOUT_RELEASE_OWNER}/${OPENSCOUT_RELEASE_REPOSITORY})`,
+      : `could not fetch the latest Scout release from GitHub (${OPENSCOUT_RELEASE_OWNER}/${OPENSCOUT_RELEASE_REPOSITORY})`,
   );
 }
 
@@ -500,11 +509,14 @@ function unmountDmg(mountPoint: string, deps: ResolvedInstallDependencies): void
 }
 
 function requireMountedOpenScoutApp(mountPoint: string, deps: ResolvedInstallDependencies): string {
-  const source = join(mountPoint, OPENSCOUT_APP_NAME);
-  if (!deps.existsSync(source) || !deps.existsSync(infoPlistPath(source))) {
-    throw new ScoutCliError(`no ${OPENSCOUT_APP_NAME} found in the mounted DMG at ${mountPoint}`);
+  // Releases up to 0.2.105 carry `OpenScout.app`. The staged copy is always
+  // written under the current name, so an old DMG still installs as Scout.app.
+  for (const name of [OPENSCOUT_APP_NAME, ...LEGACY_APP_BUNDLE_NAMES]) {
+    const source = join(mountPoint, name);
+    if (deps.existsSync(source) && deps.existsSync(infoPlistPath(source))) return source;
   }
-  return source;
+  const names = [OPENSCOUT_APP_NAME, ...LEGACY_APP_BUNDLE_NAMES].join(" or ");
+  throw new ScoutCliError(`no ${names} found in the mounted DMG at ${mountPoint}`);
 }
 
 function codesignField(output: string, key: string): string | null {
@@ -814,7 +826,7 @@ function inspectInstallProcessIds(
   deps: ResolvedInstallDependencies,
 ): { installed: number[]; staleMenus: number[] } {
   const result = deps.run("ps", ["-axo", "pid=,args="]);
-  requireSuccess(result, "could not inspect running OpenScout processes");
+  requireSuccess(result, "could not inspect running Scout processes");
   return {
     installed: processIdsForInstalledApp(result.stdout, deps.appPath),
     staleMenus: processIdsForMenuOutsideApp(result.stdout, deps.appPath),
@@ -854,7 +866,73 @@ function stopRunningApp(deps: ResolvedInstallDependencies): boolean {
   }
   if (waitUntilInstallUnblocked(deps, STOP_POLL_ATTEMPTS)) return hadInstalledRunning;
 
-  throw new ScoutCliError("could not stop OpenScout before replacing it");
+  throw new ScoutCliError("could not stop Scout before replacing it");
+}
+
+/**
+ * Stop whatever is running out of one bundle, by executable path.
+ *
+ * `stopRunningApp` only knows `deps.appPath`, so on the install that performs
+ * the rename the still-running pre-rename app is invisible to it.
+ */
+function stopAppAtPath(appPath: string, deps: ResolvedInstallDependencies): boolean {
+  const scan = (): number[] => {
+    const result = deps.run("ps", ["-axo", "pid=,args="]);
+    requireSuccess(result, "could not inspect running Scout processes");
+    return processIdsForInstalledApp(result.stdout, appPath);
+  };
+
+  if (scan().length === 0) return false;
+  for (const pid of scan()) deps.run("kill", [String(pid)]);
+  for (let attempt = 0; attempt < STOP_POLL_ATTEMPTS; attempt += 1) {
+    if (scan().length === 0) return true;
+    deps.sleep(STOP_POLL_MS);
+  }
+  for (const pid of scan()) deps.run("kill", ["-9", String(pid)]);
+  for (let attempt = 0; attempt < STOP_POLL_ATTEMPTS; attempt += 1) {
+    if (scan().length === 0) return true;
+    deps.sleep(STOP_POLL_MS);
+  }
+  throw new ScoutCliError(`could not stop the pre-rename app at ${appPath}`);
+}
+
+/**
+ * Retire bundles from before the `OpenScout.app` → `Scout.app` rename.
+ *
+ * Runs only after the new bundle is in place and verified, so a failed install
+ * never costs the operator their working app. Failing to remove one is untidy,
+ * not fatal: the install already succeeded, so it is reported and not thrown.
+ */
+function retireLegacyAppBundles(
+  deps: ResolvedInstallDependencies,
+  context: ScoutCommandContext,
+): { removed: string[]; hadRunning: boolean; blocked: boolean } {
+  const removed: string[] = [];
+  let hadRunning = false;
+  let blocked = false;
+  for (const name of LEGACY_APP_BUNDLE_NAMES) {
+    const legacyPath = join(dirname(deps.appPath), name);
+    if (legacyPath === deps.appPath || !deps.existsSync(legacyPath)) continue;
+    try {
+      if (stopAppAtPath(legacyPath, deps)) hadRunning = true;
+    } catch (error) {
+      blocked = true;
+      context.stderr(`Kept ${legacyPath}; automatic relaunch skipped: ${error instanceof Error ? error.message : String(error)}`);
+      continue;
+    }
+    try {
+      deps.rmSync(legacyPath, { recursive: true, force: true });
+      removed.push(legacyPath);
+      context.stderr(`Removed the pre-rename bundle at ${legacyPath}.`);
+    } catch (error) {
+      context.stderr(
+        `Could not remove the pre-rename bundle at ${legacyPath}: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
+  }
+  return { removed, hadRunning, blocked };
 }
 
 function launchApp(deps: ResolvedInstallDependencies): void {
@@ -889,24 +967,24 @@ async function runCheck(
   if (!deps.existsSync(deps.appPath)) {
     if (deps.existsSync(backupPathFor(deps.appPath))) {
       status = "repair-needed";
-      message = "An interrupted OpenScout install needs repair — run `scout install --force`.";
+      message = "An interrupted Scout install needs repair — run `scout install --force`.";
     } else {
       status = "not-installed";
-      message = "OpenScout is not installed — run `scout install`.";
+      message = "Scout is not installed — run `scout install`.";
     }
   } else {
     try {
       installed = verifyStagedOpenScoutApp(deps.appPath, deps);
       if (installed === target) {
         status = "up-to-date";
-        message = `OpenScout ${installed} is up to date.`;
+        message = `Scout ${installed} is up to date.`;
       } else {
         status = "update-available";
         message = `Update available: ${installed} → ${target}. Run \`scout install\`.`;
       }
     } catch (error) {
       status = "repair-needed";
-      message = `OpenScout needs repair (${error instanceof Error ? error.message : String(error)}). `
+      message = `Scout needs repair (${error instanceof Error ? error.message : String(error)}). `
         + "Run `scout install --force`.";
     }
   }
@@ -941,7 +1019,7 @@ export async function runInstallCommand(
   }
 
   context.stderr(options.candidate ? "Verifying explicit local candidate (unpublished)…"
-    : options.version ? `Fetching release ${options.version}…` : "Fetching the latest OpenScout release…");
+    : options.version ? `Fetching release ${options.version}…` : "Fetching the latest Scout release…");
   const release = options.candidate && options.dmg
     ? loadInstallCandidate(options.candidate, options.dmg)
     : await fetchRelease(options.version, deps);
@@ -964,7 +1042,7 @@ export async function runInstallCommand(
             installed: verifiedVersion,
             target,
             bundlePath: deps.appPath,
-            message: `OpenScout ${target} is already installed (use --force to reinstall).`,
+            message: `Scout ${target} is already installed (use --force to reinstall).`,
           } satisfies ScoutInstallResult,
           renderInstallResult,
         );
@@ -972,7 +1050,7 @@ export async function runInstallCommand(
       } catch (error) {
         repairingInstalledApp = true;
         context.stderr(
-          `Installed OpenScout ${target} failed verification; repairing it: ${
+          `Installed Scout ${target} failed verification; repairing it: ${
             error instanceof Error ? error.message : String(error)
           }`,
         );
@@ -996,7 +1074,7 @@ export async function runInstallCommand(
       } else {
         await downloadDmg(asset, dmgPath, context, deps);
       }
-      context.stderr(`Installing OpenScout ${target} to ${deps.appPath}…`);
+      context.stderr(`Installing Scout ${target} to ${deps.appPath}…`);
       verifyDownloadedDmg(dmgPath, deps);
       mountDmg(dmgPath, mountPoint, deps);
       mounted = true;
@@ -1010,15 +1088,23 @@ export async function runInstallCommand(
       deps.rmSync(workDir, { recursive: true, force: true });
     }
 
-    if (wasRunning && options.restart) {
+    // The pre-rename bundle shares this one's bundle id, so it is retired only
+    // now — after the replacement is staged, moved and verified. If it was the
+    // copy the operator had running, the relaunch below is what they expect.
+    const retirement = retireLegacyAppBundles(deps, context);
+    if (retirement.hadRunning) wasRunning = true;
+
+    if (wasRunning && options.restart && !retirement.blocked) {
       launchApp(deps);
     }
 
     const status: ScoutInstallStatus = hadInstalledApp ? "updated" : "installed";
-    const relaunchNote = wasRunning
+    const relaunchNote = retirement.blocked
+      ? " (legacy app cleanup incomplete; automatic relaunch skipped)"
+      : wasRunning
       ? options.restart
         ? " (relaunched)"
-        : " (restart OpenScout to use the new version)"
+        : " (restart Scout to use the new version)"
       : "";
     let verb = "Installed";
     if (repairingInstalledApp || (hadInstalledApp && !installedBefore)) {
@@ -1034,7 +1120,7 @@ export async function runInstallCommand(
         installed: installedAfter,
         target,
         bundlePath: deps.appPath,
-        message: `${verb} OpenScout ${installedAfter} → ${deps.appPath}${relaunchNote}`,
+        message: `${verb} Scout ${installedAfter} → ${deps.appPath}${relaunchNote}`,
       } satisfies ScoutInstallResult,
       renderInstallResult,
     );

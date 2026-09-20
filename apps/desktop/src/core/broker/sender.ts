@@ -25,6 +25,19 @@ export function resolveScoutAgentName(agentName?: string | null): string {
   return resolveOperatorName();
 }
 
+const TRUTHY_ENV_VALUES = new Set(["1", "true", "yes", "on"]);
+
+export function resolveHerdrAgentName(env: NodeJS.ProcessEnv): string | null {
+  const herdrEnv = env.HERDR_ENV?.trim().toLowerCase();
+  if (!herdrEnv || !TRUTHY_ENV_VALUES.has(herdrEnv)) {
+    return null;
+  }
+  if (!env.HERDR_PANE_ID?.trim()) {
+    return null;
+  }
+  return normalizeAgentSelectorSegment(env.HERDR_AGENT_NAME ?? "") || null;
+}
+
 export function resolveHumanAskSenderName(
   agentName: string | null | undefined,
   env: NodeJS.ProcessEnv = process.env,
@@ -42,6 +55,7 @@ function resolveConfiguredSenderIdForProjectRoot(
   overrides: Awaited<ReturnType<typeof readRelayAgentOverrides>>,
   projectRoot: string,
   preferredDefinitionIds: string[] = [],
+  allowProjectFallback = true,
 ): string | null {
   let fallbackSenderId: string | null = null;
   const normalizedPreferredDefinitionIds = preferredDefinitionIds
@@ -62,6 +76,10 @@ function resolveConfiguredSenderIdForProjectRoot(
     }
   }
 
+  if (!allowProjectFallback) {
+    return null;
+  }
+
   for (const [agentId, override] of Object.entries(overrides)) {
     if (BUILT_IN_AGENT_DEFINITION_IDS.has(agentId)) {
       continue;
@@ -76,12 +94,27 @@ function resolveConfiguredSenderIdForProjectRoot(
 
 async function inferSenderIdForProjectRoot(
   projectRoot: string,
+  preferredDefinitionIds: string[] = [],
 ): Promise<string> {
   const overrides = await readRelayAgentOverrides();
   const projectConfig = await readProjectConfig(projectRoot);
   const configuredDefinitionId = normalizeAgentSelectorSegment(
     projectConfig?.agent?.id?.trim() ?? "",
   );
+  const normalizedPreferredDefinitionIds = preferredDefinitionIds
+    .map((value) => normalizeAgentSelectorSegment(value))
+    .filter(Boolean);
+  const preferredDefinitionId = normalizedPreferredDefinitionIds[0];
+  if (preferredDefinitionId) {
+    const preferredSenderId = resolveConfiguredSenderIdForProjectRoot(
+      overrides,
+      projectRoot,
+      [preferredDefinitionId],
+      false,
+    );
+    return preferredSenderId
+      ?? buildRelayAgentInstance(preferredDefinitionId, projectRoot).id;
+  }
   const projectDefaultDefinitionIds = [
     configuredDefinitionId,
     projectConfig?.project?.id,
@@ -114,11 +147,17 @@ export async function resolveScoutSenderId(
   if (env.OPENSCOUT_AGENT?.trim()) {
     return env.OPENSCOUT_AGENT.trim();
   }
+  const herdrAgentName = resolveHerdrAgentName(env);
   const projectRoot = await findNearestProjectRoot(currentDirectory);
   if (!projectRoot) {
-    return resolveOperatorName();
+    return herdrAgentName
+      ? buildRelayAgentInstance(herdrAgentName, currentDirectory).id
+      : resolveOperatorName();
   }
-  return inferSenderIdForProjectRoot(projectRoot);
+  return inferSenderIdForProjectRoot(
+    projectRoot,
+    herdrAgentName ? [herdrAgentName] : [],
+  );
 }
 
 /**

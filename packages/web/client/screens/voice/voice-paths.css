@@ -1,0 +1,1117 @@
+/* Voice path diagram — see VoicePathDiagram.tsx for the direction contract. */
+
+.vpd-wrap {
+  padding: 6px 16px 2px;
+}
+
+.vpd {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+.vpd-frame {
+  fill: none;
+  stroke: color-mix(in srgb, var(--hud-ink) 14%, transparent);
+  stroke-width: 1;
+}
+
+.vpd-frame-label,
+.vpd-cloud-label,
+.vpd-stub-label {
+  font-family: "JetBrains Mono", ui-monospace, Menlo, monospace;
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+}
+
+.vpd-frame-label {
+  fill: var(--scout-chrome-ink-ghost);
+}
+
+.vpd-cloud-label {
+  fill: color-mix(in srgb, var(--cat-sky, #38bdf8) 80%, transparent);
+}
+
+/* The local chain's reply-text leg: ink, not sky — it goes to the configured
+   reply model, which may or may not be off-machine, so it must not wear the
+   leaves-the-machine color. Dotted marks it as text, not audio. */
+.vpd-stub {
+  stroke: color-mix(in srgb, var(--hud-ink) 32%, transparent);
+  stroke-width: 1;
+  stroke-dasharray: 1.5 3;
+}
+
+.vpd-stub-label {
+  fill: var(--scout-chrome-ink-ghost);
+}
+
+.vpd-speaker {
+  fill: color-mix(in srgb, var(--hud-ink) 55%, transparent);
+  stroke: none;
+}
+
+.vpd-speaker-arc {
+  fill: none;
+  stroke: color-mix(in srgb, var(--hud-ink) 55%, transparent);
+  stroke-width: 1.2;
+}
+
+.vpd-speaker-live .vpd-speaker {
+  fill: var(--hud-accent, oklch(0.86 0.17 125));
+}
+
+.vpd-speaker-live .vpd-speaker-arc {
+  stroke: var(--hud-accent, oklch(0.86 0.17 125));
+  animation: vpd-pulse 1.1s ease-in-out infinite;
+}
+
+.vpd-speaker-live .vpd-speaker-arc + .vpd-speaker-arc {
+  animation-delay: 150ms;
+}
+
+.vpd-node-plate {
+  fill: color-mix(in srgb, var(--hud-ink) 4.5%, transparent);
+  stroke: transparent;
+  stroke-width: 1;
+}
+
+.vpd-node-label {
+  font-family: "JetBrains Mono", ui-monospace, Menlo, monospace;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  fill: var(--scout-chrome-ink-strong);
+}
+
+.vpd-node--dim .vpd-node-label {
+  fill: var(--scout-chrome-ink-faint);
+}
+
+.vpd-node-dot {
+  fill: color-mix(in srgb, var(--hud-ink) 30%, transparent);
+}
+
+/* Availability reads as status-ok (green); lime stays reserved for stages
+   actively working right now (Signal-Not-Status rule). */
+.vpd-node--ready .vpd-node-plate {
+  stroke: color-mix(in srgb, var(--hud-status-ok, oklch(0.80 0.15 155)) 45%, transparent);
+}
+
+.vpd-node--ready .vpd-node-dot {
+  fill: var(--hud-status-ok, oklch(0.80 0.15 155));
+}
+
+.vpd-node--ok .vpd-node-plate {
+  stroke: color-mix(in srgb, var(--hud-accent, oklch(0.86 0.17 125)) 45%, transparent);
+}
+
+.vpd-node--ok .vpd-node-dot {
+  fill: var(--hud-accent, oklch(0.86 0.17 125));
+}
+
+.vpd-node--working .vpd-node-plate {
+  stroke: color-mix(in srgb, var(--hud-accent, oklch(0.86 0.17 125)) 60%, transparent);
+}
+
+.vpd-node--working .vpd-node-dot {
+  fill: var(--hud-accent, oklch(0.86 0.17 125));
+  animation: vpd-pulse 1.6s ease-in-out infinite;
+}
+
+.vpd-node--warn .vpd-node-plate {
+  stroke: color-mix(in srgb, var(--hud-status-warn, oklch(0.82 0.15 85)) 50%, transparent);
+}
+
+.vpd-node--warn .vpd-node-dot {
+  fill: var(--hud-status-warn, oklch(0.82 0.15 85));
+}
+
+.vpd-node--error .vpd-node-plate {
+  stroke: color-mix(in srgb, var(--hud-status-error, oklch(0.72 0.18 25)) 55%, transparent);
+}
+
+.vpd-node--error .vpd-node-dot {
+  fill: var(--hud-status-error, oklch(0.72 0.18 25));
+}
+
+/* The local turn engine is not wired yet: dashed plate, no state to earn. */
+.vpd-node--pending .vpd-node-plate {
+  fill: transparent;
+  stroke: color-mix(in srgb, var(--hud-ink) 28%, transparent);
+  stroke-dasharray: 3 3;
+}
+
+.vpd-node--pending .vpd-node-label {
+  fill: var(--scout-chrome-ink-ghost);
+}
+
+.vpd-node--pending .vpd-node-dot {
+  fill: none;
+  stroke: color-mix(in srgb, var(--hud-ink) 30%, transparent);
+  stroke-width: 1;
+  animation: vpd-breathe 2s ease-in-out infinite;
+}
+
+/* The cloud node keeps its sky identity in every state; only its dot reports
+   call state. */
+.vpd-node--sky .vpd-node-plate {
+  fill: color-mix(in srgb, var(--cat-sky, #38bdf8) 7%, transparent);
+  stroke: color-mix(in srgb, var(--cat-sky, #38bdf8) 40%, transparent);
+}
+
+.vpd-node--sky.vpd-node--ok .vpd-node-plate,
+.vpd-node--sky.vpd-node--warn .vpd-node-plate,
+.vpd-node--sky.vpd-node--error .vpd-node-plate {
+  stroke: color-mix(in srgb, var(--cat-sky, #38bdf8) 65%, transparent);
+}
+
+.vpd-link {
+  fill: none;
+  stroke: color-mix(in srgb, var(--hud-ink) 35%, transparent);
+  stroke-width: 1.5;
+}
+
+.vpd-link--sky {
+  /* Idle arches sit at half chroma — sky is earned by a live call, matching
+     the screen's "color reports state" contract. */
+  stroke: color-mix(in srgb, var(--cat-sky, #38bdf8) 45%, transparent);
+}
+
+.vpd-link--sky.vpd-flow {
+  stroke: color-mix(in srgb, var(--cat-sky, #38bdf8) 85%, transparent);
+}
+
+.vpd-link--pending {
+  stroke: color-mix(in srgb, var(--hud-ink) 22%, transparent);
+  stroke-dasharray: 3 4;
+}
+
+.vpd-arrow--ink {
+  fill: color-mix(in srgb, var(--hud-ink) 35%, transparent);
+}
+
+.vpd-arrow--sky {
+  fill: color-mix(in srgb, var(--cat-sky, #38bdf8) 85%, transparent);
+}
+
+.vpd-arrow--sky-dim {
+  fill: color-mix(in srgb, var(--cat-sky, #38bdf8) 45%, transparent);
+}
+
+.vpd-crossing {
+  fill: var(--cat-sky, #38bdf8);
+}
+
+/* A live call sends a packet along the links that carry audio. */
+.vpd-flow {
+  stroke-dasharray: 2 6;
+  animation: vpd-flow 1.1s linear infinite;
+}
+
+@keyframes vpd-flow {
+  to {
+    stroke-dashoffset: -8;
+  }
+}
+
+@keyframes vpd-pulse {
+  0%,
+  100% {
+    opacity: 0.4;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+@keyframes vpd-breathe {
+  0%,
+  100% {
+    opacity: 0.35;
+  }
+  50% {
+    opacity: 0.9;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .vpd-flow,
+  .vpd-node--working .vpd-node-dot,
+  .vpd-node--pending .vpd-node-dot {
+    animation: none;
+  }
+
+  .vp7-dot,
+  .vp7-stop-label,
+  .vp7-link::after {
+    animation: none !important;
+    transition: none !important;
+  }
+
+  .vp7-link--filling i,
+  .vp7-share-seg--live {
+    animation: none !important;
+  }
+}
+
+/* Mode switch: one segmented pill, two shapes. The glyph says what the mode
+   is made of — a capsule loop versus a block chain. */
+.voice-mode-switch {
+  display: flex;
+  gap: 2px;
+  padding: 2px;
+  border-radius: 999px;
+  border: 1px solid var(--scout-chrome-border-soft);
+  background: var(--scout-chrome-hover);
+}
+
+.voice-mode-switch button {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 12px;
+  border-radius: 999px;
+  border: none;
+  background: transparent;
+  font-family: "JetBrains Mono", ui-monospace, Menlo, monospace;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--scout-chrome-ink-faint);
+  cursor: pointer;
+  transition: color 140ms cubic-bezier(0.16, 1, 0.3, 1), background 140ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.voice-mode-switch button:hover {
+  color: var(--scout-chrome-ink-strong);
+}
+
+.voice-mode-switch button[aria-selected="true"] {
+  background: var(--scout-chrome-ink-strong);
+  color: var(--hud-bg);
+}
+
+.voice-mode-switch button:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--hud-accent, oklch(0.86 0.17 125)) 35%, transparent);
+}
+
+.voice-mode-live-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--hud-accent, oklch(0.86 0.17 125));
+  animation: vpd-pulse 1.6s ease-in-out infinite;
+}
+
+.voice-path-caption {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px 16px;
+  padding: 0 20px 10px;
+}
+
+.voice-path-caption p {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.35;
+  color: var(--scout-chrome-ink-faint);
+}
+
+/* Execution/cost identity: the answer to "which voice is this and is the
+   meter running" — chips at label-sm, not ghost fine print. */
+.voice-id {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 6px;
+}
+
+.voice-id-chip {
+  font-family: "JetBrains Mono", ui-monospace, Menlo, monospace;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  padding: 2px 8px;
+  border-radius: 6px;
+  border: 1px solid color-mix(in srgb, var(--hud-ink) 14%, transparent);
+  color: var(--scout-chrome-ink-faint);
+  white-space: nowrap;
+}
+
+/* The meter chip only lights lime while a metered call is actually running —
+   lime is "working," and a running meter is work being spent. */
+.voice-id-chip--meter.is-live {
+  border-color: color-mix(in srgb, var(--hud-accent, oklch(0.86 0.17 125)) 40%, transparent);
+  background: color-mix(in srgb, var(--hud-accent, oklch(0.86 0.17 125)) 10%, transparent);
+  color: color-mix(in srgb, var(--hud-accent, oklch(0.86 0.17 125)) 60%, var(--hud-ink));
+}
+
+.voice-id-chip--free {
+  border-color: color-mix(in srgb, var(--hud-status-ok, oklch(0.80 0.15 155)) 35%, transparent);
+  color: color-mix(in srgb, var(--hud-status-ok, oklch(0.80 0.15 155)) 60%, var(--hud-ink));
+}
+
+.voice-mode-switch button svg {
+  display: block;
+}
+
+/* /voice instrument: header readout, floor, two-column plate | activity. */
+
+.voice-readout {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: "JetBrains Mono", ui-monospace, Menlo, monospace;
+  font-size: 11px;
+  letter-spacing: 0.02em;
+  color: var(--scout-chrome-ink-faint);
+}
+
+.voice-readout-clock {
+  font-variant-numeric: tabular-nums;
+  color: var(--hud-accent, oklch(0.86 0.17 125));
+}
+
+.voice-floor {
+  padding: 16px 20px 8px;
+}
+
+.voice-floor-who {
+  display: block;
+  font-size: 22px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  line-height: 1.1;
+  color: var(--scout-chrome-ink-strong);
+}
+
+.voice-floor-who.is-open,
+.voice-floor-who.is-wait {
+  color: var(--scout-chrome-ink-faint);
+}
+
+.voice-floor-meta {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin-top: 6px;
+  font-family: "JetBrains Mono", ui-monospace, Menlo, monospace;
+  font-size: 11px;
+  letter-spacing: 0.02em;
+  color: var(--scout-chrome-ink-faint);
+}
+
+.voice-floor-count {
+  font-variant-numeric: tabular-nums;
+  color: var(--hud-accent, oklch(0.86 0.17 125));
+}
+
+.voice-floor-count.is-idle {
+  color: var(--scout-chrome-ink-ghost);
+}
+
+.voice-instrument {
+  display: grid;
+  grid-template-columns: minmax(0, 720px) minmax(240px, 360px);
+  grid-template-areas: "main trace";
+  justify-content: center;
+  min-height: 0;
+  flex: 1;
+}
+
+.voice-instrument-main,
+.voice-instrument-trace {
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+}
+
+.voice-instrument-main { grid-area: main; }
+.voice-instrument-trace { grid-area: trace; }
+
+.voice-instrument-trace {
+  border-left: 1px solid var(--scout-chrome-border-soft);
+  padding: 16px 18px;
+}
+
+.voice-trace-kicker {
+  margin: 0 0 8px;
+  font-family: "JetBrains Mono", ui-monospace, Menlo, monospace;
+  font-size: 12px;
+  letter-spacing: -0.01em;
+  color: var(--scout-chrome-ink-ghost);
+}
+
+.voice-stack {
+  display: flex;
+  flex: 0 0 auto;
+  flex-direction: column;
+  width: min(560px, 100%);
+  min-height: 0;
+  margin-inline: auto;
+}
+
+.voice-stack > * {
+  flex-shrink: 0;
+}
+
+.voice-stack-ctl {
+  padding: 12px 20px 24px;
+}
+
+.voice-stack-ctl > * {
+  height: auto;
+  min-height: 0;
+}
+
+.voice-control-well {
+  display: flex;
+  align-items: flex-start;
+  justify-content: flex-start;
+  padding: 0;
+}
+
+.voice-control-stack {
+  display: flex;
+  width: min(420px, 100%);
+  flex-direction: column;
+  align-items: stretch;
+  gap: 10px;
+}
+
+.voice-instrument .voice-control-stack .svc-action-start,
+.voice-instrument .voice-control-stack .voice-cta-end,
+.voice-instrument .voice-control-stack .svc-action-end,
+.voice-instrument .voice-control-stack .svc-action-connecting {
+  height: 44px;
+  width: 100%;
+}
+
+.voice-instrument .svc-action-start {
+  border-color: var(--scout-chrome-ink-strong);
+  background: var(--scout-chrome-ink-strong);
+  color: var(--hud-bg);
+}
+
+.voice-control-stack .voice-cta-price {
+  margin: 0;
+}
+
+.dvp-room--instrument {
+  height: auto;
+  min-height: 0;
+  overflow: visible;
+  background: transparent;
+}
+
+.dvp-room--instrument .dvp-room,
+.voice-instrument-main .dvp-room--instrument {
+  background: transparent;
+}
+
+.dvp-instrument-stage {
+  display: flex;
+  flex: 0 0 auto;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: flex-start;
+  padding: 0;
+}
+
+.dvp-instrument-error {
+  margin: 10px 0 0;
+  max-width: 42ch;
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--dvp-error, var(--hud-status-error, oklch(0.72 0.18 25)));
+}
+
+.voice-cta-end {
+  border-color: color-mix(in srgb, var(--hud-ink) 22%, transparent);
+  background: transparent;
+  color: var(--scout-chrome-ink-strong);
+}
+
+.voice-cta-end:hover {
+  background: var(--scout-chrome-hover);
+}
+
+.voice-cta-clock {
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  font-variant-numeric: tabular-nums;
+  color: var(--hud-accent, oklch(0.86 0.17 125));
+}
+
+.voice-cta-price {
+  margin: 8px 0 0;
+  text-align: center;
+  font-family: "JetBrains Mono", ui-monospace, Menlo, monospace;
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  color: var(--scout-chrome-ink-faint);
+}
+
+.voice-receipt {
+  font-family: "JetBrains Mono", ui-monospace, Menlo, monospace;
+  font-size: 11px;
+  letter-spacing: 0.02em;
+  color: var(--scout-chrome-ink-strong);
+}
+
+/* The shared control well: one skeleton both modes render —
+   title · spec · CTA · consent line · flag row · session tail. */
+
+.voice-well {
+  display: flex;
+  width: min(520px, 100%);
+  margin: 0 auto;
+  padding: 26px 28px 22px;
+  flex-direction: column;
+  align-items: stretch;
+  border: 1px solid var(--scout-chrome-border-soft);
+  border-radius: 24px;
+  background: color-mix(in srgb, var(--hud-ink) 3%, transparent);
+}
+
+.voice-well-title {
+  font-size: 17px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--scout-chrome-ink-strong);
+}
+
+.voice-well-sub {
+  margin-top: 5px;
+  font-family: "JetBrains Mono", ui-monospace, Menlo, monospace;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--scout-chrome-ink-faint);
+}
+
+.voice-well-cta {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  height: 44px;
+  margin-top: 16px;
+  border-radius: 12px;
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  cursor: pointer;
+  transition: background 140ms cubic-bezier(0.16, 1, 0.3, 1), border-color 140ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.voice-well-cta--start {
+  border: 1px solid var(--scout-chrome-ink-strong);
+  background: var(--scout-chrome-ink-strong);
+  color: var(--hud-bg);
+}
+
+.voice-well-cta--start:hover:not(:disabled) {
+  opacity: 0.88;
+}
+
+.voice-well-cta--start .voice-well-cta-clock {
+  color: inherit;
+  opacity: 0.85;
+}
+
+.voice-well-cta--end {
+  border: 1px solid color-mix(in srgb, var(--hud-ink) 22%, transparent);
+  background: transparent;
+  color: var(--scout-chrome-ink-strong);
+}
+
+.voice-well-cta--end:hover:not(:disabled) {
+  background: var(--scout-chrome-hover);
+}
+
+.voice-well-cta:disabled {
+  cursor: wait;
+  opacity: 0.6;
+}
+
+.voice-well-cta:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--hud-accent, oklch(0.86 0.17 125)) 35%, transparent);
+}
+
+.voice-well-cta-clock {
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  font-variant-numeric: tabular-nums;
+  color: var(--hud-accent, oklch(0.86 0.17 125));
+}
+
+.voice-well-note {
+  margin: 10px 0 0;
+  text-align: center;
+  font-family: "JetBrains Mono", ui-monospace, Menlo, monospace;
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  color: var(--scout-chrome-ink-faint);
+}
+
+.voice-well-note--error {
+  color: var(--hud-status-error, oklch(0.72 0.18 25));
+}
+
+.voice-well-flags {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 18px;
+}
+
+.voice-well-flag {
+  height: 30px;
+  padding: 0 12px;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--hud-ink) 15%, transparent);
+  background: transparent;
+  font-family: "JetBrains Mono", ui-monospace, Menlo, monospace;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--scout-chrome-ink-faint);
+  cursor: pointer;
+  transition: color 140ms cubic-bezier(0.16, 1, 0.3, 1), background 140ms cubic-bezier(0.16, 1, 0.3, 1), border-color 140ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.voice-well-flag:hover:not(:disabled) {
+  color: var(--scout-chrome-ink-strong);
+}
+
+.voice-well-flag--on {
+  border-color: color-mix(in srgb, var(--hud-ink) 32%, transparent);
+  background: color-mix(in srgb, var(--hud-ink) 9%, transparent);
+  color: var(--scout-chrome-ink-strong);
+}
+
+.voice-well-flag:disabled {
+  cursor: default;
+  opacity: 0.45;
+}
+
+.voice-well-flag:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--hud-accent, oklch(0.86 0.17 125)) 35%, transparent);
+}
+
+.voice-well-flag-note {
+  margin-left: auto;
+  min-width: 0;
+  font-family: "JetBrains Mono", ui-monospace, Menlo, monospace;
+  font-size: 9.5px;
+  letter-spacing: 0.02em;
+  color: var(--scout-chrome-ink-ghost);
+}
+
+.voice-well-tail {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin-top: 18px;
+  padding-top: 14px;
+  border-top: 1px solid color-mix(in srgb, var(--hud-ink) 9%, transparent);
+}
+
+.voice-well-input {
+  min-width: 0;
+  margin-right: auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: "JetBrains Mono", ui-monospace, Menlo, monospace;
+  font-size: 10px;
+  letter-spacing: 0.02em;
+  color: var(--scout-chrome-ink-ghost);
+}
+
+.voice-well-input--warn {
+  color: var(--hud-status-error, oklch(0.72 0.18 25));
+}
+
+.voice-well-tail-action {
+  padding: 0;
+  border: none;
+  background: none;
+  font-family: "JetBrains Mono", ui-monospace, Menlo, monospace;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--scout-chrome-ink-faint);
+  cursor: pointer;
+}
+
+.voice-well-tail-action:hover:not(:disabled) {
+  color: var(--scout-chrome-ink-strong);
+}
+
+.voice-well-tail-action:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+
+.voice-well-tail-action:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--hud-accent, oklch(0.86 0.17 125)) 35%, transparent);
+}
+
+/* The well collapsed to a control row while a turn performs (Voice Paths VII
+   port): input left, flags + notes + quiet tails center, one CTA right. The
+   title/sub stay off — the header readout already carries the meter line. */
+.voice-well--row {
+  width: 100%;
+  flex-direction: row;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+  padding: 14px 0 0;
+  border: 0;
+  border-top: 1px solid var(--scout-chrome-border-soft);
+  border-radius: 0;
+  background: transparent;
+}
+
+.voice-well--row .voice-well-input {
+  flex: none;
+  margin-right: 0;
+}
+
+.voice-well--row .voice-well-flags {
+  flex: 1 1 auto;
+  min-width: 0;
+  flex-wrap: wrap;
+  row-gap: 6px;
+  margin-top: 0;
+}
+
+.voice-well--row .voice-well-flag-note {
+  margin-left: 0;
+}
+
+.voice-well--row .voice-well-note {
+  min-width: 0;
+  margin: 0;
+  text-align: left;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.voice-well--row .voice-well-cta {
+  flex: none;
+  height: auto;
+  margin-top: 0;
+  margin-left: auto;
+  padding: 8px 16px;
+  border-radius: 8px;
+  font-family: "JetBrains Mono", ui-monospace, Menlo, monospace;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+}
+
+/* Egress goes quiet mid-turn: Cancel/Stop are ghost actions; only
+   Start/Send/End commitments keep a solid or outlined face. */
+.voice-well-cta--ghost {
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--scout-chrome-ink-ghost);
+  padding-inline: 10px;
+}
+
+.voice-well-cta--ghost:hover:not(:disabled) {
+  color: var(--scout-chrome-ink-strong);
+  background: transparent;
+}
+
+@media (max-width: 760px) {
+  .voice-well--row .voice-well-cta {
+    margin-left: 0;
+  }
+}
+
+/* ── The stage track: the turn's live score (Voice Paths VII port). Stops
+   carry done / active / pending with their own clocks; the active stop's
+   inbound connector sweeps a travelling glint because its duration is
+   unknowable. GPT Live connecting lights stops left to right via --i
+   staggers; live opens the whole circuit. Sky stays on hops that leave this
+   machine. */
+.vp7-track {
+  display: flex;
+  align-items: flex-start;
+  padding: 14px 20px 4px;
+}
+
+.vp7-stop {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 5px;
+  flex: none;
+}
+
+.vp7-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--hud-ink) 30%, transparent);
+  transition: background 200ms ease, box-shadow 200ms ease;
+}
+
+.vp7-stop-label {
+  font-family: "JetBrains Mono", ui-monospace, Menlo, monospace;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--scout-chrome-ink-ghost);
+  white-space: nowrap;
+  transition: color 200ms ease;
+}
+
+.vp7-stop-time {
+  font-family: "JetBrains Mono", ui-monospace, Menlo, monospace;
+  font-size: 10px;
+  color: var(--scout-chrome-ink-faint);
+  font-variant-numeric: tabular-nums;
+  min-height: 13px;
+  white-space: nowrap;
+}
+
+.vp7-stop--done .vp7-dot { background: color-mix(in srgb, var(--hud-ink) 55%, transparent); }
+.vp7-stop--done .vp7-stop-label { color: var(--scout-chrome-ink-faint); }
+
+.vp7-stop--active .vp7-dot {
+  background: var(--hud-accent, oklch(0.86 0.17 125));
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--hud-accent, oklch(0.86 0.17 125)) 14%, transparent);
+  animation: vp7-breathe 1.6s ease-in-out infinite;
+}
+
+.vp7-stop--active .vp7-stop-label { color: var(--scout-chrome-ink-strong); }
+.vp7-stop--active .vp7-stop-time { color: var(--hud-accent, oklch(0.86 0.17 125)); }
+
+.vp7-stop--sky.vp7-stop--active .vp7-dot {
+  background: var(--cat-sky, #38bdf8);
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--cat-sky, #38bdf8) 14%, transparent);
+}
+.vp7-stop--sky.vp7-stop--active .vp7-stop-time { color: var(--cat-sky, #38bdf8); }
+.vp7-stop--sky.vp7-stop--done .vp7-dot { background: color-mix(in srgb, var(--cat-sky, #38bdf8) 65%, transparent); }
+
+.vp7-link {
+  flex: 1 1 0;
+  height: 1px;
+  margin: 3px 10px 0 6px;
+  background: var(--scout-chrome-border-soft);
+  position: relative;
+  overflow: hidden;
+  min-width: 24px;
+}
+
+.vp7-link::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: color-mix(in srgb, var(--hud-ink) 55%, transparent);
+  transform: scaleX(0);
+  transform-origin: left;
+  transition: transform 420ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.vp7-link--filled::after { transform: scaleX(1); }
+
+.vp7-link--sky::after { background: color-mix(in srgb, var(--cat-sky, #38bdf8) 55%, transparent); }
+
+.vp7-link--filling::after {
+  background: transparent;
+  transform: none;
+  transition: none;
+}
+
+.vp7-link--filling i {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 28%;
+  background: var(--hud-accent, oklch(0.86 0.17 125));
+  animation: vp7-sweep 1.4s cubic-bezier(0.45, 0, 0.55, 1) infinite;
+}
+
+.vp7-link--sky.vp7-link--filling i { background: var(--cat-sky, #38bdf8); }
+
+/* GPT Live connecting: the same sequential station-by-station sweep the old
+   strip played — pure CSS stagger, no timers. */
+.vp7-track--connecting .vp7-dot {
+  background: var(--hud-accent, oklch(0.86 0.17 125));
+  transition-delay: calc(var(--i, 0) * 140ms);
+}
+
+.vp7-track--connecting .vp7-stop--sky .vp7-dot {
+  background: var(--cat-sky, #38bdf8);
+}
+
+.vp7-track--connecting .vp7-stop-label {
+  color: var(--scout-chrome-ink-faint);
+  transition-delay: calc(var(--i, 0) * 140ms);
+}
+
+.vp7-track--connecting .vp7-link::after {
+  transform: scaleX(1);
+  transition-delay: calc(var(--i, 0) * 140ms);
+}
+
+.vp7-track--error .vp7-stop--sky .vp7-dot {
+  background: var(--hud-status-error, oklch(0.72 0.18 25));
+}
+
+@keyframes vp7-sweep {
+  0% { left: -30%; }
+  100% { left: 102%; }
+}
+
+@keyframes vp7-breathe {
+  0%, 100% { box-shadow: 0 0 0 3px color-mix(in srgb, var(--hud-accent, oklch(0.86 0.17 125)) 10%, transparent); }
+  50% { box-shadow: 0 0 0 6px color-mix(in srgb, var(--hud-accent, oklch(0.86 0.17 125)) 20%, transparent); }
+}
+
+@keyframes vp7-seg-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.55; }
+}
+
+/* ── The hero: the spoken sentence is the biggest thing on screen. ─── */
+.vp7-hero {
+  padding: 10px 20px 18px;
+  min-width: 0;
+}
+
+.vp7-hero-eyebrow {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin: 0 0 12px;
+  font-family: "JetBrains Mono", ui-monospace, Menlo, monospace;
+  font-size: 11px;
+  min-width: 0;
+}
+
+.vp7-who { font-weight: 600; letter-spacing: 0.02em; }
+.vp7-who--open { color: var(--hud-accent, oklch(0.86 0.17 125)); }
+.vp7-who--wait { color: var(--scout-chrome-ink-faint); }
+.vp7-who--sky { color: color-mix(in srgb, var(--cat-sky, #38bdf8) 88%, var(--hud-ink)); }
+.vp7-who--dim { color: var(--scout-chrome-ink-ghost); }
+
+.vp7-hero-clock {
+  color: var(--scout-chrome-ink-strong);
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+
+.vp7-hero-story {
+  color: var(--scout-chrome-ink-ghost);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.vp7-hero-quote {
+  margin: 0;
+  font-family: var(--hud-font-serif, "Spectral", "Cormorant Garamond", Georgia, serif);
+  font-size: 30px;
+  line-height: 1.25;
+  letter-spacing: -0.005em;
+  color: var(--scout-chrome-ink-strong);
+  max-width: 26ch;
+  text-wrap: balance;
+}
+
+.vp7-hero-quote--rest {
+  color: var(--scout-chrome-ink-ghost);
+  font-style: italic;
+  font-size: 24px;
+}
+
+.vp7-quote-mark { color: var(--scout-chrome-ink-ghost); }
+.vp7-quote-who {
+  font-family: "JetBrains Mono", ui-monospace, Menlo, monospace;
+  font-size: 11px;
+  color: var(--scout-chrome-ink-ghost);
+  white-space: nowrap;
+}
+
+/* The share-of-turn strip doubles as the lanes toggle. */
+.vp7-share {
+  display: flex;
+  gap: 2px;
+  height: 3px;
+  width: 100%;
+  max-width: 420px;
+  margin-top: 20px;
+  padding: 0;
+  border: 0;
+  border-radius: 2px;
+  overflow: hidden;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+}
+
+/* Keep the 3px score, but not a 3px pointer target. The visible strip stays
+   20px below the quote (top padding); keyboard focus surrounds
+   the full target. Static share graphics keep their original geometry. */
+button.vp7-share {
+  box-sizing: border-box;
+  height: 44px;
+  margin-top: 0;
+  padding: 20px 0 21px;
+  touch-action: manipulation;
+}
+
+.vp7-share:disabled { cursor: default; }
+
+.vp7-share:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--hud-accent, oklch(0.86 0.17 125)) 35%, transparent);
+}
+
+.vp7-share-seg { min-width: 3px; border-radius: 1px; transition: flex-grow 180ms linear; }
+.vp7-share-seg--you { background: color-mix(in srgb, var(--hud-ink) 46%, transparent); }
+.vp7-share-seg--transcribe { background: color-mix(in srgb, var(--hud-ink) 22%, transparent); }
+.vp7-share-seg--quiet { background: color-mix(in srgb, var(--hud-ink) 8%, transparent); }
+.vp7-share-seg--reply { background: color-mix(in srgb, var(--hud-accent, oklch(0.86 0.17 125)) 62%, transparent); }
+.vp7-share-seg--speak { background: var(--hud-accent, oklch(0.86 0.17 125)); }
+.vp7-share-seg--sky { background: color-mix(in srgb, var(--cat-sky, #38bdf8) 78%, transparent); }
+.vp7-share-seg--live { animation: vp7-seg-pulse 1.2s ease-in-out infinite; }
+
+@media (max-width: 760px) {
+  .vp7-hero-quote { font-size: 23px; }
+  .vp7-hero-quote--rest { font-size: 20px; }
+}
+
+@media (max-width: 1100px) {
+  .voice-instrument {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-areas: "main" "trace";
+  }
+
+  .voice-instrument-trace {
+    border-left: none;
+    border-top: 1px solid var(--scout-chrome-border-soft);
+  }
+}

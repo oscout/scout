@@ -17,6 +17,10 @@ export type ScoutRealtimeVoiceCall = {
   leaseId: string;
   /** Resolves only after the host-local concurrency lease has been released. */
   stop: () => Promise<void>;
+  /** Gates the captured mic tracks; the stream and lease stay open. */
+  setMicMuted: (muted: boolean) => void;
+  /** Gates the remote audio element; the transport stays connected. */
+  setPlaybackMuted: (muted: boolean) => void;
 };
 
 export type ScoutRealtimeVoiceTraceEvent = {
@@ -28,6 +32,11 @@ export type ScoutRealtimeVoiceTraceEvent = {
 };
 
 export type ScoutRealtimeVoiceTraceKind = "voice" | "scoutbot" | "navigation" | "agent" | "error";
+
+/** Session-clock notices used to draw the turn timeline. startMs/endMs/offsetMs are relative to session start. */
+export type ScoutRealtimeVoiceTurnNotice =
+  | { kind: "speech"; speaker: "you" | "live"; startMs: number; endMs: number; text?: string }
+  | { kind: "delegation"; offsetMs: number };
 
 export type ScoutRealtimeVoiceReplyActions = {
   agentRequests: {
@@ -50,6 +59,7 @@ export async function startScoutRealtimeVoiceCall(callbacks: {
     isCurrent: () => boolean,
   ) => ScoutRealtimeVoiceReplyActions | Promise<ScoutRealtimeVoiceReplyActions>;
   onTrace?: (event: ScoutRealtimeVoiceTraceEvent) => void;
+  onTurn?: (notice: ScoutRealtimeVoiceTurnNotice) => void;
   /** Read the route at the moment Scoutbot handles a turn, not only when the call started. */
   getRoute?: () => unknown;
   /** Host-specific navigation capabilities for honest voice guidance. */
@@ -58,6 +68,10 @@ export async function startScoutRealtimeVoiceCall(callbacks: {
   /** Native Scout input preference, matched to WebKit's device labels when available. */
   inputDeviceName?: string | null;
   signal?: AbortSignal;
+  getAudioMuteState?: () => { micMuted: boolean; playbackMuted: boolean };
+  /** Publish ownership before SDP setup can fail, so failed cleanup remains retryable. */
+  onLeaseAcquired?: (call: ScoutRealtimeVoiceCall) => void;
+  onAudioControls?: (controls: Pick<ScoutRealtimeVoiceCall, "setMicMuted" | "setPlaybackMuted">) => void;
 } = {}): Promise<ScoutRealtimeVoiceCall> {
   throwIfAborted(callbacks.signal);
   if (!globalThis.RTCPeerConnection || !navigator.mediaDevices?.getUserMedia) {
@@ -81,6 +95,8 @@ export async function startScoutRealtimeVoiceCall(callbacks: {
   const setupSignal = setupController.signal;
   let stopped = false;
   let mediaStream: MediaStream | null = null;
+  let micMuted = callbacks.getAudioMuteState?.().micMuted ?? false;
+  audio.muted = callbacks.getAudioMuteState?.().playbackMuted ?? false;
   let leaseId: string | null = null;
   let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
   let heartbeatFailures = 0;
@@ -113,35 +129,55 @@ export async function startScoutRealtimeVoiceCall(callbacks: {
   let delegationContext: LiveDelegationContext | undefined;
   const pendingAppends = new Map<string, ReturnType<typeof setTimeout>>();
   let stopPromise: Promise<void> | null = null;
+  let audioTeardown: Promise<void> | null = null;
+  const applyMicMute = () => {
+    mediaStream?.getTracks().forEach((track) => { track.enabled = !micMuted; });
+  };
+  const setMicMuted = (muted: boolean) => {
+    micMuted = muted;
+    applyMicMute();
+  };
+  const setPlaybackMuted = (muted: boolean) => {
+    audio.muted = muted;
+  };
+  callbacks.onAudioControls?.({ setMicMuted, setPlaybackMuted });
   const stop = (): Promise<void> => {
     if (stopPromise) return stopPromise;
-    stopped = true;
-    setupController.abort();
-    callbacks.signal?.removeEventListener("abort", stopAfterAbort);
-    if (heartbeatTimer) clearInterval(heartbeatTimer);
-    heartbeatTimer = null;
-    clearTimeout(startupTimer);
-    delegationContext?.stop();
-    for (const timer of pendingAppends.values()) clearTimeout(timer);
-    pendingAppends.clear();
-    // Stop capturing immediately; keep the receiver alive for final usage.
-    mediaStream?.getTracks().forEach((track) => { track.enabled = false; });
-    const leaseToRelease = leaseId;
-    leaseId = null;
+    // Tear down audio once; retry release until the host acknowledges DELETE.
+    if (!audioTeardown) {
+      stopped = true;
+      setupController.abort();
+      callbacks.signal?.removeEventListener("abort", stopAfterAbort);
+      if (heartbeatTimer) clearInterval(heartbeatTimer);
+      heartbeatTimer = null;
+      clearTimeout(startupTimer);
+      delegationContext?.stop();
+      for (const timer of pendingAppends.values()) clearTimeout(timer);
+      pendingAppends.clear();
+      mediaStream?.getTracks().forEach((track) => { track.enabled = false; });
+      audioTeardown = (async () => {
+        if (!finalized && events?.readyState === "open") {
+          try { events.send(JSON.stringify({ type: "session.close", event_id: crypto.randomUUID() })); } catch {}
+          let closeTimer: ReturnType<typeof setTimeout> | undefined;
+          await Promise.race([finalEvent, new Promise<void>(resolve => { closeTimer = setTimeout(resolve, 4000); })]);
+          clearTimeout(closeTimer);
+        }
+        trace(finalized ? "Live session finalized" : "Live finalization unconfirmed", JSON.stringify({ sessionId, reason: finalReason, usageSeconds }));
+        mediaStream?.getTracks().forEach((track) => track.stop());
+        audio.pause(); audio.srcObject = null; peerConnection.close();
+      })();
+    }
     stopPromise = (async () => {
-      if (!finalized && events?.readyState === "open") {
-        try { events.send(JSON.stringify({ type: "session.close", event_id: crypto.randomUUID() })); } catch {}
-        let closeTimer: ReturnType<typeof setTimeout> | undefined;
-        await Promise.race([finalEvent, new Promise<void>(resolve => { closeTimer = setTimeout(resolve, 4000); })]);
-        clearTimeout(closeTimer);
+      await audioTeardown;
+      // A cancelled setup can discover a lease while audio is already closing.
+      const leaseToRelease = leaseId;
+      if (leaseToRelease) {
+        await releaseRealtimeVoiceLease(leaseToRelease, { state: finalized ? "confirmed" : "unconfirmed", reason: finalReason, seconds: usageSeconds });
+        if (leaseId === leaseToRelease) leaseId = null;
       }
-      trace(finalized ? "Live session finalized" : "Live finalization unconfirmed", JSON.stringify({ sessionId, reason: finalReason, usageSeconds }));
-      mediaStream?.getTracks().forEach((track) => track.stop());
-      audio.pause(); audio.srcObject = null; peerConnection.close();
-      if (leaseToRelease) await releaseRealtimeVoiceLease(leaseToRelease, { state: finalized ? "confirmed" : "unconfirmed", reason: finalReason, seconds: usageSeconds });
       if (!finalized && sessionId) callbacks.onError?.("Audio stopped; provider final usage is unconfirmed. Scout will attempt server cleanup.");
       callbacks.onState?.("ended");
-    })();
+    })().finally(() => { stopPromise = null; });
     return stopPromise;
   };
   const stopQuietly = () => {
@@ -188,6 +224,7 @@ export async function startScoutRealtimeVoiceCall(callbacks: {
       setupSignal,
     );
     throwIfAborted(setupSignal);
+    applyMicMute();
     for (const track of mediaStream.getTracks()) {
       peerConnection.addTrack(track, mediaStream);
     }
@@ -252,9 +289,23 @@ export async function startScoutRealtimeVoiceCall(callbacks: {
       }
       if (!started) return;
       if (payload.type === "session.input_transcript.delta" || payload.type === "session.output_transcript.delta") {
-        delegationContext?.transcript(payload.type === "session.input_transcript.delta" ? "user" : "assistant", payload.delta ?? "", payload.start_ms ?? NaN, payload.end_ms ?? NaN);
+        const speaker = payload.type === "session.input_transcript.delta" ? "user" : "assistant";
+        const startMs = payload.start_ms ?? NaN;
+        const endMs = payload.end_ms ?? NaN;
+        delegationContext?.transcript(speaker, payload.delta ?? "", startMs, endMs);
+        if (Number.isFinite(startMs) && Number.isFinite(endMs)) {
+          callbacks.onTurn?.({
+            kind: "speech",
+            speaker: speaker === "user" ? "you" : "live",
+            startMs,
+            endMs,
+            text: payload.delta,
+          });
+        }
       } else if (payload.type === "session.delegation.created" && payload.delegation?.target === "client") {
-        delegationContext?.delegation(payload.delegation.id, payload.offset_ms ?? 0);
+        const offsetMs = payload.offset_ms ?? 0;
+        delegationContext?.delegation(payload.delegation.id, offsetMs);
+        callbacks.onTurn?.({ kind: "delegation", offsetMs });
       }
     });
     startupTimer = setTimeout(() => {
@@ -279,6 +330,7 @@ export async function startScoutRealtimeVoiceCall(callbacks: {
     });
     sessionId = response.headers.get("x-openscout-live-session-id") ?? sessionId;
     leaseId = response.headers.get(SCOUT_REALTIME_VOICE_LEASE_HEADER)?.trim() || null;
+    if (leaseId) callbacks.onLeaseAcquired?.({ leaseId, stop, setMicMuted, setPlaybackMuted });
     const answerSdp = await abortable(response.text(), setupSignal);
     if (!response.ok) {
       throw new Error(readRealtimeCallError(answerSdp, response.status));
@@ -313,7 +365,7 @@ export async function startScoutRealtimeVoiceCall(callbacks: {
     throwIfAborted(setupSignal);
     if (stopped) throw new Error("Live session ended during setup.");
 
-    return { leaseId, stop };
+    return { leaseId, stop, setMicMuted, setPlaybackMuted };
   } catch (error) {
     await stop();
     throw error;
@@ -356,7 +408,7 @@ async function fulfillScoutLiveDelegation(input: {
     const response = await fetch(SCOUT_REALTIME_SCOUTBOT_CHAT_PATH, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ body: input.request, route: input.route, uiContext: input.uiContext }),
+      body: JSON.stringify({ body: input.request, route: input.route, uiContext: input.uiContext, usageMode: "api" }),
       signal: input.signal,
     });
     const raw = await response.text();

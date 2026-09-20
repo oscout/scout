@@ -91,6 +91,7 @@ import { useLaneDeck } from "./useLaneDeck.ts";
 import { useLaneWidthResize } from "./useLaneWidthResize.ts";
 import { isLaneSyntheticAgent } from "./agent-lane-navigation.ts";
 import { publishLaneRoster, type LaneRosterEntry } from "./lane-roster-store.ts";
+import { publishRecapLanes } from "../../lib/session-recap-lanes.ts";
 import {
   AGENT_LANES_GRID_COLUMN_OPTIONS,
   agentLanesLayoutOptions,
@@ -897,9 +898,17 @@ export function AgentLanesView({
     publishLaneRoster(entries);
   }, [visibleColumns, floorMode]);
 
+  useEffect(() => {
+    const visible = floorMode ? filteredLanes : visibleColumns.map((column) => column.lane);
+    publishRecapLanes(visible);
+  }, [filteredLanes, floorMode, visibleColumns]);
+
   // Clear on unmount so a stale roster doesn't linger for a rail that outlives
   // the deck (or a next mount before the first publish).
-  useEffect(() => () => publishLaneRoster(null), []);
+  useEffect(() => () => {
+    publishLaneRoster(null);
+    publishRecapLanes([]);
+  }, []);
   const [traceSheetTarget, setTraceSheetTarget] = useState<LaneTraceSheetTarget | null>(null);
   const inspectLane = useCallback((lane: AgentLane) => {
     setInspectedLaneId(lane.id);

@@ -33,6 +33,24 @@ const request = () => new Request('http://localhost/api/channels/room/events');
 const decode = (data: Uint8Array | undefined) => new TextDecoder().decode(data);
 
 describe('channel event invalidation boundary', () => {
+  test('without JetStream, serves an idle stream instead of 503', async () => {
+    const previous = process.env.OPENSCOUT_JETSTREAM_ENABLED;
+    delete process.env.OPENSCOUT_JETSTREAM_ENABLED;
+    const streams = new ChannelEventStreams();
+    try {
+      const response = await streams.open(request(), { channelId: 'room', readScope: async () => allowed() });
+      expect(response.status).toBe(200);
+      expect(response.headers.get('content-type') ?? '').toContain('text/event-stream');
+      const reader = response.body!.getReader();
+      expect(decode((await reader.read()).value)).toContain('event: ready');
+      await streams.stop();
+      reader.cancel().catch(() => undefined);
+    } finally {
+      if (previous === undefined) delete process.env.OPENSCOUT_JETSTREAM_ENABLED;
+      else process.env.OPENSCOUT_JETSTREAM_ENABLED = previous;
+    }
+  });
+
   test('denied scope never opens a transport connection', async () => {
     const streams = new ChannelEventStreams(); let opened = false;
     const response = await streams.open(request(), { channelId: 'room', readScope: async () => ({ ...allowed(), allowed: false }), open: async () => { opened = true; return fixture().open(); } });

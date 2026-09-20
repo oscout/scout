@@ -60,15 +60,63 @@ export function readTransferredFiles(
   dataTransfer: DataTransfer | null | undefined,
 ): File[] {
   if (!dataTransfer) return [];
-  const files = [...dataTransfer.files];
-  if (files.length > 0) return files;
-  const fromItems: File[] = [];
-  for (const item of dataTransfer.items) {
-    if (item.kind !== "file") continue;
-    const file = item.getAsFile();
-    if (file) fromItems.push(file);
+  const seen = new Set<string>();
+  const out: File[] = [];
+  const take = (file: File | null | undefined) => {
+    if (!file) return;
+    const key = `${file.name}:${file.size}:${file.lastModified}:${file.type}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    out.push(file);
+  };
+  for (const file of dataTransfer.files) take(file);
+  if (dataTransfer.items) {
+    for (const item of dataTransfer.items) {
+      if (item.kind === "file" || item.type.startsWith("image/") || item.type.startsWith("video/")) {
+        take(item.getAsFile());
+      }
+    }
   }
-  return fromItems;
+  rememberDroppedLocalPaths(dataTransfer, out);
+  return out;
+}
+
+/** Chromium/Electron sometimes expose a real path; browsers usually do not. */
+export function fileLocalPath(file: File): string | null {
+  const remembered = droppedLocalPaths.get(file);
+  if (remembered) return remembered;
+  const path = (file as File & { path?: unknown }).path;
+  return typeof path === "string" && path.startsWith("/") ? path : null;
+}
+
+const droppedLocalPaths = new WeakMap<File, string>();
+
+function rememberDroppedLocalPaths(dataTransfer: DataTransfer, files: File[]): void {
+  const raw = typeof dataTransfer.getData === "function" ? dataTransfer.getData("text/uri-list") : "";
+  const paths = localPathsFromUriList(raw);
+  if (paths.length === 0 || files.length === 0) return;
+  for (let index = 0; index < files.length; index += 1) {
+    const file = files[index];
+    const path = paths[index];
+    if (file && path) droppedLocalPaths.set(file, path);
+  }
+}
+
+function localPathsFromUriList(raw: string): string[] {
+  if (!raw.trim()) return [];
+  const paths: string[] = [];
+  for (const line of raw.split(/\r?\n/u)) {
+    if (!line || line.startsWith("#")) continue;
+    try {
+      const url = new URL(line.trim());
+      if (url.protocol !== "file:") continue;
+      const decoded = decodeURIComponent(url.pathname);
+      paths.push(decoded);
+    } catch {
+      // ignore unparsable lines
+    }
+  }
+  return paths;
 }
 
 export function readRoutableFiles(dataTransfer: DataTransfer | null | undefined): File[] {

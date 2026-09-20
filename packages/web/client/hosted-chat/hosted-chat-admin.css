@@ -1,0 +1,132 @@
+/* Hosted Chat operator page. Prefixed `hca-` so it cannot restyle Chat. */
+
+.hca {
+  position: fixed;
+  inset: 0;
+  display: grid;
+  grid-template-rows: 40px 1fr;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--font-sans);
+  font-size: var(--text-lg);
+  line-height: var(--leading-normal);
+  overflow: hidden;
+}
+.hca *,
+.hca *::before,
+.hca *::after { box-sizing: border-box; }
+:where(.hca) button {
+  font: inherit;
+  color: inherit;
+  background: none;
+  border: none;
+  padding: 0;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+.hca :focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+.hca-topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-lg);
+  padding: 0 var(--space-2xl);
+  border-bottom: 1px solid var(--border);
+  background: color-mix(in srgb, var(--surface) 55%, var(--bg));
+  min-width: 0;
+}
+.hca-topbar b { font-weight: 600; }
+.hca-topbar span,
+.hca-muted { color: var(--muted); font-size: var(--text-md); }
+.hca-body {
+  overflow: auto;
+  padding: var(--space-2xl);
+  display: grid;
+  gap: var(--space-2xl);
+  align-content: start;
+}
+.hca-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: var(--space-lg);
+}
+.hca-section {
+  border: 1px solid color-mix(in srgb, var(--ink) 8%, transparent);
+  border-radius: var(--radius-xl);
+  background: color-mix(in srgb, var(--surface) 96%, transparent);
+  padding: var(--space-xl);
+  display: grid;
+  gap: var(--space-md);
+  min-width: 0;
+}
+.hca-section h2 {
+  margin: 0;
+  font-size: var(--text-sm);
+  font-family: var(--font-mono);
+  letter-spacing: var(--tracking-md);
+  text-transform: uppercase;
+  color: var(--dim);
+  font-weight: 600;
+}
+.hca-stat {
+  display: grid;
+  gap: var(--space-3xs);
+}
+.hca-stat b {
+  font-size: var(--text-3xl);
+  font-weight: 600;
+  letter-spacing: -0.02em;
+}
+.hca-note {
+  margin: 0;
+  color: var(--dim);
+  font-size: var(--text-sm);
+  line-height: var(--leading-snug);
+}
+.hca-error { color: var(--red); font-size: var(--text-md); }
+.hca-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-sm);
+}
+.hca-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--text-md);
+}
+.hca-table th,
+.hca-table td {
+  text-align: left;
+  padding: var(--space-2xs) var(--space-sm) var(--space-2xs) 0;
+  border-bottom: 1px solid var(--border);
+  vertical-align: top;
+}
+.hca-table th {
+  color: var(--dim);
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-md);
+  font-weight: 600;
+}
+.hca-table button { color: var(--ink); text-decoration: underline; text-underline-offset: 2px; }
+.hca-input {
+  width: 4.5rem;
+  padding: var(--space-2xs) var(--space-sm);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+  color: var(--ink);
+  font: inherit;
+}
+.hca-warning { color: var(--amber); }
+
+@media (max-width: 720px) {
+  .hca-body { padding: var(--space-lg); }
+  .hca-table { font-size: var(--text-sm); }
+}

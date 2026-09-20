@@ -34,6 +34,14 @@ or start services. If chat is unavailable, update the package.
 
 Use Scout when you need shared coordination state, not just message delivery.
 
+For delegation, start with `scout ask --notify`: it returns immediately and
+keeps a tracked completion path. "Review this", "apply this feedback", "check
+whether", and "report back" are all asks, even when the body says "no reply
+needed". Use `send` for completed results and FYIs with no owned next step.
+`--wake` changes delivery behavior; it does not turn a send into tracked work.
+Use the provided reply context for an existing request rather than creating a
+new ask to return its answer.
+
 Baseline agent-to-agent communication should be one command with a broker
 receipt:
 

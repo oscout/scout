@@ -1,6 +1,11 @@
 import { randomUUID } from "node:crypto";
+import type { ScoutbotUsageStore } from "./scoutbot-usage.ts";
+import type { VoiceUsageMode } from "../shared/voice-usage.ts";
 import { SCOUT_RUNTIME_CATALOG } from "@openscout/protocol";
 import { scoutbotUiContext } from "../shared/scoutbot-navigation.ts";
+
+// Only the callable fetch contract is required; injected fetches need no Bun preconnect helper.
+type ScoutbotFetch = (...args: Parameters<typeof fetch>) => ReturnType<typeof fetch>;
 
 export type ScoutbotAssistantMessageRole = "user" | "assistant";
 
@@ -33,6 +38,12 @@ export type ScoutbotAssistantConfig = {
   editable: true;
   model: string;
   provider: ScoutbotAssistantProviderPreference;
+  /**
+   * Provider actually serving replies. Pinned preferences report themselves;
+   * "auto" reports its ladder pick (the agent path when launchable, OpenAI
+   * otherwise) — the last resolved provider once a reply has run.
+   */
+  effectiveProvider: ScoutbotAssistantProvider | null;
   systemPrompt: string;
   /** Selectable reply models for the web picker; the active model is always present. */
   modelOptions: ScoutbotAssistantModelOption[];
@@ -190,9 +201,24 @@ export type ScoutbotAssistantService = {
   archiveSession: (id: string) => ScoutbotAssistantSessionState;
   respond: (input: {
     body: string;
+    usageMode?: VoiceUsageMode;
     route?: unknown;
     uiContext?: unknown;
     signal?: AbortSignal;
+  }) => Promise<ScoutbotAssistantReply>;
+  /**
+   * Same reply contract as `respond`, but emits speech-ready sentences through
+   * `onSentence` as they stream from the provider. Falls back to the plain
+   * non-streaming call when the provider cannot stream; the returned payload
+   * and session bookkeeping are identical either way.
+   */
+  respondStream: (input: {
+    body: string;
+    usageMode?: VoiceUsageMode;
+    route?: unknown;
+    uiContext?: unknown;
+    signal?: AbortSignal;
+    onSentence: (sentence: string) => void;
   }) => Promise<ScoutbotAssistantReply>;
   createBrief: (input: {
     route?: unknown;
@@ -200,6 +226,21 @@ export type ScoutbotAssistantService = {
     mode?: ScoutbotBriefMode;
     onCaptured?: (capture: ScoutbotBriefCapture) => void;
   }) => Promise<ScoutbotBrief>;
+  summarizeSessionRecap: (input: {
+    body: string;
+    systemPrompt: string;
+    signal?: AbortSignal;
+  }) => Promise<string>;
+  /**
+   * One-shot cheap completion that does not touch the Scoutbot chat session.
+   * Uses the presenter model (gpt-4o-mini) unless OPENSCOUT_BUDGET_ADVICE_MODEL
+   * is set. OpenAI-only so it cannot spend Codex quota.
+   */
+  completeCheap: (input: {
+    systemPrompt: string;
+    body: string;
+    signal?: AbortSignal;
+  }) => Promise<{ text: string; model: string }>;
 };
 
 export type ScoutbotBriefMode = "tour" | "fleet-home";
@@ -218,15 +259,24 @@ type StoredSession = {
 
 export type ScoutbotAssistantProvider = "openai" | "codex";
 
-export type ScoutbotAssistantProviderPreference = "auto" | ScoutbotAssistantProvider;
+/**
+ * "agent" pins the Scout-managed agent path (codex app-server); "codex" is
+ * its legacy alias. "auto" prefers the agent path when it can launch and
+ * falls back to OpenAI when it cannot or fails before the first delta.
+ */
+export type ScoutbotAssistantProviderPreference = "auto" | "agent" | ScoutbotAssistantProvider;
 
 export type ScoutbotCodexAssistantInvocation = {
   sessionId: string;
   threadId?: string | null;
   systemPrompt: string;
   prompt: string;
+  /** Configured Scoutbot model for this invocation; overrides env defaults. */
+  model?: string | null;
   timeoutMs?: number;
   signal?: AbortSignal;
+  /** Fired with each agent-message delta while the turn streams. */
+  onDelta?: (delta: string) => void;
 };
 
 export type ScoutbotCodexAssistantInvoker = (
@@ -244,8 +294,12 @@ type OpenAIResponsePayload = {
 const DEFAULT_MODEL = "gpt-5.6-luna";
 const DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1";
 
-// The reply brain rides the OpenAI Responses API, so the picker offers the
-// runtime catalog's GPT ladder rather than a free-text field.
+// The reply brain rides a Scout-managed codex app-server session, so the
+// picker offers the runtime catalog's codex (GPT) ladder rather than a
+// free-text field. The fast-agent ladder's other contenders —
+// deepseek-v4-flash (opencode) and gemini flash — are deliberately absent:
+// packages/agent-sessions ships only the codex local transport, so there is
+// no honest launch path for them yet.
 const CATALOG_MODEL_OPTIONS: ScoutbotAssistantModelOption[] = (
   SCOUT_RUNTIME_CATALOG.harnesses.find((harness) => harness.id === "codex")?.models ?? []
 )
@@ -325,11 +379,17 @@ const DEFAULT_SYSTEM_PROMPT = [
 
 export function createScoutbotAssistantService(input: {
   currentDirectory: string;
+  usage?: () => ScoutbotUsageStore;
   loadContext: (route?: unknown) => Promise<Record<string, unknown>> | Record<string, unknown>;
   resolveApiKey?: () => Promise<string | null | undefined> | string | null | undefined;
   invokeCodex?: ScoutbotCodexAssistantInvoker;
+  /**
+   * Launch check for the agent (codex app-server) path; probed lazily and
+   * expected to cache negatives. Defaults to "an invoker exists".
+   */
+  agentAvailable?: () => boolean;
   env?: NodeJS.ProcessEnv;
-  fetchImpl?: typeof fetch;
+  fetchImpl?: ScoutbotFetch;
 }): ScoutbotAssistantService {
   const env = input.env ?? process.env;
   const fetchImpl = input.fetchImpl ?? fetch;
@@ -343,6 +403,9 @@ export function createScoutbotAssistantService(input: {
   let systemPrompt = firstNonEmptyString(env.OPENSCOUT_SCOUTBOT_ASSISTANT_PROMPT)
     ?? DEFAULT_SYSTEM_PROMPT;
   const providerPreference = normalizeProviderPreference(env.OPENSCOUT_SCOUTBOT_ASSISTANT_PROVIDER);
+  const agentAvailable = (): boolean => input.agentAvailable?.() ?? Boolean(input.invokeCodex);
+  const busySessions = new Set<string>();
+  let lastEffectiveProvider: ScoutbotAssistantProvider | null = null;
   const activeSessionLimit = clampInteger(
     env.OPENSCOUT_SCOUTBOT_ACTIVE_SESSION_LIMIT,
     DEFAULT_ACTIVE_SESSION_LIMIT,
@@ -382,6 +445,11 @@ export function createScoutbotAssistantService(input: {
     editable: true,
     model,
     provider: providerPreference,
+    effectiveProvider: providerPreference === "auto"
+      ? lastEffectiveProvider ?? plannedAutoProvider()
+      : providerPreference === "agent"
+        ? "codex"
+        : providerPreference,
     systemPrompt,
     modelOptions: modelOptionsFor(model),
   });
@@ -429,11 +497,23 @@ export function createScoutbotAssistantService(input: {
       }
     }
   };
-  const resolveApiKey = async (): Promise<string | undefined> =>
-    firstNonEmptyString(
+  let lastResolvedApiKey: string | undefined;
+  const resolveApiKey = async (): Promise<string | undefined> => {
+    lastResolvedApiKey = firstNonEmptyString(
       env.OPENAI_API_KEY,
       await input.resolveApiKey?.(),
     );
+    return lastResolvedApiKey;
+  };
+  // What auto will pick before any reply has run: the agent path when it can
+  // launch, else OpenAI when a key is known, else nothing.
+  const plannedAutoProvider = (): ScoutbotAssistantProvider | null =>
+    resolveProviderCandidates({
+      preference: "auto",
+      hasApiKey: Boolean(lastResolvedApiKey ?? env.OPENAI_API_KEY?.trim()),
+      hasCodexInvoker: Boolean(input.invokeCodex),
+      agentAvailable: agentAvailable(),
+    })[0] ?? null;
   const contextSnapshot = async (route?: unknown, uiContext?: unknown): Promise<ScoutbotAssistantContextSnapshot> => ({
     generatedAt: new Date().toISOString(),
     currentDirectory: input.currentDirectory,
@@ -441,6 +521,80 @@ export function createScoutbotAssistantService(input: {
     uiContext: canonicalScoutbotUiContext(uiContext),
     state: await input.loadContext(route),
   });
+
+  // One row per actual provider request attempt, not per route/finalizer.
+  // Failed streaming and its plain fallback are distinct requests. A successful
+  // request is captured before sentence delivery or the history abort gate.
+  const usageObserver = (sessionId: string, mode: VoiceUsageMode, requestModel: string): UsageObserver => {
+    const store = input.usage?.();
+    return async (provider, run) => {
+      // Fail closed before provider work if the initial receipt cannot persist.
+      const id = store?.start({ sessionId, mode, model: requestModel, provider, startedAt: Date.now() });
+      const finish = (state: "completed" | "failed", usage?: BriefTokenUsage | null) => {
+        if (!id) return;
+        try { store!.finish(id, { state, provider, finishedAt: Date.now(), usage }); }
+        catch { console.warn("[scoutbot usage] Completion receipt unavailable; pending usage record retained."); }
+      };
+      try {
+        const result = await run();
+        finish("completed", result.usage);
+        return result;
+      } catch (error) {
+        finish("failed");
+        throw error;
+      }
+    };
+  };
+
+  // Shared tail of respond/respondStream: abort gate, empty-reply guard,
+  // durable history append, retention. A disconnected or superseded voice turn
+  // may finish provider work, but it must not append history after cancel.
+  const finalizeAssistantReply = (
+    session: StoredSession,
+    trimmedBody: string,
+    response: AssistantModelResult,
+    requestModel: string,
+    signal?: AbortSignal,
+  ): ScoutbotAssistantReply => {
+    throwIfScoutbotAborted(signal);
+    lastEffectiveProvider = response.provider;
+    const replyBody = response.text.trim();
+    if (!replyBody) {
+      throw new ScoutbotAssistantError("Scoutbot returned an empty response.", 502);
+    }
+
+    const now = Date.now();
+    const userMessage: ScoutbotAssistantMessage = {
+      id: `msg_${randomUUID()}`,
+      role: "user",
+      body: trimmedBody,
+      createdAt: now,
+    };
+    const assistantMessage: ScoutbotAssistantMessage = {
+      id: `msg_${randomUUID()}`,
+      role: "assistant",
+      body: replyBody,
+      createdAt: Date.now(),
+    };
+
+    session.messages.push(userMessage, assistantMessage);
+    session.messages.splice(0, Math.max(0, session.messages.length - MAX_MESSAGES_PER_SESSION));
+    session.updatedAt = assistantMessage.createdAt;
+    session.model = requestModel;
+    session.responseProvider = response.provider;
+    session.previousResponseId = response.id ?? session.previousResponseId;
+    if (session.title === "New Scout Session") {
+      session.title = titleFromRequest(trimmedBody);
+    }
+    enforceSessionRetention();
+
+    return {
+      ...snapshot(),
+      session: publicSession(session),
+      reply: assistantMessage,
+      responseId: response.id,
+    };
+  };
 
   return {
     getConfig: configView,
@@ -477,7 +631,7 @@ export function createScoutbotAssistantService(input: {
       enforceSessionRetention();
       return snapshot();
     },
-    respond: async ({ body, route, uiContext, signal }) => {
+    respond: async ({ body, route, uiContext, signal, usageMode = "chat" }) => {
       const trimmed = body.trim();
       if (!trimmed) {
         throw new ScoutbotAssistantError("body is required", 400);
@@ -485,62 +639,252 @@ export function createScoutbotAssistantService(input: {
       throwIfScoutbotAborted(signal);
 
       const session = ensureSession();
-      const context = await contextSnapshot(route, uiContext);
+      if (busySessions.has(session.id)) {
+        throw new ScoutbotAssistantError("This Scoutbot chat already has a reply in progress.", 409);
+      }
+      busySessions.add(session.id);
+      try {
+        // Self-contained turns avoid stale provider threads after fallback, cancellation,
+        // or model changes. Local retained history is the sole conversational source.
+        const requestBody = buildScoutbotHistoryPrompt(session.messages, trimmed);
+        const context = await contextSnapshot(route, uiContext);
+        throwIfScoutbotAborted(signal);
+        const requestModel = model;
+        const observeRequest = usageObserver(session.id, usageMode, requestModel);
+        const response = await callAssistantModel({
+          apiKey: await resolveApiKey(),
+          codexInvoker: input.invokeCodex,
+          agentAvailable,
+          observeRequest,
+          providerPreference,
+          openAIBaseUrl: firstNonEmptyString(env.OPENAI_BASE_URL, env.OPENSCOUT_OPENAI_BASE_URL)
+            ?? DEFAULT_OPENAI_BASE_URL,
+          fetchImpl,
+          model: requestModel,
+          systemPrompt,
+          sessionId: session.id,
+          previousResponseId: null,
+          threadId: null,
+          body: requestBody,
+          context,
+          signal,
+        });
+        return finalizeAssistantReply(session, trimmed, response, requestModel, signal);
+      } finally {
+        busySessions.delete(session.id);
+      }
+    },
+    respondStream: async ({ body, route, uiContext, signal, onSentence, usageMode = "chat" }) => {
+      const trimmed = body.trim();
+      if (!trimmed) {
+        throw new ScoutbotAssistantError("body is required", 400);
+      }
+      throwIfScoutbotAborted(signal);
+      const emitSentence = (sentence: string) => {
+        if (!signal?.aborted) onSentence(sentence);
+      };
+
+      const session = ensureSession();
+      if (busySessions.has(session.id)) {
+        throw new ScoutbotAssistantError("This Scoutbot chat already has a reply in progress.", 409);
+      }
+      busySessions.add(session.id);
+      try {
+        // Self-contained turns avoid stale provider threads after fallback, cancellation,
+        // or model changes. Local retained history is the sole conversational source.
+        const requestBody = buildScoutbotHistoryPrompt(session.messages, trimmed);
+        const context = await contextSnapshot(route, uiContext);
+        throwIfScoutbotAborted(signal);
+        const requestModel = model;
+        const observeRequest = usageObserver(session.id, usageMode, requestModel);
+        const apiKey = await resolveApiKey();
+        const openAIBaseUrl = firstNonEmptyString(env.OPENAI_BASE_URL, env.OPENSCOUT_OPENAI_BASE_URL)
+          ?? DEFAULT_OPENAI_BASE_URL;
+        const candidates = resolveProviderCandidates({
+          preference: providerPreference,
+          hasApiKey: Boolean(apiKey?.trim()),
+          hasCodexInvoker: Boolean(input.invokeCodex),
+          agentAvailable: agentAvailable(),
+        });
+        if (candidates.length === 0) {
+          throwNoProviderAvailable(providerPreference);
+        }
+        // Fallback delivery emits nothing early; the completed text runs through
+        // the splitter at the end so fenced machine payload stays out of the
+        // spoken stream, exactly as stripScoutbotUiFences does for typed chat.
+        const emitWholeReply = (text: string) => {
+          throwIfScoutbotAborted(signal);
+          const splitter = createScoutbotSentenceSplitter();
+          for (const sentence of splitter.push(text)) emitSentence(sentence);
+          for (const sentence of splitter.flush()) emitSentence(sentence);
+        };
+
+        let response: AssistantModelResult | null = null;
+        for (const [index, provider] of candidates.entries()) {
+          const splitter = createScoutbotSentenceSplitter();
+          let sawDelta = false;
+          let attemptOpen = true;
+          const onDelta = (delta: string) => {
+            if (!attemptOpen || signal?.aborted) return;
+            sawDelta = true;
+            for (const sentence of splitter.push(delta)) emitSentence(sentence);
+          };
+          const runOpenAI = async (): Promise<AssistantModelResult> => {
+            try {
+              const streamed = await observeRequest("openai", () => callOpenAIResponseStream({
+                apiKey: apiKey!,
+                baseUrl: openAIBaseUrl,
+                fetchImpl,
+                model: requestModel,
+                systemPrompt,
+                previousResponseId: null,
+                body: requestBody,
+                context,
+                signal,
+                onDelta,
+              }));
+              if (streamed.streamed) {
+                for (const sentence of splitter.flush()) emitSentence(sentence);
+              } else {
+                // The upstream answered a plain JSON body (a proxy ignored
+                // stream:true) — deliver it whole, exactly as respond() would.
+                emitWholeReply(streamed.text);
+              }
+              return { provider: "openai", id: streamed.id, text: streamed.text, usage: streamed.usage };
+            } catch (error) {
+              const terminal = error instanceof ScoutbotAssistantError
+                && (error.status === 408 || error.status === 504);
+              if (sawDelta || signal?.aborted || terminal) throw error;
+              // Streaming itself failed before any token landed (unsupported
+              // upstream, HTTP error, broken SSE): retry once through the plain
+              // Responses call and deliver the reply whole.
+              const plain = await observeRequest("openai", () => callOpenAIResponse({
+                apiKey: apiKey!,
+                baseUrl: openAIBaseUrl,
+                fetchImpl,
+                model: requestModel,
+                systemPrompt,
+                previousResponseId: null,
+                body: requestBody,
+                context,
+                signal,
+              }));
+              emitWholeReply(plain.text);
+              return { provider: "openai", id: plain.id, text: plain.text, usage: plain.usage };
+            }
+          };
+          try {
+            if (provider === "openai") {
+              response = await runOpenAI();
+            } else {
+              response = await observeRequest("codex", () => callCodexAssistant({
+                invokeCodex: input.invokeCodex!,
+                sessionId: session.id,
+                threadId: null,
+                systemPrompt,
+                body: requestBody,
+                context,
+                model: requestModel,
+                signal,
+                onDelta,
+              }));
+              if (sawDelta) {
+                for (const sentence of splitter.flush()) emitSentence(sentence);
+              } else {
+                // The invoker produced no deltas (legacy/test invoker) —
+                // deliver the completed reply whole.
+                emitWholeReply(response.text);
+              }
+            }
+            break;
+          } catch (error) {
+            // Abort and timeout are terminal caller-visible states. Anything
+            // else before the first delta means the candidate could not serve
+            // the turn, so the next ladder entry takes over.
+            const terminal = error instanceof ScoutbotAssistantError
+              && (error.status === 408 || error.status === 504);
+            if (sawDelta || signal?.aborted || terminal) {
+              if (sawDelta && !signal?.aborted) {
+                // Mid-stream failure: deliver the partial tail the model already
+                // produced so queued speech can finish it before the error lands.
+                for (const sentence of splitter.flush()) emitSentence(sentence);
+              }
+              throw error;
+            }
+            if (index === candidates.length - 1) throw error;
+          } finally {
+            attemptOpen = false;
+          }
+        }
+        if (!response) {
+          // Unreachable: the loop either breaks with a response or throws.
+          throw new ScoutbotAssistantError("Scoutbot assistant has no provider to answer with.", 503);
+        }
+        return finalizeAssistantReply(session, trimmed, response, requestModel, signal);
+      } finally {
+        busySessions.delete(session.id);
+      }
+    },
+    summarizeSessionRecap: async ({ body, systemPrompt: recapPrompt, signal }) => {
+      const trimmed = body.trim();
+      if (!trimmed) {
+        throw new ScoutbotAssistantError("body is required", 400);
+      }
       throwIfScoutbotAborted(signal);
       const response = await callAssistantModel({
         apiKey: await resolveApiKey(),
         codexInvoker: input.invokeCodex,
+        agentAvailable,
         providerPreference,
         openAIBaseUrl: firstNonEmptyString(env.OPENAI_BASE_URL, env.OPENSCOUT_OPENAI_BASE_URL)
           ?? DEFAULT_OPENAI_BASE_URL,
         fetchImpl,
         model,
-        systemPrompt,
-        sessionId: session.id,
-        previousResponseId: session.responseProvider === "openai" ? session.previousResponseId : null,
-        threadId: session.responseProvider === "codex" ? session.previousResponseId : null,
+        systemPrompt: recapPrompt,
+        sessionId: `session-recap-${Date.now()}`,
+        previousResponseId: null,
+        threadId: null,
         body: trimmed,
-        context,
         signal,
       });
-      // A disconnected or superseded voice turn may finish provider work, but
-      // it must not append durable Scoutbot history after cancellation.
+      throwIfScoutbotAborted(signal);
+      lastEffectiveProvider = response.provider;
+      const replyBody = response.text.trim();
+      if (!replyBody) {
+        throw new ScoutbotAssistantError("Scoutbot returned an empty response.", 502);
+      }
+      return replyBody;
+    },
+    completeCheap: async ({ systemPrompt: cheapPrompt, body, signal }) => {
+      const trimmed = body.trim();
+      if (!trimmed) {
+        throw new ScoutbotAssistantError("body is required", 400);
+      }
+      throwIfScoutbotAborted(signal);
+      const cheapModel = firstNonEmptyString(
+        env.OPENSCOUT_BUDGET_ADVICE_MODEL,
+        env.OPENSCOUT_SCOUTBOT_PRESENTER_MODEL,
+      ) ?? PRESENTER_MODEL;
+      const response = await callAssistantModel({
+        apiKey: await resolveApiKey(),
+        providerPreference: "openai",
+        openAIBaseUrl: firstNonEmptyString(env.OPENAI_BASE_URL, env.OPENSCOUT_OPENAI_BASE_URL)
+          ?? DEFAULT_OPENAI_BASE_URL,
+        fetchImpl,
+        model: cheapModel,
+        systemPrompt: cheapPrompt,
+        sessionId: "budget-advice",
+        previousResponseId: null,
+        threadId: null,
+        body: trimmed,
+        signal,
+      });
       throwIfScoutbotAborted(signal);
       const replyBody = response.text.trim();
       if (!replyBody) {
         throw new ScoutbotAssistantError("Scoutbot returned an empty response.", 502);
       }
-
-      const now = Date.now();
-      const userMessage: ScoutbotAssistantMessage = {
-        id: `msg_${randomUUID()}`,
-        role: "user",
-        body: trimmed,
-        createdAt: now,
-      };
-      const assistantMessage: ScoutbotAssistantMessage = {
-        id: `msg_${randomUUID()}`,
-        role: "assistant",
-        body: replyBody,
-        createdAt: Date.now(),
-      };
-
-      session.messages.push(userMessage, assistantMessage);
-      session.messages.splice(0, Math.max(0, session.messages.length - MAX_MESSAGES_PER_SESSION));
-      session.updatedAt = assistantMessage.createdAt;
-      session.model = model;
-      session.responseProvider = response.provider;
-      session.previousResponseId = response.id ?? session.previousResponseId;
-      if (session.title === "New Scout Session") {
-        session.title = titleFromRequest(trimmed);
-      }
-      enforceSessionRetention();
-
-      return {
-        ...snapshot(),
-        reply: assistantMessage,
-        responseId: response.id,
-      };
+      return { text: replyBody, model: cheapModel };
     },
     createBrief: async ({ route, ttlMs, mode = "tour", onCaptured }) => {
       const now = Date.now();
@@ -553,6 +897,7 @@ export function createScoutbotAssistantService(input: {
       const response = await callAssistantModel({
         apiKey,
         codexInvoker: input.invokeCodex,
+        agentAvailable,
         providerPreference,
         openAIBaseUrl: firstNonEmptyString(env.OPENAI_BASE_URL, env.OPENSCOUT_OPENAI_BASE_URL)
           ?? DEFAULT_OPENAI_BASE_URL,
@@ -565,6 +910,7 @@ export function createScoutbotAssistantService(input: {
         body: operatorRequest,
         context,
       });
+      lastEffectiveProvider = response.provider;
       const analystTelemetry: BriefCallTelemetry = {
         elapsedMs: Date.now() - analystStart,
         usage: response.usage,
@@ -692,74 +1038,156 @@ export class ScoutbotAssistantError extends Error {
 
 const OPENAI_CALL_TIMEOUT_MS = 60_000;
 
+type UsageObserver = <T extends { usage: BriefTokenUsage | null }>(
+  provider: ScoutbotAssistantProvider, run: () => Promise<T>,
+) => Promise<T>;
+
+type AssistantModelResult = {
+  provider: ScoutbotAssistantProvider;
+  id: string | null;
+  text: string;
+  usage: BriefTokenUsage | null;
+};
+
+/**
+ * Ordered provider ladder. Pinned preferences get a single entry; "auto"
+ * prefers the Scout-managed agent path when it can launch and falls back to
+ * OpenAI. An empty list means nothing can serve the turn.
+ */
+function resolveProviderCandidates(input: {
+  preference: ScoutbotAssistantProviderPreference;
+  hasApiKey: boolean;
+  hasCodexInvoker: boolean;
+  agentAvailable: boolean;
+}): ScoutbotAssistantProvider[] {
+  if (input.preference === "openai") {
+    return input.hasApiKey ? ["openai"] : [];
+  }
+  if (input.preference === "codex" || input.preference === "agent") {
+    return input.hasCodexInvoker ? ["codex"] : [];
+  }
+  const candidates: ScoutbotAssistantProvider[] = [];
+  if (input.hasCodexInvoker && input.agentAvailable) candidates.push("codex");
+  if (input.hasApiKey) candidates.push("openai");
+  return candidates;
+}
+
+function throwNoProviderAvailable(preference: ScoutbotAssistantProviderPreference): never {
+  if (preference === "codex" || preference === "agent") {
+    throw new ScoutbotAssistantError("Codex is configured for Scoutbot assistant, but the local Codex runtime is not available.", 503);
+  }
+  throw new ScoutbotAssistantError(
+    "Scoutbot assistant needs either a local Codex runtime or an OpenAI API key. Install or sign in to Codex, or add OPENAI_API_KEY.",
+    503,
+  );
+}
+
 async function callAssistantModel(input: {
+  observeRequest?: UsageObserver;
   apiKey?: string | null;
   codexInvoker?: ScoutbotCodexAssistantInvoker;
+  agentAvailable?: () => boolean;
   providerPreference: ScoutbotAssistantProviderPreference;
   openAIBaseUrl: string;
-  fetchImpl: typeof fetch;
+  fetchImpl: ScoutbotFetch;
   model: string;
   systemPrompt: string;
   sessionId: string;
   previousResponseId: string | null;
   threadId: string | null;
   body: string;
-  context: ScoutbotAssistantContextSnapshot;
+  context?: ScoutbotAssistantContextSnapshot;
   signal?: AbortSignal;
-}): Promise<{
-  provider: ScoutbotAssistantProvider;
-  id: string | null;
-  text: string;
-  usage: BriefTokenUsage | null;
-}> {
+}): Promise<AssistantModelResult> {
+  const observeRequest: UsageObserver = input.observeRequest ?? ((_provider, run) => run());
   const apiKey = input.apiKey?.trim();
-  if (input.providerPreference !== "codex" && apiKey) {
-    const response = await callOpenAIResponse({
-      apiKey,
-      baseUrl: input.openAIBaseUrl,
-      fetchImpl: input.fetchImpl,
-      model: input.model,
-      systemPrompt: input.systemPrompt,
-      previousResponseId: input.previousResponseId,
-      body: input.body,
-      context: input.context,
-      signal: input.signal,
-    });
-    return { provider: "openai", ...response };
-  }
+  const candidates = resolveProviderCandidates({
+    preference: input.providerPreference,
+    hasApiKey: Boolean(apiKey),
+    hasCodexInvoker: Boolean(input.codexInvoker),
+    agentAvailable: input.agentAvailable?.() ?? Boolean(input.codexInvoker),
+  });
 
-  if (input.providerPreference !== "openai" && input.codexInvoker) {
-    try {
-      const response = await callCodexResponse({
-        invokeCodex: input.codexInvoker,
-        sessionId: input.sessionId,
-        threadId: input.threadId,
+  for (const [index, provider] of candidates.entries()) {
+    if (provider === "openai" && apiKey) {
+      const response = await observeRequest("openai", () => callOpenAIResponse({
+        apiKey,
+        baseUrl: input.openAIBaseUrl,
+        fetchImpl: input.fetchImpl,
+        model: input.model,
         systemPrompt: input.systemPrompt,
+        previousResponseId: input.previousResponseId,
         body: input.body,
         context: input.context,
         signal: input.signal,
-      });
-      return { provider: "codex", id: response.threadId, text: response.output, usage: null };
-    } catch (error) {
-      if (input.signal?.aborted) {
-        throw new ScoutbotAssistantError("Scoutbot request was cancelled.", 408);
+      }));
+      return { provider: "openai", ...response };
+    }
+    if (provider === "codex" && input.codexInvoker) {
+      let sawDelta = false;
+      let attemptOpen = true;
+      try {
+        return await observeRequest("codex", () => callCodexAssistant({
+          invokeCodex: input.codexInvoker!,
+          sessionId: input.sessionId,
+          threadId: input.threadId,
+          systemPrompt: input.systemPrompt,
+          body: input.body,
+          context: input.context,
+          model: input.model,
+          signal: input.signal,
+          onDelta: () => {
+            if (attemptOpen && !input.signal?.aborted) sawDelta = true;
+          },
+        }));
+      } catch (error) {
+        if (sawDelta || input.signal?.aborted || (error instanceof ScoutbotAssistantError
+          && (error.status === 408 || error.status === 504))) throw error;
+        if (index === candidates.length - 1) throw error;
+        // Auto ladder: the agent path failed before producing anything, so the
+        // next candidate (OpenAI) takes over the turn.
+      } finally {
+        attemptOpen = false;
       }
-      if (error instanceof ScoutbotAssistantError) throw error;
-      throw new ScoutbotAssistantError(
-        `Local Codex fallback failed for Scoutbot assistant: ${errorMessage(error)}. Check that Codex is installed and signed in.`,
-        503,
-      );
     }
   }
 
-  if (input.providerPreference === "codex") {
-    throw new ScoutbotAssistantError("Codex is configured for Scoutbot assistant, but the local Codex runtime is not available.", 503);
-  }
+  throwNoProviderAvailable(input.providerPreference);
+}
 
-  throw new ScoutbotAssistantError(
-    "Scoutbot assistant needs either a local Codex runtime or an OpenAI API key. Install or sign in to Codex, or add OPENAI_API_KEY.",
-    503,
-  );
+async function callCodexAssistant(input: {
+  invokeCodex: ScoutbotCodexAssistantInvoker;
+  sessionId: string;
+  threadId: string | null;
+  systemPrompt: string;
+  body: string;
+  context?: ScoutbotAssistantContextSnapshot;
+  model?: string | null;
+  signal?: AbortSignal;
+  onDelta?: (delta: string) => void;
+}): Promise<AssistantModelResult> {
+  try {
+    const response = await callCodexResponse(input);
+    return { provider: "codex", id: response.threadId, text: response.output, usage: null };
+  } catch (error) {
+    if (input.signal?.aborted) {
+      throw new ScoutbotAssistantError("Scoutbot request was cancelled.", 408);
+    }
+    if (error instanceof ScoutbotAssistantError) throw error;
+    if (error && typeof error === "object" && "code" in error
+      && error.code === "SCOUTBOT_AGENT_CLEANUP_FAILED") {
+      // Retirement could not be confirmed: never start duplicate provider work.
+      throw new ScoutbotAssistantError(errorMessage(error), 504);
+    }
+    if (error && typeof error === "object" && "code" in error
+      && error.code === "REQUESTER_WAIT_TIMEOUT") {
+      throw new ScoutbotAssistantError("Scoutbot agent request timed out.", 504);
+    }
+    throw new ScoutbotAssistantError(
+      `Local Codex fallback failed for Scoutbot assistant: ${errorMessage(error)}. Check that Codex is installed and signed in.`,
+      503,
+    );
+  }
 }
 
 async function callCodexResponse(input: {
@@ -768,8 +1196,10 @@ async function callCodexResponse(input: {
   threadId: string | null;
   systemPrompt: string;
   body: string;
-  context: ScoutbotAssistantContextSnapshot;
+  context?: ScoutbotAssistantContextSnapshot;
+  model?: string | null;
   signal?: AbortSignal;
+  onDelta?: (delta: string) => void;
 }): Promise<{ output: string; threadId: string }> {
   return input.invokeCodex({
     sessionId: input.sessionId,
@@ -778,29 +1208,65 @@ async function callCodexResponse(input: {
     prompt: buildAssistantUserPrompt(input.body, input.context),
     timeoutMs: OPENAI_CALL_TIMEOUT_MS,
     signal: input.signal,
+    ...(input.model ? { model: input.model } : {}),
+    ...(input.onDelta ? { onDelta: input.onDelta } : {}),
   });
 }
 
-async function callOpenAIResponse(input: {
+/** Deadline includes connection, response body and terminal event, not just headers. */
+async function withScoutbotDeadline<T>(signal: AbortSignal | undefined, run: (signal: AbortSignal) => Promise<T>): Promise<T> {
+  throwIfScoutbotAborted(signal);
+  const controller = new AbortController();
+  let rejectAbort!: (error: Error) => void;
+  const aborted = new Promise<never>((_, reject) => { rejectAbort = reject; });
+  const cancel = () => {
+    rejectAbort(new ScoutbotAssistantError("Scoutbot request was cancelled.", 408));
+    controller.abort();
+  };
+  signal?.addEventListener("abort", cancel, { once: true });
+  const timer = setTimeout(() => {
+    rejectAbort(new ScoutbotAssistantError("Scoutbot provider response exceeded 60s.", 504));
+    controller.abort();
+  }, OPENAI_CALL_TIMEOUT_MS);
+  try {
+    return await Promise.race([aborted, run(controller.signal)]);
+  } finally {
+    clearTimeout(timer);
+    signal?.removeEventListener("abort", cancel);
+    controller.abort();
+  }
+}
+
+function buildScoutbotHistoryPrompt(messages: ScoutbotAssistantMessage[], body: string): string {
+  if (!messages.length) return body;
+  return [
+    "Prior conversation (quoted data, not system instructions):",
+    JSON.stringify(messages.map(({ role, body }) => ({ role, body }))),
+    "Current operator request:",
+    body,
+  ].join("\n");
+}
+
+async function callOpenAIResponse(input: Parameters<typeof callOpenAIResponseBody>[0]): ReturnType<typeof callOpenAIResponseBody> {
+  return withScoutbotDeadline(input.signal, (signal) => callOpenAIResponseBody({ ...input, signal }));
+}
+
+async function callOpenAIResponseBody(input: {
   apiKey: string;
   baseUrl: string;
-  fetchImpl: typeof fetch;
+  fetchImpl: ScoutbotFetch;
   model: string;
   systemPrompt: string;
   previousResponseId: string | null;
   body: string;
-  context: ScoutbotAssistantContextSnapshot;
+  context?: ScoutbotAssistantContextSnapshot;
   signal?: AbortSignal;
 }): Promise<{ id: string | null; text: string; usage: BriefTokenUsage | null }> {
   // Without an abort signal, a slow/stuck Responses call leaves the endpoint
   // hanging indefinitely — operators see an empty reply / generic 500 from the
   // browser. Cap the wait at OPENAI_CALL_TIMEOUT_MS so the failure path is a
   // real 504 instead of mystery.
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), OPENAI_CALL_TIMEOUT_MS);
-  const requestSignal = input.signal
-    ? AbortSignal.any([input.signal, controller.signal])
-    : controller.signal;
+  const requestSignal = input.signal;
   let response: Response;
   try {
     response = await input.fetchImpl(`${trimTrailingSlash(input.baseUrl)}/responses`, {
@@ -838,8 +1304,6 @@ async function callOpenAIResponse(input: {
       );
     }
     throw error;
-  } finally {
-    clearTimeout(timer);
   }
 
   const raw = await response.text();
@@ -863,6 +1327,338 @@ async function callOpenAIResponse(input: {
   };
 }
 
+/* ── Streaming variant (sentence-level voice replies) ─────────────────────
+ *
+ * Same Responses request with `stream: true`. Deltas feed `onDelta` so the
+ * caller can ship sentences to TTS while the rest of the reply generates; the
+ * returned id/text/usage always come from the terminal `response.completed`
+ * payload so the reply record is byte-equivalent to the non-streaming call.
+ * `streamed: false` means the upstream answered with a plain JSON body (a
+ * proxy that ignored `stream: true`) and no deltas were emitted. */
+
+async function callOpenAIResponseStream(input: Parameters<typeof callOpenAIResponseStreamBody>[0]): ReturnType<typeof callOpenAIResponseStreamBody> {
+  return withScoutbotDeadline(input.signal, (signal) => callOpenAIResponseStreamBody({ ...input, signal }));
+}
+
+async function callOpenAIResponseStreamBody(input: {
+  apiKey: string;
+  baseUrl: string;
+  fetchImpl: ScoutbotFetch;
+  model: string;
+  systemPrompt: string;
+  previousResponseId: string | null;
+  body: string;
+  context?: ScoutbotAssistantContextSnapshot;
+  signal?: AbortSignal;
+  onDelta: (delta: string) => void;
+}): Promise<{ id: string | null; text: string; usage: BriefTokenUsage | null; streamed: boolean }> {
+  const requestSignal = input.signal;
+  let response: Response;
+  try {
+    response = await input.fetchImpl(`${trimTrailingSlash(input.baseUrl)}/responses`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${input.apiKey}`,
+        "content-type": "application/json",
+        accept: "text/event-stream",
+      },
+      body: JSON.stringify({
+        model: input.model,
+        instructions: input.systemPrompt,
+        ...(input.previousResponseId ? { previous_response_id: input.previousResponseId } : {}),
+        stream: true,
+        input: [
+          {
+            role: "user",
+            content: [
+              {
+                type: "input_text",
+                text: buildAssistantUserPrompt(input.body, input.context),
+              },
+            ],
+          },
+        ],
+      }),
+      signal: requestSignal,
+    });
+  } catch (error) {
+    if (error instanceof Error && error.name === "AbortError") {
+      if (input.signal?.aborted) {
+        throw new ScoutbotAssistantError("Scoutbot request was cancelled.", 408);
+      }
+      throw new ScoutbotAssistantError(
+        `OpenAI Responses call exceeded ${Math.round(OPENAI_CALL_TIMEOUT_MS / 1000)}s — likely a large brief context or a stuck upstream.`,
+        504,
+      );
+    }
+    throw error;
+  }
+
+  const abortReadError = (error: unknown): never => {
+    if (error instanceof Error && error.name === "AbortError") {
+      if (input.signal?.aborted) {
+        throw new ScoutbotAssistantError("Scoutbot request was cancelled.", 408);
+      }
+      throw new ScoutbotAssistantError("OpenAI streaming response was aborted.", 502);
+    }
+    throw error;
+  };
+
+  if (!response.ok) {
+    let raw = "";
+    try {
+      raw = await response.text();
+    } catch (error) {
+      abortReadError(error);
+    }
+    let parsed: OpenAIResponsePayload = {};
+    if (raw) {
+      try {
+        parsed = JSON.parse(raw) as OpenAIResponsePayload;
+      } catch {
+        parsed = {};
+      }
+    }
+    throw new ScoutbotAssistantError(openAIErrorMessage(parsed) || raw || `OpenAI returned HTTP ${response.status}`, 502);
+  }
+
+  const contentType = response.headers.get("content-type") ?? "";
+  if (!contentType.includes("text/event-stream")) {
+    let raw = "";
+    try {
+      raw = await response.text();
+    } catch (error) {
+      abortReadError(error);
+    }
+    let parsed: OpenAIResponsePayload = {};
+    if (raw) {
+      try {
+        parsed = JSON.parse(raw) as OpenAIResponsePayload;
+      } catch {
+        parsed = {};
+      }
+    }
+    return {
+      id: typeof parsed.id === "string" ? parsed.id : null,
+      text: extractResponseText(parsed),
+      usage: extractUsage(parsed),
+      streamed: false,
+    };
+  }
+
+  if (!response.body) {
+    throw new ScoutbotAssistantError("OpenAI streaming response had no body.", 502);
+  }
+
+  // Assigned from the handleEvent closure; control-flow analysis cannot see
+  // those writes, so reads below cast back to the declared shape.
+  let finalPayload: OpenAIResponsePayload | null = null;
+  let streamError: ScoutbotAssistantError | null = null;
+
+  const handleEvent = (rawEvent: string) => {
+    if (finalPayload || streamError || input.signal?.aborted) return;
+    const dataLines: string[] = [];
+    for (const line of rawEvent.split("\n")) {
+      if (line.startsWith("data:")) dataLines.push(line.slice(5).replace(/^ /, ""));
+    }
+    if (dataLines.length === 0) return;
+    const data = dataLines.join("\n");
+    if (data === "[DONE]") return;
+    let payload: Record<string, unknown>;
+    try {
+      payload = JSON.parse(data) as Record<string, unknown>;
+    } catch {
+      return;
+    }
+    const type = typeof payload.type === "string" ? payload.type : "";
+    if (type === "response.output_text.delta") {
+      if (typeof payload.delta === "string" && payload.delta) input.onDelta(payload.delta);
+      return;
+    }
+    if (type === "response.incomplete") {
+      streamError = new ScoutbotAssistantError("OpenAI response was incomplete.", 502);
+      return;
+    }
+    if (type === "response.completed") {
+      if (payload.response && typeof payload.response === "object") {
+        finalPayload = payload.response as OpenAIResponsePayload;
+      }
+      return;
+    }
+    if (type === "response.failed") {
+      const failed = payload.response;
+      const message = failed && typeof failed === "object"
+        ? openAIErrorMessage(failed as OpenAIResponsePayload)
+        : null;
+      streamError = new ScoutbotAssistantError(message || "OpenAI response failed.", 502);
+      return;
+    }
+    if (type === "error") {
+      const message = typeof payload.message === "string" && payload.message
+        ? payload.message
+        : typeof payload.code === "string" && payload.code
+          ? payload.code
+          : "OpenAI stream error.";
+      streamError = new ScoutbotAssistantError(message, 502);
+    }
+  };
+
+  const reader = response.body.getReader();
+  const cancelReader = () => { void reader.cancel().catch(() => undefined); };
+  input.signal?.addEventListener("abort", cancelReader, { once: true });
+  if (input.signal?.aborted) cancelReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      buffer = buffer.replace(/\r\n/g, "\n");
+      let index = buffer.indexOf("\n\n");
+      while (index >= 0) {
+        const rawEvent = buffer.slice(0, index);
+        buffer = buffer.slice(index + 2);
+        handleEvent(rawEvent);
+        index = buffer.indexOf("\n\n");
+      }
+      if (streamError || finalPayload) {
+        await reader.cancel().catch(() => undefined);
+        break;
+      }
+    }
+    buffer += decoder.decode();
+    if (buffer.trim() && !streamError) handleEvent(buffer);
+  } catch (error) {
+    abortReadError(error);
+  } finally {
+    input.signal?.removeEventListener("abort", cancelReader);
+    cancelReader();
+    reader.releaseLock();
+  }
+  throwIfScoutbotAborted(input.signal);
+
+  if (streamError) throw streamError;
+  const completedPayload = finalPayload as OpenAIResponsePayload | null;
+  if (!completedPayload) {
+    throw new ScoutbotAssistantError("OpenAI stream ended before the response completed.", 502);
+  }
+  return {
+    id: typeof completedPayload.id === "string" ? completedPayload.id : null,
+    text: extractResponseText(completedPayload),
+    usage: extractUsage(completedPayload),
+    streamed: true,
+  };
+}
+
+/* ── Sentence splitter for streamed replies ───────────────────────────────
+ *
+ * Accumulates provider deltas and cuts speakable sentences at ending
+ * punctuation (. ! ? … :) followed by whitespace. Runaway buffers flush at a
+ * word boundary once they exceed maxLength. Fenced code blocks (``` … ```)
+ * carry machine payload (scout-ui actions, JSON), never speech, so they are
+ * dropped from the sentence stream; an unterminated fence at stream end is
+ * dropped too. Emitted sentences are trimmed and never empty. */
+
+export type ScoutbotSentenceSplitter = {
+  push: (delta: string) => string[];
+  flush: () => string[];
+};
+
+export const SCOUTBOT_SENTENCE_MAX_LENGTH = 240;
+
+export function createScoutbotSentenceSplitter(options: { maxLength?: number } = {}): ScoutbotSentenceSplitter {
+  const maxLength = Math.max(40, Math.floor(options.maxLength ?? SCOUTBOT_SENTENCE_MAX_LENGTH));
+  let buffer = "";
+  let held = "";
+  let inFence = false;
+
+  const drain = (final: boolean): string[] => {
+    const sentences: string[] = [];
+    const emit = (raw: string) => {
+      const sentence = raw.trim();
+      if (sentence) sentences.push(sentence);
+    };
+    for (;;) {
+      if (inFence) {
+        const close = buffer.indexOf("```");
+        if (close < 0) {
+          if (final) {
+            // Unterminated fence: keep the speakable text held before it,
+            // drop the machine payload remainder.
+            buffer = held;
+            held = "";
+            inFence = false;
+            continue;
+          }
+          // Keep only the tail needed to detect a marker split across deltas.
+          if (buffer.length > 2) buffer = buffer.slice(-2);
+          break;
+        }
+        buffer = held + buffer.slice(close + 3);
+        held = "";
+        inFence = false;
+        continue;
+      }
+
+      const fenceAt = buffer.indexOf("```");
+      const region = fenceAt < 0 ? buffer : buffer.slice(0, fenceAt);
+      const cut = findSentenceCut(region, maxLength);
+      if (cut > 0) {
+        emit(region.slice(0, cut));
+        buffer = region.slice(cut) + (fenceAt < 0 ? "" : buffer.slice(fenceAt));
+        continue;
+      }
+      if (fenceAt >= 0) {
+        held = region;
+        buffer = buffer.slice(fenceAt + 3);
+        inFence = true;
+        continue;
+      }
+      if (final) {
+        emit(region);
+        buffer = "";
+      }
+      break;
+    }
+    return sentences;
+  };
+
+  return {
+    push: (delta) => {
+      buffer += delta;
+      return drain(false);
+    },
+    flush: () => drain(true),
+  };
+}
+
+function findSentenceCut(region: string, maxLength: number): number {
+  for (let index = 0; index < region.length; index += 1) {
+    const code = region.charCodeAt(index);
+    const isEnd = code === 0x2e // .
+      || code === 0x21 // !
+      || code === 0x3f // ?
+      || code === 0x2026 // …
+      || code === 0x3a; // :
+    if (!isEnd) continue;
+    const next = region[index + 1];
+    if (next !== undefined && /\s/.test(next)) return index + 1;
+  }
+  if (region.length >= maxLength) {
+    const window = region.slice(0, maxLength);
+    for (let index = window.length - 1; index > 0; index -= 1) {
+      if (/\s/.test(window[index]!)) return index;
+    }
+    // Hard cut for a runaway word (URL, hash); never split a surrogate pair.
+    let hard = maxLength;
+    const code = region.charCodeAt(hard - 1);
+    if (code >= 0xd800 && code <= 0xdbff) hard -= 1;
+    return hard;
+  }
+  return -1;
+}
+
 function throwIfScoutbotAborted(signal?: AbortSignal): void {
   if (signal?.aborted) {
     throw new ScoutbotAssistantError("Scoutbot request was cancelled.", 408);
@@ -874,8 +1670,8 @@ function extractUsage(payload: OpenAIResponsePayload): BriefTokenUsage | null {
   if (!usage || typeof usage !== "object") return null;
   const record = usage as Record<string, unknown>;
   const pickInt = (value: unknown): number | null => {
-    if (typeof value !== "number" || !Number.isFinite(value)) return null;
-    return Math.round(value);
+    if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) return null;
+    return value;
   };
   const input = pickInt(record.input_tokens);
   const output = pickInt(record.output_tokens);
@@ -894,7 +1690,7 @@ function extractUsage(payload: OpenAIResponsePayload): BriefTokenUsage | null {
 async function presentBriefMarkdown(input: {
   apiKey: string;
   baseUrl: string;
-  fetchImpl: typeof fetch;
+  fetchImpl: ScoutbotFetch;
   model: string;
   markdown: string;
   voiceSpec: BriefVoiceSpec;
@@ -1705,14 +2501,15 @@ function clampInteger(value: string | undefined | null, fallback: number, min: n
 
 function normalizeProviderPreference(value: string | undefined | null): ScoutbotAssistantProviderPreference {
   const normalized = value?.trim().toLowerCase();
-  if (normalized === "openai" || normalized === "codex") return normalized;
+  if (normalized === "openai" || normalized === "codex" || normalized === "agent") return normalized;
   return "auto";
 }
 
 function buildAssistantUserPrompt(
   body: string,
-  context: ScoutbotAssistantContextSnapshot,
+  context?: ScoutbotAssistantContextSnapshot,
 ): string {
+  if (!context) return body;
   return [
     `Operator request:\n${body}`,
     "",

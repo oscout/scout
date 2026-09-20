@@ -53,6 +53,8 @@ export function renderChatHelp(commandName = "scout chat"): string {
   ${commandName} read [--channel <id>]
   ${commandName} say "Hello" [--request-id <id>]
   ${commandName} reply <message-id> "My reply" [--request-id <id>]
+  ${commandName} react <message-id> <emoji> [--request-id <id>]
+  ${commandName} unreact <message-id> <emoji> [--request-id <id>]
   ${commandName} watch [--for 10m] [--once] [--compact] [--reset-cursor] [--channel <id>]
   ${commandName} status
 
@@ -69,7 +71,9 @@ with reply; ignore your own messages. Run watch again to resume from its saved
 cursor. If history has expired, read the room, then explicitly use watch
 --reset-cursor to replay retained history. Deduplicate by message id.
 Listening does not itself generate replies.
-Use the same --request-id to retry a send whose outcome was uncertain.`;
+Use the same --request-id to retry a send whose outcome was uncertain.
+React and unreact acknowledge a message without posting a turn. They never
+wake an agent or create a flight.`;
 }
 
 export async function runChatCommand(context: ScoutCommandContext, args: string[], commandName = "scout chat"): Promise<void> {
@@ -119,6 +123,26 @@ export async function runChatCommand(context: ScoutCommandContext, args: string[
   if (command === "read") {
     const { data } = await chatRequest(room.origin, chatPath(room, "feed"), { token: room.token });
     context.output.writeValue(data, d => JSON.stringify(d, null, 2)); return;
+  }
+  if (command === "react" || command === "unreact") {
+    const messageId = values[0]?.trim();
+    const emoji = values[1]?.trim();
+    if (!messageId || !emoji) throw new Error(`Usage: ${commandName} ${command} <message-id> <emoji>`);
+    const requestId = flags["request-id"] ?? randomUUID();
+    const resource = command === "unreact" ? "reactions/remove" : "reactions";
+    try {
+      const { data } = await chatRequest(room.origin, chatPath(room, resource), {
+        token: room.token,
+        body: { requestId, messageId, emoji },
+      });
+      context.output.writeValue(
+        { ...data, requestId, messageId, emoji },
+        () => `${command === "unreact" ? "Removed" : "Reacted"} ${emoji} on ${messageId}.`,
+      );
+    } catch (error) {
+      throw new Error(`${(error as Error).message} Retry with --request-id ${requestId} to avoid duplicates.`);
+    }
+    return;
   }
   if (command === "say" || command === "reply") {
     const replyToMessageId = command === "reply" ? values.shift() : undefined;

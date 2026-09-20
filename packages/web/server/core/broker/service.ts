@@ -34,6 +34,7 @@ import {
   type AgentSelector,
   type AgentSelectorCandidate,
   type MessageAttachment,
+  type MessageReactionRecord,
   type MessageRecord,
   type ScoutDeliverResponse,
   type ScoutDispatchRecord,
@@ -2669,6 +2670,46 @@ export async function sendScoutConversationMessage(input: {
     ...(participantValidTargets.length ? { notifiedTargets: participantValidTargets } : {}),
     unresolvedTargets,
   };
+}
+
+export async function sendScoutMessageReaction(input: {
+  channelId: string;
+  messageId: string;
+  actorId: string;
+  emoji: string;
+  remove?: boolean;
+}): Promise<{ usedBroker: false } | { usedBroker: true; replayed: boolean }> {
+  const broker = await loadScoutBrokerContext();
+  if (!broker) return { usedBroker: false };
+  const result = await brokerPostJson<{ replayed?: boolean }>(
+    broker.baseUrl,
+    input.remove
+      ? scoutBrokerPaths.v1.messageReactionsRemove
+      : scoutBrokerPaths.v1.messageReactions,
+    {
+      channelId: input.channelId,
+      messageId: input.messageId,
+      actorId: input.actorId,
+      emoji: input.emoji,
+      createdAt: Date.now(),
+    },
+  );
+  return { usedBroker: true, replayed: result.replayed === true };
+}
+
+export async function listScoutMessageReactions(
+  channelId: string,
+): Promise<MessageReactionRecord[] | null> {
+  const broker = await loadScoutBrokerContext();
+  if (!broker) return null;
+  const path = `${scoutBrokerPaths.v1.messageReactions}?conversationId=${encodeURIComponent(channelId)}`;
+  try {
+    return await brokerReadJson<MessageReactionRecord[]>(broker.baseUrl, path);
+  } catch {
+    // Reactions are additive. A restoring broker or a missing route must not
+    // take the whole Chat feed down with it.
+    return null;
+  }
 }
 
 export async function sendScoutConversationSteer(input: {

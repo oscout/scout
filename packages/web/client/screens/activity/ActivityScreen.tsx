@@ -2,7 +2,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, peekApiGet } from "../../lib/api.ts";
 import { copyTextToClipboard } from "../../lib/clipboard.ts";
 import { useBrokerEvents } from "../../lib/sse.ts";
-import { actorColor } from "../../lib/colors.ts";
 import {
   filterActivityByMachineScope,
   machineScopedAgentIds,
@@ -11,7 +10,12 @@ import { routeMachineId } from "../../lib/router.ts";
 import { renderWithMentions } from "../../lib/mentions.tsx";
 import { fullTimestamp, timeAgo } from "../../lib/time.ts";
 import { useContextMenu, type MenuItem } from "../../components/ContextMenu.tsx";
+import { SessionHopMenu, sessionHopMenuItems } from "../../components/SessionHopMenu.tsx";
 import { EmptyState } from "../../components/EmptyState.tsx";
+import {
+  peekTerminalSessionInventory,
+  resolveSessionTerminalTarget,
+} from "../../lib/session-terminal-hop.ts";
 import { useScout } from "../../scout/Provider.tsx";
 import type { ActivityItem, Route } from "../../lib/types.ts";
 import "../system-surfaces-redesign.css";
@@ -370,6 +374,22 @@ export function ActivityScreen({ navigate }: { navigate: (r: Route) => void }) {
                       });
                     }
                   }
+                  if (item.agentId || item.sessionId) {
+                    const sessions = peekTerminalSessionInventory();
+                    const target = sessions
+                      ? resolveSessionTerminalTarget(sessions, {
+                          agentId: item.agentId,
+                          sessionRefs: [item.sessionId],
+                        })
+                      : null;
+                    items.push({ kind: "separator" });
+                    items.push(...sessionHopMenuItems({
+                      target,
+                      agentId: item.agentId,
+                      navigate,
+                      returnTo: route,
+                    }));
+                  }
                   showContextMenu(e, items);
                 }}
               >
@@ -406,10 +426,7 @@ export function ActivityScreen({ navigate }: { navigate: (r: Route) => void }) {
                     <p className="sys-audit-summary">{renderWithMentions(summary)}</p>
                     <div className="sys-audit-meta">
                       <span className="sys-audit-meta-item">
-                        <span
-                          className="sys-audit-avatar"
-                          style={{ background: actorColor(item.actorName ?? "system") }}
-                        >
+                        <span className="sys-audit-avatar" aria-hidden>
                           {actorInitial(item.actorName)}
                         </span>
                         {item.actorName ?? "system"}
@@ -437,6 +454,15 @@ export function ActivityScreen({ navigate }: { navigate: (r: Route) => void }) {
                             {jump.label}
                           </button>
                         ))}
+                        {(item.agentId || item.sessionId) && (
+                          <SessionHopMenu
+                            className="sys-audit-jump"
+                            label="Terminal"
+                            hints={{ agentId: item.agentId, sessionRefs: [item.sessionId] }}
+                            navigate={navigate}
+                            returnTo={route}
+                          />
+                        )}
                       </div>
                     )}
                   </div>

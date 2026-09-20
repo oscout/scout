@@ -12,6 +12,7 @@ import {
   type SyntheticEvent,
 } from "react";
 import { isComposerSendShortcut } from "../../lib/compose-shortcuts.ts";
+import { currentAttentionTarget, setAttentionTarget } from "../../lib/crew-gaze.ts";
 import { DictationMic, type MicStatus } from "../DictationMic.tsx";
 import { useRouter } from "../../lib/router.ts";
 import { executeScoutVoiceIssueAction } from "../../lib/scout-voice.ts";
@@ -278,6 +279,28 @@ function MessageComposerControl({
     [textareaRef],
   );
 
+  /* Eyes on you — the composer is where the operator is, so taking focus
+     declares it as the crew's attention target and every coin on the page
+     glances over together. The stamp of the target we set is what we own: a
+     later composer's focus replaces it, and we then clear nothing. */
+  const shellRef = useRef<HTMLDivElement | null>(null);
+  const attentionStamp = useRef<number | null>(null);
+
+  const claimAttention = useCallback(() => {
+    setAttentionTarget(shellRef.current ?? localRef.current);
+    attentionStamp.current = currentAttentionTarget()?.at ?? null;
+  }, []);
+
+  const releaseAttention = useCallback(() => {
+    const stamp = attentionStamp.current;
+    attentionStamp.current = null;
+    if (stamp === null) return;
+    if (currentAttentionTarget()?.at !== stamp) return;
+    setAttentionTarget(null);
+  }, []);
+
+  useEffect(() => releaseAttention, [releaseAttention]);
+
   useEffect(() => {
     if (!autoResize) return;
     const el = localRef.current;
@@ -409,6 +432,7 @@ function MessageComposerControl({
 
   const shell = (
     <div
+      ref={shellRef}
       className={shellClass}
       data-drag-active={dragActive ? "true" : undefined}
       {...dropHandlers}
@@ -428,7 +452,11 @@ function MessageComposerControl({
             onChange={handleChange}
             onKeyDown={handleKeyDown}
             onSelect={onSelect}
-            onBlur={onBlur}
+            onFocus={claimAttention}
+            onBlur={() => {
+              releaseAttention();
+              onBlur?.();
+            }}
             onPaste={onPaste}
           />
         )}

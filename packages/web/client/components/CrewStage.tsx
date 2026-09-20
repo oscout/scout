@@ -8,6 +8,7 @@ import {
   SHEET_FRAMES,
   crewAssetUrl,
   crewGround,
+  displayCoin,
 } from "../lib/crew-registry.ts";
 import "./crew-avatar.css";
 
@@ -20,6 +21,18 @@ export interface CrewStageProps {
   hue?: number | null;
   state?: string | null;
   interactive?: boolean;
+  /** Corner radius of the OPEN stage, px. The coin is always a disc. */
+  radius?: number;
+  /**
+   * Draw the contact shadow the open figure stands on.
+   *
+   * The floor is app-drawn, never painted into the master: the same art has to
+   * read as a coin with no ground under it, so a baked shadow would be a
+   * smudge at the bottom of every disc. It fades with the morph rather than
+   * scaling with it — a shadow that grew out of a 96px disc would read as part
+   * of the character.
+   */
+  floor?: boolean;
   className?: string;
   style?: CSSProperties;
   children?: ReactNode;
@@ -75,6 +88,8 @@ export function CrewStage({
   hue,
   state = "idle",
   interactive = true,
+  radius = 16,
+  floor = false,
   className,
   style,
   children,
@@ -89,7 +104,7 @@ export function CrewStage({
 
   if (!CREW_ASSETS_AVAILABLE) return null;
 
-  const [coinX, coinY, coinSide] = art.coin;
+  const [coinX, coinY, coinSide] = displayCoin(art, coin);
   const kCoin = coin / coinSide;
   const figW = (figure * art.w) / art.h;
   const kFig = figure / art.h;
@@ -106,6 +121,14 @@ export function CrewStage({
   // background is decoupled from the character's identity hue. Callers
   // that want a colored disc must pass an explicit hue.
   const groundBg = useMemo(() => crewGround(hue ?? null, art.ink), [hue, art.ink]);
+
+  const openRadius = `${radius}px`;
+
+  /* Sized off the FIGURE, not the current box: the ellipse under the boots is
+     a property of how big the member is standing up, so it holds still while
+     the disc expands instead of inflating with it. ~120 × 16 at figure=224. */
+  const floorWidth = Math.round(figW * 0.68);
+  const floorHeight = Math.max(8, Math.round(figure * 0.072));
 
   const patchWidth = sheet ? sheet.patch[2] * (open ? kFig : kCoin) : 0;
   const patchHeight = sheet ? sheet.patch[3] * (open ? kFig : kCoin) : 0;
@@ -126,7 +149,8 @@ export function CrewStage({
         className="xc-stage"
         role={interactive ? "button" : undefined}
         tabIndex={interactive ? 0 : undefined}
-        aria-label={`${member.name} (${open ? "Full body breakout" : "Coin disc"})`}
+        aria-expanded={interactive ? open : undefined}
+        aria-label={`${member.name} (${open ? "Full figure" : "Avatar"})`}
         onClick={interactive ? onToggle : undefined}
         onKeyDown={
           interactive && onToggle
@@ -141,7 +165,7 @@ export function CrewStage({
         style={{
           width,
           height,
-          borderRadius: open ? "16px" : "50%",
+          borderRadius: open ? openRadius : "50%",
         }}
       >
         <span
@@ -149,9 +173,30 @@ export function CrewStage({
           style={{
             background: groundBg,
             opacity: open ? 0.92 : 1,
-            borderRadius: open ? "16px" : "50%",
+            borderRadius: open ? openRadius : "50%",
           }}
         />
+
+        {floor && (
+          <span
+            className="xc-stage-floor"
+            aria-hidden
+            style={{
+              position: "absolute",
+              left: "50%",
+              bottom: 0,
+              width: floorWidth,
+              height: floorHeight,
+              transform: "translateX(-50%)",
+              borderRadius: "50%",
+              background:
+                "radial-gradient(closest-side at 50% 50%, color-mix(in srgb, black 45%, transparent) 0%, color-mix(in srgb, black 22%, transparent) 46%, transparent 100%)",
+              opacity: open ? 1 : 0,
+              transition: "opacity 400ms ease",
+              pointerEvents: "none",
+            }}
+          />
+        )}
 
         <img
           src={crewAssetUrl(`${normalizedSlug}-bust.webp`)}

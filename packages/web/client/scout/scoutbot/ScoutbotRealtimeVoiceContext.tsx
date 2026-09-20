@@ -23,6 +23,13 @@ import {
   type ScoutRealtimeVoiceTraceKind,
 } from "../../lib/realtime-voice.ts";
 import {
+  EMPTY_LEDGER,
+  actionTickLabel,
+  reduceLedger,
+  type VoiceLedger,
+  type VoiceLedgerEvent,
+} from "../../lib/voice-turn-ledger.ts";
+import {
   SCOUT_REALTIME_VOICE_FLAG,
   SCOUT_REALTIME_VOICE_SETTINGS_PATH,
 } from "../../../shared/realtime-voice.ts";
@@ -37,6 +44,7 @@ import {
 } from "../../lib/scoutbot.ts";
 import { scoutbotUiContext } from "../../../shared/scoutbot-navigation.ts";
 import { useScout } from "../Provider.tsx";
+import { setScoutLiveVoiceActive } from "../../lib/scout-audio-owners.ts";
 import type {
   ScoutbotAskAgentResult,
   ScoutbotAssistantSessionState,
@@ -59,7 +67,11 @@ type ScoutbotRealtimeVoiceContextValue = {
   chatStatus: ScoutbotLiveChatStatus;
   chatError: string | null;
   sessionAction: "new" | string | null;
+  micMuted: boolean;
+  playbackMuted: boolean;
   setOpen: Dispatch<SetStateAction<boolean>>;
+  setMicMuted: (muted: boolean) => void;
+  setPlaybackMuted: (muted: boolean) => void;
   startCall: () => Promise<void>;
   endCall: () => Promise<boolean>;
   startNewChat: () => Promise<void>;
@@ -67,6 +79,7 @@ type ScoutbotRealtimeVoiceContextValue = {
   updatePreferredModel: (model: string) => Promise<string>;
   clearTrace: () => void;
   openVoiceSettings: () => void;
+  ledger: VoiceLedger;
 };
 
 const DEFAULT_REALTIME_VOICE_CONTEXT: ScoutbotRealtimeVoiceContextValue = {
@@ -80,7 +93,11 @@ const DEFAULT_REALTIME_VOICE_CONTEXT: ScoutbotRealtimeVoiceContextValue = {
   chatStatus: "idle",
   chatError: null,
   sessionAction: null,
+  micMuted: false,
+  playbackMuted: false,
   setOpen: () => {},
+  setMicMuted: () => {},
+  setPlaybackMuted: () => {},
   startCall: async () => {},
   endCall: async () => true,
   startNewChat: async () => {},
@@ -88,6 +105,7 @@ const DEFAULT_REALTIME_VOICE_CONTEXT: ScoutbotRealtimeVoiceContextValue = {
   updatePreferredModel: async (model) => model,
   clearTrace: () => {},
   openVoiceSettings: () => {},
+  ledger: EMPTY_LEDGER,
 };
 
 const ScoutbotRealtimeVoiceContext = createContext<ScoutbotRealtimeVoiceContextValue>(
@@ -108,7 +126,25 @@ export function ScoutbotRealtimeVoiceProvider({ children }: { children: ReactNod
   const [chatStatus, setChatStatus] = useState<ScoutbotLiveChatStatus>("idle");
   const [chatError, setChatError] = useState<string | null>(null);
   const [sessionAction, setSessionAction] = useState<"new" | string | null>(null);
+  const [micMuted, setMicMutedState] = useState(false);
+  const [playbackMuted, setPlaybackMutedState] = useState(false);
+  const [ledger, setLedger] = useState<VoiceLedger>(EMPTY_LEDGER);
+  useEffect(() => {
+    setScoutLiveVoiceActive(state === "connecting" || state === "live");
+    return () => setScoutLiveVoiceActive(false);
+  }, [state]);
+  const sessionOriginRef = useRef<number | null>(null);
+  const pushTurn = useCallback((event: VoiceLedgerEvent) => {
+    setLedger((current) => reduceLedger(current, event));
+  }, []);
   const callRef = useRef<ScoutRealtimeVoiceCall | null>(null);
+  const endInFlightRef = useRef<Promise<boolean> | null>(null);
+  const outstandingLeaseRef = useRef<string | null>(null);
+  const audioControlsRef = useRef<Pick<ScoutRealtimeVoiceCall, "setMicMuted" | "setPlaybackMuted"> | null>(null);
+  const micMutedRef = useRef(micMuted);
+  micMutedRef.current = micMuted;
+  const playbackMutedRef = useRef(playbackMuted);
+  playbackMutedRef.current = playbackMuted;
   const abortControllerRef = useRef<AbortController | null>(null);
   const startSettledRef = useRef<Promise<void> | null>(null);
   const generationRef = useRef(0);
@@ -191,29 +227,48 @@ export function ScoutbotRealtimeVoiceProvider({ children }: { children: ReactNod
     return () => window.removeEventListener(SCOUTBOT_SESSION_CHANGED_EVENT, refresh);
   }, [enabled, featureAvailable, loadChatState, open]);
 
-  const endCall = useCallback(async () => {
+  const endCall = useCallback((): Promise<boolean> => {
+    if (endInFlightRef.current) return endInFlightRef.current;
     generationRef.current += 1;
     const pendingStart = startSettledRef.current;
+    const activeCall = callRef.current;
+    // Stop before aborting, so the abort listener cannot launch a second retry.
+    const stopping = activeCall?.stop();
     abortControllerRef.current?.abort();
     abortControllerRef.current = null;
-    const activeCall = callRef.current;
-    callRef.current = null;
-    try {
-      await activeCall?.stop();
-      await pendingStart;
-    } catch (caught) {
-      if (!disposedRef.current) {
-        setState("error");
-        setError(caught instanceof Error ? caught.message : "Could not end realtime voice cleanly.");
+    const ending = (async () => {
+      try {
+        await Promise.all([stopping, pendingStart]);
+        // Cancelled setup may acquire ownership after endCall began.
+        const lateCall = callRef.current;
+        if (lateCall && lateCall !== activeCall) await lateCall.stop();
+        if (!activeCall && !lateCall && outstandingLeaseRef.current) {
+          throw new Error("Call cleanup is incomplete: the host lease is still outstanding.");
+        }
+      } catch (caught) {
+        // Keep both handle and lease; the next attempt must retry the real DELETE.
+        if (!disposedRef.current) {
+          setState("error");
+          setError(caught instanceof Error ? caught.message : "Could not end realtime voice cleanly.");
+        }
+        return false;
       }
-      return false;
-    }
-    if (disposedRef.current) return true;
-    setLeaseId(null);
-    setState("ended");
-    appendTrace("Live voice ended", "Microphone and host lease released", "voice");
-    return true;
-  }, [appendTrace]);
+      callRef.current = null;
+      outstandingLeaseRef.current = null;
+      if (disposedRef.current) return true;
+      setLeaseId(null);
+      setState("ended");
+      setError(null);
+      appendTrace("Live voice ended", "Microphone and host lease released", "voice");
+      pushTurn({ t: "close", at: Date.now() });
+      return true;
+    })();
+    endInFlightRef.current = ending;
+    void ending.then(() => {
+      if (endInFlightRef.current === ending) endInFlightRef.current = null;
+    });
+    return ending;
+  }, [appendTrace, pushTurn]);
 
   useEffect(() => {
     if (enabled) return;
@@ -238,6 +293,7 @@ export function ScoutbotRealtimeVoiceProvider({ children }: { children: ReactNod
     window.dispatchEvent(new CustomEvent(SCOUTBOT_REALTIME_REPLY_EVENT, { detail: { body } }));
     const spokenBody = body.replace(/```[\s\S]*?```/gu, "").trim();
     if (spokenBody) appendTrace("Scoutbot replied", spokenBody.slice(0, 2_000), "scoutbot");
+    pushTurn({ t: "bot-close", at: Date.now() });
     let requested = 0;
     let sent = 0;
     let failed = 0;
@@ -245,6 +301,7 @@ export function ScoutbotRealtimeVoiceProvider({ children }: { children: ReactNod
     for (const action of extractScoutbotUiActions(body)) {
       if (!isCurrent()) break;
       if (action.type === "ask-agent") {
+        pushTurn({ t: "action", at: Date.now(), label: actionTickLabel(action) });
         requested += 1;
         if (await sendScoutbotAsk(action, appendTrace, setError) === "sent") {
           sent += 1;
@@ -256,6 +313,7 @@ export function ScoutbotRealtimeVoiceProvider({ children }: { children: ReactNod
         const kind = action.type === "navigate" || action.type === "view-file"
           ? "navigation"
           : "scoutbot";
+        pushTurn({ t: "action", at: Date.now(), label: actionTickLabel(action) });
         appendTrace(describeAction(action), detail, kind);
         bridgeRef.current.applyScoutbotUiAction(action);
         appendTrace(
@@ -267,7 +325,7 @@ export function ScoutbotRealtimeVoiceProvider({ children }: { children: ReactNod
     }
     if (isCurrent()) await loadChatState().catch(() => null);
     return { agentRequests: { requested, sent, failed, unknown } };
-  }, [appendTrace, loadChatState]);
+  }, [appendTrace, loadChatState, pushTurn]);
 
   const openVoiceSettings = useCallback(() => {
     const action: ScoutbotUiAction = { type: "navigate", route: { view: "settings", section: "voice" } };
@@ -275,26 +333,29 @@ export function ScoutbotRealtimeVoiceProvider({ children }: { children: ReactNod
     bridgeRef.current.applyScoutbotUiAction(action);
   }, [appendTrace]);
 
+  const setMicMuted = useCallback((muted: boolean) => {
+    micMutedRef.current = muted;
+    setMicMutedState(muted);
+    audioControlsRef.current?.setMicMuted(muted);
+  }, []);
+
+  const setPlaybackMuted = useCallback((muted: boolean) => {
+    playbackMutedRef.current = muted;
+    setPlaybackMutedState(muted);
+    audioControlsRef.current?.setPlaybackMuted(muted);
+  }, []);
+
   const startCall = useCallback(async () => {
     if (!enabled) {
       setError("Turn on live voice in Settings → Voice before starting a call.");
       setOpen(false);
       return;
     }
-    if (startingRef.current || state === "connecting" || state === "live") return;
+    // Error is not release evidence. Require explicit successful cleanup.
+    if (startingRef.current || endInFlightRef.current || callRef.current || outstandingLeaseRef.current
+      || state === "connecting" || state === "live") return;
     startingRef.current = true;
     abortControllerRef.current?.abort();
-    const previousCall = callRef.current;
-    callRef.current = null;
-    try {
-      await previousCall?.stop();
-      setLeaseId(null);
-    } catch (caught) {
-      setState("error");
-      setError(caught instanceof Error ? caught.message : "Could not end the previous realtime voice call.");
-      startingRef.current = false;
-      return;
-    }
     const controller = new AbortController();
     abortControllerRef.current = controller;
     const generation = generationRef.current + 1;
@@ -307,6 +368,8 @@ export function ScoutbotRealtimeVoiceProvider({ children }: { children: ReactNod
     let started = false;
     setError(null);
     setTrace([{ id: "connecting", at: Date.now(), label: "Connecting secure audio" }]);
+    setLedger(EMPTY_LEDGER);
+    sessionOriginRef.current = Date.now();
     setState("connecting");
     try {
       const inputDeviceName = await fetchScoutVoiceSettings()
@@ -315,6 +378,13 @@ export function ScoutbotRealtimeVoiceProvider({ children }: { children: ReactNod
       const call = await startScoutRealtimeVoiceCall({
         signal: controller.signal,
         inputDeviceName,
+        getAudioMuteState: () => ({ micMuted: micMutedRef.current, playbackMuted: playbackMutedRef.current }),
+        onAudioControls: (controls) => { audioControlsRef.current = controls; },
+        onLeaseAcquired: (call) => {
+          callRef.current = call;
+          outstandingLeaseRef.current = call.leaseId;
+          if (!disposedRef.current) setLeaseId(call.leaseId);
+        },
         getRoute: () => bridgeRef.current.route,
         getUiContext: () => scoutbotUiContext(isScoutNativeUiActionHost() ? "macos" : "web"),
         onState: (next) => {
@@ -322,8 +392,11 @@ export function ScoutbotRealtimeVoiceProvider({ children }: { children: ReactNod
             setState(next);
             if (next === "ended" || next === "error") {
               generationRef.current += 1;
-              callRef.current = null;
-              setLeaseId(null);
+              if (next === "ended") {
+                callRef.current = null;
+                outstandingLeaseRef.current = null;
+                setLeaseId(null);
+              }
             }
           }
         },
@@ -335,6 +408,24 @@ export function ScoutbotRealtimeVoiceProvider({ children }: { children: ReactNod
         onTrace: (event) => {
           if (!disposedRef.current && generationRef.current === generation) {
             setTrace((current) => [...current, event].slice(-100));
+            if (event.kind === "scoutbot" && event.label === "Scoutbot is checking the control plane") {
+              pushTurn({ t: "bot-open", at: event.at, label: "Scout lookup" });
+            }
+          }
+        },
+        onTurn: (notice) => {
+          if (disposedRef.current || generationRef.current !== generation) return;
+          const origin = sessionOriginRef.current ?? Date.now();
+          if (notice.kind === "speech") {
+            pushTurn({
+              t: "speech",
+              speaker: notice.speaker,
+              at: origin + notice.startMs,
+              end: origin + notice.endMs,
+              text: notice.text,
+            });
+          } else {
+            pushTurn({ t: "bot-open", at: origin + notice.offsetMs, label: "Scout lookup" });
           }
         },
         onScoutbotReply: (body, taskIsCurrent) => {
@@ -348,7 +439,10 @@ export function ScoutbotRealtimeVoiceProvider({ children }: { children: ReactNod
         await call.stop();
         return;
       }
-      callRef.current = call;
+      callRef.current ??= call;
+      outstandingLeaseRef.current = call.leaseId;
+      call.setMicMuted(micMutedRef.current);
+      call.setPlaybackMuted(playbackMutedRef.current);
       setLeaseId(call.leaseId);
       started = true;
     } catch (caught) {
@@ -366,7 +460,7 @@ export function ScoutbotRealtimeVoiceProvider({ children }: { children: ReactNod
       if (startSettledRef.current === startSettled) startSettledRef.current = null;
       startingRef.current = false;
     }
-  }, [appendTrace, applyReplyActions, enabled, state]);
+  }, [appendTrace, applyReplyActions, enabled, pushTurn, state]);
 
   const startNewChat = useCallback(async () => {
     if (sessionAction) return;
@@ -451,7 +545,11 @@ export function ScoutbotRealtimeVoiceProvider({ children }: { children: ReactNod
       chatStatus,
       chatError,
       sessionAction,
+      micMuted,
+      playbackMuted,
       setOpen,
+      setMicMuted,
+      setPlaybackMuted,
       startCall,
       endCall,
       startNewChat,
@@ -459,6 +557,7 @@ export function ScoutbotRealtimeVoiceProvider({ children }: { children: ReactNod
       updatePreferredModel,
       clearTrace,
       openVoiceSettings,
+      ledger,
     }),
     [
       enabled,
@@ -471,6 +570,10 @@ export function ScoutbotRealtimeVoiceProvider({ children }: { children: ReactNod
       chatStatus,
       chatError,
       sessionAction,
+      micMuted,
+      playbackMuted,
+      setMicMuted,
+      setPlaybackMuted,
       startCall,
       endCall,
       startNewChat,
@@ -478,6 +581,7 @@ export function ScoutbotRealtimeVoiceProvider({ children }: { children: ReactNod
       updatePreferredModel,
       clearTrace,
       openVoiceSettings,
+      ledger,
     ],
   );
 

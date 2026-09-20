@@ -120,16 +120,29 @@ export function isAuthenticatedScoutRequest(
   return Boolean(cookie && validateSession?.(cookie));
 }
 
+/**
+ * Share the session across `scout.local` and `chat.scout.local`.
+ * Host-only cookies made Chat look signed-in from cache while `/api/*` 401'd.
+ */
+export function scoutCookieDomain(host: string | null | undefined): string | null {
+  const hostname = (host ?? "").split(":")[0]?.toLowerCase() ?? "";
+  if (hostname === "scout.local" || hostname.endsWith(".scout.local")) return "scout.local";
+  return null;
+}
+
 export function scoutWebAuthCookie(
   token: string,
   secure: boolean,
   maxAgeSeconds?: number,
+  host?: string | null,
 ): string {
+  const domain = scoutCookieDomain(host);
   return [
     `${SCOUT_WEB_AUTH_COOKIE}=${encodeURIComponent(token)}`,
     "Path=/",
     "HttpOnly",
     "SameSite=Strict",
+    ...(domain ? [`Domain=${domain}`] : []),
     ...(maxAgeSeconds !== undefined ? [`Max-Age=${Math.floor(maxAgeSeconds)}`] : []),
     ...(secure ? ["Secure"] : []),
   ].join("; ");
@@ -761,6 +774,7 @@ export function installScoutApiMiddleware(
         session,
         isForwardedHttpsScoutRequest(c.req.raw),
         SCOUT_WEB_LOGIN_SESSION_MAX_AGE_SECONDS,
+        c.req.header("host"),
       ),
     );
     return c.json({ ok: true });

@@ -1946,6 +1946,22 @@ const brokerService = createBrokerCoreService({
   readRuntimeCatalog: readBrokerRuntimeCatalogSnapshot,
   executeCommand: handleCommand,
   postConversationMessage,
+  upsertMessageReaction: async (input) => {
+    if (!sharedControlPlaneStore) {
+      throw Object.assign(new Error("broker sqlite disabled"), { status: 503, reason: "sqlite_disabled" });
+    }
+    return sharedControlPlaneStore.get().upsertMessageReaction(input);
+  },
+  removeMessageReaction: async (input) => {
+    if (!sharedControlPlaneStore) {
+      throw Object.assign(new Error("broker sqlite disabled"), { status: 503, reason: "sqlite_disabled" });
+    }
+    return sharedControlPlaneStore.get().removeMessageReaction(input);
+  },
+  listMessageReactions: async (channelId) => {
+    if (!sharedControlPlaneStore) return [];
+    return sharedControlPlaneStore.get().listMessageReactions(channelId);
+  },
   deliver: (payload, options) => deliveryAcceptanceService.accept(payload, options),
   invokeAgent: handleInvocationRequest,
 });

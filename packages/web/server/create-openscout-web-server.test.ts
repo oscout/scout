@@ -64,6 +64,7 @@ const originalScoutbotAssistantModel = process.env.OPENSCOUT_SCOUTBOT_ASSISTANT_
 const originalProbesSocket = process.env.OPENSCOUT_PROBES_SOCKET;
 const sendScoutMessageCalls: Array<Record<string, unknown>> = [];
 const sendScoutConversationMessageCalls: Array<Record<string, unknown>> = [];
+const sendScoutMessageReactionCalls: Array<Record<string, unknown>> = [];
 const sendScoutConversationSteerCalls: Array<Record<string, unknown>> = [];
 const sendScoutDirectMessageCalls: Array<Record<string, unknown>> = [];
 const askScoutQuestionCalls: Array<Record<string, unknown>> = [];
@@ -336,6 +337,11 @@ mock.module("./core/broker/service.ts", () => ({
     sendScoutConversationMessageCalls.push(input);
     return sendScoutMessageResult;
   },
+  sendScoutMessageReaction: async (input: Record<string, unknown>) => {
+    sendScoutMessageReactionCalls.push(input);
+    return { usedBroker: true, replayed: false };
+  },
+  listScoutMessageReactions: async () => [],
   sendScoutConversationSteer: async (input: Record<string, unknown>) => {
     sendScoutConversationSteerCalls.push(input);
     return sendScoutMessageResult;
@@ -464,6 +470,21 @@ function makeDiscoverySnapshot(generatedAt: number): DiscoverySnapshot {
 
 async function flushPromises(): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, 0));
+}
+
+function parseSseEvents(body: string): Array<{ event: string; data: unknown }> {
+  const events: Array<{ event: string; data: unknown }> = [];
+  for (const block of body.replace(/\r\n/g, "\n").split("\n\n")) {
+    let event = "message";
+    const dataLines: string[] = [];
+    for (const line of block.split("\n")) {
+      if (line.startsWith("event:")) event = line.slice(6).trim();
+      else if (line.startsWith("data:")) dataLines.push(line.slice(5).replace(/^ /, ""));
+    }
+    if (dataLines.length === 0) continue;
+    events.push({ event, data: JSON.parse(dataLines.join("\n")) as unknown });
+  }
+  return events;
 }
 
 function useIsolatedOpenScoutHome(): string {
@@ -1020,6 +1041,7 @@ beforeEach(() => {
   pairingSessionSnapshotsResult = [];
   sendScoutMessageCalls.length = 0;
   sendScoutConversationMessageCalls.length = 0;
+  sendScoutMessageReactionCalls.length = 0;
   sendScoutConversationSteerCalls.length = 0;
   sendScoutDirectMessageCalls.length = 0;
   askScoutQuestionCalls.length = 0;
@@ -1234,6 +1256,13 @@ describe("createOpenScoutWebServer", () => {
     expect(response.status).toBe(200);
     expect(response.headers.get("content-type")).toContain("text/css");
     await expect(response.text()).resolves.toBe("body { color: red; }\n");
+    const htmlPath = join(root, "你好.html");
+    writeFileSync(htmlPath, "<h1>Report</h1>", "utf8");
+    const html = await server.app.request(`http://localhost/api/file/raw${htmlPath.split("/").map(encodeURIComponent).join("/")}`);
+    expect(html.status).toBe(200);
+    expect(html.headers.get("content-security-policy")).toContain("sandbox;");
+    expect(html.headers.get("content-disposition")).toContain("filename*=UTF-8''%E4%BD%A0%E5%A5%BD.html");
+    expect(await html.text()).toBe("<h1>Report</h1>");
   });
 
   test("waits for canonical broker data before serving a cold tail cache", async () => {
@@ -7827,6 +7856,8 @@ describe("createOpenScoutWebServer", () => {
       currentDirectory: "/tmp/openscout",
       assetMode: "static",
       staticRoot: makeStaticRoot(),
+      // Pin the agent path off so this test exercises the OpenAI provider.
+      scoutbotAssistant: { agentAvailable: () => false },
     });
 
     const response = await server.app.request("http://localhost/api/scoutbot/chat", {
@@ -7862,6 +7893,295 @@ describe("createOpenScoutWebServer", () => {
     expect(JSON.stringify(fetchCalls[0].body)).toContain("Current Scout control-plane snapshot");
     expect(JSON.stringify(fetchCalls[0].body)).toContain("currentRoute");
     expect(JSON.stringify(fetchCalls[0].body)).toContain("fleet");
+  });
+
+  test("streams Scoutbot voice replies as sentence SSE events before the final payload", async () => {
+    process.env.OPENAI_API_KEY = "sk-test";
+    process.env.OPENSCOUT_SCOUTBOT_ASSISTANT_MODEL = "gpt-test-scoutbot";
+    const fetchBodies: Array<Record<string, unknown>> = [];
+    globalThis.fetch = (async (_input, init) => {
+      fetchBodies.push(JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>);
+      const sse = [
+        { type: "response.output_text.delta", delta: "The control plane is quiet." },
+        { type: "response.output_text.delta", delta: " Nothing needs you." },
+        {
+          type: "response.completed",
+          response: {
+            id: "resp_scoutbot_stream",
+            output_text: "The control plane is quiet. Nothing needs you.",
+            usage: { input_tokens: 12, output_tokens: 9, total_tokens: 21 },
+          },
+        },
+      ].map((event) => `data: ${JSON.stringify(event)}\n\n`).join("");
+      return new Response(sse, {
+        status: 200,
+        headers: { "content-type": "text/event-stream" },
+      });
+    }) as typeof fetch;
+
+    const server = await createOpenScoutWebServer({
+      currentDirectory: "/tmp/openscout",
+      assetMode: "static",
+      staticRoot: makeStaticRoot(),
+      // Pin the agent path off so this test exercises the OpenAI provider.
+      scoutbotAssistant: { agentAvailable: () => false },
+    });
+
+    const response = await server.app.request("http://localhost/api/scoutbot/chat", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        body: "what's going on?",
+        route: { view: "inbox" },
+        voiceTurn: { turn: 7, gen: 3 },
+        stream: true,
+      }),
+    });
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toContain("text/event-stream");
+    const events = parseSseEvents(await response.text());
+    expect(events.map((event) => event.event)).toEqual(["sentence", "sentence", "final"]);
+    expect(events[0]!.data).toEqual({ text: "The control plane is quiet." });
+    expect(events[1]!.data).toEqual({ text: "Nothing needs you." });
+    const final = events[2]!.data as {
+      reply: { body: string };
+      responseId: string | null;
+      voiceTurn: { turn: number; gen: number };
+      session: { messages: Array<{ role: string; body: string }> };
+    };
+    expect(final.reply.body).toBe("The control plane is quiet. Nothing needs you.");
+    expect(final.responseId).toBe("resp_scoutbot_stream");
+    expect(final.voiceTurn).toEqual({ turn: 7, gen: 3 });
+    expect(final.session.messages.map((message) => message.role)).toEqual(["user", "assistant"]);
+    expect(fetchBodies).toHaveLength(1);
+    expect(fetchBodies[0]!.stream).toBe(true);
+  });
+
+  test("Scoutbot overlapping chat requests expose 409 without starting a second provider", async () => {
+    useIsolatedOpenScoutHome();
+    delete process.env.OPENAI_API_KEY;
+    let started!: () => void;
+    const entered = new Promise<void>((resolve) => { started = resolve; });
+    let finish!: () => void;
+    const pending = new Promise<void>((resolve) => { finish = resolve; });
+    let calls = 0;
+    const server = await createOpenScoutWebServer({
+      currentDirectory: "/tmp/openscout", assetMode: "static", staticRoot: makeStaticRoot(),
+      scoutbotAssistant: { invokeCodex: async () => {
+        calls++; started(); await pending;
+        return { output: "First reply.", threadId: "isolated-first" };
+      } },
+    });
+    const request = (stream: boolean) => server.app.request("http://localhost/api/scoutbot/chat", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ body: "state?", stream }),
+    });
+    const first = await request(true);
+    await entered;
+    try {
+      const second = await request(true);
+      const events = parseSseEvents(await second.text());
+      expect(events).toEqual([{ event: "error", data: {
+        error: "This Scoutbot chat already has a reply in progress.", status: 409,
+      } }]);
+      const typed = await request(false);
+      expect(typed.status).toBe(409);
+      expect(await typed.json()).toMatchObject({ error: "This Scoutbot chat already has a reply in progress." });
+      expect(calls).toBe(1);
+    } finally { finish(); }
+    expect(parseSseEvents(await first.text()).at(-1)?.event).toBe("final");
+  });
+
+  test("cancelling the Scoutbot response body aborts its provider and does not append history", async () => {
+    useIsolatedOpenScoutHome();
+    delete process.env.OPENAI_API_KEY;
+    let started!: () => void;
+    const entered = new Promise<void>((resolve) => { started = resolve; });
+    let observedAbort!: () => void;
+    const aborted = new Promise<void>((resolve) => { observedAbort = resolve; });
+    let providerSignal: AbortSignal | undefined;
+    const server = await createOpenScoutWebServer({
+      currentDirectory: "/tmp/openscout", assetMode: "static", staticRoot: makeStaticRoot(),
+      scoutbotAssistant: { invokeCodex: async (input) => {
+        providerSignal = input.signal;
+        started();
+        return await new Promise<never>((_resolve, reject) => {
+          input.signal!.addEventListener("abort", () => {
+            observedAbort(); reject(new DOMException("Cancelled", "AbortError"));
+          }, { once: true });
+        });
+      } },
+    });
+    const response = await server.app.request("http://localhost/api/scoutbot/chat", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ body: "state?", stream: true }),
+    });
+    await entered;
+    await response.body!.cancel();
+    await aborted;
+    expect(providerSignal?.aborted).toBe(true);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const state = await (await server.app.request("http://localhost/api/scoutbot/session")).json() as { session: { messages: unknown[] } };
+    expect(state.session.messages).toEqual([]);
+  });
+
+  test("ends the Scoutbot stream with an in-band error event on mid-stream failure", async () => {
+    process.env.OPENAI_API_KEY = "sk-test";
+    globalThis.fetch = (async () => {
+      const sse = [
+        { type: "response.output_text.delta", delta: "Partial answer." },
+        {
+          type: "response.failed",
+          response: { status: "failed", error: { message: "upstream went away" } },
+        },
+      ].map((event) => `data: ${JSON.stringify(event)}\n\n`).join("");
+      return new Response(sse, {
+        status: 200,
+        headers: { "content-type": "text/event-stream" },
+      });
+    }) as typeof fetch;
+
+    const server = await createOpenScoutWebServer({
+      currentDirectory: "/tmp/openscout",
+      assetMode: "static",
+      staticRoot: makeStaticRoot(),
+      // Pin the agent path off so this test exercises the OpenAI provider.
+      scoutbotAssistant: { agentAvailable: () => false },
+    });
+
+    const response = await server.app.request("http://localhost/api/scoutbot/chat", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ body: "state?", stream: true }),
+    });
+
+    expect(response.status).toBe(200);
+    const events = parseSseEvents(await response.text());
+    expect(events.map((event) => event.event)).toEqual(["sentence", "error"]);
+    expect(events[0]!.data).toEqual({ text: "Partial answer." });
+    expect(events[1]!.data).toEqual({ error: "upstream went away", status: 502 });
+
+    // The failed stream must not append durable history.
+    const session = await server.app.request("http://localhost/api/scoutbot/session");
+    const state = await session.json() as { session: { messages: unknown[] } };
+    expect(state.session.messages).toEqual([]);
+  });
+
+  test("streams the Codex fallback as one whole-reply sentence event", async () => {
+    useIsolatedOpenScoutHome();
+    delete process.env.OPENAI_API_KEY;
+    globalThis.fetch = (async () => new Response("{}", { status: 200 })) as typeof fetch;
+
+    const server = await createOpenScoutWebServer({
+      currentDirectory: "/tmp/openscout",
+      assetMode: "static",
+      staticRoot: makeStaticRoot(),
+      scoutbotAssistant: {
+        invokeCodex: async () => ({
+          output: "Codex fallback works. Two sentences here.",
+          threadId: "codex-thread-stream",
+        }),
+      },
+    });
+
+    const response = await server.app.request("http://localhost/api/scoutbot/chat", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ body: "state?", stream: true }),
+    });
+
+    expect(response.status).toBe(200);
+    const events = parseSseEvents(await response.text());
+    expect(events.map((event) => event.event)).toEqual(["sentence", "sentence", "final"]);
+    expect(events[0]!.data).toEqual({ text: "Codex fallback works." });
+    expect(events[1]!.data).toEqual({ text: "Two sentences here." });
+    const final = events[2]!.data as { reply: { body: string }; responseId: string | null };
+    expect(final.reply.body).toBe("Codex fallback works. Two sentences here.");
+    expect(final.responseId).toBe("codex-thread-stream");
+  });
+
+  test("routes Scoutbot chat to the agent path first when it can launch", async () => {
+    process.env.OPENAI_API_KEY = "sk-test";
+    let fetchCalled = false;
+    globalThis.fetch = (async () => {
+      fetchCalled = true;
+      return new Response("{}", { status: 200 });
+    }) as typeof fetch;
+
+    const server = await createOpenScoutWebServer({
+      currentDirectory: "/tmp/openscout",
+      assetMode: "static",
+      staticRoot: makeStaticRoot(),
+      scoutbotAssistant: {
+        agentAvailable: () => true,
+        invokeCodex: async (input) => ({
+          output: `Agent brain answered on ${input.model ?? "unknown"}.`,
+          threadId: "codex-thread-ladder",
+        }),
+      },
+    });
+
+    const response = await server.app.request("http://localhost/api/scoutbot/chat", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ body: "state?" }),
+    });
+
+    expect(response.status).toBe(200);
+    const json = await response.json() as { reply: { body: string }; responseId: string | null };
+    expect(json.reply.body).toBe("Agent brain answered on gpt-5.6-luna.");
+    expect(json.responseId).toBe("codex-thread-ladder");
+    expect(fetchCalled).toBe(false);
+
+    const config = await server.app.request("http://localhost/api/scoutbot/config");
+    const configJson = await config.json() as { provider: string; effectiveProvider: string | null };
+    expect(configJson.provider).toBe("auto");
+    expect(configJson.effectiveProvider).toBe("codex");
+  });
+
+  test("streams agent deltas as SSE sentences before the final payload", async () => {
+    process.env.OPENAI_API_KEY = "sk-test";
+    globalThis.fetch = (async () => {
+      throw new Error("OpenAI must not be called when the agent path serves the turn");
+    }) as typeof fetch;
+
+    const server = await createOpenScoutWebServer({
+      currentDirectory: "/tmp/openscout",
+      assetMode: "static",
+      staticRoot: makeStaticRoot(),
+      scoutbotAssistant: {
+        agentAvailable: () => true,
+        invokeCodex: async (input) => {
+          input.onDelta?.("Agent first sentence.");
+          input.onDelta?.(" Second sentence lands.");
+          return {
+            output: "Agent first sentence. Second sentence lands.",
+            threadId: "codex-thread-deltas",
+          };
+        },
+      },
+    });
+
+    const response = await server.app.request("http://localhost/api/scoutbot/chat", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ body: "state?", stream: true, voiceTurn: { turn: 2, gen: 5 } }),
+    });
+
+    expect(response.status).toBe(200);
+    const events = parseSseEvents(await response.text());
+    expect(events.map((event) => event.event)).toEqual(["sentence", "sentence", "final"]);
+    expect(events[0]!.data).toEqual({ text: "Agent first sentence." });
+    expect(events[1]!.data).toEqual({ text: "Second sentence lands." });
+    const final = events[2]!.data as {
+      reply: { body: string };
+      responseId: string | null;
+      voiceTurn: { turn: number; gen: number };
+    };
+    expect(final.reply.body).toBe("Agent first sentence. Second sentence lands.");
+    expect(final.responseId).toBe("codex-thread-deltas");
+    expect(final.voiceTurn).toEqual({ turn: 2, gen: 5 });
   });
 
   test("creates a structured Scoutbot one-minute brief with TTL", async () => {
@@ -7909,6 +8229,8 @@ describe("createOpenScoutWebServer", () => {
       currentDirectory: "/tmp/openscout",
       assetMode: "static",
       staticRoot: makeStaticRoot(),
+      // Pin the agent path off so this test exercises the OpenAI provider.
+      scoutbotAssistant: { agentAvailable: () => false },
     });
 
     const response = await server.app.request("http://localhost/api/scoutbot/brief", {
@@ -7991,6 +8313,8 @@ describe("createOpenScoutWebServer", () => {
       currentDirectory: "/tmp/openscout",
       assetMode: "static",
       staticRoot: makeStaticRoot(),
+      // Pin the agent path off so this test exercises the OpenAI provider.
+      scoutbotAssistant: { agentAvailable: () => false },
     });
 
     const first = await server.app.request("http://localhost/api/fleet/brief");
@@ -9080,6 +9404,65 @@ describe("the Scout Chat surface over HTTP", () => {
     expect(call.clientMessageId).toBe("req-1");
   });
 
+  test("reactions add and remove through the broker and GET is 405", async () => {
+    seedChatChannel();
+    const server = await makeServer();
+
+    const denied = await server.app.request(
+      `http://localhost/api/channels/${CHANNEL_ID}/reactions`,
+    );
+    expect(denied.status).toBe(405);
+
+    const invalid = await server.app.request(
+      `http://localhost/api/channels/${CHANNEL_ID}/reactions`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ messageId: "m-root", emoji: "not-an-emoji", requestId: "r1" }),
+      },
+    );
+    expect(invalid.status).toBe(400);
+    expect(await invalid.json()).toMatchObject({ reason: "invalid_emoji" });
+
+    const claimed = await server.app.request(
+      `http://localhost/api/channels/${CHANNEL_ID}/reactions`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ messageId: "m-root", emoji: "👍", actorId: "spoof" }),
+      },
+    );
+    expect(claimed.status).toBe(400);
+    expect(await claimed.json()).toMatchObject({ reason: "identity_not_accepted" });
+
+    const added = await server.app.request(
+      `http://localhost/api/channels/${CHANNEL_ID}/reactions`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ messageId: "m-root", emoji: "👍", requestId: "r1" }),
+      },
+    );
+    expect(added.status).toBe(200);
+    expect(sendScoutMessageReactionCalls.at(-1)).toMatchObject({
+      channelId: CHANNEL_ID,
+      messageId: "m-root",
+      emoji: "👍",
+    });
+    expect(sendScoutMessageReactionCalls.at(-1)?.remove).toBeUndefined();
+
+    const removed = await server.app.request(
+      `http://localhost/api/channels/${CHANNEL_ID}/reactions/remove`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ messageId: "m-root", emoji: "👍", requestId: "r2" }),
+      },
+    );
+    expect(removed.status).toBe(200);
+    expect(sendScoutMessageReactionCalls.at(-1)?.remove).toBe(true);
+  });
+
   test("an ask routes to the redeemed session and to nobody else", async () => {
     seedChatChannel();
     sendScoutMessageResult = {
@@ -9557,6 +9940,35 @@ describe("lightweight API participation over HTTP", () => {
     );
     const delta = await third.json() as Record<string, any>;
     expect(delta.messages.map((message: { id: string }) => message.id)).toEqual(["m-third"]);
+  });
+
+  test("invited members cannot publish host file pointers through any spelling", async () => {
+    seedChannel();
+    stubBroker();
+    const server = await makeServer();
+    const joined = await (await participate(server)).json() as { credential: { token: string } };
+    const callsBefore = sendScoutConversationMessageCalls.length;
+    for (const attachment of [
+      { localPath: "/tmp/openscout/private.txt" },
+      { metadata: { localPath: "/tmp/openscout/private.txt" } },
+      { blobKey: "local:/tmp/openscout/private.txt" },
+      { blobKey: "  local:/tmp/openscout/private.txt  " },
+    ]) {
+      const response = await server.app.request(`http://localhost/api/channels/${CHANNEL_ID}/messages`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${joined.credential.token}`, "content-type": "application/json" },
+        body: JSON.stringify({ body: "file", attachments: [attachment] }),
+      });
+      expect(response.status).toBe(403);
+      expect(await response.json()).toEqual({ error: "local file attachments require operator authority" });
+    }
+    const rawUrl = await server.app.request(`http://localhost/api/channels/${CHANNEL_ID}/messages`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${joined.credential.token}`, "content-type": "application/json" },
+      body: JSON.stringify({ body: "file", attachments: [{ mediaType: "text/html", url: "/api/file/raw/tmp/private.html" }] }),
+    });
+    expect(rawUrl.status).toBe(403);
+    expect(sendScoutConversationMessageCalls).toHaveLength(callsBefore);
   });
 
   test("a cursor the retained window no longer covers fails rather than skipping", async () => {

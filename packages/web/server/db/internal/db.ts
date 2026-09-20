@@ -4,6 +4,7 @@
  */
 
 import { Database } from "bun:sqlite";
+import { observeSqliteDatabase } from "@openscout/runtime/sqlite-adapter";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -28,7 +29,9 @@ export function configureReadonlyDb(db: Database): void {
 
 export function db(): Database {
   if (!_db) {
-    _db = new Database(resolveDbPath(), { readonly: true });
+    _db = observeSqliteDatabase(new Database(resolveDbPath(), { readonly: true }), {
+      database: "web-control-plane",
+    });
     configureReadonlyDb(_db);
   }
   return _db;

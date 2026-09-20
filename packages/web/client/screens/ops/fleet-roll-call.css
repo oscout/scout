@@ -1,0 +1,58 @@
+.fleet-roll-call {
+  position: absolute;
+  right: 16px;
+  bottom: 28px;
+  z-index: 8;
+  width: min(360px, calc(100% - 32px));
+  padding: 10px 12px;
+  border: 1px solid var(--scout-chrome-border-soft, var(--border));
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--scout-chrome-bg, var(--bg)) 92%, black);
+  color: var(--scout-chrome-ink-strong, var(--fg));
+  pointer-events: auto;
+}
+
+.fleet-roll-call h2 {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.fleet-roll-call p,
+.fleet-roll-call li {
+  margin: 4px 0 0;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--scout-chrome-ink-faint, var(--muted));
+}
+
+.fleet-roll-call strong {
+  color: var(--scout-chrome-ink-strong, var(--fg));
+}
+
+.fleet-roll-call ol {
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+  max-height: 160px;
+  overflow: auto;
+}
+
+.fleet-roll-call time {
+  display: block;
+  font-family: ui-monospace, Menlo, monospace;
+  font-size: 10px;
+  color: var(--scout-chrome-ink-ghost, var(--muted));
+}
+
+.fleet-roll-call button {
+  margin-top: 8px;
+  border: 0;
+  background: transparent;
+  color: var(--scout-chrome-ink-strong, var(--fg));
+  font-size: 12px;
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}

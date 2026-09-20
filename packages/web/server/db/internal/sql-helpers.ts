@@ -95,11 +95,23 @@ export function agentFlightPhaseFromFlightState(state: string | null): AgentFlig
   return null;
 }
 
+/**
+ * Agents holding a live turn.
+ *
+ * An active flight state is not on its own evidence of live work. A flight
+ * whose requester stopped waiting (`requesterTimedOut` / `timeoutScope:
+ * requester_wait`) is not being waited on by anyone — the agent may still be
+ * running, but nothing is live for the operator. Excluded here, because a
+ * single such record otherwise pins an agent to "In turn" for as long as it
+ * survives in the table.
+ */
 export function queryAgentFlightPhases(database = db()): Map<string, AgentFlightPhase> {
   const phases = new Map<string, AgentFlightPhase>();
   const rows = database.prepare(
     `SELECT target_agent_id, state FROM invocations
-     WHERE state IN (${sqlPlaceholders(ACTIVE_FLIGHT_STATES.length)})`,
+     WHERE state IN (${sqlPlaceholders(ACTIVE_FLIGHT_STATES.length)})
+       AND COALESCE(json_extract(flight_metadata_json, '$.requesterTimedOut'), 0) != 1
+       AND COALESCE(json_extract(flight_metadata_json, '$.timeoutScope'), '') != 'requester_wait'`,
   ).all(...ACTIVE_FLIGHT_STATES) as Array<{ target_agent_id: string; state: string }>;
 
   for (const row of rows) {

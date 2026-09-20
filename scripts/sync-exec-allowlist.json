@@ -574,17 +574,24 @@
     "owner": "web"
   },
   {
+    "path": "packages/web/server/local-terminal-open.ts",
+    "symbol": "node:child_process",
+    "category": "process-lifecycle",
+    "reason": "Owns asynchronous local terminal launch process lifecycle; no synchronous spawn in request path",
+    "owner": "web"
+  },
+  {
     "path": "packages/runtime/src/jetstream/sidecar.ts",
     "symbol": "node:child_process",
     "category": "process-lifecycle",
-    "reason": "Opt-in NATS sidecar uses asynchronous spawn with owned child shutdown and isolated loopback endpoints.",
+    "reason": "Owns opt-in NATS sidecar asynchronous spawn and shutdown lifecycle",
     "owner": "runtime"
   },
   {
     "path": "packages/runtime/src/jetstream/test-support.ts",
     "symbol": "node:child_process",
     "category": "test",
-    "reason": "Isolated live-NATS test harness launches and disposes its own server process.",
-    "owner": "runtime"
+    "reason": "Owns isolated NATS subprocess fixtures and cleanup",
+    "owner": "tests"
   }
 ]

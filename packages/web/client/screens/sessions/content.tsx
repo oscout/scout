@@ -27,6 +27,7 @@ export function SessionsContent({
       <SessionRefScreen
         sessionRef={route.sessionId}
         navigate={navigate}
+        machineId={route.machineId}
       />
     );
   }
