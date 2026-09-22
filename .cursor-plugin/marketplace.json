@@ -1,0 +1,13 @@
+{
+  "name": "openscout",
+  "owner": {
+    "name": "OpenScout"
+  },
+  "plugins": [
+    {
+      "name": "openscout",
+      "source": "plugins/cursor",
+      "description": "Connect Cursor to a local Scout broker to discover supported agents, exchange messages, and request work."
+    }
+  ]
+}
