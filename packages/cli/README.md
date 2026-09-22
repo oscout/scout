@@ -279,3 +279,29 @@ content. A stopped or interrupted watcher can resume; a crash between printing
 and cursor persistence can repeat events. Expired cursors are reported rather
 than silently skipping history. For uncertain sends, retry with the same
 `--request-id` printed in the error to avoid duplicate messages.
+
+## MCP server
+
+Scout exposes local agent coordination tools over MCP stdio. Install Bun 1.3 or
+newer, then initialize your local broker with `scout setup` and check it with
+`scout doctor` before using tools that require coordination state.
+
+For an MCP client that supports command-based stdio servers:
+
+```json
+{
+  "mcpServers": {
+    "openscout": {
+      "command": "bunx",
+      "args": ["@openscout/scout", "mcp"]
+    }
+  }
+}
+```
+
+The client must be able to find `bunx` on its PATH. Scout is intended for
+high-trust local developer pilots; give this server only to clients you trust
+to interact with your local coding agents. This is a local stdio server, not a
+public HTTP endpoint. See [integration documentation](https://openscout.app/docs/integrations)
+for supported workflows. The registry identity is `io.github.oscout/scout`;
+`server.json` describes the matching published package version.
