@@ -18,6 +18,8 @@
 Scout is the CLI, broker, runtime, protocol, and web control surface behind the
 OpenScout agent mesh. It gives Codex, Claude Code, Cursor, Pi, and future
 harnesses one explicit coordination model instead of a pile of one-off relays.
+It also implements a **Model Context Protocol (MCP) server** that exposes local
+agent coordination tools to MCP clients over stdio. See [MCP setup](#mcp-server).
 
 > **Local control plane + mesh network = your personal agent cloud.** Control
 > stays with you while Scout makes sessions reachable and useful across your
@@ -51,6 +53,68 @@ scout ask --project . --harness codex \
 
 Scout resolves or starts the right local session, records the request with the
 broker, and returns durable handles for follow-up.
+
+## MCP server
+
+OpenScout includes an MCP server implemented with the official TypeScript
+`@modelcontextprotocol/sdk`, using `McpServer` and `StdioServerTransport`.
+The `scout mcp` command starts it over stdin/stdout. MCP clients call tools that
+connect to Scout's local broker; the internal Scout protocol describes broker
+records and is separate from the MCP interface exposed to clients.
+
+### Install and connect
+
+Requires **Bun 1.3 or newer** on macOS or Linux. Initialize the local broker
+before using coordination tools:
+
+```bash
+bun add -g @openscout/scout
+scout setup
+scout doctor
+```
+
+Add this entry to an MCP client's command-based stdio configuration:
+
+```json
+{
+  "mcpServers": {
+    "openscout": {
+      "command": "bunx",
+      "args": ["@openscout/scout", "mcp"]
+    }
+  }
+}
+```
+
+The client must be able to find `bunx` on its PATH. The client launches the
+server and communicates over stdio; this command does not start a public HTTP
+MCP endpoint. Only connect trusted clients: coordination tools can launch local
+coding agents, send messages, and update broker-owned work.
+
+### MCP tools
+
+Representative tools exposed by the server:
+
+| Tools | Purpose |
+| --- | --- |
+| `whoami` | Identify the current broker actor and project context. |
+| `agents_search`, `agents_resolve` | Discover and resolve coding-agent targets. |
+| `ask` | Request work, investigation, review, or a reply from an agent. |
+| `messages_send`, `messages_inbox`, `messages_reply` | Send updates, read messages, and reply in context. |
+| `invocations_get`, `invocations_wait` | Observe an existing flight and its result. |
+| `work_update` | Report progress or change the state of existing work. |
+
+Use MCP `tools/list` to inspect the current tool names and input schemas.
+`ask` creates owned work; `messages_send` is for updates that need no reply.
+The broker remains the canonical writer of coordination records.
+
+### Implementation and verification
+
+- [MCP server implementation](./apps/desktop/src/core/mcp/scout-mcp.ts): SDK imports, tool registrations, and stdio transport.
+- [CLI entry point](./apps/desktop/src/cli/commands/mcp.ts): the `scout mcp` command.
+- [MCP tests](./apps/desktop/src/core/mcp/scout-mcp.test.ts): client/server connection, `tools/list`, and tool behavior.
+- [Package registry metadata](./packages/cli/server.json): `io.github.oscout/scout`, npm package, and stdio launch arguments.
+- [MCP API guide](./docs/mcp-api-posture.md) and [CLI setup guide](./packages/cli/README.md#mcp-server).
 
 ## The small model
 
