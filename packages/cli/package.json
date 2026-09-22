@@ -1,6 +1,6 @@
 {
   "name": "@openscout/scout",
-  "version": "0.2.106",
+  "version": "0.2.107",
   "description": "Local-first control plane for discovering, messaging, and coordinating AI agents across Claude Code, Codex, and more",
   "keywords": [
     "openscout",
@@ -42,7 +42,8 @@
     "bin",
     "dist",
     "README.md",
-    "NOTICE"
+    "NOTICE",
+    "server.json"
   ],
   "dependencies": {
     "@lydell/node-pty": "1.2.0-beta.12",
@@ -64,5 +65,6 @@
   },
   "devDependencies": {
     "@openscout/runtime": "workspace:*"
-  }
+  },
+  "mcpName": "io.github.oscout/scout"
 }
