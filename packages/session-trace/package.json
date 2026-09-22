@@ -1,6 +1,6 @@
 {
   "name": "@openscout/session-trace",
-  "version": "0.2.107",
+  "version": "0.2.108",
   "private": true,
   "description": "Framework-agnostic live session trace model for OpenScout",
   "type": "module",

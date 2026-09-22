@@ -1,3 +1,5 @@
+# OpenScout — coordinate AI coding agents
+
 <p align="center">
   <a href="https://openscout.app">
     <img src="https://openscout.app/og.png" alt="Scout — one place for all your agents, local-first and neutral by design" width="100%" />
@@ -5,7 +7,7 @@
 </p>
 
 <p align="center">
-  <strong>The coordination layer for the coding agents you already run.</strong><br />
+  <strong>Coordinate Claude Code, Codex, Cursor, OpenCode, Kimi, Grok, Pi, and Devin.</strong><br />
   Discover agents, dispatch work, send messages, and follow progress across the tools you already use.
 </p>
 
@@ -18,10 +20,11 @@
 
 ---
 
-Scout is a local-first control plane for AI agents. It sits underneath Claude
-Code, Codex, Cursor, Pi, and other harnesses, giving them one durable broker for
-discovery, messages, work, and routing without moving agents out of the tools
-where they already run.
+OpenScout provides local-first agent messaging and multi-agent orchestration
+through a CLI and MCP server. Discover coding agents, dispatch tasks, and follow
+results across Claude Code, Codex, Cursor, OpenCode, Kimi Code, Grok, Pi, and
+Devin. Keep using the tools where your agents already run, with one durable
+broker for discovery, messages, work, and routing.
 
 ## What Scout gives you
 
@@ -38,23 +41,27 @@ TUI, web UI, and optional native apps.
 
 ## Start here
 
-Scout requires [Bun 1.3 or newer](https://bun.sh). The full broker and service
-package currently targets Apple Silicon macOS.
+Local agent coordination requires [Bun 1.3 or newer](https://bun.sh). The full
+broker and service package currently targets Apple Silicon macOS.
 
 ```bash
-bun add -g @openscout/scout
+npm install -g @openscout/scout
+scout --version
 scout setup
 scout doctor
 ```
 
-Prefer npm for global packages? `npm install -g @openscout/scout` installs the
-same package; Bun is still required at runtime.
+Prefer Bun for global packages? `bun add -g @openscout/scout` installs the
+same package. Bun is required for the local broker and agent coordination.
+
+Only joining a Scout Chat room? The [standalone Chat client](#participate-in-scout-chat)
+runs on Node.js or Bun and does not require `scout setup` or a local broker.
 
 Installing the package does not silently start services. `scout setup`
 configures the local broker and attempts to start it explicitly; `scout doctor`
 then verifies that the broker and project inventory are healthy.
 
-## Make your first handoff
+## Make your first handoff: Claude Code or Codex
 
 Route work by project and harness instead of guessing an agent name:
 
@@ -64,6 +71,9 @@ scout runtimes
 scout ask --project . --harness codex \
   "Review this repository and return the three highest-leverage improvements."
 ```
+
+Use `--harness claude` to route the same task to Claude Code. The selected
+harness must already be installed and authenticated.
 
 Scout resolves or starts a suitable worker, records the request, and returns a
 durable handle. Continue the same work with the returned ref:
@@ -125,10 +135,37 @@ Run `scout --help` for the complete command list and
 
 ## Works with the tools you already use
 
-Scout has host integrations for Claude Code, Codex, Cursor, Pi, and Hermes, plus
-MCP, ACP, Slack, Telegram, voice, and webhook paths where those transports are
-configured. The broker provides the shared coordination model; each harness
-keeps its native runtime and workflow.
+Scout's runtime catalog includes **Claude Code, Codex, Cursor CLI, OpenCode,
+Kimi Code, Grok, Pi, and Devin**. Host integrations also connect **Hermes Agent**
+and **Grok Bot** through their plugin or MCP paths. Hermes is an agent/MCP host,
+not a dispatch harness.
+
+Model families in Scout's runtime catalog include:
+
+| Runtime | Model families |
+| --- | --- |
+| Claude Code | Claude **Opus**, **Fable**, **Sonnet**, and **Haiku** |
+| Codex | **GPT**, including **Astra**, **Sol**, **Terra**, and **Luna** variants |
+| Grok | **Grok** |
+| OpenCode | **GLM**, **Kimi**, **Qwen**, **MiniMax**, **DeepSeek**, **Grok**, **Nemotron**, and **Laguna** |
+| Devin | **SWE** |
+
+Available models depend on the installed harness, provider configuration, and
+account access. Run `scout runtimes --json` for the current runtime and model
+IDs before selecting an exact model. Kimi Code, Cursor, and Pi use their harness
+configuration; Scout does not enumerate fixed model choices for them.
+
+MCP, ACP, Slack, Telegram, voice, and webhook paths connect additional surfaces
+where configured. Each harness keeps its native runtime and workflow.
+
+Connect Scout to your agent host:
+
+- [Claude Code plugin](https://github.com/arach/claude-scout)
+- [Codex plugin](https://github.com/arach/codex-scout)
+- [Cursor MCP setup](https://github.com/arach/cursor-scout)
+- [Pi extension](https://github.com/arach/pi-scout)
+- [Hermes Agent plugin](https://github.com/arach/hermes-scout)
+- [Grok setup guide](https://openscout.app/docs/scout-for-grok)
 
 See the [integration guide](https://github.com/oscout/scout/blob/main/docs/integrations.md)
 for the current package and setup map.
@@ -243,7 +280,7 @@ Run `scout --help` for the current command inventory and
 Apache-2.0. See the [license](https://github.com/oscout/scout/blob/main/LICENSE)
 and [notice](https://github.com/oscout/scout/blob/main/packages/cli/NOTICE).
 
-### Participate in Scout Chat
+## Participate in Scout Chat
 
 The main package includes a scoped Chat client:
 
