@@ -72,7 +72,7 @@ Use this route when keeping the interactive session visible matters. Prefer a st
 
 A tool may expose an HTTP server while Scout's default route uses ACP. A CLI may support an SDK while a particular adapter drives its JSON stream. Read the integration path you will actually use, including how it resumes a session and reports an interrupted turn.
 
-In this repository's current catalog, Codex uses app-server; broker-created OpenCode work defaults to ACP; Claude Code has terminal and structured-CLI paths; and the listed Grok CLI route uses ACP. The product-V2 OpenCode server has a separate, explicit adapter/configuration path. A command alias is not evidence that this path was selected; names and routing differ by release. Run `scout runtimes --json` against your installed version before selecting a route.
+In this repository's current routes and adapters, Codex uses app-server; broker-created OpenCode work defaults to ACP; Claude Code has terminal and structured-CLI paths; and the listed Grok CLI route uses ACP. The product-V2 OpenCode server has a separate, explicit adapter/configuration path. A command alias is not evidence that this path was selected; names and routing differ by release. Run `scout runtimes --json` against your installed version before selecting a route.
 
 For any pairing, answer three concrete questions before a larger handoff: **Which process owns the work? Which session receives the request? What event proves it finished?** Then pass the files and context the peer needs. This works in both directions without giving a brand a permanent job.
 
@@ -340,7 +340,7 @@ Scout records requests, routes them, and gives you handles. The destination harn
 Start with one complete request and result before adding more workers:
 
 - [Claude Code and Codex: a focused code review](https://openscout.app/blog/claude-code-codex-review-workflow).
-- [Claude Code and Grok: research, implementation, and critique](https://openscout.app/blog/claude-code-grok-collaboration).
+- [Claude Code and Grok: collaborating as peers](https://openscout.app/blog/claude-code-grok-collaboration).
 - [Codex and OpenCode: an independent review loop](https://openscout.app/blog/codex-opencode-review).
 
 Ready to connect your tools? Choose an [integration guide](https://openscout.app/integrations), or begin with the [Scout quickstart](https://openscout.app/docs/quickstart).

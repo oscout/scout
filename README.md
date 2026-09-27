@@ -157,7 +157,7 @@ a particular job.
 Start with one request and its reply before building a longer chain. The
 [coding-agent collaboration guide](./docs/coding-agent-collaboration-2026.md)
 ([web version](https://openscout.app/blog/coding-agent-collaboration-2026))
-covers handoff templates, a three-agent chain, native subagents versus separate
+covers handoff templates, connection mechanisms, native subagents versus separate
 harnesses, and coordination across machines.
 
 ### How do the connections work?
