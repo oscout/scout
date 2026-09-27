@@ -6,7 +6,7 @@ You have an implementation in Codex and want Claude Code to question it. Or Clau
 
 These are all variations of the same problem: **give another coding agent enough context to do useful work, get a result you can inspect, and retain a reliable way to follow up.**
 
-The direction can change with every task. Codex ↔ Claude Code, Claude Code ↔ Grok, Grok ↔ Codex, and Codex ↔ OpenCode are useful when those tools are available. Kimi Code, pi, and Cursor CLI fit the same pattern when Scout can launch them. No brand has to be the one that always plans or always implements.
+The direction can change with every task. Codex ↔ Claude Code, Claude Code ↔ Grok, Grok ↔ Codex, and Codex ↔ OpenCode are useful when those tools are available. Kimi Code, pi, and Cursor CLI fit the same pattern when Scout can launch them. These are collaborating peers: no brand has a fixed role or authority over another. Research, implementation, and review describe tasks you can give to any suitable agent, not permanent positions in a hierarchy.
 
 This guide explains the choices, then walks through Scout's approach. Scout is a local control plane for existing agents, intended for high-trust developer pilots. Its coordination features do not establish enterprise readiness, guaranteed delivery, or a shared transcript across tools.
 

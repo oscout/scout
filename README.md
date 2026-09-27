@@ -121,6 +121,10 @@ for additional tool-specific guides and their current setup requirements.
 
 ## Collaboration across Claude Code, Codex, Grok, and OpenCode
 
+Scout connects coding agents as **collaborating peers**. No tool has a fixed
+role or authority over another. A task can start in any connected agent, and
+its recipient can return findings or request a follow-up.
+
 Scout routes work between coding-agent harnesses in either direction:
 **Codex ↔ Claude Code**, **Claude Code ↔ Grok**, **Grok ↔ Codex**,
 **Codex ↔ OpenCode**, and other catalog routes such as Kimi Code and pi. A
