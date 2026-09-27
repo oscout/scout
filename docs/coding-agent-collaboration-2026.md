@@ -343,4 +343,4 @@ Start with one complete request and result before adding more workers:
 - [Claude Code and Grok: research, implementation, and critique](https://openscout.app/blog/claude-code-grok-collaboration).
 - [Codex and OpenCode: an independent review loop](https://openscout.app/blog/codex-opencode-review).
 
-Ready to connect your tools? Choose an [integration guide](/integrations), or begin with the [Scout quickstart](https://openscout.app/docs/quickstart).
+Ready to connect your tools? Choose an [integration guide](https://openscout.app/integrations), or begin with the [Scout quickstart](https://openscout.app/docs/quickstart).
