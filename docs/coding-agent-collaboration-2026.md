@@ -2,13 +2,79 @@
 
 *Updated September 26, 2026. Practical workflows and product documentation change; check your installed runtime before using an example.*
 
+These agents collaborate as peers. Any agent can propose an approach, ask a question, make a change, or review another agent’s work. The task assignments below are examples you can swap as the work evolves.
+
 You have an implementation in Codex and want Claude Code to question it. Or Claude has narrowed down a bug, and you want Grok to try a different explanation. Or OpenCode owns one component while another agent handles its caller.
 
 These are all variations of the same problem: **give another coding agent enough context to do useful work, get a result you can inspect, and retain a reliable way to follow up.**
 
-The direction can change with every task. Codex ↔ Claude Code, Claude Code ↔ Grok, Grok ↔ Codex, and Codex ↔ OpenCode are useful when those tools are available. Kimi Code, pi, and Cursor CLI fit the same pattern when Scout can launch them. These are collaborating peers: no brand has a fixed role or authority over another. Research, implementation, and review describe tasks you can give to any suitable agent, not permanent positions in a hierarchy.
+The direction can change with every task. Codex ↔ Claude Code, Claude Code ↔ Grok, Grok ↔ Codex, and Codex ↔ OpenCode are useful when those tools are available. Kimi Code, pi, and Cursor CLI fit the same pattern when Scout can launch them. No brand has to be the one that always plans or always implements.
 
 This guide explains the choices, then walks through Scout's approach. Scout is a local control plane for existing agents, intended for high-trust developer pilots. Its coordination features do not establish enterprise readiness, guaranteed delivery, or a shared transcript across tools.
+
+## How the agents connect: the moving parts
+
+Treat each agent as a peer with its own execution environment. To connect two of them, first identify five things:
+
+- **Interface:** the terminal UI, editor, desktop app, or custom client a person uses.
+- **Runtime:** the process that owns the model/tool loop and enforces permissions.
+- **Transport:** how another program exchanges requests and events with that runtime—pipes, a local socket, HTTP, or a terminal pane.
+- **Session:** the persistent conversation identifier, current working directory, and configuration you intend to continue.
+- **Artifacts:** the files, revisions, and findings another peer needs. A connection does not automatically transfer them.
+
+A frontend can disconnect while a server remains alive. A server can host more than one session. A successful connection can still point at the wrong session. Keeping these distinctions explicit makes collaboration much easier to reason about.
+
+| Connection mechanism | What travels through it | What your integration must handle |
+| --- | --- | --- |
+| Structured app-server or HTTP API | Session requests, turn events, results, and supported controls | Authentication, exact session identity, permissions, lifecycle, and reconnection |
+| ACP over stdio | Protocol requests and responses between a client and an agent process | Initialization, supported capabilities, process ownership, and permission responses |
+| Headless CLI with structured output | A prompt plus machine-readable progress/results | Process lifetime, session resume, output framing, and errors |
+| Terminal or tmux pane | Keystrokes, pasted text, and rendered terminal output | Correct pane, composer state, submission, approval UI, and reliable completion evidence |
+| MCP tools inside an agent | Tool calls to a service such as Scout | The host's tool permissions and the service's routing contract |
+
+These are connection choices. Any connected peer can ask questions, offer a change, or request feedback.
+
+### Codex: app-server, threads, and turns
+
+Codex's app-server defaults to newline-delimited JSON over stdio. The current interface also supports a Unix socket carrying WebSocket messages for local IPC, and an experimental TCP WebSocket listener. IPC describes communication between processes; stdio and Unix sockets are different transports within that category.
+
+A client initializes the connection, starts or resumes a thread, submits a turn, and consumes progress, approval requests, and completion events. Generate schemas from the installed version. Remote TCP listeners need the documented authentication and TLS setup. [Codex app-server](https://learn.chatgpt.com/docs/app-server).
+
+For an integration author, launching and attaching have different ownership rules. A process you launched can have your client's lifetime. An existing shared server may serve other clients, so disconnecting must not imply shutting it down. Confirm which mode your installed integration implements.
+
+### OpenCode: separate the server from its clients
+
+OpenCode V2 makes the separation explicit: the background service owns execution, while a terminal or application acts as a client. Its current JavaScript client can discover an existing registered service, ensure a compatible one is running, and derive connection headers. The documented service command is `opencode serve --service`. Requests target a session and project location. Leaving an event subscription closes that subscription; stopping the service is a separate operation.
+
+That distinction also exposes a recovery problem: current subscriptions have no replay or automatic reconnection. After a disconnect, a client must resubscribe and reconcile what actually happened. [OpenCode V2 client and service documentation](https://opencode.ai/v2/docs/build/client).
+
+Check the API generation before connecting. V1 and V2 now use the same `opencode` command, but their server contracts differ. V1 examples using `/session` and `/event` cannot be assumed to work with V2's `/api/*` contract. [V2 migration guide](https://opencode.ai/v2/docs/migrate-v1).
+
+Scout's [V2 adapter notes](https://github.com/oscout/scout/blob/main/packages/agent-sessions/src/adapters/opencode-v2/README.md) describe an explicit pinned beta integration with an older client package and a registered `opencode2` service. It queues and correlates its own inputs, filters events to the session, and leaves the shared service running on disconnect. Match the adapter's supported version instead of copying current upstream client code into an older integration.
+
+### Claude Code: choose the control surface deliberately
+
+Claude Code has an interactive terminal interface and a programmatic CLI. `claude -p` can return JSON or streamed events, and `--resume` continues a captured session identifier. Reusing a conversation and reusing an operating-system process are separate choices. [Claude programmatic mode](https://code.claude.com/docs/en/headless).
+
+The Agent SDK provides another application interface. Its permission callbacks handle requests that reach that point in evaluation; earlier rules can already allow an operation. Tool preapproval, available tools, and instructions in a prompt are different controls. A peer's request to “only read” should be backed by the appropriate permissions if read-only operation is required. [Agent SDK permissions](https://code.claude.com/docs/en/agent-sdk/permissions).
+
+Scout's structured Claude adapter drives the CLI's stream-JSON interface; it is not an Agent SDK integration. Its terminal path preserves a human-visible session. In either case, the integration needs to represent both ordinary replies and requests for human attention. A permission dialog intercepted inside the host may never reach an MCP server, so watching only the broker cannot establish that the peer is unblocked.
+
+### tmux: a visible session with terminal semantics
+
+tmux keeps its own server, sessions, windows, and panes. A person can detach and later reattach while the terminal process continues, provided the host and tmux server remain running. [tmux getting started](https://github.com/tmux/tmux/wiki/Getting-Started).
+
+For agent collaboration, a terminal adapter also needs to identify the correct pane, confirm its current session, place text in the composer, and submit it. Pasted text proves neither submission nor task completion. The adapter must observe output and attention states, and retain an explicit way to correlate the reply. tmux supplies terminal continuity; the integration supplies those agent-level semantics.
+
+Use this route when keeping the interactive session visible matters. Prefer a structured control surface when you need machine-readable events and the installed harness supports it.
+
+### Native support and Scout routing are separate checks
+
+A tool may expose an HTTP server while Scout's default route uses ACP. A CLI may support an SDK while a particular adapter drives its JSON stream. Read the integration path you will actually use, including how it resumes a session and reports an interrupted turn.
+
+In this repository's current catalog, Codex uses app-server; broker-created OpenCode work defaults to ACP; Claude Code has terminal and structured-CLI paths; and the listed Grok CLI route uses ACP. The product-V2 OpenCode server has a separate, explicit adapter/configuration path. A command alias is not evidence that this path was selected; names and routing differ by release. Run `scout runtimes --json` against your installed version before selecting a route.
+
+For any pairing, answer three concrete questions before a larger handoff: **Which process owns the work? Which session receives the request? What event proves it finished?** Then pass the files and context the peer needs. This works in both directions without giving a brand a permanent job.
 
 ## Choose the collaboration path by the work
 
@@ -29,7 +95,7 @@ A **harness** runs the agent: its tools, permissions, session, and execution loo
 
 Claude Code, Codex, Grok CLI (`@xai-official/grok`), and OpenCode are harnesses. Opus, GPT, and Grok are models you select inside a harness. `--harness claude` selects Claude Code, not Opus. A Grok model inside OpenCode or Cursor is still that other harness's session. Grok Bot is xAI's hosted agent product, where each Bot works on its own cloud computer. It can call Scout through a connector, which is a different path from Scout launching Grok CLI. [Grok Bot overview](https://docs.x.ai/grok-bot/overview), [Scout's Grok paths](https://openscout.app/docs/scout-for-grok).
 
-The repository's [runtime catalog](../packages/protocol/src/runtime-catalog.v1.json) (revision `2026-09-14.1`) contains these execution routes:
+The repository's [runtime catalog](https://github.com/oscout/scout/blob/main/packages/protocol/src/runtime-catalog.v1.json) (revision `2026-09-14.1`) contains these execution routes:
 
 | Tool | Scout harness identifier | What to check |
 | --- | --- | --- |
@@ -40,7 +106,7 @@ The repository's [runtime catalog](../packages/protocol/src/runtime-catalog.v1.j
 | Cursor CLI, Kimi Code, pi | `cursor`, `kimi`, `pi` | The corresponding executable and provider configuration. |
 | Flue, Devin | `flue`, `devin` | Runtime-specific prerequisites and access. |
 
-Run `scout runtimes --json` and `scout doctor` on your machine. A catalog row does not prove the executable, account, or model is ready. Hermes Agent and Herdr connect as a host or a terminal surface; they are not `--harness` ids. See the [CLI guide](../packages/cli/README.md) and the [integration guide](./integrations.md).
+Run `scout runtimes --json` and `scout doctor` on your machine. A catalog row does not prove the executable, account, or model is ready. Hermes Agent and Herdr connect as a host or a terminal surface; they are not `--harness` ids. See the [CLI guide](https://github.com/oscout/scout/blob/main/packages/cli/README.md) and the [integration guide](https://github.com/oscout/scout/blob/main/docs/integrations.md).
 
 ## When a native subagent is enough
 
@@ -120,28 +186,13 @@ OpenCode takes the same commands with `--harness opencode`. A Grok model configu
 
 Grok Bot reaches your broker through Scout's hosted MCP gateway and your online bridge; Scout still launches the harness you name. The published page separates that hosted connector, a local installer that points Cursor at `scout mcp`, and launching Grok CLI. The bridge is operator-assisted, and adding the connector does not create it. On September 26, 2026, the page still listed custom MCP as the connect path, with marketplace approval pending.
 
-## How do I split research, implementation, and review?
+## How do peers keep shared work moving?
 
-Use one coordinator and three owned stages. A worker finishing does not authorize the next stage, merge the result, or publish it. This example is a migration. OpenCode can sit in any seat when its tools fit.
+Initiative can move between agents. One peer raises a question, another proposes a change, and either can request another pass. Agree on ownership for the current task so two writers do not unknowingly change the same files. Ownership can change when the task does; it does not give a model a permanent rank.
 
-1. **Research.** Grok returns primary sources, repository constraints, a proposed approach, and the uncertainties. No edits.
-2. **Implementation.** Codex applies the *accepted* approach in an owned worktree. It returns the commit, the checks it ran, and questions it could not resolve.
-3. **Review.** Claude Code reads that exact commit against the accepted requirements. It returns findings and does not change the patch.
+Keep a request reference, an exact revision, and the decision made about the result. If a finding remains unresolved, continue the same request with the missing evidence. If the scope changes from investigation to editing, state the new scope and permissions explicitly. Completion of a task does not itself authorize a merge or deployment.
 
-The coordinator copies forward only what it accepted. A useful chain looks like this:
-
-```bash
-scout ask --project . --harness grok-acp --notify \
-  --prompt-file ./reviews/migration-research.md
-# Read the result. Edit the implementation brief so it quotes the accepted approach.
-scout ask --project ../migration-impl --harness codex --notify \
-  --prompt-file ./reviews/migration-implement.md
-# Read the commit SHA from the result. Put that SHA in the review brief.
-scout ask --project ../migration-impl --harness claude --notify \
-  --prompt-file ./reviews/migration-review.md
-```
-
-Keep each reference with its stage, and point the next agent at the decision, the files, and the commit. Scout does not copy a harness transcript across. `scout send` is only a status note; it does not create a flight.
+Scout's `ask` creates tracked work and a return path. `send` records a status note. Neither copies another harness's complete conversation into the recipient. The useful unit of collaboration is a specific question or artifact that a peer can inspect and answer.
 
 ## What context does the next agent need?
 
@@ -197,11 +248,11 @@ Devin is a catalogued route with its own environment. A catalog entry does not e
 
 They solve different joins. Using one does not imply the others.
 
-**MCP** connects an application (the host) to tool servers. Each connection is an MCP client. Servers expose tools, resources, and prompts. `scout mcp` is Scout's local stdio coordination server; the broker still owns the messages and asks. Local hosts such as Claude Code, Codex, and Cursor can launch it, and Grok Bot reaches the same tools through the hosted gateway. The connection does not pour another agent's conversation into the caller. Tool names can change while the [MCP posture](./mcp-api-posture.md) is v0 guidance, so use `tools/list` to see what your server exposes. Ordinary handoffs are still `ask` or `messages_send`. [MCP architecture](https://modelcontextprotocol.io/docs/2026-07-28/learn/architecture).
+**MCP** connects an application (the host) to tool servers. Each connection is an MCP client. Servers expose tools, resources, and prompts. `scout mcp` is Scout's local stdio coordination server; the broker still owns the messages and asks. Local hosts such as Claude Code, Codex, and Cursor can launch it, and Grok Bot reaches the same tools through the hosted gateway. The connection does not pour another agent's conversation into the caller. Tool names can change while the [MCP posture](https://github.com/oscout/scout/blob/main/docs/mcp-api-posture.md) is v0 guidance, so use `tools/list` to see what your server exposes. Ordinary handoffs are still `ask` or `messages_send`. [MCP architecture](https://modelcontextprotocol.io/docs/2026-07-28/learn/architecture).
 
 **ACP**, the Agent Client Protocol, is how a coding client talks to a coding agent, analogous to the Language Server Protocol. Local agents typically use JSON-RPC over stdio. The introduction describes remote agents over HTTP or WebSocket, and says full remote support is still in progress. Scout's `grok-acp` route uses ACP as a client adapter: Scout talks to that agent. Scout does not become an ACP server, and this ACP is not BeeAI's Agent Communication Protocol. [ACP introduction](https://agentclientprotocol.com/get-started/introduction).
 
-**A2A**, Agent2Agent, is how agents discover each other and exchange tasks. MCP reaches tools and data; A2A reaches agents. Scout's [concepts](./concepts.md) describe Scout as the local coordination substrate and A2A as a boundary where some primitives are exposed and full conformance is not claimed. An MCP connection or an ACP launch does not make that session a general A2A peer. [What is A2A?](https://a2a-protocol.org/latest/topics/what-is-a2a/).
+**A2A**, Agent2Agent, is how agents discover each other and exchange tasks. MCP reaches tools and data; A2A reaches agents. Scout's [concepts](https://github.com/oscout/scout/blob/main/docs/concepts.md) describe Scout as the local coordination substrate and A2A as a boundary where some primitives are exposed and full conformance is not claimed. An MCP connection or an ACP launch does not make that session a general A2A peer. [What is A2A?](https://a2a-protocol.org/latest/topics/what-is-a2a/).
 
 ## What to check when a handoff stalls
 
@@ -281,4 +332,15 @@ scout send --to TARGET \
 
 Scout records requests, routes them, and gives you handles. The destination harness can still be offline or unauthenticated, mesh reachability is not exactly-once delivery, and a cloud task or a pasted transcript is not yet a local commit. The next agent needs the goal, the revision, the ownership limits, and the artifact you accepted.
 
-[Web version](https://openscout.app/blog/coding-agent-collaboration-2026) · [Return to the Scout README](../README.md) · [Make your first handoff](../packages/cli/README.md#make-your-first-handoff-claude-code-or-codex) · [Agents and collaboration](./agents-and-collaboration.md)
+[Web version](https://openscout.app/blog/coding-agent-collaboration-2026) · [Return to the Scout README](https://github.com/oscout/scout/blob/main/README.md) · [Make your first handoff](https://github.com/oscout/scout/blob/main/packages/cli/README.md#make-your-first-handoff-claude-code-or-codex) · [Agents and collaboration](https://github.com/oscout/scout/blob/main/docs/agents-and-collaboration.md)
+
+
+## Pick your first collaboration
+
+Start with one complete request and result before adding more workers:
+
+- [Claude Code and Codex: a focused code review](https://openscout.app/blog/claude-code-codex-review-workflow).
+- [Claude Code and Grok: research, implementation, and critique](https://openscout.app/blog/claude-code-grok-collaboration).
+- [Codex and OpenCode: an independent review loop](https://openscout.app/blog/codex-opencode-review).
+
+Ready to connect your tools? Choose an [integration guide](/integrations), or begin with the [Scout quickstart](https://openscout.app/docs/quickstart).

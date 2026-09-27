@@ -160,6 +160,17 @@ Start with one request and its reply before building a longer chain. The
 covers handoff templates, a three-agent chain, native subagents versus separate
 harnesses, and coordination across machines.
 
+### How do the connections work?
+
+Codex app-server, OpenCode's detached service, Claude Code's structured CLI,
+ACP, and tmux expose different ways to exchange work. Separate the interface,
+runtime, transport, session, and artifacts before choosing one. Scout's selected
+adapter may use a different surface from a tool's native server: for example,
+broker-created OpenCode tasks default to ACP while its product-V2 service has
+an explicit adapter path. The guide explains [the moving parts and their
+lifecycle](./docs/coding-agent-collaboration-2026.md#how-the-agents-connect-the-moving-parts),
+including session identity, process ownership, permissions, and completion.
+
 ## Coding-agent workflows explained
 
 ### Claude Code vs Codex: can I use both together?
