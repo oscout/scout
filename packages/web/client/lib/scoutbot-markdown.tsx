@@ -2,6 +2,7 @@ import { ExternalLink } from "lucide-react";
 import { Fragment, type ReactNode } from "react";
 import { useScout } from "../scout/Provider.tsx";
 import { api } from "./api.ts";
+import { BASIC_WEB } from "../basic/profile.ts";
 
 export type InlineToken =
   | { kind: "text"; body: string }
@@ -327,6 +328,17 @@ function InlineNodes({ tokens }: { tokens: InlineToken[] }): ReactNode {
 function FilePathChip({ path }: { path: string }) {
   const { openFilePreview } = useScout();
   const display = shortFilePath(path);
+  // Basic web mounts no file preview overlay and exposes no OS reveal.
+  if (BASIC_WEB) {
+    return (
+      <code
+        title={path}
+        className="rounded border border-lime-300/30 bg-lime-300/[0.05] px-1.5 py-[1px] font-mono text-xs text-lime-200"
+      >
+        {display}
+      </code>
+    );
+  }
   const revealInOs = (event: React.MouseEvent) => {
     event.stopPropagation();
     void api("/api/file/reveal", {

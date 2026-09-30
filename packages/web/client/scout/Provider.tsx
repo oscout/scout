@@ -55,6 +55,7 @@ import type {
   ForwardContextSource,
 } from "../lib/context-capture-draft.ts";
 import { SCOUT_REALTIME_VOICE_FLAG } from "../../shared/realtime-voice.ts";
+import { BASIC_WEB } from "../basic/profile.ts";
 
 declare global {
   interface Window {
@@ -237,7 +238,8 @@ export function ScoutProvider({
 }) {
   const { route, navigate, navigateBack, canNavigateBack } = useRouter();
   const hudsonTheme = useOptionalTheme();
-  const realtimeVoiceEnabled = useOptionalFlag(SCOUT_REALTIME_VOICE_FLAG, true);
+  const realtimeVoiceFlag = useOptionalFlag(SCOUT_REALTIME_VOICE_FLAG, true);
+  const realtimeVoiceEnabled = !BASIC_WEB && realtimeVoiceFlag;
   const [agents, setAgents] = useState<Agent[]>([]);
   const [agentsLoaded, setAgentsLoaded] = useState(false);
   const [apiConnection, setApiConnection] = useState<ApiConnectionState>({
@@ -693,17 +695,17 @@ export function ScoutProvider({
               {realtimeVoiceEnabled
                 ? <ScoutbotRealtimeVoiceProvider>{children}</ScoutbotRealtimeVoiceProvider>
                 : children}
-              <FilePreviewOverlay
+              {!BASIC_WEB && <FilePreviewOverlay
                 path={filePreviewPath}
                 onOpenPath={openFilePreview}
                 onOpenInCode={openFileInCode}
                 onClose={closeFilePreview}
-              />
-              <ContextCaptureHost
+              />}
+              {!BASIC_WEB && <ContextCaptureHost
                 request={contextCaptureRequest}
                 onClose={closeContextCapture}
                 onOpenCapture={openContextCapture}
-              />
+              />}
             </ScoutbotStateProvider>
           </ContextMenuProvider>
         </div>

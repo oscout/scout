@@ -14,7 +14,7 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
-import { CREW_RUNTIME_FILES, findFootprintFailures } from "./check-packed-manifests.mjs";
+import { CREW_RUNTIME_FILES, findFootprintFailures, findBasicPackedClientFailures } from "./check-packed-manifests.mjs";
 
 const repoRoot = new URL("..", import.meta.url);
 const currentVersion = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"))
@@ -913,7 +913,9 @@ test("the isolated retained Scout candidate is normalized and passes the exact a
       'import "./scout-control-plane-web.mjs";\n',
     );
     writeFileSync(join(fixture, "candidate/dist/client/index.html"), "<!doctype html>\n");
-    for (const file of [...CREW_RUNTIME_FILES, "package/dist/client/characters/sage/sage.glb"]) {
+    mkdirSync(join(fixture, "candidate/dist/client/assets"), { recursive: true });
+    writeFileSync(join(fixture, "candidate/dist/client/assets/basic-fixture.js"), 'const shell = "sb-shell";\n');
+    for (const file of CREW_RUNTIME_FILES) {
       const output = join(fixture, "candidate", file.slice("package/".length));
       mkdirSync(dirname(output), { recursive: true });
       writeFileSync(output, "fixture runtime art\n");
@@ -972,6 +974,24 @@ test("the isolated retained Scout candidate is normalized and passes the exact a
     assert.equal(packedManifest.status, 0, packedManifest.stderr);
     assert.doesNotMatch(packedManifest.stdout, /workspace:/);
 
+    const leakedCharacter = join(fixture, "candidate/dist/client/characters/sage/sage.glb");
+    mkdirSync(dirname(leakedCharacter), { recursive: true });
+    writeFileSync(leakedCharacter, "excluded character asset");
+    writeFileSync(join(fixture, "candidate/dist/client/assets/basic-fixture.js"), 'const shell = "sb-shell"; const full = "WebGLRenderer";');
+    const leakedPack = spawnSync("npm", ["pack", "--ignore-scripts", "--pack-destination", fixture], {
+      cwd: join(fixture, "candidate"), encoding: "utf8",
+      env: { ...process.env, npm_config_cache: join(fixture, "npm-cache") },
+    });
+    assert.equal(leakedPack.status, 0, leakedPack.stderr);
+    const leakedAudit = spawnSync(process.execPath, ["scripts/check-packed-manifests.mjs", "--tarball", tarball], {
+      cwd: fixture, encoding: "utf8",
+    });
+    assert.notEqual(leakedAudit.status, 0);
+    assert.match(leakedAudit.stderr, /characters\/sage\/sage.glb/);
+    assert.match(leakedAudit.stderr, /excluded full-app marker.*WebGLRenderer/);
+    rmSync(leakedCharacter);
+    writeFileSync(join(fixture, "candidate/dist/client/assets/basic-fixture.js"), 'const shell = "sb-shell";');
+
     rmSync(join(fixture, "candidate/dist/client/crew/sprout-bust.webp"));
     const incompletePack = spawnSync("npm", ["pack", "--ignore-scripts", "--pack-destination", fixture], {
       cwd: join(fixture, "candidate"), encoding: "utf8",
@@ -986,6 +1006,22 @@ test("the isolated retained Scout candidate is normalized and passes the exact a
   } finally {
     rmSync(fixture, { recursive: true, force: true });
   }
+});
+
+test("packed basic client rejects full-app scripts, missing shell, and source entries", () => {
+  const index = "package/dist/client/index.html";
+  const script = "package/dist/client/assets/basic.js";
+  const files = new Map([[index, '<script src="/assets/basic.js"></script>'], [script, 'const shell = "sb-shell";']]);
+  const audit = () => findBasicPackedClientFailures([...files.keys()], (entry) => files.get(entry));
+  assert.deepEqual(audit(), []);
+  files.set(script, 'const shell = "sb-shell"; const renderer = "WebGLRenderer";');
+  assert.match(audit().join("\n"), /excluded full-app marker.*WebGLRenderer/);
+  files.set(script, 'const fullApp = true;');
+  assert.match(audit().join("\n"), /basic client shell is missing/);
+  files.set(index, '<script src="/basic/main.tsx"></script>');
+  assert.match(audit().join("\n"), /unbuilt source entry/);
+  files.delete(script);
+  assert.match(audit().join("\n"), /no emitted scripts/);
 });
 
 test("Scout's release footprint gate rejects the previous duplicate web bundle", () => {
@@ -1006,7 +1042,7 @@ test("Scout's release footprint gate rejects the previous duplicate web bundle",
   assert.match(duplicated.join("\n"), /compatibility entry must not exceed/);
 });
 
-test("World-aware package limits still reject excess bytes and file growth", () => {
+test("Package limits still reject excess bytes and file growth", () => {
   const oversized = findFootprintFailures("@openscout/scout", {
     packedBytes: 26_000_001,
     unpackedBytes: 60_000_001,

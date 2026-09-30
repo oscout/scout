@@ -7,6 +7,7 @@ import {
 } from "../scope/paths.ts";
 import { scopeRoutePath } from "../scope/presentation.ts";
 import { normalizeRoute } from "./synthetic-agent-routing.ts";
+import { BASIC_WEB, basicRoute } from "../basic/profile.ts";
 import { isTerminalSurfaceId } from "@openscout/protocol";
 import { canonicalTerminalSurfaceId, surfaceKeyFromParts, surfacePartsFromKey } from "./terminal-sessions.ts";
 import {
@@ -1031,7 +1032,8 @@ export function routeKey(r: Route): string {
 /* ── Router hook ── */
 
 function routeFromLocation(pathname: string, searchStr: string): Route {
-  return normalizeRoute(routeFromUrl(`${pathname}${searchStr}`));
+  const route = normalizeRoute(routeFromUrl(`${pathname}${searchStr}`));
+  return BASIC_WEB ? basicRoute(route) : route;
 }
 
 /* ── Browser location store ── */
@@ -1391,6 +1393,16 @@ export function updateLocation(update: LocationUpdate): void {
 }
 
 /**
+ * Basic web: every location folds onto Home, DMs or Tail, so any URL the basic
+ * route policy does not reproduce exactly (full-app surfaces, stray params,
+ * machine scope) is replaced by its basic equivalent. Exported for tests.
+ */
+export function basicCanonicalHref(pathname: string, searchStr: string, hash: string): string | null {
+  const canonical = routePath(basicRoute(normalizeRoute(routeFromUrl(`${pathname}${searchStr}`))), "/");
+  return `${pathname}${searchStr}` === canonical ? null : `${canonical}${locationHashSuffix(hash)}`;
+}
+
+/**
  * Canonical href for a location, or null when already canonical. Handles the
  * legacy /scout → /scope rewrite and trailing-slash/alias normalization that
  * used to race with the TanStack beforeLoad redirect; the replace here is now
@@ -1398,6 +1410,7 @@ export function updateLocation(update: LocationUpdate): void {
  * only whitelisted global search params carry over.
  */
 export function canonicalHrefForRoute(pathname: string, searchStr: string, hash: string): string | null {
+  if (BASIC_WEB) return basicCanonicalHref(pathname, searchStr, hash);
   if (isStandaloneEmbedPath(pathname)) return null;
   const routeUrl = `${pathname}${searchStr}`;
   const raw = routeFromUrl(routeUrl);
@@ -1435,13 +1448,20 @@ export function useRouter() {
   }, [routeUrl, pathname, searchStr]);
 
   const navigate = useCallback((r: Route, options: NavigateOptions = {}) => {
-    const requestedRoute: Route = normalizeRoute(
+    const normalizedRoute: Route = normalizeRoute(
       r.view === "ops" && !isOpsEnabled() && !isUngatedOpsSurface(r.mode)
         ? { view: "inbox" }
         : r,
     );
+    const requestedRoute = BASIC_WEB ? basicRoute(normalizedRoute) : normalizedRoute;
     const currentRoute = routeFromLocation(pathname, searchStr);
-    const { route: nextRoute, href } = planNavigation({ pathname, searchStr }, requestedRoute, options);
+    // Basic carries no global search params (machine scope, embed, theme), so
+    // every destination is planned from a clean root.
+    const { route: nextRoute, href } = planNavigation(
+      BASIC_WEB ? { pathname: "/", searchStr: "" } : { pathname, searchStr },
+      requestedRoute,
+      options,
+    );
     scrollMap.current[routeKey(currentRoute)] = window.scrollY;
     const currentState = browserLocationStore.getSnapshot().state;
     const state = buildNavigateState(currentState, options);

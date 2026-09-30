@@ -76,13 +76,13 @@ const REQUIRED_PACKED_FILES = {
     "package/dist/scout-control-plane-web.mjs",
     "package/dist/scout-web-server.mjs",
     "package/dist/client/index.html",
-    "package/dist/client/characters/sage/sage.glb",
     ...CREW_RUNTIME_FILES,
   ],
 };
 
 const FORBIDDEN_PACKED_PREFIXES = {
   "@openscout/scout": [
+    "package/dist/client/characters/",
     "package/dist/client/crew/masters/",
     "package/dist/client/crew/_runs/",
     "package/dist/client/crew/_qa/",
@@ -91,11 +91,9 @@ const FORBIDDEN_PACKED_PREFIXES = {
   ],
 };
 
-// 0.2.101 deliberately ships the reachable World/Replay renderers and 3D studio:
-// their atlases/model add about 16.7 MB, and the runtime crew pack adds 0.885 MB.
-// Authoring masters and previews are excluded. See docs/releases.md for the
-// measured candidate and review rationale. The compatibility entry retains its
-// separate 1 KB ceiling so new art cannot hide a duplicated server bundle.
+// Basic npm web ships Home, DMs and Tail. Retain the existing total ceilings
+// until the exact release candidate is measured; excluded surfaces are checked
+// directly below. The separate 1 KB compatibility ceiling remains unchanged.
 // Raising these ceilings remains a deliberate release-review decision.
 const PACKED_FOOTPRINT_BUDGETS = {
   "@openscout/scout": {
@@ -196,6 +194,27 @@ function listTarballEntries(tarballPath, packageDir) {
     .filter(Boolean);
 }
 
+/** Audit the actual packaged browser scripts, independent of the build directory. */
+export function findBasicPackedClientFailures(entries, readEntry) {
+  const failures = [];
+  const scripts = entries.filter((entry) => /^package\/dist\/client\/assets\/.*\.js$/.test(entry));
+  if (scripts.length === 0) failures.push("basic client has no emitted scripts");
+  let hasBasicShell = false;
+  for (const script of scripts) {
+    const source = readEntry(script);
+    if (source.includes("sb-shell")) hasBasicShell = true;
+    for (const marker of ["Mission Control", "Host Advisor", "Forward to new task", "WebGLRenderer", "xterm", "createScoutApp"]) {
+      if (source.includes(marker)) failures.push(`${script}: excluded full-app marker ${JSON.stringify(marker)}`);
+    }
+  }
+  if (!hasBasicShell) failures.push("basic client shell is missing from emitted scripts");
+  const index = "package/dist/client/index.html";
+  if (entries.includes(index) && /src=["']\/(?:basic\/)?main\.tsx["']/.test(readEntry(index))) {
+    failures.push("basic client index contains an unbuilt source entry");
+  }
+  return failures;
+}
+
 function auditTarball(tarballPath, packageDir = repoRoot) {
   const packedManifestText = execFileSync(
     "tar",
@@ -222,6 +241,11 @@ function auditTarball(tarballPath, packageDir = repoRoot) {
     forbiddenFiles,
     footprint,
     footprintFailures: findFootprintFailures(pkg.name, footprint),
+    basicClientFailures: pkg.name === "@openscout/scout"
+      ? findBasicPackedClientFailures(entries, (entry) => execFileSync("tar", ["-xOf", tarballPath, entry], {
+          cwd: packageDir, encoding: "utf8", maxBuffer: 32 * 1024 * 1024,
+        }))
+      : [],
     tarballPath,
   };
 }
@@ -250,6 +274,7 @@ function reportFailures(results) {
     || result.missingFiles.length > 0
     || result.forbiddenFiles.length > 0
     || result.footprintFailures.length > 0
+    || result.basicClientFailures.length > 0
   );
   for (const result of results) {
     if (PACKED_FOOTPRINT_BUDGETS[result.name]) {
@@ -270,6 +295,10 @@ function reportFailures(results) {
     if (failure.forbiddenFiles.length > 0) {
       console.error(`${failure.name} contains private product assets:`);
       for (const forbidden of failure.forbiddenFiles) console.error(`  - ${forbidden}`);
+    }
+    if (failure.basicClientFailures.length > 0) {
+      console.error(`${failure.name} does not contain the basic web client:`);
+      for (const error of failure.basicClientFailures) console.error(`  - ${error}`);
     }
     if (failure.footprintFailures.length > 0) {
       console.error(`${failure.name} exceeds its reviewed package footprint:`);

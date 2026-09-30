@@ -1,0 +1,349 @@
+/*
+ * Basic web shell (npm package). One header, one content region; every
+ * surface inside it is the full app's own screen and styling.
+ */
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+.sb-shell {
+  --sb-header-height: 44px;
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  height: 100dvh;
+  min-height: 0;
+  background: var(--bg);
+  color: var(--ink);
+}
+
+/* ── Header ────────────────────────────────────────────────────────────── */
+
+.sb-header {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: var(--space-lg);
+  height: var(--sb-header-height);
+  padding: 0 var(--space-lg);
+  border-bottom: 1px solid var(--border);
+  background: var(--bg);
+}
+
+.sb-brand {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-sm);
+  color: var(--ink);
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  letter-spacing: var(--tracking-md);
+  text-transform: uppercase;
+  text-decoration: none;
+}
+
+.sb-brand-mark {
+  width: 18px;
+  height: 18px;
+  color: var(--accent);
+}
+
+.sb-nav {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.sb-nav-item {
+  height: 28px;
+  padding: 0 var(--space-md);
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  letter-spacing: var(--tracking-md);
+  text-transform: uppercase;
+  cursor: pointer;
+}
+
+.sb-nav-item:hover {
+  color: var(--ink);
+  background: var(--sys-row-hover, color-mix(in srgb, var(--ink) 6%, transparent));
+}
+
+.sb-nav-item:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.sb-nav-item.is-active {
+  color: var(--ink);
+  border-color: color-mix(in srgb, var(--accent) 35%, transparent);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+}
+
+.sb-status {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  margin-left: auto;
+  min-width: 0;
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  letter-spacing: var(--tracking-sm);
+  white-space: nowrap;
+}
+
+.sb-status-dot {
+  width: 6px;
+  height: 6px;
+  flex: none;
+  border-radius: 50%;
+  background: var(--dim);
+}
+
+.sb-status-dot--ok { background: var(--green); }
+.sb-status-dot--warn { background: var(--amber); }
+.sb-status-dot--error { background: var(--red); }
+
+.sb-status-label {
+  color: var(--ink);
+  text-transform: uppercase;
+}
+
+.sb-status-meta {
+  color: var(--dim);
+}
+
+/* ── Content ───────────────────────────────────────────────────────────── */
+
+.sb-main {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* Home scrolls as one page: What's moving, then Deliveries. */
+.sb-main--home {
+  overflow-y: auto;
+}
+
+/* No hero above What's moving, so the page opens on it instead of on the hero's clearance. */
+.sb-main--home .s-fleet-home-inner {
+  padding-top: var(--space-3xl);
+}
+
+.sb-main--home .s-fleet-home-inner > .s-fleet-section:first-child,
+.sb-main--home .s-fleet-home-inner > .sys-banner + .s-fleet-section {
+  margin-top: 0;
+}
+
+.sb-deliveries .s-ops,
+.sb-deliveries .s-ops-body {
+  display: block;
+  height: auto;
+}
+
+.sb-deliveries .dsp-view-note--lead {
+  margin: calc(var(--space-sm) * -1) 0 var(--space-md);
+}
+
+/* Delivery detail spans the viewport under the header, not the ledger it
+   was opened from (the ledger scrolls with Home). */
+.sb-deliveries .s-slide-backdrop,
+.sb-deliveries .s-slide {
+  position: fixed;
+  top: var(--sb-header-height);
+}
+
+.sb-tail {
+  height: 100%;
+  min-height: 0;
+}
+
+/* ── DMs ───────────────────────────────────────────────────────────────── */
+
+.sb-dms {
+  display: grid;
+  grid-template-columns: minmax(260px, 320px) minmax(0, 1fr);
+  height: 100%;
+  min-height: 0;
+}
+
+.sb-dms-rail {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  border-right: 1px solid var(--border);
+}
+
+.sb-dms-rail-head {
+  display: flex;
+  gap: var(--space-sm);
+  padding: var(--space-md);
+}
+
+.sb-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 30px;
+  padding: 0 var(--space-md);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--ink);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+}
+
+.sb-input:focus-visible {
+  outline: none;
+  border-color: color-mix(in srgb, var(--accent) 55%, transparent);
+}
+
+.sb-new-dm {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 4px;
+}
+
+.sb-dms-filter {
+  padding: 0 var(--space-md) var(--space-sm);
+}
+
+.sb-dms-list,
+.sb-picker-list {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 0 var(--space-xs) var(--space-md);
+}
+
+.sb-dms-thread {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
+.sb-dms-thread > .s-thread-layout {
+  flex: 1 1 auto;
+}
+
+.sb-dms-back {
+  display: none;
+}
+
+.sb-picker {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-md);
+  width: min(520px, 100%);
+  min-height: 0;
+  margin: 0 auto;
+  padding: var(--space-xl) var(--space-lg);
+}
+
+.sb-picker-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  letter-spacing: var(--tracking-md);
+  text-transform: uppercase;
+}
+
+.sb-picker .sb-input {
+  flex: none;
+}
+
+.sb-empty {
+  margin: 0;
+  padding: var(--space-lg);
+  color: var(--muted);
+  font-size: var(--text-sm);
+}
+
+.sb-empty--center {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-md);
+  text-align: center;
+}
+
+.sb-error {
+  margin: 0;
+  color: var(--red);
+  font-size: var(--text-xs);
+}
+
+/* One column on a phone: the list, or the open thread with a way back. */
+@media (max-width: 760px) {
+  .sb-header {
+    gap: var(--space-sm);
+    padding: 0 var(--space-md);
+  }
+
+  .sb-brand span,
+  .sb-status-meta {
+    display: none;
+  }
+
+  .sb-dms {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .sb-dms-rail {
+    border-right: 0;
+  }
+
+  .sb-dms--thread-open .sb-dms-rail,
+  .sb-dms:not(.sb-dms--thread-open) .sb-dms-thread {
+    display: none;
+  }
+
+  .sb-dms-back {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    align-self: flex-start;
+    margin: var(--space-sm) var(--space-md) 0;
+    padding: 4px var(--space-sm);
+    border: 0;
+    background: transparent;
+    color: var(--muted);
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    text-transform: uppercase;
+    cursor: pointer;
+  }
+}
+
+/* ── Crash ─────────────────────────────────────────────────────────────── */
+
+.sb-crash {
+  padding: 24px;
+  font-family: var(--font-mono);
+}
+
+.sb-crash h1 {
+  font-size: 16px;
+}
+
+.sb-crash pre {
+  white-space: pre-wrap;
+  color: var(--amber);
+}

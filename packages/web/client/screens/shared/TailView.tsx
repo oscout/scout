@@ -311,6 +311,7 @@ export function TailView({
   initialFilter,
   variant = "tail",
   chrome = "full",
+  inlineDetail = false,
   filterLabel,
   filterScope = "all",
 }: {
@@ -318,6 +319,7 @@ export function TailView({
   initialFilter?: string;
   variant?: TailViewVariant;
   chrome?: TailViewChrome;
+  inlineDetail?: boolean;
   filterLabel?: string;
   filterScope?: TailFilterScope;
 } = {}) {
@@ -384,10 +386,10 @@ export function TailView({
   }, [embedded, initialFilter]);
 
   useEffect(() => {
-    if (embedded) return;
+    if (embedded || inlineDetail) return;
     publishOpsDetail(selected ? tailDetailSnapshot(selected) : null);
     return () => publishOpsDetail(null);
-  }, [embedded, selected]);
+  }, [embedded, inlineDetail, selected]);
 
   const loadDiscovery = useCallback(async () => {
     try {
@@ -716,7 +718,7 @@ export function TailView({
         </div>
       )}
 
-      {embedded && selected && (
+      {(embedded || inlineDetail) && selected && (
         <TailDetailSheet
           event={selected}
           onClose={() => setSelected(null)}

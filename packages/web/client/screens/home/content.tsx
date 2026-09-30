@@ -275,8 +275,14 @@ function isOfflineSyncError(message: string | null): boolean {
 
 export function HomeContent({
   navigate,
+  basic = false,
+  children,
 }: {
   navigate: (r: Route) => void;
+  /** Basic web: no hero, coordination stream or quiet-start panels. */
+  basic?: boolean;
+  /** Extra Home sections, laid out after What's moving. */
+  children?: React.ReactNode;
 }) {
   const { agents: allAgents, onboarding, reload, route } = useScout();
   const machineId = routeMachineId(route);
@@ -391,7 +397,7 @@ export function HomeContent({
 
     const [fleetResult, heartrateResult, agentsResult] = await Promise.allSettled([
       api<FleetState>(`/api/fleet?${fleetQuery}`),
-      api<{
+      basic ? Promise.resolve(null) : api<{
         windowLabel: string;
         bucketLabel?: string;
         buckets: HeartrateBucketView[];
@@ -405,7 +411,7 @@ export function HomeContent({
       fleetRef.current = fleetResult.value;
       setFleet(fleetResult.value);
     }
-    if (heartrateResult.status === "fulfilled") {
+    if (heartrateResult.status === "fulfilled" && heartrateResult.value) {
       setHeartrate(heartrateResult.value.buckets);
       setHeartrateWindow(heartrateResult.value.windowLabel);
       setHeartrateBucketLabel(heartrateResult.value.bucketLabel ?? "");
@@ -422,7 +428,7 @@ export function HomeContent({
     }
     setLoading(false);
     setRefreshing(false);
-  }, [reload, lookbackOption]);
+  }, [basic, reload, lookbackOption]);
 
   const scheduleRefresh = useCallback(() => {
     if (!isScoutSurfaceActive()) return;
@@ -443,6 +449,7 @@ export function HomeContent({
 
   useEffect(() => {
     let cancelled = false;
+    if (basic) return;
     const fetchBudgets = async () => {
       try {
         const gauges = await fetchServiceGauges();
@@ -468,7 +475,7 @@ export function HomeContent({
       window.removeEventListener("focus", refreshWhenVisible);
       document.removeEventListener("visibilitychange", refreshWhenVisible);
     };
-  }, [fetchServiceGauges]);
+  }, [basic, fetchServiceGauges]);
 
   const loadLocalTailSnapshot = useCallback(async () => {
     try {
@@ -512,12 +519,12 @@ export function HomeContent({
       }
       lastForegroundRefreshAtRef.current = now;
       void load("background");
-      void fetchServiceGauges().then(setServiceGauges).catch(() => null);
+      if (!basic) void fetchServiceGauges().then(setServiceGauges).catch(() => null);
       void loadLocalTailSnapshot();
     };
 
     return onScoutSurfaceActivated(refreshIfActive);
-  }, [fetchServiceGauges, load, loadLocalTailSnapshot]);
+  }, [basic, fetchServiceGauges, load, loadLocalTailSnapshot]);
 
   const [nowMs, setNowMs] = useState(() => Date.now());
 
@@ -810,7 +817,14 @@ export function HomeContent({
     <div className="s-fleet-home">
       <div className="s-fleet-home-inner">
         {/* ── Home header ─────────────────────────────────────────── */}
-        <HomeHero {...heroProps} />
+        {!basic && <HomeHero {...heroProps} />}
+        {basic && error && (
+          <div className="sys-banner sys-banner-warning" role="alert">
+            <strong>Refresh failed.</strong>
+            <span>{error}</span>
+            <button type="button" className="s-link-btn" onClick={() => void load("manual")}>Retry</button>
+          </div>
+        )}
 
         {/* ── What's moving ──────────────────────────────────────── */}
         {(totalMovingCount > 0 || loading) && (
@@ -827,9 +841,9 @@ export function HomeContent({
                   />
                   <button
                     className="s-link-btn"
-                    onClick={() => navigate({ view: "mesh" })}
+                    onClick={() => navigate(basic ? { view: "ops", mode: "tail" } : { view: "mesh" })}
                   >
-                    open mesh ↗
+                    {basic ? "View Tail" : "open mesh ↗"}
                   </button>
                 </div>
               }
@@ -865,7 +879,7 @@ export function HomeContent({
         )}
 
         {/* ── Scout coordination stream ─────────────────────────── */}
-        {showActivitySection && (
+        {!basic && showActivitySection && (
           <div className="s-fleet-section">
             <SectionRule
               label={`Scout coordination · ${liveActivity.length}${activityCapReached ? "+" : ""}`}
@@ -928,7 +942,7 @@ export function HomeContent({
           </div>
         )}
 
-        {showQuietStart && (
+        {!basic && showQuietStart && (
           <div className="s-fleet-section s-fleet-section--quiet-start">
             <QuietStartPanel
               agents={agents}
@@ -936,7 +950,7 @@ export function HomeContent({
             />
           </div>
         )}
-
+        {children}
       </div>
     </div>
   );
@@ -944,7 +958,7 @@ export function HomeContent({
 
 /* ── Sub-components ────────────────────────────────────────────────── */
 
-function SectionRule({
+export function SectionRule({
   label,
   right,
 }: {
