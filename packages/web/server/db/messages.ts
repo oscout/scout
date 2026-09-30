@@ -20,7 +20,7 @@ import {
   parseMessageHistoryCursor,
   type MessageOrderKey,
 } from "../../shared/message-pagination.ts";
-import type { WebMessage } from "./types/web.ts";
+import type { WebMessage } from "../../shared/api/web.ts";
 
 type ThreadSummary = NonNullable<WebMessage["threadSummary"]>;
 
@@ -51,12 +51,15 @@ const AGENT_NEIGHBOURHOOD_PREDICATE = `m.conversation_id IN (
 
 export function queryRecentMessages(
   limit = 80,
-  opts?: { conversationId?: string; actorId?: string; beforeMessageId?: string },
+  opts?: { conversationId?: string; conversationIds?: string[]; actorId?: string; beforeMessageId?: string; messageId?: string; search?: string },
 ): WebMessage[] {
   if (opts?.conversationId && !isOpaqueChannelId(opts.conversationId)) {
     return [];
   }
-  const conversationIds = opts?.conversationId ? conversationIdAliases(opts.conversationId) : [];
+  if (opts?.conversationIds && (!opts.conversationIds.length || opts.conversationIds.some(id => !isOpaqueChannelId(id)))) return [];
+  const conversationIds = opts?.conversationIds
+    ? [...new Set(opts.conversationIds.flatMap(id => conversationIdAliases(id)))]
+    : opts?.conversationId ? conversationIdAliases(opts.conversationId) : [];
   const actorId = opts?.actorId?.trim() || null;
   const messageCreatedAtExpression = sqlTimestampMsExpression("m.created_at");
   const pageLimit = clampMessagePageLimit(limit);
@@ -75,6 +78,8 @@ export function queryRecentMessages(
           OR (m.conversation_id LIKE 'c.%' AND length(m.conversation_id) > 2)
         )`,
     actorId ? AGENT_NEIGHBOURHOOD_PREDICATE : null,
+    opts?.messageId ? "m.id = ?" : null,
+    opts?.search ? "instr(lower(m.body), lower(?)) > 0" : null,
     beforeMessage
       ? `(
           ${messageCreatedAtExpression} < ?
@@ -108,7 +113,7 @@ export function queryRecentMessages(
        ORDER BY ${messageCreatedAtExpression} DESC, m.id DESC
        LIMIT ?`,
     )
-    .all(...conversationIds, ...actorParams, ...beforeParams, pageLimit) as Array<{
+    .all(...conversationIds, ...actorParams, ...(opts?.messageId ? [opts.messageId] : []), ...(opts?.search ? [opts.search] : []), ...beforeParams, pageLimit) as Array<{
     id: string;
     conversation_id: string;
     actor_id: string;

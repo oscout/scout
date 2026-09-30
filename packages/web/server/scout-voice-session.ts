@@ -8,6 +8,8 @@ export type ScoutVoiceSessionEventName =
   | "session.state"
   | "session.partial"
   | "session.final"
+  /** Always-on only: one finalized stretch of speech, `{ text, at }`. Never stored. */
+  | "session.segment"
   | "session.error"
   | "session.cancelled"
   | "speech.started"
@@ -71,6 +73,8 @@ export type ScoutVoiceHostCommand =
     language?: string;
     inputDeviceId?: string | null;
     inputDeviceName?: string | null;
+    /** Always-on listening: capture until stopped, reporting finalized segments. */
+    continuous?: boolean;
   }
   | { type: "session.stop"; sessionId: string }
   | { type: "session.cancel"; sessionId: string }
@@ -123,7 +127,7 @@ type SessionStatus = "pending" | "active" | "processing" | "done" | "cancelled" 
 
 type VoiceSession = {
   id: string;
-  kind: "dictation" | "speech";
+  kind: "dictation" | "speech" | "ambient";
   clientId: string;
   surface: string;
   language: string;
@@ -146,6 +150,7 @@ type VoiceHost = {
   pendingCommands: ScoutVoiceHostCommand[];
   settings: ScoutVoiceSettings;
   devices: ScoutVoiceInputDevice[];
+  capabilities: Set<string>;
 };
 
 type SessionSubscriber = (event: ScoutVoiceSessionEvent) => void;
@@ -203,6 +208,8 @@ export function registerScoutVoiceHost(input: {
   bundle?: string;
   settings?: Partial<ScoutVoiceSettings>;
   devices?: ScoutVoiceInputDevice[];
+  /** e.g. `continuous` for always-on listening; hosts that predate it send none. */
+  capabilities?: string[];
 }): { ok: true; hostId: string; pollMs: number } {
   const hostId = input.hostId.trim();
   if (!hostId) {
@@ -246,6 +253,7 @@ export function registerScoutVoiceHost(input: {
     pendingCommands: previous?.pendingCommands ?? [],
     settings,
     devices: input.devices?.length ? input.devices : (previous?.devices ?? []),
+    capabilities: new Set(input.capabilities ?? []),
   });
 
   return { ok: true, hostId, pollMs: 500 };
@@ -463,7 +471,73 @@ export function pushScoutVoiceHostEvent(input: {
   }
 
   session.assignedHostId = host.hostId;
+  if (session.kind === "ambient") return routeAmbientEvent(session, input.event, input.data ?? {});
   return appendSessionEvent(session, input.event, input.data ?? {});
+}
+
+/**
+ * Receives an always-on session's events. Transcript-bearing events (partial,
+ * segment, final) go only to this listener and are never kept in the session's
+ * event log or fanned out to subscribers: always-on speech stays in the
+ * listener's short rolling buffer and nowhere else.
+ */
+export type ScoutVoiceAmbientListener = (event: {
+  sessionId: string;
+  event: ScoutVoiceSessionEventName;
+  data: Record<string, unknown>;
+}) => void;
+
+let ambientListener: ScoutVoiceAmbientListener | null = null;
+
+export function setScoutVoiceAmbientListener(listener: ScoutVoiceAmbientListener | null): void {
+  ambientListener = listener;
+}
+
+const AMBIENT_TRANSCRIPT_EVENTS = new Set<ScoutVoiceSessionEventName>([
+  "session.partial",
+  "session.segment",
+  "session.final",
+]);
+
+function routeAmbientEvent(
+  session: VoiceSession,
+  event: ScoutVoiceSessionEventName,
+  data: Record<string, unknown>,
+): ScoutVoiceSessionEvent {
+  let payload: ScoutVoiceSessionEvent;
+  if (AMBIENT_TRANSCRIPT_EVENTS.has(event)) {
+    session.updatedAt = Date.now();
+    payload = { event, sessionId: session.id, data: {}, ts: session.updatedAt };
+  } else {
+    payload = appendSessionEvent(session, event, data);
+  }
+  try {
+    ambientListener?.({ sessionId: session.id, event, data });
+  } catch {
+    // A listener failure must not fail the host's event post.
+  }
+  return payload;
+}
+
+/** True while the host is speaking a reply (any surface's), so a mic hears it. */
+export function isScoutVoiceHostSpeaking(): boolean {
+  for (const session of sessions.values()) {
+    if (session.kind !== "speech") continue;
+    if (Date.now() - session.updatedAt > SPEECH_TIMEOUT_MS) continue;
+    if (session.status === "pending" || session.status === "active" || session.status === "processing") return true;
+  }
+  return false;
+}
+
+/** True while a push-to-talk dictation holds the host's microphone. */
+export function hasActiveScoutVoiceDictation(): boolean {
+  for (const session of sessions.values()) {
+    if (session.kind !== "dictation") continue;
+    // An abandoned session lingers until its TTL; don't let it hold the mic.
+    if (Date.now() - session.updatedAt > 2 * 60_000) continue;
+    if (session.status === "pending" || session.status === "active" || session.status === "processing") return true;
+  }
+  return false;
 }
 
 export function createScoutVoiceSession(input: {
@@ -471,6 +545,8 @@ export function createScoutVoiceSession(input: {
   surface?: string;
   language?: string;
   sessionId?: string;
+  /** Always-on listening; see `setScoutVoiceAmbientListener`. */
+  continuous?: boolean;
 }): { sessionId: string; capture: ScoutVoiceCaptureMode } {
   pruneExpiredSessions();
   const host = pickLiveVoiceHost();
@@ -482,12 +558,20 @@ export function createScoutVoiceSession(input: {
     );
   }
 
+  if (input.continuous && !host.capabilities.has("continuous")) {
+    // An older Scout Menu would treat this as push-to-talk that never ends.
+    throw new ScoutVoiceSessionError(
+      "continuous_unsupported",
+      "This Scout Menu can't listen continuously yet. Update OpenScout and try again.",
+      409,
+    );
+  }
   const sessionId = input.sessionId?.trim() || createSessionId();
   cancelStaleHostSessions(host.hostId, sessionId);
   const now = Date.now();
   const session: VoiceSession = {
     id: sessionId,
-    kind: "dictation",
+    kind: input.continuous ? "ambient" : "dictation",
     clientId: input.clientId?.trim() || "openscout-web",
     surface: input.surface?.trim() || "web",
     language: input.language?.trim() || "en",
@@ -509,6 +593,7 @@ export function createScoutVoiceSession(input: {
     language: session.language,
     inputDeviceId: inputDevice?.id ?? null,
     inputDeviceName: inputDevice?.name ?? null,
+    ...(input.continuous ? { continuous: true } : {}),
   });
 
   appendSessionEvent(session, "session.started", { state: "starting" });

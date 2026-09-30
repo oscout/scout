@@ -42,6 +42,8 @@ export interface ScoutReturnAddress {
   nodeId?: ScoutId;
   projectRoot?: string;
   sessionId?: string;
+  /** Copyable `sess.<token>@<host>` for the exact session replies should continue. */
+  sessionAddress?: string;
   metadata?: MetadataMap;
 }
 
@@ -124,6 +126,9 @@ export function buildScoutReturnAddress(input: ScoutReturnAddress): ScoutReturnA
   }
   if (input.sessionId?.trim()) {
     next.sessionId = input.sessionId.trim();
+  }
+  if (input.sessionAddress?.trim()) {
+    next.sessionAddress = input.sessionAddress.trim();
   }
   if (input.metadata && Object.keys(input.metadata).length > 0) {
     next.metadata = input.metadata;

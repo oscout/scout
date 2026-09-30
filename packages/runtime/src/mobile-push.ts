@@ -4,6 +4,16 @@ import { connect as connectHttp2 } from "node:http2";
 import { createPrivateKey, sign as signWithKey } from "node:crypto";
 import { dirname, join } from "node:path";
 
+import {
+  agentNotificationCategory,
+  type AgentNotification,
+} from "@openscout/protocol";
+
+import {
+  loadPushSealingKeys,
+  sealAgentNotificationForDevice,
+  type PushSealingKeys,
+} from "./mobile-push-seal.js";
 import { resolveOpenScoutSupportPaths } from "./support-paths.js";
 
 export type MobilePushPlatform = "ios";
@@ -58,7 +68,57 @@ export type MobilePushAlert = {
   urgency?: "interrupt" | "badge" | "silent";
   threadId?: string | null;
   payload?: Record<string, unknown>;
+  /**
+   * What the notification IS. Sealed per paired phone and carried in the
+   * push, so the phone renders it without reaching the Mac. `title`/`body`
+   * stay the fallback for a phone that can't open it.
+   */
+  notification?: AgentNotification;
 };
+
+type SealedPushTarget = {
+  deviceId: string;
+  sealed: string | null;
+};
+
+// One target per device, each sealed to that phone's key. Empty when nothing
+// can be sealed (no pairing identity, no trusted phone), which keeps the plain
+// broadcast.
+function sealedPushTargets(
+  notification: AgentNotification | undefined,
+  registrations: MobilePushRegistration[],
+  keys: PushSealingKeys | null,
+): SealedPushTarget[] {
+  if (!notification || !keys) return [];
+  const deviceIds = [...new Set(registrations.map((registration) => registration.deviceId))];
+  const targets = deviceIds.map((deviceId) => {
+    try {
+      return { deviceId, sealed: sealAgentNotificationForDevice(notification, deviceId, { keys }) };
+    } catch {
+      return { deviceId, sealed: null };
+    }
+  });
+  return targets.some((target) => target.sealed) ? targets : [];
+}
+
+function mergeBroadcastResults(results: MobilePushBroadcastResult[]): MobilePushBroadcastResult {
+  const rateLimited = results.find((result) => result.rateLimited);
+  return {
+    attemptedCount: results.reduce((sum, result) => sum + result.attemptedCount, 0),
+    deliveredCount: results.reduce((sum, result) => sum + result.deliveredCount, 0),
+    skippedCount: results.reduce((sum, result) => sum + result.skippedCount, 0),
+    failedCount: results.reduce((sum, result) => sum + result.failedCount, 0),
+    configMissing: results.some((result) => result.configMissing),
+    ...(rateLimited
+      ? {
+        rateLimited: true,
+        retryAfterSeconds: rateLimited.retryAfterSeconds ?? null,
+        rateLimitWindow: rateLimited.rateLimitWindow ?? null,
+      }
+      : {}),
+    failures: results.flatMap((result) => result.failures),
+  };
+}
 
 type MobilePushRegistrationRow = {
   id: string;
@@ -269,7 +329,7 @@ async function broadcastPushRelayAlert(alert: MobilePushAlert): Promise<MobilePu
   }
   const opaquePayload = opaqueMobilePushPayload(alert.payload);
   const itemId = opaquePayload.itemId ?? opaquePayload.messageId;
-  const response = await fetchPushRelay("POST", "/v1/push", {
+  const body = {
     meshId: config.meshId ?? undefined,
     itemId,
     kind: opaquePayload.kind,
@@ -279,7 +339,31 @@ async function broadcastPushRelayAlert(alert: MobilePushAlert): Promise<MobilePu
       ...opaquePayload,
       ...(itemId ? { itemId } : {}),
     },
-  });
+  };
+
+  // Sealed content is per phone, so a sealed alert goes out once per device
+  // instead of as one broadcast. A device we can't seal for still gets its
+  // generic push in the same pass.
+  const targets = sealedPushTargets(alert.notification, listActiveMobilePushRegistrations(), loadPushSealingKeys());
+  if (targets.length === 0 || !alert.notification) {
+    return postPushRelayAlert(body);
+  }
+  const category = agentNotificationCategory(alert.notification);
+  const results: MobilePushBroadcastResult[] = [];
+  for (const target of targets) {
+    const result = await postPushRelayAlert({
+      ...body,
+      deviceId: target.deviceId,
+      ...(target.sealed ? { sealed: target.sealed, category } : {}),
+    });
+    results.push(result);
+    if (result.rateLimited || relayRejectedOurCredential(result)) break;
+  }
+  return mergeBroadcastResults(results);
+}
+
+async function postPushRelayAlert(body: Record<string, unknown>): Promise<MobilePushBroadcastResult> {
+  const response = await fetchPushRelay("POST", "/v1/push", body);
   if (response.status === 429) {
     const retryAfter = response.headers.get("retry-after");
     const window = response.headers.get("x-ratelimit-window");
@@ -634,6 +718,7 @@ function apnsJwt(credentials: ApnsCredentials): string {
 async function sendApnsAlertToRegistration(
   registration: MobilePushRegistration,
   alert: MobilePushAlert,
+  sealed: string | null = null,
 ): Promise<ApnsSendOutcome> {
   const credentials = loadApnsCredentials();
   if (!credentials) {
@@ -658,8 +743,11 @@ async function sendApnsAlertToRegistration(
       },
       ...(alert.sound ? { sound: alert.sound } : {}),
       ...(alert.threadId ? { "thread-id": alert.threadId } : {}),
+      ...(sealed && alert.notification
+        ? { "mutable-content": 1, category: agentNotificationCategory(alert.notification) }
+        : {}),
     },
-    ...(alert.payload ? { scout: alert.payload } : {}),
+    ...(alert.payload || sealed ? { scout: { ...alert.payload, ...(sealed ? { sealed } : {}) } } : {}),
   });
 
   return new Promise<ApnsSendOutcome>((resolve, reject) => {
@@ -786,10 +874,14 @@ export async function broadcastApnsAlertToActiveMobileDevices(
   let skippedCount = 0;
   let configMissing = false;
   const failures: MobilePushBroadcastResult["failures"] = [...relayFailures];
+  const keys = alert.notification ? loadPushSealingKeys() : null;
 
   for (const registration of registrations) {
     try {
-      const outcome = await sendApnsAlertToRegistration(registration, alert);
+      const sealed = alert.notification && keys
+        ? sealAgentNotificationForDevice(alert.notification, registration.deviceId, { keys })
+        : null;
+      const outcome = await sendApnsAlertToRegistration(registration, alert, sealed);
       if (outcome.delivered) {
         deliveredCount += 1;
         continue;

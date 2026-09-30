@@ -373,8 +373,8 @@
   transition: border-color .15s ease, box-shadow .15s ease;
 }
 .chat-app[data-style="messages"] .composer-row:focus-within {
-  border-color: var(--accent);
-  box-shadow: 0 0 0 3px var(--accent-soft);
+  border-color: var(--field-focus);
+  box-shadow: none;
 }
 .chat-app[data-style="messages"] .add-button {
   border: 1px solid var(--hairline-strong) !important;

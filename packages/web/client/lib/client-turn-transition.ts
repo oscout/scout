@@ -47,6 +47,8 @@ export function stageAcceptedConversationTurn(input: {
     class: "operator",
     ...(input.attachments?.length ? { attachments: input.attachments } : {}),
     metadata: { clientMessageId: input.clientMessageId },
+    replyToMessageId: null,
+    threadConversationId: null,
   }]);
 
   const flightId = input.flightId?.trim();

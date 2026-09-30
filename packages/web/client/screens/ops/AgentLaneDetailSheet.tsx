@@ -4,6 +4,7 @@ import { SlidePanel } from "../../components/SlidePanel/SlidePanel.tsx";
 import { api } from "../../lib/api.ts";
 import { AgentAvatar } from "../../components/AgentAvatar.tsx";
 import { HarnessMark } from "../../components/HarnessMark.tsx";
+import { SessionHopMenu } from "../../components/SessionHopMenu.tsx";
 import { timeAgo } from "../../lib/time.ts";
 import { tailAttributionLabel } from "../../lib/tail-display.ts";
 import { isAgentBusy } from "../../lib/agent-state.ts";
@@ -23,6 +24,7 @@ import { buildAgentLanePreview, filePreviewLabel } from "./agent-lane-preview.ts
 import {
   laneProfileRoute,
   laneSessionRoute,
+  laneTerminalHints,
   laneTraceRoute,
 } from "./agent-lane-navigation.ts";
 import {
@@ -755,6 +757,7 @@ export function AgentLaneDetailSheet({
   const sessionRoute = useMemo(() => laneSessionRoute(lane), [lane]);
   const profileRoute = useMemo(() => laneProfileRoute(lane), [lane]);
   const traceRoute = useMemo(() => laneTraceRoute(lane), [lane]);
+  const terminalHints = useMemo(() => laneTerminalHints(lane), [lane]);
 
   const openSession = useCallback(() => {
     if (!navigationEnabled || !sessionRoute) return;
@@ -939,6 +942,12 @@ export function AgentLaneDetailSheet({
               <SheetGhost onClick={openTraces} disabled={!traceRoute}>
                 Traces
               </SheetGhost>
+              <SessionHopMenu
+                className="s-lane-sheet-ghost"
+                hints={terminalHints}
+                navigate={navigate}
+                returnTo={returnRoute}
+              />
             </>
           ) : null}
           {/* Pin project — deck action, not a route jump; stays visible in

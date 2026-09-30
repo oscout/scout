@@ -7,8 +7,8 @@
  * row helpers belong here.
  */
 
-import type { AgentSummaryState } from "../types/common.ts";
-import type { WebActivityItem } from "../types/web.ts";
+import type { AgentSummaryState } from "../../../shared/api/common.ts";
+import type { WebActivityItem } from "../../../shared/api/web.ts";
 
 import { db } from "./db.ts";
 import {

@@ -1,3 +1,4 @@
+import { hostApiPath } from "./chat-host.ts";
 import { api } from "./api.ts";
 import {
   isRoutableCaptureMediaType,
@@ -140,12 +141,12 @@ function readFileAsBase64(file: File): Promise<string> {
   });
 }
 
-export async function uploadMediaFile(file: File): Promise<UploadedMediaBlob> {
+export async function uploadMediaFile(file: File, machineId?: string): Promise<UploadedMediaBlob> {
   if (!isRoutableMediaFile(file)) {
     throw new Error("Only markdown, code, image, and video files can be routed.");
   }
   const data = await readFileAsBase64(file);
-  return api<UploadedMediaBlob>("/api/blobs", {
+  return api<UploadedMediaBlob>(hostApiPath(machineId, "/api/blobs"), {
     method: "POST",
     body: JSON.stringify({
       data,
@@ -155,12 +156,12 @@ export async function uploadMediaFile(file: File): Promise<UploadedMediaBlob> {
   });
 }
 
-export async function uploadMediaFiles(files: File[]): Promise<OutgoingAttachment[]> {
+export async function uploadMediaFiles(files: File[], machineId?: string): Promise<OutgoingAttachment[]> {
   const routable = files.filter(isRoutableMediaFile);
   if (routable.length === 0) {
     throw new Error("Drop markdown, code, an image, or a video clip to route.");
   }
-  const uploaded = await Promise.all(routable.map((file) => uploadMediaFile(file)));
+  const uploaded = await Promise.all(routable.map((file) => uploadMediaFile(file, machineId)));
   return uploaded.map((blob, index) => ({
     id: blob.id,
     mediaType: blob.mediaType,

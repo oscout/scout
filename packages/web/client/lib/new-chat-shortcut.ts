@@ -3,7 +3,7 @@ import { isEditableTarget } from "./keyboard-nav-core.ts";
 export const NEW_CHAT_SHORTCUT_LABEL = "C";
 export const NEW_CHAT_SHORTCUT_KEYS = ["C"] as const;
 export const NEW_CHAT_LEGACY_SHORTCUT_KEYS = ["⌘", "⌥", "N"] as const;
-export const NEW_TASK_ACTION_LABEL = "New task";
+export const NEW_TASK_ACTION_LABEL = "New chat";
 
 type NewChatShortcutEvent = {
   key: string;

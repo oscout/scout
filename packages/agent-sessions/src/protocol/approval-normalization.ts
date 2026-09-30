@@ -8,6 +8,8 @@ export type NormalizedApprovalRequest = {
   sessionName: string;
   adapterType: string;
   turnId: string;
+  /** Observed turn start in epoch milliseconds, absent when source timing is unknown. */
+  turnStartedAt?: number;
   blockId: string;
   version: number;
   risk: NormalizedApprovalRisk;
@@ -84,7 +86,8 @@ export function extractPendingApprovalRequests(snapshot: SessionState): Normaliz
 
       const approval = normalizeApprovalRequest(snapshot.session, turn.id, blockState.block);
       if (approval) {
-        approvals.push(approval);
+        const startedAt = turn.startedAt;
+        approvals.push({ ...approval, ...(Number.isFinite(startedAt) && startedAt >= 0 ? { turnStartedAt: startedAt } : {}) });
       }
     }
   }

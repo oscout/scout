@@ -1,3 +1,5 @@
+import type { MachineRecord } from "@openscout/protocol";
+import { hostApiPath, hostChatUrl } from "../../lib/chat-host.ts";
 import {
   useCallback,
   useEffect,
@@ -114,6 +116,7 @@ type RunnerEffortOption = {
 };
 
 type RunnerOptionsState = {
+  projects?: ProjectLaunchTarget[];
   defaults: {
     harness: string;
     model: string | null;
@@ -277,6 +280,7 @@ export function NewChatComposer({
   initialAttachmentFeedback,
   initialIntent = "new-task",
   initialProjectPath,
+  initialMachineId,
   initialForwardContext,
   initialForwardContextMode = "selected-message",
   defaultMode,
@@ -295,6 +299,7 @@ export function NewChatComposer({
   initialAttachmentFeedback?: string;
   initialIntent?: ContextCaptureIntent;
   initialProjectPath?: string;
+  initialMachineId?: string;
   initialProjectQuery?: string;
   initialForwardContext?: ForwardContextSource;
   initialForwardContextMode?: ForwardContextMode;
@@ -303,11 +308,22 @@ export function NewChatComposer({
   onDraftChange?: (draft: ContextCaptureDraft) => void;
   onDraftConsumed?: () => void;
 }) {
+  const [machineId, setMachineId] = useState(initialMachineId ?? "");
+  const [machines, setMachines] = useState<MachineRecord[]>([]);
+  const [hostError, setHostError] = useState<string | null>(null);
+  const selectedHost = machines.find((machine) => machine.id === machineId);
+  useEffect(() => {
+    let cancelled = false;
+    api<{ machines: MachineRecord[] }>("/api/machines").then((result) => {
+      if (!cancelled) setMachines(result.machines);
+    }).catch(() => { if (!cancelled) setHostError("Host list unavailable. Reopen to retry; this machine is still available."); });
+    return () => { cancelled = true; };
+  }, []);
   const routeContext = useMemo(() => resolveCaptureRouteContext(route, agents), [route, agents]);
   const isForwarding = initialIntent === "forward-message" && Boolean(initialForwardContext);
   const sorted = useMemo(
-    () => [...agents].sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0)),
-    [agents],
+    () => agents.filter((agent) => !machineId || Boolean(selectedHost?.scoutNodeId && (agent.authorityNodeId === selectedHost.scoutNodeId || agent.homeNodeId === selectedHost.scoutNodeId))).sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0)),
+    [agents, machineId, selectedHost?.scoutNodeId],
   );
   // A fresh task is project-routed. Ambient page/session context must never
   // become an invisible continuation target; contextual routing is reserved
@@ -322,7 +338,7 @@ export function NewChatComposer({
   const preferredProjectRoot = routeAgent?.projectRoot ?? routeAgent?.cwd ?? null;
   const [configuration, setConfiguration] = useState<AgentConfigurationState | null>(null);
   const [runnerOptions, setRunnerOptions] = useState<RunnerOptionsState | null>(() => (
-    cachedRunnerOptions
+    initialMachineId ? null : cachedRunnerOptions
     ?? peekApiGet<RunnerOptionsState>(RUNNER_OPTIONS_PATH, RUNNER_OPTIONS_CACHE_MAX_AGE_MS)
   ));
   const [projectLoadError, setProjectLoadError] = useState<string | null>(null);
@@ -528,7 +544,7 @@ export function NewChatComposer({
     : undefined;
 
   const projectTargets = useMemo(
-    () => orderProjectLaunchTargetsByRecency(
+    () => machineId ? runnerOptions?.projects ?? [] : orderProjectLaunchTargetsByRecency(
       buildProjectLaunchTargets(
         configuration?.projects ?? [],
         agents,
@@ -536,7 +552,7 @@ export function NewChatComposer({
       ),
       recentProjectRoots,
     ),
-    [agents, configuration, recentProjectRoots],
+    [agents, configuration, recentProjectRoots, machineId, runnerOptions],
   );
   const knownSelectedProject = projectTargets.find((candidate) => candidate.root === projectPath) ?? null;
   const selectedProject: ProjectLaunchTarget | null = knownSelectedProject ?? (projectPath
@@ -635,13 +651,13 @@ export function NewChatComposer({
   const hasAttachments = files.length > 0;
   const isStarting = state === "starting";
   const isDraggingFiles = dragDepth > 0;
-  const canUseExistingChat = projectMatchesRouteAgent
+  const canUseExistingChat = !machineId && projectMatchesRouteAgent
     && Boolean(routeAgent?.conversationId || routeConversationId);
   const usesNewWorker = !hasAttachments || !canUseExistingChat || mode === "new-session";
   // The bundled catalog is a complete launchable baseline. Live readiness is
   // enrichment, so a slow probe must not disable the picker or Start action.
-  const runtimeBlocked = usesNewWorker && selectedHarness?.ready === false;
-  const title = isForwarding ? "Forward to new task" : hasAttachments ? "Route capture" : "New task";
+  const runtimeBlocked = (usesNewWorker && selectedHarness?.ready === false) || Boolean(machineId && (!runnerOptions || runnerLoadError || !selectedHost || !hostChatUrl(selectedHost, "new")));
+  const title = isForwarding ? "Forward to new task" : hasAttachments ? "Route capture" : "New chat";
   // Forwarding states its source turns; a plain new task states its origin
   // route. Both describe where the work came from, so they never stack.
   const originContext = useMemo(
@@ -902,31 +918,30 @@ export function NewChatComposer({
   // Agent-derived and current-project rows already make the closed picker
   // useful, so only enrich the list when the operator asks to browse it.
   useEffect(() => {
-    if (!projectPickerOpen || configuration) return;
+    if (machineId || !projectPickerOpen || configuration) return;
     return loadConfiguration();
-  }, [configuration, loadConfiguration, projectPickerOpen]);
+  }, [configuration, loadConfiguration, projectPickerOpen, machineId]);
 
   // Callable so the picker's error state can offer a real retry.
   const loadRunnerOptions = useCallback(() => {
-    void api<RunnerOptionsState>(RUNNER_OPTIONS_PATH)
+    let cancelled = false;
+    void api<RunnerOptionsState>(hostApiPath(machineId, RUNNER_OPTIONS_PATH))
       .then((snapshot) => {
-        cachedRunnerOptions = snapshot;
+        if (cancelled) return;
+        if (!machineId) cachedRunnerOptions = snapshot;
         setRunnerOptions(snapshot);
         setRunnerLoadError(null);
       })
       .catch(() => {
-        // With a cached catalog already on screen a failed background
-        // revalidation changes nothing the operator can act on — the error
-        // state is reserved for having no catalog at all.
-        if (!cachedRunnerOptions) {
-          setRunnerLoadError("Live model availability is unavailable. Using the bundled catalog.");
-        }
+        if (cancelled) return;
+        setRunnerLoadError(machineId
+          ? "This host is unavailable. Choose another host or retry; your draft is kept."
+          : "Live model availability is unavailable. Using the bundled catalog.");
       });
-  }, []);
+    return () => { cancelled = true; };
+  }, [machineId]);
 
-  useEffect(() => {
-    loadRunnerOptions();
-  }, [loadRunnerOptions]);
+  useEffect(() => loadRunnerOptions(), [loadRunnerOptions]);
 
   useEffect(() => {
     if (projectSelectionTouchedRef.current || projectTargets.length === 0) return;
@@ -967,6 +982,7 @@ export function NewChatComposer({
   useLayoutEffect(() => {
     onDraftChange?.({
       intent: initialIntent,
+      machineId,
       ...(routeAgentId ? { agentId: routeAgentId } : {}),
       ...(routeConversationId
         ? { conversationId: routeConversationId }
@@ -986,6 +1002,7 @@ export function NewChatComposer({
     });
   }, [
     attachmentFeedback,
+    machineId,
     files,
     forwardContextMode,
     initialForwardContext,
@@ -1154,6 +1171,8 @@ export function NewChatComposer({
     setReasoningEffort(next.effort);
   };
 
+  const clientMessageIdRef = useRef(createClientMessageId());
+
   const start = async () => {
     if (isStarting) return;
     if (isForwarding && !committedMessage) {
@@ -1172,12 +1191,12 @@ export function NewChatComposer({
     setState("starting");
     setPhase(files.length > 0 ? "uploading" : "starting");
     setError(null);
-    const clientMessageId = createClientMessageId();
+    const clientMessageId = clientMessageIdRef.current;
     const submittedAt = Date.now();
     try {
       let attachments: OutgoingAttachment[] = [];
       if (files.length > 0) {
-        attachments = await uploadMediaFiles(files);
+        attachments = await uploadMediaFiles(files, machineId || undefined);
         setPhase("starting");
       }
 
@@ -1207,6 +1226,7 @@ export function NewChatComposer({
       }
 
       const result = await startProjectSession({
+        machineId: machineId || undefined,
         projectPath: selectedProject.root,
         harness,
         ...(model ? { model } : {}),
@@ -1217,7 +1237,7 @@ export function NewChatComposer({
             ? { instructions: "Shared capture for context." }
             : {}),
         ...(attachments.length > 0 ? { attachments } : {}),
-        ...(isForwarding && initialForwardContext
+        ...(!machineId && isForwarding && initialForwardContext
           ? {
               fromMessageId: initialForwardContext.selectedMessageId,
               fromConversationId: initialForwardContext.sourceConversationId,
@@ -1228,6 +1248,13 @@ export function NewChatComposer({
       const conversationId = result.conversationId?.trim();
       if (!conversationId) {
         throw new Error("Message sent, but no Chat was returned.");
+      }
+      if (machineId && selectedHost) {
+        const url = hostChatUrl(selectedHost, conversationId);
+        if (!url) throw new Error("Chat created, but this host has no web address.");
+        onDraftConsumed?.();
+        window.location.assign(url);
+        return;
       }
       const messageId = result.messageId?.trim();
       if (messageId) {
@@ -1332,6 +1359,31 @@ export function NewChatComposer({
               onToggleSelection={() => setAttachSelection((on) => !on)}
             />
 
+            <div className="s-newchat-host">
+              <label htmlFor="newchat-host">Host</label>
+              <select id="newchat-host" value={machineId} disabled={isStarting || initialIntent === "route-capture"}
+                onChange={(event) => {
+                  setMachineId(event.target.value);
+                  setRunnerOptions(null);
+                  setRunnerLoadError(null);
+                  setConfiguration(null);
+                  setProjectPath("");
+                  setProjectQuery("");
+                  setProjectPickerOpen(true);
+                  projectSelectionTouchedRef.current = false;
+                  runtimeSelectionTouchedRef.current = false;
+                }}>
+                <option value="">{machines.find((host) => host.isSelf)?.displayName || machines.find((host) => host.isSelf)?.name || "This machine"} · Local</option>
+                {machineId && !selectedHost ? <option value={machineId}>Unavailable host</option> : null}
+                {machines.filter((host) => !host.isSelf && host.capabilities.includes("scout-broker") && host.capabilities.includes("scout-web")).map((host) => (
+                  <option key={host.id} value={host.id} disabled={!hostChatUrl(host, "new")}>
+                    {host.displayName || host.name}{!hostChatUrl(host, "new") ? " · No web address" : ""}
+                  </option>
+                ))}
+              </select>
+            </div>
+            {hostError ? <p role="status">{hostError}</p> : null}
+            {machineId ? <p className="s-newchat-forward-intro">The chat opens in this host’s Scout after it starts.</p> : null}
             <div className="s-newchat-project-bar">
               <span className="label-md s-newchat-project-label">Project</span>
               <button

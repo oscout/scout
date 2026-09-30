@@ -15,6 +15,7 @@ import {
 import {
   applyMeshGateMode,
   classifyMeshTransport,
+  DenialThrottle,
   evaluateMeshIngress,
   type MeshIngressDecision,
 } from "./mesh-ingress-gate.js";
@@ -329,5 +330,199 @@ describe("applyMeshGateMode", () => {
       expect(decision.action).toBe("allow");
     }
     expect(warnings).toEqual([]);
+  });
+});
+
+describe("DenialThrottle", () => {
+  test("logs the first denial, suppresses repeats, then rolls up the count per interval", () => {
+    let now = 1_000;
+    const throttle = new DenialThrottle(60_000, () => now);
+    const warnings: string[] = [];
+    const logger = { warn: (message: string) => warnings.push(message) };
+    const deny: MeshIngressDecision = { action: "deny", status: 401, reason: "unknown peer" };
+    const context = {
+      mode: "enforce" as const,
+      method: "GET",
+      pathname: "/v1/mesh/nodes",
+      keyId: "peer-k",
+      logger,
+      throttle,
+    };
+
+    // First denial emits immediately; the next three in the window are
+    // counted silently.
+    applyMeshGateMode(deny, context);
+    for (let i = 0; i < 3; i += 1) {
+      now += 1_000;
+      const decision = applyMeshGateMode(deny, context);
+      expect(decision).toEqual(deny);
+    }
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain("denied GET /v1/mesh/nodes peer=peer-k — unknown peer");
+    expect(warnings[0]).not.toContain("suppressed");
+
+    // The first denial past the interval emits once, carrying the count of
+    // the three suppressed repeats.
+    now += 60_000;
+    applyMeshGateMode(deny, context);
+    expect(warnings).toHaveLength(2);
+    expect(warnings[1]).toContain("(+3 suppressed since last log)");
+
+    // A different signature is its own bucket and still logs immediately.
+    now += 1;
+    applyMeshGateMode(deny, { ...context, keyId: "peer-other" });
+    expect(warnings).toHaveLength(3);
+    expect(warnings[2]).toContain("peer=peer-other");
+    expect(warnings[2]).not.toContain("suppressed");
+  });
+
+  test("verify-warn denials are throttled the same way", () => {
+    let now = 0;
+    const throttle = new DenialThrottle(60_000, () => now);
+    const warnings: string[] = [];
+    const context = {
+      mode: "verify-warn" as const,
+      method: "GET",
+      pathname: "/v1/x",
+      keyId: "k",
+      logger: { warn: (message: string) => warnings.push(message) },
+      throttle,
+    };
+    const deny: MeshIngressDecision = { action: "deny", status: 403, reason: "route is local-only" };
+    expect(applyMeshGateMode(deny, context).action).toBe("allow");
+    expect(applyMeshGateMode(deny, context).action).toBe("allow");
+    expect(warnings).toHaveLength(1);
+    now += 61_000;
+    applyMeshGateMode(deny, context);
+    expect(warnings).toHaveLength(2);
+    expect(warnings[1]).toContain("verify-warn");
+    expect(warnings[1]).toContain("(+1 suppressed since last log)");
+  });
+
+  test("a flood of distinct signatures stays bounded — capped buckets, capped lines, one rollup per window", () => {
+    let now = 1_000;
+    const throttle = new DenialThrottle(60_000, () => now);
+    const warnings: string[] = [];
+    const logger = { warn: (message: string) => warnings.push(message) };
+    const deny: MeshIngressDecision = { action: "deny", status: 401, reason: "unknown peer" };
+    const contextFor = (keyId: string) => ({
+      mode: "enforce" as const,
+      method: "GET",
+      pathname: "/v1/mesh/nodes",
+      keyId,
+      logger,
+      throttle,
+    });
+
+    for (let i = 0; i < 100_000; i += 1) {
+      applyMeshGateMode(deny, contextFor(`peer-${i}`));
+    }
+
+    // Bounded storage and bounded lines: 20 first-seen lines, everything else
+    // counted silently for the window rollup.
+    expect(throttle.size).toBe(512);
+    expect(warnings).toHaveLength(20);
+
+    // The first denial of the next window reports the overflow once.
+    now += 60_000;
+    applyMeshGateMode(deny, contextFor("peer-rollover"));
+    expect(warnings).toHaveLength(22);
+    expect(warnings[20]).toContain("… and 99980 more distinct denial signatures suppressed");
+    expect(warnings[21]).toContain("peer=peer-rollover");
+  });
+
+  test("recurring emissions share the per-window allowance — 512 repeats emit 20 lines plus one rollup", () => {
+    let now = 1_000;
+    const throttle = new DenialThrottle(60_000, () => now);
+    const warnings: string[] = [];
+    const logger = { warn: (message: string) => warnings.push(message) };
+    const deny: MeshIngressDecision = { action: "deny", status: 401, reason: "unknown peer" };
+    const contextFor = (keyId: string) => ({
+      mode: "enforce" as const,
+      method: "GET",
+      pathname: "/v1/mesh/nodes",
+      keyId,
+      logger,
+      throttle,
+    });
+
+    // 512 distinct signatures at t=0: 20 first-seen lines, 492 overflow.
+    const peers = Array.from({ length: 512 }, (_, i) => `peer-${i}`);
+    for (const keyId of peers) {
+      applyMeshGateMode(deny, contextFor(keyId));
+    }
+    expect(warnings).toHaveLength(20);
+
+    // One window later every signature repeats. First-seen and recurring
+    // emissions share the 20-line allowance, so the batch emits 20 signature
+    // lines plus a single rollup — not one line per signature (513).
+    warnings.length = 0;
+    now += 60_000;
+    for (const keyId of peers) {
+      applyMeshGateMode(deny, contextFor(keyId));
+    }
+    const aggregates = warnings.filter((message) => message.includes("more distinct denial signatures"));
+    const signatureLines = warnings.filter((message) => !message.includes("more distinct denial signatures"));
+    expect(signatureLines).toHaveLength(20);
+    expect(aggregates).toHaveLength(1);
+    expect(aggregates[0]).toContain("… and 492 more distinct denial signatures suppressed");
+  });
+
+  test("id-like route segments and oversized key ids normalize into one signature", () => {
+    const now = 1_000;
+    const throttle = new DenialThrottle(60_000, () => now);
+    const warnings: string[] = [];
+    const logger = { warn: (message: string) => warnings.push(message) };
+    const deny: MeshIngressDecision = { action: "deny", status: 401, reason: "unknown peer" };
+
+    // Distinct concrete ids collapse onto one bucket; the second denial is
+    // suppressed as a repeat of the first.
+    applyMeshGateMode(deny, {
+      mode: "enforce", method: "GET", pathname: "/v1/agents/3f8a2c1e-9b4d-4e6f-8a0b-1c2d3e4f5a6b/messages", keyId: "k", logger, throttle,
+    });
+    applyMeshGateMode(deny, {
+      mode: "enforce", method: "GET", pathname: "/v1/agents/77aa10ff-2211-4c33-9d44-556677889900/messages", keyId: "k", logger, throttle,
+    });
+    expect(warnings).toHaveLength(1);
+    expect(throttle.size).toBe(1);
+
+    // Two keyIds sharing a 64-char prefix are the same signature.
+    const prefix = "k".repeat(64);
+    applyMeshGateMode(deny, {
+      mode: "enforce", method: "GET", pathname: "/v1/other", keyId: `${prefix}-a`, logger, throttle,
+    });
+    applyMeshGateMode(deny, {
+      mode: "enforce", method: "GET", pathname: "/v1/other", keyId: `${prefix}-b`, logger, throttle,
+    });
+    expect(warnings).toHaveLength(2);
+    expect(throttle.size).toBe(2);
+  });
+
+  test("expired buckets are swept on insert and a stale signature emits fresh", () => {
+    let now = 1_000;
+    const throttle = new DenialThrottle(60_000, () => now);
+    const warnings: string[] = [];
+    const logger = { warn: (message: string) => warnings.push(message) };
+    const deny: MeshIngressDecision = { action: "deny", status: 401, reason: "unknown peer" };
+    const contextFor = (keyId: string) => ({
+      mode: "enforce" as const, method: "GET", pathname: "/v1/mesh/nodes", keyId, logger, throttle,
+    });
+
+    for (let i = 0; i < 512; i += 1) {
+      applyMeshGateMode(deny, contextFor(`peer-${i}`));
+    }
+    expect(throttle.size).toBe(512);
+
+    // Past the 5-minute expiry every bucket is stale; the next inserts sweep
+    // them instead of evicting live entries or growing past the cap.
+    now += 5 * 60_000 + 1;
+    applyMeshGateMode(deny, contextFor("peer-0"));
+    applyMeshGateMode(deny, contextFor("peer-fresh"));
+    expect(throttle.size).toBe(2);
+    // peer-0 emitted again as first-seen (its suppressed history expired with
+    // the bucket) — the aggregate rollup reports the swept window's overflow.
+    const peer0Lines = warnings.filter((message) => message.includes("peer=peer-0"));
+    expect(peer0Lines).toHaveLength(2);
+    expect(peer0Lines[1]).not.toContain("suppressed since last log");
   });
 });

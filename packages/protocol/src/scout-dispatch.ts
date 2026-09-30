@@ -48,6 +48,17 @@ export type ScoutRouteTarget =
       /** Canonical writes use a broker `sess.*` handle. Native ids are legacy resolver inputs only. */
       sessionId: ScoutId;
       harness?: AgentHarness;
+      /**
+       * Opt-in for native ids: if the session is live outside Scout (e.g. open
+       * in the operator's terminal), continue it as a new Scout-owned fork
+       * rather than refusing. The receipt's targetSessionId names the fork.
+       */
+      forkIfLive?: boolean;
+      /**
+       * Host part of a `sess.<token>@<host>` address: the broker authority that
+       * owns the session. Scopes resolution to that host; it never widens it.
+       */
+      host?: string;
       value?: string;
     }
   | { kind: "binding_ref"; ref: string; value?: string }
@@ -108,6 +119,8 @@ export interface ScoutDispatchEnvelope {
   dispatchedAt: number;
   dispatcherNodeId: ScoutId;
   diagnosticCode?: RouteAliasDiagnosticCode;
+  /** Exact-session wake refusal code (session_unknown, session_live_unbound, …). */
+  sessionWakeReason?: string;
   aliasResolution?: RouteAliasResolutionProof;
 }
 

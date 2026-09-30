@@ -369,6 +369,9 @@ export function channelMemberMayAccess(input: {
       if (rest === "blobs") return true;
       // Same access as posting: a reaction is an acknowledgment in the room.
       if (rest === "reactions" || rest === "reactions/remove") return true;
+      // Pins are shared room annotations, like reactions; they grant no new
+      // membership or execution authority. API participants may collaborate.
+      if (rest === "read-state" || rest === "attention" || rest === "pins" || rest === "corrections") return true;
       // Everything below widens the room rather than speaking in it, and a
       // lightweight participant was not granted that. Minting invitations is
       // the sharp one: a joiner able to issue more would defeat the
@@ -376,9 +379,11 @@ export function channelMemberMayAccess(input: {
       // agent is the softer one -- it dispatches tracked work to somebody
       // else's session -- and the no-install document promises neither.
       if (grant.participation === "api") return false;
+      if (rest === "presence") return true;
       // Addressing one agent, and minting an invitation so a teammate can
       // bring their own agent into the room they are already in.
       if (rest === "asks" || rest === "invites") return true;
+      if (/^questions\/[^/]+\/respond$/.test(rest)) return true;
       if (/^asks\/[^/]+\/cancel$/.test(rest)) return true;
       // Revoking, but only an invitation they created -- being able to let
       // someone in without being able to take it back is not a permission, it

@@ -1,3 +1,8 @@
+import { ChatStopControl } from "./ChatExecutionControls.tsx";
+import { ChatApprovalPrompts, useChatApprovals } from "./ChatApprovalControls.tsx";
+import { ChatQuestionControls } from "./ChatQuestionControls.tsx";
+import { readChatMessageCorrection } from "@openscout/protocol";
+import { ChatMessageCorrectionControls, type CorrectChatMessage } from "./ChatMessageCorrectionControls.tsx";
 /**
  * The small shared parts of the chat surface: copy affordances, the turn, the
  * tracked-ask card, and the connection block.
@@ -8,6 +13,7 @@
  */
 
 import { useCallback, useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
+import { Bookmark, MessageSquare, Pin } from "lucide-react";
 import { copyTextToClipboard } from "../../lib/clipboard.ts";
 import {
   REACTION_EMOJI_MORE,
@@ -18,6 +24,7 @@ import { sameOriginBlobUrl } from "../../components/MessageEmbeds.tsx";
 
 import {
   CHAT_LINK_PREVIEW_PATH,
+  ChatApiError,
   type ChannelMemberView,
   type ChatMessage,
   type TrackedRequest,
@@ -27,9 +34,11 @@ import { useChatCapabilities } from "./chat-transport.tsx";
 import { MemberAvatar } from "./ChatAvatar.tsx";
 import {
   askChip,
+  askHeadline,
   clockTime,
   memberDisplayName,
   memberOrFallback,
+  reactionReactorNames,
   memberReceptionView,
   relativeTime,
   threadStubLabel,
@@ -89,31 +98,103 @@ export function TrackedAskCard({
   request: TrackedRequest;
   target: ChannelMemberView | null;
   withTarget: boolean;
-  onStop?: (flightId: string) => void;
+  onStop?: (flightId: string) => void | Promise<void>;
 }) {
+  const [stopping, setStopping] = useState(false);
+  const [stopError, setStopError] = useState<string | null>(null);
+  const inFlight = useRef(false);
+  const stop = async () => {
+    if (!onStop || inFlight.current) return;
+    inFlight.current = true;
+    setStopping(true);
+    setStopError(null);
+    try { await onStop(request.flightId); }
+    catch (error) {
+      setStopError(error instanceof ChatApiError && error.status > 0 && error.status < 500
+        ? error.message : "Could not confirm cancellation. Check your connection and try again.");
+    } finally { inFlight.current = false; setStopping(false); }
+  };
   const chip = askChip(
     request,
     target ? { label: memberDisplayName(target), reception: target.reception } : null,
   );
+  const agentLabel = target ? memberDisplayName(target) : request.targetName ?? request.targetActorId;
+  const active = ["running", "waiting", "blocked", "needs_input"].includes(chip.state);
+  const approvals = useChatApprovals(request.flightId, active);
+  const responsibility = request.responsibility;
+  const headline = askHeadline({
+    state: request.state,
+    agent: withTarget ? agentLabel : null,
+    responsibility,
+    approvalsForYou: active ? approvals.pending.length : 0,
+  });
+  const failed = chip.tone === "failed";
   return (
-    <div className="chat-ask-card" data-tone={chip.tone}>
-      <span className="label-sm">Tracked request</span>
-      <span
-        className="chip chip--sm chip--mono chip--ghost chat-ask-chip"
-        data-tone={chip.tone}
-        aria-label={chip.ariaLabel}
-      >
-        {withTarget ? chip.textWithTarget : chip.text}
-      </span>
+    <div
+      className="chat-ask-card"
+      data-tone={chip.tone}
+      data-needs-you={headline.needsYou || undefined}
+      role="group"
+      aria-label={chip.ariaLabel}
+    >
+      <p className="chat-ask-headline">{headline.text}</p>
+      {request.summary ? <p className="chat-ask-summary">{request.summary}</p> : null}
+
+      {active ? <ChatApprovalPrompts approvals={approvals} /> : null}
+
+      {responsibility ? <div className="chat-ask-slot">
+        <p className="chat-ask-slot-label">
+          {responsibility.kind === "question" ? "Question" : "Work"}{responsibility.settled ? ` · ${responsibility.state}` : ""}
+        </p>
+        <p className="chat-ask-quote">{responsibility.title}</p>
+        {responsibility.answer ? <>
+          <p className="chat-ask-slot-label">Answer</p>
+          <pre className="chat-ask-answer">{responsibility.answer}</pre>
+        </> : null}
+        <ChatQuestionControls question={responsibility} />
+      </div> : chip.state === "waiting" && !approvals.pending.length ? (
+        <p className="chat-ask-trail">The next actor is not available in this view.</p>
+      ) : null}
+
+      {failed && request.error ? <div className="chat-ask-error" role="alert">
+        <p className="chat-ask-error-label">Error</p>
+        <pre>{request.error}</pre>
+      </div> : null}
+
+      {request.output ? <details className="chat-ask-outcome" open={chip.state === "completed" || undefined}>
+        <summary>{chip.state === "completed" ? "Recorded outcome" : "Recorded output"}{request.outputTruncated ? " (preview)" : ""}</summary>
+        <pre>{request.output}</pre>
+        {request.outputTruncated ? <p>
+          Preview limited to 4,000 characters. {request.outputUrl?.startsWith("/api/channels/") && !request.outputUrl.includes("\\")
+            ? <a href={request.outputUrl} target="_blank" rel="noopener noreferrer">Read full outcome</a> : null}
+        </p> : null}
+      </details> : null}
+      {chip.state === "completed" && !request.output && !request.summary ? <p className="chat-ask-trail">Completed without a recorded outcome.</p> : null}
+
+      {chip.state === "running" ? <ChatStopControl flightId={request.flightId} /> : null}
+      {chip.canStop && stopError ? <p className="chat-ask-trail" role="alert">{stopError}</p> : null}
       {chip.canStop && onStop ? (
         <button
           type="button"
           className="chat-ask-stop"
-          onClick={() => onStop(request.flightId)}
+          disabled={stopping}
+          onClick={() => void stop()}
         >
-          Stop
+          {stopping ? "Cancelling…" : stopError ? "Retry cancellation" : "Cancel request"}
         </button>
       ) : null}
+
+      <details className="chat-ask-more">
+        <summary>Details</summary>
+        <dl>
+          <dt>Agent</dt><dd>{agentLabel}</dd>
+          <dt>State</dt><dd>{chip.state}</dd>
+          {request.requesterActorId ? <><dt>Requested by</dt><dd>{request.requesterName || request.requesterActorId}</dd></> : null}
+          {request.startedAt != null ? <><dt>Started</dt><dd><time dateTime={new Date(request.startedAt).toISOString()}>{new Date(request.startedAt).toLocaleString()}</time></dd></> : null}
+          {request.completedAt != null ? <><dt>Finished</dt><dd><time dateTime={new Date(request.completedAt).toISOString()}>{new Date(request.completedAt).toLocaleString()}</time></dd></> : null}
+          {!failed && request.error ? <><dt>Error</dt><dd>{request.error}</dd></> : null}
+        </dl>
+      </details>
     </div>
   );
 }
@@ -230,8 +311,17 @@ export function Turn({
   onOpenMember,
   onReact,
   onCopyLink,
+  saved,
+  saveBusy,
+  onSave,
+  pinned,
+  onPin,
+  viewerActorId,
+  viewerIsOperator,
+  onCorrect,
   onStopAsk,
   focused = false,
+  continues = false,
   withTargetOnChip = true,
 }: {
   message: ChatMessage;
@@ -244,17 +334,34 @@ export function Turn({
   onOpenMember?: (actorId: string) => void;
   onReact?: (messageId: string, emoji: string, remove: boolean) => void;
   onCopyLink?: (messageId: string) => void;
-  onStopAsk?: (flightId: string) => void;
+  saved?: boolean;
+  saveBusy?: boolean;
+  onSave?: (messageId: string, saved: boolean) => void;
+  pinned?: boolean;
+  onPin?: (messageId: string, pinned: boolean) => void;
+  viewerActorId?: string;
+  viewerIsOperator?: boolean;
+  onCorrect?: CorrectChatMessage;
+  onStopAsk?: (flightId: string) => void | Promise<void>;
   focused?: boolean;
+  /**
+   * Same author, moments after the turn above. The header is already on
+   * screen, so this one shows only its body — with the clock moved into the
+   * avatar gutter, where it stays reachable without repeating a name.
+   */
+  continues?: boolean;
   withTargetOnChip?: boolean;
 }) {
   const capabilities = useChatCapabilities();
+  const correction = readChatMessageCorrection(message.metadata);
+  const deleted = correction?.deletedAt != null;
+  const authored = message.actorId === viewerActorId || (viewerIsOperator === true && message.actorId === "owner");
   const [pickerPinned, setPickerPinned] = useState(false);
   const press = useRef<{ timer: number; x: number; y: number } | null>(null);
-  const author = memberOrFallback(members, message.actorId);
+  const author = memberOrFallback(members, message.actorId, message.actorName);
   const target = request ? members.get(request.targetActorId) ?? null : null;
   const name = memberDisplayName(author);
-  const canReact = capabilities.reactions && Boolean(onReact);
+  const canReact = !deleted && capabilities.reactions && Boolean(onReact);
 
   const clearPress = () => {
     if (press.current) {
@@ -263,10 +370,72 @@ export function Turn({
     }
   };
 
+  // The same stamp serves both shapes: beside the name when the block opens,
+  // in the gutter where the avatar would be when it continues. A continued
+  // turn never loses its clock, it only stops shouting it.
+  const clock = (
+    <time className="chat-when" dateTime={new Date(message.createdAt).toISOString()}>
+      {clockTime(message.createdAt)}
+    </time>
+  );
+  const stamp = onCopyLink
+    ? (
+      <button
+        type="button"
+        className="chat-when-link"
+        title="Copy link to this message"
+        aria-label={`Copy link to this message, sent ${clockTime(message.createdAt)}`}
+        onClick={() => onCopyLink(message.id)}
+      >
+        {clock}
+      </button>
+    )
+    : clock;
+  const picker = canReact
+    ? (
+      <ReactionPicker
+        message={message}
+        onReact={onReact!}
+        pinned={pickerPinned}
+        onDismiss={() => setPickerPinned(false)}
+      />
+    )
+    : null;
+
+  // Everything you can do to a message, in one floating strip that appears on
+  // hover, keyboard focus or a long press. It used to be a row of words under
+  // every message, which made a quiet feed read like a form.
+  const toolButtons = [
+    onOpenThread ? (
+      <button key="reply" type="button" className="chat-turn-tool" onClick={onOpenThread}
+        aria-label={`Reply in thread to ${name}`} title="Reply in thread">
+        <MessageSquare size={15} strokeWidth={1.8} aria-hidden />
+      </button>
+    ) : null,
+    onSave && (!deleted || saved) ? (
+      <button key="save" type="button" className="chat-turn-tool" aria-pressed={saved === true}
+        disabled={saveBusy} onClick={() => onSave(message.id, !saved)}
+        aria-label={saved ? "Remove from saved messages" : "Save message privately"}
+        title={saved ? "Saved — remove" : "Save for later"}>
+        <Bookmark size={15} strokeWidth={1.8} aria-hidden />
+      </button>
+    ) : null,
+    onPin && (!deleted || pinned) ? (
+      <button key="pin" type="button" className="chat-turn-tool" aria-pressed={pinned === true}
+        disabled={saveBusy} onClick={() => onPin(message.id, !pinned)}
+        aria-label={pinned ? "Unpin from channel" : "Pin for everyone in channel"}
+        title={pinned ? "Pinned — unpin" : "Pin to channel"}>
+        <Pin size={15} strokeWidth={1.8} aria-hidden />
+      </button>
+    ) : null,
+  ].filter(Boolean);
+  const tools = picker || toolButtons.length ? <>{picker}{toolButtons}</> : null;
+
   return (
     <article
       className="chat-turn"
       data-message-id={message.id}
+      data-continues={continues ? "true" : undefined}
       data-focused={focused ? "true" : undefined}
       data-reacting={pickerPinned ? "true" : undefined}
       onPointerDown={(event) => {
@@ -297,48 +466,35 @@ export function Turn({
         if (canReact && pickerPinned) event.preventDefault();
       }}
     >
-      {onOpenMember ? (
+      {continues ? (
+        <span className="chat-turn-gutter">{stamp}</span>
+      ) : onOpenMember ? (
         <button
           type="button"
           onClick={() => onOpenMember(author.actorId)}
           aria-label={`Open ${name}'s member card`}
         >
-          <MemberAvatar member={author} size={32} />
+          <MemberAvatar member={author} size={36} />
         </button>
       ) : (
-        <MemberAvatar member={author} size={32} />
+        <MemberAvatar member={author} size={36} />
       )}
       <div>
-        <div className="chat-turn-meta">
-          <span className="chat-who">{name}</span>
-          {onCopyLink ? (
-            <button
-              type="button"
-              className="chat-when-link"
-              title="Copy link to this message"
-              aria-label="Copy link to this message"
-              onClick={() => onCopyLink(message.id)}
-            >
-              <time className="chat-when" dateTime={new Date(message.createdAt).toISOString()}>
-                {clockTime(message.createdAt)}
-              </time>
-            </button>
-          ) : (
-            <time className="chat-when" dateTime={new Date(message.createdAt).toISOString()}>
-              {clockTime(message.createdAt)}
-            </time>
-          )}
-          {canReact ? (
-            <ReactionPicker
-              message={message}
-              onReact={onReact!}
-              pinned={pickerPinned}
-              onDismiss={() => setPickerPinned(false)}
-            />
-          ) : null}
-        </div>
-        <MessageBody message={message} />
-        <ChatAttachments attachments={message.attachments ?? []} />
+        {continues ? null : (
+          <div className="chat-turn-meta">
+            <span className="chat-who">{name}</span>
+            {stamp}
+            {pinned ? <span className="chat-turn-mark">Pinned</span> : null}
+            {saved ? <span className="chat-turn-mark">Saved</span> : null}
+          </div>
+        )}
+        {!deleted && viewerActorId && message.mentions?.some(mention => mention.actorId === viewerActorId) ? <span className="chat-message-mention">Mentions you</span> : null}
+        {deleted ? <p className="chat-message-deleted">Message deleted</p> : <MessageBody message={message} />}
+        {!deleted && correction?.editedAt != null ? <span className="chat-message-edited" title={new Date(correction.editedAt).toLocaleString()}>Edited</span> : null}
+        {onCorrect
+          ? <ChatMessageCorrectionControls key={`${viewerActorId}:${message.id}`} message={message} canEdit={authored} canDelete={authored || viewerIsOperator === true} onCorrect={onCorrect} tools={tools} />
+          : tools ? <div className="chat-turn-tools" role="toolbar" aria-label="Message actions">{tools}</div> : null}
+        <ChatAttachments attachments={deleted ? [] : message.attachments ?? []} />
         {request ? (
           <TrackedAskCard
             request={request}
@@ -347,28 +503,20 @@ export function Turn({
             onStop={onStopAsk}
           />
         ) : null}
-        {capabilities.reactions ? (
-          <ReactionChips message={message} onReact={canReact ? onReact : undefined} />
+        {capabilities.reactions && !deleted ? (
+          <ReactionChips message={message} members={members} viewerActorId={viewerActorId} onReact={canReact ? onReact : undefined} />
         ) : null}
-        {onOpenThread ? (
-          // Every root can start a thread, not only one that already has
-          // replies — an ordinary message and a pending ask are exactly where a
-          // follow-up belongs. With no replies yet the affordance is quiet
-          // until the turn is hovered or focused (see chat-space.css).
+        {onOpenThread && replyCount && replyCount > 0 ? (
+          // A thread that exists is part of the conversation and stays on the
+          // page. Starting one is an action, so it lives in the hover toolbar
+          // and costs the feed no reserved row under every message.
           <button
             type="button"
             className="chat-thread-stub"
-            data-empty={replyCount && replyCount > 0 ? undefined : "true"}
             onClick={onOpenThread}
-            aria-label={
-              replyCount && replyCount > 0
-                ? `Open thread, ${threadStubLabel(replyCount, lastReplyAt ?? null, nowMs)}`
-                : `Reply in thread to ${name}`
-            }
+            aria-label={`Open thread, ${threadStubLabel(replyCount, lastReplyAt ?? null, nowMs)}`}
           >
-            {replyCount && replyCount > 0
-              ? `⌵ ${threadStubLabel(replyCount, lastReplyAt ?? null, nowMs)}`
-              : "⌵ Reply in thread"}
+            {`⌵ ${threadStubLabel(replyCount, lastReplyAt ?? null, nowMs)}`}
           </button>
         ) : null}
       </div>
@@ -494,9 +642,13 @@ function toggleReaction(
 
 function ReactionChips({
   message,
+  members,
+  viewerActorId,
   onReact,
 }: {
   message: ChatMessage;
+  members: Map<string, ChannelMemberView>;
+  viewerActorId?: string;
   onReact?: (messageId: string, emoji: string, remove: boolean) => void;
 }) {
   const chips = message.reactions ?? [];
@@ -504,15 +656,20 @@ function ReactionChips({
   return (
     <div className="chat-reaction-row">
       {chips.map((chip) => {
+        // Names ride on hover and in the accessible label; the click stays a
+        // toggle. A server that sends no reactor list gets the count alone.
+        const reactors = reactionReactorNames(chip.actorIds, members, viewerActorId);
+        const who = reactors ? ` from ${reactors}` : "";
         const label = chip.me
-          ? `${chip.emoji} ${chip.count}, including you. Remove your reaction.`
-          : `${chip.emoji} ${chip.count}. React with ${chip.emoji}.`;
+          ? `${chip.emoji} ${chip.count}${who}, including you. Remove your reaction.`
+          : `${chip.emoji} ${chip.count}${who}. React with ${chip.emoji}.`;
         return (
           <button
             type="button"
             key={chip.emoji}
             className="chat-reaction"
             data-me={chip.me ? "true" : undefined}
+            data-reactors={reactors ?? undefined}
             aria-pressed={chip.me}
             aria-label={label}
             onClick={() => onReact && toggleReaction(message, chip.emoji, onReact)}

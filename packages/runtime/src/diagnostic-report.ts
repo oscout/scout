@@ -4,6 +4,7 @@ import { homedir, platform, release, arch, totalmem, uptime } from "node:os";
 import { join } from "node:path";
 import { Database } from "bun:sqlite";
 import { loadOpenScoutRuntimeBuildIdentity } from "./build-info.js";
+import { detectCodingAgentHost } from "./coding-agent-host.js";
 import { resolveOpenScoutSupportPaths } from "./support-paths.js";
 
 const LOG_BYTES = 64 * 1024;
@@ -19,11 +20,33 @@ export type DiagnosticReport = {
   logs: string[];
 };
 export type DiagnosticReceipt = { id: string; status: "uploaded" | "saved"; localPath: string; error?: string };
+/** Which Scout surface filed the report, so triage can tell an agent's MCP
+ * note from an operator's CLI note without reading the body. */
+export type DiagnosticClient = "cli" | "mcp" | "scoutbot" | "ios" | "macos" | "web";
+/** Who filed it, when the filer is an agent rather than the operator. Every
+ * field is optional and goes through the same redaction as the note. */
+export type DiagnosticReporter = {
+  agentId?: string; agentName?: string; harness?: string; project?: string; host?: string; sessionId?: string;
+};
 export type DiagnosticOptions = {
   message?: string; diagnostics?: boolean; localOnly?: boolean; version?: string;
+  client?: DiagnosticClient; reporter?: DiagnosticReporter;
   supportDirectory?: string; controlHome?: string; endpoint?: string;
   fetch?: typeof fetch;
 };
+
+/** The cloud list shows `context.source`; unlabelled callers keep the v1 string. */
+/** The harness a report came from. OPENSCOUT_AGENT marks a Scout-managed
+ *  agent, not which harness runs it, so look past it to the harness's own
+ *  signal and fall back to "scout" only when nothing else matches. */
+export function reporterHarness(env: Record<string, string | undefined>): string | undefined {
+  const { OPENSCOUT_AGENT: _agent, OPENSCOUT_MANAGED_AGENT: _managed, ...harnessEnv } = env;
+  return (detectCodingAgentHost(harnessEnv) ?? detectCodingAgentHost(env))?.harness;
+}
+
+export function diagnosticSource(client?: DiagnosticClient): string {
+  return client ? `Scout ${client} v1` : "Scout diagnostics v1";
+}
 
 /** Applied to notes, errors and diagnostic output before either disk or network. */
 export function redactDiagnosticText(text: string): string {
@@ -133,8 +156,12 @@ export async function collectDiagnosticReport(options: DiagnosticOptions = {}): 
     id: randomUUID(), timestamp: new Date().toISOString(),
     system: { os: platform(), osVersion: release(), chip: arch(), memory: String(totalmem()) },
     apps: { collector: { running: true, pid: process.pid, version: options.version ?? loadOpenScoutRuntimeBuildIdentity().version ?? undefined } },
-    context: { source: "Scout diagnostics v1", userDescription: (options.message ?? "").slice(0, 8000), reportSections: sections }, logs: [],
+    context: { source: diagnosticSource(options.client), userDescription: (options.message ?? "").slice(0, 8000), reportSections: sections }, logs: [],
   };
+  const reporterEntries = Object.entries(options.reporter ?? {})
+    .filter(([, value]) => typeof value === "string" && value.trim())
+    .map(([label, value]) => ({ label, value: (value as string).trim().slice(0, 200) }));
+  if (reporterEntries.length) sections.push({ id: "reporter", title: "Sender", entries: reporterEntries });
   if (options.diagnostics !== false) {
     const add = (id: string, data: unknown) => {
       const value = JSON.stringify(data);

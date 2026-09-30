@@ -16,6 +16,7 @@ import {
   meshRouteTierFor,
 } from "./mesh-route-matrix.js";
 import type {
+  RuntimeGuestAuthPrincipal,
   RuntimeHttpHeaders,
   RuntimeHttpRequestLike,
   RuntimeRequestTransportContext,
@@ -64,8 +65,67 @@ export function classifyMeshTransport(remoteAddress: string | undefined | null):
 }
 
 export type MeshIngressDecision =
-  | { action: "allow"; principal?: PeerAuthPrincipal }
-  | { action: "deny"; status: number; reason: string };
+  | { action: "allow"; principal?: PeerAuthPrincipal; guest?: RuntimeGuestAuthPrincipal }
+  | { action: "deny"; status: number; reason: string; hard?: true };
+
+/**
+ * Guest key lookup (docs/proposals/scout-tailscale.md): only active
+ * `guest_grants`, never `trusted_peers`. Guests are checked on the `guest`
+ * route tier alone and hold no peer tier.
+ */
+export type GuestAuthLookup = (keyId: string) =>
+  | { publicKey: string; grantId: string }
+  | undefined;
+
+/** Guest nonces share the durable claim table under a separate namespace. */
+export function guestNonceClaim(base: PeerNonceClaim): PeerNonceClaim {
+  return { claim: (keyId, nonce, now) => base.claim(`guest:${keyId}`, nonce, now) };
+}
+
+/**
+ * Guest-tier decision. Unlike peer tiers this applies on every transport
+ * (loopback included) and is never softened by verify-warn: the handler
+ * needs a verified principal, and there is no unauthenticated guest mode.
+ */
+export function evaluateGuestIngress(input: {
+  method: string;
+  requestTarget: string;
+  headers: PeerRequestHeaders;
+  body?: Buffer | string;
+  destinationKeyId: string;
+  bootedAt: number;
+  lookupGuest?: GuestAuthLookup;
+  nonceClaim: PeerNonceClaim;
+  now?: number;
+}): MeshIngressDecision {
+  const lookupGuest = input.lookupGuest;
+  if (!lookupGuest) {
+    return { action: "deny", status: 503, reason: "guest access is unavailable on this broker" };
+  }
+  let grantId: string | undefined;
+  const verified = verifyPeerRequest({
+    method: input.method,
+    path: input.requestTarget,
+    body: input.body,
+    headers: input.headers,
+    destinationKeyId: input.destinationKeyId,
+    lookupPeer: (keyId) => {
+      const guest = lookupGuest(keyId);
+      if (!guest) return undefined;
+      grantId = guest.grantId;
+      // The tier is a placeholder required by the shared verifier; guest
+      // principals never flow into peer tier checks.
+      return { publicKey: guest.publicKey, tier: "observe" };
+    },
+    nonceClaim: guestNonceClaim(input.nonceClaim),
+    bootedAt: input.bootedAt,
+    now: input.now,
+  });
+  if (!verified.ok || !grantId) {
+    return { action: "deny", status: 401, reason: verified.ok ? "guest grant missing" : verified.reason.replace(/^peer /, "guest ") };
+  }
+  return { action: "allow", guest: { keyId: verified.principal.keyId, grantId } };
+}
 
 export type MeshIngressVerifyInput = {
   transport: RuntimeTransportKind;
@@ -79,16 +139,25 @@ export type MeshIngressVerifyInput = {
   destinationKeyId: string;
   bootedAt: number;
   lookupPeer: PeerAuthLookup;
+  lookupGuest?: GuestAuthLookup;
   nonceClaim: PeerNonceClaim;
   now?: number;
 };
 
 /** Pure gate decision; transport classification and mode application live outside. */
 export function evaluateMeshIngress(input: MeshIngressVerifyInput): MeshIngressDecision {
+  const routeTier = meshRouteTierFor(input.method, input.pathname);
+  if (routeTier === "guest") {
+    return evaluateGuestIngress({ ...input });
+  }
+  // A known guest key is never a peer and never unauthenticated: it is denied
+  // on every other route, on every transport, and verify-warn cannot soften it.
+  if (input.headers.peer && input.lookupGuest?.(input.headers.peer)) {
+    return { action: "deny", status: 403, reason: "guest keys may only call guest routes", hard: true };
+  }
   if (input.transport !== "remote") {
     return { action: "allow" };
   }
-  const routeTier = meshRouteTierFor(input.method, input.pathname);
   if (routeTier === "public") {
     return { action: "allow" };
   }
@@ -123,10 +192,158 @@ export type MeshGateLogger = {
   warn: (message: string, detail?: unknown) => void;
 };
 
+/** What the caller should log for one recorded denial, in order. */
+export type DenialThrottleAction =
+  | { kind: "signature"; suppressed: number }
+  | { kind: "aggregate"; suppressedSignatures: number };
+
+const MAX_DENIAL_BUCKETS = 512;
+const DENIAL_BUCKET_EXPIRY_MS = 5 * 60_000;
+const MAX_DENIAL_LINES_PER_WINDOW = 20;
+const MAX_DENIAL_KEY_ID_CHARS = 64;
+const MAX_DENIAL_ROUTE_CHARS = 128;
+
+function normalizeDenialKeyId(keyId: string | undefined): string {
+  return (keyId ?? "").slice(0, MAX_DENIAL_KEY_ID_CHARS);
+}
+
+/** Segments that look like generated ids, not route structure. */
+function isIdLikePathSegment(segment: string): boolean {
+  if (!segment) {
+    return false;
+  }
+  if (/^\d+$/.test(segment)) {
+    return true;
+  }
+  if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(segment)) {
+    return true;
+  }
+  return segment.length >= 16 && /\d/.test(segment);
+}
+
+function normalizeDenialRoute(method: string, pathname: string): string {
+  const collapsed = pathname
+    .split("/")
+    .map((segment) => (isIdLikePathSegment(segment) ? ":id" : segment))
+    .join("/");
+  return `${method.toUpperCase()} ${collapsed}`.slice(0, MAX_DENIAL_ROUTE_CHARS);
+}
+
+/**
+ * Rate-limits repeated gate denials per signature key: the first occurrence
+ * logs immediately, repeats are counted silently, and the next denial after
+ * the interval emits one rolled-up line carrying the suppressed count. A peer
+ * retrying against a broker that will never admit it produces one warn per
+ * minute instead of one per request — the broker's stderr log has no rotation.
+ *
+ * The throttle itself is bounded so a hostile peer cannot grow it by varying
+ * the signature: key components are normalized (id-like path segments collapse
+ * to `:id`), buckets are LRU-capped and expire after 5 minutes, and at most
+ * `MAX_DENIAL_LINES_PER_WINDOW` signature lines may emit per interval across
+ * all buckets — first-seen and recurring emissions share the allowance, and
+ * whatever arrives after it is spent reports as one aggregate line when the
+ * next window opens.
+ */
+export class DenialThrottle {
+  private readonly buckets = new Map<string, { lastEmitAt: number; suppressed: number }>();
+  private windowStart = 0;
+  private linesThisWindow = 0;
+  private overflowSignatures = 0;
+
+  constructor(
+    private readonly intervalMs = 60_000,
+    private readonly now: () => number = Date.now,
+  ) {}
+
+  /** Current bucket count — exposed for tests asserting the bound. */
+  get size(): number {
+    return this.buckets.size;
+  }
+
+  /**
+   * Record one denial and return the lines to emit for it: possibly empty
+   * (suppressed), a signature line (first-seen or interval rollup), and/or the
+   * per-window aggregate line reporting how many distinct signatures were
+   * suppressed entirely during the window that just closed.
+   */
+  record(input: { keyId?: string | undefined; method: string; pathname: string; reason: string }): DenialThrottleAction[] {
+    const now = this.now();
+    const actions: DenialThrottleAction[] = [];
+
+    if (now - this.windowStart >= this.intervalMs) {
+      if (this.overflowSignatures > 0) {
+        actions.push({ kind: "aggregate", suppressedSignatures: this.overflowSignatures });
+      }
+      this.windowStart = now;
+      this.linesThisWindow = 0;
+      this.overflowSignatures = 0;
+    }
+
+    const key = `${normalizeDenialKeyId(input.keyId)}\u0000${normalizeDenialRoute(input.method, input.pathname)}\u0000${input.reason}`;
+    const existing = this.buckets.get(key);
+    if (existing && now - existing.lastEmitAt < DENIAL_BUCKET_EXPIRY_MS) {
+      if (now - existing.lastEmitAt < this.intervalMs) {
+        existing.suppressed += 1;
+        this.buckets.delete(key);
+        this.buckets.set(key, existing);
+        return actions;
+      }
+      // Interval elapsed: this established signature re-earns its line,
+      // carrying the suppressed repeat count — subject to the same per-window
+      // line allowance as first-seen emissions.
+      const suppressed = existing.suppressed;
+      existing.lastEmitAt = now;
+      existing.suppressed = 0;
+      this.buckets.delete(key);
+      this.buckets.set(key, existing);
+      if (this.linesThisWindow < MAX_DENIAL_LINES_PER_WINDOW) {
+        this.linesThisWindow += 1;
+        actions.push({ kind: "signature", suppressed });
+      } else {
+        this.overflowSignatures += 1;
+      }
+      return actions;
+    }
+    if (existing) {
+      this.buckets.delete(key);
+    }
+
+    // First-seen signature. Expired buckets are swept lazily on insert, then
+    // the eldest live bucket is evicted to keep the map bounded.
+    this.sweepExpired(now);
+    while (this.buckets.size >= MAX_DENIAL_BUCKETS) {
+      const eldest = this.buckets.keys().next().value;
+      if (eldest === undefined) {
+        break;
+      }
+      this.buckets.delete(eldest);
+    }
+    this.buckets.set(key, { lastEmitAt: now, suppressed: 0 });
+
+    if (this.linesThisWindow < MAX_DENIAL_LINES_PER_WINDOW) {
+      this.linesThisWindow += 1;
+      actions.push({ kind: "signature", suppressed: 0 });
+    } else {
+      this.overflowSignatures += 1;
+    }
+    return actions;
+  }
+
+  private sweepExpired(now: number): void {
+    for (const [key, bucket] of this.buckets) {
+      if (now - bucket.lastEmitAt >= DENIAL_BUCKET_EXPIRY_MS) {
+        this.buckets.delete(key);
+      }
+    }
+  }
+}
+
 /**
  * Apply the rollout mode to a decision: `verify-warn` logs the failure at warn
  * level (with keyId/route/reason) and converts the deny into an allow;
- * `enforce` logs and keeps the deny.
+ * `enforce` logs and keeps the deny. Repeated denials of the same
+ * (keyId, route, reason) signature are throttled by `context.throttle` when
+ * provided.
  */
 export function applyMeshGateMode(
   decision: MeshIngressDecision,
@@ -136,6 +353,7 @@ export function applyMeshGateMode(
     pathname: string;
     keyId?: string | undefined;
     logger: MeshGateLogger;
+    throttle?: DenialThrottle;
   },
 ): MeshIngressDecision {
   if (decision.action === "allow") {
@@ -143,16 +361,32 @@ export function applyMeshGateMode(
   }
   const peer = context.keyId ? ` peer=${context.keyId}` : "";
   const route = `${context.method.toUpperCase()} ${context.pathname}`;
-  if (context.mode === "verify-warn") {
+  const actions = context.throttle
+    ? context.throttle.record({
+      keyId: context.keyId,
+      method: context.method,
+      pathname: context.pathname,
+      reason: decision.reason,
+    })
+    : [{ kind: "signature" as const, suppressed: 0 }];
+  for (const action of actions) {
+    if (action.kind === "aggregate") {
+      context.logger.warn(
+        `[openscout-runtime] mesh gate ${context.mode}: `
+          + `… and ${action.suppressedSignatures} more distinct denial signatures suppressed`,
+      );
+      continue;
+    }
+    const suffix = action.suppressed > 0
+      ? ` (+${action.suppressed} suppressed since last log)`
+      : "";
     context.logger.warn(
-      `[openscout-runtime] mesh gate verify-warn: would deny ${route}${peer} — ${decision.reason}`,
+      context.mode === "verify-warn"
+        ? `[openscout-runtime] mesh gate verify-warn: would deny ${route}${peer} — ${decision.reason}${suffix}`
+        : `[openscout-runtime] mesh gate enforce: denied ${route}${peer} — ${decision.reason}${suffix}`,
     );
-    return { action: "allow" };
   }
-  context.logger.warn(
-    `[openscout-runtime] mesh gate enforce: denied ${route}${peer} — ${decision.reason}`,
-  );
-  return decision;
+  return context.mode === "verify-warn" && !decision.hard ? { action: "allow" } : decision;
 }
 
 export type MeshIngressGateDeps = {
@@ -161,6 +395,7 @@ export type MeshIngressGateDeps = {
   /** process boot time; timestamps before it (minus grace) are rejected */
   bootedAt: number;
   lookupPeer: PeerAuthLookup;
+  lookupGuest?: GuestAuthLookup;
   nonceClaim: PeerNonceClaim;
   logger?: MeshGateLogger;
   /**
@@ -239,7 +474,11 @@ function replayBufferedRequest(
 }
 
 export function createMeshIngressGate(deps: MeshIngressGateDeps): MeshIngressGate {
-  const logger = deps.logger ?? { warn: (message: string, detail?: unknown) => console.warn(message, detail) };
+  const logger = deps.logger ?? {
+    warn: (message: string, detail?: unknown) =>
+      detail === undefined ? console.warn(message) : console.warn(message, detail),
+  };
+  const denialThrottle = new DenialThrottle();
 
   function effectiveMode(transport: RuntimeTransportKind): MeshGateMode {
     // §11.6: non-loopback listeners force enforce for remote traffic.
@@ -256,6 +495,7 @@ export function createMeshIngressGate(deps: MeshIngressGateDeps): MeshIngressGat
         destinationKeyId: deps.destinationKeyId,
         bootedAt: deps.bootedAt,
         lookupPeer: deps.lookupPeer,
+        lookupGuest: deps.lookupGuest,
         nonceClaim: deps.nonceClaim,
       }),
       {
@@ -264,6 +504,7 @@ export function createMeshIngressGate(deps: MeshIngressGateDeps): MeshIngressGat
         pathname: input.pathname,
         keyId: input.headers.peer,
         logger,
+        throttle: denialThrottle,
       },
     );
   }
@@ -280,6 +521,48 @@ export function createMeshIngressGate(deps: MeshIngressGateDeps): MeshIngressGat
       const method = request.method ?? "GET";
       const headers = peerAuthHeadersFrom(request.headers);
       const routeTier = meshRouteTierFor(method, url.pathname);
+
+      // Guest tier: always verified, on every transport, never verify-warn.
+      if (routeTier === "guest") {
+        let body: Buffer;
+        try {
+          body = await bufferRequestBody(request);
+        } catch (error) {
+          json(response, 413, { error: "payload_too_large", detail: error instanceof Error ? error.message : String(error) });
+          return;
+        }
+        const decision = evaluateGuestIngress({
+          method,
+          requestTarget: request.url ?? url.pathname,
+          headers,
+          body,
+          destinationKeyId: deps.destinationKeyId,
+          bootedAt: deps.bootedAt,
+          lookupGuest: deps.lookupGuest,
+          nonceClaim: deps.nonceClaim,
+        });
+        if (decision.action === "deny") {
+          logger.warn(`[openscout-runtime] guest gate: denied ${method.toUpperCase()} ${url.pathname} — ${decision.reason}`);
+          json(response, decision.status, {
+            error: decision.status === 401 ? "unauthorized" : "unavailable",
+            detail: decision.reason,
+          });
+          return;
+        }
+        await next(replayBufferedRequest(request, body, {
+          transport,
+          ...(remoteAddress ? { remoteAddress } : {}),
+          ...(decision.guest ? { guest: decision.guest } : {}),
+        }));
+        return;
+      }
+
+      if (headers.peer && deps.lookupGuest?.(headers.peer)) {
+        request.resume();
+        logger.warn(`[openscout-runtime] guest gate: denied ${method.toUpperCase()} ${url.pathname} — guest key on a non-guest route`);
+        json(response, 403, { error: "forbidden", detail: "guest keys may only call guest routes" });
+        return;
+      }
 
       // Local transports and remote public routes pass through untouched —
       // the router reads the body stream itself, exactly as before the gate.
@@ -317,7 +600,7 @@ export function createMeshIngressGate(deps: MeshIngressGateDeps): MeshIngressGat
       } catch (error) {
         const decision = applyMeshGateMode(
           { action: "deny", status: 413, reason: error instanceof Error ? error.message : String(error) },
-          { mode: effectiveMode(transport), method, pathname: url.pathname, keyId: headers.peer, logger },
+          { mode: effectiveMode(transport), method, pathname: url.pathname, keyId: headers.peer, logger, throttle: denialThrottle },
         );
         if (decision.action === "deny") {
           json(response, decision.status, { error: "payload_too_large", detail: decision.reason });
@@ -360,13 +643,15 @@ export function createMeshIngressGate(deps: MeshIngressGateDeps): MeshIngressGat
       const url = new URL(request.url ?? "/", "http://localhost");
       const method = request.method ?? "GET";
       const headers = peerAuthHeadersFrom(request.headers);
-      const decision = decide({
-        transport,
-        method,
-        pathname: url.pathname,
-        requestTarget: request.url ?? url.pathname,
-        headers,
-      });
+      const decision: MeshIngressDecision = meshRouteTierFor(method, url.pathname) === "guest"
+        ? { action: "deny", status: 403, reason: "guest routes do not upgrade" }
+        : decide({
+          transport,
+          method,
+          pathname: url.pathname,
+          requestTarget: request.url ?? url.pathname,
+          headers,
+        });
       if (decision.action === "allow") {
         return true;
       }

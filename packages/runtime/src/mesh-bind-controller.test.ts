@@ -81,6 +81,8 @@ describe("findMeshTlsBindAddresses", () => {
       en1: [{ address: "169.254.1.1", family: "IPv4", internal: false }],
     } as never;
     expect(findMeshTlsBindAddresses(interfaces)).toEqual(["192.168.1.10", "100.64.0.20"]);
+    expect(findMeshTlsBindAddresses(interfaces, true)).toEqual(["100.64.0.20"]);
+    expect(findMeshTlsBindAddresses({ en0: [{ address: "192.168.1.10", family: "IPv4", internal: false }] } as never, true)).toEqual([]);
   });
 
   test("advertises LAN before Tailscale even if TLS listeners came up in reverse", async () => {

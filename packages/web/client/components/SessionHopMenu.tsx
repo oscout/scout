@@ -32,6 +32,7 @@ import {
   type SessionTerminalTarget,
 } from "../lib/session-terminal-hop.ts";
 import { openContent } from "../scout/slots/openContent.ts";
+import { isScoutNativeUiActionHost } from "../lib/scoutbot.ts";
 import type { Route } from "../lib/types.ts";
 
 type Navigate = (route: Route, options?: { returnTo?: Route }) => void;
@@ -104,16 +105,19 @@ export function sessionHopMenuItems(args: {
   } = args;
   const items: MenuItem[] = [];
 
+  // Inside the Scout app the route hands off to the native Terminals seat,
+  // and a scout:// link from an embedded WebView would open nothing.
+  const inScoutApp = isScoutNativeUiActionHost();
   const webRoute = includeWeb ? terminalHopRoute(target, agentId) : null;
   if (webRoute) {
     items.push({
       kind: "action",
-      label: "Open in web terminal",
+      label: inScoutApp ? "Open in Terminals" : "Open in web terminal",
       onSelect: () => openContent(navigate, webRoute, { returnTo }),
     });
   }
 
-  const deepLink = target ? terminalHopDeepLink(target) : null;
+  const deepLink = target && !inScoutApp ? terminalHopDeepLink(target) : null;
   if (deepLink) {
     items.push({
       kind: "action",

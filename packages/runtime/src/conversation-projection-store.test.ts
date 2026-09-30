@@ -1650,3 +1650,59 @@ describe("ConversationProjectionStore", () => {
     });
   });
 });
+
+describe("delete preimage targeting", () => {
+  type AffectedProbe = { affectedConversationIds(entries: BrokerJournalEntry[]): Set<string> };
+
+  function seedMembership(db: Harness["db"]): void {
+    db.query("INSERT INTO actors (id, kind, display_name, created_at) VALUES ('agent-1', 'agent', 'Agent One', ?1)").run(BASE);
+    db.query("INSERT INTO actors (id, kind, display_name, created_at) VALUES ('other-agent', 'agent', 'Other', ?1)").run(BASE);
+    seedConversation(db, { id: "direct-with-agent", participantIds: [OPERATOR_ID, "agent-1"] });
+    seedConversation(db, { id: "chan-with-agent", kind: "channel", participantIds: [OPERATOR_ID, "agent-1"] });
+    seedConversation(db, { id: "direct-unrelated", participantIds: [OPERATOR_ID, "other-agent"] });
+  }
+
+  test("endpoint.delete with an agentId preimage touches only that agent's conversations", () => {
+    const { db, projection } = setup();
+    seedMembership(db);
+    const affected = (projection as unknown as AffectedProbe).affectedConversationIds([
+      { kind: "agent.endpoint.delete", endpointId: "ep-1", agentId: "agent-1" },
+    ]);
+    expect([...affected].sort()).toEqual(["chan-with-agent", "direct-with-agent"]);
+    expect(affected.has("direct-unrelated")).toBe(false);
+  });
+
+  test("agent.delete with a conversationIds preimage touches only the listed conversations", () => {
+    const { db, projection } = setup();
+    seedMembership(db);
+    const affected = (projection as unknown as AffectedProbe).affectedConversationIds([
+      { kind: "agent.delete", agentId: "agent-1", conversationIds: ["chan-with-agent"] },
+    ]);
+    expect([...affected]).toEqual(["chan-with-agent"]);
+    expect(affected.has("direct-with-agent")).toBe(false);
+    expect(affected.has("direct-unrelated")).toBe(false);
+  });
+
+  test("actor.delete with a conversationIds preimage touches only the listed conversations", () => {
+    const { db, projection } = setup();
+    seedMembership(db);
+    const affected = (projection as unknown as AffectedProbe).affectedConversationIds([
+      { kind: "actor.delete", actorId: "agent-1", conversationIds: [] },
+      { kind: "actor.delete", actorId: "other-agent", conversationIds: ["direct-unrelated"] },
+    ]);
+    // An empty preimage means verified-zero memberships — not a fallback.
+    expect([...affected]).toEqual(["direct-unrelated"]);
+  });
+
+  test("legacy delete entries without a preimage still scan every direct conversation", () => {
+    const { db, projection } = setup();
+    seedMembership(db);
+    const affected = (projection as unknown as AffectedProbe).affectedConversationIds([
+      { kind: "agent.endpoint.delete", endpointId: "ep-1" },
+      { kind: "actor.delete", actorId: "agent-1" },
+    ]);
+    expect(affected.has("direct-with-agent")).toBe(true);
+    expect(affected.has("direct-unrelated")).toBe(true);
+    expect(affected.has("chan-with-agent")).toBe(false);
+  });
+});

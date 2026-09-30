@@ -65,7 +65,7 @@ export type ScoutAskNextCall = {
 };
 
 export type ScoutAskError = {
-  code: "broker_unreachable" | "invalid_request";
+  code: "broker_unreachable" | "invalid_request" | "preflight_failed";
   message: string;
 };
 

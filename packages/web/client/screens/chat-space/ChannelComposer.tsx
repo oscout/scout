@@ -1,3 +1,4 @@
+import type { MessageMention } from "@openscout/protocol";
 /**
  * The composer, and with it the boundary this feature turns on.
  *
@@ -14,10 +15,11 @@
  * the selector opens the real agent list, and send sends.
  */
 
-import { ArrowUp, AtSign, Bold, ChevronDown, Code, Italic, List, Loader2, Paperclip, X } from "lucide-react";
+import { ArrowUp, AtSign, Bold, Bot, ChevronDown, Code, Italic, List, Loader2, Paperclip, Type, X } from "lucide-react";
 import {
   useCallback,
   useEffect,
+  useId,
   useMemo,
   useRef,
   useState,
@@ -72,6 +74,8 @@ export function mentionInsertion(draft: string, caret: number): { next: string; 
 
 export function ChannelComposer({
   members,
+  mentions = [],
+  onMentionsChange,
   draft,
   onDraftChange,
   askTargetId,
@@ -81,9 +85,13 @@ export function ChannelComposer({
   error,
   placeholder,
   variant = "channel",
+  attachmentScope,
   autoFocus = false,
+  request = null,
 }: {
   members: ChannelMemberView[];
+  mentions?: MessageMention[];
+  onMentionsChange?: (mentions: MessageMention[]) => void;
   draft: string;
   onDraftChange: (value: string) => void;
   askTargetId: string | null;
@@ -93,15 +101,22 @@ export function ChannelComposer({
   error: string | null;
   placeholder: string;
   variant?: "channel" | "thread";
+  attachmentScope?: string;
   autoFocus?: boolean;
+  /** A one-shot nudge from outside the composer; `at` makes each one distinct. */
+  request?: { kind: "focus" | "ask"; at: number } | null;
 }) {
   const inputRef = useRef<ChatRichInputHandle | null>(null);
   const pickerButtonRef = useRef<HTMLButtonElement | null>(null);
   const [query, setQuery] = useState<MentionQuery | null>(null);
   const [activeIndex, setActiveIndex] = useState(0);
   const [pickerOpen, setPickerOpen] = useState(false);
+  // Where the bar is too narrow for four marks, they live behind one control.
+  // Wide bars ignore this and show them all (see chat-space.css).
+  const [marksOpen, setMarksOpen] = useState(false);
+  const marksId = useId();
   const capabilities = useChatCapabilities();
-  const attachments = useComposerAttachments();
+  const attachments = useComposerAttachments(attachmentScope, Boolean(attachmentScope));
 
   // The picker offers only members `/asks` will actually route to. An API
   // participant is listed inertly below — hiding the one agent in the room
@@ -116,6 +131,10 @@ export function ChannelComposer({
     () => members.find((member) => member.actorId === askTargetId) ?? null,
     [members, askTargetId],
   );
+  // A recovered draft must never silently become an ordinary post just
+  // because its selected agent has left, is still loading, or cannot be asked.
+  const targetUnavailable = Boolean(askTargetId)
+    && (!capabilities.asks || !target || !isAskableMember(target));
 
   const matches = useMemo(() => {
     if (!query) return [];
@@ -123,7 +142,7 @@ export function ChannelComposer({
     const ranked = members.filter((member) =>
       memberDisplayName(member).toLowerCase().includes(needle)
       || member.displayName.toLowerCase().includes(needle));
-    // Agents first: they are the ones a mention can turn into work.
+    // Keep agent ordering stable without treating a mention as an ask.
     return [...ranked].sort((left, right) =>
       Number(isAgentMember(right)) - Number(isAgentMember(left)),
     ).slice(0, 8);
@@ -138,6 +157,13 @@ export function ChannelComposer({
     inputRef.current?.focus();
   }, [autoFocus]);
 
+  useEffect(() => {
+    if (!request) return;
+    if (request.kind === "ask" && capabilities.asks) setPickerOpen(true);
+    else inputRef.current?.focus();
+    // Only a new request acts; the capability read is not a trigger.
+  }, [request]);
+
   const closePicker = useCallback((returnFocus: "toggle" | "input") => {
     setPickerOpen(false);
     if (returnFocus === "toggle") pickerButtonRef.current?.focus();
@@ -146,6 +172,7 @@ export function ChannelComposer({
 
   const applyMention = useCallback(
     (member: ChannelMemberView) => {
+      if (mentions.length >= 20 && !mentions.some(mention => mention.actorId === member.actorId)) return;
       const editor = inputRef.current;
       const before = editor?.textBeforeCaret() ?? draft;
       const active = query ?? readMentionQuery(before, before.length);
@@ -157,13 +184,13 @@ export function ChannelComposer({
       } else {
         editor.replaceMention(active.start, label);
       }
-      // The selection — not the text — is what addresses the agent. An API
-      // participant is never armed as a target: `/asks` refuses it by name,
-      // and a mention of it is an ordinary post it reads on its next poll.
-      if (capabilities.asks && isAskableMember(member)) onAskTargetChange(member.actorId);
+      if (!mentions.some(mention => mention.actorId === member.actorId)) {
+        onMentionsChange?.([...mentions, { actorId: member.actorId, label }]);
+      }
+      // Mentions never choose work routing; the Ask picker owns that decision.
       setQuery(null);
     },
-    [capabilities.asks, draft, onAskTargetChange, onDraftChange, query],
+    [draft, mentions, onMentionsChange, onDraftChange, query],
   );
 
   /**
@@ -188,14 +215,15 @@ export function ChannelComposer({
     requestAnimationFrame(() => inputRef.current?.focus());
   }, [draft, onDraftChange]);
 
-  const canSend = !sending && (draft.trim().length > 0 || attachments.hasFiles);
+  const needsAskInstructions = Boolean(askTargetId) && draft.trim().length === 0;
+  const canSend = !sending && !attachments.recoveryPending && !targetUnavailable && !needsAskInstructions && (draft.trim().length > 0 || attachments.hasFiles);
   const submit = useCallback(() => {
-    if (sending || (!draft.trim() && !attachments.hasFiles)) return;
+    if (!canSend) return;
     const files = attachments.files;
-    void Promise.resolve(onSend(files)).then((sent) => {
-      if (sent !== false) attachments.clear();
+    void attachments.waitForRecovery().then(() => onSend(files)).then((sent) => {
+      if (sent !== false) attachments.clear(files);
     });
-  }, [attachments, draft, onSend, sending]);
+  }, [attachments, canSend, draft, onSend]);
 
   const onKeyDown = useCallback(
     (event: ReactKeyboardEvent<HTMLDivElement>) => {
@@ -258,7 +286,7 @@ export function ChannelComposer({
 
   const hint = composerHint(target ? memberDisplayName(target) : null);
   const sendTitle = target
-    ? `Send — asks ${memberDisplayName(target)}`
+    ? `Ask ${memberDisplayName(target)} — creates a tracked request`
     : variant === "thread"
       ? "Send reply"
       : "Send to the channel";
@@ -270,13 +298,27 @@ export function ChannelComposer({
       data-drag={capabilities.attachments && attachments.dragActive ? "true" : undefined}
       {...(capabilities.attachments ? attachments.dropHandlers : {})}
     >
-      {variant === "channel" && target ? (
+      {mentions.length > 0 ? <div className="chat-mention-recipients" aria-label="Mention recipients">
+        <span>Mention attention{mentions.length >= 20 ? " (20 maximum)" : ""}:</span>
+        {mentions.map(mention => <button key={mention.actorId} type="button"
+          onClick={() => onMentionsChange?.(mentions.filter(item => item.actorId !== mention.actorId))}
+          aria-label={`Remove mention for ${mention.label || mention.actorId}`}>
+          {mention.label || mention.actorId} ×
+        </button>)}
+      </div> : null}
+      {/* Who is being asked is stated once, on the control beside Send. What
+          remains here is the part that control cannot say: what pressing it
+          will actually create. */}
+      {targetUnavailable ? (
+        <div className="chat-ask-target" role="status">
+          <span className="chat-composer-hint">The selected agent is unavailable. Choose another agent or post to the channel.</span>
+          <button type="button" className="chat-ask-target-clear" onClick={() => onAskTargetChange(null)}>
+            {variant === "thread" ? "Post reply instead" : "Post to channel instead"}
+          </button>
+        </div>
+      ) : target && hint ? (
         <div className="chat-ask-target">
-          <span className="label-sm" style={{ color: "var(--dim)" }}>Asking</span>
-          <span className="chip chip--sm chip--mono chip--neutral">
-            <MemberAvatar member={target} size={14} />
-            {memberDisplayName(target)}
-          </span>
+          <span className="chat-composer-hint" role="status">{needsAskInstructions ? "Add instructions for the agent before sending. Attachments can accompany your request." : hint}</span>
           <button
             type="button"
             className="chat-ask-target-clear"
@@ -285,10 +327,11 @@ export function ChannelComposer({
           >
             ×
           </button>
-          {hint ? <span className="chat-composer-hint">{hint}</span> : null}
         </div>
       ) : null}
 
+      {attachments.recoveryPending ? <p className="chat-composer-hint" role="status">Restoring attachments…</p> : null}
+      {attachments.recoveryError ? <p className="chat-send-error" role="alert">{attachments.recoveryError}</p> : null}
       <ChatRichInput
         ref={inputRef}
         value={draft}
@@ -349,14 +392,13 @@ export function ChannelComposer({
               key={member.actorId}
               type="button"
               role="option"
+              disabled={mentions.length >= 20 && !mentions.some(mention => mention.actorId === member.actorId)}
               aria-selected={index === activeIndex}
               data-active={index === activeIndex}
               className="chat-mention-option"
-              // `mousedown` fires before the textarea blur that would close this.
-              onMouseDown={(event) => {
-                event.preventDefault();
-                applyMention(member);
-              }}
+              // Preserve the editor selection; click also supports keyboard activation.
+              onMouseDown={(event) => event.preventDefault()}
+              onClick={() => applyMention(member)}
             >
               <MemberAvatar member={member} size={18} />
               {memberDisplayName(member)}
@@ -368,7 +410,7 @@ export function ChannelComposer({
         </div>
       ) : null}
 
-      {pickerOpen && variant === "channel" && capabilities.asks ? (
+      {pickerOpen && capabilities.asks ? (
         <div
           className="chat-mention-popup"
           role="listbox"
@@ -386,6 +428,23 @@ export function ChannelComposer({
             </div>
           ) : (
             <>
+              {/* Disarming has to be reachable from the same list that armed
+                  it — the `×` on the banner is a pointer-only route. */}
+              {target ? (
+                <button
+                  type="button"
+                  role="option"
+                  aria-selected={false}
+                  className="chat-mention-option"
+                  onClick={() => {
+                    onAskTargetChange(null);
+                    closePicker("input");
+                  }}
+                >
+                  Send to the channel
+                  <span className="chat-mention-kind">asks nobody</span>
+                </button>
+              ) : null}
               {askable.map((member) => (
                 <button
                   key={member.actorId}
@@ -433,6 +492,12 @@ export function ChannelComposer({
 
       {error ? <p className="chat-send-error" role="alert">{error}</p> : null}
 
+      {/* Two halves with different jobs. Left: how the message is written —
+          attachment, mention, and the four marks the feed can actually paint,
+          which fold behind one control where the bar is too narrow to hold
+          them, and the quiet "ask an agent" tool. Right: send, joined by the
+          ask target only once one is armed — that is when it changes what
+          send does. */}
       <div className="chat-composer-foot">
         <span className="chat-composer-tools">
           {capabilities.attachments ? (
@@ -457,81 +522,119 @@ export function ChannelComposer({
           >
             <AtSign size={14} strokeWidth={2} aria-hidden />
           </button>
-          <button
-            type="button"
-            className="chat-composer-tool chat-composer-tool--icon"
-            onMouseDown={(event) => {
-              event.preventDefault();
-              inputRef.current?.applyFormat("bold");
-            }}
-            disabled={sending}
-            aria-label="Bold"
-            title="Bold"
-          >
-            <Bold size={14} strokeWidth={2} aria-hidden />
-          </button>
-          <button
-            type="button"
-            className="chat-composer-tool chat-composer-tool--icon"
-            onMouseDown={(event) => {
-              event.preventDefault();
-              inputRef.current?.applyFormat("italic");
-            }}
-            disabled={sending}
-            aria-label="Italic"
-            title="Italic"
-          >
-            <Italic size={14} strokeWidth={2} aria-hidden />
-          </button>
-          <button
-            type="button"
-            className="chat-composer-tool chat-composer-tool--icon"
-            onMouseDown={(event) => {
-              event.preventDefault();
-              inputRef.current?.applyFormat("code");
-            }}
-            disabled={sending}
-            aria-label="Code"
-            title="Code"
-          >
-            <Code size={14} strokeWidth={2} aria-hidden />
-          </button>
-          <button
-            type="button"
-            className="chat-composer-tool chat-composer-tool--icon"
-            onMouseDown={(event) => {
-              event.preventDefault();
-              inputRef.current?.applyFormat("list");
-            }}
-            disabled={sending}
-            aria-label="List"
-            title="List"
-          >
-            <List size={14} strokeWidth={2} aria-hidden />
-          </button>
-          {variant === "channel" && capabilities.asks ? (
+          {/* A message is a post by default. Asking an agent is the exception,
+              so unarmed it is one quiet tool among the others; only once armed
+              does it move beside send, because then it changes what send does. */}
+          {capabilities.asks && !target ? (
             <button
               ref={pickerButtonRef}
               type="button"
-              className="chat-composer-tool"
+              className="chat-composer-tool chat-composer-tool--icon"
               data-active={pickerOpen}
               aria-expanded={pickerOpen}
               aria-haspopup="listbox"
               disabled={sending}
+              aria-label="Ask an agent"
+              title="Ask an agent — turns this message into a tracked request"
               onClick={() => setPickerOpen((open) => !open)}
             >
-              {target ? "Change agent" : "Ask an agent"}
+              <Bot size={15} strokeWidth={2} aria-hidden />
+            </button>
+          ) : null}
+          <button
+            type="button"
+            className="chat-composer-tool chat-composer-tool--icon chat-composer-marks-toggle"
+            data-active={marksOpen}
+            aria-expanded={marksOpen}
+            aria-controls={marksId}
+            disabled={sending}
+            aria-label={marksOpen ? "Hide formatting" : "Show formatting"}
+            title={marksOpen ? "Hide formatting" : "Show formatting"}
+            onClick={() => setMarksOpen((open) => !open)}
+          >
+            <Type size={14} strokeWidth={2} aria-hidden />
+          </button>
+          <span className="chat-composer-marks" id={marksId} data-open={marksOpen ? "true" : undefined}>
+            <button
+              type="button"
+              className="chat-composer-tool chat-composer-tool--icon"
+              onMouseDown={(event) => {
+                event.preventDefault();
+                inputRef.current?.applyFormat("bold");
+              }}
+              disabled={sending}
+              aria-label="Bold"
+              title="Bold"
+            >
+              <Bold size={14} strokeWidth={2} aria-hidden />
+            </button>
+            <button
+              type="button"
+              className="chat-composer-tool chat-composer-tool--icon"
+              onMouseDown={(event) => {
+                event.preventDefault();
+                inputRef.current?.applyFormat("italic");
+              }}
+              disabled={sending}
+              aria-label="Italic"
+              title="Italic"
+            >
+              <Italic size={14} strokeWidth={2} aria-hidden />
+            </button>
+            <button
+              type="button"
+              className="chat-composer-tool chat-composer-tool--icon"
+              onMouseDown={(event) => {
+                event.preventDefault();
+                inputRef.current?.applyFormat("code");
+              }}
+              disabled={sending}
+              aria-label="Code"
+              title="Code"
+            >
+              <Code size={14} strokeWidth={2} aria-hidden />
+            </button>
+            <button
+              type="button"
+              className="chat-composer-tool chat-composer-tool--icon"
+              onMouseDown={(event) => {
+                event.preventDefault();
+                inputRef.current?.applyFormat("list");
+              }}
+              disabled={sending}
+              aria-label="List"
+              title="List"
+            >
+              <List size={14} strokeWidth={2} aria-hidden />
+            </button>
+          </span>
+        </span>
+        <span className="chat-composer-right">
+          {capabilities.asks && target ? (
+            <button
+              ref={pickerButtonRef}
+              type="button"
+              className="chat-composer-tool chat-composer-ask"
+              data-armed="true"
+              data-active={pickerOpen}
+              aria-expanded={pickerOpen}
+              aria-haspopup="listbox"
+              disabled={sending}
+              // Armed, the control shows a face and a name — which says who but
+              // not what pressing it does. The label supplies the verb.
+              aria-label={`Change agent — currently asking ${memberDisplayName(target)}`}
+              title={`Change agent — currently asking ${memberDisplayName(target)}`}
+              onClick={() => setPickerOpen((open) => !open)}
+            >
+              <MemberAvatar member={target} size={14} />
+              <span className="chat-composer-ask-name">{memberDisplayName(target)}</span>
               <ChevronDown size={12} strokeWidth={2} aria-hidden />
             </button>
           ) : null}
-        </span>
-        <span className="chat-composer-right">
-          <span className="chat-enter">
-            {variant === "thread" ? "↵ send" : "↵ send · ⇧↵ newline"}
-          </span>
           <button
             type="button"
             className="chat-composer-send"
+            data-mode={target ? "ask" : undefined}
             onClick={submit}
             disabled={!canSend}
             aria-label={sending ? "Sending…" : sendTitle}

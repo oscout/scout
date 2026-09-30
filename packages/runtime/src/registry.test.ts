@@ -139,6 +139,48 @@ describe("queryRuntimeRegistrySnapshot", () => {
     expect(result.messages).toEqual({});
   });
 
+  test("identity scope keeps nodes, actors, and agents and drops history", () => {
+    const snapshot = createRuntimeRegistrySnapshot({
+      nodes: {
+        "node-1": {
+          id: "node-1",
+          meshId: "mesh-1",
+          name: "node",
+          advertiseScope: "local",
+          registeredAt: 1,
+          lastSeenAt: 1,
+        },
+      },
+      actors: { participant: actor("participant") },
+      agents: { participant: agent("participant") },
+      endpoints: {
+        "endpoint-participant": endpoint("endpoint-participant", "participant", "active"),
+      },
+      conversations: {
+        recent: conversation("recent", ["participant"], 10),
+      },
+      messages: {
+        recent: message("recent", "recent", "participant", 10),
+      },
+      invocations: { "inv-1": invocation("inv-1", "participant", 1) },
+      flights: { "flt-1": flight("flt-1", "inv-1", "participant", "running") },
+    });
+
+    const result = queryRuntimeRegistrySnapshot(snapshot, { scope: "identity" });
+    expect(result.nodes).toEqual(snapshot.nodes);
+    expect(result.actors).toEqual(snapshot.actors);
+    expect(result.agents).toEqual(snapshot.agents);
+    expect(result.agents).not.toBe(snapshot.agents);
+    expect(result.endpoints).toEqual({});
+    expect(result.conversations).toEqual({});
+    expect(result.messages).toEqual({});
+    expect(result.invocations).toEqual({});
+    expect(result.flights).toEqual({});
+    expect(result.collaborationRecords).toEqual({});
+    expect(result.bindings).toEqual({});
+    expect(result.readCursors).toEqual({});
+  });
+
   test("conversation scope omits unrelated current agent registrations", () => {
     const snapshot = createRuntimeRegistrySnapshot({
       actors: {
@@ -326,4 +368,15 @@ describe("queryRuntimeRegistrySnapshot", () => {
     expect(result.agents[liveAgentId]?.id).toBe(liveAgentId);
     expect(result.endpoints.live?.agentId).toBe(liveAgentId);
   });
+});
+
+test("old open and answered questions survive the rolling conversation snapshot", () => {
+  const base = { kind: "question" as const, title: "Old question", acceptanceState: "none" as const, createdById: "maya", nextMoveOwnerId: "alex", conversationId: "room", createdAt: 1, updatedAt: 1 };
+  const snapshot = createRuntimeRegistrySnapshot({ collaborationRecords: {
+    open: { ...base, id: "open", state: "open" },
+    answered: { ...base, id: "answered", state: "answered", answer: "Two" },
+    closed: { ...base, id: "closed", state: "closed" },
+  } });
+  const selected = queryRuntimeRegistrySnapshot(snapshot, { since: 10 * DAY_MS, scope: "conversations" });
+  expect(Object.keys(selected.collaborationRecords).sort()).toEqual(["answered", "open"]);
 });

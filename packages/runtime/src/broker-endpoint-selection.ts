@@ -1,3 +1,4 @@
+import { isExternalSessionEndpoint } from "./external-session-transport.js";
 import type {
   AgentDefinition,
   AgentEndpoint,
@@ -123,6 +124,7 @@ export function classifyEndpoint(
       && (
         endpoint.transport === "pairing_bridge"
         || isA2AHttpEndpoint(endpoint)
+        || isExternalSessionEndpoint(endpoint)
         || isBrokerRunnableLocalAgentTransport(endpoint.transport)
       ),
   );
@@ -205,6 +207,7 @@ export function isStaleLocalEndpoint(
 export function describeUnavailableSessionEndpoint(
   endpoint: AgentEndpoint,
 ): ScoutDispatchUnavailableTarget | null {
+  if (endpoint.transport === "mcp_poll" && endpoint.state === "registered") return null;
   const endpointState = endpointCandidateState(endpoint.state);
   if (endpointState === "online") {
     return null;

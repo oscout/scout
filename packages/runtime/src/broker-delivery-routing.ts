@@ -29,7 +29,11 @@ import {
 
 export type InvocationResolution =
   | { kind: "resolved"; agent: AgentDefinition; aliasResolution?: RouteAliasResolutionProof }
-  | (Extract<BrokerLabelResolution, { kind: "resolved_session" }> & { aliasResolution?: RouteAliasResolutionProof })
+  | (Extract<BrokerLabelResolution, { kind: "resolved_session" }> & {
+      aliasResolution?: RouteAliasResolutionProof;
+      /** The exact-session target was live, so delivery goes to this Scout-owned fork instead. */
+      sessionFork?: { sourceSessionId: string; sessionId: string };
+    })
   | Exclude<BrokerLabelResolution, { kind: "resolved" | "resolved_session" }>;
 
 export type ExactSessionWakeInput = {
@@ -37,10 +41,16 @@ export type ExactSessionWakeInput = {
   harness?: AgentHarness;
   projectPath?: string;
   requesterId?: string;
+  /**
+   * Opt-in: when the session is live outside Scout, continue it as a new
+   * Scout-owned fork instead of refusing (`session_live_unbound`). Default
+   * off so CLI/MCP exact continuation keeps its refusal.
+   */
+  forkIfLive?: boolean;
 };
 
 export type ExactSessionWakeResult =
-  | { ok: true }
+  | { ok: true; forkedSession?: { sourceSessionId: string; sessionId: string } }
   | {
       ok: false;
       reason: string;
@@ -155,20 +165,33 @@ export function projectPathRouteTarget(input: BrokerRouteTargetInput): string | 
   return undefined;
 }
 
+/** Resolver refusal codes for a session address scoped to a host this broker cannot answer for. */
+const SESSION_HOST_REFUSALS: ReadonlySet<string> = new Set([
+  "session_host_unknown",
+  "session_not_on_host",
+  "session_host_not_projected",
+]);
+
 /** Exact harness session route — never demotes to project/card workers. */
 export function exactSessionRouteTarget(input: BrokerRouteTargetInput): {
   nativeSessionId: string;
   harness?: AgentHarness;
+  host?: string;
   label: string;
+  forkIfLive?: boolean;
 } | null {
   if (input.target?.kind === "session_id") {
     const nativeSessionId = input.target.sessionId.trim();
     if (!nativeSessionId) return null;
     const harness = input.target.harness ?? input.execution?.harness;
+    const host = input.target.host?.trim();
+    const base = harness ? `session:${harness}:${nativeSessionId}` : `session:${nativeSessionId}`;
     return {
       nativeSessionId,
       ...(harness ? { harness } : {}),
-      label: harness ? `session:${harness}:${nativeSessionId}` : `session:${nativeSessionId}`,
+      ...(host ? { host } : {}),
+      ...(input.target.forkIfLive === true ? { forkIfLive: true } : {}),
+      label: host ? `${base}@${host}` : base,
     };
   }
   const bare = input.targetSessionId?.trim();
@@ -238,6 +261,7 @@ export function buildDeliveryReceipt(input: {
   requesterNodeId: string;
   targetAgentId?: string;
   targetSessionId?: string;
+  targetSessionAddress?: string;
   targetLabel: string;
   sessionAlias?: string;
   bindingRef?: string;
@@ -254,6 +278,7 @@ export function buildDeliveryReceipt(input: {
     requesterNodeId: input.requesterNodeId,
     targetAgentId: input.targetAgentId,
     targetSessionId: input.targetSessionId,
+    ...(input.targetSessionAddress ? { targetSessionAddress: input.targetSessionAddress } : {}),
     targetLabel: input.targetLabel,
     ...(input.sessionAlias ? { sessionAlias: input.sessionAlias } : {}),
     ...(input.bindingRef ? { bindingRef: input.bindingRef } : {}),
@@ -347,6 +372,12 @@ export class BrokerDeliveryRouter {
     // routing. If unknown, try harness-store wake then re-resolve only that id.
     const exactSession = exactSessionRouteTarget(input);
     if (exactSession && native.kind === "unknown") {
+      // A session address whose host is not this broker (or names no node)
+      // is reported as-is: the local harness store is the wrong authority to
+      // wake from, and waking a local look-alike would substitute a session.
+      if (native.sessionWakeReason && SESSION_HOST_REFUSALS.has(native.sessionWakeReason)) {
+        return native;
+      }
       if (!this.options.wakeExactHarnessSession) {
         return {
           kind: "unknown",
@@ -360,12 +391,39 @@ export class BrokerDeliveryRouter {
         harness: exactSession.harness,
         projectPath: resolveOptions.currentDirectory,
         requesterId: resolveOptions.requesterId,
+        ...(exactSession.forkIfLive ? { forkIfLive: true } : {}),
       });
       if (!wake.ok) {
         return {
           kind: "unknown",
           label: exactSession.label,
           detail: wake.detail || wake.reason,
+          sessionWakeReason: wake.reason,
+        };
+      }
+      if (wake.forkedSession) {
+        const fork = wake.forkedSession;
+        const forkResolution = this.resolveTarget({
+          ...input,
+          target: {
+            kind: "session_id",
+            sessionId: fork.sessionId,
+            ...(exactSession.harness ? { harness: exactSession.harness } : {}),
+            ...(exactSession.host ? { host: exactSession.host } : {}),
+          },
+          targetSessionId: undefined,
+        });
+        if (forkResolution.kind === "resolved_session") {
+          this.options.log?.(
+            `[openscout-runtime] exact harness session ${exactSession.label} is live; continuing as fork ${fork.sessionId}`,
+          );
+          return { ...forkResolution, sessionFork: fork };
+        }
+        return {
+          kind: "unknown",
+          label: exactSession.label,
+          detail: `session ${exactSession.nativeSessionId} fork ${fork.sessionId} did not produce a routable session`,
+          sessionWakeReason: "session_fork_unroutable",
         };
       }
       const afterWake = this.resolveTarget(input);

@@ -699,3 +699,13 @@ describe("stale reconciliation writer eligibility", () => {
     expect(harness.warnings).toEqual([]);
   });
 });
+
+
+test("external provider receipts are not projected to running/completed by local flight state", async () => {
+  const delivery = testDelivery({ transport: "http", status: "acknowledged", metadata: { externalSession: true, phase: "provider_accepted" } });
+  const harness = createHarness({ deliveries: [delivery] });
+  await harness.service.recordFlight(testFlight({ state: "waiting" }));
+  await harness.service.recordFlight(testFlight({ state: "completed", output: "done" }));
+  expect(harness.updatedDeliveries).toEqual([]);
+  expect(staleLocalDeliveryReason(harness.snapshot, delivery, { now: 1_000_000 })).toBeNull();
+});

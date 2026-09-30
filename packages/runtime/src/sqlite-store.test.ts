@@ -526,6 +526,51 @@ describe("SQLiteControlPlaneStore", () => {
     }
   });
 
+  test("stamps the agent's harness on the activity it records", () => {
+    const store = createStore();
+    try {
+      seedAgent(store);
+      store.upsertActor({ id: "operator", kind: "person", displayName: "Operator" });
+      store.upsertEndpoint({
+        id: "endpoint-harness",
+        agentId: "agent-1",
+        nodeId: "node-1",
+        harness: "grok-acp" as never,
+        transport: "grok_acp" as never,
+        state: "active",
+        sessionId: "session-harness",
+        projectRoot: "/repo",
+        metadata: {},
+      });
+      store.upsertConversation({
+        id: "conv-h",
+        kind: "direct",
+        title: "Direct",
+        visibility: "private",
+        shareMode: "local",
+        authorityNodeId: "node-1",
+        participantIds: ["agent-1", "operator"],
+      });
+      store.recordMessage({
+        id: "msg-h",
+        conversationId: "conv-h",
+        actorId: "agent-1",
+        originNodeId: "node-1",
+        class: "agent",
+        body: "Done.",
+        visibility: "private",
+        policy: "durable",
+        createdAt: Date.now(),
+      });
+      const row = getWritableDb(store).query(
+        "SELECT workspace_root, json_extract(payload_json, '$.agentHarness') AS harness FROM activity_items WHERE message_id = ?1",
+      ).get("msg-h") as { workspace_root: string | null; harness: string | null } | null;
+      expect(row).toEqual({ workspace_root: "/repo", harness: "grok-acp" });
+    } finally {
+      store.close();
+    }
+  });
+
   test("advances endpoint recency from lifecycle evidence without refreshing projection replay", () => {
     const { store, dbPath } = createStoreWithPath();
     const db = new Database(dbPath, { readonly: true });
@@ -1210,7 +1255,14 @@ describe("SQLiteControlPlaneStore", () => {
         policy: "best_effort",
         status: "accepted",
       }]);
-      store.recordMessage({ ...message, body: "hello again" });
+      const beforeCorrectionEvents = store.listThreadEvents({ conversationId: "conv-1" }).length;
+      const correction = { revision: 1, editedAt: 200, changedBy: "operator" };
+      expect(store.recordMessage({ ...message, body: "hello again", metadata: { chatCorrection: correction } })).toEqual([]);
+      expect(store.listThreadEvents({ conversationId: "conv-1" })).toHaveLength(beforeCorrectionEvents);
+      const correctedRow = db.query("SELECT body, metadata_json, created_at FROM messages WHERE id = 'msg-1'").get() as { body: string; metadata_json: string; created_at: number };
+      expect(correctedRow.body).toBe("hello again");
+      expect(JSON.parse(correctedRow.metadata_json).chatCorrection).toEqual(correction);
+      expect(correctedRow.created_at).toBe(100);
       expect(countRows(db, "deliveries", "message_id", "msg-1")).toBe(1);
 
       const invocation = {
@@ -2710,6 +2762,24 @@ describe("terminal workspaces", () => {
     }
   });
 
+  test("prunes quota history older than the charted week and keeps current windows", () => {
+    const store = createStore();
+    try {
+      const now = Date.now();
+      const old = now - 9 * 24 * 60 * 60 * 1000;
+      const base = { source: "provider_reported" as const, provider: "openai", harness: "codex", label: "7d" };
+      store.recordBudgetQuotaWindowSnapshot({ ...base, id: "budget:quota:history:old", capturedAt: old });
+      store.recordBudgetQuotaWindowSnapshot({ ...base, id: "budget:quota:history:recent", capturedAt: now });
+      store.recordBudgetQuotaWindowSnapshot({ ...base, id: "budget:quota:current", capturedAt: old });
+
+      expect(store.pruneBudgetQuotaHistory(now)).toBe(1);
+      expect(store.listBudgetQuotaWindowSnapshots().map((window) => window.id).sort())
+        .toEqual(["budget:quota:current", "budget:quota:history:recent"]);
+    } finally {
+      store.close();
+    }
+  });
+
   test("compactAndPruneMeshNodes re-homes collision-suffixed ghost nodes and prunes them cleanly", () => {
     const store = createStore();
     try {
@@ -2791,4 +2861,180 @@ describe("terminal workspaces", () => {
       store.close();
     }
   });
+});
+
+describe("registry deletes", () => {
+  test("deleteAgent removes the agent row and all of its endpoint rows", () => {
+    const store = createStore();
+    try {
+      seedAgent(store);
+      store.upsertEndpoint({
+        id: "ep-1",
+        agentId: "agent-1",
+        nodeId: "node-1",
+        harness: "codex",
+        transport: "local_socket",
+        state: "offline",
+      });
+      store.upsertEndpoint({
+        id: "ep-2",
+        agentId: "agent-1",
+        nodeId: "node-1",
+        harness: "codex",
+        transport: "local_socket",
+        state: "stopped",
+      });
+
+      const snapshot = store.loadSnapshot();
+      expect(snapshot.agents["agent-1"]).toBeDefined();
+      expect(Object.keys(snapshot.endpoints)).toHaveLength(2);
+
+      store.deleteAgent("agent-1");
+
+      const after = store.loadSnapshot();
+      expect(after.agents["agent-1"]).toBeUndefined();
+      expect(Object.keys(after.endpoints)).toHaveLength(0);
+      // The actor row survives — actors are deleted separately.
+      expect(after.actors["agent-1"]).toBeDefined();
+
+      // Idempotent.
+      store.deleteAgent("agent-1");
+      store.deleteAgent("never-existed");
+    } finally {
+      store.close();
+    }
+  });
+
+  test("deleteActor removes the actor and throws loudly on a RESTRICT reference", () => {
+    const store = createStore();
+    try {
+      seedAgent(store);
+      store.upsertConversation({
+        id: "conv-1",
+        kind: "channel",
+        title: "Room",
+        visibility: "workspace",
+        shareMode: "shared",
+        authorityNodeId: "node-1",
+        participantIds: ["agent-1"],
+      });
+      store.recordMessage({
+        id: "msg-1",
+        conversationId: "conv-1",
+        actorId: "agent-1",
+        originNodeId: "node-1",
+        class: "agent",
+        body: "authored",
+        visibility: "private",
+        policy: "durable",
+        createdAt: 1_700_000_000_000,
+      });
+
+      // messages.actor_id is ON DELETE RESTRICT — the delete must throw, not
+      // silently cascade.
+      expect(() => store.deleteActor("agent-1")).toThrow();
+      expect(store.loadSnapshot().actors["agent-1"]).toBeDefined();
+
+      // Once the reference is gone the delete succeeds and is idempotent.
+      getWritableDb(store).query("DELETE FROM messages WHERE id = ?1").run("msg-1");
+      store.deleteActor("agent-1");
+      expect(store.loadSnapshot().actors["agent-1"]).toBeUndefined();
+      store.deleteActor("agent-1");
+    } finally {
+      store.close();
+    }
+  });
+
+  test("reference counts mirror the retention guards", () => {
+    const store = createStore();
+    try {
+      seedAgent(store);
+      expect(store.agentReferenceCount("agent-1")).toBe(0);
+      // The agents row itself counts: the actor only leaves with its agent.
+      expect(store.actorReferenceCount("agent-1")).toBe(1);
+
+      // Conversation membership deliberately counts for neither: channels
+      // auto-enrol every agent, and member rows cascade-delete anyway.
+      store.upsertConversation({
+        id: "conv-1",
+        kind: "channel",
+        title: "Room",
+        visibility: "workspace",
+        shareMode: "shared",
+        authorityNodeId: "node-1",
+        participantIds: ["agent-1"],
+      });
+      expect(store.agentReferenceCount("agent-1")).toBe(0);
+      expect(store.actorReferenceCount("agent-1")).toBe(1);
+
+      store.upsertEndpoint({
+        id: "ep-1",
+        agentId: "agent-1",
+        nodeId: "node-1",
+        harness: "codex",
+        transport: "local_socket",
+        state: "offline",
+      });
+      expect(store.agentReferenceCount("agent-1")).toBe(1);
+      expect(store.actorReferenceCount("agent-1")).toBe(2);
+
+      store.deleteEndpoint("ep-1");
+      expect(store.agentReferenceCount("agent-1")).toBe(0);
+      // The surviving agents row still references the actor id.
+      expect(store.actorReferenceCount("agent-1")).toBe(1);
+      store.deleteAgent("agent-1");
+      expect(store.actorReferenceCount("agent-1")).toBe(0);
+    } finally {
+      store.close();
+    }
+  });
+
+  test("actorReferenceCount counts collaboration ownership columns", () => {
+    const store = createStore();
+    try {
+      seedAgent(store);
+      store.upsertActor({ id: "owner-1", kind: "agent", displayName: "Owner" });
+      store.upsertActor({ id: "operator", kind: "person", displayName: "Operator" });
+
+      // owner_id and next_move_owner_id are ON DELETE SET NULL — without the
+      // count veto, deleting the actor would silently erase ownership of an
+      // open work item. created_by_id is RESTRICT; ownership is not.
+      getWritableDb(store).query(
+        `INSERT INTO collaboration_records (
+          id, kind, state, acceptance_state, title,
+          created_by_id, owner_id, next_move_owner_id,
+          created_at, updated_at
+        ) VALUES ('work-1', 'work_item', 'open', 'pending', 'Work',
+          'operator', 'owner-1', 'owner-1', 1, 1)`,
+      ).run();
+
+      expect(store.actorReferenceCount("owner-1")).toBe(1);
+      // The count veto protects the record; the row must stay owned.
+      const row = getWritableDb(store).query(
+        "SELECT owner_id, next_move_owner_id FROM collaboration_records WHERE id = 'work-1'",
+      ).get() as { owner_id: string; next_move_owner_id: string };
+      expect(row).toEqual({ owner_id: "owner-1", next_move_owner_id: "owner-1" });
+    } finally {
+      store.close();
+    }
+  });
+});
+
+test("retained question history is channel scoped and creation-order paginated", () => {
+  const store = createStore();
+  try {
+    store.upsertNode({ id: "node", meshId: "mesh", name: "Test", advertiseScope: "local", registeredAt: 1 });
+    store.upsertActor({ id: "operator", kind: "person", displayName: "Operator" });
+    for (const id of ["room", "other"]) store.upsertConversation({ id, title: id, shareMode: "shared", kind: "channel", authorityNodeId: "node", participantIds: [], visibility: "workspace", createdAt: 1 });
+    store.upsertConversation({ id: "thread", title: "Thread", shareMode: "shared", kind: "thread", parentConversationId: "room", authorityNodeId: "node", participantIds: [], visibility: "workspace", createdAt: 1 });
+    for (const [id, conversationId, createdAt, updatedAt] of [["a", "room", 1, 100], ["b", "thread", 1, 300], ["c", "room", 2, 200], ["hidden", "other", 1, 500]] as const) {
+      store.recordCollaborationRecord({ id, kind: "question", conversationId, createdAt, updatedAt,
+        title: id, createdById: "operator", state: "closed", acceptanceState: "accepted", answer: `answer ${id}` });
+    }
+    const query = { kind: "question" as const, state: "closed", conversationId: "room", includeThreads: true, orderByCreatedAt: true, limit: 2 };
+    expect(store.listCollaborationRecords(query).map(row => row.id)).toEqual(["a", "b"]);
+    expect(store.listCollaborationRecords({ ...query, afterCreatedAt: 1, afterId: "b" })).toMatchObject([{ id: "c", answer: "answer c" }]);
+    expect(store.listCollaborationRecords({ ...query, includeThreads: false }).map(row => row.id)).toEqual(["a", "c"]);
+    expect(store.listCollaborationRecords({ ...query, orderByCreatedAt: false }).map(row => row.id)).toEqual(["b", "c"]);
+  } finally { store.close(); }
 });

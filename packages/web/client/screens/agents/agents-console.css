@@ -7,7 +7,7 @@
    Scoped under `.s-acon`, aliasing the studio `--s-*` skin onto the web's live
    theme tokens (same pattern as `.s-aproj`), so the whole console follows theme
    switches and the single app accent. One accent, spent only as the precedence
-   dot: needs-you ▸ live ▸ idle. Working-vs-idle otherwise reads from the sprite
+   dot: request ▸ live ▸ idle. Working-vs-idle otherwise reads from the sprite
    brightness + text contrast, never a categorical status palette. `ac-*` class
    prefix avoids collisions with global CSS. */
 

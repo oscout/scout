@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -1542,4 +1542,185 @@ test("startup suffix catch-up excludes later writes and survives checkpoint rest
     expect(verified.loadSnapshot().agents["agent-1"]?.displayName).toBe("After boundary");
     expect(Object.keys(verified.loadSnapshot().messages)).toEqual(["msg-1"]);
   } finally { verified.close(); await journal.close(); }
+});
+
+describe("registry delete tombstones", () => {
+  const tombstoneFixture = () => {
+    const node = {
+      id: "node-1",
+      meshId: "mesh-1",
+      name: "Node One",
+      advertiseScope: "local",
+      registeredAt: 1_700_000_000_000,
+    };
+    const actor = {
+      id: "agent-1",
+      kind: "agent",
+      displayName: "Agent One",
+      createdAt: 1_700_000_000_000,
+    };
+    const agent = {
+      ...actor,
+      definitionId: "agent-1",
+      agentClass: "builder",
+      capabilities: ["chat"],
+      wakePolicy: "on_demand",
+      homeNodeId: "node-1",
+      authorityNodeId: "node-1",
+      advertiseScope: "local",
+    };
+    const endpoint = {
+      id: "ep-1",
+      agentId: "agent-1",
+      nodeId: "node-1",
+      harness: "codex",
+      transport: "local_socket",
+      state: "offline",
+    };
+    // A legacy-shape channel roster that still lists the deleted actor —
+    // journals written before membership-removal upserts look like this.
+    const channel = {
+      id: "conv-1",
+      kind: "channel",
+      title: "Room",
+      visibility: "workspace",
+      shareMode: "shared",
+      authorityNodeId: "node-1",
+      participantIds: ["agent-1"],
+    };
+    const entries = [
+      { kind: "node.upsert", node },
+      { kind: "actor.upsert", actor },
+      { kind: "agent.upsert", agent },
+      { kind: "agent.endpoint.upsert", endpoint },
+      { kind: "conversation.upsert", conversation: channel },
+      { kind: "agent.endpoint.delete", endpointId: "ep-1" },
+      { kind: "agent.delete", agentId: "agent-1" },
+      { kind: "actor.delete", actorId: "agent-1" },
+    ];
+    return { node, actor, agent, endpoint, channel, entries };
+  };
+
+  function writeCompactedJournal(
+    root: string,
+    entries: readonly unknown[],
+  ): { journal: FileBackedBrokerJournal; journalPath: string } {
+    const journalPath = join(root, "broker-journal.jsonl");
+    writeFileSync(
+      journalPath,
+      entries.map((entry) => JSON.stringify(entry)).join("\n") + "\n",
+      "utf8",
+    );
+    return {
+      journal: new FileBackedBrokerJournal(journalPath, {
+        // Forces compaction during load(): upserts superseded by deletes are
+        // dropped, but the delete tombstones themselves must be retained.
+        compactionPolicy: { minimumReclaimBytes: 1, minimumReclaimRatio: 0 },
+      }),
+      journalPath,
+    };
+  }
+
+  test("replays compacted delete tombstones onto a lagging database", async () => {
+    const root = mkdtempSync(join(tmpdir(), "openscout-projection-tombstone-"));
+    tempRoots.add(root);
+    const dbPath = join(root, "projection.sqlite");
+    const { node, actor, agent, endpoint, channel, entries } = tombstoneFixture();
+
+    // The database committed the upserts but crashed before projecting the
+    // deletes; compaction runs before recovery on the next boot.
+    const seeded = new SQLiteControlPlaneStore(dbPath);
+    seeded.upsertNode(node as never);
+    seeded.upsertActor(actor as never);
+    seeded.upsertAgent(agent as never);
+    seeded.upsertEndpoint(endpoint as never);
+    seeded.upsertConversation(channel as never);
+    seeded.close();
+
+    const { journal } = writeCompactedJournal(root, entries);
+    await journal.load();
+
+    const projection = createRealProjection(dbPath, journal);
+    await projection.warm();
+    await projection.flush();
+    projection.close();
+
+    const verified = new SQLiteControlPlaneStore(dbPath);
+    try {
+      const snapshot = verified.loadSnapshot();
+      expect(snapshot.actors).toEqual({});
+      expect(snapshot.agents).toEqual({});
+      expect(snapshot.endpoints).toEqual({});
+      expect(snapshot.conversations["conv-1"]?.participantIds).toEqual([]);
+    } finally {
+      verified.close();
+      await journal.close();
+    }
+  });
+
+  test("does not resurrect a deleted actor from retained membership on a fresh rebuild", async () => {
+    const root = mkdtempSync(join(tmpdir(), "openscout-projection-rebuild-"));
+    tempRoots.add(root);
+    const { entries } = tombstoneFixture();
+
+    const { journal } = writeCompactedJournal(root, entries);
+    await journal.load();
+
+    const projection = createRealProjection(join(root, "projection.sqlite"), journal);
+    await projection.warm();
+    await projection.flush();
+    projection.close();
+
+    const verified = new SQLiteControlPlaneStore(join(root, "projection.sqlite"));
+    try {
+      const snapshot = verified.loadSnapshot();
+      // The retained conversation upsert still names 'agent-1' — the stub
+      // actor it synthesizes is removed again by the surviving tombstone.
+      expect(snapshot.actors).toEqual({});
+      expect(snapshot.agents).toEqual({});
+      expect(snapshot.endpoints).toEqual({});
+      expect(snapshot.conversations["conv-1"]).toBeDefined();
+      expect(snapshot.conversations["conv-1"]?.participantIds).toEqual([]);
+    } finally {
+      verified.close();
+      await journal.close();
+    }
+  });
+
+  test("an agent.delete tombstone alone still cascades its endpoints after compaction", async () => {
+    const root = mkdtempSync(join(tmpdir(), "openscout-projection-cascade-"));
+    tempRoots.add(root);
+    const { node, actor, agent, endpoint } = tombstoneFixture();
+    // Legacy shape: agent.delete with no preceding endpoint tombstones —
+    // the endpoint upsert survives compaction under its own key, so only the
+    // agent tombstone's cascade keeps it gone.
+    const entries = [
+      { kind: "node.upsert", node },
+      { kind: "actor.upsert", actor },
+      { kind: "agent.upsert", agent },
+      { kind: "agent.endpoint.upsert", endpoint },
+      { kind: "agent.delete", agentId: "agent-1" },
+    ];
+
+    const { journal } = writeCompactedJournal(root, entries);
+    await journal.load();
+    expect(journal.snapshot().endpoints).toEqual({});
+
+    const projection = createRealProjection(join(root, "projection.sqlite"), journal);
+    await projection.warm();
+    await projection.flush();
+    projection.close();
+
+    const verified = new SQLiteControlPlaneStore(join(root, "projection.sqlite"));
+    try {
+      const snapshot = verified.loadSnapshot();
+      expect(snapshot.agents).toEqual({});
+      expect(snapshot.endpoints).toEqual({});
+      // The actor row is a separate record — it survives an agent delete.
+      expect(snapshot.actors["agent-1"]).toBeDefined();
+    } finally {
+      verified.close();
+      await journal.close();
+    }
+  });
 });

@@ -53,12 +53,46 @@ function dependencies(overrides: Partial<HerdrWorkspacesDependencies> = {}): Her
 }
 
 describe("herdr_workspaces", () => {
+  test("panel query returns every matching identity without choosing by activity", async () => {
+    const client = await clientFor(dependencies({ readDigests: async () => ({
+      available: true, truncated: false,
+      digests: [digestHerdrTopology(topology("scout", [
+        pane("w1:p2", { name: "devon-2-openscout", agent: "devin", agentSession: { agent: "devin", kind: "id", source: "herdr:devin", value: "plum-chef" } }),
+        pane("w1:p3", { name: "devon-2-other", agentStatus: "working" }),
+      ]))],
+    }) }));
+    const result = await client.callTool({ name: "herdr_workspaces", arguments: { query: "devon-2" } });
+    const data = result.structuredContent as { results: Array<Record<string, unknown>> };
+    expect(result.structuredContent).toMatchObject({ selection: "candidates_only", candidateCount: 2, truncated: false });
+    expect(data.results.find((pane) => pane.name === "devon-2-openscout")).toMatchObject({
+      herdrSession: "scout", paneId: "w1:p2", agentSession: { value: "plum-chef" },
+      readCommand: { command: "herdr", args: ["--session", "scout", "pane", "read", "w1:p2", "--source", "recent-unwrapped", "--lines", "100", "--format", "text"] },
+    });
+  });
+
+  test("a pane omitted by upstream bounds produces a bounded miss, not absence", async () => {
+    const client = await clientFor(dependencies({ readDigests: async () => ({
+      available: true, truncated: false,
+      digests: [digestHerdrTopology(topology("scout", [pane("w1:p1", { name: "hidden" })]), { paneCap: 0 })],
+    }) }));
+    const result = await client.callTool({ name: "herdr_workspaces", arguments: { query: "hidden" } });
+    expect(result.structuredContent).toMatchObject({ candidateCount: 0, results: [], truncated: true });
+  });
+
+  test("saved matches retain provenance and have no read command", async () => {
+    const client = await clientFor(dependencies({ readDigests: async () => ({
+      available: true, truncated: false,
+      digests: [digestHerdrTopology({ ...topology("parked", [pane("w1:p2", { name: "devon-2" })], false), savedAt: 5 })],
+    }) }));
+    const result = await client.callTool({ name: "herdr_workspaces", arguments: { query: "devon-2" } });
+    expect(result.structuredContent).toMatchObject({ results: [{ live: false, savedAt: 5, status: "unknown", target: null, readCommand: null }] });
+  });
   test("leads with what is blocked and carries the digest as structured content", async () => {
     const client = await clientFor(dependencies());
     const result = await client.callTool({ name: "herdr_workspaces", arguments: {} });
     const text = (result.content as Array<{ text: string }>)[0]!.text;
     expect(text).toContain("herdr · openscout — live");
-    expect(text.indexOf("Waiting on you")).toBeLessThan(text.indexOf("Grouped by directory"));
+    expect(text.indexOf("Requests")).toBeLessThan(text.indexOf("Grouped by directory"));
     expect(result.structuredContent).toMatchObject({
       source: "herdr_topology_projection",
       available: true,

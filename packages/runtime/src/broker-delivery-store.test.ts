@@ -105,7 +105,7 @@ function createTestDeliveryStore() {
     },
   });
 
-  return { journal, events, store };
+  return { journal, events, store, durableStore };
 }
 
 function testDelivery(input: Partial<DeliveryIntent> = {}): DeliveryIntent {
@@ -293,4 +293,17 @@ test("asynchronous read-ack eligibility holds the existing write queue until its
   expect(await rejected).toBe(false);
   expect((await claim)?.status).toBe("leased");
   expect(journal.getDelivery("delivery-1")?.leaseOwner).toBe("worker");
+});
+
+
+test("receipt mutations re-read under the canonical writer and preserve prior reply fields", async () => {
+  const { store, journal, durableStore } = createTestDeliveryStore();
+  await store.recordDelivery({ id: "external", targetId: "agent", targetKind: "agent", transport: "http", reason: "invocation", policy: "durable", status: "sent" });
+  const entered = Promise.withResolvers<void>(); const release = Promise.withResolvers<void>();
+  const held = durableStore.runWrite(async () => { entered.resolve(); await release.promise; });
+  await entered.promise;
+  const complete = store.mutateDelivery("external", (current) => ({ ...current, status: "completed", metadata: { replyBodyHash: "pinned" } }));
+  const lateAck = store.mutateDelivery("external", (current) => current.status === "completed" ? null : { ...current, status: "acknowledged" });
+  release.resolve(); await Promise.all([held, complete, lateAck]);
+  expect(journal.getDelivery("external")).toMatchObject({ status: "completed", metadata: { replyBodyHash: "pinned" } });
 });

@@ -109,6 +109,9 @@ export default defineConfig({
   plugins: [react(), tailwindcss(), ...(basicWeb ? [basicWebPlugin()] : [])],
   define: { "import.meta.env.VITE_SCOUT_WEB_PROFILE": JSON.stringify(basicWeb ? "basic" : "full") },
   server: {
+    // The portal name (DEFAULT_SCOUT_WEB_PORTAL_HOST) and its subdomains, so
+    // dev work is reachable as scout.local:43122 like the service is.
+    allowedHosts: ["scout.local", ".scout.local"],
     hmr: {
       path: routes.viteHmrPath,
       ...(viteHmrProtocol ? { protocol: viteHmrProtocol } : {}),

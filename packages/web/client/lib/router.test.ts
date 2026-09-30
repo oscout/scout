@@ -534,6 +534,30 @@ describe("agents route parsing", () => {
     expect(routePath({ view: "broker", filter: "failed" })).toBe(
       "/dispatch?filter=failed",
     );
+    // Dispatch focus is linkable: repeated focus params, `between` only with
+    // two or more nodes, and the default window stays out of the URL.
+    expect(routeFromUrl(
+      "http://127.0.0.1:43120/dispatch?focus=operator&focus=agent%3Aopus&between=1&window=today",
+    )).toEqual({
+      view: "broker",
+      focus: ["operator", "agent:opus"],
+      between: true,
+      window: "today",
+    });
+    expect(routeFromUrl("http://127.0.0.1:43120/dispatch?focus=operator&between=1&window=all")).toEqual({
+      view: "broker",
+      focus: ["operator"],
+    });
+    expect(routePath({
+      view: "broker",
+      filter: "failed",
+      focus: ["operator", "agent:opus"],
+      between: true,
+      window: "24h",
+    })).toBe("/dispatch?filter=failed&focus=operator&focus=agent%3Aopus&between=1&window=24h");
+    expect(routePath({ view: "broker", focus: ["operator"], between: true })).toBe(
+      "/dispatch?focus=operator",
+    );
     // /channels is a legacy alias onto the unified conversation route; it parses
     // but never serializes back — canonical form is /messages/<id>.
     expect(routeFromUrl("http://127.0.0.1:43120/channels/chan-1")).toEqual({

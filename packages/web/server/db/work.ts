@@ -29,14 +29,14 @@ import {
   sqlWhereClause,
 } from "./internal/sql-helpers.ts";
 import { queryFlights } from "./runs.ts";
-import type { WorkAttention } from "./types/common.ts";
+import type { WorkAttention } from "../../shared/api/common.ts";
 import type {
   WebFlight,
   WebWorkDetail,
   WebWorkInvocation,
   WebWorkItem,
   WebWorkTimelineItem,
-} from "./types/web.ts";
+} from "../../shared/api/web.ts";
 
 /* ── Work-item phase + attention helpers ── */
 

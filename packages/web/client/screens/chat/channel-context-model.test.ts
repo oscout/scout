@@ -10,6 +10,8 @@ import {
 const agent = (overrides: Partial<Agent> & Pick<Agent, "id" | "name">): Agent => ({
   definitionId: overrides.id,
   handle: null,
+  authorityNodeId: null,
+  authorityNodeName: null,
   agentClass: "managed_session",
   harness: "claude",
   state: "idle",

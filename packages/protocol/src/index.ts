@@ -12,6 +12,7 @@ export * from "./conversations.js";
 export * from "./conversation-projection.js";
 export * from "./channel-identity.js";
 export * from "./channel-invites.js";
+export * from "./channel-membership.js";
 export * from "./channel-reception.js";
 export * from "./collaboration.js";
 export * from "./assigned-roles.js";
@@ -61,3 +62,12 @@ export * from "./terminal-host-topology.js";
 export * from "./herdr-workspace-digest.js";
 export * from "./broker-routes.js";
 export * from "./rendezvous.js";
+
+export * from "./chat-pins.js";
+export * from "./chat-message-corrections.js";
+
+export * from "./chat-mentions.js";
+
+export * from "./agent-notifications.js";
+
+export * from "./mcp-core-tools.js";

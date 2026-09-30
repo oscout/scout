@@ -1,5 +1,6 @@
 @import "@hudsonkit/styles";
 @import "./styles/appearance.css";
+@import "./styles/field-focus.css";
 
 :root {
   /* Scout-specific pill tints — stay direct (tied to semantic status colors) */

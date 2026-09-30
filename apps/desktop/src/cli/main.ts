@@ -24,27 +24,22 @@ async function main() {
   let command = input.command;
   let commandArgs = input.args;
 
-  // MCP stdio hosts expect the protocol handshake immediately; broker
-  // maintenance here can leave the host terminal waiting with input disabled.
-  if (shouldEnsureBrokerUptodateForCommand(command)) {
-    // Let scoutd authorize and own any runtime refresh required after an update.
-    await ensureBrokerUptodate({
-      checkpointPath: cliMtimeCheckpointPath(),
-      debug: brokerUpdateDebugEnabled(context.env),
-      readCurrentMtime: readCurrentCliMtime,
-      report: (message) => context.stderr(message),
-      restart: async () => runNativeScoutdJson("restart"),
-      status: async () => runNativeScoutdJson("status", { timeoutMs: 5_000 }),
-    });
+  if (command === "__doctor-check") {
+    const { collectDoctorCheck, DOCTOR_CHECK_NAMES } = await import("./doctor-checks.ts");
+    const name = commandArgs[0];
+    if (commandArgs.length !== 1 || !DOCTOR_CHECK_NAMES.some(candidate => candidate === name)) throw new ScoutCliError("invalid diagnostic check");
+    context.output.writeText(JSON.stringify(await collectDoctorCheck(name as typeof DOCTOR_CHECK_NAMES[number], context)));
+    process.exit(0);
   }
 
   if (input.versionRequested) {
     context.output.writeText(SCOUT_APP_VERSION);
     return;
   }
-
-  if (input.helpRequested || !command) {
-    context.output.writeText(renderScoutHelp(SCOUT_APP_VERSION));
+  if (input.helpRequested && command && command !== "--detail") {
+    commandArgs = ["--help", ...commandArgs];
+  } else if (input.helpRequested || !command) {
+    context.output.writeText(renderScoutHelp(SCOUT_APP_VERSION, command === "--detail"));
     return;
   }
 
@@ -57,13 +52,28 @@ async function main() {
     }
   }
 
+  // Help and diagnostics must not refresh/restart the service they describe.
+  if (shouldEnsureBrokerUptodateForCommand(command, commandArgs)) {
+    await ensureBrokerUptodate({
+      checkpointPath: cliMtimeCheckpointPath(),
+      debug: brokerUpdateDebugEnabled(context.env),
+      readCurrentMtime: readCurrentCliMtime,
+      report: (message) => context.stderr(message),
+      restart: async () => runNativeScoutdJson("restart"),
+      status: async () => runNativeScoutdJson("status", { timeoutMs: 5_000 }),
+    });
+  }
+
   const registration = findScoutCommandRegistration(command);
   if (!registration && (command === "need" || command === "attention")) {
     throw new ScoutCliError(command === "need"
-      ? "scout need has been replaced by scout ask --operator --question <text>"
+      ? "scout need has been replaced by scout operator --question <text>"
       : "scout attention has been replaced by scout status --all --blocked; use scout diff for repository changes");
   }
   if (!registration) {
+    if (commandArgs.includes("--help") || commandArgs.includes("-h")) {
+      throw new ScoutCliError(`unknown command: ${command}; see scout help --detail`);
+    }
     const implicitPromptArgs = [command, ...commandArgs];
     try {
       const options = parseImplicitAskCommandOptions(implicitPromptArgs, defaultScoutContextDirectory(context));
@@ -85,13 +95,26 @@ async function main() {
   const resolvedCommand = registration.canonicalName ?? registration.name;
   const handler = await loadScoutCommandHandler(resolvedCommand as Parameters<typeof loadScoutCommandHandler>[0]);
   await handler(context, commandArgs);
-  exitAfterCompletedCommand(resolvedCommand);
+  exitAfterCompletedCommand(resolvedCommand, commandArgs);
 }
 
 const FORCE_EXIT_AFTER_COMPLETED_COMMANDS = new Set(["ask"]);
 
-function exitAfterCompletedCommand(command: string | null): void {
-  if (!command || !FORCE_EXIT_AFTER_COMPLETED_COMMANDS.has(command)) {
+function shouldForceExitAfterCommand(command: string | null, args: readonly string[]): boolean {
+  if (!command) {
+    return false;
+  }
+  if (FORCE_EXIT_AFTER_COMPLETED_COMMANDS.has(command)) {
+    return true;
+  }
+  // A tracked send runs the ask lifecycle and exits like ask. A plain send
+  // keeps its natural exit so a large --json receipt (which echoes the body)
+  // is never truncated on a pipe by a forced exit.
+  return command === "send" && args.includes("--tracked");
+}
+
+function exitAfterCompletedCommand(command: string | null, args: readonly string[] = []): void {
+  if (!shouldForceExitAfterCommand(command, args)) {
     return;
   }
   process.exit(process.exitCode ?? 0);

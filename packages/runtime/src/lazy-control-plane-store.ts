@@ -20,6 +20,10 @@ type SharedStoreSurface = Pick<
   | "deleteMachine"
   | "updateMachineAnnotations"
   | "compactAndPruneMeshNodes"
+  | "agentReferenceCount"
+  | "actorReferenceCount"
+  | "actorCreatedAtById"
+  | "memberConversationIds"
   | "close"
 >;
 
@@ -94,6 +98,22 @@ export class LazyControlPlaneStore<TStore extends SharedStoreSurface = SQLiteCon
 
   compactAndPruneMeshNodes(...args: Parameters<SQLiteControlPlaneStore["compactAndPruneMeshNodes"]>): ReturnType<SQLiteControlPlaneStore["compactAndPruneMeshNodes"]> {
     return this.get().compactAndPruneMeshNodes(...args);
+  }
+
+  agentReferenceCount(...args: Parameters<SQLiteControlPlaneStore["agentReferenceCount"]>): ReturnType<SQLiteControlPlaneStore["agentReferenceCount"]> {
+    return this.get().agentReferenceCount(...args);
+  }
+
+  actorReferenceCount(...args: Parameters<SQLiteControlPlaneStore["actorReferenceCount"]>): ReturnType<SQLiteControlPlaneStore["actorReferenceCount"]> {
+    return this.get().actorReferenceCount(...args);
+  }
+
+  actorCreatedAtById(...args: Parameters<SQLiteControlPlaneStore["actorCreatedAtById"]>): ReturnType<SQLiteControlPlaneStore["actorCreatedAtById"]> {
+    return this.get().actorCreatedAtById(...args);
+  }
+
+  memberConversationIds(...args: Parameters<SQLiteControlPlaneStore["memberConversationIds"]>): ReturnType<SQLiteControlPlaneStore["memberConversationIds"]> {
+    return this.get().memberConversationIds(...args);
   }
 
   close(): void {

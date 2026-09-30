@@ -61,7 +61,14 @@ import {
   sendScoutMobileComms,
   sendScoutMobileMessage,
 } from "../../../mobile/service.ts";
-import { readScoutBrokerTailRecent } from "../../../broker/service.ts";
+import { askScoutQuestion, loadScoutBrokerContext, readScoutBrokerTailRecent } from "../../../broker/service.ts";
+import { askMobileHarnessSession } from "../../../mobile/ask-session.ts";
+import { loadSessionRefObservePayload } from "../../../observe/service.ts";
+import { formatSessionRouteRef } from "../../../../../shared/session-route-ref.ts";
+import { toSessionUpdate } from "../../../../../client/screens/agents/agents-feed-article.ts";
+import { pendingOperatorNeeds } from "../../../attention/operator-needs.ts";
+import { collectHerdrHostAttention } from "../../../attention/herdr-host-attention.ts";
+import { resolveOperatorName } from "@openscout/runtime/user-config";
 import {
   provisionMobileTerminalAccess,
   readMobileTerminalStatus,
@@ -69,6 +76,7 @@ import {
 import { InvalidMobileTerminalSessionError } from "./mobile-terminal-session.ts";
 import { syncMobilePushRegistrationWithRelay } from "@openscout/runtime/mobile-push";
 import {
+  queryHeartrate,
   queryMobileAgentDetail,
 } from "../../../../db-queries.ts";
 import {
@@ -413,6 +421,114 @@ function extractProjectName(filePath: string): string {
   return parts[parts.length - 2] || "unknown";
 }
 
+/**
+ * A transcript line carrying words someone said: a Claude user/assistant line
+ * with text (not a tool result), or a Codex message item. Cheap substring
+ * checks first — most lines of a long session are tool traffic.
+ */
+const STEP_TEXT_LIMIT = 600;
+const STEP_INPUT_LIMIT = 240;
+
+/** Keeps the first and last three lines of a long output, within a budget. */
+function trimStepText(value: string): string {
+  const lines = value.split("\n");
+  let out = lines.length > 7 ? [...lines.slice(0, 3), `… ${lines.length - 6} more lines`, ...lines.slice(-3)].join("\n") : value;
+  if (out.length > STEP_TEXT_LIMIT) out = `${out.slice(0, STEP_TEXT_LIMIT)}…`;
+  return out;
+}
+
+function trimStepInput(input: unknown): unknown {
+  if (!input || typeof input !== "object") return input;
+  const out: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(input as Record<string, unknown>)) {
+    out[key] = typeof value === "string" && value.length > STEP_INPUT_LIMIT ? `${value.slice(0, STEP_INPUT_LIMIT)}…` : value;
+  }
+  return out;
+}
+
+/**
+ * One transcript line reduced to what a lane draws: a prompt, a reply, a
+ * tool call (its input trimmed) or a tool result (its output trimmed).
+ * Anything else is null.
+ */
+function compactTranscriptStepLine(line: string): string | null {
+  const claude = line.includes('"type":"user"') || line.includes('"type":"assistant"');
+  const codex = line.includes('"type":"response_item"');
+  if (!claude && !codex) return null;
+  try {
+    const entry = JSON.parse(line) as Record<string, any>;
+    if (codex) {
+      if (entry.type !== "response_item") return null;
+      const payload = entry.payload ?? {};
+      const kind = payload.type as string | undefined;
+      if (kind === "message") return line.length > 8000 ? JSON.stringify({ ...entry, payload: { ...payload, content: (payload.content ?? []).map((b: any) => typeof b?.text === "string" ? { ...b, text: b.text.slice(0, 8000) } : b) } }) : line;
+      if (kind === "function_call" || kind === "custom_tool_call" || kind === "local_shell_call") {
+        const next = { ...payload };
+        if (typeof next.arguments === "string" && next.arguments.length > 2000) next.arguments = next.arguments.slice(0, 2000);
+        if (typeof next.input === "string") next.input = trimStepText(next.input);
+        return JSON.stringify({ type: entry.type, timestamp: entry.timestamp, payload: next });
+      }
+      if (kind === "function_call_output" || kind === "custom_tool_call_output") {
+        const raw = typeof payload.output === "string"
+          ? payload.output
+          : Array.isArray(payload.output)
+            ? payload.output.map((b: any) => (typeof b?.text === "string" ? b.text : "")).join("")
+            : "";
+        const output = trimStepText(raw);
+        return JSON.stringify({ type: entry.type, timestamp: entry.timestamp, payload: { ...payload, output } });
+      }
+      return null;
+    }
+    if (entry.type !== "user" && entry.type !== "assistant") return null;
+    if (entry.isMeta || entry.isSidechain) return null;
+    const message = entry.message ?? {};
+    const content = message.content;
+    const blocks = Array.isArray(content)
+      ? content.flatMap<Record<string, unknown>>((block: any) => {
+        if (block?.type === "text") return [{ type: "text", text: String(block.text ?? "").slice(0, 8000) }];
+        if (block?.type === "tool_use") return [{ type: "tool_use", id: block.id, name: block.name, input: trimStepInput(block.input) }];
+        if (block?.type === "tool_result") {
+          const raw = typeof block.content === "string"
+            ? block.content
+            : Array.isArray(block.content)
+              ? block.content.filter((c: any) => c?.type === "text").map((c: any) => c.text).join("\n")
+              : "";
+          return [{ type: "tool_result", tool_use_id: block.tool_use_id, is_error: block.is_error === true, lines: raw.split("\n").length, content: trimStepText(raw) }];
+        }
+        return [];
+      })
+      : typeof content === "string" ? content.slice(0, 8000) : null;
+    if (blocks === null || (Array.isArray(blocks) && blocks.length === 0)) return null;
+    return JSON.stringify({
+      type: entry.type,
+      timestamp: entry.timestamp,
+      isCompactSummary: entry.isCompactSummary,
+      message: { id: message.id, role: message.role, content: blocks },
+    });
+  } catch {
+    return null;
+  }
+}
+
+function isTranscriptMessageLine(line: string): boolean {
+  const claude = line.includes('"type":"user"') || line.includes('"type":"assistant"');
+  const codex = line.includes('"type":"response_item"') && line.includes('"type":"message"');
+  if (!claude && !codex) return false;
+  if (claude && line.includes('"type":"tool_result"')) return false;
+  if (claude && !line.includes('"type":"text"') && !line.includes('"content":"')) return false;
+  try {
+    const entry = JSON.parse(line) as Record<string, any>;
+    if (codex) return entry.type === "response_item" && entry.payload?.type === "message";
+    if (entry.type !== "user" && entry.type !== "assistant") return false;
+    if (entry.isMeta || entry.isSidechain) return false;
+    const content = entry.message?.content;
+    if (typeof content === "string") return content.trim().length > 0;
+    return Array.isArray(content) && content.some((block: any) => block?.type === "text" && block.text?.trim());
+  } catch {
+    return false;
+  }
+}
+
 interface DiscoveredSession {
   path: string;
   project: string;
@@ -521,7 +637,10 @@ export type MobileInboxItemKind =
   | "failed_action"
   | "failed_turn"
   | "session_error"
-  | "native_attention";
+  | "native_attention"
+  // A declared `scout need`: answered by replying in its conversation, so
+  // sessionId carries the conversation id and the phone offers "Open chat".
+  | "ask";
 
 export type MobileInboxItem = {
   id: string;
@@ -539,6 +658,8 @@ export type MobileInboxItem = {
   detail: string | null;
   actionKind?: ActionBlock["action"]["kind"];
   actionStatus?: ActionBlock["action"]["status"];
+  /** Discrete answers a declared ask offers; the phone sends one as a reply. */
+  options?: string[];
 };
 
 function approvalInboxItemId(
@@ -706,6 +827,68 @@ export function lookupMobileInboxItemForEvent(
   }
 }
 
+/**
+ * Unanswered `scout need` declarations. They reach the phone as a push but live
+ * only as conversation messages, so without this the inbox the push opens has
+ * nothing in it. Best-effort: an unreachable broker adds nothing rather than
+ * failing the session-attention half of the inbox.
+ */
+async function queryOperatorNeedInboxItems(): Promise<MobileInboxItem[]> {
+  const broker = await loadScoutBrokerContext(undefined, {
+    scope: "conversations",
+    signal: AbortSignal.timeout(2_000),
+  }).catch(() => null);
+  if (!broker) return [];
+  const snapshot = broker.snapshot;
+  const operatorName = resolveOperatorName().trim() || "operator";
+  return pendingOperatorNeeds({
+    messages: Object.values(snapshot.messages ?? {}),
+    operatorIds: [operatorName, "operator"],
+  }).map((need) => {
+    const name = snapshot.actors[need.actorId]?.displayName?.trim() || need.actorId;
+    return {
+      id: `need:${need.messageId}`,
+      kind: "ask" as const,
+      createdAt: need.createdAt,
+      sessionId: need.conversationId,
+      sessionName: name,
+      adapterType: "agent",
+      turnId: null,
+      blockId: null,
+      version: null,
+      risk: "medium" as const,
+      title: `${name} is asking`,
+      description: need.question,
+      detail: need.blockedReason ? `Blocked: ${need.blockedReason}` : null,
+      ...(need.options.length ? { options: need.options } : {}),
+    };
+  });
+}
+
+/**
+ * Terminal sessions herdr reports as blocked — a native Claude/Codex/etc. at a
+ * permission or input prompt. Read-only: the phone can see what is being
+ * asked, and answering happens at that terminal.
+ */
+async function queryHerdrInboxItems(): Promise<MobileInboxItem[]> {
+  const items = await collectHerdrHostAttention().catch(() => []);
+  return items.map((item) => ({
+    id: item.id,
+    kind: "native_attention" as const,
+    createdAt: item.updatedAt,
+    sessionId: item.sessionId,
+    sessionName: item.sessionName,
+    adapterType: item.harness,
+    turnId: null,
+    blockId: null,
+    version: null,
+    risk: "medium" as const,
+    title: item.title,
+    description: item.summary,
+    detail: [item.detail, `herdr · ${item.location}`].filter(Boolean).join("\n"),
+  }));
+}
+
 function queryMobileInboxItems(bridge: Bridge): MobileInboxItem[] {
   const items: MobileInboxItem[] = [];
 
@@ -830,6 +1013,14 @@ const sessionRouter = t.router({
 
 // -- Mobile -----------------------------------------------------------------
 
+export const mobileAskSessionInputSchema = z.object({
+  sessionId: z.string().min(1),
+  harness: z.string().nullable().optional(),
+  cwd: z.string().nullable().optional(),
+  body: z.string(),
+  clientMessageId: z.string().nullable().optional(),
+});
+
 const mobileRouter = t.router({
   runtimeCapabilities: procedure
     .input(z.object({ projectRoot: z.string().optional() }).optional())
@@ -842,8 +1033,12 @@ const mobileRouter = t.router({
     .query(() => getMobileMeshStatus()),
 
   inbox: procedure
-    .query(({ ctx }) => ({
-      items: queryMobileInboxItems(ctx.bridge),
+    .query(async ({ ctx }) => ({
+      items: [
+        ...(await queryOperatorNeedInboxItems()),
+        ...(await queryHerdrInboxItems()),
+        ...queryMobileInboxItems(ctx.bridge),
+      ],
     })),
 
   pushSync: procedure
@@ -1179,6 +1374,12 @@ const mobileRouter = t.router({
       return getScoutMobileServiceBudgets();
     }),
 
+  // Fleet Velocity: the same trailing-7d smoothed activity line the web and
+  // Mac Home draw from /api/heartrate. The phone draws it small in its feed.
+  heartrate: procedure
+    .input(z.object({}).optional())
+    .query(() => queryHeartrate()),
+
   // Recent terminal sessions. No params; the phone just asks for the recent
   // sessions and gets one flat row per registry record (most recent first).
   terminalSessions: procedure
@@ -1192,10 +1393,55 @@ const mobileRouter = t.router({
   // the broker fresh each call (re-resolving the URL), so it survives broker
   // restarts where the singleton tail-fanout push would silently go stale, and
   // it never streams the full firehose across cellular when nobody's watching.
+  //
+  // The Agents feed on Home asks for `mode: "assistant-replies"`: each harness
+  // session's latest reply, Scout-started or not, the same slice the web feed
+  // reads from /api/tail/recent.
   tail: procedure
-    .input(z.object({ limit: z.number().optional() }).optional())
+    .input(z.object({
+      limit: z.number().optional(),
+      mode: z.literal("assistant-replies").optional(),
+      windowMs: z.number().int().positive().optional(),
+    }).optional())
     .query(async ({ input }) => {
-      return readScoutBrokerTailRecent(input?.limit ?? 50);
+      return readScoutBrokerTailRecent(input?.limit ?? 50, undefined, {
+        mode: input?.mode,
+        windowMs: input?.windowMs,
+      });
+    }),
+
+  // The Agents feed's session page: a harness session Scout didn't start has
+  // no conversation, only its transcript. Read-only — the same projection the
+  // web feed detail shows (the update, the steps behind it, files changed).
+  sessionUpdate: procedure
+    .input(z.object({
+      sessionId: z.string().min(1),
+      harness: z.string().nullable().optional(),
+      at: z.number(),
+    }))
+    .query(async ({ input }) => {
+      const ref = formatSessionRouteRef(input.harness ?? null, input.sessionId) ?? input.sessionId;
+      const payload = await loadSessionRefObservePayload(ref);
+      const data = payload?.data ?? null;
+      return {
+        update: toSessionUpdate(data, input.at),
+        cwd: data?.metadata?.session?.cwd ?? null,
+        model: data?.metadata?.session?.model ?? null,
+      };
+    }),
+
+  // Reply to a harness session Scout did not start (one the phone saw in the
+  // tail). Exact-session ask with fork-if-live: a session still open in the
+  // operator's terminal is continued as a new Scout-owned fork, never resumed
+  // in a second process. Expected refusals return { ok: false }, not errors.
+  askSession: procedure
+    .input(mobileAskSessionInputSchema)
+    .mutation(async ({ input }) => {
+      return askMobileHarnessSession(input, {
+        ask: askScoutQuestion,
+        senderId: resolveOperatorName().trim() || "operator",
+        fallbackCurrentDirectory: resolveMobileCurrentDirectory(),
+      });
     }),
 
   agentDetail: procedure
@@ -1499,8 +1745,21 @@ const historyRouter = t.router({
       return { query: input.query, matches: matches.slice(0, limit) };
     }),
 
+  // Raw transcript lines, newest 500 by default. The phone's session page
+  // pages backwards with `before` (a line index) + `limit`, and asks for
+  // `messages` only: the prompt and reply lines, without the tool results
+  // that make up most of a transcript's bytes. Older phones send neither.
   read: procedure
-    .input(z.object({ path: z.string() }))
+    .input(z.object({
+      path: z.string(),
+      before: z.number().int().nonnegative().optional(),
+      limit: z.number().int().positive().max(500).optional(),
+      messages: z.boolean().optional(),
+      // `steps`: prompts, replies, tool calls and their results, with the
+      // bulky parts (file contents, long outputs) trimmed here so a page
+      // stays small. The iPad Deck's lanes draw a turn from these.
+      steps: z.boolean().optional(),
+    }))
     .query(({ input }) => {
       if (!input.path.endsWith(".jsonl")) {
         throw new TRPCError({
@@ -1511,8 +1770,42 @@ const historyRouter = t.router({
       try {
         const content = readFileSync(input.path, "utf-8");
         const lines = content.split("\n").filter((l) => l.trim().length > 0);
-        const trimmed = lines.length > 500 ? lines.slice(-500) : lines;
-        return { path: input.path, lineCount: lines.length, lines: trimmed };
+        if (input.steps) {
+          const limit = input.limit ?? 120;
+          let index = Math.min(input.before ?? lines.length, lines.length) - 1;
+          const picked: string[] = [];
+          while (index >= 0 && picked.length < limit) {
+            const compact = compactTranscriptStepLine(lines[index]!);
+            // `_line` keeps step ids stable while the page's window moves.
+            if (compact) picked.push(`{"_line":${index},${compact.slice(1)}`);
+            index -= 1;
+          }
+          picked.reverse();
+          const start = index + 1;
+          return { path: input.path, lineCount: lines.length, lines: picked, start, hasOlder: start > 0 };
+        }
+        if (input.before === undefined && input.limit === undefined && !input.messages) {
+          const trimmed = lines.length > 500 ? lines.slice(-500) : lines;
+          return { path: input.path, lineCount: lines.length, lines: trimmed };
+        }
+        const limit = input.limit ?? 500;
+        let index = Math.min(input.before ?? lines.length, lines.length) - 1;
+        const picked: string[] = [];
+        while (index >= 0 && picked.length < limit) {
+          const line = lines[index]!;
+          if (!input.messages || isTranscriptMessageLine(line)) picked.push(line);
+          index -= 1;
+        }
+        picked.reverse();
+        const start = index + 1;
+        let hasOlder = start > 0;
+        if (input.messages) {
+          hasOlder = false;
+          for (let i = start - 1; i >= 0; i -= 1) {
+            if (isTranscriptMessageLine(lines[i]!)) { hasOlder = true; break; }
+          }
+        }
+        return { path: input.path, lineCount: lines.length, lines: picked, start, hasOlder };
       } catch (err: any) {
         throw new TRPCError({
           code: "INTERNAL_SERVER_ERROR",
@@ -1766,9 +2059,14 @@ export const bridgeRouter = t.router({
 
   // turn/interrupt
   turnInterrupt: procedure
-    .input(z.object({ sessionId: z.string() }))
+    .input(z.object({ sessionId: z.string(), turnId: z.string().min(1).optional() }))
     .mutation(({ input, ctx }) => {
-      ctx.bridge.interrupt(input.sessionId);
+      try {
+        if (input.turnId) ctx.bridge.interruptTurn(input.sessionId, input.turnId);
+        else ctx.bridge.interrupt(input.sessionId);
+      } catch (error) {
+        throw toTRPCRegistryError(error) ?? error;
+      }
       return { ok: true };
     }),
 

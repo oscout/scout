@@ -42,6 +42,41 @@ describe("SCO-070 cardless sessions", () => {
     });
   });
 
+  test("an ask from an unseen non-git folder goes headless instead of blocking on Claude's trust dialog", () => {
+    // Regression: `scout ask --harness claude --new` from Linea's support folder
+    // spawned tmux Claude, which sat on "Yes, I trust this folder" forever.
+    const folder = "/Users/me/Library/Application Support/Linea/Scout";
+    const untrusted = () => false;
+    expect(resolveCardlessSessionSpawnTarget("claude", { cwd: folder, isClaudeFolderTrusted: untrusted }))
+      .toEqual({ harness: "claude", transport: "claude_stream_json" });
+    expect(resolveCardlessSessionSpawnTarget(undefined, { cwd: folder, isClaudeFolderTrusted: untrusted }))
+      .toEqual({ harness: "claude", transport: "claude_stream_json" });
+    // A folder Claude already trusts keeps the interactive tmux default.
+    expect(resolveCardlessSessionSpawnTarget("claude", { cwd: PROJECT, isClaudeFolderTrusted: () => true }))
+      .toEqual({ harness: "claude", transport: "tmux" });
+    // An explicit transport override still wins.
+    expect(resolveCardlessSessionSpawnTarget("claude", {
+      cwd: folder,
+      claudeTransport: "tmux",
+      isClaudeFolderTrusted: untrusted,
+    })).toEqual({ harness: "claude", transport: "tmux" });
+    // Other harnesses have no trust dialog and are unaffected.
+    expect(resolveCardlessSessionSpawnTarget("codex", { cwd: folder, isClaudeFolderTrusted: untrusted }))
+      .toEqual({ harness: "codex", transport: "codex_app_server" });
+  });
+
+  test("fails closed on an explicit opencode2 request instead of defaulting to V1 ACP", () => {
+    // `opencode2` is the product-V2 integration, not an alias for `opencode`.
+    // An explicit unsupported harness must error; only an omitted harness gets
+    // the documented claude default.
+    expect(resolveCardlessSessionSpawnTarget("opencode")).toEqual({
+      harness: "opencode",
+      transport: "opencode_acp",
+    });
+    expect(() => resolveCardlessSessionSpawnTarget("opencode2"))
+      .toThrow('cannot auto-spawn a session for harness "opencode2"');
+  });
+
   test("formats display names as {project}-{alias}", () => {
     expect(cardlessSessionDisplayName({ handle: "project-hooke", projectName: "scope" })).toBe("scope-hooke");
     expect(cardlessSessionDisplayName({ handle: "archimedes", projectName: "scope" })).toBe("scope-archimedes");
@@ -67,6 +102,27 @@ describe("SCO-070 cardless sessions", () => {
       nativeSurface: "codex_app",
       configurationScope: "operator_inherited",
     }));
+  });
+
+  test("attached placement is Codex-only and marks the endpoint to attach, not spawn", () => {
+    expect(resolveSessionPlacement("codex", "attached")).toBe("attached");
+    expect(() => resolveSessionPlacement("claude", "attached"))
+      .toThrow("claude supports background placement only");
+
+    const attached = buildCardlessSessionEndpoint({
+      sessionId: "sess-attached",
+      transport: "codex_app_server",
+      harness: "codex",
+      cwd: PROJECT,
+      nodeId: "node-1",
+      placement: "attached",
+    });
+    expect(attached.metadata).toEqual(expect.objectContaining({
+      placement: "attached",
+      codexConnection: "attach",
+      configurationScope: "server_inherited",
+    }));
+    expect(attached.metadata?.nativeSurface).toBeUndefined();
   });
 
   test("registers a session-kind actor + endpoint with no card", async () => {

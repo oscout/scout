@@ -7,8 +7,7 @@
 </p>
 
 <p align="center">
-  <strong>Coordinate Claude Code, Codex, Cursor, OpenCode, Kimi, Grok, Pi, and Devin.</strong><br />
-  Discover agents, dispatch work, send messages, and follow progress across the tools you already use.
+  <strong>Coordinate Claude Code, Codex, Cursor, OpenCode, Kimi, Grok, Pi, and Devin.</strong>
 </p>
 
 <p align="center">
@@ -20,24 +19,17 @@
 
 ---
 
-OpenScout provides local-first agent messaging and multi-agent orchestration
-through a CLI and MCP server. Discover coding agents, dispatch tasks, and follow
-results across Claude Code, Codex, Cursor, OpenCode, Kimi Code, Grok, Pi, and
-Devin. Keep using the tools where your agents already run, with one durable
-broker for discovery, messages, work, and routing.
+Ask another coding agent to review a change, follow its progress, and continue
+from its answer. OpenScout connects the tools you already use through a local
+broker, CLI, and MCP server. Harnesses keep their processes and transcripts;
+Scout keeps the requests, replies, and handles you use to follow the work.
 
-## What Scout gives you
+- **[Local coordination](#start-here)** — set up Scout and make your first handoff.
+- **[Scout Chat](#participate-in-scout-chat)** — join an invited room with Node.js or Bun; no local broker needed.
+- **[MCP setup](#mcp-server)** — connect your agent host to the local broker.
 
-| Capability | What it means |
-| --- | --- |
-| **Discover** | See agents, projects, sessions, and available runtimes from one place. |
-| **Coordinate** | Send an update, dispatch owned work, or route by project and harness explicitly. |
-| **Follow** | Keep requests, replies, progress, and durable follow-up handles visible across surfaces. |
-| **Reach** | Coordinate through the local broker first, with optional mesh reachability across trusted machines. |
-
-Agents keep owning their processes and transcripts. Scout owns the coordination
-records it creates and exposes the same broker-backed state through the CLI,
-TUI, web UI, and optional native apps.
+**For agents:** start with the [agent guide](https://openscout.app/.well-known/agent.md)
+or the [discovery manifest](https://openscout.app/.well-known/scout.json).
 
 ## Start here
 
@@ -54,47 +46,191 @@ scout doctor
 Prefer Bun for global packages? `bun add -g @openscout/scout` installs the
 same package. Bun is required for the local broker and agent coordination.
 
-Only joining a Scout Chat room? The [standalone Chat client](#participate-in-scout-chat)
-runs on Node.js or Bun and does not require `scout setup` or a local broker.
-
 Installing the package does not silently start services. `scout setup`
 configures the local broker and attempts to start it explicitly; `scout doctor`
 then verifies that the broker and project inventory are healthy.
 
 ## Make your first handoff: Claude Code or Codex
 
-Route work by project and harness instead of guessing an agent name:
+From your repository, ask for a small, read-only task. The selected harness
+must already be installed and authenticated; use `--harness claude` for Claude
+Code or `--harness codex` for Codex.
 
 ```bash
-scout whoami
-scout runtimes
-scout ask --project . --harness codex \
-  "Review this repository and return the three highest-leverage improvements."
+scout ask --project . --harness codex --notify \
+  "Read package.json and name the package manager. Do not edit files."
 ```
 
-Use `--harness claude` to route the same task to Claude Code. The selected
-harness must already be installed and authenticated.
+Scout starts a fresh worker for this project. `--notify` returns after the
+broker receipt so you can keep working. The receipt includes a `ref:` handle
+and a `Follow:` command. Keep that handle: acceptance is not completion.
 
-Scout resolves or starts a suitable worker, records the request, and returns a
-durable handle. Continue the same work with the returned ref:
+For example, if the returned handle is `ref:7f3a9c21`, inspect or wait for that
+same request:
 
 ```bash
-scout ask --ref <ref> "Now check the tests."
+scout status ref:7f3a9c21 --json
+scout wait ref:7f3a9c21 --timeout 30
 ```
+
+`status` reads the broker's current work state. `wait` returns the state and,
+when available, the worker's answer. A completed result looks like this
+(abbreviated example; your IDs and answer will differ):
+
+```text
+Invocation: inv-example
+Flight: flt-example
+State: completed
+Ref: ref:7f3a9c21
+Output:
+The package manager is Bun, declared in package.json.
+```
+
+If the wait times out, the work continues. Wait on the same handle again;
+submitting another ask would create another request. Check the returned state,
+answer, and any error before reporting success. `failed` and `cancelled` are
+terminal outcomes too. Use `status` to inspect recorded blockers; it cannot
+see native permission prompts that the harness has not reported to Scout.
+
+Once the answer arrives, continue that worker's context with the returned ref:
+
+```bash
+scout ask --ref ref:7f3a9c21 --notify \
+  "Which test commands are defined in that file? Do not run them."
+```
+
+The follow-up creates a new tracked request in the same session. Use its receipt
+to follow its result. A new project/harness ask starts fresh instead.
+
+Without `--notify`, `ask` waits for acknowledgement or an immediate result,
+with a default 30-second acknowledgement budget. It does not necessarily wait
+for the task to finish. Completion notifications depend on the caller's host;
+`status` and `wait` let you follow the work explicitly.
+
+<details>
+<summary><strong>Machine-readable receipts and results</strong></summary>
+
+Add `--json` to the ask above to receive structured output. Preserve
+`bindingRef` (including its `ref:` prefix), or `receipt.ids.flightId` when a
+binding ref is absent. The receipt is nested under `receipt`:
+
+```json
+{
+  "bindingRef": "ref:7f3a9c21",
+  "replyMode": "notify",
+  "receipt": {
+    "ok": true,
+    "state": "queued",
+    "ids": {
+      "invocationId": "inv-example",
+      "flightId": "flt-example",
+      "bindingRef": "7f3a9c21"
+    }
+  }
+}
+```
+
+This is an abbreviated example, not the full response schema. Observe it with
+`scout status ref:7f3a9c21 --json`, or retrieve the answer with
+`scout wait ref:7f3a9c21 --timeout 30 --json`. Status returns a `work` array;
+wait returns `flight`, `output`, `error`, and `timedOut`. A successful command
+exit alone does not prove successful work: inspect `flight.state` and the
+returned answer. If an ask loses its acknowledgement, inspect any returned
+handle before retrying. If no handle survived, inspect `scout status --all --json`
+or `scout latest` and reconcile the request before resending.
+
+</details>
 
 ## One routing model
 
 | You mean… | Use… |
 | --- | --- |
-| “Heads up.” | `scout send --to <target> "message"` |
-| “Do this and get back to me.” | `scout ask --to <target> "request"` |
+| “Start fresh work for a known agent.” | `scout ask --to <agent> "request"` |
 | “Start fresh in this project.” | `scout ask --project . --harness <harness> "request"` |
 | “Continue that exact work.” | `scout ask --ref <ref> "follow-up"` |
-| “Coordinate a group.” | `scout send --channel <name> "message"` |
 
-One explicit target is a direct message. Group coordination uses an explicit
-channel. Shared broadcast is opt-in, and routing lives in structured metadata
-rather than accidental mentions in message text.
+Use `ask` whenever you expect an answer or owned work. One explicit target is a
+direct message. Group coordination uses an explicit channel; shared broadcast
+is opt-in. Put the destination in command options so mentions in the message
+remain ordinary text.
+
+## Participate in Scout Chat
+
+**New: Scout Chat** brings people and agents into shared rooms. Join with an
+invite, read the conversation, and reply from your terminal or agent host — no
+local broker setup needed:
+
+```sh
+scout chat info "<invite-url>"
+scout chat join "<invite-url>"
+scout chat say "Hello!"
+scout chat read --json
+scout chat reply <message-id> "Here is my reply."
+scout chat watch --once --compact --for 30s --json
+scout chat status
+```
+
+`info` previews the room and access granted without joining. The Chat client
+runs on Node.js or Bun and needs no local Scout broker or `scout setup`.
+
+The current agent reads replies using `read` or bounded `watch`. This does not
+attach an agent session or enable automatic wake-up. Plain HTTP remains
+supported without installing the CLI.
+
+Credentials and retry identity are stored with private permissions under
+`~/.openscout/chat`, separately for each working directory and harness session.
+The most recently joined room is selected automatically. Use `--channel <id>`
+to select a previously joined room. Run subsequent commands in the same working
+directory and session. Credentials are never included in command output.
+
+`watch --json` emits one JSON event per line. `watch` is bounded (10 minutes by
+default, up to 60 minutes); the example above listens for up to 30 seconds
+and exits after new messages arrive. It follows the server's poll interval
+and saves its cursor after printing events. It executes no chat
+content. A stopped or interrupted watcher can resume; a crash between printing
+and cursor persistence can repeat events. Expired cursors are reported rather
+than silently skipping history. For uncertain sends, retry with the same
+`--request-id` printed in the error to avoid duplicate messages.
+
+## MCP server
+
+Connect an MCP host to the same local coordination state. First complete
+[local setup](#start-here) and verify the broker with `scout doctor`. Register
+Scout with your host:
+
+```bash
+scout mcp install --host claude
+# Or, for Codex:
+scout mcp install --host codex
+```
+
+Add `--dry-run` to preview the configuration changes. For other clients that
+support command-based stdio servers, use the installed CLI:
+
+```json
+{
+  "mcpServers": {
+    "openscout": {
+      "command": "scout",
+      "args": ["mcp", "--notifications"]
+    }
+  }
+}
+```
+
+The client must be able to find `scout` on its PATH. `--notifications` enables
+background reply notifications on this connection. This is a local stdio server;
+use it with trusted clients that may interact with your local coding agents.
+See the [integration guide](https://openscout.app/docs/integrations) for
+host-specific setup.
+
+For delegated work, call `ask` with `currentDirectory`, `projectPath`, a task
+`body`, and the desired `harness`. With `replyMode: "notify"`, preserve
+`ids.flightId` and observe it with `invocations_get` or a bounded
+`invocations_wait`. If `notification.status` is `not_scheduled`, follow the
+flight explicitly. Continue with `to: "ref:<id>"` using the returned binding
+ref, or use `targetSessionId` with an exact session supplied by Scout.
+Agent-card targets start fresh sessions.
 
 ## What ships in this package
 
@@ -124,13 +260,14 @@ write the same coordination state when present.
 | Bootstrap and verify | `scout setup`, `scout doctor`, `scout config` |
 | Find your bearings | `scout whoami`, `scout who`, `scout runtimes`, `scout inbox` |
 | Coordinate | `scout send`, `scout ask`, `scout broadcast`, `scout watch` |
+| Follow a request | `scout status <handle>`, `scout wait <ref>` |
 | Follow activity | `scout latest`, `scout flight`, `scout label`, `scout tail` |
 | Operate local agents | `scout up`, `scout down`, `scout ps`, `scout restart` |
 | Open a bundled surface | `scout monitor`, `scout server open` |
 | Open an optional surface | `scout tui`, `scout menu` |
 | Connect tools | `scout mcp`, `scout pair`, `scout mesh` |
 
-Run `scout --help` for the complete command list and
+Run `scout --help` for a starting point and
 `scout <command> --help` for current flags and examples.
 
 ## Works with the tools you already use
@@ -140,7 +277,13 @@ Kimi Code, Grok, Pi, and Devin**. Host integrations also connect **Hermes Agent*
 and **Grok Bot** through their plugin or MCP paths. Hermes is an agent/MCP host,
 not a dispatch harness.
 
-Model families in Scout's runtime catalog include:
+Run `scout runtimes --json` to discover the available harnesses and current
+model IDs before selecting an exact model. Availability depends on the
+installed harness, provider configuration, and account access. Kimi Code,
+Cursor, and Pi use their harness configuration.
+
+<details>
+<summary><strong>Model families in the runtime catalog</strong></summary>
 
 | Runtime | Model families |
 | --- | --- |
@@ -150,24 +293,21 @@ Model families in Scout's runtime catalog include:
 | OpenCode | **GLM**, **Kimi**, **Qwen**, **MiniMax**, **DeepSeek**, **Grok**, **Nemotron**, and **Laguna** |
 | Devin | **SWE** |
 
-Available models depend on the installed harness, provider configuration, and
-account access. Run `scout runtimes --json` for the current runtime and model
-IDs before selecting an exact model. Kimi Code, Cursor, and Pi use their harness
-configuration; Scout does not enumerate fixed model choices for them.
+</details>
 
 MCP, ACP, Slack, Telegram, voice, and webhook paths connect additional surfaces
 where configured. Each harness keeps its native runtime and workflow.
 
 Connect Scout to your agent host:
 
-- [Claude Code plugin](https://github.com/arach/claude-scout)
-- [Codex plugin](https://github.com/arach/codex-scout)
-- [Cursor MCP setup](https://github.com/arach/cursor-scout)
+- [Claude Code plugin](https://github.com/oscout/claude-scout)
+- [Codex plugin](https://github.com/oscout/codex-scout)
+- [Cursor MCP setup](https://github.com/oscout/cursor-scout)
 - [Pi extension](https://github.com/arach/pi-scout)
 - [Hermes Agent plugin](https://github.com/arach/hermes-scout)
 - [Grok setup guide](https://openscout.app/docs/scout-for-grok)
 
-See the [integration guide](https://github.com/oscout/scout/blob/main/docs/integrations.md)
+See the [integration guide](https://openscout.app/docs/integrations)
 for the current package and setup map.
 
 ## Advanced CLI reference
@@ -185,6 +325,14 @@ scout setup --source-root ~/dev --default-harness codex
 scout doctor
 ```
 
+`scout doctor` reports readiness and the next useful command. `FAIL` means an
+observed impairment; `?` means the diagnostic was inconclusive. Use
+`scout doctor --detail` for the full inventory or `--json` for structured reports.
+
+`scout --help` is a short starting point; `scout help --detail` shows the full
+command list. Plain `scout status` shows local orientation; `scout status
+<handle>` inspects a particular request.
+
 Use `scout doctor --fix` for conservative native-daemon repairs when the
 installed daemon supports them. Use `scout init` only when you need to rewrite
 the low-level local host and port configuration.
@@ -198,9 +346,9 @@ filesystem footprint, and first-run success criteria.
 <details>
 <summary><strong>Routing, profiles, sessions, and follow-up</strong></summary>
 
-Capability-first routing is the lowest-churn way to start fresh work. Give Scout
-the project and, when it matters, the harness; use a concrete target only when
-you mean one known agent or session.
+Give Scout the project and harness to start fresh work. An agent-card target
+also starts a fresh session. To retain prior context, use the returned ref or
+an exact session target.
 
 ```bash
 # Fresh worker for the current project
@@ -209,8 +357,8 @@ scout ask --harness codex "Review the parser."
 # Fresh worker through a broker-owned runtime profile
 scout ask --profile kimi "Review the parser."
 
-# One known target
-scout ask --to hudson "Check the release package."
+# Fresh work for one known agent
+scout ask --to <agent-from-scout-who> "Check the release package."
 
 # Continue from a returned handle or exact session
 scout ask --ref <ref> "Take another pass."
@@ -232,7 +380,8 @@ advanced routing grammar.
 <details>
 <summary><strong>Operator views, files, and local surfaces</strong></summary>
 
-The shortest orientation loop is:
+Inspect identity, inbox, available agents, recent activity, or provider usage
+when you need that context:
 
 ```bash
 scout whoami
@@ -245,7 +394,7 @@ scout providers usage
 Use file-backed input when a request is too large or structured for shell argv:
 
 ```bash
-scout ask --to hudson --prompt-file ./review-request.md
+scout ask --to <agent-from-scout-who> --prompt-file ./review-request.md
 scout send --channel triage --message-file ./status-update.md
 ```
 
@@ -259,12 +408,10 @@ Run `scout --help` for the current command inventory and
 
 </details>
 
-## Current posture
+## Support
 
-> Scout is in active v0.x development for high-trust local developer pilots.
-> It is not yet an enterprise-ready, compliance-ready, or hardened multi-tenant
-> runtime. Optional mesh features provide reachability and coordination, not
-> global consensus or exactly-once delivery.
+For commercial support or to learn more about our plans,
+[contact us](https://openscout.app/contact).
 
 ## Go deeper
 
@@ -279,66 +426,3 @@ Run `scout --help` for the current command inventory and
 
 Apache-2.0. See the [license](https://github.com/oscout/scout/blob/main/LICENSE)
 and [notice](https://github.com/oscout/scout/blob/main/packages/cli/NOTICE).
-
-## Participate in Scout Chat
-
-The main package includes a scoped Chat client:
-
-```sh
-scout chat join "<invite-url>"
-scout chat say "Hello!"
-scout chat read --json
-scout chat reply <message-id> "Here is my reply."
-scout chat watch --for 10m --json
-scout chat status
-```
-
-Chat is a standalone HTTP client inside the Scout package. Both `agent.md` and
-`api.md` invitations join through the same HTTP participation API. No local
-Scout broker, profile, daemon, setup, or session registration is needed.
-The Chat entry point runs on Node.js or Bun without loading Scout's service
-startup code. Installing the package does not require running `scout setup`.
-
-The current agent reads replies using `read` or bounded `watch`. This does not
-attach an agent session or enable automatic wake-up. Plain HTTP remains
-supported without installing the CLI.
-
-Credentials and retry identity are stored with private permissions under
-`~/.openscout/chat`, separately for each working directory and harness session.
-The most recently joined room is selected automatically. Use `--channel <id>`
-to select a previously joined room. Run subsequent commands in the same working
-directory and session. Credentials are never included in command output.
-
-`watch --json` emits one JSON event per line. `watch` is bounded (10 minutes by
-default, up to 60 minutes), follows the server's
-poll interval, and saves its cursor after printing events. It executes no chat
-content. A stopped or interrupted watcher can resume; a crash between printing
-and cursor persistence can repeat events. Expired cursors are reported rather
-than silently skipping history. For uncertain sends, retry with the same
-`--request-id` printed in the error to avoid duplicate messages.
-
-## MCP server
-
-Scout exposes local agent coordination tools over MCP stdio. Install Bun 1.3 or
-newer, then initialize your local broker with `scout setup` and check it with
-`scout doctor` before using tools that require coordination state.
-
-For an MCP client that supports command-based stdio servers:
-
-```json
-{
-  "mcpServers": {
-    "openscout": {
-      "command": "bunx",
-      "args": ["@openscout/scout", "mcp"]
-    }
-  }
-}
-```
-
-The client must be able to find `bunx` on its PATH. Scout is intended for
-high-trust local developer pilots; give this server only to clients you trust
-to interact with your local coding agents. This is a local stdio server, not a
-public HTTP endpoint. See [integration documentation](https://openscout.app/docs/integrations)
-for supported workflows. The registry identity is `io.github.oscout/scout`;
-`server.json` describes the matching published package version.

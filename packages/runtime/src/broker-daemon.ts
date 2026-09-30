@@ -1,8 +1,13 @@
+import { GuestGrantStore } from "./guest-access.js";
+import { BrokerExternalSessionService } from "./broker-external-session-service.js";
+import { externalSessionConnections, devinSessionTransport } from "./external-session-transport.js";
 import { BrokerMessageHistory } from "./broker-message-history.js";
+import { startBrokerOtlpReceiver } from "./otlp/broker-lifecycle.js";
 import { memoryMaintenanceFromEnv } from "./broker-memory-maintenance.js";
 import { scoutbotIsolationMetadata } from "./scoutbot-isolation.js";
 import { randomUUID } from "node:crypto";
 import { createServer, type IncomingMessage } from "node:http";
+import { statSync } from "node:fs";
 import { mkdir, rename, unlink, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { hostname } from "node:os";
@@ -67,6 +72,17 @@ import {
   idleCardlessSessionExpiryCandidates,
 } from "./broker-cardless-session-reaper.js";
 import {
+  applyRegistryRetentionPlan,
+  createRegistryRetentionEvaluator,
+  registryRetentionPlan,
+} from "./broker-registry-retention.js";
+import {
+  resolveArchiveWeeks,
+  resolveRetentionWeeks,
+  retentionCutoff,
+} from "./retention-clock.js";
+import { planHistoryRotation, refineVerifiedRotation } from "./history-rotation.js";
+import {
   resolveAgentLabel,
   type BrokerRouteTargetInput,
 } from "./scout-dispatcher.js";
@@ -88,6 +104,7 @@ import {
   isLocalAgentSessionAliveAsync,
   invokeLocalAgentEndpoint,
   listRelayAgentTmuxSessionOwners,
+  listScoutLaunchedTmuxSessions,
   observeLocalAgentEndpointSession,
   loadRegisteredLocalAgentBindings,
   shutdownLocalSessionEndpoint,
@@ -117,7 +134,8 @@ import {
 import { replacePersistedActiveObservedSessionSeeds } from "./tail/service.js";
 import { ThreadEventPlane } from "./thread-events.js";
 import { invokeA2AHttpEndpoint } from "./a2a-http-endpoint.js";
-import { ensureOpenScoutCleanSlateSync, resolveOpenScoutSupportPaths } from "./support-paths.js";
+import { ensureOpenScoutCleanSlateSync, resolveOpenScoutSupportPaths, controlPlaneArchiveDirectory } from "./support-paths.js";
+import { archiveEvents, evaluateControlPlaneVacuum, type ControlPlaneVacuumCheck } from "./control-plane-archive.js";
 import { expandHomePath } from "./tool-resolution.js";
 import {
   requestScoutBrokerJson,
@@ -203,9 +221,11 @@ import {
   postMeshPeerJson,
 } from "./broker-mesh-forwarding-service.js";
 import {
+  startSessionOnPeers,
   wakeLocalHarnessSession,
   wakeSessionOnPeers,
   type LocalSessionWakeResult,
+  type MeshProjectSessionStartInput,
 } from "./broker-session-wake.js";
 import { BrokerMeshDiscoveryService } from "./broker-mesh-discovery-service.js";
 import { BrokerMeshHttpService } from "./broker-mesh-http-service.js";
@@ -364,6 +384,24 @@ const relayAgentIdleTtlMs = Number.parseInt(
   process.env.OPENSCOUT_RELAY_AGENT_IDLE_TTL_MS ?? String(DEFAULT_RELAY_AGENT_SESSION_IDLE_TTL_MS),
   10,
 );
+// Registry retention reaps rotation-old unreferenced registrations. The week
+// clock (OPENSCOUT_RETENTION_WEEKS, default 2 live calendar weeks) is the one
+// clock; OPENSCOUT_REGISTRY_RETENTION_MS remains only as an explicit rolling
+// override — 0 disables the sweep entirely, any positive value is clamped to
+// a one-hour floor.
+const retentionWeeks = resolveRetentionWeeks(process.env);
+const archiveWeeks = resolveArchiveWeeks(process.env);
+const registryRetentionOverrideMs = (() => {
+  const raw = process.env.OPENSCOUT_REGISTRY_RETENTION_MS;
+  if (raw === undefined || raw.trim() === "") return undefined;
+  const parsed = Number.parseInt(raw, 10);
+  if (parsed === 0) return 0;
+  if (!Number.isFinite(parsed) || parsed < 0) return undefined;
+  return Math.max(60 * 60_000, parsed);
+})();
+if (registryRetentionOverrideMs !== undefined) {
+  console.log(`[openscout-runtime] OPENSCOUT_REGISTRY_RETENTION_MS=${registryRetentionOverrideMs} overrides the week-based retention clock (OPENSCOUT_RETENTION_WEEKS=${retentionWeeks})`);
+}
 const runtimeHeartbeatIntervalMs = 30_000;
 const repoWatchServeCacheTtlMs = Number.parseInt(process.env.OPENSCOUT_REPO_WATCH_CACHE_TTL_MS ?? "1200000", 10);
 const tailRecentServeCacheTtlMs = Number.parseInt(process.env.OPENSCOUT_TAIL_RECENT_SERVE_CACHE_TTL_MS ?? "4000", 10);
@@ -398,6 +436,9 @@ const memoryMaintenance = memoryMaintenanceFromEnv(process.env);
 const historyCount=(value:string|undefined,fallback:number)=>{const n=Number(value);return Number.isSafeInteger(n)&&n>0?n:fallback;};
 // Experimental until the full packaged memory budget passes.
 const messageHistory=process.env.OPENSCOUT_BROKER_DISK_HISTORY !== "1" ? undefined : await BrokerMessageHistory.create(journalPath,{snapshotReaders:historyCount(process.env.OPENSCOUT_BROKER_HISTORY_SNAPSHOT_READERS,2),coldReaders:historyCount(process.env.OPENSCOUT_BROKER_HISTORY_COLD_READERS,4)});
+if (messageHistory && retentionWeeks > 0) {
+  console.warn("[openscout-runtime] history rotation: message eviction is not implemented under OPENSCOUT_BROKER_DISK_HISTORY; messages are retained until that lands");
+}
 const journal = new FileBackedBrokerJournal(journalPath, {
   messageHistory,
   progressiveStartup: true,
@@ -410,7 +451,13 @@ const initialSnapshot = journal.snapshot();
 assertNoReservedStoredAgentNames(initialSnapshot.agents, { localNodeId: nodeId });
 
 const sqliteDisabled = process.env.OPENSCOUT_DISABLE_SQLITE === "1";
-const runtime = createInMemoryControlRuntime(initialSnapshot, { localNodeId: nodeId });
+// Retired actor tombstones aren't visible in the snapshot projection — the
+// journal tracked them during replay so the runtime can fence stale
+// whole-record roster writes that would resurrect a deleted member.
+const runtime = createInMemoryControlRuntime(initialSnapshot, {
+  localNodeId: nodeId,
+  retiredActorIds: journal.retiredActorIds(),
+});
 replaceControlEventBacklog(runtime.recentEvents(500), 500);
 if (!sqliteDisabled) {
   await mkdir(dirname(dbPath), { recursive: true });
@@ -453,6 +500,14 @@ const nodeIdentityKeyId = nodeKeyId(nodeIdentity.publicKey);
 const nodeIdentityFingerprint = nodeFingerprint(nodeIdentity.publicKey);
 const brokerBootedAt = Date.now();
 const trustedPeerStore = sharedControlPlaneStore;
+// Guest grants (docs/proposals/scout-tailscale.md) share the control-plane
+// database but never the trusted_peers table or its tiers.
+const guestGrantStore = sharedControlPlaneStore
+  ? new GuestGrantStore(
+      sharedControlPlaneStore.routeAliasDatabase,
+      (keyId) => Boolean(trustedPeerStore?.trustedPeer(keyId)),
+    )
+  : null;
 // Bind controller is assigned after the HTTP server stack is built; the gate
 // reads forceRemoteEnforce via this ref so §11.6 can key off live listeners.
 let meshBindController: MeshBindController | null = null;
@@ -464,13 +519,20 @@ const meshIngressGate = createMeshIngressGate({
     const peer = trustedPeerStore?.trustedPeer(keyId);
     return peer ? { publicKey: peer.publicKey, tier: peer.tier } : undefined;
   },
+  lookupGuest: (keyId) => {
+    const grant = guestGrantStore?.activeByKeyId(keyId);
+    return grant ? { publicKey: grant.publicKey, grantId: grant.id } : undefined;
+  },
   nonceClaim: trustedPeerStore
     ? {
         claim: (keyId, nonce, now) =>
           trustedPeerStore.claimPeerNonce(keyId, nonce, now, PEER_AUTH_MAX_SKEW_MS),
       }
     : new PeerNonceCache(),
-  logger: { warn: (message, detail) => console.warn(message, detail) },
+  logger: {
+    warn: (message, detail) =>
+      detail === undefined ? console.warn(message) : console.warn(message, detail),
+  },
   forceRemoteEnforce: () => meshBindController?.hasNonLoopbackListener() ?? false,
 });
 const trustEnrollmentService = new TrustEnrollmentService({
@@ -628,15 +690,24 @@ const controlStreams = new BrokerControlStreamService({
 });
 const operatorActorId = "operator";
 const durableRecords = new BrokerDurableRecordStore({
+  localNodeId: nodeId,
   runtime,
   durableStore,
   knownInvocations,
+  // Queried before agent/actor deletes so journaled entries carry the
+  // membership preimage the conversation projection needs (member rows
+  // cascade-delete with the actor).
+  memberConversationIds: sharedControlPlaneStore
+    ? (actorId: string) => sharedControlPlaneStore.memberConversationIds(actorId)
+    : undefined,
 });
 const upsertNodeDurably = durableRecords.upsertNode;
 const upsertActorDurably = durableRecords.upsertActor;
 const upsertAgentDurably = durableRecords.upsertAgent;
 const upsertEndpointDurably = durableRecords.upsertEndpoint;
 const deleteEndpointDurably = durableRecords.deleteEndpoint;
+const deleteAgentDurably = durableRecords.deleteAgent;
+const deleteActorDurably = durableRecords.deleteActor;
 const upsertConversationDurably = durableRecords.upsertConversation;
 const upsertBindingDurably = durableRecords.upsertBinding;
 const recordCollaborationDurably = durableRecords.recordCollaboration;
@@ -652,7 +723,7 @@ const conversationService = new BrokerConversationService({
   operatorDisplayName: operatorActorDisplayName,
   createChannelId: () => mintChannelId(randomUUID),
   upsertActor: upsertActorDurably,
-  upsertConversation: upsertConversationDurably,
+  updateConversation: durableRecords.updateConversation,
 });
 const meshDiscoveryService = new BrokerMeshDiscoveryService({
   nodeId,
@@ -741,25 +812,16 @@ const deliveryRouter = new BrokerDeliveryRouter({
   wakeExactHarnessSession: async (input) => {
     const wake = await wakeLocalSessionForBroker(input);
     if (wake.ok) {
-      return { ok: true };
+      return wake.forkedSession ? { ok: true, forkedSession: wake.forkedSession } : { ok: true };
     }
     if (wake.reason !== "session_unknown") {
       return wake;
     }
     // T4: this machine's harness store misses — ask trusted reachable peers to
     // wake the session in theirs and adopt the winning peer-owned endpoint.
-    const trustedNodeIds = new Set(
-      trustedPeerStore?.listTrustedPeers().flatMap((peer) => peer.nodeId ? [peer.nodeId] : []) ?? [],
-    );
-    const peers = Object.values(runtime.snapshot().nodes).filter((node) =>
-      node.id !== nodeId
-      && node.meshId === meshId
-      && trustedNodeIds.has(node.id)
-      && isReachableMeshNode(node)
-    );
     const peerWake = await wakeSessionOnPeers({
       localNodeId: nodeId,
-      peers,
+      peers: trustedReachableMeshPeers(),
       postJson: (brokerBaseUrl, path, payload) => postMeshPeerJson(brokerBaseUrl, path, payload, daemonMeshPeerFetch),
       registry: { upsertActor: upsertActorDurably, upsertEndpoint: persistEndpoint },
       log: (message) => console.log(message),
@@ -1190,8 +1252,10 @@ const flightLifecycleService = new BrokerFlightLifecycleService({
   updateDeliveryStatusIf: deliveryStore.updateDeliveryStatusIf,
   promoteInvocationFlightToWork,
   maybeForwardFlightToAuthority: (flight) => meshForwardingService.maybeForwardFlightToAuthority(flight),
-  isInvocationActive: (invocationId) => localInvocationService.hasActiveInvocation(invocationId),
+  isInvocationActive: (invocationId) => localInvocationService.hasActiveInvocation(invocationId) || externalSessionService.hasPendingInvocation(invocationId),
   onTerminalFlight: async ({ flight, invocation }) => {
+    if (invocation) void externalSessionService.forwardResult(invocation, flight)
+      .catch((error) => console.error("[openscout-runtime] external result delivery failed", error));
     // Role lifecycle (orchestrator post_ask_summary, etc.). Best-effort; never
     // fail the flight record path. Uses a short-lived SQLite connection so we
     // don't hold the projection store lock.
@@ -1324,6 +1388,275 @@ async function sweepIdleCardlessSessions(): Promise<void> {
   }
 }
 
+/**
+ * Remove rotation-old, unreferenced registry records — retired endpoints, then
+ * agents, then actors. The plan comes from the in-memory snapshot; agents and
+ * actors get a second, authoritative reference check against SQLite so journal
+ * replay lag can never turn into a dangling FK delete.
+ */
+async function sweepRegistryRetention(): Promise<void> {
+  if (registryRetentionOverrideMs === 0) return;
+  if (registryRetentionOverrideMs === undefined && retentionWeeks <= 0) return;
+  // The boundary is recomputed per sweep: the week clock means a new cutoff
+  // only when the calendar week rolls over; the ms override stays rolling.
+  const cutoff = registryRetentionOverrideMs !== undefined
+    ? Date.now() - registryRetentionOverrideMs
+    : retentionCutoff(Date.now(), retentionWeeks);
+  // SQLite's actors.created_at is authoritative age evidence for rows
+  // journaled before actor upserts carried createdAt.
+  let actorCreatedAtById: Map<string, number> | undefined;
+  try {
+    actorCreatedAtById = sharedControlPlaneStore?.actorCreatedAtById();
+  } catch {
+    actorCreatedAtById = undefined;
+  }
+  const plan = registryRetentionPlan(runtime.snapshot(), {
+    nodeId,
+    cutoff,
+    actorCreatedAtById,
+  });
+  const total = plan.endpointIds.length + plan.agentIds.length + plan.actorIds.length;
+  if (total === 0) return;
+
+  const referenceCount = (kind: "agent" | "actor", id: string): number => {
+    if (!sharedControlPlaneStore) return 0;
+    try {
+      return kind === "agent"
+        ? sharedControlPlaneStore.agentReferenceCount(id)
+        : sharedControlPlaneStore.actorReferenceCount(id);
+    } catch {
+      // An unreadable store must fail closed: keep the record.
+      return Number.MAX_SAFE_INTEGER;
+    }
+  };
+
+  // Guards run inside the serialized durable writer against fresh canonical
+  // state — a revival or reference queued ahead of the delete wins, and the
+  // SQLite reference count stays an additional veto evaluated in the same
+  // write (the projection can lag the journal, so it is a veto, not the sole
+  // live-reference authority).
+  const evaluator = createRegistryRetentionEvaluator({
+    nodeId,
+    cutoff,
+    actorCreatedAtById,
+  });
+
+  let failureCount = 0;
+  const removed = await applyRegistryRetentionPlan(plan, {
+    deleteEndpoint: (endpointId) =>
+      deleteEndpointDurably(endpointId, {
+        eligible: (snapshot) => evaluator.endpointEligible(snapshot, endpointId),
+      }),
+    deleteAgent: (agentId) =>
+      deleteAgentDurably(agentId, {
+        eligible: (snapshot) => {
+          const verdict = evaluator.agentEligible(snapshot, agentId);
+          if (!verdict.ok) return verdict;
+          return referenceCount("agent", agentId) > 0
+            ? { ok: false, reason: "sqlite-reference" }
+            : { ok: true };
+        },
+      }),
+    deleteActor: (actorId) =>
+      deleteActorDurably(actorId, {
+        eligible: (snapshot) => {
+          const verdict = evaluator.actorEligible(snapshot, actorId);
+          if (!verdict.ok) return verdict;
+          return referenceCount("actor", actorId) > 0
+            ? { ok: false, reason: "sqlite-reference" }
+            : { ok: true };
+        },
+      }),
+  }, {
+    onProgress: (completed, totalCount) => {
+      console.log(`[openscout-runtime] registry retention ${completed}/${totalCount}`);
+    },
+    onPaceAdjust: (newBatchSize) => {
+      console.warn(`[openscout-runtime] registry retention batch exceeded 5s — batch size halved to ${newBatchSize}, yielding 250ms between batches`);
+    },
+    onFailure: (category, id, error) => {
+      // First few failures logged individually; the rollup lands in the
+      // summary line so a pathological sweep can't flood the log.
+      if (failureCount++ < 5) {
+        console.warn(`[openscout-runtime] registry retention ${category} delete failed for ${id}:`, error instanceof Error ? error.message : error);
+      }
+    },
+  });
+  const skippedCount = removed.skipped.endpoints + removed.skipped.agents + removed.skipped.actors;
+  if (removed.endpoints + removed.agents + removed.actors > 0 || skippedCount > 0 || removed.failures > 0) {
+    console.log(`[openscout-runtime] registry retention removed ${removed.endpoints} endpoints, ${removed.agents} agents, ${removed.actors} actors (older than ${new Date(cutoff).toISOString()})${skippedCount > 0 ? ` — skipped ${skippedCount} (vetoed at write time)` : ""}${removed.failures > 0 ? ` — ${removed.failures} delete(s) failed` : ""}`);
+  }
+}
+
+// Hot-set history rotation: the journal + in-memory snapshot keep only the
+// live week windows; SQLite keeps everything. The boundary AND the positive
+// per-record verification run INSIDE the serialized writer — a write queued
+// ahead of the rotation must finish projecting before the rotate marker is
+// journaled, so the database provably holds the rows the hot set is about
+// to forget. The marker carries exactly the verified id sets; apply and
+// compaction doom only those lines and never recompute eligibility.
+async function rotateHistory(): Promise<void> {
+  if (retentionWeeks <= 0) {
+    return;
+  }
+  const cutoff = retentionCutoff(Date.now(), retentionWeeks);
+  if (journal.historyRotationCutoff() === cutoff) {
+    return;
+  }
+  const countsOf = (plan: {
+    messageIds: ReadonlySet<string>;
+    invocationIds: ReadonlySet<string>;
+    flightIds: ReadonlySet<string>;
+    deliveryIds: ReadonlySet<string>;
+    deliveryAttemptIds: ReadonlySet<string>;
+    collaborationEventIds: ReadonlySet<string>;
+  }) => ({
+    messages: plan.messageIds.size,
+    flights: plan.flightIds.size,
+    invocations: plan.invocationIds.size,
+    deliveries: plan.deliveryIds.size,
+    deliveryAttempts: plan.deliveryAttemptIds.size,
+    collaborationEvents: plan.collaborationEventIds.size,
+  });
+  type RotationOutcome =
+    | { skipped: string }
+    | {
+        rotated: true;
+        evicted: ReturnType<typeof countsOf>;
+        retained: ReturnType<typeof countsOf>;
+        retainedIds: {
+          messageIds: string[];
+          invocationIds: string[];
+          flightIds: string[];
+          deliveryIds: string[];
+          deliveryAttemptIds: string[];
+          collaborationEventIds: string[];
+        };
+      }
+    | null;
+  const outcome: RotationOutcome = await durableStore.runWrite(async () => {
+    const boundary = await durableStore.awaitProjectionBoundary();
+    if (!boundary.ok) {
+      return { skipped: boundary.reason };
+    }
+    const snapshot = journal.snapshot();
+    const plan = planHistoryRotation(
+      snapshot,
+      cutoff,
+      journal.historyRotationContext(),
+    );
+    const { present, missing } = await durableStore.verifyPersisted(plan);
+    // Re-run the dependency closure over the verified answer: a record that
+    // could not be proven durable stays live, so every candidate connected
+    // to it — referents and dependents — stays journaled too. Eviction is
+    // all-or-nothing per connected component.
+    const attemptsById = journal.deliveryAttemptsById();
+    const { evictable, retained } = refineVerifiedRotation(present, missing, {
+      invocation: (id) => snapshot.invocations[id],
+      flight: (id) => snapshot.flights[id],
+      delivery: (id) => journal.getDelivery(id),
+      deliveryAttempt: (id) => attemptsById.get(id),
+    });
+    const evicted = {
+      messageIds: [...evictable.messageIds],
+      invocationIds: [...evictable.invocationIds],
+      flightIds: [...evictable.flightIds],
+      deliveryIds: [...evictable.deliveryIds],
+      deliveryAttemptIds: [...evictable.deliveryAttemptIds],
+      collaborationEventIds: [...evictable.collaborationEventIds],
+    };
+    let rotated = false;
+    await commitDurableEntries(
+      [{ kind: "history.rotate", cutoff, rotatedAt: Date.now(), evicted }],
+      async () => {
+        runtime.applyHistoryRotation(evictable);
+        for (const invocationId of evictable.invocationIds) {
+          knownInvocations.delete(invocationId);
+        }
+        rotated = true;
+      },
+    );
+    const firstFive = (ids: ReadonlySet<string>) => [...ids].slice(0, 5);
+    return rotated
+      ? {
+          rotated: true,
+          evicted: countsOf(evictable),
+          retained: countsOf(retained),
+          retainedIds: {
+            messageIds: firstFive(retained.messageIds),
+            invocationIds: firstFive(retained.invocationIds),
+            flightIds: firstFive(retained.flightIds),
+            deliveryIds: firstFive(retained.deliveryIds),
+            deliveryAttemptIds: firstFive(retained.deliveryAttemptIds),
+            collaborationEventIds: firstFive(retained.collaborationEventIds),
+          },
+        }
+      : null;
+  });
+  if (outcome !== null && "skipped" in outcome) {
+    console.warn(`[openscout-runtime] history rotation skipped: ${outcome.skipped}`);
+  } else if (outcome !== null) {
+    const { evicted, retained, retainedIds } = outcome;
+    console.log(`[openscout-runtime] history rotated: cutoff ${new Date(cutoff).toISOString()}, evicted ${evicted.messages}/${evicted.flights}/${evicted.invocations}/${evicted.deliveries}/${evicted.deliveryAttempts}/${evicted.collaborationEvents} (M/F/I/D/A/C), retained-unverified ${retained.messages}/${retained.flights}/${retained.invocations}/${retained.deliveries}/${retained.deliveryAttempts}/${retained.collaborationEvents}`);
+    const retainedTotal = retained.messages + retained.flights + retained.invocations
+      + retained.deliveries + retained.deliveryAttempts + retained.collaborationEvents;
+    if (retainedTotal > 0) {
+      const samples: string[] = [];
+      if (retainedIds.messageIds.length > 0) samples.push(`messages: ${retainedIds.messageIds.join(", ")}`);
+      if (retainedIds.flightIds.length > 0) samples.push(`flights: ${retainedIds.flightIds.join(", ")}`);
+      if (retainedIds.invocationIds.length > 0) samples.push(`invocations: ${retainedIds.invocationIds.join(", ")}`);
+      if (retainedIds.deliveryIds.length > 0) samples.push(`deliveries: ${retainedIds.deliveryIds.join(", ")}`);
+      if (retainedIds.deliveryAttemptIds.length > 0) samples.push(`delivery attempts: ${retainedIds.deliveryAttemptIds.join(", ")}`);
+      if (retainedIds.collaborationEventIds.length > 0) samples.push(`collaboration events: ${retainedIds.collaborationEventIds.join(", ")}`);
+      console.warn(`[openscout-runtime] history rotation retained ${retainedTotal} record(s) the projection has not durably persisted — they stay journaled and retry next rotation. First ids — ${samples.join("; ")}`);
+    }
+  }
+}
+
+// Control-plane event archive-then-prune: rows older than the archive cutoff
+// leave the events table for ISO-week gzip files. The whole operation —
+// including the conditional VACUUM — runs inside the serialized writer so the
+// broker never serves a write mid-prune or while the file is being rebuilt.
+// VACUUM is restricted to startup and week-boundary crossings: it rewrites
+// the entire database file and must not become hourly churn.
+let lastArchiveBoundaryCutoff: number | null = null;
+async function archiveControlPlane(): Promise<void> {
+  if (archiveWeeks <= 0 || !sharedControlPlaneStore) {
+    return;
+  }
+  const cutoff = retentionCutoff(Date.now(), archiveWeeks);
+  const vacuumEligible = lastArchiveBoundaryCutoff === null || lastArchiveBoundaryCutoff !== cutoff;
+  const db = sharedControlPlaneStore.routeAliasDatabase;
+  const outcome = await durableStore.runWrite(async () => {
+    // The events table is SQLite-only — archive/prune must refuse while the
+    // projection is disabled, deferred, abandoned, or degraded.
+    const boundary = await durableStore.awaitProjectionBoundary();
+    if (!boundary.ok) {
+      return { skipped: boundary.reason } as const;
+    }
+    const archived = await archiveEvents(db, {
+      cutoff,
+      archiveDir: controlPlaneArchiveDirectory(),
+    });
+    let vacuum: ControlPlaneVacuumCheck | null = null;
+    if (archived.rows > 0 && vacuumEligible) {
+      vacuum = evaluateControlPlaneVacuum(db, dbPath);
+      if (vacuum.shouldVacuum) {
+        db.exec("VACUUM");
+      }
+    }
+    return { archived, vacuum };
+  });
+  lastArchiveBoundaryCutoff = cutoff;
+  if ("skipped" in outcome) {
+    console.warn(`[openscout-runtime] control-plane archive skipped: ${outcome.skipped}`);
+    return;
+  }
+  if (outcome.archived.rows > 0) {
+    console.log(`[openscout-runtime] control-plane events archived: ${outcome.archived.rows} rows, ${outcome.archived.bytesWritten} bytes across ${outcome.archived.weeks.length} week(s) [${outcome.archived.weeks.join(", ")}]${outcome.vacuum ? ` — vacuum ${outcome.vacuum.shouldVacuum ? "ran" : `skipped (${outcome.vacuum.reason})`}` : ""}`);
+  }
+}
+
 // Relay agents live in detached tmux sessions parented to launchd, so nothing
 // reaps them for free. The reaper puts idle relays back to sleep (the wake
 // path recreates them on demand) and its startup pass collects orphans left
@@ -1331,12 +1664,16 @@ async function sweepIdleCardlessSessions(): Promise<void> {
 const relayAgentReaper = new RelayAgentSessionReaper({
   snapshot: () => runtime.snapshot(),
   listTmuxSessions: async () => {
-    const probe = await tmuxSessionsProbe.for({}).fresh({ maxAgeMs: 5_000 });
+    const [probe, launched] = await Promise.all([
+      tmuxSessionsProbe.for({}).fresh({ maxAgeMs: 5_000 }),
+      listScoutLaunchedTmuxSessions(),
+    ]);
     return (probe.value ?? []).map((session) => ({
       name: session.name,
       attached: session.attached,
       createdAtMs: session.createdAt ? session.createdAt * 1_000 : null,
       activityAtMs: session.activityAt ? session.activityAt * 1_000 : null,
+      launchedByScout: launched.has(session.name),
     }));
   },
   listSessionOwners: () => listRelayAgentTmuxSessionOwners(),
@@ -1402,7 +1739,38 @@ const messageService = new BrokerMessageService({
   applyProjectedEntries,
   reconcileStaleLocalDeliveries,
   persistFlight,
+  authorizeReplyCompletion: (invocation, reply) => externalSessionService.authorizesReplyCompletion(invocation, reply),
   activeLocalEndpointForAgent: (agentId) => localEndpointResolver.activeLocalEndpointForAgent(agentId),
+});
+
+const externalSessionService = new BrokerExternalSessionService({
+  nodeId,
+  connections: () => externalSessionConnections(process.env),
+  transport: (connection) => devinSessionTransport(connection),
+  endpoints: () => Object.values(runtime.snapshot().endpoints),
+  agent: (id) => runtime.agent(id),
+  actor: (id) => runtime.actor(id),
+  persistActor: upsertActorDurably,
+  visitDeliveries: (visitor) => journal.visitDeliveries(visitor),
+  invocations: () => knownInvocations.values(),
+  persistEndpoint,
+  delivery: (id) => journal.getDelivery(id),
+  recordDelivery: async (delivery) => {
+    await recordDeliveryDurably(delivery);
+    if (delivery.transport === "mcp_poll" && delivery.status === "accepted") {
+      // The hint carries ids, not content: keep the mailbox body off the control stream.
+      const { mailboxBody: _body, ...metadata } = delivery.metadata ?? {};
+      controlStreams.streamEvent({
+        id: createRuntimeId("evt"), kind: "delivery.state.changed", ts: Date.now(),
+        actorId: "system", nodeId, payload: { delivery: { ...delivery, metadata }, previousStatus: undefined },
+      });
+    }
+  },
+  mutateDelivery: deliveryStore.mutateDelivery,
+  invocation: (id) => knownInvocations.get(id),
+  flight: (id) => runtime.flightForInvocation(id),
+  recordFlight: recordFlightDurably,
+  postMessage: postConversationMessage,
 });
 
 const localInvocationService = new BrokerLocalInvocationService({
@@ -1485,6 +1853,7 @@ async function createCardlessProjectSessionForDelivery(input: {
   const requestedHarness = input.execution?.harness;
   const { harness, transport } = resolveCardlessSessionSpawnTarget(requestedHarness, {
     claudeTransport: process.env.OPENSCOUT_CLAUDE_CARDLESS_TRANSPORT,
+    cwd: projectRoot,
   });
   const reasoningEffort = input.execution?.reasoningEffort?.trim();
   // Grok carries effort over ACP on `session/set_model`; Kimi exposes no
@@ -1552,6 +1921,130 @@ async function createCardlessProjectSessionForDelivery(input: {
   };
 }
 
+/** Trusted, reachable peers in this mesh — the only nodes a session may be woken or started on. */
+function trustedReachableMeshPeers() {
+  const trustedNodeIds = new Set(
+    trustedPeerStore?.listTrustedPeers().flatMap((peer) => peer.nodeId ? [peer.nodeId] : []) ?? [],
+  );
+  return Object.values(runtime.snapshot().nodes).filter((node) =>
+    node.id !== nodeId
+    && node.meshId === meshId
+    && trustedNodeIds.has(node.id)
+    && isReachableMeshNode(node)
+  );
+}
+
+function isLocalDirectory(path: string): boolean {
+  try {
+    return statSync(path).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Project-path asks start a new session where the project lives. A path that
+ * exists here starts locally; otherwise trusted peers are asked (most likely
+ * owner first) and the winning peer-owned endpoint is adopted, so dispatch
+ * forwards the invocation to that machine.
+ */
+async function createProjectSessionForDelivery(
+  input: Parameters<typeof createCardlessProjectSessionForDelivery>[0],
+) {
+  const projectRoot = resolve(expandHomePath(input.projectPath));
+  if (isLocalDirectory(projectRoot)) {
+    return createCardlessProjectSessionForDelivery(input);
+  }
+  const execution = input.execution;
+  const request: MeshProjectSessionStartInput = {
+    projectPath: input.projectPath.trim(),
+    ...(execution?.harness ? { harness: execution.harness } : {}),
+    ...(execution?.model?.trim() ? { model: execution.model.trim() } : {}),
+    ...(execution?.reasoningEffort?.trim() ? { reasoningEffort: execution.reasoningEffort.trim() } : {}),
+    ...(execution?.placement ? { placement: execution.placement } : {}),
+    requesterId: input.requesterId,
+  };
+  const snapshot = runtime.snapshot();
+  const started = await startSessionOnPeers({
+    localNodeId: nodeId,
+    peers: trustedReachableMeshPeers(),
+    peerProjectRoots: (peerNodeId) => Object.values(snapshot.agents).flatMap((agent) => {
+      const root = agent.homeNodeId === peerNodeId ? agent.metadata?.projectRoot : undefined;
+      return typeof root === "string" && root.trim() ? [root.trim()] : [];
+    }),
+    postJson: (brokerBaseUrl, path, payload) => postMeshPeerJson(brokerBaseUrl, path, payload, daemonMeshPeerFetch),
+    registry: { upsertActor: upsertActorDurably, upsertEndpoint: persistEndpoint },
+    log: (message) => console.log(message),
+  }, request);
+  if (!started.ok) {
+    throw new Error(
+      `project path ${input.projectPath} does not exist on this node`
+      + (started.peersTried > 0
+        ? `, and none of ${started.peersTried} trusted mesh peer(s) could start a session there`
+        : ", and no trusted mesh peer is reachable"),
+    );
+  }
+  const endpoint = runtime.snapshot().endpoints[started.endpoint.id] ?? started.endpoint;
+  const projectName = basename(input.projectPath.trim()) || input.projectPath;
+  return {
+    kind: "resolved_session" as const,
+    session: {
+      sessionId: endpoint.sessionId ?? started.endpoint.id,
+      actorId: endpoint.agentId,
+      endpoint,
+      label: cardlessSessionDisplayName({
+        handle: started.actor?.displayName?.trim() || endpoint.agentId,
+        projectName,
+      }),
+      nodeId: endpoint.nodeId,
+    },
+  };
+}
+
+/** Peer side of mesh session start: start locally only, never fan out. */
+async function startMeshProjectSessionForPeer(input: MeshProjectSessionStartInput) {
+  const projectRoot = resolve(expandHomePath(input.projectPath));
+  if (!isLocalDirectory(projectRoot)) {
+    return {
+      ok: false as const,
+      reason: "project_unknown",
+      detail: `project path ${input.projectPath} does not exist on ${nodeId}`,
+    };
+  }
+  // Peer-supplied harness rides in as a plain string; only a known kind narrows.
+  const harness = input.harness && (AGENT_HARNESSES as readonly string[]).includes(input.harness)
+    ? input.harness as AgentHarness
+    : undefined;
+  const placement = input.placement === "foreground" || input.placement === "background"
+    ? input.placement
+    : undefined;
+  try {
+    const resolved = await createCardlessProjectSessionForDelivery({
+      projectPath: projectRoot,
+      execution: {
+        ...(harness ? { harness } : {}),
+        ...(input.model ? { model: input.model } : {}),
+        ...(input.reasoningEffort ? { reasoningEffort: input.reasoningEffort } : {}),
+        ...(placement ? { placement } : {}),
+      } as InvocationRequest["execution"],
+      requesterId: input.requesterId?.trim() || "mesh-peer",
+      createdAt: Date.now(),
+    });
+    const actor = runtime.snapshot().actors[resolved.session.actorId];
+    return {
+      ok: true as const,
+      endpoint: resolved.session.endpoint,
+      ...(actor ? { actor } : {}),
+    };
+  } catch (error) {
+    return {
+      ok: false as const,
+      reason: "start_failed",
+      detail: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
 function launchArgsForCardlessSession(
   harness: AgentHarness,
   execution: InvocationRequest["execution"] | undefined,
@@ -1606,7 +2099,7 @@ async function createIsolatedAgentEndpointForInvocation(
 
   const { harness, transport } = resolveCardlessSessionSpawnTarget(
     requestedHarness ?? baseEndpoint?.harness,
-    { claudeTransport: process.env.OPENSCOUT_CLAUDE_CARDLESS_TRANSPORT },
+    { claudeTransport: process.env.OPENSCOUT_CLAUDE_CARDLESS_TRANSPORT, cwd: projectRoot },
   );
   const sessionId = createRuntimeId("session");
   const launchArgs = launchArgsForCardlessSession(harness, invocation.execution);
@@ -1806,7 +2299,13 @@ const invocationDispatchService = new BrokerInvocationDispatchService({
   enqueuePeerInvocation: async (invocation, authorityNode) => {
     await peerDelivery.enqueue(invocation, authorityNode);
   },
-  launchLocalInvocation: (invocation) => localInvocationService.launch(invocation),
+  launchLocalInvocation: (invocation) => {
+    const endpoint = externalSessionService.endpointFor(invocation);
+    if (!endpoint) { localInvocationService.launch(invocation); return; }
+    void externalSessionService.dispatch(invocation, endpoint).catch(async (error) => {
+      await transitionInvocation(invocation.id, { state: "failed", error: error instanceof Error ? error.message : "external_dispatch_failed", completedAt: Date.now() });
+    }).catch((error) => console.error("[openscout-runtime] external session dispatch failed", error));
+  },
   log: (message) => console.log(message),
   warn: (message) => console.warn(message),
   error: (message, detail) => console.error(message, detail),
@@ -1816,7 +2315,7 @@ const dispatchRecoveryService = new BrokerDispatchRecoveryService({
   runtimeSnapshot: () => runtime.snapshot(),
   dispatchJobs: () => journal.listInvocationDispatchJobs({ limit: 5000 }),
   invocationFor: (invocationId) => knownInvocations.get(invocationId),
-  isInvocationActive: (invocationId) => localInvocationService.hasActiveInvocation(invocationId),
+  isInvocationActive: (invocationId) => localInvocationService.hasActiveInvocation(invocationId) || externalSessionService.hasPendingInvocation(invocationId),
   runDispatchJob: (job, invocation) => invocationDispatchService.runDispatchJob(job, invocation),
   dispatchAcceptedInvocation: (invocation) => invocationDispatchService.dispatchAcceptedInvocation(invocation),
   log: (message) => console.log(message),
@@ -1825,7 +2324,7 @@ const dispatchRecoveryService = new BrokerDispatchRecoveryService({
 
 const channelInviteService = new BrokerChannelInviteService({
   runtime,
-  upsertConversation: upsertConversationDurably,
+  updateConversation: durableRecords.updateConversation,
 });
 
 const commandService = new BrokerCommandService({
@@ -1872,6 +2371,7 @@ const deliveryAcceptanceService = new BrokerDeliveryAcceptanceService({
   nodeId,
   operatorActorId,
   runtimeSnapshot: () => runtime.snapshot(),
+  readRuntimeCatalog: readBrokerRuntimeCatalogSnapshot,
   createId: createRuntimeId,
   syncRegisteredLocalAgentsIfChanged,
   metadataStringValue,
@@ -1890,7 +2390,7 @@ const deliveryAcceptanceService = new BrokerDeliveryAcceptanceService({
   isLocalScoutProductTarget,
   onlineConversationNotifyTargets,
   resolveBrokerDeliveryTargetWithImplicitProjectAgent,
-  createCardlessProjectSession: createCardlessProjectSessionForDelivery,
+  createCardlessProjectSession: createProjectSessionForDelivery,
   recordScoutDispatch: recordScoutDispatchDurably,
   describeUnavailableDeliveryTarget: (snapshot, agent, targetSessionId) =>
     unavailableTargetService.describe(snapshot, agent, targetSessionId),
@@ -2025,20 +2525,46 @@ const routeRequest = createBrokerHttpRouter({
       : {}),
     ...(input.projectPath ? { projectPath: input.projectPath } : {}),
   }),
+  startMeshProjectSession: startMeshProjectSessionForPeer,
   threadEvents,
   handleCommand,
   handleInvocationRequest,
-  deleteEndpoint: deleteEndpointDurably,
+  deleteEndpoint: async (endpointId) => {
+    await deleteEndpointDurably(endpointId);
+  },
   recordFlight: recordFlightDurably,
   listReadCursorsForConversation,
   resolveReadCursor,
   recordReadCursor: recordReadCursorDurably,
+  updateChatPreferences: readCursorStore.updatePreferences,
   setConversationTitle: durableRecords.setConversationTitle,
+    updateConversationPins: durableRecords.updateConversationPins,
+    correctChatMessage: durableRecords.correctMessage,
+    respondToChatQuestion: durableRecords.respondToChatQuestion,
   acknowledgeDeliveriesForReadCursor,
   deliveryAcceptanceService,
   rendezvousService,
+  externalSessionService,
   routeAliasService,
   machines: machineService,
+  guest: {
+    sessions: externalSessionService,
+    grants: guestGrantStore,
+    nodeId,
+    nodeKeyId: nodeIdentityKeyId,
+    nodeCard: currentSignedNodeCard,
+    // Milestone one: only agents whose authority is this node. A guest ask is
+    // never forwarded to, or recreated on, another node.
+    listAgents: () => Object.values(runtime.snapshot().agents)
+      .filter((agent) => agent.authorityNodeId === nodeId)
+      .map((agent) => ({ id: agent.id, displayName: agent.displayName, ...(agent.handle ? { handle: agent.handle } : {}) })),
+    ensureGuestActor: (actor) => upsertActorDurably(actor),
+    openThread: ({ requesterId, targetAgentId }) => ensureBrokerDeliveryConversation({ requesterId, targetAgentId }),
+    postMessage: (message) => postConversationMessage(message),
+    invoke: (invocation) => handleInvocationRequest(invocation),
+    existingInvocation: (invocationId) => runtime.snapshot().invocations[invocationId],
+    flightForInvocation: (invocationId) => runtime.flightForInvocation(invocationId),
+  },
   meshTrust: {
     enrollment: trustEnrollmentService,
     rateLimiter: trustEndpointRateLimiter,
@@ -2070,6 +2596,29 @@ const routeRequest = createBrokerHttpRouter({
       mdnsAdvertising: false,
       hasNonLoopbackListener: false,
     },
+  },
+  forwardHostWebRequest: async (input) => {
+    const authority = runtime.node(input.nodeId);
+    if (!authority || authority.meshId !== meshId) {
+      return { status: 404, body: { error: "Destination is not in this mesh" } };
+    }
+    if (authority.id === nodeId) return webControl.requestForHost(input);
+    if (!authority.brokerUrl) return { status: 503, body: { error: "Destination broker is unavailable" } };
+    try {
+      const forwarded = await daemonMeshPeerFetch(authority.brokerUrl, "/v1/mesh/web-request", {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ path: input.path, method: input.method, body: input.body }),
+        signal: AbortSignal.timeout(20_000),
+      });
+      if (!forwarded.ok) return { status: forwarded.status, body: { error: "Destination broker rejected host routing; check its version and mesh trust" } };
+      const result = await forwarded.json() as { status: number; body: unknown };
+      if (!Number.isInteger(result.status) || result.status < 200 || result.status > 599) {
+        return { status: 502, body: { error: "Destination broker returned an invalid host response" } };
+      }
+      return result;
+    } catch {
+      return { status: 502, body: { error: "Destination broker could not be reached" } };
+    }
   },
   forwardRouteAliasRequest: async ({ nodeSelector, path, method, body }) => {
     const matches = Object.values(runtime.snapshot().nodes).filter((candidate) =>
@@ -2413,10 +2962,14 @@ try {
   console.log(`[openscout-runtime] node ${nodeId} in mesh ${meshId}`);
   console.log(`[openscout-runtime] mesh trust: keyId ${nodeIdentityKeyId} fingerprint ${nodeIdentityFingerprint} (gate: ${effectiveGateMode()})`);
   console.log(`[openscout-runtime] journal ${journalPath}`);
+  // Re-read the report after finishStartup(): under progressive startup the
+  // deferred compaction folds its real compactionMs/compactedBytes back in.
+  const finalLoadReport = journal.loadReport() ?? journalLoadReport;
   console.log(
-    `[openscout-runtime] journal load ${journalLoadReport.totalMs}ms `
-    + `(scan ${journalLoadReport.scanMs}ms, compaction ${journalLoadReport.compactionMs}ms, `
-    + `${journalLoadReport.validEntries} entries, ${journalLoadReport.sourceBytes} -> ${journalLoadReport.compactedBytes} bytes)`,
+    `[openscout-runtime] journal load ${finalLoadReport.totalMs}ms `
+    + `(scan ${finalLoadReport.scanMs}ms, compaction ${finalLoadReport.compactionMs}ms, `
+    + `${finalLoadReport.validEntries} entries, ${finalLoadReport.sourceBytes} -> ${finalLoadReport.compactedBytes} bytes, `
+    + `compactionReason ${finalLoadReport.compactionReason})`,
   );
   console.log(`[openscout-runtime] sqlite ${sqliteDisabled ? "disabled" : dbPath}`);
 } catch (error) {
@@ -2439,8 +2992,14 @@ try {
   throw error;
 }
 
+const otlpReceiver = await startBrokerOtlpReceiver(controlHome);
+
 setTimeout(() => {
   if (!startupTrafficGate.snapshot().mutationsAdmitted) return;
+  // Reconcile persisted external attempts without repeating a provider send.
+  void externalSessionService.recover([...knownInvocations.values()])
+    .then((failed) => { if (failed.length) console.error("[openscout-runtime] external session recovery incomplete", failed); })
+    .catch((error) => console.error("[openscout-runtime] external session recovery failed", error));
   bootstrapRegisteredLocalAgents()
     .then(() => dispatchRecoveryService.recoverQueuedFlights({ reason: "startup" }))
     .catch((error) => {
@@ -2455,6 +3014,15 @@ setTimeout(() => {
   sweepIdleCardlessSessions().catch((error) => {
     console.error("[openscout-runtime] initial cardless session sweep failed:", error);
   });
+  sweepRegistryRetention()
+    .catch((error) => {
+      console.error("[openscout-runtime] initial registry retention sweep failed:", error);
+    })
+    .then(() => rotateHistory())
+    .then(() => archiveControlPlane())
+    .catch((error) => {
+      console.error("[openscout-runtime] initial history rotation/archive failed:", error);
+    });
   sweepAndCompactMeshNodes();
   relayAgentReaper.sweep("startup").catch((error) => {
     console.error("[openscout-runtime] startup relay-agent sweep failed:", error);
@@ -2524,6 +3092,9 @@ if (startupTrafficGate.snapshot().mutationsAdmitted) {
       sweepIdleCardlessSessions().catch((error) => {
         console.error("[openscout-runtime] periodic cardless session sweep failed:", error);
       });
+      sweepRegistryRetention().catch((error) => {
+        console.error("[openscout-runtime] periodic registry retention sweep failed:", error);
+      });
     }, Math.max(60_000, cardlessSessionSweepIntervalMs)).unref();
   }
 
@@ -2539,6 +3110,17 @@ if (startupTrafficGate.snapshot().mutationsAdmitted) {
   setInterval(() => {
     sweepAndCompactMeshNodes();
   }, 15 * 60_000).unref();
+
+  // Hot-set history rotation is a cheap no-op until the Monday boundary —
+  // hourly so the week roll prunes promptly. The control-plane archive runs
+  // after it; its VACUUM only fires on the boundary crossing itself.
+  setInterval(() => {
+    rotateHistory()
+      .then(() => archiveControlPlane())
+      .catch((error) => {
+        console.error("[openscout-runtime] periodic history rotation/archive failed:", error);
+      });
+  }, 60 * 60_000).unref();
 
   // Backstop retry for queued deliveries with no endpoint event to wake them —
   // deferred thread_held_externally parks and any flight whose attach event was
@@ -2562,6 +3144,9 @@ async function shutdownBroker(exitCode = 0): Promise<void> {
     return;
   }
   shuttingDown = true;
+  await otlpReceiver?.close().catch(() => {
+    console.warn("[openscout-runtime] OTLP receiver shutdown failed");
+  });
   if (parentWatcher) {
     clearInterval(parentWatcher);
     parentWatcher = null;

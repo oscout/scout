@@ -3943,7 +3943,7 @@
   background: var(--bg);
 }
 
-/* Needs-you projects get a flat left accent edge (left bars only on
+/* Projects with a request get a flat left accent edge (left bars only on
    square/flat rows, never rounded cards). */
 .s-pf-proj[data-attn] {
   box-shadow: inset 2px 0 0 var(--accent);

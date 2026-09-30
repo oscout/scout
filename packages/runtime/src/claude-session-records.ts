@@ -166,7 +166,9 @@ export type ClaudePaneProbe = (tmuxSession: string) => Promise<ClaudeLivePane[]>
 
 /** Compare both the pane's current process and its birth time: kill(pid, 0) alone permits PID reuse. */
 async function probeClaudePanes(tmuxSession: string): Promise<ClaudeLivePane[]> {
-  const output = await execSystemFile("tmux", ["list-panes", "-s", "-t", `=${tmuxSession}`,
+  // -u: without a UTF-8 locale (launchd gives the broker none) tmux prints
+  // tabs as "_", so every row would fail to split.
+  const output = await execSystemFile("tmux", ["-u", "list-panes", "-s", "-t", `=${tmuxSession}`,
     "-F", "#{session_name}\t#{window_id}\t#{pane_id}\t#{pane_pid}"],
     { timeoutMs: 2000, maxStdoutBytes: 16384 });
   const rows = output.stdout.trim().split("\n").filter(Boolean);

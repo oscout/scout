@@ -2,7 +2,11 @@ export function normalizeCliBinaryMtimeMs(value: number): number {
   return Math.floor(value);
 }
 
-export function shouldEnsureBrokerUptodateForCommand(command: string | null): boolean {
+export function shouldEnsureBrokerUptodateForCommand(command: string | null, args: string[] = []): boolean {
+  if (!command || command === "doctor" || args.includes("--help") || args.includes("-h")) return false;
+  // scout-base supervises the mesh bridge; a bridge (re)start that restarts the
+  // broker service would take down its own supervisor.
+  if (command === "mesh" && args[0] === "bridge") return false;
   // Local-only knowledge search does not need broker maintenance.
   return command !== "chat" && command !== "status" && command !== "report" && command !== "feedback" && command !== "mcp" && command !== "statusline" && command !== "search";
 }

@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 export type OpenScoutSupportPaths = {
   supportDirectory: string;
@@ -56,10 +56,23 @@ export function assertTestIsolatedUserData(operation: string, isolationEnvKey: s
   );
 }
 
+/**
+ * Durable support directory when OPENSCOUT_SUPPORT_DIRECTORY is unset.
+ * Darwin stays ~/Library/Application Support/OpenScout. Every other platform
+ * uses ${XDG_DATA_HOME:-~/.local/share}/openscout.
+ */
+export function defaultOpenScoutSupportDirectory(home = homedir()): string {
+  if (process.platform === "darwin") {
+    return join(home, "Library", "Application Support", "OpenScout");
+  }
+  const xdgDataHome = process.env.XDG_DATA_HOME?.trim();
+  return join(xdgDataHome || join(home, ".local", "share"), "openscout");
+}
+
 export function resolveOpenScoutSupportPaths(): OpenScoutSupportPaths {
   const home = homedir();
   const supportDirectory = process.env.OPENSCOUT_SUPPORT_DIRECTORY
-    ?? join(home, "Library", "Application Support", "OpenScout");
+    ?? defaultOpenScoutSupportDirectory(home);
   const logsDirectory = join(supportDirectory, "logs");
   const runtimeDirectory = join(supportDirectory, "runtime");
   const catalogDirectory = join(supportDirectory, "catalog");
@@ -90,6 +103,16 @@ export function resolveOpenScoutSupportPaths(): OpenScoutSupportPaths {
     workspaceStatePath: join(supportDirectory, "workspace-state.json"),
     cutoverMarkerPath: join(supportDirectory, OPENSCOUT_RPC_CUTOVER_MARKER),
   };
+}
+
+/**
+ * Base directory for control-plane archive output (gzip JSONL exports written
+ * before pruning). Sits next to the control-plane home so an overridden
+ * OPENSCOUT_CONTROL_HOME keeps archives on the same volume.
+ */
+export function controlPlaneArchiveDirectory(): string {
+  const { controlHome } = resolveOpenScoutSupportPaths();
+  return join(dirname(controlHome), "work-archives", "control-plane");
 }
 
 export function localAgentRuntimeDirectory(agentId: string): string {

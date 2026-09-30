@@ -49,6 +49,7 @@ export function gptLiveWellSpec({
   playbackMuted,
   dictationActive = false,
   newChatBusy = false,
+  blockedReason = null,
 }: {
   enabled: boolean;
   state: ScoutRealtimeVoiceConnectionState | "idle";
@@ -60,9 +61,12 @@ export function gptLiveWellSpec({
   playbackMuted: boolean;
   dictationActive?: boolean;
   newChatBusy?: boolean;
+  /** this page can't reach the microphone at all (see realtimeVoiceBlockedReason) */
+  blockedReason?: string | null;
 }): VoiceWellSpec {
+  const idle = state !== "connecting" && state !== "live";
   let cta: VoiceWellSpec["cta"];
-  if (dictationActive) {
+  if (dictationActive || (blockedReason && idle)) {
     cta = { label: "Start live voice", disabled: true };
   } else if (state === "connecting") {
     cta = { label: "Cancel connection", busy: true };
@@ -76,7 +80,9 @@ export function gptLiveWellSpec({
 
   let note: string | undefined;
   let noteError = false;
-  if (error) {
+  if (blockedReason && idle) {
+    note = blockedReason;
+  } else if (error) {
     note = error;
     noteError = true;
   } else if (dictationActive) {

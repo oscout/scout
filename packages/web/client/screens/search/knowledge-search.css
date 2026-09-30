@@ -105,10 +105,8 @@
 }
 
 .ks-search-form:focus-within {
-  border-color: color-mix(in srgb, var(--accent) 48%, var(--border));
-  box-shadow:
-    0 0 0 3px color-mix(in srgb, var(--accent) 12%, transparent),
-    0 1px 0 color-mix(in srgb, var(--accent) 16%, transparent);
+  border-color: var(--field-focus);
+  box-shadow: none;
 }
 
 .ks-search-form > svg {

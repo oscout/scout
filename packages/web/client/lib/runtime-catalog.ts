@@ -55,10 +55,48 @@ export interface RuntimeHarness extends RuntimeOption {
   efforts?: RuntimeEffort[] | null;
 }
 
+/**
+ * Where a pinned model came from, most specific first. `project`/`user` are
+ * configured lists; the `harness-*` origins are the harness's own on-disk
+ * preferences observed read-only.
+ */
+export type RuntimeShortlistOrigin =
+  | "project"
+  | "user"
+  | "harness-favorite"
+  | "harness-default"
+  | "harness-recent";
+
+export type RuntimePresetOrigin =
+  | "project"
+  | "user"
+  | "harness-profile"
+  | "broker-profile";
+
+export interface RuntimeShortlistEntry {
+  harness: string;
+  model: string;
+  origin: RuntimeShortlistOrigin;
+}
+
+/** One named `<harness>[/<model>[/<effort>]]` tuple — a chip in the picker. */
+export interface RuntimePreset {
+  id: string;
+  label: string;
+  harness: string;
+  model?: string;
+  effort?: string;
+  origin: RuntimePresetOrigin;
+}
+
 export interface RuntimeCatalog {
   harnesses: RuntimeHarness[];
   /** Fallback ladder for harnesses that don't name their own. Ordinal. */
   efforts: RuntimeEffort[];
+  /** Models pinned first in the Model band; everything else stays visible. */
+  shortlist?: RuntimeShortlistEntry[];
+  /** Named runtime tuples rendered as a band above Harness. */
+  presets?: RuntimePreset[];
 }
 
 export interface RuntimeValue {
@@ -138,6 +176,93 @@ export function effortsFor(
 
 export function supportsEffort(catalog: RuntimeCatalog, harness: string): boolean {
   return effortsFor(catalog, harness) !== null;
+}
+
+/**
+ * Pin-first ordering for the Model band: shortlisted models for `harness`
+ * lead in shortlist order, then a divider, then everything else in catalog
+ * order. `""` (the Default row) is never pinned — it is not a model — and a
+ * shortlisted id the catalog does not list still pins, marked `custom`, since
+ * the operator named it deliberately.
+ */
+export interface PinnedRuntimeOption extends RuntimeOption {
+  pinnedOrigin: RuntimeShortlistOrigin;
+}
+
+export function orderModelsWithShortlist(
+  models: RuntimeOption[],
+  shortlist: RuntimeShortlistEntry[] | undefined,
+  harness: string,
+): { pinned: PinnedRuntimeOption[]; rest: RuntimeOption[] } {
+  const pins = (shortlist ?? []).filter(
+    (entry) => entry.harness === harness && entry.model,
+  );
+  if (!pins.length) return { pinned: [], rest: models };
+  const pinnedValues = new Set<string>();
+  const pinned: PinnedRuntimeOption[] = [];
+  for (const entry of pins) {
+    if (pinnedValues.has(entry.model)) continue;
+    pinnedValues.add(entry.model);
+    const listed = models.find((option) => option.value === entry.model);
+    pinned.push({
+      ...(listed ?? { value: entry.model, label: entry.model, note: "custom" }),
+      pinnedOrigin: entry.origin,
+    });
+  }
+  const rest = models.filter((option) => !pinnedValues.has(option.value));
+  return { pinned, rest };
+}
+
+/**
+ * The preset matching the current value: harness and model must be exact; a
+ * preset that names an effort also requires that rung, while one without an
+ * effort matches any rung — it prescribes nothing there.
+ */
+export function matchPreset(
+  catalog: RuntimeCatalog,
+  value: RuntimeValue,
+): RuntimePreset | undefined {
+  return catalog.presets?.find((preset) => {
+    if (preset.harness !== value.harness) return false;
+    if ((preset.model ?? RUNTIME_DEFAULT_VALUE) !== value.model) return false;
+    if (preset.effort !== undefined && preset.effort !== value.effort) return false;
+    return true;
+  });
+}
+
+/**
+ * The value a preset stands for. Reconciled against the current value so an
+ * effort the harness ladder cannot express clamps rather than passing through.
+ * A preset that names no effort applies the harness default instead of
+ * carrying the previous rung.
+ */
+export function valueForPreset(
+  catalog: RuntimeCatalog,
+  preset: RuntimePreset,
+  current: RuntimeValue,
+): RuntimeValue {
+  return reconcileRuntime(catalog, current, {
+    harness: preset.harness,
+    model: preset.model ?? RUNTIME_DEFAULT_VALUE,
+    ...(preset.effort !== undefined ? { effort: preset.effort } : {}),
+  });
+}
+
+/** Display name for a shortlist/preset origin — chip titles and pinned rows. */
+export function runtimeListOriginLabel(
+  origin: RuntimeShortlistOrigin | RuntimePresetOrigin,
+  harnessLabel?: string,
+  kind: "shortlist" | "preset" = "shortlist",
+): string {
+  switch (origin) {
+    case "project": return kind === "preset" ? "Project preset" : "Project shortlist";
+    case "user": return kind === "preset" ? "Your preset" : "Your shortlist";
+    case "harness-favorite": return `${harnessLabel ?? "Harness"} favorite`;
+    case "harness-default": return `${harnessLabel ?? "Harness"} default`;
+    case "harness-recent": return `${harnessLabel ?? "Harness"} recent`;
+    case "harness-profile": return `${harnessLabel ?? "Harness"} profile`;
+    case "broker-profile": return "Broker profile";
+  }
 }
 
 /**
@@ -332,6 +457,9 @@ export interface RunnerOptionsLike {
     harnesses: string[];
     models?: string[];
   }>;
+  /** Resolved runtime lists — see `resolveRuntimeListPreferences` upstream. */
+  shortlist?: RuntimeShortlistEntry[];
+  presets?: RuntimePreset[];
 }
 
 function noteFrom(...candidates: Array<string | null | undefined>): string | undefined {
@@ -389,5 +517,10 @@ export function runtimeCatalogFromRunnerOptions(options: RunnerOptionsLike): Run
     label: candidate.label,
     note: noteFrom(candidate.description),
   }));
-  return { harnesses, efforts: efforts.length > 0 ? efforts : RUNTIME_EFFORTS };
+  return {
+    harnesses,
+    efforts: efforts.length > 0 ? efforts : RUNTIME_EFFORTS,
+    ...(options.shortlist?.length ? { shortlist: options.shortlist } : {}),
+    ...(options.presets?.length ? { presets: options.presets } : {}),
+  };
 }

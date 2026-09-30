@@ -4,7 +4,7 @@ import { Hono } from "hono";
 import type { TailEvent } from "@openscout/runtime/tail";
 
 import type { ScoutSurfaceRequest } from "../../client/surface-contract/scout-surface-contract.ts";
-import type { WebAgent } from "../db/types/web.ts";
+import type { WebAgent } from "../../shared/api/web.ts";
 import {
   createScoutDeckSurfaceService,
   mountScoutDeckSurfaceRoutes,

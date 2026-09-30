@@ -51,6 +51,19 @@ export type OpenScoutUserConfig = {
   provisionalAgentNamesFile?: string;
   /** How the tail renders text-less thinking blocks. Default `hide`. */
   tailThinking?: TailThinkingMode;
+  /**
+   * Models pinned to the top of runtime pickers — `<harness>[/<model>]`
+   * specs. Everything else stays listed below the pinned rows.
+   */
+  runtimeShortlist?: string[];
+  /** Named `<harness>[/<model>[/<effort>]]` tuples shown as one-tap presets. */
+  runtimePresets?: RuntimePresetConfig[];
+};
+
+export type RuntimePresetConfig = {
+  id: string;
+  label?: string;
+  runtime: string;
 };
 
 function userConfigPath(): string {

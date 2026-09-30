@@ -155,7 +155,7 @@ export function DeckYoke({ model }: { model: DeckModel }) {
         </div>
 
         <div className="yoke__attention">
-          <span className="deck-kicker">Needs you · {String(model.attention.length).padStart(2, "0")}</span>
+          <span className="deck-kicker">Requests · {String(model.attention.length).padStart(2, "0")}</span>
           <AttentionList model={model} />
         </div>
 

@@ -1175,3 +1175,11 @@ export async function decideScoutWebPairingApproval(
   invalidateScoutWebPairingStateCache();
   return coalescedPairingStateReader(currentDirectory)();
 }
+
+/** Acknowledges forwarding only; observed session events establish whether it stopped. */
+export async function interruptScoutWebPairingTurn(input: { sessionId: string; turnId: string }): Promise<void> {
+  const resolvedConfig = resolveScoutPairingConfig();
+  await withScoutPairingBridgeClient(resolvedConfig.port, async client => {
+    await client.mutation<{ ok: true }>("turnInterrupt", input);
+  });
+}

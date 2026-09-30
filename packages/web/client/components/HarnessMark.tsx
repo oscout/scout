@@ -219,21 +219,34 @@ export interface HarnessMarkProps {
   style?: CSSProperties;
   /** Override the tooltip; defaults to the harness label. Pass null for none. */
   title?: string | null;
+  /**
+   * A same-colour outline, in screen px, around filled shapes. At ~12px the
+   * logos' hairline parts (Claude's rays, Grok's slash) fade to grey; a
+   * third of a pixel of outline keeps them solid without changing the shape.
+   */
+  outline?: number;
 }
 
-export function HarnessMark({ harness, size = 14, className, style, title }: HarnessMarkProps) {
+export function HarnessMark({ harness, size = 14, className, style, title, outline }: HarnessMarkProps) {
   const key = normalizeHarnessKey(harness);
   const brand = BRAND_MARKS[key];
+  const viewBox = brand?.viewBox ?? "0 0 24 24";
+  const viewBoxWidth = Number(viewBox.split(/\s+/)[2]) || 24;
+  // Line glyphs set their own stroke; only filled shapes inherit this one.
+  const outlineProps = outline
+    ? { stroke: "currentColor", strokeWidth: (outline * viewBoxWidth) / size, strokeLinejoin: "round" as const }
+    : {};
   const glyph = HARNESS_GLYPHS[key];
   const tip = title === null ? undefined : title ?? harnessLabel(harness);
 
   return (
     <span className={className} style={style} title={tip} aria-hidden={tip ? undefined : true}>
       <svg
-        viewBox={brand?.viewBox ?? "0 0 24 24"}
+        viewBox={viewBox}
         width={size}
         height={size}
         style={{ display: "block" }}
+        {...outlineProps}
         role="img"
         aria-label={tip}
       >

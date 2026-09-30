@@ -7,7 +7,8 @@ import { stateColor } from "../../lib/colors.ts";
 import { compareTimestampsDesc, timeAgo } from "../../lib/time.ts";
 import { formatLabel } from "../../lib/text.ts";
 import { api } from "../../lib/api.ts";
-import { useBrokerEvents } from "../../lib/sse.ts";
+import { loadFleet } from "../../lib/fleet-store.ts";
+import { isBrokerDataEvent, useBrokerEventsRefresh } from "../../lib/sse.ts";
 import { resolveAgentTerminalSurface } from "../../lib/terminal-relay.ts";
 import { queueTakeover } from "../../lib/terminal-takeover.ts";
 import {
@@ -414,7 +415,7 @@ function AgentInfoRouteInspector({
     void loadSession();
   }, [loadSession]);
 
-  useBrokerEvents(() => {
+  useBrokerEventsRefresh(isBrokerDataEvent, () => {
     void loadSession();
   });
 
@@ -506,7 +507,7 @@ function AgentContextPanel({
 
   const load = useCallback(async () => {
     const [fleetResult, catalogResult, observeResult] = await Promise.all([
-      api<FleetState>("/api/fleet").catch(() => null),
+      loadFleet().catch(() => null),
       api<SessionCatalogWithResume>(
         `/api/agents/${encodeURIComponent(agent.id)}/session-catalog`,
       ).catch(() => null),
@@ -526,7 +527,7 @@ function AgentContextPanel({
     setSessionCatalog(null);
     setObserve(null);
   }, [agent.id]);
-  useBrokerEvents(() => {
+  useBrokerEventsRefresh(isBrokerDataEvent, () => {
     void load();
   });
 
@@ -1157,7 +1158,7 @@ function ObserveContext({ agentId }: { agentId: string }) {
   useEffect(() => {
     void load();
   }, [load]);
-  useBrokerEvents(() => {
+  useBrokerEventsRefresh(isBrokerDataEvent, () => {
     void load();
   });
 
@@ -1300,7 +1301,7 @@ function SessionActivity({
   useEffect(() => {
     void load();
   }, [load]);
-  useBrokerEvents(() => {
+  useBrokerEventsRefresh(isBrokerDataEvent, () => {
     void load();
   });
 

@@ -20,6 +20,12 @@
 */
 
 .s-msg-compose {
+  /* The writing field is prose, not chrome: it always sets in the platform's
+     text face (SF on macOS/WebKit) at a reading size, and never inherits a
+     surface's --font-sans override (Scope rebinds that to mono). */
+  --compose-font: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Inter", system-ui, "Segoe UI", Roboto, sans-serif;
+  --compose-size: 14px;
+  --compose-leading: 1.5;
   box-sizing: border-box;
   width: 100%;
   min-width: 0;
@@ -67,7 +73,7 @@
 }
 
 .s-msg-compose-shell:focus-within {
-  border-color: color-mix(in srgb, var(--border) 100%, transparent);
+  border-color: var(--field-focus);
 }
 
 /* ── Top: decoration / reply ─────────────────────────────────────── */
@@ -101,15 +107,29 @@
   width: 100%;
   min-width: 0;
   min-height: 44px;
-  max-height: 160px;
+  max-height: min(45vh, 280px);
   border: none;
   border-radius: 0;
   background: transparent;
   padding: 0;
-  font-size: var(--text-lg);
-  font-family: var(--font-sans);
-  line-height: var(--leading-normal);
+  font-family: var(--compose-font);
+  font-size: var(--compose-size);
+  font-weight: 400;
+  font-feature-settings: normal;
+  font-variant-numeric: normal;
+  letter-spacing: normal;
+  text-transform: none;
+  line-height: var(--compose-leading);
   color: var(--ink);
+  caret-color: var(--accent, var(--ink));
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+  overflow-wrap: break-word;
+  white-space: pre-wrap;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
   resize: none;
   outline: none;
   cursor: text;
@@ -119,6 +139,7 @@
 
 .s-msg-compose-input::placeholder {
   color: var(--dim);
+  opacity: 1;
 }
 
 .s-msg-compose-shell .s-msg-compose-input:focus,
@@ -575,9 +596,12 @@
 }
 
 /* Compact density */
+.s-msg-compose--compact {
+  --compose-size: 13px;
+}
+
 .s-msg-compose--compact .s-msg-compose-input {
   min-height: 32px;
-  font-size: var(--text-md);
 }
 
 .s-msg-compose--compact .s-msg-compose-body {

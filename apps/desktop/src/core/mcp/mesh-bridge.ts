@@ -1,7 +1,13 @@
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import type { JSONRPCMessage } from "@modelcontextprotocol/sdk/types.js";
+import { closeSync, constants, fstatSync, openSync, readFileSync } from "node:fs";
+import { join } from "node:path";
+
+import { SCOUT_MCP_CORE_TOOL_NAMES } from "@openscout/protocol";
+import { resolveScoutBrokerUrl } from "../broker/service.ts";
 
 import { createScoutMcpServer } from "./scout-mcp.ts";
+import { watchMailboxNotifications } from "./mailbox-notifications.ts";
 
 export interface McpBridgeBoundEnvelope {
   v: 1;
@@ -21,26 +27,7 @@ export interface McpWorkerBoundEnvelope {
   message?: string;
 }
 
-export const SCOUT_MCP_CORE_TOOLS = [
-  "whoami",
-  "ask",
-  "messages_send",
-  "messages_reply",
-  "messages_inbox",
-  "messages_channel",
-  "broker_feed",
-  "tail_events",
-  "work_update",
-  "notify_operator",
-  "consult_operator",
-  "current_reply_context",
-  "invocations_get",
-  "invocations_wait",
-  "labels_brief",
-  "labels_feed",
-  "agents_search",
-  "agents_resolve",
-] as const;
+export const SCOUT_MCP_CORE_TOOLS = SCOUT_MCP_CORE_TOOL_NAMES;
 
 export function parseBridgeBoundEnvelope(data: unknown): McpBridgeBoundEnvelope | null {
   if (typeof data !== "string") return null;
@@ -182,25 +169,80 @@ export interface ScoutMeshBridgeConfigFile {
   relayUrl: string;
   token?: string;
   tokenKeychainService?: string;
+  /** Mode-0600 token file. Used off darwin, where the macOS keychain is unavailable. */
+  tokenFile?: string;
   sender?: string;
   node?: string;
   tools?: string[] | "core";
   dir?: string;
 }
 
-export function readKeychainSecret(service: string): string | null {
-  const result = Bun.spawnSync(["security", "find-generic-password", "-s", service, "-w"]);
+export const MESH_BRIDGE_TOKEN_FILENAME = "mcp-bridge.token";
+
+export function meshBridgeTokenFilePath(supportDirectory: string): string {
+  return join(supportDirectory, MESH_BRIDGE_TOKEN_FILENAME);
+}
+
+type KeychainSpawn = (command: string[]) => {
+  exitCode: number | null;
+  stdout: { toString(): string };
+};
+
+/**
+ * Read a mesh-bridge token only from a regular mode-0600 file owned by this
+ * user. Open with O_NOFOLLOW and read that descriptor so a symlink cannot be
+ * swapped in between the check and the read.
+ */
+export function readMode0600TokenFile(path: string): string | null {
+  const noFollow = constants.O_NOFOLLOW;
+  if (typeof noFollow !== "number" || noFollow === 0) return null;
+  let fd: number | null = null;
+  try {
+    fd = openSync(path, constants.O_RDONLY | noFollow);
+    const stats = fstatSync(fd);
+    if (!stats.isFile() || (stats.mode & 0o777) !== 0o600) return null;
+    if (typeof process.getuid === "function" && stats.uid !== process.getuid()) return null;
+    const value = readFileSync(fd, "utf8").trim();
+    return value || null;
+  } catch {
+    return null;
+  } finally {
+    if (fd !== null) {
+      try {
+        closeSync(fd);
+      } catch {
+        // closeSync throws if the descriptor was already released.
+      }
+    }
+  }
+}
+
+export function readKeychainSecret(
+  service: string,
+  spawn: KeychainSpawn = (command) => Bun.spawnSync(command),
+): string | null {
+  if (process.platform !== "darwin") return null;
+  const result = spawn(["security", "find-generic-password", "-s", service, "-w"]);
   if (result.exitCode !== 0) return null;
   const value = result.stdout.toString().trim();
   return value || null;
 }
 
-export function resolveBridgeTokenFromConfig(config: ScoutMeshBridgeConfigFile): string | null {
+export function resolveBridgeTokenFromConfig(
+  config: ScoutMeshBridgeConfigFile,
+  options: { supportDirectory?: string } = {},
+): string | null {
   if (config.token?.trim()) return config.token.trim();
-  if (config.tokenKeychainService?.trim()) {
-    return readKeychainSecret(config.tokenKeychainService.trim());
+  if (process.platform === "darwin") {
+    if (config.tokenKeychainService?.trim()) {
+      return readKeychainSecret(config.tokenKeychainService.trim());
+    }
+    return null;
   }
-  return null;
+  const tokenPath = config.tokenFile?.trim()
+    || (options.supportDirectory ? meshBridgeTokenFilePath(options.supportDirectory) : "");
+  if (!tokenPath) return null;
+  return readMode0600TokenFile(tokenPath);
 }
 
 const RECONNECT_MAX_DELAY_MS = 30_000;
@@ -211,16 +253,15 @@ const MAX_IDENTITY_INSTANCES = 16;
 const BRIDGE_PING_INTERVAL_MS = 20_000;
 const BRIDGE_STALE_MS = 60_000;
 
-export function resolveBridgeWebSocketUrl(relayUrl: string, token: string): string {
+/** The token rides in the Authorization header only: URLs end up in proxy and access logs. */
+export function resolveBridgeWebSocketUrl(relayUrl: string): string {
   const url = new URL(relayUrl);
   if (url.protocol === "https:") url.protocol = "wss:";
   if (url.protocol === "http:") url.protocol = "ws:";
   if (!url.pathname.endsWith("/bridge")) {
     url.pathname = `${url.pathname.replace(/\/$/, "")}/bridge`;
   }
-  if (!url.searchParams.get("access_token")) {
-    url.searchParams.set("access_token", token);
-  }
+  url.searchParams.delete("access_token");
   return url.toString();
 }
 
@@ -276,7 +317,7 @@ export async function startScoutMeshMcpBridge(
     return instance;
   };
 
-  const wsUrl = resolveBridgeWebSocketUrl(options.relayUrl, options.token);
+  const wsUrl = resolveBridgeWebSocketUrl(options.relayUrl);
 
   const scheduleReconnect = () => {
     const delay = Math.min(RECONNECT_MAX_DELAY_MS, 1_000 * 2 ** attempt)
@@ -399,9 +440,37 @@ export async function startScoutMeshMcpBridge(
 
   connect();
 
+  const mailboxAbort = new AbortController();
+  let mailboxReconnect: ReturnType<typeof setTimeout> | null = null;
+  let mailboxAttempt = 0;
+  const watchMailbox = () => {
+    if (closed) return;
+    void watchMailboxNotifications({
+      brokerUrl: options.env?.OPENSCOUT_BROKER_URL?.trim() || resolveScoutBrokerUrl(),
+      signal: mailboxAbort.signal,
+      // Route every hint to the relay, which delivers only to that owner's open stream.
+      // Gating on this process's instances would drop hints after a bridge restart,
+      // while the owner's GET stream is still connected but has not POSTed again.
+      onNotification: ({ agent, payload }) => {
+        mailboxAttempt = 0;
+        sendRaw({ v: 1, kind: "mcp_notify", id: crypto.randomUUID(), agent, payload });
+      },
+    }).catch((error) => {
+      if (!closed) log(`bridge: mailbox event stream unavailable: ${error instanceof Error ? error.message : "unknown error"}`);
+    }).finally(() => {
+      if (!closed) {
+        const delay = Math.min(RECONNECT_MAX_DELAY_MS, 1_000 * 2 ** Math.min(mailboxAttempt++, 5));
+        mailboxReconnect = setTimeout(watchMailbox, delay);
+      }
+    });
+  };
+  watchMailbox();
+
   return {
     close: async () => {
       closed = true;
+      mailboxAbort.abort();
+      if (mailboxReconnect) clearTimeout(mailboxReconnect);
       if (reconnectTimer) clearTimeout(reconnectTimer);
       socket?.close(1000, "bridge shutting down");
       socket = null;

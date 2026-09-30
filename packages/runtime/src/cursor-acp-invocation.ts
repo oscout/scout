@@ -8,6 +8,7 @@ export interface CursorAcpInvocationOptions {
   prompt: string;
   name?: string;
   timeoutMs?: number;
+  hardCeilingMs?: number;
 }
 
 export type CursorAcpInvocationResult = AcpAgentInvocationResult;

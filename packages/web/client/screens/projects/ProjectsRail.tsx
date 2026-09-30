@@ -208,7 +208,7 @@ function ProjectRailRow({
           </span>
           {state !== "idle" ? (
             <span className="pi-projectState" data-state={state}>
-              {state === "needs" ? "Needs you" : "Active"}
+              {state === "needs" ? "Asking" : "Active"}
             </span>
           ) : null}
         </button>

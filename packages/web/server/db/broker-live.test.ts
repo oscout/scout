@@ -6,7 +6,7 @@ import {
   markBrokerDiagnosticsLiveUnavailable,
   mergeBrokerDiagnosticsWithLiveSnapshot,
 } from "./broker-live.ts";
-import type { WebBrokerDiagnostics, WebBrokerRouteAttempt } from "./types/web.ts";
+import type { WebBrokerDiagnostics, WebBrokerRouteAttempt } from "../../shared/api/web.ts";
 
 function message(
   id: string,

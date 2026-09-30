@@ -49,6 +49,11 @@ function run(command, args) {
 }
 
 const serverTests = findTests("server", (path) => /\.test\.tsx?$/u.test(path));
+// HTTP tests built on web-server-test-harness.ts install process-wide module
+// mocks, so every one of them runs in its own Bun process too.
+for (const path of serverTests) {
+  if (path.endsWith(".server.test.ts")) isolatedServerTests.add(path);
+}
 const regularServerTests = serverTests.filter((path) => !isolatedServerTests.has(path));
 
 run("bun", ["test", "--isolate", "./client", ...regularServerTests]);

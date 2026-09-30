@@ -3,7 +3,7 @@ import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import type { AgentSessionStreamEvent } from "../../protocol/primitives.js";
+import type { AgentSessionStreamEvent, TurnStatus } from "../../protocol/primitives.js";
 import { createAdapter } from "./adapter.js";
 
 const tempPaths = new Set<string>();
@@ -356,6 +356,128 @@ for await (const line of rl) {
     expect(turnEnd).toEqual(expect.objectContaining({ event: "turn:end", status: "completed" }));
 
     await adapter.shutdown();
+  });
+
+  test("appends the retained stderr tail to the exit error", async () => {
+    const tempRoot = mkdtempSync(join(tmpdir(), "openscout-acp-exit-"));
+    tempPaths.add(tempRoot);
+
+    const executable = writeFakeAcpExecutable(tempRoot, `#!/usr/bin/env bun
+process.stderr.write("model catalog init timed out\\n");
+// Give the parent a beat to capture the stderr chunk before exiting.
+setTimeout(() => process.exit(1), 250);
+`);
+
+    const adapter = createAdapter({
+      sessionId: `acp-exit-${crypto.randomUUID()}`,
+      name: "Fake ACP Exit",
+      cwd: tempRoot,
+      options: {
+        command: executable,
+        startupTimeoutMs: 3_000,
+        requestTimeoutMs: 3_000,
+        promptTimeoutMs: 3_000,
+      },
+    });
+
+    const errors: Error[] = [];
+    adapter.on("error", (error) => errors.push(error));
+
+    await expect(adapter.start()).rejects.toThrow(
+      /ACP agent exited with code 1 — stderr: model catalog init timed out/,
+    );
+    expect(errors.at(-1)?.message).toContain("stderr: model catalog init timed out");
+  });
+
+  test("maps non-completing ACP stop reasons to non-success statuses and surfaces stopReason", async () => {
+    const cases: Array<{ stopReason: string; status: TurnStatus }> = [
+      { stopReason: "end_turn", status: "completed" },
+      { stopReason: "cancelled", status: "stopped" },
+      { stopReason: "max_tokens", status: "failed" },
+      { stopReason: "max_turn_requests", status: "failed" },
+      { stopReason: "refusal", status: "failed" },
+    ];
+
+    for (const { stopReason, status } of cases) {
+      const tempRoot = mkdtempSync(join(tmpdir(), "openscout-acp-stop-"));
+      tempPaths.add(tempRoot);
+
+      const executable = writeFakeAcpExecutable(tempRoot, `#!/usr/bin/env bun
+import readline from "node:readline";
+
+const rl = readline.createInterface({ input: process.stdin, crlfDelay: Infinity });
+
+for await (const line of rl) {
+  const trimmed = line.trim();
+  if (!trimmed) continue;
+  const message = JSON.parse(trimmed);
+  const id = message.id;
+  const method = message.method;
+
+  if (method === "initialize") {
+    console.log(JSON.stringify({
+      jsonrpc: "2.0",
+      id,
+      result: {
+        protocolVersion: 1,
+        agentCapabilities: {},
+        agentInfo: { name: "fake-acp-stop", version: "1.0.0" },
+        authMethods: []
+      }
+    }));
+    continue;
+  }
+
+  if (method === "session/new") {
+    console.log(JSON.stringify({ jsonrpc: "2.0", id, result: { sessionId: "acp-session-stop" } }));
+    continue;
+  }
+
+  if (method === "session/prompt") {
+    console.log(JSON.stringify({ jsonrpc: "2.0", id, result: { stopReason: process.env.STOP_REASON } }));
+    continue;
+  }
+
+  if (method === "session/close") {
+    console.log(JSON.stringify({ jsonrpc: "2.0", id, result: {} }));
+    continue;
+  }
+}
+`);
+
+      const sessionId = `acp-stop-${crypto.randomUUID()}`;
+      const adapter = createAdapter({
+        sessionId,
+        name: "Fake ACP Stop",
+        cwd: tempRoot,
+        env: { STOP_REASON: stopReason },
+        options: {
+          command: executable,
+          startupTimeoutMs: 2_000,
+          requestTimeoutMs: 2_000,
+          promptTimeoutMs: 2_000,
+        },
+      });
+
+      const collector = createEventCollector();
+      adapter.on("event", (event) => collector.push(event));
+
+      await adapter.start();
+      adapter.send({ sessionId, text: "go" });
+
+      await collector.waitFor((events) => events.some((event) => event.event === "turn:end"));
+
+      const turnEnd = collector.events.find((event) => event.event === "turn:end");
+      const lastUpdate = collector.events.filter((event) => event.event === "session:update").at(-1);
+
+      expect(turnEnd).toEqual(expect.objectContaining({ event: "turn:end", status }));
+      expect(lastUpdate).toBeDefined();
+      if (lastUpdate?.event === "session:update") {
+        expect(lastUpdate.session.providerMeta?.acp).toMatchObject({ lastStopReason: stopReason });
+      }
+
+      await adapter.shutdown();
+    }
   });
 });
 

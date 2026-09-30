@@ -277,6 +277,25 @@ describe("BrokerRepoTailService", () => {
     });
   });
 
+  test("keeps one copy of a line the live buffer and the replay number differently", async () => {
+    const harness = createHarness({
+      liveEvents: [
+        tailEvent({ id: "s:1227", ts: 30, summary: "Write door.tsx" }),
+      ],
+      transcriptEvents: [
+        tailEvent({ id: "s:77", ts: 30, summary: "Write door.tsx" }),
+        tailEvent({ id: "s:30", ts: 20, summary: "[attachment]" }),
+        tailEvent({ id: "s:31", ts: 20, summary: "[attachment]" }),
+      ],
+    });
+
+    const payload = await harness.service.readTailRecentPayload(
+      new URL("http://test/v1/tail/recent?limit=10&transcripts=1"),
+    );
+
+    expect(payload.events.map((event) => event.id)).toEqual(["s:30", "s:31", "s:1227"]);
+  });
+
   test("filters assistant replies before the final limit despite newer technical events", async () => {
     const technicalEvents = Array.from({ length: 12_000 }, (_, index) => tailEvent({
       id: `tool-${index}`,

@@ -6,6 +6,7 @@ import type { MessageRecord } from "@openscout/protocol";
 export const readableJournalKinds: Record<BrokerJournalEntry["kind"], true> = {
   "control.event.record": true,
   "node.upsert": true, "actor.upsert": true, "agent.upsert": true,
+  "agent.delete": true, "actor.delete": true,
   "agent.endpoint.upsert": true, "agent.endpoint.delete": true,
   "conversation.upsert": true, "binding.upsert": true, "message.record": true,
   "conversation.read_cursor.upsert": true, "invocation.record": true,
@@ -16,6 +17,7 @@ export const readableJournalKinds: Record<BrokerJournalEntry["kind"], true> = {
   "durable.attempt.record": true, "durable.checkpoint.record": true,
   "durable.signal.record": true, "journal.replay_barrier": true,
   "delivery.status.update": true, "scout.dispatch.record": true,
+  "history.rotate": true,
 };
 
 export function readableCanonicalMessage(message: unknown): message is MessageRecord {

@@ -16,7 +16,7 @@ test("only explicit leading commands upload; feedback is note-only by default", 
   expect(await handleDiagnosticCommand("/feedback useful app", submit)).toContain("Report uploaded");
   expect(calls[0].diagnostics).toBe(false);
   await handleDiagnosticCommand("/report broke --local-only", submit);
-  expect(calls[1]).toEqual({ message: "broke", diagnostics: true, localOnly: true });
+  expect(calls[1]).toEqual({ message: "broke", diagnostics: true, localOnly: true, client: "scoutbot" });
   await handleDiagnosticCommand("/feedback broke --diagnostics", submit);
   expect(calls[2].diagnostics).toBe(true);
 });

@@ -5,12 +5,12 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { copyControlPlaneClient, findBasicClientLeaks } from "./bundle-scout-web.mjs";
 
-test("packaged client keeps runtime portraits, eye patches and reachable assets without authoring payload", () => {
+test("packaged client keeps runtime portraits, eye patches, pose frames and reachable assets without authoring payload", () => {
   const root = mkdtempSync(join(tmpdir(), "scout-client-copy-"));
   const source = join(root, "source");
   const target = join(root, "packed");
-  const retained = ["index.html", "crew/sprout-bust.webp", "crew/sheets/sprout/blink-half.webp", "crew/sheets/eye-plate-v1/rest.webp", "characters/sage/sage.glb", "assets/world-outposts-hash.png"];
-  const excluded = ["crew-preview.html", "crew/masters/sprout.png", "crew/_runs/frame.webp", "crew/_qa/proof.webp", "crew/poses/wave.webp", "crew/pack.json"];
+  const retained = ["index.html", "crew/sprout-bust.webp", "crew/sheets/sprout/blink-half.webp", "crew/sheets/eye-plate-v1/rest.webp", "crew/poses/sprout/wave.webp", "characters/sage/sage.glb", "assets/world-outposts-hash.png"];
+  const excluded = ["crew-preview.html", "crew/masters/sprout.png", "crew/_runs/frame.webp", "crew/_qa/proof.webp", "crew/poses/sprout/notes.png", "crew/pack.json"];
   try {
     for (const file of [...retained, ...excluded]) {
       mkdirSync(dirname(join(source, file)), { recursive: true });

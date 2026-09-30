@@ -112,6 +112,14 @@ export interface ChannelInviteRevokeCommand {
   revokedAt: number;
 }
 
+export interface ChannelMemberRemoveCommand {
+  kind: "channel.member.remove";
+  channelId: ScoutId;
+  actorId: ScoutId;
+  removedByActorId: ScoutId;
+  removedAt: number;
+}
+
 export interface ChannelInviteRedeemCommand {
   kind: "channel.invite.redeem";
   channelId: ScoutId;
@@ -134,6 +142,7 @@ export type ControlCommand =
   | ChannelInviteCreateCommand
   | ChannelInviteRevokeCommand
   | ChannelInviteRedeemCommand
+  | ChannelMemberRemoveCommand
   | PostMessageCommand
   | InvokeAgentCommand
   | EnsureAwakeCommand

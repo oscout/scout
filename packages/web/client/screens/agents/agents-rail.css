@@ -123,16 +123,16 @@
   display: flex;
   align-items: flex-start;
   justify-content: center;
-  padding-top: 8vh;
+  padding: clamp(24px, 14vh, 160px) 24px 24px;
   background: color-mix(in srgb, var(--bg) 76%, transparent);
-  backdrop-filter: blur(4px);
+  backdrop-filter: blur(2px);
 }
 
 .s-newchat-panel {
   position: relative;
   display: flex;
-  width: 560px;
-  max-height: 84vh;
+  width: 760px;
+  max-height: calc(100dvh - clamp(24px, 14vh, 160px) - 24px);
   flex-direction: column;
   max-width: calc(100vw - 48px);
   background: color-mix(in srgb, var(--surface) 96%, var(--bg));
@@ -723,7 +723,7 @@
 }
 
 .s-newchat-panel .s-msg-compose-shell:focus-within {
-  border-color: color-mix(in srgb, var(--accent) 24%, var(--border));
+  border-color: var(--field-focus);
 }
 
 .s-newchat-panel .s-msg-compose-input::placeholder {
@@ -929,7 +929,7 @@
 }
 /* compact single-line row: avatar · name · count. The tail is a quiet
    right-aligned count (studio .railCount): dim mono for working-only projects,
-   --accent (no pulsing halo) when the project needs you. Idle shows nothing. */
+   --accent (no pulsing halo) when the project has a request. Idle shows nothing. */
 .s-rail-proj-count {
   flex: none;
   font-family: var(--font-mono);
@@ -1112,3 +1112,11 @@
   background: color-mix(in srgb, var(--accent) 10%, var(--surface));
   color: var(--ink);
 }
+
+/* Destination precedes project and message in the launch task path. */
+.s-newchat-host { display: flex; align-items: center; gap: var(--space-md); padding-block: var(--space-sm); }
+.s-newchat-host label { color: var(--ink-dim); min-width: 56px; }
+.s-newchat-host select { flex: 1; min-width: 0; min-height: 36px; padding: 8px 12px; color: var(--ink); background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-md); font: inherit; }
+.s-newchat-host select:focus-visible { outline: 2px solid var(--hud-accent); outline-offset: 2px; }
+.s-newchat-panel:not([data-framed]) .s-msg-compose-input { min-height: clamp(180px, 24vh, 300px); }
+@media (max-width: 620px) { .s-newchat-backdrop { padding: 12px; } }

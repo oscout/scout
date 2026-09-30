@@ -1386,6 +1386,7 @@ describe("ensureCodexAppServerAgentOnline", () => {
       expect(online).toEqual({
         threadId: fixture.startedThreadId,
         durableThreadId: null,
+        codexAppServer: expect.objectContaining({ connection: "spawned", socketPath: null, capabilityGaps: [] }),
       });
       expect(existsSync(threadIdPath)).toBe(false);
 
@@ -1398,6 +1399,7 @@ describe("ensureCodexAppServerAgentOnline", () => {
       expect(durable).toEqual({
         threadId: fixture.startedThreadId,
         durableThreadId: fixture.startedThreadId,
+        codexAppServer: expect.objectContaining({ connection: "spawned" }),
       });
       expect(readFileSync(threadIdPath, "utf8").trim()).toBe(fixture.startedThreadId);
       const methods = readFileSync(fixture.methodsPath, "utf8");

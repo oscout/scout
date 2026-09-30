@@ -33,6 +33,16 @@ type TargetableMessageOptions = ContextRootOptions & {
   aliasHost?: string;
 };
 
+export type ScoutSendCommandOptions = TargetableMessageOptions & {
+  /** Opt in to tracked work on the ask invocation lifecycle. */
+  tracked: boolean;
+  noNotifs: boolean;
+  wait: boolean;
+  timeoutSeconds?: number;
+};
+
+export type ScoutTellCommandOptions = TargetableMessageOptions;
+
 export type ScoutSetupCommandOptions = {
   currentDirectory: string;
   sourceRoots: string[];
@@ -55,7 +65,7 @@ export type ScoutAskCommandOptions = ContextRootOptions & {
   session?: "new";
   timeoutSeconds?: number;
   replyMode?: "inline" | "notify" | "none";
-  placement?: "background" | "foreground";
+  placement?: "background" | "foreground" | "attached";
   labels?: string[];
   message: string;
   promptFile?: string;
@@ -116,6 +126,7 @@ export type ScoutMonitorCommandOptions = ContextRootOptions & {
 };
 
 export type ScoutDoctorCommandOptions = ContextRootOptions & {
+  detail: boolean;
   json: boolean;
   fix: boolean;
   yes: boolean;
@@ -619,11 +630,13 @@ export function parseDoctorCommandOptions(
   defaultCurrentDirectory: string,
 ): ScoutDoctorCommandOptions {
   const parsed = parseContextRootPrefix(args, defaultCurrentDirectory);
+  let detail = false;
   let json = false;
   let fix = false;
   let yes = false;
 
   for (const current of parsed.args) {
+    if (current === "--detail") { detail = true; continue; }
     if (current === "--json") {
       json = true;
       continue;
@@ -646,6 +659,7 @@ export function parseDoctorCommandOptions(
   return {
     currentDirectory: parsed.currentDirectory,
     args: parsed.args,
+    detail,
     json,
     fix,
     yes,
@@ -655,7 +669,34 @@ export function parseDoctorCommandOptions(
 export function parseSendCommandOptions(
   args: string[],
   defaultCurrentDirectory: string,
-): TargetableMessageOptions {
+): ScoutSendCommandOptions {
+  return parseTargetableMessageCommandOptions("send", args, defaultCurrentDirectory);
+}
+
+export function parseTellCommandOptions(
+  args: string[],
+  defaultCurrentDirectory: string,
+): ScoutTellCommandOptions {
+  const {
+    tracked: _tracked,
+    noNotifs: _noNotifs,
+    wait: _wait,
+    timeoutSeconds: _timeout,
+    ...options
+  } = parseTargetableMessageCommandOptions("tell", args, defaultCurrentDirectory);
+  return options;
+}
+
+const SEND_TRACKED_FLAGS = ["--tracked", "--no-notifs", "--wait", "--timeout"] as const;
+const REPEATED_DESTINATION_ERROR =
+  "provide exactly one destination: repeated --to/--ref flags are not merged (use --channel for a group thread)";
+
+function parseTargetableMessageCommandOptions(
+  commandName: "send" | "tell",
+  args: string[],
+  defaultCurrentDirectory: string,
+): ScoutSendCommandOptions {
+  const allowTrackedFlags = commandName === "send";
   const parsed = parseContextRootPrefix(args, defaultCurrentDirectory);
   let agentName: string | null = null;
   let targetLabel: string | undefined;
@@ -663,6 +704,10 @@ export function parseSendCommandOptions(
   let channel: string | undefined;
   let shouldSpeak = false;
   let wake = false;
+  let tracked = false;
+  let noNotifs = false;
+  let wait = false;
+  let timeoutSeconds: number | undefined;
   let harness: string | undefined;
   let messageFile: string | undefined;
   let aliasProject: string | undefined;
@@ -671,6 +716,36 @@ export function parseSendCommandOptions(
 
   for (let index = 0; index < parsed.args.length; index += 1) {
     const current = parsed.args[index] ?? "";
+    if (
+      !allowTrackedFlags
+      && SEND_TRACKED_FLAGS.some((flag) => current === flag || current.startsWith(`${flag}=`))
+    ) {
+      throw new ScoutCliError(
+        `${current.split("=")[0]} belongs to \`scout send --tracked\`; \`scout tell\` posts a message only and never creates work`,
+      );
+    }
+    if (allowTrackedFlags && current === "--tracked") {
+      tracked = true;
+      continue;
+    }
+    if (allowTrackedFlags && current === "--no-notifs") {
+      noNotifs = true;
+      continue;
+    }
+    if (allowTrackedFlags && current === "--wait") {
+      wait = true;
+      continue;
+    }
+    if (allowTrackedFlags && (current === "--timeout" || current.startsWith("--timeout="))) {
+      const value = parseFlagValue(parsed.args, index, "--timeout");
+      const parsedTimeout = Number(value.value);
+      if (!Number.isFinite(parsedTimeout) || parsedTimeout <= 0) {
+        throw new ScoutCliError("--timeout must be a positive number of seconds");
+      }
+      timeoutSeconds = parsedTimeout;
+      index = value.nextIndex;
+      continue;
+    }
     if (current === "--as" || current.startsWith("--as=")) {
       const value = parseFlagValue(parsed.args, index, "--as");
       agentName = value.value;
@@ -678,12 +753,18 @@ export function parseSendCommandOptions(
       continue;
     }
     if (current === "--to" || current.startsWith("--to=")) {
+      if (targetLabel !== undefined) {
+        throw new ScoutCliError(REPEATED_DESTINATION_ERROR);
+      }
       const value = parseFlagValue(parsed.args, index, "--to");
       targetLabel = value.value;
       index = value.nextIndex;
       continue;
     }
     if (current === "--ref" || current.startsWith("--ref=")) {
+      if (targetLabel !== undefined) {
+        throw new ScoutCliError(REPEATED_DESTINATION_ERROR);
+      }
       const value = parseFlagValue(parsed.args, index, "--ref");
       targetRef = value.value.replace(/^ref:/, "");
       targetLabel = `ref:${targetRef}`;
@@ -719,6 +800,11 @@ export function parseSendCommandOptions(
       continue;
     }
     if (current === "--wake") {
+      if (!allowTrackedFlags) {
+        throw new ScoutCliError(
+          "--wake forces a dispatch turn; `scout tell` never wakes or launches a target. Use `scout send --tracked --to` or `scout ask` when the target should act",
+        );
+      }
       wake = true;
       continue;
     }
@@ -754,6 +840,17 @@ export function parseSendCommandOptions(
   if ((aliasProject || aliasHost) && parseScoutComposerRouteTarget(targetLabel ?? "")?.kind !== "route_alias") {
     throw new ScoutCliError("--alias-project/--alias-host require --to alias:<name>");
   }
+  if (timeoutSeconds !== undefined && !wait) {
+    throw new ScoutCliError("--timeout requires --wait");
+  }
+  if ((noNotifs || wait) && !tracked) {
+    throw new ScoutCliError(
+      `${noNotifs ? "--no-notifs" : "--wait"} applies to tracked sends; add --tracked (or use \`scout ask\`). A plain \`scout send\` is a message-only FYI.`,
+    );
+  }
+  if (noNotifs && wait) {
+    throw new ScoutCliError("--no-notifs and --wait are mutually exclusive: --wait returns the result inline");
+  }
 
   return {
     currentDirectory: parsed.currentDirectory,
@@ -764,6 +861,10 @@ export function parseSendCommandOptions(
     channel,
     shouldSpeak,
     wake,
+    tracked,
+    noNotifs,
+    wait,
+    timeoutSeconds,
     harness,
     message,
     messageFile,
@@ -930,7 +1031,7 @@ export function parseAskCommandOptions(
     }
     if (current === "--placement" || current.startsWith("--placement=")) {
       const value = parseFlagValue(parsed.args, index, "--placement");
-      if (value.value !== "background" && value.value !== "foreground") {
+      if (value.value !== "background" && value.value !== "foreground" && value.value !== "attached") {
         throw new ScoutCliError(`invalid placement: ${value.value}`);
       }
       if (placement && placement !== value.value) {
@@ -1186,7 +1287,7 @@ export function parseImplicitAskCommandOptions(
     }
     if (current === "--placement" || current.startsWith("--placement=")) {
       const value = parseFlagValue(parsed.args, index, "--placement");
-      if (value.value !== "background" && value.value !== "foreground") {
+      if (value.value !== "background" && value.value !== "foreground" && value.value !== "attached") {
         throw new ScoutCliError(`invalid placement: ${value.value}`);
       }
       if (placement && placement !== value.value) {

@@ -1,7 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import type { TerminalSessionRecord } from "@openscout/protocol";
 import { terminalListItems, type TerminalListItem } from "../../lib/terminal-sessions.ts";
-import { groupTerminalNavItems } from "./terminal-nav-model.ts";
+import { groupTerminalNavItems, normalizeTerminalNavMode } from "./terminal-nav-model.ts";
+import { summarizeHerdrTopology, terminalNavHandle, terminalNavRow } from "./terminal-nav-row.ts";
 
 function session(
   id: string,
@@ -51,93 +52,148 @@ const MIN = 60 * 1_000;
 const HOUR = 60 * MIN;
 const DAY = 24 * HOUR;
 
-describe("terminal nav modes", () => {
-  test("fleet groups by intentionality in fixed order", () => {
-    const items = itemsOf(
-      session("s1", "tmux", "session-ms0hf3f7-3ngln1"),
-      session("s2", "herdr", "blink"),
-      session("s3", "tmux", "scout-tmux-obsidian"),
-      session("s4", "tmux", "teamup", { origin: "discovered" }),
-    );
-    const sections = groupTerminalNavItems(items, "fleet", NOW);
+const labels = (sections: ReturnType<typeof groupTerminalNavItems>) => sections.map((section) => section.label);
+const names = (items: TerminalListItem[]) => items.map((item) => item.surface.sessionName);
 
-    expect(sections.map((section) => section.key)).toEqual(["herdr", "tmux-named", "tmux-auto", "external"]);
-    expect(sections.map((section) => section.items[0]?.surface.sessionName)).toEqual([
-      "blink",
-      "scout-tmux-obsidian",
-      "session-ms0hf3f7-3ngln1",
-      "teamup",
-    ]);
+describe("terminal index: projects", () => {
+  test("groups by project, most recent first, catch-alls and Home sink", () => {
+    const items = itemsOf(
+      session("a", "tmux", "a", { cwd: "/Users/art/dev/openscout", activityAt: NOW - 3 * HOUR }),
+      session("b", "tmux", "b", { cwd: "/Users/art/dev/lp", activityAt: NOW - 5 * MIN }),
+      session("c", "tmux", "c", { cwd: "/Users/art", activityAt: NOW - MIN }),
+      session("d", "tmux", "d", { cwd: "/Users/art/dev/openscout", activityAt: NOW - 10 * MIN }),
+    );
+    const sections = groupTerminalNavItems(items, "projects", { now: NOW });
+    expect(labels(sections)).toEqual(["lp", "openscout", "Home"]);
+    expect(names(sections[1]!.items)).toEqual(["d", "a"]);
   });
 
-  test("places groups by project, most recently active project first", () => {
+  test("a working terminal lifts its project and leads within it", () => {
     const items = itemsOf(
-      session("s1", "tmux", "one", { project: "openscout", activityAt: NOW - 2 * HOUR }),
-      session("s2", "tmux", "two", { project: "hudson", activityAt: NOW - 5 * MIN }),
-      session("s3", "tmux", "three", { project: "openscout", activityAt: NOW - 3 * HOUR }),
-      session("s4", "tmux", "four", { origin: "discovered" }),
+      session("a", "tmux", "a", { cwd: "/Users/art/dev/openscout", activityAt: NOW - 3 * HOUR }),
+      session("d", "tmux", "d", { cwd: "/Users/art/dev/openscout", activityAt: NOW - 2 * HOUR }),
+      session("b", "tmux", "b", { cwd: "/Users/art/dev/lp", activityAt: NOW - MIN }),
     );
-    const sections = groupTerminalNavItems(items, "places", NOW);
-
-    expect(sections.map((section) => section.label)).toEqual(["hudson", "openscout", "backend-only"]);
-    expect(sections[1]?.items.map((item) => item.surface.sessionName)).toEqual(["one", "three"]);
+    const sections = groupTerminalNavItems(items, "projects", {
+      now: NOW,
+      isWorking: (item) => item.surface.sessionName === "a",
+    });
+    expect(labels(sections)).toEqual(["openscout", "lp"]);
+    expect(sections[0]!.working).toBe(true);
+    expect(names(sections[0]!.items)).toEqual(["a", "d"]);
   });
 
-  test("places orders equal-activity projects alphabetically", () => {
+  test("stopped herdr sessions fold into their section; projectOf places live herdr", () => {
     const items = itemsOf(
-      session("s1", "tmux", "one", { project: "beta", activityAt: NOW - HOUR }),
-      session("s2", "tmux", "two", { project: "alpha", activityAt: NOW - HOUR }),
+      session("h1", "herdr", "scout", { activityAt: NOW - MIN }),
+      session("h2", "herdr", "old-layout", { state: "detached", cwd: "/Users/art/dev/openscout" }),
+      session("t1", "tmux", "t1", { cwd: "/Users/art/dev/openscout", activityAt: NOW - HOUR }),
     );
-    const sections = groupTerminalNavItems(items, "places", NOW);
+    const sections = groupTerminalNavItems(items, "projects", {
+      now: NOW,
+      projectOf: (item) => (item.surface.sessionName === "scout" ? "openscout" : null),
+    });
+    expect(labels(sections)).toEqual(["openscout"]);
+    expect(names(sections[0]!.items)).toEqual(["scout", "t1"]);
+    expect(names(sections[0]!.stopped)).toEqual(["old-layout"]);
+  });
+});
 
-    expect(sections.map((section) => section.label)).toEqual(["alpha", "beta"]);
+describe("terminal index: recent", () => {
+  test("buckets by last activity with working on top and stopped at the foot", () => {
+    const items = itemsOf(
+      session("w", "tmux", "w", { activityAt: NOW - 2 * DAY }),
+      session("h", "tmux", "h", { activityAt: NOW - 10 * MIN }),
+      session("o", "tmux", "o", { activityAt: NOW - 30 * DAY }),
+      session("u", "tmux", "u"),
+      session("s", "herdr", "s", { state: "detached" }),
+    );
+    // `u` has updatedAt 1, so it reads as old rather than unknown.
+    const sections = groupTerminalNavItems(items, "recent", {
+      now: NOW,
+      isWorking: (item) => item.surface.sessionName === "w",
+    });
+    expect(labels(sections)).toEqual(["Working now", "Last hour", "Older", "Stopped"]);
+    expect(names(sections[2]!.items).sort()).toEqual(["o", "u"]);
+    expect(names(sections[3]!.stopped)).toEqual(["s"]);
+    expect(sections[3]!.items).toEqual([]);
   });
 
-  test("time buckets by last activity age", () => {
-    const items = itemsOf(
-      session("s1", "tmux", "now", { activityAt: NOW - 2 * MIN }),
-      session("s2", "tmux", "today", { activityAt: NOW - 3 * HOUR }),
-      session("s3", "tmux", "week", { activityAt: NOW - 2 * DAY }),
-      session("s4", "tmux", "older", { activityAt: NOW - 10 * DAY }),
-      session("s5", "tmux", "unknown", { origin: "discovered" }),
-    );
-    const sections = groupTerminalNavItems(items, "time", NOW);
+  test("old persisted modes map onto the two cuts", () => {
+    expect(normalizeTerminalNavMode("fleet")).toBe("projects");
+    expect(normalizeTerminalNavMode("places")).toBe("projects");
+    expect(normalizeTerminalNavMode("time")).toBe("recent");
+    expect(normalizeTerminalNavMode("attention")).toBe("recent");
+    expect(normalizeTerminalNavMode(undefined)).toBe("projects");
+  });
+});
 
-    expect(sections.map((section) => section.key)).toEqual(["now", "today", "week", "older", "unknown"]);
-    expect(sections.map((section) => section.items[0]?.surface.sessionName)).toEqual([
-      "now",
-      "today",
-      "week",
-      "older",
-      "unknown",
-    ]);
+describe("terminal index rows", () => {
+  test("handles shorten generated names only", () => {
+    expect(terminalNavHandle("session-mulg1xl0-bvteeb")).toBe("mulg1xl0");
+    expect(terminalNavHandle("lp")).toBe("lp");
   });
 
-  test("attention groups by attached, live, detached, exited", () => {
-    const items = itemsOf(
-      session("s1", "tmux", "exited", { state: "exited" }),
-      session("s2", "tmux", "attached", { attachedClients: 2 }),
-      session("s3", "tmux", "live"),
-      session("s4", "tmux", "detached", { state: "detached" }),
-    );
-    const sections = groupTerminalNavItems(items, "attention", NOW);
-
-    expect(sections.map((section) => section.key)).toEqual(["attached", "live", "detached", "exited"]);
-    expect(sections.map((section) => section.items[0]?.surface.sessionName)).toEqual([
-      "attached",
-      "live",
-      "detached",
-      "exited",
-    ]);
+  test("a tmux row marks its harness and skips Claude's version as a command", () => {
+    const [item] = itemsOf({
+      ...session("c", "tmux", "session-mulg1xl0-bvteeb"),
+      harness: "claude-code",
+      metadata: { currentCommand: "2.1.280" },
+    });
+    const row = terminalNavRow(item!, null, null);
+    expect(row.mark).toEqual({ kind: "harness", harness: "claude" });
+    expect(row.title).toBe("mulg1xl0");
+    expect(row.handle).toBe("claude");
+    expect(row.working).toBe(false);
   });
 
-  test("empty groups are dropped and an empty list yields no sections", () => {
-    expect(groupTerminalNavItems([], "fleet", NOW)).toEqual([]);
-    expect(groupTerminalNavItems([], "places", NOW)).toEqual([]);
-    expect(groupTerminalNavItems([], "time", NOW)).toEqual([]);
-    expect(groupTerminalNavItems([], "attention", NOW)).toEqual([]);
+  test("a plain shell row shows its foreground command", () => {
+    const [item] = itemsOf({
+      ...session("z", "tmux", "logs"),
+      harness: "zsh",
+      metadata: { currentCommand: "tail -f broker.log" },
+    });
+    const row = terminalNavRow(item!, null, null);
+    expect(row.mark).toEqual({ kind: "shell" });
+    expect(row.title).toBe("tail -f broker.log");
+  });
 
-    const items = itemsOf(session("s1", "tmux", "solo", { activityAt: NOW - MIN }));
-    expect(groupTerminalNavItems(items, "time", NOW).map((section) => section.key)).toEqual(["now"]);
+  test("herdr topology groups panes by harness and names the common folder", () => {
+    const pane = (agent: string | null, agentStatus: string, cwd: string) => ({ agent, agentStatus, cwd, foregroundCwd: null });
+    const summary = summarizeHerdrTopology({
+      running: true,
+      workspaces: [{
+        tabs: [{
+          panes: [
+            pane("claude", "working", "/Users/art/dev/openscout"),
+            pane("claude", "idle", "/Users/art/dev/openscout"),
+            pane("codex", "idle", "/Users/art/dev/openscout/"),
+            pane(null, "idle", "/Users/art"),
+          ],
+        }],
+      }],
+    } as never);
+    expect(summary).toEqual({
+      panes: [
+        { harness: "claude", count: 2, working: 1 },
+        { harness: "codex", count: 1, working: 0 },
+      ],
+      paneCount: 4,
+      working: 1,
+      project: "openscout",
+    });
+    const [item] = itemsOf(session("h", "herdr", "scout"));
+    const row = terminalNavRow(item!, null, summary);
+    expect(row.mark).toEqual({ kind: "herdr" });
+    expect(row.working).toBe(true);
+    expect(row.title).toBe("scout");
+  });
+});
+
+describe("terminal index row titles", () => {
+  test("an owner named after its session falls back to the handle", () => {
+    const [item] = itemsOf({ ...session("c", "tmux", "session-mulg1xl0-bvteeb"), harness: "claude" });
+    const owner = { name: "Session Mulg1xl0 Bvteeb", harness: "claude", state: "idle", brokerActivity: [] } as never;
+    expect(terminalNavRow(item!, owner, null).title).toBe("mulg1xl0");
   });
 });

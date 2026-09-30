@@ -33,13 +33,15 @@ import type { ServerWebSocket } from "bun";
 
 import { realpathSync } from "fs";
 import { homedir } from "os";
+import type { SessionState } from "@openscout/agent-sessions";
+import { agentNotificationForSessionAttention } from "@openscout/runtime/agent-notification-builders";
 import { broadcastApnsAlertToActiveMobileDevices } from "@openscout/runtime/mobile-push";
 
 import { log } from "./log.ts";
 import type { Bridge } from "./bridge.ts";
 import { resolveConfig } from "./config.ts";
 import { handleRPC, type BridgeServerOptions } from "./server.ts";
-import { bridgeRouter, lookupMobileInboxItemForEvent } from "./router.ts";
+import { bridgeRouter, lookupMobileInboxItemForEvent, type MobileInboxItem } from "./router.ts";
 import { getTailFanout } from "./tail-fanout.ts";
 import {
   watchScoutMessages,
@@ -148,15 +150,7 @@ function mobileConversationLifecycleEvent(lifecycle: ScoutBrokerConversationLife
   };
 }
 
-async function sendMobileInboxPushNotification(item: {
-  id: string;
-  kind: string;
-  title: string;
-  description: string;
-  sessionId: string;
-  turnId: string | null;
-  blockId: string | null;
-}) {
+async function sendMobileInboxPushNotification(item: MobileInboxItem, snapshot: SessionState | null) {
   const result = await broadcastApnsAlertToActiveMobileDevices({
     title: "Scout",
     body: genericMobileInboxAlertBody(item.kind),
@@ -170,6 +164,8 @@ async function sendMobileInboxPushNotification(item: {
       turnId: item.turnId,
       blockId: item.blockId,
     },
+    // The command, diff, or question itself, sealed to each paired phone.
+    notification: agentNotificationForSessionAttention({ item, snapshot }),
   });
 
   if (result.attemptedCount === 0 && !result.rateLimited) {
@@ -211,12 +207,12 @@ async function sendMobileInboxPushNotification(item: {
 
 function genericMobileInboxAlertBody(kind: string): string {
   switch (kind) {
-    case "approval": return "A local agent needs your approval.";
+    case "approval": return "A local agent is asking for approval.";
     case "question": return "A local agent has a question.";
     case "failed_action":
     case "failed_turn":
     case "session_error": return "A local agent needs review.";
-    default: return "A local agent needs your attention.";
+    default: return "A local agent has a request.";
   }
 }
 
@@ -589,7 +585,10 @@ export function startBridgeServerTRPC(options: {
           tier: attentionItem.risk === "low" ? "badge" : "interrupt",
           item: attentionItem,
         }));
-        void sendMobileInboxPushNotification(attentionItem).catch((error) => {
+        void sendMobileInboxPushNotification(
+          attentionItem,
+          bridge.getSessionSnapshot(attentionItem.sessionId) ?? null,
+        ).catch((error) => {
           log.warn(
             "push",
             "Unexpected error while sending APNs inbox alert",

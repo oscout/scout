@@ -21,12 +21,13 @@ import {
 describe("parseDoctorCommandOptions", () => {
   test("accepts context, json, and native repair flags", () => {
     const options = parseDoctorCommandOptions(
-      ["--context-root", "/tmp/repo", "--json", "--fix", "--yes"],
+      ["--context-root", "/tmp/repo", "--json", "--detail", "--fix", "--yes"],
       "/tmp/workspace",
     );
 
     expect(options.currentDirectory).toBe("/tmp/repo");
     expect(options.json).toBe(true);
+    expect(options.detail).toBe(true);
     expect(options.fix).toBe(true);
     expect(options.yes).toBe(true);
   });
@@ -37,6 +38,67 @@ describe("parseDoctorCommandOptions", () => {
 });
 
 describe("parseSendCommandOptions", () => {
+  test("a plain send is not tracked", () => {
+    const options = parseSendCommandOptions(["--to", "hudson", "branch", "pushed"], "/tmp/workspace");
+    expect(options.tracked).toBe(false);
+    expect(options.message).toBe("branch pushed");
+  });
+
+  test("parses --tracked and its flags instead of swallowing them into the body", () => {
+    const options = parseSendCommandOptions(
+      ["--tracked", "--to", "hudson", "--no-notifs", "run", "the", "sweep"],
+      "/tmp/workspace",
+    );
+    expect(options.tracked).toBe(true);
+    expect(options.noNotifs).toBe(true);
+    expect(options.wait).toBe(false);
+    expect(options.message).toBe("run the sweep");
+  });
+
+  test("parses a bounded wait budget", () => {
+    const options = parseSendCommandOptions(
+      ["--to", "hudson", "--tracked", "--wait", "--timeout", "300", "current", "blocker?"],
+      "/tmp/workspace",
+    );
+    expect(options.wait).toBe(true);
+    expect(options.timeoutSeconds).toBe(300);
+    expect(options.message).toBe("current blocker?");
+  });
+
+  test("tracked-only flags require --tracked", () => {
+    expect(() =>
+      parseSendCommandOptions(["--to", "hudson", "--no-notifs", "hello"], "/tmp/workspace"),
+    ).toThrow(/add --tracked/);
+    expect(() =>
+      parseSendCommandOptions(["--to", "hudson", "--wait", "hello"], "/tmp/workspace"),
+    ).toThrow(/add --tracked/);
+  });
+
+  test("rejects --timeout without --wait and non-positive budgets", () => {
+    expect(() =>
+      parseSendCommandOptions(["--to", "hudson", "--tracked", "--timeout", "300", "hello"], "/tmp/workspace"),
+    ).toThrow("--timeout requires --wait");
+    expect(() =>
+      parseSendCommandOptions(["--to", "hudson", "--tracked", "--wait", "--timeout", "0", "hello"], "/tmp/workspace"),
+    ).toThrow("--timeout must be a positive number of seconds");
+  });
+
+  test("rejects --no-notifs with --wait", () => {
+    expect(() =>
+      parseSendCommandOptions(["--to", "hudson", "--tracked", "--wait", "--no-notifs", "hello"], "/tmp/workspace"),
+    ).toThrow(/mutually exclusive/);
+  });
+
+  test("rejects repeated destinations instead of keeping the last one", () => {
+    for (const args of [
+      ["--to", "a", "--to", "b", "review"],
+      ["--to", "a", "--ref", "7f3a9c21", "review"],
+      ["--ref", "7f3a9c21", "--ref", "8e2b1d10", "review"],
+    ]) {
+      expect(() => parseSendCommandOptions(args, "/tmp/workspace")).toThrow(/exactly one destination/);
+    }
+  });
+
   test("accepts a message file as the primary body source", () => {
     const options = parseSendCommandOptions(
       ["--context-root", "/tmp/repo", "--message-file", "status.md"],
@@ -380,6 +442,18 @@ describe("parseAskCommandOptions", () => {
     expect(options.placement).toBe("foreground");
     expect(options.replyMode).toBe("notify");
     expect(options.session).toBe("new");
+  });
+
+  test("parses attached placement for the running Codex app-server", () => {
+    const options = parseAskCommandOptions(
+      ["--harness", "codex", "--placement", "attached", "review"],
+      "/tmp/workspace",
+    );
+    expect(options.placement).toBe("attached");
+    expect(() => parseAskCommandOptions(
+      ["--harness", "codex", "--foreground", "--placement", "attached", "review"],
+      "/tmp/workspace",
+    )).toThrow("conflicting placement");
   });
 
   test("rejects invalid and conflicting session placement", () => {

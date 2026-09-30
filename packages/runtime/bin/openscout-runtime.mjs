@@ -14,18 +14,21 @@ const sourceMain = {
   broker: resolve(sourceDir, "broker-daemon.ts"),
   service: resolve(sourceDir, "broker-process-manager.ts"),
   discover: resolve(sourceDir, "mesh-discover.ts"),
+  otel: resolve(sourceDir, "otlp/entry.ts"),
 };
 const distMain = {
   base: resolve(distDir, "base-daemon.js"),
   broker: resolve(distDir, "broker-daemon.js"),
   service: resolve(distDir, "broker-process-manager.js"),
   discover: resolve(distDir, "mesh-discover.js"),
+  otel: resolve(distDir, "otlp/entry.js"),
 };
 const processNames = {
   base: "scout-base",
   broker: "scout-broker",
   service: "scout-service",
   discover: "scout-discover",
+  otel: "scout-otel",
 };
 const npmCommand = process.platform === "win32" ? "npm.cmd" : "npm";
 

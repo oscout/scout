@@ -1,0 +1,27 @@
+/* Input focus is neutral chrome, independent of the brand/status accent.
+ * Text editors can match :focus-visible even after a pointer click. Keep one
+ * crisp indicator rather than layering a colored halo over their own border. */
+:is([data-scout-theme], .native-surface, .chat-app) {
+  --field-focus: color-mix(in srgb, var(--ink) 60%, var(--surface, var(--canvas)));
+}
+
+:is([data-scout-theme], .native-surface, .chat-app)
+  :is(input, textarea, select, [contenteditable="true"]):focus:not([aria-invalid="true"]) {
+  border-color: var(--field-focus);
+  outline: 1px solid var(--field-focus);
+  outline-offset: 1px;
+  box-shadow: none;
+  --tw-ring-color: var(--field-focus);
+}
+
+/* Composite editors already have an enclosing focus border. Do not draw a
+ * second rectangle around the editable region or a search input inside it. */
+:is([data-scout-theme], .native-surface, .chat-app)
+  :is(.chat-composer, .chat-side-search, .chat-palette, .s-msg-compose-shell,
+      .s-thread-compose-shell, .s-observe-compose-shell, .sys-broker-message-composer,
+      .ks-search-form, .s-atop-search, .s-rt-search, .s-term-picker-search,
+      [data-field-shell], .chat-app[data-style="messages"] .composer-row)
+  :is(input, textarea, [contenteditable="true"]):focus:not([aria-invalid="true"]) {
+  outline: none;
+  box-shadow: none;
+}

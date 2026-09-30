@@ -43,7 +43,7 @@ export type ProjectAgentGroup = {
 };
 
 /**
- * Roll a project's agent nodes up by agent name. needs-you sorts first, then
+ * Roll a project's agent nodes up by agent name. Requests sort first, then
  * recency, then conversation volume — so whoever wants you, or worked last, leads.
  */
 export function groupsForProject(project: DirProject): ProjectAgentGroup[] {

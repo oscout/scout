@@ -133,6 +133,7 @@ describe("stream event identity and subjects", () => {
 describe("publishable entries", () => {
   test("only canonical message records qualify", () => {
     expect(isPublishableEntry({ kind: "message.record", message: messageRecord() })).toBe(true);
+    expect(isPublishableEntry({ kind: "message.record", message: { ...messageRecord(), metadata: { chatCorrection: { revision: 1, editedAt: 123, changedBy: "operator" } } } })).toBe(false);
     expect(isPublishableEntry({
       kind: "control.event.record",
       event: { id: "evt", kind: "presence.updated", ts: 1, actorId: "a", payload: {} as never },

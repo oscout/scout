@@ -27,9 +27,11 @@ import {
   askScoutSessionById,
   buildScoutLabelBrief,
   buildScoutLabelFeed,
+  deliverScoutAsk,
   isReusableBrokerRegisteredTargetAgent,
   listScoutAgents,
   loadScoutBrokerContext,
+  loadScoutBrokerContextResult,
   parseScoutHarness,
   parseScoutLocalHarness,
   readScoutCapabilityMatrix,
@@ -57,6 +59,7 @@ const originalSupportDirectory = process.env.OPENSCOUT_SUPPORT_DIRECTORY;
 const originalControlHome = process.env.OPENSCOUT_CONTROL_HOME;
 const originalRelayHub = process.env.OPENSCOUT_RELAY_HUB;
 const originalBrokerUrl = process.env.OPENSCOUT_BROKER_URL;
+const originalBrokerSocketPath = process.env.OPENSCOUT_BROKER_SOCKET_PATH;
 const originalBrokerHost = process.env.OPENSCOUT_BROKER_HOST;
 const originalBrokerPort = process.env.OPENSCOUT_BROKER_PORT;
 const originalNetworkDiscovery =
@@ -163,6 +166,11 @@ afterEach(() => {
     delete process.env.OPENSCOUT_BROKER_URL;
   } else {
     process.env.OPENSCOUT_BROKER_URL = originalBrokerUrl;
+  }
+  if (originalBrokerSocketPath === undefined) {
+    delete process.env.OPENSCOUT_BROKER_SOCKET_PATH;
+  } else {
+    process.env.OPENSCOUT_BROKER_SOCKET_PATH = originalBrokerSocketPath;
   }
   if (originalBrokerHost === undefined) {
     delete process.env.OPENSCOUT_BROKER_HOST;
@@ -606,6 +614,9 @@ function useIsolatedOpenScoutHome(): string {
   );
   process.env.OPENSCOUT_RELAY_HUB = join(home, ".openscout", "relay");
   process.env.OPENSCOUT_BROKER_URL = "http://broker.test";
+  // Pin the socket to a path that never exists — otherwise a live broker's
+  // unix socket answers in place of the fetch stub on dev machines.
+  process.env.OPENSCOUT_BROKER_SOCKET_PATH = join(home, "broker.sock");
   process.env.OPENSCOUT_SKIP_USER_PROJECT_HINTS = "1";
   return home;
 }
@@ -3076,6 +3087,9 @@ describe("sendScoutMessage", () => {
     });
     expect(requests).toEqual([
       "GET /health",
+      // Identity scope for sender resolution — not the full registry.
+      "GET /v1/node",
+      "GET /v1/snapshot",
       "POST /v1/actors",
       "POST /v1/deliver",
     ]);
@@ -3858,5 +3872,357 @@ describe("watchScoutMessages", () => {
     });
 
     expect(received).toEqual(["matching"]);
+  });
+});
+
+describe("loadScoutBrokerContextResult", () => {
+  test("reports snapshot_read_failed with detail when /v1/snapshot errors", async () => {
+    useIsolatedOpenScoutHome();
+    const requested: string[] = [];
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const request = input instanceof Request ? input : new Request(input, init);
+      const url = new URL(request.url);
+      requested.push(`${request.method} ${url.pathname}`);
+      if (url.pathname === "/health") {
+        return jsonResponse({ ok: true, nodeId: "node-1", meshId: "mesh-1" });
+      }
+      if (url.pathname === "/v1/node") {
+        return jsonResponse({ id: "node-1" });
+      }
+      if (url.pathname === "/v1/snapshot") {
+        return jsonResponse({ error: "snapshot exploded" }, 500);
+      }
+      return jsonResponse({ error: "not found" }, 404);
+    }) as unknown as typeof fetch;
+
+    const result = await loadScoutBrokerContextResult();
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toBe("snapshot_read_failed");
+      expect(result.detail).toContain("500");
+    }
+    expect(requested).toContain("GET /v1/node");
+    expect(requested).toContain("GET /v1/snapshot");
+  });
+
+  test("reports node_read_failed when /v1/node errors while the broker is healthy", async () => {
+    useIsolatedOpenScoutHome();
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const request = input instanceof Request ? input : new Request(input, init);
+      const url = new URL(request.url);
+      if (url.pathname === "/health") {
+        return jsonResponse({ ok: true, nodeId: "node-1", meshId: "mesh-1" });
+      }
+      if (url.pathname === "/v1/node") {
+        return jsonResponse({ error: "node exploded" }, 502);
+      }
+      if (url.pathname === "/v1/snapshot") {
+        return jsonResponse(createRuntimeRegistrySnapshot());
+      }
+      return jsonResponse({ error: "not found" }, 404);
+    }) as unknown as typeof fetch;
+
+    const result = await loadScoutBrokerContextResult();
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toBe("node_read_failed");
+      expect(result.detail).toContain("502");
+    }
+  });
+
+  test("reports health_failed when the broker cannot be reached", async () => {
+    useIsolatedOpenScoutHome();
+    globalThis.fetch = (async () => {
+      throw new Error("connection refused");
+    }) as unknown as typeof fetch;
+
+    const result = await loadScoutBrokerContextResult();
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toBe("health_failed");
+    }
+  });
+
+  test("the ask path reads the agents-scoped snapshot, not the full registry", async () => {
+    useIsolatedOpenScoutHome();
+    const requested: string[] = [];
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const request = input instanceof Request ? input : new Request(input, init);
+      const url = new URL(request.url);
+      requested.push(`${request.method} ${url.pathname}${url.search}`);
+      if (url.pathname === "/health") {
+        return jsonResponse({ ok: true, nodeId: "node-1", meshId: "mesh-1" });
+      }
+      if (url.pathname === "/v1/node") {
+        return jsonResponse({ id: "node-1" });
+      }
+      if (url.pathname === "/v1/snapshot") {
+        return jsonResponse(createRuntimeRegistrySnapshot());
+      }
+      if (url.pathname === "/v1/actors" && request.method === "POST") {
+        return jsonResponse({ ok: true });
+      }
+      if (url.pathname === "/v1/deliver" && request.method === "POST") {
+        return jsonResponse({
+          kind: "delivery",
+          accepted: true,
+          routeKind: "dm",
+          conversation: {
+            id: "dm.operator.agent-1",
+            kind: "direct",
+            title: "Agent One",
+            visibility: "private",
+            authorityNodeId: "node-1",
+            participantIds: ["operator", "agent-1"],
+          },
+          message: {
+            id: "msg-1",
+            conversationId: "dm.operator.agent-1",
+            actorId: "operator",
+            originNodeId: "node-1",
+            class: "operator",
+            body: "hi",
+            visibility: "private",
+            policy: "durable",
+            createdAt: Date.now(),
+          },
+          flight: {
+            id: "flt-1",
+            invocationId: "inv-1",
+            requesterId: "operator",
+            targetAgentId: "agent-1",
+            state: "waking",
+            startedAt: Date.now(),
+          },
+        });
+      }
+      return jsonResponse({ error: "not found" }, 404);
+    }) as unknown as typeof fetch;
+
+    const result = await deliverScoutAsk({
+      senderId: "operator",
+      target: { kind: "agent_id", agentId: "agent-1" },
+      body: "hi",
+      currentDirectory: "/tmp",
+    });
+
+    expect(result.usedBroker).toBe(true);
+    expect(result.flight?.id).toBe("flt-1");
+    // Every route reads the identity scope: sender resolution needs actors,
+    // and a snapshot without them would re-post the registered sender.
+    expect(requested).toContain("GET /v1/snapshot?scope=identity");
+    expect(requested).not.toContain("GET /v1/snapshot?scope=agents");
+    expect(requested).not.toContain("GET /v1/snapshot");
+  });
+
+  test("a profile ask reads only the identity snapshot scope — a broken full snapshot cannot fail it", async () => {
+    useIsolatedOpenScoutHome();
+    const requested: string[] = [];
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const request = input instanceof Request ? input : new Request(input, init);
+      const url = new URL(request.url);
+      requested.push(`${request.method} ${url.pathname}${url.search}`);
+      if (url.pathname === "/health") {
+        return jsonResponse({ ok: true, nodeId: "node-1", meshId: "mesh-1" });
+      }
+      if (url.pathname === "/v1/snapshot") {
+        // The full registry is broken; the identity scope is all this route
+        // needs.
+        if (url.searchParams.get("scope") !== "identity") {
+          return jsonResponse({ error: "snapshot exploded" }, 500);
+        }
+        return jsonResponse({
+          actors: {},
+          agents: {},
+          nodes: {},
+        });
+      }
+      if (url.pathname === "/v1/node") {
+        return jsonResponse({ id: "node-1" });
+      }
+      if (url.pathname === "/v1/actors" && request.method === "POST") {
+        return jsonResponse({ ok: true });
+      }
+      if (url.pathname === "/v1/deliver" && request.method === "POST") {
+        return jsonResponse({
+          kind: "delivery",
+          accepted: true,
+          routeKind: "dm",
+          conversation: {
+            id: "dm.operator.fable",
+            kind: "direct",
+            title: "Fable",
+            visibility: "private",
+            authorityNodeId: "node-1",
+            participantIds: ["operator", "fable"],
+          },
+          message: {
+            id: "msg-1",
+            conversationId: "dm.operator.fable",
+            actorId: "operator",
+            originNodeId: "node-1",
+            class: "operator",
+            body: "do the thing",
+            visibility: "private",
+            policy: "durable",
+            createdAt: Date.now(),
+          },
+          flight: {
+            id: "flt-profile",
+            invocationId: "inv-profile",
+            requesterId: "operator",
+            targetAgentId: "fable",
+            state: "waking",
+            startedAt: Date.now(),
+          },
+        });
+      }
+      return jsonResponse({ error: "not found" }, 404);
+    }) as unknown as typeof fetch;
+
+    const result = await deliverScoutAsk({
+      senderId: "operator",
+      target: { kind: "runtime_profile", profile: "fable", projectPath: "/tmp" },
+      body: "do the thing",
+      currentDirectory: "/tmp",
+    });
+
+    expect(result.usedBroker).toBe(true);
+    expect(result.flight?.id).toBe("flt-profile");
+    expect(requested).toContain("GET /v1/snapshot?scope=identity");
+    expect(requested).not.toContain("GET /v1/snapshot");
+  });
+
+  test("a profile ask resolves the registered sender without re-posting the actor", async () => {
+    useIsolatedOpenScoutHome();
+    const requested: string[] = [];
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const request = input instanceof Request ? input : new Request(input, init);
+      const url = new URL(request.url);
+      requested.push(`${request.method} ${url.pathname}${url.search}`);
+      if (url.pathname === "/health") {
+        return jsonResponse({ ok: true, nodeId: "node-1", meshId: "mesh-1" });
+      }
+      if (url.pathname === "/v1/node") {
+        return jsonResponse({ id: "node-1" });
+      }
+      if (url.pathname === "/v1/snapshot") {
+        expect(url.searchParams.get("scope")).toBe("identity");
+        return jsonResponse({
+          nodes: {},
+          actors: {
+            operator: {
+              id: "operator",
+              kind: "person",
+              displayName: "Operator",
+              labels: ["primary-operator"],
+              metadata: { pronouns: "they/them" },
+            },
+          },
+          agents: {},
+        });
+      }
+      if (url.pathname === "/v1/actors" && request.method === "POST") {
+        return jsonResponse({ ok: true });
+      }
+      if (url.pathname === "/v1/deliver" && request.method === "POST") {
+        return jsonResponse({
+          kind: "delivery",
+          accepted: true,
+          routeKind: "dm",
+          conversation: {
+            id: "dm.operator.fable",
+            kind: "direct",
+            title: "Fable",
+            visibility: "private",
+            authorityNodeId: "node-1",
+            participantIds: ["operator", "fable"],
+          },
+          message: {
+            id: "msg-1",
+            conversationId: "dm.operator.fable",
+            actorId: "operator",
+            originNodeId: "node-1",
+            class: "operator",
+            body: "do the thing",
+            visibility: "private",
+            policy: "durable",
+            createdAt: Date.now(),
+          },
+          flight: {
+            id: "flt-profile",
+            invocationId: "inv-profile",
+            requesterId: "operator",
+            targetAgentId: "fable",
+            state: "waking",
+            startedAt: Date.now(),
+          },
+        });
+      }
+      return jsonResponse({ error: "not found" }, 404);
+    }) as unknown as typeof fetch;
+
+    const result = await deliverScoutAsk({
+      senderId: "operator",
+      target: { kind: "runtime_profile", profile: "fable", projectPath: "/tmp" },
+      body: "do the thing",
+      currentDirectory: "/tmp",
+    });
+
+    expect(result.usedBroker).toBe(true);
+    // The registered actor row satisfied sender resolution — no synthesized
+    // upsert replaced its labels/metadata.
+    expect(requested.some((entry) => entry === "POST /v1/actors")).toBe(false);
+  });
+});
+
+describe("scoutAskHandler preflight diagnostics", () => {
+  test("a snapshot read failure reports preflight_failed, not broker_unreachable", async () => {
+    useIsolatedOpenScoutHome();
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const request = input instanceof Request ? input : new Request(input, init);
+      const url = new URL(request.url);
+      if (url.pathname === "/health") {
+        return jsonResponse({ ok: true, nodeId: "node-1", meshId: "mesh-1" });
+      }
+      if (url.pathname === "/v1/node") {
+        return jsonResponse({ id: "node-1" });
+      }
+      if (url.pathname === "/v1/snapshot") {
+        return jsonResponse({ error: "snapshot exploded" }, 500);
+      }
+      return jsonResponse({ error: "not found" }, 404);
+    }) as unknown as typeof fetch;
+
+    const receipt = await scoutAskHandler({
+      senderId: "operator",
+      to: "agent-1",
+      body: "hi",
+      currentDirectory: "/tmp",
+    });
+
+    expect(receipt.ok).toBe(false);
+    expect(receipt.error?.code).toBe("preflight_failed");
+    expect(receipt.error?.message).toContain("/v1/snapshot");
+    expect(receipt.error?.message).toContain("safe to retry");
+  });
+
+  test("a health failure still reports broker_unreachable", async () => {
+    useIsolatedOpenScoutHome();
+    globalThis.fetch = (async () => {
+      throw new Error("connection refused");
+    }) as unknown as typeof fetch;
+
+    const receipt = await scoutAskHandler({
+      senderId: "operator",
+      to: "agent-1",
+      body: "hi",
+      currentDirectory: "/tmp",
+    });
+
+    expect(receipt.error?.code).toBe("broker_unreachable");
   });
 });

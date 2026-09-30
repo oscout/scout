@@ -1,6 +1,6 @@
 {
   "name": "@openscout/protocol",
-  "version": "0.2.109",
+  "version": "0.2.110",
   "description": "Typed protocol for the OpenScout local control plane",
   "license": "Apache-2.0",
   "type": "module",
@@ -47,8 +47,8 @@
   "scripts": {
     "prebuild": "bun ../../scripts/generate-runtime-catalog.ts",
     "build": "rm -rf dist && tsc -p tsconfig.json",
-    "precheck": "bun ../../scripts/generate-runtime-catalog.ts",
-    "check": "tsc --noEmit -p tsconfig.json",
+    "check": "tsc --noEmit -p tsconfig.json && bun run check:catalog",
+    "check:catalog": "bun ../../scripts/generate-runtime-catalog.ts --check",
     "test": "bun test src/*.test.ts",
     "prepack": "npm run build && node ../../scripts/prepare-publish-manifest.mjs .",
     "postpack": "node ../../scripts/restore-publish-manifest.mjs .",

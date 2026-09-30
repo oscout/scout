@@ -153,6 +153,7 @@ Examples:
 
 ```bash
 scout send --to hudson "The branch is ready for review."
+scout tell --to hudson "The branch is ready for review."   # explicit FYI verb, same delivery
 ```
 
 MCP equivalent:
@@ -174,6 +175,22 @@ Expected client behavior:
   callers should not need to choose wake mechanics for normal sends
 - require an explicit channel for group coordination
 - do not treat message delivery as fire-and-forget; keep the receipt available
+
+`scout tell` is the explicit spelling of this path: it never creates work and
+rejects `--wake` and `--tracked`. A plain `scout send` keeps the same
+message-only default.
+
+Tracked send is opt-in. `scout send --tracked --to hudson "..."` (MCP:
+`messages_send({ interaction: "work" })`) creates tracked work on the same
+invocation/flight lifecycle as `scout ask --notify`: it returns after the broker
+receipt with durable handles and reports completion back to the requester.
+`--no-notifs` (MCP `replyMode: "none"`) keeps the work tracked but suppresses the
+completion callback; `--wait [--timeout <s>]` waits for the result within a
+bounded budget. It applies only to one directed target: channels, `--ref`
+replies, broadcasts, multi-target sends, and bodies carrying a legacy
+`[ask:<id>]` completion tag fail closed, so completion replies never recurse into
+new work. `ask` remains the primary work verb and carries the richer options
+(`--project`, `--harness`, runtime, placement).
 
 Quiet delivery should be an optional message/reply modifier, not a separate
 primitive. It should still write the durable conversation record while

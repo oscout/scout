@@ -47,12 +47,12 @@ export function AgentsLeft() {
                 </span>
                 {/* tail — a quiet right-aligned count (studio .railCount). Dim mono
                     for working-only projects; rendered in --accent (no pulsing
-                    halo) when the project needs you. Idle shows nothing. */}
+                    halo) when the project has a request. Idle shows nothing. */}
                 {working > 0 ? (
                   <span
                     className="s-rail-proj-count"
                     data-needs={needs || undefined}
-                    title={needs ? "needs you" : undefined}
+                    title={needs ? "asking" : undefined}
                   >
                     {working}
                   </span>

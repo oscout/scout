@@ -3,8 +3,12 @@ import { describe, expect, test } from "bun:test";
 import type { ActorIdentity, AgentEndpoint, NodeDefinition } from "@openscout/protocol";
 
 import {
+  MESH_SESSION_START_PATH,
   MESH_SESSION_WAKE_PATH,
+  rankPeersForProjectPath,
+  startSessionOnPeers,
   flatDispatchSessionId,
+  isCodexThreadHeldByWriter,
   wakeLocalHarnessSession,
   wakeSessionOnPeers,
   type LocalSessionWakeDeps,
@@ -328,5 +332,221 @@ describe("wakeSessionOnPeers", () => {
 
     expect(result).toEqual({ ok: false, peersTried: 0 });
     expect(posts).toEqual([]);
+  });
+});
+
+describe("startSessionOnPeers", () => {
+  function createStartDeps(input: {
+    responses: Record<string, PeerSessionWakeResponse | Error>;
+    roots?: Record<string, string[]>;
+  }) {
+    const upsertedActors: ActorIdentity[] = [];
+    const upsertedEndpoints: AgentEndpoint[] = [];
+    const posts: Array<{ brokerBaseUrl: string; path: string; payload: unknown }> = [];
+    const deps = {
+      localNodeId: "node-local",
+      peerProjectRoots: (nodeId: string) => input.roots?.[nodeId] ?? [],
+      registry: {
+        async upsertActor(actor: ActorIdentity) {
+          upsertedActors.push(actor);
+        },
+        async upsertEndpoint(nextEndpoint: AgentEndpoint) {
+          upsertedEndpoints.push(nextEndpoint);
+        },
+      },
+      postJson: async <TResponse,>(brokerBaseUrl: string, path: string, payload: unknown): Promise<TResponse> => {
+        posts.push({ brokerBaseUrl, path, payload });
+        const response = input.responses[brokerBaseUrl];
+        if (response instanceof Error) {
+          throw response;
+        }
+        return (response ?? { ok: false, reason: "project_unknown", detail: "not here" }) as TResponse;
+      },
+    };
+    return { deps, posts, upsertedActors, upsertedEndpoints };
+  }
+
+  test("asks the peer whose agents live under the same home first and adopts its endpoint", async () => {
+    const peerEndpoint = endpoint({ id: "endpoint-mini", nodeId: "node-mini", sessionId: "session-new" });
+    const peerActor = { id: peerEndpoint.agentId, kind: "session", displayName: "agentlist.io" } as ActorIdentity;
+    const { deps, posts, upsertedActors, upsertedEndpoints } = createStartDeps({
+      roots: {
+        "node-air": ["/Users/art/dev/openscout"],
+        "node-mini": ["/Users/arach/dev/talkie"],
+      },
+      responses: {
+        "http://mini.example:43110": { ok: true, endpoint: peerEndpoint, actor: peerActor },
+      },
+    });
+
+    const result = await startSessionOnPeers(
+      { ...deps, peers: [
+        node({ id: "node-air", brokerUrl: "http://air.example:43110" }),
+        node({ id: "node-mini", brokerUrl: "http://mini.example:43110" }),
+      ] },
+      { projectPath: "/Users/arach/dev/agentlist.io", harness: "claude", model: "claude-opus-5-5" },
+    );
+
+    expect(result).toEqual({ ok: true, peerNodeId: "node-mini", endpoint: peerEndpoint, actor: peerActor });
+    expect(posts).toEqual([{
+      brokerBaseUrl: "http://mini.example:43110",
+      path: MESH_SESSION_START_PATH,
+      payload: { projectPath: "/Users/arach/dev/agentlist.io", harness: "claude", model: "claude-opus-5-5" },
+    }]);
+    expect(upsertedActors).toEqual([peerActor]);
+    expect(upsertedEndpoints).toEqual([peerEndpoint]);
+  });
+
+  test("falls through peers that do not have the project and reports how many were asked", async () => {
+    const { deps, posts } = createStartDeps({
+      responses: { "http://a.example:43110": new Error("connect ECONNREFUSED") },
+    });
+
+    const result = await startSessionOnPeers(
+      { ...deps, peers: [
+        node({ id: "node-a", brokerUrl: "http://a.example:43110" }),
+        node({ id: "node-b", brokerUrl: "http://b.example:43110" }),
+        node({ id: "node-local", brokerUrl: "http://self.example:43110" }),
+      ] },
+      { projectPath: "/srv/missing" },
+    );
+
+    expect(result).toEqual({ ok: false, peersTried: 2 });
+    expect(posts.map((post) => post.brokerBaseUrl)).toEqual(["http://a.example:43110", "http://b.example:43110"]);
+  });
+
+  test("refuses an endpoint the peer does not own", async () => {
+    const { deps, upsertedEndpoints } = createStartDeps({
+      responses: { "http://b.example:43110": { ok: true, endpoint: endpoint({ nodeId: "node-elsewhere" }) } },
+    });
+
+    const result = await startSessionOnPeers(
+      { ...deps, peers: [node({ id: "node-b", brokerUrl: "http://b.example:43110" })] },
+      { projectPath: "/srv/project" },
+    );
+
+    expect(result).toEqual({ ok: false, peersTried: 1 });
+    expect(upsertedEndpoints).toEqual([]);
+  });
+
+  test("ranks peers by shared path depth, then id", () => {
+    const peers = [node({ id: "node-c" }), node({ id: "node-b" }), node({ id: "node-a" })];
+    const ranked = rankPeersForProjectPath(peers, "/Users/arach/dev/x", (id) => ({
+      "node-b": ["/Users/arach/dev/talkie"],
+      "node-c": ["/Users/art/dev/openscout"],
+    })[id] ?? []);
+
+    expect(ranked.map((peer) => peer.id)).toEqual(["node-b", "node-c", "node-a"]);
+  });
+});
+
+const FORK_SESSION_ID = "9b1c2d3e-0000-4000-8000-000000000001";
+const CODEX_THREAD_ID = "019fbee7-2a7f-7eb0-84bf-da22717c74d0";
+
+function locatedCodexSession(): SessionLocateResult {
+  return {
+    ok: true,
+    session: {
+      harness: "codex",
+      nativeSessionId: CODEX_THREAD_ID,
+      cwd: "/Users/art/dev/blink",
+      path: `/Users/art/.codex/sessions/2026/09/24/rollout-${CODEX_THREAD_ID}.jsonl`,
+      lastActivityAt: 100,
+      match: "session_meta id",
+    },
+  };
+}
+
+describe("wakeLocalHarnessSession fork-if-live", () => {
+  test("continues a live Claude session as a Scout-owned fork with a pre-minted id", async () => {
+    const { deps, upsertedEndpoints } = createLocalDeps();
+    deps.findLiveClaudeSession = async () => ({ sessionId: NATIVE_SESSION_ID });
+    deps.createForkSessionId = () => FORK_SESSION_ID;
+    const result = await wakeLocalHarnessSession(deps, { nativeSessionId: NATIVE_SESSION_ID, harness: "claude", forkIfLive: true });
+    expect(result).toMatchObject({ ok: true, forkedSession: { sourceSessionId: NATIVE_SESSION_ID, sessionId: FORK_SESSION_ID } });
+    expect(upsertedEndpoints).toHaveLength(1);
+    const fork = upsertedEndpoints[0]!;
+    expect(fork.agentId).toBe(flatDispatchSessionId("claude", FORK_SESSION_ID));
+    expect(fork.transport).toBe("tmux");
+    expect(fork.metadata).toMatchObject({
+      flatDispatch: true,
+      nativeSessionId: FORK_SESSION_ID,
+      externalSessionId: FORK_SESSION_ID,
+      forkedFromSessionId: NATIVE_SESSION_ID,
+    });
+  });
+
+  test("reuses the existing fork of a still-live source instead of forking again", async () => {
+    const prior = endpoint({
+      id: "endpoint-fork",
+      agentId: flatDispatchSessionId("claude", FORK_SESSION_ID),
+      transport: "tmux",
+      state: "idle",
+      sessionId: flatDispatchSessionId("claude", FORK_SESSION_ID),
+      metadata: { flatDispatch: true, nativeSessionId: FORK_SESSION_ID, forkedFromSessionId: NATIVE_SESSION_ID, startedAt: "100" },
+    });
+    const { deps, upsertedEndpoints } = createLocalDeps({ endpoints: { [prior.id]: prior } });
+    deps.observeEndpointSession = async () => null;
+    deps.findLiveClaudeSession = async () => ({ sessionId: NATIVE_SESSION_ID });
+    deps.createForkSessionId = () => { throw new Error("must not mint a second fork"); };
+    const result = await wakeLocalHarnessSession(deps, { nativeSessionId: NATIVE_SESSION_ID, harness: "claude", forkIfLive: true });
+    expect(result).toMatchObject({ ok: true, endpoint: { id: "endpoint-fork" }, forkedSession: { sessionId: FORK_SESSION_ID } });
+    expect(upsertedEndpoints).toHaveLength(0);
+  });
+
+  test("an idle Claude session resumes in place even when fork-if-live is requested", async () => {
+    const { deps, upsertedEndpoints } = createLocalDeps();
+    deps.createForkSessionId = () => { throw new Error("must not fork an idle session"); };
+    const result = await wakeLocalHarnessSession(deps, { nativeSessionId: NATIVE_SESSION_ID, harness: "claude", forkIfLive: true });
+    expect(result.ok).toBe(true);
+    expect(result.ok && result.forkedSession).toBeFalsy();
+    expect(upsertedEndpoints[0]?.metadata?.nativeSessionId).toBe(NATIVE_SESSION_ID);
+  });
+
+  test("still fails closed when Claude liveness cannot be observed", async () => {
+    const { deps, upsertedEndpoints } = createLocalDeps();
+    deps.findLiveClaudeSession = async () => { throw new Error("tmux unavailable"); };
+    expect(await wakeLocalHarnessSession(deps, { nativeSessionId: NATIVE_SESSION_ID, forkIfLive: true })).toMatchObject({ ok: false, reason: "session_runtime_unobserved" });
+    expect(upsertedEndpoints).toHaveLength(0);
+  });
+
+  test("refuses a Codex thread held by another writer when fork-if-live is requested", async () => {
+    const { deps, upsertedEndpoints } = createLocalDeps({ locate: locatedCodexSession() });
+    deps.isCodexThreadLive = async () => true;
+    expect(await wakeLocalHarnessSession(deps, { nativeSessionId: CODEX_THREAD_ID, harness: "codex", forkIfLive: true }))
+      .toMatchObject({ ok: false, reason: "session_live_fork_unsupported" });
+    expect(upsertedEndpoints).toHaveLength(0);
+  });
+
+  test("wakes a Codex thread no one holds, and fails closed when the lock probe fails", async () => {
+    const free = createLocalDeps({ locate: locatedCodexSession() });
+    free.deps.isCodexThreadLive = async () => false;
+    expect((await wakeLocalHarnessSession(free.deps, { nativeSessionId: CODEX_THREAD_ID, harness: "codex", forkIfLive: true })).ok).toBe(true);
+    expect(free.upsertedEndpoints[0]?.metadata?.threadId).toBe(CODEX_THREAD_ID);
+
+    const unknown = createLocalDeps({ locate: locatedCodexSession() });
+    unknown.deps.isCodexThreadLive = async () => { throw new Error("lsof failed"); };
+    expect(await wakeLocalHarnessSession(unknown.deps, { nativeSessionId: CODEX_THREAD_ID, harness: "codex", forkIfLive: true }))
+      .toMatchObject({ ok: false, reason: "session_runtime_unobserved" });
+  });
+
+  test("plain Codex exact wakes never consult the writer lock", async () => {
+    const { deps } = createLocalDeps({ locate: locatedCodexSession() });
+    deps.isCodexThreadLive = async () => { throw new Error("must not probe without opt-in"); };
+    expect((await wakeLocalHarnessSession(deps, { nativeSessionId: CODEX_THREAD_ID, harness: "codex" })).ok).toBe(true);
+  });
+});
+
+describe("isCodexThreadHeldByWriter", () => {
+  test("no lock file means no writer", async () => {
+    expect(await isCodexThreadHeldByWriter("t1", { codexHome: "/codex", exists: () => false, holders: async () => { throw new Error("unreached"); } })).toBe(false);
+  });
+
+  test("a lock file with a holding process is a live writer; one without is stale", async () => {
+    const seen: string[] = [];
+    const holders = async (path: string) => { seen.push(path); return ["4242"]; };
+    expect(await isCodexThreadHeldByWriter("t1", { codexHome: "/codex", exists: () => true, holders })).toBe(true);
+    expect(seen).toEqual(["/codex/thread-writer-locks/t1.lock"]);
+    expect(await isCodexThreadHeldByWriter("t1", { codexHome: "/codex", exists: () => true, holders: async () => [] })).toBe(false);
   });
 });

@@ -16,6 +16,7 @@ import {
   type MachinePresence,
   type MachineRecord,
 } from "@openscout/protocol";
+import { classifyScoutBridgeCommand, type ScoutBridgeKind } from "@openscout/runtime/scout-bridge-command";
 
 /* ── Version comparison ── */
 
@@ -225,13 +226,10 @@ export function emptyReading(probeError: string | null = null): MachineUpdateRea
  *
  * `scout.ts` belongs in the entry set: Mini runs its bridges from a source
  * checkout as `apps/desktop/bin/scout.ts mcp`.
+ * `main.mjs` belongs too: a bundled install launches its bridges as
+ * `bun <package>/dist/main.mjs mesh bridge`.
  */
-const SCOUT_BRIDGE_PATTERN = /(?:scout\.(?:mjs|ts|js)|\/bin\/scout)\s+(mcp|channel|mesh\s+bridge)(?:\s|$)/;
-
-/** The standalone MCP binary, which carries no subcommand. */
-const SCOUT_BRIDGE_BINARY = /(?:^|\/)scout-mcp(?:\s|$)/;
-
-export type ScoutBridgeKind = "mcp" | "channel" | "mesh";
+export type { ScoutBridgeKind };
 
 /**
  * Which bridge a command is, or null when it is not one.
@@ -240,13 +238,12 @@ export type ScoutBridgeKind = "mcp" | "channel" | "mesh";
  * Scout process that pins its code at launch — even though the 2026-09-14 fleet
  * ran none, so including it leaves the audited 18 and 25 unchanged. The app and
  * the menu bar item are deliberately absent: the app's version is compared as a
- * component already, and counting it again would double-report it.
+ * component already, and counting it again would double-report it. Matching is
+ * anchored on the launch shape (runtime + entrypoint), so a prompt that quotes
+ * a bridge command is not one.
  */
 export function classifyScoutBridge(command: string): ScoutBridgeKind | null {
-  const lowered = command.toLowerCase();
-  const match = SCOUT_BRIDGE_PATTERN.exec(lowered);
-  if (match) return match[1]!.startsWith("mesh") ? "mesh" : (match[1] as ScoutBridgeKind);
-  return SCOUT_BRIDGE_BINARY.test(lowered) ? "mcp" : null;
+  return classifyScoutBridgeCommand(command);
 }
 
 /** Harnesses that hold Scout MCP and channel bridges open. */

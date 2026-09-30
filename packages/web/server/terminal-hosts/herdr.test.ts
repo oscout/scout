@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import { herdrTerminalHost, unwrapHerdrPaneRead } from "./herdr.ts";
+import { herdrSessionNeedsFirstWorkspace, herdrTerminalHost, unwrapHerdrPaneRead } from "./herdr.ts";
 
 /** An environment where no `herdr` binary can be found. */
 const NO_HERDR = { ...process.env, PATH: "/nonexistent-scout-probe", OPENSCOUT_HERDR_BIN: "" };
@@ -39,6 +39,19 @@ describe("herdr create", () => {
     // The binary is missing here, so creation fails first; the contract that
     // matters is that `resumed` is never silently true.
     expect(result.resumed ?? false).toBe(false);
+  });
+});
+
+describe("herdrSessionNeedsFirstWorkspace", () => {
+  const layout = { savedAt: 1, workspaces: 2, tabs: 3, panes: 4, cwds: [], agents: [] };
+
+  test("a restarted session restores its saved workspaces instead of gaining a stray one", () => {
+    expect(herdrSessionNeedsFirstWorkspace(layout)).toBe(false);
+  });
+
+  test("a brand-new or empty session still gets its first workspace", () => {
+    expect(herdrSessionNeedsFirstWorkspace(null)).toBe(true);
+    expect(herdrSessionNeedsFirstWorkspace({ ...layout, workspaces: 0 })).toBe(true);
   });
 });
 

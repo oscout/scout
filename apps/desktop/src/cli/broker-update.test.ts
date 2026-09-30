@@ -1,5 +1,6 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import {
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -60,6 +61,15 @@ function writeLockOwner(
 }
 
 describe("CLI broker update coordination", () => {
+  let previousPlatform: PropertyDescriptor | undefined;
+  beforeEach(() => {
+    previousPlatform = Object.getOwnPropertyDescriptor(process, "platform");
+    Object.defineProperty(process, "platform", { configurable: true, enumerable: true, value: "darwin" });
+  });
+  afterEach(() => {
+    if (previousPlatform) Object.defineProperty(process, "platform", previousPlatform);
+  });
+
   test("fails closed and reports when the native status probe fails", async () => {
     const checkpointPath = temporaryCheckpointPath();
     const reports: string[] = [];
@@ -465,5 +475,34 @@ describe("CLI broker update coordination", () => {
     expect(brokerUpdateDebugEnabled({ OPENSCOUT_DEBUG_BROKER_UPDATE: "true" })).toBe(true);
     expect(brokerUpdateDebugEnabled({ OPENSCOUT_DEBUG_BROKER_UPDATE: "0" })).toBe(false);
     expect(brokerUpdateDebugEnabled({})).toBe(false);
+  });
+});
+
+describe("ensureBrokerUptodate off darwin", () => {
+  test("skips the native supervisor probe when process.platform is linux", async () => {
+    const previous = Object.getOwnPropertyDescriptor(process, "platform");
+    Object.defineProperty(process, "platform", { configurable: true, enumerable: true, value: "linux" });
+    const checkpointPath = temporaryCheckpointPath();
+    let statusCount = 0;
+    let restartCount = 0;
+    try {
+      await ensureBrokerUptodate({
+        checkpointPath,
+        readCurrentMtime: () => 2_000,
+        restart: async () => {
+          restartCount += 1;
+          return { ok: true };
+        },
+        status: async () => {
+          statusCount += 1;
+          return statusFromFixture("scoutd-status-stale.json");
+        },
+      });
+      expect(statusCount).toBe(0);
+      expect(restartCount).toBe(0);
+      expect(existsSync(checkpointPath)).toBe(false);
+    } finally {
+      if (previous) Object.defineProperty(process, "platform", previous);
+    }
   });
 });

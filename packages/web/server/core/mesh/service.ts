@@ -21,8 +21,17 @@ import {
   resolveScoutBrokerUrl,
   type ScoutBrokerHealthState,
   type ScoutBrokerNodeRecord,
+  type ScoutBrokerContext,
 } from "../broker/service.ts";
 import { createCachedSnapshot } from "../../server-core.ts";
+import type {
+  MeshIssueCode,
+  MeshIssue,
+} from "../../../shared/api/mesh.ts";
+export type {
+  MeshIssueCode,
+  MeshIssue,
+} from "../../../shared/api/mesh.ts";
 
 /* ── Types ── */
 
@@ -33,22 +42,13 @@ export type TailscaleStatus = {
   health: string[];
   peers: TailscalePeerCandidate[];
   onlineCount: number;
-};
-
-export type MeshIssueCode =
-  | "broker_unreachable"
-  | "tailscale_stopped"
-  | "local_only"
-  | "mesh_loopback"
-  | "discovery_unconfigured";
-
-export type MeshIssue = {
-  code: MeshIssueCode;
-  severity: "warning" | "error";
-  title: string;
-  summary: string;
-  action: string | null;
-  actionCommand: string | null;
+  freshness?: {
+    lastSuccessAt: number | null;
+    ageMs: number | null;
+    stale: boolean;
+    refreshing: boolean;
+    error: string | null;
+  };
 };
 
 export type MeshIdentitySummary = {
@@ -71,6 +71,8 @@ export type MeshStatusReport = {
   tailscale: TailscaleStatus;
   issues: MeshIssue[];
   warnings: string[];
+  snapshotFreshness?: ScoutBrokerContext["freshness"] | null;
+  partial?: boolean;
 };
 
 export type TailscaleControlAction = "open_app";
@@ -105,7 +107,8 @@ function isPeerReachableBrokerUrl(url: string | null | undefined): boolean {
 }
 
 async function readTailscaleStatus(): Promise<TailscaleStatus> {
-  const summary = tailscaleStatusProbe.read().value;
+  const snapshot = tailscaleStatusProbe.read();
+  const summary = snapshot.value;
   const peers = summary?.peers ?? [];
   return {
     available: summary !== null,
@@ -114,6 +117,8 @@ async function readTailscaleStatus(): Promise<TailscaleStatus> {
     health: summary?.health ?? [],
     peers,
     onlineCount: peers.filter((p) => p.online).length,
+    freshness: { lastSuccessAt: snapshot.at, ageMs: snapshot.ageMs, stale: snapshot.stale,
+      refreshing: snapshot.refreshing, error: snapshot.error?.message ?? null },
   };
 }
 
@@ -132,18 +137,32 @@ function computeIssues(
   const issues: MeshIssue[] = [];
 
   if (!health.reachable) {
+    const timedOut = health.observation?.state === "timed_out";
     issues.push({
-      code: "broker_unreachable",
+      code: timedOut ? "broker_slow" : "broker_unreachable",
       severity: "error",
-      title: "Broker not reachable",
-      summary: "The mesh page cannot reach the local broker yet, so peer status is incomplete.",
-      action: "Start the broker, then reload this page.",
+      title: timedOut ? "Broker health timed out" : "Broker not reachable",
+      summary: timedOut ? "The broker did not complete its health check within the status deadline. Its current readiness is unknown."
+        : "The mesh page cannot reach the local broker yet, so peer status is incomplete.",
+      action: "Check broker diagnostics and host resource pressure, then retry.",
       actionCommand: null,
     });
     return issues;
   }
 
-  if (tailscale.available && !tailscale.running) {
+  if (!health.ok || health.observation?.state === "slow") {
+    issues.push({
+      code: health.ok ? "broker_slow" : "broker_degraded",
+      severity: "warning",
+      title: health.ok ? "Broker health is slow" : "Broker health is degraded",
+      summary: health.ok ? "The broker reports ready, but its health response was slow."
+        : "The broker answered, but current readiness was not confirmed.",
+      action: "Check broker diagnostics and host resource pressure.",
+      actionCommand: null,
+    });
+  }
+
+  if (tailscale.available && !tailscale.running && !tailscale.freshness?.stale) {
     issues.push({
       code: "tailscale_stopped",
       severity: "warning",
@@ -160,7 +179,7 @@ function computeIssues(
       code: "local_only",
       severity: "warning",
       title: "Not announced to peers",
-      summary: "This broker is healthy on this machine, but it is still local-only, so peer brokers will not discover it.",
+      summary: "The last broker node record is local-only, so it is not announced for peer discovery.",
       action: "Use Join mesh if this machine should participate in peer discovery.",
       actionCommand: "scout mesh join",
     });
@@ -177,7 +196,7 @@ function computeIssues(
 
   const remoteNodes = Object.values(nodes).filter((n) => n.id !== localNode?.id);
 
-  if (!tailscale.available && remoteNodes.length === 0) {
+  if (!tailscale.available && !tailscale.freshness?.refreshing && !tailscale.freshness?.error && remoteNodes.length === 0) {
     issues.push({
       code: "discovery_unconfigured",
       severity: "warning",
@@ -200,16 +219,16 @@ function computeIdentitySummary(
   const name = localNode?.name ?? null;
   const nodeId = localNode?.id ?? health.nodeId ?? null;
 
-  if (!health.reachable) {
+  if (!health.ok) {
     return {
       name,
       nodeId,
       meshId,
-      modeLabel: "Broker offline",
+      modeLabel: health.observation?.state === "timed_out" ? "Health timed out" : health.reachable ? "Broker degraded" : "Broker unreachable",
       discoverable: false,
       announceUrl,
       discoveryDetail:
-        "This broker is not running, so peers cannot discover it yet. Other brokers only learn a mesh ID after they reach a broker address and read /v1/node.",
+        "Current broker readiness could not be confirmed. A failed or timed-out check does not establish that the process has stopped.",
     };
   }
 
@@ -218,11 +237,11 @@ function computeIdentitySummary(
       name,
       nodeId,
       meshId,
-      modeLabel: "Not registered",
+      modeLabel: "Node status pending",
       discoverable: false,
       announceUrl,
       discoveryDetail:
-        "This broker is up, but it has not published a local node record yet. Peers only learn a mesh ID after they reach a broker address and read /v1/node.",
+        "The broker node snapshot is not available yet. Peer discovery status will update after a successful snapshot read.",
     };
   }
 
@@ -306,7 +325,7 @@ async function readMeshStatus(options: { forceBrokerContext?: boolean } = {}): P
   // now happens at most once per snapshot window instead of once per request.
   const [health, context, tailscale] = await Promise.all([
     readScoutBrokerHealth(controlUrl),
-    loadScoutBrokerContext(controlUrl, { force: options.forceBrokerContext }),
+    loadScoutBrokerContext(controlUrl, { force: options.forceBrokerContext, waitForInitial: options.forceBrokerContext === true }),
     readTailscaleStatus(),
   ]);
 
@@ -316,9 +335,18 @@ async function readMeshStatus(options: { forceBrokerContext?: boolean } = {}): P
   const identity = computeIdentitySummary(health, localNode, meshId);
   const nodes = filterCurrentMeshNodes(allNodes, meshId, localNode?.id, Date.now());
   const issues = computeIssues(health, localNode, nodes, tailscale);
+  if (!context || context.freshness?.stale) issues.push({
+    code: "broker_snapshot_unavailable", severity: "warning", title: "Peer status is incomplete",
+    summary: context ? "Showing a previous broker snapshot while current data is unavailable or refreshing."
+      : "The broker snapshot is still loading or unavailable; health and local probe results are shown separately.",
+    action: null, actionCommand: null,
+  });
   const warnings = issues.map(formatIssueWarning);
 
-  return { brokerUrl: advertiseUrl, health, localNode, meshId, identity, nodes, tailscale, issues, warnings };
+  return { brokerUrl: advertiseUrl, health, localNode, meshId, identity, nodes, tailscale, issues, warnings,
+    snapshotFreshness: context?.freshness ?? null,
+    partial: !context || context.freshness?.stale === true || !health.ok || !tailscale.available || tailscale.freshness?.stale === true,
+  };
 }
 
 /**

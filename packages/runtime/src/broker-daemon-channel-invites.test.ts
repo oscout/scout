@@ -64,10 +64,23 @@ describe("channel invitations through the durable broker HTTP boundary", () => {
     expect(otherSession.rejection.reason).toBe("exhausted");
 
     expect((await command(restarted.baseUrl, {
+      kind: "channel.member.remove", channelId, actorId, removedByActorId: "operator", removedAt: Date.now(),
+    })).ok).toBe(true);
+    restarted.child.kill();
+    await restarted.child.exited;
+    await Promise.all(restarted.outputDrain);
+    broker.harnesses.delete(restarted);
+    const afterRemoval = await broker.startBroker({ controlHome });
+    const removedSnapshot = await broker.getJson<{ conversations: Record<string, ConversationDefinition> }>(afterRemoval.baseUrl, "/v1/snapshot");
+    expect(removedSnapshot.conversations[channelId].participantIds).not.toContain(actorId);
+    const removedRetry = await command(afterRemoval.baseUrl, redeem);
+    expect(removedRetry).toMatchObject({ ok: false, rejection: { reason: "membership_removed" } });
+
+    expect((await command(afterRemoval.baseUrl, {
       kind: "channel.invite.revoke", channelId, inviteId: "cinv-recovery",
       revokedByActorId: "operator", revokedAt: Date.now(),
     })).ok).toBe(true);
-    const revokedRetry = await command(restarted.baseUrl, redeem);
+    const revokedRetry = await command(afterRemoval.baseUrl, redeem);
     expect(revokedRetry.ok).toBe(false);
     expect(revokedRetry.rejection.reason).toBe("revoked");
   }, 30_000);

@@ -1,8 +1,10 @@
 /* Projects & Agents — two honest views over one directory.
 
-   Projects is the default: one compact row per known project. Agents shows
-   durable identities only: one base coding agent per project plus unbound
-   named role definitions. Runtime sessions remain in the Sessions surface. */
+   Projects is the default: one compact row per known project (the Projects
+   tab, ?view=projects; the Agents tab is the activity feed instead —
+   studio study agents-home-directions). Agents shows durable identities only: one
+   base coding agent per project plus unbound named role definitions. Runtime
+   sessions remain in the Sessions surface. */
 
 import { useMemo, useState } from "react";
 import { Folder, FolderOpen, MessageSquare, Plus, Search, Telescope } from "lucide-react";
@@ -78,12 +80,15 @@ export function CrewWorkspaces({
   route,
   navigate,
   nowMs,
+  fullPage = false,
 }: {
   model: ProjectsInboxModel;
   agents: Agent[];
   route: Extract<Route, { view: "agents-v2" }>;
   navigate: Navigate;
   nowMs: number;
+  /** The Projects page itself (not an embed): caps the column to the feed's width. */
+  fullPage?: boolean;
 }) {
   const [mode, setMode] = useState<DirectoryMode>("projects");
   const [statusFilter, setStatusFilter] = useState<CrewStatusFilter>("all");
@@ -115,7 +120,7 @@ export function CrewWorkspaces({
   const roleAgentCount = members.filter((member) => member.kind === "role").length;
 
   return (
-    <main className="cw-root" aria-label="Projects and agents">
+    <main className="cw-root" data-home={fullPage || undefined} aria-label="Projects and agents">
       <div className="cw-toolbar">
         <div className="cw-modeToggle" role="group" aria-label="Directory view">
           <button
@@ -304,14 +309,14 @@ function ProjectRow({
     <article className="cw-workspace" data-state={project.needs > 0 ? "needs" : active ? "live" : undefined}>
       <button type="button" className="cw-workspaceHead" onClick={() => openProject(navigate, route, project.slug)}>
         <span className="cw-workspaceTitle">/{project.title}</span>
-        <span className="cw-workspaceRoot" title={project.root ?? undefined}>
-          {project.root ? shortHomePath(project.root) : "Discovered project"}
+        <span className="cw-workspaceState">
+          {project.worktreeCount} {project.worktreeCount === 1 ? "worktree" : "worktrees"}
+          {" · "}
+          {project.sessionCount} {project.sessionCount === 1 ? "session" : "sessions"}
         </span>
         <span className="cw-workspaceMeta">
-          <span>
-            {project.worktreeCount} {project.worktreeCount === 1 ? "worktree" : "worktrees"}
-            {" · "}
-            {project.sessionCount} {project.sessionCount === 1 ? "session" : "sessions"}
+          <span className="cw-workspaceRoot" title={project.root ?? undefined}>
+            {project.root ? shortHomePath(project.root) : "Discovered project"}
           </span>
           {project.needs > 0 ? (
             <span className="cw-workspaceAsks">{project.needs} {project.needs === 1 ? "ask" : "asks"}</span>

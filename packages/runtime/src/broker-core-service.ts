@@ -76,6 +76,11 @@ type BrokerCoreProjection = {
 
 type BrokerCoreJournal = {
   listCollaborationRecords: (options?: {
+    conversationId?: string;
+    includeThreads?: boolean;
+    orderByCreatedAt?: boolean;
+    afterCreatedAt?: number;
+    afterId?: string;
     limit?: number;
     kind?: CollaborationRecord["kind"];
     state?: string;
@@ -189,7 +194,16 @@ function listBrokerCollaborationRecords(
   journal: BrokerCoreJournal,
   input: ScoutBrokerCollaborationRecordQuery,
 ) {
+  if ((input.afterCreatedAt != null || input.afterId != null)
+    && (!Number.isSafeInteger(input.afterCreatedAt) || !input.orderByCreatedAt || !input.afterId?.trim())) {
+    throw new Error("A creation-order cursor requires a valid timestamp and record ID.");
+  }
   return journal.listCollaborationRecords({
+    conversationId: input.conversationId,
+    includeThreads: input.includeThreads,
+    orderByCreatedAt: input.orderByCreatedAt,
+    afterCreatedAt: input.afterCreatedAt,
+    afterId: input.afterId,
     limit: normalizeLimit(input.limit),
     kind: input.kind as CollaborationRecord["kind"] | undefined,
     state: input.state,

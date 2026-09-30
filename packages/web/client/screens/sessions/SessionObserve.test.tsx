@@ -21,7 +21,10 @@ mock.module("../../lib/api.ts", () => ({
   },
   peekApiGet: () => null,
 }));
-mock.module("../../lib/sse.ts", () => ({ useBrokerEvents: () => undefined }));
+mock.module("../../lib/sse.ts", () => ({
+  useBrokerEvents: () => undefined,
+  observeBrokerEvents: () => () => undefined,
+}));
 mock.module("../../scout/Provider.tsx", () => ({
   useScout: () => ({ navigate: () => undefined }),
   useOptionalScout: () => ({ navigate: () => undefined }),

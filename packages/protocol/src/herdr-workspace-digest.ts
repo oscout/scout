@@ -29,6 +29,7 @@
  */
 
 import type {
+  HerdrAgentSessionRef,
   HerdrAgentStatus,
   HerdrPaneProjection,
   HerdrSessionTopology,
@@ -45,15 +46,19 @@ export type HerdrStatusCounts = Record<HerdrAgentStatus, number>;
 
 export type HerdrDigestPane = {
   /**
-   * What `herdr agent <verb>` accepts as a target for this pane: the stable
-   * terminal id when herdr reported one, else the pane id. Null on a persisted
-   * projection, where neither is live — a pane you cannot address yet.
+   * Observed host locator: terminal id when reported, else pane id. This is
+   * not a Scout address or a guaranteed CLI target (Herdr versions differ).
+   * Read handoffs use the host session + pane id. Null on a saved projection.
    */
   target: string | null;
   paneId: string;
   workspaceId: string;
   tabId: string;
+  /** Operator-assigned pane name, not a Scout agent address. */
+  name?: string | null;
   label: string | null;
+  /** Herdr-reported identity, not a verified Scout session binding. */
+  agentSession?: HerdrAgentSessionRef | null;
   /** Detected agent label ("claude", "codex"), or null for a plain shell. */
   agent: string | null;
   status: HerdrAgentStatus;
@@ -168,7 +173,9 @@ function toDigestPane(pane: HerdrPaneProjection): HerdrDigestPane {
     paneId: pane.paneId,
     workspaceId: pane.workspaceId,
     tabId: pane.tabId,
+    name: pane.name ?? null,
     label: pane.label,
+    agentSession: pane.agentSession,
     agent: pane.agent,
     status: pane.agentStatus,
     directory: paneDirectory(pane),
@@ -262,6 +269,10 @@ export function digestHerdrTopology(
       });
       for (const pane of tab.panes) {
         const digestPane = toDigestPane(pane);
+        if (!topology.running) {
+          digestPane.target = null;
+          digestPane.status = "unknown";
+        }
         counts[digestPane.status] += 1;
         if (digestPane.agent) agentTotal += 1;
         all.push(digestPane);
@@ -372,10 +383,14 @@ export function digestHerdrTopology(
  * every row buys nothing.
  */
 function paneLine(pane: HerdrDigestPane): string {
-  const parts = pane.label
-    ? [pane.label, pane.agent ?? "shell", pane.paneId]
+  const title = pane.name ?? pane.label;
+  const parts = title
+    ? [title, pane.agent ?? "shell", pane.paneId]
     : [pane.paneId, pane.agent ?? "shell"];
+  if (pane.name && pane.label && pane.name !== pane.label) parts.push(pane.label);
   if (pane.directory) parts.push(directoryName(pane.directory));
+  parts.push(pane.status);
+  if (pane.agentSession) parts.push(`reported ${pane.agentSession.agent} ${pane.agentSession.kind}:${pane.agentSession.value}`);
   if (pane.focused) parts.push("focused");
   return `  ${parts.join("  ")}`;
 }
@@ -422,9 +437,10 @@ export function renderHerdrWorkspaceDigest(digest: HerdrWorkspaceDigest): string
   // scanning reader never reaches a footnote, and these are the lines that stop
   // someone believing `unknown` meant done or that a stale layout was current.
   for (const note of digest.notes) lines.push(`  ${note}`);
+  lines.push(`  Observed ${new Date(digest.observedAt).toISOString()}; pane names are host labels, not Scout addresses.`);
 
   if (digest.needsYou.length) {
-    lines.push("", "Waiting on you");
+    lines.push("", "Requests");
     for (const pane of digest.needsYou) lines.push(paneLine(pane));
   }
   if (digest.working.length) {
@@ -439,6 +455,7 @@ export function renderHerdrWorkspaceDigest(digest: HerdrWorkspaceDigest): string
       const where = group.directory ? ` (${group.directory})` : "";
       const hidden = omittedLabel(group.omittedCounts);
       lines.push(`  ${group.name}${where} — ${total} pane${total === 1 ? "" : "s"} · ${countsLine(group.counts)}${hidden ? ` · ${hidden}` : ""}`);
+      for (const pane of group.panes) lines.push(`  ${paneLine(pane)}`);
     }
   }
 

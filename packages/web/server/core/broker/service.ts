@@ -56,6 +56,7 @@ import {
 } from "@openscout/runtime/setup";
 import {
   requestScoutBrokerJson,
+  ScoutBrokerHttpError,
   type ScoutBrokerBuildIdentity,
   type ScoutBrokerChildServiceSnapshots,
   type ScoutBrokerHealthPayload,
@@ -85,6 +86,10 @@ import {
   scoutBrokerMessagesListPath,
   scoutBrokerPaths,
 } from "./paths.ts";
+import {
+  queryFlightRecordById,
+  queryInvocationById,
+} from "../../db-queries.ts";
 import { coalesce } from "../../server-core.ts";
 
 export type ScoutBrokerActorRecord = ActorIdentity;
@@ -106,6 +111,8 @@ const SCOUT_BROKER_CONTEXT_STALE_RETENTION_MS = 60_000;
 
 type ScoutBrokerContextCacheEntry = {
   expiresAt: number;
+  lastSuccessAt: number | null;
+  lastFailureAt: number | null;
   value: ScoutBrokerContext | null;
   hasValue: boolean;
   inFlight: Promise<ScoutBrokerContext | null> | null;
@@ -124,6 +131,13 @@ export type ScoutBrokerContext = {
   baseUrl: string;
   node: ScoutBrokerNodeRecord;
   snapshot: ScoutBrokerSnapshot;
+  freshness?: {
+    lastSuccessAt: number;
+    ageMs: number;
+    stale: boolean;
+    refreshing: boolean;
+    lastFailureAt: number | null;
+  };
 };
 
 export type ScoutBrokerHealthState = {
@@ -157,7 +171,25 @@ export type ScoutBrokerHealthState = {
     collaborationRecords: number;
   } | null;
   error: string | null;
+  observation?: {
+    state: "healthy" | "slow" | "degraded" | "timed_out" | "unreachable" | "cancelled";
+    checkedAt: number;
+    durationMs: number;
+    lastSuccessAt: number | null;
+    statusCode: number | null;
+  };
 };
+
+// This is provenance only, never a cached assertion that the broker is healthy.
+// Bound the map because explicit remote URLs are accepted by these helpers.
+const brokerHealthLastSuccess = new Map<string, number>();
+const BROKER_HEALTH_TIMEOUT_MS = 2_000;
+const BROKER_CONTEXT_TIMEOUT_MS = 5_000;
+
+function boundedBrokerSignal(signal: AbortSignal | undefined, timeoutMs: number): AbortSignal {
+  const deadline = AbortSignal.timeout(timeoutMs);
+  return signal ? AbortSignal.any([signal, deadline]) : deadline;
+}
 
 export type ScoutBrokerHomeAgentRecord = {
   id: string;
@@ -213,6 +245,10 @@ export type ScoutTargetDiagnostic =
       state: AgentState | "discovered" | "unknown";
       registrationKind: ScoutWhoRegistrationKind | null;
       projectRoot: string | null;
+      /** Broker detail, set alongside sessionWakeReason (why an exact session could not wake). */
+      detail?: string;
+      /** Exact-session wake refusal code, when the broker reported one. */
+      sessionWakeReason?: string;
     }
   | {
       agentId: string;
@@ -446,6 +482,23 @@ export async function upsertScoutCollaborationRecord(
     scoutBrokerPaths.v1.collaborationRecords,
     record,
   );
+}
+
+/** Use the broker's lifecycle guard; changing a flight row does not stop execution. */
+export async function cancelScoutChatFlight(flightId: string, baseUrl = resolveScoutBrokerUrl()): Promise<
+  { ok: true; state: "cancelled" | "completed" | "failed" } | { ok: false; status: 409 | 502; error: string }
+> {
+  const response = await brokerPostJson<{ result?: { status?: { state?: string } }; error?: { code?: number } }>(baseUrl, "/a2a", {
+    jsonrpc: "2.0", id: `chat-cancel:${flightId}`, method: "CancelTask", params: { id: flightId },
+  });
+  if (response.error?.code === -32004) {
+    return { ok: false, status: 409, error: "This request has already started. Chat cannot stop its active session yet. Its status has not been changed." };
+  }
+  const state = response.result?.status?.state;
+  if (state === "TASK_STATE_CANCELED") return { ok: true, state: "cancelled" };
+  if (state === "TASK_STATE_COMPLETED") return { ok: true, state: "completed" };
+  if (state === "TASK_STATE_FAILED") return { ok: true, state: "failed" };
+  return { ok: false, status: 502, error: "Could not confirm cancellation. Refresh the request and try again." };
 }
 
 export async function upsertScoutFlight(
@@ -961,6 +1014,9 @@ function scoutTargetDiagnosticFromDeliveryFailure(
       state: "unknown",
       registrationKind: null,
       projectRoot: null,
+      ...(dispatch.sessionWakeReason
+        ? { sessionWakeReason: dispatch.sessionWakeReason, detail: dispatch.detail }
+        : {}),
     };
   }
   if (delivery.kind === "rejected" && dispatch.kind === "unparseable") {
@@ -975,12 +1031,25 @@ function scoutTargetDiagnosticFromDeliveryFailure(
 
 export async function readScoutBrokerHealth(
   baseUrl = resolveScoutBrokerUrl(),
-  options: { signal?: AbortSignal } = {},
+  options: { signal?: AbortSignal; timeoutMs?: number } = {},
 ): Promise<ScoutBrokerHealthState> {
+  const startedAt = Date.now();
+  const signal = boundedBrokerSignal(options.signal, options.timeoutMs ?? BROKER_HEALTH_TIMEOUT_MS);
+  const key = `${baseUrl}\u0000${resolveBrokerSocketPathForBaseUrl(baseUrl) ?? "http"}`;
+  let receivedResponse = false;
   try {
     const health = await brokerReadJson<ScoutBrokerHealthPayload>(baseUrl, scoutBrokerPaths.health, {
-      signal: options.signal,
+      signal,
     });
+    receivedResponse = true;
+    if (!health || typeof health.ok !== "boolean") throw new Error("Broker health response has no boolean ok field");
+    const checkedAt = Date.now();
+    if (health.ok) {
+      if (!brokerHealthLastSuccess.has(key) && brokerHealthLastSuccess.size >= 32) {
+        brokerHealthLastSuccess.delete(brokerHealthLastSuccess.keys().next().value!);
+      }
+      brokerHealthLastSuccess.set(key, checkedAt);
+    }
 
     return {
       baseUrl,
@@ -1015,11 +1084,18 @@ export async function readScoutBrokerHealth(
           }
         : null,
       error: null,
+      observation: {
+        state: !health.ok ? "degraded" : checkedAt - startedAt >= 1_000 ? "slow" : "healthy",
+        checkedAt,
+        durationMs: checkedAt - startedAt,
+        lastSuccessAt: brokerHealthLastSuccess.get(key) ?? null,
+        statusCode: 200,
+      },
     };
   } catch (error) {
     return {
       baseUrl,
-      reachable: false,
+      reachable: receivedResponse || error instanceof ScoutBrokerHttpError,
       ok: false,
       nodeId: null,
       meshId: null,
@@ -1029,6 +1105,15 @@ export async function readScoutBrokerHealth(
       startup: null,
       counts: null,
       error: error instanceof Error ? error.message : null,
+      observation: {
+        state: receivedResponse || error instanceof ScoutBrokerHttpError ? "degraded"
+          : signal.aborted ? (signal.reason?.name === "TimeoutError" ? "timed_out" : "cancelled")
+          : "unreachable",
+        checkedAt: Date.now(),
+        durationMs: Date.now() - startedAt,
+        lastSuccessAt: brokerHealthLastSuccess.get(key) ?? null,
+        statusCode: error instanceof ScoutBrokerHttpError ? error.status : receivedResponse ? 200 : null,
+      },
     };
   }
 }
@@ -1116,12 +1201,23 @@ interface ScoutBrokerTailRecentPayload {
 export async function readScoutBrokerTailRecent(
   limit = 50,
   baseUrl = resolveScoutBrokerUrl(),
+  options: {
+    /** Latest assistant reply per session only — what the Agents feed reads. */
+    mode?: "assistant-replies";
+    /** Look back at most this far; the broker caps it at 24h. */
+    windowMs?: number;
+  } = {},
 ): Promise<ScoutBrokerTailEvent[]> {
   const safeLimit = Math.min(Math.max(1, Math.trunc(limit) || 50), 200);
+  const params = new URLSearchParams({ limit: String(safeLimit), transcripts: "1" });
+  if (options.mode) params.set("mode", options.mode);
+  if (options.windowMs && options.windowMs > 0) {
+    params.set("windowMs", String(Math.min(Math.trunc(options.windowMs), 24 * 60 * 60 * 1_000)));
+  }
   try {
     const payload = await brokerReadJson<ScoutBrokerTailRecentPayload>(
       baseUrl,
-      `/v1/tail/recent?limit=${safeLimit}&transcripts=1`,
+      `/v1/tail/recent?${params.toString()}`,
     );
     return (payload.events ?? []).map((event) => ({
       id: event.id,
@@ -1293,14 +1389,16 @@ export async function loadScoutBrokerContext(
     if (
       key !== cacheKey
       && !entry.inFlight
-      && entry.expiresAt + SCOUT_BROKER_CONTEXT_STALE_RETENTION_MS <= now
+      && (entry.lastSuccessAt ?? entry.expiresAt) + SCOUT_BROKER_CONTEXT_CACHE_TTL_MS + SCOUT_BROKER_CONTEXT_STALE_RETENTION_MS <= now
     ) {
       scoutBrokerContextCache.delete(key);
     }
   }
 
   const readContext = async (): Promise<ScoutBrokerContext | null> => {
-    const health = await readScoutBrokerHealth(baseUrl, { signal: options.signal });
+    // One deadline covers health + node + snapshot, including transport fallback.
+    const signal = boundedBrokerSignal(options.signal, BROKER_CONTEXT_TIMEOUT_MS);
+    const health = await readScoutBrokerHealth(baseUrl, { signal });
     if (!health.reachable || !health.ok) {
       return null;
     }
@@ -1313,13 +1411,15 @@ export async function loadScoutBrokerContext(
       : scoutBrokerPaths.v1.snapshot;
     try {
       const [node, snapshot] = await Promise.all([
-        brokerReadJson<ScoutBrokerNodeRecord>(baseUrl, scoutBrokerPaths.v1.node, { signal: options.signal }),
-        brokerReadJson<ScoutBrokerSnapshot>(baseUrl, snapshotPath, { signal: options.signal }),
+        brokerReadJson<ScoutBrokerNodeRecord>(baseUrl, scoutBrokerPaths.v1.node, { signal }),
+        brokerReadJson<ScoutBrokerSnapshot>(baseUrl, snapshotPath, { signal }),
       ]);
       if (!node.id || !snapshot) {
         return null;
       }
-      return { baseUrl, node, snapshot };
+      return { baseUrl, node, snapshot, freshness: {
+        lastSuccessAt: Date.now(), ageMs: 0, stale: false, refreshing: false, lastFailureAt: null,
+      } };
     } catch {
       return null;
     }
@@ -1331,6 +1431,7 @@ export async function loadScoutBrokerContext(
 
   const refresh = (entry: ScoutBrokerContextCacheEntry, delayMs = 0) => {
     if (entry.inFlight) return entry.inFlight;
+    if (entry.lastFailureAt !== null && entry.expiresAt > Date.now()) return Promise.resolve(null);
     const attempt = (delayMs > 0
       ? new Promise<void>((resolve) => setTimeout(resolve, delayMs))
       : Promise.resolve())
@@ -1340,13 +1441,14 @@ export async function loadScoutBrokerContext(
         if (context) {
           entry.value = context;
           entry.hasValue = true;
+          entry.lastSuccessAt = context.freshness!.lastSuccessAt;
+          entry.lastFailureAt = null;
           entry.expiresAt = Date.now() + SCOUT_BROKER_CONTEXT_CACHE_TTL_MS;
-        } else if (!entry.hasValue) {
-          scoutBrokerContextCache.delete(cacheKey);
         } else {
           // Keep the last good snapshot through a transient broker miss, but
           // bound retry pressure so one outage does not refresh per caller.
-          entry.expiresAt = Date.now() + SCOUT_BROKER_CONTEXT_CACHE_TTL_MS;
+          entry.expiresAt = Date.now() + (entry.hasValue ? SCOUT_BROKER_CONTEXT_CACHE_TTL_MS : 2_000);
+          entry.lastFailureAt = Date.now();
         }
         return context;
       })
@@ -1368,7 +1470,16 @@ export async function loadScoutBrokerContext(
         // mutations without repeatedly serializing a large idle registry.
         void refresh(cached);
       }
-      return cached.value;
+      const ageMs = Math.max(0, now - cached.lastSuccessAt!);
+      // Failed retries must not renew the lifetime of last-known-good data.
+      if (ageMs > SCOUT_BROKER_CONTEXT_CACHE_TTL_MS + SCOUT_BROKER_CONTEXT_STALE_RETENTION_MS) return null;
+      return cached.value ? { ...cached.value, freshness: {
+        lastSuccessAt: cached.lastSuccessAt!,
+        ageMs,
+        stale: ageMs >= SCOUT_BROKER_CONTEXT_CACHE_TTL_MS || cached.lastFailureAt !== null,
+        refreshing: cached.inFlight !== null,
+        lastFailureAt: cached.lastFailureAt,
+      } } : null;
     }
     if (options.waitForInitial === false) {
       void refresh(cached, options.initialRefreshDelayMs);
@@ -1379,6 +1490,8 @@ export async function loadScoutBrokerContext(
 
   const entry: ScoutBrokerContextCacheEntry = {
     expiresAt: now + SCOUT_BROKER_CONTEXT_CACHE_TTL_MS,
+    lastSuccessAt: null,
+    lastFailureAt: null,
     value: null,
     hasValue: false,
     inFlight: null,
@@ -2537,6 +2650,8 @@ export async function sendScoutConversationMessage(input: {
   senderId: string;
   body: string;
   attachments?: OutgoingAttachmentInput[];
+  /** Persisted attention only; never a transport delivery or invocation. */
+  attentionMentions?: MessageRecord["mentions"];
   replyToMessageId?: string | null;
   clientMessageId?: string | null;
   createdAtMs?: number;
@@ -2573,12 +2688,12 @@ export async function sendScoutConversationMessage(input: {
     input.senderId,
     currentDirectory,
   );
-  const routeBodyMentions = input.resolveMentionsFromBody !== false;
+  const routeBodyMentions = input.attentionMentions === undefined && input.resolveMentionsFromBody !== false;
   const mentionResolution = routeBodyMentions
     ? await resolveMentionTargets(broker.snapshot, input.body, currentDirectory)
     : { resolved: [], unresolved: [], ambiguous: [] };
   const mentionedTargetIds = new Set(mentionResolution.resolved.map((target) => target.agentId));
-  const participantTargetIds = input.notifyParticipantAgents
+  const participantTargetIds = input.attentionMentions === undefined && input.notifyParticipantAgents
     && (
       conversation.kind === "channel"
       || conversation.kind === "group_direct"
@@ -2634,11 +2749,11 @@ export async function sendScoutConversationMessage(input: {
     class: conversation.kind === "system" ? "system" : "agent",
     body: input.body,
     ...(input.replyToMessageId?.trim() ? { replyToMessageId: input.replyToMessageId.trim() } : {}),
-    mentions: mentionResolution.resolved
+    mentions: input.attentionMentions ?? mentionResolution.resolved
       .filter((target) => mentionedValidTargets.includes(target.agentId))
       .map((target) => ({ actorId: target.agentId, label: target.label })),
     attachments: normalizeOutgoingAttachments(input.attachments),
-    audience: participantValidTargets.length > 0
+    audience: input.attentionMentions !== undefined ? { delivery: "none" } : participantValidTargets.length > 0
       ? { notify: participantValidTargets, reason: "conversation_visibility" }
       : mentionedValidTargets.length > 0
         ? { notify: mentionedValidTargets, reason: "mention" }
@@ -2734,6 +2849,8 @@ export async function sendScoutConversationSteer(input: {
    * name in the message must never widen that into a second invocation.
    */
   resolveMentionsFromBody?: boolean;
+  /** Canonical attention recipients; these never add execution targets. */
+  attentionMentions?: MessageRecord["mentions"];
 }): Promise<ScoutMessagePostResult> {
   const broker = await loadScoutBrokerContext();
   if (!broker) {
@@ -2759,7 +2876,7 @@ export async function sendScoutConversationSteer(input: {
     input.senderId,
     currentDirectory,
   );
-  const routeBodyMentions = input.resolveMentionsFromBody !== false;
+  const routeBodyMentions = input.attentionMentions === undefined && input.resolveMentionsFromBody !== false;
   const mentionResolution = routeBodyMentions
     ? await resolveMentionTargets(broker.snapshot, input.body, currentDirectory)
     : { resolved: [], unresolved: [], ambiguous: [] };
@@ -2867,7 +2984,7 @@ export async function sendScoutConversationSteer(input: {
     class: conversation.kind === "system" ? "system" : "agent",
     body: input.body,
     ...(input.replyToMessageId?.trim() ? { replyToMessageId: input.replyToMessageId.trim() } : {}),
-    mentions: targetLabels,
+    mentions: [...new Map([...targetLabels, ...(input.attentionMentions ?? [])].map(mention => [mention.actorId, mention])).values()],
     attachments: normalizeOutgoingAttachments(input.attachments),
     audience: targetIds.length > 0
       ? {
@@ -2962,6 +3079,14 @@ export async function loadScoutReadCursors(input: {
     input.baseUrl ?? resolveScoutBrokerUrl(),
     path,
   );
+}
+
+export async function updateScoutChatPreferences(input: {
+  conversationId: string; actorId: string; change: unknown; baseUrl?: string;
+}): Promise<{ ok: true; preferences: import("@openscout/protocol").ChatAttentionPreferences }> {
+  return brokerPostJson(input.baseUrl ?? resolveScoutBrokerUrl(),
+    `/v1/conversations/${encodeURIComponent(input.conversationId)}/read-cursors`,
+    { operation: "preferences", actorId: input.actorId, change: input.change });
 }
 
 export async function markScoutConversationRead(input: {
@@ -3156,6 +3281,12 @@ export async function sendScoutDirectMessage(input: {
   };
 }
 
+export async function requestScoutHostWeb(input: { nodeId: string; path: string; method: "GET" | "POST"; body?: unknown }): Promise<{ status: number; body: unknown; binary?: { data: string; contentType: string } }> {
+  const broker = await loadScoutBrokerContext();
+  if (!broker) return { status: 503, body: { error: "Local broker is unavailable" } };
+  return brokerPostJson(broker.baseUrl, "/v1/hosts/web-request", input);
+}
+
 export async function askScoutQuestion(input: {
   senderId: string;
   targetLabel?: string;
@@ -3280,9 +3411,36 @@ export async function askScoutQuestion(input: {
   };
 }
 
+// The control-plane database can be absent on a fresh install — a durable
+// miss must degrade to "not found", never break a previously snapshot-only
+// reader.
+function durableBrokerFlight(flightId: string): ScoutFlightRecord | null {
+  try {
+    return queryFlightRecordById(flightId);
+  } catch {
+    return null;
+  }
+}
+
+function durableBrokerInvocation(invocationId: string): InvocationRequest | null {
+  try {
+    return queryInvocationById(invocationId);
+  } catch {
+    return null;
+  }
+}
+
+// There is no per-flight broker route (only /v1/invocations/:id, keyed by
+// invocation id), so a single-flight read uses the conversations-scoped
+// snapshot — never the unscoped full-registry read. SQLite retains terminal
+// flights the broker hot set rotated out, so a snapshot miss falls back to
+// the durable record.
 async function loadBrokerFlight(baseUrl: string, flightId: string): Promise<ScoutFlightRecord | null> {
-  const snapshot = await brokerReadJson<{ flights?: Record<string, ScoutFlightRecord> }>(baseUrl, scoutBrokerPaths.v1.snapshot);
-  return snapshot.flights?.[flightId] ?? null;
+  const snapshot = await brokerReadJson<{ flights?: Record<string, ScoutFlightRecord> }>(
+    baseUrl,
+    `${scoutBrokerPaths.v1.snapshot}?scope=conversations`,
+  );
+  return snapshot.flights?.[flightId] ?? durableBrokerFlight(flightId);
 }
 
 export async function waitForScoutFlight(
@@ -3459,6 +3617,25 @@ export async function watchScoutMessages(options: ScoutWatchOptions): Promise<vo
       }
     };
 
+    // An invocation referenced by a live event may have rotated out of the
+    // broker's hot window; SQLite retains it, so fall back to the durable row.
+    const resolveInvocation = async (invocationId: string | undefined) => {
+      if (!invocationId) return undefined;
+      let invocation = invocationsById.get(invocationId);
+      if (!invocation) {
+        await maybeRefreshMaps();
+        invocation = invocationsById.get(invocationId);
+      }
+      if (!invocation) {
+        const durable = durableBrokerInvocation(invocationId);
+        if (durable) {
+          invocationsById.set(durable.id, durable);
+          invocation = durable;
+        }
+      }
+      return invocation;
+    };
+
     const emitLifecycle = (record: ScoutBrokerConversationLifecycleRecord) => {
       if (conversationId && record.conversationId !== conversationId) return;
       options.onLifecycle?.(record);
@@ -3511,11 +3688,7 @@ export async function watchScoutMessages(options: ScoutWatchOptions): Promise<vo
       if (event.kind === "flight.updated") {
         const flight = (event as Extract<ControlEvent, { kind: "flight.updated" }>).payload?.flight;
         if (!flight) return;
-        let invocation = invocationsById.get(flight.invocationId);
-        if (!invocation) {
-          await maybeRefreshMaps();
-          invocation = invocationsById.get(flight.invocationId);
-        }
+        const invocation = await resolveInvocation(flight.invocationId);
         if (!invocation?.conversationId) return;
         const message = invocation.messageId ? messagesById.get(invocation.messageId) : undefined;
         emitLifecycle({
@@ -3536,11 +3709,7 @@ export async function watchScoutMessages(options: ScoutWatchOptions): Promise<vo
         const delivery = (event as Extract<ControlEvent, { kind: "delivery.state.changed" }>).payload?.delivery;
         if (!delivery) return;
         if (delivery.status !== "peer_acked" && delivery.status !== "acknowledged" && delivery.status !== "running") return;
-        let invocation = delivery.invocationId ? invocationsById.get(delivery.invocationId) : undefined;
-        if (delivery.invocationId && !invocation) {
-          await maybeRefreshMaps();
-          invocation = invocationsById.get(delivery.invocationId);
-        }
+        const invocation = await resolveInvocation(delivery.invocationId);
         const message = delivery.messageId ? messagesById.get(delivery.messageId) : undefined;
         const lifecycleConversationId = invocation?.conversationId ?? message?.conversationId;
         if (!lifecycleConversationId) return;
@@ -3771,4 +3940,43 @@ export async function speakScoutText(text: string, voice: string): Promise<void>
 
 export function defaultScoutAgentNameForPath(projectPath: string): string {
   return basename(projectPath);
+}
+
+export async function updateScoutChannelPins(input: {
+  conversationId: string; actorId: string; change: unknown; baseUrl?: string;
+}): Promise<{ ok: true; conversation: import("@openscout/protocol").ConversationDefinition }> {
+  return brokerPostJson(input.baseUrl ?? resolveScoutBrokerUrl(), `/v1/conversations/${encodeURIComponent(input.conversationId)}/pins`, { actorId: input.actorId, change: input.change });
+}
+
+export async function correctScoutChatMessage(input: {
+  conversationId: string; messageId: string; actorId: string; canModerate: boolean; change: unknown; baseUrl?: string;
+}): Promise<{ ok: true; message: MessageRecord }> {
+  type Result = { ok: true; message: MessageRecord } | { status: number; error: string };
+  const result = await brokerPostJson<Result>(input.baseUrl ?? resolveScoutBrokerUrl(), `/v1/conversations/${encodeURIComponent(input.conversationId)}/corrections`, {
+    messageId: input.messageId, actorId: input.actorId, canModerate: input.canModerate, change: input.change,
+  }, { acceptErrorJson: (value): value is Result => Boolean(value && typeof value === "object" && "status" in value && "error" in value) });
+  if ("error" in result) throw Object.assign(new Error(result.error), { status: result.status });
+  return result;
+}
+
+
+export async function respondScoutChatQuestion(input: {
+  channelId: string; questionId: string; actorId: string; isOperator: boolean; change: unknown; baseUrl?: string;
+}): Promise<{ ok: true; record: import("@openscout/protocol").CollaborationRecord }> {
+  type Result = { ok: true; record: import("@openscout/protocol").CollaborationRecord } | { status: number; error: string };
+  const result = await brokerPostJson<Result>(input.baseUrl ?? resolveScoutBrokerUrl(), `/v1/conversations/${encodeURIComponent(input.channelId)}/questions/${encodeURIComponent(input.questionId)}/respond`, {
+    actorId: input.actorId, isOperator: input.isOperator, change: input.change,
+  }, { acceptErrorJson: (value): value is Result => Boolean(value && typeof value === "object" && "status" in value && "error" in value) });
+  if ("error" in result) throw Object.assign(new Error(result.error), { status: result.status });
+  return result;
+}
+
+/** Retained questions, scoped by the broker before pagination rather than the hot snapshot. */
+export async function readScoutChatQuestionHistory(baseUrl: string, channelId: string, after: { createdAt: number; id: string } | null): Promise<CollaborationRecord[]> {
+  const pages = await Promise.all(["closed", "declined"].map(state => {
+    const params = new URLSearchParams({ kind: "question", state, conversationId: channelId, includeThreads: "true", orderByCreatedAt: "true", limit: "51" });
+    if (after) { params.set("afterCreatedAt", String(after.createdAt)); params.set("afterId", after.id); }
+    return brokerReadJson<CollaborationRecord[]>(baseUrl, `/v1/collaboration/records?${params}`, { signal: AbortSignal.timeout(5000) });
+  }));
+  return pages.flat();
 }

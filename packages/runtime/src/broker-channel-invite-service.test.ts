@@ -61,7 +61,7 @@ function conversation(input: Partial<ConversationDefinition> = {}): Conversation
 
 function createHarness(input: { snapshot?: RuntimeRegistrySnapshot } = {}) {
   const snapshot = input.snapshot ?? createRuntimeRegistrySnapshot();
-  snapshot.conversations["chn-room"] = conversation();
+  snapshot.conversations["chn-room"] ??= conversation();
   snapshot.agents["session-tesla"] = agent();
   snapshot.actors["operator"] = {
     id: "operator",
@@ -79,9 +79,13 @@ function createHarness(input: { snapshot?: RuntimeRegistrySnapshot } = {}) {
   const upsertedConversations: ConversationDefinition[] = [];
   const service = new BrokerChannelInviteService({
     runtime: { snapshot: () => snapshot },
-    async upsertConversation(next) {
+    async updateConversation(conversationId, mutate) {
+      const current = snapshot.conversations[conversationId];
+      const next = mutate(current);
+      if (!next) return { updated: false, conversation: current ?? null };
       upsertedConversations.push(next);
       snapshot.conversations[next.id] = next;
+      return { updated: true, conversation: next };
     },
   });
   return { service, snapshot, upsertedConversations };
@@ -282,6 +286,81 @@ describe("BrokerChannelInviteService.redeem", () => {
   });
 });
 
+describe("BrokerChannelInviteService missing-record declines", () => {
+  // Port of /tmp/review985-third-conversions.ts: when the canonical writer
+  // sees no current record (the channel was deleted between the service's
+  // read and the serialized write), updateConversation resolves with
+  // conversation: null. Every mutation path must report failure instead of a
+  // success that never reached the journal.
+  function missingRecordService(harness: ReturnType<typeof createHarness>) {
+    return new BrokerChannelInviteService({
+      runtime: { snapshot: () => harness.snapshot },
+      async updateConversation(_conversationId, mutate) {
+        // The record is gone inside the write: mutate sees no current record,
+        // declines, and nothing is journaled.
+        const next = mutate(undefined);
+        if (!next) return { updated: false, conversation: null };
+        harness.upsertedConversations.push(next);
+        harness.snapshot.conversations[next.id] = next;
+        return { updated: true, conversation: next };
+      },
+    });
+  }
+
+  test("create reports channel-not-found and journals nothing", async () => {
+    const harness = createHarness();
+    const service = missingRecordService(harness);
+    const writes = harness.upsertedConversations.length;
+    const result = await service.create(createCommand({ inviteId: "inv-2", tokenHash: "BEEF02" }));
+    expect(result).toEqual({ ok: false, error: "Channel chn-room not found." });
+    expect(harness.upsertedConversations).toHaveLength(writes);
+  });
+
+  test("revoke reports channel-not-found and journals nothing", async () => {
+    const harness = createHarness();
+    await harness.service.create(createCommand());
+    const service = missingRecordService(harness);
+    const writes = harness.upsertedConversations.length;
+    const result = await service.revoke({
+      kind: "channel.invite.revoke",
+      channelId: "chn-room",
+      inviteId: "inv-1",
+      revokedByActorId: "operator",
+      revokedAt: NOW + 2_000,
+    });
+    expect(result).toEqual({ ok: false, error: "Channel chn-room not found." });
+    expect(harness.upsertedConversations).toHaveLength(writes);
+  });
+
+  test("a new redemption reports the unknown-invite failure and journals nothing", async () => {
+    const harness = createHarness();
+    await harness.service.create(createCommand());
+    const service = missingRecordService(harness);
+    const writes = harness.upsertedConversations.length;
+    const result = await service.redeem(redeemCommand());
+    expect(result.ok).toBe(false);
+    expect(result.ok === false && result.rejection?.reason).toBe("unknown_token");
+    expect(harness.upsertedConversations).toHaveLength(writes);
+  });
+
+  test("an existing redemption reports the unknown-invite failure and journals nothing", async () => {
+    const harness = createHarness();
+    await harness.service.create(createCommand());
+    await harness.service.redeem(redeemCommand());
+    const service = missingRecordService(harness);
+    const writes = harness.upsertedConversations.length;
+    const result = await service.redeem(
+      redeemCommand({ redemptionId: "inv-red-2", redeemedAt: NOW + 9_000 }),
+    );
+    expect(result.ok).toBe(false);
+    expect(result.ok === false && result.rejection?.reason).toBe("unknown_token");
+    expect(harness.upsertedConversations).toHaveLength(writes);
+    // The phantom redemption was never committed — the stored row count stays.
+    const stored = readChannelInvites(harness.snapshot.conversations["chn-room"]!.metadata);
+    expect(stored[0]!.redemptions).toHaveLength(1);
+  });
+});
+
 describe("BrokerChannelInviteService reads", () => {
   test("revoking is idempotent and keeps the first timestamp", async () => {
     const harness = createHarness();
@@ -335,5 +414,52 @@ describe("BrokerChannelInviteService reads", () => {
     await harness.service.create(createCommand());
     expect(Object.keys(harness.snapshot.conversations["chn-room"]!.metadata!))
       .toContain(CHANNEL_INVITES_METADATA_KEY);
+  });
+});
+
+describe("durable channel member removal", () => {
+  test("blocks old invitations after removal and restart, while a fresh invitation can re-admit", async () => {
+    const harness = createHarness();
+    await harness.service.create(createCommand());
+    expect((await harness.service.redeem(redeemCommand())).ok).toBe(true);
+    const remove = { channelId: "chn-room", actorId: "session-tesla", removedByActorId: "operator", removedAt: NOW + 2000 };
+    const removed = await harness.service.removeMember(remove);
+    expect(removed).toEqual({ ok: true, participantIds: ["operator"] });
+    expect(harness.snapshot.conversations["chn-room"]!.metadata?.channel).toBe("design-room");
+    const restarted = createHarness({ snapshot: harness.snapshot });
+    expect(await restarted.service.redeem(redeemCommand({ redemptionId: "retry", redeemedAt: NOW + 3000 }))).toMatchObject({
+      ok: false, rejection: { reason: "membership_removed" },
+    });
+    // A fresh invitation is recognized by identity, independent of clock skew.
+    await restarted.service.create(createCommand({ inviteId: "fresh", tokenHash: "aabbccdd", createdAt: NOW - 1000 }));
+    const writes = restarted.upsertedConversations.length;
+    expect((await restarted.service.removeMember({ ...remove, removedAt: NOW + 4000 })).ok).toBe(true);
+    expect(restarted.upsertedConversations).toHaveLength(writes);
+    expect((await restarted.service.redeem(redeemCommand({ tokenHash: "aabbccdd", redemptionId: "fresh-redemption", redeemedAt: NOW + 5000 }))).ok).toBe(true);
+    expect(restarted.snapshot.conversations["chn-room"]!.participantIds).toContain("session-tesla");
+    // Re-admission does not make the original link usable again.
+    expect(await restarted.service.redeem(redeemCommand())).toMatchObject({ ok: false, rejection: { reason: "membership_removed" } });
+  });
+
+  test("serializes removal with a competing old-link retry", async () => {
+    const harness = createHarness();
+    await harness.service.create(createCommand());
+    await harness.service.redeem(redeemCommand());
+    const [removed, retry] = await Promise.all([
+      harness.service.removeMember({ channelId: "chn-room", actorId: "session-tesla", removedByActorId: "operator", removedAt: NOW + 2000 }),
+      harness.service.redeem(redeemCommand({ redemptionId: "racing-retry", redeemedAt: NOW + 2001 })),
+    ]);
+    expect(removed.ok).toBe(true);
+    expect(retry).toMatchObject({ ok: false, rejection: { reason: "membership_removed" } });
+    expect(harness.snapshot.conversations["chn-room"]!.participantIds).toEqual(["operator"]);
+    expect(readChannelInvites(harness.snapshot.conversations["chn-room"]!.metadata)[0]!.redemptions).toHaveLength(1);
+  });
+
+  test("refuses self-removal and unknown membership without writing", async () => {
+    const harness = createHarness();
+    for (const actorId of ["operator", "missing"]) {
+      expect((await harness.service.removeMember({ channelId: "chn-room", actorId, removedByActorId: "operator", removedAt: NOW })).ok).toBe(false);
+    }
+    expect(harness.upsertedConversations).toHaveLength(0);
   });
 });

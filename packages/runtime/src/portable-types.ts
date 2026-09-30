@@ -110,6 +110,14 @@ export type RuntimeRequestTransportContext = {
   remoteAddress?: string;
   /** present only after the ingress gate verified the peer signature */
   peer?: RuntimePeerAuthPrincipal;
+  /** present only after the ingress gate verified a guest grant signature */
+  guest?: RuntimeGuestAuthPrincipal;
+};
+
+/** A verified guest key and its active grant (never a mesh peer). */
+export type RuntimeGuestAuthPrincipal = {
+  keyId: string;
+  grantId: string;
 };
 
 export type RuntimeHttpRequestLike = {

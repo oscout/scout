@@ -1,6 +1,4 @@
-import { SlidePanel } from "../../components/SlidePanel/SlidePanel.tsx";
-import { BASIC_WEB } from "../../basic/profile.ts";
-import { ArrowDown, ArrowRight, AtSign, Check, ChevronDown, Copy, ExternalLink, Hash, LoaderCircle, Maximize2, MessageSquare, Minimize2, Paperclip, Plus, Radio, RefreshCw, SendHorizontal, X } from "lucide-react";
+import { ArrowRight, Check, ChevronDown, Copy, ExternalLink, LoaderCircle, Maximize2, MessageSquare, Minimize2, Paperclip, Plus, RefreshCw, SendHorizontal, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { DictationMic } from "../../components/DictationMic.tsx";
@@ -12,7 +10,7 @@ import { isRoutableMediaFile, uploadMediaFiles } from "../../lib/media-blobs.ts"
 import { useBrokerEvents } from "../../lib/sse.ts";
 import { brokerAttemptTone } from "../../lib/status-tone.ts";
 import { fullTimestamp, normalizeTimestampMs, timeAgo } from "../../lib/time.ts";
-import type { Agent, BrokerDiagnostics, BrokerHistoryKey, BrokerRouteAttempt, DispatchFilter, Route } from "../../lib/types.ts";
+import type { BrokerDiagnostics, BrokerHistoryKey, BrokerRouteAttempt, DispatchFilter, DispatchWindow, Route } from "../../lib/types.ts";
 import { useScout } from "../../scout/Provider.tsx";
 import { openContent } from "../../scout/slots/openContent.ts";
 import {
@@ -24,7 +22,6 @@ import { effortsFor, type RuntimeValue } from "../../lib/runtime-catalog.ts";
 
 import {
   brokerAttemptErrorSummary,
-  brokerAttemptFailureTitle,
   brokerAttemptIsFailure,
   brokerAttemptTargetAgent,
   brokerAttemptContextText,
@@ -33,24 +30,58 @@ import {
 } from "./broker-display.ts";
 import { BrokerMetadataPanel } from "./BrokerMetadataPanel.tsx";
 import { DispatchAftermath } from "./DispatchAftermath.tsx";
+import { DispatchFocusBar, DispatchNodeCard, DispatchRouteGraph, dispatchNodeKindLabel } from "./DispatchFocus.tsx";
+import {
+  applyDispatchScope,
+  dispatchGraph,
+  dispatchNodeCatalog,
+  dispatchRecovery,
+  dispatchRowModel,
+  dispatchStateBadge,
+  DISPATCH_WINDOWS,
+  type DispatchRecovery,
+  type DispatchRowModel,
+  type DispatchScope,
+} from "./dispatch-focus.ts";
 import { brokerDiagnosticsUrl } from "./broker-query.ts";
 import { useBrokerLedgerKeyboard } from "./useBrokerLedgerKeyboard.ts";
 import { ShikiPane } from "../code/ShikiPane.tsx";
 import { defineSurface } from "../../surfaces/types.ts";
 import { useEmbedHeadline } from "../../surfaces/useEmbedHeadline.ts";
+import { SlidePanel } from "../../components/SlidePanel/SlidePanel.tsx";
+import { BASIC_WEB } from "../../basic/profile.ts";
 import "../system-surfaces-redesign.css";
+import "./dispatch-focus.css";
 
 type BrokerTab = DispatchFilter;
 
-const BROKER_TABS: BrokerTab[] = ["all", "delivered", "failed"];
+const BROKER_TABS: BrokerTab[] = ["all", "failed", "delivered"];
 
 const ROUTE_CACHE_MAX_AGE_MS = 30_000;
 
 const TAB_LABELS: Record<BrokerTab, string> = {
   all: "All",
   delivered: "Delivered",
-  failed: "Failed",
+  failed: "Needs attention",
 };
+
+const GRAPH_HIDDEN_STORAGE_KEY = "scout.dispatch.graphHidden";
+
+function readGraphHidden(): boolean {
+  try {
+    return window.localStorage.getItem(GRAPH_HIDDEN_STORAGE_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+function writeGraphHidden(hidden: boolean): void {
+  try {
+    window.localStorage.setItem(GRAPH_HIDDEN_STORAGE_KEY, hidden ? "1" : "0");
+  } catch {
+    // Remembering the graph toggle is a convenience; losing it is harmless.
+  }
+}
 
 function attemptKindLabel(kind: BrokerRouteAttempt["kind"]): string {
   switch (kind) {
@@ -80,7 +111,7 @@ function dispatchStateLabel(attempt: BrokerRouteAttempt): string {
     case "success":
       return "Delivered";
     case "danger":
-      return "Failed";
+      return "Needs attention";
     case "working":
       return "Pending";
     case "warning":
@@ -88,17 +119,6 @@ function dispatchStateLabel(attempt: BrokerRouteAttempt): string {
     default:
       return attempt.status ? attempt.status.charAt(0).toUpperCase() + attempt.status.slice(1) : "Queued";
   }
-}
-
-/** Two-glyph sender badge: trailing number for numbered agents, else initials. */
-function dispatchActorInitials(name: string | null): string {
-  if (!name) return "··";
-  const parts = name.trim().split(/\s+/).filter(Boolean);
-  if (parts.length === 0) return "··";
-  const last = parts[parts.length - 1]!;
-  if (/^\d+$/.test(last)) return last.slice(-2);
-  if (parts.length >= 2) return (parts[0]![0]! + parts[1]![0]!).toUpperCase();
-  return name.trim().slice(0, 2).toUpperCase();
 }
 
 /** Wall-clock stamp (e.g. "12:20 AM"); the day grouping supplies the date. */
@@ -164,18 +184,6 @@ function dispatchChannelLabel(route: string | null): string {
   }
 }
 
-function dispatchPartyKind(attempt: BrokerRouteAttempt, side: "from" | "to"): string {
-  if (side === "to") {
-    if (attempt.route === "channel") return "Channel";
-    if (attempt.route === "broadcast") return "Broadcast";
-    return attempt.target?.toLowerCase().includes("operator") ? "Operator" : "Agent lane";
-  }
-  const actorClass = metadataText(attempt, "class", "actorClass")?.toLowerCase();
-  if (actorClass === "operator" || actorClass === "human") return "Operator";
-  if (actorClass === "agent") return "Agent";
-  return attempt.actorName?.toLowerCase().includes("operator") ? "Operator" : "Sender";
-}
-
 function dispatchLatencyLabel(attempt: BrokerRouteAttempt): string {
   const rawDuration = metadataLeaf(attempt.metadata, ["latencyMs", "durationMs"]);
   if (typeof rawDuration === "number" && Number.isFinite(rawDuration) && rawDuration >= 0) {
@@ -187,165 +195,6 @@ function dispatchLatencyLabel(attempt: BrokerRouteAttempt): string {
   if (sentAt === null || deliveredAt === null || deliveredAt < sentAt) return "—";
   const duration = deliveredAt - sentAt;
   return duration < 1_000 ? `${duration}ms` : `${(duration / 1_000).toFixed(duration < 10_000 ? 1 : 0)}s`;
-}
-
-/** Route-kind encoded as the address glyph next to the target id. */
-function RouteGlyph({ route }: { route: string | null }) {
-  switch (route) {
-    case "channel":
-      return <Hash size={12} aria-hidden="true" />;
-    case "broadcast":
-      return <Radio size={12} aria-hidden="true" />;
-    case "dm":
-      return <AtSign size={12} aria-hidden="true" />;
-    default:
-      return <MessageSquare size={12} aria-hidden="true" />;
-  }
-}
-
-function dispatchEndpointAgent(agents: Agent[], value: string | null): Agent | null {
-  if (!value) return null;
-  const needle = value.trim().replace(/^@/, "").toLowerCase();
-  return agents.find((agent) => [
-    agent.id,
-    agent.name,
-    agent.handle,
-    agent.selector,
-    agent.defaultSelector,
-    agent.conversationId,
-    agent.harnessSessionId,
-  ].some((candidate) => candidate?.trim().replace(/^@/, "").toLowerCase() === needle)) ?? null;
-}
-
-type DispatchParty = {
-  /** Display name for this end of the edge. */
-  label: string;
-  /** What kind of thing it is (Agent, Operator, Session route, Channel…). */
-  kind: string;
-  agent: Agent | null;
-};
-
-function dispatchParty(
-  attempt: BrokerRouteAttempt,
-  agents: Agent[],
-  side: "from" | "to",
-): DispatchParty {
-  const rawValue = side === "from" ? attempt.actorName : attempt.target;
-  const agent = dispatchEndpointAgent(agents, rawValue);
-  const label = agent?.name ?? rawValue ?? (side === "from" ? "Unknown" : "No target");
-  const kind = agent
-    ? "Agent"
-    : side === "to" && attempt.conversationId
-      ? "Session route"
-      : dispatchPartyKind(attempt, side);
-  return { label, kind, agent };
-}
-
-/**
- * From and To describe one relationship, so they hover as one card. The fields
- * name the edge — who, to what kind of thing, at which address, over which
- * channel — instead of repeating an endpoint dossier twice per row.
- *
- * Where the edge lands on a known agent we also carry branch, runtime and
- * machine: the inspector does not list them, so hover is the only place in
- * Dispatch they exist. The target's context wins over the sender's — the
- * target is the half the operator is scanning for.
- */
-function dispatchRouteFields(
-  attempt: BrokerRouteAttempt,
-  from: DispatchParty,
-  to: DispatchParty,
-): Array<{ label: string; value: string }> {
-  const context = to.agent ?? from.agent;
-  return [
-    { label: "From", value: from.kind },
-    { label: "To", value: to.kind },
-    { label: "Target", value: attempt.target ?? to.label },
-    { label: "Channel", value: dispatchChannelLabel(attempt.route) },
-    {
-      label: "Project",
-      value: context?.project ?? metadataText(attempt, "project", "projectName"),
-    },
-    { label: "Branch", value: context?.branch ?? metadataText(attempt, "branch") },
-    {
-      label: "Runtime",
-      value: context
-        ? [context.harness, context.model, context.reasoningEffort].filter(Boolean).join(" · ") || null
-        : [metadataText(attempt, "harness"), metadataText(attempt, "model")].filter(Boolean).join(" · ") || null,
-    },
-    {
-      label: "Machine",
-      value: context?.authorityNodeName
-        ?? context?.homeNodeName
-        ?? context?.authorityNodeId
-        ?? context?.homeNodeId
-        ?? metadataText(attempt, "machine", "machineName", "nodeName"),
-    },
-  ].filter((field): field is { label: string; value: string } => Boolean(field.value));
-}
-
-function DispatchRouteFace({
-  party,
-  route,
-  side,
-}: {
-  party: DispatchParty;
-  route: string | null;
-  side: "from" | "to";
-}) {
-  return (
-    <span className={`sys-broker-route-end sys-broker-route-end--${side}`}>
-      <span className="sys-broker-avatar sys-broker-endpoint-avatar" aria-hidden="true">
-        {party.agent || side === "from"
-          ? dispatchActorInitials(party.label)
-          : <RouteGlyph route={route} />}
-      </span>
-      <span className="sys-broker-endpoint-name" title={party.label}>{party.label}</span>
-    </span>
-  );
-}
-
-/**
- * The route: one composite cell, one hover card, one truncation budget. The
- * sender recedes and gives up width first — the target is the half that varies
- * and the half the operator is scanning for.
- */
-function DispatchRoute({ attempt, agents }: { attempt: BrokerRouteAttempt; agents: Agent[] }) {
-  const from = dispatchParty(attempt, agents, "from");
-  const to = dispatchParty(attempt, agents, "to");
-  const fields = dispatchRouteFields(attempt, from, to);
-  const descriptionId = `dispatch-route-${attempt.id}`;
-
-  return (
-    <span className="sys-broker-route" tabIndex={0} aria-describedby={descriptionId}>
-      <DispatchRouteFace party={from} route={attempt.route} side="from" />
-      <ArrowRight className="sys-broker-route-arrow" size={11} aria-hidden="true" />
-      <DispatchRouteFace party={to} route={attempt.route} side="to" />
-      <span className="sys-broker-endpoint-card" id={descriptionId} role="tooltip">
-        <span className="sys-broker-endpoint-card-head">
-          <span className="sys-broker-endpoint-card-edge">
-            <span className="sys-broker-avatar sys-broker-endpoint-avatar" aria-hidden="true">
-              {dispatchActorInitials(from.label)}
-            </span>
-            <strong>{from.label}</strong>
-            <ArrowRight className="sys-broker-route-arrow" size={11} aria-hidden="true" />
-            <span className="sys-broker-avatar sys-broker-endpoint-avatar" aria-hidden="true">
-              {to.agent ? dispatchActorInitials(to.label) : <RouteGlyph route={attempt.route} />}
-            </span>
-            <strong>{to.label}</strong>
-          </span>
-        </span>
-        <span className="sys-broker-endpoint-card-body">
-          {fields.map((field) => (
-            <span className="sys-broker-endpoint-card-field" key={field.label}>
-              <small>{field.label}</small>
-              <code title={field.value}>{field.value}</code>
-            </span>
-          ))}
-        </span>
-      </span>
-    </span>
-  );
 }
 
 function dispatchDayKey(ts: number): string {
@@ -410,7 +259,7 @@ export function BrokerScreen({
   initialAttemptId?: string;
 }) {
   useEmbedHeadline("Dispatch", embedded);
-  const { route, agents, selectedBrokerAttempt, inspectBrokerAttempt, clearBrokerAttempt } = useScout();
+  const { route, agents, operatorName, selectedBrokerAttempt, inspectBrokerAttempt, clearBrokerAttempt } = useScout();
   // Warm start: paint the last diagnostics page on remount while the mount
   // effect's load("initial") refreshes it in the background.
   const [initialBroker] = useState(() =>
@@ -516,22 +365,105 @@ export function BrokerScreen({
     });
   }, [broker]);
 
-  const activeRows = useMemo(() => {
-    switch (activeTab) {
-      case "delivered":
-        return feedRows.filter((attempt) => !brokerAttemptIsFailure(attempt));
-      case "failed":
-        return feedRows.filter(brokerAttemptIsFailure);
-      default:
-        return feedRows;
-    }
-  }, [activeTab, feedRows]);
+  // One scope drives everything below: the ledger, the graph and the tab
+  // counts all read from the same matching set. Focus, window and outcome live
+  // in the route so a view can be linked; the search box is local.
+  const focusNodes = useMemo(
+    () => (route.view === "broker" ? route.focus ?? [] : []),
+    [route],
+  );
+  const focusBetween = route.view === "broker" ? Boolean(route.between) && focusNodes.length >= 2 : false;
+  const timeWindow: DispatchWindow = route.view === "broker" ? route.window ?? "all" : "all";
+  const [searchQuery, setSearchQuery] = useState("");
+  const [graphHidden, setGraphHidden] = useState(readGraphHidden);
+  const [inspectedNodeKey, setInspectedNodeKey] = useState<string | null>(null);
+  // The window is relative to now; re-reading the clock each minute keeps
+  // "Last hour" honest on a page left open.
+  const [nowMs, setNowMs] = useState(() => Date.now());
+  useEffect(() => {
+    const timer = setInterval(() => setNowMs(Date.now()), 60_000);
+    return () => clearInterval(timer);
+  }, []);
+
+  const rowModels = useMemo(
+    () => feedRows.map((attempt) => dispatchRowModel(attempt, agents, operatorName)),
+    [agents, feedRows, operatorName],
+  );
+  const nodeCatalog = useMemo(() => dispatchNodeCatalog(rowModels, agents), [agents, rowModels]);
+  const scope = useMemo<DispatchScope>(() => ({
+    nodes: focusNodes,
+    between: focusBetween,
+    window: timeWindow,
+    query: searchQuery,
+    outcome: activeTab,
+  }), [activeTab, focusBetween, focusNodes, searchQuery, timeWindow]);
+  const scopeResult = useMemo(
+    () => applyDispatchScope(rowModels, scope, nowMs),
+    [nowMs, rowModels, scope],
+  );
+  const matchingRows = scopeResult.matching;
+  const activeRows = useMemo(() => matchingRows.map((row) => row.attempt), [matchingRows]);
   const activeHasMore = broker?.ledger.hasMore.attempts ?? false;
-  const tabCounts = useMemo<Record<BrokerTab, number>>(() => ({
-    all: feedRows.length,
-    delivered: feedRows.filter((attempt) => !brokerAttemptIsFailure(attempt)).length,
-    failed: feedRows.filter(brokerAttemptIsFailure).length,
-  }), [feedRows]);
+  const tabCounts = scopeResult.counts;
+  const graph = useMemo(
+    () => dispatchGraph(matchingRows, focusNodes, nodeCatalog),
+    [focusNodes, matchingRows, nodeCatalog],
+  );
+  const inspectedNode = inspectedNodeKey ? nodeCatalog.get(inspectedNodeKey) ?? null : null;
+  const inspectedNodeTraffic = useMemo(() => {
+    if (!inspectedNodeKey) return { sent: 0, received: 0 };
+    let sent = 0;
+    let received = 0;
+    for (const row of matchingRows) {
+      if (row.from.key === inspectedNodeKey) sent += 1;
+      if (row.to.key === inspectedNodeKey) received += 1;
+    }
+    return { sent, received };
+  }, [inspectedNodeKey, matchingRows]);
+  const scopeActive = focusNodes.length > 0
+    || timeWindow !== "all"
+    || activeTab !== "all"
+    || searchQuery.trim().length > 0;
+
+  const navigateScope = useCallback((next: {
+    focus?: string[];
+    between?: boolean;
+    window?: DispatchWindow;
+    filter?: BrokerTab;
+  }) => {
+    const current = route.view === "broker" ? route : null;
+    const focus = next.focus ?? current?.focus ?? [];
+    const filter = next.filter ?? activeTab;
+    const window = next.window ?? current?.window ?? "all";
+    const between = (next.between ?? current?.between ?? false) && focus.length >= 2;
+    navigate({
+      view: "broker",
+      ...(current?.attemptId ? { attemptId: current.attemptId } : {}),
+      ...(filter !== "all" ? { filter } : {}),
+      ...(focus.length > 0 ? { focus } : {}),
+      ...(between ? { between: true } : {}),
+      ...(window !== "all" ? { window } : {}),
+    });
+  }, [activeTab, navigate, route]);
+
+  const addFocusNode = useCallback((key: string) => {
+    if (focusNodes.includes(key)) return;
+    navigateScope({ focus: [...focusNodes, key] });
+  }, [focusNodes, navigateScope]);
+  const removeFocusNode = useCallback((key: string) => {
+    navigateScope({ focus: focusNodes.filter((candidate) => candidate !== key) });
+  }, [focusNodes, navigateScope]);
+  const resetScope = useCallback(() => {
+    setSearchQuery("");
+    setInspectedNodeKey(null);
+    navigateScope({ focus: [], between: false, window: "all", filter: "all" });
+  }, [navigateScope]);
+  const toggleGraph = useCallback(() => {
+    setGraphHidden((hidden) => {
+      writeGraphHidden(!hidden);
+      return !hidden;
+    });
+  }, []);
 
   const selectedAttempt = useMemo(() => {
     const requestedAttemptId = route.view === "broker" ? route.attemptId : undefined;
@@ -651,9 +583,8 @@ export function BrokerScreen({
   const cycleBrokerTab = useCallback((delta: number) => {
     const current = BROKER_TABS.indexOf(activeTab);
     const next = (current + delta + BROKER_TABS.length) % BROKER_TABS.length;
-    const filter = BROKER_TABS[next]!;
-    navigate({ view: "broker", ...(filter === "all" ? {} : { filter }) });
-  }, [activeTab, navigate]);
+    navigateScope({ filter: BROKER_TABS[next]! });
+  }, [activeTab, navigateScope]);
 
   // The web shell mounts the inspector in its right rail. An embed has no rail
   // — the native host owns that chrome — so selecting a row used to update
@@ -666,6 +597,47 @@ export function BrokerScreen({
     <div className={`s-ops${embedded ? " s-ops--embedded" : ""}${embedded && inspectorAttempt ? " s-ops--split" : ""}`}>
       <div className="s-ops-body">
         <div className="sys-surface-page sys-surface-page-wide sys-surface-page-fluid sys-broker-page">
+          {broker && !basic && (
+            <DispatchFocusBar
+              catalog={nodeCatalog}
+              focused={focusNodes}
+              between={focusBetween}
+              window={timeWindow}
+              query={searchQuery}
+              graphHidden={graphHidden}
+              canReset={scopeActive}
+              onAddNode={addFocusNode}
+              onRemoveNode={removeFocusNode}
+              onBetween={(between) => navigateScope({ between })}
+              onWindow={(window) => navigateScope({ window })}
+              onQuery={setSearchQuery}
+              onToggleGraph={toggleGraph}
+              onReset={resetScope}
+            />
+          )}
+          {broker && !basic && !graphHidden && (
+            <DispatchRouteGraph
+              graph={graph}
+              inspectedKey={inspectedNodeKey}
+              onInspect={(key) => setInspectedNodeKey((current) => (current === key ? null : key))}
+              title={focusNodes.length === 0
+                ? "All routes"
+                : `${focusBetween ? "Between" : "Involving"} ${focusNodes.map((key) => nodeCatalog.get(key)?.label ?? key).join(focusBetween ? " and " : ", ")}`}
+              meta={`${matchingRows.length} ${matchingRows.length === 1 ? "dispatch" : "dispatches"} · ${DISPATCH_WINDOWS.find((entry) => entry.value === timeWindow)?.label ?? "All loaded"}`}
+            />
+          )}
+          {broker && inspectedNode && (
+            <DispatchNodeCard
+              node={inspectedNode}
+              sent={inspectedNodeTraffic.sent}
+              received={inspectedNodeTraffic.received}
+              focused={focusNodes.includes(inspectedNode.key)}
+              onFocus={() => addFocusNode(inspectedNode.key)}
+              onUnfocus={() => removeFocusNode(inspectedNode.key)}
+              onClose={() => setInspectedNodeKey(null)}
+              copyButton={(value, subject) => <CopyIconButton value={value} subject={subject} />}
+            />
+          )}
           <div className="sys-ledger-toolbar" aria-label="Dispatch controls">
             {broker ? (
               <div
@@ -689,10 +661,7 @@ export function BrokerScreen({
                     role="tab"
                     aria-selected={activeTab === tab}
                     className={`sys-tab${activeTab === tab ? " sys-tab-active" : ""}`}
-                    onClick={() => navigate({
-                      view: "broker",
-                      ...(tab === "all" ? {} : { filter: tab }),
-                    })}
+                    onClick={() => navigateScope({ filter: tab })}
                   >
                     <span>{TAB_LABELS[tab]}</span>
                     <span className="sys-tab-count">{tabCounts[tab]}</span>
@@ -793,8 +762,9 @@ export function BrokerScreen({
           {broker && (
             <>
               <BrokerAttemptList
-                attempts={activeRows}
-                agents={agents}
+                rows={matchingRows}
+                filtered={scopeActive}
+                onReset={resetScope}
                 // Clicking a row inspects without navigating, so the deep-link
                 // id alone left every click unhighlighted. The inspected row is
                 // the selection; the route id only seeds it.
@@ -805,8 +775,12 @@ export function BrokerScreen({
                 onInspect={selectAttempt}
                 getRowFocusProps={getRowFocusProps}
               />
-              {activeRows.length > 0 && activeHasMore && (
-                <div className="sys-ledger-footer">
+              <div className="dsp-ledger-foot">
+                <span>
+                  Showing {matchingRows.length} of {feedRows.length}
+                  {activeHasMore ? "+" : ""} loaded {feedRows.length === 1 ? "dispatch" : "dispatches"}
+                </span>
+                {activeHasMore && (
                   <button
                     type="button"
                     className="s-btn"
@@ -815,15 +789,34 @@ export function BrokerScreen({
                   >
                     {loadingOlder ? "Loading older..." : "Load older"}
                   </button>
-                </div>
+                )}
+              </div>
+              {!basic && (
+                <p className="dsp-view-note">
+                  Focus and filters change this view only. Connections and permissions stay as they are.
+                </p>
               )}
             </>
           )}
         </div>
 
         {basic && inspectorAttempt && (
-          <SlidePanel open onClose={clearSelection} side="right" owner="openscout.dispatch" resizable defaultSize={520} minSize={360} maxSize={860} ariaLabel="Delivery detail">
-            <BrokerAttemptInspector attempt={inspectorAttempt} navigate={navigate} onClose={clearSelection} />
+          <SlidePanel
+            open
+            onClose={clearSelection}
+            side="right"
+            owner="openscout.dispatch"
+            resizable
+            defaultSize={520}
+            minSize={360}
+            maxSize={860}
+            ariaLabel="Delivery detail"
+          >
+            <BrokerAttemptInspector
+              attempt={inspectorAttempt}
+              navigate={navigate}
+              onClose={clearSelection}
+            />
           </SlidePanel>
         )}
         {embedded && inspectorAttempt && (
@@ -842,107 +835,127 @@ export function BrokerScreen({
 
 type BrokerRowFocusProps = ReturnType<typeof useBrokerLedgerKeyboard>["getRowFocusProps"];
 
+const DELIVERY_LABELS: Record<DispatchRowModel["delivery"], string> = {
+  attention: "Needs attention",
+  delivered: "Delivered",
+  pending: "Pending",
+};
+
+function DispatchRouteLine({ row }: { row: DispatchRowModel }) {
+  const fromAddress = row.from.address && row.from.address !== row.from.label ? ` (${row.from.address})` : "";
+  const toAddress = row.to.address && row.to.address !== row.to.label ? ` (${row.to.address})` : "";
+  return (
+    <span
+      className="dsp-row-route"
+      title={`${row.from.label}${fromAddress} → ${row.to.label}${toAddress}`}
+    >
+      <span className="dsp-row-from">{row.from.label}</span>
+      <ArrowRight size={10} aria-hidden="true" />
+      <span className="dsp-row-to">{row.to.label}</span>
+    </span>
+  );
+}
+
 function BrokerAttemptList({
-  attempts,
-  agents,
+  rows,
+  filtered,
+  onReset,
   selectedAttemptId,
   onInspect,
   getRowFocusProps,
 }: {
-  attempts: BrokerRouteAttempt[];
-  agents: Agent[];
+  rows: DispatchRowModel[];
+  filtered: boolean;
+  onReset: () => void;
   selectedAttemptId: string | null;
   onInspect: (attempt: BrokerRouteAttempt) => void;
   getRowFocusProps: BrokerRowFocusProps;
 }) {
-  if (attempts.length === 0) {
+  if (rows.length === 0) {
     return (
       <div className="sys-broker-empty-wrap">
         <EmptyState
           className="sys-state-card-centered"
-          title="No dispatch rows"
-          body="No dispatch rows are available yet."
+          title={filtered ? "No matching dispatches" : "No dispatch rows"}
+          body={filtered
+            ? "Change the filters or reset focus. Older dispatches may need Load older."
+            : "No dispatch rows are available yet."}
+          action={filtered ? (
+            <button type="button" className="s-btn" onClick={onReset}>Reset view</button>
+          ) : undefined}
         />
       </div>
     );
   }
 
-  const groups = attempts.reduce<Array<{
+  const groups = rows.reduce<Array<{
     key: string;
     label: string;
-    attempts: Array<{ attempt: BrokerRouteAttempt; index: number }>;
-  }>>((result, attempt, index) => {
-    const key = dispatchDayKey(attempt.ts);
+    rows: Array<{ row: DispatchRowModel; index: number }>;
+  }>>((result, row, index) => {
+    const key = dispatchDayKey(row.attempt.ts);
     const current = result[result.length - 1];
     if (current?.key === key) {
-      current.attempts.push({ attempt, index });
+      current.rows.push({ row, index });
     } else {
-      result.push({ key, label: dispatchDayLabel(attempt.ts), attempts: [{ attempt, index }] });
+      result.push({ key, label: dispatchDayLabel(row.attempt.ts), rows: [{ row, index }] });
     }
     return result;
   }, []);
 
   return (
-    <div className="sys-broker-wire" aria-label="Dispatch ledger">
-      <div className="sys-broker-wire-head" aria-hidden="true">
-        <span className="sys-broker-col sys-broker-col--route">Route</span>
-        <span className="sys-broker-col sys-broker-col--msg">Message</span>
-        <span className="sys-broker-col sys-broker-col--time">Time</span>
+    <div className="dsp-ledger" aria-label="Dispatch ledger">
+      <div className="dsp-ledger-head" aria-hidden="true">
+        <span>Request / route</span>
+        <span>Delivery</span>
+        <span>Time</span>
       </div>
       {groups.map((group) => (
-        <section className="sys-broker-day" key={group.key} aria-labelledby={`dispatch-day-${group.key}`}>
-          <header className="sys-broker-day-head">
+        <section className="dsp-day" key={group.key} aria-labelledby={`dispatch-day-${group.key}`}>
+          <header className="dsp-day-head">
             <h2 id={`dispatch-day-${group.key}`}>{group.label}</h2>
-            <span>{group.attempts.length} {group.attempts.length === 1 ? "dispatch" : "dispatches"}</span>
+            <span>{group.rows.length} {group.rows.length === 1 ? "dispatch" : "dispatches"}</span>
           </header>
-          <div className="sys-broker-wire-body" role="list">
-            {group.attempts.map(({ attempt, index }) => {
-              const tone = brokerAttemptTone(attempt.kind, attempt.status);
-              const isFailure = brokerAttemptIsFailure(attempt);
-              const isPending = !isFailure && (tone === "working" || tone === "warning");
-              const errorSummary = brokerAttemptErrorSummary(attempt);
-              const stateLabel = dispatchStateLabel(attempt);
-              // Delivered is the unmarked norm: the row itself carries state in
-              // colour, and the chip only speaks when the dispatch did not just
-              // work. The state word survives for screen readers in aria-label.
-              const chipText = isFailure ? errorSummary : isPending ? stateLabel : null;
+          <div role="list">
+            {group.rows.map(({ row, index }) => {
+              const { attempt } = row;
               const inspect = () => {
                 onInspect(attempt);
                 window.dispatchEvent(new CustomEvent("scout:set-inspector-width", {
                   detail: { width: 520 },
                 }));
               };
+              const selected = selectedAttemptId === attempt.id;
               return (
                 <div
                   key={attempt.id}
                   role="listitem"
-                  className={`sys-broker-wire-row${isFailure ? " sys-broker-wire-row--failure" : isPending ? " sys-broker-wire-row--pending" : ""}${selectedAttemptId === attempt.id ? " sys-broker-wire-row--selected" : ""}`}
-                  aria-label={`${stateLabel}. Inspect ${attempt.detail}`}
+                  className={`dsp-row dsp-row--${row.delivery}${selected ? " dsp-row--selected" : ""}`}
+                  aria-label={`${DELIVERY_LABELS[row.delivery]}. ${row.title}. From ${row.from.label} to ${row.to.label}.`}
+                  aria-current={selected ? "true" : undefined}
                   onClick={inspect}
                   {...getRowFocusProps(index)}
                 >
-                  <div className="sys-broker-cell sys-broker-col--route">
-                    <DispatchRoute attempt={attempt} agents={agents} />
-                  </div>
-                  <div className="sys-broker-cell sys-broker-col--msg">
-                    <span className="sys-broker-msg" title={attempt.detail}>{attempt.detail}</span>
-                    {chipText && (
-                      <span
-                        className={`sys-broker-msg-error sys-broker-msg-error--${isFailure ? "danger" : "warning"}`}
-                        title={chipText}
-                      >
-                        {chipText}
-                      </span>
-                    )}
-                  </div>
-                  <div className="sys-broker-cell sys-broker-col--time">
-                    <time
-                      className="sys-broker-time-abs"
-                      title={`${timeAgo(attempt.ts)} · ${fullTimestamp(attempt.ts)}`}
+                  <div className="dsp-row-main">
+                    <span
+                      className={`dsp-row-title${row.request ? "" : " dsp-row-title--unrecorded"}`}
+                      title={row.request ? attempt.detail : `${row.title} — request text not recorded`}
                     >
-                      {dispatchClock(attempt.ts)}
-                    </time>
+                      {row.title}
+                    </span>
+                    <DispatchRouteLine row={row} />
                   </div>
+                  <span className={`dsp-status dsp-status--${row.delivery}`}>
+                    {row.delivery === "delivered" && <Check size={11} aria-hidden="true" />}
+                    {row.delivery === "attention" && <span className="dsp-status-mark" aria-hidden="true">!</span>}
+                    {DELIVERY_LABELS[row.delivery]}
+                  </span>
+                  <time
+                    className="dsp-row-time"
+                    title={`${timeAgo(attempt.ts)} · ${fullTimestamp(attempt.ts)}`}
+                  >
+                    {dispatchClock(attempt.ts)}
+                  </time>
                 </div>
               );
             })}
@@ -1119,18 +1132,48 @@ function DispatchPayloadViewer({ payload }: { payload: string }) {
   );
 }
 
-function DispatchRouteFailure({ attempt }: { attempt: BrokerRouteAttempt }) {
-  const title = brokerAttemptFailureTitle(attempt);
+/**
+ * Where the dispatch got to, in three steps. It describes delivery only — a
+ * delivered dispatch still says nothing about whether the work finished.
+ */
+function DispatchDeliveryPath({ recovery }: { recovery: DispatchRecovery }) {
+  const steps: Array<{ label: string; state: "done" | "stopped" | "waiting" }> = (() => {
+    switch (recovery.stage) {
+      case "routing-stopped":
+        return [
+          { label: "Sent", state: "done" },
+          { label: "Routing", state: "done" },
+          { label: "Stopped", state: "stopped" },
+        ];
+      case "delivery-failed":
+        return [
+          { label: "Sent", state: "done" },
+          { label: "Routed", state: "done" },
+          { label: "Delivery failed", state: "stopped" },
+        ];
+      case "pending":
+        return [
+          { label: "Sent", state: "done" },
+          { label: "Routed", state: "done" },
+          { label: "Awaiting delivery", state: "waiting" },
+        ];
+      default:
+        return [
+          { label: "Sent", state: "done" },
+          { label: "Routed", state: "done" },
+          { label: "Delivered", state: "done" },
+        ];
+    }
+  })();
   return (
-    <div className="sys-broker-route-failure" role="status">
-      <span className="sys-broker-route-failure-mark" aria-hidden="true"><X size={14} /></span>
-      <div>
-        <span className="sys-detail-label">Routing stopped</span>
-        <strong>{title}</strong>
-        <p>{attempt.detail}</p>
-      </div>
-      <CopyIconButton value={attempt.detail} subject="failure detail" />
-    </div>
+    <ol className="dsp-path" aria-label="Delivery path">
+      {steps.map((step, index) => (
+        <li key={step.label} className={`dsp-path-step dsp-path-step--${step.state}`}>
+          {index > 0 && <i aria-hidden="true" />}
+          <span>{step.label}</span>
+        </li>
+      ))}
+    </ol>
   );
 }
 
@@ -1143,11 +1186,15 @@ export function BrokerAttemptInspector({
   navigate: (r: Route) => void;
   onClose: () => void;
 }) {
-  const { route, agents, scoutbotAgentId } = useScout();
+  const { route, agents, scoutbotAgentId, operatorName } = useScout();
   const rows = brokerInspectorRows(attempt);
+  const recovery = useMemo(() => dispatchRecovery(attempt), [attempt]);
+  const rowModel = useMemo(
+    () => dispatchRowModel(attempt, agents, operatorName),
+    [agents, attempt, operatorName],
+  );
   const metadata = brokerMetadataJson(attempt.metadata);
   const isFailure = brokerAttemptIsFailure(attempt);
-  const isRouteFailure = attempt.kind === "failed_query";
   const errorSummary = brokerAttemptErrorSummary(attempt);
   const tone = brokerAttemptTone(attempt.kind, attempt.status);
   const sentAt = metadataTimestamp(attempt, "sentAt", "createdAt") ?? normalizeTimestampMs(attempt.ts);
@@ -1451,6 +1498,11 @@ export function BrokerAttemptInspector({
       ?? "");
   }, [forwardCatalog, forwardHarness, forwardEffort]);
 
+  // When resending can't help — there is no recorded request, or the evidence
+  // says the same route would refuse again — handing the work to another agent
+  // is the real next step, so Forward leads instead of Retry.
+  const handOffFirst = isFailure && recovery.retry !== "available";
+
   // The one automated intent: a stock prompt plus the dispatch context to
   // Scoutbot (read-only, so sending without composing is safe). On a failure
   // it doubles as the failure report — recovery framing instead of a summary.
@@ -1592,53 +1644,55 @@ export function BrokerAttemptInspector({
       </header>
 
       <div className="sys-broker-inspector-body">
-        <section className="sys-broker-route-stack" aria-label="Dispatch route">
-          <div className="sys-broker-route-party">
-            <span className="sys-broker-avatar sys-broker-route-avatar" aria-hidden="true">
-              {dispatchActorInitials(attempt.actorName)}
-            </span>
-            <div className="sys-broker-route-party-copy">
-              <span className="sys-detail-label">From · {dispatchPartyKind(attempt, "from")}</span>
-              <strong>{attempt.actorName ?? "Unknown sender"}</strong>
-            </div>
-            {attempt.actorName && <CopyIconButton value={attempt.actorName} subject="sender" />}
+        <section className={`dsp-outcome dsp-outcome--${rowModel.delivery}`} aria-labelledby="dispatch-outcome-headline">
+          <span className="dsp-caption">Selected dispatch</span>
+          <span className={`dsp-badge dsp-badge--${rowModel.delivery}`}>{dispatchStateBadge(rowModel, recovery)}</span>
+          <h2 id="dispatch-outcome-headline">{recovery.headline}</h2>
+          {recovery.body && <p>{recovery.body}</p>}
+          <DispatchDeliveryPath recovery={recovery} />
+        </section>
+
+        <dl className="dsp-facts">
+          <div>
+            <dt>Request</dt>
+            <dd className={rowModel.request ? undefined : "dsp-facts-muted"}>
+              {rowModel.request ?? "Not recorded with this routing failure"}
+            </dd>
           </div>
+          <div>
+            <dt>Route</dt>
+            <dd>
+              <span className="dsp-facts-route">
+                <span>{rowModel.from.label}</span>
+                <ArrowRight size={11} aria-hidden="true" />
+                <span>{rowModel.to.label}</span>
+                <span className="dsp-facts-kind">· {dispatchNodeKindLabel(rowModel.to).toLowerCase()}</span>
+              </span>
+              {attempt.conversationId && (
+                <button
+                  type="button"
+                  className="sys-broker-route-button"
+                  onClick={() => openContent(navigate, { view: "conversation", conversationId: attempt.conversationId! }, { returnTo: route })}
+                >
+                  <ExternalLink size={11} aria-hidden="true" />
+                  Conversation
+                </button>
+              )}
+            </dd>
+          </div>
+        </dl>
 
-          <ArrowDown className="sys-broker-route-down" size={17} aria-hidden="true" />
-
-          <div className="sys-broker-route-party">
-            <span className="sys-broker-route-target-icon" aria-hidden="true">
-              <RouteGlyph route={attempt.route} />
-            </span>
-            <div className="sys-broker-route-party-copy">
-              <span className="sys-detail-label">To · {dispatchPartyKind(attempt, "to")}</span>
-              <code title={attempt.target ?? "No target"}>{attempt.target ?? "No target"}</code>
-            </div>
-            {attempt.target && <CopyIconButton value={attempt.target} subject="target" />}
-            {attempt.conversationId && (
-              <button
-                type="button"
-                className="sys-broker-route-button"
-                onClick={() => openContent(navigate, { view: "conversation", conversationId: attempt.conversationId! }, { returnTo: route })}
-              >
-                <ExternalLink size={11} aria-hidden="true" />
-                Route
-              </button>
+        {recovery.requestRecorded && (
+          <section className="sys-broker-payload">
+            <DispatchPayloadViewer payload={attempt.detail} />
+            {isFailure && errorSummary && errorSummary !== recovery.body && (
+              <div className="sys-broker-inspector-error" role="status">
+                <span className="sys-broker-inspector-error-label">Error</span>
+                <p>{errorSummary}</p>
+              </div>
             )}
-          </div>
-        </section>
-
-        <section className="sys-broker-payload">
-          {isRouteFailure
-            ? <DispatchRouteFailure attempt={attempt} />
-            : <DispatchPayloadViewer payload={attempt.detail} />}
-          {isFailure && !isRouteFailure && errorSummary && (
-            <div className="sys-broker-inspector-error" role="status">
-              <span className="sys-broker-inspector-error-label">Error</span>
-              <p>{errorSummary}</p>
-            </div>
-          )}
-        </section>
+          </section>
+        )}
 
         {/* The payload is only the ask. Routing succeeded is not an outcome, so
             the aftermath sits directly under it rather than behind an action. */}
@@ -1650,8 +1704,9 @@ export function BrokerAttemptInspector({
         />
 
         <section className="sys-broker-actions" aria-label="Dispatch actions">
-          {isFailure && retryAction}
-          <div className="sys-broker-intents">
+          {recovery.guidance && <p className="dsp-guidance">{recovery.guidance}</p>}
+          {isFailure && recovery.retry === "available" && retryAction}
+          <div className={`sys-broker-intents${handOffFirst ? " dsp-intents--handoff" : ""}`}>
             <button
               type="button"
               className={`sys-broker-intent${!isFailure ? " sys-broker-intent--primary" : ""}`}
@@ -1671,7 +1726,7 @@ export function BrokerAttemptInspector({
             </button>
             <button
               type="button"
-              className="sys-broker-intent"
+              className={`sys-broker-intent${handOffFirst ? " sys-broker-intent--primary" : ""}`}
               aria-expanded={forwardOpen}
               onClick={() => (forwardOpen ? discardForwardDraft() : openForwardDraft())}
             >
@@ -1679,6 +1734,9 @@ export function BrokerAttemptInspector({
               Forward to agent…
             </button>
           </div>
+          {isFailure && recovery.retryNote && (
+            <p className="dsp-action-note">{recovery.retryNote}</p>
+          )}
           {investigateMessage && (
             <div className={`sys-broker-action-status sys-broker-action-status--${investigateStatus}`} role="status">
               {investigateMessage}
@@ -1896,6 +1954,24 @@ export function BrokerAttemptInspector({
               <dd>{dispatchClockWithSeconds(deliveredAt)}</dd>
             </div>
           </dl>
+          {(recovery.evidence.length > 0 || !recovery.requestRecorded) && (
+            <div className="sys-broker-inspector-rows dsp-evidence">
+              {!recovery.requestRecorded && (
+                <div className="sys-broker-inspector-row">
+                  <span className="sys-detail-label">Broker said</span>
+                  <code className="sys-detail-value">{attempt.detail}</code>
+                  <CopyIconButton value={attempt.detail} subject="broker detail" />
+                </div>
+              )}
+              {recovery.evidence.map((item) => (
+                <div key={item.label} className="sys-broker-inspector-row">
+                  <span className="sys-detail-label">{item.label}</span>
+                  <code className="sys-detail-value">{item.value}</code>
+                  <CopyIconButton value={item.value} subject={item.label.toLowerCase()} />
+                </div>
+              ))}
+            </div>
+          )}
           <div className="sys-broker-record-head">
             <span className="sys-detail-label">Record</span>
             <CopyIconButton value={recordJson} subject="record as JSON" className="sys-broker-metadata-copy" />
@@ -1916,8 +1992,13 @@ export function BrokerAttemptInspector({
             </div>
             <BrokerMetadataPanel metadata={attempt.metadata} rawJson={metadata} />
           </div>
-          {!isFailure && retryAction}
+          {!isFailure && recovery.retry === "available" && retryAction}
         </details>
+        {isFailure && (
+          <p className="dsp-action-note dsp-action-note--foot">
+            Needs attention reflects this dispatch's own result. Scout doesn't track whether a later dispatch recovered it.
+          </p>
+        )}
       </div>
     </aside>
   );

@@ -9,6 +9,7 @@ import {
   type FlightRecord,
   type InvocationRequest,
   type MessageRecord,
+  type ScoutCodexAppServerIdentity,
   type ScoutExecutionResolution,
 } from "@openscout/protocol";
 
@@ -82,6 +83,10 @@ type LocalAgentInvocationResult = {
   metadata?: Record<string, unknown>;
 };
 
+type LocalAgentInvocationHooks = {
+  onSessionObserved?: (metadata: Record<string, unknown>) => Promise<void> | void;
+};
+
 type InvocationExecutorResult =
   | PairingInvocationResult
   | A2AHttpInvocationResult
@@ -109,6 +114,7 @@ function executionResolutionWithObservedEndpoint(
     observedAt: observed[key] ? observedAt : resolution[key].observedAt,
   });
   const sessionId = localEndpointTraceSessionId(endpoint);
+  const codexAppServer = codexAppServerIdentityForEndpoint(endpoint) ?? resolution.codexAppServer;
   return {
     ...resolution,
     harness: dimension("harness"),
@@ -116,7 +122,17 @@ function executionResolutionWithObservedEndpoint(
     reasoningEffort: dimension("reasoningEffort"),
     ...(sessionId ? { sessionId } : {}),
     ...(hasObserved ? { observedAt } : {}),
+    ...(codexAppServer ? { codexAppServer } : {}),
   };
+}
+
+/** Which Codex app-server served this endpoint, as recorded from `initialize`. */
+function codexAppServerIdentityForEndpoint(endpoint: AgentEndpoint): ScoutCodexAppServerIdentity | undefined {
+  const value = endpoint.metadata?.codexAppServer;
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const record = value as Record<string, unknown>;
+  if (record.connection !== "spawned" && record.connection !== "attached") return undefined;
+  return record as unknown as ScoutCodexAppServerIdentity;
 }
 
 async function invocationWithOriginatingMessageAttachments(
@@ -194,6 +210,7 @@ export type BrokerLocalInvocationServiceOptions = {
   invokeLocalAgentEndpoint: (
     endpoint: AgentEndpoint,
     invocation: InvocationRequest,
+    hooks?: LocalAgentInvocationHooks,
   ) => Promise<LocalAgentInvocationResult>;
   error?: (message: string, detail?: unknown) => void;
   warn?: (message: string) => void;
@@ -355,7 +372,9 @@ export class BrokerLocalInvocationService {
       harness: runningEndpoint.harness,
       sessionId: localEndpointTraceSessionId(runningEndpoint),
       nodeId: runningEndpoint.nodeId,
-      placement: runningEndpoint.metadata?.placement === "foreground"
+      placement: runningEndpoint.metadata?.placement === "attached"
+        ? "attached"
+        : runningEndpoint.metadata?.placement === "foreground"
         ? "foreground"
         : runningEndpoint.metadata?.placement === "background"
           ? "background"
@@ -384,12 +403,21 @@ export class BrokerLocalInvocationService {
       },
     });
 
+    // Carries harness identity observed mid-turn, so every later persist of
+    // this endpoint (completion, empty reply, failure) keeps it.
+    let liveEndpoint = runningEndpoint;
     try {
       const result = await this.invokeEndpoint(
         runningEndpoint,
         await invocationWithOriginatingMessageAttachments(invocation, this.options.runtime),
+        {
+          onSessionObserved: async (metadata) => {
+            liveEndpoint = promoteLocalEndpointProviderSession(liveEndpoint, { metadata });
+            await this.options.persistEndpoint(liveEndpoint);
+          },
+        },
       );
-      const completedEndpoint = this.completedEndpoint(runningEndpoint, result);
+      const completedEndpoint = this.completedEndpoint(liveEndpoint, result);
       const completedSessionId = localEndpointTraceSessionId(completedEndpoint);
       const refinesSessionId = (
         dispatchAck.sessionId
@@ -453,10 +481,10 @@ export class BrokerLocalInvocationService {
         });
 
         await this.options.persistEndpoint({
-          ...runningEndpoint,
+          ...liveEndpoint,
           state: "idle",
           metadata: {
-            ...(runningEndpoint.metadata ?? {}),
+            ...(liveEndpoint.metadata ?? {}),
             lastFailedAt: this.now(),
             lastError: failedFlight.error,
           },
@@ -531,7 +559,7 @@ export class BrokerLocalInvocationService {
         error,
         invocation,
         target,
-        runningEndpoint,
+        runningEndpoint: liveEndpoint,
         runningFlight,
         priorEndpointState: endpoint.state,
       });
@@ -541,6 +569,7 @@ export class BrokerLocalInvocationService {
   private async invokeEndpoint(
     endpoint: AgentEndpoint,
     invocation: InvocationRequest,
+    hooks: LocalAgentInvocationHooks,
   ): Promise<InvocationExecutorResult> {
     if (endpoint.transport === "pairing_bridge") {
       return this.options.invokePairingSessionEndpoint(endpoint, invocation);
@@ -548,7 +577,7 @@ export class BrokerLocalInvocationService {
     if (isA2AHttpEndpoint(endpoint)) {
       return (this.options.invokeA2AHttpEndpoint ?? invokeA2AHttpEndpoint)(endpoint, invocation);
     }
-    return this.options.invokeLocalAgentEndpoint(endpoint, invocation);
+    return this.options.invokeLocalAgentEndpoint(endpoint, invocation, hooks);
   }
 
   private completedEndpoint(

@@ -366,7 +366,18 @@ function mapSessionStatus(status: string | null | undefined): SessionStatus {
 }
 
 function mapTurnStatus(stopReason: unknown): TurnStatus {
-  return stopReason === "cancelled" ? "stopped" : "completed";
+  switch (stopReason) {
+    case "cancelled":
+      return "stopped";
+    // The provider cut the turn short or declined it — reporting any of these
+    // as "completed" would read as success to the caller.
+    case "max_tokens":
+    case "max_turn_requests":
+    case "refusal":
+      return "failed";
+    default:
+      return "completed";
+  }
 }
 
 function mapToolStatus(status: AcpToolCallUpdate["status"]): Action["status"] {
@@ -709,11 +720,16 @@ export class AcpAdapter extends BaseAdapter {
       if (this.session.status === "closed") {
         return;
       }
+      // The child's stderr tail is already redacted and capped — surface it in
+      // the exit error so callers see why the agent died, not just that it did.
+      const acpMeta = isRecord(this.session.providerMeta?.acp) ? this.session.providerMeta.acp : {};
+      const lastStderr = typeof acpMeta.lastStderr === "string" ? acpMeta.lastStderr.trim() : "";
       this.failSession(
         new Error(
           `ACP agent exited`
           + (code !== null ? ` with code ${code}` : "")
-          + (signal ? ` (${signal})` : ""),
+          + (signal ? ` (${signal})` : "")
+          + (lastStderr ? ` — stderr: ${lastStderr}` : ""),
         ),
       );
     });
@@ -907,6 +923,11 @@ export class AcpAdapter extends BaseAdapter {
       // like it consumed nothing at all.
       if (isRecord(response.usage)) {
         this.updateProviderMeta({ usage: response.usage });
+      }
+      // Surface the raw ACP stopReason so callers can distinguish "end_turn"
+      // from a truncation or refusal without parsing the mapped status.
+      if (typeof response.stopReason === "string" && response.stopReason) {
+        this.updateProviderMeta({ lastStopReason: response.stopReason });
       }
       this.finishTurn(mapTurnStatus(response.stopReason));
     } catch (error) {

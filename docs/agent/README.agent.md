@@ -93,7 +93,7 @@ attention, and scoutd—see [`docs/concepts.md`](../concepts.md).
 | **past harness session text** | **`scout search`** (explicit `index` then `query`) | prefer over grepping `~/.codex` / `~/.claude` / `~/.kimi-code`; see `docs/session-search.md` |
 | runtime discovery | `scout runtimes --json` | inspect legal harness/model/effort tuples before requiring exact execution |
 | first project ask | `scout ask --project /path/to/repo --runtime codex/gpt-5.6-sol/xhigh "review this"` | broker should create an isolated exact-runtime worker and return handles plus execution resolution |
-| first specific message | `scout send --to <agent-from-scout-who> "hello"` | use a fuller selector if the short name is ambiguous |
+| first specific ask | `scout ask --to <agent-from-scout-who> --notify "Review the changes and report back."` | use a fuller selector if the short name is ambiguous |
 
 Do not use placeholder names like `agent` or generic guesses like `claude.main`
 as literal targets. For fresh capability work, pass `projectPath` / `--project`

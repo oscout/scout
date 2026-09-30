@@ -623,10 +623,16 @@
     color: var(--outgoing-ink);
   }
 
-  .chat-app[data-style="scout"] .composer-field,
-  .chat-app[data-style="scout"] .composer-field textarea {
+  /* The field carries the fill; the textarea stays transparent. The field
+     doesn't clip, so a filled textarea drew a square inside the rounded pill. */
+  .chat-app[data-style="scout"] .composer-field {
     color: var(--ink);
     background: var(--field);
+  }
+
+  .chat-app[data-style="scout"] .composer-field textarea {
+    color: var(--ink);
+    background: transparent;
   }
 
   .chat-app[data-style="scout"] .reaction-badge {

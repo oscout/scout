@@ -3,7 +3,7 @@ import { mkdtemp, mkdir, writeFile, readFile, stat, rm } from "node:fs/promises"
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Database } from "bun:sqlite";
-import { collectDiagnosticReport, submitDiagnosticReport, diagnosticLogLines, redactDiagnosticText } from "./diagnostic-report";
+import { collectDiagnosticReport, submitDiagnosticReport, diagnosticLogLines, redactDiagnosticText, reporterHarness } from "./diagnostic-report";
 const roots: string[] = [];
 afterEach(async () => { await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))); });
 async function fixture() {
@@ -80,4 +80,35 @@ test("reads SQLite evidence without changing application data", async () => {
   const report = await collectDiagnosticReport(opts);
   expect(JSON.stringify(report)).toContain("mini");
   expect(await readFile(path)).toEqual(before);
+});
+test("labels the filing client and records a redacted sender without reading logs", async () => {
+  const opts = await fixture();
+  const receipt = await submitDiagnosticReport({
+    ...opts, diagnostics: false, localOnly: true, message: "chat composer clips on iPhone",
+    client: "mcp",
+    reporter: { agentName: "openscout-bartok", harness: "codex", project: "openscout", host: "arts mini", sessionId: " ", agentId: undefined },
+  });
+  const report = JSON.parse(await readFile(receipt.localPath, "utf8"));
+  expect(report.context.source).toBe("Scout mcp v1");
+  expect(report.logs).toEqual([]);
+  expect(report.context.reportSections).toEqual([{
+    id: "reporter", title: "Sender",
+    entries: [
+      { label: "agentName", value: "openscout-bartok" },
+      { label: "harness", value: "codex" },
+      { label: "project", value: "openscout" },
+      { label: "host", value: "arts mini" },
+    ],
+  }]);
+});
+test("unlabelled callers keep the v1 source string", async () => {
+  const opts = await fixture();
+  const receipt = await submitDiagnosticReport({ ...opts, diagnostics: false, localOnly: true, message: "note" });
+  expect(JSON.parse(await readFile(receipt.localPath, "utf8")).context.source).toBe("Scout diagnostics v1");
+});
+
+test("reporterHarness names the harness under a Scout-managed agent", () => {
+  expect(reporterHarness({ OPENSCOUT_AGENT: "hudson.main", CLAUDECODE: "1" })).toBe("claude");
+  expect(reporterHarness({ OPENSCOUT_AGENT: "hudson.main" })).toBe("scout");
+  expect(reporterHarness({})).toBeUndefined();
 });

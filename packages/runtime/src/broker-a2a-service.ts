@@ -514,7 +514,7 @@ export class BrokerA2AService {
     if (isA2ATerminalTaskState(state)) {
       return a2aTaskForFlight(found.flight, found.invocation);
     }
-    if (this.options.activeInvocationTasks.has(found.flight.invocationId)) {
+    if (found.flight.state !== "queued" || this.options.activeInvocationTasks.has(found.flight.invocationId)) {
       throw Object.assign(new Error(`A2A task ${taskId} is already running and cannot be cancelled by the broker yet.`), {
         code: -32004,
         data: { taskId, state },

@@ -47,6 +47,10 @@ const lazySurfaceModules = [
     modulePath: "../screens/voice/RealtimeVoiceScreen.tsx",
     embedPaths: ["/embed/voice"],
   },
+  {
+    modulePath: "../screens/settings/ScoutSettings.tsx",
+    embedPaths: ["/embed/settings"],
+  },
 ] as const satisfies readonly LazySurfaceModule[];
 
 const lazyRegistry = buildLazySurfaceRegistry(screenModules, lazySurfaceModules);

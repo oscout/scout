@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 
-import type { MessageRecord } from "@openscout/protocol";
+import { readChatMessageCorrection, type MessageRecord } from "@openscout/protocol";
 
 import type {
   BrokerJournalEntry,
@@ -515,7 +515,9 @@ export class JetStreamJournalPublisher {
 }
 
 /**
- * Only canonical message records are published in this slice.
+ * Only original canonical posts are published in this slice. Corrective
+ * message upserts must not be announced as another post; readers refresh
+ * corrections from the canonical record.
  *
  * Note what this excludes for free: `presence.updated` is not a journal entry
  * kind at all, so a journal-sourced publisher cannot leak presence into durable
@@ -524,7 +526,7 @@ export class JetStreamJournalPublisher {
 export function isPublishableEntry(
   entry: BrokerJournalEntry,
 ): entry is Extract<BrokerJournalEntry, { kind: "message.record" }> {
-  return entry.kind === "message.record";
+  return entry.kind === "message.record" && !readChatMessageCorrection(entry.message.metadata);
 }
 
 export function streamEventForEntry(

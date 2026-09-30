@@ -34,6 +34,8 @@ function mkAgent(partial: Partial<Agent> & { id: string; name: string }): Agent 
   return {
     definitionId: `${partial.id}-def`,
     handle: null,
+    authorityNodeId: null,
+    authorityNodeName: null,
     agentClass: "agent",
     harness: "claude",
     state: "callable",

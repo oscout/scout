@@ -1,6 +1,6 @@
 {
   "name": "@openscout/runtime",
-  "version": "0.2.109",
+  "version": "0.2.110",
   "description": "Local runtime foundation for the OpenScout control plane",
   "type": "module",
   "bin": {
@@ -211,6 +211,30 @@
       "import": "./dist/user-config.js",
       "default": "./dist/user-config.js"
     },
+    "./user-config-fields": {
+      "bun": "./src/user-config-fields.ts",
+      "types": "./dist/user-config-fields.d.ts",
+      "import": "./dist/user-config-fields.js",
+      "default": "./dist/user-config-fields.js"
+    },
+    "./harness-model-preferences": {
+      "bun": "./src/harness-model-preferences.ts",
+      "types": "./dist/harness-model-preferences.d.ts",
+      "import": "./dist/harness-model-preferences.js",
+      "default": "./dist/harness-model-preferences.js"
+    },
+    "./runtime-list-preferences": {
+      "bun": "./src/runtime-list-preferences.ts",
+      "types": "./dist/runtime-list-preferences.d.ts",
+      "import": "./dist/runtime-list-preferences.js",
+      "default": "./dist/runtime-list-preferences.js"
+    },
+    "./broker-runtime-profiles": {
+      "bun": "./src/broker-runtime-profiles.ts",
+      "types": "./dist/broker-runtime-profiles.d.ts",
+      "import": "./dist/broker-runtime-profiles.js",
+      "default": "./dist/broker-runtime-profiles.js"
+    },
     "./provisional-agent-names": {
       "bun": "./src/provisional-agent-names.ts",
       "types": "./dist/provisional-agent-names.d.ts",
@@ -247,11 +271,23 @@
       "import": "./dist/mobile-push.js",
       "default": "./dist/mobile-push.js"
     },
+    "./agent-notification-builders": {
+      "bun": "./src/agent-notification-builders.ts",
+      "types": "./dist/agent-notification-builders.d.ts",
+      "import": "./dist/agent-notification-builders.js",
+      "default": "./dist/agent-notification-builders.js"
+    },
     "./broker-trpc-router": {
       "bun": "./src/broker-trpc-router.ts",
       "types": "./dist/broker-trpc-router.d.ts",
       "import": "./dist/broker-trpc-router.js",
       "default": "./dist/broker-trpc-router.js"
+    },
+    "./otlp": {
+      "bun": "./src/otlp/index.ts",
+      "types": "./dist/otlp/index.d.ts",
+      "import": "./dist/otlp/index.js",
+      "default": "./dist/otlp/index.js"
     },
     "./tail": {
       "bun": "./src/tail/index.ts",
@@ -301,6 +337,12 @@
       "types": "./dist/diagnostic-report.d.ts",
       "import": "./dist/diagnostic-report.js",
       "default": "./dist/diagnostic-report.js"
+    },
+    "./scout-bridge-command": {
+      "bun": "./src/scout-bridge-command.ts",
+      "types": "./dist/scout-bridge-command.d.ts",
+      "import": "./dist/scout-bridge-command.js",
+      "default": "./dist/scout-bridge-command.js"
     }
   },
   "types": "./dist/index.d.ts",
@@ -343,6 +385,7 @@
     "@trpc/server": "^11.16.0",
     "bonjour-service": "^1.4.4",
     "drizzle-orm": "^0.45.2",
+    "protobufjs": "7.6.6",
     "smol-toml": "^1.6.1",
     "varlock": "^1.16.0",
     "ws": "^8.18.3",

@@ -32,12 +32,16 @@ import type {
   WebFleetAsk,
   WebFleetAskStatus,
   WebFleetState,
-} from "./types/web.ts";
+} from "../../shared/api/web.ts";
 
 /* ── Row projection types (private to this domain) ── */
 
 type FleetActivityRow = {
   id: string;
+  /** The author's harness: stamped on the activity at write time, else the
+   *  author's most recent endpoint. Session agents aren't in the roster, so
+   *  the feed learns it here rather than by joining back to /api/agents. */
+  actor_harness?: string | null;
   kind: string;
   ts: number;
   actor_name: string | null;
@@ -126,6 +130,7 @@ function projectFleetActivity(row: FleetActivityRow): WebFleetActivity {
     messageId: row.message_id,
     recordId: row.record_id,
     sessionId: row.session_id,
+    actorHarness: row.actor_harness ?? null,
   };
 }
 
@@ -199,6 +204,18 @@ export function queryFleetActivity(opts?: {
     ai.flight_id,
     ai.record_id,
     ai.session_id,
+    -- Stamped on the activity when it was recorded (the agent's harness);
+    -- older rows fall back to the author's latest endpoint.
+    COALESCE(
+      CASE WHEN ai.agent_id = ai.actor_id THEN json_extract(ai.payload_json, '$.agentHarness') END,
+      (
+        SELECT ep.harness
+        FROM agent_endpoints ep
+        WHERE ep.agent_id = ai.actor_id AND ep.harness IS NOT NULL
+        ORDER BY ep.updated_at DESC
+        LIMIT 1
+      )
+    ) AS actor_harness,
     c.kind AS conversation_kind
   FROM activity_items ai
   LEFT JOIN actors ac ON ac.id = ai.actor_id
@@ -233,7 +250,7 @@ function fleetStatusLabel(status: WebFleetAskStatus): string {
     case "working":
       return "Working";
     case "needs_attention":
-      return "Needs your input";
+      return "Asking for input";
     case "failed":
       return "Failed";
     default:
@@ -385,7 +402,7 @@ function projectFleetAsk(row: FleetAskRow, requesterIdSet: Set<string>): WebFlee
       && ["open", "answered"].includes(row.work_state));
   // A standing operator dismissal (nothing on the record has moved since)
   // resolves the handback here exactly as it does in the attention band —
-  // otherwise a dismissed record's ask re-surfaces as "needs you" forever.
+  // otherwise a dismissed record's ask re-surfaces as a request forever.
   const recordDismissedAt = normalizeTimestampMs(row.record_dismissed_at);
   const recordUpdatedAt = normalizeTimestampMs(row.work_updated_at);
   const recordDismissed = recordDismissedAt !== null
@@ -419,7 +436,7 @@ function projectFleetAsk(row: FleetAskRow, requesterIdSet: Set<string>): WebFlee
     status = "working";
   } else if (failed || staleActiveFlight) {
     // A failed dispatch produced nothing to review; it must never present as
-    // "Needs your input" just because its work record was born pending.
+    // "Asking for input" just because its work record was born pending.
     status = "failed";
   } else if (awaitingOperator) {
     status = "needs_attention";

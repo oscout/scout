@@ -1625,10 +1625,8 @@
 }
 
 .sys-broker-message-composer:focus-within {
-  border-color: color-mix(in srgb, var(--accent) 42%, var(--sys-hairline));
-  box-shadow:
-    0 0 0 3px color-mix(in srgb, var(--accent) 8%, transparent),
-    0 16px 34px -26px rgba(0, 0, 0, 0.95);
+  border-color: var(--field-focus);
+  box-shadow: none;
 }
 
 .sys-broker-message-composer > label {

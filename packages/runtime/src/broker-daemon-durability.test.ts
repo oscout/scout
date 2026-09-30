@@ -194,7 +194,9 @@ describe("broker daemon durability routes", () => {
       OPENSCOUT_RUNTIME_CATALOG_REFRESH_MS: "0",
     } });
     const snapshot = await broker.getJson<{ actors: Record<string, unknown>; messages: Record<string, unknown> }>(second.baseUrl, "/v1/snapshot");
-    expect(snapshot.actors[actor.id]).toEqual(actor);
+    // Registrations are stamped with first-registration createdAt at the
+    // durable upsert funnel, so the record now carries that field.
+    expect(snapshot.actors[actor.id]).toEqual({ ...actor, createdAt: expect.any(Number) });
     expect(snapshot.messages["not-accepted"]).toBeUndefined();
     const db = new Database(join(controlHome, "control-plane.sqlite"), { readonly: true });
     try { expect(db.query("SELECT display_name FROM actors WHERE id = ?").get(actor.id)).toEqual({ display_name: actor.displayName }); }

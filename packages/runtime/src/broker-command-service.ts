@@ -39,6 +39,7 @@ export type BrokerCommandMesh = {
 };
 
 export type BrokerChannelInviteCommands = {
+  removeMember: (command: Extract<ControlCommand, { kind: "channel.member.remove" }>) => Promise<{ ok: true; participantIds: string[] } | { ok: false; error: string }>;
   create: (command: Extract<ControlCommand, { kind: "channel.invite.create" }>) => Promise<ChannelInviteCommandResult>;
   revoke: (command: Extract<ControlCommand, { kind: "channel.invite.revoke" }>) => Promise<ChannelInviteCommandResult>;
   redeem: (command: Extract<ControlCommand, { kind: "channel.invite.redeem" }>) => Promise<ChannelInviteRedeemResult>;
@@ -102,6 +103,8 @@ export class BrokerCommandService {
         return await this.executeCollaborationUpsert(command.record);
       case "collaboration.event.append":
         return await this.executeCollaborationEventAppend(command.event);
+      case "channel.member.remove":
+        return await this.deps.channelInvites.removeMember(command);
       case "channel.invite.create":
         return await this.deps.channelInvites.create(command);
       case "channel.invite.revoke":

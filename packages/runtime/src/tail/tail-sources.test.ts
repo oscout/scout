@@ -680,6 +680,57 @@ describe("tail transcript sources", () => {
     expect(phaseEvent?.summary).toBe("phase · tool_execution");
   });
 
+  test("emits a reply-only Grok turn's prompt and reply from updates.jsonl", () => {
+    const sessionId = "019edd6b-reply-only";
+    const sessionDir = join(
+      process.env.OPENSCOUT_TAIL_GROK_SESSIONS_ROOT!,
+      encodeURIComponent("/Users/art/dev/openscout"),
+      sessionId,
+    );
+    mkdirSync(sessionDir, { recursive: true });
+    writeFileSync(
+      join(sessionDir, "summary.json"),
+      JSON.stringify({ info: { id: sessionId, cwd: "/Users/art/dev/openscout" } }),
+      "utf8",
+    );
+    const update = (body: Record<string, unknown>) => JSON.stringify({
+      timestamp: Date.parse("2026-04-27T15:00:01.000Z") / 1000,
+      method: "_x.ai/session/update",
+      params: { sessionId, update: body },
+    });
+    writeFileSync(
+      join(sessionDir, "updates.jsonl"),
+      [
+        update({
+          sessionUpdate: "user_message_chunk",
+          content: { type: "text", text: "Reply with exactly: ok" },
+          _meta: { promptIndex: 0 },
+        }),
+        update({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: "o" } }),
+        update({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: "k" } }),
+        update({ sessionUpdate: "turn_completed", stop_reason: "end_turn" }),
+      ].join("\n") + "\n",
+      "utf8",
+    );
+    const lines = [
+      { ts: "2026-04-27T15:00:01.000Z", type: "turn_started", session_id: sessionId, turn_number: 0, model_id: "grok-4.7" },
+      { ts: "2026-04-27T15:00:01.100Z", type: "loop_started", loop_index: 0 },
+      { ts: "2026-04-27T15:00:02.000Z", type: "turn_ended", outcome: "completed" },
+    ].map((line) => JSON.stringify(line));
+    writeFileSync(join(sessionDir, "events.jsonl"), lines.join("\n") + "\n", "utf8");
+
+    const transcript = GrokSource.discoverTranscripts([]).find((entry) => entry.sessionId === sessionId);
+    expect(transcript).toBeDefined();
+    const ctx = makeContext("grok", transcript!);
+    const events = lines.map((line, lineOffset) => GrokSource.parseLine(line, { ...ctx, lineOffset }));
+
+    expect(events.map((event) => [event?.kind, event?.summary])).toEqual([
+      ["system", "turn 0 · grok-4.7"],
+      ["user", "Reply with exactly: ok"],
+      ["assistant", "ok"],
+    ]);
+  });
+
   test("enriches Grok shell tool events with commands from updates.jsonl", () => {
     const projectDir = join(
       process.env.OPENSCOUT_TAIL_GROK_SESSIONS_ROOT!,

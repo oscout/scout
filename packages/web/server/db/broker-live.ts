@@ -4,7 +4,7 @@ import type {
   WebBrokerDiagnostics,
   WebBrokerDialogueItem,
   WebBrokerRouteAttempt,
-} from "./types/web.ts";
+} from "../../shared/api/web.ts";
 
 export type BrokerDiagnosticsSnapshot = {
   actors: Record<string, { displayName?: string | null } | undefined>;

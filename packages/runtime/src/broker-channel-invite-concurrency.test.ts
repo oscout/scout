@@ -12,10 +12,14 @@ test("overlapping channel invite commands preserve both durable invitations", as
   };
   const service = new BrokerChannelInviteService({
     runtime: { snapshot: () => snapshot },
-    async upsertConversation(conversation) {
+    async updateConversation(conversationId, mutate) {
+      const current = snapshot.conversations[conversationId];
+      const next = mutate(current);
+      if (!next) return { updated: false, conversation: current ?? null };
       // Real durability yields before applying to the in-memory registry.
       await new Promise<void>((resolve) => setTimeout(resolve, 1));
-      snapshot.conversations[conversation.id] = conversation;
+      snapshot.conversations[next.id] = next;
+      return { updated: true, conversation: next };
     },
   });
   const command = (id: string): ChannelInviteCreateCommand => ({
@@ -40,9 +44,13 @@ test("concurrent redemptions cannot consume the same last invitation use", async
   };
   const service = new BrokerChannelInviteService({
     runtime: { snapshot: () => snapshot },
-    async upsertConversation(conversation) {
+    async updateConversation(conversationId, mutate) {
+      const current = snapshot.conversations[conversationId];
+      const next = mutate(current);
+      if (!next) return { updated: false, conversation: current ?? null };
       await new Promise<void>((resolve) => setTimeout(resolve, 1));
-      snapshot.conversations[conversation.id] = conversation;
+      snapshot.conversations[next.id] = next;
+      return { updated: true, conversation: next };
     },
   });
   const tokenHash = "a".repeat(64);

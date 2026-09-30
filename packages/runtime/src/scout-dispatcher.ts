@@ -22,6 +22,7 @@ import {
   type ScoutRoutePolicy,
   type ScoutRouteTarget,
   normalizeAgentSelectorSegment,
+  normalizeScoutSessionHost,
 } from "@openscout/protocol";
 
 import type { createInMemoryControlRuntime } from "./broker.js";
@@ -38,6 +39,7 @@ import {
   executionForBrokerRuntimeProfile,
   resolveBrokerRuntimeProfile,
 } from "./broker-runtime-profiles.js";
+import { sessionHostForNodeId, sessionHostNodeIds } from "./runtime-session-address.js";
 
 export type RuntimeSnapshot = ReturnType<ReturnType<typeof createInMemoryControlRuntime>["snapshot"]>;
 
@@ -64,7 +66,7 @@ export type BrokerLabelResolution =
   | { kind: "resolved_session"; session: ResolvedSessionTarget }
   | { kind: "ambiguous"; label: string; candidates: AgentDefinition[]; detail?: string }
   | { kind: "unparseable"; label: string }
-  | { kind: "unknown"; label: string; detail?: string; candidates?: AgentDefinition[]; diagnosticCode?: RouteAliasDiagnosticCode };
+  | { kind: "unknown"; label: string; detail?: string; candidates?: AgentDefinition[]; diagnosticCode?: RouteAliasDiagnosticCode; sessionWakeReason?: string };
 
 export interface BrokerRouteTargetInput {
   target?: ScoutRouteTarget | null;
@@ -148,8 +150,9 @@ function metadataStringValue(metadata: Record<string, unknown> | undefined, key:
   return typeof value === "string" && value.length > 0 ? value : undefined;
 }
 
-function sessionRouteLabel(sessionId: string, harness?: AgentHarness): string {
-  return harness ? `session:${harness}:${sessionId}` : `session:${sessionId}`;
+function sessionRouteLabel(sessionId: string, harness?: AgentHarness, host?: string): string {
+  const base = harness ? `session:${harness}:${sessionId}` : `session:${sessionId}`;
+  return host ? `${base}@${host}` : base;
 }
 
 function endpointMatchesSessionRouteScope(
@@ -715,15 +718,22 @@ function resolveSessionTarget(
   options: {
     helpers: Pick<DispatcherHelpers, "isStale">;
     harness?: AgentHarness;
+    host?: string;
     preferLocalNodeId?: string;
   },
 ): BrokerLabelResolution {
-  const label = sessionRouteLabel(sessionId, options.harness);
-  const matching = Object.values(snapshot.endpoints)
+  const label = sessionRouteLabel(sessionId, options.harness, options.host);
+  const anyHost = Object.values(snapshot.endpoints)
     .filter((endpoint) => endpointMatchesTargetSession(endpoint, sessionId))
     .filter((endpoint) => endpointMatchesSessionRouteScope(endpoint, options));
+  const hostScope = options.host ? sessionHostScope(snapshot, options.host, options.preferLocalNodeId) : null;
+  const matching = hostScope
+    ? anyHost.filter((endpoint) => hostScope.nodeIds.has(endpoint.nodeId))
+    : anyHost;
   if (matching.length === 0) {
-    return { kind: "unknown", label };
+    return hostScope
+      ? unknownOnHost(snapshot, label, options.host!, hostScope, anyHost)
+      : { kind: "unknown", label };
   }
 
   const liveMatching = matching.filter((endpoint) => !isStaleLocalEndpoint(snapshot, endpoint));
@@ -817,6 +827,61 @@ function resolveSessionTarget(
   };
 }
 
+/**
+ * Nodes a session-address host names. The host is the authority boundary:
+ * resolution never leaves it, so an address cannot be satisfied by a
+ * same-token projection on another machine.
+ */
+function sessionHostScope(
+  snapshot: RuntimeSnapshot,
+  host: string,
+  localNodeId: string | undefined,
+): { nodeIds: Set<string>; includesLocal: boolean } {
+  const nodeIds = new Set(sessionHostNodeIds(snapshot, host));
+  // The local broker always answers for itself, even before its own node
+  // record is registered in the snapshot.
+  if (localNodeId && sessionHostForNodeId(snapshot, localNodeId) === host) {
+    nodeIds.add(localNodeId);
+  }
+  return { nodeIds, includesLocal: Boolean(localNodeId && nodeIds.has(localNodeId)) };
+}
+
+function unknownOnHost(
+  snapshot: RuntimeSnapshot,
+  label: string,
+  host: string,
+  scope: { nodeIds: Set<string>; includesLocal: boolean },
+  anyHost: AgentEndpoint[],
+): BrokerLabelResolution {
+  if (scope.nodeIds.size === 0) {
+    return {
+      kind: "unknown",
+      label,
+      detail: `${label}: no mesh node is known as host "${host}"`,
+      sessionWakeReason: "session_host_unknown",
+    };
+  }
+  const elsewhere = [...new Set(anyHost.map((endpoint) => sessionHostForNodeId(snapshot, endpoint.nodeId)))]
+    .sort((left, right) => left.localeCompare(right));
+  if (elsewhere.length > 0) {
+    return {
+      kind: "unknown",
+      label,
+      detail: `${label}: that session is not on host "${host}" (known on ${elsewhere.join(", ")}); Scout does not substitute another host's session`,
+      sessionWakeReason: "session_not_on_host",
+    };
+  }
+  if (!scope.includesLocal) {
+    return {
+      kind: "unknown",
+      label,
+      detail: `${label}: host "${host}" (${[...scope.nodeIds].join(", ")}) has not shared this session with this broker; cross-host session-address resolution is not available yet`,
+      sessionWakeReason: "session_host_not_projected",
+    };
+  }
+  return { kind: "unknown", label };
+}
+
 export function resolveBrokerRouteTarget(
   snapshot: RuntimeSnapshot,
   input: BrokerRouteTargetInput,
@@ -836,9 +901,13 @@ export function resolveBrokerRouteTarget(
     const directSessionHarness = routeTarget?.kind === "session_id"
       ? routeTarget.harness
       : input.execution?.harness;
+    const directSessionHost = routeTarget?.kind === "session_id"
+      ? normalizeScoutSessionHost(routeTarget.host) || undefined
+      : undefined;
     return resolveSessionTarget(snapshot, directSessionId, {
       helpers: options.helpers,
       harness: directSessionHarness,
+      ...(directSessionHost ? { host: directSessionHost } : {}),
       preferLocalNodeId,
     });
   }
@@ -1041,6 +1110,7 @@ export function buildDispatchEnvelope(
         ),
       ),
       ...(resolution.diagnosticCode ? { diagnosticCode: resolution.diagnosticCode } : {}),
+      ...(resolution.sessionWakeReason ? { sessionWakeReason: resolution.sessionWakeReason } : {}),
       dispatchedAt,
       dispatcherNodeId,
     };

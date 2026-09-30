@@ -538,7 +538,10 @@ impl Pointer {
 
 impl Take {
     pub fn splits_detail(self) -> bool {
-        matches!(self, Take::Horizon | Take::Mesh | Take::Quota | Take::Harvest)
+        matches!(
+            self,
+            Take::Horizon | Take::Mesh | Take::Quota | Take::Harvest
+        )
     }
 }
 
@@ -951,7 +954,7 @@ impl App {
                 let host = derive_host(&session_id, last_event);
                 let handle = format!("@{short_name}");
 
-                // A session needs you only if its LATEST event says so and it is
+                // A session has a request only if its LATEST event says so and it is
                 // recent — an old ask a human long since answered must not pin a
                 // stale session to the top of every list.
                 let live = delta_ms < 90_000;
@@ -1015,7 +1018,7 @@ impl App {
             })
             .collect();
 
-        // Ordering: needs-you first, then live, then most recent activity.
+        // Ordering: requests first, then live, then most recent activity.
         // Recency — never the alphabet — decides who sits near the top.
         agents.sort_by(|a, b| {
             b.needs
@@ -1709,7 +1712,13 @@ pub fn short_session(raw: &str) -> String {
 pub fn is_write_tool(tool: &str) -> bool {
     matches!(
         tool.to_ascii_lowercase().as_str(),
-        "edit" | "write" | "notebookedit" | "multiedit" | "search_replace" | "str_replace" | "apply_patch"
+        "edit"
+            | "write"
+            | "notebookedit"
+            | "multiedit"
+            | "search_replace"
+            | "str_replace"
+            | "apply_patch"
     )
 }
 

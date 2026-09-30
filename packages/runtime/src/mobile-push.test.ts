@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { generateKeyPairSync } from "node:crypto";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -10,11 +11,13 @@ import {
   listMobilePushRegistrations,
   syncMobilePushRegistration,
 } from "./mobile-push.ts";
+import { openPushContent } from "./mobile-push-seal.ts";
 import { SQLiteControlPlaneStore } from "./sqlite-store.ts";
 
 const tempRoots = new Set<string>();
 const originalControlHome = process.env.OPENSCOUT_CONTROL_HOME;
 const originalFetch = globalThis.fetch;
+const originalPairingDir = process.env.OPENSCOUT_PAIRING_DIR;
 const originalRelayUrl = process.env.OPENSCOUT_PUSH_RELAY_URL;
 const originalRelaySession = process.env.OPENSCOUT_PUSH_RELAY_SESSION;
 const originalRelayMeshId = process.env.OPENSCOUT_PUSH_RELAY_MESH_ID;
@@ -32,6 +35,7 @@ afterEach(() => {
     process.env.OPENSCOUT_CONTROL_HOME = originalControlHome;
   }
   for (const [key, value] of [
+    ["OPENSCOUT_PAIRING_DIR", originalPairingDir],
     ["OPENSCOUT_PUSH_RELAY_URL", originalRelayUrl],
     ["OPENSCOUT_PUSH_RELAY_SESSION", originalRelaySession],
     ["OPENSCOUT_PUSH_RELAY_MESH_ID", originalRelayMeshId],
@@ -208,6 +212,81 @@ describe("mobile push relay", () => {
     expect(JSON.stringify(requestBody)).not.toContain("This content");
     expect(JSON.stringify(requestBody)).not.toContain("human-readable-agent-name");
   });
+  test("seals an agent notification per paired phone and sends it to that device only", async () => {
+    const root = createControlPlaneRoot();
+    const rawKeys = () => {
+      const pair = generateKeyPairSync("x25519");
+      return {
+        publicKey: pair.publicKey.export({ format: "der", type: "spki" }).subarray(-32),
+        privateKey: pair.privateKey.export({ format: "der", type: "pkcs8" }).subarray(-32),
+      };
+    };
+    const mac = rawKeys();
+    const phone = rawKeys();
+    const phoneHex = phone.publicKey.toString("hex");
+    process.env.OPENSCOUT_PAIRING_DIR = join(root, ".scout", "pairing");
+    mkdirSync(join(root, ".scout", "pairing"), { recursive: true });
+    writeFileSync(join(root, ".scout", "pairing", "identity.json"), JSON.stringify({
+      publicKey: mac.publicKey.toString("hex"),
+      privateKey: mac.privateKey.toString("hex"),
+    }));
+    writeFileSync(join(root, ".scout", "pairing", "trusted-peers.json"), JSON.stringify([
+      { publicKey: phoneHex, pairedAt: "2026-09-24" },
+    ]));
+    for (const [deviceId, token] of [[phoneHex.slice(0, 16), "aa11"], ["unpaired-device", "bb22"]] as const) {
+      syncMobilePushRegistration({
+        deviceId,
+        platform: "ios",
+        appBundleId: "app.openscout.scout",
+        apnsEnvironment: "production",
+        authorizationStatus: "authorized",
+        pushToken: token,
+      });
+    }
+
+    process.env.OPENSCOUT_PUSH_RELAY_URL = "https://push.example.test";
+    process.env.OPENSCOUT_PUSH_RELAY_SESSION = "osn_session_test";
+    const bodies: Array<Record<string, unknown>> = [];
+    globalThis.fetch = (async (_input, init) => {
+      bodies.push(JSON.parse(String(init?.body)));
+      return Response.json({ attemptedCount: 1, deliveredCount: 1, failedCount: 0, failures: [] });
+    }) as typeof fetch;
+
+    const result = await broadcastApnsAlertToActiveMobileDevices({
+      title: "Scout needs attention",
+      body: "A local agent is asking for input.",
+      urgency: "interrupt",
+      payload: { destination: "inbox", itemId: "item-1", kind: "approval" },
+      notification: {
+        v: 1,
+        itemId: "item-1",
+        sender: { name: "machiavelli" },
+        project: "openscout",
+        urgent: true,
+        createdAt: 1,
+        view: "turn.approve.command",
+        command: "bash apps/ios/scripts/release.sh",
+        risk: "high",
+      },
+    });
+
+    expect(result.deliveredCount).toBe(2);
+    expect(bodies.map((body) => body.deviceId).sort()).toEqual([phoneHex.slice(0, 16), "unpaired-device"].sort());
+    const sealedBody = bodies.find((body) => body.deviceId === phoneHex.slice(0, 16))!;
+    const plainBody = bodies.find((body) => body.deviceId === "unpaired-device")!;
+    expect(sealedBody.category).toBe("scout.approval");
+    expect(plainBody.sealed).toBeUndefined();
+    expect(JSON.stringify(bodies)).not.toContain("release.sh");
+    const opened = JSON.parse(openPushContent({
+      sealed: String(sealedBody.sealed),
+      itemId: "item-1",
+      phonePrivateKey: phone.privateKey,
+      phonePublicKey: phone.publicKey,
+      expectedMacPublicKey: mac.publicKey,
+    }));
+    expect(opened).toMatchObject({ view: "turn.approve.command", command: "bash apps/ios/scripts/release.sh" });
+  });
+
   test("reports the relay's refusal and stops there when there is no APNs key", async () => {
     createControlPlaneRoot();
     process.env.OPENSCOUT_PUSH_RELAY_URL = "https://push.example.test";
@@ -223,7 +302,7 @@ describe("mobile push relay", () => {
     }) as typeof fetch;
 
     const result = await broadcastApnsAlertToActiveMobileDevices({
-      title: "An agent needs you",
+      title: "An agent is asking",
       body: "Open Scout for details.",
       sound: "default",
       urgency: "interrupt",
@@ -260,7 +339,7 @@ describe("mobile push relay", () => {
     }) as typeof fetch;
 
     const result = await broadcastApnsAlertToActiveMobileDevices({
-      title: "An agent needs you",
+      title: "An agent is asking",
       body: "Open Scout for details.",
       sound: "default",
       urgency: "interrupt",
@@ -306,7 +385,7 @@ describe("mobile push relay", () => {
     }) as typeof fetch;
 
     const result = await broadcastApnsAlertToActiveMobileDevices({
-      title: "An agent needs you",
+      title: "An agent is asking",
       body: "Open Scout for details.",
       sound: "default",
       urgency: "interrupt",
@@ -331,7 +410,7 @@ describe("mobile push relay", () => {
       Response.json({ error: "unauthorized" }, { status: 401 })) as typeof fetch;
 
     const result = await broadcastApnsAlertToActiveMobileDevices({
-      title: "An agent needs you",
+      title: "An agent is asking",
       body: "Open Scout for details.",
       sound: "default",
       urgency: "interrupt",

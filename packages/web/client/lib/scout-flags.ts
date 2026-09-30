@@ -372,7 +372,7 @@ export function writeStoredScoutFlagBundle(request: ScoutFlagBundlePersistenceRe
   }
 }
 
-/** Resolve the active bundle from storage, bootstrap, or the lean default. */
+/** Resolve the active bundle from storage, bootstrap, or the max default. */
 export function resolveActiveScoutFlagBundle(): ScoutFlagBundle {
   return (
     readStoredScoutFlagBundle()
@@ -386,13 +386,10 @@ function scoutStoredBundleLayer(): FeatureFlagLayerInput<ScoutAudienceTier> {
   return bundle ? scoutFlagBundleLayer(bundle) : {};
 }
 
-// The out-of-the-box experience. With nothing else set we serve the lean
-// `light-prod` bundle (ops/surface extras off) as the baseline; the
-// full experience is opt-in via `?ffBundle=max-pro` (one load), `?ffGlobal=max-pro`
-// (pinned for the browser), or the dev panel. `OPENSCOUT_WEB_FLAG_BUNDLE` on the
-// server still wins over this default. This is the lowest-priority layer —
-// url/local always override it.
-const SCOUT_DEFAULT_BUNDLE: ScoutFlagBundle = "light-prod";
+// The out-of-the-box experience uses the full `max-pro` bundle.
+// Server bootstrap, persisted browser preferences, and URL overrides can
+// select another bundle; this default is the lowest-priority layer.
+const SCOUT_DEFAULT_BUNDLE: ScoutFlagBundle = "max-pro";
 
 function scoutSiteBundleLayer(): FeatureFlagLayerInput<ScoutAudienceTier> {
   const bundle = scoutFlagBundleFromValue(readScoutBootstrapFlagBundle()) ?? SCOUT_DEFAULT_BUNDLE;

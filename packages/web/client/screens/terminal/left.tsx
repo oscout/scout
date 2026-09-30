@@ -1,14 +1,9 @@
 import {
-  Activity,
   ChevronRight,
-  Clock,
   Eye,
-  Folder,
-  Layers,
   LogIn,
   Power,
   RefreshCw,
-  Terminal as TerminalIcon,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { usePersistentState } from "@hudsonkit";
@@ -20,40 +15,66 @@ import {
   terminalSurfaceIdsEqual,
 } from "../../lib/terminal-sessions.ts";
 import type { TerminalSessionRecord } from "@openscout/protocol";
+import { HarnessMark } from "../../components/HarnessMark.tsx";
+import { HerdrMark } from "../../components/HerdrMark.tsx";
+import { fetchHerdrTopology } from "../../lib/herdr-topology.ts";
+import { timeAgo } from "../../lib/time.ts";
 import { isEditableTarget, rovingTabIndex, useListArrowNav } from "../../lib/keyboard-nav.ts";
 import { useScout } from "../../scout/Provider.tsx";
-import { agentStateLabel } from "../../lib/agent-state.ts";
+import { agentStateLabel, isAgentInTurn } from "../../lib/agent-state.ts";
 import { controlTerminalSurface, resolveAgentTerminalSurface } from "../../lib/terminal-relay.ts";
 import type { Agent } from "../../lib/types.ts";
-import { sortTerminalSessionItems, terminalSessionLifecycle } from "./session-table.ts";
+import {
+  sortTerminalSessionItems,
+  terminalSessionActivityAt,
+  terminalSessionLifecycle,
+} from "./session-table.ts";
 import {
   groupTerminalNavItems,
+  isStoppedHostItem,
+  normalizeTerminalNavMode,
+  projectLabel,
   TERMINAL_NAV_MODES,
   type TerminalNavMode,
+  type TerminalNavSection,
 } from "./terminal-nav-model.ts";
+import {
+  markedHarness,
+  summarizeHerdrTopology,
+  terminalNavRow,
+  type TerminalNavHerdrSummary,
+  type TerminalNavRowModel,
+} from "./terminal-nav-row.ts";
 import "../../scout/slots/ctx-panel.css";
 import "../../scout/slots/terminal-left-panel.css";
 
 const TERMINAL_NAV_REFRESH_MS = 8_000;
 type TerminalNavSort = "recent" | "name";
-
-const TERMINAL_NAV_SORTS: ReadonlyArray<{ id: TerminalNavSort; label: string }> = [
-  { id: "recent", label: "Recent" },
-  { id: "name", label: "A–Z" },
-];
+type TerminalListItemRow = ReturnType<typeof terminalListItems>[number];
 
 /**
- * The rail is a navigator, not a single list: the same targets can be cut by
- * fleet intentionality, by project, by recency, or by attention state. The
- * mode switcher picks the axis; search and sort apply inside whatever grouping
- * the axis produces.
+ * Every row's mark sits in one 34px tile (see terminal-left-panel.css) so the
+ * column lines up; what changes is the glyph inside. herdr fills its tile,
+ * which is what sets a layout apart from a single agent.
  */
-const TERMINAL_NAV_MODE_ICONS: Record<TerminalNavMode, typeof Layers> = {
-  fleet: Layers,
-  places: Folder,
-  time: Clock,
-  attention: Activity,
-};
+const TERMINAL_NAV_GLYPH = 18;
+const TERMINAL_NAV_HERDR_GLYPH = 26;
+const TERMINAL_NAV_CHIP_GLYPH = 13;
+/**
+ * A herdr layout's harnesses: a small overlapped pile, each with its pane
+ * count badged on. 12px is half the logos' 24-unit grid, so on a 2x screen
+ * every unit is one device pixel; centred in an 18px disc it sits on whole
+ * pixels too. The outline keeps hairline details solid at this size.
+ */
+const TERMINAL_NAV_PANE_GLYPH = 12;
+const TERMINAL_NAV_PANE_OUTLINE = 0.35;
+
+/**
+ * The rail is an index with two cuts of the same terminals: Projects and
+ * Recent. A row says what is in a terminal (who is working, what they last
+ * did, which harnesses a herdr layout holds) rather than how it is hosted,
+ * and stopped herdr layouts fold to one line per group.
+ */
 
 export function TerminalLeft() {
   const { route, navigate, agents } = useScout();
@@ -62,8 +83,11 @@ export function TerminalLeft() {
     | { state: "ready"; sessions: TerminalSessionRecord[] }
     | { state: "failed"; sessions: TerminalSessionRecord[]; error: string }
   >({ state: "loading", sessions: [] });
-  const [sort, setSort] = useState<TerminalNavSort>("recent");
-  const [navMode, setNavMode] = usePersistentState<TerminalNavMode>("terminal-nav-mode", "fleet");
+  const sort: TerminalNavSort = "recent";
+  const [storedNavMode, setNavMode] = usePersistentState<string>("terminal-nav-mode", "projects");
+  const navMode: TerminalNavMode = normalizeTerminalNavMode(storedNavMode);
+  const [herdrSummaries, setHerdrSummaries] = useState<ReadonlyMap<string, TerminalNavHerdrSummary>>(new Map());
+  const [expandedStopped, setExpandedStopped] = useState<ReadonlySet<string>>(new Set());
   const [inactiveExpanded, setInactiveExpanded] = useState(false);
   const [releasingItemId, setReleasingItemId] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
@@ -162,8 +186,59 @@ export function TerminalLeft() {
     }),
     [agents, allItems, sort],
   );
+  // A running herdr session's record carries no folder and no agents; its
+  // topology does. Read it for live sessions only, on the rail's own cadence.
+  const liveHerdrNames = useMemo(
+    () => items
+      .filter((item) => item.surface.backend === "herdr" && !isStoppedHostItem(item))
+      .map((item) => item.surface.sessionName)
+      .sort()
+      .join("\n"),
+    [items],
+  );
+  useEffect(() => {
+    const names = liveHerdrNames ? liveHerdrNames.split("\n") : [];
+    if (names.length === 0) {
+      setHerdrSummaries(new Map());
+      return;
+    }
+    let cancelled = false;
+    void Promise.all(names.map(async (name) => {
+      const summary = await fetchHerdrTopology(name).then(summarizeHerdrTopology).catch(() => null);
+      return [name, summary] as const;
+    })).then((entries) => {
+      if (cancelled) return;
+      const next = new Map<string, TerminalNavHerdrSummary>();
+      for (const [name, summary] of entries) if (summary) next.set(name, summary);
+      setHerdrSummaries(next);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [liveHerdrNames, state.sessions]);
+  const rowModels = useMemo(() => {
+    const models = new Map<string, TerminalNavRowModel>();
+    for (const item of items) {
+      const owner = agents.find((agent) => {
+        const surface = resolveAgentTerminalSurface(agent);
+        return surface != null
+          && surface.backend === item.surface.backend
+          && surface.sessionName === item.surface.sessionName;
+      }) ?? null;
+      const herdr = item.surface.backend === "herdr"
+        ? herdrSummaries.get(item.surface.sessionName) ?? null
+        : null;
+      models.set(item.id, terminalNavRow(item, owner, herdr));
+    }
+    return models;
+  }, [agents, herdrSummaries, items]);
   const currentItems = items.filter((item) => terminalSessionLifecycle(item) === "current");
-  const navSections = groupTerminalNavItems(currentItems, navMode);
+  const navSections = groupTerminalNavItems(currentItems, navMode, {
+    isWorking: (item) => rowModels.get(item.id)?.working ?? false,
+    projectOf: (item) => item.surface.backend === "herdr"
+      ? herdrSummaries.get(item.surface.sessionName)?.project ?? null
+      : null,
+  });
   const inactiveItems = items.filter((item) => terminalSessionLifecycle(item) === "inactive");
   const reviewItems = items.filter((item) => terminalSessionLifecycle(item) === "review");
   const inactiveCount = inactiveItems.length + reviewItems.length;
@@ -181,10 +256,13 @@ export function TerminalLeft() {
     || (showInactive && [...inactiveItems, ...reviewItems].some(isActiveTerminalItem))
     || (activeAgentKey != null && visibleAgents.some((agent) => `agent:${agent.id}` === activeAgentKey)),
   );
-  const firstRowId = currentItems[0]?.id
+  const firstRowId = navSections.find((section) => section.items.length > 0)?.items[0]?.id
     ?? (showInactive ? inactiveItems[0]?.id ?? reviewItems[0]?.id : undefined)
     ?? (visibleAgents[0] ? `agent:${visibleAgents[0].id}` : undefined);
-  const summary = state.state === "loading" ? "Syncing" : `${items.length + agentTargets.length} targets`;
+  const stoppedCount = currentItems.filter(isStoppedHostItem).length;
+  const summary = state.state === "loading" && items.length === 0
+    ? "Syncing"
+    : `${currentItems.length - stoppedCount} running${stoppedCount > 0 ? ` · ${stoppedCount} stopped` : ""}`;
   const terminalRouteFor = (
     item: ReturnType<typeof terminalListItems>[number],
     mode?: "takeover" | "observe",
@@ -220,14 +298,18 @@ export function TerminalLeft() {
       setReleasingItemId(null);
     }
   };
-  const renderTerminalItem = (item: ReturnType<typeof terminalListItems>[number]) => {
+  const renderTerminalItem = (item: TerminalListItemRow, options: { withProject?: boolean } = {}) => {
     const active = isActiveTerminalItem(item);
     const lifecycle = terminalSessionLifecycle(item);
     const releasing = releasingItemId === item.id;
+    const row = rowModels.get(item.id) ?? terminalNavRow(item, null, null);
+    const activityAt = terminalSessionActivityAt(item);
+    const when = row.working ? "now" : activityAt !== null ? timeAgo(activityAt) : "";
+    const place = row.panes?.project ?? projectLabel(item);
     return (
       <div
         key={item.id}
-        className={`terminal-nav-row${active ? " terminal-nav-row--active" : ""}${lifecycle === "review" ? " terminal-nav-row--review" : ""}`}
+        className={`terminal-nav-row${active ? " terminal-nav-row--active" : ""}${lifecycle === "review" ? " terminal-nav-row--review" : ""}${row.panes ? " terminal-nav-row--layout" : ""}`}
         title={item.surface.sessionName}
       >
         <button
@@ -237,16 +319,50 @@ export function TerminalLeft() {
           tabIndex={rovingTabIndex(active, hasAnyActive, item.id === firstRowId)}
           onClick={() => navigate(terminalRouteFor(item))}
         >
-          <TerminalIcon className="terminal-nav-row-icon" size={14} strokeWidth={1.7} />
-          <span className="terminal-nav-row-main">
-            <span className="terminal-nav-row-title"><span>{item.title}</span></span>
-            <span className="terminal-nav-row-detail">{item.detail || item.session.sourceSessionId}</span>
+          <span className="terminal-nav-mark" data-kind={row.mark.kind}>
+            {row.mark.kind === "herdr" ? (
+              <HerdrMark size={TERMINAL_NAV_HERDR_GLYPH} title={null} />
+            ) : row.mark.kind === "harness" ? (
+              <HarnessMark harness={row.mark.harness} size={TERMINAL_NAV_GLYPH} title={null} />
+            ) : (
+              <span className="terminal-nav-mark-shell">&gt;_</span>
+            )}
+            {row.working && <span className="terminal-nav-mark-working" aria-label="working" />}
           </span>
-          <span className="terminal-nav-badges">
-            <span className="terminal-nav-badge terminal-nav-badge--backend">{item.surface.backend}</span>
-            <span className={`terminal-nav-badge${lifecycle === "review" ? " terminal-nav-badge--review" : ""}`}>
-              {lifecycle === "current" ? item.condition : lifecycle}
+          <span className="terminal-nav-row-main">
+            <span className="terminal-nav-row-title">
+              <span className="terminal-nav-row-name">{row.title}</span>
+              {row.panes && row.panes.paneCount > 0 && (
+                <span className="terminal-nav-panes">
+                  {row.panes.panes.map((group) => (
+                    <span
+                      key={group.harness}
+                      className={`terminal-nav-pane-chip${group.working > 0 ? " terminal-nav-pane-chip--working" : ""}`}
+                      title={`${group.count} ${group.harness}${group.working > 0 ? `, ${group.working} working` : ""}`}
+                    >
+                      <HarnessMark harness={group.harness} size={TERMINAL_NAV_PANE_GLYPH} outline={TERMINAL_NAV_PANE_OUTLINE} title={null} />
+                      {group.count > 1 ? (
+                        <span className="terminal-nav-pane-count">{group.count}</span>
+                      ) : group.working > 0 ? (
+                        <span className="terminal-nav-pane-count terminal-nav-pane-count--dot" />
+                      ) : null}
+                    </span>
+                  ))}
+                </span>
+              )}
             </span>
+            <span className="terminal-nav-row-detail">
+              {[
+                row.handle,
+                options.withProject ? place : null,
+                row.panes && row.panes.paneCount > 0
+                  ? `${row.panes.paneCount} ${row.panes.paneCount === 1 ? "pane" : "panes"}${row.panes.working > 0 ? ` · ${row.panes.working} working` : ""}`
+                  : null,
+              ].filter(Boolean).join(" · ")}
+            </span>
+          </span>
+          <span className="terminal-nav-row-when">
+            {lifecycle === "review" ? <span className="terminal-nav-badge terminal-nav-badge--review">review</span> : when}
           </span>
         </button>
         <div className="terminal-nav-row-actions">
@@ -288,6 +404,53 @@ export function TerminalLeft() {
     );
   };
 
+  const renderStoppedFold = (section: TerminalNavSection) => {
+    if (section.stopped.length === 0) return null;
+    const expanded = expandedStopped.has(section.key);
+    const names = section.stopped.map((item) => item.surface.sessionName).join(" · ");
+    return (
+      <>
+        <button
+          type="button"
+          className="terminal-nav-stopped"
+          aria-expanded={expanded}
+          title={`Stopped herdr layouts: ${names}`}
+          onClick={() => setExpandedStopped((current) => {
+            const next = new Set(current);
+            if (next.has(section.key)) next.delete(section.key);
+            else next.add(section.key);
+            return next;
+          })}
+        >
+          <span className="terminal-nav-stopped-mark"><HerdrMark size={TERMINAL_NAV_GLYPH} title={null} /></span>
+          <span className="terminal-nav-stopped-count">
+            {section.stopped.length} stopped {section.stopped.length === 1 ? "layout" : "layouts"}
+          </span>
+          <ChevronRight size={12} strokeWidth={1.8} className="terminal-nav-stopped-chevron" />
+          {!expanded && <span className="terminal-nav-stopped-names">{names}</span>}
+        </button>
+        {expanded && section.stopped.map((item) => renderTerminalItem(item, { withProject: navMode === "recent" }))}
+      </>
+    );
+  };
+  const renderSection = (section: TerminalNavSection) => {
+    if (section.items.length === 0 && section.stopped.length === 0) return null;
+    const when = section.working
+      ? "now"
+      : section.latestActivity !== null ? timeAgo(section.latestActivity) : "";
+    return (
+      <div className="terminal-nav-section" key={section.key}>
+        <div className={`terminal-nav-section-title${section.working ? " terminal-nav-section-title--working" : ""}`}>
+          <span>{section.label}</span>
+          {navMode === "projects" && when && <span className="terminal-nav-section-when">{when}</span>}
+          <span>{section.items.length || ""}</span>
+        </div>
+        {section.items.map((item) => renderTerminalItem(item, { withProject: navMode === "recent" }))}
+        {renderStoppedFold(section)}
+      </div>
+    );
+  };
+
   return (
     <div className="ctx-panel terminal-nav">
       <div className="terminal-nav-head">
@@ -306,39 +469,20 @@ export function TerminalLeft() {
           <RefreshCw size={14} strokeWidth={1.8} />
         </button>
       </div>
-      <div className="terminal-nav-modes" role="group" aria-label="Group terminals">
-        {TERMINAL_NAV_MODES.map((mode) => {
-          const ModeIcon = TERMINAL_NAV_MODE_ICONS[mode.id];
-          return (
-            <button
-              key={mode.id}
-              type="button"
-              title={mode.title}
-              aria-label={mode.title}
-              aria-pressed={navMode === mode.id}
-              className={`terminal-nav-mode${navMode === mode.id ? " terminal-nav-mode--active" : ""}`}
-              onClick={() => setNavMode(mode.id)}
-            >
-              <ModeIcon size={13} strokeWidth={1.8} />
-            </button>
-          );
-        })}
-      </div>
-      <div className="ctx-panel-toolbar terminal-nav-toolbar">
-        <div className="ctx-panel-sort" role="group" aria-label="Sort terminals">
-          {TERMINAL_NAV_SORTS.map((option) => (
-            <button
-              key={option.id}
-              type="button"
-              title={option.id === "recent" ? "Sort by most recent" : "Sort alphabetically"}
-              aria-pressed={sort === option.id}
-              className={`ctx-panel-sort-option${sort === option.id ? " ctx-panel-sort-option--active" : ""}`}
-              onClick={() => setSort(option.id)}
-            >
-              {option.label}
-            </button>
-          ))}
-        </div>
+      <div className="terminal-nav-modes" role="tablist" aria-label="Index terminals by">
+        {TERMINAL_NAV_MODES.map((mode) => (
+          <button
+            key={mode.id}
+            type="button"
+            role="tab"
+            title={mode.title}
+            aria-selected={navMode === mode.id}
+            className={`terminal-nav-mode${navMode === mode.id ? " terminal-nav-mode--active" : ""}`}
+            onClick={() => setNavMode(mode.id)}
+          >
+            {mode.label}
+          </button>
+        ))}
       </div>
       {state.state === "failed" && (
         <div className="terminal-nav-error">{state.error}</div>
@@ -353,18 +497,7 @@ export function TerminalLeft() {
           <div className="ctx-panel-empty">No terminal targets</div>
         ) : (
           <>
-            {navSections.map((section) => {
-              if (section.items.length === 0) return null;
-              return (
-                <div className="terminal-nav-section" key={section.key}>
-                  <div className="terminal-nav-section-title">
-                    <span>{section.label}</span>
-                    <span>{section.items.length}</span>
-                  </div>
-                  {section.items.map((item) => renderTerminalItem(item))}
-                </div>
-              );
-            })}
+            {navSections.map((section) => renderSection(section))}
             {currentItems.length === 0 && state.state !== "loading" && (
               <div className="terminal-nav-empty">No sessions</div>
             )}
@@ -419,7 +552,14 @@ export function TerminalLeft() {
                       tabIndex={rovingTabIndex(active, hasAnyActive, key === firstRowId)}
                       onClick={() => navigate(terminalRouteForAgent(agent))}
                     >
-                      <span className={`terminal-nav-agent-dot${terminalSurface ? " terminal-nav-agent-dot--bound" : ""}`} aria-hidden />
+                      {markedHarness(agent.harness) ? (
+                        <span className="terminal-nav-mark" data-kind="harness">
+                          <HarnessMark harness={markedHarness(agent.harness)!} size={TERMINAL_NAV_GLYPH} title={null} />
+                          {isAgentInTurn(agent.state, agent) && <span className="terminal-nav-mark-working" aria-label="working" />}
+                        </span>
+                      ) : (
+                        <span className={`terminal-nav-agent-dot${terminalSurface ? " terminal-nav-agent-dot--bound" : ""}`} aria-hidden />
+                      )}
                       <span className="terminal-nav-row-main">
                         <span className="terminal-nav-row-title">
                           <span>{agent.name}</span>

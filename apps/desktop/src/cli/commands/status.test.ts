@@ -1,7 +1,20 @@
-import { expect, test } from "bun:test";
+import { afterAll, expect, test } from "bun:test";
 import { createRuntimeRegistrySnapshot } from "@openscout/runtime/registry";
-import { buildWorkStatuses, parseStatusCommandOptions, selectWorkStatuses } from "./status.ts";
+import { buildWorkStatuses, parseStatusCommandOptions, runStatusCommand, selectWorkStatuses } from "./status.ts";
 import { shouldEnsureBrokerUptodateForCommand } from "../uptodate.ts";
+import { createScoutCommandContext } from "../context.ts";
+
+const originalBrokerUrl = process.env.OPENSCOUT_BROKER_URL;
+const originalSocketPath = process.env.OPENSCOUT_BROKER_SOCKET_PATH;
+const originalFetch = globalThis.fetch;
+
+afterAll(() => {
+  if (originalBrokerUrl === undefined) delete process.env.OPENSCOUT_BROKER_URL;
+  else process.env.OPENSCOUT_BROKER_URL = originalBrokerUrl;
+  if (originalSocketPath === undefined) delete process.env.OPENSCOUT_BROKER_SOCKET_PATH;
+  else process.env.OPENSCOUT_BROKER_SOCKET_PATH = originalSocketPath;
+  globalThis.fetch = originalFetch;
+});
 
 test("status cannot restart the broker and rejects ambiguous filter syntax", () => {
   expect(shouldEnsureBrokerUptodateForCommand("status")).toBe(false);
@@ -43,6 +56,42 @@ test("exact and reference handles resolve and ambiguous bindings fail closed", (
   expect(() => selectWorkStatuses([...rows, { ...rows[0]!, id: "another" }], parseStatusCommandOptions(["ref:binding"]))).toThrow("ambiguous");
 });
 
+test("a /v1/snapshot read failure reports the endpoint and unknown work status", async () => {
+  process.env.OPENSCOUT_BROKER_URL = "http://broker.test";
+  process.env.OPENSCOUT_BROKER_SOCKET_PATH = "/nonexistent/openscout-status-test.sock";
+  const requested: string[] = [];
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const request = input instanceof Request ? input : new Request(input, init);
+    const url = new URL(request.url);
+    requested.push(`${request.method} ${url.pathname}`);
+    if (url.pathname === "/v1/snapshot") {
+      return new Response(JSON.stringify({ error: "snapshot exploded" }), {
+        status: 500,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    return new Response(JSON.stringify({ error: "not found" }), {
+      status: 404,
+      headers: { "content-type": "application/json" },
+    });
+  }) as unknown as typeof fetch;
+  const context = createScoutCommandContext({
+    cwd: "/tmp/openscout-test",
+    env: {},
+    stdout: () => undefined,
+    stderr: () => undefined,
+    isTty: false,
+  });
+
+  await expect(runStatusCommand(context, ["--all"]))
+    .rejects
+    .toThrow("/v1/snapshot read failed");
+  await expect(runStatusCommand(context, ["--all"]))
+    .rejects
+    .toThrow("work status is unknown");
+  expect(requested).toContain("GET /v1/snapshot");
+});
+
 test("operator question resolves only on an exact operator reply, never an unrelated message", () => {
   const snapshot = createRuntimeRegistrySnapshot();
   snapshot.messages.question = { id: "question", conversationId: "dm", actorId: "child", originNodeId: "node", class: "agent", body: "Which target should I use?", visibility: "private", policy: "durable", createdAt: 1, metadata: { operatorSignal: { kind: "need", question: "Which target should I use?" } } };
@@ -52,4 +101,17 @@ test("operator question resolves only on an exact operator reply, never an unrel
   expect(buildWorkStatuses(snapshot)[0]?.state).toBe("answered");
   snapshot.messages.reply.actorId = "another-agent";
   expect(buildWorkStatuses(snapshot)[0]?.blocked).toBe(true);
+});
+
+test("plain status provides orientation without reading the broker", async () => {
+  const savedFetch = globalThis.fetch;
+  globalThis.fetch = (() => { throw new Error("orientation must not read broker"); }) as unknown as typeof fetch;
+  try {
+    const lines: string[] = [];
+    await runStatusCommand(createScoutCommandContext({ stdout: line => lines.push(line) }), []);
+    expect(lines.join("\n")).toContain("Health has not been checked");
+    expect(lines.join("\n")).toContain("scout status <handle>");
+    expect(parseStatusCommandOptions([]).overview).toBe(true);
+    expect(parseStatusCommandOptions(["--help"]).help).toBe(true);
+  } finally { globalThis.fetch = savedFetch; }
 });

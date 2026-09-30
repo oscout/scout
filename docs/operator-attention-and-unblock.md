@@ -86,8 +86,9 @@ current handback.
 Implemented now:
 
 - Runtime session attention projection exists in `packages/runtime/src/session-attention.ts`.
-- Protocol and runtime support broker-owned durable `unblock_request` records
-  and unblock request events.
+- Broker-owned durable `unblock_request` records and events remain a planned
+  integration boundary. The current protocol/runtime source does not expose
+  that lifecycle; MCP feed schemas mentioning the kind are not an implementation.
 - Mobile bridge inbox now uses session attention instead of approvals only.
 - Bridge websocket now emits `operator:notify` for any projected session attention item.
 - APNs alert routing now sends inbox alerts for any projected item.
@@ -101,7 +102,9 @@ Implemented now:
   flight, and the broker can fan out a generic APNs alert without putting agent
   content in the push payload. The relay preserves opaque conversation/message
   correlation and keeps these non-blocking alerts quiet.
-- Web operator attention reads active broker unblock requests.
+- Web operator attention reads pairing-session approvals and collaboration
+  attention. It must not be described as reading durable broker unblock requests
+  until that record lifecycle exists.
 - Managed Claude sessions rely on host or companion permission capture; Scout
   does not install Claude project hooks.
 - Active managed Claude tmux sessions project a currently visible permission

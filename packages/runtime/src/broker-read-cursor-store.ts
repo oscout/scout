@@ -1,3 +1,4 @@
+import { applyChatAttentionPreferenceChange, type ChatAttentionPreferences } from "@openscout/protocol";
 import { readRuntimeMessage } from "./broker-message-records.js";
 import { selectMessageRecordsAsync } from "./broker-message-records.js";
 import type {
@@ -122,18 +123,16 @@ export class BrokerReadCursorStore {
 
     const current = this.options.runtime.readCursor(conversationId, actorId);
     if (current) {
-      const currentRank = await this.cursorProgressRank(current);
-      const nextRank = await this.cursorProgressRank({ lastReadSeq, lastReadMessageId });
-      if (
-        currentRank !== undefined
-        && (nextRank === undefined || nextRank < currentRank)
-      ) {
+      if (await this.isBehind({ lastReadSeq, lastReadMessageId }, current)) {
         lastReadMessageId = current.lastReadMessageId;
         lastReadSeq = current.lastReadSeq;
         lastReadAt = current.lastReadAt;
       }
     }
 
+    const boundary = lastReadMessageId === lastReadMessage?.id
+      ? lastReadMessage
+      : lastReadMessageId ? await readRuntimeMessage(this.options.runtime, lastReadMessageId) : undefined;
     return {
       conversationId,
       actorId,
@@ -142,18 +141,54 @@ export class BrokerReadCursorStore {
       lastReadSeq,
       lastReadAt,
       updatedAt: Date.now(),
-      metadata: input.metadata,
+      metadata: {
+        ...current?.metadata,
+        ...input.metadata,
+        // Canonical message position survives paging; callers cannot supply it.
+        scoutReadBoundary: boundary ? { id: boundary.id, createdAt: boundary.createdAt } : null,
+      },
     };
   };
 
   readonly record = async (cursor: ConversationReadCursor): Promise<void> => {
     await this.options.durableStore.runWrite(async () => {
+      // Resolution happens before the write queue. Another device can advance
+      // the cursor in between; re-check inside the canonical writer's lock.
+      const current = this.options.runtime.readCursor(cursor.conversationId, cursor.actorId);
+      if (current && await this.isBehind(cursor, current)) return;
+      // A preference write may have happened after read-position resolution.
+      // Read acknowledgements never own or replace personal attention settings.
+      if (current?.metadata?.chatAttention !== undefined) {
+        cursor = { ...cursor, metadata: { ...cursor.metadata, chatAttention: current.metadata.chatAttention } };
+      }
       await this.options.durableStore.commitEntries(
         { kind: "conversation.read_cursor.upsert", cursor },
         async () => {
           await this.options.runtime.upsertReadCursor(cursor);
         },
       );
+    });
+  };
+
+  readonly updatePreferences = async (
+    conversationId: string, actorId: string, change: unknown,
+  ): Promise<ChatAttentionPreferences> => {
+    if (!actorId.trim() || !this.options.runtime.conversation(conversationId)) throw new Error("Conversation and actor are required.");
+    // Validate the request before creating any identity or durable record.
+    applyChatAttentionPreferenceChange(undefined, change);
+    await this.options.ensureActor(actorId);
+    return this.options.durableStore.runWrite(async () => {
+      const current = this.options.runtime.readCursor(conversationId, actorId);
+      const preferences = applyChatAttentionPreferenceChange(current?.metadata?.chatAttention, change);
+      const cursor: ConversationReadCursor = {
+        ...(current ?? { conversationId, actorId, lastReadAt: 0 }),
+        updatedAt: Date.now(), metadata: { ...current?.metadata, chatAttention: preferences },
+      };
+      await this.options.durableStore.commitEntries(
+        { kind: "conversation.read_cursor.upsert", cursor },
+        async () => { await this.options.runtime.upsertReadCursor(cursor); },
+      );
+      return preferences;
     });
   };
 
@@ -212,5 +247,23 @@ export class BrokerReadCursorStore {
       return cursor.lastReadSeq;
     }
     return this.messageCreatedAt(cursor.lastReadMessageId);
+  }
+
+  private async isBehind(next: { lastReadSeq?: number; lastReadMessageId?: string }, current: { lastReadSeq?: number; lastReadMessageId?: string }): Promise<boolean> {
+    if (Number.isFinite(next.lastReadSeq) && Number.isFinite(current.lastReadSeq)) {
+      return next.lastReadSeq! < current.lastReadSeq!;
+    }
+    if (next.lastReadMessageId && current.lastReadMessageId) {
+      const [nextMessage, currentMessage] = await Promise.all([
+        readRuntimeMessage(this.options.runtime, next.lastReadMessageId),
+        readRuntimeMessage(this.options.runtime, current.lastReadMessageId),
+      ]);
+      if (nextMessage && currentMessage) {
+        return nextMessage.createdAt < currentMessage.createdAt
+          || (nextMessage.createdAt === currentMessage.createdAt && nextMessage.id < currentMessage.id);
+      }
+    }
+    const [nextRank, currentRank] = await Promise.all([this.cursorProgressRank(next), this.cursorProgressRank(current)]);
+    return currentRank !== undefined && (nextRank === undefined || nextRank < currentRank);
   }
 }

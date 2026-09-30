@@ -2380,7 +2380,7 @@
 .pi-zeroInputRow textarea::placeholder { color: var(--pi-dim); }
 .pi-zeroInputRow textarea:focus,
 .pi-zeroSelect:focus-within {
-  border-color: color-mix(in srgb, var(--pi-accent) 45%, var(--pi-hairline));
+  border-color: var(--field-focus);
 }
 .pi-zeroSend {
   height: 38px;

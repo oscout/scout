@@ -28,6 +28,18 @@ export interface ObservedStatusProjectionOptions {
    * Passing a log makes the call stateful — it records the observation.
    */
   transitions?: ActivityTransitionLog;
+  /**
+   * Project only what was actually observed; for the presence map, and read
+   * by the plural projection only.
+   *
+   * By default an endpoint with no timestamp of its own reads as seen `now`,
+   * and an agent with no evidence at all as registered-and-seen `now`, so every
+   * agent gets a status. Presence cannot use that: a fabricated `now` never
+   * decays, and it kept every agent ever registered (thousands) in the live
+   * map. Here such endpoints are skipped and evidence-free agents omitted;
+   * they stay findable through the registry, not presence.
+   */
+  evidenceOnly?: boolean;
 }
 
 /**
@@ -65,8 +77,8 @@ export function projectObservedStatusForAgent(
     endpoints,
     latestFlightForAgent(snapshot, agentId),
     latestCollaborationForAgent(snapshot, agentId),
-    options,
-  );
+    { ...options, evidenceOnly: false },
+  )!;
 }
 
 function projectObservedStatusForAgentFromRecords(
@@ -76,11 +88,12 @@ function projectObservedStatusForAgentFromRecords(
   latestFlight: FlightRecord | null,
   latestCollaboration: CollaborationRecord | null,
   options: ObservedStatusProjectionOptions,
-): ObservedStatusProjection {
+): ObservedStatusProjection | null {
   const now = options.now ?? Date.now();
   const candidates: StatusCandidate[] = [];
 
   for (const endpoint of endpoints) {
+    if (options.evidenceOnly && endpointTimestamp(endpoint) === null) continue;
     candidates.push(projectEndpointStatus(endpoint, now, options));
   }
 
@@ -94,6 +107,7 @@ function projectObservedStatusForAgentFromRecords(
   }
 
   if (candidates.length === 0) {
+    if (options.evidenceOnly) return null;
     return withTransitionAt(stripRank({
       subjectKind: "agent",
       subjectId: agentId,
@@ -216,14 +230,14 @@ export function projectObservedStatusesFromRuntimeSnapshot(
 
   return [...agentIds]
     .sort()
-    .map((agentId) => projectObservedStatusForAgentFromRecords(
+    .flatMap((agentId) => projectObservedStatusForAgentFromRecords(
       snapshot,
       agentId,
       endpointsByAgent.get(agentId) ?? [],
       latestFlightByAgent.get(agentId) ?? null,
       latestCollaborationByAgent.get(agentId) ?? null,
       options,
-    ));
+    ) ?? []);
 }
 
 function keepLatestCollaboration(

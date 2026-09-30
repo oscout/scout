@@ -1,20 +1,39 @@
+import { classifySendInteraction } from "../../core/broker/send-interaction.ts";
+
 import type { ScoutCommandContext } from "../context.ts";
 import { defaultScoutContextDirectory } from "../context.ts";
+import { ScoutCliError } from "../errors.ts";
 import { resolveMessageBody } from "../input-file.ts";
-import { parseSendCommandOptions } from "../options.ts";
 import {
+  parseSendCommandOptions,
+  type ScoutSendCommandOptions,
+  type ScoutTellCommandOptions,
+} from "../options.ts";
+import { scoutAskHandler } from "../../core/broker/ask.ts";
+import type { ScoutAskReceipt } from "../../core/broker/ask-types.ts";
+import {
+  loadScoutInvocationSnapshot,
   parseScoutHarness,
+  resolveScoutBrokerUrl,
   resolveScoutSenderId,
   sendScoutMessage,
+  waitForScoutInvocation,
+  type ScoutFlightRecord,
+  type ScoutInvocationSnapshot,
   type ScoutMessagePostResult,
 } from "../../core/broker/service.ts";
 import { renderScoutMessagePostResult } from "../../ui/terminal/broker.ts";
+import {
+  formatScoutAskReceiptError,
+  loadInitialScoutAskFlight,
+} from "./ask.ts";
 
 const HELP_FLAGS = new Set(["--help", "-h"]);
+const DEFAULT_SEND_WAIT_TIMEOUT_SECONDS = 600;
 
 export function renderSendCommandHelp(): string {
   return [
-    "Usage: scout send [--as <sender>] [--to <agent> | --ref <ref>] [--alias-project <path>] [--alias-host <node>] [--channel <name>] [--speak] [--wake] [--harness <runtime>] [--message-file <path> | <message>]",
+    "Usage: scout send [--as <sender>] [--to <agent> | --ref <ref>] [--alias-project <path>] [--alias-host <node>] [--channel <name>] [--tracked [--no-notifs | --wait [--timeout <seconds>]]] [--speak] [--wake] [--harness <runtime>] [--message-file <path> | <message>]",
     "",
     "Tell or update another agent or an explicit channel.",
     "",
@@ -30,8 +49,18 @@ export function renderSendCommandHelp(): string {
     "Use send only when no reply, judgment, investigation, or owned work is expected.",
     "Use `scout ask` when the meaning is \"do this and get back to me.\" When in doubt, use ask.",
     "For asynchronous work, do not downgrade an ask to send: use `scout ask --notify` so Scout returns now and reports completion later.",
+    "`scout tell` is the explicit FYI spelling of a plain send; it never creates work and rejects --wake/--tracked.",
     "Targeted DMs dispatch automatically when the broker can reach the agent.",
     "Add --wake only when you need to force an explicit wake turn or runtime harness.",
+    "",
+    "Tracked (opt-in):",
+    "  --tracked                          -> directed --to only: create tracked work on the ask invocation",
+    "                                        lifecycle (same as `scout ask --notify`); returns with durable",
+    "                                        handles and reports completion back to you",
+    "  --tracked --no-notifs              -> tracked, result retained; no completion callback (ask --reply-mode none)",
+    "  --tracked --wait [--timeout <s>]   -> tracked; wait for the result within a bounded budget (default 600s)",
+    "  channels, --ref replies, broadcasts, and [ask:<id>] completion bodies never become tracked work;",
+    "  --tracked on them fails closed.",
     "",
     "Input:",
     "  inline message                    -> message body",
@@ -48,11 +77,18 @@ export function renderSendCommandHelp(): string {
     '  scout send --as premotion.master.mini --to hudson "editor branch is green"',
     '  scout send --channel triage "both reviews are complete"',
     '  scout send "@hudson build passed"  # legacy body-mention shorthand',
+    '  scout tell --to hudson "branch pushed"  # same FYI, explicit verb',
+    '  scout send --tracked --to hudson "run the nightly sweep and report back"',
     "",
     "For work instead:",
     '  scout ask --to hudson --notify "apply the chrome feedback and report back"',
   ].join("\n");
 }
+
+export {
+  classifySendInteraction,
+  type ScoutSendInteraction,
+} from "../../core/broker/send-interaction.ts";
 
 function renderTargetLabel(label: string): string {
   const trimmed = label.trim();
@@ -122,19 +158,11 @@ function formatScoutRouteChoiceError(
   return "message targets multiple agents without an explicit channel; send separate DMs, use --channel <name> for a group thread, or use scout broadcast for channel.shared.";
 }
 
-export async function runSendCommand(
+export async function runMessageOnlySend(
   context: ScoutCommandContext,
-  args: string[],
+  options: ScoutTellCommandOptions,
+  body: string,
 ): Promise<void> {
-  if (args.some((arg) => HELP_FLAGS.has(arg))) {
-    context.output.writeText(renderSendCommandHelp());
-    return;
-  }
-
-  const options = parseSendCommandOptions(
-    args,
-    defaultScoutContextDirectory(context),
-  );
   const currentDirectory =
     options.currentDirectory ?? defaultScoutContextDirectory(context);
   const senderId = await resolveScoutSenderId(
@@ -142,7 +170,6 @@ export async function runSendCommand(
     currentDirectory,
     context.env,
   );
-  const body = await resolveMessageBody(options);
   const result = await sendScoutMessage({
     senderId,
     body,
@@ -183,4 +210,211 @@ export async function runSendCommand(
     },
     renderScoutMessagePostResult,
   );
+}
+
+type ScoutTrackedSendResult = {
+  senderId: string;
+  receipt: ScoutAskReceipt;
+  replyMode: "inline" | "notify" | "none";
+  flight: ScoutFlightRecord | null;
+  waited: boolean;
+  timedOut: boolean;
+  snapshot: ScoutInvocationSnapshot | null;
+  output: string;
+};
+
+export function renderTrackedSendReceipt(value: {
+  senderId: string;
+  receipt: ScoutAskReceipt;
+  replyMode: "inline" | "notify" | "none";
+  flight: ScoutFlightRecord | null;
+}): string {
+  const { ids } = value.receipt;
+  const pieces = [
+    ids.targetAgentId ? `tracked send to ${ids.targetAgentId}` : "tracked send queued",
+    ids.flightId ? `flight ${ids.flightId}` : null,
+    ids.invocationId ? `invocation ${ids.invocationId}` : null,
+    ids.conversationId
+      ? ids.conversationId.startsWith("dm.")
+        ? `DM ${ids.conversationId}`
+        : `conversation ${ids.conversationId}`
+      : null,
+    ids.bindingRef
+      ? ids.bindingRef.startsWith("ref:") ? ids.bindingRef : `ref:${ids.bindingRef}`
+      : null,
+  ].filter((piece): piece is string => Boolean(piece));
+  const dispatch = value.flight ? `Dispatch state: ${value.flight.state}.` : null;
+  const notification = value.replyMode === "notify"
+    ? `Completion will be reported back to ${value.senderId}; a requested callback is not proof of receipt.`
+    : "Completion notifications suppressed; the result stays tracked.";
+  const next = ids.invocationId || ids.flightId
+    ? `Next: scout wait ${ids.invocationId ?? ids.flightId} --timeout ${DEFAULT_SEND_WAIT_TIMEOUT_SECONDS}`
+    : "Follow the receipt handles to continue.";
+  return [
+    `${pieces.join(" · ")}.`,
+    dispatch,
+    notification,
+    next,
+  ].filter((line): line is string => Boolean(line)).join(" ");
+}
+
+function renderTrackedSendWaitedResult(value: ScoutTrackedSendResult): string {
+  const flight = value.snapshot?.flight ?? value.flight;
+  if (flight?.state === "completed") {
+    return flight.output ?? flight.summary ?? "";
+  }
+  const reference = value.receipt.ids.invocationId ?? value.receipt.ids.flightId ?? "";
+  const state = flight?.state ?? "pending";
+  const detail = flight?.error ?? flight?.summary ?? null;
+  return [
+    value.timedOut
+      ? `wait budget elapsed; the tracked send is still ${state}.`
+      : `tracked send is ${state}.`,
+    detail,
+    reference ? `Next: scout wait ${reference} --timeout ${DEFAULT_SEND_WAIT_TIMEOUT_SECONDS}` : null,
+  ].filter((line): line is string => Boolean(line)).join(" ");
+}
+
+async function runTrackedSend(
+  context: ScoutCommandContext,
+  options: ScoutSendCommandOptions,
+  body: string,
+): Promise<void> {
+  const currentDirectory =
+    options.currentDirectory ?? defaultScoutContextDirectory(context);
+  const senderId = await resolveScoutSenderId(
+    options.agentName,
+    currentDirectory,
+    context.env,
+  );
+  const replyMode = options.wait
+    ? options.noNotifs ? "none" : "inline"
+    : options.noNotifs
+      ? "none"
+      : "notify";
+
+  const receipt = await scoutAskHandler({
+    senderId,
+    to: options.targetLabel ?? "",
+    body,
+    harness: parseScoutHarness(options.harness),
+    shouldSpeak: options.shouldSpeak,
+    // Preserve the calling session so the completion notification comes back
+    // to it rather than to the project's home endpoint.
+    replyToSessionId: context.env.OPENSCOUT_SESSION_ID?.trim()
+      || context.env.CODEX_THREAD_ID?.trim()
+      || context.env.OPENSCOUT_CODEX_THREAD_ID?.trim()
+      || context.env.CLAUDE_CODE_SESSION_ID?.trim()
+      || context.env.CLAUDE_SESSION_ID?.trim()
+      || context.env.CLAUDE_CODE_REMOTE_SESSION_ID?.trim()
+      || undefined,
+    replyMode,
+    currentDirectory,
+    source: "scout-send",
+    aliasScope: options.aliasProject || options.aliasHost ? {
+      ...(options.aliasProject ? { projectRoot: options.aliasProject } : {}),
+      ...(options.aliasHost ? { nodeId: options.aliasHost } : {}),
+    } : undefined,
+  });
+
+  if (!receipt.ok || !receipt.ids.flightId) {
+    throw new Error(formatScoutAskReceiptError(receipt, options.targetLabel));
+  }
+
+  context.stderr(
+    `tracked send to ${receipt.ids.targetAgentId ?? options.targetLabel ?? "target"} as ${senderId}... (flight ${receipt.ids.flightId})`,
+  );
+
+  const brokerUrl = resolveScoutBrokerUrl();
+  const flight = await loadInitialScoutAskFlight(brokerUrl, receipt.ids.flightId)
+    .catch(() => null);
+
+  if (!options.wait) {
+    context.output.writeValue(
+      {
+        senderId,
+        receipt,
+        replyMode,
+        flight,
+        waited: false,
+        timedOut: false,
+        snapshot: null,
+        output: renderTrackedSendReceipt({ senderId, receipt, replyMode, flight }),
+      } satisfies ScoutTrackedSendResult,
+      (value) => value.output,
+    );
+    return;
+  }
+
+  const waitReference = receipt.ids.invocationId ?? receipt.ids.flightId;
+  let timedOut = false;
+  let snapshot: ScoutInvocationSnapshot | null = null;
+  try {
+    snapshot = await waitForScoutInvocation(brokerUrl, waitReference, {
+      timeoutSeconds: options.timeoutSeconds ?? DEFAULT_SEND_WAIT_TIMEOUT_SECONDS,
+      onUpdate: (_snapshot, detail) => context.stderr(detail),
+    });
+  } catch (error) {
+    if (
+      error instanceof Error
+      && error.message.includes("Timed out waiting for invocation")
+    ) {
+      timedOut = true;
+      snapshot = await loadScoutInvocationSnapshot(brokerUrl, waitReference)
+        .catch(() => null);
+    } else {
+      throw error;
+    }
+  }
+
+  const result: ScoutTrackedSendResult = {
+    senderId,
+    receipt,
+    replyMode,
+    flight,
+    waited: true,
+    timedOut,
+    snapshot,
+    output: "",
+  };
+  result.output = renderTrackedSendWaitedResult(result);
+  context.output.writeValue(result, (value) => value.output);
+}
+
+export async function runSendCommand(
+  context: ScoutCommandContext,
+  args: string[],
+): Promise<void> {
+  if (args.some((arg) => HELP_FLAGS.has(arg))) {
+    context.output.writeText(renderSendCommandHelp());
+    return;
+  }
+
+  const options = parseSendCommandOptions(
+    args,
+    defaultScoutContextDirectory(context),
+  );
+  const body = await resolveMessageBody(options);
+
+  // Main's contract: a plain send is a message (FYI/update). Tracked work is
+  // opt-in via --tracked, and only for a directed single-target send; every
+  // reply-shaped or group-shaped route stays message-only so completion
+  // replies can never recursively launch work.
+  if (!options.tracked) {
+    await runMessageOnlySend(context, options, body);
+    return;
+  }
+
+  const interaction = classifySendInteraction({
+    targetLabel: options.targetLabel,
+    targetRef: options.targetRef,
+    channel: options.channel,
+    body,
+  });
+  if (interaction !== "work") {
+    throw new ScoutCliError(
+      "--tracked needs exactly one directed --to target; channels, --ref replies, broadcasts, and [ask:...] completion bodies are message-only and never create work. Drop --tracked, or use `scout ask`.",
+    );
+  }
+  await runTrackedSend(context, options, body);
 }

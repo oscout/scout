@@ -13,9 +13,20 @@ import type {
 import type { NodeDefinition } from "@openscout/protocol";
 import { filterMessageRecords, filterMessageRecordsAsync } from "./broker-message-records.js";
 
+/**
+ * ActorIdentity plus the actor's first-registration timestamp. Stamped at the
+ * durable upsert funnel so journal replay preserves it; `actors.created_at`
+ * in SQLite carries it across restarts. Retention uses it as the last resort
+ * for records with no other age evidence.
+ */
+export type RuntimeActorIdentity = ActorIdentity & { createdAt?: number };
+
+/** AgentDefinition carrying the same first-registration stamp as its actor. */
+export type RuntimeAgentDefinition = AgentDefinition & { createdAt?: number };
+
 export interface RuntimeRegistrySnapshot {
   nodes: Record<string, NodeDefinition>;
-  actors: Record<string, ActorIdentity>;
+  actors: Record<string, RuntimeActorIdentity>;
   agents: Record<string, AgentDefinition>;
   endpoints: Record<string, AgentEndpoint>;
   conversations: Record<string, ConversationDefinition>;
@@ -33,8 +44,11 @@ export interface RuntimeRegistrySnapshotQuery {
    * Keep only records needed to render conversation lists and transcripts.
    * This avoids serializing thousands of unrelated historical agent
    * registrations on the latency-sensitive app startup path.
+   * `identity` keeps just the routing identity records — nodes, actors, and
+   * agents — for callers that resolve senders and targets without reading
+   * any conversation history.
    */
-  scope?: "conversations" | "agents";
+  scope?: "conversations" | "agents" | "identity";
 }
 
 export function createRuntimeRegistrySnapshot(
@@ -119,6 +133,13 @@ export function queryRuntimeRegistrySnapshot(
 ): RuntimeRegistrySnapshot {
   if (query.scope === "agents") {
     return createRuntimeRegistrySnapshot({
+      agents: { ...snapshot.agents },
+    });
+  }
+  if (query.scope === "identity") {
+    return createRuntimeRegistrySnapshot({
+      nodes: { ...snapshot.nodes },
+      actors: { ...snapshot.actors },
       agents: { ...snapshot.agents },
     });
   }
@@ -306,6 +327,7 @@ function finishRegistryQuery(snapshot:RuntimeRegistrySnapshot,query:RuntimeRegis
 
 export async function queryRuntimeRegistrySnapshotAsync(snapshot:RuntimeRegistrySnapshot,query:RuntimeRegistrySnapshotQuery={},options?:{signal?:AbortSignal}):Promise<RuntimeRegistrySnapshot>{
  if(query.scope==='agents')return createRuntimeRegistrySnapshot({agents:{...snapshot.agents}});
+ if(query.scope==='identity')return createRuntimeRegistrySnapshot({nodes:{...snapshot.nodes},actors:{...snapshot.actors},agents:{...snapshot.agents}});
  const since=finiteTimestamp(query.since),conversationScoped=query.scope==='conversations';if(since===null&&!conversationScoped)return snapshot;
  const cutoff=since??0,messageConversationIds=new Set<string>(),messageActorIds=new Set<string>();
  const messages=await filterMessageRecordsAsync(snapshot.messages,message=>{if(!(message.createdAt>=cutoff))return false;messageConversationIds.add(message.conversationId);messageActorIds.add(message.actorId);return true;},options);

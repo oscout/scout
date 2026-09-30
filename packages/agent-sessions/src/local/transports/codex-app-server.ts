@@ -1,10 +1,28 @@
-import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { appendFile, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import { buildScoutMcpCodexLaunchArgs } from "../../codex-launch-config.js";
 import { resolveCodexExecutable } from "../../codex-executable.js";
 import { redactSecrets } from "../../secret-redaction.js";
+import {
+  connectCodexAppServerSocket,
+  defaultCodexAppServerControlSocketPath,
+  readCodexAppServerDaemonVersion,
+  resolveCodexAppServerConnectionConfig,
+  spawnCodexAppServerStdioConnection,
+  type CodexAppServerConnection,
+  type CodexAppServerConnectionClose,
+  type CodexAppServerConnectionConfig,
+  type CodexAppServerConnectionHandlers,
+  type CodexAppServerConnectionMode,
+  type CodexAppServerDaemonVersion,
+} from "./codex-app-server-connection.js";
+
+export {
+  defaultCodexAppServerControlSocketPath,
+  type CodexAppServerConnectionConfig,
+  type CodexAppServerConnectionMode,
+} from "./codex-app-server-connection.js";
 
 export type CodexAppServerApprovalPolicy = "untrusted" | "on-request" | "on-failure" | "never";
 export type CodexAppServerSandboxMode = "read-only" | "workspace-write" | "danger-full-access";
@@ -97,7 +115,91 @@ export type CodexAppServerSessionOptions = {
   onDelta?: (delta: string) => void;
   /** Optional owner lifetime; checked before launching or starting a turn. */
   signal?: AbortSignal;
+  /**
+   * Which app-server to talk to. Default `{ mode: "spawn" }`: Scout launches
+   * and owns a private `codex app-server`. `{ mode: "attach" }` connects to an
+   * app-server that is already running (the Codex daemon control socket);
+   * Scout never stops or restarts that server.
+   */
+  connection?: CodexAppServerConnectionConfig;
+  /** Optional title set with `thread/name/set` when Scout starts a new thread. */
+  threadName?: string;
 };
+
+/**
+ * Which Codex this session is talking to. Captured from `initialize` and, for
+ * attached servers, `codex app-server daemon version`.
+ */
+export type CodexAppServerIdentity = {
+  connection: CodexAppServerConnectionMode;
+  socketPath: string | null;
+  pid: number | null;
+  userAgent: string | null;
+  appServerVersion: string | null;
+  codexHome: string | null;
+  platformOs: string | null;
+  /** Scout-side features that do not apply to this server. */
+  capabilityGaps: string[];
+  connectedAt: number;
+};
+
+/**
+ * Attached servers were launched by someone else: Scout cannot add its MCP
+ * server, launch args, or process environment (including CODEX_HOME).
+ */
+export const CODEX_ATTACHED_CAPABILITY_GAPS = [
+  "scout_mcp_injection",
+  "launch_args",
+  "process_env",
+] as const;
+
+type InitializeResult = {
+  userAgent?: string;
+  codexHome?: string;
+  platformOs?: string;
+};
+
+function codexVersionFromUserAgent(userAgent: string | null): string | null {
+  const match = userAgent?.match(/\/(\d+\.\d+\.\d+(?:-[0-9A-Za-z.]+)?)/);
+  return match?.[1] ?? null;
+}
+
+export function buildCodexAppServerIdentity(input: {
+  connection: Pick<CodexAppServerConnection, "mode" | "pid" | "socketPath">;
+  initialized: InitializeResult | null | undefined;
+  daemon?: CodexAppServerDaemonVersion | null;
+  now?: number;
+}): CodexAppServerIdentity {
+  const text = (value: unknown) => typeof value === "string" && value.trim() ? value.trim() : null;
+  const userAgent = text(input.initialized?.userAgent);
+  // Only trust the daemon's version when it describes the socket we attached to.
+  const daemonMatches = Boolean(
+    input.daemon
+      && input.connection.socketPath
+      && input.daemon.socketPath === input.connection.socketPath,
+  );
+  return {
+    connection: input.connection.mode,
+    socketPath: input.connection.socketPath,
+    pid: input.connection.pid,
+    userAgent,
+    appServerVersion: (daemonMatches ? input.daemon?.appServerVersion : null) ?? codexVersionFromUserAgent(userAgent),
+    codexHome: text(input.initialized?.codexHome),
+    platformOs: text(input.initialized?.platformOs),
+    capabilityGaps: input.connection.mode === "attached" ? [...CODEX_ATTACHED_CAPABILITY_GAPS] : [],
+    connectedAt: input.now ?? Date.now(),
+  };
+}
+
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`Timed out after ${timeoutMs}ms waiting for ${label}.`)), timeoutMs);
+  });
+  return Promise.race([promise, timeout]).finally(() => {
+    if (timer) clearTimeout(timer);
+  });
+}
 
 export type CodexAppServerInvocationOptions = CodexAppServerSessionOptions & {
   prompt: string;
@@ -118,6 +220,8 @@ export type CodexAppServerShutdownOptions = {
 export type CodexAppServerTurnResult = {
   output: string;
   threadId: string;
+  /** Which Codex answered: attached vs Scout-spawned, socket, version, home. */
+  codexAppServer?: CodexAppServerIdentity | null;
 };
 
 export type CodexAppServerTurnStartResult = {
@@ -128,6 +232,7 @@ export type CodexAppServerTurnStartResult = {
 export type CodexAppServerThreadResult = {
   threadId: string;
   durableThreadId: string | null;
+  codexAppServer?: CodexAppServerIdentity | null;
 };
 
 export type CodexAppServerExitKind =
@@ -791,8 +896,8 @@ export class CodexAppServerTransport {
   private readonly stdoutLogPath: string;
   private readonly stderrLogPath: string;
 
-  private process: ChildProcessWithoutNullStreams | null = null;
-  private lineBuffer = "";
+  private connection: CodexAppServerConnection | null = null;
+  private serverIdentity: CodexAppServerIdentity | null = null;
   private nextRequestId = 1;
   private readonly pendingRequests = new Map<string | number, {
     resolve: (value: unknown) => void;
@@ -838,7 +943,15 @@ export class CodexAppServerTransport {
   }
 
   get pid(): number | null {
-    return this.process?.pid ?? null;
+    return this.connection?.pid ?? null;
+  }
+
+  get identity(): CodexAppServerIdentity | null {
+    return this.serverIdentity;
+  }
+
+  private get connectionConfig() {
+    return resolveCodexAppServerConnectionConfig(this.options.connection);
   }
 
   get sessionOptions(): CodexAppServerSessionOptions {
@@ -865,7 +978,7 @@ export class CodexAppServerTransport {
   }
 
   isAlive(): boolean {
-    return Boolean(this.process && !this.process.killed && this.process.exitCode === null);
+    return Boolean(this.connection?.isOpen());
   }
 
   async ensureOnline(): Promise<CodexAppServerThreadResult> {
@@ -877,6 +990,7 @@ export class CodexAppServerTransport {
     return {
       threadId: this.threadId,
       durableThreadId: this.durableThreadId,
+      codexAppServer: this.serverIdentity,
     };
   }
 
@@ -890,6 +1004,7 @@ export class CodexAppServerTransport {
       threadId: this.threadId,
       cwd: this.options.cwd,
       input: this.textInput(prompt),
+      ...this.attachedRuntimeParams({ includeEffort: true }),
     });
     await this.persistThreadId();
     return response;
@@ -921,6 +1036,7 @@ export class CodexAppServerTransport {
   }
 
   async shutdown(options: CodexAppServerShutdownOptions = {}): Promise<void> {
+    await this.leaveAttachedThread();
     this.proactiveShutdown = {
       reason: options.reason
         ?? (options.resetThread ? "OpenScout reset the app-server session" : "OpenScout stopped the app-server session"),
@@ -938,18 +1054,13 @@ export class CodexAppServerTransport {
     }
     this.pendingRequests.clear();
 
-    const child = this.process;
-    this.process = null;
+    const connection = this.connection;
+    this.connection = null;
     this.starting = null;
-    this.lineBuffer = "";
 
-    if (child && child.exitCode === null && !child.killed) {
-      child.kill("SIGTERM");
-      await new Promise((resolve) => setTimeout(resolve, 250));
-      if (child.exitCode === null && child.signalCode === null) {
-        child.kill("SIGKILL");
-      }
-    }
+    // Spawned: Scout owns the child and terminates it. Attached: close only
+    // disconnects; the shared server keeps running.
+    await connection?.close();
     await this.threadPersistence;
 
 
@@ -962,6 +1073,38 @@ export class CodexAppServerTransport {
     }
 
     await this.persistState();
+  }
+
+  /**
+   * Attached servers were not launched with Scout's `-c model=…` args, so the
+   * model and effort ride on the JSON-RPC requests instead. Spawned servers
+   * keep today's launch-arg path unchanged.
+   */
+  private attachedRuntimeParams(options: { includeEffort?: boolean } = {}): Record<string, string> {
+    if (this.connectionConfig.mode !== "attach") return {};
+    const model = readCodexAppServerModelFromLaunchArgs(this.options.launchArgs);
+    const effort = options.includeEffort
+      ? readCodexAppServerReasoningEffortFromLaunchArgs(this.options.launchArgs)
+      : null;
+    return {
+      ...(model ? { model } : {}),
+      ...(effort ? { effort } : {}),
+    };
+  }
+
+  /** Attached servers outlive Scout: unsubscribe so the server can unload the thread. */
+  private async leaveAttachedThread(): Promise<void> {
+    const connection = this.connection;
+    if (!connection || connection.mode !== "attached" || !connection.isOpen() || !this.threadId) return;
+    const threadId = this.threadId;
+    try {
+      await withTimeout(this.request("thread/unsubscribe", { threadId }), 2_000, "thread/unsubscribe");
+    } catch (error) {
+      await appendFile(
+        this.stderrLogPath,
+        `[openscout] failed to unsubscribe attached Codex thread ${threadId}: ${errorMessage(error)}\n`,
+      ).catch(() => undefined);
+    }
   }
 
   private textInput(prompt: string): Array<{ type: "text"; text: string; text_elements: never[] }> {
@@ -985,6 +1128,8 @@ export class CodexAppServerTransport {
       requireExistingThread: options.requireExistingThread === true,
       env: normalizeEnvironmentOverrides(options.env),
       launchArgs: normalizeCodexAppServerLaunchArgs(options.launchArgs),
+      connection: resolveCodexAppServerConnectionConfig(options.connection),
+      threadName: options.threadName?.trim() || null,
     });
   }
 
@@ -1021,51 +1166,52 @@ export class CodexAppServerTransport {
     }
 
     this.options.signal?.throwIfAborted();
-    const codexExecutable = resolveCodexExecutable();
-    const launchArgs = normalizeCodexAppServerLaunchArgs(this.options.launchArgs);
     const env = this.options.processEnv ?? mergeEnvironmentOverrides(process.env, this.options.env);
-    const child = spawn(codexExecutable, [
-      "app-server",
-      ...buildScoutMcpCodexLaunchArgs({
-        currentDirectory: this.options.cwd,
-        env,
-      }),
-      ...launchArgs,
-    ], {
-      cwd: this.options.cwd,
-      env,
-      stdio: ["pipe", "pipe", "pipe"],
-    });
-
-    this.process = child;
-    this.lineBuffer = "";
-
-    child.stdout.setEncoding("utf8");
-    child.stderr.setEncoding("utf8");
-
-    child.stdout.on("data", (chunk: string) => {
-      void appendFile(this.stdoutLogPath, redactSecrets(chunk)).catch(() => undefined);
-      this.handleStdoutChunk(chunk);
-    });
-    child.stderr.on("data", (chunk: string) => {
-      void appendFile(this.stderrLogPath, redactSecrets(chunk)).catch(() => undefined);
-    });
-    child.once("error", (error) => {
-      this.failSession(new Error(`Codex app-server failed for ${this.options.agentName}: ${errorMessage(error)}`));
-    });
-    child.once("exit", (code, signal) => {
-      const proactiveShutdown = this.proactiveShutdown;
-      if (proactiveShutdown) {
-        this.handleProactiveProcessExit(child, proactiveShutdown, code, signal);
-        return;
+    const connectionConfig = this.connectionConfig;
+    let connection: CodexAppServerConnection | undefined;
+    const handlers = this.connectionHandlers(() => connection);
+    let daemonVersion: Promise<CodexAppServerDaemonVersion | null> | null = null;
+    if (connectionConfig.mode === "attach") {
+      // `codex app-server daemon version` only describes the default control
+      // socket, and it is read-only: it never starts or restarts the daemon.
+      if (connectionConfig.socketPath === defaultCodexAppServerControlSocketPath()) {
+        const executable = (() => {
+          try {
+            return resolveCodexExecutable();
+          } catch {
+            return null;
+          }
+        })();
+        daemonVersion = executable ? readCodexAppServerDaemonVersion({ executable, env }) : null;
       }
+      connection = await connectCodexAppServerSocket({
+        socketPath: connectionConfig.socketPath,
+        handlers,
+      });
+      await appendFile(
+        this.stderrLogPath,
+        `[openscout] attached to running Codex app-server at ${connectionConfig.socketPath}; Scout will not stop or restart it\n`,
+      ).catch(() => undefined);
+    } else {
+      const launchArgs = normalizeCodexAppServerLaunchArgs(this.options.launchArgs);
+      connection = spawnCodexAppServerStdioConnection({
+        executable: resolveCodexExecutable(),
+        args: [
+          "app-server",
+          ...buildScoutMcpCodexLaunchArgs({
+            currentDirectory: this.options.cwd,
+            env,
+          }),
+          ...launchArgs,
+        ],
+        cwd: this.options.cwd,
+        env,
+        handlers,
+      });
+    }
 
-      this.failSession(new CodexAppServerExitError({
-        agentName: this.options.agentName,
-        exitCode: code,
-        signal,
-      }));
-    });
+    this.connection = connection;
+    this.serverIdentity = null;
 
     const clientInfo = this.options.clientInfo ?? {
       name: "openscout-agent-sessions",
@@ -1073,13 +1219,18 @@ export class CodexAppServerTransport {
       version: "0.0.0",
     };
 
-    await this.request("initialize", {
+    const initialized = await this.request<InitializeResult>("initialize", {
       clientInfo,
       capabilities: {
         experimentalApi: true,
       },
     });
     this.notify("initialized");
+    this.serverIdentity = buildCodexAppServerIdentity({
+      connection,
+      initialized,
+      daemon: daemonVersion ? await daemonVersion : null,
+    });
 
     await this.resumeOrStartThread();
     await this.persistState();
@@ -1098,6 +1249,7 @@ export class CodexAppServerTransport {
           sandbox: this.options.sandbox ?? "danger-full-access",
           baseInstructions: this.options.systemPrompt,
           persistExtendedHistory: true,
+          ...this.attachedRuntimeParams(),
         });
         this.threadId = resumed.thread.id;
         this.threadPath = resumed.thread.path ?? null;
@@ -1144,6 +1296,8 @@ export class CodexAppServerTransport {
       ephemeral: false,
       experimentalRawEvents: false,
       persistExtendedHistory: true,
+      ...this.attachedRuntimeParams(),
+      ...(this.connectionConfig.mode === "attach" ? { threadSource: "user" } : {}),
     });
     this.threadId = started.thread.id;
     this.threadPath = started.thread.path ?? null;
@@ -1151,6 +1305,20 @@ export class CodexAppServerTransport {
       this.durableThreadId = null;
     }
     await this.persistThreadId();
+    await this.nameStartedThread(started.thread.id);
+  }
+
+  private async nameStartedThread(threadId: string): Promise<void> {
+    const name = this.options.threadName?.trim();
+    if (!name) return;
+    try {
+      await this.request("thread/name/set", { threadId, name });
+    } catch (error) {
+      await appendFile(
+        this.stderrLogPath,
+        `[openscout] failed to name Codex thread ${threadId}: ${errorMessage(error)}\n`,
+      ).catch(() => undefined);
+    }
   }
 
   private catalogRuntimeMeta(): {
@@ -1171,39 +1339,72 @@ export class CodexAppServerTransport {
     };
   }
 
-  private handleStdoutChunk(chunk: string): void {
-    this.lineBuffer += chunk;
-    while (true) {
-      const newlineIndex = this.lineBuffer.indexOf("\n");
-      if (newlineIndex === -1) {
-        break;
-      }
+  private connectionHandlers(current: () => CodexAppServerConnection | undefined): CodexAppServerConnectionHandlers {
+    return {
+      onMessage: (text) => this.handleMessageText(text),
+      onStdout: (chunk) => {
+        void appendFile(this.stdoutLogPath, redactSecrets(chunk)).catch(() => undefined);
+      },
+      onStderr: (chunk) => {
+        void appendFile(this.stderrLogPath, redactSecrets(chunk)).catch(() => undefined);
+      },
+      onClose: (close) => this.handleConnectionClose(current(), close),
+    };
+  }
 
-      const line = this.lineBuffer.slice(0, newlineIndex).trim();
-      this.lineBuffer = this.lineBuffer.slice(newlineIndex + 1);
-      if (!line) {
-        continue;
-      }
+  private handleConnectionClose(
+    connection: CodexAppServerConnection | undefined,
+    close: CodexAppServerConnectionClose,
+  ): void {
+    const proactiveShutdown = this.proactiveShutdown;
+    if (proactiveShutdown) {
+      this.handleProactiveProcessExit(connection, proactiveShutdown, close.exitCode, close.signal);
+      return;
+    }
+    if (connection?.mode === "attached") {
+      this.failSession(new CodexAppServerExitError({
+        agentName: this.options.agentName,
+        exitKind: "unexpected_exit",
+        exitCode: null,
+        signal: null,
+        reason: close.error?.message ?? null,
+      }));
+      return;
+    }
+    if (close.error && close.exitCode === null && close.signal === null) {
+      this.failSession(new Error(`Codex app-server failed for ${this.options.agentName}: ${errorMessage(close.error)}`));
+      return;
+    }
+    this.failSession(new CodexAppServerExitError({
+      agentName: this.options.agentName,
+      exitCode: close.exitCode,
+      signal: close.signal,
+    }));
+  }
 
-      const message = parseJsonLine(line);
-      if (!message) {
-        void appendFile(this.stderrLogPath, `[openscout] unparsable app-server output: ${redactSecrets(line)}\n`).catch(() => undefined);
-        continue;
-      }
+  private handleMessageText(line: string): void {
+    const message = parseJsonLine(line);
+    if (!message) {
+      void appendFile(this.stderrLogPath, `[openscout] unparsable app-server output: ${redactSecrets(line)}\n`).catch(() => undefined);
+      return;
+    }
 
-      if (isResponse(message)) {
-        this.handleResponse(message);
-        continue;
-      }
+    if (this.connection?.mode === "attached") {
+      void appendFile(this.stdoutLogPath, `${redactSecrets(line)}\n`).catch(() => undefined);
+    }
 
-      if (isServerRequest(message)) {
-        this.handleServerRequest(message);
-        continue;
-      }
+    if (isResponse(message)) {
+      this.handleResponse(message);
+      return;
+    }
 
-      if (isNotification(message)) {
-        this.handleNotification(message);
-      }
+    if (isServerRequest(message)) {
+      this.handleServerRequest(message);
+      return;
+    }
+
+    if (isNotification(message)) {
+      this.handleNotification(message);
     }
   }
 
@@ -1265,12 +1466,8 @@ export class CodexAppServerTransport {
   }
 
   private failSession(error: Error): void {
-    if (this.process) {
-      this.process.removeAllListeners();
-      this.process.stdout.removeAllListeners();
-      this.process.stderr.removeAllListeners();
-    }
-    this.process = null;
+    this.connection?.detach();
+    this.connection = null;
     this.starting = null;
 
     for (const pending of this.pendingRequests.values()) {
@@ -1284,13 +1481,13 @@ export class CodexAppServerTransport {
   }
 
   private handleProactiveProcessExit(
-    child: ChildProcessWithoutNullStreams,
+    connection: CodexAppServerConnection | undefined,
     shutdown: ProactiveCodexAppServerShutdown,
     code: number | null,
     signal: string | null,
   ): void {
-    if (this.process === child) {
-      this.process = null;
+    if (connection && this.connection === connection) {
+      this.connection = null;
     }
     this.proactiveShutdown = null;
     this.starting = null;
@@ -1302,7 +1499,9 @@ export class CodexAppServerTransport {
     const detail = exitDetail ? ` (${exitDetail})` : "";
     void appendFile(
       this.stderrLogPath,
-      `[openscout] Codex app-server stopped for ${this.options.agentName}: ${shutdown.reason}${detail}\n`,
+      connection?.mode === "attached"
+        ? `[openscout] detached from shared Codex app-server for ${this.options.agentName}: ${shutdown.reason}\n`
+        : `[openscout] Codex app-server stopped for ${this.options.agentName}: ${shutdown.reason}${detail}\n`,
     ).catch(() => undefined);
     void this.persistState();
   }
@@ -1364,7 +1563,8 @@ export class CodexAppServerTransport {
         threadPath: durableThreadPath,
         requestedThreadId: this.options.threadId ?? null,
         requireExistingThread: this.options.requireExistingThread === true,
-        pid: this.process?.pid ?? null,
+        pid: this.connection?.pid ?? null,
+        codexAppServer: this.serverIdentity,
         stdoutLogFile: this.stdoutLogPath,
         stderrLogFile: this.stderrLogPath,
         updatedAt: new Date().toISOString(),
@@ -1399,12 +1599,12 @@ export class CodexAppServerTransport {
   }
 
   private writeMessage(message: Record<string, unknown>): void {
-    const child = this.process;
-    if (!child || child.killed || child.exitCode !== null) {
+    const connection = this.connection;
+    if (!connection || !connection.isOpen()) {
       throw new Error(`Codex app-server session for ${this.options.agentName} is not running.`);
     }
 
-    child.stdin.write(`${JSON.stringify(message)}\n`);
+    connection.send(JSON.stringify(message));
   }
 }
 
@@ -1445,6 +1645,10 @@ export class CodexAppServerClient {
 
   get stdoutLogFile(): string {
     return this.transport.stdoutLogFile;
+  }
+
+  get identity(): CodexAppServerIdentity | null {
+    return this.transport.identity;
   }
 
   get stderrLogFile(): string {
@@ -1499,6 +1703,7 @@ export class CodexAppServerClient {
       return {
         output,
         threadId: this.transport.currentThreadId,
+        codexAppServer: this.transport.identity,
       };
     });
   }
@@ -1576,6 +1781,7 @@ export class CodexAppServerClient {
     return {
       output,
       threadId: this.transport.currentThreadId,
+      codexAppServer: this.transport.identity,
     };
   }
 
@@ -1813,8 +2019,12 @@ export class CodexAppServerClient {
       return;
     }
 
+    // Codex can close a turn with a message that repeats an earlier one
+    // word for word (a progress note restated as the final answer); the reply
+    // carries it once.
     const output = activeTurn.messageOrder
-      .map((itemId) => activeTurn.messageByItemId.get(itemId) ?? "")
+      .map((itemId) => (activeTurn.messageByItemId.get(itemId) ?? "").trim())
+      .filter((text, index, all) => text.length > 0 && all.indexOf(text) === index)
       .join("\n\n")
       .trim();
 

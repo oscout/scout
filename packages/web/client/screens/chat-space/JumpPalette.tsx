@@ -1,6 +1,7 @@
 /** ⌘K — jump to a channel or a member. Keyboard first, no mouse required. */
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useState } from "react";
+import { useFocusTrap } from "../../lib/keyboard-nav.ts";
 import type { ConversationDefinition } from "@openscout/protocol";
 
 import type { ChannelMemberView } from "./chat-api.ts";
@@ -24,11 +25,8 @@ export function JumpPalette({
 }) {
   const [query, setQuery] = useState("");
   const [index, setIndex] = useState(0);
-  const inputRef = useRef<HTMLInputElement | null>(null);
-
-  useEffect(() => {
-    inputRef.current?.focus();
-  }, []);
+  const listId = useId();
+  const { ref: dialogRef, onKeyDown: trapFocus } = useFocusTrap<HTMLDivElement>();
 
   const targets = useMemo<JumpTarget[]>(() => {
     const needle = query.trim().toLowerCase();
@@ -61,9 +59,16 @@ export function JumpPalette({
         if (event.target === event.currentTarget) onClose();
       }}
     >
-      <div className="chat-palette" role="dialog" aria-modal="true" aria-label="Jump to a channel or person">
+      <div ref={dialogRef} className="chat-palette" role="dialog" aria-modal="true" aria-label="Jump to a channel or person" onKeyDown={(event) => {
+        trapFocus(event);
+        if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); onClose(); }
+      }}>
         <input
-          ref={inputRef}
+          role="combobox"
+          aria-autocomplete="list"
+          aria-expanded="true"
+          aria-controls={listId}
+          aria-activedescendant={targets[index] ? `${listId}-${index}` : undefined}
           value={query}
           placeholder="Jump to a channel or person"
           aria-label="Jump to a channel or person"
@@ -85,13 +90,9 @@ export function JumpPalette({
               if (picked) onPick(picked);
               return;
             }
-            if (event.key === "Escape") {
-              event.preventDefault();
-              onClose();
-            }
           }}
         />
-        <div className="chat-palette-list" role="listbox">
+        <div id={listId} className="chat-palette-list" role="listbox" aria-label="Channels and people">
           {targets.length === 0 ? (
             <div className="chat-palette-empty">Nothing matches that.</div>
           ) : (
@@ -99,14 +100,16 @@ export function JumpPalette({
               <button
                 key={`${target.kind}:${target.id}`}
                 type="button"
+                id={`${listId}-${position}`}
                 role="option"
                 aria-selected={position === index}
                 data-active={position === index}
                 className="chat-palette-option"
                 onMouseDown={(event) => {
                   event.preventDefault();
-                  onPick(target);
                 }}
+                onFocus={() => setIndex(position)}
+                onClick={() => onPick(target)}
               >
                 {target.kind === "member"
                   ? <MemberAvatar member={target.member} size={18} />

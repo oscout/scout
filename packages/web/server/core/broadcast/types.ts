@@ -1,17 +1,12 @@
 import type { DiscoverySnapshot, TailEvent } from "@openscout/runtime/tail";
-
-export type BroadcastTier = "info" | "warn" | "error";
-
-export type Broadcast = {
-  id: string;
-  tier: BroadcastTier;
-  text: string;
-  agent?: string;
-  project?: string;
-  ts: number;
-  ruleId: string;
-  key: string;
-};
+import type {
+  BroadcastTier,
+  Broadcast,
+} from "../../../shared/api/broadcasts.ts";
+export type {
+  BroadcastTier,
+  Broadcast,
+} from "../../../shared/api/broadcasts.ts";
 
 export type BroadcastContext = {
   now: number;

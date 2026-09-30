@@ -18,6 +18,7 @@ import type {
   WorkMaterialContent,
   WorkMaterialKind,
 } from "../../lib/types.ts";
+import { formatWorkMaterialDiff } from "../../../shared/api/work-materials.ts";
 
 const IMAGE_EXTENSIONS = new Set(["png", "jpg", "jpeg", "gif", "webp", "avif", "svg"]);
 
@@ -475,9 +476,7 @@ export function WorkFilesViewer({
                     <span>{selected.kind}</span>
                     <span>{selected.status}</span>
                     {selected.diffStat && (
-                      <span>
-                        +{selected.diffStat.additions} -{selected.diffStat.deletions}
-                      </span>
+                      <span>{formatWorkMaterialDiff(selected.diffStat)}</span>
                     )}
                   </div>
                 </header>

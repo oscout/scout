@@ -2,9 +2,18 @@ import { afterAll, describe, expect, mock, test } from "bun:test";
 import { namedChannelNaturalKey, stableChannelId } from "@openscout/protocol";
 
 let brokerContextResult: unknown = null;
+let durableInvocationsResult: Array<Record<string, unknown>> = [];
+let durableFlightRecordsResult: Array<Record<string, unknown>> = [];
 
 mock.module("../broker/service.ts", () => ({
   loadScoutBrokerContext: async () => brokerContextResult,
+}));
+
+// The service overlays SQLite rows under the broker's hot window; keep the
+// durable layer a stub so tests never touch the real control-plane database.
+mock.module("../../db-queries.ts", () => ({
+  queryInvocations: () => durableInvocationsResult,
+  queryFlightRecords: () => durableFlightRecordsResult,
 }));
 
 const {
@@ -129,6 +138,106 @@ function seedBrokerMessages(
 }
 
 describe("getScoutConversations", () => {
+  test("overlays SQLite invocations and flights the broker hot set rotated out", async () => {
+    const snapshot = baseSnapshot();
+    brokerContextResult = brokerContext(snapshot);
+    // The terminal invocation/flight rotated out of the broker's hot set;
+    // only SQLite still holds them.
+    durableInvocationsResult = [
+      {
+        id: "inv-rotated",
+        requesterId: "operator",
+        targetAgentId: "hudson.main.mini",
+        conversationId: "chat_hudson-main",
+        messageId: "msg-1",
+        action: "run",
+        task: "hello",
+        ensureAwake: true,
+        stream: false,
+        createdAt: 1_779_461_710_000,
+      },
+    ];
+    durableFlightRecordsResult = [
+      {
+        id: "flt-rotated",
+        invocationId: "inv-rotated",
+        requesterId: "operator",
+        targetAgentId: "hudson.main.mini",
+        state: "completed",
+        summary: "done",
+        startedAt: 1_779_461_720_000,
+        completedAt: 1_779_461_730_000,
+      },
+    ];
+    try {
+      const conversations = await getScoutConversations();
+      const chat = conversations.find((conversation) => conversation.id === "chat_hudson-main");
+      expect(chat?.turn).toMatchObject({
+        messageId: "msg-1",
+        invocationId: "inv-rotated",
+        flightId: "flt-rotated",
+        state: "completed",
+      });
+    } finally {
+      durableInvocationsResult = [];
+      durableFlightRecordsResult = [];
+    }
+  });
+
+  test("the broker's live record wins over a stale durable row on duplicate ids", async () => {
+    const snapshot = baseSnapshot({
+      invocations: {
+        "inv-shared": {
+          id: "inv-shared",
+          requesterId: "operator",
+          targetAgentId: "hudson.main.mini",
+          conversationId: "chat_hudson-main",
+          messageId: "msg-1",
+          action: "run",
+          task: "hello",
+          ensureAwake: true,
+          stream: false,
+          createdAt: 1_779_461_710_000,
+        },
+      },
+      flights: {
+        "flt-shared": {
+          id: "flt-shared",
+          invocationId: "inv-shared",
+          requesterId: "operator",
+          targetAgentId: "hudson.main.mini",
+          state: "failed",
+          error: "target crashed",
+          startedAt: 1_779_461_720_000,
+          completedAt: 1_779_461_740_000,
+        },
+      },
+    });
+    brokerContextResult = brokerContext(snapshot);
+    // SQLite's row predates the failure — the broker overlay wins.
+    durableFlightRecordsResult = [
+      {
+        id: "flt-shared",
+        invocationId: "inv-shared",
+        requesterId: "operator",
+        targetAgentId: "hudson.main.mini",
+        state: "running",
+        startedAt: 1_779_461_720_000,
+      },
+    ];
+    try {
+      const conversations = await getScoutConversations();
+      const chat = conversations.find((conversation) => conversation.id === "chat_hudson-main");
+      expect(chat?.turn).toMatchObject({
+        invocationId: "inv-shared",
+        flightId: "flt-shared",
+        state: "failed",
+      });
+    } finally {
+      durableFlightRecordsResult = [];
+    }
+  });
+
   test("applies machine scope before the recent conversation limit", async () => {
     const snapshot = baseSnapshot();
     snapshot.nodes["node-2"] = { id: "node-2", name: "node-2" };

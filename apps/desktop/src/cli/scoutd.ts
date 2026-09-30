@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 
 import {
+  nativeSupervisorNotApplicableDetail,
   openScoutNetworkServiceEnvironment,
   resolveBrokerServiceConfig,
   resolveScoutdCommand,
@@ -45,6 +46,9 @@ export type NativeScoutdDoctorReport = {
     launchdState: string | null;
     reachable: boolean | null;
     healthOk: boolean | null;
+    healthState?: string | null;
+    healthCheckedAt?: number | null;
+    healthDurationMs?: number | null;
     healthTransport: string | null;
     healthError: string | null;
     brokerUrl: string | null;
@@ -76,6 +80,8 @@ export type NativeScoutdDoctorReport = {
     raw: unknown;
   };
   raw: unknown;
+  /** Set when this platform has no native supervisor. Omitted on darwin. */
+  notApplicableDetail?: string;
 };
 
 export type NativeScoutdJsonOutcome =
@@ -90,7 +96,7 @@ export type NativeScoutdJsonOutcome =
   | {
       ok: false;
       command: NativeScoutdCommand;
-      reason: "missing" | "failed";
+      reason: "missing" | "failed" | "not-applicable";
       scoutdPath: string | null;
       source: string | null;
       error: string;
@@ -148,6 +154,17 @@ export async function runNativeScoutdJson(
     config?: BrokerServiceConfig;
   } = {},
 ): Promise<NativeScoutdJsonOutcome> {
+  if (process.platform !== "darwin") {
+    return {
+      ok: false,
+      command,
+      reason: "not-applicable",
+      scoutdPath: null,
+      source: null,
+      error: nativeSupervisorNotApplicableDetail(),
+    };
+  }
+
   const env = options.env ?? process.env;
   let config: BrokerServiceConfig;
   try {
@@ -437,6 +454,9 @@ function readStatus(raw: unknown): NativeScoutdDoctorReport["status"] {
     launchdState: readString(status.launchdState),
     reachable: readBoolean(status.reachable) ?? readBoolean(health.reachable),
     healthOk: readBoolean(health.ok),
+    healthState: readString(health.state),
+    healthCheckedAt: readNumber(health.checkedAt),
+    healthDurationMs: readNumber(health.durationMs),
     healthTransport: readString(health.transport),
     healthError: readString(health.error),
     brokerUrl: readString(status.brokerUrl),
@@ -495,6 +515,7 @@ export function normalizeNativeScoutdDoctorReport(input: {
   fixRequested?: boolean;
   yes?: boolean;
   available?: boolean;
+  notApplicableDetail?: string;
 }): NativeScoutdDoctorReport {
   const raw = input.raw;
   const record = isRecord(raw) ? raw : {};
@@ -513,6 +534,7 @@ export function normalizeNativeScoutdDoctorReport(input: {
     processes: readProcesses(record.processes),
     fix: readFixReport(raw),
     raw,
+    ...(input.notApplicableDetail ? { notApplicableDetail: input.notApplicableDetail } : {}),
   };
 }
 
@@ -528,6 +550,19 @@ export async function loadNativeScoutdDoctorReport(input: {
     flags,
     env: input.env,
   });
+
+  if (!outcome.ok && outcome.reason === "not-applicable") {
+    return normalizeNativeScoutdDoctorReport({
+      raw: null,
+      scoutdPath: null,
+      source: null,
+      available: false,
+      error: null,
+      notApplicableDetail: outcome.error,
+      fixRequested: fix,
+      yes,
+    });
+  }
 
   if (outcome.ok) {
     return normalizeNativeScoutdDoctorReport({
@@ -584,6 +619,9 @@ function renderFixLines(report: NativeScoutdDoctorReport): string[] {
 }
 
 export function renderNativeScoutdDoctorSection(report: NativeScoutdDoctorReport): string {
+  if (report.notApplicableDetail) {
+    return `\n${report.notApplicableDetail}`;
+  }
   if (!report.available && !report.fixRequested) {
     return "";
   }
@@ -616,6 +654,9 @@ export function renderNativeScoutdDoctorSection(report: NativeScoutdDoctorReport
       `  PID: ${status.pid ?? "-"}`,
       `  Broker reachable: ${yesNo(status.reachable)}`,
     );
+    if (status.healthState) {
+      lines.push(`  Health: ${status.healthState}${status.healthDurationMs != null ? ` (${status.healthDurationMs}ms)` : ""}`);
+    }
     if (status.healthTransport) {
       lines.push(`  Health transport: ${status.healthTransport}`);
     }

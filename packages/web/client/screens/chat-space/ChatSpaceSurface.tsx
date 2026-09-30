@@ -1,3 +1,19 @@
+import { createChatSendLedger } from "./chat-send-ledger.ts";
+import { useChatPresence, chatPresenceText } from "./use-chat-presence.ts";
+import { ChatExecutionAccess } from "./ChatExecutionControls.tsx";
+import { ChatApprovalAccess } from "./ChatApprovalControls.tsx";
+import { ChatQuestions } from "./ChatQuestions.tsx";
+import { mergeChatRequestResponsibilities } from "./chat-request-state.ts";
+import { ChatQuestionResponder } from "./ChatQuestionControls.tsx";
+import type { ChatQuestionChange } from "./chat-api.ts";
+import { ChatCorrectionScope } from "./chat-correction-draft.ts";
+import type { ChatMessage } from "./chat-api.ts";
+import { mergeChatMessageRevisions, newestChatMessage } from "./chat-message-revisions.ts";
+import type { CorrectChatMessage } from "./ChatMessageCorrectionControls.tsx";
+import { ChatSearch } from "./ChatSearch.tsx";
+import { compareMessagesAsc } from "../../../shared/message-pagination.ts";
+import { useChatMessageContext } from "./use-chat-message-context.ts";
+import { ChatAttention } from "./ChatAttention.tsx";
 /**
  * Scout Chat — the standalone channel surface at `/chat`.
  *
@@ -21,7 +37,8 @@
  *    typing is client state and is never touched by a refresh.
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
+import { Bot, MessageSquare, UserPlus } from "lucide-react";
 import type { ChannelInvitePublicView, ConversationDefinition, MessageAttachment } from "@openscout/protocol";
 
 import {
@@ -48,7 +65,10 @@ import { Facepile } from "./ChatAvatar.tsx";
 import { Turn } from "./ChatBits.tsx";
 import { InviteSheet } from "./InviteSheet.tsx";
 import { JumpPalette } from "./JumpPalette.tsx";
+import { TeamPanel } from "./TeamPanel.tsx";
 import { createSelectionGuard, subscribeChannelChanges } from "./chat-live.ts";
+import { usePoll } from "./use-poll.ts";
+import { useSpaceTeam } from "./useSpaceTeam.ts";
 import {
   BOOTSTRAP_POLL_MS,
   FEED_POLL_MS,
@@ -64,9 +84,13 @@ import {
   projectFeed,
   sortChannels,
 } from "./chat-space-model.ts";
+import { viewedThreadReads } from "./chat-attention-model.ts";
 import { uploadMediaFiles } from "../../lib/media-blobs.ts";
 import { copyTextToClipboard } from "../../lib/clipboard.ts";
 import { chatMessageHref } from "./chat-address.ts";
+import { useChatDraft } from "./use-chat-draft.ts";
+import { useChatReadingPosition } from "./use-chat-reading-position.ts";
+import { useChatReadState } from "./use-chat-read-state.ts";
 
 /**
  * The space rides in the URL beside the channel, so a link carries the whole
@@ -147,35 +171,6 @@ function useMediaQuery(query: string): boolean {
   return matches;
 }
 
-/** A poll that pauses with the tab and never overlaps itself. */
-function usePoll(run: () => Promise<void>, intervalMs: number, enabled: boolean) {
-  const runRef = useRef(run);
-  runRef.current = run;
-  useEffect(() => {
-    if (!enabled) return;
-    let cancelled = false;
-    let busy = false;
-    const tick = () => {
-      if (cancelled || busy) return;
-      if (typeof document !== "undefined" && document.hidden) return;
-      busy = true;
-      void runRef.current().finally(() => {
-        busy = false;
-      });
-    };
-    const timer = setInterval(tick, intervalMs);
-    const onVisible = () => {
-      if (typeof document !== "undefined" && !document.hidden) tick();
-    };
-    document.addEventListener("visibilitychange", onVisible);
-    return () => {
-      cancelled = true;
-      clearInterval(timer);
-      document.removeEventListener("visibilitychange", onVisible);
-    };
-  }, [enabled, intervalMs]);
-}
-
 /**
  * The server's change stream for one channel, when it serves one.
  *
@@ -224,15 +219,6 @@ export interface ChatSpaceSurfaceProps {
 
 type StagedOutgoing = MessageAttachment & { localPath?: string };
 
-interface PendingSend {
-  channelId: string;
-  body: string;
-  replyToMessageId: string | null;
-  targetActorId: string | null;
-  requestId: string;
-  attachments?: StagedOutgoing[];
-}
-
 async function outgoingChatAttachments(
   files: File[],
   uploadRemote: (files: File[]) => Promise<StagedOutgoing[]>,
@@ -272,11 +258,32 @@ export function ChatSpaceSurface({ signedOut }: ChatSpaceSurfaceProps = {}) {
   const [revokingInviteId, setRevokingInviteId] = useState<string | null>(null);
   const [feedError, setFeedError] = useState<string | null>(null);
   const [stale, setStale] = useState(false);
-  const [drafts, setDrafts] = useState<Record<string, string>>({});
-  const [threadDrafts, setThreadDrafts] = useState<Record<string, string>>({});
-  const [askTargets, setAskTargets] = useState<Record<string, string | null>>({});
   const [panel, setPanel] = useState<PanelView>({ kind: "none" });
   const [sheetOpen, setSheetOpen] = useState(false);
+  // Find, Questions and Activity share one tray under the channel header, so
+  // at most one is open and none of them costs a row while closed.
+  const [headTool, setHeadTool] = useState<"find" | "questions" | "activity" | null>(null);
+  const chanHeadRef = useRef<HTMLElement | null>(null);
+  const headToolProps = (tool: "find" | "questions" | "activity") => ({
+    open: headTool === tool,
+    onOpenChange: (open: boolean) => setHeadTool(current => open ? tool : current === tool ? null : current),
+  });
+  useEffect(() => { setHeadTool(null); }, [channelId, space]);
+  useEffect(() => {
+    if (!headTool) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setHeadTool(null);
+    };
+    const onPointer = (event: PointerEvent) => {
+      if (!chanHeadRef.current?.contains(event.target as Node)) setHeadTool(null);
+    };
+    document.addEventListener("keydown", onKey);
+    document.addEventListener("pointerdown", onPointer);
+    return () => {
+      document.removeEventListener("keydown", onKey);
+      document.removeEventListener("pointerdown", onPointer);
+    };
+  }, [headTool]);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [sending, setSending] = useState(false);
   const [sendError, setSendError] = useState<string | null>(null);
@@ -300,9 +307,18 @@ export function ChatSpaceSurface({ signedOut }: ChatSpaceSurfaceProps = {}) {
   const panelDragTargetRef = useRef(panelWidth);
   const [panelDragWidth, setPanelDragWidth] = useState<number | null>(null);
 
-  const pendingSend = useRef<PendingSend | null>(null);
+  const sendLedger = useRef(createChatSendLedger(newRequestId));
   const feedScrollRef = useRef<HTMLDivElement | null>(null);
+  const feedContentRef = useRef<HTMLDivElement | null>(null);
+  // Which channel the feed currently in state was read for. The state itself
+  // cannot say: a feed has no channel id on it, and it survives one commit
+  // past the selection change that invalidated it.
+  const feedChannel = useRef<string | null>(null);
   const rosterForChannel = useRef<string | null>(null);
+  const rosterReadGeneration = useRef(0);
+  // A panel view that must survive the channel switch it triggered: the
+  // channel-change effect applies it instead of closing the panel.
+  const pendingPanel = useRef<PanelView | null>(null);
   // Every channel read is stamped with the selection that started it. A
   // response that outlives its selection is dropped rather than applied —
   // including the A→B→A case, where the channel id alone would look current
@@ -427,13 +443,23 @@ export function ChatSpaceSurface({ signedOut }: ChatSpaceSurfaceProps = {}) {
 
   /* ── channel contents ──────────────────────────────────────────────────── */
 
+  const readState = useChatReadState({
+    api: chatApi,
+    actorId: bootstrap?.viewer.actorId ?? null,
+    space,
+    channelIds: channels.map((item) => item.id),
+    activeChannelId: channelId,
+    enabled: phase === "ready" && capabilities.readState === true,
+  });
+
   const loadFeed = useCallback(async () => {
     if (!channelId) return;
     const isCurrent = selection.begin();
     try {
       const next = await chatApi.feed(channelId, space);
       if (!isCurrent()) return;
-      setFeed(next);
+      feedChannel.current = channelId;
+      setFeed(previous => ({ ...next, messages: mergeChatMessageRevisions(previous?.messages ?? [], next.messages), requests: mergeChatRequestResponsibilities(previous?.requests ?? [], next.requests) }));
       setFeedError(null);
       setStale(false);
     } catch (error) {
@@ -451,22 +477,23 @@ export function ChatSpaceSurface({ signedOut }: ChatSpaceSurfaceProps = {}) {
   const loadRoster = useCallback(async () => {
     if (!channelId) return;
     const isCurrent = selection.begin();
+    const readGeneration = ++rosterReadGeneration.current;
     try {
       const next = await chatApi.members(channelId, space);
-      if (!isCurrent()) return;
+      if (!isCurrent() || readGeneration !== rosterReadGeneration.current) return;
       setMembers((current) => {
         const incoming = next.members ?? [];
-        if (incoming.length === 0) return current;
+        if (incoming.length === 0 && !next.authoritative) return current;
         // First successful read for this channel may replace. Every later
-        // read merges — a thin snapshot finishing last was wiping Arc.
+        // read merges partial snapshots; complete rosters remove departed members.
         if (rosterForChannel.current !== channelId) {
           rosterForChannel.current = channelId;
           return incoming;
         }
-        return mergeChannelRoster(current, incoming);
+        return mergeChannelRoster(current, incoming, next.authoritative);
       });
     } catch {
-      if (!isCurrent()) return;
+      if (!isCurrent() || readGeneration !== rosterReadGeneration.current) return;
       setStale(true);
     }
   }, [channelId, chatApi, selection, space]);
@@ -498,24 +525,38 @@ export function ChatSpaceSurface({ signedOut }: ChatSpaceSurfaceProps = {}) {
     // Wipe feed/invites on channel change, but keep the last roster until
     // the new one arrives so the facepile does not collapse to nobody.
     selection.reset();
+    feedChannel.current = null;
     setFeed(null);
     setInvites([]);
     setFeedError(null);
-    setPanel({ kind: "none" });
+    setPanel(pendingPanel.current ?? { kind: "none" });
+    if (pendingPanel.current) setCompactView("panel");
+    pendingPanel.current = null;
     if (rosterForChannel.current !== channelId) {
       rosterForChannel.current = null;
     }
   }, [channelId, selection]);
 
   useEffect(() => {
-    if (!channelId) return;
+    // Hosted channel reads need the space map established by bootstrap.
+    if (!channelId || phase !== "ready") return;
     void loadFeed();
     void loadRoster();
     void loadInvites();
-  }, [channelId, loadFeed, loadInvites, loadRoster]);
+  }, [channelId, phase, loadFeed, loadInvites, loadRoster]);
 
   usePoll(loadFeed, FEED_POLL_MS, phase === "ready" && Boolean(channelId));
   usePoll(loadRoster, ROSTER_POLL_MS, phase === "ready" && Boolean(channelId));
+  usePoll(loadInvites, ROSTER_POLL_MS, phase === "ready" && Boolean(channelId) && capabilities.inviteList && panel.kind === "members");
+  useEffect(() => {
+    if (phase === "ready" && panel.kind === "members") void loadInvites();
+  }, [phase, panel.kind, loadInvites]);
+  // A redeemed invitation arrives as a new roster member; re-read the list
+  // then instead of leaving a spent "Invited" row until the next slow poll.
+  const rosterKey = useMemo(() => members.map(member => member.actorId).sort().join("\n"), [members]);
+  useEffect(() => {
+    if (phase === "ready" && panel.kind === "members" && rosterKey) void loadInvites();
+  }, [rosterKey]);
 
   // The stream only shortens the wait for a posted message. The polls above
   // stay exactly as they were: they remain the fallback when no stream is
@@ -561,33 +602,140 @@ export function ChatSpaceSurface({ signedOut }: ChatSpaceSurfaceProps = {}) {
     return ids;
   }, [channelId, members, projection, viewer]);
 
-  // Follow the tail unless the reader has scrolled up to read something.
+  const draftScope = viewer && channelId ? { actorId: viewer.actorId, space, channelId } : null;
+  const visibleMessageIds = useMemo(
+    () => projection.entries.filter((entry) => entry.kind === "turn").map((entry) => entry.message.id),
+    [projection.entries],
+  );
+  const selectedReadState = channelId ? readState.states[channelId] : undefined;
+  const rootReadLane = selectedReadState?.lanes.find((lane) => lane.rootMessageId === null);
+  const reading = useChatReadingPosition({
+    scope: draftScope,
+    ready: Boolean(feed && channel && feedChannel.current === channelId
+      && (!capabilities.readState || selectedReadState || readState.error)),
+    messageIds: visibleMessageIds,
+    focusMessageId,
+    initialUnreadMessageId: rootReadLane?.unreadMessageIds.find((id) => visibleMessageIds.includes(id)),
+    scroller: feedScrollRef,
+    content: feedContentRef,
+  });
+  const latestVisibleRootId = visibleMessageIds.at(-1) ?? null;
+  const unreadArrival = useRef<{ key: string; messageId: string | null } | null>(null);
+  const unreadVisitKey = JSON.stringify([viewer?.actorId, space, channelId]);
+  if (unreadArrival.current?.key !== unreadVisitKey) unreadArrival.current = null;
+  if (!unreadArrival.current && rootReadLane) {
+    unreadArrival.current = { key: unreadVisitKey, messageId: rootReadLane.unreadMessageIds[0] ?? null };
+  }
+
   useEffect(() => {
-    const node = feedScrollRef.current;
-    if (!node) return;
-    const distanceFromBottom = node.scrollHeight - node.scrollTop - node.clientHeight;
-    if (distanceFromBottom < 160) node.scrollTop = node.scrollHeight;
-  }, [projection.lastMessageAt]);
+    if (!channelId || !rootReadLane || !latestVisibleRootId || reading.away
+      || feedChannel.current !== channelId
+      || !rootReadLane.unreadMessageIds.some((id) => visibleMessageIds.includes(id))
+      || rootReadLane.lastReadMessageId === latestVisibleRootId
+      || (isCompact && compactView !== "channel")) return;
+    const timer = window.setTimeout(() => {
+      if (document.visibilityState === "visible" && feedScrollRef.current?.getClientRects().length) {
+        void readState.markRead(channelId, latestVisibleRootId);
+      }
+    }, 800);
+    return () => window.clearTimeout(timer);
+  }, [channelId, compactView, isCompact, latestVisibleRootId, reading.away, readState.markRead, rootReadLane, visibleMessageIds]);
+
+  // Replies under a root the viewer is looking at arrive as a reply count on
+  // that root; they must not leave the channel badged while it is on screen.
+  const openThreadRootId = panel.kind === "thread" ? panel.rootMessageId : null;
+  const viewedThreads = useMemo(() => viewedThreadReads(selectedReadState, visibleMessageIds, openThreadRootId), [openThreadRootId, selectedReadState, visibleMessageIds]);
+  useEffect(() => {
+    if (!channelId || !viewedThreads.length || reading.away || feedChannel.current !== channelId
+      || (isCompact && compactView !== "channel")) return;
+    const timer = window.setTimeout(() => {
+      if (document.visibilityState !== "visible" || !feedScrollRef.current?.getClientRects().length) return;
+      for (const read of viewedThreads) void readState.markRead(channelId, read.messageId, read.rootMessageId);
+    }, 800);
+    return () => window.clearTimeout(timer);
+  }, [channelId, compactView, isCompact, reading.away, readState.markRead, viewedThreads]);
 
   /* ── sending ───────────────────────────────────────────────────────────── */
 
-  const draft = channelId ? drafts[channelId] ?? "" : "";
-  const askTargetId = channelId ? askTargets[channelId] ?? null : null;
+  const channelDraft = useChatDraft(draftScope);
+  const threadRootId = panel.kind === "thread" ? panel.rootMessageId : null;
+  const messageContext = useChatMessageContext(chatApi, bootstrap?.viewer.actorId ?? null, space, channelId, focusMessageId ?? threadRootId);
+  const onQuestionResponse = async (questionId: string, change: ChatQuestionChange) => {
+    if (!channelId || !chatApi.respondQuestion) throw new Error("Question responses are unavailable.");
+    const isCurrent = selection.begin();
+    try {
+      const result = await chatApi.respondQuestion(channelId, questionId, change, space);
+      if (!isCurrent()) return;
+      void loadBootstrap(false);
+      setFeed(previous => previous ? { ...previous, requests: previous.requests.map(item => item.responsibility?.recordId === questionId
+        ? { ...item, responsibility: result.responsibility } : item) } : previous);
+    } catch (error) {
+      if (isCurrent() && error instanceof ChatApiError && error.status === 409) await loadFeed();
+      throw error;
+    }
+  };
+  const onCorrect: CorrectChatMessage = async (messageId, change) => {
+    if (!channelId || !chatApi.correctMessage) throw new Error("Message corrections are unavailable.");
+    const isCurrent = selection.begin();
+    const install = (message: ChatMessage) => {
+      if (!isCurrent()) return;
+      setFeed(previous => previous ? { ...previous, messages: previous.messages.map(item => item.id === messageId ? newestChatMessage(item, message) : item) } : previous);
+      messageContext.replaceMessage(message);
+    };
+    try {
+      const result = await chatApi.correctMessage(channelId, messageId, change, space);
+      install(result.message);
+      if (isCurrent()) void loadFeed();
+      return result.message;
+    } catch (error) {
+      if (error instanceof ChatApiError && error.status === 409 && chatApi.messageContext) {
+        const latest = await chatApi.messageContext(channelId, messageId, space).catch(() => null);
+        const message = latest?.messages.find(item => item.id === messageId);
+        if (message) install(message);
+      }
+      throw error;
+    }
+  };
+
+  useEffect(() => {
+    if (focusMessageId && messageContext.context && ((panel.kind === "thread" && panel.rootMessageId !== messageContext.context.rootMessageId) || (panel.kind !== "thread" && !feed?.messages.some(message => message.id === focusMessageId)))) {
+      setPanel({ kind: "thread", rootMessageId: messageContext.context.rootMessageId });
+      setCompactView("panel");
+    }
+  }, [feed, focusMessageId, messageContext.context, panel]);
+  useEffect(() => {
+    if (!focusMessageId || !messageContext.context) return;
+    const frame = requestAnimationFrame(() => {
+      document.querySelector(`.chat-rpanel [data-message-id="${CSS.escape(focusMessageId)}"]`)?.scrollIntoView({ block: "nearest" });
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [focusMessageId, messageContext.context?.rootMessageId]);
+  const replyDraft = useChatDraft(threadRootId ? draftScope : null, threadRootId);
+  const draft = channelDraft.draft.body;
+  const askTargetId = channelDraft.draft.targetActorId;
+  const threadDraft = replyDraft.draft.body;
+
+  const presence = useChatPresence(chatApi, channelId, viewer?.actorId, space, phase === "ready" && panel.kind !== "team" && (!isCompact || compactView !== "list"));
+  const typingText = chatPresenceText(presence);
+  const hereActorIds = useMemo(() => new Set(presence.people.map(person => person.actorId)), [presence.people]);
 
   const setDraft = useCallback(
     (value: string) => {
-      if (!channelId) return;
-      setDrafts((current) => ({ ...current, [channelId]: value }));
+      presence.edited();
+      channelDraft.store.update((current) => ({ ...current, body: value }));
     },
-    [channelId],
+    [channelDraft.store, presence.edited],
   );
+
+  // The intro's starters nudge the composer; they never post or ask by themselves.
+  const [composerRequest, setComposerRequest] = useState<{ kind: "focus" | "ask"; at: number } | null>(null);
+  const channelHasAskable = capabilities.asks && members.some(isAskableMember);
 
   const setAskTarget = useCallback(
     (actorId: string | null) => {
-      if (!channelId) return;
-      setAskTargets((current) => ({ ...current, [channelId]: actorId }));
+      channelDraft.store.update((current) => ({ ...current, targetActorId: actorId }));
     },
-    [channelId],
+    [channelDraft.store],
   );
 
   const send = useCallback(
@@ -596,43 +744,35 @@ export function ChatSpaceSurface({ signedOut }: ChatSpaceSurfaceProps = {}) {
       replyToMessageId: string | null;
       targetActorId: string | null;
       files?: File[];
+      mentionActorIds?: string[];
     }) => {
-      if (!channelId) return false;
+      if (!channelId || !viewer) return false;
       const body = input.body.trim();
       const files = input.files ?? [];
+      const mentionActorIds = [...new Set(input.mentionActorIds ?? [])].sort();
       if (!body && files.length === 0) return false;
 
-      // One logical send keeps one request id across retries, so a failure we
-      // cannot interpret does not turn into two posts.
-      const previous = pendingSend.current;
-      const sameSend = previous
-        && previous.channelId === channelId
-        && previous.body === body
-        && previous.replyToMessageId === input.replyToMessageId
-        && previous.targetActorId === input.targetActorId;
-      const requestId = sameSend ? previous!.requestId : newRequestId();
-      const attachments = sameSend && previous?.attachments
-        ? previous.attachments
-        : files.length > 0
-          ? await outgoingChatAttachments(files, (remote) =>
-            chatApi.uploadAttachments
-              ? chatApi.uploadAttachments(channelId, remote, space)
-              : uploadMediaFiles(remote))
-          : undefined;
-      pendingSend.current = {
-        channelId,
-        body,
+      const pending = sendLedger.current.begin({
+        actorId: viewer.actorId, space, channelId, body,
         replyToMessageId: input.replyToMessageId,
-        targetActorId: input.targetActorId,
-        requestId,
-        attachments,
-      };
+        targetActorId: input.targetActorId, files, mentionActorIds,
+      });
+      const requestId = pending.requestId;
+      const attachments = pending.attachments ?? (files.length > 0
+        ? await outgoingChatAttachments(files, (remote) =>
+          chatApi.uploadAttachments
+            ? chatApi.uploadAttachments(channelId, remote, space)
+            : uploadMediaFiles(remote))
+        : undefined);
+      sendLedger.current.prepared(pending, attachments);
 
       if (input.targetActorId) {
         await chatApi.postAsk(channelId, {
           requestId,
           body,
           targetActorId: input.targetActorId,
+          ...(attachments?.length ? { attachments } : {}),
+          mentionActorIds,
           space,
           ...(input.replyToMessageId ? { replyToMessageId: input.replyToMessageId } : {}),
         });
@@ -640,18 +780,19 @@ export function ChatSpaceSurface({ signedOut }: ChatSpaceSurfaceProps = {}) {
         await chatApi.postMessage(channelId, {
           requestId,
           body,
+          mentionActorIds,
           space,
           ...(input.replyToMessageId ? { replyToMessageId: input.replyToMessageId } : {}),
           ...(attachments && attachments.length > 0 ? { attachments } : {}),
         });
       }
-      // Only a definite success clears the retry slot.
-      pendingSend.current = null;
+      // A late success acknowledges only this logical send.
+      sendLedger.current.acknowledge(pending);
       await loadFeed();
       void loadRoster();
       return true;
     },
-    [channelId, chatApi, loadFeed, loadRoster, space],
+    [channelId, chatApi, loadFeed, loadRoster, space, viewer],
   );
 
   const onReact = useCallback((messageId: string, emoji: string, remove: boolean) => {
@@ -663,7 +804,7 @@ export function ChatSpaceSurface({ signedOut }: ChatSpaceSurfaceProps = {}) {
         ...current,
         messages: current.messages.map((message) =>
           message.id === messageId
-            ? { ...message, reactions: applyOptimisticReaction(message.reactions, emoji, remove) }
+            ? { ...message, reactions: applyOptimisticReaction(message.reactions, emoji, remove, viewer?.actorId) }
             : message),
       };
     });
@@ -681,36 +822,28 @@ export function ChatSpaceSurface({ signedOut }: ChatSpaceSurfaceProps = {}) {
             : "That reaction did not save.",
         );
       });
-  }, [channelId, chatApi, feed, loadFeed, space]);
+  }, [channelId, chatApi, feed, loadFeed, space, viewer?.actorId]);
 
-  const onStopAsk = useCallback((flightId: string) => {
+  const onStopAsk = useCallback(async (flightId: string) => {
     if (!channelId) return;
-    void chatApi.cancelAsk(channelId, flightId, space)
-      .then((result) => {
-        setFeed((current) => {
-          if (!current) return current;
-          return {
-            ...current,
-            requests: current.requests.map((item) =>
-              item.flightId === flightId ? { ...item, state: result.request.state } : item
-            ),
-          };
-        });
-      })
-      .catch(() => {
-        void loadFeed();
-      });
-  }, [channelId, chatApi, loadFeed, space]);
+    const isCurrent = selection.begin();
+    const result = await chatApi.cancelAsk(channelId, flightId, space);
+    if (!isCurrent()) return;
+    setFeed(current => current ? {
+      ...current,
+      requests: current.requests.map(item => item.flightId === flightId ? { ...item, state: result.request.state } : item),
+    } : current);
+    void loadFeed();
+  }, [channelId, chatApi, loadFeed, selection, space]);
 
   const onSendChannel = useCallback((files: File[] = []) => {
     if (!channelId || sending) return Promise.resolve(false);
     setSendError(null);
     setSending(true);
-    return send({ body: draft, replyToMessageId: null, targetActorId: askTargetId, files })
+    return send({ body: draft, replyToMessageId: null, targetActorId: askTargetId, files, mentionActorIds: channelDraft.draft.mentions?.map(mention => mention.actorId) })
       .then((sent) => {
         if (sent) {
-          setDrafts((current) => ({ ...current, [channelId]: "" }));
-          setAskTargets((current) => ({ ...current, [channelId]: null }));
+          channelDraft.store.clearIfUnchanged(channelDraft.draft);
         }
         return sent;
       })
@@ -723,18 +856,15 @@ export function ChatSpaceSurface({ signedOut }: ChatSpaceSurfaceProps = {}) {
         return false;
       })
       .finally(() => setSending(false));
-  }, [askTargetId, channelId, draft, send, sending]);
-
-  const threadRootId = panel.kind === "thread" ? panel.rootMessageId : null;
-  const threadDraft = threadRootId ? threadDrafts[threadRootId] ?? "" : "";
+  }, [askTargetId, channelId, channelDraft.draft, channelDraft.store, draft, send, sending]);
 
   const onSendThreadReply = useCallback((files: File[] = []) => {
     if (!threadRootId || threadSending) return Promise.resolve(false);
     setThreadError(null);
     setThreadSending(true);
-    return send({ body: threadDraft, replyToMessageId: threadRootId, targetActorId: null, files })
+    return send({ body: threadDraft, replyToMessageId: threadRootId, targetActorId: replyDraft.draft.targetActorId, files, mentionActorIds: replyDraft.draft.mentions?.map(mention => mention.actorId) })
       .then((sent) => {
-        if (sent) setThreadDrafts((current) => ({ ...current, [threadRootId]: "" }));
+        if (sent) replyDraft.store.clearIfUnchanged(replyDraft.draft);
         return sent;
       })
       .catch((error: unknown) => {
@@ -744,7 +874,7 @@ export function ChatSpaceSurface({ signedOut }: ChatSpaceSurfaceProps = {}) {
         return false;
       })
       .finally(() => setThreadSending(false));
-  }, [send, threadDraft, threadRootId, threadSending]);
+  }, [send, threadDraft, threadRootId, threadSending, replyDraft.draft, replyDraft.store]);
 
   /* ── navigation ────────────────────────────────────────────────────────── */
 
@@ -769,6 +899,7 @@ export function ChatSpaceSurface({ signedOut }: ChatSpaceSurfaceProps = {}) {
     setSpace(slug);
     setChannelId(null);
     setBootstrap(null);
+    feedChannel.current = null;
     setFeed(null);
     setMembers([]);
     setInvites([]);
@@ -791,6 +922,7 @@ export function ChatSpaceSurface({ signedOut }: ChatSpaceSurfaceProps = {}) {
   }, [address, channelId, space]);
 
   const openPanel = useCallback((next: PanelView) => {
+    setFocusMessageId(null);
     setPanel(next);
     setCompactView(next.kind === "none" ? "channel" : "panel");
   }, []);
@@ -814,9 +946,41 @@ export function ChatSpaceSurface({ signedOut }: ChatSpaceSurfaceProps = {}) {
   }, [feed, focusMessageId]);
 
   const closePanel = useCallback(() => {
+    setFocusMessageId(null);
     setPanel({ kind: "none" });
     setCompactView("channel");
   }, []);
+
+  const toggleTeam = useCallback(() => {
+    const open = panel.kind !== "team";
+    setPanel(open ? { kind: "team" } : { kind: "none" });
+    setCompactView(open ? "panel" : "channel");
+  }, [panel.kind]);
+
+  // A team row opens the member card in the first channel that listed them.
+  const openTeamMember = useCallback(
+    (actorId: string, targetChannelId: string) => {
+      // Crossing channels: the change effect would close the panel, so the
+      // card is staged for it to apply instead.
+      if (targetChannelId !== channelId) {
+        pendingPanel.current = { kind: "member", actorId };
+      }
+      selectChannel(targetChannelId);
+      openPanel({ kind: "member", actorId });
+    },
+    [channelId, openPanel, selectChannel],
+  );
+
+  // Inviting names a channel: the selected one, or the space's first.
+  const inviteFromTeam = useCallback(() => {
+    if (!channelId && channels[0]) {
+      // Selecting the fallback channel fires the change effect; keep the
+      // team panel open behind the sheet.
+      pendingPanel.current = { kind: "team" };
+      selectChannel(channels[0].id);
+    }
+    setSheetOpen(true);
+  }, [channelId, channels, selectChannel]);
 
   const toggleRail = useCallback(() => {
     sidebarCollapse.toggleCollapsed();
@@ -979,39 +1143,67 @@ export function ChatSpaceSurface({ signedOut }: ChatSpaceSurfaceProps = {}) {
     [address, capabilities.spaceDelete, chatApi, loadBootstrap],
   );
 
+  // The Team panel reads across every channel in the space — an aggregation
+  // of the same per-channel reads, only while the panel is open.
+  const teamOpen = panel.kind === "team";
+  const {
+    team: spaceTeam,
+    loading: spaceTeamLoading,
+    reload: reloadSpaceTeam,
+  } = useSpaceTeam({
+    api: chatApi,
+    capabilities,
+    channels,
+    space,
+    enabled: phase === "ready" && teamOpen,
+    viewerActorId: viewer?.actorId ?? "",
+  });
+
   const revokeInvite = useCallback(
-    async (inviteId: string) => {
-      if (!channelId || !viewer) return;
+    async (inviteId: string, targetChannelId?: string) => {
+      const target = targetChannelId ?? channelId;
+      if (!target || !viewer) return;
       setRevokingInviteId(inviteId);
+      setInviteError(null);
+      const isCurrent = selection.begin();
       try {
-        await chatApi.revokeInvite(channelId, inviteId, viewer.actorId, space);
-        await loadInvites();
+        const result = await chatApi.revokeInvite(target, inviteId, viewer.actorId, space);
+        if (!isCurrent()) return;
+        if (target === channelId) setInvites(current => current.map(invite => invite.id === inviteId ? result.invite : invite));
+        await reloadSpaceTeam();
+        if (target === channelId) await loadInvites();
       } catch (error) {
-        setInviteError(error instanceof Error ? error.message : "That invitation could not be revoked.");
+        if (!isCurrent()) return;
+        setInviteError(error instanceof ChatApiError && (error.status === 0 || error.status >= 500)
+          ? "Could not confirm the revocation. Check your connection and try again."
+          : error instanceof Error ? error.message : "That invitation could not be revoked.");
       } finally {
         setRevokingInviteId(null);
       }
     },
-    [channelId, chatApi, loadInvites, space, viewer],
+    [channelId, chatApi, loadInvites, reloadSpaceTeam, selection, space, viewer],
   );
 
   const mentionMember = useCallback(
     (actorId: string) => {
       const member = membersById.get(actorId);
       if (!member || !channelId) return;
+      const selected = channelDraft.store.read().mentions ?? [];
+      if (selected.length >= 20 && !selected.some(mention => mention.actorId === actorId)) {
+        setSendError("A message can mention up to 20 people. Remove a recipient before adding another.");
+        closePanel();
+        return;
+      }
       const label = memberDisplayName(member);
-      setDrafts((current) => {
-        const existing = current[channelId] ?? "";
+      channelDraft.store.update((current) => {
+        const existing = current.body;
         const separator = existing.length === 0 || existing.endsWith(" ") ? "" : " ";
-        return { ...current, [channelId]: `${existing}${separator}@${label} ` };
+        return { ...current, body: `${existing}${separator}@${label} `, mentions: [...(current.mentions ?? []).filter(mention => mention.actorId !== actorId), { actorId, label }] };
       });
-      // Mentioning arms an ask target only for a member `/asks` can route to;
-      // an API participant's mention stays an ordinary post, and so does every
-      // mention on a server with no `/asks`.
-      if (capabilities.asks && isAskableMember(member)) setAskTarget(actorId);
+      // Work routing is chosen explicitly in the Ask picker.
       closePanel();
     },
-    [capabilities.asks, channelId, closePanel, membersById, setAskTarget],
+    [channelId, channelDraft.store, closePanel, membersById],
   );
 
   /* ── keyboard (§11) ────────────────────────────────────────────────────── */
@@ -1130,14 +1322,30 @@ export function ChatSpaceSurface({ signedOut }: ChatSpaceSurfaceProps = {}) {
   } as CSSProperties;
   const panelOpen = panel.kind !== "none";
   const threadRoot = threadRootId
-    ? (feed?.messages ?? []).find((message) => message.id === threadRootId) ?? null
+    ? [...(feed?.messages ?? []), ...(messageContext.context?.messages ?? [])].filter(message => message.id === threadRootId)
+      .reduce<ChatMessage | null>((latest, message) => newestChatMessage(latest ?? undefined, message), null)
     : null;
-  const threadReplyList = threadRootId ? projection.repliesByRoot.get(threadRootId) ?? [] : [];
+  const threadReplyList = threadRootId ? [...new Map([
+    ...(messageContext.context?.messages.filter(message => message.replyToMessageId === threadRootId) ?? []),
+    ...mergeChatMessageRevisions(messageContext.context?.messages ?? [], projection.repliesByRoot.get(threadRootId) ?? []),
+  ].map(message => [message.id, message])).values()].sort(compareMessagesAsc) : [];
   const threadRequest = threadRootId
     ? projection.requestsByMessage.get(threadRootId) ?? null
     : null;
 
   return (
+    <ChatCorrectionScope.Provider value={draftScope}>
+    <ChatExecutionAccess.Provider value={viewer?.isOperator && channelId && chatApi.execution && chatApi.interruptExecution ? {
+      scope: JSON.stringify([viewer.actorId, space, channelId]),
+      load: flightId => chatApi.execution!(channelId, flightId, space),
+      interrupt: (flightId, input) => chatApi.interruptExecution!(channelId, flightId, input, space),
+    } : null}>
+    <ChatApprovalAccess.Provider value={viewer?.isOperator && channelId && chatApi.approvals && chatApi.decideApproval ? {
+      scope: JSON.stringify([viewer.actorId, space, channelId]),
+      load: flightId => chatApi.approvals!(channelId, flightId, space),
+      decide: (flightId, decision) => chatApi.decideApproval!(channelId, flightId, decision, space),
+    } : null}>
+    <ChatQuestionResponder.Provider value={chatApi.respondQuestion ? onQuestionResponse : null}>
     <ChatSpaceTheme
       theme={theme}
       className="chat-space"
@@ -1152,7 +1360,7 @@ export function ChatSpaceSurface({ signedOut }: ChatSpaceSurfaceProps = {}) {
         <div className="chat-topbar-band">
           <div className="chat-space-name">
             <b>Scout Chat</b>
-            {channel ? <span>{channel.authorityNodeId}</span> : null}
+            {channel ? <span>{spaces.find((entry) => entry.slug === space)?.title ?? space}</span> : null}
           </div>
           {isCompact ? null : (
             <RailToggle
@@ -1181,6 +1389,8 @@ export function ChatSpaceSurface({ signedOut }: ChatSpaceSurfaceProps = {}) {
           activeSpace={space}
           selectedId={channelId}
           addressedChannelIds={addressedChannelIds}
+          readStates={readState.states}
+          questionCounts={bootstrap?.questionCounts}
           canCreate={viewer?.isOperator === true}
           viewerName={viewerName}
           viewerIsHost={viewer?.isOperator === true}
@@ -1192,6 +1402,8 @@ export function ChatSpaceSurface({ signedOut }: ChatSpaceSurfaceProps = {}) {
           onCreateSpace={createSpace}
           onDeleteSpace={deleteSpace}
           onInvite={() => setSheetOpen(true)}
+          onOpenTeam={toggleTeam}
+          teamOpen={teamOpen}
           onExpandRail={toggleRail}
           onOpenProfile={channel && viewer
             ? () => openPanel({ kind: "member", actorId: viewer.actorId })
@@ -1202,7 +1414,7 @@ export function ChatSpaceSurface({ signedOut }: ChatSpaceSurfaceProps = {}) {
 
         {channel ? (
           <main className="chat-channel" aria-label={channelLabel(channel.title)}>
-            <header className="chat-chan-head">
+            <header className="chat-chan-head" ref={chanHeadRef}>
               <button
                 type="button"
                 className="chat-compact-back"
@@ -1211,24 +1423,71 @@ export function ChatSpaceSurface({ signedOut }: ChatSpaceSurfaceProps = {}) {
               >
                 ‹
               </button>
-              <span className="chat-chan-name">
-                <span className="chat-hash">#</span>
-                {channel.title.replace(/^#/u, "")}
-              </span>
-              <span className={`chat-topic${channel.topic ? "" : " chat-topic--empty"}`}>
-                {channel.topic ?? "No topic set"}
-              </span>
+              {/* The header reads left to right as three things: which room,
+                  who is in it, and what you can do here. Name and topic are
+                  one group; the topic is the only elastic part, so a narrow
+                  window eats it before anything else. */}
+              <div className="chat-chan-title">
+                <span className="chat-chan-name">
+                  <span className="chat-hash">#</span>
+                  {channel.title.replace(/^#/u, "")}
+                </span>
+                {channel.topic ? <span className="chat-topic">{channel.topic}</span> : null}
+              </div>
               <Facepile
                 members={members}
                 countLabel={countLabel}
+                hereActorIds={hereActorIds}
                 onOpen={() => openPanel({ kind: "members" })}
               />
-              <button type="button" className="btn btn--sm" onClick={() => setSheetOpen(true)}>
-                Invite
-              </button>
+              {/* Find, Questions and Activity: one row of triggers in the
+                  header, one tray beneath it (see .chat-chan-tools). Mark read
+                  and Invite live in the Members panel and the sidebar. */}
+              <span className="chat-chan-divider" aria-hidden />
+              <div className="chat-chan-tools" role="toolbar" aria-label="Channel tools">
+                {chatApi.searchMessages ? <ChatSearch key={JSON.stringify([viewer?.actorId, space, channelId])}
+                  {...headToolProps("find")}
+                  api={chatApi} channelId={channelId!} space={space}
+                  onOpen={message => {
+                    setFocusMessageId(message.id);
+                    setPanel({ kind: "thread", rootMessageId: message.replyToMessageId ?? message.id });
+                    setCompactView("panel");
+                    address.write({ channelId, space, messageId: message.id }, false);
+                  }} /> : null}
+
+                {chatApi.questions ? <ChatQuestions key={JSON.stringify(["questions", viewer?.actorId, space, channelId])} {...headToolProps("questions")} api={chatApi} channelId={channelId!} space={space} onChanged={() => { void loadFeed(); void loadBootstrap(false); }} /> : null}
+
+                {capabilities.readState && chatApi.updateAttention ? <ChatAttention
+                  {...headToolProps("activity")}
+                  channels={channels} channelId={channelId!} states={readState.states} messages={feed?.messages ?? []} actorNames={Object.fromEntries(members.map(member => [member.actorId, memberDisplayName(member)]))} questionCounts={bootstrap?.questionCounts}
+                  busy={readState.attentionBusy} error={readState.attentionError}
+                  onUnpin={chatApi.updatePins ? (messageId) => void readState.updatePins(channelId!, messageId, false) : undefined}
+                  onUnsave={(id, messageId) => void readState.updateAttention(id, { messageId, saved: false })}
+                  onOpenSaved={(id, messageId) => {
+                    const rootMessageId = id === channelId ? feed?.messages.find(message => message.id === messageId)?.replyToMessageId ?? messageId : messageId;
+                    if (id !== channelId) pendingPanel.current = { kind: "thread", rootMessageId };
+                    selectChannel(id);
+                    setPanel({ kind: "thread", rootMessageId });
+                    setFocusMessageId(messageId);
+                    setCompactView("panel");
+                    address.write({ channelId: id, space, messageId }, false);
+                  }}
+                  onMode={notificationMode => void readState.updateAttention(channelId!, { notificationMode })}
+                  onUnfollow={(id, threadId) => void readState.updateAttention(id, { threadId, following: false })}
+                  onOpen={(id, rootMessageId) => {
+                    if (rootMessageId && id !== channelId) pendingPanel.current = { kind: "thread", rootMessageId };
+                    selectChannel(id);
+                    if (rootMessageId) openPanel({ kind: "thread", rootMessageId });
+                  }}
+                /> : null}
+              </div>
             </header>
 
-            <div className="chat-feed" ref={feedScrollRef} role="log" aria-label="Channel messages">
+            <div className="chat-feed" ref={feedScrollRef} onScroll={reading.onScroll} role="log" aria-label="Channel messages">
+              {/* The scroller and the column it scrolls are separate elements
+                  on purpose: only a box of its own can be measured, and the
+                  tail-pin below needs to know when this column grows. */}
+              <div className="chat-feed-inner" ref={feedContentRef}>
               {stale ? (
                 <p className="chat-feed-notice">
                   Reconnecting — this is the last reading that came back.
@@ -1237,12 +1496,56 @@ export function ChatSpaceSurface({ signedOut }: ChatSpaceSurfaceProps = {}) {
               {feedError ? (
                 <p className="chat-feed-notice" data-tone="error">{feedError}</p>
               ) : null}
+              {readState.attentionError ? <p className="chat-feed-notice" role="alert">{readState.attentionError}</p> : null}
+              {readState.error ? <p className="chat-feed-notice" role="status">{readState.error}</p> : null}
               {!feed && !feedError ? <p className="chat-feed-notice">Loading messages…</p> : null}
               {feed && projection.entries.length === 0 ? (
-                <p className="chat-feed-empty">
-                  Nothing has been posted here yet. Say something, or invite the people and
-                  agents who belong in this room.
-                </p>
+                <section className="chat-intro" aria-label={`About ${channelLabel(channel.title)}`}>
+                  <span className="chat-intro-mark" aria-hidden>#</span>
+                  <h2 className="chat-intro-name">{channel.title.replace(/^#/u, "")}</h2>
+                  {channel.topic ? <p className="chat-intro-topic">{channel.topic}</p> : null}
+                  <p className="chat-intro-note">
+                    Nothing has been posted here yet. Say something, or bring in the people and agents who belong in this room.
+                  </p>
+                  {!capabilities.invitesRequireOwner || viewer?.isOperator === true ? (
+                    <div className="chat-intro-actions">
+                      <button type="button" className="btn btn--sm" onClick={() => setSheetOpen(true)}>
+                        <UserPlus size={15} strokeWidth={1.9} aria-hidden /> Invite people or agents
+                      </button>
+                    </div>
+                  ) : null}
+                  <div className="chat-intro-starters">
+                    <p className="chat-intro-starters-label">Or start with</p>
+                    <button
+                      type="button"
+                      className="chat-intro-starter"
+                      onClick={() => {
+                        if (!draft.trim()) setDraft("This channel is for ");
+                        setComposerRequest({ kind: "focus", at: Date.now() });
+                      }}
+                    >
+                      <MessageSquare size={15} strokeWidth={1.8} aria-hidden /> Post what this channel is for
+                    </button>
+                    {channelHasAskable ? (
+                      <button
+                        type="button"
+                        className="chat-intro-starter"
+                        onClick={() => setComposerRequest({ kind: "ask", at: Date.now() })}
+                      >
+                        <Bot size={15} strokeWidth={1.8} aria-hidden /> Ask an agent in this channel
+                      </button>
+                    ) : null}
+                  </div>
+                </section>
+              ) : null}
+              {feed?.reachesStart && projection.entries.length > 0 ? (
+                <div className="chat-origin">
+                  <span className="chat-intro-mark" aria-hidden>#</span>
+                  <p>
+                    <strong>This is the start of {channelLabel(channel.title)}.</strong>
+                    {channel.topic ? <span>{channel.topic}</span> : null}
+                  </p>
+                </div>
               ) : null}
 
               {projection.entries.map((entry) => {
@@ -1264,6 +1567,10 @@ export function ChatSpaceSurface({ signedOut }: ChatSpaceSurfaceProps = {}) {
                   return <StatusFold key={entry.id} label={entry.label} messages={entry.messages} />;
                 }
                 return (
+                  <Fragment key={entry.id}>
+                  {unreadArrival.current?.messageId === entry.message.id ? (
+                    <div className="chat-unread-divider" role="separator" aria-label="New messages">New messages</div>
+                  ) : null}
                   <Turn
                     key={entry.id}
                     message={entry.message}
@@ -1276,16 +1583,45 @@ export function ChatSpaceSurface({ signedOut }: ChatSpaceSurfaceProps = {}) {
                     onOpenMember={(actorId) => openPanel({ kind: "member", actorId })}
                     onReact={onReact}
                     onCopyLink={onCopyLink}
+                    pinned={selectedReadState?.pins?.some(pin => pin.messageId === entry.message.id)}
+                    viewerActorId={viewer?.actorId}
+                    viewerIsOperator={viewer?.isOperator}
+                    onCorrect={chatApi.correctMessage ? onCorrect : undefined}
+                    onPin={chatApi.updatePins && selectedReadState ? (messageId, pinned) => void readState.updatePins(channelId!, messageId, pinned) : undefined}
+                    saved={selectedReadState?.preferences?.savedMessageIds?.includes(entry.message.id)}
+                    saveBusy={readState.attentionBusy}
+                    onSave={chatApi.updateAttention && selectedReadState ? (messageId, saved) => void readState.updateAttention(channelId!, { messageId, saved }) : undefined}
                     onStopAsk={onStopAsk}
                     focused={focusMessageId === entry.message.id}
+                    continues={entry.continues}
                   />
+                  </Fragment>
                 );
               })}
+              </div>
             </div>
 
+            {reading.away ? (
+              <div className="chat-reading-nav">
+                <button type="button" className="btn btn--sm" onClick={reading.jumpToLatest}>
+                  {reading.newCount > 0
+                    ? `${reading.newCount} new ${reading.newCount === 1 ? "message" : "messages"} · Jump to latest ↓`
+                    : "Jump to latest ↓"}
+                </button>
+              </div>
+            ) : null}
             <div className="chat-composer-wrap">
+              {/* Typing sits on the composer's top edge, in a slot that is
+                  always reserved so the field never jumps. When nobody is
+                  typing it says nothing — a quiet room needs no caption. */}
+              <div className="chat-typing" role="status" aria-live="polite">
+                {typingText ? <><span className="chat-typing-dots" aria-hidden><i /><i /><i /></span>{typingText}</> : null}
+              </div>
               <ChannelComposer
+                attachmentScope={JSON.stringify([viewer?.actorId, space, channelId])}
                 members={members}
+                mentions={channelDraft.draft.mentions}
+                onMentionsChange={mentions => channelDraft.store.update(current => ({ ...current, mentions }))}
                 draft={draft}
                 onDraftChange={setDraft}
                 askTargetId={askTargetId}
@@ -1294,6 +1630,7 @@ export function ChatSpaceSurface({ signedOut }: ChatSpaceSurfaceProps = {}) {
                 sending={sending}
                 error={sendError}
                 placeholder={`Message ${channelLabel(channel.title)}`}
+                request={composerRequest}
               />
             </div>
           </main>
@@ -1309,7 +1646,7 @@ export function ChatSpaceSurface({ signedOut }: ChatSpaceSurfaceProps = {}) {
           </main>
         )}
 
-        {channel && panelOpen && isMidWidth && !isCompact ? (
+        {(channel || teamOpen) && panelOpen && isMidWidth && !isCompact ? (
           <div className="chat-panel-scrim" role="presentation" onClick={closePanel} />
         ) : null}
 
@@ -1363,6 +1700,25 @@ export function ChatSpaceSurface({ signedOut }: ChatSpaceSurfaceProps = {}) {
           />
         ) : null}
 
+        {viewer && teamOpen ? (
+          <TeamPanel
+            spaceTitle={spaces.find((entry) => entry.slug === space)?.title ?? space}
+            team={spaceTeam}
+            loading={spaceTeamLoading}
+            inviteError={inviteError}
+            nowMs={nowMs}
+            viewerActorId={viewer.actorId}
+            viewerIsOperator={viewer.isOperator}
+            revokingInviteId={revokingInviteId}
+            onOpenMember={openTeamMember}
+            onRevokeInvite={(targetChannelId, inviteId) => void revokeInvite(inviteId, targetChannelId)}
+            onInvite={inviteFromTeam}
+            inviteDisabled={channels.length === 0}
+            onClose={closePanel}
+            overlay={isMidWidth}
+          />
+        ) : null}
+
         {channel && viewer ? (
           <ChatRightPanel
             view={panel}
@@ -1378,29 +1734,71 @@ export function ChatSpaceSurface({ signedOut }: ChatSpaceSurfaceProps = {}) {
             threadRoot={threadRoot}
             threadReplies={threadReplyList}
             threadRequest={threadRequest}
+            threadRequestsByMessage={projection.requestsByMessage}
             threadDraft={threadDraft}
+            threadAttachmentScope={JSON.stringify([viewer?.actorId, space, channelId, threadRootId])}
+            threadAskTargetId={replyDraft.draft.targetActorId}
+            onThreadAskTargetChange={targetActorId => replyDraft.store.update(current => ({ ...current, targetActorId }))}
+            threadMentions={replyDraft.draft.mentions}
+            onThreadMentionsChange={mentions => replyDraft.store.update(current => ({ ...current, mentions }))}
             onThreadDraftChange={(value) => {
               if (!threadRootId) return;
-              setThreadDrafts((current) => ({ ...current, [threadRootId]: value }));
+              presence.edited(threadRootId);
+              replyDraft.store.update((current) => ({ ...current, body: value }));
             }}
             onSendThreadReply={onSendThreadReply}
             onReact={onReact}
             onCopyLink={onCopyLink}
+            onCorrect={chatApi.correctMessage ? onCorrect : undefined}
+            pinnedMessageIds={selectedReadState?.pins?.map(pin => pin.messageId)}
+            onPin={chatApi.updatePins && selectedReadState ? (messageId, pinned) => void readState.updatePins(channelId!, messageId, pinned) : undefined}
+            savedMessageIds={selectedReadState?.preferences?.savedMessageIds}
+            onSave={chatApi.updateAttention && selectedReadState ? (messageId, saved) => void readState.updateAttention(channelId!, { messageId, saved }) : undefined}
             onStopAsk={onStopAsk}
             focusMessageId={focusMessageId}
             threadSending={threadSending}
             threadError={threadError}
+            contextNotice={messageContext.error ?? (messageContext.loading ? "Loading discussion…" : messageContext.context?.hasMore && !messageContext.context.nextCursor ? "Showing recent replies and the selected message. Older replies are not all loaded." : null)}
+            onRetryContext={messageContext.error ? messageContext.retry : undefined}
+            onLoadEarlier={messageContext.context?.nextCursor ? () => void messageContext.loadEarlier() : undefined}
+            loadingEarlier={messageContext.loadingEarlier}
+            earlierError={messageContext.earlierError}
+            following={Boolean(threadRootId && selectedReadState?.preferences?.followedThreadIds.includes(threadRootId))}
+            followBusy={readState.attentionBusy}
+            followError={readState.attentionError}
+            onToggleFollow={chatApi.updateAttention && threadRootId && selectedReadState && (threadRoot || selectedReadState.preferences?.followedThreadIds.includes(threadRootId))
+              ? () => void readState.updateAttention(channelId!, { threadId: threadRootId, following: !selectedReadState.preferences?.followedThreadIds.includes(threadRootId) }) : undefined}
+            onMarkChannelRead={selectedReadState
+              ? () => {
+                for (const lane of selectedReadState.lanes) {
+                  if (lane.latestMessageId) void readState.markRead(channelId!, lane.latestMessageId, lane.rootMessageId);
+                }
+              }
+              : undefined}
+            onMarkThreadRead={capabilities.readState && threadRootId && threadReplyList.length > 0
+              ? () => void readState.markRead(channelId!, threadReplyList.at(-1)!.id, threadRootId)
+              : undefined}
             onClose={closePanel}
             onBack={() => openPanel({ kind: "members" })}
             onOpenMember={(actorId) => openPanel({ kind: "member", actorId })}
             onMention={mentionMember}
+            onRemoveMember={chatApi.removeMember && viewer.isOperator ? async (actorId) => {
+              const isCurrent = selection.begin();
+              await chatApi.removeMember!(channel.id, actorId, space);
+              if (!isCurrent()) return;
+              // Invalidate reads started before the confirmed removal.
+              rosterReadGeneration.current += 1;
+              setMembers(current => current.filter(member => member.actorId !== actorId));
+              setPanel(current => current.kind === "member" && current.actorId === actorId ? { kind: "members" } : current);
+              void loadRoster();
+            } : undefined}
             onRevokeInvite={(inviteId) => void revokeInvite(inviteId)}
             onInvite={() => setSheetOpen(true)}
             overlay={isMidWidth}
           />
         ) : null}
 
-        {channel && panelOpen && !isMidWidth && !isCompact ? (
+        {(channel || teamOpen) && panelOpen && !isMidWidth && !isCompact ? (
           <div
             data-scout-sidebar-resize-handle=""
             role="separator"
@@ -1451,6 +1849,10 @@ export function ChatSpaceSurface({ signedOut }: ChatSpaceSurfaceProps = {}) {
         />
       ) : null}
     </ChatSpaceTheme>
+    </ChatQuestionResponder.Provider>
+    </ChatApprovalAccess.Provider>
+    </ChatExecutionAccess.Provider>
+    </ChatCorrectionScope.Provider>
   );
 }
 

@@ -4,6 +4,7 @@ import type {
   AgentEndpoint,
   AgentHarness,
   InvocationRequest,
+  SessionPlacement,
 } from "@openscout/protocol";
 
 import { isA2AHttpEndpoint } from "./a2a-http-endpoint.js";
@@ -555,7 +556,8 @@ function invocationHasExplicitRuntime(invocation: InvocationRequest): boolean {
   );
 }
 
-function endpointPlacement(endpoint: AgentEndpoint): "background" | "foreground" {
+function endpointPlacement(endpoint: AgentEndpoint): SessionPlacement {
+  if (endpoint.metadata?.placement === "attached") return "attached";
   if (endpoint.metadata?.placement === "foreground") return "foreground";
   if (endpoint.metadata?.placement === "background") return "background";
   return endpoint.transport === "codex_app_server" ? "foreground" : "background";

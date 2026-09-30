@@ -9,6 +9,7 @@ import { HostAdvisorView } from "./HostAdvisorView.tsx";
 import { AtopView } from "./AtopView.tsx";
 import { TailView } from "../shared/TailView.tsx";
 import type { OpsMode, Route } from "../../lib/types.ts";
+import { useFollowTailQuery } from "./follow-tail-query.ts";
 import { useContentOwnsSecondaryNav } from "../../scout/sidebar/useContentSecondaryNav.ts";
 import { OpsSubnav } from "./OpsSubnav.tsx";
 import { FleetRollCallHud } from "./FleetRollCallHud.tsx";
@@ -26,6 +27,7 @@ export function OpsScreen({
 }) {
   const { agents, route } = useScout();
   const contentOwnsSecondaryNav = useContentOwnsSecondaryNav();
+  const resolvedTailQuery = useFollowTailQuery(route, tailQuery);
 
   return (
     <div className="s-ops">
@@ -48,7 +50,7 @@ export function OpsScreen({
         {mode === "tail" && (
           <TailView
             navigate={navigate}
-            initialFilter={tailQuery}
+            initialFilter={resolvedTailQuery}
             variant="tail"
           />
         )}

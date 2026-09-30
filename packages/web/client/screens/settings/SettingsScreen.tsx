@@ -8,7 +8,7 @@ import { timeAgo } from "../../lib/time.ts";
 import type { PairingState, Route } from "../../lib/types.ts";
 import { pairingDeepLinks } from "../../../shared/pairing-link.js";
 import { AgentConfigurationScreen } from "../agents/AgentConfigurationScreen.tsx";
-import { SettingsPage, type DrawerSettingsSection } from "./SettingsDrawer.tsx";
+import { isScoutSettingsSection, ScoutSettings } from "./ScoutSettings.tsx";
 import "../system-surfaces-redesign.css";
 
 function relayHostLabel(input: string | null): string | null {
@@ -99,21 +99,12 @@ export function SettingsScreen({
 
   // First-class Settings pages. Each section owns a URL and renders in the
   // normal center workspace; there is no modal/drawer presentation.
-  if (
-    section === undefined
-    || section === "appearance"
-    || section === "operator"
-    || section === "comms"
-    || section === "credentials"
-    || section === "voice"
-    || section === "devices"
-    || section === "about"
-  ) {
-    const pageSection = (section ?? "appearance") as DrawerSettingsSection;
+  if (section === undefined || isScoutSettingsSection(section)) {
     return (
-      <SettingsPage
-        section={pageSection}
+      <ScoutSettings
+        section={section ?? "appearance"}
         onSectionChange={(nextSection) => navigate({ view: "settings", section: nextSection })}
+        navigate={navigate}
       />
     );
   }

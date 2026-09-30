@@ -14,8 +14,9 @@ import type { RuntimeRegistrySnapshot } from "./registry.js";
  * sleep trigger that was never built.
  *
  * Reaping is attribution-first: a tmux session is only ever a candidate when
- * the relay registry (or a process lease) positively claims it. Arbitrary
- * operator tmux sessions are untouchable by construction. Note this reaps
+ * Scout launched it (the `@openscout-launched` tmux tag) and the relay
+ * registry (or a process lease) positively claims it. Operator tmux sessions,
+ * including ones Scout attached to or registered, are untouchable. Note this reaps
  * relay *processes*, never their registrations — registration GC is a
  * separate, eligibility-constrained problem.
  */
@@ -28,6 +29,12 @@ export type RelayAgentTmuxSession = {
   attached: number;
   createdAtMs: number | null;
   activityAtMs: number | null;
+  /**
+   * Scout created this tmux session itself (it carries the
+   * `@openscout-launched` tag). Sessions the operator started, and later let
+   * Scout attach to or register, are theirs to end, never the reaper's.
+   */
+  launchedByScout?: boolean;
 };
 
 /** tmux session name -> relay agent id that owns it. */
@@ -68,7 +75,39 @@ function activeCollaborationForAgent(record: CollaborationRecord, agentId: strin
 function metadataTimestamp(endpoint: AgentEndpoint, key: string): number {
   const raw = endpoint.metadata?.[key];
   const value = typeof raw === "number" ? raw : Number(raw);
-  return Number.isFinite(value) && value > 0 ? value : 0;
+  if (!Number.isFinite(value) || value <= 0) return 0;
+  // Some writers stamp epoch seconds (10 digits), others milliseconds.
+  return value >= 1e9 && value < 1e10 ? value * 1_000 : value;
+}
+
+function endpointStampedAt(endpoint: AgentEndpoint): number {
+  return Math.max(
+    metadataTimestamp(endpoint, "startedAt"),
+    metadataTimestamp(endpoint, "lastStartedAt"),
+    metadataTimestamp(endpoint, "lastResumedAt"),
+    metadataTimestamp(endpoint, "lastCompletedAt"),
+    metadataTimestamp(endpoint, "lastFailedAt"),
+  );
+}
+
+/**
+ * Whether the session's current endpoint is mid-turn. Several endpoints can
+ * name one tmux session (a launch placeholder, then the registry's own), and
+ * a placeholder left "active" must not outvote the newer record that says
+ * idle, or the session is never reaped.
+ */
+function sessionEndpointActive(snapshot: RuntimeRegistrySnapshot, agentId: string, sessionName: string): boolean {
+  let latest: AgentEndpoint | null = null;
+  let latestAt = -1;
+  for (const endpoint of Object.values(snapshot.endpoints)) {
+    if (!endpointMatchesSession(endpoint, agentId, sessionName)) continue;
+    const at = endpointStampedAt(endpoint);
+    if (at > latestAt || (at === latestAt && endpoint.state === "active")) {
+      latest = endpoint;
+      latestAt = at;
+    }
+  }
+  return latest?.state === "active";
 }
 
 function endpointMatchesSession(endpoint: AgentEndpoint, agentId: string, sessionName: string): boolean {
@@ -86,13 +125,7 @@ function lastBrokerActivity(
   let latest = 0;
   for (const endpoint of Object.values(snapshot.endpoints)) {
     if (!endpointMatchesSession(endpoint, agentId, sessionName)) continue;
-    latest = Math.max(
-      latest,
-      metadataTimestamp(endpoint, "startedAt"),
-      metadataTimestamp(endpoint, "lastResumedAt"),
-      metadataTimestamp(endpoint, "lastCompletedAt"),
-      metadataTimestamp(endpoint, "lastFailedAt"),
-    );
+    latest = Math.max(latest, endpointStampedAt(endpoint));
   }
   for (const flight of Object.values(snapshot.flights)) {
     if (!matchesAgentId(flight.targetAgentId, agentId)) continue;
@@ -122,12 +155,13 @@ export function idleRelayAgentSessionCandidates(input: {
     const agentId = input.owners.get(session.name);
     if (!agentId) continue;
 
+    // Only sessions Scout launched; the operator's own are never put to sleep.
+    if (session.launchedByScout !== true) continue;
+
     // A human attached to the pane is using it, whatever the broker thinks.
     if (session.attached > 0) continue;
 
-    if (Object.values(input.snapshot.endpoints).some((endpoint) =>
-      endpointMatchesSession(endpoint, agentId, session.name) && endpoint.state === "active",
-    )) {
+    if (sessionEndpointActive(input.snapshot, agentId, session.name)) {
       continue;
     }
     if (Object.values(input.snapshot.flights).some((flight) => activeFlightForAgent(flight, agentId))) {

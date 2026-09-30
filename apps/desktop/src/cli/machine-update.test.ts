@@ -294,6 +294,15 @@ describe("listing unmanaged Scout bridges", () => {
     // ran none, so counting it leaves the audited 18 and 25 unchanged.
     expect(classifyScoutBridge("/Users/o/.bun/bin/bun /Users/o/dev/openscout/apps/desktop/bin/scout.ts mesh bridge"))
       .toBe("mesh");
+    // A bundled install launches it from the package's dist entry.
+    expect(classifyScoutBridge("/Users/o/.bun/bin/bun /Users/o/Library/Application Support/OpenScout/deployments/abc/dist/main.mjs mesh bridge --config /s/mcp-bridge.json"))
+      .toBe("mesh");
+    expect(classifyScoutBridge("claude --print review mesh bridge shutdown")).toBeNull();
+    expect(classifyScoutBridge('claude --prompt "Review /repo/apps/desktop/bin/scout.ts mesh bridge shutdown"')).toBeNull();
+    expect(classifyScoutBridge("sh -c bun /repo/apps/desktop/bin/scout.ts mcp")).toBeNull();
+    expect(classifyScoutBridge("/Users/o/.bun/bin/scout-mcp")).toBe("mcp");
+    expect(classifyScoutBridge("scout-mcp --stdio")).toBe("mcp");
+    expect(classifyScoutBridge('bun innocent.ts --prompt "scout-mcp"')).toBeNull();
   });
 
   test("does not count the app or the menu bar item as a bridge", () => {

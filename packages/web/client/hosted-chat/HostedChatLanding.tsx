@@ -1,88 +1,65 @@
 /**
- * Hosted Scout Chat — the signed-out door.
+ * Hosted Scout Chat — signed out.
  *
- * DIRECTION CONTRACT
+ * DIRECTION CONTRACT (studio: /studies/hosted-chat-door, take D · Account for
+ * the task pages; the shared shell and provider buttons live in
+ * `HostedDoor.tsx`)
  *
- * THESIS: this page is the door to a *named room*, not a login card adrift in a
- * black field. It refuses the centered auth card and the three-feature-card
- * explainer; the visitor's own address is the subject line, and the room itself
- * is the argument.
- * OWN-WORLD: Scout Web, unchanged — near-neutral OKLCH canvas (hue 260 dark,
- * warm paper light), one lime signal at hue 125 spent on the single action,
- * 1px hairlines, mono eyebrows, flat at rest. No new color and no new face.
- * STORY: a developer opened a link to a hosted space, was not signed in, and
- * lands here. They see the address they were heading for, one sentence of
- * what this is, the real room's chrome as a labeled example, and one button
- * that returns them exactly where they were.
- * FIRST VIEWPORT: the app's own 40px topbar band across the top. Under it, a
- * 1380px shell in two planes: left the door (mark, address slip, display
- * headline, lede, the GitHub action, scope note, a three-row hairline readout);
- * right the example room at the real geometry, captioned as an example.
- * FORM: grounded structure 5 of 7 (address-first door), fused with the pinned
- * "visual introduction to the real interface"; surface seed key d64260a0.
+ * THREE PAGES, ONE COMPONENT:
+ * - THE LANDING (the root, signed out): the brand-forward page, with the
+ *   example room playing and two ways in — Sign up and Sign in
+ *   (`HostedBrandLanding.tsx`). No accent colour anywhere.
+ * - SIGN UP / SIGN IN (`#sign-up`, `#sign-in`): the same provider buttons —
+ *   with OAuth they are the same click — but each says what it is for. Sign-up
+ *   is a first-class path with its own heading and the promise of what comes
+ *   next (naming the space, `HostedChatSetup.tsx`); sign-in is the way back.
+ *   A hash, so the browser's Back returns to the landing.
+ * - A ROOM'S ADDRESS: the visitor already has a destination, so the door is
+ *   sign-in straight away, and it promises the way back to that room.
  *
- * SCOPE: this file and `hosted-chat-landing.css` are the whole of it. It draws
- * nothing the hosted Worker cannot do, imports the shared theme host and the
- * shared avatars — people as member coins, agents as crew coins with a harness
- * mark in the corner — rather than restating them, and takes every
- * deployment-owned string — the sign-in href above all — as a prop, so the
- * caller keeps the one piece of knowledge that is deployment truth: where the
- * door leads and what return address it carries.
+ * Every deployment-owned string — the sign-in hrefs above all — is a prop.
  */
 
-import { useState, type ReactNode } from "react";
+import { useEffect, useState } from "react";
 
-import { CrewAvatar } from "../components/CrewAvatar.tsx";
-import { ScoutMark } from "../components/ScoutMark.tsx";
-import { ScoutShimmerMark } from "../components/ScoutShimmerMark.tsx";
-import { MemberCoin } from "../screens/chat-space/ChatAvatar.tsx";
-import { ChatSpaceTheme, useScoutStandaloneAppearance } from "../screens/chat-space/ChatSpaceTheme.tsx";
-import type { ScoutTheme, ScoutThemePreference } from "../lib/theme.ts";
+import type { ScoutTheme } from "../lib/theme.ts";
+import { displayAddress } from "./hosted-chat-landing-address.ts";
+import type { AuthErrorNotice } from "./hosted-chat-auth-error.ts";
+import { DoorShell, ProviderButtons, type DoorPhase, type SignInOption } from "./HostedDoor.tsx";
+import { HostedBrandLanding } from "./HostedBrandLanding.tsx";
 
-import fennBust from "../public/crew/fenn-bust.webp";
-import miloBust from "../public/crew/milo-bust.webp";
-import sproutBust from "../public/crew/sprout-bust.webp";
-import vexBust from "../public/crew/vex-bust.webp";
+export type { SignInOption } from "./HostedDoor.tsx";
 
-import "./hosted-chat-landing.css";
-
-/**
- * What the page knows about the session, as three states rather than two flags.
- *
- * A `loading` boolean beside a `busy` boolean admits the combination "checking
- * and redirecting", which means nothing; one union cannot be asked to render an
- * impossible state.
- */
-export type HostedChatLandingStatus =
-  /** The door is open: the action is live. */
-  | "ready"
-  /** The session is still being read; the action waits rather than lying. */
-  | "checking"
-  /** The browser is on its way to GitHub. */
-  | "redirecting";
+/** What the page knows about the session, as three states rather than two flags. */
+export type HostedChatLandingStatus = DoorPhase;
 
 export interface HostedChatLandingProps {
   /**
-   * Where "Continue with GitHub" goes — **already carrying the return URL**.
-   *
-   * The deployment owns this. Composing it here would mean this file holding a
-   * second opinion about `startPath` and `return_to`, and the two would drift.
+   * The single sign-in door — **already carrying the return URL** — for a
+   * deployment that passes no `signInOptions`. The deployment owns this.
    */
   signInHref: string;
-  /** The button's words. Defaults to the hosted deployment's own label. */
+  /** One button per identity provider, each able to carry a return address. */
+  signInOptions?: ReadonlyArray<SignInOption>;
+  /** The single door's words. Defaults to "Continue with GitHub". */
   signInLabel?: string;
   /** The address this visitor was heading for. Defaults to the live location. */
   returnTo?: string | null;
   /** The host to print beside it. Defaults to the browser's own. */
   host?: string | null;
-  /** Replaces the designed lede when the deployment has a sentence of its own. */
+  /** Replaces the landing's lede when the deployment has a sentence of its own. */
   lede?: string | null;
-  /** The data-use line under the button. */
+  /** The data-use line under the buttons. */
   note?: string | null;
   /** Why the gate appeared, when there is a reason ("Your session ended."). */
   message?: string | null;
   /** A failure the visitor can act on. Rendered as an alert, never swallowed. */
   error?: string | null;
+  /**
+   * A sign-in that came back refused, already turned into a sentence by
+   * `hosted-chat-auth-error.ts`. Shown above the buttons it is about.
+   */
+  authError?: AuthErrorNotice | null;
   /** Offered beside an error. Omit it and no retry is drawn. */
   onRetry?: () => void;
   /** Defaults to "ready". */
@@ -93,134 +70,60 @@ export interface HostedChatLandingProps {
 
 const DEFAULT_LABEL = "Continue with GitHub";
 
-const DEFAULT_LEDE =
-  "Create a space, name its channels, and invite an agent you already run. "
-  + "It joins with a scoped invitation and posts into the channel alongside you.";
 
 /**
- * Three sentences, each one a fact the hosted Worker can back.
- *
- * Deliberately a hairline-ruled readout rather than three cards: a card trio is
- * the shape every product ships here, and these are definitions, not features.
- * The third row is the one most pages omit — what the service does *not* do —
- * and it stays because Scout states both in the same breath.
+ * Accounts are per provider and are never linked, so the second door is a
+ * different, empty account. Said where a returning visitor chooses.
  */
-const READOUT: ReadonlyArray<{ key: string; value: string }> = [
-  {
-    key: "Spaces",
-    value: "Name a space and give it channels. A space is private to the account that created it.",
-  },
-  {
-    key: "Agents",
-    value: "Invite an agent you already run. It joins over HTTP with a scoped invitation and reads the channel by polling.",
-  },
-  {
-    key: "Scope",
-    value: "No local broker and no background service. Scout Chat carries the conversation; it does not run models, and it does not run your agents.",
-  },
-];
+const SAME_PROVIDER = "Use the provider you signed up with: each one is a separate account.";
 
-/**
- * Where a developer goes next, without leaving the door.
- *
- * Four destinations, each one real and each one a different question: what this
- * product is, where its source lives, how it is documented, and how to install
- * it. Kept as plain links with no tracking and no interstitials — the door is
- * already asking for one thing, and these must not compete with it.
- */
-const LINKS: ReadonlyArray<{ label: string; href: string }> = [
-  { label: "openscout.app", href: "https://openscout.app" },
-  { label: "Source", href: "https://github.com/oscout/scout" },
-  { label: "Docs", href: "https://openscout.app/docs" },
-  { label: "Install", href: "https://openscout.app/install" },
-];
 
-/**
- * The door's day / night / auto.
- *
- * Day and Night pin the canvas; Auto follows the OS — the same three states
- * the signed-in sidebar calls Dark, Light and System, written through the same
- * `openscout.theme` storage key, so a choice made on the door is still the
- * choice when the room opens. It lives on the band rather than in a menu
- * because the theme is part of what this page is showing.
- */
-const THEME_CHOICES: ReadonlyArray<{
-  value: ScoutThemePreference;
-  label: string;
-  title: string;
-}> = [
-  { value: "light", label: "Day", title: "Light theme" },
-  { value: "dark", label: "Night", title: "Dark theme" },
-  { value: "system", label: "Auto", title: "Follow the system's theme" },
-];
+type View = "landing" | "sign-up" | "sign-in";
 
-function ThemeSwitch({
-  preference,
-  onChange,
-}: {
-  preference: ScoutThemePreference;
-  onChange: (next: ScoutThemePreference) => void;
-}) {
-  return (
-    <span className="hcl-themes" role="group" aria-label="Theme">
-      {THEME_CHOICES.map((choice) => (
-        <button
-          key={choice.value}
-          type="button"
-          className="hcl-theme"
-          title={choice.title}
-          aria-pressed={preference === choice.value}
-          data-active={preference === choice.value}
-          onClick={() => onChange(choice.value)}
-        >
-          {choice.label}
-        </button>
-      ))}
-    </span>
-  );
+function viewFromHash(): View {
+  if (typeof window === "undefined") return "landing";
+  const hash = window.location.hash.slice(1);
+  return hash === "sign-up" || hash === "sign-in" ? hash : "landing";
 }
 
-/** The GitHub mark (octicon `mark-github-16`), so the door names its provider. */
-function GitHubMark() {
-  return (
-    <svg className="hcl-gh" viewBox="0 0 16 16" aria-hidden="true" fill="currentColor">
-      <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z" />
-    </svg>
-  );
+/** The landing's view, kept in the hash so Back and a shared link both work. */
+function useView(): [View, (next: View) => void] {
+  const [view, setView] = useState<View>(viewFromHash);
+  useEffect(() => {
+    const onChange = () => setView(viewFromHash());
+    window.addEventListener("hashchange", onChange);
+    return () => window.removeEventListener("hashchange", onChange);
+  }, []);
+  const go = (next: View) => {
+    window.location.hash = next === "landing" ? "" : next;
+    // A fresh page starts at its top, not where the landing was scrolled to.
+    document.querySelector(".hcl")?.scrollTo({ top: 0 });
+  };
+  return [view, go];
 }
 
 /**
- * The address the visitor is standing in front of.
- *
- * A space's own path is hosted Chat's whole grammar, and being bounced to a
- * sign-in page is the moment a person most doubts the link still works.
- * Printing the address — and saying they come back to it — makes the return
- * trip a visible promise rather than a query parameter nobody reads.
- *
- * Read live from the location bar unless the caller names it, so the exact
- * spelling of a space path stays the transport's business, not this file's.
+ * A sign-in that came back refused. `hosted-chat-auth-error.ts` owns the
+ * sentence; this only places it, adds the alternative when there is one, and
+ * prints the Worker's own reason small — a pilot's visitor is often its
+ * operator, and a code is what they will paste into an issue.
  */
+function AuthNotice({ notice, multiple }: { notice: AuthErrorNotice | null; multiple: boolean }) {
+  if (!notice) return null;
+  return (
+    <div className="hcl-notice" role="alert">
+      <p>
+        {notice.message}
+        {notice.alternative && multiple ? " Try another provider." : null}
+        {notice.code ? <code className="hcl-notice-code">{notice.code}</code> : null}
+      </p>
+    </div>
+  );
+}
+
 function currentPath(): string | null {
   if (typeof window === "undefined") return null;
   return window.location.pathname + window.location.search;
-}
-
-/** A path for display: a full URL is reduced to its path, anything else dropped. */
-function displayPath(value: string | null | undefined): string | null {
-  const raw = (value ?? currentPath() ?? "").trim();
-  if (!raw) return null;
-  let path = raw;
-  if (/^https?:\/\//i.test(raw)) {
-    try {
-      path = new URL(raw).pathname;
-    } catch {
-      return null;
-    }
-  }
-  if (!path.startsWith("/")) return null;
-  // The root is the product's front door, not a room: it is not an address the
-  // page should promise to return anyone to.
-  return path === "/" ? null : path;
 }
 
 function displayHost(value: string | null | undefined): string | null {
@@ -231,6 +134,7 @@ function displayHost(value: string | null | undefined): string | null {
 
 export function HostedChatLanding({
   signInHref,
+  signInOptions,
   signInLabel,
   returnTo,
   host,
@@ -238,320 +142,141 @@ export function HostedChatLanding({
   note,
   message,
   error,
+  authError,
   onRetry,
   status,
-  theme: themeProp,
+  theme,
 }: HostedChatLandingProps) {
-  const { theme: resolvedTheme, preference, setPreference } = useScoutStandaloneAppearance();
-  const theme = themeProp ?? resolvedTheme;
-
-  // The anchor navigates on its own, so the button can report that it is
-  // leaving without the caller wiring anything. A caller that *does* own the
-  // status — because it starts the redirect itself — wins.
-  const [pressed, setPressed] = useState(false);
-  const phase: HostedChatLandingStatus = status && status !== "ready"
-    ? status
-    : pressed ? "redirecting" : "ready";
-
-  const path = displayPath(returnTo);
+  const [view, go] = useView();
+  const back = returnTo ?? currentPath() ?? "/";
+  const path = displayAddress(back);
   const hostLabel = displayHost(host);
-  const label = signInLabel?.trim() || DEFAULT_LABEL;
-  const actionLabel = phase === "checking"
-    ? "Checking your session…"
-    : phase === "redirecting" ? "Opening GitHub…" : label;
+  // Without the deployment's provider list the door is its one `signInHref`,
+  // which already carries the return address.
+  const options: ReadonlyArray<SignInOption> = signInOptions?.length
+    ? signInOptions
+    : [{ id: "github", label: signInLabel?.trim() || DEFAULT_LABEL, name: "GitHub", hrefFor: () => signInHref }];
+  const multiple = options.length > 1;
+  const names = options.map((option) => option.name ?? option.label);
 
-  return (
-    <ChatSpaceTheme theme={theme} className="hcl">
-      {/* The app's own top band, on the page before the app. Standing at the
-          door of Scout Chat should already look like Scout Chat. */}
-      <header className="hcl-bar">
-        {/* The band's rule spans the window, as the app's own topbar does, but
-            its contents sit on the shell's measure — a brand and a posture word
-            3400px apart on an ultrawide is the same stranding this page exists
-            to fix, one row higher up. */}
-        <div className="hcl-bar-inner">
-          <span className="hcl-bar-brand">
-            <ScoutMark className="hcl-mark" />
-            <b>Scout Chat</b>
-          </span>
-          <span className="hcl-bar-side">
-            <span className="hcl-bar-posture">Hosted pilot</span>
-            {/* A caller-pinned theme is a posed page, not a door: the switch
-                would change storage without changing the picture, so it is
-                not drawn. */}
-            {themeProp ? null : (
-              <ThemeSwitch preference={preference} onChange={setPreference} />
-            )}
-          </span>
+  const problems = (
+    <>
+      {message ? <p className="hcl-message">{message}</p> : null}
+      <AuthNotice notice={authError ?? null} multiple={multiple} />
+      {error ? (
+        <div className="hcl-notice" role="alert">
+          <p>{error}</p>
+          {onRetry ? (
+            <button type="button" className="hcl-button hcl-button--quiet" onClick={onRetry}>
+              Try again
+            </button>
+          ) : null}
         </div>
-      </header>
-
-      <main className="hcl-shell">
-        <div className="hcl-grid">
-          <section className="hcl-door">
-            {/* The brand, alive. It is the one thing on this page that moves
-                before you do, and it names the product without a word. */}
-            <ScoutShimmerMark className="hcl-shimmer" width={132} />
-
-            <p className="hcl-slip">
-              {hostLabel ? <span className="hcl-slip-host">{hostLabel}</span> : null}
-              {path ? <span className="hcl-slip-path">{path}</span> : null}
-              <span className="hcl-slip-note">
-                {path
-                  ? "Signing in brings you straight back to this address."
-                  : "Sign in to open your spaces."}
-              </span>
-            </p>
-
-            <h1 className="hcl-head">A named room your agents can reach.</h1>
-
-            <p className="hcl-lede">{lede?.trim() || DEFAULT_LEDE}</p>
-
-            <div className="hcl-act">
-              {message ? <p className="hcl-message">{message}</p> : null}
-              <a
-                className="btn btn--primary hcl-cta"
-                href={signInHref}
-                aria-disabled={phase === "ready" ? undefined : true}
-                data-busy={phase === "ready" ? undefined : "true"}
-                onClick={(event) => {
-                  if (phase !== "ready") {
-                    event.preventDefault();
-                    return;
-                  }
-                  setPressed(true);
-                }}
-              >
-                <GitHubMark />
-                {actionLabel}
-              </a>
-              {note ? <p className="hcl-note">{note}</p> : null}
-              {error ? (
-                <p className="hcl-error" role="alert">
-                  <span>{error}</span>
-                  {onRetry ? (
-                    <button type="button" className="btn btn--sm hcl-retry" onClick={onRetry}>
-                      Try again
-                    </button>
-                  ) : null}
-                </p>
-              ) : null}
-            </div>
-
-            <nav className="hcl-links" aria-label="Scout">
-              {LINKS.map((link) => (
-                <a className="hcl-link" key={link.href} href={link.href} rel="noreferrer">
-                  {link.label}
-                </a>
-              ))}
-            </nav>
-          </section>
-
-          {/* DOM order is the stacked order — door, room, readout — and the
-              grid's named areas put the readout back under the door when there
-              are two columns. The picture of the product must not land beneath
-              a screenful of definitions on a phone. */}
-          <ExampleRoom />
-
-          <dl className="hcl-read">
-            {READOUT.map((row) => (
-              <div className="hcl-read-row" key={row.key}>
-                <dt className="label-md hcl-read-k">{row.key}</dt>
-                <dd className="hcl-read-v">{row.value}</dd>
-              </div>
-            ))}
-          </dl>
-        </div>
-      </main>
-    </ChatSpaceTheme>
+      ) : null}
+    </>
   );
-}
 
-/* ── the example room ─────────────────────────────────────────────────────── */
+  /* ── a room's address: sign in, straight back here ─────────────────────── */
 
-/**
- * The room, as it looks once you are through the door.
- *
- * Built from the real surface's geometry and the real avatars, at a reduced
- * measure — people as member coins, invited agents as crew coins with the
- * harness mark in the bottom-right. It names a space and a channel and never
- * an address: how a hosted space is spelled in the location bar is the
- * transport's decision, and a picture that hardcoded one would go stale the
- * first time it changed.
- *
- * Reduced measure — not a screenshot, and not a second implementation of Chat: nothing
- * in here is wired to anything, and it says so twice. The frame is inert
- * (`pointer-events`, `user-select`) and `aria-hidden`, so the only thing a
- * screen reader meets is the caption that calls it an example. Every name and
- * message in it is invented sample content; no count, no metric, no claim.
- */
+  if (path) {
+    return (
+      <DoorShell theme={theme} labelledBy="hcl-head">
+        <h1 id="hcl-head" className="hcl-head">Sign in to continue</h1>
+        <p className="hcl-slip">
+          {hostLabel ? <span className="hcl-slip-host">{hostLabel}</span> : null}
+          <span className="hcl-slip-path">{path}</span>
+        </p>
+        {problems}
+        <ProviderButtons options={options} returnTo={back} status={status} />
+        <p className="hcl-fine">
+          You come straight back to this address.{multiple ? <> {SAME_PROVIDER}</> : null}
+        </p>
+        {note ? <p className="hcl-fine">{note}</p> : null}
+        <p className="hcl-switch">
+          New to Scout Chat? <a href="/#sign-up">Create an account</a>
+        </p>
+      </DoorShell>
+    );
+  }
 
-interface SampleCrew {
-  slug: string;
-  name: string;
-  harness: string;
-  bustSrc: string;
-  state?: string;
-}
+  // A refused sign-in or a reason to show belongs where the buttons are.
+  const shown: View = view === "landing" && (authError || message || error) ? "sign-in" : view;
 
-interface SampleTurn {
-  who: string;
-  when: string;
-  body: ReactNode;
-  /** Agents carry the reception line the real hosted roster shows. */
-  sub?: string;
-  crew?: SampleCrew;
-}
+  /* ── sign up / sign in ──────────────────────────────────────────────────── */
 
-const SAMPLE_CREW = {
-  milo: { slug: "milo", name: "Milo", harness: "codex", bustSrc: miloBust, state: "working" },
-  sprout: { slug: "sprout", name: "Sprout", harness: "claude", bustSrc: sproutBust },
-  vex: { slug: "vex", name: "Vex", harness: "grok", bustSrc: vexBust },
-  fenn: { slug: "fenn", name: "Fenn", harness: "kimi", bustSrc: fennBust },
-} as const satisfies Record<string, SampleCrew>;
+  if (shown !== "landing") {
+    const signingUp = shown === "sign-up";
+    return (
+      <DoorShell theme={theme} labelledBy="hcl-head">
+        <a
+          className="hcl-back"
+          href="/"
+          onClick={(event) => {
+            event.preventDefault();
+            go("landing");
+          }}
+        >
+          ← Scout Chat
+        </a>
+        {signingUp ? (
+          <>
+            <h1 id="hcl-head" className="hcl-head">Create your account</h1>
+            <p className="hcl-sub">
+              Sign up with {listOf(names)}. Next, you name your space — the address your team and
+              your agents will share.
+            </p>
+          </>
+        ) : (
+          <>
+            <h1 id="hcl-head" className="hcl-head">Welcome back</h1>
+            <p className="hcl-sub">Sign in to open your spaces.</p>
+          </>
+        )}
+        {problems}
+        {/* The root door returns to the root, not to whatever a refused sign-in
+            left in the query (`?auth_error=…`), or the notice would come back too. */}
+        <ProviderButtons options={options} returnTo="/" status={status} />
+        {signingUp ? (
+          <ol className="hcl-next" aria-label="What happens next">
+            <li><span>1</span>Choose a provider and approve Scout Chat.</li>
+            <li><span>2</span>Name your space. It is created on the spot.</li>
+            <li><span>3</span>Invite an agent or a teammate from any channel.</li>
+          </ol>
+        ) : multiple ? (
+          <p className="hcl-fine">{SAME_PROVIDER}</p>
+        ) : null}
+        {note ? <p className="hcl-fine">{note}</p> : null}
+        <p className="hcl-switch">
+          {signingUp ? "Already have an account? " : "New to Scout Chat? "}
+          <a
+            href={signingUp ? "#sign-in" : "#sign-up"}
+            onClick={(event) => {
+              event.preventDefault();
+              go(signingUp ? "sign-in" : "sign-up");
+            }}
+          >
+            {signingUp ? "Sign in" : "Create an account"}
+          </a>
+        </p>
+      </DoorShell>
+    );
+  }
 
-const SAMPLE_ROSTER: ReadonlyArray<SampleCrew> = [
-  SAMPLE_CREW.milo,
-  SAMPLE_CREW.sprout,
-  SAMPLE_CREW.vex,
-  SAMPLE_CREW.fenn,
-];
+  /* ── the landing ────────────────────────────────────────────────────────── */
 
-const SAMPLE_TURNS: ReadonlyArray<SampleTurn> = [
-  {
-    who: "Ada",
-    when: "09:12",
-    body: "Is the release branch green?",
-  },
-  {
-    who: "Milo",
-    when: "09:12",
-    crew: SAMPLE_CREW.milo,
-    sub: "Codex · via API — reads by polling",
-    body: "Three of four packages pass. web is still building.",
-  },
-  {
-    who: "Ada",
-    when: "09:14",
-    body: (
-      <>
-        <span className="hcl-mention">@milo</span>
-        {" post the failing file when it lands."}
-      </>
-    ),
-  },
-  {
-    who: "Sprout",
-    when: "09:15",
-    crew: SAMPLE_CREW.sprout,
-    sub: "Claude · via API — reads by polling",
-    body: "I'll draft the changelog the moment web goes green.",
-  },
-  {
-    who: "Vex",
-    when: "09:16",
-    crew: SAMPLE_CREW.vex,
-    sub: "Grok · via API — reads by polling",
-    body: "Incidents is quiet. Watching the build.",
-  },
-  {
-    who: "Fenn",
-    when: "09:17",
-    crew: SAMPLE_CREW.fenn,
-    sub: "Kimi · via API — reads by polling",
-    body: "#general has the rollout notes if you want a second pair of eyes.",
-  },
-];
-
-function SampleCrewCoin({
-  crew,
-  size,
-}: {
-  crew: SampleCrew;
-  size: number;
-}) {
   return (
-    <CrewAvatar
-      slug={crew.slug}
-      name={crew.name}
-      harness={crew.harness}
-      project="atlas"
-      state={crew.state ?? "idle"}
-      size={size}
-      bustSrc={crew.bustSrc}
-      badge
-      ring={crew.state === "working"}
+    <HostedBrandLanding
+      theme={theme}
+      lede={lede}
+      providerNames={names}
+      onSignUp={() => go("sign-up")}
+      onSignIn={() => go("sign-in")}
     />
   );
 }
 
-function ExampleRoom() {
-  return (
-    <figure className="hcl-room">
-      <div className="hcl-room-frame" aria-hidden="true">
-        <div className="hcl-room-bar">
-          <span className="hcl-room-brand">
-            <ScoutMark className="hcl-mark" />
-            <b>Scout Chat</b>
-          </span>
-          <span className="hcl-room-addr">#release-train</span>
-          <span className="hcl-room-faces">
-            <MemberCoin name="Ada" size={28} />
-            {SAMPLE_ROSTER.map((crew) => (
-              <SampleCrewCoin key={crew.slug} crew={crew} size={28} />
-            ))}
-          </span>
-        </div>
-
-        <div className="hcl-room-body">
-          <nav className="hcl-room-rail">
-            <span className="label-md hcl-room-group">Atlas</span>
-            <span className="hcl-room-chan"><i>#</i>general</span>
-            <span className="hcl-room-chan" data-on="true"><i>#</i>release-train</span>
-            <span className="hcl-room-chan"><i>#</i>incidents</span>
-            <span className="hcl-room-rule" />
-            <span className="label-md hcl-room-group">In this channel</span>
-            <span className="hcl-room-who">
-              <MemberCoin name="Ada" size={28} />
-              Ada
-            </span>
-            {SAMPLE_ROSTER.map((crew) => (
-              <span className="hcl-room-who" key={crew.slug}>
-                <SampleCrewCoin crew={crew} size={28} />
-                {crew.name}
-              </span>
-            ))}
-          </nav>
-
-          <div className="hcl-room-feed">
-            {SAMPLE_TURNS.map((turn, index) => (
-              <article className="hcl-turn" key={turn.who + turn.when + index} style={{ "--i": index } as never}>
-                {turn.crew
-                  ? <SampleCrewCoin crew={turn.crew} size={40} />
-                  : <MemberCoin name={turn.who} size={40} />}
-                <div>
-                  <div className="hcl-turn-meta">
-                    <span className="hcl-turn-who">{turn.who}</span>
-                    <span className="hcl-turn-when">{turn.when}</span>
-                  </div>
-                  <p className="hcl-turn-body">{turn.body}</p>
-                  {turn.sub ? <p className="hcl-turn-sub">{turn.sub}</p> : null}
-                </div>
-              </article>
-            ))}
-
-            <div className="hcl-room-composer">
-              <span>Message #release-train</span>
-              <span className="hcl-room-send">Send</span>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <figcaption className="hcl-room-cap">
-        <span className="label-md">Example</span>
-        <span>A space as it looks once you are signed in. Sample names and messages — not a live conversation.</span>
-      </figcaption>
-    </figure>
-  );
+/** "GitHub, Google or X". */
+function listOf(names: ReadonlyArray<string>): string {
+  if (names.length <= 1) return names[0] ?? "";
+  return `${names.slice(0, -1).join(", ")} or ${names[names.length - 1]}`;
 }

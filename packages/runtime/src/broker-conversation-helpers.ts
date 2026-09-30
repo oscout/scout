@@ -12,6 +12,7 @@ import {
 } from "@openscout/protocol";
 
 import type { BrokerRouteTargetInput, RuntimeSnapshot } from "./scout-dispatcher.js";
+import { runtimeSessionAddressForEndpoint, runtimeSessionAddressForSessionId } from "./runtime-session-address.js";
 import {
   classifyEndpoint,
   endpointStartedAt,
@@ -258,6 +259,11 @@ export function buildBrokerReturnAddressForActor(
     nodeId: endpoint?.nodeId || agent?.authorityNodeId || agent?.homeNodeId,
     projectRoot: endpoint?.projectRoot ?? endpoint?.cwd ?? metadataStringValue(agent?.metadata, "projectRoot") ?? undefined,
     sessionId: options.sessionId ?? endpoint?.sessionId,
+    sessionAddress: options.sessionId
+      ? runtimeSessionAddressForSessionId(snapshot, options.sessionId) ?? undefined
+      : endpoint
+      ? runtimeSessionAddressForEndpoint(snapshot, endpoint) ?? undefined
+      : undefined,
   });
 }
 

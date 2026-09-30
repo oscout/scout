@@ -9,6 +9,9 @@
  * - `control` — remote peers holding a `control` grant.
  * - `public`  — unauthenticated, remote-reachable by design: the node card and
  *               the trust enrollment handshake (rate-limited, single-use).
+ * - `guest`   — signed by an owner-approved guest key from `guest_grants`
+ *               (docs/proposals/scout-tailscale.md), on every transport. Peer
+ *               grants never satisfy it, and guest keys satisfy nothing else.
  *
  * The matrix is tied to the checked-in route inventory
  * (broker-daemon-route-inventory.test.ts): a route without a declared tier
@@ -17,9 +20,9 @@
  * stay `local` and must never be promoted to `observe`.
  */
 
-export type MeshRouteTier = "local" | "observe" | "control" | "public";
+export type MeshRouteTier = "local" | "observe" | "control" | "public" | "guest";
 
-export const MESH_ROUTE_TIERS: readonly MeshRouteTier[] = ["local", "observe", "control", "public"];
+export const MESH_ROUTE_TIERS: readonly MeshRouteTier[] = ["local", "observe", "control", "public", "guest"];
 
 /** Rank for grant-tier satisfaction checks; `local`/`public` never compare. */
 const GRANT_TIER_RANK: Record<"observe" | "control", number> = { observe: 1, control: 2 };
@@ -64,6 +67,11 @@ const MESH_ROUTE_MATRIX: Record<string, MeshRouteTier> = {
   // its local harness store. Registers a cardless endpoint — control tier, the
   // same trust as forwarding an invocation here.
   "POST /v1/mesh/sessions/wake": "control",
+  // New-session twin: a peer asks this node to start a cardless session in a
+  // project that exists here. Same trust as forwarding an invocation.
+  "POST /v1/mesh/sessions/start": "control",
+  "POST /v1/mesh/web-request": "control",
+  "POST /v1/hosts/web-request": "local",
   [TRPC_UPGRADE_ROUTE]: "control",
 
   // ── local: machine-local bind flip (handler also refuse-remote, §11.5/§11.9)
@@ -142,6 +150,9 @@ const MESH_ROUTE_MATRIX: Record<string, MeshRouteTier> = {
   "POST /v1/commands": "local",
   "POST /v1/conversations": "local",
   "POST /v1/conversations/:id/read-cursors": "local",
+  "POST /v1/conversations/:id/corrections": "local",
+  "POST /v1/conversations/:id/questions/:id/respond": "local",
+  "POST /v1/conversations/:id/pins": "local",
   "POST /v1/conversations/:id/title": "local",
   "POST /v1/deliver": "local",
   "POST /v1/deliveries/claim": "local",
@@ -150,6 +161,11 @@ const MESH_ROUTE_MATRIX: Record<string, MeshRouteTier> = {
   "POST /v1/durable-actions": "local",
   "POST /v1/durable-actions/:id/heartbeat": "local",
   "POST /v1/endpoints": "local",
+  "POST /v1/external-sessions/ack": "local",
+  "POST /v1/external-sessions/attach": "local",
+  "POST /v1/external-sessions/get": "local",
+  "POST /v1/external-sessions/poll": "local",
+  "POST /v1/external-sessions/reply": "local",
   "POST /v1/flights": "local",
   "POST /v1/inbox/ack": "local",
   "POST /v1/inbox/claim": "local",
@@ -182,6 +198,22 @@ const MESH_ROUTE_MATRIX: Record<string, MeshRouteTier> = {
   "POST /v1/trust/revoke": "local",
   "POST /v1/web/restart": "local",
   "POST /v1/web/start": "local",
+
+  // ── guest: owner-approved guest keys only (never mesh peers)
+  "GET /v1/guest/agents": "guest",
+  "GET /v1/guest/asks/:id": "guest",
+  "GET /v1/guest/whoami": "guest",
+  "POST /v1/guest/asks": "guest",
+  "POST /v1/guest/sessions/attach": "guest",
+  "POST /v1/guest/sessions/get": "guest",
+  "POST /v1/guest/sessions/poll": "guest",
+  "POST /v1/guest/sessions/ack": "guest",
+  "POST /v1/guest/sessions/reply": "guest",
+
+  // guest grant administration is a local owner act (loopback only)
+  "GET /v1/guest-grants": "local",
+  "POST /v1/guest-grants": "local",
+  "POST /v1/guest-grants/revoke": "local",
 };
 
 const exactTiers = new Map<string, MeshRouteTier>();

@@ -58,6 +58,7 @@ export type BrokerMessageServiceDeps = {
   applyProjectedEntries: (entries: BrokerJournalEntry[]) => Promise<void>;
   reconcileStaleLocalDeliveries: () => Promise<void>;
   persistFlight: (flight: FlightRecord) => Promise<void>;
+  authorizeReplyCompletion?: (invocation: InvocationRequest, reply: MessageRecord) => boolean;
   activeLocalEndpointForAgent: (agentId: string) => unknown;
 };
 
@@ -182,6 +183,7 @@ export class BrokerMessageService {
     invocation: InvocationRequest,
     reply: MessageRecord,
   ): Promise<boolean> => {
+    if (this.deps.authorizeReplyCompletion && !this.deps.authorizeReplyCompletion(invocation, reply)) return false;
     const flight = this.deps.runtime.flightForInvocation(invocation.id);
     if (!flight || !isWorkingFlightState(flight.state)) {
       return false;

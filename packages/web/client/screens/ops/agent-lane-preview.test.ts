@@ -16,6 +16,8 @@ function agent(): Agent {
     definitionId: "preview",
     name: "preview",
     handle: null,
+    authorityNodeId: null,
+    authorityNodeName: null,
     agentClass: "managed",
     harness: "codex",
     state: "working",

@@ -35,7 +35,7 @@ import {
   sqlWhereClause,
 } from "./internal/sql-helpers.ts";
 import { workAttention, workPhaseFromFlightState, workPhaseFromState } from "./work.ts";
-import type { WebMeshOpsHost, WebMeshOpsItem } from "./types/web.ts";
+import type { WebMeshOpsHost, WebMeshOpsItem } from "../../shared/api/web.ts";
 
 /** Done/cancelled items stay listed while updated within this window; the
  * client buckets them into "done" (≤24h) or "archive" (older). */

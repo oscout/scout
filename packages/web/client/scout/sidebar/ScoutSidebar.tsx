@@ -255,6 +255,27 @@ export function ScoutSidebar({
       </SidebarHeader>
 
       <SidebarContent className="gap-0">
+        <SidebarGroup className="border-b border-sidebar-border">
+          <SidebarMenu>
+          <SidebarMenuItem>
+            <SidebarMenuButton
+              type="button"
+              tooltip={`${NEW_TASK_ACTION_LABEL} (${NEW_CHAT_SHORTCUT_LABEL})`}
+              aria-label={NEW_TASK_ACTION_LABEL}
+              aria-keyshortcuts={NEW_CHAT_SHORTCUT_LABEL}
+              data-action="new-task"
+              className="font-mono text-sm font-semibold tracking-[0.02em] [&_svg]:text-[var(--hud-accent)]"
+              onClick={startNewTask}
+            >
+              <Plus size={16} strokeWidth={1.8} aria-hidden />
+              <span>{NEW_TASK_ACTION_LABEL}</span>
+            </SidebarMenuButton>
+            <SidebarMenuBadge className="font-mono text-2xs text-sidebar-foreground/55">
+              {NEW_CHAT_SHORTCUT_LABEL}
+            </SidebarMenuBadge>
+          </SidebarMenuItem>
+          </SidebarMenu>
+        </SidebarGroup>
         {model.kind === "scope" ? (
           <SidebarGroup>
             {/* Column header — see data-sidebar-head note on the Navigate group. */}
@@ -338,26 +359,9 @@ export function ScoutSidebar({
       </SidebarContent>
 
       <SidebarFooter className="border-t border-sidebar-border">
-        {/* Global action + destination stay pinned here across every route. In the
+        {/* Settings stays pinned here across every route. In the
             icon rail they remain deterministic targets with hover tooltips. */}
         <SidebarMenu className="gap-1">
-          <SidebarMenuItem>
-            <SidebarMenuButton
-              type="button"
-              tooltip={`${NEW_TASK_ACTION_LABEL} (${NEW_CHAT_SHORTCUT_LABEL})`}
-              aria-label={NEW_TASK_ACTION_LABEL}
-              aria-keyshortcuts={NEW_CHAT_SHORTCUT_LABEL}
-              data-action="new-task"
-              className="font-mono text-sm font-semibold tracking-[0.02em] [&_svg]:text-[var(--hud-accent)]"
-              onClick={startNewTask}
-            >
-              <Plus size={16} strokeWidth={1.8} aria-hidden />
-              <span>{NEW_TASK_ACTION_LABEL}</span>
-            </SidebarMenuButton>
-            <SidebarMenuBadge className="font-mono text-2xs text-sidebar-foreground/55">
-              {NEW_CHAT_SHORTCUT_LABEL}
-            </SidebarMenuBadge>
-          </SidebarMenuItem>
           <SidebarMenuItem>
             <SidebarMenuButton
               type="button"

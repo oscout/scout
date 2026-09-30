@@ -27,8 +27,12 @@ export type InvocationSessionPolicy =
   /** @deprecated use reuse */
   | "any";
 
-/** Where a newly created harness session should be discoverable. */
-export type SessionPlacement = "background" | "foreground";
+/**
+ * Where a newly created harness session should be discoverable.
+ * `attached` (Codex only) runs the session on an already-running Codex
+ * app-server (the daemon control socket) instead of a Scout-spawned one.
+ */
+export type SessionPlacement = "background" | "foreground" | "attached";
 
 export type InvocationForkSourceKind =
   | "native_thread_clone"
@@ -72,6 +76,17 @@ export interface InvocationExecutionPreference {
   forkFromSessionId?: ScoutId;
   forkContext?: InvocationForkContextOptions;
   lineage?: InvocationSessionLineage;
+  /**
+   * Hard per-turn execution budget in milliseconds, honoured only by the ACP
+   * wrappers (Grok, Kimi, OpenCode, Devin, Cursor). Tmux, Claude stream-JSON,
+   * Codex app-server, and Pi RPC do not implement a turn budget. Distinct
+   * from the requester's wait budget (`timeoutMs`): a caller willing to wait
+   * 24 h does not license a 24 h turn. When set it takes precedence over the
+   * OPENSCOUT_ACP_HARD_CEILING_MS default (typically to raise it); bounded to
+   * 6 h at the command boundary and always clamped to the administrator
+   * maximum OPENSCOUT_ACP_HARD_CEILING_MAX_MS (default 6 h).
+   */
+  turnBudgetMs?: number;
 }
 
 export interface InvocationRequest {
@@ -158,7 +173,7 @@ function cleanTraceTimestamp(value: unknown): number | undefined {
 }
 
 function cleanTracePlacement(value: unknown): SessionPlacement | undefined {
-  return value === "background" || value === "foreground" ? value : undefined;
+  return value === "background" || value === "foreground" || value === "attached" ? value : undefined;
 }
 
 function parseFlightSessionTraceEntry(value: unknown): FlightSessionTraceEntry | null {

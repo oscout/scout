@@ -1,3 +1,4 @@
+import { isAllowedHostWebRequest, type HostWebRequest, type HostWebResponse } from "./host-web-request.js";
 import type { RuntimeChildProcessLike, RuntimeEnv, RuntimeHttpRequestLike, RuntimeSpawnFunction } from "./portable-types.js";
 import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
@@ -222,6 +223,31 @@ export class BrokerWebControlService {
     return Number.isInteger(envPort) && envPort > 0 && envPort < 65536
       ? envPort
       : (this.options.resolveWebPort ?? resolveWebPort)();
+  }
+
+  /** Execute only on this broker's own web process using its local credential. */
+  async requestForHost(input: HostWebRequest): Promise<HostWebResponse> {
+    if (!isAllowedHostWebRequest(input)) return { status: 400, body: { error: "unsupported_host_operation" } };
+    try {
+      const response = await this.fetchImpl(new URL(input.path, this.url()), {
+        method: input.method,
+        headers: { authorization: `Bearer ${this.webAuthToken}`, "content-type": "application/json" },
+        ...(input.method === "POST" ? { body: JSON.stringify(input.body ?? {}) } : {}),
+        redirect: "error",
+        signal: AbortSignal.timeout(15_000),
+      });
+      if (input.method === "GET" && input.path.startsWith("/api/blobs/") && response.ok) {
+        const bytes = await response.arrayBuffer();
+        if (bytes.byteLength > 25 * 1024 * 1024) return { status: 413, body: { error: "Attachment is too large" } };
+        return { status: response.status, body: null, binary: {
+          data: Buffer.from(bytes).toString("base64"),
+          contentType: response.headers.get("content-type") || "application/octet-stream",
+        } };
+      }
+      return { status: response.status, body: await response.json() };
+    } catch {
+      return { status: 502, body: { error: "Destination web service is unavailable" } };
+    }
   }
 
   url(): string {

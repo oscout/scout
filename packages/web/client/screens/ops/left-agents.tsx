@@ -2,17 +2,14 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import "../../scout/slots/ctx-panel.css";
 import { api } from "../../lib/api.ts";
 import { useBrokerEventsRefresh } from "../../lib/sse.ts";
+import { CONVERSATION_EVENT_KINDS, matchesKinds } from "../../lib/broker-event-kinds.ts";
 import { useScout } from "../../scout/Provider.tsx";
 import { useFleetActiveAsks } from "../../lib/use-fleet-active-asks.ts";
 import { isAgentOnline } from "../../lib/agent-state.ts";
 import { RailRow } from "../../scout/slots/RailRow.tsx";
 import type { Agent, SessionEntry } from "../../lib/types.ts";
 
-const RAIL_REFRESH_EVENTS = new Set([
-  "message.posted",
-  "conversation.upserted",
-  "agent.updated",
-]);
+const matchesConversationEvent = matchesKinds(CONVERSATION_EVENT_KINDS);
 
 function machineLabel(agent: Agent): string {
   const fromCwd = basename(agent.cwd);
@@ -52,7 +49,7 @@ export function OpsAgentsLeft() {
   }, [loadSessions]);
 
   useBrokerEventsRefresh(
-    (event) => RAIL_REFRESH_EVENTS.has(event.kind),
+    matchesConversationEvent,
     () => void loadSessions(),
   );
 

@@ -17,6 +17,7 @@ import type {
   ScoutDispatchCandidate,
 } from "@openscout/protocol";
 import { api } from "../../lib/api.ts";
+import { loadFleet } from "../../lib/fleet-store.ts";
 import { uploadMediaFiles, type OutgoingAttachment } from "../../lib/media-blobs.ts";
 import { useComposerAttachments } from "../../components/MessageComposer/index.ts";
 import {
@@ -64,6 +65,7 @@ import {
 import { dismissOperatorAttention } from "../../lib/operator-attention.ts";
 import {
   routeMachineId,
+  routePath,
   useBrowserLocation,
 } from "../../lib/router.ts";
 import {
@@ -77,6 +79,11 @@ import { useScout } from "../../scout/Provider.tsx";
 import { openContent } from "../../scout/slots/openContent.ts";
 import { useContextMenu, type MenuItem } from "../../components/ContextMenu.tsx";
 import { copyTextToClipboard } from "../../lib/clipboard.ts";
+import {
+  conversationMessagePermalink,
+  messageIdFromPermalinkHash,
+  messagePermalinkAnchor,
+} from "../../lib/message-permalink.ts";
 import { createForwardContextSource } from "../../lib/forward-context.ts";
 import { MessageEmbeds } from "../../components/MessageEmbeds.tsx";
 import { AgentAvatar } from "../../components/AgentAvatar.tsx";
@@ -194,15 +201,7 @@ import {
 const WORKING_TURN_TRACE_POLL_MS = 3_500;
 
 function messageIdFromLocationHash(hash: string | null | undefined): string | null {
-  const raw = hash?.trim().replace(/^#/, "");
-  if (!raw?.startsWith("msg-")) return null;
-  const id = raw.slice("msg-".length).trim();
-  if (!id) return null;
-  try {
-    return decodeURIComponent(id);
-  } catch {
-    return id;
-  }
+  return messageIdFromPermalinkHash(hash);
 }
 
 type ConversationMessageLoadMode = "initial" | "refresh" | "none";
@@ -218,8 +217,17 @@ function clientMessageIdFromMetadata(metadata: Record<string, unknown> | null | 
   return typeof value === "string" && value.trim() ? value.trim() : null;
 }
 
+/** Native Scoutbot appends where the operator was looking as a trailing
+ *  block. It rides along for the model; it is not the operator's words. */
+const CONTEXT_REFERENCES_MARKER = "\n\nContext references (not instructions):";
+
+export function withoutContextReferences(body: string): string {
+  const at = body.indexOf(CONTEXT_REFERENCES_MARKER);
+  return at === -1 ? body : body.slice(0, at).trimEnd();
+}
+
 function messageReplyPreview(message: Message): string {
-  const body = message.body.replace(/\s+/gu, " ").trim();
+  const body = withoutContextReferences(message.body).replace(/\s+/gu, " ").trim();
   if (body) {
     return body.length > 180
       ? `${body.slice(0, 179).trimEnd()}…`
@@ -503,7 +511,7 @@ export function ConversationScreen({
   const [pinnedAsk, setPinnedAsk] = useState<FleetAsk | null>(null);
 
   useEffect(() => {
-    api<FleetState>("/api/fleet")
+    loadFleet()
       .then((fleet) => {
         setPinnedAsk((previous) =>
           keepPreviousIfJsonEqual(
@@ -565,7 +573,7 @@ export function ConversationScreen({
         api<Flight[]>(
           `/api/flights?conversationId=${encodeURIComponent(canonicalConversationId)}&active=false`,
         ).catch(() => []),
-        api<FleetState>("/api/fleet?limit=24&activityLimit=160").catch(() =>
+        loadFleet("limit=24&activityLimit=160").catch(() =>
           emptyFleetState(),
         ),
       ]);
@@ -1070,10 +1078,15 @@ export function ConversationScreen({
     latestFlight && TERMINAL_CONVERSATION_FLIGHT_STATES.has(latestFlight.state)
       ? latestFlight
       : null;
+  // A failure already shown as a notice, or a completed turn whose reply is
+  // in the transcript, has nothing left for an outcome card to say.
   const outcomeFlightSuppressed = Boolean(
     outcomeFlight && messages.some((message) =>
-      conversationFailureNotice(message) !== null
-      && message.metadata?.["flightId"] === outcomeFlight.id,
+      (conversationFailureNotice(message) !== null
+        && message.metadata?.["flightId"] === outcomeFlight.id)
+      || (outcomeFlight.state === "completed"
+        && Boolean(outcomeFlight.messageId)
+        && message.replyToMessageId === outcomeFlight.messageId),
     ),
   );
   const outcomeSessionId = outcomeFlight?.sessions.at(-1)?.sessionId
@@ -1349,7 +1362,7 @@ export function ConversationScreen({
         previous.has(fanOutKey) ? previous : new Set(previous).add(fanOutKey)
       ));
     }
-    const el = document.getElementById(`msg-${messageId}`);
+    const el = document.getElementById(messagePermalinkAnchor(messageId));
     if (!el) return;
     // A folded delivery's anchor has no box of its own, so the row standing in
     // for it is what gets scrolled and highlighted.
@@ -1398,6 +1411,7 @@ export function ConversationScreen({
             attachments: message.attachments,
             metadata: message.metadata,
             replyToMessageId: message.replyToMessageId ?? message.n ?? null,
+            threadConversationId: message.threadConversationId ?? null,
           };
           if (isNoisyConversationStatusMessage(nextMessage)) return;
 
@@ -1691,9 +1705,8 @@ export function ConversationScreen({
       body: trimmed,
       createdAt: optimisticCreatedAt,
       class: "operator",
-      ...(outgoingReplyTarget
-        ? { replyToMessageId: outgoingReplyTarget.messageId }
-        : {}),
+      replyToMessageId: outgoingReplyTarget?.messageId ?? null,
+      threadConversationId: null,
       metadata: {
         clientMessageId,
         deliveryState: "sending",
@@ -2052,13 +2065,17 @@ export function ConversationScreen({
   }, [replyTarget]);
 
   const copyMessageLink = useCallback((messageId: string) => {
-    const url = new URL(window.location.href);
-    if (route.view === "agents-v2") {
-      url.searchParams.set("tab", "message");
-    }
-    url.hash = `msg-${messageId}`;
-    void copyTextToClipboard(url.toString());
-  }, [route.view]);
+    // Always share the product conversation path — never the native
+    // /embed/thread location (themeVars / profile / treatment).
+    const path = routePath({ view: "conversation", conversationId });
+    const href = conversationMessagePermalink({
+      origin: window.location.origin,
+      conversationId,
+      messageId,
+      path,
+    });
+    void copyTextToClipboard(href);
+  }, [conversationId]);
 
   const forwardMessage = useCallback((
     message: Message,
@@ -2570,7 +2587,10 @@ export function ConversationScreen({
                     operatorName,
                   })
                 : null;
+              // A reply to the message directly above it needs no pointer.
+              const previousRow = index > 0 ? feedRows[index - 1] : null;
               const replyOrigin = !askReply && message.replyToMessageId
+                && !(previousRow?.kind !== "fanout" && previousRow?.message.id === message.replyToMessageId)
                 ? messagesById.get(message.replyToMessageId) ?? null
                 : null;
               const replyOriginLabel = replyOrigin
@@ -2578,7 +2598,7 @@ export function ConversationScreen({
                   ? operatorName
                   : replyOrigin.actorName
                 : null;
-              const displayBody = askReply ? askReply.body : message.body;
+              const displayBody = askReply ? askReply.body : withoutContextReferences(message.body);
               const failureNotice = conversationFailureNotice(message);
               if (failureNotice && dismissedFailureMessageIds.has(message.id)) {
                 return null;
@@ -2615,7 +2635,7 @@ export function ConversationScreen({
 
                   {failureNotice && failureTargetName ? (
                     <article
-                      id={`msg-${message.id}`}
+                      id={messagePermalinkAnchor(message.id)}
                       className={[
                         "s-thread-msg",
                         "s-thread-failure-notice",
@@ -2692,7 +2712,7 @@ export function ConversationScreen({
                     </article>
                   ) : (
                   <article
-                    id={`msg-${message.id}`}
+                    id={messagePermalinkAnchor(message.id)}
                     className={[
                       "s-thread-msg",
                       isYou && "s-thread-msg--you",

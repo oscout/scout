@@ -7,6 +7,7 @@ import {
   TERMINAL_SESSION_REVIEW_AFTER_MS,
   inactiveTerminalItemDetail,
   sortTerminalSessionItems,
+  stoppedHostSessionDetail,
   terminalSessionActivityAt,
   terminalSessionLifecycle,
   terminalSessionStateLabel,
@@ -88,7 +89,8 @@ describe("terminalSessionStateRank", () => {
   test("labels the state without inventing an attach count", () => {
     expect(terminalSessionStateLabel(item({ title: "a", backend: "tmux", attached: 2 }))).toBe("2 attached");
     expect(terminalSessionStateLabel(item({ title: "b", backend: "tmux", attached: 0 }))).toBe("live");
-    expect(terminalSessionStateLabel(item({ title: "c", backend: "herdr", state: "detached" }))).toBe("detached");
+    expect(terminalSessionStateLabel(item({ title: "c", backend: "herdr", state: "detached" }))).toBe("stopped");
+    expect(terminalSessionStateLabel(item({ title: "e", backend: "tmux", state: "detached" }))).toBe("detached");
     expect(terminalSessionStateLabel(item({ title: "d", backend: "zellij", state: "exited" }))).toBe("exited");
   });
 });
@@ -256,5 +258,26 @@ describe("inactiveTerminalItemDetail", () => {
       activityAt: now - 2 * DAY,
       lastKnown: { savedAt: now - 23 * DAY, panes: 6, agents: ["codex"] },
     }), now)).toBe("last active 2d ago · 6 panes · codex");
+  });
+});
+
+describe("stoppedHostSessionDetail", () => {
+  const now = 1_800_000_000_000;
+  const DAY = 24 * 60 * 60 * 1000;
+
+  test("a session that ran before says when, how big, and who was in it", () => {
+    const record = item({
+      title: "scout-desk",
+      backend: "herdr",
+      origin: "backend",
+      state: "detached",
+      lastKnown: { savedAt: now - 2 * DAY, panes: 3, agents: ["claude", "codex"] },
+    }).session;
+    expect(stoppedHostSessionDetail(record, now)).toBe("last active 2d ago · 3 panes · claude, codex");
+  });
+
+  test("no persisted layout means it never ran", () => {
+    const record = item({ title: "fresh", backend: "herdr", state: "detached" }).session;
+    expect(stoppedHostSessionDetail(record, now)).toBeNull();
   });
 });

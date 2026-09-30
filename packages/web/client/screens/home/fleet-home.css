@@ -249,6 +249,20 @@
   margin-bottom: var(--space-4xl);
 }
 
+/* Home's section titles are the page's structure, so they sit one step
+   brighter than the dim eyebrow they share with other screens. */
+.s-fleet-home .s-eyebrow {
+  font-weight: 600;
+  color: color-mix(in srgb, var(--ink) 62%, var(--dim));
+}
+
+/* 8px instrument labels are unreadable at Home's arm's-length distance;
+   Home lifts them to the 9px floor. */
+.s-fleet-home .label-xs {
+  font-size: var(--text-2xs);
+  letter-spacing: var(--tracking-lg);
+}
+
 .s-section-rule-line {
   flex: 1;
   height: 1px;
@@ -1835,7 +1849,8 @@
   align-items: center;
   flex-wrap: wrap;
   gap: var(--space-sm);
-  padding: var(--space-3xs) var(--space-3xs) var(--space-sm);
+  padding: 0 var(--space-3xs) var(--space-md);
+  margin-top: calc(-1 * var(--space-md));
   font-family: var(--font-mono);
   font-size: var(--text-sm);
   letter-spacing: var(--tracking-sm);
@@ -1866,67 +1881,40 @@
   pointer-events: none;
 }
 
-.s-fleet-live-skeleton-row {
-  display: grid;
-  grid-template-columns: 56px 120px 1fr;
-  gap: var(--space-xl);
-  align-items: center;
-  padding: var(--space-sm) var(--space-md);
-  background: var(--bg);
-  border-bottom: 1px solid var(--border);
-}
-
-.s-fleet-live-skeleton-row:last-child {
-  border-bottom: 0;
-}
-
-.s-fleet-live-skeleton-row > span {
-  display: block;
-  height: 10px;
-  border-radius: var(--radius-sm);
-  background: linear-gradient(
-    90deg,
-    color-mix(in srgb, var(--border) 60%, transparent) 0%,
-    color-mix(in srgb, var(--border) 90%, transparent) 50%,
-    color-mix(in srgb, var(--border) 60%, transparent) 100%
-  );
-  background-size: 200% 100%;
-  animation: s-fleet-live-shimmer 1400ms linear infinite;
-}
-
-.s-fleet-live-skeleton-time { width: 36px; }
-.s-fleet-live-skeleton-actor { width: 90px; }
-.s-fleet-live-skeleton-text { width: 80%; }
-
 @keyframes s-fleet-live-shimmer {
   0%   { background-position: 200% 0; }
   100% { background-position: -200% 0; }
 }
 
+/* Empty / error: one dim line under the section rule, no container. */
 .s-fleet-live-empty {
   display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: var(--space-xs);
-  padding: var(--space-4xl) var(--space-xl);
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: var(--space-2xs) var(--space-md);
+  padding: 0 var(--space-3xs) var(--space-md);
+  margin-top: calc(-1 * var(--space-md));
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  letter-spacing: var(--tracking-sm);
+  color: var(--dim);
 }
 
 .s-fleet-live-empty-title {
-  font-family: var(--font-mono);
-  font-size: var(--text-md);
+  color: var(--dim);
+}
+
+.s-fleet-live-empty--error .s-fleet-live-empty-title {
   color: var(--muted);
-  letter-spacing: var(--tracking-sm);
 }
 
 .s-fleet-live-empty-detail {
-  font-family: var(--font-mono);
-  font-size: var(--text-sm);
+  min-width: 0;
+  max-width: 60ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   color: var(--dim);
-  letter-spacing: var(--tracking-sm);
-}
-
-.s-fleet-live-empty-actions {
-  margin-top: var(--space-2xs);
 }
 
 /* ── Quiet starter ────────────────────────────────────────────────── */
@@ -1945,8 +1933,8 @@
 .s-quiet-panel {
   min-width: 0;
   border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
-  background: color-mix(in srgb, var(--surface) 82%, var(--bg));
+  border-radius: var(--radius-xl);
+  background: color-mix(in srgb, var(--surface) 75%, var(--bg));
 }
 
 .s-quiet-panel--tail {
@@ -2160,4 +2148,71 @@
     flex: 0 0 auto;
     justify-content: flex-start;
   }
+}
+
+/* ── Stable load: placeholders and arrivals ──────────────────────────
+   Skeletons wear the real row classes; `.home-skel` is the only new
+   piece — a shimmer bar that sits on the row's own line box, so a
+   placeholder and the row that replaces it are the same height. Real
+   content then fades in over the same footprint instead of pushing. */
+.home-skel {
+  display: inline-block;
+  vertical-align: middle;
+  max-width: 100%;
+  height: 0.8em;
+  border-radius: var(--radius-sm);
+  background: linear-gradient(
+    90deg,
+    color-mix(in srgb, var(--border) 55%, transparent) 0%,
+    color-mix(in srgb, var(--border) 90%, transparent) 50%,
+    color-mix(in srgb, var(--border) 55%, transparent) 100%
+  );
+  background-size: 200% 100%;
+  animation: s-fleet-live-shimmer 1400ms linear infinite;
+}
+
+.home-skel--dot {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  justify-self: center;
+}
+
+.home-skel-chip {
+  color: transparent;
+}
+
+.s-moving-signal-skeleton,
+.hd-card--pending {
+  pointer-events: none;
+}
+
+.s-moving-signal-row--skeleton {
+  cursor: default;
+}
+
+.s-moving-signal-row--skeleton:hover {
+  background: transparent;
+}
+
+.s-moving-signal-row--skeleton .s-moving-signal-action {
+  color: transparent;
+}
+
+.s-fleet-live-stream--skeleton .s-mc-stream-row {
+  cursor: default;
+}
+
+.home-arrive {
+  animation: home-arrive 240ms var(--motion-ease-standard, ease-out) both;
+}
+
+@keyframes home-arrive {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .home-skel { animation: none; }
+  .home-arrive { animation-duration: 120ms; }
 }

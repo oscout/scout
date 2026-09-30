@@ -72,6 +72,7 @@ export class BrokerPresenceService {
     const statuses = projectObservedStatusesFromRuntimeSnapshot(snapshot, {
       now,
       transitions: this.presence.transitions,
+      evidenceOnly: true,
     });
 
     let published = 0;

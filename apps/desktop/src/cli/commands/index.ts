@@ -6,6 +6,7 @@ export type ScoutCommandName =
   | "app"
   | "status"
   | "notify"
+  | "operator"
   | "ask"
   | "alias"
   | "broadcast"
@@ -45,6 +46,7 @@ export type ScoutCommandName =
   | "speak"
   | "statusline"
   | "tail"
+  | "tell"
   | "tui"
   | "up"
   | "update"
@@ -61,6 +63,8 @@ export async function loadScoutCommandHandler(name: ScoutCommandName): Promise<S
       return (await import("./status.ts")).runStatusCommand;
     case "notify":
       return (await import("./notify.ts")).runNotifyCommand;
+    case "operator":
+      return (await import("./operator.ts")).runOperatorCommand;
     case "ask":
       return (await import("./ask.ts")).runAskCommand;
     case "alias":
@@ -139,6 +143,8 @@ export async function loadScoutCommandHandler(name: ScoutCommandName): Promise<S
       return (await import("./statusline.ts")).runStatuslineCommand;
     case "tail":
       return (await import("./tail.ts")).runTailCommand;
+    case "tell":
+      return (await import("./tell.ts")).runTellCommand;
     case "tui":
       return (await import("./tui.ts")).runTuiCommand;
     case "up":

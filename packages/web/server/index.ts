@@ -207,7 +207,7 @@ const web = await createOpenScoutWebServer({
   },
   scoutbot: { enabled: true },
 });
-const { app, warmupCaches } = web;
+const { app, warmupCaches, startScoutbotRunner } = web;
 
 const honoFetch = app.fetch;
 const relayWebSocket = createRelayWebSocketProxy();
@@ -440,6 +440,8 @@ console.log(`Relay WebSocket -> ws://${hostname}:${server.port}${routes.terminal
 if (startupWarmupEnabled) {
   setTimeout(() => void warmupCaches(), 5_000).unref?.();
 }
+// Off the boot path: runner registration scans saved agents and projects.
+setTimeout(() => void startScoutbotRunner(), 10_000).unref?.();
 if (providerTelemetryBootstrapEnabled) {
   setTimeout(() => void bootstrapProviderTelemetry(), 30_000).unref?.();
 }

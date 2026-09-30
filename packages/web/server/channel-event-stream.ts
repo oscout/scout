@@ -16,7 +16,7 @@ export type ChannelEventStreamOptions = {
   open?: () => Promise<{ connection: ConsumerConnection; consumer: ScoutEventConsumer }>;
 };
 
-function idleChannelEventStream(request: Request, heartbeatMs = 15_000): Response {
+function idleChannelEventStream(request: Request, heartbeatMs = 5_000): Response {
   const encoder = new TextEncoder();
   const stream = new ReadableStream<Uint8Array>({
     start(controller) {

@@ -127,15 +127,16 @@ describe("terminal workspace store", () => {
     expect(mod.queryTerminalWorkspace(created.id)?.layout).toBeUndefined();
   });
 
-  test("adds the layout column to a table that predates it", () => {
-    // A machine that ran the build which created this table without
-    // layout_json gets `CREATE TABLE IF NOT EXISTS`, which is a no-op — the
-    // exact reason the field silently failed to persist there. The repair is a
-    // guarded ALTER, and it has to be idempotent.
-    const database = new Database(join(process.env.OPENSCOUT_CONTROL_HOME!, "control-plane.sqlite"));
+  test("carries workspaces over from the control plane once, including ones that predate layouts", () => {
+    // Workspaces used to live in the broker's control-plane database. The
+    // web-owned file copies them over on first open; a table from a build
+    // before layout_json existed must still come across.
+    mod.closeTerminalWorkspaceDb();
+    const home = process.env.OPENSCOUT_CONTROL_HOME!;
+    rmSync(join(home, "web-state.sqlite"), { force: true });
+    const controlPlane = new Database(join(home, "control-plane.sqlite"), { create: true });
     try {
-      database.exec("DROP TABLE IF EXISTS terminal_workspaces");
-      database.exec(`CREATE TABLE terminal_workspaces (
+      controlPlane.exec(`CREATE TABLE terminal_workspaces (
         id TEXT PRIMARY KEY,
         name TEXT NOT NULL,
         purpose TEXT NOT NULL DEFAULT '',
@@ -145,27 +146,33 @@ describe("terminal workspace store", () => {
         created_at INTEGER NOT NULL DEFAULT 0,
         updated_at INTEGER NOT NULL
       )`);
+      controlPlane.query("INSERT INTO terminal_workspaces (id, name, columns_count, updated_at) VALUES (?, ?, ?, ?)")
+        .run("tw.legacy", "Legacy desk", 3, 1);
     } finally {
-      database.close();
+      controlPlane.close();
     }
-    mod.closeTerminalWorkspaceDb();
 
-    const created = mod.upsertTerminalWorkspace({
-      name: "Upgraded desk",
-      layout: { mode: "grid", columns: 3 },
-      cells: [],
-    });
-    expect(created.layout).toEqual({ mode: "grid", columns: 3 });
+    const imported = mod.queryTerminalWorkspace("tw.legacy");
+    expect(imported).toEqual(expect.objectContaining({ name: "Legacy desk", columns: 3 }));
+    expect(imported?.layout).toBeUndefined();
 
-    // Reopening must not try to add the column twice.
+    // Once: a workspace deleted after the copy stays deleted on reopen.
+    expect(mod.deleteTerminalWorkspace("tw.legacy")).toBe(true);
     mod.closeTerminalWorkspaceDb();
-    expect(mod.upsertTerminalWorkspace({ id: created.id, name: "Upgraded desk", layout: { mode: "solo" } }).layout)
-      .toEqual({ mode: "solo" });
+    expect(mod.queryTerminalWorkspace("tw.legacy")).toBeNull();
+
+    // And the control plane was only read.
+    const reread = new Database(join(home, "control-plane.sqlite"), { readonly: true });
+    try {
+      expect(reread.query("SELECT count(*) AS count FROM terminal_workspaces").get()).toEqual({ count: 1 });
+    } finally {
+      reread.close();
+    }
   });
 
   test("refuses to hand back a layout mode that is not a shape", () => {
     const created = mod.upsertTerminalWorkspace({ name: "Desk", cells: [] });
-    const database = new Database(join(process.env.OPENSCOUT_CONTROL_HOME!, "control-plane.sqlite"));
+    const database = new Database(join(process.env.OPENSCOUT_CONTROL_HOME!, "web-state.sqlite"));
     try {
       database.query("UPDATE terminal_workspaces SET layout_json = ? WHERE id = ?")
         .run(JSON.stringify({ mode: "carousel", columns: 4 }), created.id);

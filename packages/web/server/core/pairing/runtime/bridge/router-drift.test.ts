@@ -43,9 +43,12 @@ const KNOWN_COPY_DRIFT = {
   // Procedures the canonical web copy exposes that apps/desktop is missing.
   webOnly: [
     "history.snapshot",
+    "mobile.askSession",
     "mobile.commsMarkRead",
     "mobile.endpoints",
+    "mobile.heartrate",
     "mobile.meshStatus",
+    "mobile.sessionUpdate",
     "mobile.tail",
   ],
   // Procedures apps/desktop exposes that the canonical web copy is missing.

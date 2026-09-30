@@ -17,7 +17,7 @@ import type {
   WebBrokerDiagnostics,
   WebBrokerHistoryKey,
   WebBrokerRouteAttempt,
-} from "./types/web.ts";
+} from "../../shared/api/web.ts";
 
 type BrokerCursor = {
   ts: number;
@@ -51,6 +51,7 @@ type DispatchRow = {
   dispatched_at: number;
   invocation_execution_json: string | null;
   invocation_execution_resolution_json: string | null;
+  payload_json: string | null;
 };
 
 type DeliveryRow = {
@@ -391,6 +392,7 @@ function queryDispatchRows(limit: number, cursor: BrokerCursor | null, since?: n
          sd.requester_id,
          ac.display_name AS actor_name,
          sd.dispatched_at,
+         sd.payload_json,
          inv.execution_json AS invocation_execution_json,
          inv.execution_resolution_json AS invocation_execution_resolution_json
        FROM scout_dispatches sd
@@ -433,8 +435,35 @@ function failedQueryFromRow(row: DispatchRow): WebBrokerRouteAttempt {
         row.invocation_execution_resolution_json,
         null,
       ),
+      ...dispatchEvidenceFromPayload(row.payload_json),
     },
   };
+}
+
+/**
+ * The broker stores the whole dispatch envelope, and only it carries the
+ * structured reason a route failed — why an exact session could not wake, which
+ * alias check refused, why a known agent was unavailable. `detail` is prose for
+ * people; these codes are what an operator surface can safely branch on.
+ */
+export function dispatchEvidenceFromPayload(payloadJson: string | null): Record<string, unknown> {
+  const payload = parseJson<Record<string, unknown> | null>(payloadJson, null);
+  if (!payload || typeof payload !== "object") return {};
+  const evidence: Record<string, unknown> = {};
+  const text = (value: unknown) => (typeof value === "string" && value.trim() ? value.trim() : null);
+  const sessionWakeReason = text(payload.sessionWakeReason);
+  if (sessionWakeReason) evidence.sessionWakeReason = sessionWakeReason;
+  const diagnosticCode = text(payload.diagnosticCode);
+  if (diagnosticCode) evidence.diagnosticCode = diagnosticCode;
+  const target = payload.target && typeof payload.target === "object" && !Array.isArray(payload.target)
+    ? payload.target as Record<string, unknown>
+    : null;
+  const unavailableReason = text(target?.reason);
+  if (unavailableReason) evidence.unavailableReason = unavailableReason;
+  const unavailableAgentId = text(target?.agentId);
+  if (unavailableAgentId) evidence.unavailableAgentId = unavailableAgentId;
+  if (Array.isArray(payload.candidates)) evidence.candidateCount = payload.candidates.length;
+  return evidence;
 }
 
 function queryFailedDeliveryRows(limit: number, cursor: BrokerCursor | null, since?: number): DeliveryRow[] {

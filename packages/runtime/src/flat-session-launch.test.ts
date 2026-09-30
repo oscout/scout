@@ -7,6 +7,14 @@ test("flat tmux Claude continuation explicitly resumes its requested native id",
   expect(flatSessionEndpointLaunchArgs(endpoint)).toEqual(["--model", "opus", "--resume", "native-target"]);
 });
 
+test("a fork endpoint branches from its live source until the fork's own transcript exists", () => {
+  const endpoint = { transport: "tmux", harness: "claude", metadata: { flatDispatch: true, nativeSessionId: "fork-id", forkedFromSessionId: "source-id", launchArgs: ["--model", "opus", "--resume", "source-id"] } } as AgentEndpoint;
+  expect(flatSessionEndpointLaunchArgs(endpoint, { claudeSessionExists: () => false }))
+    .toEqual(["--model", "opus", "--resume", "source-id", "--fork-session", "--session-id", "fork-id"]);
+  expect(flatSessionEndpointLaunchArgs(endpoint, { claudeSessionExists: (id) => id === "fork-id" }))
+    .toEqual(["--model", "opus", "--resume", "fork-id"]);
+});
+
 test("a flat continuation without native identity cannot launch fresh", () => {
   expect(() => flatSessionEndpointLaunchArgs({ transport: "tmux", harness: "claude", metadata: { flatDispatch: true } } as AgentEndpoint)).toThrow("no native session id");
 });
@@ -15,6 +23,12 @@ test("ordinary new Claude launches keep their launch arguments", () => {
   expect(flatSessionEndpointLaunchArgs({ transport: "tmux", harness: "claude", metadata: { launchArgs: ["--model", "opus"] } } as AgentEndpoint)).toEqual(["--model", "opus"]);
 });
 
+
+test("a forked flat endpoint guards delivery on the fork id the invocation targets", () => {
+  const endpoint = { id: "endpoint.flat-claude-fork-id.node.tmux", sessionId: "flat-claude-fork-id", transport: "tmux", harness: "claude", metadata: { flatDispatch: true, nativeSessionId: "fork-id", forkedFromSessionId: "source-id" } } as AgentEndpoint;
+  const invocation = { execution: { session: "existing", targetSessionId: "fork-id" } } as InvocationRequest;
+  expect(exactClaudeNativeSessionForDelivery(endpoint, invocation)).toBe("fork-id");
+});
 
 test("pre-delivery native guard accepts only the observed requested session", async () => {
   await expect(requireClaudeNativeSessionBeforeDelivery("native-target", {

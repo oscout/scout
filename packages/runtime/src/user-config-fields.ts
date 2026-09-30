@@ -1,4 +1,11 @@
 import {
+  isScoutLaunchableHarness,
+  normalizeAgentSelectorSegment,
+  parseScoutRuntimeSpec,
+  SCOUT_REASONING_EFFORTS,
+  SCOUT_RESERVED_RUNTIME_PROFILE_IDS,
+} from "@openscout/protocol";
+import {
   describeProvisionalAgentNamePool,
   normalizeProvisionalAgentNamesSetting,
 } from "./provisional-agent-names-config.js";
@@ -12,6 +19,7 @@ import {
   type InterruptThreshold,
   type OpenScoutUserConfig,
   type ProvisionalAgentNamesMode,
+  type RuntimePresetConfig,
   type TailThinkingMode,
 } from "./user-config.js";
 
@@ -35,6 +43,8 @@ export type UserConfigFieldDefinition = {
   resolveGet?: (config: OpenScoutUserConfig) => string;
   /** One-line value for scout config show. */
   formatSummary?: (config: OpenScoutUserConfig) => string;
+  /** Custom render of a parsed value for set output (defaults follow `kind`). */
+  formatValue?: (value: unknown) => string;
   apply?: (config: OpenScoutUserConfig, value: unknown) => void;
   clear?: (config: OpenScoutUserConfig) => void;
 };
@@ -108,6 +118,100 @@ function setConfigValue<K extends keyof OpenScoutUserConfig>(
   value: OpenScoutUserConfig[K],
 ): void {
   config[key] = value;
+}
+
+// ── Runtime lists ────────────────────────────────────────────────────────────
+//
+// `runtimeShortlist` and `runtimePresets` are validated here once and shared by
+// `scout config set` and `POST /api/user`, so the CLI grammar and the HTTP body
+// can never drift apart. Specs go through `parseScoutRuntimeSpec`; preset ids
+// are slugified and refused when they collide with reserved profile names,
+// launchable harness ids, or reasoning-effort words — grammar words cannot be
+// reassigned.
+
+export function normalizeRuntimeShortlistInput(value: unknown): string[] {
+  if (!Array.isArray(value)) {
+    throw new Error("runtime-shortlist expects a list of <harness>[/<model>] specs");
+  }
+  const specs = value
+    .map((entry) => (typeof entry === "string" ? entry.trim() : ""))
+    .filter((entry) => entry.length > 0);
+  for (const spec of specs) {
+    const parsed = parseScoutRuntimeSpec(spec);
+    if (!parsed.ok) {
+      throw new Error(`invalid runtime spec "${spec}": ${parsed.error}`);
+    }
+    if (parsed.value.reasoningEffort) {
+      throw new Error(`invalid runtime spec "${spec}": shortlist entries pin a model, not an effort — use runtime-presets for effort`);
+    }
+  }
+  return specs;
+}
+
+/**
+ * Slugified preset ids are grammar-adjacent: `scout ask fable` and
+ * `scout ask claude/opus-5/medium` already mean something, so a user preset may
+ * not take those words.
+ */
+export function normalizeRuntimePresetId(raw: unknown): string {
+  const id = normalizeAgentSelectorSegment(typeof raw === "string" ? raw : "");
+  if (!id) {
+    throw new Error("runtime preset needs an id — use id[:Label]=<harness>[/<model>[/<effort>]]");
+  }
+  if ((SCOUT_RESERVED_RUNTIME_PROFILE_IDS as readonly string[]).includes(id)) {
+    throw new Error(`runtime preset id "${id}" is a reserved runtime profile name`);
+  }
+  if (isScoutLaunchableHarness(id)) {
+    throw new Error(`runtime preset id "${id}" collides with a launchable harness`);
+  }
+  if ((SCOUT_REASONING_EFFORTS as readonly string[]).includes(id)) {
+    throw new Error(`runtime preset id "${id}" collides with a reasoning effort`);
+  }
+  return id;
+}
+
+export function normalizeRuntimePresetInput(value: unknown): RuntimePresetConfig {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("runtime preset must be { id, label?, runtime }");
+  }
+  const record = value as Record<string, unknown>;
+  const id = normalizeRuntimePresetId(record.id);
+  const runtime = typeof record.runtime === "string" ? record.runtime.trim() : "";
+  const parsed = parseScoutRuntimeSpec(runtime);
+  if (!parsed.ok) {
+    throw new Error(`invalid runtime spec for preset "${id}": ${parsed.error}`);
+  }
+  const label = typeof record.label === "string" && record.label.trim()
+    ? record.label.trim()
+    : undefined;
+  return { id, ...(label ? { label } : {}), runtime };
+}
+
+/** `id[:Label]=<harness>[/<model>[/<effort>]]` — the field grammar. */
+export function parseRuntimePresetItem(item: string): RuntimePresetConfig {
+  const trimmed = item.trim();
+  const eq = trimmed.indexOf("=");
+  if (eq < 0) {
+    throw new Error(`preset "${trimmed}" must be id[:Label]=<harness>[/<model>[/<effort>]]`);
+  }
+  const head = trimmed.slice(0, eq).trim();
+  const runtime = trimmed.slice(eq + 1).trim();
+  const colon = head.indexOf(":");
+  const id = colon < 0 ? head : head.slice(0, colon).trim();
+  const label = colon < 0 ? undefined : head.slice(colon + 1).trim() || undefined;
+  return normalizeRuntimePresetInput({ id, ...(label ? { label } : {}), runtime });
+}
+
+export function normalizeRuntimePresetsInput(value: unknown): RuntimePresetConfig[] {
+  if (!Array.isArray(value)) {
+    throw new Error("runtime-presets expects a list of id[:Label]=<spec> items");
+  }
+  return value.map((entry) =>
+    typeof entry === "string" ? parseRuntimePresetItem(entry) : normalizeRuntimePresetInput(entry));
+}
+
+export function formatRuntimePresetSetting(preset: RuntimePresetConfig): string {
+  return `${preset.id}${preset.label ? `:${preset.label}` : ""}=${preset.runtime}`;
 }
 
 function clearConfigValue(
@@ -319,6 +423,55 @@ export const USER_CONFIG_FIELDS: readonly UserConfigFieldDefinition[] = [
     resolveGet: (config) => formatStoredString(config.provisionalAgentNamesFile),
     formatSummary: (config) => formatStoredString(config.provisionalAgentNamesFile) || "—",
   },
+  {
+    id: "runtime-shortlist",
+    key: "runtimeShortlist",
+    label: "Runtime model shortlist",
+    kind: "string-list",
+    summary: "Models pinned first in runtime pickers (<harness>[/<model>], comma-separated)",
+    parse: (args) =>
+      normalizeRuntimeShortlistInput(
+        args.join(" ").split(",").map((entry) => entry.trim()).filter(Boolean),
+      ),
+    resolveGet: (config) => (config.runtimeShortlist ?? []).join(", "),
+    formatSummary: (config) => (config.runtimeShortlist ?? []).join(", ") || "—",
+    formatValue: (value) => (Array.isArray(value) ? value.join(", ") : ""),
+    apply: (config, value) => {
+      const specs = normalizeRuntimeShortlistInput(value);
+      if (specs.length === 0) {
+        clearConfigValue(config, "runtimeShortlist");
+      } else {
+        setConfigValue(config, "runtimeShortlist", specs);
+      }
+    },
+    clear: (config) => clearConfigValue(config, "runtimeShortlist"),
+  },
+  {
+    id: "runtime-presets",
+    key: "runtimePresets",
+    label: "Runtime presets",
+    kind: "string-list",
+    summary: "Named runtime tuples: id[:Label]=<harness>[/<model>[/<effort>]], comma-separated",
+    parse: (args) =>
+      normalizeRuntimePresetsInput(
+        args.join(" ").split(",").map((entry) => entry.trim()).filter(Boolean),
+      ),
+    resolveGet: (config) =>
+      (config.runtimePresets ?? []).map(formatRuntimePresetSetting).join(", "),
+    formatSummary: (config) =>
+      (config.runtimePresets ?? []).map(formatRuntimePresetSetting).join(", ") || "—",
+    formatValue: (value) =>
+      Array.isArray(value) ? value.map(formatRuntimePresetSetting).join(", ") : "",
+    apply: (config, value) => {
+      const presets = normalizeRuntimePresetsInput(value);
+      if (presets.length === 0) {
+        clearConfigValue(config, "runtimePresets");
+      } else {
+        setConfigValue(config, "runtimePresets", presets);
+      }
+    },
+    clear: (config) => clearConfigValue(config, "runtimePresets"),
+  },
 ] as const;
 
 const USER_CONFIG_FIELD_INDEX = new Map<string, UserConfigFieldDefinition>(
@@ -409,6 +562,9 @@ export function formatUserConfigFieldValue(
   field: UserConfigFieldDefinition,
   value: unknown,
 ): string {
+  if (field.formatValue) {
+    return field.formatValue(value);
+  }
   switch (field.kind) {
     case "number":
       return value === undefined || value === null ? "" : String(value);

@@ -274,9 +274,15 @@ async function waitForTailscaleRunning(timeoutMs = 12_000): Promise<boolean> {
   return false;
 }
 
-async function openTailscaleApp(): Promise<void> {
+type TailscaleOpenExec = (
+  file: string,
+  args: readonly string[],
+  options: { timeoutMs: number },
+) => Promise<unknown>;
+
+export async function openTailscaleApp(exec: TailscaleOpenExec = execSystemFile): Promise<void> {
   if (process.platform !== "darwin") return;
-  await execSystemFile("open", ["-a", "Tailscale"], { timeoutMs: 1_500 });
+  await exec("open", ["-a", "Tailscale"], { timeoutMs: 1_500 });
   tailscaleStatusProbe.invalidate("tailscale.start");
 }
 

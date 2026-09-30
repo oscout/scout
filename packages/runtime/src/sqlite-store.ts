@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 
-import { and, asc, eq } from "drizzle-orm";
+import { and, asc, eq, inArray } from "drizzle-orm";
 
 import {
   canonicalMeshNodeId,
@@ -11,6 +11,7 @@ import {
 } from "./node-identity.js";
 
 import {
+  readChatMessageCorrection,
   EPOCH_MILLISECONDS_FLOOR,
   epochMs,
   normalizeTerminalWorkspaceColumns,
@@ -74,6 +75,7 @@ import type {
 
 import {
   createRuntimeRegistrySnapshot,
+  type RuntimeActorIdentity,
   type RuntimeRegistrySnapshot,
 } from "./registry.js";
 import { openControlPlaneDrizzle } from "./drizzle-client.js";
@@ -132,6 +134,10 @@ function currentTimestampMs(): number {
 }
 
 const RUNTIME_SESSION_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
+// Hourly quota history is charted over the last week; one bucket of slack
+// keeps the oldest charted hour whole.
+const QUOTA_HISTORY_RETENTION_MS = 7 * 24 * 60 * 60 * 1000 + 60 * 60 * 1000;
+const QUOTA_HISTORY_PRUNE_INTERVAL_MS = 10 * 60 * 1000;
 
 const RUNTIME_SESSION_ALIAS_METADATA_KEYS = [
   { key: "sessionId", kind: "metadata_session" },
@@ -146,6 +152,205 @@ const RUNTIME_SESSION_ALIAS_METADATA_KEYS = [
 
 function normalizeTimestampMs(value: number | null | undefined): number | null {
   return epochMs(value);
+}
+
+/**
+ * Record kinds the history-rotation persistence boundary verifies. For each,
+ * `canonicalRecord` produces the exact shape the row→record mappers emit —
+ * the persisted field set with every normalization the mapper applies —
+ * so an `isDeepStrictEqual` comparison against the journaled record is
+ * symmetric by construction: fields the table does not store are dropped,
+ * null/undefined collapse identically, and JSON columns get the same
+ * stringify→parse round-trip on both sides.
+ */
+export type PersistedRotationRecordKind =
+  | "message"
+  | "invocation"
+  | "flight"
+  | "delivery"
+  | "deliveryAttempt"
+  | "collaborationEvent";
+
+/** JSON-column normalization — mirrors `stringify`→`parseJson`. */
+function jsonCanonical<T>(value: T | null | undefined): T | undefined {
+  return value === undefined || value === null
+    ? undefined
+    : JSON.parse(JSON.stringify(value)) as T;
+}
+
+function compareIds(a: string, b: string): number {
+  return a < b ? -1 : a > b ? 1 : 0;
+}
+
+function canonicalMentions(mentions: MessageMention[] | undefined): MessageMention[] | undefined {
+  // The child table cannot distinguish [] from absent — no rows reads back
+  // as undefined, so collapse both to undefined.
+  if (mentions === undefined || mentions.length === 0) {
+    return undefined;
+  }
+  // message_mentions is keyed (message_id, actor_id): the write path's
+  // INSERT OR REPLACE keeps the last mention per actor, and reads order by
+  // actor_id. Mentions are a set, not a list — the canonical form is that set.
+  const byActorId = new Map<string, MessageMention>();
+  for (const mention of mentions) {
+    byActorId.set(mention.actorId, {
+      actorId: mention.actorId,
+      label: mention.label ?? undefined,
+    });
+  }
+  return [...byActorId.values()].sort((a, b) => compareIds(a.actorId, b.actorId));
+}
+
+function canonicalAttachments(attachments: MessageAttachment[] | undefined): MessageAttachment[] | undefined {
+  if (attachments === undefined || attachments.length === 0) {
+    return undefined;
+  }
+  // message_attachments is keyed by attachment id: INSERT OR REPLACE keeps
+  // the last write per id and reads order by id. The canonical form is that set.
+  const byId = new Map<string, MessageAttachment>();
+  for (const attachment of attachments) {
+    byId.set(attachment.id, {
+      id: attachment.id,
+      mediaType: attachment.mediaType,
+      fileName: attachment.fileName ?? undefined,
+      blobKey: attachment.blobKey ?? undefined,
+      url: attachment.url ?? undefined,
+      metadata: jsonCanonical(attachment.metadata),
+    });
+  }
+  return [...byId.values()].sort((a, b) => compareIds(a.id, b.id));
+}
+
+/**
+ * Cross-record inputs the write path had when it normalized a record, so the
+ * expected (in-memory) side of a persisted-parity comparison can apply the
+ * same normalization. Stored rows already embody write-path normalization —
+ * callers pass context only for the expected side.
+ */
+export interface CanonicalRecordContext {
+  /**
+   * A flight's parent invocation is the identity authority: `recordFlight`
+   * rewrites a divergent requester/target to the invocation's identities
+   * before writing. Pass the journaled parent invocation here so the
+   * canonical form of the expected flight matches the stored row.
+   */
+  flightInvocation?: Pick<InvocationRequest, "requesterId" | "targetAgentId"> | undefined;
+}
+
+export function canonicalRecord<T>(
+  kind: PersistedRotationRecordKind,
+  record: T,
+  context?: CanonicalRecordContext,
+): T {
+  const r = record as Record<string, unknown>;
+  switch (kind) {
+    case "message":
+      return {
+        id: r.id,
+        conversationId: r.conversationId,
+        actorId: r.actorId,
+        originNodeId: r.originNodeId,
+        class: r.class,
+        body: r.body,
+        replyToMessageId: r.replyToMessageId ?? undefined,
+        threadConversationId: r.threadConversationId ?? undefined,
+        mentions: canonicalMentions(r.mentions as MessageMention[] | undefined),
+        attachments: canonicalAttachments(r.attachments as MessageAttachment[] | undefined),
+        speech: jsonCanonical(r.speech),
+        audience: jsonCanonical(r.audience),
+        visibility: r.visibility,
+        policy: r.policy,
+        createdAt: normalizeTimestampMs(r.createdAt as number | null | undefined) ?? r.createdAt,
+        metadata: jsonCanonical(r.metadata),
+      } as T;
+    case "invocation":
+      return {
+        id: r.id,
+        requesterId: r.requesterId,
+        requesterNodeId: r.requesterNodeId,
+        targetAgentId: r.targetAgentId,
+        targetNodeId: r.targetNodeId ?? undefined,
+        action: r.action,
+        task: r.task,
+        // recordInvocation stores resolveInvocationCollaborationRecordId's
+        // result; applying the same resolver here keeps the canonical form
+        // equal by construction. On a stored row the resolver's first clause
+        // returns the column itself (trimmed), so this is idempotent.
+        collaborationRecordId: resolveInvocationCollaborationRecordId(r as unknown as InvocationRequest),
+        conversationId: r.conversationId ?? undefined,
+        messageId: r.messageId ?? undefined,
+        context: jsonCanonical(r.context),
+        execution: jsonCanonical(r.execution),
+        executionResolution: jsonCanonical(r.executionResolution),
+        ensureAwake: r.ensureAwake === true,
+        stream: r.stream === true,
+        timeoutMs: r.timeoutMs ?? undefined,
+        labels: jsonCanonical(r.labels),
+        metadata: jsonCanonical(r.metadata),
+        createdAt: r.createdAt,
+      } as T;
+    case "flight": {
+      // recordFlight rewrites a divergent requester/target to the parent
+      // invocation's identities before writing. context.flightInvocation is
+      // the journaled parent — apply the same normalization to the expected
+      // record. Stored rows carry the normalized identity already and are
+      // canonicalized without context.
+      const identity = context?.flightInvocation;
+      return {
+        id: r.id,
+        invocationId: r.invocationId,
+        requesterId: identity?.requesterId ?? r.requesterId,
+        targetAgentId: identity?.targetAgentId ?? r.targetAgentId,
+        state: r.state,
+        summary: r.summary ?? undefined,
+        output: r.output ?? undefined,
+        error: r.error ?? undefined,
+        labels: jsonCanonical(r.labels),
+        metadata: jsonCanonical(r.metadata),
+        startedAt: r.startedAt ?? undefined,
+        completedAt: r.completedAt ?? undefined,
+      } as T;
+    }
+    case "delivery":
+      return {
+        id: r.id,
+        messageId: r.messageId ?? undefined,
+        invocationId: r.invocationId ?? undefined,
+        targetId: r.targetId,
+        targetNodeId: r.targetNodeId ?? undefined,
+        targetKind: r.targetKind,
+        transport: r.transport,
+        reason: r.reason,
+        policy: r.policy,
+        status: r.status,
+        bindingId: r.bindingId ?? undefined,
+        leaseOwner: r.leaseOwner ?? undefined,
+        leaseExpiresAt: r.leaseExpiresAt ?? undefined,
+        metadata: jsonCanonical(r.metadata),
+      } as T;
+    case "deliveryAttempt":
+      return {
+        id: r.id,
+        deliveryId: r.deliveryId,
+        attempt: r.attempt,
+        status: r.status,
+        error: r.error ?? undefined,
+        externalRef: r.externalRef ?? undefined,
+        createdAt: r.createdAt,
+        metadata: jsonCanonical(r.metadata),
+      } as T;
+    case "collaborationEvent":
+      return {
+        id: r.id,
+        recordId: r.recordId,
+        recordKind: r.recordKind,
+        kind: r.kind,
+        actorId: r.actorId,
+        summary: r.summary ?? undefined,
+        metadata: jsonCanonical(r.metadata),
+        at: r.at,
+      } as T;
+  }
 }
 
 function stableHash(value: string, length = 20): string {
@@ -266,6 +471,13 @@ function queryAllDynamic<Row>(
   return statement.all(...params);
 }
 
+/** Bounded `IN`-list chunks — SQLite's bound-parameter limit stays clear. */
+function* chunksOf(ids: readonly string[], size = 400): Generator<readonly string[]> {
+  for (let start = 0; start < ids.length; start += size) {
+    yield ids.slice(start, start + size);
+  }
+}
+
 function queryGet<Row, Params extends SQLiteBinding[] = []>(
   db: ControlPlaneSqliteDatabase,
   sql: string,
@@ -290,6 +502,7 @@ interface ActorRow {
   handle: string | null;
   labels_json: string | null;
   metadata_json: string | null;
+  created_at: number;
 }
 
 interface NodeRow {
@@ -1168,6 +1381,156 @@ interface ActivityItemRow {
   payload_json: string | null;
 }
 
+/**
+ * Row→record mappers — the single source of truth for what the durable
+ * tables project back into. `loadSnapshot` and the rotation verifier's
+ * chunked `read*` lookups share them, and every output passes through
+ * `canonicalRecord`, so the verifier can compare a stored row against the
+ * journaled record field-for-field.
+ */
+function messageRecordFromRow(
+  row: MessageRow,
+  mentions: MessageMention[] | undefined,
+  attachments: MessageAttachment[] | undefined,
+): MessageRecord {
+  return canonicalRecord("message", {
+    id: row.id,
+    conversationId: row.conversation_id,
+    actorId: row.actor_id,
+    originNodeId: row.origin_node_id,
+    class: row.class,
+    body: row.body,
+    replyToMessageId: row.reply_to_message_id ?? undefined,
+    threadConversationId: row.thread_conversation_id ?? undefined,
+    mentions,
+    attachments,
+    speech: parseJson<MessageRecord["speech"]>(row.speech_json, undefined),
+    audience: parseJson<MessageRecord["audience"]>(row.audience_json, undefined),
+    visibility: row.visibility,
+    policy: row.policy,
+    createdAt: normalizeTimestampMs(row.created_at) ?? row.created_at,
+    metadata: parseJson<Record<string, unknown> | undefined>(row.metadata_json, undefined),
+  }) as MessageRecord;
+}
+
+function invocationRequestFromRow(row: InvocationRow): InvocationRequest {
+  return canonicalRecord("invocation", {
+    id: row.id,
+    requesterId: row.requester_id,
+    requesterNodeId: row.requester_node_id,
+    targetAgentId: row.target_agent_id,
+    targetNodeId: row.target_node_id ?? undefined,
+    action: row.action,
+    task: row.task,
+    collaborationRecordId: row.collaboration_record_id ?? undefined,
+    conversationId: row.conversation_id ?? undefined,
+    messageId: row.message_id ?? undefined,
+    context: parseJson<Record<string, unknown> | undefined>(row.context_json, undefined),
+    execution: parseJson<InvocationRequest["execution"]>(row.execution_json, undefined),
+    executionResolution: parseJson<InvocationRequest["executionResolution"]>(
+      row.execution_resolution_json,
+      undefined,
+    ),
+    ensureAwake: row.ensure_awake === 1,
+    stream: row.stream === 1,
+    timeoutMs: row.timeout_ms ?? undefined,
+    labels: parseJson<string[] | undefined>(row.labels_json, undefined),
+    metadata: parseJson<Record<string, unknown> | undefined>(row.metadata_json, undefined),
+    createdAt: row.created_at,
+  }) as InvocationRequest;
+}
+
+function flightRecordFromRow(row: FlightRow): FlightRecord {
+  return canonicalRecord("flight", {
+    id: row.id,
+    invocationId: row.invocation_id,
+    requesterId: row.requester_id,
+    targetAgentId: row.target_agent_id,
+    state: row.state,
+    summary: row.summary ?? undefined,
+    output: row.output ?? undefined,
+    error: row.error ?? undefined,
+    labels: parseJson<string[] | undefined>(row.labels_json, undefined),
+    metadata: parseJson<Record<string, unknown> | undefined>(row.metadata_json, undefined),
+    startedAt: row.started_at ?? undefined,
+    completedAt: row.completed_at ?? undefined,
+  }) as FlightRecord;
+}
+
+/** The drizzle deliveries select shape — camelCase columns. */
+interface DeliveryProjectionRow {
+  id: string;
+  messageId: string | null;
+  invocationId: string | null;
+  targetId: string;
+  targetNodeId: string | null;
+  targetKind: DeliveryIntent["targetKind"];
+  transport: DeliveryIntent["transport"];
+  reason: DeliveryIntent["reason"];
+  policy: DeliveryIntent["policy"];
+  status: DeliveryIntent["status"];
+  bindingId: string | null;
+  leaseOwner: string | null;
+  leaseExpiresAt: number | null;
+  metadataJson: string | null;
+}
+
+function deliveryIntentFromRow(row: DeliveryProjectionRow): DeliveryIntent {
+  return canonicalRecord("delivery", {
+    id: row.id,
+    messageId: row.messageId ?? undefined,
+    invocationId: row.invocationId ?? undefined,
+    targetId: row.targetId,
+    targetNodeId: row.targetNodeId ?? undefined,
+    targetKind: row.targetKind,
+    transport: row.transport,
+    reason: row.reason,
+    policy: row.policy,
+    status: row.status,
+    bindingId: row.bindingId ?? undefined,
+    leaseOwner: row.leaseOwner ?? undefined,
+    leaseExpiresAt: row.leaseExpiresAt ?? undefined,
+    metadata: parseJson<Record<string, unknown> | undefined>(row.metadataJson, undefined),
+  }) as DeliveryIntent;
+}
+
+interface DeliveryAttemptProjectionRow {
+  id: string;
+  deliveryId: string;
+  attempt: number;
+  status: DeliveryAttempt["status"];
+  error: string | null;
+  externalRef: string | null;
+  createdAt: number;
+  metadataJson: string | null;
+}
+
+function deliveryAttemptFromRow(row: DeliveryAttemptProjectionRow): DeliveryAttempt {
+  return canonicalRecord("deliveryAttempt", {
+    id: row.id,
+    deliveryId: row.deliveryId,
+    attempt: row.attempt,
+    status: row.status,
+    error: row.error ?? undefined,
+    externalRef: row.externalRef ?? undefined,
+    createdAt: row.createdAt,
+    metadata: parseJson<Record<string, unknown> | undefined>(row.metadataJson, undefined),
+  }) as DeliveryAttempt;
+}
+
+function collaborationEventFromRow(row: CollaborationEventRow): CollaborationEvent {
+  return canonicalRecord("collaborationEvent", {
+    id: row.id,
+    recordId: row.record_id,
+    recordKind: row.record_kind as CollaborationEvent["recordKind"],
+    kind: row.kind as CollaborationEvent["kind"],
+    actorId: row.actor_id,
+    summary: row.summary ?? undefined,
+    metadata: parseJson<Record<string, unknown> | undefined>(row.metadata_json, undefined),
+    at: row.created_at,
+  }) as CollaborationEvent;
+}
+
 function buildCollaborationRecord(row: CollaborationRecordRow): CollaborationRecord {
   const detail = parseJson<Record<string, unknown>>(row.detail_json, {});
   const base = {
@@ -1230,6 +1593,7 @@ export class SQLiteControlPlaneStore {
   private flushPendingEventsTimer: ReturnType<typeof setTimeout> | null = null;
   private conversationsApi: ConversationsApi | null = null;
   private closed = false;
+  private lastQuotaHistoryPruneAt = 0;
 
   constructor(dbPath: string) {
     mkdirSync(dirname(dbPath), { recursive: true });
@@ -1743,6 +2107,7 @@ export class SQLiteControlPlaneStore {
         handle: row.handle ?? undefined,
         labels: parseJson<string[] | undefined>(row.labels_json, undefined),
         metadata: parseJson<Record<string, unknown> | undefined>(row.metadata_json, undefined),
+        createdAt: row.created_at,
       };
     }
 
@@ -1829,8 +2194,14 @@ export class SQLiteControlPlaneStore {
     }
 
     const messages = queryAll<MessageRow>(this.readDb, "SELECT * FROM messages");
-    const mentionRows = queryAll<MentionRow>(this.readDb, "SELECT * FROM message_mentions");
-    const attachmentRows = queryAll<AttachmentRow>(this.readDb, "SELECT * FROM message_attachments");
+    const mentionRows = queryAll<MentionRow>(
+      this.readDb,
+      "SELECT * FROM message_mentions ORDER BY message_id, actor_id",
+    );
+    const attachmentRows = queryAll<AttachmentRow>(
+      this.readDb,
+      "SELECT * FROM message_attachments ORDER BY message_id, id",
+    );
     const mentionsByMessage = new Map<string, MessageMention[]>();
     const attachmentsByMessage = new Map<string, MessageAttachment[]>();
 
@@ -1853,24 +2224,11 @@ export class SQLiteControlPlaneStore {
     }
 
     for (const row of messages) {
-      snapshot.messages[row.id] = {
-        id: row.id,
-        conversationId: row.conversation_id,
-        actorId: row.actor_id,
-        originNodeId: row.origin_node_id,
-        class: row.class,
-        body: row.body,
-        replyToMessageId: row.reply_to_message_id ?? undefined,
-        threadConversationId: row.thread_conversation_id ?? undefined,
-        mentions: mentionsByMessage.get(row.id),
-        attachments: attachmentsByMessage.get(row.id),
-        speech: parseJson<MessageRecord["speech"]>(row.speech_json, undefined),
-        audience: parseJson<MessageRecord["audience"]>(row.audience_json, undefined),
-        visibility: row.visibility,
-        policy: row.policy,
-        createdAt: normalizeTimestampMs(row.created_at) ?? row.created_at,
-        metadata: parseJson<Record<string, unknown> | undefined>(row.metadata_json, undefined),
-      };
+      snapshot.messages[row.id] = messageRecordFromRow(
+        row,
+        mentionsByMessage.get(row.id),
+        attachmentsByMessage.get(row.id),
+      );
     }
 
     const readCursorRows = queryAll<ReadCursorRow>(this.readDb, "SELECT * FROM conversation_read_cursors");
@@ -1890,48 +2248,12 @@ export class SQLiteControlPlaneStore {
 
     const invocations = queryAll<InvocationRow>(this.readDb, "SELECT * FROM invocations");
     for (const row of invocations) {
-      snapshot.invocations[row.id] = {
-        id: row.id,
-        requesterId: row.requester_id,
-        requesterNodeId: row.requester_node_id,
-        targetAgentId: row.target_agent_id,
-        targetNodeId: row.target_node_id ?? undefined,
-        action: row.action,
-        task: row.task,
-        collaborationRecordId: row.collaboration_record_id ?? undefined,
-        conversationId: row.conversation_id ?? undefined,
-        messageId: row.message_id ?? undefined,
-        context: parseJson<Record<string, unknown> | undefined>(row.context_json, undefined),
-        execution: parseJson<InvocationRequest["execution"]>(row.execution_json, undefined),
-        executionResolution: parseJson<InvocationRequest["executionResolution"]>(
-          row.execution_resolution_json,
-          undefined,
-        ),
-        ensureAwake: row.ensure_awake === 1,
-        stream: row.stream === 1,
-        timeoutMs: row.timeout_ms ?? undefined,
-        labels: parseJson<string[] | undefined>(row.labels_json, undefined),
-        metadata: parseJson<Record<string, unknown> | undefined>(row.metadata_json, undefined),
-        createdAt: row.created_at,
-      };
+      snapshot.invocations[row.id] = invocationRequestFromRow(row);
     }
 
     const flights = queryAll<FlightRow>(this.readDb, "SELECT * FROM flights");
     for (const row of flights) {
-      snapshot.flights[row.id] = {
-        id: row.id,
-        invocationId: row.invocation_id,
-        requesterId: row.requester_id,
-        targetAgentId: row.target_agent_id,
-        state: row.state,
-        summary: row.summary ?? undefined,
-        output: row.output ?? undefined,
-        error: row.error ?? undefined,
-        labels: parseJson<string[] | undefined>(row.labels_json, undefined),
-        metadata: parseJson<Record<string, unknown> | undefined>(row.metadata_json, undefined),
-        startedAt: row.started_at ?? undefined,
-        completedAt: row.completed_at ?? undefined,
-      };
+      snapshot.flights[row.id] = flightRecordFromRow(row);
     }
 
     const collaborationRows = queryAll<CollaborationRecordRow>(
@@ -2420,7 +2742,7 @@ export class SQLiteControlPlaneStore {
     return claim();
   }
 
-  upsertActor(actor: ActorIdentity): void {
+  upsertActor(actor: RuntimeActorIdentity): void {
     this.db.query(
       `INSERT INTO actors (
         id, kind, display_name, handle, labels_json, metadata_json, created_at
@@ -2438,8 +2760,30 @@ export class SQLiteControlPlaneStore {
       actor.handle ?? null,
       stringify(actor.labels),
       stringify(actor.metadata),
-      currentTimestampMs(),
+      // First insert wins — the ON CONFLICT clause deliberately omits
+      // created_at so re-upserts and replays keep the original stamp.
+      actor.createdAt ?? currentTimestampMs(),
     );
+  }
+
+  /** Membership preimage for delete journal entries — must be queried BEFORE
+   * the actor/agents delete, since the member rows cascade away with it. */
+  memberConversationIds(actorId: string): string[] {
+    return (this.readDb.query(
+      "SELECT conversation_id FROM conversation_members WHERE actor_id = ?1",
+    ).all(actorId) as Array<{ conversation_id: string }>).map((row) => row.conversation_id);
+  }
+
+  /** First-registration timestamps for every actor — retention's age
+   * fallback for rows journaled before `createdAt` rode the entries. */
+  actorCreatedAtById(): Map<string, number> {
+    const map = new Map<string, number>();
+    for (const row of this.readDb.query(
+      "SELECT id, created_at FROM actors",
+    ).all() as Array<{ id: string; created_at: number }>) {
+      map.set(row.id, row.created_at);
+    }
+    return map;
   }
 
   upsertAgent(agent: AgentDefinition): void {
@@ -2536,6 +2880,78 @@ export class SQLiteControlPlaneStore {
 
   deleteEndpoint(endpointId: string): void {
     this.db.query("DELETE FROM agent_endpoints WHERE id = ?1").run(endpointId);
+  }
+
+  /**
+   * Remove an agent row and its endpoint rows. `agents.id` has no incoming
+   * foreign keys — endpoint/agent rows reference `actors`, not `agents` — so
+   * this cannot hit RESTRICT; the retention planner's rules are the gate.
+   */
+  deleteAgent(agentId: string): void {
+    this.db.query("DELETE FROM agent_endpoints WHERE agent_id = ?1").run(agentId);
+    this.db.query("DELETE FROM agents WHERE id = ?1").run(agentId);
+  }
+
+  /**
+   * Remove an actor row. Every referencing table that RESTRICTs on actors
+   * (messages, message_reactions, invocations, flights, collaboration_records,
+   * collaboration_events) makes this throw loudly rather than silently cascade
+   * — a throw here means the retention planner missed a reference.
+   */
+  deleteActor(actorId: string): void {
+    this.db.query("DELETE FROM actors WHERE id = ?1").run(actorId);
+  }
+
+  /**
+   * Authoritative structural references that keep an agent row live, mirroring
+   * the registry-retention planner: any remaining endpoint row, a non-terminal
+   * flight, or an invocation that lacks a terminal flight. Conversation
+   * membership deliberately does not count — channels auto-enrol every agent,
+   * so membership is not evidence of life. The sweep checks this before
+   * journaling agent.delete so journal/snapshot drift cannot retire a
+   * still-referenced agent.
+   */
+  agentReferenceCount(agentId: string): number {
+    const terminal = "('completed','failed','cancelled')";
+    const queries = [
+      "SELECT count(*) AS n FROM agent_endpoints WHERE agent_id = ?1",
+      `SELECT count(*) AS n FROM flights WHERE target_agent_id = ?1 AND state NOT IN ${terminal}`,
+      `SELECT count(*) AS n FROM invocations i WHERE i.target_agent_id = ?1 AND NOT EXISTS (SELECT 1 FROM flights f WHERE f.invocation_id = i.id AND f.state IN ${terminal})`,
+    ];
+    let total = 0;
+    for (const sql of queries) {
+      const row = this.db.query(sql).get(agentId) as { n: number } | null;
+      total += row?.n ?? 0;
+    }
+    return total;
+  }
+
+  /**
+   * Authoritative references to an actor id: every ON DELETE RESTRICT foreign
+   * key into actors, the collaboration ownership columns (SET NULL — silent
+   * erasure otherwise), plus a surviving agents row and its endpoint rows
+   * (both silently consumed by CASCADE otherwise). Conversation membership is
+   * deliberately excluded — CASCADE drops roster rows, which is the desired
+   * outcome for a dead agent. The sweep checks this before journaling
+   * actor.delete; deleteActor still throws on a miss.
+   */
+  actorReferenceCount(actorId: string): number {
+    const queries = [
+      "SELECT count(*) AS n FROM agents WHERE id = ?1",
+      "SELECT count(*) AS n FROM agent_endpoints WHERE agent_id = ?1",
+      "SELECT count(*) AS n FROM messages WHERE actor_id = ?1",
+      "SELECT count(*) AS n FROM message_reactions WHERE actor_id = ?1",
+      "SELECT count(*) AS n FROM invocations WHERE requester_id = ?1 OR target_agent_id = ?1",
+      "SELECT count(*) AS n FROM flights WHERE requester_id = ?1 OR target_agent_id = ?1",
+      "SELECT count(*) AS n FROM collaboration_records WHERE created_by_id = ?1 OR owner_id = ?1 OR next_move_owner_id = ?1",
+      "SELECT count(*) AS n FROM collaboration_events WHERE actor_id = ?1",
+    ];
+    let total = 0;
+    for (const sql of queries) {
+      const row = this.db.query(sql).get(actorId) as { n: number } | null;
+      total += row?.n ?? 0;
+    }
+    return total;
   }
 
   private markRuntimeSessionsForEndpointEnded(
@@ -2701,9 +3117,28 @@ export class SQLiteControlPlaneStore {
     for (const record of observations.usage) {
       this.recordBudgetUsageEvent(record);
     }
+    // Prune before writing, so a batch is never deleted in the call that
+    // recorded it.
+    const now = currentTimestampMs();
+    if (observations.quotaWindows.length > 0 && now - this.lastQuotaHistoryPruneAt >= QUOTA_HISTORY_PRUNE_INTERVAL_MS) {
+      this.lastQuotaHistoryPruneAt = now;
+      this.pruneBudgetQuotaHistory(now);
+    }
     for (const snapshot of observations.quotaWindows) {
       this.recordBudgetQuotaWindowSnapshot(snapshot);
     }
+  }
+
+  /**
+   * Drop hourly quota history older than the charted week. Current-window rows
+   * (`budget:quota:<hash>`) are one per window and are never pruned here.
+   */
+  pruneBudgetQuotaHistory(now = currentTimestampMs()): number {
+    const result = this.db.query(
+      `DELETE FROM budget_quota_window_snapshots
+       WHERE id LIKE 'budget:quota:history:%' AND captured_at < ?1`,
+    ).run(now - QUOTA_HISTORY_RETENTION_MS) as { changes?: number };
+    return result.changes ?? 0;
   }
 
   recordBudgetUsageEvent(record: BudgetUsageRecord): void {
@@ -2968,7 +3403,7 @@ export class SQLiteControlPlaneStore {
 
   recordMessage(message: MessageRecord): ThreadEventEnvelope[] {
     const activityItem = this.projectMessageActivity(message);
-    const threadMessageEvent = this.buildThreadMessageEvent(message, this.readDb);
+    const threadMessageEvent = readChatMessageCorrection(message.metadata) ? null : this.buildThreadMessageEvent(message, this.readDb);
     let threadEvents: ThreadEventEnvelope[] = [];
     (this.db as SQLiteTransactionalDatabase).transaction((
       nextMessage: MessageRecord,
@@ -3512,6 +3947,11 @@ export class SQLiteControlPlaneStore {
   }
 
   listCollaborationRecords(options: {
+    conversationId?: string;
+    includeThreads?: boolean;
+    orderByCreatedAt?: boolean;
+    afterCreatedAt?: number;
+    afterId?: string;
     limit?: number;
     kind?: CollaborationRecord["kind"];
     state?: string;
@@ -3520,6 +3960,18 @@ export class SQLiteControlPlaneStore {
   } = {}): CollaborationRecord[] {
     const filters: string[] = [];
     const values: Array<string | number> = [];
+
+    if (options.conversationId) {
+      values.push(options.conversationId);
+      const slot = `?${values.length}`;
+      filters.push(options.includeThreads
+        ? `(conversation_id = ${slot} OR conversation_id IN (SELECT id FROM conversations WHERE kind = 'thread' AND parent_conversation_id = ${slot}))`
+        : `conversation_id = ${slot}`);
+    }
+    if (options.afterCreatedAt != null) {
+      values.push(options.afterCreatedAt, options.afterId ?? "");
+      filters.push(`(created_at > ?${values.length - 1} OR (created_at = ?${values.length - 1} AND id > ?${values.length}))`);
+    }
 
     if (options.kind) {
       filters.push(`kind = ?${values.length + 1}`);
@@ -3542,7 +3994,7 @@ export class SQLiteControlPlaneStore {
     const sql = [
       "SELECT * FROM collaboration_records",
       filters.length ? `WHERE ${filters.join(" AND ")}` : "",
-      "ORDER BY updated_at DESC",
+      options.orderByCreatedAt ? "ORDER BY created_at ASC, id ASC" : "ORDER BY updated_at DESC",
       `LIMIT ?${values.length + 1}`,
     ].filter(Boolean).join(" ");
     const rows = queryAll<CollaborationRecordRow, Array<string | number>>(this.readDb, sql, ...values, limit);
@@ -3566,16 +4018,7 @@ export class SQLiteControlPlaneStore {
       `LIMIT ?${values.length + 1}`,
     ].filter(Boolean).join(" ");
     const rows = queryAll<CollaborationEventRow, Array<string | number>>(this.readDb, sql, ...values, limit);
-    return rows.map((row) => ({
-      id: row.id,
-      recordId: row.record_id,
-      recordKind: row.record_kind as CollaborationEvent["recordKind"],
-      kind: row.kind as CollaborationEvent["kind"],
-      actorId: row.actor_id,
-      summary: row.summary ?? undefined,
-      metadata: parseJson<Record<string, unknown> | undefined>(row.metadata_json, undefined),
-      at: row.created_at,
-    }));
+    return rows.map(collaborationEventFromRow);
   }
 
   recordDeliveries(deliveries: DeliveryIntent[]): void {
@@ -3702,22 +4145,137 @@ export class SQLiteControlPlaneStore {
             metadataJson: string | null;
           }>;
 
-    return rows.map((row) => ({
-      id: row.id,
-      messageId: row.messageId ?? undefined,
-      invocationId: row.invocationId ?? undefined,
-      targetId: row.targetId,
-      targetNodeId: row.targetNodeId ?? undefined,
-      targetKind: row.targetKind,
-      transport: row.transport,
-      reason: row.reason,
-      policy: row.policy,
-      status: row.status,
-      bindingId: row.bindingId ?? undefined,
-      leaseOwner: row.leaseOwner ?? undefined,
-      leaseExpiresAt: row.leaseExpiresAt ?? undefined,
-      metadata: parseJson<Record<string, unknown> | undefined>(row.metadataJson, undefined),
-    }));
+    return (rows as DeliveryProjectionRow[]).map(deliveryIntentFromRow);
+  }
+
+  /**
+   * Positive per-record reads for the rotation persistence boundary: the
+   * stored rows come back through the same row→record mappers `loadSnapshot`
+   * uses, so the verifier compares a stored record against the journaled
+   * record field-for-field (after `canonicalRecord` normalization on both
+   * sides). Chunked `IN` lists keep bound-parameter counts bounded; a
+   * lookup error propagates so the caller can fail closed.
+   */
+  readMessages(ids: readonly string[]): Map<string, MessageRecord> {
+    const found = new Map<string, MessageRecord>();
+    for (const chunk of chunksOf(ids)) {
+      const marks = chunk.map(() => "?").join(", ");
+      const rows = queryAllDynamic<MessageRow>(
+        this.readDb,
+        `SELECT * FROM messages WHERE id IN (${marks})`,
+        [...chunk],
+      );
+      const mentionsByMessage = new Map<string, MessageMention[]>();
+      const attachmentsByMessage = new Map<string, MessageAttachment[]>();
+      for (const row of queryAllDynamic<MentionRow>(
+        this.readDb,
+        `SELECT * FROM message_mentions WHERE message_id IN (${marks}) ORDER BY message_id, actor_id`,
+        [...chunk],
+      )) {
+        const list = mentionsByMessage.get(row.message_id) ?? [];
+        list.push({ actorId: row.actor_id, label: row.label ?? undefined });
+        mentionsByMessage.set(row.message_id, list);
+      }
+      for (const row of queryAllDynamic<AttachmentRow>(
+        this.readDb,
+        `SELECT * FROM message_attachments WHERE message_id IN (${marks}) ORDER BY message_id, id`,
+        [...chunk],
+      )) {
+        const list = attachmentsByMessage.get(row.message_id) ?? [];
+        list.push({
+          id: row.id,
+          mediaType: row.media_type,
+          fileName: row.file_name ?? undefined,
+          blobKey: row.blob_key ?? undefined,
+          url: row.url ?? undefined,
+          metadata: parseJson<Record<string, unknown> | undefined>(row.metadata_json, undefined),
+        });
+        attachmentsByMessage.set(row.message_id, list);
+      }
+      for (const row of rows) {
+        found.set(row.id, messageRecordFromRow(
+          row,
+          mentionsByMessage.get(row.id),
+          attachmentsByMessage.get(row.id),
+        ));
+      }
+    }
+    return found;
+  }
+
+  readInvocations(ids: readonly string[]): Map<string, InvocationRequest> {
+    const found = new Map<string, InvocationRequest>();
+    for (const chunk of chunksOf(ids)) {
+      const marks = chunk.map(() => "?").join(", ");
+      for (const row of queryAllDynamic<InvocationRow>(
+        this.readDb,
+        `SELECT * FROM invocations WHERE id IN (${marks})`,
+        [...chunk],
+      )) {
+        found.set(row.id, invocationRequestFromRow(row));
+      }
+    }
+    return found;
+  }
+
+  readFlights(ids: readonly string[]): Map<string, FlightRecord> {
+    const found = new Map<string, FlightRecord>();
+    for (const chunk of chunksOf(ids)) {
+      const marks = chunk.map(() => "?").join(", ");
+      for (const row of queryAllDynamic<FlightRow>(
+        this.readDb,
+        `SELECT * FROM flights WHERE id IN (${marks})`,
+        [...chunk],
+      )) {
+        found.set(row.id, flightRecordFromRow(row));
+      }
+    }
+    return found;
+  }
+
+  readDeliveries(ids: readonly string[]): Map<string, DeliveryIntent> {
+    const found = new Map<string, DeliveryIntent>();
+    for (const chunk of chunksOf(ids)) {
+      const rows = this.drizzleReadDb
+        .select()
+        .from(deliveriesTable)
+        .where(inArray(deliveriesTable.id, [...chunk]))
+        .all() as DeliveryProjectionRow[];
+      for (const row of rows) {
+        found.set(row.id, deliveryIntentFromRow(row));
+      }
+    }
+    return found;
+  }
+
+  readDeliveryAttempts(ids: readonly string[]): Map<string, DeliveryAttempt> {
+    const found = new Map<string, DeliveryAttempt>();
+    for (const chunk of chunksOf(ids)) {
+      const rows = this.drizzleReadDb
+        .select()
+        .from(deliveryAttemptsTable)
+        .where(inArray(deliveryAttemptsTable.id, [...chunk]))
+        .all() as DeliveryAttemptProjectionRow[];
+      for (const row of rows) {
+        found.set(row.id, deliveryAttemptFromRow(row));
+      }
+    }
+    return found;
+  }
+
+  readCollaborationEvents(ids: readonly string[]): Map<string, CollaborationEvent> {
+    const found = new Map<string, CollaborationEvent>();
+    for (const chunk of chunksOf(ids)) {
+      const marks = chunk.map(() => "?").join(", ");
+      for (const row of queryAllDynamic<CollaborationEventRow>(
+        this.readDb,
+        `SELECT * FROM collaboration_events WHERE id IN (${marks})`,
+        [...chunk],
+      )) {
+        found.set(row.id, collaborationEventFromRow(row));
+      }
+    }
+    return found;
   }
 
   updateDeliveryStatus(
@@ -3763,25 +4321,7 @@ export class SQLiteControlPlaneStore {
       .orderBy(asc(deliveryAttemptsTable.attempt), asc(deliveryAttemptsTable.createdAt))
       .all();
 
-    return (rows as Array<{
-      id: string;
-      deliveryId: string;
-      attempt: number;
-      status: DeliveryAttempt["status"];
-      error: string | null;
-      externalRef: string | null;
-      createdAt: number;
-      metadataJson: string | null;
-    }>).map((row) => ({
-      id: row.id,
-      deliveryId: row.deliveryId,
-      attempt: row.attempt,
-      status: row.status,
-      error: row.error ?? undefined,
-      externalRef: row.externalRef ?? undefined,
-      createdAt: row.createdAt,
-      metadata: parseJson<Record<string, unknown> | undefined>(row.metadataJson, undefined),
-    }));
+    return (rows as DeliveryAttemptProjectionRow[]).map(deliveryAttemptFromRow);
   }
 
   recordDeliveryAttempt(attempt: DeliveryAttempt): void {
@@ -4329,6 +4869,7 @@ export class SQLiteControlPlaneStore {
         mentionActorIds: (message.mentions ?? []).map((mention) => mention.actorId),
         visibility: message.visibility,
         policy: message.policy,
+        agentHarness: agentContext.harness,
       },
     };
   }
@@ -4355,6 +4896,7 @@ export class SQLiteControlPlaneStore {
         ensureAwake: invocation.ensureAwake,
         stream: invocation.stream,
         timeoutMs: invocation.timeoutMs ?? null,
+        agentHarness: agentContext.harness,
       },
     };
   }
@@ -4378,6 +4920,7 @@ export class SQLiteControlPlaneStore {
         state: flight.state,
         startedAt: flight.startedAt ?? null,
         completedAt: flight.completedAt ?? null,
+        agentHarness: agentContext.harness,
       },
     };
   }
@@ -4515,14 +5058,21 @@ export class SQLiteControlPlaneStore {
     return Boolean(row?.id);
   }
 
-  private resolveAgentContext(agentId: string | undefined | null): { workspaceRoot: string | null; sessionId: string | null } {
+  /** Where the agent works and what runs it, read from its latest endpoint
+      when an activity is recorded — so the activity carries its own context
+      and readers never join back to a roster that may have moved on. */
+  private resolveAgentContext(agentId: string | undefined | null): {
+    workspaceRoot: string | null;
+    sessionId: string | null;
+    harness: string | null;
+  } {
     if (!agentId) {
-      return { workspaceRoot: null, sessionId: null };
+      return { workspaceRoot: null, sessionId: null, harness: null };
     }
 
-    const row = queryGet<Pick<EndpointRow, "project_root" | "cwd" | "session_id">, [string]>(
+    const row = queryGet<Pick<EndpointRow, "project_root" | "cwd" | "session_id" | "harness">, [string]>(
       this.readDb,
-      `SELECT project_root, cwd, session_id
+      `SELECT project_root, cwd, session_id, harness
       FROM agent_endpoints
       WHERE agent_id = ?1
       ORDER BY updated_at DESC
@@ -4533,6 +5083,7 @@ export class SQLiteControlPlaneStore {
     return {
       workspaceRoot: row?.project_root ?? row?.cwd ?? null,
       sessionId: row?.session_id ?? null,
+      harness: row?.harness || null,
     };
   }
 

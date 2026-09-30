@@ -9,28 +9,20 @@
 
 /* ── Vitals Top Strip ─────────────────────────────────────────────── */
 
+/* Same header grammar as every other Home section (.s-section-rule): label,
+   hairline, controls. The cockpit is a section, not a boxed toolbar. */
 .hd-vitals-band {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: var(--space-md);
-  flex-wrap: wrap;
-  padding: var(--space-xs) var(--space-md);
-  border-radius: var(--radius-lg);
-  background: color-mix(in srgb, var(--surface) 60%, var(--bg));
-  border: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
+  gap: var(--space-lg);
+  padding: var(--space-2xs) 0;
+  margin-bottom: var(--space-sm);
 }
 
 .hd-vitals-left {
   display: flex;
   align-items: center;
   gap: var(--space-sm);
-  flex-wrap: wrap;
-}
-
-.hd-vitals-title {
-  color: var(--ink);
-  letter-spacing: var(--tracking-lg);
 }
 
 .hd-vitals-callsign {
@@ -40,8 +32,7 @@
 .hd-vitals-right {
   display: flex;
   align-items: center;
-  gap: var(--space-xs);
-  margin-left: auto;
+  gap: var(--space-sm);
 }
 
 .hd-meta {

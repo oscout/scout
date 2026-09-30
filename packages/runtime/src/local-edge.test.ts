@@ -103,6 +103,7 @@ describe("OpenScout local edge", () => {
 
     expect(caddyfile).toContain("http://*.scout.local {");
     expect(caddyfile).toContain("*.scout.local {\n  tls internal");
+    expect(caddyfile).toContain("skip_install_trust");
   });
 
   test("registers a dev.scout.local route to Vite when a vite upstream is configured", () => {

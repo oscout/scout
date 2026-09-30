@@ -93,6 +93,8 @@ Options:
   --no-ios            Skip the iOS build/install step.
   --require-ios       Fail if the iOS build/install step fails.
   --verify-only       Do not mutate anything; verify the running suite.
+  --now               Stop without waiting for in-flight work. By default the
+                      stop waits (up to 30m) for waking/running flights.
   --port <n>          Web app port. Alias: --web-port.
   --vite-port <n>     Accepted for compatibility; managed restarts do not start Vite.
   --pairing-port <n>  Pairing bridge port.
@@ -137,6 +139,7 @@ export function parseArgs(argv) {
     vitePort: null,
     pairingPort: null,
     verifyOnly: false,
+    now: false,
   };
   const args = argv.slice(2);
   for (let i = 0; i < args.length; i += 1) {
@@ -156,6 +159,10 @@ export function parseArgs(argv) {
     if (arg === "--require-ios") {
       options.ios = true;
       options.requireIos = true;
+      continue;
+    }
+    if (arg === "--now") {
+      options.now = true;
       continue;
     }
     if (arg === "--verify-only") {
@@ -439,14 +446,17 @@ function readBrokerStatus(_bunBin) {
  * script, and the menu command all consult — so this file is left with what is
  * genuinely dev-only: build flags, package builds, and the iOS push.
  */
-function scoutApp(verb, { required = true, allowSharedServiceRepoint = false } = {}) {
+function scoutApp(verb, { required = true, allowSharedServiceRepoint = false, extraArgs = [] } = {}) {
   const cli = resolve(repoRoot, "apps", "desktop", "src", "cli", "main.ts");
-  const result = spawnSync(resolveBunBin(), [cli, "app", verb, "--json"], {
+  const result = spawnSync(resolveBunBin(), [cli, "app", verb, "--json", ...extraArgs], {
     cwd: repoRoot,
     env: allowSharedServiceRepoint
       ? { ...process.env, OPENSCOUT_ALLOW_SHARED_SERVICE_REPOINT: "1" }
       : process.env,
     encoding: "utf8",
+    // stderr streams: a stop can wait minutes for in-flight work, and it says
+    // which flights it is waiting on there.
+    stdio: ["ignore", "pipe", "inherit"],
   });
 
   let parsed = null;
@@ -463,8 +473,8 @@ function scoutApp(verb, { required = true, allowSharedServiceRepoint = false } =
   if ((result.status ?? 1) !== 0 && required) {
     const detail = parsed?.problems?.length
       ? `${parsed.message} (${parsed.problems.join("; ")})`
-      : (result.stderr || result.stdout || "").trim();
-    throw new Error(`scout app ${verb} failed: ${detail || "unknown error"}`);
+      : (result.stdout || "").trim();
+    throw new Error(`scout app ${verb} failed: ${detail || "see output above"}`);
   }
   return parsed;
 }
@@ -580,7 +590,8 @@ async function main() {
   const sharedServiceRoot = assertPrimaryCheckoutForSharedServiceRepoint();
   console.log(`shared service owner: ${sharedServiceRoot}`);
 
-  reportLifecycle("Stop OpenScout", scoutApp("stop"));
+  console.log("\n==> Wait for in-flight work, then stop OpenScout");
+  reportLifecycle("Stop OpenScout", scoutApp("stop", { extraArgs: options.now ? ["--now"] : [] }));
 
   if (options.fresh) {
     removeGeneratedOutputs();

@@ -35,6 +35,11 @@ export interface MessageReactionChip {
   emoji: string;
   count: number;
   me: boolean;
+  /**
+   * Who reacted, earliest first. Clients resolve names from the roster they
+   * already hold; an older server omits it and the chip shows only the count.
+   */
+  actorIds?: string[];
 }
 
 /** One stored row. Canonical identity is `(messageId, actorId, emoji)`. */
@@ -55,11 +60,12 @@ export function projectMessageReactionChips(
   rows: readonly MessageReactionRecord[],
   viewerActorId: string,
 ): MessageReactionChip[] {
-  const byEmoji = new Map<string, { count: number; me: boolean; firstAt: number }>();
+  const byEmoji = new Map<string, { count: number; me: boolean; firstAt: number; actors: MessageReactionRecord[] }>();
   for (const row of rows) {
     const current = byEmoji.get(row.emoji);
     if (current) {
       current.count += 1;
+      current.actors.push(row);
       if (row.actorId === viewerActorId) current.me = true;
       if (row.createdAt < current.firstAt) current.firstAt = row.createdAt;
     } else {
@@ -67,6 +73,7 @@ export function projectMessageReactionChips(
         count: 1,
         me: row.actorId === viewerActorId,
         firstAt: row.createdAt,
+        actors: [row],
       });
     }
   }
@@ -80,5 +87,12 @@ export function projectMessageReactionChips(
       if (time !== 0) return time;
       return allowlistIndex(left[0]) - allowlistIndex(right[0]);
     })
-    .map(([emoji, value]) => ({ emoji, count: value.count, me: value.me }));
+    .map(([emoji, value]) => ({
+      emoji,
+      count: value.count,
+      me: value.me,
+      actorIds: value.actors
+        .sort((left, right) => left.createdAt - right.createdAt)
+        .map((row) => row.actorId),
+    }));
 }

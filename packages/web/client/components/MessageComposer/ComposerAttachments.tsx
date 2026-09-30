@@ -1,3 +1,4 @@
+import { mergeComposerFiles, composerFileId, readComposerFiles, subscribeComposerFiles, updateComposerFiles } from "../../lib/composer-file-recovery.ts";
 /**
  * Staged-attachment plumbing for MessageComposer call sites.
  *
@@ -34,10 +35,13 @@ export type ComposerAttachmentsState = {
   feedback: string | null;
   error: string | null;
   dragActive: boolean;
+  recoveryPending: boolean;
+  recoveryError: string | null;
+  waitForRecovery: () => Promise<void>;
   /** Returns how many of `incoming` were routable and staged. */
   stage: (incoming: File[], verb?: string) => number;
   remove: (file: File) => void;
-  clear: () => void;
+  clear: (submitted?: readonly File[]) => void;
   setError: (message: string | null) => void;
   openPicker: () => void;
   /** Spread onto the element that should accept drops (composer shell). */
@@ -50,12 +54,58 @@ export type ComposerAttachmentsState = {
   inputRef: React.RefObject<HTMLInputElement | null>;
 };
 
-export function useComposerAttachments(): ComposerAttachmentsState {
-  const [files, setFiles] = useState<File[]>([]);
+export function useComposerAttachments(scopeKey = "default", persistFiles = false): ComposerAttachmentsState {
+  const [scopedFiles, setScopedFiles] = useState<Record<string, File[]>>({});
+  const fileState = useRef(scopedFiles);
+  const writes = useRef(new Map<string, Promise<void>>());
+  const removedIds = useRef(new Set<string>());
+  const [recovery, setRecovery] = useState<Record<string, { ready: boolean; error: string | null }>>({});
+  const files = scopedFiles[scopeKey] ?? [];
+  const setFiles = useCallback((update: File[] | ((previous: File[]) => File[])) => {
+    const previous = fileState.current[scopeKey] ?? [];
+    const next = typeof update === "function" ? update(previous) : update;
+    fileState.current = { ...fileState.current, [scopeKey]: next };
+    setScopedFiles(fileState.current);
+    if (persistFiles) {
+      const added = next.filter(file => !previous.includes(file));
+      const removed = previous.filter(file => !next.includes(file));
+      for (const file of removed) removedIds.current.add(composerFileId(file));
+      for (const file of added) removedIds.current.delete(composerFileId(file));
+      const write = updateComposerFiles(scopeKey, added, removed).catch(() => {
+        setRecovery(state => ({ ...state, [scopeKey]: { ready: true, error: added.length ? "Files are available in this tab, but could not be saved for reopening. Keep this tab open until you send them." : "Saved attachments could not be removed from this browser. Check them before sending after reopening." } }));
+      });
+      writes.current.set(scopeKey, Promise.all([writes.current.get(scopeKey), write]).then(() => {}));
+    }
+  }, [scopeKey, persistFiles]);
+  useEffect(() => {
+    if (!persistFiles) return;
+    let active = true;
+    const refresh = (onlyIds?: Set<string>) => readComposerFiles(scopeKey).then(restored => {
+      if (!active) return;
+      const current = fileState.current[scopeKey] ?? [];
+      const ids = new Set(current.map(composerFileId));
+      fileState.current = { ...fileState.current, [scopeKey]: mergeComposerFiles(current, restored.filter(file => (!onlyIds || onlyIds.has(composerFileId(file))) && !ids.has(composerFileId(file)) && !removedIds.current.has(composerFileId(file)))) };
+      setScopedFiles(fileState.current);
+      setRecovery(state => ({ ...state, [scopeKey]: { ready: true, error: state[scopeKey]?.error ?? null } }));
+    }).catch(() => { if (active) setRecovery(state => ({ ...state, [scopeKey]: { ready: true, error: "Saved attachments could not be restored. Reattach any missing files before sending." } })); });
+    const unsubscribe = subscribeComposerFiles(change => {
+      if (change.scope !== scopeKey || !active) return;
+      for (const id of change.removed) removedIds.current.add(id);
+      for (const id of change.added) removedIds.current.delete(id);
+      const removed = new Set(change.removed);
+      fileState.current = { ...fileState.current, [scopeKey]: (fileState.current[scopeKey] ?? []).filter(file => !removed.has(composerFileId(file))) };
+      setScopedFiles(fileState.current);
+      if (change.added.length) void refresh(new Set(change.added));
+    });
+    void refresh();
+    return () => { active = false; unsubscribe(); };
+  }, [scopeKey, persistFiles]);
   const [feedback, setFeedback] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [dragDepth, setDragDepth] = useState(0);
   const inputRef = useRef<HTMLInputElement | null>(null);
+
+  useEffect(() => { setFeedback(null); setError(null); setDragDepth(0); }, [scopeKey]);
 
   const stage = useCallback((incoming: File[], verb = "Attached") => {
     const routable = incoming.filter(isRoutableMediaFile);
@@ -65,14 +115,7 @@ export function useComposerAttachments(): ComposerAttachmentsState {
     }
     setError(null);
     setFiles((previous) => {
-      // Same name+size+mtime picked twice is the same capture, not two.
-      const seen = new Set(
-        previous.map((file) => `${file.name}:${file.size}:${file.lastModified}`),
-      );
-      const fresh = routable.filter(
-        (file) => !seen.has(`${file.name}:${file.size}:${file.lastModified}`),
-      );
-      return fresh.length > 0 ? [...previous, ...fresh] : previous;
+      return mergeComposerFiles(previous, routable);
     });
     setFeedback(
       routable.length === 1
@@ -80,19 +123,19 @@ export function useComposerAttachments(): ComposerAttachmentsState {
         : `${verb} ${routable.length} attachments.`,
     );
     return routable.length;
-  }, []);
+  }, [setFiles]);
 
   const remove = useCallback((target: File) => {
     setFiles((previous) => previous.filter((file) => file !== target));
     setFeedback(null);
-  }, []);
+  }, [setFiles]);
 
-  const clear = useCallback(() => {
-    setFiles([]);
+  const clear = useCallback((submitted?: readonly File[]) => {
+    setFiles(previous => submitted ? previous.filter(file => !submitted.includes(file)) : []);
     setFeedback(null);
     setError(null);
     setDragDepth(0);
-  }, []);
+  }, [setFiles]);
 
   const openPicker = useCallback(() => {
     inputRef.current?.click();
@@ -140,6 +183,9 @@ export function useComposerAttachments(): ComposerAttachmentsState {
 
   return {
     files,
+    recoveryPending: persistFiles && !recovery[scopeKey]?.ready,
+    recoveryError: recovery[scopeKey]?.error ?? null,
+    waitForRecovery: () => writes.current.get(scopeKey) ?? Promise.resolve(),
     hasFiles: files.length > 0,
     feedback,
     error,

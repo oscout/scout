@@ -16,6 +16,8 @@ function agent(input: Partial<Agent> & { id: string }): Agent {
     definitionId: input.definitionId ?? input.id,
     name: input.name ?? input.id,
     handle: input.handle ?? null,
+    authorityNodeId: null,
+    authorityNodeName: null,
     agentClass: input.agentClass ?? "general",
     harness: input.harness ?? "codex",
     state: input.state ?? null,

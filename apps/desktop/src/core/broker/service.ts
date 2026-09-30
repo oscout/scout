@@ -458,6 +458,10 @@ export type ScoutAskResult = {
   workItem?: ScoutTrackedWorkItem;
   unresolvedTarget?: string;
   targetDiagnostic?: ScoutAskTargetDiagnostic;
+  preflightFailure?: {
+    reason: ScoutBrokerReadFailureReason;
+    detail: string;
+  };
 };
 
 export type ScoutAskByIdResult = {
@@ -1258,17 +1262,44 @@ export async function readScoutBrokerHome(
   }
 }
 
+export type ScoutBrokerReadFailureReason =
+  | "health_failed"
+  | "node_read_failed"
+  | "snapshot_read_failed";
+
+export type ScoutBrokerSnapshotResult =
+  | { ok: true; snapshot: ScoutBrokerSnapshot }
+  | { ok: false; reason: "snapshot_read_failed"; detail: string };
+
+function scoutBrokerReadErrorDetail(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+export async function readScoutBrokerSnapshotResult(
+  baseUrl = resolveScoutBrokerUrl(),
+): Promise<ScoutBrokerSnapshotResult> {
+  try {
+    return {
+      ok: true,
+      snapshot: await brokerReadJson<ScoutBrokerSnapshot>(
+        baseUrl,
+        scoutBrokerPaths.v1.snapshot,
+      ),
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      reason: "snapshot_read_failed",
+      detail: scoutBrokerReadErrorDetail(error),
+    };
+  }
+}
+
 export async function readScoutBrokerSnapshot(
   baseUrl = resolveScoutBrokerUrl(),
 ): Promise<ScoutBrokerSnapshot | null> {
-  try {
-    return await brokerReadJson<ScoutBrokerSnapshot>(
-      baseUrl,
-      scoutBrokerPaths.v1.snapshot,
-    );
-  } catch {
-    return null;
-  }
+  const result = await readScoutBrokerSnapshotResult(baseUrl);
+  return result.ok ? result.snapshot : null;
 }
 
 export async function readScoutCapabilityMatrix(
@@ -1745,29 +1776,63 @@ async function readLabelCollaborationEvents(
   return eventLists.flat();
 }
 
+export type ScoutBrokerContextResult =
+  | { ok: true; context: ScoutBrokerContext }
+  | { ok: false; reason: ScoutBrokerReadFailureReason; detail: string };
+
+export async function loadScoutBrokerContextResult(
+  baseUrl = resolveScoutBrokerUrl(),
+  options: { scope?: "agents" | "conversations" | "identity" } = {},
+): Promise<ScoutBrokerContextResult> {
+  const health = await readScoutBrokerHealth(baseUrl);
+  if (!health.reachable || !health.ok) {
+    return {
+      ok: false,
+      reason: "health_failed",
+      detail: health.error ?? `broker health check failed at ${baseUrl}`,
+    };
+  }
+
+  const snapshotPath = options.scope
+    ? `${scoutBrokerPaths.v1.snapshot}?scope=${options.scope}`
+    : scoutBrokerPaths.v1.snapshot;
+  const [nodeResult, snapshotResult] = await Promise.all([
+    brokerReadJson<ScoutBrokerNodeRecord>(baseUrl, scoutBrokerPaths.v1.node).then(
+      (node) => ({ ok: true as const, node }),
+      (error: unknown) => ({ ok: false as const, error }),
+    ),
+    brokerReadJson<ScoutBrokerSnapshot>(baseUrl, snapshotPath).then(
+      (snapshot) => ({ ok: true as const, snapshot }),
+      (error: unknown) => ({ ok: false as const, error }),
+    ),
+  ]);
+  if (!nodeResult.ok || !nodeResult.node.id) {
+    return {
+      ok: false,
+      reason: "node_read_failed",
+      detail: nodeResult.ok
+        ? `${scoutBrokerPaths.v1.node} returned no node id`
+        : scoutBrokerReadErrorDetail(nodeResult.error),
+    };
+  }
+  if (!snapshotResult.ok) {
+    return {
+      ok: false,
+      reason: "snapshot_read_failed",
+      detail: scoutBrokerReadErrorDetail(snapshotResult.error),
+    };
+  }
+  return {
+    ok: true,
+    context: { baseUrl, node: nodeResult.node, snapshot: snapshotResult.snapshot },
+  };
+}
+
 export async function loadScoutBrokerContext(
   baseUrl = resolveScoutBrokerUrl(),
 ): Promise<ScoutBrokerContext | null> {
-  const health = await readScoutBrokerHealth(baseUrl);
-  if (!health.reachable || !health.ok) {
-    return null;
-  }
-
-  try {
-    const [node, snapshot] = await Promise.all([
-      brokerReadJson<ScoutBrokerNodeRecord>(baseUrl, scoutBrokerPaths.v1.node),
-      brokerReadJson<ScoutBrokerSnapshot>(
-        baseUrl,
-        scoutBrokerPaths.v1.snapshot,
-      ),
-    ]);
-    if (!node.id) {
-      return null;
-    }
-    return { baseUrl, node, snapshot };
-  } catch {
-    return null;
-  }
+  const result = await loadScoutBrokerContextResult(baseUrl);
+  return result.ok ? result.context : null;
 }
 
 export async function requireScoutBrokerContext(
@@ -3139,14 +3204,19 @@ export async function sendScoutMessage(input: {
     // Explicit routes are already complete broker commands. Do not fetch and
     // clone the global registry just to post one delivery; the broker owns
     // target resolution and only the caller identity needs local enrichment.
-    const health = await readScoutBrokerHealth();
-    if (!health.reachable || !health.ok || !health.nodeId) {
+    // The identity scope carries the registered actor rows sender resolution
+    // needs — an empty snapshot would synthesize an upsert that replaces the
+    // sender's labels/metadata.
+    const contextResult = await loadScoutBrokerContextResult(undefined, {
+      scope: "identity",
+    });
+    if (!contextResult.ok) {
       return { usedBroker: false, invokedTargets: [], unresolvedTargets: [] };
     }
     const senderId = await resolveConversationActorId(
-      health.baseUrl,
-      createRuntimeRegistrySnapshot(),
-      health.nodeId,
+      contextResult.context.baseUrl,
+      contextResult.context.snapshot,
+      contextResult.context.node.id,
       input.senderId,
       currentDirectory,
     );
@@ -3155,10 +3225,10 @@ export async function sendScoutMessage(input: {
       requestedTargetRef,
       input.aliasScope,
     );
-    const delivery = await brokerPostDeliver(health.baseUrl, {
+    const delivery = await brokerPostDeliver(contextResult.context.baseUrl, {
       caller: {
         actorId: senderId,
-        nodeId: health.nodeId,
+        nodeId: contextResult.context.node.id,
         currentDirectory,
         metadata: { source },
       },
@@ -4089,19 +4159,37 @@ export async function deliverScoutAsk(input: {
   currentDirectory?: string;
   source?: string;
 }): Promise<ScoutAskResult> {
-  const broker = await loadScoutBrokerContext();
   const renderedTarget = input.targetLabel?.trim() || renderedScoutAskTarget(input.target);
-  if (!broker) {
-    return { usedBroker: false, unresolvedTarget: renderedTarget };
+  // Every ask route is a complete broker command: the broker owns target
+  // resolution, so cloning conversation history as a "preflight" buys
+  // nothing. The identity scope (nodes/actors/agents) is still required on
+  // all of them — sender resolution must see the real registered actor; a
+  // snapshot without actors would synthesize an upsert that replaces its
+  // labels/metadata.
+  const contextResult = await loadScoutBrokerContextResult(undefined, {
+    scope: "identity",
+  });
+  if (!contextResult.ok) {
+    return {
+      usedBroker: false,
+      unresolvedTarget: renderedTarget,
+      preflightFailure: {
+        reason: contextResult.reason,
+        detail: contextResult.detail,
+      },
+    };
   }
+  const brokerBaseUrl = contextResult.context.baseUrl;
+  const brokerNodeId = contextResult.context.node.id;
+  const brokerSnapshot = contextResult.context.snapshot;
 
   const currentDirectory = input.currentDirectory ?? process.cwd();
   const createdAtMs = input.createdAtMs ?? Date.now();
   const source = input.source?.trim() || "scout-ask";
   const senderId = await resolveConversationActorId(
-    broker.baseUrl,
-    broker.snapshot,
-    broker.node.id,
+    brokerBaseUrl,
+    brokerSnapshot,
+    brokerNodeId,
     input.senderId,
     currentDirectory,
   );
@@ -4130,10 +4218,10 @@ export async function deliverScoutAsk(input: {
     ...(replyToSessionId ? { replyToSessionId } : {}),
     ...(input.replyMode ? { replyMode: input.replyMode } : {}),
   };
-  const delivery = await brokerPostDeliver(broker.baseUrl, {
+  const delivery = await brokerPostDeliver(brokerBaseUrl, {
     caller: {
       actorId: senderId,
-      nodeId: broker.node.id,
+      nodeId: brokerNodeId,
       currentDirectory,
       metadata: { source },
     },
@@ -4179,7 +4267,7 @@ export async function deliverScoutAsk(input: {
     ? createTrackedWorkItemSummary(delivery.workItem)
     : input.workItem && delivery.targetAgentId
     ? await createScoutTrackedWorkItem({
-        baseUrl: broker.baseUrl,
+        baseUrl: brokerBaseUrl,
         senderId,
         targetAgentId: delivery.targetAgentId,
         conversationId: delivery.conversation.id,

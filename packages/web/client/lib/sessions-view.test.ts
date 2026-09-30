@@ -75,7 +75,7 @@ describe("sessions view grouping", () => {
     expect(groups.map((g) => g.label)).toEqual(["Today", "Yesterday", "Earlier"]);
   });
 
-  test("state ladder: needs-you outranks working outranks starting outranks quiet", () => {
+  test("state ladder: request outranks working outranks starting outranks quiet", () => {
     expect(queueSessionState({ status: "needs_attention" })).toBe("needs_you");
     expect(queueSessionState({ status: "working" })).toBe("working");
     expect(queueSessionState({ status: "queued" })).toBe("queued");
@@ -83,7 +83,7 @@ describe("sessions view grouping", () => {
     expect(queueSessionState(undefined)).toBe("quiet");
 
     const groups = groupQueueSessions(sessions, "state", agents, asks, NOW);
-    expect(groups.map((g) => g.label)).toEqual(["Needs you", "Working", "Quiet"]);
+    expect(groups.map((g) => g.label)).toEqual(["Requests", "Working", "Quiet"]);
     expect(groups[0]!.sessions.map((s) => s.id)).toEqual(["c2"]);
     expect(groups[1]!.sessions.map((s) => s.id)).toEqual(["c1"]);
     expect(groups[2]!.sessions.map((s) => s.id)).toEqual(["c3", "c4", "c5"]);

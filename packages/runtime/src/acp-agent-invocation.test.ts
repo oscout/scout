@@ -1,15 +1,76 @@
-import { afterEach, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
 import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import {
+  acpTurnCeilingMs,
   invokeAcpAgent,
   shutdownAcpAgentSession,
   shutdownAllAcpAgentSessions,
 } from "./acp-agent-invocation.js";
 
 const tempPaths = new Set<string>();
+
+describe("acpTurnCeilingMs", () => {
+  const original = process.env.OPENSCOUT_ACP_HARD_CEILING_MS;
+  const originalMax = process.env.OPENSCOUT_ACP_HARD_CEILING_MAX_MS;
+  afterEach(() => {
+    if (original === undefined) delete process.env.OPENSCOUT_ACP_HARD_CEILING_MS;
+    else process.env.OPENSCOUT_ACP_HARD_CEILING_MS = original;
+    if (originalMax === undefined) delete process.env.OPENSCOUT_ACP_HARD_CEILING_MAX_MS;
+    else process.env.OPENSCOUT_ACP_HARD_CEILING_MAX_MS = originalMax;
+  });
+
+  test("defaults to 60 minutes", () => {
+    delete process.env.OPENSCOUT_ACP_HARD_CEILING_MS;
+    expect(acpTurnCeilingMs({})).toBe(60 * 60_000);
+  });
+
+  test("OPENSCOUT_ACP_HARD_CEILING_MS overrides the default", () => {
+    process.env.OPENSCOUT_ACP_HARD_CEILING_MS = `${5 * 60_000}`;
+    expect(acpTurnCeilingMs({})).toBe(5 * 60_000);
+    process.env.OPENSCOUT_ACP_HARD_CEILING_MS = "not-a-number";
+    expect(acpTurnCeilingMs({})).toBe(60 * 60_000);
+  });
+
+  test("a requester timeoutMs of 24 hours does not change the ceiling", () => {
+    delete process.env.OPENSCOUT_ACP_HARD_CEILING_MS;
+    // The requester's wait budget is not an input to the turn budget — a
+    // caller willing to wait a day does not license a day-long turn.
+    const options = { timeoutMs: 24 * 60 * 60_000 };
+    expect(acpTurnCeilingMs(options)).toBe(60 * 60_000);
+  });
+
+  test("an explicit hardCeilingMs (invocation execution.turnBudgetMs) overrides the configured default", () => {
+    delete process.env.OPENSCOUT_ACP_HARD_CEILING_MS;
+    expect(acpTurnCeilingMs({ hardCeilingMs: 4 * 60 * 60_000 })).toBe(4 * 60 * 60_000);
+    // An explicit budget is authoritative — it may also lower the ceiling.
+    expect(acpTurnCeilingMs({ hardCeilingMs: 5 * 60_000 })).toBe(5 * 60_000);
+    process.env.OPENSCOUT_ACP_HARD_CEILING_MS = `${10 * 60_000}`;
+    expect(acpTurnCeilingMs({ hardCeilingMs: 4 * 60 * 60_000 })).toBe(4 * 60 * 60_000);
+  });
+
+  test("any ceiling source is clamped to the administrator maximum (default 6 h)", () => {
+    delete process.env.OPENSCOUT_ACP_HARD_CEILING_MS;
+    delete process.env.OPENSCOUT_ACP_HARD_CEILING_MAX_MS;
+    // A budget that somehow bypasses the HTTP schema's 6 h bound is still
+    // clamped at runtime — the admin maximum is independent of the schema.
+    expect(acpTurnCeilingMs({ hardCeilingMs: 24 * 60 * 60_000 })).toBe(6 * 60 * 60_000);
+    // So is an oversized configured default.
+    process.env.OPENSCOUT_ACP_HARD_CEILING_MS = `${24 * 60 * 60_000}`;
+    expect(acpTurnCeilingMs({})).toBe(6 * 60 * 60_000);
+  });
+
+  test("OPENSCOUT_ACP_HARD_CEILING_MAX_MS lowers the administrator maximum", () => {
+    delete process.env.OPENSCOUT_ACP_HARD_CEILING_MS;
+    process.env.OPENSCOUT_ACP_HARD_CEILING_MAX_MS = `${30 * 60_000}`;
+    expect(acpTurnCeilingMs({})).toBe(30 * 60_000);
+    expect(acpTurnCeilingMs({ hardCeilingMs: 4 * 60 * 60_000 })).toBe(30 * 60_000);
+    process.env.OPENSCOUT_ACP_HARD_CEILING_MAX_MS = "not-a-number";
+    expect(acpTurnCeilingMs({})).toBe(60 * 60_000);
+  });
+});
 
 afterEach(async () => {
   await shutdownAllAcpAgentSessions();

@@ -14,7 +14,7 @@ import { formatTerminalSurfaceId } from "@openscout/protocol";
 import type { TerminalSurface } from "@openscout/protocol";
 
 import { errorReason, probeCommand } from "./tmux.ts";
-import { readHerdrLastKnownState } from "./herdr-session-state.ts";
+import { readHerdrLastKnownState, type HerdrLastKnownState } from "./herdr-session-state.ts";
 import type {
   TerminalHostAdapter,
   TerminalHostSession,
@@ -107,6 +107,12 @@ export const herdrTerminalHost: TerminalHostAdapter = {
     }
     const env = context.env ?? process.env;
     try {
+      // Starting a stopped session brings back the layout it saved, so it only
+      // needs a first workspace when there is nothing to restore; seeding one
+      // anyway left a stray "Scout" workspace behind on every restart.
+      const existing = (await readHerdrSessions({ env, maxAgeMs: 0 }))
+        .find((session) => session.name === sessionName);
+      const lastKnown = existing?.sessionDir ? await readHerdrLastKnownState(existing.sessionDir) : null;
       // The session server runs for as long as the session does, so it is
       // spawned detached rather than awaited: awaiting it would hang until the
       // operator stopped the session.
@@ -119,11 +125,13 @@ export const herdrTerminalHost: TerminalHostAdapter = {
         };
       }
       await waitForHerdrSession(sessionName, env);
-      const [, ...workspaceArgs] = buildHerdrWorkspaceCreateCommand(sessionName, {
-        cwd: input.cwd,
-        label: "Scout",
-      });
-      await execSystemFile("herdr", workspaceArgs, { timeoutMs: 5_000, env });
+      if (herdrSessionNeedsFirstWorkspace(lastKnown)) {
+        const [, ...workspaceArgs] = buildHerdrWorkspaceCreateCommand(sessionName, {
+          cwd: input.cwd,
+          label: "Scout",
+        });
+        await execSystemFile("herdr", workspaceArgs, { timeoutMs: 5_000, env });
+      }
       // Scout creates the herdr SESSION and its first workspace and stops
       // there; herdr owns what runs inside. `herdr agent start` could launch a
       // harness, but nothing here knows enough to claim it resumed the saved
@@ -236,6 +244,11 @@ function spawnDetachedHerdrServer(
 }
 
 /** Wait for the new session to appear before driving it. */
+/** A session with a saved layout restores its own workspaces; only an empty one needs a first. */
+export function herdrSessionNeedsFirstWorkspace(lastKnown: HerdrLastKnownState | null): boolean {
+  return !lastKnown || lastKnown.workspaces === 0;
+}
+
 async function waitForHerdrSession(sessionName: string, env: NodeJS.ProcessEnv): Promise<void> {
   for (let attempt = 0; attempt < 20; attempt += 1) {
     await new Promise((resolve) => setTimeout(resolve, 150));

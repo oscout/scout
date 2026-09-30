@@ -1,3 +1,5 @@
+import { scoutRuntimeHarness, scoutRuntimeLatestModelInFamily } from "./runtime-execution.js";
+
 const HOUR_MS = 60 * 60_000;
 const DAY_MS = 24 * HOUR_MS;
 
@@ -152,6 +154,15 @@ type RolePolicy = {
   candidates: RuntimeCandidate[];
 };
 
+// The Opus role follows the catalog's newest Opus instead of pinning a release.
+const OPUS = latestClaudeModel("Opus", { id: "claude-opus-5-5", label: "Opus 5.5" });
+
+function latestClaudeModel(family: string, fallback: { id: string; label: string }): { id: string; label: string } {
+  const id = scoutRuntimeLatestModelInFamily("claude", family);
+  const model = scoutRuntimeHarness("claude")?.models.find((entry) => entry.id === id);
+  return model ? { id: model.id, label: model.label } : fallback;
+}
+
 const RUNTIMES = {
   fable: runtimeDefinition(
     "Fable 5", "claude", "claude", "claude-fable-5", "max", "Fable",
@@ -174,7 +185,7 @@ const RUNTIMES = {
     "The harness owns the concrete model and quota telemetry can be stale; probe before large fan-out.",
   ),
   opus: runtimeDefinition(
-    "Opus 5", "claude", "claude", "claude-opus-5", "high", "Opus",
+    OPUS.label, "claude", "claude", OPUS.id, "high", "Opus",
     "Long-context synthesis, nuanced architecture, and coherent product reasoning.",
     "Premium shared Claude quota; avoid routine scans and repetitive verification.",
   ),

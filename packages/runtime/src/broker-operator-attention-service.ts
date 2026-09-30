@@ -4,6 +4,9 @@ import type {
   ScoutOperatorSignal,
 } from "@openscout/protocol";
 
+import { basename } from "node:path";
+
+import { agentNotificationForOperatorSignal } from "./agent-notification-builders.js";
 import type {
   MobilePushAlert,
   MobilePushBroadcastResult,
@@ -28,6 +31,11 @@ export type OperatorSignalInput = {
   conversationId: string;
   requesterId: string;
   requesterNodeId: string;
+  /** What the agent said. Only ever travels sealed to paired phones. */
+  body?: string;
+  requesterName?: string;
+  projectRoot?: string;
+  createdAt?: number;
 };
 
 export type BrokerOperatorAttentionServiceOptions = {
@@ -82,15 +90,28 @@ export class BrokerOperatorAttentionService {
 
   async sendOperatorSignalAlert(input: OperatorSignalInput): Promise<void> {
     const signal = input.signal;
-    // Remote push carries generic copy; the paired broker serves authored content.
+    // The alert text stays generic; what the agent said rides sealed to each
+    // paired phone, which is the only place it can be read.
     const isNeed = signal.kind === "need";
+    const notification = input.body !== undefined
+      ? agentNotificationForOperatorSignal({
+        messageId: input.messageId,
+        conversationId: input.conversationId,
+        signal,
+        agentName: input.requesterName ?? input.requesterId,
+        agentId: input.requesterId,
+        body: input.body,
+        project: input.projectRoot ? basename(input.projectRoot) : null,
+        createdAt: input.createdAt ?? this.options.now?.() ?? Date.now(),
+      })
+      : undefined;
     const result = await this.options.broadcastApnsAlertToActiveMobileDevices({
       title: isNeed
-        ? "An agent needs you"
+        ? "An agent is asking"
         : signal.kind === "consult"
           ? "An agent would value your input"
           : "Agent update",
-      body: isNeed ? "An agent needs your answer. Open Scout for details." : "Open Scout for details.",
+      body: isNeed ? "An agent is asking a question. Open Scout for details." : "Open Scout for details.",
       sound: isNeed ? "default" : null,
       urgency: isNeed ? "interrupt" : "silent",
       threadId: "scout.agent-signal",
@@ -104,6 +125,7 @@ export class BrokerOperatorAttentionService {
         requesterId: input.requesterId,
         requesterNodeId: input.requesterNodeId,
       },
+      ...(notification ? { notification } : {}),
     });
 
     this.warnForBroadcastResult(result);

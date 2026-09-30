@@ -1,6 +1,7 @@
 import type { ScoutCommandContext } from "../context.ts";
 import { defaultScoutContextDirectory } from "../context.ts";
 import { resolveMessageBody } from "../input-file.ts";
+import { ScoutCliError } from "../errors.ts";
 import { parseSendCommandOptions } from "../options.ts";
 import {
   acquireScoutOnAir,
@@ -18,6 +19,9 @@ import { formatScoutSendRoutingError } from "./send.ts";
 
 export async function runSpeakCommand(context: ScoutCommandContext, args: string[]): Promise<void> {
   const options = parseSendCommandOptions(args, defaultScoutContextDirectory(context));
+  if (options.tracked) {
+    throw new ScoutCliError("speak is message-only; --tracked applies to a directed `scout send --to`");
+  }
   const currentDirectory = options.currentDirectory ?? defaultScoutContextDirectory(context);
   const senderId = await resolveScoutSenderId(options.agentName, currentDirectory, context.env);
   const config = await loadScoutRelayConfig();

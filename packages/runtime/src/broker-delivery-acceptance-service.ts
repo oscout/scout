@@ -17,6 +17,7 @@ import {
   type ScoutDispatchEnvelope,
   type ScoutDispatchRecord,
   type ScoutDispatchUnavailableTarget,
+  type ScoutOwnedRuntimeCatalog,
   type ScoutReturnAddress,
 } from "@openscout/protocol";
 
@@ -42,6 +43,7 @@ import {
   type RuntimeSnapshot,
 } from "./scout-dispatcher.js";
 import { sessionActorAlias } from "./session-alias.js";
+import { runtimeSessionAddressForSessionId } from "./runtime-session-address.js";
 
 type EnsureBrokerDeliveryConversationInput = {
   requesterId: string;
@@ -80,6 +82,13 @@ export type BrokerDeliveryAcceptanceServiceOptions = {
   nodeId: string;
   operatorActorId: string;
   runtimeSnapshot: () => RuntimeSnapshot;
+  /**
+   * Live runtime-catalog snapshot (BrokerRuntimeCatalogService.read). Tuple
+   * validation runs against it so a catalog newer than the shipped default is
+   * honored; when absent or failing, validation falls back to the bundled
+   * catalog — that is what the bundled copy is for.
+   */
+  readRuntimeCatalog?: () => Promise<{ catalog: ScoutOwnedRuntimeCatalog }>;
   createId: (prefix: string) => string;
   syncRegisteredLocalAgentsIfChanged: (reason: string) => Promise<void>;
   metadataStringValue: (metadata: Record<string, unknown> | undefined, key: string) => string | null;
@@ -168,6 +177,10 @@ export type BrokerDeliveryAcceptanceServiceOptions = {
     conversationId: string;
     requesterId: string;
     requesterNodeId: string;
+    body?: string;
+    requesterName?: string;
+    projectRoot?: string;
+    createdAt?: number;
   }) => void;
   warn?: (message: string, detail?: unknown) => void;
   now?: () => number;
@@ -361,6 +374,7 @@ export class BrokerDeliveryAcceptanceService {
             requesterNodeId,
             targetAgentId,
             targetSessionId,
+            targetSessionAddress: runtimeSessionAddressForSessionId(this.options.runtimeSnapshot(), targetSessionId) ?? undefined,
             targetLabel,
             sessionAlias,
             bindingRef,
@@ -425,7 +439,12 @@ export class BrokerDeliveryAcceptanceService {
           ...(normalizedModel?.ok ? { model: normalizedModel.resolved } : {}),
         }
       : undefined;
-    const runtimeIssues = validateScoutRuntimeTuple(execution ?? {});
+    const runtimeCatalogSnapshot = await this.options.readRuntimeCatalog?.().catch(() => null);
+    const runtimeIssues = validateScoutRuntimeTuple(
+      execution ?? {},
+      undefined,
+      runtimeCatalogSnapshot?.catalog ?? undefined,
+    );
     if (runtimeIssues.length > 0) {
       const issue = runtimeIssues[0]!;
       throw new Error(`${issue.code}: ${issue.message}`);
@@ -589,12 +608,25 @@ export class BrokerDeliveryAcceptanceService {
       };
       await this.options.postConversationMessage(message);
       if (operatorSignal) {
+        const requesterAgent = snapshot.agents[requesterId];
+        const requesterActor = snapshot.actors[requesterId];
+        const requesterEndpoint = Object.values(snapshot.endpoints)
+          .find((endpoint) => endpoint.agentId === requesterId && (endpoint.projectRoot || endpoint.cwd));
+        const requesterProjectRoot = requesterEndpoint?.projectRoot ?? requesterEndpoint?.cwd;
         this.options.queueOperatorSignal({
           signal: operatorSignal,
           messageId,
           conversationId: conversation.id,
           requesterId,
           requesterNodeId,
+          body: message.body,
+          requesterName: requesterAgent?.handle
+            ?? requesterActor?.handle
+            ?? requesterAgent?.displayName
+            ?? requesterActor?.displayName
+            ?? requesterId,
+          ...(requesterProjectRoot ? { projectRoot: requesterProjectRoot } : {}),
+          createdAt,
         });
       }
       throwIfAborted(options.signal);
@@ -883,7 +915,9 @@ export class BrokerDeliveryAcceptanceService {
           endpoint: resolved.session.endpoint as AgentEndpoint | undefined,
         };
     const aliasResolution = resolved.aliasResolution;
-    const receiptSessionId = requestedTargetSessionId
+    const sessionFork = resolved.kind === "resolved_session" ? resolved.sessionFork : undefined;
+    const receiptSessionId = sessionFork?.sessionId
+      ?? requestedTargetSessionId
       ?? (aliasResolution?.target.kind === "session" ? aliasResolution.target.sessionId : undefined)
       ?? (resolved.kind === "resolved_session" ? resolved.session.sessionId : undefined);
 
@@ -1038,6 +1072,7 @@ export class BrokerDeliveryAcceptanceService {
         requesterNodeId,
         targetAgentId: target.actorId,
         targetSessionId: receiptSessionId,
+        targetSessionAddress: runtimeSessionAddressForSessionId(this.options.runtimeSnapshot(), receiptSessionId) ?? undefined,
         targetLabel,
         aliasResolution,
         conversationId: conversation.id,
@@ -1136,6 +1171,7 @@ export class BrokerDeliveryAcceptanceService {
         requesterNodeId,
         targetAgentId: target.actorId,
         targetSessionId: receiptSessionId,
+        targetSessionAddress: runtimeSessionAddressForSessionId(this.options.runtimeSnapshot(), receiptSessionId) ?? undefined,
         targetLabel,
         sessionAlias,
         bindingRef,

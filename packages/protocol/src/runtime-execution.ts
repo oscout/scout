@@ -7,6 +7,8 @@ import {
   type ScoutOwnedRuntimeCatalog,
   type ScoutOwnedRuntimeHarness,
   type ScoutReasoningEffort,
+  type ScoutRuntimeHarnessPresentation,
+  type ScoutRuntimeModelPresentation,
 } from "./runtime-catalog-contract.js";
 export * from "./runtime-catalog-contract.js";
 
@@ -44,6 +46,15 @@ export function isScoutRuntimeHarnessListed(
 ): boolean {
   const entry = scoutRuntimeHarness(harness, catalog);
   return entry?.enabled === true && entry.listed !== false;
+}
+
+/** A harness accepts a model dimension iff the owned catalog lists at least one enabled model for it. */
+export function isModelSelectableHarness(
+  harness: string,
+  catalog: ScoutOwnedRuntimeCatalog = SCOUT_RUNTIME_CATALOG,
+): boolean {
+  const entry = scoutRuntimeHarness(harness, catalog);
+  return entry?.enabled === true && entry.models.some((model) => model.enabled);
 }
 
 export function scoutRuntimeDefaultHarness(
@@ -148,6 +159,24 @@ export interface ScoutRuntimeDimensionResolution {
 }
 
 /**
+ * Which Codex app-server executed the session: one Scout spawned for itself,
+ * or an already-running server Scout attached to over its control socket.
+ * Harness-owned evidence from `initialize` and `codex app-server daemon version`.
+ */
+export interface ScoutCodexAppServerIdentity {
+  connection: "spawned" | "attached";
+  socketPath: string | null;
+  pid: number | null;
+  userAgent: string | null;
+  appServerVersion: string | null;
+  codexHome: string | null;
+  platformOs?: string | null;
+  /** Scout features that do not apply to this server (e.g. scout_mcp_injection). */
+  capabilityGaps: string[];
+  connectedAt: number;
+}
+
+/**
  * Durable execution truth for one concrete session. `requested` is caller
  * intent, `resolved` is the spawn value after the launch ladder, and
  * `observed` is populated only from harness-owned evidence.
@@ -160,6 +189,8 @@ export interface ScoutExecutionResolution {
   sessionId?: string;
   resolvedAt?: number;
   observedAt?: number;
+  /** Present for Codex sessions once the app-server has been reached. */
+  codexAppServer?: ScoutCodexAppServerIdentity;
 }
 
 export interface ScoutRuntimeModelOption {
@@ -170,6 +201,9 @@ export interface ScoutRuntimeModelOption {
   source: "catalog" | "observed" | "configured" | "default";
   family?: string;
   version?: string;
+  /** True when the owned catalog marks this model as its harness's default. */
+  isDefault?: boolean;
+  presentation?: ScoutRuntimeModelPresentation;
 }
 
 export interface ScoutRuntimeEffortOption {
@@ -195,6 +229,7 @@ export interface ScoutRuntimeHarnessOption {
   state?: "ready" | "configured" | "installed" | "missing" | null;
   ready?: boolean | null;
   detail?: string | null;
+  presentation?: ScoutRuntimeHarnessPresentation;
 }
 
 export interface ScoutRuntimeCapabilityCatalog {
@@ -238,6 +273,8 @@ export function scoutRuntimeModelCatalog(
         source: "default",
         ...(model.family ? { family: model.family } : {}),
         ...(model.version ? { version: model.version } : {}),
+        ...(model.default === true ? { isDefault: true } : {}),
+        ...(model.presentation ? { presentation: model.presentation } : {}),
       });
     }
   }
@@ -310,6 +347,28 @@ export type ScoutRuntimeModelNormalization =
   | { ok: true; requested: string; resolved: string }
   | { ok: false; requested: string; error: string; candidates?: string[] };
 
+const CLAUDE_FAMILY_ALIASES: Record<string, string> = {
+  fable: "Fable",
+  opus: "Opus",
+  sonnet: "Sonnet",
+  haiku: "Haiku",
+};
+
+/**
+ * The newest enabled model in a catalog family: the harness default when it is
+ * in the family, otherwise the first in catalog order (newest first). A family
+ * alias like `opus` follows the catalog instead of pinning a release.
+ */
+export function scoutRuntimeLatestModelInFamily(
+  harness: string,
+  family: string,
+  catalog: ScoutOwnedRuntimeCatalog = SCOUT_RUNTIME_CATALOG,
+): string | undefined {
+  const models = (scoutRuntimeHarness(harness, catalog)?.models ?? [])
+    .filter((model) => model.enabled && model.family === family);
+  return (models.find((model) => model.default) ?? models[0])?.id;
+}
+
 /** Canonical model aliases shared by every request boundary and spawn path. */
 export function normalizeScoutRuntimeModel(
   harness: string,
@@ -334,13 +393,9 @@ export function normalizeScoutRuntimeModel(
     return { ok: true, requested, resolved: requested };
   }
   if (normalizedHarness === "claude") {
-    const aliases: Record<string, string> = {
-      fable: "claude-fable-5",
-      opus: "claude-opus-5",
-      sonnet: "claude-sonnet-4-6",
-      haiku: "claude-haiku-4-5",
-    };
-    return { ok: true, requested, resolved: aliases[lower] ?? requested };
+    const family = CLAUDE_FAMILY_ALIASES[lower];
+    const resolved = family ? scoutRuntimeLatestModelInFamily("claude", family) : undefined;
+    return { ok: true, requested, resolved: resolved ?? requested };
   }
   return { ok: true, requested, resolved: requested };
 }
@@ -485,6 +540,7 @@ export function createScoutExecutionResolution(input: {
 export function validateScoutRuntimeTuple(
   input: ScoutRuntimeTuple,
   catalog?: Pick<ScoutRuntimeCapabilityCatalog, "models" | "efforts">,
+  ownedCatalog: ScoutOwnedRuntimeCatalog = SCOUT_RUNTIME_CATALOG,
 ): ScoutRuntimeTupleIssue[] {
   const rawHarness = input.harness?.trim().toLowerCase();
   const harness = rawHarness === "oc" ? "opencode" : rawHarness;
@@ -492,11 +548,14 @@ export function validateScoutRuntimeTuple(
   const effortRaw = input.reasoningEffort?.trim();
   const issues: ScoutRuntimeTupleIssue[] = [];
 
-  if (harness && !isScoutLaunchableHarness(harness)) {
+  // Harness membership and model selectability come from the owned catalog —
+  // the live broker snapshot when one is supplied, the bundled default
+  // otherwise — never a hand-maintained list.
+  if (harness && !ownedCatalog.harnesses.some((entry) => entry.id === harness)) {
     issues.push({
       code: "unsupported_harness",
       dimension: "harness",
-      message: `unsupported harness "${input.harness}"; expected one of: ${SCOUT_LAUNCHABLE_HARNESSES.join(", ")}`,
+      message: `unsupported harness "${input.harness}"; expected one of: ${ownedCatalog.harnesses.map((entry) => entry.id).join(", ")}`,
     });
     return issues;
   }
@@ -512,7 +571,7 @@ export function validateScoutRuntimeTuple(
     const catalogEffort = catalog?.efforts.find((candidate) => candidate.id === effort);
     let supported = catalogEffort
       ? catalogEffort.harnesses.includes(harness as ScoutLaunchableHarness)
-      : (scoutRuntimeReasoningEfforts(harness, model) ?? []).includes(effort);
+      : (scoutRuntimeReasoningEfforts(harness, model, ownedCatalog) ?? []).includes(effort);
     if (supported && catalogEffort?.models?.length && model) {
       const harnessModels = new Set(
         catalog?.models
@@ -535,12 +594,7 @@ export function validateScoutRuntimeTuple(
     }
   }
 
-  const modelSelectableHarness = harness === "claude"
-    || harness === "codex"
-    || harness === "grok"
-    || harness === "grok-acp"
-    || harness === "opencode";
-  if (model && harness && !modelSelectableHarness) {
+  if (model && harness && !isModelSelectableHarness(harness, ownedCatalog)) {
     issues.push({
       code: "unsupported_model_dimension",
       dimension: "model",

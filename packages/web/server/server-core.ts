@@ -369,12 +369,26 @@ export function isScoutWebRequestAllowedFromPeer(
         || path === "/api/chat/spaces"
         || path === "/api/member/me" || path === "/api/logout"
         || /^\/api\/invites\/[^/]+(?:\/(?:join|redeem|participate))?$/.test(path)
-        || /^\/api\/channels\/[^/]+\/(?:feed|poll|events|messages|asks|members|invites)(?:\/[^/]+\/revoke)?$/.test(path))) return true;
+        || /^\/api\/channels\/[^/]+\/(?:feed|poll|inbox|events|messages|asks|members|invites)(?:\/[^/]+\/revoke)?$/.test(path))) return true;
     return false;
   }
   return request.method === "GET"
     && url.pathname === "/pair"
     && request.headers.get("upgrade") === null;
+}
+
+/**
+ * The origin the browser saw when the local edge terminated TLS in front of us.
+ * Caddy reaches this server over plain loopback http, so `request.url` says
+ * http even for an https page; its X-Forwarded-Proto says what the browser
+ * used. Only a loopback peer (the edge) is believed — a LAN client talking to
+ * this port directly cannot relabel its scheme.
+ */
+function edgeRequestOrigin(request: Request, requestUrl: URL, peerAddress?: string): string | null {
+  if (peerAddress !== undefined && !isLoopbackScoutAddress(peerAddress)) return null;
+  const proto = request.headers.get("x-forwarded-proto")?.split(",")[0]?.trim().toLowerCase();
+  if (proto !== "http" && proto !== "https") return null;
+  return `${proto}://${requestUrl.host}`;
 }
 
 export function isTrustedScoutApiRequest(
@@ -412,6 +426,7 @@ export function isTrustedScoutApiRequest(
         !isTrustedApiHostname(originUrl.hostname, options)
         || (
           originUrl.origin !== requestUrl.origin
+          && originUrl.origin !== edgeRequestOrigin(request, requestUrl, peerAddress)
           && !trustedOriginSet(options).has(originUrl.origin.toLowerCase())
         )
       ) {
@@ -499,6 +514,8 @@ export function coalesce<T>(fn: () => Promise<T>, ttlMs = 2000): () => Promise<T
     return inflight;
   };
 }
+
+export type CachedSnapshot<T> = ReturnType<typeof createCachedSnapshot<T>>;
 
 export function createCachedSnapshot<T>(load: () => Promise<T>, ttlMs: number) {
   let inflight: Promise<T> | null = null;

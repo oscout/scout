@@ -1,0 +1,25 @@
+export const state:any = { rows: [], reactions: [], broker: null };
+export const loadScoutBrokerContext = async () => state.broker;
+export const getScoutConversationMessages = async (id:string, limit:number) => state.rows.filter((m:any)=>m.conversationId===id).slice(-limit);
+export const queryRecentMessages = () => [];
+export const listScoutMessageReactions = async () => state.reactions;
+export const queryBrokerFlightsForWeb = () => state.flights ?? [];
+export const normalizeTimestampMs = (n:any) => Number(n);
+export const isTransientBrokerWaitStatusMessage = () => false;
+export const queryFlightRecordById = () => undefined;
+export const loadScoutReadCursors = (...args:any[]) => { throw new Error("Unexpected fixture call loadScoutReadCursors"); };
+export const markScoutConversationRead = (...args:any[]) => { throw new Error("Unexpected fixture call markScoutConversationRead"); };
+export const updateScoutChatPreferences = (...args:any[]) => { throw new Error("Unexpected fixture call updateScoutChatPreferences"); };
+export const updateScoutChannelPins = (...args:any[]) => { throw new Error("Unexpected fixture call updateScoutChannelPins"); };
+export const correctScoutChatMessage = (...args:any[]) => { throw new Error("Unexpected fixture call correctScoutChatMessage"); };
+export const respondScoutChatQuestion = (...args:any[]) => { throw new Error("Unexpected fixture call respondScoutChatQuestion"); };
+export const readScoutChatQuestionHistory = (...args:any[]) => { throw new Error("Unexpected fixture call readScoutChatQuestionHistory"); };
+export const sendScoutConversationMessage = (...args:any[]) => { throw new Error("Unexpected fixture call sendScoutConversationMessage"); };
+export const sendScoutMessageReaction = (...args:any[]) => { throw new Error("Unexpected fixture call sendScoutMessageReaction"); };
+export const sendScoutConversationSteer = (...args:any[]) => { throw new Error("Unexpected fixture call sendScoutConversationSteer"); };
+export const invalidateScoutBrokerContextCache = (...args:any[]) => { throw new Error("Unexpected fixture call invalidateScoutBrokerContextCache"); };
+export const upsertScoutConversation = (...args:any[]) => { throw new Error("Unexpected fixture call upsertScoutConversation"); };
+export const cancelScoutChatFlight = (...args:any[]) => { throw new Error("Unexpected fixture call cancelScoutChatFlight"); };
+export const brokerFlightToWebFlight = (...args:any[]) => { throw new Error("Unexpected fixture call brokerFlightToWebFlight"); };
+
+export const inboxDatabaseRevision = () => state.revision ?? 1;

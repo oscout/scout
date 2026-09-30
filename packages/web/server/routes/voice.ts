@@ -1,3 +1,4 @@
+import type { AmbientVoiceController } from "../ambient-voice-controller.ts";
 import { finalizeLiveSession } from "../live-finalization.ts";
 import type { ScoutbotUsageStore } from "../scoutbot-usage.ts";
 import type { VoiceUsageSnapshot } from "../../shared/voice-usage.ts";
@@ -62,6 +63,17 @@ import {
   updateScoutVoiceSettings,
   type ScoutVoiceSessionEventName,
 } from "../scout-voice-session.ts";
+import {
+  voiceEngageBody,
+  voiceHostEventBody,
+  voiceAmbientBody,
+  voiceHostRegisterBody,
+  voicePermissionBody,
+  voiceSessionBody,
+  voiceSettingsBody,
+  voiceSpeakBody,
+} from "../../shared/api/voice.ts";
+import { readJsonBody } from "../request-body.ts";
 
 function parseOptionalPositiveInt(
   value: string | undefined,
@@ -159,6 +171,8 @@ function parseScoutVoiceAudioFormat(value: string | undefined): "mp3" | "wav" | 
 }
 
 export type ScoutVoiceRouteDeps = {
+  /** Always-on listening; absent in hosts that don't run it. */
+  ambientVoice?: AmbientVoiceController;
   usage?: () => ScoutbotUsageStore;
   resolveOpenAIApiKey?: () => Promise<string | undefined>;
   /** Legacy/test override. Production uses the persisted preference callbacks. */
@@ -360,10 +374,9 @@ export function mountScoutVoiceRoutes(app: Hono, deps: ScoutVoiceRouteDeps = {})
   });
 
   app.post("/api/voice/engage", async (c) => {
-    const body = (await c.req.json().catch(() => ({}))) as {
-      surface?: string;
-      requestPermissions?: boolean;
-    };
+    const parsed = await readJsonBody(c, voiceEngageBody);
+    if (!parsed.ok) return parsed.response;
+    const body = parsed.body;
     try {
       return c.json(engageScoutVoiceDictation(body));
     } catch (error) {
@@ -377,10 +390,9 @@ export function mountScoutVoiceRoutes(app: Hono, deps: ScoutVoiceRouteDeps = {})
   });
 
   app.put("/api/voice/settings", async (c) => {
-    const body = (await c.req.json().catch(() => ({}))) as {
-      preference?: "auto" | "parakeet" | "apple";
-      inputDeviceId?: string | null;
-    };
+    const parsed = await readJsonBody(c, voiceSettingsBody);
+    if (!parsed.ok) return parsed.response;
+    const body = parsed.body;
     try {
       return c.json(updateScoutVoiceSettings(body));
     } catch (error) {
@@ -389,9 +401,9 @@ export function mountScoutVoiceRoutes(app: Hono, deps: ScoutVoiceRouteDeps = {})
   });
 
   app.post("/api/voice/permissions/open", async (c) => {
-    const body = (await c.req.json().catch(() => ({}))) as {
-      kind?: "microphone" | "speechRecognition";
-    };
+    const parsed = await readJsonBody(c, voicePermissionBody);
+    if (!parsed.ok) return parsed.response;
+    const body = parsed.body;
     try {
       return c.json(openScoutVoicePrivacySettings(body.kind ?? "microphone"));
     } catch (error) {
@@ -400,9 +412,9 @@ export function mountScoutVoiceRoutes(app: Hono, deps: ScoutVoiceRouteDeps = {})
   });
 
   app.post("/api/voice/permissions/request", async (c) => {
-    const body = (await c.req.json().catch(() => ({}))) as {
-      kind?: "microphone" | "speechRecognition";
-    };
+    const parsed = await readJsonBody(c, voicePermissionBody);
+    if (!parsed.ok) return parsed.response;
+    const body = parsed.body;
     try {
       return c.json(requestScoutVoicePermissions(body.kind ?? "microphone"));
     } catch (error) {
@@ -411,20 +423,16 @@ export function mountScoutVoiceRoutes(app: Hono, deps: ScoutVoiceRouteDeps = {})
   });
 
   app.post("/api/voice/host/register", async (c) => {
-    const body = (await c.req.json().catch(() => ({}))) as {
-      hostId?: string;
-      instanceId?: string;
-      platform?: string;
-      bundle?: string;
-      settings?: unknown;
-      devices?: Array<{ id?: string; name?: string; isDefault?: boolean }>;
-    };
+    const parsed = await readJsonBody(c, voiceHostRegisterBody);
+    if (!parsed.ok) return parsed.response;
+    const body = parsed.body;
     try {
       return c.json(registerScoutVoiceHost({
         hostId: body.hostId ?? "",
         instanceId: body.instanceId,
         platform: body.platform ?? "unknown",
         bundle: body.bundle,
+        capabilities: body.capabilities,
         settings: parseScoutVoiceSettingsPatch(body.settings),
         devices: (body.devices ?? [])
           .map((device) => ({
@@ -453,17 +461,81 @@ export function mountScoutVoiceRoutes(app: Hono, deps: ScoutVoiceRouteDeps = {})
     }
   });
 
+  app.get("/api/voice/ambient", (c) => {
+    if (!deps.ambientVoice) return c.json({ error: "always-on voice is not available" }, 404);
+    const snapshot = deps.ambientVoice.snapshot();
+    // Opt-in: the buffered words themselves, for checking what it heard.
+    if (c.req.query("transcript") === "1") {
+      return c.json({ ...snapshot, transcript: deps.ambientVoice.transcript() });
+    }
+    return c.json(snapshot);
+  });
+
+  app.post("/api/voice/ambient", async (c) => {
+    if (!deps.ambientVoice) return c.json({ error: "always-on voice is not available" }, 404);
+    const parsed = await readJsonBody(c, voiceAmbientBody);
+    if (!parsed.ok) return parsed.response;
+    return c.json(deps.ambientVoice.setEnabled(parsed.body.enabled));
+  });
+
+  // Page actions from always-on replies (navigate, open a file). Every open
+  // page listens; the first to claim a batch runs it.
+  app.get("/api/voice/ambient/actions", (c) => {
+    const ambientVoice = deps.ambientVoice;
+    if (!ambientVoice) return c.json({ error: "always-on voice is not available" }, 404);
+    const encoder = new TextEncoder();
+    const signal = c.req.raw.signal;
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        let closed = false;
+        const safeEnqueue = (chunk: string) => {
+          if (closed) return;
+          try {
+            controller.enqueue(encoder.encode(chunk));
+          } catch {
+            closed = true;
+          }
+        };
+        const heartbeat = setInterval(() => safeEnqueue(`: keep-alive ${Date.now()}\n\n`), 15_000);
+        const unsubscribe = ambientVoice.subscribePageActions((batch) => {
+          safeEnqueue(`event: actions\ndata: ${JSON.stringify(batch)}\n\n`);
+        });
+        signal.addEventListener("abort", () => {
+          if (closed) return;
+          closed = true;
+          clearInterval(heartbeat);
+          unsubscribe();
+          try {
+            controller.close();
+          } catch {
+            /* already closed */
+          }
+        }, { once: true });
+      },
+    });
+    return new Response(stream, {
+      headers: {
+        "content-type": "text/event-stream",
+        "cache-control": "no-cache, no-transform",
+        connection: "keep-alive",
+        "x-accel-buffering": "no",
+      },
+    });
+  });
+
+  app.post("/api/voice/ambient/actions/:id/claim", (c) => {
+    if (!deps.ambientVoice) return c.json({ error: "always-on voice is not available" }, 404);
+    const claimed = deps.ambientVoice.claimPageActions(c.req.param("id") ?? "");
+    return claimed ? c.json({ claimed: true }) : c.json({ claimed: false }, 409);
+  });
+
   app.post("/api/voice/host/events", async (c) => {
-    const body = (await c.req.json().catch(() => ({}))) as {
-      hostId?: string;
-      instanceId?: string;
-      sessionId?: string;
-      event?: string;
-      data?: Record<string, unknown>;
-    };
+    const parsed = await readJsonBody(c, voiceHostEventBody);
+    if (!parsed.ok) return parsed.response;
+    const body = parsed.body;
     const hostId = body.hostId?.trim();
     const sessionId = body.sessionId?.trim();
-    const event = body.event?.trim() as ScoutVoiceSessionEventName | undefined;
+    const event = body.event satisfies ScoutVoiceSessionEventName | undefined;
     if (!hostId || !sessionId || !event) {
       return c.json({ error: "hostId, sessionId, and event are required" }, 400);
     }
@@ -481,12 +553,9 @@ export function mountScoutVoiceRoutes(app: Hono, deps: ScoutVoiceRouteDeps = {})
   });
 
   app.post("/api/voice/session", async (c) => {
-    const body = (await c.req.json().catch(() => ({}))) as {
-      clientId?: string;
-      surface?: string;
-      language?: string;
-      sessionId?: string;
-    };
+    const parsed = await readJsonBody(c, voiceSessionBody);
+    if (!parsed.ok) return parsed.response;
+    const body = parsed.body;
     try {
       return c.json(createScoutVoiceSession(body));
     } catch (error) {
@@ -609,17 +678,9 @@ export function mountScoutVoiceRoutes(app: Hono, deps: ScoutVoiceRouteDeps = {})
   });
 
   app.post("/api/voice/speak", async (c) => {
-    const body = (await c.req.json().catch(() => ({}))) as {
-      text?: string;
-      modelId?: string;
-      voiceId?: string;
-      speed?: number;
-      instructions?: string;
-      originAppId?: string;
-      utteranceId?: string;
-      speechTiming?: unknown;
-      playback?: unknown;
-    };
+    const parsed = await readJsonBody(c, voiceSpeakBody);
+    if (!parsed.ok) return parsed.response;
+    const body = parsed.body;
     const text = body.text?.trim();
     if (!text) {
       return c.json({ error: "text is required" }, 400);

@@ -1,11 +1,35 @@
 import { expect, test } from "bun:test";
+import { chmodSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import {
   MeshRelayServerTransport,
+  meshBridgeTokenFilePath,
   parseBridgeBoundEnvelope,
+  readKeychainSecret,
+  readMode0600TokenFile,
+  resolveBridgeTokenFromConfig,
   resolveBridgeWebSocketUrl,
   type McpWorkerBoundEnvelope,
 } from "./mesh-bridge.ts";
+
+function withPlatform<T>(platform: NodeJS.Platform, run: () => T): T {
+  const previous = Object.getOwnPropertyDescriptor(process, "platform");
+  Object.defineProperty(process, "platform", { configurable: true, enumerable: true, value: platform });
+  const restore = () => {
+    if (previous) Object.defineProperty(process, "platform", previous);
+  };
+  try {
+    const result = run();
+    if (result instanceof Promise) return result.finally(restore) as T;
+    restore();
+    return result;
+  } catch (error) {
+    restore();
+    throw error;
+  }
+}
 
 function collectingTransport(): { transport: MeshRelayServerTransport; emitted: McpWorkerBoundEnvelope[] } {
   const transport = new MeshRelayServerTransport();
@@ -96,11 +120,100 @@ test("server-initiated notifications are forwarded as mcp_notify envelopes", asy
   });
 });
 
-test("bridge websocket url derives from the relay url and carries the token", () => {
-  expect(resolveBridgeWebSocketUrl("https://mesh.oscout.net/v1/mcp", "tok"))
-    .toBe("wss://mesh.oscout.net/v1/mcp/bridge?access_token=tok");
-  expect(resolveBridgeWebSocketUrl("http://localhost:8787/v1/mcp?node=mini", "tok"))
-    .toBe("ws://localhost:8787/v1/mcp/bridge?node=mini&access_token=tok");
-  expect(resolveBridgeWebSocketUrl("wss://mesh.oscout.net/v1/mcp/bridge", "tok"))
-    .toBe("wss://mesh.oscout.net/v1/mcp/bridge?access_token=tok");
+test("bridge websocket url derives from the relay url and never carries the token", () => {
+  expect(resolveBridgeWebSocketUrl("https://mesh.oscout.net/v1/mcp"))
+    .toBe("wss://mesh.oscout.net/v1/mcp/bridge");
+  expect(resolveBridgeWebSocketUrl("http://localhost:8787/v1/mcp?node=mini"))
+    .toBe("ws://localhost:8787/v1/mcp/bridge?node=mini");
+  expect(resolveBridgeWebSocketUrl("wss://mesh.oscout.net/v1/mcp/bridge?access_token=leak"))
+    .toBe("wss://mesh.oscout.net/v1/mcp/bridge");
+});
+
+test("readMode0600TokenFile reads a mode-0600 file and rejects a loose file or symlink", () => {
+  const root = mkdtempSync(join(tmpdir(), "openscout-mesh-token-mode-"));
+  const tokenPath = join(root, "owned.token");
+  writeFileSync(tokenPath, "file-token\n", { mode: 0o600 });
+  chmodSync(tokenPath, 0o600);
+  const loosePath = join(root, "loose.token");
+  writeFileSync(loosePath, "loose-token\n", { mode: 0o644 });
+  chmodSync(loosePath, 0o644);
+  symlinkSync(tokenPath, join(root, "linked.token"));
+  try {
+    expect(readMode0600TokenFile(tokenPath)).toBe("file-token");
+    expect(readMode0600TokenFile(loosePath)).toBeNull();
+    expect(readMode0600TokenFile(join(root, "linked.token"))).toBeNull();
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("linux reads a mode-0600 mesh-bridge token file and does not call security", () => {
+  const root = mkdtempSync(join(tmpdir(), "openscout-mesh-token-"));
+  const tokenPath = meshBridgeTokenFilePath(root);
+  writeFileSync(tokenPath, "file-token\n", { mode: 0o600 });
+  chmodSync(tokenPath, 0o600);
+  const loosePath = join(root, "loose.token");
+  writeFileSync(loosePath, "loose-token\n", { mode: 0o644 });
+  chmodSync(loosePath, 0o644);
+  symlinkSync(tokenPath, join(root, "linked.token"));
+  try {
+    withPlatform("linux", () => {
+      let spawned = false;
+      expect(readKeychainSecret("OPENSCOUT_MCP_BRIDGE_TOKEN", () => {
+        spawned = true;
+        throw new Error("security spawned");
+      })).toBeNull();
+      expect(spawned).toBe(false);
+      expect(resolveBridgeTokenFromConfig(
+        { relayUrl: "https://mcp.oscout.net", tokenKeychainService: "OPENSCOUT_MCP_BRIDGE_TOKEN" },
+        { supportDirectory: root },
+      )).toBe("file-token");
+      expect(resolveBridgeTokenFromConfig(
+        { relayUrl: "https://mcp.oscout.net", tokenFile: loosePath },
+      )).toBeNull();
+      expect(readMode0600TokenFile(join(root, "linked.token"))).toBeNull();
+      expect(resolveBridgeTokenFromConfig({
+        relayUrl: "https://mcp.oscout.net",
+        token: " inline ",
+        tokenFile: tokenPath,
+      })).toBe("inline");
+    });
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("darwin keychain lookup keeps the security command and ignores the token file", () => {
+  const root = mkdtempSync(join(tmpdir(), "openscout-mesh-token-darwin-"));
+  const tokenPath = meshBridgeTokenFilePath(root);
+  writeFileSync(tokenPath, "file-token\n", { mode: 0o600 });
+  chmodSync(tokenPath, 0o600);
+  try {
+    withPlatform("darwin", () => {
+      const commands: string[][] = [];
+      expect(readKeychainSecret("OPENSCOUT_MCP_BRIDGE_TOKEN", (command) => {
+        commands.push(command);
+        return { exitCode: 0, stdout: Buffer.from("keychain-token\n") };
+      })).toBe("keychain-token");
+      expect(commands).toEqual([[
+        "security",
+        "find-generic-password",
+        "-s",
+        "OPENSCOUT_MCP_BRIDGE_TOKEN",
+        "-w",
+      ]]);
+      expect(resolveBridgeTokenFromConfig({
+        relayUrl: "https://mcp.oscout.net",
+        token: " inline ",
+        tokenKeychainService: "OPENSCOUT_MCP_BRIDGE_TOKEN",
+        tokenFile: tokenPath,
+      })).toBe("inline");
+      expect(resolveBridgeTokenFromConfig({
+        relayUrl: "https://mcp.oscout.net",
+        tokenFile: tokenPath,
+      }, { supportDirectory: root })).toBeNull();
+    });
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });

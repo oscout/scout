@@ -15,7 +15,7 @@
 
 import type { SessionAttentionItem } from "@openscout/runtime";
 
-import type { WebAgent } from "../../db/types/web.ts";
+import type { WebAgent } from "../../../shared/api/web.ts";
 
 export type AgentAttentionEntry = {
   /** The question / approval / handoff text the operator is being asked about. */
@@ -126,7 +126,7 @@ export function buildAgentAttentionIndex(input: {
 
 /**
  * Attention outranks working/in_flight: from the operator's seat, an agent
- * with a pending ask "needs you" even if its flight is still moving. Clients
+ * with a pending ask is "asking" even if its flight is still moving. Clients
  * debounce and baseline on their side (ScoutAttentionTracker), so flapping
  * here does not ambush anyone.
  */

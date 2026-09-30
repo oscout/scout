@@ -86,6 +86,7 @@ export type EventMessageRecord = {
   replyToMessageId?: string | null;
   /** Compact broker field name for the reply-to message id. */
   n?: string | null;
+  threadConversationId?: string | null;
 };
 
 export type EventFlightRecord = {

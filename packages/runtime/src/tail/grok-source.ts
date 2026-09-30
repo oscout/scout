@@ -42,14 +42,28 @@ type GrokToolCallRecord = {
   rawInput: Record<string, unknown>;
 };
 
+/**
+ * One prompt/reply pair from `updates.jsonl`. `events.jsonl` only carries
+ * lifecycle markers, so without this a reply-only turn (a Scout ask answered
+ * without tools) has no user or assistant event and never reaches Lanes or
+ * Mission Control.
+ */
+type GrokTurnRecord = {
+  prompt: string;
+  replies: string[];
+};
+
 type GrokToolCallMatcher = {
   records: GrokToolCallRecord[];
+  turns: Map<number, GrokTurnRecord>;
   paired: Set<string>;
   pendingByTool: Map<string, GrokToolCallRecord>;
   updatesMtimeMs: number;
 };
 
 const grokToolCallMatchers = new Map<string, GrokToolCallMatcher>();
+/** Turn in progress per session dir, advanced by `turn_started` as lines parse in order. */
+const grokCurrentTurns = new Map<string, number>();
 
 type TranscriptFileStat = { path: string; mtimeMs: number; size: number };
 type TranscriptMetadata = {
@@ -342,18 +356,51 @@ function grokToolArgSummary(toolName: string, rawInput: Record<string, unknown>)
   return "";
 }
 
-function loadGrokToolCallIndex(sessionDir: string): GrokToolCallRecord[] {
-  const updatesPath = join(sessionDir, "updates.jsonl");
-  if (!existsSync(updatesPath)) return [];
+function grokContentText(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) return content.map(grokContentText).join("");
+  const record = metadataRecord(content);
+  return typeof record?.text === "string" ? record.text : "";
+}
 
+function loadGrokUpdatesIndex(sessionDir: string): {
+  records: GrokToolCallRecord[];
+  turns: Map<number, GrokTurnRecord>;
+} {
+  const updatesPath = join(sessionDir, "updates.jsonl");
   const records: GrokToolCallRecord[] = [];
+  const turns = new Map<number, GrokTurnRecord>();
+  if (!existsSync(updatesPath)) return { records, turns };
+
+  let currentTurn: GrokTurnRecord | null = null;
+  let previousUpdate = "";
   try {
     const text = readFileSync(updatesPath, "utf8");
     for (const line of text.split(/\r?\n/)) {
       const envelope = parseJsonRecord(line.trim());
       const params = metadataRecord(envelope?.params);
       const update = metadataRecord(params?.update);
-      if (update?.sessionUpdate !== "tool_call") continue;
+      const kind = typeof update?.sessionUpdate === "string" ? update.sessionUpdate : "";
+      if (!update || !kind) continue;
+
+      if (kind === "user_message_chunk") {
+        const promptIndex = metadataRecord(update._meta)?.promptIndex;
+        const index = typeof promptIndex === "number" ? promptIndex : turns.size;
+        currentTurn = turns.get(index) ?? { prompt: "", replies: [] };
+        turns.set(index, currentTurn);
+        currentTurn.prompt += grokContentText(update.content);
+      } else if (kind === "agent_message_chunk" && currentTurn) {
+        // Consecutive chunks stream one message; anything in between (a tool
+        // call, a thought) starts the next one.
+        const chunk = grokContentText(update.content);
+        if (previousUpdate === "agent_message_chunk" && currentTurn.replies.length > 0) {
+          currentTurn.replies[currentTurn.replies.length - 1] += chunk;
+        } else {
+          currentTurn.replies.push(chunk);
+        }
+      }
+      previousUpdate = kind;
+      if (kind !== "tool_call") continue;
 
       const toolName = typeof update.title === "string" && update.title.trim()
         ? update.title.trim()
@@ -375,10 +422,10 @@ function loadGrokToolCallIndex(sessionDir: string): GrokToolCallRecord[] {
       });
     }
   } catch {
-    return [];
+    return { records: [], turns: new Map() };
   }
 
-  return records.sort((left, right) => left.tsMs - right.tsMs);
+  return { records: records.sort((left, right) => left.tsMs - right.tsMs), turns };
 }
 
 function grokMatcherForTranscript(transcriptPath: string): GrokToolCallMatcher | null {
@@ -398,8 +445,10 @@ function grokMatcherForTranscript(transcriptPath: string): GrokToolCallMatcher |
     return existing;
   }
 
+  const { records, turns } = loadGrokUpdatesIndex(sessionDir);
   const matcher: GrokToolCallMatcher = {
-    records: loadGrokToolCallIndex(sessionDir),
+    records,
+    turns,
     paired: new Set(),
     pendingByTool: new Map(),
     updatesMtimeMs,
@@ -411,11 +460,17 @@ function grokMatcherForTranscript(transcriptPath: string): GrokToolCallMatcher |
     if (!oldest) break;
     grokToolCallMatchers.delete(oldest);
   }
+  while (grokCurrentTurns.size > TOOL_CALL_INDEX_CACHE_LIMIT) {
+    const oldest = grokCurrentTurns.keys().next().value;
+    if (!oldest) break;
+    grokCurrentTurns.delete(oldest);
+  }
   return matcher;
 }
 
 function resetGrokToolCallMatcher(transcriptPath: string): void {
   const sessionDir = dirname(transcriptPath);
+  grokCurrentTurns.delete(sessionDir);
   const matcher = grokToolCallMatchers.get(sessionDir);
   if (!matcher) return;
   matcher.paired.clear();
@@ -559,6 +614,32 @@ function enrichGrokToolPayload(
   };
 }
 
+/**
+ * The first loop of a turn stands in for the prompt and `turn_ended` for the
+ * reply; both lines are otherwise lifecycle noise. The turn number comes from
+ * the preceding `turn_started`, so a line read without it stays lifecycle
+ * rather than guess which turn it belongs to.
+ */
+function grokTurnMessage(
+  type: string,
+  record: Record<string, unknown>,
+  turnNumber: number | undefined,
+  matcher: GrokToolCallMatcher | null,
+): { kind: "user" | "assistant"; text: string } | null {
+  if (turnNumber === undefined || !matcher) return null;
+  const turn = matcher.turns.get(turnNumber);
+  if (!turn) return null;
+  if (type === "loop_started" && record.loop_index === 0) {
+    const text = turn.prompt.trim();
+    return text ? { kind: "user", text } : null;
+  }
+  if (type === "turn_ended") {
+    const text = [...turn.replies].reverse().find((reply) => reply.trim())?.trim() ?? "";
+    return text ? { kind: "assistant", text } : null;
+  }
+  return null;
+}
+
 function parseGrokLine(line: string, ctx: TailContext): TailEvent | null {
   const record = parseJsonRecord(line.trim());
   if (!record) return null;
@@ -571,6 +652,27 @@ function parseGrokLine(line: string, ctx: TailContext): TailEvent | null {
   const eventTs = parseTimestamp(record.ts) ?? parseTimestamp(record.timestamp) ?? Date.now();
   const matcher = grokMatcherForTranscript(ctx.transcriptPath);
   const enriched = enrichGrokToolPayload(record, type, eventTs, matcher);
+  const sessionDir = dirname(ctx.transcriptPath);
+  if (type === "turn_started" && typeof record.turn_number === "number") {
+    grokCurrentTurns.set(sessionDir, record.turn_number);
+  }
+  const message = grokTurnMessage(type, record, grokCurrentTurns.get(sessionDir), matcher);
+  if (message) {
+    return {
+      id: `${SOURCE_NAME}:${sessionId}:${ctx.lineOffset}`,
+      ts: eventTs,
+      source: SOURCE_NAME,
+      sessionId,
+      pid: ctx.process.pid,
+      parentPid: ctx.process.ppid || null,
+      project: cwd ? basename(cwd) : ctx.transcript.project,
+      cwd,
+      harness: ctx.process.harness,
+      kind: message.kind,
+      summary: clip(message.text),
+      raw: { ...enriched, text: message.text },
+    };
+  }
 
   return {
     id: `${SOURCE_NAME}:${sessionId}:${ctx.lineOffset}`,

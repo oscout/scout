@@ -72,7 +72,7 @@ const OBSERVED_PREVIEW_LIMIT = 12;
 
 /**
  * Roving-tabindex bookkeeping. Rows are addressed by ROW id, not conversation
- * id: Needs-you mirrors conversations that also render in their own section
+ * id: Requests mirrors conversations that also render in their own section
  * below, so a conversation id is not unique in the rail.
  */
 type RailNav = {
@@ -110,9 +110,9 @@ const GROUP_CHIPS: Array<[SessionsGroupKey, string]> = [
 /**
  * The chat rail (D1/D3/D4/D5 of docs/design/comms-channel-navigation.md).
  *
- * One list, fixed sections, no switchers: Needs you · Pinned · Agents ·
+ * One list, fixed sections, no switchers: Requests · Pinned · Agents ·
  * Channels · Observed · Archived. Ordered by recency folds Channels and
- * Observed into the one list. Attention is the only emphasis — Needs-you
+ * Observed into the one list. Attention is the only emphasis — Requests
  * MIRRORS rows rather than moving them, so nothing reflows when an ask
  * resolves and positional memory survives.
  */
@@ -177,7 +177,7 @@ export function ChatLeft() {
   );
 
   /**
-   * The precedence layer: operator DMs whose agent has an ask waiting on you.
+   * The precedence layer: operator DMs whose agent has an open ask.
    * Computed off the UNFILTERED list so the header stat stays an honest global
    * readout while you type a filter; the section itself is filtered below.
    */
@@ -214,7 +214,7 @@ export function ChatLeft() {
     const dms = unpinned.filter(isOperatorDm);
     const observed = unpinned.filter(isObservedDirect);
 
-    // One fixed order everywhere: recency. Attention lives in Needs-you, not
+    // One fixed order everywhere: recency. Attention lives in Requests, not
     // in sort order — sorting is a preference, not chrome (D1).
     return {
       pinned,
@@ -447,7 +447,7 @@ export function ChatLeft() {
     : queueGroups.reduce((n, g) => n + g.sessions.length, 0);
   const observedCount = railObserved.reduce((n, g) => n + g.conversations.length, 0);
   const archivedCount = sections.archived.length;
-  // Needs-you rows are mirrors of rows counted below — never counted twice.
+  // Requests rows are mirrors of rows counted below — never counted twice.
   const totalVisible = pinnedCount + channelCount + agentCount + observedCount + archivedCount;
 
   // Query forces the collapsed stratum open so search reaches Observed (D1).
@@ -538,7 +538,7 @@ export function ChatLeft() {
           onKeyDown={onSearchKeyDown}
         />
         {needsYouAll.length > 0 && (
-          <span className="ctx-panel-rail-stat" title="Asks waiting on your reply">
+          <span className="ctx-panel-rail-stat" title="Open asks">
             {needsReplyLabel(needsYouAll.length)}
           </span>
         )}
@@ -592,9 +592,9 @@ export function ChatLeft() {
           <>
             {needsYou.length > 0 && (
               <RailSection
-                label="Needs you"
+                label="Requests"
                 count={needsYou.length}
-                hint="Asks waiting on your reply"
+                hint="Open asks"
               >
                 {/* Mirrors: the origin row keeps its place below, so nothing
                     reflows under the cursor when an ask resolves. */}
@@ -973,7 +973,7 @@ function SessionRailRow({
   onContextMenu,
 }: {
   session: SessionEntry;
-  /** Unique per RENDERED row — Needs-you mirrors reuse the conversation. */
+  /** Unique per RENDERED row — Requests mirrors reuse the conversation. */
   rowId: string;
   nav: RailNav;
   agentById: Map<string, Agent>;
@@ -998,7 +998,7 @@ function SessionRailRow({
   const observed = isObservedDirect(s);
   const agent = s.agentId ? agentById.get(s.agentId) : undefined;
   const ask = fleetAskForSession(asksByAgent, s);
-  // D4 — emphasis is ADDRESSED-ONLY: an ask waiting on you, never recency.
+  // D4 — emphasis is ADDRESSED-ONLY: an open ask, never recency.
   // Channel rows carry none because there is no addressed-mention (@you)
   // backend yet; until mentions land, channels order by recency only.
   // D5 — Observed has no unread state at all; its count is inventory.
@@ -1295,7 +1295,7 @@ function needsReplyLabel(count: number): string {
 function askActivityLabel(ask: FleetAsk): string {
   if (ask.status === "queued") return "Starting";
   if (ask.status === "working") return "Working";
-  if (ask.status === "needs_attention") return "Needs you";
+  if (ask.status === "needs_attention") return "Asking";
   return ask.statusLabel || ask.status;
 }
 

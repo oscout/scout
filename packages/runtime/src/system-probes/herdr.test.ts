@@ -253,6 +253,43 @@ describe("parseHerdrTopology", () => {
     });
   });
 
+  test("preserves the assigned panel name separately from a changing title", () => {
+    const payload = JSON.parse(paneList);
+    Object.assign(payload.result.panes[0], { name: "devon-2-openscout", terminal_title_stripped: "Router investigation" });
+    const [workspace] = parseHerdrTopology({ workspaceList, tabList, paneList: JSON.stringify(payload) });
+    expect(workspace.tabs[0]?.panes[0]).toMatchObject({
+      name: "devon-2-openscout", label: "Router investigation",
+      agentSession: { agent: "claude", kind: "id", source: "herdr:claude", value: "0a7c0c5c-c3f0-4c50-b141-9d6993c8da75" },
+    });
+  });
+
+  test("reads an assigned label as the name when herdr also reports a title", () => {
+    const payload = JSON.parse(paneList);
+    Object.assign(payload.result.panes[2], { label: "help-center", terminal_title_stripped: "~/dev/openscout  ·  main  ·  4.38" });
+    const [workspace] = parseHerdrTopology({ workspaceList, tabList, paneList: JSON.stringify(payload) });
+    expect(workspace.tabs[1]?.panes[0]).toMatchObject({ name: "help-center", label: "~/dev/openscout  ·  main  ·  4.38" });
+    // Without a title, label is an older herdr's title and never a name.
+    const [legacy] = parseHerdrTopology({ workspaceList, tabList, paneList });
+    expect(legacy.tabs[1]?.panes[0]).toMatchObject({ name: null, label: "scout shell" });
+  });
+
+  test("joins names from agent list by terminal and pane rather than title or directory", () => {
+    const payload = JSON.parse(paneList);
+    const first = payload.result.panes[0];
+    const agentList = JSON.stringify({ result: { agents: [
+      { terminal_id: first.terminal_id, pane_id: first.pane_id, name: "devon-2-openscout" },
+    ] } });
+    const parse = (agentList: string) => parseHerdrTopology({ workspaceList, tabList, paneList, agentList })[0]!.tabs[0]!.panes[0]!;
+    expect(parse(agentList).name).toBe("devon-2-openscout");
+    for (const mismatch of [
+      { terminal_id: "replaced", pane_id: first.pane_id },
+      { terminal_id: first.terminal_id, pane_id: "w9:p9" },
+    ]) {
+      expect(parse(JSON.stringify({ result: { agents: [{ ...mismatch, name: "wrong", cwd: first.cwd, label: first.label }] } })).name).toBeNull();
+    }
+    expect(parse("invalid").name).toBeNull();
+  });
+
   // Mirrors `herdr --session <n> api snapshot` output verbatim.
   const snapshot = JSON.stringify({
     id: "cli:api:snapshot",

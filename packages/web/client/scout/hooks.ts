@@ -24,6 +24,8 @@ import { renderNavCenter } from "./nav-center.tsx";
 import { getRecapLanes, subscribeRecapLanes } from "../lib/session-recap-lanes.ts";
 import { speakLatestVisibleTurn, stopSessionRecaps, toggleFleetRollCall } from "../lib/session-recap-queue.ts";
 import { fleetRecapCommands } from "./fleet-recap-commands.ts";
+import { sessionPaletteCommands } from "../lib/session-palette.ts";
+import type { TailDiscoverySnapshot } from "../lib/types.ts";
 
 export type ScoutStatusBarState = {
   status: { label: string; color: StatusColor };
@@ -46,6 +48,29 @@ export function useScoutCommands(): CommandOption[] {
   const scoutbotEnabled = useOptionalFlag("surface.scoutbot", true);
   const [recapCount, setRecapCount] = useState(() => getRecapLanes().length);
   useEffect(() => subscribeRecapLanes(() => setRecapCount(getRecapLanes().length)), []);
+
+  const [transcripts, setTranscripts] = useState<TailDiscoverySnapshot["transcripts"]>([]);
+  useEffect(() => {
+    let cancelled = false;
+    const load = () => {
+      void api<TailDiscoverySnapshot>("/api/tail/discover")
+        .then((snapshot) => {
+          if (!cancelled) setTranscripts(snapshot.transcripts ?? []);
+        })
+        .catch(() => {});
+    };
+    load();
+    const refreshIfActive = () => {
+      if (isScoutSurfaceActive()) load();
+    };
+    const timer = setInterval(refreshIfActive, 60_000);
+    const stopActivationListener = onScoutSurfaceActivated(refreshIfActive);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+      stopActivationListener();
+    };
+  }, []);
 
   const askScoutbotForState = useCallback(() => {
     applyScoutbotUiAction({ type: "open-scoutbot", mode: "ask" });
@@ -126,8 +151,10 @@ export function useScoutCommands(): CommandOption[] {
       });
     }
 
+    commands.push(...sessionPaletteCommands(transcripts ?? [], navigate));
+
     return commands;
-  }, [agents, applyScoutbotUiAction, askScoutbotForState, navigate, openContextCapture, opsEnabled, recapCount, scoutbotEnabled, reload]);
+  }, [agents, applyScoutbotUiAction, askScoutbotForState, navigate, openContextCapture, opsEnabled, recapCount, scoutbotEnabled, reload, transcripts]);
 }
 
 export function useScoutStatusBarState(): ScoutStatusBarState {

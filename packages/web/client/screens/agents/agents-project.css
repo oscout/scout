@@ -3,7 +3,7 @@
    a left content column ruled into even bands sharing one left/right edge, and
    a full-height right rail split off by a single hairline. Decorations stripped;
    hierarchy from type weight, spacing, and hairlines. One accent, spent only as
-   the precedence dot: needs-you ▸ live ▸ idle.
+   the precedence dot: request ▸ live ▸ idle.
 
    Scoped under `.s-aproj`, which aliases the studio's `--s-*` skin tokens onto
    the web's own design tokens so the rules below read identically to the studio
@@ -814,7 +814,7 @@
   text-transform: uppercase;
   color: var(--s-accent);
 }
-/* live activity word — muted, never the reserved accent (that belongs to needs-you) */
+/* live activity word — muted, never the reserved accent (that belongs to requests) */
 .ap-rowState {
   flex: none;
   font-size: var(--text-xs);

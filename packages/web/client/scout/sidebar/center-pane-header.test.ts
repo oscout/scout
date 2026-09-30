@@ -34,6 +34,7 @@ describe("center-pane header seam projections (SCO-085 / SCO-086)", () => {
     const projects = areaSubNavForRoute({ view: "agents-v2" });
     expect(projects?.items.map((i) => i.label)).toEqual([
       "Agents",
+      "Projects",
       "Repositories",
       "Code Browser",
     ]);

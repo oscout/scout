@@ -41,7 +41,7 @@ import {
  */
 
 export type ChannelInviteError = {
-  status: 400 | 403 | 404 | 410 | 502;
+  status: 400 | 403 | 404 | 409 | 410 | 502;
   error: string;
   reason?: ChannelInviteRejection["reason"];
 };
@@ -164,6 +164,23 @@ export async function revokeChannelInvite(input: {
   return result.ok
     ? { ok: true, invite: result.invite }
     : { ok: false, status: 404, error: result.error };
+}
+
+export async function removeChannelMember(input: {
+  channelId: string;
+  actorId: string;
+  removedByActorId: string;
+}): Promise<{ ok: true } | ({ ok: false } & ChannelInviteError)> {
+  const broker = await loadScoutBrokerContext();
+  if (!broker) return { ok: false, status: 502, error: "broker unreachable" };
+  const result = await executeBrokerCommand<
+    { ok: true; participantIds: string[] } | { ok: false; error: string }
+  >(broker.baseUrl, {
+    kind: "channel.member.remove",
+    ...input,
+    removedAt: Date.now(),
+  });
+  return result.ok ? { ok: true } : { ok: false, status: 409, error: result.error };
 }
 
 export interface ResolvedChannelInvite {
@@ -506,6 +523,7 @@ function redemptionFailureStatus(
     case "revoked":
     case "exhausted":
       return { status: 410, reason: rejection.reason };
+    case "membership_removed":
     case "missing_identity":
       return { status: 403, reason: rejection.reason };
     case "unknown_token":

@@ -48,6 +48,7 @@ import {
   senderAttribution,
   showsSenderLabel,
 } from "./presentation.ts";
+import "../../styles/field-focus.css";
 import "./scout-chat.css";
 import "./messages-theme.css";
 import "./whatsapp-theme.css";
@@ -286,6 +287,9 @@ function previewFixtureMessages() {
  * spoken, so the header card still has a subject. */
 const CONVERSATION_IDENTITY = "__conversation__";
 
+/** Turns carried by "Send to another host": the lifted message and what led to it. */
+const HANDOFF_TURN_LIMIT = 20;
+
 const REACTIONS = ["❤️", "👍", "👎", "😂", "‼️", "❓"];
 const REACTION_LABELS: Record<string, string> = { "❤️": "Love", "👍": "Like", "👎": "Dislike", "😂": "Laugh", "‼️": "Emphasize", "❓": "Question" };
 const MORE_REACTIONS = ["😀", "🥰", "😮", "😢", "😡", "👏", "🙌", "🔥", "🎉", "💯", "✅", "👀", "🙏", "🤝", "💡", "🚀", "🫶", "🤔", "🤯", "💪", "❤️‍🔥", "✨", "⭐️", "🫡"];
@@ -515,6 +519,7 @@ function ChatApp() {
   const focusDialogRef = useRef<HTMLDivElement>(null);
   const infoDialogRef = useRef<HTMLElement>(null);
 
+  const lastSnapshotKey = useRef<string | null>(null);
   const refresh = useCallback(async (quiet = false) => {
     if (!nativeHandler()) {
       setLoading(false);
@@ -524,11 +529,16 @@ function ChatApp() {
     refreshInFlight.current = true;
     try {
       const next = await callNative<Snapshot>("chat.snapshot", { limit: historyLimit });
-      setSnapshot(next);
-      setMessages((current) => {
-        const authoritative = normalise(next);
-        return reconcileAuthoritativeMessages(current, authoritative);
-      });
+      // Most polls bring back what's already on screen; don't redraw for it.
+      const key = JSON.stringify(next);
+      if (key !== lastSnapshotKey.current) {
+        lastSnapshotKey.current = key;
+        setSnapshot(next);
+        setMessages((current) => {
+          const authoritative = normalise(next);
+          return reconcileAuthoritativeMessages(current, authoritative);
+        });
+      }
       setLoadError(null);
       const newestMessageId = next.messages.at(-1)?.id ?? null;
       if (newestMessageId && newestMessageId !== lastReadMessageId.current) {
@@ -606,11 +616,22 @@ function ChatApp() {
     return () => window.clearInterval(timer);
   }, [voiceInput.state]);
 
+  // The app keeps a hidden tab's page alive and says so here; a hidden
+  // chat stops polling and catches up the moment it's back.
+  const [active, setActive] = useState(() => (globalThis as { __scoutActive?: boolean }).__scoutActive !== false);
   useEffect(() => {
+    const onActivity = (event: Event) => setActive((event as CustomEvent<{ active: boolean }>).detail?.active !== false);
+    window.addEventListener("scout:activity", onActivity);
+    return () => window.removeEventListener("scout:activity", onActivity);
+  }, []);
+
+  useEffect(() => {
+    if (!active) return;
+    void refresh(true);
     const delay = snapshot?.session?.currentTurnId ? 1200 : 3200;
     const timer = window.setInterval(() => void refresh(true), delay);
     return () => window.clearInterval(timer);
-  }, [refresh, snapshot?.session?.currentTurnId]);
+  }, [active, refresh, snapshot?.session?.currentTurnId]);
 
   useEffect(() => {
     localStorage.setItem(`scout.chat.draft.${config.conversationId}`, draft);
@@ -934,6 +955,38 @@ function ChatApp() {
     setToast("Copied into the composer");
   }
 
+  /** Hands the thread up to and including the lifted message to native, which
+   * opens New with it as context so the operator can pick another host. The
+   * slice is bounded here so the wire never carries a whole history; native
+   * owns the prompt wording. A host too old to know the method (or a browser
+   * preview) keeps the old behaviour: the body lands in this composer. */
+  async function handoffFocused() {
+    if (!focused) return;
+    const upTo = unhiddenMessages.findIndex((message) => message.id === focused.id);
+    const slice = unhiddenMessages.slice(Math.max(0, upTo - (HANDOFF_TURN_LIMIT - 1)), upTo + 1);
+    setFocusedId(null);
+    try {
+      await callNative<{ ok: boolean }>("chat.handoff", {
+        conversationId: config.conversationId,
+        title: snapshot?.title ?? config.title,
+        focusedMessageId: focused.id,
+        truncated: upTo + 1 > slice.length,
+        messages: slice.map((message) => ({
+          id: message.id,
+          author: message.authorLabel,
+          isOperator: message.isOperator,
+          body: message.body,
+          createdAt: message.createdAt,
+          attachments: message.attachments.map((attachment) => attachment.fileName ?? attachment.mediaType),
+        })),
+      });
+    } catch {
+      clearRecoveryForEdit();
+      setDraft(focused.body);
+      setToast("Copied into the composer");
+    }
+  }
+
   function deleteFocused() {
     if (!focused) return;
     if (pinnedMessageId === focused.id) setPinnedMessageId(null);
@@ -1196,7 +1249,7 @@ function ChatApp() {
               <button type="button" onClick={copyFocused}><span>Copy</span><Copy /></button>
               {style === "whatsapp" && <button type="button" onClick={pinFocused}><span>{pinnedMessageId === focused.id ? "Unpin" : "Pin on this phone"}</span><span aria-hidden="true">⌁</span></button>}
               {focused.isOperator && <button type="button" onClick={editFocused}><span>Edit as new</span><Ellipsis /></button>}
-              <button type="button" onClick={() => { clearRecoveryForEdit(); setDraft(focused.body); setFocusedId(null); setToast("Ready to forward as a new message"); }}><span>Forward as new</span><Forward /></button>
+              <button type="button" onClick={() => { void handoffFocused(); }}><span>Send to another host</span><Forward /></button>
               <button className="destructive" type="button" onClick={deleteFocused}><span>Delete for me</span><Trash2 /></button>
             </div>
           </div>

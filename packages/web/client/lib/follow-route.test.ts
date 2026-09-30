@@ -32,6 +32,25 @@ describe("follow route resolution", () => {
     });
   });
 
+  test("filters the tail on the harness session id alone when it is known", () => {
+    const target = {
+      flightId: "flt-1",
+      invocationId: "inv-1",
+      conversationId: "chn-1",
+      workId: null,
+      sessionId: "session-1",
+      targetAgentId: "session-1",
+      harnessSessionId: "2fcba627-da26-4d4b-9ecd-d052e4b8b27d",
+    };
+    expect(tailQueryForFollowTarget(target)).toBe("2fcba627-da26-4d4b-9ecd-d052e4b8b27d");
+    expect(routeForFollowTarget(target, "tail")).toMatchObject({
+      view: "ops",
+      mode: "tail",
+      tailQuery: "2fcba627-da26-4d4b-9ecd-d052e4b8b27d",
+      flightId: "flt-1",
+    });
+  });
+
   test("dedupes and trims tail terms", () => {
     expect(tailQueryForFollowTarget({
       flightId: "flight-1",
@@ -150,6 +169,7 @@ describe("follow route resolution", () => {
       workId: "fallback-work",
       sessionId: "session-1",
       targetAgentId: "fallback-agent",
+      harnessSessionId: null,
     });
   });
 });

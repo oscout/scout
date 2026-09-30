@@ -643,8 +643,8 @@
 }
 
 .s-inbox-thread-redesign.s-conversation .s-thread-compose-shell:focus-within {
-  border-color: color-mix(in srgb, var(--accent) 30%, var(--border));
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 6%, transparent);
+  border-color: var(--field-focus);
+  box-shadow: none;
 }
 
 .s-inbox-thread-redesign.s-conversation .s-compose-mode-row {

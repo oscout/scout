@@ -15,6 +15,7 @@ import { openContent } from "../../scout/slots/openContent.ts";
 import { pathLeaf } from "../agents/model.ts";
 import { SessionRefScreen, type SessionRefLookup } from "../sessions/SessionRefScreen.tsx";
 import { AddProjectForm } from "./AddProjectForm.tsx";
+import { AgentsHomeStage } from "../agents/AgentsHomeFeed.tsx";
 import { CrewWorkspaces, ProjectAgentDirectory } from "./CrewWorkspaces.tsx";
 import { buildCrewMembers } from "./crew-workspaces-model.ts";
 import { shortHomePath } from "./project-overview-helpers.ts";
@@ -311,7 +312,7 @@ function ProjectScopeHeader({
 function projectDigest(needs: number, active: number, agents: number, sessions: number): ReactNode {
   const parts: ReactNode[] = [];
   if (active > 0) parts.push(<b key="w">{active} active</b>);
-  if (needs > 0) parts.push(<b key="n">{needs} needs you</b>);
+  if (needs > 0) parts.push(<b key="n">{needs} asking</b>);
   parts.push(<span key="a">{agents} agent{agents === 1 ? "" : "s"}</span>);
   parts.push(<span key="s">{sessions} session{sessions === 1 ? "" : "s"}</span>);
   return parts.reduce<ReactNode[]>((result, node, index) => {
@@ -1865,6 +1866,11 @@ export function ProjectsInbox({
   // Mount the project directory with the first wave — do not wait for model
   // data, so the toolbar and filters render immediately over an empty list.
   const showMeta = !scoped && !showProjectZeroState;
+  // The Agents page is agent activity; the project list is its own view
+  // (?view=projects, the Projects tab). The macOS embed follows the same
+  // split — its Agents section is the feed.
+  const projectListView = !scoped && route.indexView === "projects";
+  const showFeed = !scoped && !projectListView;
 
   const [cursor, setCursor] = useState(-1);
   const rowRefs = useRef(new Map<string, HTMLButtonElement>());
@@ -1929,8 +1935,8 @@ export function ProjectsInbox({
       ) : (
         <div className="pi-inboxHead">
           <div className="pi-inboxHeading">
-            <h1 className="pi-inboxTitle">Projects</h1>
-            <span className="pi-inboxDigest">{projectCountLabel(model, zeroPreview)}</span>
+            <h1 className="pi-inboxTitle">{projectListView ? "Projects" : "Agents"}</h1>
+            {showFeed ? null : <span className="pi-inboxDigest">{projectCountLabel(model, zeroPreview)}</span>}
           </div>
         </div>
       )}
@@ -1961,8 +1967,17 @@ export function ProjectsInbox({
           navigate={navigate}
           nowMs={nowMs}
         />
+      ) : showFeed ? (
+        <AgentsHomeStage agents={agents} navigate={navigate} embedded={embedded} />
       ) : showMeta ? (
-        <CrewWorkspaces model={model} agents={agents} route={route} navigate={navigate} nowMs={nowMs} />
+        <CrewWorkspaces
+          model={model}
+          agents={agents}
+          route={route}
+          navigate={navigate}
+          nowMs={nowMs}
+          fullPage={!embedded}
+        />
       ) : (
         <div className="pi-threads">
           {initialLoading ? <ProjectRowsSkeleton /> : null}

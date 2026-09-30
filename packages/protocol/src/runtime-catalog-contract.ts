@@ -24,6 +24,20 @@ export const SCOUT_REASONING_EFFORT_LABELS: Readonly<Record<ScoutReasoningEffort
   ultra: "Ultra",
 };
 
+/** Optional picker-facing copy owned by the catalog, not by client code. */
+export interface ScoutRuntimeHarnessPresentation {
+  /** One-word rail/chip label, e.g. "Claude" for "Claude Code". */
+  short?: string;
+  /** Typographic stand-in for surfaces that render the harness as a mark. */
+  monogram?: string;
+}
+
+/** Optional picker-facing copy owned by the catalog, not by client code. */
+export interface ScoutRuntimeModelPresentation {
+  /** One-line picker blurb, e.g. "Deepest", "Frontier". */
+  detail?: string;
+}
+
 export interface ScoutOwnedRuntimeModel {
   id: string;
   label: string;
@@ -35,6 +49,7 @@ export interface ScoutOwnedRuntimeModel {
   contextWindowTokens?: number;
   reasoningEfforts?: readonly ScoutReasoningEffort[] | null;
   defaultReasoningEffort?: ScoutReasoningEffort | null;
+  presentation?: ScoutRuntimeModelPresentation;
 }
 
 export interface ScoutOwnedRuntimeHarness {
@@ -50,6 +65,7 @@ export interface ScoutOwnedRuntimeHarness {
   default?: boolean;
   reasoningEfforts: readonly ScoutReasoningEffort[] | null;
   defaultReasoningEffort?: ScoutReasoningEffort | null;
+  presentation?: ScoutRuntimeHarnessPresentation;
   models: readonly ScoutOwnedRuntimeModel[];
 }
 

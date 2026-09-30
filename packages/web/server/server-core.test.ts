@@ -760,3 +760,11 @@ describe("chat-only LAN access", () => {
     expect(isScoutWebRequestAllowedFromPeer(new Request("http://mac.local/api/agents", {headers:{"x-forwarded-for":"100.123.16.74"}}), "127.0.0.1", "chat")).toBe(false);
   });
 });
+
+
+describe("participant inbox LAN scope", () => {
+  test("admits channel inbox GET without exposing host routes", () => {
+    expect(isScoutWebRequestAllowedFromPeer(new Request("http://mac.local/api/channels/room/inbox?wait=20"), "192.168.1.50", "chat")).toBe(true);
+    expect(isScoutWebRequestAllowedFromPeer(new Request("http://mac.local/api/sessions"), "192.168.1.50", "chat")).toBe(false);
+  });
+});

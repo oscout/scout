@@ -14,9 +14,12 @@ import {
   queryFleet,
   queryFleetAttentionRows,
   queryFlightRecordById,
+  queryFlightRecords,
   queryFollowTarget,
   queryFlights,
   queryHeartrate,
+  queryInvocationById,
+  queryInvocations,
   queryMobileAgents,
   queryMobileAgentDetail,
   queryMobileSessions,
@@ -248,6 +251,131 @@ describe("web db query flights", () => {
     }
   });
 
+  test("durable overlay reads project invocations and flights from the invocation shadow columns", () => {
+    const store = createSeededStore();
+
+    try {
+      expect(queryInvocationById("inv-1")).toEqual(expect.objectContaining({
+        id: "inv-1",
+        requesterId: "operator",
+        targetAgentId: "agent-1",
+        conversationId: "c.conv-1",
+        action: "consult",
+      }));
+      expect(queryInvocationById("missing")).toBeNull();
+      expect(queryInvocationById("  ")).toBeNull();
+
+      expect(queryInvocations({ conversationId: "c.conv-1" })).toEqual([
+        expect.objectContaining({ id: "inv-1", targetAgentId: "agent-1" }),
+      ]);
+      expect(queryInvocations({ conversationId: "c.other" })).toEqual([]);
+      expect(queryInvocations({ conversationId: " " })).toEqual([]);
+
+      expect(queryFlightRecords({ conversationId: "c.conv-1" })).toEqual([
+        expect.objectContaining({
+          id: "flight-1",
+          invocationId: "inv-1",
+          state: "running",
+          summary: "In progress",
+        }),
+      ]);
+      expect(queryFlightRecords({ conversationId: "c.other" })).toEqual([]);
+    } finally {
+      store.close();
+    }
+  });
+
+  test("durable overlay reads project executionResolution and labels like the store does", () => {
+    const store = createSeededStore();
+
+    try {
+      store.recordInvocation({
+        id: "inv-resolved",
+        requesterId: "operator",
+        requesterNodeId: "node-1",
+        targetAgentId: "agent-1",
+        action: "consult",
+        task: "Resolved runtime differs from the request",
+        conversationId: "c.conv-1",
+        ensureAwake: true,
+        stream: false,
+        execution: {
+          harness: "claude",
+          model: "opus",
+        },
+        executionResolution: {
+          requested: { harness: "claude", model: "opus" },
+          resolved: { harness: "claude", model: "opus-4-7" },
+          observed: { harness: "claude", model: "opus-4-7" },
+        },
+        labels: ["review", "urgent"],
+        createdAt: 105,
+      });
+
+      expect(queryInvocationById("inv-resolved")).toEqual(expect.objectContaining({
+        execution: { harness: "claude", model: "opus" },
+        executionResolution: {
+          requested: { harness: "claude", model: "opus" },
+          resolved: { harness: "claude", model: "opus-4-7" },
+          observed: { harness: "claude", model: "opus-4-7" },
+        },
+        labels: ["review", "urgent"],
+      }));
+      expect(queryInvocations({ conversationId: "c.conv-1" })).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ id: "inv-resolved", labels: ["review", "urgent"] }),
+        ]),
+      );
+    } finally {
+      store.close();
+    }
+  });
+
+  test("durable overlay reads return the newest 200 rows, ordered ascending", () => {
+    const store = createSeededStore();
+
+    try {
+      for (let index = 1; index <= 210; index += 1) {
+        store.recordInvocation({
+          id: `inv-page-${index}`,
+          requesterId: "operator",
+          requesterNodeId: "node-1",
+          targetAgentId: "agent-1",
+          action: "consult",
+          task: `Bulk ${index}`,
+          conversationId: "c.conv-1",
+          ensureAwake: false,
+          stream: false,
+          createdAt: 1_000 + index,
+        });
+        store.recordFlight({
+          id: `flight-page-${index}`,
+          invocationId: `inv-page-${index}`,
+          requesterId: "operator",
+          targetAgentId: "agent-1",
+          state: "completed",
+          startedAt: 1_000 + index,
+          completedAt: 1_000 + index,
+        });
+      }
+
+      const invocations = queryInvocations({ conversationId: "c.conv-1" });
+      const flights = queryFlightRecords({ conversationId: "c.conv-1" });
+
+      // The newest 200 win the window — the oldest rows are the ones the
+      // broker's hot set rotated out long ago anyway. inv-1 (createdAt 100)
+      // and inv-page-1..10 fall outside it; order stays ascending.
+      expect(invocations.map((invocation) => invocation.id)).toEqual(
+        Array.from({ length: 200 }, (_, index) => `inv-page-${index + 11}`),
+      );
+      expect(flights.map((flight) => flight.id)).toEqual(
+        Array.from({ length: 200 }, (_, index) => `flight-page-${index + 11}`),
+      );
+    } finally {
+      store.close();
+    }
+  });
+
   test("filters flights by exact flight id", () => {
     const store = createSeededStore();
 
@@ -468,10 +596,74 @@ describe("web db query flights", () => {
         workId: "work-1",
         sessionId: "flight-session-1",
         targetAgentId: "agent-1",
+        harnessSessionId: null,
       });
       expect(queryFlights({ flightId: "flight-1", activeOnly: false })[0]?.sessions).toEqual([
         expect.objectContaining({ sessionId: "flight-session-1", endpointId: "historical-endpoint" }),
       ]);
+    } finally {
+      store.close();
+    }
+  });
+
+  test("resolves the harness session id a tail link can match from the flight's own endpoint", () => {
+    const store = createSeededStore();
+
+    try {
+      store.upsertEndpoint({
+        id: "endpoint.scout-session-1.tmux",
+        agentId: "agent-1",
+        nodeId: "node-1",
+        harness: "claude",
+        transport: "tmux",
+        state: "active",
+        sessionId: "scout-session-1",
+        metadata: {
+          pendingExternalSession: false,
+          externalSessionId: "2fcba627-da26-4d4b-9ecd-d052e4b8b27d",
+          observedSessionId: "2fcba627-da26-4d4b-9ecd-d052e4b8b27d",
+          observedSessionEvidence: { source: "claude-session-record", tmuxSession: "scout-session-1" },
+        },
+      });
+      store.upsertEndpoint({
+        id: "agent-1-newer-endpoint",
+        agentId: "agent-1",
+        nodeId: "node-1",
+        harness: "codex",
+        transport: "codex_app_server",
+        state: "active",
+        sessionId: "unrelated-thread",
+        metadata: { threadId: "unrelated-thread" },
+      });
+      store.recordFlight({
+        id: "flight-1",
+        invocationId: "inv-1",
+        requesterId: "operator",
+        targetAgentId: "agent-1",
+        state: "running",
+        summary: "In progress",
+        startedAt: 101,
+        metadata: {
+          sessionTrace: [{
+            sessionId: "scout-session-1",
+            endpointId: "endpoint.scout-session-1.tmux",
+            harness: "claude",
+            transport: "tmux",
+            startedAt: 101,
+            lastAcknowledgedAt: 102,
+          }],
+        },
+      });
+
+      expect(queryFollowTarget({ flightId: "flight-1", sessionId: "scout-session-1" })).toEqual(
+        expect.objectContaining({
+          sessionId: "scout-session-1",
+          harnessSessionId: "2fcba627-da26-4d4b-9ecd-d052e4b8b27d",
+        }),
+      );
+      // Same answer from the Scout session id alone.
+      expect(queryFollowTarget({ sessionId: "scout-session-1" }).harnessSessionId)
+        .toBe("2fcba627-da26-4d4b-9ecd-d052e4b8b27d");
     } finally {
       store.close();
     }
@@ -502,6 +694,7 @@ describe("web db query flights", () => {
         workId: "work-unthreaded",
         sessionId: null,
         targetAgentId: "agent-1",
+        harnessSessionId: null,
       });
     } finally {
       store.close();
@@ -533,6 +726,7 @@ describe("web db query flights", () => {
         workId: "work-operator-next",
         sessionId: null,
         targetAgentId: null,
+        harnessSessionId: null,
       });
     } finally {
       store.close();
@@ -1360,6 +1554,32 @@ describe("web db message filtering", () => {
     } finally {
       store.close();
     }
+  });
+
+  test("searches full scoped history literally and pages matching rows", () => {
+    const store = createSeededStore();
+    try {
+      seedConversationMessages(store, 120);
+      const first = queryRecentMessages(50, { conversationIds: ["c.conv-1"], search: "PAGE" });
+      expect(first).toHaveLength(50);
+      const next = queryRecentMessages(50, { conversationIds: ["c.conv-1"], search: "page", beforeMessageId: encodeMessageHistoryCursor(first.at(-1)!) });
+      expect(next).toHaveLength(50);
+      expect(new Set([...first, ...next].map(message => message.id)).size).toBe(100);
+      expect(queryRecentMessages(50, { conversationIds: [], search: "page" })).toEqual([]);
+      expect(queryRecentMessages(50, { conversationIds: ["c.other"], search: "page" })).toEqual([]);
+      expect(queryRecentMessages(50, { conversationIds: ["c.conv-1"], search: "%" })).toEqual([]);
+      expect(queryRecentMessages(50, { conversationIds: ["c.conv-1"], search: "' OR 1=1 --" })).toEqual([]);
+    } finally { store.close(); }
+  });
+
+  test("finds a message by ID outside the recent window while retaining conversation scope", () => {
+    const store = createSeededStore();
+    try {
+      seedConversationMessages(store, 120);
+      expect(queryRecentMessages(1, { messageId: "msg-page-1", conversationId: "c.conv-1" }).map(message => message.id)).toEqual(["msg-page-1"]);
+      expect(queryRecentMessages(1, { messageId: "msg-page-1", conversationId: "c.unrelated" })).toEqual([]);
+      expect(queryRecentMessages(1, { messageId: "missing" })).toEqual([]);
+    } finally { store.close(); }
   });
 
   test("pages to messages before a stable message id", () => {

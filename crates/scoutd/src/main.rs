@@ -7,7 +7,8 @@ use std::collections::HashSet;
 use std::env;
 use std::fs::{self, OpenOptions};
 use std::io::{self, Read, Seek, SeekFrom, Write};
-use std::net::TcpStream;
+use std::net::{TcpStream, ToSocketAddrs};
+use std::os::fd::AsRawFd;
 use std::os::unix::net::UnixStream;
 use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::path::{Path, PathBuf};
@@ -56,6 +57,8 @@ const ALLOW_SHARED_SERVICE_REPOINT_ENV: &str = "OPENSCOUT_ALLOW_SHARED_SERVICE_R
 static SHUTDOWN_REQUESTED: AtomicBool = AtomicBool::new(false);
 const OPTIONAL_LAUNCH_ENV_KEYS: &[&str] = &[
     // Persist the opt-in transport configuration across launchd restarts.
+    "OPENSCOUT_EXTERNAL_SESSION_CONNECTIONS",
+    "OPENSCOUT_DEVIN_CLI_BIN",
     "OPENSCOUT_JETSTREAM_ENABLED",
     "OPENSCOUT_JETSTREAM_MANAGE_SERVER",
     "OPENSCOUT_JETSTREAM_HOST",
@@ -383,6 +386,9 @@ struct LaunchctlStatus {
 
 #[derive(Clone, Debug)]
 struct HealthStatus {
+    state: &'static str,
+    checked_at: u128,
+    duration_ms: u128,
     reachable: bool,
     ok: bool,
     transport: Option<String>,
@@ -1521,6 +1527,9 @@ fn launchd_accepted_service_status(config: &Config) -> ServiceStatus {
     service_status(
         config,
         HealthStatus {
+            state: "unknown",
+            checked_at: epoch_ms(),
+            duration_ms: 0,
             reachable: false,
             ok: false,
             transport: None,
@@ -1658,6 +1667,17 @@ fn inspect_launchctl(config: &Config) -> LaunchctlStatus {
 }
 
 fn fetch_health(config: &Config) -> HealthStatus {
+    let started = Instant::now();
+    let mut health = fetch_health_observation(config);
+    health.checked_at = epoch_ms();
+    health.duration_ms = started.elapsed().as_millis();
+    if health.ok && health.duration_ms >= 1_000 {
+        health.state = "slow";
+    }
+    health
+}
+
+fn fetch_health_observation(config: &Config) -> HealthStatus {
     match fetch_unix_health(&config.broker_socket_path) {
         Ok(mut health) => {
             health.transport = Some("unix_socket".to_string());
@@ -1669,6 +1689,19 @@ fn fetch_health(config: &Config) -> HealthStatus {
                 health
             }
             Err(http_error) => HealthStatus {
+                state: if matches!(
+                    http_error.kind(),
+                    io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock
+                ) || matches!(
+                    socket_error.kind(),
+                    io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock
+                ) {
+                    "timed_out"
+                } else {
+                    "unreachable"
+                },
+                checked_at: epoch_ms(),
+                duration_ms: 0,
                 reachable: false,
                 ok: false,
                 transport: None,
@@ -1680,32 +1713,136 @@ fn fetch_health(config: &Config) -> HealthStatus {
     }
 }
 
-fn fetch_unix_health(socket_path: &Path) -> Result<HealthStatus, String> {
-    let mut stream = UnixStream::connect(socket_path).map_err(|error| error.to_string())?;
-    stream
-        .set_read_timeout(Some(Duration::from_secs(1)))
-        .map_err(|error| error.to_string())?;
-    stream
-        .set_write_timeout(Some(Duration::from_secs(1)))
-        .map_err(|error| error.to_string())?;
-    fetch_http_health(&mut stream, "localhost")
+fn fetch_unix_health(socket_path: &Path) -> io::Result<HealthStatus> {
+    let mut stream = UnixStream::connect(socket_path)?;
+    fetch_http_health(&mut stream, "localhost").map_err(io::Error::other)
 }
 
-fn fetch_tcp_health(config: &Config) -> Result<HealthStatus, String> {
-    let mut stream = TcpStream::connect((&config.broker_host[..], config.broker_port))
-        .map_err(|error| error.to_string())?;
-    stream
-        .set_read_timeout(Some(Duration::from_secs(1)))
-        .map_err(|error| error.to_string())?;
-    stream
-        .set_write_timeout(Some(Duration::from_secs(1)))
-        .map_err(|error| error.to_string())?;
-    fetch_http_health(&mut stream, &config.broker_host)
+fn fetch_tcp_health(config: &Config) -> io::Result<HealthStatus> {
+    let addresses = (&config.broker_host[..], config.broker_port).to_socket_addrs()?;
+    let started = Instant::now();
+    let mut last_error = io::Error::new(
+        io::ErrorKind::NotFound,
+        "broker host resolved to no addresses",
+    );
+    for address in addresses {
+        let remaining = Duration::from_secs(1)
+            .checked_sub(started.elapsed())
+            .filter(|remaining| !remaining.is_zero())
+            .ok_or_else(|| {
+                io::Error::new(io::ErrorKind::TimedOut, "health connect deadline exceeded")
+            })?;
+        match TcpStream::connect_timeout(&address, remaining) {
+            Ok(mut stream) => {
+                return fetch_http_health(&mut stream, &config.broker_host)
+                    .map_err(io::Error::other)
+            }
+            Err(error) => last_error = error,
+        }
+    }
+    Err(last_error)
 }
 
-fn fetch_http_health<T: Read + Write>(stream: &mut T, host: &str) -> Result<HealthStatus, String> {
-    let response = fetch_http_response(stream, host, "/health", "application/json")?;
-    parse_health_response(&response)
+trait HealthStream: Read + Write + AsRawFd {
+    fn health_timeout(&self, timeout: Duration) -> io::Result<()>;
+}
+impl HealthStream for UnixStream {
+    fn health_timeout(&self, timeout: Duration) -> io::Result<()> {
+        self.set_read_timeout(Some(timeout))?;
+        self.set_write_timeout(Some(timeout))
+    }
+}
+impl HealthStream for TcpStream {
+    fn health_timeout(&self, timeout: Duration) -> io::Result<()> {
+        self.set_read_timeout(Some(timeout))?;
+        self.set_write_timeout(Some(timeout))
+    }
+}
+
+// A connection that accepted the probe is reachable. A response deadline miss
+// does not prove readiness, and must not trigger a second probe or socket removal.
+// Apply a total read budget, rather than resetting the full timeout per chunk.
+fn fetch_http_health<T: HealthStream>(stream: &mut T, host: &str) -> Result<HealthStatus, String> {
+    read_http_health(stream, host, Duration::from_secs(1))
+}
+
+fn read_http_health<T: HealthStream>(
+    stream: &mut T,
+    host: &str,
+    budget: Duration,
+) -> Result<HealthStatus, String> {
+    let started = Instant::now();
+    let mut response = Vec::new();
+    let result = (|| -> io::Result<()> {
+        stream.health_timeout(budget)?;
+        stream.write_all(format!("GET /health HTTP/1.1\r\nHost: {host}\r\nAccept: application/json\r\nConnection: close\r\n\r\n").as_bytes())?;
+        let mut chunk = [0; 8192];
+        loop {
+            let remaining = budget
+                .checked_sub(started.elapsed())
+                .filter(|remaining| !remaining.is_zero())
+                .ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::TimedOut, "health response deadline exceeded")
+                })?;
+            let mut poll_fd = libc::pollfd {
+                fd: stream.as_raw_fd(),
+                events: libc::POLLIN,
+                revents: 0,
+            };
+            let wait_ms = remaining
+                .as_millis()
+                .saturating_add(1)
+                .min(i32::MAX as u128) as i32;
+            let ready = unsafe { libc::poll(&mut poll_fd, 1, wait_ms) };
+            if ready == 0 {
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "health response deadline exceeded",
+                ));
+            }
+            if ready < 0 {
+                let error = io::Error::last_os_error();
+                if error.kind() == io::ErrorKind::Interrupted {
+                    continue;
+                }
+                return Err(error);
+            }
+            let count = stream.read(&mut chunk)?;
+            if count == 0 {
+                return Ok(());
+            }
+            response.extend_from_slice(&chunk[..count]);
+            if response.len() > 1024 * 1024 {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "health response exceeds 1 MiB",
+                ));
+            }
+        }
+    })();
+    match result {
+        Ok(()) => parse_health_response(&String::from_utf8_lossy(&response)),
+        Err(error) => Ok(HealthStatus {
+            state: if matches!(
+                error.kind(),
+                io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock
+            ) {
+                "timed_out"
+            } else {
+                "degraded"
+            },
+            checked_at: epoch_ms(),
+            duration_ms: started.elapsed().as_millis(),
+            reachable: true,
+            ok: false,
+            transport: None,
+            status_code: parse_http_status_code(&String::from_utf8_lossy(&response)),
+            body: None,
+            error: Some(format!(
+                "broker connected but health was not confirmed: {error}"
+            )),
+        }),
+    }
 }
 
 fn fetch_node_broker_url(config: &Config) -> Result<Option<String>, String> {
@@ -1756,35 +1893,90 @@ fn fetch_node_broker_url_http<T: Read + Write>(
     }
 }
 
+fn health_response_body(response: &str) -> Result<String, String> {
+    let (headers, body) = response
+        .split_once("\r\n\r\n")
+        .ok_or_else(|| "health response missing headers".to_string())?;
+    let chunked = headers
+        .lines()
+        .filter_map(|line| line.split_once(':'))
+        .any(|(key, value)| {
+            key.eq_ignore_ascii_case("transfer-encoding")
+                && value
+                    .split(',')
+                    .any(|encoding| encoding.trim().eq_ignore_ascii_case("chunked"))
+        });
+    if !chunked {
+        if let Some(length) = headers
+            .lines()
+            .filter_map(|line| line.split_once(':'))
+            .find_map(|(key, value)| {
+                key.eq_ignore_ascii_case("content-length")
+                    .then_some(value.trim())
+            })
+        {
+            let length = length.parse::<usize>().map_err(|error| error.to_string())?;
+            if body.len() != length {
+                return Err("incomplete health response body".to_string());
+            }
+        }
+        return Ok(body.to_string());
+    }
+    let mut remaining = body.as_bytes();
+    let mut decoded = Vec::new();
+    loop {
+        let end = remaining
+            .windows(2)
+            .position(|pair| pair == b"\r\n")
+            .ok_or_else(|| "incomplete health chunk header".to_string())?;
+        let size_text =
+            std::str::from_utf8(&remaining[..end]).map_err(|error| error.to_string())?;
+        let size = usize::from_str_radix(size_text.split(';').next().unwrap_or("").trim(), 16)
+            .map_err(|error| error.to_string())?;
+        remaining = &remaining[end + 2..];
+        if size == 0 {
+            if !remaining.starts_with(b"\r\n") && !remaining.ends_with(b"\r\n\r\n") {
+                return Err("incomplete health chunk trailer".to_string());
+            }
+            return String::from_utf8(decoded).map_err(|error| error.to_string());
+        }
+        if size > remaining.len().saturating_sub(2)
+            || remaining.get(size..size + 2) != Some(b"\r\n")
+        {
+            return Err("incomplete health chunk".to_string());
+        }
+        decoded.extend_from_slice(&remaining[..size]);
+        remaining = &remaining[size + 2..];
+    }
+}
+
 fn parse_health_response(response: &str) -> Result<HealthStatus, String> {
     let status_code = parse_http_status_code(response);
-    let body = response
-        .split_once("\r\n\r\n")
-        .map(|(_, body)| body.to_string())
-        .unwrap_or_default();
+    let decoded = health_response_body(response);
+    let body = decoded.as_ref().cloned().unwrap_or_default();
     let ok = status_code == Some(200) && health_body_reports_ok(&body);
     Ok(HealthStatus {
-        reachable: status_code.is_some(),
+        state: if ok { "healthy" } else { "degraded" },
+        checked_at: epoch_ms(),
+        duration_ms: 0,
+        reachable: true,
         ok,
         transport: None,
         status_code,
         body: if body.is_empty() { None } else { Some(body) },
-        error: if status_code.is_some() {
-            None
-        } else {
+        error: if status_code.is_none() {
             Some("missing HTTP status".to_string())
+        } else {
+            decoded.err()
         },
     })
 }
 
 fn health_body_reports_ok(body: &str) -> bool {
-    let Some((_, after_key)) = body.split_once("\"ok\"") else {
-        return false;
-    };
-    let Some((_, after_colon)) = after_key.split_once(':') else {
-        return false;
-    };
-    after_colon.trim_start().starts_with("true")
+    serde_json::from_str::<serde_json::Value>(body)
+        .ok()
+        .and_then(|value| value.get("ok").and_then(serde_json::Value::as_bool))
+        == Some(true)
 }
 
 fn doctor_report(config: &Config, options: DoctorOptions) -> DoctorReport {
@@ -1804,10 +1996,18 @@ fn doctor_report(config: &Config, options: DoctorOptions) -> DoctorReport {
             config.bun_executable
         ));
     }
-    if !status.health.reachable {
-        warnings.push("broker health is unreachable".to_string());
+    if !status.health.ok {
+        warnings.push(format!(
+            "broker health {}: {}",
+            status.health.state,
+            status
+                .health
+                .error
+                .as_deref()
+                .unwrap_or("broker did not report ready")
+        ));
     }
-    if status.config.broker_socket_path.exists() && !status.health.reachable {
+    if status.config.broker_socket_path.exists() && status.health.state == "unreachable" {
         warnings.push(format!(
             "broker socket exists but health is unreachable: {}",
             status.config.broker_socket_path.display(),
@@ -1910,7 +2110,7 @@ fn doctor_repairs(
     }
 
     let mut repairs = Vec::new();
-    if status.config.broker_socket_path.exists() && !status.health.reachable {
+    if status.config.broker_socket_path.exists() && status.health.state == "unreachable" {
         repairs.push(remove_file_repair(
             "stale-broker-socket",
             "Remove stale broker socket",
@@ -3329,7 +3529,29 @@ fn inspect_runtime_freshness(config: &Config, raw_daemon_state: Option<&str>) ->
     let running = running_runtime_artifact(raw_daemon_state);
     let pin = env_nonempty("OPENSCOUT_RUNTIME_BUILD_PIN");
     let pin_reason = env_nonempty("OPENSCOUT_RUNTIME_BUILD_PIN_REASON");
-    evaluate_runtime_freshness(configured, running, pin, pin_reason)
+    let freshness = evaluate_runtime_freshness(configured, running, pin, pin_reason);
+    let owner = fs::read_to_string(&config.launch_agent_path)
+        .ok()
+        .map(|existing| assert_launch_agent_owner_compatible(config, &existing));
+    match owner {
+        Some(Err(_)) => freshness_for_foreign_owner(freshness),
+        _ => freshness,
+    }
+}
+
+// A caller whose install does not own the shared service is comparing the
+// running runtime against its own artifact, which says nothing about whether
+// the service is current, and it could not restart the service anyway.
+fn freshness_for_foreign_owner(freshness: RuntimeFreshness) -> RuntimeFreshness {
+    if freshness.state != "stale" {
+        return freshness;
+    }
+    RuntimeFreshness {
+        state: "unverified".to_string(),
+        reason_code: Some("foreign_service_owner".to_string()),
+        detail: "The shared Scout service is owned by a different installation; its freshness is judged against that owner's artifact, not this one.".to_string(),
+        ..freshness
+    }
 }
 
 fn evaluate_runtime_freshness(
@@ -3610,10 +3832,7 @@ fn print_status(status: &ServiceStatus, json: bool) {
         );
         println!("runtime detail: {}", status.runtime_freshness.detail);
         println!("reachable: {}", yes_no(status.health.reachable));
-        println!(
-            "health: {}",
-            if status.health.ok { "ok" } else { "unhealthy" }
-        );
+        println!("health: {}", status.health.state);
     }
 }
 
@@ -3766,6 +3985,8 @@ fn health_json(health: &HealthStatus) -> String {
 \"reachable\":{},\
 \"ok\":{},\
 \"checkedAt\":{},\
+\"state\":{},\
+\"durationMs\":{},\
 \"transport\":{},\
 \"statusCode\":{},\
 \"body\":{},\
@@ -3773,7 +3994,9 @@ fn health_json(health: &HealthStatus) -> String {
 }}",
         health.reachable,
         health.ok,
-        epoch_ms(),
+        health.checked_at,
+        json_string(health.state),
+        health.duration_ms,
         json_opt_str(health.transport.as_deref()),
         json_opt_u16(health.status_code),
         json_opt_str(health.body.as_deref()),
@@ -3943,12 +4166,12 @@ fn xml_escape(value: &str) -> String {
 mod tests {
     use super::{
         build_identity_json, build_identity_text, command_invokes_scoutd_daemon, commits_match,
-        elapsed_seconds, evaluate_runtime_freshness, health_body_reports_ok,
-        launch_agent_owner_compatible, legacy_service_labels, legacy_service_targets,
-        openscout_pairing_advertisement_key, parse_daemon_state_telemetry, parse_health_response,
-        parse_http_status_code, process_snapshot_filter, read_last_log_line_from,
-        resolve_advertise_scope_value, resolve_broker_host_value, resolve_broker_url_value,
-        resolve_push_relay_child_environment, restart_telemetry_warnings,
+        elapsed_seconds, evaluate_runtime_freshness, freshness_for_foreign_owner,
+        health_body_reports_ok, launch_agent_owner_compatible, legacy_service_labels,
+        legacy_service_targets, openscout_pairing_advertisement_key, parse_daemon_state_telemetry,
+        parse_health_response, parse_http_status_code, process_snapshot_filter,
+        read_last_log_line_from, resolve_advertise_scope_value, resolve_broker_host_value,
+        resolve_broker_url_value, resolve_push_relay_child_environment, restart_telemetry_warnings,
         rotate_child_log_if_needed, rotated_child_log_path, running_runtime_artifact,
         scoutd_owned_child_log_path, stale_pairing_advertisement_pids, start_readiness_from_args,
         start_service_launchctl_command_plan, xml_escape, Config, ManagedProcessLease, ProcessInfo,
@@ -4353,6 +4576,32 @@ mod tests {
     }
 
     #[test]
+    fn launch_agent_preserves_external_session_cli_configuration() {
+        let config = test_config(
+            "/stable/packages/cli",
+            "/stable/packages/cli/bin/scoutd",
+            SHARED_SERVICE_LABEL,
+        );
+        let default_plist = super::render_launch_agent_plist_with_optional_env(&config, |_| None);
+        assert!(!default_plist.contains("OPENSCOUT_EXTERNAL_SESSION_CONNECTIONS"));
+        assert!(!default_plist.contains("OPENSCOUT_DEVIN_CLI_BIN"));
+
+        let connections = r#"[{"id":"devin-cloud-cli","deliveryMode":"cloud_cli"}]"#;
+        let plist = super::render_launch_agent_plist_with_optional_env(&config, |key| match key {
+            "OPENSCOUT_EXTERNAL_SESSION_CONNECTIONS" => Some(connections.into()),
+            "OPENSCOUT_DEVIN_CLI_BIN" => Some("/tools/Devin & Scout/devin".into()),
+            _ => None,
+        });
+        assert!(plist.contains(&format!(
+            "<key>OPENSCOUT_EXTERNAL_SESSION_CONNECTIONS</key>\n    <string>{}</string>",
+            super::xml_escape(connections)
+        )));
+        assert!(plist.contains(
+            "<key>OPENSCOUT_DEVIN_CLI_BIN</key>\n    <string>/tools/Devin &amp; Scout/devin</string>"
+        ));
+    }
+
+    #[test]
     fn shared_launch_agent_preserves_its_existing_runtime_owner() {
         let config = test_config(
             "/stable/packages/cli",
@@ -4459,6 +4708,103 @@ mod tests {
     #[test]
     fn push_relay_is_disabled_without_a_session() {
         assert!(resolve_push_relay_child_environment(None, None, None, None).is_empty());
+    }
+
+    #[test]
+    fn connected_health_timeout_is_not_unreachable_or_ready() {
+        let (mut client, _server) = std::os::unix::net::UnixStream::pair().unwrap();
+        let health = super::read_http_health(
+            &mut client,
+            "localhost",
+            std::time::Duration::from_millis(20),
+        )
+        .unwrap();
+        assert!(health.reachable);
+        assert!(!health.ok);
+        assert_eq!(health.state, "timed_out");
+        assert!(health.duration_ms < 500);
+        let json: serde_json::Value = serde_json::from_str(&super::health_json(&health)).unwrap();
+        assert_eq!(
+            json["checkedAt"].as_u64().unwrap() as u128,
+            health.checked_at
+        );
+        assert_eq!(json["state"], "timed_out");
+    }
+
+    #[test]
+    fn health_deadline_bounds_a_dribbling_response_and_recovers() {
+        use std::io::{Read, Write};
+        let (mut client, mut server) = std::os::unix::net::UnixStream::pair().unwrap();
+        let writer = std::thread::spawn(move || {
+            let mut request = [0; 1024];
+            server.read(&mut request).unwrap();
+            for _ in 0..20 {
+                if server.write_all(b"x").is_err() {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+        });
+        let health = super::read_http_health(
+            &mut client,
+            "localhost",
+            std::time::Duration::from_millis(30),
+        )
+        .unwrap();
+        assert_eq!(health.state, "timed_out");
+        assert!(!health.ok);
+        assert!(health.duration_ms < 500);
+        drop(client);
+        writer.join().unwrap();
+
+        let (mut client, mut server) = std::os::unix::net::UnixStream::pair().unwrap();
+        let writer = std::thread::spawn(move || {
+            let mut request = [0; 1024];
+            server.read(&mut request).unwrap();
+            server
+                .write_all(b"HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n{\"ok\":true}")
+                .unwrap();
+        });
+        let health = super::read_http_health(
+            &mut client,
+            "localhost",
+            std::time::Duration::from_millis(500),
+        )
+        .unwrap();
+        assert!(health.ok, "{health:?}");
+        assert_eq!(health.state, "healthy");
+        writer.join().unwrap();
+    }
+
+    #[test]
+    fn health_decodes_chunked_json_and_rejects_incomplete_framing() {
+        let response =
+            "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\nb\r\n{\"ok\":true}\r\n0\r\n\r\n";
+        let health = parse_health_response(response).unwrap();
+        assert!(health.ok);
+        assert_eq!(health.body.as_deref(), Some(r#"{"ok":true}"#));
+        let truncated = response.trim_end_matches("0\r\n\r\n");
+        let health = parse_health_response(truncated).unwrap();
+        assert!(!health.ok);
+        assert!(health.reachable);
+        assert_eq!(health.state, "degraded");
+        let health =
+            parse_health_response("HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\n{\"ok\":true}")
+                .unwrap();
+        assert!(!health.ok);
+    }
+
+    #[test]
+    fn health_requires_valid_top_level_readiness() {
+        assert!(!health_body_reports_ok(
+            r#"{"nested":{"ok":true},"ok":false}"#
+        ));
+        assert!(!health_body_reports_ok(r#"{"ok":trueish}"#));
+        let health =
+            parse_health_response("HTTP/1.1 503 Unavailable\r\n\r\n{\"ok\":true}").unwrap();
+        assert!(health.reachable);
+        assert!(!health.ok);
+        assert_eq!(health.state, "degraded");
     }
 
     #[test]
@@ -4712,6 +5058,37 @@ mod tests {
             manifest_path: (mode == "bundle")
                 .then(|| "/opt/openscout/dist/build-manifest.json".to_string()),
         }
+    }
+
+    #[test]
+    fn foreign_service_owner_is_never_reported_stale() {
+        let stale = evaluate_runtime_freshness(
+            RuntimeArtifactIdentity {
+                mode: "bundle".to_string(),
+                commit: Some("new".to_string()),
+                version: None,
+                source_dirty: None,
+                built_at: None,
+                manifest_path: None,
+            },
+            Some(RuntimeArtifactIdentity {
+                mode: "bundle".to_string(),
+                commit: Some("old".to_string()),
+                version: None,
+                source_dirty: None,
+                built_at: None,
+                manifest_path: None,
+            }),
+            None,
+            None,
+        );
+        assert_eq!(stale.state, "stale");
+        let foreign = freshness_for_foreign_owner(stale);
+        assert_eq!(foreign.state, "unverified");
+        assert_eq!(
+            foreign.reason_code.as_deref(),
+            Some("foreign_service_owner")
+        );
     }
 
     #[test]

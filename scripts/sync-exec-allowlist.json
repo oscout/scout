@@ -56,6 +56,13 @@
     "owner": "desktop"
   },
   {
+    "path": "apps/desktop/src/cli/commands/mesh-bridge-linux.test.ts",
+    "symbol": "spawnSync",
+    "category": "test",
+    "reason": "spies on Bun.spawnSync only to assert the Linux self-service path never shells out; nothing is spawned",
+    "owner": "desktop"
+  },
+  {
     "path": "apps/desktop/src/cli/commands/mesh-bridge.ts",
     "symbol": "Bun.spawnSync",
     "category": "cli",
@@ -497,21 +504,21 @@
     "owner": "tests"
   },
   {
-    "path": "packages/web/server/create-openscout-web-server.test.ts",
+    "path": "packages/web/server/web-server-test-harness.ts",
     "symbol": "execFileSync",
     "category": "test",
     "reason": "git fixture setup",
     "owner": "tests"
   },
   {
-    "path": "packages/web/server/create-openscout-web-server.test.ts",
+    "path": "packages/web/server/web-server-test-harness.ts",
     "symbol": "node:child_process",
     "category": "test",
     "reason": "test subprocess fixture or git fixture setup",
     "owner": "tests"
   },
   {
-    "path": "packages/web/server/create-openscout-web-server.ts",
+    "path": "packages/web/server/routes/knowledge.ts",
     "symbol": "Bun.spawn",
     "category": "process-lifecycle",
     "reason": "owns the isolated session knowledge index child lifecycle so heavy indexing cannot block the web server event loop",
@@ -593,5 +600,61 @@
     "category": "test",
     "reason": "Owns isolated NATS subprocess fixtures and cleanup",
     "owner": "tests"
+  },
+  {
+    "path": "packages/runtime/src/devin-cloud-cli-transport.ts",
+    "symbol": "node:child_process",
+    "category": "process-lifecycle",
+    "reason": "async spawn of the Devin cloud CLI (ACP stdio and one-shot resume); no sync exec",
+    "owner": "runtime"
+  },
+  {
+    "path": "packages/web/server/scoutbot-file-lookup.ts",
+    "symbol": "node:child_process",
+    "category": "imperative",
+    "reason": "async execFile of a bounded file search for Scoutbot's file lookup tool; no sync exec",
+    "owner": "web"
+  },
+  {
+    "path": "apps/desktop/src/core/mcp/mesh-bridge-connect.ts",
+    "symbol": "Bun.spawnSync",
+    "category": "cli",
+    "reason": "one-shot Keychain writes during `scout login`: `security -i` takes the secret on stdin so it never appears in the process list",
+    "owner": "desktop"
+  },
+  {
+    "path": "packages/runtime/src/mesh-bridge-supervisor.ts",
+    "symbol": "node:child_process",
+    "category": "process-lifecycle",
+    "reason": "mesh bridge supervisor reads process identity and retires the legacy launchd agent",
+    "owner": "runtime"
+  },
+  {
+    "path": "packages/runtime/src/mesh-bridge-supervisor.ts",
+    "symbol": "spawnSync",
+    "category": "process-lifecycle",
+    "reason": "one-shot ps identity reads (pid + start time, to survive pid reuse) and ordered launchctl bootout of the legacy mesh-bridge agent",
+    "owner": "runtime"
+  },
+  {
+    "path": "packages/runtime/src/local-edge-trust.ts",
+    "symbol": "node:child_process",
+    "category": "imperative",
+    "reason": "security verify-cert check of the local CA (tens of ms) on explicit setup, doctor, CLI and Settings requests; the password-dialog path in the web server is async",
+    "owner": "runtime"
+  },
+  {
+    "path": "packages/runtime/src/local-edge-trust.ts",
+    "symbol": "spawnSync",
+    "category": "imperative",
+    "reason": "security verify-cert check of the local CA (tens of ms) on explicit setup, doctor, CLI and Settings requests; the password-dialog path in the web server is async",
+    "owner": "runtime"
+  },
+  {
+    "path": "packages/web/server/core/attention/herdr-continuation-host.test.ts",
+    "symbol": "Bun.spawn",
+    "category": "test",
+    "reason": "spawns a plain NODE_ENV=production script to prove injected continuation authority is ignored outside the test runner",
+    "owner": "web"
   }
 ]

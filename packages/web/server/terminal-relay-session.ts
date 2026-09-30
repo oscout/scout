@@ -18,7 +18,7 @@ export interface SessionInitMessage {
   cwd?: string;
   /** Files to bootstrap in the CWD before spawning the CLI. Keys are relative paths, values are file contents. Only written if the file doesn't already exist. */
   workspaceFiles?: Record<string, string>;
-  /** How long (ms) to keep the PTY alive after the client disconnects. Defaults to 30 min. */
+  /** How long (ms) to keep the PTY alive after the client disconnects. Unset = until the process exits (or OPENSCOUT_RELAY_ORPHAN_TTL_MS). */
   orphanTTL?: number;
   /** PTY backend. 'pty' spawns a fresh process; 'tmux'/'zellij'/'herdr' attach to named hosts. */
   backend?: 'pty' | 'tmux' | 'zellij' | 'herdr';
@@ -119,8 +119,15 @@ import { resolveCodexExecutableInventory } from '@openscout/agent-sessions/codex
 // Constants
 // ---------------------------------------------------------------------------
 
-/** Default orphan TTL — how long a detached session lives before being reaped. */
-const DEFAULT_ORPHAN_TTL_MS = 30 * 60 * 1000; // 30 minutes
+/**
+ * Default orphan TTL — how long a detached, still-running session lives before
+ * being reaped. 0 = never: an agent running in a PTY keeps working when its last
+ * viewer goes away. OPENSCOUT_RELAY_ORPHAN_TTL_MS sets a cap for users who want one.
+ */
+function defaultOrphanTtlMs(): number {
+  const raw = Number(process.env.OPENSCOUT_RELAY_ORPHAN_TTL_MS || 0);
+  return Number.isFinite(raw) && raw > 0 ? raw : 0;
+}
 
 /** Maximum size of the raw output buffer for reconnect replay (~512 KB). */
 const MAX_BUFFER_SIZE = 512 * 1024;
@@ -155,7 +162,7 @@ export interface Session {
   /** Authoritative tmux window dimensions used to clamp read-only clients. */
   tmuxSourceCols?: number;
   tmuxSourceRows?: number;
-  /** Set when ws detaches — session is reaped after orphanTTL. */
+  /** Set when ws detaches — session is reaped after orphanTTL (0 = only once the process exits). */
   reapTimer: ReturnType<typeof setTimeout> | null;
   /** How long this session survives without a client (ms). */
   orphanTTL: number;
@@ -865,7 +872,7 @@ export async function createSession(ws: RelaySocket, msg: SessionInitMessage): P
     return null;
   }
 
-  const orphanTTL = msg.orphanTTL && msg.orphanTTL > 0 ? msg.orphanTTL : DEFAULT_ORPHAN_TTL_MS;
+  const orphanTTL = msg.orphanTTL && msg.orphanTTL > 0 ? msg.orphanTTL : defaultOrphanTtlMs();
 
   const session: Session = {
     id,
@@ -989,9 +996,13 @@ export function detachSession(session: Session) {
 
   if (session.exited) {
     scheduleReap(session, 5_000);
-  } else {
+  } else if (session.orphanTTL > 0) {
     scheduleReap(session, session.orphanTTL);
     console.log(`[relay] Session ${session.id} detached (orphaned for ${session.orphanTTL / 1000}s)`);
+  } else {
+    if (session.reapTimer) clearTimeout(session.reapTimer);
+    session.reapTimer = null;
+    console.log(`[relay] Session ${session.id} detached (kept until exit)`);
   }
 }
 

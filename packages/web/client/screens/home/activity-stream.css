@@ -460,38 +460,52 @@
 
 /* ── Activity stream ────────────────────────────── */
 
+/* One card, the same tonal step and radius as What's moving; rows split by
+   a faint hairline instead of a 1px gap over a border-colored backdrop. Who
+   and what was said are sans (a person or agent wrote them); time and event
+   kind are mono (the machine knows them). */
 .s-mc-stream {
-  display: grid;
-  gap: 1px;
+  display: flex;
+  flex-direction: column;
   border: 1px solid var(--border);
-  border-radius: var(--mc-radius);
-  overflow: hidden;
-  background: var(--border);
+  border-radius: var(--radius-xl);
+  background: color-mix(in srgb, var(--surface) 75%, var(--bg));
   max-height: 480px;
   overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--ink) 14%, transparent) transparent;
 }
 
 .s-mc-stream-row {
   appearance: none;
   border: 0;
-  background: var(--bg);
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 45%, transparent);
+  background: transparent;
+  color: inherit;
   cursor: pointer;
   text-align: left;
   display: grid;
-  grid-template-columns: 36px auto auto minmax(0, 1fr);
+  grid-template-columns: 36px minmax(0, 168px) 128px minmax(0, 1fr);
   align-items: baseline;
-  gap: var(--space-sm);
-  padding: var(--space-sm) var(--space-md);
-  font-family: var(--font-mono);
-  font-size: var(--text-sm);
+  gap: var(--space-lg);
+  padding: var(--space-sm) var(--space-xl);
+  font-family: var(--font-sans);
+  font-size: var(--text-lg);
   line-height: var(--leading-tight);
   transition: background 120ms;
   min-width: 0;
 }
 
-.s-mc-stream-row:hover { background: color-mix(in srgb, var(--accent) 6%, var(--bg)); }
+.s-mc-stream-row:last-child { border-bottom: 0; }
+.s-mc-stream-row:hover { background: color-mix(in srgb, var(--ink) 4%, transparent); }
+.s-mc-stream-row:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent) 60%, transparent);
+  outline-offset: -2px;
+}
 
 .s-mc-stream-time {
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
   color: var(--dim);
   font-variant-numeric: tabular-nums;
   text-align: right;
@@ -499,17 +513,24 @@
 
 .s-mc-stream-actor {
   font-weight: 500;
-  font-family: var(--font-mono);
   color: var(--ink);
-  letter-spacing: var(--tracking-xs);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
+
 .s-mc-stream-verb {
-  color: var(--muted);
-  font-style: italic;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  letter-spacing: var(--tracking-sm);
+  color: var(--dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .s-mc-stream-text {
-  color: var(--ink);
+  color: var(--muted);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -520,6 +541,11 @@
 @container (max-width: 1100px) {
   .s-mc-body { grid-template-columns: minmax(0, 1fr); }
   .s-mc-side { background: var(--bg); border-top: 1px solid var(--border); }
+}
+
+@container fleet-home (max-width: 720px) {
+  .s-mc-stream-row { grid-template-columns: 36px minmax(0, 120px) minmax(0, 1fr); }
+  .s-mc-stream-verb { display: none; }
 }
 
 @container (max-width: 780px) {

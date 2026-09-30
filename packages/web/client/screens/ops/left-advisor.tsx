@@ -12,7 +12,7 @@ import {
   Terminal,
 } from "lucide-react";
 import { api } from "../../lib/api.ts";
-import { useBrokerEvents } from "../../lib/sse.ts";
+import { isBrokerDataEvent, useBrokerEventsRefresh } from "../../lib/sse.ts";
 import { useScout } from "../../scout/Provider.tsx";
 import type { Route, TailDiscoverySnapshot } from "../../lib/types.ts";
 
@@ -36,7 +36,7 @@ export function OpsAdvisorLeft() {
     void load();
   }, [load]);
 
-  useBrokerEvents(() => {
+  useBrokerEventsRefresh(isBrokerDataEvent, () => {
     void load();
   });
 

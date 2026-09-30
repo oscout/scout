@@ -51,6 +51,26 @@ type ScoutbotChatResult = {
   reply?: { body?: unknown };
 };
 
+/**
+ * Why a call can't start in this page, before anyone clicks. Browsers only
+ * share the microphone with a secure page (https, localhost, 127.0.0.1): on a
+ * plain-http LAN name like arts-mini.scout.local `navigator.mediaDevices` is
+ * simply absent, which is not the browser's fault and shouldn't read as it.
+ */
+export function realtimeVoiceBlockedReason(): string | null {
+  if (typeof window === "undefined") return null;
+  if (window.isSecureContext === false) {
+    const secure = new URL(window.location.href);
+    secure.protocol = "https:";
+    secure.port = "";
+    return `Browsers only share the microphone with a secure page. Open ${secure.origin}${window.location.pathname} instead.`;
+  }
+  if (!globalThis.RTCPeerConnection || !navigator.mediaDevices?.getUserMedia) {
+    return "This browser does not support realtime audio calls.";
+  }
+  return null;
+}
+
 export async function startScoutRealtimeVoiceCall(callbacks: {
   onState?: (state: ScoutRealtimeVoiceConnectionState) => void;
   onError?: (message: string) => void;
@@ -74,9 +94,8 @@ export async function startScoutRealtimeVoiceCall(callbacks: {
   onAudioControls?: (controls: Pick<ScoutRealtimeVoiceCall, "setMicMuted" | "setPlaybackMuted">) => void;
 } = {}): Promise<ScoutRealtimeVoiceCall> {
   throwIfAborted(callbacks.signal);
-  if (!globalThis.RTCPeerConnection || !navigator.mediaDevices?.getUserMedia) {
-    throw new Error("This browser does not support realtime audio calls.");
-  }
+  const blocked = realtimeVoiceBlockedReason();
+  if (blocked) throw new Error(blocked);
 
   // Resolve the host gate before asking for microphone access. Settings can
   // change in another window, and a stale footer must never flash the privacy

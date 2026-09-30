@@ -44,7 +44,8 @@ transcripts.
 
 | Workflow | Use | API/tool |
 |---|---|---|
-| message/update | durable message with broker receipt ids | `scout send`, `messages_send` |
+| message/update | durable message with broker receipt ids | `scout send` (explicit alias: `scout tell`), `messages_send` |
+| tracked send (opt-in) | one directed target; same invocation/flight lifecycle as `ask --notify` | `scout send --tracked [--no-notifs \| --wait]`, `messages_send({ interaction: "work", replyMode? })` |
 | ask/reply | answer/work expected, creates invocation/flight | `scout ask`, `ask` |
 | asynchronous ask | answer/work expected, caller returns after receipt and completion is reported later | `scout ask --notify`, `ask({ replyMode: "notify" })` |
 | project/capability-routed ask | project known, concrete agent/session unknown | `scout ask --project --harness`, `ask({ projectPath, harness })` |

@@ -31,7 +31,9 @@ import {
   steerCodexAppServerLocalAgent,
   type CodexAppServerInvocationOptions,
   type CodexAppServerExitKind,
+  type CodexAppServerIdentity,
   type CodexAppServerSessionOptions,
+  type CodexAppServerTurnResult,
   type CodexAppServerShutdownOptions,
   type CodexAppServerSteerOptions,
 } from "@openscout/agent-sessions/local";
@@ -55,6 +57,7 @@ export {
 };
 export type {
   CodexAppServerExitKind,
+  CodexAppServerIdentity,
   CodexAppServerShutdownOptions,
 };
 
@@ -1147,6 +1150,9 @@ async function prepareManagedCodexAuthentication(options: SessionRequestOptions)
 }
 
 async function withPreparedManagedCodexEnvironment<T extends SessionRequestOptions>(options: T): Promise<T> {
+  // An attached app-server already has its own CODEX_HOME and auth; Scout's
+  // environment never reaches it.
+  if (options.connection?.mode === "attach") return options;
   await prepareManagedCodexAuthentication(options);
   return withManagedCodexEnvironment(options);
 }
@@ -1154,15 +1160,16 @@ async function withPreparedManagedCodexEnvironment<T extends SessionRequestOptio
 export async function ensureCodexAppServerAgentOnline(options: SessionRequestOptions): Promise<{
   threadId: string;
   durableThreadId: string | null;
+  codexAppServer?: CodexAppServerIdentity | null;
 }> {
   return ensureCodexAppServerLocalAgentOnline(await withPreparedManagedCodexEnvironment(options));
 }
 
-export async function invokeCodexAppServerAgent(options: InvocationOptions): Promise<{ output: string; threadId: string }> {
+export async function invokeCodexAppServerAgent(options: InvocationOptions): Promise<CodexAppServerTurnResult> {
   return invokeCodexAppServerLocalAgent(await withPreparedManagedCodexEnvironment(options));
 }
 
-export async function sendCodexAppServerAgent(options: InvocationOptions): Promise<{ output: string; threadId: string }> {
+export async function sendCodexAppServerAgent(options: InvocationOptions): Promise<CodexAppServerTurnResult> {
   return sendCodexAppServerLocalAgent(await withPreparedManagedCodexEnvironment(options));
 }
 

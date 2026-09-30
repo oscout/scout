@@ -446,8 +446,8 @@ function nextStepBody(plan: MachineUpdatePlan): string {
       const pids = launchd.map((bridge) => bridge.pid);
       steps.push(`${pids.length} with ppid 1 (launchd or orphan; pid ${pids.join(", ")}); job ownership `
         + `is unverified. Check \`launchctl list ${label}\` there and compare its PID. Only if it `
-        + `matches this suite mesh bridge, run \`launchctl kickstart -k `
-        + `gui/$(id -u)/${label}\` or re-run \`scout mesh bridge install\`; otherwise identify its owner first`);
+        + `matches the retired ${label} LaunchAgent, run \`scout mesh bridge install\` to hand the `
+        + `bridge to scout-base; otherwise identify its owner first`);
     }
     return `${plan.label}: ${bridges.length} Scout bridge${bridges.length === 1 ? "" : "s"} outside the `
       + `managed suite have unverified release identities. ${steps.join(". ")}.`;

@@ -9,6 +9,7 @@ import { MessageMarkup } from "../../lib/message-markup.tsx";
 import { formatThreadDayLabel } from "../../lib/thread-days.ts";
 import { timeAgo } from "../../lib/time.ts";
 import type { ConversationFeedRow } from "./conversation-model.ts";
+import { messagePermalinkAnchor } from "../../lib/message-permalink.ts";
 
 /// The rule for when a row opens a new day. Kept next to the rows that draw it
 /// so the fan-out branch and the message branch cannot drift apart.
@@ -52,7 +53,7 @@ export function FanOutRow({
     >
       {showDayDivider && <ThreadDayDivider at={row.createdAt} />}
 
-      {/* Folding removed the `msg-<id>` element each delivery used to own, and
+      {/* Folding removed the message-id element each delivery used to own, and
           reply backlinks and `#msg-` permalinks resolve by that id. Every
           folded message keeps a marker here so those targets still land; the
           markers have no box of their own, and the scroll and the highlight are
@@ -60,7 +61,7 @@ export function FanOutRow({
       {row.messages.map((message) => (
         <span
           key={message.id}
-          id={`msg-${message.id}`}
+          id={messagePermalinkAnchor(message.id)}
           className="s-thread-fanout-anchor"
           aria-hidden="true"
         />

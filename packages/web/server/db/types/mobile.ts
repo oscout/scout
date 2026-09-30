@@ -5,7 +5,7 @@
  * bridge can fulfil reads from SQLite without round-tripping the broker.
  */
 
-import type { AgentSummaryState } from "./common.ts";
+import type { AgentSummaryState } from "../../../shared/api/common.ts";
 
 export type MobileAgentSummary = {
   id: string;
