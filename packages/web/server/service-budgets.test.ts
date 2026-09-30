@@ -137,6 +137,16 @@ function createQuotaTable(rawDb: Database): void {
   `);
 }
 
+// Rows the web server harvested land in its own database, not the broker's.
+function countWebStateRows(controlHome: string, sql: string): number | undefined {
+  const database = new Database(join(controlHome, "web-state.sqlite"), { readonly: true });
+  try {
+    return database.query<{ count: number }, []>(sql).get()?.count;
+  } finally {
+    database.close();
+  }
+}
+
 describe("service budgets", () => {
   test("uses Claude statusline hook capture for quota windows", async () => {
     const root = mkdtempSync(join(tmpdir(), "openscout-service-budgets-claude-statusline-"));
@@ -205,9 +215,10 @@ describe("service budgets", () => {
       expect.objectContaining({ label: "5h", usedLabel: "11%" }),
       expect.objectContaining({ label: "7d", usedLabel: "70%" }),
     ]);
-    expect(rawDb.query<{ count: number }>(
+    expect(countWebStateRows(
+      controlHome,
       "SELECT count(*) AS count FROM budget_quota_window_snapshots WHERE provider = 'anthropic' AND harness = 'claude'",
-    ).get()?.count).toBe(4);
+    )).toBe(4);
     rawDb.close();
   });
 
@@ -717,12 +728,14 @@ describe("service budgets", () => {
     ]);
     const codexWindows = codex && codex.kind === "quota" ? codex.windows ?? [] : [];
     expect(codexWindows[0]?.history?.length).toBeGreaterThanOrEqual(1);
-    expect(rawDb.query<{ count: number }>(
+    expect(countWebStateRows(
+      controlHome,
       "SELECT count(*) AS count FROM budget_quota_window_snapshots WHERE provider = 'openai' AND harness = 'codex'",
-    ).get()?.count).toBe(4);
-    expect(rawDb.query<{ count: number }>(
+    )).toBe(4);
+    expect(countWebStateRows(
+      controlHome,
       "SELECT count(*) AS count FROM budget_quota_window_snapshots WHERE id LIKE 'budget:quota:history:%' AND provider = 'openai' AND harness = 'codex'",
-    ).get()?.count).toBe(2);
+    )).toBe(2);
 
     // A resumed session can replay a lower percentage for the same reset with
     // a newer capture timestamp. The persistence high-water mark must survive
@@ -1036,9 +1049,10 @@ describe("service budgets", () => {
     expect(withoutFreshToken.gauges.find((gauge) => gauge.id === "kimi")).toEqual(
       expect.objectContaining({ id: "kimi", kind: "quota", usedLabel: "53%", plan: "Advanced" }),
     );
-    expect(rawDb.query<{ count: number }>(
+    expect(countWebStateRows(
+      controlHome,
       "SELECT count(*) AS count FROM budget_quota_window_snapshots WHERE provider = 'kimi' AND harness = 'kimi'",
-    ).get()?.count).toBe(4);
+    )).toBe(4);
     rawDb.close();
   });
 
@@ -1128,7 +1142,10 @@ describe("service budgets", () => {
     const rawDb = new Database(join(controlHome, "control-plane.sqlite"));
     createQuotaTable(rawDb);
 
-    const now = Date.now();
+    // Keep both billing samples in one hourly history bucket, so the row count
+    // does not change during the first minute of an hour.
+    const historyBucketMs = 60 * 60 * 1000;
+    const now = Math.floor(Date.now() / historyBucketMs) * historyBucketMs + 2 * 60 * 1000;
     const periodEnd = now + 4 * 24 * 60 * 60 * 1000;
     const periodStart = periodEnd - 7 * 24 * 60 * 60 * 1000;
     const logsDirectory = join(home, ".grok", "logs");
@@ -1178,9 +1195,10 @@ describe("service budgets", () => {
         source: "Grok local billing",
       }),
     ]);
-    expect(rawDb.query<{ count: number }>(
+    expect(countWebStateRows(
+      controlHome,
       "SELECT count(*) AS count FROM budget_quota_window_snapshots WHERE provider = 'xai' AND harness = 'grok'",
-    ).get()?.count).toBe(2);
+    )).toBe(2);
     rawDb.close();
   });
 
@@ -1396,12 +1414,16 @@ describe("service budgets", () => {
     ]);
     const githubWindows = github && github.kind === "quota" ? github.windows ?? [] : [];
     expect(githubWindows[0]?.history?.length).toBeGreaterThanOrEqual(1);
-    expect(rawDb.query<{ count: number }>(
+    expect(countWebStateRows(
+      controlHome,
       "SELECT count(*) AS count FROM budget_quota_window_snapshots WHERE provider = 'github'",
-    ).get()?.count).toBe(2);
-    expect(rawDb.query<{ used: number; limit_value: number }>(
+    )).toBe(2);
+    const webState = new Database(join(controlHome, "web-state.sqlite"), { readonly: true });
+    const githubCurrent = webState.query<{ used: number; limit_value: number }, []>(
       "SELECT used, limit_value FROM budget_quota_window_snapshots WHERE provider = 'github' AND id NOT LIKE 'budget:quota:history:%'",
-    ).get()).toEqual(expect.objectContaining({
+    ).get();
+    webState.close();
+    expect(githubCurrent).toEqual(expect.objectContaining({
       used: 7,
       limit_value: 5000,
     }));

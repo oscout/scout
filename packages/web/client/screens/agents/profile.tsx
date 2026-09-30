@@ -12,7 +12,7 @@ import {
   resolveSelectedSessionId,
   sortSessionsByRecency,
 } from "../../lib/session-catalog.ts";
-import { useBrokerEvents } from "../../lib/sse.ts";
+import { isBrokerDataEvent, useBrokerEventsRefresh } from "../../lib/sse.ts";
 import { timeAgo } from "../../lib/time.ts";
 import { BackToPicker } from "../../scout/slots/BackToPicker.tsx";
 import { openContent } from "../../scout/slots/openContent.ts";
@@ -202,7 +202,7 @@ function SessionSummary({
   useEffect(() => {
     void load();
   }, [load]);
-  useBrokerEvents(() => {
+  useBrokerEventsRefresh(isBrokerDataEvent, () => {
     void load();
   });
 
@@ -693,7 +693,7 @@ export function CurrentSessionCard({
     setObserve(null);
     void load();
   }, [load]);
-  useBrokerEvents(() => {
+  useBrokerEventsRefresh(isBrokerDataEvent, () => {
     void load();
   });
 
@@ -1146,7 +1146,7 @@ export function AgentDetailWithRail({
     void loadObserve();
   }, [activeTab, loadObserve]);
 
-  useBrokerEvents(() => {
+  useBrokerEventsRefresh(isBrokerDataEvent, () => {
     void load();
     if (activeTab === "observe") {
       void loadObserve();

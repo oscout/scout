@@ -25,8 +25,11 @@ import {
 
 import { planMessageDeliveries, type DeliveryRoute } from "./planner.js";
 import { captureMessageRecords, asyncMessageRecordView, readMessageRecord } from "./broker-message-records.js";
+import { applyHistoryRotationEviction } from "./history-rotation.js";
 import {
   createRuntimeRegistrySnapshot,
+  type RuntimeActorIdentity,
+  type RuntimeAgentDefinition,
   type RuntimeRegistrySnapshot,
 } from "./registry.js";
 import type { ControlRuntime } from "./service.js";
@@ -159,13 +162,31 @@ export class InMemoryControlRuntime implements ControlRuntime {
 
   private readonly flightIdByInvocationId = new Map<ScoutId, ScoutId>();
 
+  /**
+   * Actor ids removed by an `actor.delete` tombstone. Presence in `actors`
+   * alone cannot distinguish "deleted" from "never registered" — stale
+   * whole-record conversation upserts would otherwise resurrect a deleted
+   * actor's roster membership. Seeded at hydration from the journal's
+   * retained tombstones; maintained live by deleteActor/upsertActor.
+   */
+  private readonly retiredActorIds = new Set<ScoutId>();
+
   constructor(
     initial: Partial<RuntimeRegistrySnapshot> = {},
-    options: { localNodeId?: ScoutId } = {},
+    options: { localNodeId?: ScoutId; retiredActorIds?: Iterable<ScoutId> } = {},
   ) {
     this.registry = createRuntimeRegistrySnapshot(initial);
     this.localNodeId = options.localNodeId;
+    for (const actorId of options.retiredActorIds ?? []) {
+      this.retiredActorIds.add(actorId);
+    }
     this.rebuildIndexes();
+  }
+
+  /** Whether an `actor.delete` tombstone retired this id — until a fresh
+   * actor (or agent) registration revives it. */
+  isRetiredActor(actorId: ScoutId): boolean {
+    return this.retiredActorIds.has(actorId);
   }
 
   snapshot(): RuntimeRegistrySnapshot {
@@ -331,6 +352,7 @@ export class InMemoryControlRuntime implements ControlRuntime {
         return;
       case "stream.subscribe":
         return;
+      case "channel.member.remove":
       case "channel.invite.create":
       case "channel.invite.revoke":
       case "channel.invite.redeem":
@@ -361,7 +383,9 @@ export class InMemoryControlRuntime implements ControlRuntime {
     });
   }
 
-  async upsertActor(actor: ActorIdentity): Promise<void> {
+  async upsertActor(actor: RuntimeActorIdentity): Promise<void> {
+    // Re-registration revives the identity — clear the tombstone.
+    this.retiredActorIds.delete(actor.id);
     this.registry.actors[actor.id] = {
       id: actor.id,
       kind: actor.kind,
@@ -369,6 +393,9 @@ export class InMemoryControlRuntime implements ControlRuntime {
       handle: actor.handle,
       labels: actor.labels,
       metadata: actor.metadata,
+      // First-registration stamp: preserved across re-upserts and replay,
+      // retention's last-resort age evidence.
+      createdAt: actor.createdAt ?? this.registry.actors[actor.id]?.createdAt ?? Date.now(),
     };
     this.emit({
       id: createRuntimeId("evt"),
@@ -380,7 +407,9 @@ export class InMemoryControlRuntime implements ControlRuntime {
     });
   }
 
-  async upsertAgent(agent: AgentDefinition): Promise<void> {
+  async upsertAgent(agent: RuntimeAgentDefinition): Promise<void> {
+    // Agent registration synthesizes the actor identity — it revives the id.
+    this.retiredActorIds.delete(agent.id);
     if (!this.registry.actors[agent.id]) {
       this.registry.actors[agent.id] = {
         id: agent.id,
@@ -389,6 +418,7 @@ export class InMemoryControlRuntime implements ControlRuntime {
         handle: agent.handle,
         labels: agent.labels,
         metadata: agent.metadata,
+        createdAt: agent.createdAt ?? Date.now(),
       };
     }
     this.registry.agents[agent.id] = agent;
@@ -415,6 +445,8 @@ export class InMemoryControlRuntime implements ControlRuntime {
     authorityNodeId: string;
     metadata?: Record<string, unknown>;
   }): void {
+    // Identity-only registration synthesizes the actor — it revives the id.
+    this.retiredActorIds.delete(input.id);
     if (!this.registry.actors[input.id]) {
       this.registry.actors[input.id] = {
         id: input.id,
@@ -423,6 +455,7 @@ export class InMemoryControlRuntime implements ControlRuntime {
         handle: input.handle,
         labels: input.labels,
         metadata: input.metadata,
+        createdAt: Date.now(),
       };
     }
     const partial: AgentDefinition = {
@@ -493,6 +526,55 @@ export class InMemoryControlRuntime implements ControlRuntime {
       nodeId: endpoint.nodeId,
       payload: { endpointId: id },
     });
+  }
+
+  deleteAgent(id: string): void {
+    // Endpoints ride along with their agent. Idempotent: an endpoint delete
+    // journaled ahead of the agent delete may already have removed them.
+    const endpointIds = this.endpointIdsByAgentId.get(id);
+    if (endpointIds) {
+      for (const endpointId of [...endpointIds]) {
+        this.deleteEndpoint(endpointId);
+      }
+    }
+    if (!this.registry.agents[id]) return;
+    delete this.registry.agents[id];
+    // No agent.deleted control-event kind exists; endpoint.deleted per endpoint
+    // above is the only wire signal. Subscribers reconcile via snapshot diff.
+  }
+
+  deleteActor(id: string): void {
+    // Mark even when the row is already gone — the tombstone is the fact.
+    this.retiredActorIds.add(id);
+    if (!this.registry.actors[id]) return;
+    delete this.registry.actors[id];
+  }
+
+  /**
+   * Evict exactly the ids a journaled `history.rotate` marker verified —
+   * the runtime mirror of the rotation. Eligibility is never recomputed
+   * here; the writer already verified each id against durable SQLite. No
+   * tombstones, no control events: eviction is a cache rotation, not a
+   * semantic delete; SQLite keeps the records.
+   */
+  applyHistoryRotation(evicted: {
+    messageIds: Iterable<string>;
+    invocationIds: Iterable<string>;
+    flightIds: Iterable<string>;
+  }): void {
+    const flightIds = new Set(evicted.flightIds);
+    applyHistoryRotationEviction(this.registry, {
+      messageIds: new Set(evicted.messageIds),
+      invocationIds: new Set(evicted.invocationIds),
+      flightIds,
+    });
+    if (flightIds.size > 0) {
+      for (const [invocationId, flightId] of this.flightIdByInvocationId) {
+        if (flightIds.has(flightId)) {
+          this.flightIdByInvocationId.delete(invocationId);
+        }
+      }
+    }
   }
 
   async upsertConversation(conversation: ConversationDefinition): Promise<void> {
@@ -621,6 +703,12 @@ export class InMemoryControlRuntime implements ControlRuntime {
     });
 
     return deliveries;
+  }
+
+  async correctMessage(message: MessageRecord): Promise<void> {
+    if (!asyncMessageRecordView(this.registry.messages)) this.registry.messages[message.id] = message;
+    this.emit({ id: createRuntimeId("evt"), kind: "message.corrected", ts: Date.now(), actorId: message.actorId,
+      nodeId: message.originNodeId, payload: { message } });
   }
 
   async commitMessage(
@@ -863,7 +951,7 @@ export class InMemoryControlRuntime implements ControlRuntime {
 
 export function createInMemoryControlRuntime(
   initial: Partial<RuntimeRegistrySnapshot> = {},
-  options: { localNodeId?: ScoutId } = {},
+  options: { localNodeId?: ScoutId; retiredActorIds?: Iterable<ScoutId> } = {},
 ): InMemoryControlRuntime {
   return new InMemoryControlRuntime(initial, options);
 }

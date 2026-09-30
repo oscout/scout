@@ -34,7 +34,7 @@ export type ScoutOperatorSignalKind = "notify" | "consult" | "need";
  *             do without it (`defaultAction`). Silence is a valid answer.
  *   need    — the agent cannot proceed. Silence is NOT an answer, so this is
  *             the only kind that is blocking, and the only one that raises the
- *             operator's needs-you surface.
+ *             operator's requests surface.
  *
  * `notify` and `consult` stay conversational side effects: they never create a
  * flight and never imply the agent is waiting. `need` is the exception on
@@ -142,6 +142,8 @@ export interface ScoutDeliveryReceipt {
   requesterNodeId: ScoutId;
   targetAgentId?: ScoutId;
   targetSessionId?: ScoutId;
+  /** Copyable `sess.<token>@<host>` for exact continuation of the target session. */
+  targetSessionAddress?: string;
   targetLabel?: string;
   /** Provisional routable pointer (e.g. project-chopin) when target is cardless. */
   sessionAlias?: string;

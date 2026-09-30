@@ -3,6 +3,7 @@ import {
   createScoutbotAssistantService,
   createScoutbotSentenceSplitter,
   ScoutbotAssistantError,
+  SCOUTBOT_SPOKEN_REPLY_DIRECTIVE,
   type ScoutbotCodexAssistantInvocation,
 } from "./scoutbot-assistant.ts";
 
@@ -167,6 +168,167 @@ describe("createScoutbotAssistantService", () => {
 
     await expect(response).rejects.toMatchObject({ status: 408 });
     expect(scoutbot.getSessionState().session.messages).toEqual(before);
+  });
+
+  test("local voice turns get the slim snapshot and the spoken-reply directive", async () => {
+    const contextCalls: Array<{ spoken?: boolean } | undefined> = [];
+    const prompts: string[] = [];
+    const scoutbot = createScoutbotAssistantService({
+      currentDirectory: "/tmp/openscout",
+      loadContext: (_route, options) => {
+        contextCalls.push(options);
+        return options?.spoken ? { slim: true } : { full: true };
+      },
+      env: { OPENSCOUT_SCOUTBOT_ASSISTANT_PROVIDER: "codex" } as NodeJS.ProcessEnv,
+      invokeCodex: async (input) => {
+        prompts.push(input.prompt);
+        return { output: "x".repeat(2_000), threadId: "thread" };
+      },
+    });
+
+    await scoutbot.respond({ body: "typed question" });
+    await scoutbot.respond({ body: "spoken question", usageMode: "local" });
+
+    expect(contextCalls).toEqual([undefined, { spoken: true }]);
+    expect(prompts[0]).toContain("\"full\":true");
+    expect(prompts[0]).not.toContain(SCOUTBOT_SPOKEN_REPLY_DIRECTIVE);
+    expect(prompts[1]).toContain("\"slim\":true");
+    expect(prompts[1]).toContain(SCOUTBOT_SPOKEN_REPLY_DIRECTIVE);
+    // Earlier long replies are clipped in spoken history.
+    expect(prompts[1]).not.toContain("x".repeat(1_000));
+    // Durable history keeps what the operator said, not the directive.
+    const messages = scoutbot.getSessionState().session.messages;
+    expect(messages.some((message) => message.body.includes(SCOUTBOT_SPOKEN_REPLY_DIRECTIVE))).toBe(false);
+  });
+
+  test("spoken turns try OpenAI first with reasoning off; typed turns keep the agent first", async () => {
+    const openAIBodies: Array<Record<string, unknown>> = [];
+    let codexCalls = 0;
+    const scoutbot = createScoutbotAssistantService({
+      currentDirectory: "/tmp/openscout",
+      loadContext: () => ({ ok: true }),
+      env: { OPENAI_API_KEY: "sk-test" } as NodeJS.ProcessEnv,
+      invokeCodex: async () => {
+        codexCalls += 1;
+        return { output: "from codex", threadId: "thread" };
+      },
+      fetchImpl: async (_url, init) => {
+        openAIBodies.push(JSON.parse(String(init?.body)));
+        return new Response(JSON.stringify({ id: "resp_1", output_text: "from openai" }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      },
+    });
+
+    const typed = await scoutbot.respond({ body: "typed question" });
+    expect(typed.reply.body).toBe("from codex");
+    expect(openAIBodies).toHaveLength(0);
+
+    const spoken = await scoutbot.respond({ body: "spoken question", usageMode: "local" });
+    expect(spoken.reply.body).toBe("from openai");
+    expect(codexCalls).toBe(1);
+    expect(openAIBodies[0]).toMatchObject({ model: "gpt-6-luna", reasoning: { effort: "none" } });
+  });
+
+  test("a spoken turn can look up a file before opening it; typed turns get no tools", async () => {
+    const bodies: Array<Record<string, unknown>> = [];
+    const queries: string[] = [];
+    const reply = (payload: Record<string, unknown>) => new Response(JSON.stringify(payload), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+    const scoutbot = createScoutbotAssistantService({
+      currentDirectory: "/tmp/openscout",
+      loadContext: () => ({ ok: true }),
+      env: { OPENAI_API_KEY: "sk-test", OPENSCOUT_SCOUTBOT_ASSISTANT_PROVIDER: "openai" } as NodeJS.ProcessEnv,
+      findFiles: async (query) => {
+        queries.push(query);
+        return ["/tmp/openscout/docs/live-voice-lifecycle.md"];
+      },
+      fetchImpl: async (_url, init) => {
+        const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+        bodies.push(body);
+        if (body.tool_choice === "auto" && bodies.length === 1) {
+          return reply({
+            id: "resp_call",
+            output: [{ type: "function_call", call_id: "call_1", name: "find_files", arguments: "{\"query\":\"live voice lifecycle\"}" }],
+            usage: { input_tokens: 100, output_tokens: 5, total_tokens: 105 },
+          });
+        }
+        return reply({
+          id: "resp_final",
+          output_text: "Opening it.\n```scout-ui\n{\"type\":\"view-file\",\"path\":\"/tmp/openscout/docs/live-voice-lifecycle.md\"}\n```",
+          usage: { input_tokens: 120, output_tokens: 20, total_tokens: 140 },
+        });
+      },
+    });
+
+    const spoken = await scoutbot.respond({ body: "show me the live voice lifecycle doc", usageMode: "local" });
+    expect(queries).toEqual(["live voice lifecycle"]);
+    expect(bodies).toHaveLength(2);
+    expect(bodies[0]).toMatchObject({ tool_choice: "auto", tools: [{ name: "find_files" }] });
+    expect(bodies[0]).not.toHaveProperty("previous_response_id");
+    expect(bodies[1]!.input).toEqual([
+      expect.objectContaining({ role: "user" }),
+      { type: "function_call", call_id: "call_1", name: "find_files", arguments: "{\"query\":\"live voice lifecycle\"}" },
+      { type: "function_call_output", call_id: "call_1", output: JSON.stringify({ matches: ["/tmp/openscout/docs/live-voice-lifecycle.md"] }) },
+    ]);
+    expect(spoken.reply.body).toContain("/tmp/openscout/docs/live-voice-lifecycle.md");
+
+    bodies.length = 0;
+    await scoutbot.respond({ body: "typed question" });
+    expect(bodies[0]).not.toHaveProperty("tools");
+  });
+
+  test("a spoken turn stops offering tools after two lookup rounds", async () => {
+    const choices: unknown[] = [];
+    const scoutbot = createScoutbotAssistantService({
+      currentDirectory: "/tmp/openscout",
+      loadContext: () => ({ ok: true }),
+      env: { OPENAI_API_KEY: "sk-test", OPENSCOUT_SCOUTBOT_ASSISTANT_PROVIDER: "openai" } as NodeJS.ProcessEnv,
+      findFiles: async () => [],
+      fetchImpl: async (_url, init) => {
+        const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+        choices.push(body.tool_choice);
+        const payload = body.tool_choice === "auto"
+          ? { id: "r", output: [{ type: "function_call", call_id: `c${choices.length}`, name: "find_files", arguments: "{\"query\":\"x\"}" }] }
+          : { id: "r", output_text: "I couldn't find that file." };
+        return new Response(JSON.stringify(payload), { status: 200, headers: { "content-type": "application/json" } });
+      },
+    });
+
+    const spoken = await scoutbot.respond({ body: "open the missing doc", usageMode: "local" });
+    expect(choices).toEqual(["auto", "auto", "none"]);
+    expect(spoken.reply.body).toBe("I couldn't find that file.");
+  });
+
+  test("a spoken turn uses the prewarmed snapshot once, then loads fresh", async () => {
+    let loads = 0;
+    const prompts: string[] = [];
+    const scoutbot = createScoutbotAssistantService({
+      currentDirectory: "/tmp/openscout",
+      loadContext: () => ({ load: (loads += 1) }),
+      env: { OPENSCOUT_SCOUTBOT_ASSISTANT_PROVIDER: "codex" } as NodeJS.ProcessEnv,
+      invokeCodex: async (input) => {
+        prompts.push(input.prompt);
+        return { output: "ok", threadId: "thread" };
+      },
+    });
+
+    scoutbot.prewarmSpokenContext({ view: "voice" });
+    expect(loads).toBe(1);
+    await scoutbot.respond({ body: "first", usageMode: "local", route: { view: "voice" } });
+    expect(loads).toBe(1);
+    expect(prompts[0]).toContain("\"load\":1");
+
+    await scoutbot.respond({ body: "second", usageMode: "local", route: { view: "voice" } });
+    expect(loads).toBe(2);
+
+    // A prewarm for another route is not reused.
+    scoutbot.prewarmSpokenContext({ view: "inbox" });
+    await scoutbot.respond({ body: "third", usageMode: "local", route: { view: "voice" } });
+    expect(loads).toBe(4);
   });
 
   test("session recap does not append conversational Scoutbot history", async () => {

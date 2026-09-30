@@ -1,10 +1,10 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
 import { isolateOpenScoutUserDataForTests } from "./test-user-data-isolation.ts";
 
 isolateOpenScoutUserDataForTests();
 
-import { chmodSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -95,6 +95,23 @@ async function withEnv<T>(patch: Record<string, string | undefined>, fn: () => T
   const next = envQueue.then(run, run);
   envQueue = next.catch(() => undefined);
   return await next;
+}
+
+function withPlatform<T>(platform: NodeJS.Platform, run: () => T): T {
+  const previous = Object.getOwnPropertyDescriptor(process, "platform");
+  Object.defineProperty(process, "platform", { configurable: true, enumerable: true, value: platform });
+  const restorePlatform = () => {
+    if (previous) Object.defineProperty(process, "platform", previous);
+  };
+  try {
+    const result = run();
+    if (result instanceof Promise) return result.finally(restorePlatform) as T;
+    restorePlatform();
+    return result;
+  } catch (error) {
+    restorePlatform();
+    throw error;
+  }
 }
 
 function restore(previous: Map<string, string | undefined>): void {
@@ -276,10 +293,10 @@ describe("broker service scoutd adapter", () => {
       runtimePackageDir: packageRoot,
     };
 
-    const resolved = await withEnv({
+    const resolved = await withPlatform("darwin", () => withEnv({
       OPENSCOUT_SCOUTD_BIN: undefined,
       PATH: join(root, "path"),
-    }, () => resolveScoutdCommand(packagedConfig));
+    }, () => resolveScoutdCommand(packagedConfig)));
 
     expect(resolved).toEqual({ path: scoutd, source: "package" });
   });
@@ -297,11 +314,11 @@ describe("broker service scoutd adapter", () => {
       runtimePackageDir: join(root, "packages", "runtime"),
     };
 
-    const resolved = await withEnv({
+    const resolved = await withPlatform("darwin", () => withEnv({
       OPENSCOUT_SCOUTD_BIN: undefined,
       OPENSCOUT_ALLOW_WORKSPACE_SCOUTD: undefined,
       PATH: join(root, "path"),
-    }, () => resolveScoutdCommand(workspaceConfig));
+    }, () => resolveScoutdCommand(workspaceConfig)));
 
     expect(resolved).toEqual({ path: scoutd, source: "package" });
   });
@@ -310,10 +327,10 @@ describe("broker service scoutd adapter", () => {
     const root = mkdtempSync(join(tmpdir(), "openscout-scoutd-env-"));
     const scoutd = writeExecutable(join(root, "custom-scoutd"));
 
-    const resolved = await withEnv({
+    const resolved = await withPlatform("darwin", () => withEnv({
       OPENSCOUT_SCOUTD_BIN: scoutd,
       PATH: "",
-    }, () => resolveScoutdCommand(config));
+    }, () => resolveScoutdCommand(config)));
 
     expect(resolved).toEqual({ path: scoutd, source: "env" });
   });
@@ -330,11 +347,11 @@ describe("broker service scoutd adapter", () => {
       runtimePackageDir: join(root, "packages", "runtime"),
     };
 
-    const resolved = await withEnv({
+    const resolved = await withPlatform("darwin", () => withEnv({
       OPENSCOUT_SCOUTD_BIN: undefined,
       OPENSCOUT_ALLOW_WORKSPACE_SCOUTD: undefined,
       PATH: join(root, "bin"),
-    }, () => resolveScoutdCommand(workspaceConfig));
+    }, () => resolveScoutdCommand(workspaceConfig)));
 
     expect(resolved).toEqual({ path: scoutd, source: "path" });
   });
@@ -351,11 +368,11 @@ describe("broker service scoutd adapter", () => {
       runtimePackageDir: join(root, "packages", "runtime"),
     };
 
-    const resolved = await withEnv({
+    const resolved = await withPlatform("darwin", () => withEnv({
       OPENSCOUT_SCOUTD_BIN: undefined,
       OPENSCOUT_ALLOW_WORKSPACE_SCOUTD: "1",
       PATH: "",
-    }, () => resolveScoutdCommand(workspaceConfig));
+    }, () => resolveScoutdCommand(workspaceConfig)));
 
     expect(debugScoutd).toContain("target/debug/scoutd");
     expect(resolved).toEqual({ path: releaseScoutd, source: "workspace" });
@@ -384,6 +401,24 @@ describe("broker service scoutd adapter", () => {
 });
 
 describe("runScoutdServiceCommand shell-out", () => {
+  let previousPlatform: PropertyDescriptor | undefined;
+  beforeEach(() => {
+    previousPlatform = Object.getOwnPropertyDescriptor(process, "platform");
+    Object.defineProperty(process, "platform", { configurable: true, enumerable: true, value: "darwin" });
+  });
+  afterEach(() => {
+    if (previousPlatform) Object.defineProperty(process, "platform", previousPlatform);
+  });
+
+  test("preserves connected native health timeout provenance", async () => {
+    const scoutd = writeExecutable(join(mkdtempSync(join(tmpdir(), "openscout-scoutd-timeout-")), "scoutd"));
+    const result = await withEnv({ OPENSCOUT_SCOUTD_BIN: scoutd }, () =>
+      runScoutdServiceCommand("status", config, 45_000, async () => JSON.stringify({
+        health: { reachable: true, ok: false, state: "timed_out", checkedAt: 1700000000, durationMs: 1001 },
+      })));
+    expect(result.health).toMatchObject({ reachable: true, ok: false, state: "timed_out", checkedAt: 1700000000, durationMs: 1001 });
+  });
+
   test("parses scoutd JSON into the normalized status shape", async () => {
     const status = {
       label: "app.openscout",
@@ -565,6 +600,52 @@ describe("runScoutdServiceCommand shell-out", () => {
     ).rejects.toThrow(/scoutd start timed out after 100ms/);
     // Must reject promptly, not let a runaway child pin the caller.
     expect(Date.now() - started).toBeLessThan(2000);
+  });
+});
+
+describe("tmp support directory fallback", () => {
+  test("a /tmp support directory falls back to the platform default", async () => {
+    await withEnv({
+      OPENSCOUT_SUPPORT_DIRECTORY: "/tmp/openscout-remote-install",
+      XDG_DATA_HOME: undefined,
+    }, () => withPlatform("linux", () => {
+      const serviceConfig = resolveBrokerServiceConfig();
+      const supportDirectory = join(homedir(), ".local", "share", "openscout");
+      expect(serviceConfig.supportDirectory).toBe(supportDirectory);
+      expect(serviceConfig.runtimeDirectory).toBe(join(supportDirectory, "runtime"));
+      expect(serviceConfig.logsDirectory).toBe(join(supportDirectory, "logs", "broker"));
+    }));
+
+    await withEnv({
+      OPENSCOUT_SUPPORT_DIRECTORY: "/tmp/openscout-remote-install",
+      XDG_DATA_HOME: "/var/lib/openscout-should-not-apply",
+    }, () => withPlatform("darwin", () => {
+      expect(resolveBrokerServiceConfig().supportDirectory)
+        .toBe(join(homedir(), "Library", "Application Support", "OpenScout"));
+    }));
+  });
+});
+
+describe("scoutd resolution on linux", () => {
+  test("does not resolve or spawn scoutd when process.platform is linux", async () => {
+    const root = mkdtempSync(join(tmpdir(), "openscout-scoutd-linux-"));
+    const marker = join(root, "spawned");
+    const scoutd = writeExecutableScript(join(root, "scoutd"), `#!/bin/sh\ntouch ${JSON.stringify(marker)}\n`);
+    try {
+      await withPlatform("linux", async () => {
+        const resolved = await withEnv({
+          OPENSCOUT_SCOUTD_BIN: scoutd,
+          PATH: root,
+        }, () => resolveScoutdCommand(config));
+        expect(resolved).toBeNull();
+        await expect(withEnv({ OPENSCOUT_SCOUTD_BIN: scoutd }, () =>
+          runScoutdServiceCommand("status", config, 1_000),
+        )).rejects.toThrow("native supervisor: not applicable on linux");
+      });
+      expect(existsSync(marker)).toBe(false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });
 

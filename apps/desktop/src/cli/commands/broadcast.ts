@@ -40,6 +40,9 @@ export async function runBroadcastCommand(context: ScoutCommandContext, args: st
   if (options.channel) {
     throw new ScoutCliError("broadcast always targets channel.shared; do not pass --channel");
   }
+  if (options.tracked) {
+    throw new ScoutCliError("broadcast is message-only; --tracked applies to a directed `scout send --to`");
+  }
   const currentDirectory = options.currentDirectory ?? defaultScoutContextDirectory(context);
   const senderId = await resolveScoutSenderId(options.agentName, currentDirectory, context.env);
   const body = await resolveMessageBody(options);

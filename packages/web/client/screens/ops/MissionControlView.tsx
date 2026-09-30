@@ -84,6 +84,8 @@ function syntheticAgent(log: MissionLog): Agent {
     definitionId: `native:${log.source}:${log.sessionId}`,
     name: `${log.source} · ${log.project}`,
     handle: log.sessionId.slice(0, 8),
+    authorityNodeId: null,
+    authorityNodeName: null,
     agentClass: "native-session",
     harness: log.source,
     state: log.live ? "working" : "ready",

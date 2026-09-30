@@ -7,7 +7,7 @@ const HELP_FLAGS = new Set(["--help", "-h"]);
 /**
  * `scout ask --operator` — the agent's way to say it cannot proceed without the operator.
  *
- * This is the *declared* half of the needs-you surface. Everything else that
+ * This is the *declared* half of the requests surface. Everything else that
  * raises the operator is inferred: a permission prompt spotted in a harness
  * snapshot, a session that stopped moving. Inference is a guess about an agent
  * that cannot speak for itself, and it produced alerts with nothing in them.

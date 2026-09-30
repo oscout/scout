@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 
 import type { LifecycleProcess, LifecycleTree } from "../app-lifecycle.ts";
-import { lifecycleProblems, selectInstalledAppBundle, startTreeReady } from "./app.ts";
+import { lifecycleProblems, parseAppCommand, runAppCommand, selectInstalledAppBundle, startTreeReady } from "./app.ts";
 
 function process(layer: LifecycleProcess["layer"], pid: number): LifecycleProcess {
   return {
@@ -31,6 +31,7 @@ function treeWith(input: {
     app: [],
     menu: [],
     pairing: [],
+    bridge: [],
   };
   for (const entry of input.owned ?? []) layers[entry.layer].push(entry);
   return {
@@ -146,5 +147,38 @@ describe("selectInstalledAppBundle", () => {
       "/Users/art",
       (path) => path === relocated,
     )).toBe(relocated);
+  });
+});
+
+describe("parseAppCommand", () => {
+  test("restart waits for in-flight work by default", () => {
+    const command = parseAppCommand(["restart"]);
+    expect(command.action).toBe("restart");
+    expect(command.now).toBe(false);
+    expect(command.drainTimeoutMs).toBe(30 * 60_000);
+  });
+
+  test("--now and --timeout are parsed, and the timeout value is not a subcommand", () => {
+    expect(parseAppCommand(["restart", "--now"]).now).toBe(true);
+    expect(parseAppCommand(["restart", "--timeout", "90s"]).drainTimeoutMs).toBe(90_000);
+    expect(parseAppCommand(["--timeout=2h", "stop"])).toMatchObject({ action: "stop", drainTimeoutMs: 7_200_000 });
+  });
+
+  test("rejects an unreadable --timeout", () => {
+    expect(() => parseAppCommand(["restart", "--timeout", "soon"])).toThrow("invalid --timeout");
+  });
+});
+
+describe("runAppCommand help", () => {
+  test("--help after a verb prints help instead of running the verb", async () => {
+    const written: string[] = [];
+    const context = {
+      output: {
+        writeText: (text: string) => written.push(text),
+        writeValue: () => { throw new Error("lifecycle verb ran"); },
+      },
+    } as unknown as Parameters<typeof runAppCommand>[0];
+    await runAppCommand(context, ["restart", "--help"]);
+    expect(written[0]).toContain("scout app — OpenScout application lifecycle");
   });
 });

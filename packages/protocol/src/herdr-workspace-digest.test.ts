@@ -242,6 +242,25 @@ describe("digestHerdrTopology", () => {
 });
 
 describe("renderHerdrWorkspaceDigest", () => {
+  test("idle panel names and reported session identities remain visible in text", () => {
+    const digest = digestHerdrTopology(topology([pane("w1:p2", {
+      name: "devon-2-openscout", label: "Router investigation", agent: "devin", agentStatus: "idle",
+      agentSession: { agent: "devin", kind: "id", source: "herdr:devin", value: "plum-chef" },
+    })]));
+    expect(digest.groups[0]?.panes[0]).toMatchObject({ name: "devon-2-openscout", agentSession: { value: "plum-chef" } });
+    const text = renderHerdrWorkspaceDigest(digest);
+    expect(text).toContain("devon-2-openscout");
+    expect(text).toContain("Router investigation");
+    expect(text).toContain("reported devin id:plum-chef");
+    expect(text).toContain("2023-11-14T22:13:20.000Z");
+  });
+
+  test("a saved pane never retains a live target or activity claim", () => {
+    const digest = digestHerdrTopology(topology([pane("w1:p2", { name: "devon-2", agentStatus: "working" })], { running: false }));
+    expect(digest.groups[0]?.panes[0]).toMatchObject({ name: "devon-2", target: null, status: "unknown" });
+    expect(digest.working).toEqual([]);
+    expect(digest.counts.working).toBe(0);
+  });
   test("puts what is waiting above what is moving, above the inventory", () => {
     const text = renderHerdrWorkspaceDigest(digestHerdrTopology(topology([
       pane("w1:p1", { agent: "claude", agentStatus: "working" }),
@@ -249,7 +268,7 @@ describe("renderHerdrWorkspaceDigest", () => {
     ])));
 
     expect(text).toContain("herdr · openscout — live · 1 workspace, 1 tab, 2 panes (1 blocked · 1 working)");
-    expect(text.indexOf("Waiting on you")).toBeLessThan(text.indexOf("Working now"));
+    expect(text.indexOf("Requests")).toBeLessThan(text.indexOf("Working now"));
     expect(text.indexOf("Working now")).toBeLessThan(text.indexOf("Grouped by directory"));
     expect(text.indexOf("Grouped by directory")).toBeLessThan(text.indexOf("Arranged like this"));
   });
@@ -260,7 +279,7 @@ describe("renderHerdrWorkspaceDigest", () => {
       pane("w1:p2", { agent: "claude", agentStatus: "working" }),
     ])));
     const heads = text.split("\n").filter((line) => line && !line.startsWith(" ") && !line.startsWith("herdr ·"));
-    expect(heads).toEqual(["Waiting on you", "Working now", "Grouped by directory", "Arranged like this"]);
+    expect(heads).toEqual(["Requests", "Working now", "Grouped by directory", "Arranged like this"]);
   });
 
   test("leads a row with its label, and with the short pane id when it has none", () => {
@@ -285,7 +304,7 @@ describe("renderHerdrWorkspaceDigest", () => {
 
   test("omits sections it has nothing to say in", () => {
     const text = renderHerdrWorkspaceDigest(digestHerdrTopology(topology([pane("w1:p1")])));
-    expect(text).not.toContain("Waiting on you");
+    expect(text).not.toContain("Requests");
     expect(text).not.toContain("Working now");
     expect(text).toContain("Grouped by directory");
   });

@@ -1,0 +1,199 @@
+/* Hosted Scout Chat — the example room (`HostedLiveRoom.tsx`).
+ *
+ * A picture of the product, drawn in the same tokens as the product: ink,
+ * hairlines, one surface, and no accent. The window's shadow is the one
+ * standing shadow on the landing. */
+
+.hcl-room {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  margin: 0;
+}
+/* The caption sits under the window it describes, small, like a figure's. */
+.hcl-room-cap {
+  order: 2;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: center;
+  gap: 6px 10px;
+  margin-top: 16px;
+  font-size: 12.5px;
+  color: var(--dim);
+}
+.hcl-room-cap .hcl-eyebrow { margin: 0; }
+/* Inert by construction: a picture of the product accepts no click, caret or
+   selection. The one standing shadow on the page: a window over the canvas. */
+.hcl-room-frame {
+  pointer-events: none;
+  user-select: none;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background: var(--bg);
+  box-shadow: 0 30px 80px var(--shadow-soft), 0 2px 6px var(--shadow-soft);
+}
+.hcl-room-bar {
+  height: 46px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 16px;
+  border-bottom: 1px solid var(--border);
+  background: var(--hcl-raised);
+}
+.hcl-room-chan { font-family: var(--font-accent-title); font-size: 15px; font-weight: 600; letter-spacing: -0.01em; }
+.hcl-room-chan i, .hcl-room-link i { font-style: normal; color: var(--muted); margin-right: 3px; font-weight: 500; }
+.hcl-room-space { font-family: var(--font-mono); font-size: 11px; color: var(--muted); }
+.hcl-room-faces { margin-left: auto; display: inline-flex; align-items: center; }
+.hcl-room-faces > * {
+  position: relative;
+  margin-left: -6px;
+  border-radius: 50%;
+  box-shadow: 0 0 0 2px var(--hcl-raised);
+}
+.hcl-room-faces > *:first-child { margin-left: 0; }
+.hcl-room .xc-badge-mark { z-index: 2; }
+
+.hcl-room-body {
+  display: grid;
+  grid-template-columns: 200px minmax(0, 1fr);
+  height: 440px;
+}
+.hcl-room-rail {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 16px 10px;
+  border-right: 1px solid var(--border);
+  background: color-mix(in srgb, var(--surface) 30%, var(--bg));
+}
+.hcl-room-group { padding: 4px 8px 6px; }
+.hcl-room-link { padding: 5px 8px; border-radius: 6px; font-size: 13.5px; color: var(--muted); }
+.hcl-room-link[data-on="true"] { background: var(--scout-chrome-active); color: var(--ink); font-weight: 500; }
+.hcl-room-rule { height: 1px; margin: 12px 8px; background: var(--border); }
+.hcl-room-who { display: flex; align-items: center; gap: 8px; padding: 4px 8px; font-size: 13px; color: var(--muted); }
+.hcl-room-typing { margin-left: auto; font-family: var(--font-mono); font-size: 10px; color: var(--muted); }
+
+.hcl-room-main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+/* Newest at the bottom; older turns rise and fade under the band. */
+.hcl-room-feed {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  padding: 20px 28px 14px;
+  mask-image: linear-gradient(to bottom, transparent 0, #000 64px);
+  transition: opacity 420ms ease;
+}
+.hcl-room-feed[data-fading] { opacity: 0; }
+.hcl-room-stack { display: flex; flex-direction: column; gap: 18px; will-change: transform; }
+.hcl-turn {
+  display: grid;
+  grid-template-columns: 36px minmax(0, 1fr);
+  gap: 12px;
+  animation: hcl-land 520ms cubic-bezier(0.2, 0.7, 0.2, 1) both;
+}
+.hcl-turn-text { min-width: 0; }
+.hcl-turn-meta { display: flex; align-items: baseline; flex-wrap: wrap; gap: 8px; }
+.hcl-turn-who { font-size: 14px; font-weight: 600; }
+.hcl-turn-tag, .hcl-turn-when { font-family: var(--font-mono); font-size: 10.5px; color: var(--muted); }
+.hcl-turn-when { margin-left: auto; }
+.hcl-turn-body { margin: 3px 0 0; font-size: 14.5px; line-height: 1.5; }
+.hcl-mention {
+  padding: 0 3px;
+  margin: 0 -1px;
+  border-radius: 4px;
+  font-weight: 600;
+  background: color-mix(in srgb, var(--ink) 9%, transparent);
+}
+/* The opening turns are the room as it stands: they are there on arrival, not
+   landing, so a fresh load never shows an empty feed. */
+.hcl-turn[data-seeded] { animation: none; }
+.hcl-turn[data-mention] .hcl-mention { animation: hcl-ping 1200ms ease-out 300ms both; }
+
+.hcl-typing { display: flex; align-items: center; gap: 12px; animation: hcl-land 520ms cubic-bezier(0.2, 0.7, 0.2, 1) both; }
+.hcl-typing-label { font-size: 12.5px; color: var(--muted); }
+.hcl-typing-dots {
+  display: inline-flex;
+  gap: 4px;
+  padding: 9px 11px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+}
+.hcl-typing-dots i {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--muted);
+  animation: hcl-dot 1100ms ease-in-out infinite;
+}
+.hcl-typing-dots i:nth-child(2) { animation-delay: 150ms; }
+.hcl-typing-dots i:nth-child(3) { animation-delay: 300ms; }
+
+.hcl-composer {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  height: 48px;
+  margin: 0 28px 18px;
+  padding: 0 8px 0 14px;
+  border: 1px solid color-mix(in srgb, var(--ink) 14%, transparent);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--surface) 30%, var(--bg));
+  transition: border-color 200ms ease;
+}
+.hcl-composer[data-active="true"] { border-color: color-mix(in srgb, var(--ink) 30%, transparent); }
+.hcl-composer-text { flex: 1; min-width: 0; font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.hcl-composer-hint { color: var(--muted); }
+.hcl-caret {
+  display: inline-block;
+  width: 1.5px;
+  height: 1.05em;
+  margin-left: 1px;
+  vertical-align: -0.15em;
+  background: var(--ink);
+  animation: hcl-blink 1s steps(1) infinite;
+}
+.hcl-composer-send {
+  padding: 6px 12px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--muted);
+}
+.hcl-composer[data-active="true"] .hcl-composer-send { color: var(--ink); }
+
+@keyframes hcl-land { from { opacity: 0; transform: scale(0.985); } to { opacity: 1; transform: none; } }
+@keyframes hcl-ping {
+  0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--ink) 30%, transparent); }
+  100% { box-shadow: 0 0 0 6px transparent; }
+}
+@keyframes hcl-dot { 0%, 60%, 100% { opacity: 0.3; transform: none; } 30% { opacity: 1; transform: translateY(-2px); } }
+@keyframes hcl-blink { 50% { opacity: 0; } }
+
+@media (prefers-reduced-motion: reduce) {
+  .hcl-turn,
+  .hcl-typing,
+  .hcl-typing-dots i,
+  .hcl-caret,
+  .hcl-turn[data-mention] .hcl-mention { animation: none; }
+  .hcl-room-feed { transition: none; }
+}
+
+@media (max-width: 899px) {
+  .hcl-room-body { grid-template-columns: minmax(0, 1fr); height: 400px; }
+  .hcl-room-rail { display: none; }
+}
+
+@media (max-width: 599px) {
+  .hcl-room-faces { display: none; }
+  .hcl-room-feed { padding: 16px 14px 12px; }
+  .hcl-composer { margin: 0 14px 14px; }
+  .hcl-room-body { height: 380px; }
+  .hcl-room-frame { border-radius: 12px; }
+}

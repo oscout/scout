@@ -378,7 +378,12 @@ const BUILT_IN_HARNESS_CATALOG: HarnessCatalogEntry[] = [
   {
     name: "opencode",
     harness: "opencode",
-    aliases: ["oc", "opencode2"],
+    // `oc` is a short handle for this harness. `opencode2` is deliberately NOT
+    // an alias: product-V2 is a breaking /api + SSE integration (separate
+    // `opencode-v2` adapter against the registered `opencode2` service), not a
+    // spelling of V1-over-ACP. A route asking for it must fail closed until V2
+    // is a distinct, routable harness.
+    aliases: ["oc"],
     label: "OpenCode",
     description: "OpenCode's coding agent over ACP, fronting many model vendors via OpenCode Zen",
     homepage: "https://opencode.ai/docs/",

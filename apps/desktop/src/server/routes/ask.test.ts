@@ -18,6 +18,10 @@ function createAskRouteTestApp(options: {
       flightId?: string;
       workId?: string;
     };
+    error?: {
+      code: "broker_unreachable" | "invalid_request" | "preflight_failed";
+      message: string;
+    };
     next?: {
       tool: "agents_resolve" | "agents_search" | "agents_start";
       arguments: Record<string, unknown>;
@@ -140,6 +144,35 @@ describe("createAskRoutes", () => {
         reason: "Choose one concrete target, then retry the ask.",
       },
     });
+  });
+
+  test("maps broker read preflight failures to 502, not a request-shape error", async () => {
+    const { app } = createAskRouteTestApp({
+      scoutAskHandler: async () => ({
+        ok: false,
+        state: "failed",
+        ids: {},
+        error: {
+          code: "preflight_failed",
+          message: "broker preflight failed: /v1/snapshot read failed (500); the broker is up — the request is safe to retry",
+        },
+      }),
+    });
+
+    const response = await app.request("http://localhost/api/ask", {
+      method: "POST",
+      body: JSON.stringify({
+        to: "talkie",
+        body: "Review this.",
+      }),
+      headers: { "content-type": "application/json" },
+    });
+
+    expect(response.status).toBe(502);
+    expect(await response.json()).toEqual(expect.objectContaining({
+      ok: false,
+      error: expect.objectContaining({ code: "preflight_failed" }),
+    }));
   });
 
   test("posts a project-path ask without an agent label", async () => {

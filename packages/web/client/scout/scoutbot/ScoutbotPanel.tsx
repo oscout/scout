@@ -14,8 +14,6 @@ import {
   stripScoutbotUiFences,
 } from "../../lib/scoutbot.ts";
 import { toSpokenScoutText } from "../../lib/spoken-text.ts";
-import { streamScoutbotChat } from "../../lib/scoutbot-chat-stream.ts";
-import { startScoutbotSpeechPipeline } from "../../lib/scoutbot-speech-pipeline.ts";
 import {
   isScoutSpeechStopped,
   ensureScoutVoiceAutoProbe,
@@ -636,96 +634,7 @@ export function ScoutbotPanel({
     };
   }, [loadScoutbotSession]);
 
-  // Voice-turn fast path: stream the reply as sentences and pipeline TTS so
-  // the first sentence speaks while the rest generates. Ledger spans mirror
-  // runSpeech — one prep-open at first prepare, one speak-open at first
-  // playback, speak-close + close when the queue drains after the final event.
-  const runStreamedVoiceReply = useCallback(async (trimmed: string, controller: AbortController) => {
-    stopSpeech();
-    const pipeline = startScoutbotSpeechPipeline({
-      speed: voiceSpeed,
-      modelId: speechVoice.modelId,
-      voiceId: speechVoice.voiceId,
-      instructions: speechVoice.instructions,
-      playback: speechVoice.playback,
-      toSpoken: toSpokenScoutText,
-    }, {
-      onPrepareStart: () => {
-        setSpeaking(true);
-        emitTurn({
-          t: "prep-open",
-          at: Date.now(),
-          label: speechVoice.playback === "host" ? "speech on this Mac" : "tts",
-        });
-      },
-      onPlaybackStart: (text) => {
-        emitTurn({ t: "speak-open", at: Date.now(), text: text.slice(0, 180) });
-      },
-    });
-    const speech = { promise: pipeline.promise, stop: pipeline.stop };
-    speechRef.current = speech;
-    void pipeline.promise
-      .catch((err) => {
-        if (!isScoutSpeechStopped(err)) {
-          const message = err instanceof Error ? err.message : String(err);
-          console.warn("[scoutbot] reply speech unavailable", { message });
-          setError(message);
-        }
-      })
-      .finally(() => {
-        if (speechRef.current === speech) {
-          speechRef.current = null;
-          setSpeaking(false);
-          emitTurn({ t: "speak-close", at: Date.now() });
-          emitTurn({ t: "close", at: Date.now() });
-        }
-      });
-
-    let receivedFinal = false;
-    let streamFailure: Error | null = null;
-    try {
-      await streamScoutbotChat({
-        body: trimmed,
-        route,
-        uiContext: { ...scoutbotUiContext("web"), usageMode: presentation === "direct-voice" ? "local" : "chat" },
-        signal: controller.signal,
-      }, {
-        onSentence: (text) => pipeline.push(text),
-        onFinal: (reply) => {
-          receivedFinal = true;
-          // Let the queued sentences drain; the pipeline settle emits closes.
-          pipeline.finish();
-          if (controller.signal.aborted) return;
-          setSessionState({
-            session: reply.session,
-            sessions: reply.sessions,
-            config: reply.config,
-          });
-          setAskStatus("Reply received");
-          setLastReply(stripScoutbotUiFences(reply.reply.body));
-          emitTurn({ t: "bot-close", at: Date.now() });
-          applyScoutbotActions(reply.reply.body);
-        },
-        onError: ({ message }) => {
-          // Mid-stream failure: queued sentences still drain, then the outer
-          // catch surfaces the error line and closes the turn.
-          streamFailure = new Error(message);
-          emitTurn({ t: "bot-close", at: Date.now() });
-          pipeline.finish();
-        },
-      });
-    } catch (err) {
-      pipeline.finish();
-      throw err;
-    }
-    if (streamFailure) throw streamFailure;
-    if (!receivedFinal && !controller.signal.aborted) {
-      pipeline.finish();
-      throw new Error("Scoutbot reply stream ended before the reply completed.");
-    }
-  }, [applyScoutbotActions, emitTurn, presentation, route, speechVoice, stopSpeech, voiceSpeed]);
-
-  const askScoutbot = useCallback(async (body: string, options?: { streamVoiceReply?: boolean }) => {
+  const askScoutbot = useCallback(async (body: string) => {
     const trimmed = body.trim();
     if (!trimmed || sending) return;
     const controller = new AbortController();
@@ -744,10 +653,6 @@ export function ScoutbotPanel({
     try {
       await ensureOpenAIKeyOnServer().catch(() => null);
       if (controller.signal.aborted) return;
-      if (options?.streamVoiceReply) {
-        await runStreamedVoiceReply(trimmed, controller);
-        return;
-      }
       const result = await api<ScoutbotAssistantReply>("/api/scoutbot/chat", {
         method: "POST",
         body: JSON.stringify({
@@ -778,7 +683,7 @@ export function ScoutbotPanel({
         emitTurn({ t: "close", at: Date.now() });
       }
     }
-  }, [emitTurn, handleScoutbotReply, presentation, route, runStreamedVoiceReply, sending, sessionState]);
+  }, [emitTurn, handleScoutbotReply, presentation, route, sending, sessionState]);
 
   const startVoice = useCallback(async () => {
     if (recording) return;
@@ -823,6 +728,10 @@ export function ScoutbotPanel({
       liveRef.current = live;
       setRecording(true);
       emitTurn({ t: "you-open", at: Date.now() });
+      if (presentation === "direct-voice") {
+        // Gather Scout state while the operator talks; the reply starts sooner.
+        void api("/api/scoutbot/prewarm", { method: "POST", body: JSON.stringify({ route }) }).catch(() => undefined);
+      }
       const final = await live.result;
       await cleanupLive();
       if (!mountedRef.current) return;
@@ -836,13 +745,10 @@ export function ScoutbotPanel({
       }
       setVoiceState("done");
       if (final.text) {
-        // Direct voice turns with speakable browser playback stream the reply
-        // sentence-by-sentence; host playback (device voice) and typed chat
-        // keep the whole-reply path.
-        const streamVoiceReply = presentation === "direct-voice"
-          && voiceRepliesRef.current
-          && speechVoice.playback !== "host";
-        await askScoutbot(final.text, streamVoiceReply ? { streamVoiceReply: true } : undefined);
+        // Spoken replies are one to three sentences, so the whole reply goes
+        // to speech as one request: one continuous take, no gaps between
+        // per-sentence requests, nothing for a newer sentence to cut off.
+        await askScoutbot(final.text);
       } else {
         emitTurn({ t: "close", at: Date.now() });
       }
@@ -866,7 +772,7 @@ export function ScoutbotPanel({
       if (mountedRef.current) await cleanupLive();
       liveCancelReasonRef.current = null;
     }
-  }, [askScoutbot, emitTurn, presentation, probeVoice, recording, speechVoice, voiceAvailable]);
+  }, [askScoutbot, emitTurn, presentation, probeVoice, recording, route, voiceAvailable]);
 
   const stopVoice = useCallback(async () => {
     const live = liveRef.current;

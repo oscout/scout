@@ -111,9 +111,10 @@ fn register_hit(app: &mut App, area: Rect, kind: HitKind) {
 fn split_dossier(area: Rect, left_pct: u16) -> (Rect, Rect, Rect) {
     let inner = area.width.saturating_sub(1);
     let min_side = 12u16.min(inner / 3);
-    let left_w = ((u32::from(inner) * u32::from(left_pct.clamp(28, 75))) / 100)
-        .clamp(u32::from(min_side), u32::from(inner.saturating_sub(min_side)))
-        as u16;
+    let left_w = ((u32::from(inner) * u32::from(left_pct.clamp(28, 75))) / 100).clamp(
+        u32::from(min_side),
+        u32::from(inner.saturating_sub(min_side)),
+    ) as u16;
     let right_w = inner.saturating_sub(left_w);
     (
         Rect {
@@ -145,7 +146,11 @@ fn paint_split(frame: &mut Frame, app: &mut App, sep: Rect) {
     frame.render_widget(Paragraph::new(lines), sep);
     let hit_x = sep.x.saturating_sub(1);
     let hit_w = sep.width.saturating_add(if sep.x > 0 { 2 } else { 1 });
-    register_hit(app, Rect::new(hit_x, sep.y, hit_w, sep.height), HitKind::Split);
+    register_hit(
+        app,
+        Rect::new(hit_x, sep.y, hit_w, sep.height),
+        HitKind::Split,
+    );
 }
 
 pub fn draw(frame: &mut Frame, app: &mut App) {
@@ -215,7 +220,13 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     draw_footer(frame, app, footer_area, selected.as_ref());
 }
 
-fn draw_mast(frame: &mut Frame, app: &mut App, area: Rect, agents: &[Agent], selected: Option<&Agent>) {
+fn draw_mast(
+    frame: &mut Frame,
+    app: &mut App,
+    area: Rect,
+    agents: &[Agent],
+    selected: Option<&Agent>,
+) {
     let width = area.width as usize;
     let live_count = agents.iter().filter(|a| a.live).count();
     let need_count = agents.iter().filter(|a| a.needs).count();
@@ -307,10 +318,7 @@ fn draw_mast(frame: &mut Frame, app: &mut App, area: Rect, agents: &[Agent], sel
             } else {
                 format!(
                     "harvest · {} fruit · +{} −{} · {} at rest",
-                    total_files,
-                    total_adds,
-                    total_dels,
-                    rest_trees
+                    total_files, total_adds, total_dels, rest_trees
                 )
             },
             Style::default().fg(BONE),
@@ -1058,10 +1066,7 @@ fn draw_deck_column(
         } else {
             dock_spans.push(Span::styled("› ", Style::default().fg(EMBER)));
             dock_spans.push(Span::styled(
-                format!(
-                    "Press [i] to draft for {}   ·   Enter sends ",
-                    agent.handle
-                ),
+                format!("Press [i] to draft for {}   ·   Enter sends ", agent.handle),
                 Style::default().fg(BONE),
             ));
             dock_spans.push(Span::styled(
@@ -1336,7 +1341,11 @@ fn draw_machine_list(frame: &mut Frame, app: &mut App, agents: &[Agent], area: R
     }
 
     for (y, i) in mesh_hits {
-        register_hit(app, Rect::new(area.x, y, area.width, lane as u16), HitKind::Mesh(i));
+        register_hit(
+            app,
+            Rect::new(area.x, y, area.width, lane as u16),
+            HitKind::Mesh(i),
+        );
     }
 
     frame.render_widget(Paragraph::new(lines), area);
@@ -2004,10 +2013,7 @@ fn draw_take_harvest(frame: &mut Frame, app: &mut App, area: Rect) {
             } else if t.files.is_empty() {
                 "at rest".to_string()
             } else {
-                format!(
-                    "{} fruit",
-                    t.files.len()
-                )
+                format!("{} fruit", t.files.len())
             };
             let mut sub_line = Line::from(vec![
                 Span::styled(" ".repeat(meta_w), Style::default()),
@@ -3009,7 +3015,10 @@ fn draw_trace_stream(frame: &mut Frame, app: &App, session_id: &str, area: Rect)
                 spans.push(Span::styled("  ▸ ", Style::default().fg(ASH)));
                 let tool_name = r.tool.as_deref().unwrap_or("tool");
                 spans.push(Span::styled(
-                    truncate(&format!("{tool_name} {text}", text = r.text), width.saturating_sub(14)),
+                    truncate(
+                        &format!("{tool_name} {text}", text = r.text),
+                        width.saturating_sub(14),
+                    ),
                     Style::default().fg(ASH),
                 ));
             }
@@ -3367,10 +3376,7 @@ fn draw_help(frame: &mut Frame, area: Rect) {
     ];
     let controls: &[(&str, &str)] = &[
         ("j / k", "Navigate sessions / machines / harvest trees"),
-        (
-            "click",
-            "Select a row, or a take in the mast (1–7)",
-        ),
+        ("click", "Select a row, or a take in the mast (1–7)"),
         ("scroll", "Same as j / k"),
         (
             "[ / ]",

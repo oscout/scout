@@ -68,6 +68,9 @@ describe("listRelayAgentTmuxSessionOwners", () => {
     // Owner values carry the instance-qualified id the broker itself uses.
     expect(owners.get("session-abc123")).toBe("session-abc123.test-node");
     expect(owners.get("relay-session-abc123-test-node")).toBe("session-abc123.test-node");
+    // Per-harness default names, which launches without a saved profile use.
+    expect(owners.get("relay-session-abc123-test-node-claude")).toBe("session-abc123.test-node");
+    expect(owners.get("relay-session-abc123-test-node-codex")).toBe("session-abc123.test-node");
     // A lease claims sessions that no registration knows about anymore.
     expect(owners.get("session-lease-only")).toBe("session-lease-only");
     // No entry ever exists for a session nobody claims.

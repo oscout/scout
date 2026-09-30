@@ -35,7 +35,7 @@ import "./agents-console.css";
  * version SHA, and frontmatter triggers.
  *
  * Color discipline follows the agents-project port: one accent, spent only as
- * the precedence dot (needs-you ▸ live ▸ idle). Working-vs-idle otherwise reads
+ * the precedence dot (request ▸ live ▸ idle). Working-vs-idle otherwise reads
  * from the SpriteAvatar's own state brightness and from text contrast — never a
  * categorical status palette.
  */
@@ -246,7 +246,7 @@ export function AgentsConsole({
                         <span className="ac-agentName" data-idle={tone === "idle" || undefined}>
                           {entry.agent.name}
                         </span>
-                        {tone === "needs" ? <span className="ac-needs">needs you</span> : null}
+                        {tone === "needs" ? <span className="ac-needs">asking</span> : null}
                         <span className="ac-agentTail">
                           {tone !== "idle" ? (
                             <span className="ac-dot" data-tone={tone} aria-hidden />
@@ -598,7 +598,7 @@ function FactsRail({
 
       <div className="ac-railState" data-tone={tone === "idle" ? undefined : tone}>
         {tone !== "idle" ? <span className="ac-dot" data-tone={tone} aria-hidden /> : null}
-        <span>{entry.needsYou ? "Needs you" : agentStateLabel(agent.state)}</span>
+        <span>{entry.needsYou ? "Asking" : agentStateLabel(agent.state)}</span>
       </div>
       {entry.activeTask ? <div className="ac-railTask">{entry.activeTask}</div> : null}
 

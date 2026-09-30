@@ -4,6 +4,7 @@ export type ContextCaptureDraftSeed = {
   intent?: ContextCaptureIntent;
   agentId?: string;
   conversationId?: string;
+  machineId?: string;
   projectPath?: string;
   message?: string;
   files?: File[];
@@ -31,6 +32,7 @@ export type ForwardContextSource = {
 };
 
 export type ContextCaptureDraft = {
+  machineId?: string;
   intent: ContextCaptureIntent;
   agentId?: string;
   conversationId?: string;
@@ -82,6 +84,7 @@ export function mergeContextCaptureDraft(
   const preserveForward = intent === "forward-message";
   return {
     intent,
+    machineId: seed.machineId ?? current?.machineId,
     ...(preserveRoute && (seed.agentId ?? current?.agentId)
       ? { agentId: seed.agentId ?? current?.agentId }
       : {}),

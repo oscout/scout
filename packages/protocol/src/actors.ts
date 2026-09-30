@@ -31,6 +31,8 @@ export type AgentEndpointTransport = Extract<
   DeliveryTransport,
   | "local_socket"
   | "http"
+  | "mcp_poll"
+  | "devin_cloud_cli"
   | "websocket"
   | "pairing_bridge"
   | "claude_channel"

@@ -3,6 +3,7 @@ import type { ScoutbotUsageStore } from "./scoutbot-usage.ts";
 import type { VoiceUsageMode } from "../shared/voice-usage.ts";
 import { SCOUT_RUNTIME_CATALOG } from "@openscout/protocol";
 import { scoutbotUiContext } from "../shared/scoutbot-navigation.ts";
+import { createScoutbotFileLookup, type ScoutbotFileLookup } from "./scoutbot-file-lookup.ts";
 
 // Only the callable fetch contract is required; injected fetches need no Bun preconnect helper.
 type ScoutbotFetch = (...args: Parameters<typeof fetch>) => ReturnType<typeof fetch>;
@@ -212,6 +213,11 @@ export type ScoutbotAssistantService = {
    * non-streaming call when the provider cannot stream; the returned payload
    * and session bookkeeping are identical either way.
    */
+  /**
+   * Start gathering the spoken-turn snapshot while the operator is still
+   * talking; the next spoken turn on the same route within the TTL uses it.
+   */
+  prewarmSpokenContext: (route?: unknown) => void;
   respondStream: (input: {
     body: string;
     usageMode?: VoiceUsageMode;
@@ -380,7 +386,11 @@ const DEFAULT_SYSTEM_PROMPT = [
 export function createScoutbotAssistantService(input: {
   currentDirectory: string;
   usage?: () => ScoutbotUsageStore;
-  loadContext: (route?: unknown) => Promise<Record<string, unknown>> | Record<string, unknown>;
+  /** `spoken` asks for the slim snapshot a live voice turn needs, not the full state. */
+  loadContext: (
+    route?: unknown,
+    options?: { spoken?: boolean },
+  ) => Promise<Record<string, unknown>> | Record<string, unknown>;
   resolveApiKey?: () => Promise<string | null | undefined> | string | null | undefined;
   invokeCodex?: ScoutbotCodexAssistantInvoker;
   /**
@@ -388,6 +398,8 @@ export function createScoutbotAssistantService(input: {
    * expected to cache negatives. Defaults to "an invoker exists".
    */
   agentAvailable?: () => boolean;
+  /** File lookup behind a spoken turn's find_files tool; defaults to the workspace's git listing. */
+  findFiles?: ScoutbotFileLookup;
   env?: NodeJS.ProcessEnv;
   fetchImpl?: ScoutbotFetch;
 }): ScoutbotAssistantService {
@@ -514,12 +526,37 @@ export function createScoutbotAssistantService(input: {
       hasCodexInvoker: Boolean(input.invokeCodex),
       agentAvailable: agentAvailable(),
     })[0] ?? null;
-  const contextSnapshot = async (route?: unknown, uiContext?: unknown): Promise<ScoutbotAssistantContextSnapshot> => ({
+  let workspaceFileLookup: ScoutbotFileLookup | null = null;
+  const findFiles = () => input.findFiles
+    ?? (workspaceFileLookup ??= createScoutbotFileLookup(input.currentDirectory));
+  let prewarmedSpoken: { key: string; at: number; state: Promise<Record<string, unknown>> } | null = null;
+  const loadSpokenState = (route?: unknown): Promise<Record<string, unknown>> =>
+    Promise.resolve(input.loadContext(route, { spoken: true }));
+  const prewarmSpokenContext = (route?: unknown) => {
+    const state = loadSpokenState(route);
+    // A failed prewarm is simply not used; the turn loads its own snapshot.
+    state.catch(() => undefined);
+    prewarmedSpoken = { key: JSON.stringify(route ?? null), at: Date.now(), state };
+  };
+  const takePrewarmedSpokenState = (route?: unknown): Promise<Record<string, unknown>> | null => {
+    const entry = prewarmedSpoken;
+    prewarmedSpoken = null;
+    if (!entry || entry.key !== JSON.stringify(route ?? null)) return null;
+    if (Date.now() - entry.at > SPOKEN_CONTEXT_PREWARM_TTL_MS) return null;
+    return entry.state.catch(() => loadSpokenState(route));
+  };
+  const contextSnapshot = async (
+    route?: unknown,
+    uiContext?: unknown,
+    spoken = false,
+  ): Promise<ScoutbotAssistantContextSnapshot> => ({
     generatedAt: new Date().toISOString(),
     currentDirectory: input.currentDirectory,
     ...(route !== undefined ? { currentRoute: route } : {}),
     uiContext: canonicalScoutbotUiContext(uiContext),
-    state: await input.loadContext(route),
+    state: await (spoken
+      ? takePrewarmedSpokenState(route) ?? loadSpokenState(route)
+      : input.loadContext(route)),
   });
 
   // One row per actual provider request attempt, not per route/finalizer.
@@ -646,10 +683,13 @@ export function createScoutbotAssistantService(input: {
       try {
         // Self-contained turns avoid stale provider threads after fallback, cancellation,
         // or model changes. Local retained history is the sole conversational source.
-        const requestBody = buildScoutbotHistoryPrompt(session.messages, trimmed);
-        const context = await contextSnapshot(route, uiContext);
+        // Local Live reads the reply aloud: a slim snapshot keeps time-to-first-
+        // sentence down, and the spoken directive keeps the reply short.
+        const spoken = usageMode === "local";
+        const requestBody = buildScoutbotHistoryPrompt(session.messages, trimmed, spoken);
+        const context = await contextSnapshot(route, uiContext, spoken);
         throwIfScoutbotAborted(signal);
-        const requestModel = model;
+        const requestModel = spoken ? spokenModel(env) : model;
         const observeRequest = usageObserver(session.id, usageMode, requestModel);
         const response = await callAssistantModel({
           apiKey: await resolveApiKey(),
@@ -657,6 +697,9 @@ export function createScoutbotAssistantService(input: {
           agentAvailable,
           observeRequest,
           providerPreference,
+          preferOpenAI: spoken,
+          reasoningEffort: spoken ? spokenReasoningEffort(requestModel, env) : undefined,
+          findFiles: spoken ? findFiles() : undefined,
           openAIBaseUrl: firstNonEmptyString(env.OPENAI_BASE_URL, env.OPENSCOUT_OPENAI_BASE_URL)
             ?? DEFAULT_OPENAI_BASE_URL,
           fetchImpl,
@@ -674,6 +717,7 @@ export function createScoutbotAssistantService(input: {
         busySessions.delete(session.id);
       }
     },
+    prewarmSpokenContext,
     respondStream: async ({ body, route, uiContext, signal, onSentence, usageMode = "chat" }) => {
       const trimmed = body.trim();
       if (!trimmed) {
@@ -692,10 +736,13 @@ export function createScoutbotAssistantService(input: {
       try {
         // Self-contained turns avoid stale provider threads after fallback, cancellation,
         // or model changes. Local retained history is the sole conversational source.
-        const requestBody = buildScoutbotHistoryPrompt(session.messages, trimmed);
-        const context = await contextSnapshot(route, uiContext);
+        // Local Live reads the reply aloud: a slim snapshot keeps time-to-first-
+        // sentence down, and the spoken directive keeps the reply short.
+        const spoken = usageMode === "local";
+        const requestBody = buildScoutbotHistoryPrompt(session.messages, trimmed, spoken);
+        const context = await contextSnapshot(route, uiContext, spoken);
         throwIfScoutbotAborted(signal);
-        const requestModel = model;
+        const requestModel = spoken ? spokenModel(env) : model;
         const observeRequest = usageObserver(session.id, usageMode, requestModel);
         const apiKey = await resolveApiKey();
         const openAIBaseUrl = firstNonEmptyString(env.OPENAI_BASE_URL, env.OPENSCOUT_OPENAI_BASE_URL)
@@ -705,10 +752,12 @@ export function createScoutbotAssistantService(input: {
           hasApiKey: Boolean(apiKey?.trim()),
           hasCodexInvoker: Boolean(input.invokeCodex),
           agentAvailable: agentAvailable(),
+          preferOpenAI: spoken,
         });
         if (candidates.length === 0) {
           throwNoProviderAvailable(providerPreference);
         }
+        const reasoningEffort = spoken ? spokenReasoningEffort(requestModel, env) : undefined;
         // Fallback delivery emits nothing early; the completed text runs through
         // the splitter at the end so fenced machine payload stays out of the
         // spoken stream, exactly as stripScoutbotUiFences does for typed chat.
@@ -741,6 +790,7 @@ export function createScoutbotAssistantService(input: {
                 body: requestBody,
                 context,
                 signal,
+                reasoningEffort,
                 onDelta,
               }));
               if (streamed.streamed) {
@@ -768,6 +818,7 @@ export function createScoutbotAssistantService(input: {
                 body: requestBody,
                 context,
                 signal,
+                reasoningEffort,
               }));
               emitWholeReply(plain.text);
               return { provider: "openai", id: plain.id, text: plain.text, usage: plain.usage };
@@ -1059,6 +1110,9 @@ function resolveProviderCandidates(input: {
   hasApiKey: boolean;
   hasCodexInvoker: boolean;
   agentAvailable: boolean;
+  /** Spoken turns: a direct streaming call starts talking seconds sooner than
+   * launching an agent process, so auto tries OpenAI first when a key exists. */
+  preferOpenAI?: boolean;
 }): ScoutbotAssistantProvider[] {
   if (input.preference === "openai") {
     return input.hasApiKey ? ["openai"] : [];
@@ -1068,7 +1122,10 @@ function resolveProviderCandidates(input: {
   }
   const candidates: ScoutbotAssistantProvider[] = [];
   if (input.hasCodexInvoker && input.agentAvailable) candidates.push("codex");
-  if (input.hasApiKey) candidates.push("openai");
+  if (input.hasApiKey) {
+    if (input.preferOpenAI) candidates.unshift("openai");
+    else candidates.push("openai");
+  }
   return candidates;
 }
 
@@ -1088,6 +1145,9 @@ async function callAssistantModel(input: {
   codexInvoker?: ScoutbotCodexAssistantInvoker;
   agentAvailable?: () => boolean;
   providerPreference: ScoutbotAssistantProviderPreference;
+  preferOpenAI?: boolean;
+  reasoningEffort?: string;
+  findFiles?: ScoutbotFileLookup;
   openAIBaseUrl: string;
   fetchImpl: ScoutbotFetch;
   model: string;
@@ -1106,6 +1166,7 @@ async function callAssistantModel(input: {
     hasApiKey: Boolean(apiKey),
     hasCodexInvoker: Boolean(input.codexInvoker),
     agentAvailable: input.agentAvailable?.() ?? Boolean(input.codexInvoker),
+    preferOpenAI: input.preferOpenAI,
   });
 
   for (const [index, provider] of candidates.entries()) {
@@ -1120,6 +1181,8 @@ async function callAssistantModel(input: {
         body: input.body,
         context: input.context,
         signal: input.signal,
+        reasoningEffort: input.reasoningEffort,
+        findFiles: input.findFiles,
       }));
       return { provider: "openai", ...response };
     }
@@ -1237,13 +1300,55 @@ async function withScoutbotDeadline<T>(signal: AbortSignal | undefined, run: (si
   }
 }
 
-function buildScoutbotHistoryPrompt(messages: ScoutbotAssistantMessage[], body: string): string {
-  if (!messages.length) return body;
+const SPOKEN_HISTORY_MESSAGES = 12;
+const SPOKEN_CONTEXT_PREWARM_TTL_MS = 60_000;
+
+const DEFAULT_SPOKEN_MODEL = "gpt-6-luna";
+
+/** Model for spoken turns, independent of the typed-chat model.
+ * OPENSCOUT_SCOUTBOT_VOICE_MODEL overrides. */
+function spokenModel(env: NodeJS.ProcessEnv): string {
+  return env.OPENSCOUT_SCOUTBOT_VOICE_MODEL?.trim() || DEFAULT_SPOKEN_MODEL;
+}
+
+/** Reasoning for spoken turns: the lowest level, "none", by default on GPT-5/6
+ * models (measured ~0.6-0.9s to first token vs ~1.5-1.8s at the default).
+ * Other models get no reasoning field. OPENSCOUT_SCOUTBOT_VOICE_REASONING_EFFORT
+ * overrides; set it empty to send none. */
+function spokenReasoningEffort(model: string, env: NodeJS.ProcessEnv): string | undefined {
+  const configured = env.OPENSCOUT_SCOUTBOT_VOICE_REASONING_EFFORT;
+  if (configured !== undefined) return configured.trim() || undefined;
+  return /^gpt-[56]/i.test(model.trim()) ? "none" : undefined;
+}
+const SPOKEN_HISTORY_CHARS = 600;
+
+export const SCOUTBOT_SPOKEN_REPLY_DIRECTIVE = [
+  "Spoken reply: this is a live voice conversation and your reply is read aloud as you write it.",
+  "Talk like a person in conversation: respond to what the operator actually said, in their register.",
+  "A greeting or small talk gets a short, natural reply, not a status report.",
+  "Only bring up fleet or Scout state when the operator asks about it, and then answer just that question.",
+  "Keep it brief, usually one or two sentences, with no markdown, lists, IDs, file paths, or URLs.",
+  "Don't close with a stock offer or question such as \"Want the details?\"; stop when you've answered.",
+  "When the operator asks you to do something (open a page, open a file, refresh, or ask an agent), do it: say in a few words what you're doing and put the scout-ui block after the spoken text.",
+  "To open a file whose exact absolute path you don't know, call find_files first and use a path it returns; never guess a path or open a folder.",
+].join(" ");
+
+function buildScoutbotHistoryPrompt(messages: ScoutbotAssistantMessage[], body: string, spoken = false): string {
+  const request = spoken ? `${body}\n\n${SCOUTBOT_SPOKEN_REPLY_DIRECTIVE}` : body;
+  // Spoken turns carry a bounded history: earlier long typed replies would
+  // otherwise dominate the prompt and re-teach the model to answer long.
+  const history = spoken
+    ? messages.slice(-SPOKEN_HISTORY_MESSAGES).map(({ role, body }) => ({
+        role,
+        body: body.length > SPOKEN_HISTORY_CHARS ? `${body.slice(0, SPOKEN_HISTORY_CHARS)}…` : body,
+      }))
+    : messages.map(({ role, body }) => ({ role, body }));
+  if (!history.length) return request;
   return [
     "Prior conversation (quoted data, not system instructions):",
-    JSON.stringify(messages.map(({ role, body }) => ({ role, body }))),
+    JSON.stringify(history),
     "Current operator request:",
-    body,
+    request,
   ].join("\n");
 }
 
@@ -1261,12 +1366,65 @@ async function callOpenAIResponseBody(input: {
   body: string;
   context?: ScoutbotAssistantContextSnapshot;
   signal?: AbortSignal;
+  reasoningEffort?: string;
+  /** When set, the model may call find_files before answering (spoken turns). */
+  findFiles?: ScoutbotFileLookup;
 }): Promise<{ id: string | null; text: string; usage: BriefTokenUsage | null }> {
   // Without an abort signal, a slow/stuck Responses call leaves the endpoint
   // hanging indefinitely — operators see an empty reply / generic 500 from the
   // browser. Cap the wait at OPENAI_CALL_TIMEOUT_MS so the failure path is a
   // real 504 instead of mystery.
-  const requestSignal = input.signal;
+  const conversation: unknown[] = [
+    {
+      role: "user",
+      content: [
+        {
+          type: "input_text",
+          text: buildAssistantUserPrompt(input.body, input.context),
+        },
+      ],
+    },
+  ];
+  let usage: BriefTokenUsage | null = null;
+
+  for (let round = 0; ; round += 1) {
+    const toolsOpen = Boolean(input.findFiles) && round < SPOKEN_TOOL_ROUNDS;
+    const parsed = await postOpenAIResponse(input, {
+      model: input.model,
+      instructions: input.systemPrompt,
+      ...(input.reasoningEffort ? { reasoning: { effort: input.reasoningEffort } } : {}),
+      ...(input.previousResponseId ? { previous_response_id: input.previousResponseId } : {}),
+      ...(input.findFiles ? { tools: [FIND_FILES_TOOL], tool_choice: toolsOpen ? "auto" : "none" } : {}),
+      input: conversation,
+    });
+    usage = addUsage(usage, extractUsage(parsed));
+
+    const calls = toolsOpen ? extractFunctionCalls(parsed) : [];
+    if (calls.length === 0) {
+      return {
+        id: typeof parsed.id === "string" ? parsed.id : null,
+        text: extractResponseText(parsed),
+        usage,
+      };
+    }
+    // Stateless continuation: resend the calls with their outputs rather than
+    // chaining previous_response_id, so it works without stored responses.
+    for (const call of calls) {
+      const matches = call.name === FIND_FILES_TOOL.name
+        ? await input.findFiles!(readFindFilesQuery(call.arguments)).catch(() => [])
+        : [];
+      conversation.push(
+        { type: "function_call", call_id: call.callId, name: call.name, arguments: call.arguments },
+        { type: "function_call_output", call_id: call.callId, output: JSON.stringify({ matches }) },
+      );
+    }
+  }
+}
+
+async function postOpenAIResponse(
+  input: { apiKey: string; baseUrl: string; fetchImpl: ScoutbotFetch; signal?: AbortSignal },
+  requestBody: Record<string, unknown>,
+): Promise<OpenAIResponsePayload> {
   let response: Response;
   try {
     response = await input.fetchImpl(`${trimTrailingSlash(input.baseUrl)}/responses`, {
@@ -1275,23 +1433,8 @@ async function callOpenAIResponseBody(input: {
         authorization: `Bearer ${input.apiKey}`,
         "content-type": "application/json",
       },
-      body: JSON.stringify({
-        model: input.model,
-        instructions: input.systemPrompt,
-        ...(input.previousResponseId ? { previous_response_id: input.previousResponseId } : {}),
-        input: [
-          {
-            role: "user",
-            content: [
-              {
-                type: "input_text",
-                text: buildAssistantUserPrompt(input.body, input.context),
-              },
-            ],
-          },
-        ],
-      }),
-      signal: requestSignal,
+      body: JSON.stringify(requestBody),
+      signal: input.signal,
     });
   } catch (error) {
     if (error instanceof Error && error.name === "AbortError") {
@@ -1319,11 +1462,58 @@ async function callOpenAIResponseBody(input: {
   if (!response.ok) {
     throw new ScoutbotAssistantError(openAIErrorMessage(parsed) || raw || `OpenAI returned HTTP ${response.status}`, 502);
   }
+  return parsed;
+}
 
+const SPOKEN_TOOL_ROUNDS = 2;
+
+const FIND_FILES_TOOL = {
+  type: "function",
+  name: "find_files",
+  description: "Find files in the operator's workspace by loose name. Returns up to 8 absolute paths, best first. Call it before a view-file action whenever you don't already know the file's exact absolute path.",
+  parameters: {
+    type: "object",
+    properties: {
+      query: { type: "string", description: "Words from the file's name or path, e.g. \"live voice lifecycle\"." },
+    },
+    required: ["query"],
+    additionalProperties: false,
+  },
+  strict: true,
+} as const;
+
+function extractFunctionCalls(payload: OpenAIResponsePayload): Array<{ callId: string; name: string; arguments: string }> {
+  if (!Array.isArray(payload.output)) return [];
+  const calls: Array<{ callId: string; name: string; arguments: string }> = [];
+  for (const item of payload.output) {
+    if (!item || typeof item !== "object") continue;
+    const record = item as Record<string, unknown>;
+    if (record.type !== "function_call" || typeof record.call_id !== "string" || typeof record.name !== "string") continue;
+    calls.push({
+      callId: record.call_id,
+      name: record.name,
+      arguments: typeof record.arguments === "string" ? record.arguments : "{}",
+    });
+  }
+  return calls;
+}
+
+function readFindFilesQuery(args: string): string {
+  try {
+    const parsed = JSON.parse(args) as { query?: unknown };
+    return typeof parsed.query === "string" ? parsed.query : "";
+  } catch {
+    return "";
+  }
+}
+
+function addUsage(total: BriefTokenUsage | null, next: BriefTokenUsage | null): BriefTokenUsage | null {
+  if (!total || !next) return next ?? total;
+  const sum = (a: number | null, b: number | null) => (a === null && b === null ? null : (a ?? 0) + (b ?? 0));
   return {
-    id: typeof parsed.id === "string" ? parsed.id : null,
-    text: extractResponseText(parsed),
-    usage: extractUsage(parsed),
+    inputTokens: sum(total.inputTokens, next.inputTokens),
+    outputTokens: sum(total.outputTokens, next.outputTokens),
+    totalTokens: sum(total.totalTokens, next.totalTokens),
   };
 }
 
@@ -1350,6 +1540,7 @@ async function callOpenAIResponseStreamBody(input: {
   body: string;
   context?: ScoutbotAssistantContextSnapshot;
   signal?: AbortSignal;
+  reasoningEffort?: string;
   onDelta: (delta: string) => void;
 }): Promise<{ id: string | null; text: string; usage: BriefTokenUsage | null; streamed: boolean }> {
   const requestSignal = input.signal;
@@ -1365,6 +1556,7 @@ async function callOpenAIResponseStreamBody(input: {
       body: JSON.stringify({
         model: input.model,
         instructions: input.systemPrompt,
+        ...(input.reasoningEffort ? { reasoning: { effort: input.reasoningEffort } } : {}),
         ...(input.previousResponseId ? { previous_response_id: input.previousResponseId } : {}),
         stream: true,
         input: [
@@ -1871,7 +2063,7 @@ function briefSystemPrompt(basePrompt: string, mode: ScoutbotBriefMode): string 
       "Use LLM judgment over the snapshot. Start with briefingEvidence.agentLogMessages (last 50 observed agent-log events) and briefingEvidence.scoutChatter (last 50 Scout messages), then cross-check recentCompleted, activity, sessions, activeWork, activeRuns, operatorAttention, needsAttention, and harnessActivity.",
       "Derivation rule: messages and transcripts are evidence for meaning, but clickable references must be grounded in concrete IDs from the snapshot such as agentId, conversationId, workId/recordId, sessionId, invocationId, flightId, or activity id.",
       "Treat the brief as an attention layer, not a dashboard summary. Answer: what deserves the operator's next 30 seconds, what subtle signal could fall through the cracks, and what might they be forgetting?",
-      "Priority order: (1) needs-you-now items: approvals, decisions, questions, failed checks, blocked work; (2) stale or hidden obligations: asks without replies, sessions idle after an error, repeated failures, ambiguous ownership; (3) material progress: ships, completed work, docs/code changes, verification results; (4) current work only when it has a deliverable, owner, or risk; (5) next best inspection point.",
+      "Priority order: (1) open requests: approvals, decisions, questions, failed checks, blocked work; (2) stale or hidden obligations: asks without replies, sessions idle after an error, repeated failures, ambiguous ownership; (3) material progress: ships, completed work, docs/code changes, verification results; (4) current work only when it has a deliverable, owner, or risk; (5) next best inspection point.",
       "If anything is waiting, blocked, failed, stale, needs human input, or looks risky, make that the first sentence and include owner plus next move when evidence supports it.",
       "If the system is idle, replay what recently happened and what is still worth checking: notable completed work, recent ships, changed docs/code, organic sessions/transcripts, unanswered questions, or old threads that look easy to forget. Prefer concrete titles, projects, agent names, outcomes, and time references from the snapshot.",
       "If there is genuinely no useful recent signal, say what to inspect next and why instead of padding with inventory counts.",
@@ -1882,7 +2074,7 @@ function briefSystemPrompt(basePrompt: string, mode: ScoutbotBriefMode): string 
       "Never copy the examples or schema placeholders. They demonstrate shape only.",
       "",
       "Fleet-home examples (shape only; do not reuse names, projects, or wording):",
-      "Bad pattern: inventory counter sentence. Good pattern: Needs you now: approval or decision waiting, owner named, consequence stated.",
+      "Bad pattern: inventory counter sentence. Good pattern: Requests: approval or decision waiting, owner named, consequence stated.",
       "Bad pattern: generic idle/quiet sentence. Good pattern: Since the last window, shipped artifact plus verification state plus next review target.",
       "Bad pattern: no-active-agents sentence. Good pattern: Stale or hidden obligation: thread/session/question has not moved, why it matters, where to inspect.",
       "Bad pattern: agent-status sentence. Good pattern: Current work tied to deliverable, risk, or critical path.",

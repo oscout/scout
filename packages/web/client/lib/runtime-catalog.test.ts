@@ -3,10 +3,13 @@ import {
   RUNTIME_EFFORTS,
   describeRuntime,
   effortsFor,
+  matchPreset,
+  orderModelsWithShortlist,
   reconcileRuntime,
   resolveModel,
   runtimeCatalogFromRunnerOptions,
   searchRuntimeOptions,
+  valueForPreset,
   type RuntimeCatalog,
   type RuntimeValue,
 } from "./runtime-catalog.ts";
@@ -196,6 +199,8 @@ describe("Scout-owned runtime seed", () => {
     expect(codex.models.map((model) => model.label)).toEqual([
       "Default",
       "6 Astra",
+      "6 Sol",
+      "6 Luna",
       "5.6 Sol",
       "5.6 Terra",
       "5.6 Luna",
@@ -242,7 +247,8 @@ describe("Scout-owned runtime seed", () => {
     )).toEqual({
       harness: "codex",
       model: "gpt-6-astra",
-      effort: "medium",
+      // The default model's own effort wins over the harness-wide default.
+      effort: "low",
     });
   });
 });
@@ -327,5 +333,85 @@ describe("effortsFor with a selected model", () => {
   test("reconcile keeps the harness-decides empty effort", () => {
     const value: RuntimeValue = { harness: "codex", model: "gpt-5.6-sol", effort: "" };
     expect(reconcileRuntime(SCOPED, value, { model: "gpt-5.5" }).effort).toBe("");
+  });
+});
+
+describe("runtime lists — shortlist and presets", () => {
+  const SHORTLIST = [
+    { harness: "claude", model: "claude-haiku-4-5", origin: "user" as const },
+    { harness: "claude", model: "claude-opus-9", origin: "project" as const },
+    { harness: "codex", model: "gpt-5.5", origin: "user" as const },
+  ];
+
+  test("orderModelsWithShortlist pins first, keeps Default and rest", () => {
+    const models = CATALOG.harnesses[0].models;
+    const { pinned, rest } = orderModelsWithShortlist(models, SHORTLIST, "claude");
+    expect(pinned.map((option) => option.value)).toEqual([
+      "claude-haiku-4-5",
+      "claude-opus-9",
+    ]);
+    expect(pinned[0].pinnedOrigin).toBe("user");
+    // A shortlisted id outside the catalog pins anyway, marked custom.
+    expect(pinned[1]).toMatchObject({ label: "claude-opus-9", note: "custom" });
+    // Default ("") is never pinned and stays first of the rest.
+    expect(rest.map((option) => option.value)).toEqual(["", "claude-opus-5"]);
+  });
+
+  test("orderModelsWithShortlist passes through when no pins match", () => {
+    const models = CATALOG.harnesses[0].models;
+    const { pinned, rest } = orderModelsWithShortlist(models, SHORTLIST, "grok");
+    expect(pinned).toEqual([]);
+    expect(rest).toBe(models);
+  });
+
+  test("matchPreset requires exact harness+model and effort when named", () => {
+    const catalog: RuntimeCatalog = {
+      ...CATALOG,
+      presets: [
+        { id: "fusion", label: "Fusion", harness: "claude", model: "claude-opus-5", effort: "high", origin: "project" },
+        { id: "loose", label: "Loose", harness: "claude", model: "claude-haiku-4-5", origin: "user" },
+      ],
+    };
+    expect(matchPreset(catalog, VALUE)?.id).toBe("fusion");
+    expect(matchPreset(catalog, { ...VALUE, effort: "medium" })).toBeUndefined();
+    // A preset with no effort matches any rung on its harness+model.
+    expect(matchPreset(catalog, { harness: "claude", model: "claude-haiku-4-5", effort: "low" })?.id).toBe("loose");
+    expect(matchPreset(catalog, { harness: "codex", model: "gpt-5.5", effort: "low" })).toBeUndefined();
+  });
+
+  test("valueForPreset applies the tuple and clamps effort", () => {
+    const preset = { id: "p", label: "P", harness: "codex", model: "gpt-5.5", effort: "ultra", origin: "user" as const };
+    const next = valueForPreset(CATALOG, preset, VALUE);
+    expect(next.harness).toBe("codex");
+    expect(next.model).toBe("gpt-5.5");
+    // Codex's ladder in this catalog tops out at high.
+    expect(next.effort).toBe("high");
+  });
+
+  test("valueForPreset without an effort takes the harness default", () => {
+    const codex = CATALOG.harnesses.find((h) => h.value === "codex")!;
+    const catalog: RuntimeCatalog = {
+      ...CATALOG,
+      harnesses: CATALOG.harnesses.map((h) =>
+        h === codex ? { ...h, defaultEffort: "low" } : h),
+    };
+    const preset = { id: "p", label: "P", harness: "codex", model: "gpt-5.5", origin: "user" as const };
+    expect(valueForPreset(catalog, preset, VALUE).effort).toBe("low");
+  });
+
+  test("runtimeCatalogFromRunnerOptions passes shortlist and presets through", () => {
+    const catalog = runtimeCatalogFromRunnerOptions({
+      harnesses: [{ id: "claude", label: "Claude" }],
+      models: [],
+      efforts: [],
+      shortlist: [{ harness: "claude", model: "claude-opus-5", origin: "user" }],
+      presets: [{ id: "fusion", label: "Fusion", harness: "claude", model: "claude-opus-5", origin: "broker-profile" }],
+    });
+    expect(catalog.shortlist).toEqual([
+      { harness: "claude", model: "claude-opus-5", origin: "user" },
+    ]);
+    expect(catalog.presets).toEqual([
+      { id: "fusion", label: "Fusion", harness: "claude", model: "claude-opus-5", origin: "broker-profile" },
+    ]);
   });
 });

@@ -1312,6 +1312,9 @@ exit 64
     const script = join(directory, "tmux-fixture.sh");
     writeFileSync(script, `#!/bin/sh
 mode="\${OPENSCOUT_TEST_TMUX_MODE:-success}"
+if [ "$1" = "-u" ]; then
+  shift
+fi
 if [ "$1" = "-S" ]; then
   shift 2
 fi

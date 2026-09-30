@@ -22,6 +22,8 @@ function agent(overrides: Partial<Agent> & Pick<Agent, "id" | "name">): Agent {
   return {
     definitionId: overrides.id,
     handle: null,
+    authorityNodeId: null,
+    authorityNodeName: null,
     agentClass: "agent",
     harness: "claude",
     state: "online",
@@ -66,6 +68,7 @@ function attempt(overrides: Partial<BrokerRouteAttempt> = {}): BrokerRouteAttemp
     target: "session-mcp@pi-lattice",
     route: "dm",
     detail: "Project-path routed request",
+    metadata: null,
     conversationId: "c-1",
     messageId: "msg-1",
     deliveryId: null,

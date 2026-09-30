@@ -19,6 +19,7 @@ function attempt(overrides: Partial<BrokerRouteAttempt> = {}): BrokerRouteAttemp
     target: "worker",
     route: "dm",
     detail: "do the thing",
+    metadata: null,
     conversationId: "chn-1",
     messageId: "msg-1",
     deliveryId: null,
@@ -30,9 +31,12 @@ function attempt(overrides: Partial<BrokerRouteAttempt> = {}): BrokerRouteAttemp
 function message(overrides: Partial<Message> & { id: string; createdAt: number }): Message {
   return {
     conversationId: "chn-1",
+    actorId: "worker",
     actorName: "worker",
     body: "on it",
     class: "agent",
+    replyToMessageId: null,
+    threadConversationId: null,
     ...overrides,
   };
 }

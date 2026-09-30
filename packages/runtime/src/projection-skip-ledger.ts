@@ -1,6 +1,7 @@
 /** Bounded diagnostic state: counts are occurrences, not unique lost records. */
 const kinds = new Set([
-  'node.upsert', 'actor.upsert', 'agent.upsert', 'agent.endpoint.upsert', 'agent.endpoint.delete',
+  'node.upsert', 'actor.upsert', 'agent.upsert', 'agent.delete', 'actor.delete',
+  'agent.endpoint.upsert', 'agent.endpoint.delete',
   'conversation.upsert', 'binding.upsert', 'message.record', 'conversation.read_cursor.upsert',
   'invocation.record', 'invocation.dispatch_job.record', 'flight.record', 'collaboration.record',
   'collaboration.event.record', 'deliveries.record', 'delivery.attempt.record', 'durable.action.record',

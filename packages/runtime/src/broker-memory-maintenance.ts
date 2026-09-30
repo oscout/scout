@@ -136,6 +136,8 @@ export class BrokerMemoryMaintenance {
 }
 
 export function memoryMaintenanceFromEnv(env: Record<string, string | undefined>): BrokerMemoryMaintenance | undefined {
-  if (env.OPENSCOUT_BROKER_MEMORY_MAINTENANCE !== '1') return undefined;
+  // On by default — a long-lived broker needs bounded allocations without an
+  // opt-in env var nobody sets. OPENSCOUT_BROKER_MEMORY_MAINTENANCE=0 disables.
+  if (env.OPENSCOUT_BROKER_MEMORY_MAINTENANCE === '0') return undefined;
   return new BrokerMemoryMaintenance({ collect: typeof Bun === 'undefined' ? undefined : () => { Bun.gc(true); } });
 }

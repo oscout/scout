@@ -311,6 +311,93 @@ Use `session:sess.<token>` for exact harness continuation. Legacy
 `session:<native-id>` and `session:<harness>:<native-id>` inputs are accepted by
 the compatibility resolver but are not canonical addresses.
 
+## Session Addresses
+
+Every session the broker knows has an automatically derived, copyable address:
+
+```text
+sess.<token>@<host>
+```
+
+- The local part is the canonical broker handle for the exact harness
+  conversation. It is opaque, so the address carries no agent, profile,
+  project, or harness semantics.
+- The host is the stable qualifier of the broker authority that owns the
+  session: the node id minus its mesh suffix (`arts-mini-openscout` →
+  `arts-mini`). It is never an IP address or a DHCP/mDNS-drifting hostname. A
+  host also matches the node's id, name, or host name, so `mini` and
+  `mini.local` name the same machine.
+- Nothing is registered to get one. No card, alias, or setup step exists for
+  addresses; they are computed from the session mapping the broker already
+  holds.
+
+Discover and use one:
+
+```bash
+scout session address                  # this session's own address
+scout session address <selector>       # a handle, native id, actor id, or address
+scout session address --all            # known live/resumable sessions
+scout ask --to sess.<token>@<host> "..."
+```
+
+`session:sess.<token>@<host>` is the typed form. A bare `sess.<token>@<host>`
+works anywhere a route target does: CLI `--to`, the composer `>>` operator, and
+MCP `ask` `to` or `targetSessionId`. `session:sess.<token>` without a host and
+every legacy selector keep their meaning. A host is parsed only after a
+canonical `sess.*` handle, so a native id containing `@` is unchanged.
+
+Routing is an exact-session route scoped to the host:
+
+- The host bounds resolution. A same-token projection on another machine never
+  satisfies the address.
+- A session on this broker resolves as described in
+  [Ask Targets And Reply Sessions](#ask-targets-and-reply-sessions), including
+  the exact-session wake for a resumable session.
+- A remote session this broker has a projection of resolves to that host's
+  endpoint, and dispatch forwards to its authority node.
+- Failures are reported with `sessionWakeReason` on the dispatch record and
+  never fall back to a fresh session:
+  - `session_host_unknown`: no mesh node answers to the host.
+  - `session_not_on_host`: the session exists, but on a different host (the
+    detail names it).
+  - `session_host_not_projected`: the host is a known peer that has not shared
+    the session with this broker. The local harness store is not searched.
+
+Addressability is separate from reachability. `scout session address` reports
+each address with one of:
+
+- `live`: an attached endpoint is online.
+- `resumable`: the session is offline but carries a harness-native id, so an
+  ask triggers the exact-session wake. The wake can still fail, and Scout
+  reports that failure instead of starting a new session.
+- `unavailable`: the session has ended or been superseded, or has nothing to
+  resume.
+
+Reply continuity uses the same address:
+
+- Delivery receipts carry `targetSessionAddress` when the target resolves to
+  exactly one canonical session. Pass it back as the target to keep building
+  in that conversation.
+- Return addresses carry `sessionAddress` for the requester's exact session:
+  either the explicit `replyToSessionId`, or the session the return address
+  already names. It is omitted, not guessed, when that session is ambiguous or
+  unknown.
+
+Route aliases are unchanged and remain a separate, optional layer: an address
+needs no alias. `scout alias set <name> --to session:sess.<token>` still pins an
+exact session, but alias targets do not accept the `@<host>` form yet. Role or
+harness addresses on a host and explicit group fan-out are not part of the
+address grammar and must never be inferred from it.
+
+### Current Limits
+
+- Cross-host resolution works only for sessions the peer has projected to this
+  broker. Most sessions are not projected today, so a remote address usually
+  returns `session_host_not_projected`. The next step is to forward
+  unprojected resolution to the host's authority broker. The route-alias
+  forwarder (`/v1/mesh/aliases/resolve`) is the model to follow.
+- Offline retry and delivery policy are unchanged.
+
 ## Route Alias Lifetime
 
 `scout alias set <name> --to <agent>` creates a durable route pointer with
@@ -523,3 +610,15 @@ Future CLI, MCP, and skill updates should converge on these names:
 
 Old commands should continue to work while emitting behavior that maps cleanly
 onto these semantics.
+
+## External session attachment
+
+The broker's `sessions_attach` MCP primitive binds an explicitly selected native
+session to a durable, exact-session mailbox using the existing MCP connection.
+It reuses endpoints and a single integration actor, creates no per-session agent,
+and returns the same opaque handle on repeated attachment. `sessions_poll`,
+`sessions_ack`, and `sessions_reply` distinguish receipt from completed work.
+An explicit `replyToSessionId` routes the result back to the originating mailbox.
+Polling does not wake a suspended host. An optional configured Devin API transport
+can resume a suspended Devin session. See [external-sessions.md](./external-sessions.md)
+for ownership, limits, and conservative handling of interrupted sends.

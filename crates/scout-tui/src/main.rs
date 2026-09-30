@@ -1,6 +1,6 @@
 //! THESIS: The TUI is a night instrument, not an attention inbox.
 //! OWN-WORLD: Warm near-black room canvas (#0C0A08), BONE primary text,
-//! ASH machine details, EMBER live/selected, SIGNAL gold for needs-you.
+//! ASH machine details, EMBER live/selected, SIGNAL gold for requests.
 //! STORY: What is moving; last thought already on screen; draft a response.
 //! FORM: Seven takes on one fleet (Now, Horizon, Twin, Mesh, Quota, Harvest, Grid).
 

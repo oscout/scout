@@ -9,6 +9,7 @@ import {
   registerScoutVoiceHost,
   resetScoutVoiceSessionStateForTests,
   parseScoutVoiceSettingsPatch,
+  setScoutVoiceAmbientListener,
   stopScoutVoiceSession,
   subscribeScoutVoiceSession,
   synthesizeScoutVoiceSpeech,
@@ -16,6 +17,7 @@ import {
 
 afterEach(() => {
   resetScoutVoiceSessionStateForTests();
+  setScoutVoiceAmbientListener(null);
 });
 
 describe("scout voice native sessions", () => {
@@ -589,5 +591,36 @@ describe("parseScoutVoiceSettingsPatch", () => {
         { kind: "speechRecognition", status: "notDetermined", granted: false, canRequest: false },
       ],
     });
+  });
+});
+
+describe("always-on voice sessions", () => {
+  test("ask the host to capture continuously and keep transcript text out of the event log", async () => {
+    registerScoutVoiceHost({ hostId: "scout-menu", platform: "macos", capabilities: ["continuous"] });
+    const heard: Array<{ event: string; data: Record<string, unknown> }> = [];
+    setScoutVoiceAmbientListener(({ event, data }) => heard.push({ event, data }));
+
+    const { sessionId } = createScoutVoiceSession({ surface: "ambient", continuous: true });
+    expect(await awaitScoutVoiceHostCommand("scout-menu", 10)).toMatchObject({
+      command: { type: "session.start", sessionId, continuous: true },
+    });
+
+    const seen: Array<{ event: string; data: Record<string, unknown> }> = [];
+    const unsubscribe = subscribeScoutVoiceSession(sessionId, (event) => seen.push(event));
+    pushScoutVoiceHostEvent({ hostId: "scout-menu", sessionId, event: "session.partial", data: { text: "secret plans" } });
+    pushScoutVoiceHostEvent({ hostId: "scout-menu", sessionId, event: "session.segment", data: { text: "secret plans", at: 5 } });
+    pushScoutVoiceHostEvent({ hostId: "scout-menu", sessionId, event: "session.state", data: { state: "recording" } });
+    unsubscribe();
+
+    expect(heard.map((entry) => entry.event)).toEqual(["session.partial", "session.segment", "session.state"]);
+    expect(heard[1]!.data).toEqual({ text: "secret plans", at: 5 });
+    expect(JSON.stringify(seen)).not.toContain("secret plans");
+    expect(JSON.stringify(listScoutVoiceSessionHistory())).not.toContain("secret plans");
+  });
+
+  test("refuse a host that can't listen continuously", () => {
+    registerScoutVoiceHost({ hostId: "scout-menu", platform: "macos" });
+    expect(() => createScoutVoiceSession({ surface: "ambient", continuous: true }))
+      .toThrow("can't listen continuously");
   });
 });

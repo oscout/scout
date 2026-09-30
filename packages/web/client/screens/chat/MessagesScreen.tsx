@@ -145,7 +145,7 @@ function ConversationRoute({
 /**
  * There is no landing page (D2): the rail + open conversation IS the triage
  * surface. Bare /messages resolves to a conversation by precedence —
- * unseen needs-you → last-active participant conversation → zero-state.
+ * unseen request → last-active participant conversation → zero-state.
  * Landing marks the conversation seen; Observed threads are never a landing
  * target. `replace` keeps Back from bouncing through the redirect.
  */

@@ -4,8 +4,10 @@ import {
   createScoutExecutionResolution,
   parseScoutRuntimeSpec,
   formatScoutRuntimeSpec,
+  isModelSelectableHarness,
   isScoutRuntimeHarnessListed,
   normalizeScoutRuntimeModel,
+  scoutRuntimeLatestModelInFamily,
   SCOUT_LAUNCHABLE_HARNESSES,
   SCOUT_REASONING_EFFORT_LABELS,
   SCOUT_RUNTIME_CATALOG,
@@ -28,13 +30,14 @@ describe("runtime execution contracts", () => {
   test("uses the Scout-owned catalog for product defaults and display labels", () => {
     expect(SCOUT_RUNTIME_CATALOG.schemaVersion).toBe("openscout.runtime-catalog.v1");
     expect(scoutRuntimeDefaultHarness()).toBe("claude");
-    expect(scoutRuntimeDefaultModel("claude")).toBe("claude-opus-5");
+    expect(scoutRuntimeDefaultModel("claude")).toBe("claude-opus-5-5");
     expect(scoutRuntimeDefaultModel("codex")).toBe("gpt-6-astra");
     expect(scoutRuntimeDefaultModel("grok")).toBe("grok-4.6");
     expect(scoutRuntimeDefaultModel("grok-acp")).toBe("grok-4.6");
     expect(isScoutRuntimeHarnessListed("grok")).toBe(false);
     expect(isScoutRuntimeHarnessListed("grok-acp")).toBe(true);
     expect(scoutRuntimeDefaultReasoningEffort("claude", "claude-opus-5")).toBe("medium");
+    expect(scoutRuntimeDefaultReasoningEffort("codex", "gpt-6-astra")).toBe("low");
     expect(SCOUT_REASONING_EFFORT_LABELS.low).toBe("Light");
     expect(SCOUT_REASONING_EFFORT_LABELS.xhigh).toBe("Extra High");
     expect(isScoutRuntimeHarnessListed("grok")).toBe(false);
@@ -42,6 +45,15 @@ describe("runtime execution contracts", () => {
   });
 
   test("lets Scout define a different effort ladder for each model", () => {
+    expect(scoutRuntimeReasoningEfforts("claude", "claude-opus-5-5")).toEqual([
+      "low", "medium", "high", "xhigh", "max",
+    ]);
+    expect(scoutRuntimeReasoningEfforts("codex", "gpt-6-sol")).toEqual([
+      "low", "medium", "high", "xhigh", "max", "ultra",
+    ]);
+    expect(scoutRuntimeReasoningEfforts("codex", "gpt-6-luna")).toEqual([
+      "low", "medium", "high", "xhigh", "max",
+    ]);
     expect(scoutRuntimeReasoningEfforts("codex", "gpt-6-astra")).toEqual([
       "low", "medium", "high", "xhigh", "max",
     ]);
@@ -54,7 +66,7 @@ describe("runtime execution contracts", () => {
     expect(SCOUT_RUNTIME_EFFORT_CATALOG.find((entry) => entry.id === "ultra")).toEqual(
       expect.objectContaining({
         harnesses: ["codex"],
-        models: ["gpt-5.6-sol", "gpt-5.6-terra"],
+        models: ["gpt-6-sol", "gpt-5.6-sol", "gpt-5.6-terra"],
       }),
     );
   });
@@ -70,6 +82,11 @@ describe("runtime execution contracts", () => {
   });
 
   test("rejects effort values that Scout disabled for the selected model", () => {
+    expect(validateScoutRuntimeTuple({ harness: "codex", model: "gpt-6-sol", reasoningEffort: "ultra" })).toEqual([]);
+    expect(validateScoutRuntimeTuple({ harness: "codex", model: "gpt-6-luna", reasoningEffort: "max" })).toEqual([]);
+    expect(validateScoutRuntimeTuple({ harness: "claude", model: "claude-opus-5-5", reasoningEffort: "max" })).toEqual([]);
+    expect(validateScoutRuntimeTuple({ harness: "codex", model: "gpt-6-luna", reasoningEffort: "ultra" }))
+      .toEqual([expect.objectContaining({ code: "reasoning_effort_harness_mismatch" })]);
     expect(parseScoutRuntimeSpec("codex/gpt-5.6-luna/ultra")).toEqual({
       ok: false,
       error: 'reasoning effort "ultra" is not supported by harness "codex"',
@@ -141,6 +158,33 @@ describe("runtime execution contracts", () => {
       requested: "fable",
       resolved: "claude-fable-5",
     });
+    // Family aliases follow the catalog's newest model, not a pinned release.
+    expect(normalizeScoutRuntimeModel("claude", "opus")).toEqual({
+      ok: true,
+      requested: "opus",
+      resolved: "claude-opus-5-5",
+    });
+    expect(normalizeScoutRuntimeModel("claude", "claude-opus-5")).toEqual({
+      ok: true,
+      requested: "claude-opus-5",
+      resolved: "claude-opus-5",
+    });
+  });
+
+  test("resolves a family to its newest enabled catalog model", () => {
+    const catalog = {
+      ...SCOUT_RUNTIME_CATALOG,
+      harnesses: [{
+        ...SCOUT_RUNTIME_CATALOG.harnesses.find((entry) => entry.id === "claude")!,
+        models: [
+          { id: "claude-opus-6", label: "Opus 6", enabled: false, family: "Opus" },
+          { id: "claude-opus-5-5", label: "Opus 5.5", enabled: true, family: "Opus" },
+          { id: "claude-opus-5", label: "Opus 5", enabled: true, family: "Opus" },
+        ],
+      }],
+    };
+    expect(scoutRuntimeLatestModelInFamily("claude", "Opus", catalog)).toBe("claude-opus-5-5");
+    expect(scoutRuntimeLatestModelInFamily("claude", "Sonnet", catalog)).toBeUndefined();
   });
 
   test("does not format sparse runtime tuples ambiguously", () => {
@@ -148,5 +192,28 @@ describe("runtime execution contracts", () => {
       harness: "codex",
       reasoningEffort: "xhigh",
     })).toThrow("cannot encode effort without a model");
+  });
+
+  test("devin with a catalog model passes model selectability", () => {
+    const model = SCOUT_RUNTIME_CATALOG.harnesses
+      .find((entry) => entry.id === "devin")!
+      .models.find((candidate) => candidate.enabled)!.id;
+    const issues = validateScoutRuntimeTuple({ harness: "devin", model });
+    expect(issues.some((issue) => issue.code === "unsupported_model_dimension")).toBe(false);
+  });
+
+  test("a harness with no catalog models rejects a model", () => {
+    expect(validateScoutRuntimeTuple({ harness: "kimi", model: "some-model" }))
+      .toEqual([expect.objectContaining({
+        code: "unsupported_model_dimension",
+        dimension: "model",
+      })]);
+  });
+
+  test("isModelSelectableHarness follows the catalog", () => {
+    expect(isModelSelectableHarness("claude")).toBe(true);
+    expect(isModelSelectableHarness("devin")).toBe(true);
+    expect(isModelSelectableHarness("kimi")).toBe(false);
+    expect(isModelSelectableHarness("not-a-harness")).toBe(false);
   });
 });

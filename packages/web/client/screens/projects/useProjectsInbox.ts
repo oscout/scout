@@ -17,6 +17,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { api } from "../../lib/api.ts";
+import { loadFleet } from "../../lib/fleet-store.ts";
 import { routeMachineId } from "../../lib/router.ts";
 import { useBrokerEvents } from "../../lib/sse.ts";
 import { isScoutSurfaceActive, onScoutSurfaceActivated } from "../../lib/surface-activity.ts";
@@ -168,7 +169,7 @@ async function load(mode: "initial" | "background"): Promise<void> {
     }
     const [sessionsResult, fleetResult, discoveryResult] = await Promise.allSettled([
       api<SessionEntry[]>("/api/conversations"),
-      api<FleetState>("/api/fleet"),
+      loadFleet(),
       api<TailDiscoverySnapshot>(TAIL_DISCOVERY_PATH),
     ]);
 

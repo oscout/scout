@@ -506,6 +506,45 @@ describe("verifyTree", () => {
     )).toBe(true);
   });
 
+  test("files a base-owned mesh bridge under the bridge layer and accepts its absence", () => {
+    const bridge = line(660, 200, `/Users/dev/.bun/bin/bun ${OURS.root}/apps/desktop/bin/scout.ts mesh bridge --config /s/mcp-bridge.json`);
+    const withBridge = classifyProcesses(parseProcessTable(`${healthyTable()}\n${bridge}`), paths);
+    expect(withBridge.layers.bridge.map((entry) => entry.pid)).toEqual([660]);
+    expect(verifyTree(withBridge).filter((problem) => problem.layer === "bridge")).toEqual([]);
+
+    const without = classifyProcesses(parseProcessTable(healthyTable()), paths);
+    expect(verifyTree(without).filter((problem) => problem.layer === "bridge")).toEqual([]);
+  });
+
+  test("leaves a legacy launchd or harness-held mesh bridge out of the tree", () => {
+    const legacy = line(661, 1, "/Users/dev/.bun/bin/bun /Users/dev/Library/Application Support/OpenScout/deployments/abc/dist/main.mjs mesh bridge --config /s/mcp-bridge.json");
+    const tree = classifyProcesses(parseProcessTable(`${healthyTable()}\n${legacy}`), paths);
+    expect(tree.layers.bridge).toEqual([]);
+    expect(tree.foreign.map((entry) => entry.pid)).not.toContain(661);
+  });
+
+  test("does not mistake a prompt or shell line mentioning mesh bridge for a bridge", () => {
+    const table = [
+      healthyTable(),
+      line(670, 300, "claude --print review mesh bridge shutdown"),
+      line(671, 300, "sh -c echo mesh bridge"),
+    ].join("\n");
+    const tree = classifyProcesses(parseProcessTable(table), paths);
+    expect(tree.layers.bridge).toEqual([]);
+  });
+
+  test("files a bundled base-owned bridge (dist/main.mjs)", () => {
+    const bridge = line(663, 200, "/Users/dev/.bun/bin/bun /opt/scout/dist/main.mjs mesh bridge --config /s/mcp-bridge.json");
+    const tree = classifyProcesses(parseProcessTable(`${healthyTable()}\n${bridge}`), paths);
+    expect(tree.layers.bridge.map((entry) => entry.pid)).toEqual([663]);
+  });
+
+  test("flags two base-owned mesh bridges", () => {
+    const bridge = (pid: number) => line(pid, 200, `/Users/dev/.bun/bin/bun ${OURS.root}/apps/desktop/bin/scout.ts mesh bridge`);
+    const tree = classifyProcesses(parseProcessTable(`${healthyTable()}\n${bridge(660)}\n${bridge(662)}`), paths);
+    expect(verifyTree(tree).some((problem) => problem.layer === "bridge" && /at most one bridge/.test(problem.message))).toBe(true);
+  });
+
   test("accepts menu ownership only when the base supervisor is unavailable", () => {
     const table = [
       line(500, 1, `${OURS.dist}/Scout.app/Contents/MacOS/Scout`),

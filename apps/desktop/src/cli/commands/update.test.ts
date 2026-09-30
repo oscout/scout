@@ -438,7 +438,8 @@ describe("scout update — named machines", () => {
     // The two kinds of bridge need two different actions.
     expect(text()).toContain("2 held by a harness session");
     expect(text()).toContain("1 with ppid 1 (launchd or orphan; pid 995)");
-    expect(text()).toContain("launchctl kickstart -k gui/$(id -u)/app.openscout.mcp-bridge");
+    expect(text()).toContain("launchctl list app.openscout.mcp-bridge");
+    expect(text()).toContain("hand the bridge to scout-base");
     expect(text()).toContain("scout mesh bridge install");
     expect(text()).toContain("job ownership is unverified");
     expect(text()).toContain("compare its PID. Only if it matches");

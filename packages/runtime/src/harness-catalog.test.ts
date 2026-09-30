@@ -11,6 +11,7 @@ import {
   buildHarnessResumeCommand,
   createBuiltInHarnessCatalog,
   evaluateHarnessReadiness,
+  findHarnessEntry,
   loadHarnessCatalogSnapshot,
   mergeHarnessCatalogEntries,
   resolveHarnessSessionDefaults,
@@ -42,6 +43,14 @@ describe("harness catalog", () => {
     expect(entries.find((entry) => entry.name === "pi")?.install?.macos).toBe(
       "npm install -g @earendil-works/pi-coding-agent",
     );
+  });
+
+  test("keeps `oc` as an OpenCode alias but not the product-V2 `opencode2`", () => {
+    expect(findHarnessEntry("oc")?.harness).toBe("opencode");
+    expect(findHarnessEntry("opencode")?.harness).toBe("opencode");
+    // `opencode2` is the product-V2 integration, not an `opencode` alias.
+    expect(findHarnessEntry("opencode2")).toBeNull();
+    expect(resolveHarnessSessionDefaults("opencode2")).toBeNull();
   });
 
   test("declaratively resolves default harnesses and transports for new sessions", () => {

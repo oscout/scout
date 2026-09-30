@@ -11,6 +11,7 @@ export interface OpencodeAcpInvocationOptions {
   prompt: string;
   name?: string;
   timeoutMs?: number;
+  hardCeilingMs?: number;
   adapterOptions?: Record<string, unknown>;
 }
 

@@ -11,6 +11,7 @@ import {
   normalizeAgentState,
 } from "../../lib/agent-state.ts";
 import { api } from "../../lib/api.ts";
+import { loadFleet } from "../../lib/fleet-store.ts";
 import { copyTextToClipboard } from "../../lib/clipboard.ts";
 import { routeForFleetAsk, routeForOperatorAttention } from "../../lib/operator-attention.ts";
 import { useBrokerEvents } from "../../lib/sse.ts";
@@ -69,7 +70,7 @@ export function OpsInspectorPanel({
   });
 
   const load = useCallback(async () => {
-    const data = await api<FleetState>("/api/fleet").catch(() => null);
+    const data = await loadFleet().catch(() => null);
     setFleet(data);
   }, []);
 

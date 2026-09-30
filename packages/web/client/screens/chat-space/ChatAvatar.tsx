@@ -118,21 +118,31 @@ export function MemberAvatar({
 export function Facepile({
   members,
   countLabel,
+  hereActorIds,
   onOpen,
 }: {
   members: ChannelMemberView[];
   countLabel: string;
+  /** Members seen in this channel moments ago; their faces go first and carry a dot. */
+  hereActorIds?: ReadonlySet<string>;
   onOpen: () => void;
 }) {
-  const visible = members.slice(0, 4);
+  const here = hereActorIds ?? new Set<string>();
+  const visible = [...members]
+    .sort((a, b) => Number(here.has(b.actorId)) - Number(here.has(a.actorId)))
+    .slice(0, 3);
+  const hereCount = members.filter(member => here.has(member.actorId)).length;
+  const label = `Members: ${countLabel}${hereCount ? `, ${hereCount} here recently` : ""}`;
   return (
-    <button type="button" className="chat-facepile" onClick={onOpen} aria-label={`Members: ${countLabel}`}>
+    <button type="button" className="chat-facepile" onClick={onOpen} aria-label={label} title={label}>
       <span className="chat-facepile-faces">
         {visible.map((member) => (
-          <MemberAvatar key={member.actorId} member={member} size={20} className="chat-facepile-face" />
+          <span key={member.actorId} className="chat-facepile-face" data-here={here.has(member.actorId) ? "true" : undefined}>
+            <MemberAvatar member={member} size={20} />
+          </span>
         ))}
       </span>
-      <span className="chat-pile-count">{countLabel}</span>
+      <span className="chat-pile-count">{members.length || "…"}</span>
     </button>
   );
 }

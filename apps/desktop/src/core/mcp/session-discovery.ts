@@ -4,6 +4,13 @@ import { SQLiteKnowledgeStore, type KnowledgeCoverage, type KnowledgeSearchHit, 
 import { terminalSurfaceIdForSurface, type TerminalSessionRecord } from "@openscout/protocol";
 
 import { readScoutWebJson } from "../../cli/web-api.ts";
+import {
+  herdrWorkspacesDependencies,
+  herdrPanelIdentities,
+  matchesHerdrPanel,
+  type HerdrPanelIdentity,
+  type HerdrWorkspacesDependencies,
+} from "./herdr-workspaces.ts";
 
 type ObservedSession = {
   id: string;
@@ -16,7 +23,12 @@ type ObservedSession = {
 type SearchStore = Pick<SQLiteKnowledgeStore, "assessCoverage" | "searchLexical" | "close">;
 export type SessionDiscoveryDependencies = {
   openStore: () => SearchStore;
-  readInventory: () => Promise<{ sessions: ObservedSession[]; terminals: TerminalSessionRecord[] }>;
+  readInventory: () => Promise<{
+    sessions: ObservedSession[];
+    terminals: TerminalSessionRecord[];
+    herdr?: Awaited<ReturnType<HerdrWorkspacesDependencies["readDigests"]>>;
+    sources?: { sessions: "available" | "unavailable"; terminals: "available" | "unavailable" };
+  }>;
   webOrigin: string;
 };
 
@@ -34,11 +46,20 @@ export function sessionDiscoveryDependencies(
     // A missing index remains missing. Read-only open never initializes schema or indexes transcripts.
     openStore: () => new SQLiteKnowledgeStore(undefined, undefined, { readonly: true }),
     readInventory: async () => {
-      const [sessions, result] = await Promise.all([
+      const [sessions, terminals, herdr] = await Promise.allSettled([
         read<ObservedSession[]>("/api/sessions"),
         read<{ sessions: TerminalSessionRecord[] }>("/api/terminal-sessions?includeDiscovered=1&limit=100"),
+        herdrWorkspacesDependencies(webOrigin, options).readDigests(),
       ]);
-      return { sessions, terminals: result.sessions };
+      return {
+        sessions: sessions.status === "fulfilled" ? sessions.value : [],
+        terminals: terminals.status === "fulfilled" ? terminals.value.sessions : [],
+        sources: {
+          sessions: sessions.status === "fulfilled" ? "available" : "unavailable",
+          terminals: terminals.status === "fulfilled" ? "available" : "unavailable",
+        },
+        herdr: herdr.status === "fulfilled" ? herdr.value : { digests: [], available: false, truncated: false },
+      };
     },
   };
 }
@@ -62,9 +83,26 @@ function observedState(terminal: TerminalSessionRecord | undefined): "live_attac
   return "unknown";
 }
 
+function panelSessionId(panel: HerdrPanelIdentity): string | null {
+  const ref = panel.agentSession;
+  return panel.live && ref?.kind === "id" && ref.agent === panel.agent ? ref.value : null;
+}
+
+function inventorySources(inventory: Awaited<ReturnType<SessionDiscoveryDependencies["readInventory"]>>) {
+  return {
+    ...(inventory.sources ?? { sessions: "available", terminals: "available" }),
+    herdr: inventory.herdr?.available ? "available" : "unavailable",
+  };
+}
+
 function facet(hit: KnowledgeSearchHit, key: string): string | null {
   const value = hit.facets[key];
   return typeof value === "string" ? value : value?.[0] ?? null;
+}
+
+function uniqueMatch<T>(values: T[] | undefined, predicate: (value: T) => boolean): T | undefined {
+  const matches = values?.filter(predicate) ?? [];
+  return matches.length === 1 ? matches[0] : undefined;
 }
 
 /**
@@ -98,26 +136,46 @@ export function registerSessionDiscoveryTools(server: McpServer, deps: SessionDi
   const annotations = { readOnlyHint: true, idempotentHint: true, destructiveHint: false, openWorldHint: false };
   server.registerTool("sessions_inventory", {
     title: "Find Current Scout Sessions",
-    description: "Read current registered/observed sessions and live terminal surfaces. Filters are literal text, not semantic search. Returns only existing Open/Attach actions; unknown surface liveness is not attachable. Inventory is bounded and not exhaustive.",
+    description: "Find current sessions by Herdr panel name (for example devon-2), terminal title, directory, or session id. Query matches literal text, not semantics. Preserves the panel name, title, reported harness identity, observation time, and live/last-known state. Correlates only matching harness + exact session id, never title or directory. Multiple candidates are not a resolved target. Returns only existing Open/Attach actions; a Herdr report alone does not prove attachment or task completion. Reports unavailable sources separately from no matches. Inventory is bounded and not exhaustive.",
     inputSchema: z.object({ query: z.string().trim().max(200).optional(), limit: z.number().int().min(1).max(20).default(10) }),
     annotations,
   }, async ({ query, limit }) => {
     const inventory = await deps.readInventory();
     const needle = query?.toLowerCase() ?? "";
     const matches = (value: unknown) => JSON.stringify(value).toLowerCase().includes(needle);
-    const terminals = inventory.terminals.filter((record) => matches([record.id, record.sourceSessionId, record.harness, record.cwd, record.surfaces.map((surface) => surface.sessionName)]));
-    const sessions = inventory.sessions.filter((record) => matches([record.id, record.title, record.harness, record.workspaceRoot, record.sessionId, record.harnessSessionId]));
-    const results = terminals.map((record) => {
-      const session = inventory.sessions.find((item) => item.harness === record.harness && (item.harnessSessionId === record.sourceSessionId || item.sessionId === record.sourceSessionId));
+    const panels = herdrPanelIdentities(inventory.herdr?.digests ?? []);
+    const linkedPanels = (harness: string | null, sessionId: string | null) => panels.filter((panel) =>
+      sessionId && panel.agent === harness && panelSessionId(panel) === sessionId);
+    const results = inventory.terminals.map((record) => {
+      const candidates = inventory.sessions.filter((item) => item.harness === record.harness && (item.harnessSessionId === record.sourceSessionId || item.sessionId === record.sourceSessionId));
+      const session = candidates.length === 1 ? candidates[0] : undefined;
       const actions = actionsFor(record, session, deps.webOrigin);
-      return { sessionId: record.sourceSessionId || null, terminalId: record.id, harness: record.harness || null, cwd: record.cwd, title: session?.title ?? record.surfaces[0]?.sessionName ?? record.id, state: observedState(record), actions };
+      return { queryAliases: candidates.flatMap(item => [item.id, item.sessionId, item.harnessSessionId]), sessionId: record.sourceSessionId || null, terminalId: record.id, harness: record.harness || null, cwd: record.cwd, title: session?.title ?? record.surfaces[0]?.sessionName ?? record.id, state: observedState(record), actions, panels: linkedPanels(record.harness, record.sourceSessionId) };
     });
-    const terminalSourceIds = new Set(terminals.map((record) => `${record.harness}:${record.sourceSessionId}`));
-    for (const session of sessions) {
-      if (terminalSourceIds.has(`${session.harness}:${session.harnessSessionId ?? session.sessionId}`)) continue;
-      results.push({ sessionId: session.harnessSessionId ?? session.sessionId, terminalId: session.id, harness: session.harness, cwd: session.workspaceRoot ?? "", title: session.title, state: "unknown", actions: actionsFor(undefined, session, deps.webOrigin) });
+    const terminalSourceIds = new Set(inventory.terminals.map((record) => `${record.harness}:${record.sourceSessionId}`));
+    for (const session of inventory.sessions) {
+      if ([session.harnessSessionId, session.sessionId].some(id => id && terminalSourceIds.has(`${session.harness}:${id}`))) continue;
+      results.push({ queryAliases: [session.id, session.sessionId, session.harnessSessionId], sessionId: session.harnessSessionId ?? session.sessionId, terminalId: session.id, harness: session.harness, cwd: session.workspaceRoot ?? "", title: session.title, state: "unknown", actions: actionsFor(undefined, session, deps.webOrigin), panels: linkedPanels(session.harness, session.harnessSessionId ?? session.sessionId) });
     }
-    const structuredContent = { source: "canonical_session_views_and_observed_terminal_inventory", coverage: "bounded_inventory_not_exhaustive", query: query ?? "", truncated: results.length > limit || inventory.terminals.length >= 100 || inventory.sessions.length >= 80, results: results.slice(0, limit) };
+    const attachedPanels = new Set(results.flatMap((result) => result.panels.map((panel) => JSON.stringify([panel.herdrSession, panel.paneId]))));
+    for (const panel of panels) {
+      if (attachedPanels.has(JSON.stringify([panel.herdrSession, panel.paneId]))) continue;
+      results.push({ queryAliases: [], sessionId: panelSessionId(panel), terminalId: panel.target ?? `${panel.herdrSession}/${panel.paneId}`, harness: panel.agent, cwd: panel.directory ?? "", title: panel.name ?? panel.label ?? panel.paneId, state: "unknown", actions: [], panels: [panel] });
+    }
+    // Filter after correlation so a pane-name query retains the linked session
+    // and its actions, and a title match does not duplicate a terminal row.
+    const filtered = results.filter((result) => matches([result.sessionId, result.terminalId, result.harness, result.cwd, result.title, ...result.queryAliases])
+      || result.panels.some((panel) => matchesHerdrPanel(panel, needle))
+      || inventory.terminals.find((terminal) => terminal.id === result.terminalId)?.surfaces.some((surface) => matches(surface.sessionName)));
+    const sources = inventorySources(inventory);
+    const structuredContent = {
+      source: "canonical_session_views_and_observed_terminal_inventory", coverage: "bounded_inventory_not_exhaustive", query: query ?? "",
+      available: Object.values(sources).some((status) => status === "available"), sources,
+      truncated: filtered.length > limit || inventory.terminals.length >= 100 || inventory.sessions.length >= 80 || inventory.herdr?.truncated === true || inventory.herdr?.digests.some((digest) => digest.truncated) === true,
+      candidateCount: filtered.length, selection: "candidates_only",
+      note: "Herdr names are panel labels, not Scout addresses. A reported session is not transcript verification. Idle/unknown is not task completion. Unavailable or bounded sources cannot establish absence. Read commands return terminal output, not a guaranteed final turn.",
+      results: filtered.slice(0, limit).map(({ queryAliases, ...result }) => result),
+    };
     return { content: [{ type: "text" as const, text: JSON.stringify(structuredContent) }], structuredContent };
   });
   server.registerTool("sessions_search", {
@@ -157,12 +215,17 @@ export function registerSessionDiscoveryTools(server: McpServer, deps: SessionDi
         const source = hit.sourceRefs.find((ref) => ref.kind === "harness_transcript");
         const sessionId = source?.kind === "harness_transcript" ? source.sessionId ?? facet(hit, "sessionId") : facet(hit, "sessionId");
         const harnessId = source?.kind === "harness_transcript" ? source.harness : facet(hit, "harness");
-        const terminal = inventory?.terminals.find((record) => record.harness === harnessId && record.sourceSessionId === sessionId);
-        const session = inventory?.sessions.find((record) => record.harness === harnessId && (record.harnessSessionId === sessionId || record.sessionId === sessionId));
+        const terminal = uniqueMatch(inventory?.terminals, (record) => record.harness === harnessId && record.sourceSessionId === sessionId);
+        const session = uniqueMatch(inventory?.sessions, (record) => record.harness === harnessId && (record.harnessSessionId === sessionId || record.sessionId === sessionId));
         const actions = actionsFor(terminal, session, deps.webOrigin);
         return { sessionId, harness: harnessId, project: facet(hit, "project"), title: hit.title.slice(0, 240), snippet: hit.snippet.slice(0, 1200), source: source ?? null, freshness: hit.freshness, state: observedState(terminal), actions };
       });
-      const structuredContent = { query, mode: "lexical", coverage, searchedHours: Math.round(searchedMs / 3_600_000), ...(narrowedFromMs === null ? {} : { requestedHours: Math.round(narrowedFromMs / 3_600_000), narrowedToWarmedWindow: true }), indexedOnly: true, inventoryStatus: !hits.length ? "not_requested" : inventory ? "available_bounded" : "unavailable", results };
+      const sources = inventory ? inventorySources(inventory) : null;
+      const inventoryStatus = !hits.length ? "not_requested"
+        : !sources || Object.values(sources).every((status) => status === "unavailable") ? "unavailable"
+        : inventory?.sources && Object.values(sources).some((status) => status === "unavailable") ? "partial"
+        : "available_bounded";
+      const structuredContent = { query, mode: "lexical", coverage, searchedHours: Math.round(searchedMs / 3_600_000), ...(narrowedFromMs === null ? {} : { requestedHours: Math.round(narrowedFromMs / 3_600_000), narrowedToWarmedWindow: true }), indexedOnly: true, inventoryStatus, inventorySources: sources, results };
       return { content: [{ type: "text" as const, text: JSON.stringify(structuredContent) }], structuredContent };
     } finally { store.close(); }
   });

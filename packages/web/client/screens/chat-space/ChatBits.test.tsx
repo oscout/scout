@@ -74,6 +74,25 @@ const message = (
 });
 
 describe("Turn", () => {
+  test("only canonical mentions of the viewer receive an attention label", () => {
+    const render = (mentions?: MessageRecord["mentions"]) => renderToStaticMarkup(createElement(Turn, {
+      message: message({ id: "mention", body: "@Maya quoted text", mentions }), members: roster(maya), nowMs: NOW, viewerActorId: "actor-maya",
+    }));
+    expect(render()).not.toContain("Mentions you");
+    expect(render([{ actorId: "someone-else" }])).not.toContain("Mentions you");
+    expect(render([{ actorId: "actor-maya" }])).toContain("Mentions you");
+  });
+
+  test("a departed author keeps the server label without rejoining the roster", () => {
+    const members = roster();
+    const html = renderToStaticMarkup(createElement(Turn, {
+      message: { ...message({ id: "historical" }), actorName: "Former teammate" }, members, nowMs: NOW,
+    }));
+    expect(html).toContain("Former teammate");
+    expect(members.size).toBe(0);
+    expect(html).not.toContain("Ready to receive");
+  });
+
   test("the clock copies a link when asked", () => {
     const html = renderToStaticMarkup(
       createElement(Turn, {
@@ -119,8 +138,8 @@ describe("Turn", () => {
         onOpenThread: () => {},
       }),
     );
-    expect(html).toContain("Tracked request");
-    expect(html).toContain("▸ Maya&#x27;s Codex · working");
+    expect(html).toContain("Tracked request for Maya&#x27;s Codex, running");
+    expect(html).toContain("Maya&#x27;s Codex is working");
     expect(html).toContain('data-tone="owed"');
     expect(html).toContain("⌵ 2 replies · last 3m ago");
     expect(html.match(/chat-ask-card/gu)?.length).toBe(1);
@@ -161,6 +180,20 @@ describe("Turn", () => {
     expect(hosted).not.toContain("chat-reaction-picker");
   });
 
+  test("a reaction chip names who reacted on hover, from the roster", () => {
+    const html = renderToStaticMarkup(
+      createElement(Turn, {
+        message: message({ id: "m1", reactions: [{ emoji: "👍", count: 2, me: true, actorIds: [maya.actorId, "viewer"] }] } as never),
+        members: roster(maya),
+        nowMs: NOW,
+        viewerActorId: "viewer",
+        onReact: () => {},
+      }),
+    );
+    expect(html).toContain(`data-reactors="${maya.displayName}, You"`);
+    expect(html).toContain(`from ${maya.displayName}, You, including you`);
+  });
+
   test("every root can start a thread, not only one that already has replies", () => {
     const html = renderToStaticMarkup(
       createElement(Turn, {
@@ -170,9 +203,10 @@ describe("Turn", () => {
         onOpenThread: () => {},
       }),
     );
-    expect(html).toContain("⌵ Reply in thread");
-    // Quiet until the turn is hovered or focused, but present in the layout.
-    expect(html).toContain('data-empty="true"');
+    // Starting a thread is an action in the hover toolbar, not a reserved row.
+    expect(html).toContain('aria-label="Reply in thread to');
+    expect(html).toContain('role="toolbar"');
+    expect(html).not.toContain("chat-thread-stub");
   });
 
   test("with no thread handler there is no reply affordance at all", () => {
@@ -266,7 +300,33 @@ describe("Turn", () => {
 });
 
 describe("TrackedAskCard", () => {
-  test("an owed ask at an unreachable agent says so instead of spinning", () => {
+  test("recorded outcomes and waiting uncertainty are explicit", () => {
+    const render = (request: TrackedRequest) => renderToStaticMarkup(createElement(TrackedAskCard, { request, target: null, withTarget: true }));
+    const request = { messageId: "m", flightId: "f", targetActorId: "codex", state: "completed", requesterActorId: "maya", requesterName: "Maya", output: "Tests passed", outputTruncated: true };
+    const complete = render(request);
+    expect(complete).toContain("<dt>Requested by</dt><dd>Maya</dd>");
+    expect(complete).toContain("Done");
+    expect(complete).toContain("Recorded outcome");
+    expect(complete).toContain("Tests passed");
+    expect(complete).toContain("Preview limited");
+    expect(render({ ...request, outputUrl: "/api/channels/c/asks/f/output" })).toContain('href="/api/channels/c/asks/f/output"');
+    expect(render({ ...request, outputUrl: "https://example.com/outcome" })).not.toContain("Read full outcome");
+    expect(render({ ...request, outputUrl: "javascript:alert(1)" })).not.toContain("Read full outcome");
+    expect(complete).not.toContain("Stop");
+    const responsibility = { recordId: "q", kind: "question" as const, state: "answered", title: "Release approval", settled: false, actorId: "maya", actorName: "Maya", answer: "Release two" };
+    const review = render({ ...request, responsibility });
+    expect(review).toContain("Waiting on Maya to review the answer");
+    expect(review).not.toContain('data-needs-you');
+    expect(review).toContain("Release two");
+    expect(render({ ...request, responsibility: { ...responsibility, actions: ["close", "reopen"] } })).toContain("Answer ready for your review");
+    const closed = render({ ...request, responsibility: { ...responsibility, settled: true, state: "closed" } });
+    expect(closed).not.toContain("Waiting on Maya");
+    expect(closed).toContain("Question · closed");
+    expect(render({ ...request, state: "waiting" })).toContain("next actor is not available");
+    expect(render({ ...request, output: undefined })).toContain("Completed without a recorded outcome");
+  });
+
+  test("a queued flight stays queued even when the roster is unavailable", () => {
     const html = renderToStaticMarkup(
       createElement(TrackedAskCard, {
         request: {
@@ -279,7 +339,8 @@ describe("TrackedAskCard", () => {
         withTarget: true,
       }),
     );
-    expect(html).toContain("isn&#x27;t listening right now");
+    expect(html).toContain("Queued for");
+    expect(html).not.toContain("blocked");
     expect(html).toContain('data-tone="owed"');
   });
 
@@ -297,17 +358,25 @@ describe("TrackedAskCard", () => {
       }),
     );
     expect(html).toContain('data-tone="failed"');
-    expect(html).toContain("▸ failed");
+    expect(html).toContain("Couldn&#x27;t finish");
     expect(html).not.toContain("Stop");
+    const withError = renderToStaticMarkup(createElement(TrackedAskCard, {
+      request: { messageId: "m1", flightId: "flight-1", state: "failed", targetActorId: "actor-codex", error: "exit 1" },
+      target: codex(),
+      withTarget: true,
+    }));
+    expect(withError).toContain("Maya&#x27;s Codex couldn&#x27;t finish");
+    expect(withError).toContain('class="chat-ask-error" role="alert"');
+    expect(withError).toContain("exit 1");
   });
 
-  test("an owed ask offers Stop", () => {
+  test("a queued ask offers cancellation", () => {
     const html = renderToStaticMarkup(
       createElement(TrackedAskCard, {
         request: {
           messageId: "m1",
           flightId: "flight-1",
-          state: "running",
+          state: "queued",
           targetActorId: "actor-codex",
         },
         target: codex(),
@@ -315,8 +384,8 @@ describe("TrackedAskCard", () => {
         onStop: () => {},
       }),
     );
-    expect(html).toContain("▸ Maya&#x27;s Codex · working");
-    expect(html).toContain("Stop");
+    expect(html).toContain("Queued for Maya&#x27;s Codex");
+    expect(html).toContain("Cancel request");
   });
 });
 

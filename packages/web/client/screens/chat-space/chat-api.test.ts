@@ -71,12 +71,14 @@ describe("transport", () => {
     await chatApi.postMessage("conv-1", {
       requestId: "req-1",
       body: "hi",
+      mentionActorIds: ["person-alex"],
       attachments: [{ id: "att-1", mediaType: "image/png", fileName: "shot.png", url: "/api/blobs/att-1" }],
     });
 
     const call = lastCall();
     expect(call.init?.method).toBe("POST");
     expect(headersOf(call)["content-type"]).toBe("application/json");
+    expect(sentBody().mentionActorIds).toEqual(["person-alex"]);
     expect(sentBody().attachments).toEqual([
       { id: "att-1", mediaType: "image/png", fileName: "shot.png", url: "/api/blobs/att-1" },
     ]);
@@ -305,4 +307,69 @@ describe("explicit sign-out", () => {
     expect(lastCall().url).toBe("/api/logout");
     expect(lastCall().init?.method).toBe("POST");
   });
+});
+
+
+test("question responses encode scope and preserve conflict errors", async () => {
+  stubFetch(() => json({ error: "Question changed", status: 409 }, 409));
+  await expect(chatApi.respondQuestion!("channel/a", "question/b", { action: "answer", expectedUpdatedAt: 3, answer: "Two" }, "team")).rejects.toBeInstanceOf(ChatApiError);
+  expect(lastCall().url).toBe("/api/channels/channel%2Fa/questions/question%2Fb/respond?space=team");
+  expect(JSON.parse(lastCall().init!.body!)).toEqual({ action: "answer", expectedUpdatedAt: 3, answer: "Two" });
+});
+
+
+test("channel questions preserve pagination and space scope", async () => {
+  stubFetch(() => json({ questions: [], nextCursor: null }));
+  await chatApi.questions!("channel/a", "cursor+value", "team");
+  expect(lastCall().url).toBe("/api/channels/channel%2Fa/questions?cursor=cursor%2Bvalue&space=team");
+});
+
+
+test("an ask carries mention attention independently of its execution target", async () => {
+  stubFetch(() => json({ message: { id: "m" }, request: { flightId: "f" } }));
+  await chatApi.postAsk("room", { requestId: "request", body: "Review", targetActorId: "codex", mentionActorIds: ["maya"] });
+  expect(JSON.parse(lastCall().init!.body!)).toEqual({ requestId: "request", body: "Review", targetActorId: "codex", mentionActorIds: ["maya"] });
+});
+
+
+test("agent asks preserve attached files and thread routing", async () => {
+  stubFetch(() => json({ message: { id: "m-file" }, request: { messageId: "m-file" } }));
+  const attachments = [{ id: "file", mediaType: "text/markdown", url: "/api/blobs/file", fileName: "notes.md" }];
+  await chatApi.postAsk("room", { requestId: "request", body: "Review notes", targetActorId: "codex", attachments, replyToMessageId: "root" });
+  expect(sentBody()).toMatchObject({ attachments, replyToMessageId: "root", targetActorId: "codex" });
+});
+
+test("approval transport preserves scope and the exact decision tuple", async () => {
+  stubFetch(() => json({ available: true, approvals: [] }));
+  await chatApi.approvals!("room", "flight", "work");
+  expect(lastCall().url).toBe("/api/channels/room/asks/flight/approvals?space=work");
+  const decision = { sessionId: "session", turnId: "turn", blockId: "block", version: 4, decision: "deny" as const };
+  await chatApi.decideApproval!("room", "flight", decision, "work");
+  expect(lastCall().url).toBe("/api/channels/room/asks/flight/approvals/decide?space=work");
+  expect(sentBody()).toEqual(decision);
+});
+
+test("execution transport preserves space and observed turn identity", async () => {
+  stubFetch(() => json({ available: true, interruptible: true }));
+  await chatApi.execution!("room", "flight", "work");
+  expect(lastCall().url).toBe("/api/channels/room/asks/flight/execution?space=work");
+  const input = { sessionId: "session", turnId: "turn" };
+  await chatApi.interruptExecution!("room", "flight", input, "work");
+  expect(lastCall().url).toBe("/api/channels/room/asks/flight/execution?space=work");
+  expect(lastCall().init?.method).toBe("POST");
+  expect(sentBody()).toEqual(input);
+});
+
+test("question history transport encodes cursor and space independently", async () => {
+  stubFetch(() => json({ questions: [], nextCursor: null }));
+  await chatApi.questionHistory!("room/a", "cursor+value", "work");
+  expect(lastCall().url).toBe("/api/channels/room%2Fa/questions/history?cursor=cursor%2Bvalue&space=work");
+});
+
+test("presence transport sends activity identity without draft text", async () => {
+  stubFetch(() => json({ people: [] }));
+  const beat = { clientId: "tab", sequence: 2, active: true, typing: true, threadId: "root" };
+  await chatApi.presence!("room/a", beat, "work");
+  expect(lastCall().url).toBe("/api/channels/room%2Fa/presence?space=work");
+  expect(sentBody()).toEqual(beat);
 });

@@ -68,6 +68,11 @@ export type HomeHeroProps = {
   heartrateBucketLabel: string;
   heartrateVisibleEventThreshold?: number;
   serviceGauges: ServiceGauge[];
+  /** First fetch still in flight: reserve the card instead of growing into it. */
+  gaugesPending?: boolean;
+  heartratePending?: boolean;
+  /** Last settled cockpit shape; sizes the pending cards. */
+  layoutHint?: { gauges: number; heartrate: boolean };
 };
 
 const HEARTRATE_VISIBLE_EVENT_THRESHOLD = 3;
@@ -514,6 +519,65 @@ function sortedServiceGauges(gauges: ServiceGauge[]): ServiceGauge[] {
     .map(({ gauge }) => gauge);
 }
 
+/* Pending cards reuse the real chrome and row classes, with invisible text
+   holding each line box, so the swap to data changes pixels, not geometry. */
+function QuotasCardSkeleton({ rows }: { rows: number }) {
+  return (
+    <div className="hd-card hd-card--quotas hd-card--pending" aria-hidden="true">
+      <div className="hd-card-head">
+        <div className="hd-card-head-left">
+          <span className="label-xs hd-card-title">Subscriptions & Quotas</span>
+          <span className="chip chip--neutral chip--mono chip--sm home-skel-chip">0 Active</span>
+        </div>
+      </div>
+      <div className="hd-gauge-set">
+        <div className="hd-gauge-table-head label-xs">
+          <span>Service</span>
+          <span>Short Window</span>
+          <span>Resets</span>
+          <span>Long Window</span>
+          <span>Reset Countdown</span>
+        </div>
+        {Array.from({ length: rows }, (_, i) => (
+          <span key={i} className="hd-gauge-wrap">
+            <span className="hd-gauge">
+              <span className="hd-gauge-head">
+                <span className="hd-gauge-label"><span className="home-skel" style={{ width: 44 }} />{"\u00a0"}</span>
+              </span>
+              <span className="hd-gauge-cell"><span className="home-skel" style={{ width: "80%" }} /></span>
+              <span className="hd-gauge-cell hd-gauge-reset"><span className="home-skel" style={{ width: 40 }} /></span>
+              <span className="hd-gauge-cell"><span className="home-skel" style={{ width: "80%" }} /></span>
+              <span className="hd-gauge-cell hd-gauge-reset hd-gauge-reset--featured">
+                <strong><span className="home-skel" style={{ width: 64 }} />{"\u00a0"}</strong>
+                <span>{"\u00a0"}</span>
+              </span>
+            </span>
+          </span>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function HeartrateCardSkeleton() {
+  return (
+    <div className="hd-card hd-card--heartrate hd-card--pending" aria-hidden="true">
+      <div className="hd-card-head">
+        <div className="hd-card-head-left">
+          <Activity size={12} className="hd-heartrate-icon" aria-hidden="true" />
+          <span className="label-xs hd-card-title">Fleet Velocity</span>
+        </div>
+        <div className="hd-card-head-right">
+          <span className="chip chip--neutral chip--mono chip--sm home-skel-chip">0 Events</span>
+        </div>
+      </div>
+      <div className="hd-heartrate-plot-body">
+        <HeartrateGraph buckets={[]} />
+      </div>
+    </div>
+  );
+}
+
 export default function HomeHero(props: HomeHeroProps) {
   const {
     now,
@@ -529,6 +593,9 @@ export default function HomeHero(props: HomeHeroProps) {
     heartrateBucketLabel,
     heartrateVisibleEventThreshold = HEARTRATE_VISIBLE_EVENT_THRESHOLD,
     serviceGauges,
+    gaugesPending = false,
+    heartratePending = false,
+    layoutHint = { gauges: HOME_SERVICE_GAUGE_LIMIT, heartrate: true },
   } = props;
   const [showAllGauges, setShowAllGauges] = useState(false);
 
@@ -541,19 +608,26 @@ export default function HomeHero(props: HomeHeroProps) {
 
   const totalHeartrateEvents = heartrate.reduce((total, bucket) => total + bucket.count, 0);
   const showHeartrate = totalHeartrateEvents >= heartrateVisibleEventThreshold;
+  // While a source is unresolved its card holds the slot it last occupied, so
+  // the grid never reflows from one column to two when the data lands.
+  const reserveGauges = gauges.length === 0 && gaugesPending && layoutHint.gauges > 0;
+  const reserveHeartrate = !showHeartrate && heartratePending && layoutHint.heartrate;
+  const hasQuotasCard = gauges.length > 0 || reserveGauges;
+  const hasHeartrateCard = showHeartrate || reserveHeartrate;
 
   return (
     <section className="hd" aria-label="Fleet Cockpit and Service Cluster">
       {/* ── Cockpit Vitals Band ────────────────────────────────────── */}
       <div className="hd-vitals-band">
         <div className="hd-vitals-left">
-          <span className="label-sm hd-vitals-title">Fleet Cockpit</span>
+          <span className="s-eyebrow hd-vitals-title">Fleet Cockpit</span>
           {operatorName && (
             <span className="chip chip--neutral chip--mono chip--sm hd-vitals-callsign">
               {operatorName}
             </span>
           )}
         </div>
+        <span className="s-section-rule-line" aria-hidden="true" />
         <div className="hd-vitals-right">
           {error && <span className="dot dot--warning" aria-hidden="true" />}
           <span className={`hd-meta hd-meta--${syncTone}`}>{syncLabel}</span>
@@ -571,11 +645,12 @@ export default function HomeHero(props: HomeHeroProps) {
       </div>
 
       {/* ── Modular HUD Telemetry Cards ────────────────────────────── */}
-      {(gauges.length > 0 || showHeartrate) && (
-        <div className={`hd-telemetry-grid ${showHeartrate && gauges.length > 0 ? "hd-telemetry-grid--split" : "hd-telemetry-grid--single"}`}>
+      {(hasQuotasCard || hasHeartrateCard) && (
+        <div className={`hd-telemetry-grid ${hasQuotasCard && hasHeartrateCard ? "hd-telemetry-grid--split" : "hd-telemetry-grid--single"}`}>
+          {reserveGauges && <QuotasCardSkeleton rows={layoutHint.gauges} />}
           {/* Subscriptions & Quotas Card */}
           {gauges.length > 0 && (
-            <div className="hd-card hd-card--quotas">
+            <div className="hd-card hd-card--quotas home-arrive">
               <div className="hd-card-head">
                 <div className="hd-card-head-left">
                   <span className="label-xs hd-card-title">Subscriptions & Quotas</span>
@@ -613,8 +688,9 @@ export default function HomeHero(props: HomeHeroProps) {
           )}
 
           {/* Fleet Velocity & Heartrate Oscilloscope Card */}
+          {reserveHeartrate && <HeartrateCardSkeleton />}
           {showHeartrate && (
-            <div className="hd-card hd-card--heartrate">
+            <div className="hd-card hd-card--heartrate home-arrive">
               <div className="hd-card-head">
                 <div className="hd-card-head-left">
                   <Activity size={12} className="hd-heartrate-icon" aria-hidden="true" />

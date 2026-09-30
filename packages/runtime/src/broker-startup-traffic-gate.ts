@@ -71,7 +71,7 @@ export class BrokerStartupTrafficGate {
         && ["/v1/actors", "/v1/agents", "/v1/endpoints"].includes(path)) return true;
       if ((normalizedMethod === "GET" || normalizedMethod === "HEAD") && path === "/v1/snapshot") {
         const scope = new URL(requestTarget, "http://broker.local").searchParams.get("scope");
-        return scope === "agents" ? this.coreReady : this.historyReady;
+        return scope === "agents" || scope === "identity" ? this.coreReady : this.historyReady;
       }
       // Home depends on the projection; an empty/partial prior launch is not
       // a complete history result. Health remains available with coverage.

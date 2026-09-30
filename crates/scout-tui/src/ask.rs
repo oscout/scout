@@ -56,10 +56,7 @@ pub fn post_ask(target_id: &str, target_label: &str, body: &str) -> Result<Strin
     )?;
     if resp.status == 401 {
         let cookie = bootstrap_cookie(&endpoint.host, endpoint.port)?;
-        let retry_headers = [
-            ("Accept", "application/json"),
-            ("Cookie", cookie.as_str()),
-        ];
+        let retry_headers = [("Accept", "application/json"), ("Cookie", cookie.as_str())];
         let retry = http::request_with_body(
             &endpoint.host,
             endpoint.port,
@@ -79,7 +76,11 @@ fn interpret_ask(resp: &http::HttpResponse, target_label: &str) -> Result<String
     if resp.status >= 200 && resp.status < 300 {
         let flight = value
             .as_ref()
-            .and_then(|v| v.get("flight").and_then(|f| f.get("id")).and_then(|id| id.as_str()))
+            .and_then(|v| {
+                v.get("flight")
+                    .and_then(|f| f.get("id"))
+                    .and_then(|id| id.as_str())
+            })
             .or_else(|| {
                 value
                     .as_ref()

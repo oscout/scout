@@ -8,8 +8,11 @@ import HomeHero, {
 } from "./HomeHero.tsx";
 import { TailView } from "../shared/TailView.tsx";
 import { api, peekApiGet } from "../../lib/api.ts";
+import { loadFleet } from "../../lib/fleet-store.ts";
+import { readHomeLayoutHint, writeHomeLayoutHint } from "./home-layout-hint.ts";
 import { useObservePolling } from "../../lib/observe.ts";
-import { useBrokerEvents } from "../../lib/sse.ts";
+import { useBrokerRefresh, type BrokerRefreshPolicy } from "../../lib/broker-refresh.ts";
+import { AGENT_ROSTER_EVENT_KINDS, FLEET_EVENT_KINDS, matchesKinds } from "../../lib/broker-event-kinds.ts";
 import { isScoutSurfaceActive, onScoutSurfaceActivated } from "../../lib/surface-activity.ts";
 import {
   compareTimestampsDesc,
@@ -34,6 +37,7 @@ import {
   MessageComposer,
   MessageComposerToolSelect,
   RuntimePicker,
+  useMessageComposerEmbedded,
 } from "../../components/MessageComposer/index.ts";
 import { useScout } from "../../scout/Provider.tsx";
 import { routeMachineId } from "../../lib/router.ts";
@@ -110,6 +114,13 @@ const MOVING_SORT_STORAGE_KEY = "openscout.home.movingSort.v1";
 // homepage can poll cheaply without holding an hour-old client snapshot.
 const SERVICE_BUDGETS_REFRESH_MS = 60_000;
 const LOCAL_TAIL_REFRESH_MS = 30_000;
+// Fleet + roster + heartrate. Heartrate has no event of its own, so the live
+// net stays at 30s rather than relaxing further.
+const HOME_FLEET_REFRESH_POLICY: BrokerRefreshPolicy = {
+  matches: matchesKinds(FLEET_EVENT_KINDS, AGENT_ROSTER_EVENT_KINDS),
+  fallbackPollMs: 15_000,
+  livePollMs: 30_000,
+};
 const HEARTRATE_COMBINED_EVENT_THRESHOLD = 3;
 const ROUTE_CACHE_MAX_AGE_MS = 30_000;
 
@@ -354,10 +365,15 @@ export function HomeContent({
   const [tailDiscovery, setTailDiscovery] = useState<TailDiscoverySnapshot | null>(warmStart.tailDiscovery);
   const [serviceGauges, setServiceGauges] = useState<ServiceGauge[]>(warmStart.gauges?.gauges ?? []);
   const [loading, setLoading] = useState(warmStart.fleet === null);
+  // Gauges and the local tail load on their own clocks. Until each first
+  // answer lands, its sections hold their last-known shape instead of
+  // collapsing and re-growing.
+  const [gaugesSettled, setGaugesSettled] = useState(warmStart.gauges !== null);
+  const [tailSettled, setTailSettled] = useState(warmStart.tailRecent !== null);
+  const [layoutHint] = useState(readHomeLayoutHint);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [lastLoadedAt, setLastLoadedAt] = useState<number | null>(null);
-  const refreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const requestIdRef = useRef(0);
   const lastForegroundRefreshAtRef = useRef(0);
   const fleetRef = useRef<FleetState | null>(warmStart.fleet);
@@ -395,13 +411,16 @@ export function HomeContent({
       activityLimit: String(lookbackOption.activityLimit),
     }).toString();
 
+    // Heartrate only feeds the hero's velocity chart, which basic omits.
     const [fleetResult, heartrateResult, agentsResult] = await Promise.allSettled([
-      api<FleetState>(`/api/fleet?${fleetQuery}`),
-      basic ? Promise.resolve(null) : api<{
-        windowLabel: string;
-        bucketLabel?: string;
-        buckets: HeartrateBucketView[];
-      }>("/api/heartrate"),
+      loadFleet(fleetQuery),
+      basic
+        ? Promise.resolve(null)
+        : api<{
+          windowLabel: string;
+          bucketLabel?: string;
+          buckets: HeartrateBucketView[];
+        }>("/api/heartrate"),
       reload(),
     ]);
 
@@ -430,32 +449,22 @@ export function HomeContent({
     setRefreshing(false);
   }, [basic, reload, lookbackOption]);
 
-  const scheduleRefresh = useCallback(() => {
-    if (!isScoutSurfaceActive()) return;
-    if (refreshTimerRef.current) return;
-    refreshTimerRef.current = setTimeout(() => {
-      refreshTimerRef.current = null;
-      void load("background");
-    }, 250);
-  }, [load]);
-
   useEffect(() => {
     void load();
-    return () => {
-      if (refreshTimerRef.current) clearTimeout(refreshTimerRef.current);
-    };
   }, [load]);
-  useBrokerEvents(scheduleRefresh);
+  useBrokerRefresh(() => void load("background"), HOME_FLEET_REFRESH_POLICY);
 
   useEffect(() => {
-    let cancelled = false;
     if (basic) return;
+    let cancelled = false;
     const fetchBudgets = async () => {
       try {
         const gauges = await fetchServiceGauges();
         if (!cancelled) setServiceGauges(gauges);
       } catch {
         // Silent: gauges are best-effort. If the endpoint fails, we just hide them.
+      } finally {
+        if (!cancelled) setGaugesSettled(true);
       }
     };
     void fetchBudgets();
@@ -491,6 +500,8 @@ export function HomeContent({
       if (discovery) setTailDiscovery(discovery);
     } catch {
       // Silent: the embedded Tail view owns the visible error/empty state.
+    } finally {
+      setTailSettled(true);
     }
   }, [localTailRecentLimit]);
 
@@ -503,28 +514,19 @@ export function HomeContent({
   }, [loadLocalTailSnapshot]);
 
   useEffect(() => {
-    const timer = setInterval(() => {
-      if (isScoutSurfaceActive()) {
-        void load("background");
-      }
-    }, 15_000);
-    return () => clearInterval(timer);
-  }, [load]);
-
-  useEffect(() => {
     const refreshIfActive = () => {
       const now = Date.now();
       if (now - lastForegroundRefreshAtRef.current < 1000) {
         return;
       }
       lastForegroundRefreshAtRef.current = now;
-      void load("background");
+      // The fleet itself refreshes through useBrokerRefresh above.
       if (!basic) void fetchServiceGauges().then(setServiceGauges).catch(() => null);
       void loadLocalTailSnapshot();
     };
 
     return onScoutSurfaceActivated(refreshIfActive);
-  }, [basic, fetchServiceGauges, load, loadLocalTailSnapshot]);
+  }, [basic, fetchServiceGauges, loadLocalTailSnapshot]);
 
   const [nowMs, setNowMs] = useState(() => Date.now());
 
@@ -762,12 +764,16 @@ export function HomeContent({
     heartrateBucketLabel,
     heartrateVisibleEventThreshold: HEARTRATE_COMBINED_EVENT_THRESHOLD,
     serviceGauges,
+    gaugesPending: !gaugesSettled,
+    heartratePending: loading || !tailSettled,
+    layoutHint,
   };
   const hideEmptyActivityModule =
     !loading &&
     !error &&
     liveActivity.length === 0 &&
     lookbackMs >= DEFAULT_LOOKBACK_MS;
+  const composerEmbedded = useMessageComposerEmbedded();
   const showQuietStart =
     !loading &&
     !error &&
@@ -808,6 +814,27 @@ export function HomeContent({
   const visibleMovingCards = movingCards.slice(0, HOME_MOVING_CARD_LIMIT);
   const movingCardCount = visibleMovingCards.length;
   const totalMovingCount = movingCards.length + movingAsksWithoutWorkingAgent.length;
+  // Moving rows are joined from fleet, tail, and discovery; until the first
+  // fleet and tail answers land, an empty list means "not known yet".
+  const movingPending = (loading || !tailSettled) && totalMovingCount === 0;
+  const activityPending = loading && liveActivity.length === 0;
+
+  const settled = !loading && gaugesSettled && tailSettled;
+  const settledQuotaCount = serviceGauges.filter((gauge) => gauge.kind === "quota").length;
+  const settledHeartrate =
+    combinedHeartrate.reduce((total, bucket) => total + bucket.count, 0) >= HEARTRATE_COMBINED_EVENT_THRESHOLD;
+  const settledMovingRows = movingCardCount + movingAsksWithoutWorkingAgent.length;
+  const settledActivityRows = Math.min(liveActivity.length, 30);
+  useEffect(() => {
+    if (!settled) return;
+    writeHomeLayoutHint({
+      gauges: Math.min(settledQuotaCount, 2),
+      heartrate: settledHeartrate,
+      moving: settledMovingRows,
+      activity: settledActivityRows,
+    });
+  }, [settled, settledQuotaCount, settledHeartrate, settledMovingRows, settledActivityRows]);
+
   const movingSectionLabel =
     totalMovingCount > movingCardCount && movingCardCount > 0
       ? `What's moving · ${movingCardCount} of ${totalMovingCount}`
@@ -827,10 +854,11 @@ export function HomeContent({
         )}
 
         {/* ── What's moving ──────────────────────────────────────── */}
-        {(totalMovingCount > 0 || loading) && (
-          <div className="s-fleet-section">
+        {/* Always mounted: a quiet line when nothing moves, so the sections
+            below never jump when work starts or stops. */}
+        <div className="s-fleet-section">
             <SectionRule
-              label={loading && totalMovingCount === 0 ? "What's moving" : movingSectionLabel}
+              label={movingPending ? "What's moving" : movingSectionLabel}
               right={
                 <div className="s-moving-controls">
                   <MovingControls
@@ -848,10 +876,14 @@ export function HomeContent({
                 </div>
               }
             />
-            {loading && totalMovingCount === 0 ? (
-              <MovingSkeleton />
+            {movingPending ? (
+              <MovingSkeleton rows={layoutHint.moving} />
+            ) : totalMovingCount === 0 ? (
+              <div className="s-fleet-live-empty home-arrive" role="status">
+                <span>Nothing moving in the last {movingWindow.key}.</span>
+              </div>
             ) : (
-              <>
+              <div className="home-arrive">
                 {movingCardCount > 0 && (
                   <HomeMovingSignalList
                     cards={visibleMovingCards}
@@ -873,16 +905,17 @@ export function HomeContent({
                     ))}
                   </div>
                 )}
-              </>
+              </div>
             )}
-          </div>
-        )}
+        </div>
 
         {/* ── Scout coordination stream ─────────────────────────── */}
         {!basic && showActivitySection && (
           <div className="s-fleet-section">
             <SectionRule
-              label={`Scout coordination · ${liveActivity.length}${activityCapReached ? "+" : ""}`}
+              label={activityPending
+                ? "Scout coordination"
+                : `Scout coordination · ${liveActivity.length}${activityCapReached ? "+" : ""}`}
               right={
                 <LookbackPicker
                   value={lookbackMs}
@@ -891,6 +924,11 @@ export function HomeContent({
                 />
               }
             />
+            {activityPending && (
+              <div className="s-fleet-live-shape" aria-hidden="true">
+                <span><span className="home-skel" style={{ width: 170 }} />{"\u00a0"}</span>
+              </div>
+            )}
             {activityShape && (
               <div className="s-fleet-live-shape">
                 <span>last {formatDuration(activityShape.lastAgoMs)} ago</span>
@@ -912,20 +950,18 @@ export function HomeContent({
                 )}
               </div>
             )}
-            {loading && liveActivity.length === 0 ? (
-              <ActivityStreamSkeleton />
+            {activityPending ? (
+              <ActivityStreamSkeleton rows={layoutHint.activity} />
             ) : liveActivity.length === 0 ? (
               <LiveActivityEmpty
                 lookbackMs={lookbackMs}
                 nextOption={nextLookbackOption}
                 onWiden={(opt) => setLookbackMs(opt.value)}
-                loadedAt={lastLoadedAt}
-                nowMs={nowMs}
                 error={error}
                 onRetry={() => void load("manual")}
               />
             ) : (
-              <div className="s-mc-stream s-fleet-live-stream">
+              <div className="s-mc-stream s-fleet-live-stream home-arrive">
                 {liveActivity.slice(0, 30).map((item) => (
                   <ActivityRow
                     key={item.id}
@@ -942,14 +978,22 @@ export function HomeContent({
           </div>
         )}
 
-        {!basic && showQuietStart && (
-          <div className="s-fleet-section s-fleet-section--quiet-start">
-            <QuietStartPanel
-              agents={agents}
-              navigate={navigate}
-            />
+        {/* Local tail is always on Home; the quiet-start composer joins it
+            only when coordination is empty. Inside an embed the host owns the
+            composer (MessageComposer renders nothing), so the Message panel is
+            skipped rather than drawn as an empty frame. */}
+        {!basic && <div className="s-fleet-section s-fleet-section--quiet-start">
+          <div className="s-quiet-start">
+            {showQuietStart && !composerEmbedded && (
+              <QuietStartPanel
+                agents={agents}
+                navigate={navigate}
+              />
+            )}
+            <LocalTailPanel navigate={navigate} />
           </div>
-        )}
+        </div>}
+
         {children}
       </div>
     </div>
@@ -1085,16 +1129,29 @@ function LookbackPicker({
   );
 }
 
-function MovingSkeleton() {
+/* Skeleton rows wear the real row classes and hold an invisible line of text,
+   so each placeholder is exactly as tall as the row that replaces it. */
+function MovingSkeleton({ rows }: { rows: number }) {
+  if (rows === 0) {
+    return (
+      <div className="s-fleet-live-empty" aria-hidden="true">
+        <span className="home-skel" style={{ width: 180 }} />
+        {"\u00a0"}
+      </div>
+    );
+  }
   return (
     <div className="s-moving-signal-stage s-moving-signal-skeleton" aria-hidden="true">
       <div className="s-moving-signal-list">
-        {[0, 1, 2, 3, 4].map((i) => (
-          <div key={i} className="s-moving-signal-row s-moving-signal-row--skeleton">
-            <span className="s-moving-signal-skeleton-age" />
-            <span />
-            <span className="s-moving-signal-skeleton-where" />
-            <span className="s-moving-signal-skeleton-action" />
+        {Array.from({ length: rows }, (_, i) => (
+          <div key={i} className="s-moving-signal-item">
+            <div className="s-moving-signal-row s-moving-signal-row--skeleton">
+              <span className="s-moving-signal-age"><span className="home-skel" style={{ width: 28 }} />{"\u00a0"}</span>
+              <span className="home-skel home-skel--dot" />
+              <span className="s-moving-signal-where"><span className="s-moving-signal-project"><span className="home-skel" style={{ width: 84 }} />{"\u00a0"}</span></span>
+              <span className="s-moving-signal-action" style={{ width: `${40 + ((i * 17) % 30)}%` }}><span className="home-skel" style={{ width: "70%" }} />{"\u00a0"}</span>
+              <span><span className="home-skel" style={{ width: 32 }} /></span>
+            </div>
           </div>
         ))}
       </div>
@@ -1102,14 +1159,15 @@ function MovingSkeleton() {
   );
 }
 
-function ActivityStreamSkeleton() {
+function ActivityStreamSkeleton({ rows }: { rows: number }) {
   return (
     <div className="s-mc-stream s-fleet-live-stream s-fleet-live-stream--skeleton" aria-hidden="true">
-      {[0, 1, 2, 3, 4].map((i) => (
-        <div key={i} className="s-fleet-live-skeleton-row">
-          <span className="s-fleet-live-skeleton-time" />
-          <span className="s-fleet-live-skeleton-actor" />
-          <span className="s-fleet-live-skeleton-text" />
+      {Array.from({ length: Math.max(rows, 3) }, (_, i) => (
+        <div key={i} className="s-mc-stream-row">
+          <span className="s-mc-stream-time"><span className="home-skel" style={{ width: 20 }} />{"\u00a0"}</span>
+          <span className="s-mc-stream-actor"><span className="home-skel" style={{ width: 96 }} /></span>
+          <span className="s-mc-stream-verb"><span className="home-skel" style={{ width: 72 }} /></span>
+          <span className="s-mc-stream-text"><span className="home-skel" style={{ width: `${52 + ((i * 23) % 40)}%` }} /></span>
         </div>
       ))}
     </div>
@@ -1120,51 +1178,42 @@ function LiveActivityEmpty({
   lookbackMs,
   nextOption,
   onWiden,
-  loadedAt,
-  nowMs,
   error,
   onRetry,
 }: {
   lookbackMs: number;
   nextOption: LookbackOption | null;
   onWiden: (opt: LookbackOption) => void;
-  loadedAt: number | null;
-  nowMs: number;
   error: string | null;
   onRetry: () => void;
 }) {
+  // Empty and error both collapse to one quiet line under the section rule:
+  // "nothing happened" should cost a line, not a box. Freshness already lives
+  // in the cockpit's "Last updated" readout, so it is not repeated here.
   if (error) {
     return (
-      <div className="s-mc-empty s-fleet-live-empty">
-        <div className="s-fleet-live-empty-title">Couldn’t load activity.</div>
-        <div className="s-fleet-live-empty-detail">{error}</div>
-        <div className="s-fleet-live-empty-actions">
-          <button type="button" className="s-link-btn" onClick={onRetry}>
-            Try again
-          </button>
-        </div>
+      <div className="s-fleet-live-empty s-fleet-live-empty--error" role="status">
+        <span className="s-fleet-live-empty-title">Couldn’t load activity</span>
+        <span className="s-fleet-live-empty-detail" title={error}>{error}</span>
+        <button type="button" className="s-link-btn" onClick={onRetry}>
+          Try again
+        </button>
       </div>
     );
   }
-  const polledLabel = loadedAt
-    ? `Polled ${formatDuration(Math.max(0, nowMs - loadedAt))} ago.`
-    : "Polling…";
   return (
-    <div className="s-mc-empty s-fleet-live-empty">
-      <div className="s-fleet-live-empty-title">
-        No Scout messages or dispatches in the last {formatLookback(lookbackMs)}.
-      </div>
-      <div className="s-fleet-live-empty-detail">{polledLabel}</div>
+    <div className="s-fleet-live-empty" role="status">
+      <span className="s-fleet-live-empty-title">
+        No Scout messages or dispatches in the last {formatLookback(lookbackMs)}
+      </span>
       {nextOption && (
-        <div className="s-fleet-live-empty-actions">
-          <button
-            type="button"
-            className="s-link-btn"
-            onClick={() => onWiden(nextOption)}
-          >
-            Widen to {nextOption.label} →
-          </button>
-        </div>
+        <button
+          type="button"
+          className="s-link-btn"
+          onClick={() => onWiden(nextOption)}
+        >
+          Widen to {nextOption.label}
+        </button>
       )}
     </div>
   );
@@ -1299,78 +1348,81 @@ function QuietStartPanel({
   };
 
   return (
-    <div className="s-quiet-start">
-      <div className="s-quiet-panel s-quiet-panel--tail">
-        <div className="s-quiet-panel-head">
-          <span className="s-eyebrow">Local tail</span>
-          <button
-            type="button"
-            className="s-icon-btn"
-            title="Open tail"
-            onClick={() => navigate({ view: "ops", mode: "tail" })}
-          >
-            <ExternalLink size={14} aria-hidden="true" />
-            <span>Open tail</span>
-          </button>
-        </div>
-        <div className="s-quiet-tail-frame">
-          <TailView navigate={navigate} chrome="embedded" />
-        </div>
+    <div className="s-quiet-panel s-quiet-panel--ask">
+      <div className="s-quiet-panel-head">
+        <span className="s-eyebrow">Message</span>
       </div>
-
-      <div className="s-quiet-panel s-quiet-panel--ask">
-        <div className="s-quiet-panel-head">
-          <span className="s-eyebrow">Message</span>
-        </div>
-        <div className="s-quiet-compose">
-          <MessageComposer
-            density="panel"
-            value={prompt}
-            onChange={setPrompt}
-            onSend={() => void submitMessage()}
-            placeholder="Type a message…"
-            disabled={submitting || !selectedAgent}
-            sending={submitting}
-            canSend={!submitting && Boolean(selectedAgent) && prompt.trim().length > 0}
-            leadingTools={(
-              /* Target rides in the toolbar like every other composer control
-                 (main-composer grammar) — not as a bar above the input. */
-              <div className="s-quiet-target-chip">
-                <span className="s-quiet-label">To</span>
-                <MessageComposerToolSelect
-                  label="Send to agent"
-                  value={agentId}
-                  onChange={setAgentId}
-                  disabled={catchupAgents.length === 0 || submitting}
-                  options={catchupAgents.length === 0
-                    ? [{ value: "", label: "No registered agents" }]
-                    : catchupAgents.map((agent) => ({
-                        value: agent.id,
-                        label: agent.name,
-                      }))}
-                />
-              </div>
-            )}
-            tools={(
-              /* Right cluster: runtime · mic · Send. One chip replaces the
-                 harness and model selects — the harness reads as its mark. */
-              <RuntimePicker
-                catalog={runtimeCatalog}
-                value={{ harness: effectiveHarness, model, effort: reasoningEffort }}
-                onChange={(next: RuntimeValue) => {
-                  // "" keeps its meaning: run on the agent's own runtime.
-                  setHarness(next.harness === (selectedAgent?.harness?.trim() ?? "")
-                    ? ""
-                    : next.harness);
-                  setModel(next.model);
-                  setReasoningEffort(next.effort);
-                }}
-                disabled={submitting || !selectedAgent}
+      <div className="s-quiet-compose">
+        <MessageComposer
+          density="panel"
+          value={prompt}
+          onChange={setPrompt}
+          onSend={() => void submitMessage()}
+          placeholder="Type a message…"
+          disabled={submitting || !selectedAgent}
+          sending={submitting}
+          canSend={!submitting && Boolean(selectedAgent) && prompt.trim().length > 0}
+          leadingTools={(
+            /* Target rides in the toolbar like every other composer control
+               (main-composer grammar) — not as a bar above the input. */
+            <div className="s-quiet-target-chip">
+              <span className="s-quiet-label">To</span>
+              <MessageComposerToolSelect
+                label="Send to agent"
+                value={agentId}
+                onChange={setAgentId}
+                disabled={catchupAgents.length === 0 || submitting}
+                options={catchupAgents.length === 0
+                  ? [{ value: "", label: "No registered agents" }]
+                  : catchupAgents.map((agent) => ({
+                      value: agent.id,
+                      label: agent.name,
+                    }))}
               />
-            )}
-          />
-        </div>
-        {sendError && <div className="s-quiet-error">{sendError}</div>}
+            </div>
+          )}
+          tools={(
+            /* Right cluster: runtime · mic · Send. One chip replaces the
+               harness and model selects — the harness reads as its mark. */
+            <RuntimePicker
+              catalog={runtimeCatalog}
+              value={{ harness: effectiveHarness, model, effort: reasoningEffort }}
+              onChange={(next: RuntimeValue) => {
+                // "" keeps its meaning: run on the agent's own runtime.
+                setHarness(next.harness === (selectedAgent?.harness?.trim() ?? "")
+                  ? ""
+                  : next.harness);
+                setModel(next.model);
+                setReasoningEffort(next.effort);
+              }}
+              disabled={submitting || !selectedAgent}
+            />
+          )}
+        />
+      </div>
+      {sendError && <div className="s-quiet-error">{sendError}</div>}
+    </div>
+  );
+}
+
+/** Local tail on Home. Always mounted — independent of coordination state. */
+function LocalTailPanel({ navigate }: { navigate: (r: Route) => void }) {
+  return (
+    <div className="s-quiet-panel s-quiet-panel--tail">
+      <div className="s-quiet-panel-head">
+        <span className="s-eyebrow">Local tail</span>
+        <button
+          type="button"
+          className="s-icon-btn"
+          title="Open tail"
+          onClick={() => navigate({ view: "ops", mode: "tail" })}
+        >
+          <ExternalLink size={14} aria-hidden="true" />
+          <span>Open tail</span>
+        </button>
+      </div>
+      <div className="s-quiet-tail-frame">
+        <TailView navigate={navigate} chrome="embedded" />
       </div>
     </div>
   );

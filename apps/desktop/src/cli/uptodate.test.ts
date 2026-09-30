@@ -23,7 +23,12 @@ describe("CLI broker update check", () => {
     expect(shouldEnsureBrokerUptodateForCommand("report")).toBe(false);
     expect(shouldEnsureBrokerUptodateForCommand("feedback")).toBe(false);
     expect(shouldEnsureBrokerUptodateForCommand("ask")).toBe(true);
-    expect(shouldEnsureBrokerUptodateForCommand(null)).toBe(true);
+    expect(shouldEnsureBrokerUptodateForCommand(null)).toBe(false);
+    expect(shouldEnsureBrokerUptodateForCommand("doctor")).toBe(false);
+    expect(shouldEnsureBrokerUptodateForCommand("ask", ["--help"])).toBe(false);
+    expect(shouldEnsureBrokerUptodateForCommand("setup", ["-h"])).toBe(false);
+    expect(shouldEnsureBrokerUptodateForCommand("mesh", ["bridge", "--config", "/tmp/x.json"])).toBe(false);
+    expect(shouldEnsureBrokerUptodateForCommand("mesh", ["status"])).toBe(true);
   });
 
   test("extracts native scoutd build identities from tolerant payload shapes", () => {

@@ -45,6 +45,21 @@ Commit the source, version manifests, `apps/desktop/src/shared/product.ts`,
 `docs.json`, and lockfile on a review branch. Merge only after the standalone
 checks and packed artifact audit pass.
 
+## 0.2.110 source update
+
+This release brings the reviewed CLI, broker, protocol, and web source updates
+into the public package, including invitation previews and readable Scout Chat
+feeds, participant inbox commands, clearer ask/status/wait receipts, and the
+examples-first npm guide. Commercial support and plans link to
+[OpenScout contact](https://openscout.app/contact).
+
+Public-only publication tooling and MCP registry metadata remain authoritative.
+The browser package still uses the basic Home, DMs, and Tail profile; the existing
+exact tarball limits and excluded-feature checks apply unchanged. The public
+Tail session fallback and isolated mobile catalog test are retained. Hosted
+Worker parity checks stay in the private product repository; the exported client
+behavior tests have no dependency on private Worker source.
+
 ## Local publication
 
 ### 0.2.109 basic web package footprint

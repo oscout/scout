@@ -188,7 +188,7 @@ describe("post-979 usage across provider and streaming paths", () => {
         usage.finish = (id, receipt) => { finish(id, receipt); abort.abort(); };
         const service = createScoutbotAssistantService({
           currentDirectory: "/tmp/scout-usage-test", usage: () => usage, loadContext: () => ({}),
-          env: { OPENAI_API_KEY: "fixture", OPENSCOUT_SCOUTBOT_ASSISTANT_PROVIDER: "openai", OPENSCOUT_SCOUTBOT_ASSISTANT_MODEL: "captured" },
+          env: { OPENAI_API_KEY: "fixture", OPENSCOUT_SCOUTBOT_ASSISTANT_PROVIDER: "openai", OPENSCOUT_SCOUTBOT_ASSISTANT_MODEL: "captured", OPENSCOUT_SCOUTBOT_VOICE_MODEL: "captured" },
           fetchImpl: (async () => { service.updateConfig({ model: "changed" }); return stream ? sse([completed]) : jsonReply(); }) as typeof fetch,
         });
         const sentences: string[] = [];

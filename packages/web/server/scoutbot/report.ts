@@ -11,7 +11,7 @@ export async function handleDiagnosticCommand(prompt: string, submit = submitDia
   const message = tokens.filter((token) => !["--local-only", "--diagnostics"].includes(token)).join(" ");
   if (match[1].toLowerCase() === "feedback" && !message) return "Use /feedback <note>. Add --diagnostics to include service traces.";
   try {
-    return formatDiagnosticReceipt(await submit({ message, diagnostics: match[1].toLowerCase() === "report" || tokens.includes("--diagnostics"), localOnly: tokens.includes("--local-only") }));
+    return formatDiagnosticReceipt(await submit({ message, diagnostics: match[1].toLowerCase() === "report" || tokens.includes("--diagnostics"), localOnly: tokens.includes("--local-only"), client: "scoutbot" }));
   } catch {
     return "Could not save the report. Check the host’s disk space and report-directory permissions, then retry with scout report --local-only.";
   }

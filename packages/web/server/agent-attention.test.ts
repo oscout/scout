@@ -6,7 +6,7 @@ import {
   applyAgentAttention,
   buildAgentAttentionIndex,
 } from "./core/attention/agent-attention.ts";
-import type { WebAgent } from "./db/types/web.ts";
+import type { WebAgent } from "../shared/api/web.ts";
 
 function sessionItem(overrides: Partial<SessionAttentionItem>): SessionAttentionItem {
   return {
@@ -159,7 +159,7 @@ describe("buildAgentAttentionIndex", () => {
       }],
     });
 
-    // Reported from iOS: a "needs you" card naming no question, whose
+    // Reported from iOS: a request card naming no question, whose
     // conversation had no message behind it. An alert the operator cannot act
     // on is worse than no alert.
     expect(index.has("agent-1")).toBe(false);

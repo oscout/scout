@@ -61,6 +61,8 @@ export type MessagePostedEvent = ControlEventBase<"message.posted", {
   message: MessageRecord;
 }>;
 
+export type MessageCorrectedEvent = ControlEventBase<"message.corrected", { message: MessageRecord }>;
+
 export type ConversationReadCursorUpdatedEvent = ControlEventBase<"conversation.read_cursor.updated", {
   cursor: ConversationReadCursor;
 }>;
@@ -122,6 +124,7 @@ export type ControlEvent =
   | ConversationUpsertedEvent
   | BindingUpsertedEvent
   | MessagePostedEvent
+  | MessageCorrectedEvent
   | ConversationReadCursorUpdatedEvent
   | InvocationRequestedEvent
   | FlightUpdatedEvent

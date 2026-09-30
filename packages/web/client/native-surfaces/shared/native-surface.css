@@ -1,3 +1,5 @@
+@import "../../styles/field-focus.css";
+
 :root {
   color-scheme: dark;
   --hud-bg: #070908;

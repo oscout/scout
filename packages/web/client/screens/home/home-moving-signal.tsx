@@ -505,6 +505,7 @@ export function HomeMovingSignalList({
                       onSelect={toggle}
                       onHoverStart={showHover}
                       onHoverEnd={hideHover}
+                      onOpen={navigate}
                     />
                   ))}
                 </div>
@@ -521,6 +522,7 @@ export function HomeMovingSignalList({
                 onSelect={toggle}
                 onHoverStart={showHover}
                 onHoverEnd={hideHover}
+                onOpen={navigate}
               />
             ))}
           </div>
@@ -563,11 +565,14 @@ function SignalRow({
   onSelect,
   onHoverStart,
   onHoverEnd,
+  onOpen,
 }: {
   row: SignalRowModel;
   grouped?: boolean;
   selected: boolean;
   onSelect: (id: string) => void;
+  /** Double-click skips the inspector and goes straight into the session. */
+  onOpen: (route: Route) => void;
   onHoverStart: (id: string, rect: DOMRect) => void;
   onHoverEnd: () => void;
 }) {
@@ -583,6 +588,9 @@ function SignalRow({
         className={`s-moving-signal-row ${selected ? "is-selected" : ""}`}
         aria-pressed={selected}
         onClick={() => onSelect(row.id)}
+        onDoubleClick={() => {
+          if (row.observeRoute) onOpen(row.observeRoute);
+        }}
         onMouseEnter={(event) => onHoverStart(row.id, event.currentTarget.getBoundingClientRect())}
         onMouseLeave={onHoverEnd}
         onFocus={(event) => onHoverStart(row.id, event.currentTarget.getBoundingClientRect())}

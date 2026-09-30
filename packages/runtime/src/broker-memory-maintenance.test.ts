@@ -24,8 +24,14 @@ test('accepted fanout and encoded byte budgets trigger independently without idl
  m.accepted([],0);expect(calls).toBe(2);
 });
 
+test('maintenance is enabled by default and OPENSCOUT_BROKER_MEMORY_MAINTENANCE=0 opts out',()=>{
+ expect(memoryMaintenanceFromEnv({})).toBeDefined();
+ expect(memoryMaintenanceFromEnv({OPENSCOUT_BROKER_MEMORY_MAINTENANCE:'1'})).toBeDefined();
+ expect(memoryMaintenanceFromEnv({OPENSCOUT_BROKER_MEMORY_MAINTENANCE:'0'})).toBeUndefined();
+});
+
 test('disabled and unsupported collectors are explicit, and invalid configuration is rejected',()=>{
- expect(memoryMaintenanceFromEnv({})).toBeUndefined();
+ expect(memoryMaintenanceFromEnv({OPENSCOUT_BROKER_MEMORY_MAINTENANCE:'0'})).toBeUndefined();
  const m=new BrokerMemoryMaintenance({replayWorkBytes:1,liveWorkRecords:1});m.beginReplay().add(1);m.accepted([message('x')],1);
  expect(m.status()).toMatchObject({enabled:true,available:false,collections:0,failure:null});
  for(const liveWorkBytes of [0,-1,NaN,Infinity])expect(()=>new BrokerMemoryMaintenance({liveWorkBytes})).toThrow();

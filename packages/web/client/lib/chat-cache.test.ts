@@ -27,10 +27,13 @@ function message(id: string, conversationId: string, createdAt: number): Message
   return {
     id,
     conversationId,
+    actorId: "operator",
     actorName: "Operator",
     body: id,
     createdAt,
     class: "operator",
+    replyToMessageId: null,
+    threadConversationId: null,
   };
 }
 

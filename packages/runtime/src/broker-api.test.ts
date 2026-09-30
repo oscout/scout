@@ -658,3 +658,11 @@ describe("broker JSON transport", () => {
     }
   });
 });
+
+test("collaboration history query forwards scope and a stable creation cursor", async () => {
+  let observed: unknown;
+  registerActiveScoutBrokerService({ baseUrl: "http://history.test", readCollaborationRecords: async (query: unknown) => { observed = query; return []; } } as unknown as ActiveScoutBrokerService);
+  const result = await maybeReadJsonFromActiveScoutBrokerService("http://history.test", "/v1/collaboration/records?kind=question&state=closed&conversationId=room&includeThreads=true&orderByCreatedAt=true&afterCreatedAt=123&afterId=question-2&limit=51");
+  expect(result).toMatchObject({ handled: true });
+  expect(observed).toMatchObject({ kind: "question", state: "closed", conversationId: "room", includeThreads: true, orderByCreatedAt: true, afterCreatedAt: 123, afterId: "question-2", limit: 51 });
+});

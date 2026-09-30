@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import "../../scout/slots/ctx-panel.css";
-import { api } from "../../lib/api.ts";
+import { loadFleet } from "../../lib/fleet-store.ts";
 import { normalizeAgentState } from "../../lib/agent-state.ts";
 import { routeForFleetAsk, routeForOperatorAttention } from "../../lib/operator-attention.ts";
 import { useBrokerEvents } from "../../lib/sse.ts";
@@ -49,7 +49,7 @@ export function OpsDefaultLeft() {
   const [state, setState] = useState<FleetState | null>(null);
 
   const load = useCallback(async () => {
-    const data = await api<FleetState>("/api/fleet").catch(() => null);
+    const data = await loadFleet().catch(() => null);
     setState(data);
   }, []);
 
@@ -95,7 +95,7 @@ export function OpsDefaultLeft() {
 
       <section className="ctx-panel-section">
         <div className="ctx-panel-section-label">
-          Needs you
+          Requests
           {needs.length > 0 && <span className="ctx-panel-count">{needs.length}</span>}
         </div>
         {needs.length === 0 ? (

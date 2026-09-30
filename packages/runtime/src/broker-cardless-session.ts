@@ -10,6 +10,7 @@ import { validateScoutSessionHandleForWrite } from "@openscout/protocol";
 
 import type { ManagedLocalSessionTransport } from "./broker-managed-session-helpers.js";
 import { isStaleLocalEndpoint } from "./broker-endpoint-selection.js";
+import { isClaudeFolderTrusted } from "./claude-folder-trust.js";
 import { resolveHarnessSessionDefaults } from "./harness-catalog.js";
 import type { RuntimeRegistrySnapshot } from "./registry.js";
 import { expandHomePath } from "./tool-resolution.js";
@@ -37,15 +38,38 @@ export type CardlessSessionSpawnTransport =
   | "devin_acp"
   | "tmux";
 
-/** Harness/transport policy for broker-created sessions that have no agent card. */
+/**
+ * Harness/transport policy for broker-created sessions that have no agent card.
+ *
+ * Claude defaults to tmux, but interactive Claude Code blocks on its
+ * folder-trust dialog in a folder it has never opened (a GUI app's support
+ * folder, a fresh scratch dir). When `cwd` is given and Claude has not trusted
+ * it, the session goes headless (`claude_stream_json`), which has no dialog.
+ * An explicit `claudeTransport` override always wins.
+ */
 export function resolveCardlessSessionSpawnTarget(
   requestedHarness: string | undefined,
-  options: { claudeTransport?: string } = {},
+  options: {
+    claudeTransport?: string;
+    cwd?: string;
+    isClaudeFolderTrusted?: (folder: string) => boolean;
+  } = {},
 ): { harness: AgentHarness; transport: CardlessSessionSpawnTransport } {
   const defaults = resolveHarnessSessionDefaults(requestedHarness ?? "claude", {
     transportOverride: options.claudeTransport,
   });
   if (defaults && isCardlessSessionSpawnTransport(defaults.transport)) {
+    const overridden = Boolean(options.claudeTransport?.trim());
+    if (
+      defaults.harness === "claude"
+      && defaults.transport === "tmux"
+      && !overridden
+      && options.cwd
+      && defaults.fallbackTransports.includes("claude_stream_json")
+      && !(options.isClaudeFolderTrusted ?? isClaudeFolderTrusted)(options.cwd)
+    ) {
+      return { harness: "claude", transport: "claude_stream_json" };
+    }
     return {
       harness: defaults.harness as AgentHarness,
       transport: defaults.transport,
@@ -103,9 +127,9 @@ export function resolveSessionPlacement(
   requested: SessionPlacement | undefined,
 ): SessionPlacement {
   const placement = requested ?? "background";
-  if (placement === "foreground" && harness !== "codex") {
+  if ((placement === "foreground" || placement === "attached") && harness !== "codex") {
     throw new Error(
-      `session_placement_unsupported: ${harness} supports background placement only; Codex supports foreground`,
+      `session_placement_unsupported: ${harness} supports background placement only; Codex supports foreground and attached`,
     );
   }
   return placement;
@@ -231,6 +255,11 @@ export function buildCardlessSessionEndpoint(input: CardlessSessionInput): Agent
       ...(placement === "foreground" && input.harness === "codex" ? {
         nativeSurface: "codex_app",
         configurationScope: "operator_inherited",
+      } : placement === "attached" ? {
+        // Scout connects to a Codex app-server someone else launched; its
+        // config, CODEX_HOME and MCP servers belong to that server.
+        codexConnection: "attach",
+        configurationScope: "server_inherited",
       } : {
         configurationScope: "managed",
       }),

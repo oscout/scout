@@ -8,7 +8,7 @@ import {
 } from "../../lib/agent-labels.ts";
 import { stateColor } from "../../lib/colors.ts";
 import { api } from "../../lib/api.ts";
-import { useBrokerEvents } from "../../lib/sse.ts";
+import { isBrokerDataEvent, useBrokerEventsRefresh } from "../../lib/sse.ts";
 import { fullTimestamp, timeAgo } from "../../lib/time.ts";
 import { formatLabel } from "../../lib/text.ts";
 import { useScout } from "../../scout/Provider.tsx";
@@ -260,7 +260,7 @@ export function AgentInfoScreen({
     setSessionResolved(false);
     void load();
   }, [load]);
-  useBrokerEvents(() => {
+  useBrokerEventsRefresh(isBrokerDataEvent, () => {
     void load();
   });
 

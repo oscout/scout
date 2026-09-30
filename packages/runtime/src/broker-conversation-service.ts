@@ -30,7 +30,18 @@ export type BrokerConversationServiceDeps = {
   operatorDisplayName: () => string;
   createChannelId: () => string;
   upsertActor: (actor: ActorIdentity) => Promise<void>;
-  upsertConversation: (conversation: ConversationDefinition) => Promise<void>;
+  /**
+   * Canonical read-modify-write on one conversation — the mutator runs inside
+   * the serialized durable writer against the latest record, so a roster
+   * merged here cannot overwrite a concurrent membership change with a stale
+   * preimage.
+   */
+  updateConversation: (
+    conversationId: string,
+    mutate: (
+      current: ConversationDefinition | undefined,
+    ) => ConversationDefinition | null | undefined,
+  ) => Promise<{ conversation: ConversationDefinition | null }>;
 };
 
 export class BrokerConversationService {
@@ -113,41 +124,56 @@ export class BrokerConversationService {
       return existing;
     }
 
-    const nonOperatorParticipants = participantIds.filter((participantId) => participantId !== this.deps.operatorActorId);
-    const conversationTitle = requesterId === this.deps.operatorActorId || targetAgentId === this.deps.operatorActorId
-      ? this.actorDisplayName(snapshot, nonOperatorParticipants[0] ?? targetAgentId)
-      : `${this.actorDisplayName(snapshot, requesterId)} <> ${this.actorDisplayName(snapshot, targetAgentId)}`;
-    const conversation: ConversationDefinition = {
-      id: conversationId,
-      kind: "direct",
-      /* Automatic naming defers to a human one. Without this, re-deriving the
-         conversation — a share-mode flip, a participant change — silently
-         undoes a rename. */
-      title: resolveConversationTitle({
-        derived: targetAgentId === this.deps.dispatcherAgentId && requesterId === this.deps.operatorActorId
-          ? "Scout"
-          : conversationTitle,
-        existingTitle: existing?.title,
-        existingMetadata: existing?.metadata,
-      }),
-      visibility: "private",
-      shareMode,
-      authorityNodeId: this.deps.nodeId,
-      participantIds,
-      metadata: {
-        surface: "broker",
-        naturalKey,
-        ...(targetAgentId === this.deps.dispatcherAgentId && requesterId === this.deps.operatorActorId ? { role: "partner" } : {}),
-        /* The rename mark rides on metadata, and this object replaces it
-           wholesale — carry it or the guard above has nothing to read next
-           time. */
-        ...(isOperatorTitled(existing?.metadata)
-          ? { titleSource: existing!.metadata!.titleSource, titleSetAt: existing!.metadata!.titleSetAt }
-          : {}),
-      },
-    };
-    await this.deps.upsertConversation(conversation);
-    return conversation;
+    // The write goes through the canonical writer so the record journaled
+    // here is derived from the latest conversation — a concurrent roster or
+    // title write queued ahead of this one is not overwritten by `existing`.
+    const result = await this.deps.updateConversation(conversationId, (current) => {
+      const fresh = this.deps.runtime.snapshot();
+      const freshShareMode = resolveConversationShareMode(fresh, participantIds, "local", this.deps.nodeId);
+      if (current
+        && current.kind === "direct"
+        && current.visibility === "private"
+        && current.shareMode === freshShareMode
+        && current.participantIds.join("\u0000") === participantIds.join("\u0000")) {
+        return null;
+      }
+      const nonOperatorParticipants = participantIds.filter((participantId) => participantId !== this.deps.operatorActorId);
+      const conversationTitle = requesterId === this.deps.operatorActorId || targetAgentId === this.deps.operatorActorId
+        ? this.actorDisplayName(fresh, nonOperatorParticipants[0] ?? targetAgentId)
+        : `${this.actorDisplayName(fresh, requesterId)} <> ${this.actorDisplayName(fresh, targetAgentId)}`;
+      return {
+        id: conversationId,
+        kind: "direct" as const,
+        /* Automatic naming defers to a human one. Without this, re-deriving the
+           conversation — a share-mode flip, a participant change — silently
+           undoes a rename. */
+        title: resolveConversationTitle({
+          derived: targetAgentId === this.deps.dispatcherAgentId && requesterId === this.deps.operatorActorId
+            ? "Scout"
+            : conversationTitle,
+          existingTitle: current?.title,
+          existingMetadata: current?.metadata,
+        }),
+        visibility: "private" as const,
+        shareMode: freshShareMode,
+        authorityNodeId: this.deps.nodeId,
+        participantIds,
+        metadata: {
+          surface: "broker",
+          naturalKey,
+          ...(targetAgentId === this.deps.dispatcherAgentId && requesterId === this.deps.operatorActorId ? { role: "partner" } : {}),
+          /* The rename mark rides on metadata, and this object replaces it
+             wholesale — carry it or the guard above has nothing to read next
+             time. */
+          ...(isOperatorTitled(current?.metadata)
+            ? { titleSource: current!.metadata!.titleSource, titleSetAt: current!.metadata!.titleSetAt }
+            : {}),
+        },
+      };
+    });
+    // The mutator only declines when a record exists, so `conversation` is
+    // always populated here — either the write or the current record.
+    return result.conversation!;
   }
 
   private async ensureChannelConversation(
@@ -201,12 +227,52 @@ export class BrokerConversationService {
       return existing;
     }
 
-    const conversation: ConversationDefinition = {
-      ...definition,
-      participantIds: nextParticipants,
-    };
-    await this.deps.upsertConversation(conversation);
-    return conversation;
+    // The write goes through the canonical writer so the roster merge — and
+    // the broadcast membership snapshot — are recomputed against the latest
+    // state inside the durable write, not the preimage read above.
+    const result = await this.deps.updateConversation(definition.id, (current) => {
+      const fresh = this.deps.runtime.snapshot();
+      const freshBroadcastParticipants = input.channel === "broadcast" ? [...new Set([
+        this.deps.operatorActorId,
+        input.requesterId,
+        ...Object.values(fresh.endpoints)
+          .filter((endpoint) => endpoint.state !== "offline" && fresh.agents[endpoint.agentId])
+          .map((endpoint) => endpoint.agentId),
+      ])].sort() : [];
+      const freshDefinition = this.channelDefinition(fresh, {
+        channel: input.channel,
+        broadcastParticipants: freshBroadcastParticipants,
+        scopedParticipants,
+        systemParticipants,
+      });
+      const freshNaturalKey = conversationNaturalKey(freshDefinition);
+      const freshEquivalents = freshNaturalKey
+        ? conversationsWithNaturalKey(Object.values(fresh.conversations), freshNaturalKey)
+        : [];
+      const mergedParticipants = input.channel === "broadcast" ? freshDefinition.participantIds : [...new Set([
+        ...freshEquivalents.flatMap((conversation) => conversation.participantIds),
+        ...freshDefinition.participantIds,
+      ])].sort();
+      if (
+        current
+        && current.kind === freshDefinition.kind
+        && current.visibility === freshDefinition.visibility
+        && current.shareMode === freshDefinition.shareMode
+        && current.participantIds.join("\u0000") === mergedParticipants.join("\u0000")
+      ) {
+        return null;
+      }
+      return {
+        ...freshDefinition,
+        participantIds: mergedParticipants,
+        // Merge rather than replace: keys this definition does not own —
+        // invite sets, rename marks — survive the roster write.
+        metadata: { ...(current?.metadata ?? {}), ...freshDefinition.metadata },
+      };
+    });
+    // Same guarantee as ensureDirectConversation: `conversation` is the write
+    // or the current record the mutator declined on.
+    return result.conversation!;
   }
 
   private channelDefinition(

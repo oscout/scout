@@ -25,7 +25,7 @@ import {
   summarizeAgentState,
   type AgentFlightPhase,
 } from "./internal/sql-helpers.ts";
-import type { WebAgent } from "./types/web.ts";
+import type { WebAgent } from "../../shared/api/web.ts";
 
 function existingDirectConversationIdsForAgents(agentIds: string[]): Map<string, string> {
   const agentIdByNaturalKey = new Map(

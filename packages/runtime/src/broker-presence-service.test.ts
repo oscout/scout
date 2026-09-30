@@ -116,6 +116,48 @@ describe("BrokerPresenceService", () => {
     expect(published[0]!.payload.beat.displayName).toBe("hopper");
   });
 
+  test("a registered agent with nothing observed is not present", () => {
+    const { published, service } = createService(snapshotWith());
+
+    expect(service.sample(T0)).toBe(0);
+    expect(published).toHaveLength(0);
+    expect(service.snapshot(T0).beats).toHaveLength(0);
+  });
+
+  test("an endpoint with no timestamp of its own is not a sighting", () => {
+    // Most stored endpoints carry no lastSeenAt. Read as "seen now", they kept
+    // every one of them present forever, restamped on every sample.
+    const untimed = (id: string, state: AgentEndpoint["state"]) => ({
+      ...heartbeat(T0),
+      id,
+      state,
+      metadata: {},
+    }) as AgentEndpoint;
+    const { service } = createService(snapshotWith({
+      endpoints: {
+        "endpoint-offline": untimed("endpoint-offline", "offline"),
+        "endpoint-waiting": untimed("endpoint-waiting", "waiting"),
+      },
+    }));
+
+    const last = T0 + 10 * 60 * 60_000;
+    for (let at = T0; at <= last; at += 60 * 60_000) service.sample(at);
+    expect(service.snapshot(last).beats).toHaveLength(0);
+  });
+
+  test("an agent seen offline long ago drops out instead of staying fresh", () => {
+    const { service } = createService(snapshotWith({
+      endpoints: { "endpoint-1": { ...heartbeat(T0), state: "offline" } as AgentEndpoint },
+    }));
+
+    service.sample(T0);
+    expect(service.presence.get("agent-1")?.activity).toBe("offline");
+
+    const later = T0 + 24 * 60 * 60_000;
+    service.sample(later);
+    expect(service.snapshot(later).beats).toHaveLength(0);
+  });
+
   test("steady state puts nothing on the wire", () => {
     const { published, service, setSnapshot } = createService(snapshotWith({
       endpoints: { "endpoint-1": heartbeat(T0) },

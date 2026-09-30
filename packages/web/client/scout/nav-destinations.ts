@@ -52,6 +52,7 @@ export type NavCapability = "ops.control" | "surface.mesh-ops";
 export type NavDestinationId =
   | "home"
   | "projects"
+  | "project-list"
   | "sessions"
   | "chat"
   | "search"
@@ -95,6 +96,13 @@ function isOpsMission(route: Route): boolean {
  * Single source of truth for every navigable product destination.
  * Projections pick rows from this table; they do not redefine routes/active.
  */
+/** The project list, or a project's own pages (not an agent opened in one). */
+function isProjectListRoute(route: Route): boolean {
+  if (route.view !== "agents-v2") return false;
+  if (route.projectSlug) return !route.agentId;
+  return route.indexView === "projects";
+}
+
 export const NAV_DESTINATIONS: readonly NavDestination[] = [
   {
     id: "home",
@@ -106,9 +114,17 @@ export const NAV_DESTINATIONS: readonly NavDestination[] = [
     id: "projects",
     label: "Agents",
     route: { view: "agents-v2" },
+    // The activity feed and agent pages. The project list and project
+    // pages belong to the Projects tab below.
     active: (route) =>
-      route.view === "agents-v2" ||
+      (route.view === "agents-v2" && !isProjectListRoute(route)) ||
       route.view === "agent-info",
+  },
+  {
+    id: "project-list",
+    label: "Projects",
+    route: { view: "agents-v2", indexView: "projects" },
+    active: isProjectListRoute,
   },
   {
     id: "sessions",
@@ -616,6 +632,7 @@ const AREA_SUB_NAV_PROJECTION: Record<
 > = {
   projects: [
     { destinationId: "projects", id: "projects" },
+    { destinationId: "project-list", id: "project-list" },
     { destinationId: "repos", id: "repos" },
     { destinationId: "code", id: "code" },
   ],

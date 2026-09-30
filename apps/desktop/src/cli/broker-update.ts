@@ -346,6 +346,8 @@ async function refreshLegacyCliMtimeCheckpoint(
  * lifecycle change. The compatibility checkpoint is write-only in this CLI.
  */
 export async function ensureBrokerUptodate(options: EnsureBrokerUptodateOptions): Promise<void> {
+  if (process.platform !== "darwin") return;
+
   const report = options.report ?? (() => undefined);
   const lockPath = join(dirname(options.checkpointPath), BROKER_UPDATE_LOCK_DIRECTORY);
   let lock: AcquiredBrokerUpdateLock | SkippedBrokerUpdateLock;

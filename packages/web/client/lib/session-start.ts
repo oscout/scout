@@ -1,3 +1,4 @@
+import { hostApiPath } from "./chat-host.ts";
 import { ensureAgentChat } from "./agent-chat.ts";
 import { api } from "./api.ts";
 import type { OutgoingAttachment } from "./media-blobs.ts";
@@ -217,6 +218,7 @@ export async function startAgentSession(
  * card for every casual chat; users can promote a routed worker deliberately.
  */
 export async function startProjectSession(input: {
+  machineId?: string;
   projectPath: string;
   harness?: string;
   model?: string;
@@ -235,7 +237,7 @@ export async function startProjectSession(input: {
   const fromMessageId = input.fromMessageId?.trim();
   const fromConversationId = input.fromConversationId?.trim();
   const attachments = input.attachments?.filter(Boolean) ?? [];
-  return api<SessionInitiationResult>("/api/sessions", {
+  return api<SessionInitiationResult>(hostApiPath(input.machineId, "/api/sessions"), {
     method: "POST",
     body: JSON.stringify({
       target: { projectPath },

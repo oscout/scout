@@ -6,6 +6,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { SQLiteKnowledgeStore, type KnowledgeSearchHit } from "@openscout/runtime";
+import { digestHerdrTopology, type HerdrSessionTopology } from "@openscout/protocol";
 import { registerSessionDiscoveryTools, sessionDiscoveryDependencies, type SessionDiscoveryDependencies } from "./session-discovery.ts";
 
 const cleanups: Array<() => Promise<void>> = [];
@@ -29,7 +30,101 @@ const hit: KnowledgeSearchHit = {
 function dependencies(overrides: Partial<SessionDiscoveryDependencies> = {}): SessionDiscoveryDependencies {
   return { webOrigin: "http://localhost:43120", openStore: () => ({ assessCoverage: () => warmed, searchLexical: () => [hit], close() {} }), readInventory: async () => ({ sessions: [], terminals: [] }), ...overrides };
 }
+
+function herdrInventory(options: { live?: boolean; harness?: string; kind?: string } = {}) {
+  const harness = options.harness ?? "codex";
+  const topology: HerdrSessionTopology = {
+    session: "scout", running: options.live ?? true, observedAt: 1234, savedAt: options.live === false ? 1000 : null,
+    workspaces: [{ workspaceId: "w1", label: "work", number: 1, focused: true, activeTabId: "w1:t1", agentStatus: "idle",
+      tabs: [{ tabId: "w1:t1", workspaceId: "w1", label: "eight", number: 1, focused: true, agentStatus: "idle", layout: null,
+        panes: [{ paneId: "w1:p2", terminalId: "herdr-terminal", workspaceId: "w1", tabId: "w1:t1", name: "devon-2-openscout", label: "Old unrelated title",
+          agent: harness, agentStatus: "idle", agentSession: { agent: harness, kind: options.kind ?? "id", source: `herdr:${harness}`, value: "native-2" },
+          cwd: "/work", foregroundCwd: null, focused: false, scroll: null }],
+      }],
+    }],
+  };
+  return { available: true, truncated: false, digests: [digestHerdrTopology(topology)] };
+}
+
 describe("Scoutbot read-only session tools", () => {
+  test("a panel-name lookup joins exact harness identity and keeps observed status separate", async () => {
+    const client = await clientFor(dependencies({ readInventory: async () => ({
+      sessions: [{ id: "session-record", title: "Router report", harness: "codex", sessionId: null, harnessSessionId: "native-2", workspaceRoot: "/work" }],
+      terminals: [], herdr: herdrInventory(),
+    }) }));
+    const result = await client.callTool({ name: "sessions_inventory", arguments: { query: "devon-2" } });
+    expect(result.structuredContent).toMatchObject({ candidateCount: 1, selection: "candidates_only", results: [{
+      title: "Router report", sessionId: "native-2", state: "unknown",
+      actions: [{ kind: "open", url: "http://localhost:43120/sessions/session-record" }],
+      panels: [{ name: "devon-2-openscout", label: "Old unrelated title", status: "idle", live: true, observedAt: 1234 }],
+    }] });
+  });
+
+  test.each([
+    { live: false }, { harness: "devin" }, { kind: "path" },
+  ])("never joins a saved, cross-harness or non-id reference: %j", async (options) => {
+    const client = await clientFor(dependencies({ readInventory: async () => ({
+      sessions: [{ id: "wrong-record", title: "Old unrelated title", harness: "codex", sessionId: null, harnessSessionId: "native-2", workspaceRoot: "/work" }],
+      terminals: [], herdr: herdrInventory(options),
+    }) }));
+    const result = await client.callTool({ name: "sessions_inventory", arguments: { query: "devon-2" } });
+    expect(result.structuredContent).toMatchObject({ candidateCount: 1, results: [{ actions: [], title: "devon-2-openscout", state: "unknown" }] });
+  });
+
+  test("panel discovery survives unavailable canonical views and declares those gaps", async () => {
+    const fetchImpl = (async (input: string | URL | Request) => {
+      const url = new URL(input instanceof Request ? input.url : String(input));
+      return url.pathname.endsWith("/herdr/workspaces")
+        ? Response.json(herdrInventory())
+        : new Response("unavailable", { status: 503 });
+    }) as typeof fetch;
+    const deps = sessionDiscoveryDependencies("http://localhost:43120", { fetchImpl, env: {} });
+    const client = await clientFor(deps);
+    const result = await client.callTool({ name: "sessions_inventory", arguments: { query: "devon-2" } });
+    expect(result.structuredContent).toMatchObject({
+      sources: { sessions: "unavailable", terminals: "unavailable", herdr: "available" },
+      results: [{ title: "devon-2-openscout", actions: [] }],
+    });
+  });
+
+  test("a linked session title matches the terminal once, after correlation", async () => {
+    const client = await clientFor(dependencies({ readInventory: async () => ({
+      sessions: [{ id: "session-record", title: "Router report", harness: "codex", sessionId: null, harnessSessionId: "native-2", workspaceRoot: "/work" }],
+      terminals: [{ id: "ts-1", harness: "codex", sourceSessionId: "native-2", cwd: "/work", resumeCommand: "", createdAt: 1, updatedAt: 2, surfaces: [] }],
+      herdr: herdrInventory(),
+    }) }));
+    const result = await client.callTool({ name: "sessions_inventory", arguments: { query: "Router report" } });
+    expect(result.structuredContent).toMatchObject({ candidateCount: 1, results: [{ terminalId: "ts-1", panels: [{ name: "devon-2-openscout" }] }] });
+  });
+
+  test.each(["session-record", "native-2", "alternate-native"])("retains linked session query alias %s", async query => {
+    for (const sourceSessionId of ["native-2", "alternate-native"]) {
+      const client = await clientFor(dependencies({ readInventory: async () => ({
+        sessions: [{ id: "session-record", title: "Router report", harness: "codex", sessionId: "alternate-native", harnessSessionId: "native-2", workspaceRoot: "/work" }],
+        terminals: [{ id: "ts-1", harness: "codex", sourceSessionId, cwd: "/work", resumeCommand: "", createdAt: 1, updatedAt: 2, surfaces: [] }],
+      }) }));
+      const result = await client.callTool({ name: "sessions_inventory", arguments: { query } });
+      expect(result.structuredContent).toMatchObject({ candidateCount: 1, results: [{ terminalId: "ts-1", actions: [{ kind: "open", url: "http://localhost:43120/sessions/session-record" }] }] });
+      expect(JSON.stringify(result.structuredContent)).not.toContain("queryAliases");
+    }
+  });
+
+  test("an entirely unavailable inventory is not an empty successful lookup", async () => {
+    const client = await clientFor(sessionDiscoveryDependencies("http://localhost:43120", {
+      env: {}, fetchImpl: (async () => new Response("offline", { status: 503 })) as unknown as typeof fetch,
+    }));
+    const result = await client.callTool({ name: "sessions_inventory", arguments: { query: "devon-2" } });
+    expect(result.structuredContent).toMatchObject({ available: false, results: [], sources: { sessions: "unavailable", terminals: "unavailable", herdr: "unavailable" } });
+  });
+
+  test("an ambiguous indexed session never chooses the first Open action", async () => {
+    const client = await clientFor(dependencies({ readInventory: async () => ({ terminals: [], sessions: [
+      { id: "one", title: "One", harness: "codex", sessionId: null, harnessSessionId: "native-1", workspaceRoot: "/work" },
+      { id: "two", title: "Two", harness: "codex", sessionId: null, harnessSessionId: "native-1", workspaceRoot: "/work" },
+    ] }) }));
+    const result = await client.callTool({ name: "sessions_search", arguments: { query: "build" } });
+    expect(result.structuredContent).toMatchObject({ results: [{ sessionId: "native-1", state: "unknown", actions: [] }] });
+  });
   test("unwarmed query never searches or loads inventory, and closes the read store", async () => {
     let closed = false;
     const client = await clientFor(dependencies({ openStore: () => ({ assessCoverage: () => ({ kind: "empty_index", suggestion: "scout search index --source sessions --days 3" }), searchLexical: () => { throw new Error("must not search"); }, close() { closed = true; } }), readInventory: async () => { throw new Error("must not load inventory"); } }));
@@ -178,8 +273,8 @@ describe("Scoutbot read-only session tools", () => {
     const inventory = await deps.readInventory();
     expect(inventory.sessions[0]?.id).toBe("chat_one");
     expect(inventory.terminals).toEqual([]);
-    expect(reads.filter((read) => read.path === "/api/bootstrap.js")).toHaveLength(2);
-    expect(reads.filter((read) => read.cookie === "openscout_web_session=example")).toHaveLength(2);
+    expect(reads.filter((read) => read.path === "/api/bootstrap.js")).toHaveLength(3);
+    expect(reads.filter((read) => read.cookie === "openscout_web_session=example")).toHaveLength(3);
   });
   test("inventory uses configured bearer auth without local bootstrap", async () => {
     const paths: string[] = [];

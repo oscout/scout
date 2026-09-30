@@ -88,22 +88,56 @@ const SECTION_COPY: Record<InviteKind, {
   },
 };
 
+/**
+ * Where the server mints no bound "agent" invitation (hosted Chat), the HTTP
+ * invitation is the only way an agent gets in, so it is simply "Agent": the
+ * no-install wording only means something beside the installed alternative.
+ */
+const API_AS_AGENT_COPY: (typeof SECTION_COPY)["api"] = {
+  ariaLabel: "Agent invitation",
+  heading: "Invite an agent",
+  explain: "Bring Claude Code, Codex, or your own script into this channel. Nothing to install.",
+  mintLabel: "Create agent invitation",
+  preMintNote: "Admits one agent. Expires in 24 hours if unused.",
+  copyLabel: "Copy agent instructions",
+  copiedLabel: "Instructions copied",
+  postCopyNote: "Now paste it into your agent’s chat.",
+  metaFacts: "One agent · Reads by polling",
+  previewLabel: "Preview agent instructions",
+};
+
+/**
+ * The whole agent path, said where it is taken: the sheet is the manual, so an
+ * owner never needs the guide to get an agent in.
+ */
+function AgentInviteSteps({ channelName }: { channelName: string }) {
+  return (
+    <ol className="chat-invite-steps" aria-label="How an agent joins">
+      <li>Create the invitation and copy it.</li>
+      <li>Paste it into your agent’s chat. Any agent that can make web requests works.</li>
+      <li>It reads the instructions, joins {channelName}, and shows up in Members. Talk to it here like anyone else.</li>
+    </ol>
+  );
+}
+
 function ReachabilityLine({ invite }: { invite: CreatedChannelInvite }) {
   const view = reachabilityView(invite.invite.route, invite.reachability ?? null);
   const reachability = invite.invite.route.reachability;
   const Icon = view.remoteUsable ? Globe : reachability === "local_only" ? Monitor : CircleHelp;
-  const summary = view.remoteUsable
+  const note = invite.reachability;
+  const summary = note?.summary ?? (view.remoteUsable
     ? "Works through your Scout network."
     : reachability === "local_only"
       ? "Use this link on this Mac. It cannot be opened on another machine."
       : reachability === "lan"
         ? "Use this link on the same local network."
-        : "Other machines may not be able to open this link.";
+        : "Other machines may not be able to open this link.");
+  const title = note?.title ?? (view.remoteUsable ? "Network invitation" : reachability === "local_only" ? "This Mac only" : reachability === "lan" ? "Same network only" : "Connection not verified");
   return (
     <div className="chat-invite-connection" data-restricted={!view.remoteUsable}>
       <Icon size={16} aria-hidden="true" />
       <div>
-        <p className="chat-invite-connection-title">{view.remoteUsable ? "Network invitation" : reachability === "local_only" ? "This Mac only" : reachability === "lan" ? "Same network only" : "Connection not verified"}</p>
+        <p className="chat-invite-connection-title">{title}</p>
         <p>{summary}</p>
         <details className="chat-invite-details">
           <summary>Connection details</summary>
@@ -123,6 +157,7 @@ function InviteSection({
   error,
   pending,
   onMint,
+  apiIsAgent,
 }: {
   kind: InviteKind;
   channel: ConversationDefinition;
@@ -131,11 +166,19 @@ function InviteSection({
   error: string | null;
   pending: boolean;
   onMint: () => void;
+  apiIsAgent: boolean;
 }) {
   const nowMs = Date.now();
   const [previewOpen, setPreviewOpen] = useState(false);
-  const copy = SECTION_COPY[kind];
-  const MintIcon = kind === "teammate" ? Link2 : kind === "agent" ? Bot : Webhook;
+  const capabilities = useChatCapabilities();
+  const copy = kind === "teammate" && capabilities.teammateIdentity === "account" ? {
+    ...SECTION_COPY.teammate,
+    explain: "Share a link. They sign in and join this channel in their browser.",
+    preMintNote: "One person joins using their signed-in account.",
+    metaFacts: "One person",
+  } : kind === "api" && apiIsAgent ? API_AS_AGENT_COPY : SECTION_COPY[kind];
+  const MintIcon = kind === "teammate" ? Link2 : kind === "agent" || apiIsAgent ? Bot : Webhook;
+  const guideUrl = kind !== "teammate" ? capabilities.agentInviteGuideUrl : undefined;
 
   const body = invite
     ? inviteCopyBlock({
@@ -145,6 +188,8 @@ function InviteSection({
         inviterName,
         inviteUrl: invite.inviteUrl,
         agentInstructionsUrl: invite.agentInstructionsUrl,
+        reachability: invite.invite.route?.reachability,
+        expiresAt: invite.invite.expiresAt,
       })
     : null;
 
@@ -153,6 +198,7 @@ function InviteSection({
     <section className="chat-sheet-sec" aria-label={copy.ariaLabel}>
       <h3 className="chat-invite-heading">{copy.heading}</h3>
       <p className="chat-sheet-explain">{copy.explain}</p>
+      {kind === "api" && apiIsAgent ? <AgentInviteSteps channelName={channelLabel(channel.title)} /> : null}
       {error ? <p className="chat-sheet-error" role="alert">{error}</p> : null}
       {invite && body && copyValue ? (
         <>
@@ -185,6 +231,11 @@ function InviteSection({
           <p className="chat-invite-next">{copy.preMintNote}</p>
         </div>
       )}
+      {guideUrl ? (
+        <p className="chat-invite-meta">
+          <a href={guideUrl} target="_blank" rel="noreferrer">How agent invitations work</a>
+        </p>
+      ) : null}
     </section>
   );
 }
@@ -196,6 +247,7 @@ export function InviteSheet({
   viewerName,
   onClose,
   onInvitesChanged,
+  initialKind,
 }: {
   channel: ConversationDefinition;
   space?: string;
@@ -203,13 +255,17 @@ export function InviteSheet({
   viewerName: string;
   onClose: () => void;
   onInvitesChanged: () => void;
+  /** The tab to open on, when the caller already knows who is being invited. */
+  initialKind?: InviteKind;
 }) {
   const chatApi = useChatApi();
   const capabilities = useChatCapabilities();
   // Only the kinds this server has a redemption path for. A tab whose invitation
   // nothing can redeem is a control with no endpoint behind it.
   const offered = capabilities.inviteKinds;
-  const [kind, setKind] = useState<InviteKind>(() => offered[0] ?? "teammate");
+  const apiIsAgent = !offered.includes("agent");
+  const [kind, setKind] = useState<InviteKind>(() =>
+    initialKind && offered.includes(initialKind) ? initialKind : offered[0] ?? "teammate");
   const { ref: dialogRef } = useFocusTrap<HTMLDivElement>();
   const [invites, setInvites] = useState<Record<InviteKind, SheetInvite>>({
     teammate: null,
@@ -304,7 +360,9 @@ export function InviteSheet({
             ) : null}
             {offered.includes("api") ? (
               <button type="button" aria-pressed={kind === "api"} onClick={() => setKind("api")}>
-                <Webhook size={16} aria-hidden="true" /> No install
+                {apiIsAgent
+                  ? <><Bot size={16} aria-hidden="true" /> Agent</>
+                  : <><Webhook size={16} aria-hidden="true" /> No install</>}
               </button>
             ) : null}
           </div>
@@ -318,6 +376,7 @@ export function InviteSheet({
           error={errors[kind]}
           pending={pending !== null}
           onMint={() => void mint(kind)}
+          apiIsAgent={apiIsAgent}
         />
         {capabilities.inviteList ? (
           <p className="chat-sheet-foot">Manage or revoke invitations in Members.</p>

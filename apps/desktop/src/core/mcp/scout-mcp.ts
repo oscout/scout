@@ -29,6 +29,13 @@ import {
   type ResolvedRelayAgentConfig,
 } from "@openscout/runtime/setup";
 import { resolveHost, resolveWebPort } from "@openscout/runtime/local-config";
+import {
+  reporterHarness,
+  submitDiagnosticReport,
+  type DiagnosticOptions,
+  type DiagnosticReceipt,
+} from "@openscout/runtime/diagnostic-report";
+import { hostname } from "node:os";
 import * as z from "zod/v4";
 
 import {
@@ -88,6 +95,7 @@ import type {
   ScoutAskReplyMode,
   ScoutAskReceipt,
 } from "../broker/ask-types.ts";
+import { classifySendInteraction } from "../broker/send-interaction.ts";
 import { SCOUT_APP_VERSION } from "../../shared/product.ts";
 import { registerAttachmentReaderTool } from "./attachment-reader.ts";
 import { herdrWorkspacesDependencies, registerHerdrWorkspaceTools } from "./herdr-workspaces.ts";
@@ -331,7 +339,7 @@ const targetAgentIdInputSchema = z
 
 const targetSessionIdInputSchema = z
   .string()
-  .describe("Exact Scout session id to continue. Agent-card targets create fresh sessions; pass targetSessionId only when you intentionally want prior context from a specific CODEX_THREAD_ID or attached runtime session.")
+  .describe("Exact Scout session to continue: a copyable session address (sess.<token>@<host>, from `scout session address` or a receipt's targetSessionAddress / returnAddress.sessionAddress) or a session id. Agent-card targets create fresh sessions; pass targetSessionId only when you intentionally want prior context from a specific CODEX_THREAD_ID or attached runtime session. An address never falls back to a fresh session.")
   .optional();
 
 const projectPathInputSchema = z
@@ -408,6 +416,8 @@ type InternalAgentDirectoryEntry = {
 };
 
 type ScoutMcpDependencies = {
+  /** Files a note with the OpenScout team (local copy first, then upload). */
+  submitFeedback: (options: DiagnosticOptions) => Promise<DiagnosticReceipt>;
   resolveSenderId: (
     senderId: string | null | undefined,
     currentDirectory: string,
@@ -527,6 +537,7 @@ type ScoutMcpDependencies = {
     replyMode?: ScoutAskReplyMode;
     currentDirectory: string;
     source?: string;
+    aliasScope?: import("@openscout/protocol").RouteAliasScope;
   }) => Promise<ScoutAskResult>;
   askAgentById: (input: {
     senderId: string;
@@ -1115,10 +1126,18 @@ const sendResultSchema = z.object({
   currentDirectory: z.string(),
   senderId: z.string(),
   mode: z.enum(["body_mentions", "explicit_targets", "target_label"]),
+  interaction: z.enum(["work", "message"]).optional(),
   usedBroker: z.boolean(),
   conversationId: z.string().nullable(),
   messageId: z.string().nullable(),
   flightId: z.string().nullable().optional(),
+  invocationId: z.string().nullable().optional(),
+  workId: z.string().nullable().optional(),
+  replyMode: z.enum(["notify", "none"]).nullable().optional(),
+  notification: z.object({
+    method: z.literal("notifications/scout/reply"),
+    status: z.enum(["scheduled", "not_scheduled"]),
+  }).nullable().optional(),
   wake: z.boolean().optional(),
   invokedTargetIds: z.array(z.string()),
   unresolvedTargetIds: z.array(z.string()),
@@ -1279,7 +1298,7 @@ const askReceiptSchema = z.object({
     .optional(),
   error: z
     .object({
-      code: z.enum(["broker_unreachable", "invalid_request"]),
+      code: z.enum(["broker_unreachable", "invalid_request", "preflight_failed"]),
       message: z.string(),
     })
     .optional(),
@@ -1447,6 +1466,8 @@ function renderFollowLinkText(result: {
 }
 
 function renderMcpSendSummary(result: {
+  senderId?: string;
+  interaction?: "work" | "message";
   usedBroker: boolean;
   conversationId: string | null;
   messageId: string | null;
@@ -1457,11 +1478,16 @@ function renderMcpSendSummary(result: {
   startSuggestion?: ScoutMcpStartSuggestion | null;
   routingAdvice?: SendRoutingAdvice | null;
   flightId?: string | null;
+  invocationId?: string | null;
+  replyMode?: "notify" | "none" | null;
+  notification?: { status: string } | null;
   wake?: boolean;
   followUrl?: string | null;
 }): string {
   if (!result.usedBroker) {
-    return "Scout broker is not reachable; message was not sent.";
+    return result.interaction === "work"
+      ? "Scout broker is not reachable; tracked send was not created."
+      : "Scout broker is not reachable; message was not sent.";
   }
   if (result.routingError) {
     const advice = result.routingAdvice ?? buildSendRoutingAdvice(result.routingError);
@@ -1477,6 +1503,27 @@ function renderMcpSendSummary(result: {
       targetDiagnostic: result.targetDiagnostic,
       startSuggestion: result.startSuggestion,
     });
+  }
+  if (result.interaction === "work") {
+    const target = result.invokedTargetIds[0] ?? "target";
+    const details = [
+      result.invocationId ? `invocation ${result.invocationId}` : null,
+      result.flightId ? `flight ${result.flightId}` : null,
+    ].filter(Boolean).join(", ");
+    const detailText = details ? `; ${details}` : "";
+    const route = result.conversationId ? ` in ${result.conversationId}` : "";
+    const followText = renderFollowLinkText(result);
+    const followHint = result.flightId
+      ? ` Follow with invocations_wait flightId=${result.flightId}.`
+      : "";
+    if (result.replyMode === "none") {
+      return `Tracked send to ${target}${detailText}${route}. Completion notifications suppressed; the result stays tracked.${followHint}${followText}`;
+    }
+    const notificationText = result.notification?.status === "scheduled"
+      ? " An MCP reply notification is scheduled."
+      : "";
+    const requester = result.senderId ?? "the requester";
+    return `Tracked send to ${target}${detailText}${route}. Completion will be reported back to ${requester}; a requested callback is not proof of receipt.${notificationText}${followHint}${followText}`;
   }
   const destination = result.invokedTargetIds.length > 0
     ? ` to ${result.invokedTargetIds.join(", ")}`
@@ -1586,7 +1633,10 @@ function resolveAskReplyMode(input: {
   if (input.replyMode) {
     return input.replyMode;
   }
-  return input.awaitReply ? "inline" : "none";
+  // Default to notify so an ask that omits replyMode still pushes its reply
+  // back to the caller; "none" silently dropped replies. Callers opt out by
+  // passing replyMode "none" (ids only) or "inline" explicitly.
+  return input.awaitReply ? "inline" : "notify";
 }
 
 function areMcpReplyNotificationsEnabled(env: NodeJS.ProcessEnv): boolean {
@@ -2855,6 +2905,7 @@ function defaultScoutMcpDependencies(
   env: NodeJS.ProcessEnv,
 ): ScoutMcpDependencies {
   return {
+    submitFeedback: (feedback) => submitDiagnosticReport(feedback),
     resolveSenderId: (senderId, currentDirectory, scopedEnv) =>
       resolveScoutSenderId(senderId, currentDirectory, scopedEnv),
     resolveBrokerUrl: () =>
@@ -3007,6 +3058,7 @@ function defaultScoutMcpDependencies(
       replyMode,
       currentDirectory,
       source,
+      aliasScope,
     }) =>
       askScoutQuestion({
         senderId,
@@ -3020,6 +3072,7 @@ function defaultScoutMcpDependencies(
         replyMode,
         currentDirectory,
         source,
+        aliasScope,
       }),
     askAgentById: ({
       senderId,
@@ -3157,6 +3210,40 @@ export function createScoutMcpServer(options: {
         : {}),
     },
   });
+
+  const EXTERNAL_SESSION_TOOL_TITLES = {
+    attach: "Attach External Session",
+    get: "Get External Session",
+    poll: "Poll External Session",
+    ack: "Acknowledge External Session Item",
+    reply: "Reply to External Session Item",
+  } as const;
+
+  // The hosted bridge pins resolveSenderId to the authenticated OAuth identity.
+  // Never accept ownerId, API credentials, provider URLs or agentId from this tool.
+  for (const operation of ["attach", "get", "poll", "ack", "reply"] as const) {
+    server.registerTool(`sessions_${operation}`, {
+      title: EXTERNAL_SESSION_TOOL_TITLES[operation],
+      description: operation === "attach"
+        ? "Attach your existing conversation to an isolated MCP mailbox (default, no extra credentials). Returns sessionId for exact asks and replyToSessionId. Optional connectionId selects an operator-configured provider API instead. Native identity is caller-asserted for polling; this never starts or wakes a host."
+        : operation === "poll" ? "Read this session mailbox with bounded pagination. Polling does not execute work or wake a host. Work remains listed until replied; never re-execute acknowledged work. Restart pagination without a cursor on each polling cycle."
+        : operation === "ack" ? "Acknowledge receipt of a mailbox item. This does not complete work; use sessions_reply for the final answer. Acknowledged result notifications leave the mailbox."
+        : operation === "reply"
+        ? "Reply to the exact Scout delivery address supplied with your task. Completes its original flight; retries with the same body are idempotent."
+        : "Inspect your attached external session and return transport.",
+      inputSchema: z.object(operation === "attach"
+        ? { connectionId: z.string().min(1).optional(), nativeSessionId: z.string().min(1).max(512) }
+        : operation === "get" ? { sessionId: z.string().min(1) }
+        : operation === "poll" ? { sessionId: z.string().min(1), cursor: z.string().max(256).optional(), limit: z.number().int().min(1).max(50).optional() }
+        : operation === "ack" ? { sessionId: z.string().min(1), deliveryId: z.string().min(1) }
+        : { sessionId: z.string().min(1), deliveryId: z.string().min(1), replyToken: z.string().min(1).max(256).optional(), body: z.string().min(1).max(100_000) }),
+      annotations: { readOnlyHint: operation === "get" || operation === "poll", idempotentHint: true, destructiveHint: false, openWorldHint: operation === "attach" },
+    }, async (input) => {
+      const ownerId = await resolveMcpSenderId(deps, undefined, options.defaultCurrentDirectory, env);
+      const result = await aliasBrokerRequest(`/v1/external-sessions/${operation}`, { method: "POST", body: JSON.stringify({ ...input, ownerId }) });
+      return { content: [{ type: "text" as const, text: JSON.stringify(result) }] };
+    });
+  }
 
   const aliasScopeSchema = {
     projectRoot: z.string().optional(),
@@ -3337,6 +3424,63 @@ export function createScoutMcpServer(options: {
         brokerUrl: deps.resolveBrokerUrl(),
         defaultSenderId,
       };
+      return {
+        content: createTextContent(structuredContent),
+        structuredContent,
+      };
+    },
+  );
+
+  server.registerTool(
+    "feedback_send",
+    {
+      title: "Send Scout Feedback",
+      description:
+        "File feedback about Scout itself with the OpenScout team: a bug, a rough edge, a missing capability. The note is redacted, saved locally, then uploaded; the report names the sender (agent, harness, project, host). Set diagnostics only when the note is about Scout misbehaving on this machine — it attaches bounded, redacted service logs. This is not a message to another agent; use messages_send or ask for that.",
+      inputSchema: z.object({
+        note: z.string().trim().min(1).max(8000),
+        diagnostics: z.boolean().optional(),
+        localOnly: z.boolean().optional(),
+        currentDirectory: z.string().optional(),
+        senderId: z.string().optional(),
+      }),
+      outputSchema: z.object({
+        id: z.string(),
+        status: z.enum(["uploaded", "saved"]),
+        localPath: z.string(),
+        error: z.string().optional(),
+      }),
+      annotations: {
+        readOnlyHint: false,
+        idempotentHint: false,
+        destructiveHint: false,
+        openWorldHint: true,
+      },
+    },
+    async ({ note, diagnostics, localOnly, currentDirectory, senderId }) => {
+      const resolvedCurrentDirectory = resolveToolCurrentDirectory(
+        currentDirectory,
+        options.defaultCurrentDirectory,
+      );
+      // Naming the sender is best effort: feedback must still file when the
+      // broker is down, which is often exactly what the note is about.
+      const agentId = await resolveMcpSenderId(deps, senderId, resolvedCurrentDirectory, env)
+        .catch(() => env.OPENSCOUT_AGENT?.trim() || undefined);
+      const projectRoot = await findNearestProjectRoot(resolvedCurrentDirectory).catch(() => null);
+      const receipt = await deps.submitFeedback({
+        message: note,
+        diagnostics: diagnostics ?? false,
+        localOnly: localOnly ?? false,
+        version: SCOUT_APP_VERSION,
+        client: "mcp",
+        reporter: {
+          agentId,
+          harness: reporterHarness(env),
+          project: basename(projectRoot ?? resolvedCurrentDirectory),
+          host: hostname(),
+        },
+      });
+      const structuredContent = { ...receipt };
       return {
         content: createTextContent(structuredContent),
         structuredContent,
@@ -4094,7 +4238,7 @@ export function createScoutMcpServer(options: {
         replyMode: z
           .enum(REPLY_MODE_VALUES)
           .describe(
-            "Reply delivery mode: 'none' returns durable ids only, 'inline' waits briefly, and 'notify' returns quickly; notify emits notifications/scout/reply only when OPENSCOUT_MCP_ENABLE_NOTIFICATIONS=1.",
+            "Reply delivery mode (default 'notify'): 'notify' returns durable ids quickly and emits notifications/scout/reply when OPENSCOUT_MCP_ENABLE_NOTIFICATIONS=1 (always on for the hosted bridge), 'inline' waits briefly, and 'none' returns durable ids only.",
           )
           .optional(),
         timeoutSeconds: z
@@ -4532,12 +4676,19 @@ export function createScoutMcpServer(options: {
       }),
   );
 
+  // Hosted tiers filter out agents_start; only point at it when it is registered.
+  const canStartAgents = !options.toolFilter || options.toolFilter("agents_start");
   server.registerTool(
     "messages_send",
     {
       title: "Send Scout Message",
       description:
-        "Post a broker-backed Scout message/update/reply. Use this for heads-up, threaded conversation, and status when no new owned-work lifecycle is needed. Pass targets as fields: one explicit target without a channel becomes a DM, group delivery requires an explicit channel, and the body remains payload text. Targeted DMs are dispatched by the broker when the target can be reached; callers should not preflight wake/session mechanics. Use targetAgentId when agents_start returned exactTargetAgentId; this bypasses label resolution but remains an agent/card target, not a sticky session. Use channel='shared' only for shared updates. Pass targetLabel for the single-call broker-resolved path; mentionAgentIds remains available for exact-id compatibility. If a requested new or precise target is unresolved or mismatched, call agents_start and retry with the returned exactTargetAgentId instead of substituting a different agent. For new agent-to-agent work, use ask instead. To continue prior context, pass targetSessionId through ask.",
+        "Post a broker-backed Scout message/update/reply. Use this for heads-up, threaded conversation, and status when no new owned-work lifecycle is needed. Pass targets as fields: one explicit target without a channel becomes a DM, group delivery requires an explicit channel, and the body remains payload text. Targeted DMs are dispatched by the broker when the target can be reached; callers should not preflight wake/session mechanics. " +
+        (canStartAgents ? "Use targetAgentId when agents_start returned exactTargetAgentId; this bypasses label resolution but remains an agent/card target, not a sticky session. " : "") +
+        "Use channel='shared' only for shared updates. Pass targetLabel for the single-call broker-resolved path; mentionAgentIds remains available for exact-id compatibility. " +
+        (canStartAgents ? "If a requested new or precise target is unresolved or mismatched, call agents_start and retry with the returned exactTargetAgentId instead of substituting a different agent. " : "If a requested target is unresolved or mismatched, report it instead of substituting a different agent. ") +
+        "For new agent-to-agent work, use ask instead. To continue prior context, pass targetSessionId through ask. " +
+        "Opt-in: interaction='work' turns one directed send into tracked work on the ask lifecycle (same as scout send --tracked); the default stays message-only.",
       inputSchema: z.object({
         body: z.string().min(1),
         currentDirectory: z.string().optional(),
@@ -4549,10 +4700,22 @@ export function createScoutMcpServer(options: {
         channel: z.string().optional(),
         shouldSpeak: z.boolean().optional(),
         mentionAgentIds: mentionAgentIdsInputSchema,
+        interaction: z
+          .enum(["message", "work"])
+          .describe(
+            "Default 'message': a durable FYI/update with no owned work (the CLI's scout send / scout tell). Pass 'work' to opt one directed target into tracked work on the ask invocation lifecycle (the CLI's scout send --tracked): returns with durable handles and reports completion back to the sender. 'work' fails closed on channel, multi-target, ref-reply, and [ask:...] completion sends. For richer work options (projectPath, harness, runtime, inline wait) use ask.",
+          )
+          .optional(),
+        replyMode: z
+          .enum(["notify", "none"])
+          .describe(
+            "interaction='work' only. 'notify' (default) reports completion back to the requesting agent/session; 'none' suppresses the completion callback while keeping the tracked result inspectable via invocations_wait.",
+          )
+          .optional(),
         wake: z
           .boolean()
           .describe(
-            "Advanced override: force a visible wake turn after posting. Omit this for normal targeted DMs; the broker dispatches reachable targets automatically.",
+            "Advanced override: force a visible wake turn after posting. Omit this for normal targeted DMs; the broker dispatches reachable targets automatically. Redundant with interaction='work', which already dispatches.",
           )
           .optional(),
       }),
@@ -4590,6 +4753,8 @@ export function createScoutMcpServer(options: {
       channel,
       shouldSpeak,
       mentionAgentIds,
+      interaction,
+      replyMode,
       wake,
     }) => {
       const resolvedCurrentDirectory = resolveToolCurrentDirectory(
@@ -4612,6 +4777,233 @@ export function createScoutMcpServer(options: {
           ),
         ),
       ];
+
+      if (replyMode && interaction !== "work") {
+        throw new Error(
+          "replyMode applies only to interaction='work' (tracked sends). A plain messages_send is a message-only FYI; drop replyMode, or use ask.",
+        );
+      }
+
+      // Main's contract: messages_send is message-only by default. Tracked work
+      // is opt-in (interaction='work', the CLI's `scout send --tracked`) and only
+      // for one directed target; channel, multi-target, reply-shaped, and
+      // [ask:...] completion sends never become work, so completion replies can
+      // never recursively launch work.
+      const resolvedInteraction = interaction === "work"
+        ? explicitTargetIds.length === 1
+          ? classifySendInteraction({ targetLabel: explicitTargetIds[0], channel, body })
+          : explicitTargetIds.length === 0
+            ? classifySendInteraction({ targetLabel, channel, body })
+            : "message"
+        : "message";
+      if (interaction === "work" && explicitTargetIds.length > 0 && targetLabel?.trim()) {
+        throw new Error(
+          "interaction='work' takes exactly one routing field: pass targetAgentId or targetLabel, not both (mentionAgentIds counts as targetAgentId).",
+        );
+      }
+      if (interaction === "work" && resolvedInteraction !== "work") {
+        throw new Error(
+          "interaction='work' needs exactly one directed target (targetAgentId or targetLabel) with no channel; channel posts, multi-target sends, ref replies, and [ask:...] completion bodies are message-only and never create work. Drop interaction, or use ask.",
+        );
+      }
+
+      if (resolvedInteraction === "work") {
+        const trackedTargetId = explicitTargetIds[0] ?? null;
+        const trackedLabel = trackedTargetId ?? targetLabel?.trim() ?? "";
+        const resolvedReplyMode = replyMode ?? "notify";
+        const resolvedReplyToSessionId = resolveMcpReplyToSessionId(
+          undefined,
+          env,
+        );
+
+        if (!trackedTargetId) {
+          const parsedRouteTarget = parseScoutComposerRouteTarget(trackedLabel);
+          const targetCheck = parsedRouteTarget?.kind === "route_alias"
+            ? { blocked: false as const }
+            : await diagnosePreciseTargetLabel({
+                deps,
+                targetLabel: trackedLabel,
+                currentDirectory: resolvedCurrentDirectory,
+              });
+          if (targetCheck.blocked) {
+            const structuredContent = {
+              currentDirectory: resolvedCurrentDirectory,
+              senderId: resolvedSenderId,
+              mode: "target_label" as const,
+              interaction: "work" as const,
+              usedBroker: true,
+              conversationId: null,
+              messageId: null,
+              flightId: null,
+              invocationId: null,
+              workId: null,
+              replyMode: resolvedReplyMode,
+              notification: null,
+              wake: wake ?? false,
+              bindingRef: null,
+              invokedTargetIds: [],
+              unresolvedTargetIds: [trackedLabel],
+              targetDiagnostic: targetCheck.diagnostic,
+              startSuggestion: targetCheck.startSuggestion,
+              routingAdvice: null,
+              routeKind: null,
+              routingError: null,
+            };
+            return {
+              content: createPlainTextContent(
+                renderMcpSendSummary(structuredContent),
+              ),
+              structuredContent,
+            };
+          }
+        }
+
+        const result = trackedTargetId
+          ? await deps.askAgentById({
+              senderId: resolvedSenderId,
+              targetAgentId: trackedTargetId,
+              body,
+              ...(shouldSpeak !== undefined ? { shouldSpeak } : {}),
+              ...(resolvedReplyToSessionId
+                ? { replyToSessionId: resolvedReplyToSessionId }
+                : {}),
+              replyMode: resolvedReplyMode,
+              currentDirectory: resolvedCurrentDirectory,
+              source: "scout-mcp-send",
+            })
+          : await deps.askQuestion({
+              senderId: resolvedSenderId,
+              targetLabel: trackedLabel,
+              body,
+              ...(shouldSpeak !== undefined ? { shouldSpeak } : {}),
+              ...(resolvedReplyToSessionId
+                ? { replyToSessionId: resolvedReplyToSessionId }
+                : {}),
+              replyMode: resolvedReplyMode,
+              currentDirectory: resolvedCurrentDirectory,
+              source: "scout-mcp-send",
+              aliasScope: aliasProject || aliasHost ? {
+                ...(aliasProject ? { projectRoot: resolve(resolvedCurrentDirectory, aliasProject) } : {}),
+                ...(aliasHost ? { nodeId: aliasHost } : {}),
+              } : undefined,
+            });
+
+        const unresolvedTargetIds = [
+          ...("unresolvedTargetId" in result && result.unresolvedTargetId
+            ? [result.unresolvedTargetId]
+            : []),
+          ...("unresolvedTarget" in result && result.unresolvedTarget
+            ? [result.unresolvedTarget]
+            : []),
+        ];
+        const flight = result.flight ?? null;
+        const bindingRef = "bindingRef" in result && result.bindingRef
+          ? `ref:${result.bindingRef}`
+          : null;
+        const startSuggestion = unresolvedTargetIds.length > 0 && !trackedTargetId
+          ? await buildStartSuggestionForTarget(
+              unresolvedTargetIds[0] ?? trackedLabel,
+              resolvedCurrentDirectory,
+            )
+          : null;
+        const followArtifacts = buildScoutFollowArtifacts(
+          {
+            flight,
+            conversationId: result.conversationId ?? null,
+            workItem: result.workItem ?? null,
+            targetAgentId: flight?.targetAgentId ?? trackedTargetId ?? null,
+          },
+          env,
+        );
+        let notification:
+          | {
+              method: "notifications/scout/reply";
+              status: "scheduled" | "not_scheduled";
+            }
+          | null = null;
+        if (
+          resolvedReplyMode === "notify"
+          && unresolvedTargetIds.length === 0
+          && result.usedBroker
+        ) {
+          if (areMcpReplyNotificationsEnabled(env) && flight) {
+            scheduleScoutReplyNotification({
+              server,
+              deps,
+              brokerUrl: deps.resolveBrokerUrl(),
+              flight,
+              context: {
+                currentDirectory: resolvedCurrentDirectory,
+                senderId: resolvedSenderId,
+                targetAgentId: flight.targetAgentId ?? trackedTargetId ?? null,
+                targetLabel: trackedLabel,
+                conversationId: result.conversationId ?? null,
+                messageId: result.messageId ?? null,
+                bindingRef,
+                flightId: flight.id,
+                workItem: null,
+                workId: result.workItem?.id ?? null,
+                workUrl: null,
+                ids: followArtifacts.ids,
+                links: followArtifacts.links,
+                followUrl: followArtifacts.followUrl,
+              },
+            });
+            notification = {
+              method: "notifications/scout/reply",
+              status: "scheduled",
+            };
+          } else {
+            notification = {
+              method: "notifications/scout/reply",
+              status: "not_scheduled",
+            };
+          }
+        }
+        const structuredContent = {
+          currentDirectory: resolvedCurrentDirectory,
+          senderId: resolvedSenderId,
+          mode: trackedTargetId
+            ? "explicit_targets" as const
+            : "target_label" as const,
+          interaction: "work" as const,
+          usedBroker: result.usedBroker,
+          conversationId: result.conversationId ?? null,
+          messageId: result.messageId ?? null,
+          flightId: flight?.id ?? null,
+          invocationId: flight?.invocationId ?? null,
+          workId: result.workItem?.id ?? null,
+          replyMode: resolvedReplyMode,
+          notification,
+          wake: wake ?? false,
+          bindingRef,
+          invokedTargetIds: flight?.targetAgentId
+            ? [flight.targetAgentId]
+            : unresolvedTargetIds.length === 0
+                && result.usedBroker
+                && trackedTargetId
+              ? [trackedTargetId]
+              : [],
+          unresolvedTargetIds,
+          targetDiagnostic: result.targetDiagnostic
+            ?? (trackedTargetId
+              ? buildExactTargetIdsDiagnostic(unresolvedTargetIds)
+              : null),
+          startSuggestion,
+          routingAdvice: null,
+          routeKind: null,
+          routingError: null,
+          ids: followArtifacts.ids,
+          links: followArtifacts.links,
+          followUrl: followArtifacts.followUrl,
+        };
+        return {
+          content: createPlainTextContent(
+            renderMcpSendSummary(structuredContent),
+          ),
+          structuredContent,
+        };
+      }
 
       if (explicitTargetIds.length > 0) {
         if (wake) {
@@ -4650,6 +5042,7 @@ export function createScoutMcpServer(options: {
             currentDirectory: resolvedCurrentDirectory,
             senderId: resolvedSenderId,
             mode: "explicit_targets" as const,
+            interaction: "message" as const,
             usedBroker: results.some((result) => result.usedBroker),
             conversationId: firstResult?.conversationId ?? null,
             messageId: firstResult?.messageId ?? null,
@@ -4699,6 +5092,7 @@ export function createScoutMcpServer(options: {
           currentDirectory: resolvedCurrentDirectory,
           senderId: resolvedSenderId,
           mode: "explicit_targets" as const,
+          interaction: "message" as const,
           usedBroker: result.usedBroker,
           conversationId: result.conversationId ?? null,
           messageId: result.messageId ?? null,
@@ -4739,6 +5133,7 @@ export function createScoutMcpServer(options: {
             currentDirectory: resolvedCurrentDirectory,
             senderId: resolvedSenderId,
             mode: "target_label" as const,
+            interaction: "message" as const,
             usedBroker: true,
             conversationId: null,
             messageId: null,
@@ -4793,6 +5188,7 @@ export function createScoutMcpServer(options: {
           currentDirectory: resolvedCurrentDirectory,
           senderId: resolvedSenderId,
           mode: "target_label" as const,
+          interaction: "message" as const,
           usedBroker: result.usedBroker,
           conversationId: result.conversationId ?? null,
           messageId: result.messageId ?? null,
@@ -4846,6 +5242,7 @@ export function createScoutMcpServer(options: {
         currentDirectory: resolvedCurrentDirectory,
         senderId: resolvedSenderId,
         mode: "body_mentions" as const,
+        interaction: "message" as const,
         usedBroker: result.usedBroker,
         conversationId: result.conversationId ?? null,
         messageId: result.messageId ?? null,
@@ -4904,7 +5301,7 @@ export function createScoutMcpServer(options: {
           replyMode: z
             .enum(REPLY_MODE_VALUES)
             .describe(
-              "Reply delivery mode: 'inline' returns a quick acknowledgement or immediate completion, 'notify' returns durable ids and emits notifications/scout/reply only when OPENSCOUT_MCP_ENABLE_NOTIFICATIONS=1, and 'none' returns durable ids only. Inline acknowledgement waits use timeoutSeconds only as a caller wait budget.",
+              "Reply delivery mode (default 'notify'): 'inline' returns a quick acknowledgement or immediate completion, 'notify' returns durable ids and emits notifications/scout/reply when OPENSCOUT_MCP_ENABLE_NOTIFICATIONS=1 (always on for the hosted bridge), and 'none' returns durable ids only. Inline acknowledgement waits use timeoutSeconds only as a caller wait budget.",
             )
             .optional(),
           timeoutSeconds: z

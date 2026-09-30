@@ -9,7 +9,7 @@ import { randomBytes } from "node:crypto";
 import { homedir, hostname as osHostname } from "node:os";
 import { dirname, join } from "node:path";
 
-import { assertTestIsolatedUserData } from "./support-paths.js";
+import { assertTestIsolatedUserData, defaultOpenScoutSupportDirectory } from "./support-paths.js";
 import { stripBonjourCollisionSuffix } from "./node-identity.js";
 
 export const LOCAL_CONFIG_VERSION = 1;
@@ -275,7 +275,7 @@ export function resolveWebAuthToken(env: NodeJS.ProcessEnv = process.env): strin
   if (envToken) return envToken;
 
   const supportDir = env.OPENSCOUT_SUPPORT_DIRECTORY
-    ?? join(homedir(), "Library", "Application Support", "OpenScout");
+    ?? defaultOpenScoutSupportDirectory();
   const tokenPath = join(supportDir, "runtime", "web-auth-token");
 
   try {

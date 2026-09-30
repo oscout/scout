@@ -41,7 +41,10 @@ const hostedOut = resolve(__dirname, "../../apps/hosted-chat/public");
  */
 const icons = {
   name: "hosted-chat-icons",
-  async closeBundle() {
+  async closeBundle(error?: Error) {
+    // Rollup calls this after a failed build too; copying then would replace
+    // the real error with a missing-directory one.
+    if (error) return;
     const from = resolve(__dirname, "client/public");
     for (const file of ["favicon.svg", "favicon.ico"]) {
       await copyFile(resolve(from, file), resolve(hostedOut, file));

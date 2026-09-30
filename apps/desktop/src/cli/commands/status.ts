@@ -1,11 +1,12 @@
 import type { ScoutCommandContext } from "../context.ts";
 import { defaultScoutContextDirectory } from "../context.ts";
 import { ScoutCliError } from "../errors.ts";
-import { readScoutBrokerSnapshot, resolveScoutSenderId, type ScoutBrokerSnapshot } from "../../core/broker/service.ts";
+import { readScoutBrokerSnapshotResult, resolveScoutSenderId, type ScoutBrokerSnapshot } from "../../core/broker/service.ts";
 
 export type StatusOptions = {
   help: boolean;
   all: boolean;
+  overview?: boolean;
   ref?: string;
   state?: "blocked" | "failed";
   nextActor?: string;
@@ -29,10 +30,12 @@ export type WorkStatus = {
 
 export function renderStatusCommandHelp(): string {
   return [
-    "Usage: scout status <handle> [--json]",
+    "Usage: scout status [--json]",
+    "       scout status <handle> [--json]",
     "       scout status --all [--blocked | --failed] [--next-actor operator|self|<actor-id>] [--json]",
     "",
-    "Inspect work without waiting or changing its state.",
+    "Without a handle, show local orientation and useful next commands.",
+    "With a handle or --all, inspect work without waiting or changing its state.",
     "Handles: flight, invocation, work item, question, message, or ref:<binding>.",
     "--all includes all work in this broker's snapshot, not a live poll of every machine.",
     "--blocked uses explicit waiting states and unanswered questions, never inactivity or message keywords.",
@@ -71,7 +74,7 @@ export function parseStatusCommandOptions(args: string[]): StatusOptions {
   if (result.ref && result.all) throw new ScoutCliError("choose a handle or --all, not both");
   if (!result.ref && !result.all) {
     if (result.state || result.nextActor) throw new ScoutCliError("status filters require --all or a handle");
-    result.help = true;
+    result.overview = true;
   }
   return result;
 }
@@ -164,11 +167,26 @@ export function selectWorkStatuses(rows: WorkStatus[], options: StatusOptions): 
 export async function runStatusCommand(context: ScoutCommandContext, args: string[]): Promise<void> {
   const options = parseStatusCommandOptions(args);
   if (options.help) { context.output.writeText(renderStatusCommandHelp()); return; }
+  if (options.overview) {
+    const value = {
+      scope: "orientation", currentDirectory: defaultScoutContextDirectory(context),
+      health: "not_checked",
+      commands: { health: "scout doctor", agents: "scout who", work: "scout status --all", blocked: "scout status --all --blocked" },
+    };
+    context.output.writeValue(value, row => [
+      "Scout status", `Project context: ${row.currentDirectory}`,
+      "Health has not been checked. Run scout doctor for a live assessment.",
+      "Agents: scout who", "Work: scout status <handle> or scout status --all",
+      "Needs attention: scout status --all --blocked",
+    ].join("\n"));
+    return;
+  }
   if (options.nextActor === "self") {
     options.nextActor = await resolveScoutSenderId(undefined, defaultScoutContextDirectory(context), context.env);
   }
-  const snapshot = await readScoutBrokerSnapshot();
-  if (!snapshot) throw new ScoutCliError("broker snapshot unavailable; work status is unknown (not an empty result)");
+  const snapshotResult = await readScoutBrokerSnapshotResult();
+  if (!snapshotResult.ok) throw new ScoutCliError(`broker snapshot unavailable — /v1/snapshot read failed: ${snapshotResult.detail}; work status is unknown (not an empty result)`);
+  const snapshot = snapshotResult.snapshot;
   const work = selectWorkStatuses(buildWorkStatuses(snapshot), options);
   const result = {
     scope: "broker_snapshot", liveRemotePoll: false,

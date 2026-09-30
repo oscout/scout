@@ -1,4 +1,5 @@
 import { isSyntheticAgentId } from "../../lib/synthetic-agent-routing.ts";
+import type { SessionTerminalHints } from "../../lib/session-terminal-hop.ts";
 import type { Agent, Route } from "../../lib/types.ts";
 import { buildLaneSessionStats } from "./agent-lane-detail.ts";
 import type { AgentLane } from "./agent-lanes-model.ts";
@@ -21,6 +22,22 @@ export function laneSessionRoute(
   if (!sessionId) return null;
   const agentId = isLaneSyntheticAgent(lane.agent) ? undefined : lane.agent.id;
   return { view: "sessions", sessionId, ...(agentId ? { agentId } : {}) };
+}
+
+/** Every ref a lane knows about its session, for the terminal hop resolver.
+ *  Synthetic agents contribute refs only, so an unresolved hop never falls back
+ *  to a takeover route for an id the agents directory cannot resolve. */
+export function laneTerminalHints(lane: AgentLane): SessionTerminalHints {
+  const agent = lane.agent;
+  return {
+    agentId: isLaneSyntheticAgent(agent) ? undefined : agent.id,
+    sessionRefs: [
+      laneSessionId(lane),
+      agent.harnessSessionId,
+      agent.conversationId,
+      agent.terminalSurface?.sessionName,
+    ],
+  };
 }
 
 /** Full trace from a lane always opens the session observe surface — never the

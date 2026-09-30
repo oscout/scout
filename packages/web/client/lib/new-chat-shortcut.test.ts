@@ -7,7 +7,7 @@ import {
 
 describe("new chat shortcuts", () => {
   test("exposes the product label and primary shortcut for launchers", () => {
-    expect(NEW_TASK_ACTION_LABEL).toBe("New task");
+    expect(NEW_TASK_ACTION_LABEL).toBe("New chat");
     expect(NEW_CHAT_SHORTCUT_LABEL).toBe("C");
   });
 

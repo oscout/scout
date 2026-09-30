@@ -37,7 +37,8 @@ import {
   normalizeOpenScoutNetworkSettings,
   type OpenScoutNetworkRuntimeSettings,
 } from "./open-scout-network.js";
-import { assertTestIsolatedUserData, ensureOpenScoutCleanSlateSync, resolveOpenScoutSupportPaths } from "./support-paths.js";
+import { assertTestIsolatedUserData, defaultOpenScoutSupportDirectory, ensureOpenScoutCleanSlateSync, resolveOpenScoutSupportPaths } from "./support-paths.js";
+import type { RuntimePresetConfig } from "./user-config.js";
 import { collectUserLevelProjectRootHints, encodeClaudeProjectsSlug } from "./user-project-hints.js";
 
 export type RelayRuntimeTransport = "claude_stream_json" | "codex_app_server" | "pi_rpc" | "grok_acp" | "kimi_acp" | "cursor_acp" | "opencode_acp" | "devin_acp" | "tmux" | "cursor_exec";
@@ -121,6 +122,13 @@ export type OpenScoutProjectConfig = {
     runtime?: {
       defaultHarness?: AgentHarness;
       profiles?: Partial<Record<ManagedAgentHarness, RelayHarnessProfileInput>>;
+      /**
+       * Project-scoped model shortlist and presets — the most specific layer
+       * of the picker ordering (project → user → harness-native → broker).
+       * Read-only in this pass; no CLI writer exists for project scope.
+       */
+      shortlist?: string[];
+      presets?: RuntimePresetConfig[];
       defaults?: {
         cwd?: string;
         harness?: AgentHarness;
@@ -1929,7 +1937,7 @@ export function resolveOpenScoutSetupContextRoot(options: {
 
   const home = env.HOME?.trim() || homedir();
   const supportDirectory = env.OPENSCOUT_SUPPORT_DIRECTORY?.trim()
-    || join(home, "Library", "Application Support", "OpenScout");
+    || defaultOpenScoutSupportDirectory(home);
   const settingsPath = join(supportDirectory, "settings.json");
   if (existsSync(settingsPath)) {
     try {

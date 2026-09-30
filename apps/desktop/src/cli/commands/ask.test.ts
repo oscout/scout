@@ -192,3 +192,98 @@ describe("renderScoutAskReceipt", () => {
     })).toContain("alias project-chopin");
   });
 });
+
+describe("ask receipt follow-up clarity", () => {
+  const receipt = {
+    ok: true, state: "queued" as const,
+    ids: { targetAgentId: "project-hudson-3", invocationId: "inv-1", flightId: "flt-1", bindingRef: "abc12345" },
+  };
+
+  test("notify shows destination, selected harness, and one wait command using the short ref", () => {
+    const text = renderScoutAskReceipt({ replyMode: "notify", receipt: {
+      ...receipt,
+      executionResolution: {
+        schemaVersion: "openscout.execution-resolution.v1",
+        harness: { requested: "codex", resolved: "codex", drift: "unknown" },
+        model: { drift: "unknown" }, reasoningEffort: { drift: "unknown" },
+      },
+    } });
+    expect(text).toContain("Routed to project-hudson-3 · harness codex (selected) · ref:abc12345");
+    expect(text).toContain("Scout will surface the completion when it arrives.");
+    expect(text).toContain("Follow: scout wait ref:abc12345 --timeout 600");
+    expect(text.match(/scout wait/g)).toHaveLength(1);
+  });
+
+  test("requested-only harness is not presented as confirmed execution", () => {
+    const text = renderScoutAskReceipt({ replyMode: "notify", receipt: {
+      ...receipt,
+      executionResolution: {
+        schemaVersion: "openscout.execution-resolution.v1",
+        harness: { requested: "codex", drift: "unknown" },
+        model: { drift: "unknown" }, reasoningEffort: { drift: "unknown" },
+      },
+    } });
+    expect(text).toContain("harness codex (requested; unconfirmed)");
+  });
+
+  test("observed mismatch remains visible", () => {
+    const text = renderScoutAskReceipt({ replyMode: "notify", receipt: {
+      ...receipt,
+      executionResolution: {
+        schemaVersion: "openscout.execution-resolution.v1",
+        harness: { requested: "codex", resolved: "codex", observed: "claude", drift: "mismatch" },
+        model: { drift: "unknown" }, reasoningEffort: { drift: "unknown" },
+      },
+    } });
+    expect(text).toContain("harness claude (observed; requested codex)");
+  });
+
+  test("dispatch metadata supplies harness when the receipt has no resolution", () => {
+    const text = renderScoutAskReceipt({ replyMode: "notify", receipt, flight: {
+      id: "flt-1", invocationId: "inv-1", requesterId: "operator", targetAgentId: "project-hudson-3", state: "running",
+      metadata: { dispatchAck: { sessionId: "session-1", acknowledgedAt: 1, harness: "codex" } },
+    } });
+    expect(text).toContain("harness codex (dispatched)");
+  });
+
+  test("missing metadata stays unconfirmed and full handles remain usable fallbacks", () => {
+    for (const replyMode of ["notify", "none"] as const) {
+      const text = renderScoutAskReceipt({ replyMode, receipt: { ...receipt, ids: { targetAgentId: "codex-named-agent", invocationId: "inv-1", flightId: "flt-1" } } });
+      expect(text).toContain("harness unconfirmed");
+      expect(text).toContain("scout wait inv-1 --timeout 600");
+    }
+    expect(renderScoutAskReceipt({ replyMode: "none", receipt: { ...receipt, ids: { flightId: "flt-1" } } })).toContain("scout wait flt-1 --timeout 600");
+  });
+
+  test("already prefixed references are preserved and shell-sensitive references are quoted", () => {
+    const render = (bindingRef: string) => renderScoutAskReceipt({ replyMode: "notify", receipt: { ...receipt, ids: { ...receipt.ids, bindingRef } } });
+    expect(render("ref:abc12345")).toContain("scout wait ref:abc12345 --timeout 600");
+    expect(render("ref:a'b")).toContain("scout wait 'ref:a'\\''b' --timeout 600");
+  });
+
+  test("terminal receipts preserve outcome and do not promise a future completion", () => {
+    for (const state of ["completed", "failed", "cancelled"] as const) {
+      const text = renderScoutAskReceipt({ replyMode: "notify", receipt, flight: {
+        id: "flt-1", invocationId: "inv-1", requesterId: "operator", targetAgentId: "project-hudson-3", state, summary: "Recorded outcome",
+      } });
+      expect(text).toContain("Recorded outcome");
+      expect(text).not.toContain("Scout will surface the completion");
+      expect(text).toContain("scout wait ref:abc12345");
+    }
+  });
+
+  test("newer dispatch does not inherit observed harness from an earlier receipt session", () => {
+    const text = renderScoutAskReceipt({ replyMode: "notify", receipt: {
+      ok: true, state: "queued", ids: { flightId: "flt-1" },
+      executionResolution: {
+        schemaVersion: "openscout.execution-resolution.v1", sessionId: "old-session",
+        harness: { observed: "codex", drift: "match" }, model: { drift: "unknown" }, reasoningEffort: { drift: "unknown" },
+      },
+    }, flight: {
+      id: "flt-1", invocationId: "inv-1", requesterId: "operator", targetAgentId: "worker", state: "running",
+      metadata: { dispatchAck: { sessionId: "new-session", acknowledgedAt: 2, harness: "claude" } },
+    } });
+    expect(text).toContain("harness claude (dispatched)");
+    expect(text).not.toContain("codex (observed)");
+  });
+});

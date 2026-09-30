@@ -1,5 +1,7 @@
 import {
   CHANNEL_INVITE_SCOPE,
+  CHANNEL_MEMBER_REMOVALS_KEY,
+  readChannelMemberRemoval,
   CHANNEL_INVITES_METADATA_KEY,
   channelInvitePublicView,
   evaluateChannelInviteRedemption,
@@ -24,7 +26,17 @@ export type BrokerChannelInviteRuntime = {
 
 export type BrokerChannelInviteServiceDeps = {
   runtime: BrokerChannelInviteRuntime;
-  upsertConversation: (conversation: ConversationDefinition) => Promise<void>;
+  /**
+   * Canonical read-modify-write on one conversation — the mutator runs inside
+   * the serialized durable writer, so the roster/invites journaled here are
+   * computed from the latest record, never a stale preimage.
+   */
+  updateConversation: (
+    conversationId: string,
+    mutate: (
+      current: ConversationDefinition | undefined,
+    ) => ConversationDefinition | null | undefined,
+  ) => Promise<{ conversation: ConversationDefinition | null }>;
 };
 
 export type ChannelInviteCommandResult =
@@ -91,6 +103,45 @@ export class BrokerChannelInviteService {
     }
   }
 
+  /** Called by the operator-authorized command path; never by an invitee. */
+  readonly removeMember = async (command: {
+    channelId: string; actorId: string; removedByActorId: string; removedAt: number;
+  }): Promise<{ ok: true; participantIds: string[] } | { ok: false; error: string }> =>
+    this.runExclusive(typeof command.channelId === "string" ? command.channelId : "", async () => {
+      const actorId = typeof command.actorId === "string" ? command.actorId.trim() : "";
+      if (!actorId || typeof command.removedByActorId !== "string" || !command.removedByActorId.trim() || !Number.isFinite(command.removedAt)) {
+        return { ok: false, error: "A member, removing actor, and timestamp are required." };
+      }
+      if (actorId === command.removedByActorId) return { ok: false, error: "The operator cannot remove their own channel access." };
+      let error: string | null = null;
+      const update = await this.deps.updateConversation(command.channelId, current => {
+        if (!current || current.kind !== "channel") { error = "Channel not found."; return null; }
+        const prior = readChannelMemberRemoval(current.metadata, actorId);
+        if (!current.participantIds.includes(actorId)) {
+          if (!prior) error = "That identity is not a channel member.";
+          return null;
+        }
+        const existing = current.metadata?.[CHANNEL_MEMBER_REMOVALS_KEY];
+        const records = existing && typeof existing === "object" && !Array.isArray(existing) ? existing : {};
+        return {
+          ...current,
+          participantIds: current.participantIds.filter(id => id !== actorId),
+          metadata: {
+            ...current.metadata,
+            [CHANNEL_MEMBER_REMOVALS_KEY]: {
+              ...records,
+              [actorId]: {
+                removedAt: command.removedAt, removedByActorId: command.removedByActorId,
+                blockedInviteIds: [...new Set([...(prior?.blockedInviteIds ?? []), ...readChannelInvites(current.metadata).map(invite => invite.id)])],
+              },
+            },
+          },
+        };
+      });
+      if (error || !update.conversation) return { ok: false, error: error ?? "Channel not found." };
+      return { ok: true, participantIds: update.conversation.participantIds };
+    });
+
   readonly create = async (
     command: ChannelInviteCreateCommand,
   ): Promise<ChannelInviteCommandResult> =>
@@ -126,11 +177,16 @@ export class BrokerChannelInviteService {
         ...(command.metadata ? { metadata: command.metadata } : {}),
       };
 
-      await this.writeInvites(conversation, [...invites, invite]);
+      const written = await this.writeInvites(conversation.id, [...invites, invite]);
+      if (!written) {
+        // The channel record vanished between validation and the write —
+        // report the same failure as an unknown channel.
+        return { ok: false, error: `Channel ${command.channelId} not found.` };
+      }
       return {
         ok: true,
         invite: channelInvitePublicView(invite, command.createdAt),
-        participantIds: conversation.participantIds,
+        participantIds: written.participantIds,
       };
   });
 
@@ -158,16 +214,21 @@ export class BrokerChannelInviteService {
             revokedAt: command.revokedAt,
             revokedByActorId: command.revokedByActorId,
           };
+      let latestParticipantIds = conversation.participantIds;
       if (revoked !== target) {
-        await this.writeInvites(
-          conversation,
+        const written = await this.writeInvites(
+          conversation.id,
           invites.map((invite) => (invite.id === target.id ? revoked : invite)),
         );
+        if (!written) {
+          return { ok: false, error: `Channel ${command.channelId} not found.` };
+        }
+        latestParticipantIds = written.participantIds;
       }
       return {
         ok: true,
         invite: channelInvitePublicView(revoked, command.revokedAt),
-        participantIds: conversation.participantIds,
+        participantIds: latestParticipantIds,
       };
   });
 
@@ -221,18 +282,42 @@ export class BrokerChannelInviteService {
         return { ok: false, error: outcome.rejection.message, rejection: outcome.rejection };
       }
 
-      const participantIds = this.participantsWith(conversation, [
+      const additions = [
         actorId,
         ...(invite.invitee?.actorId ? [invite.invitee.actorId] : []),
-      ]);
+      ];
+
+      const removedRejection = {
+        ok: false as const,
+        error: "This membership was removed. Ask for a new invitation.",
+        rejection: { reason: "membership_removed" as const, message: "This membership was removed. Ask for a new invitation." },
+      };
+      const blocked = (current: ConversationDefinition) => additions.some(id =>
+        readChannelMemberRemoval(current.metadata, id)?.blockedInviteIds.includes(invite.id));
+      if (blocked(conversation)) return removedRejection;
+      let deniedByRemoval = false;
 
       if (outcome.existing) {
-        // A retry. Membership is re-asserted (it may have been removed), but the
-        // redemption row, its timestamp, and the remaining slots stand.
-        const membershipChanged =
-          participantIds.join(",") !== [...conversation.participantIds].sort().join(",");
-        if (membershipChanged) {
-          await this.writeInvites(conversation, invites, participantIds);
+        // A retry can repair a partial roster, but explicit removals above block
+        // old links. The redemption row, its timestamp, and the remaining slots stand. The
+        // roster merge happens inside the durable writer so a concurrent
+        // membership removal is not clobbered by this stale read.
+        let participantIds = this.participantsWith(conversation, additions);
+        const update = await this.deps.updateConversation(conversation.id, (current) => {
+          if (!current) return null;
+          if (blocked(current)) { deniedByRemoval = true; return null; }
+          const next = this.participantsWith(current, additions);
+          participantIds = next;
+          if (next.join(",") === [...current.participantIds].sort().join(",")) {
+            return null;
+          }
+          return { ...current, participantIds: next };
+        });
+        if (deniedByRemoval) return removedRejection;
+        if (!update.conversation) {
+          // The channel record vanished between validation and the write.
+          const rejection = unknownChannelInviteRejection();
+          return { ok: false, error: rejection.message, rejection };
         }
         return {
           ok: true,
@@ -261,11 +346,35 @@ export class BrokerChannelInviteService {
         ...invite,
         redemptions: [...invite.redemptions, redemption],
       };
-      await this.writeInvites(
-        conversation,
-        invites.map((entry) => (entry.id === invite.id ? nextInvite : entry)),
-        participantIds,
-      );
+      // Roster and invites merge inside the durable writer against the latest
+      // record: a retention membership removal (or any concurrent write)
+      // queued ahead of this one must not be overwritten by the stale
+      // `conversation` preimage read above.
+      let participantIds = this.participantsWith(conversation, additions);
+      const update = await this.deps.updateConversation(conversation.id, (current) => {
+        if (!current) return null;
+        if (blocked(current)) { deniedByRemoval = true; return null; }
+        participantIds = this.participantsWith(current, additions);
+        const baseInvites = readChannelInvites(current.metadata);
+        const nextInvites = baseInvites.some((entry) => entry.id === invite.id)
+          ? baseInvites.map((entry) => (entry.id === invite.id ? nextInvite : entry))
+          : [...baseInvites, nextInvite];
+        return {
+          ...current,
+          participantIds,
+          metadata: {
+            ...(current.metadata ?? {}),
+            [CHANNEL_INVITES_METADATA_KEY]: nextInvites,
+          },
+        };
+      });
+      if (deniedByRemoval) return removedRejection;
+      if (!update.conversation) {
+        // The channel record vanished between validation and the write — the
+        // redemption was never committed, so it must not be reported.
+        const rejection = unknownChannelInviteRejection();
+        return { ok: false, error: rejection.message, rejection };
+      }
 
       return {
         ok: true,
@@ -326,18 +435,28 @@ export class BrokerChannelInviteService {
     ])].sort();
   }
 
+  /**
+   * Write the invite set through the canonical writer: the metadata merge runs
+   * against the latest record inside the durable write, so fields this service
+   * does not own (roster included) are preserved as they are at write time.
+   * Returns the committed/current record, or null when the channel record is
+   * gone — callers must treat null as failure rather than report a mutation
+   * that never reached the journal.
+   */
   private async writeInvites(
-    conversation: ConversationDefinition,
+    channelId: string,
     invites: ChannelInviteRecord[],
-    participantIds?: string[],
-  ): Promise<void> {
-    await this.deps.upsertConversation({
-      ...conversation,
-      ...(participantIds ? { participantIds } : {}),
-      metadata: {
-        ...(conversation.metadata ?? {}),
-        [CHANNEL_INVITES_METADATA_KEY]: invites,
-      },
+  ): Promise<ConversationDefinition | null> {
+    const result = await this.deps.updateConversation(channelId, (current) => {
+      if (!current) return null;
+      return {
+        ...current,
+        metadata: {
+          ...(current.metadata ?? {}),
+          [CHANNEL_INVITES_METADATA_KEY]: invites,
+        },
+      };
     });
+    return result.conversation;
   }
 }

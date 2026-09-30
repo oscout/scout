@@ -10,7 +10,7 @@ import {
   ListTodo,
   Users,
 } from "lucide-react";
-import { api } from "../../lib/api.ts";
+import { loadFleet } from "../../lib/fleet-store.ts";
 import { actorColor } from "../../lib/colors.ts";
 import {
   isAgentOnline,
@@ -96,7 +96,7 @@ function HomeCollapsedStrip({ onExpand }: { onExpand?: () => void }) {
   );
 
   const load = useCallback(async () => {
-    setFleet(await api<FleetState>("/api/fleet").catch(() => null));
+    setFleet(await loadFleet().catch(() => null));
   }, []);
 
   useEffect(() => {
@@ -348,7 +348,7 @@ function AgentChip({
   const online = isAgentOnline(agent.state);
   return (
     <CollapsedChip
-      title={attention ? `${name} · needs you` : name}
+      title={attention ? `${name} · asking` : name}
       tone={attention ? "attention" : "default"}
       avatarNode={
         <AgentAvatar

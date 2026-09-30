@@ -1,3 +1,4 @@
+export * from "./local-edge-trust.js";
 import {
   DEFAULT_SCOUT_WEB_PORTAL_HOST,
   DEFAULT_SCOUT_WEB_VITE_HMR_PATH,
@@ -581,5 +582,8 @@ export function renderOpenScoutCaddyfile(config: OpenScoutLocalEdgeConfig, siteI
   // healthy control traffic on stderr grew the edge log without adding useful
   // diagnostics. Warnings and errors remain visible.
   const imports = siteImportsGlob ? `\nimport ${JSON.stringify(siteImportsGlob)}\n` : "";
-  return `{\n  log {\n    level WARN\n  }\n}\n\n${blocks}\n${imports}`;
+  // A background daemon must never try to install the local CA itself (it
+  // would raise a password prompt out of nowhere); the operator trusts it once.
+  const trust = config.scheme === "http" ? "" : "  skip_install_trust\n";
+  return `{\n${trust}  log {\n    level WARN\n  }\n}\n\n${blocks}\n${imports}`;
 }

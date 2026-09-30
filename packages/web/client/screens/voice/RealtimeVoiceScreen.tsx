@@ -13,6 +13,7 @@ import {
   ScoutbotRealtimeVoiceCall,
   ScoutbotRealtimeVoiceCallHeader,
 } from "../../scout/scoutbot/ScoutbotRealtimeVoiceCall.tsx";
+import { realtimeVoiceBlockedReason } from "../../lib/realtime-voice.ts";
 import { useScoutbotRealtimeVoice } from "../../scout/scoutbot/ScoutbotRealtimeVoiceContext.tsx";
 import { ScoutbotPanel } from "../../scout/scoutbot/ScoutbotPanel.tsx";
 import { VoiceUsagePanel } from "../../scout/scoutbot/VoiceUsagePanel.tsx";
@@ -423,6 +424,7 @@ export function RealtimeVoicePage() {
     enabled, state, error, clock: callLive ? clock : undefined,
     meterLine: gptLine, inputLabel: gptInputLabel ?? "browser default",
     micMuted, playbackMuted, newChatBusy: sessionAction !== null,
+    blockedReason: realtimeVoiceBlockedReason(),
   });
   if (callOutstanding && !callLive) {
     callSpec.cta = { label: "Retry ending call", tone: "end" };

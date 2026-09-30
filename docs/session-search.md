@@ -1,6 +1,6 @@
 # Session search
 
-Search **observed harness sessions** (Codex, Claude, Kimi, …) after an
+Search **observed harness sessions** (Codex, Claude Code, and Kimi) after an
 **explicit warm-up**. This is not broker chat history and does not import
 transcripts into Scout messages.
 
@@ -8,10 +8,34 @@ transcripts into Scout messages.
 
 | Need | Prefer |
 | --- | --- |
+| “Read devon-2's last report” / a named Herdr panel | `sessions_inventory` or `herdr_workspaces` with `query: "devon-2"` first |
 | Who is online / what just happened on the broker | `scout who`, `scout latest` |
 | Live harness firehose | `scout tail` |
 | “What did a past session say/do about X?” | **`scout search`** |
 | Exact session coordinates after a hit | session id + path from search hits |
+
+### Resolve a panel before searching its history
+
+A Herdr panel name is an operator label. It is separate from the terminal
+title, harness-native session reference, and Scout agent address. Inventory
+preserves those fields rather than making the caller infer one from another.
+For example, `sessions_inventory { "query": "devon-2" }` returns the matching
+panel coordinates, observed status/time, reported harness session, and any
+existing Open/Attach actions correlated by exact harness + session id.
+`herdr_workspaces` accepts the same query for a host-only lookup.
+
+Both lookups are literal, bounded candidate searches. Multiple matches remain
+ambiguous; a truncated or unavailable source cannot establish that a panel is
+absent. A saved layout is last-known, not live, and carries no read command.
+Live pane results include a structured `readCommand` (`command` plus `args`)
+for reading terminal output through Herdr. That output may be a progress update
+or a partial turn: it is not automatically a final report. A Herdr-reported
+session reference is observation evidence, not independent transcript
+verification and not a Scout routing address.
+
+Only use transcript search once the request actually needs historical
+content. Preserve its coverage and supported-harness limits: a panel being
+discoverable does not imply its harness history is indexed.
 
 ## Contract
 
@@ -66,7 +90,8 @@ scout search query "iOS build" --harness kimi --json
 | `~/.openscout/control-plane/knowledge/qmd/` | Derived markdown sidecars |
 
 Control-plane SQLite (messages, flights) is **separate**. Search never writes
-Scout-owned conversation records from harness text.
+Scout-owned conversation records from harness text. These commands search
+the local index; they do not search other machines' transcripts through mesh.
 
 ## Agent guidance
 
@@ -78,7 +103,7 @@ which session ran a command, where a harness instance lived):
 3. `scout search query "…" --harness <id> --hours N`
 4. Report session id, project/cwd, and source path from hits — do not invent peers.
 
-Do **not** grepping entire `~/.codex` / `~/.kimi-code` trees by hand when this
+Do **not** grep entire `~/.codex` / `~/.kimi-code` trees by hand when this
 path is available. Do **not** bulk-import transcripts into Scout messages.
 
 ## Related

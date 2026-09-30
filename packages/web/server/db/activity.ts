@@ -11,8 +11,8 @@ import {
   sqlTimestampMsExpression,
   staleFlightActivityPredicate,
 } from "./internal/sql-helpers.ts";
-import type { HeartrateBucket } from "./types/common.ts";
-import type { WebActivityItem } from "./types/web.ts";
+import type { HeartrateBucket } from "../../shared/api/common.ts";
+import type { WebActivityItem } from "../../shared/api/web.ts";
 
 export function queryActivity(limit = 60): WebActivityItem[] {
   const activityTsExpression = sqlTimestampMsExpression("ai.ts");

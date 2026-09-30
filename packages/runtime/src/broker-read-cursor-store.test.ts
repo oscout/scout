@@ -115,6 +115,30 @@ function createStore(input: {
 }
 
 describe("BrokerReadCursorStore", () => {
+  test("preference writes preserve unread state and concurrent independent choices", async () => {
+    const { runtime, store, appended, deliveryUpdates } = createStore();
+    await runtime.upsertConversation(testConversation());
+    await runtime.commitMessage(testMessage(), []);
+    await store.updatePreferences("conversation-1", "agent-1", { notificationMode: "mentions" });
+    expect(runtime.readCursor("conversation-1", "agent-1")?.lastReadMessageId).toBeUndefined();
+    expect(runtime.readCursor("conversation-1", "agent-1")?.lastReadAt).toBe(0);
+    const pendingRead = await store.resolve("conversation-1", { actorId: "agent-1", lastReadMessageId: "message-1" });
+    await Promise.all([
+      store.updatePreferences("conversation-1", "agent-1", { threadId: "thread-a", following: true }),
+      store.updatePreferences("conversation-1", "agent-1", { threadId: "thread-b", following: true }),
+      store.updatePreferences("conversation-1", "agent-1", { messageId: "message-1", saved: true }),
+    ]);
+    await store.record(pendingRead);
+    expect(runtime.readCursor("conversation-1", "agent-1")?.metadata?.chatAttention).toEqual({
+      notificationMode: "mentions", followedThreadIds: ["thread-a", "thread-b"], savedMessageIds: ["message-1"],
+    });
+    await store.updatePreferences("conversation-1", "agent-1", { notificationMode: "muted" });
+    expect(runtime.readCursor("conversation-1", "agent-1")?.lastReadMessageId).toBe("message-1");
+    expect(runtime.readCursor("conversation-1", "operator")).toBeUndefined();
+    expect(deliveryUpdates).toEqual([]);
+    expect(appended.flat().every(entry => entry.kind === "conversation.read_cursor.upsert")).toBe(true);
+  });
+
   test("records read cursors durably and updates runtime state", async () => {
     const { runtime, appended, store } = createStore();
     const cursor: ConversationReadCursor = {
@@ -199,6 +223,35 @@ describe("BrokerReadCursorStore", () => {
         }),
       }),
     ]);
+  });
+
+  test("read boundaries are derived from the canonical message and survive a regressing request", async () => {
+    const { runtime, store } = createStore();
+    await runtime.upsertConversation(testConversation());
+    await runtime.commitMessage(testMessage({ id: "old", createdAt: 100 }), []);
+    await runtime.commitMessage(testMessage({ id: "new", createdAt: 200 }), []);
+    const first = await store.resolve("conversation-1", {
+      actorId: "agent-1", lastReadMessageId: "new",
+      metadata: { scoutReadBoundary: { id: "new", createdAt: 999999 } },
+    });
+    expect(first.metadata?.scoutReadBoundary).toEqual({ id: "new", createdAt: 200 });
+    await store.record(first);
+    const older = await store.resolve("conversation-1", { actorId: "agent-1", lastReadMessageId: "old" });
+    expect(older.lastReadMessageId).toBe("new");
+    expect(older.metadata?.scoutReadBoundary).toEqual({ id: "new", createdAt: 200 });
+  });
+
+  test("two devices resolving before either writes cannot move read progress backwards", async () => {
+    const { runtime, store } = createStore();
+    await runtime.upsertConversation(testConversation());
+    await runtime.commitMessage(testMessage({ id: "a", createdAt: 200 }), []);
+    await runtime.commitMessage(testMessage({ id: "b", createdAt: 200 }), []);
+    const earlier = await store.resolve("conversation-1", { actorId: "agent-1", lastReadMessageId: "a" });
+    const later = await store.resolve("conversation-1", { actorId: "agent-1", lastReadMessageId: "b" });
+    await store.record(later);
+    await store.record(earlier);
+    expect(runtime.readCursor("conversation-1", "agent-1")?.lastReadMessageId).toBe("b");
+    expect((await store.resolve("conversation-1", { actorId: "agent-1", lastReadMessageId: "a" })).lastReadMessageId).toBe("b");
   });
 });
 

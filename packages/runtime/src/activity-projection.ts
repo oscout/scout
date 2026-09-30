@@ -261,7 +261,7 @@ function buildFleetDigest(input: {
   if (input.needsYouCount > 0) {
     const first = input.needsYou[0];
     return {
-      label: "Needs you",
+      label: "Requests",
       summary: input.needsYouCount === 1
         ? `${agentLabel(first)} is waiting`
         : `${input.needsYouCount} agents are waiting`,

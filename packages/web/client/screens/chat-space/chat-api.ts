@@ -1,3 +1,4 @@
+import type { NormalizedApprovalRequest } from "@openscout/agent-sessions/client";
 /**
  * Scout Chat — the client's whole view of the server.
  *
@@ -11,6 +12,7 @@
 import { refreshSessionAuth } from "../../lib/api.ts";
 
 import type {
+  ChatReadState,
   ChannelInvitePublicView,
   ChannelInviteReachability,
   ChannelReception,
@@ -31,7 +33,7 @@ import type {
  */
 export type ChatMessage = Pick<
   MessageRecord,
-  "id" | "actorId" | "body" | "class" | "createdAt" | "replyToMessageId" | "mentions" | "attachments"
+  "id" | "actorId" | "body" | "class" | "createdAt" | "replyToMessageId" | "mentions" | "attachments" | "metadata"
 > & {
   /**
    * Present when the transport declares `reactions`. Omitted when the
@@ -39,6 +41,8 @@ export type ChatMessage = Pick<
    * has reacted yet.
    */
   reactions?: MessageReactionChip[];
+  /** Server-resolved historical author label, independent of current membership. */
+  actorName?: string;
 };
 
 export interface ChatViewer {
@@ -62,6 +66,8 @@ export interface ChatSpaceView {
 }
 
 export interface ChatBootstrap {
+  /** Canonical questions awaiting this viewer, independently of message reads. */
+  questionCounts?: Record<string, number>;
   viewer: ChatViewer;
   channels: ConversationDefinition[];
   /**
@@ -79,16 +85,48 @@ export interface ChatBootstrap {
  * `state` is rendered verbatim from the broker's flight lifecycle — the client
  * never re-labels a state it does not recognize, it shows it.
  */
+export type ChatPresencePeople = Array<{ actorId: string; name: string; expiresInMs: number; typing: Array<{ threadId: string | null; expiresInMs: number }> }>;
+export type ChatPresenceBeat = { clientId: string; sequence: number; active: boolean; typing: boolean; threadId?: string | null };
+export type ChatExecution = { available: boolean; sessionId?: string; sessionName?: string; turnId?: string; status?: "streaming" | "completed" | "interrupted" | "error"; interruptible?: boolean };
+export type ChatInterrupt = { sessionId: string; turnId: string };
+export type ChatSessionApprovals = { available: boolean; sessionId?: string; approvals: NormalizedApprovalRequest[] };
+export type ChatApprovalDecision = Pick<NormalizedApprovalRequest, "sessionId" | "turnId" | "blockId" | "version"> & { decision: "approve" | "deny"; reason?: string };
+
 export interface TrackedRequest {
   messageId: string;
   flightId: string;
   state: string;
   targetActorId: string;
+  targetName?: string;
+  requesterActorId?: string;
+  requesterName?: string;
+  summary?: string;
+  output?: string;
+  outputTruncated?: boolean;
+  outputUrl?: string;
+  responsibility?: {
+    recordId: string;
+    updatedAt?: number;
+    actions?: Array<"answer" | "close" | "reopen">;
+    kind: "question" | "work_item";
+    state: string;
+    title: string;
+    settled: boolean;
+    actorId?: string;
+    actorName?: string;
+    waitingOn?: string;
+    answer?: string;
+  };
+  error?: string;
+  startedAt?: number;
+  completedAt?: number;
 }
 
 export interface ChannelFeed {
   messages: ChatMessage[];
   requests: TrackedRequest[];
+  /** True only when the server says this page holds the channel's first message. */
+  reachesStart?: boolean;
 }
 
 /** The activity plane, when the server knows of any. Never inferred here. */
@@ -130,6 +168,8 @@ export interface ChannelMemberView {
 }
 
 export interface ChannelMembers {
+  /** True only when this response enumerates every current member. */
+  authoritative?: boolean;
   channelId: string;
   members: ChannelMemberView[];
 }
@@ -148,6 +188,12 @@ export interface InviteReachabilityNote {
   detail: string;
   /** True only when a teammate away from this network can use the link. */
   remoteUsable: boolean;
+  /**
+   * The card's own headline and sentence, where the transport knows better
+   * than the route vocabulary (hosted Chat has no Scout network to name).
+   */
+  title?: string;
+  summary?: string;
 }
 
 export interface CreatedChannelInvite {
@@ -305,10 +351,29 @@ function withSpace(path: string, space: string | null | undefined): string {
  * that implements it can drive the surface, and one that cannot implement a
  * method says so in `ChatCapabilities` rather than stubbing it.
  */
+export interface ChatQuestionChange { action: "answer" | "close" | "reopen"; expectedUpdatedAt: number; answer?: string; }
+
+export type ChatQuestionPage = { questions: Array<NonNullable<TrackedRequest["responsibility"]>>; nextCursor: string | null };
 export interface ChatApi {
+  execution?(channelId: string, flightId: string, space?: string | null): Promise<ChatExecution>;
+  interruptExecution?(channelId: string, flightId: string, input: ChatInterrupt, space?: string | null): Promise<{ ok: true; status: "submitted" }>;
+  approvals?(channelId: string, flightId: string, space?: string | null): Promise<ChatSessionApprovals>;
+  decideApproval?(channelId: string, flightId: string, decision: ChatApprovalDecision, space?: string | null): Promise<{ ok: true; status: "submitted"; decision: "approve" | "deny" }>;
+  presenceIntervalMs?: number;
+  presence?(channelId: string, beat: ChatPresenceBeat, space?: string | null): Promise<{ people: ChatPresencePeople }>;
+  questionHistory?(channelId: string, cursor?: string | null, space?: string | null): Promise<ChatQuestionPage>;
+  questions?(channelId: string, cursor?: string | null, space?: string | null): Promise<ChatQuestionPage>;
+  respondQuestion?(channelId: string, questionId: string, change: ChatQuestionChange, space?: string | null): Promise<{ ok: true; responsibility: NonNullable<TrackedRequest["responsibility"]> }>;
+  correctMessage?(channelId: string, messageId: string, change: import("@openscout/protocol").ChatMessageChange, space?: string | null): Promise<{ ok: true; message: ChatMessage }>;
+  updatePins?(channelId: string, change: import("@openscout/protocol").ChatPinChange, space?: string | null): Promise<{ ok: true; pins: import("@openscout/protocol").ChatPin[] }>;
+  updateAttention?(channelId: string, change: import("@openscout/protocol").ChatAttentionPreferenceChange, space?: string | null): Promise<{ ok: true; preferences: import("@openscout/protocol").ChatAttentionPreferences }>;
+  searchMessages?(channelId: string, query: string, cursor?: string | null, space?: string | null): Promise<{ messages: ChatMessage[]; nextCursor: string | null }>;
+  messageContext?(channelId: string, messageId: string, space?: string | null, cursor?: string | null): Promise<{ rootMessageId: string; messages: ChatMessage[]; hasMore: boolean; nextCursor?: string | null }>;
+  readState?(channelId: string, space?: string | null): Promise<ChatReadState>;
+  markRead?(channelId: string, input: { messageId: string; rootMessageId?: string | null; space?: string | null }): Promise<{ ok: true }>;
   bootstrap(options?: { recoverSession?: boolean; space?: string | null }): Promise<ChatBootstrap>;
   spaces(): Promise<{ spaces: ChatSpaceView[] }>;
-  createSpace(input: { title: string; channel?: string }): Promise<{
+  createSpace(input: { title: string; channel?: string; slug?: string }): Promise<{
     space: ChatSpaceView;
     existed: boolean;
     channel: ConversationDefinition;
@@ -333,6 +398,7 @@ export interface ChatApi {
       replyToMessageId?: string;
       space?: string | null;
       attachments?: Array<MessageAttachment & { localPath?: string }>;
+      mentionActorIds?: string[];
     },
   ): Promise<{ message: ChatMessage }>;
   postAsk(
@@ -341,6 +407,8 @@ export interface ChatApi {
       requestId: string;
       body: string;
       targetActorId: string;
+      attachments?: Array<MessageAttachment & { localPath?: string }>;
+      mentionActorIds?: string[];
       replyToMessageId?: string;
       space?: string | null;
     },
@@ -358,6 +426,7 @@ export interface ChatApi {
     channelId: string,
     input: { messageId: string; emoji: string; requestId: string; space?: string | null },
   ): Promise<{ ok: true; replayed: boolean }>;
+  removeMember?(channelId: string, actorId: string, space?: string | null): Promise<{ ok: true }>;
   invites(channelId: string, space?: string | null): Promise<ChannelInviteList>;
   createInvite(
     channelId: string,
@@ -392,6 +461,12 @@ export interface ChatApi {
  * list that reads as "nothing here yet".
  */
 export interface ChatCapabilities {
+  /** Some deployments restrict invitation creation to the space owner. */
+  invitesRequireOwner?: boolean;
+  /** Human invitations use the authenticated account instead of a chosen name. */
+  teammateIdentity?: "account";
+  /** Durable per-person, per-thread read cursors and retained unread state. */
+  readState?: boolean;
   /**
    * Addressed asks — `POST /asks` and the flight states `feed` returns beside
    * the messages. Without it the composer offers no ask target and the surface
@@ -405,6 +480,11 @@ export interface ChatCapabilities {
    * redemption path for is not offered as a tab.
    */
   inviteKinds: InviteCreateInput["kind"][];
+  /**
+   * A public page explaining how an invited agent joins, linked from the agent
+   * tabs of the invite sheet. Absent, the sheet links nothing.
+   */
+  agentInviteGuideUrl?: string;
   /** Revoking an invitation the surface has listed. */
   inviteRevoke: boolean;
   /**
@@ -433,6 +513,11 @@ export interface ChatCapabilities {
    * reception. Without it the member panel shows identity only.
    */
   memberDetail: boolean;
+  /**
+   * Removing a member from the selected channel. Currently owner-only where
+   * implemented; the panel must also check the viewer and transport method.
+   */
+  memberRemove: boolean;
   /**
    * Emoji reactions on channel messages. Absent means no picker, no chips, and
    * no `reactions` field is read — not an empty row.
@@ -471,6 +556,7 @@ export const CHAT_LINK_PREVIEW_PATH = "/api/link-preview";
 
 /** The local Scout server answers the whole contract. */
 export const LOCAL_CHAT_CAPABILITIES: ChatCapabilities = {
+  readState: true,
   asks: true,
   inviteList: true,
   inviteKinds: ["teammate", "agent", "api"],
@@ -483,6 +569,8 @@ export const LOCAL_CHAT_CAPABILITIES: ChatCapabilities = {
   spaceDelete: false,
   namedFirstChannel: true,
   memberDetail: true,
+  // The local Scout serves no member-removal endpoint either.
+  memberRemove: true,
   reactions: true,
   attachments: true,
   signIn: {
@@ -496,6 +584,41 @@ export const LOCAL_CHAT_CAPABILITIES: ChatCapabilities = {
 };
 
 export const chatApi = {
+  searchMessages(channelId: string, query: string, cursor?: string | null, space?: string | null): Promise<{ messages: ChatMessage[]; nextCursor: string | null }> {
+    return request(withSpace(`/api/channels/${encodeId(channelId)}/search?q=${encodeURIComponent(query)}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`, space));
+  },
+  messageContext(channelId: string, messageId: string, space?: string | null, cursor?: string | null): Promise<{ rootMessageId: string; messages: ChatMessage[]; hasMore: boolean; nextCursor?: string | null }> {
+    return request(withSpace(`/api/channels/${encodeId(channelId)}/messages/${encodeId(messageId)}/context${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ""}`, space));
+  },
+  presence(channelId, beat, space) {
+    return request<{ people: ChatPresencePeople }>(withSpace(`/api/channels/${encodeId(channelId)}/presence`, space), { method: "POST", body: JSON.stringify(beat) });
+  },
+  questionHistory(channelId: string, cursor?: string | null, space?: string | null): Promise<ChatQuestionPage> {
+    return request(withSpace(`/api/channels/${encodeId(channelId)}/questions/history${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ""}`, space));
+  },
+  questions(channelId: string, cursor?: string | null, space?: string | null): Promise<ChatQuestionPage> {
+    return request(withSpace(`/api/channels/${encodeId(channelId)}/questions${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ""}`, space));
+  },
+  respondQuestion(channelId: string, questionId: string, change: ChatQuestionChange, space?: string | null): Promise<{ ok: true; responsibility: NonNullable<TrackedRequest["responsibility"]> }> {
+    return request(withSpace(`/api/channels/${encodeId(channelId)}/questions/${encodeId(questionId)}/respond`, space), { method: "POST", body: JSON.stringify(change) });
+  },
+  correctMessage(channelId: string, messageId: string, change: import("@openscout/protocol").ChatMessageChange, space?: string | null): Promise<{ ok: true; message: ChatMessage }> {
+    return request(withSpace(`/api/channels/${encodeId(channelId)}/corrections`, space), { method: "POST", body: JSON.stringify({ messageId, change }) });
+  },
+  updatePins(channelId: string, change: import("@openscout/protocol").ChatPinChange, space?: string | null): Promise<{ ok: true; pins: import("@openscout/protocol").ChatPin[] }> {
+    return request(withSpace(`/api/channels/${encodeId(channelId)}/pins`, space), { method: "POST", body: JSON.stringify(change) });
+  },
+  updateAttention(channelId: string, change: import("@openscout/protocol").ChatAttentionPreferenceChange, space?: string | null): Promise<{ ok: true; preferences: import("@openscout/protocol").ChatAttentionPreferences }> {
+    return request(withSpace(`/api/channels/${encodeId(channelId)}/attention`, space), { method: "POST", body: JSON.stringify(change) });
+  },
+  readState(channelId: string, space?: string | null): Promise<ChatReadState> {
+    return request(withSpace(`/api/channels/${encodeId(channelId)}/read-state`, space));
+  },
+  markRead(channelId: string, input: { messageId: string; rootMessageId?: string | null; space?: string | null }): Promise<{ ok: true }> {
+    return request(withSpace(`/api/channels/${encodeId(channelId)}/read-state`, input.space), {
+      method: "POST", body: JSON.stringify({ messageId: input.messageId, rootMessageId: input.rootMessageId ?? null }),
+    });
+  },
   /** Recover the existing trusted local session before showing a sign-in gate. */
   async bootstrap(
     options: { recoverSession?: boolean; space?: string | null } = {},
@@ -576,6 +699,12 @@ export const chatApi = {
     return request<ChannelMembers>(withSpace(`/api/channels/${encodeId(channelId)}/members`, space));
   },
 
+  removeMember(channelId: string, actorId: string, space?: string | null): Promise<{ ok: true }> {
+    return request(withSpace(`/api/channels/${encodeId(channelId)}/members/revoke`, space), {
+      method: "POST", body: JSON.stringify({ actorId }),
+    });
+  },
+
   /**
    * A plain post. It invokes nobody — being in the room is not being asked.
    *
@@ -590,6 +719,7 @@ export const chatApi = {
       replyToMessageId?: string;
       space?: string | null;
       attachments?: Array<MessageAttachment & { localPath?: string }>;
+      mentionActorIds?: string[];
     },
   ): Promise<{ message: ChatMessage }> {
     return request<{ message: ChatMessage }>(withSpace(`/api/channels/${encodeId(channelId)}/messages`, input.space), {
@@ -597,6 +727,7 @@ export const chatApi = {
       body: JSON.stringify({
         requestId: input.requestId,
         body: input.body,
+        ...(input.mentionActorIds?.length ? { mentionActorIds: input.mentionActorIds } : {}),
         ...(input.replyToMessageId ? { replyToMessageId: input.replyToMessageId } : {}),
         ...(input.attachments && input.attachments.length > 0
           ? {
@@ -619,12 +750,27 @@ export const chatApi = {
    * An addressed ask. `targetActorId` is an explicitly selected channel agent —
    * never a display name parsed out of the body.
    */
+  execution(channelId, flightId, space) {
+    return request<ChatExecution>(withSpace(`/api/channels/${encodeId(channelId)}/asks/${encodeId(flightId)}/execution`, space));
+  },
+  interruptExecution(channelId, flightId, input, space) {
+    return request<{ ok: true; status: "submitted" }>(withSpace(`/api/channels/${encodeId(channelId)}/asks/${encodeId(flightId)}/execution`, space), { method: "POST", body: JSON.stringify(input) });
+  },
+  approvals(channelId, flightId, space) {
+    return request<ChatSessionApprovals>(withSpace(`/api/channels/${encodeId(channelId)}/asks/${encodeId(flightId)}/approvals`, space));
+  },
+  decideApproval(channelId, flightId, decision, space) {
+    return request<{ ok: true; status: "submitted"; decision: "approve" | "deny" }>(withSpace(`/api/channels/${encodeId(channelId)}/asks/${encodeId(flightId)}/approvals/decide`, space), { method: "POST", body: JSON.stringify(decision) });
+  },
+
   postAsk(
     channelId: string,
     input: {
       requestId: string;
       body: string;
       targetActorId: string;
+      attachments?: Array<MessageAttachment & { localPath?: string }>;
+      mentionActorIds?: string[];
       replyToMessageId?: string;
       space?: string | null;
     },
@@ -637,6 +783,8 @@ export const chatApi = {
           requestId: input.requestId,
           body: input.body,
           targetActorId: input.targetActorId,
+          ...(input.attachments?.length ? { attachments: input.attachments } : {}),
+          ...(input.mentionActorIds ? { mentionActorIds: input.mentionActorIds } : {}),
           ...(input.replyToMessageId ? { replyToMessageId: input.replyToMessageId } : {}),
         }),
       },

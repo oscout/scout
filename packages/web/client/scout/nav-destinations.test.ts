@@ -186,9 +186,17 @@ describe("nav destination catalog", () => {
 
   test("AREA_SUB_NAV projection covers repos/code/terminals (SCO-085)", () => {
     const projects = projectAreaSubNav("projects");
-    expect(projects.map((item) => item.id)).toEqual(["projects", "repos", "code"]);
+    expect(projects.map((item) => item.id)).toEqual(["projects", "project-list", "repos", "code"]);
+    const projectsTab = projects.find((item) => item.id === "project-list")!;
+    const agentsTab = projects.find((item) => item.id === "projects")!;
+    expect(projectsTab.active({ view: "agents-v2", indexView: "projects" })).toBe(true);
+    expect(projectsTab.active({ view: "agents-v2", projectSlug: "openscout" })).toBe(true);
+    expect(agentsTab.active({ view: "agents-v2" })).toBe(true);
+    expect(agentsTab.active({ view: "agents-v2", indexView: "projects" })).toBe(false);
+    expect(agentsTab.active({ view: "agents-v2", projectSlug: "openscout", agentId: "a" })).toBe(true);
     expect(projects.map((item) => item.label)).toEqual([
       "Agents",
+      "Projects",
       "Repositories",
       "Code Browser",
     ]);

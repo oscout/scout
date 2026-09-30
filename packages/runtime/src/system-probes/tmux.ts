@@ -266,6 +266,7 @@ async function readTmuxPaneLocal(key: string, ctx: ProbeCtx): Promise<TmuxPaneDe
   try {
     if (parsed.kind === "detail") {
       const { stdout } = await execProbeFile(ctx, tmuxBin(), [
+        "-u", // keep the tabs below: tmux prints them as "_" without a UTF-8 locale
         ...tmuxSocketArgs(parsed.socketPath),
         "display-message",
         "-p",

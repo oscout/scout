@@ -19,7 +19,7 @@ const targets: Record<DeliveryIntent["targetKind"],true> = {participant:true,age
 const policies: Record<DeliveryIntent["policy"],true> = {best_effort:true,must_ack:true,durable:true,ephemeral:true};
 const reasons: Record<DeliveryIntent["reason"],true> = {conversation_visibility:true,direct_message:true,mention:true,thread_reply:true,invocation:true,bridge_outbound:true,speech:true};
 const transports: Record<DeliveryIntent["transport"],true> = {
-  local_socket:true,websocket:true,pairing_bridge:true,peer_broker:true,http:true,webhook:true,
+  local_socket:true,websocket:true,pairing_bridge:true,peer_broker:true,http:true,mcp_poll:true,devin_cloud_cli:true,webhook:true,
   telegram:true,discord:true,sms:true,email:true,tts:true,native_voice:true,claude_channel:true,
   claude_stream_json:true,codex_app_server:true,codex_exec:true,claude_resume:true,pi_rpc:true,
   grok_acp:true,kimi_acp:true,cursor_acp:true,opencode_acp:true,devin_acp:true,tmux:true,cursor_exec:true,

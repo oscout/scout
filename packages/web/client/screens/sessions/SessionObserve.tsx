@@ -2929,7 +2929,7 @@ function SessionObserveComposer({
         onAttach={() => inputRef.current?.focus()}
         attachTitle="Add context"
         attachAriaLabel="Add context"
-        sendTitle="Send into this session (Cmd+Enter)"
+        sendTitle="Send into this session (Enter) · Shift+Enter for a new line"
         sendAriaLabel="Send into this session"
         tools={!canWrite ? (
           <span className="s-observe-compose-status s-observe-compose-status--muted">

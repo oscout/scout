@@ -86,6 +86,34 @@ afterEach(() => {
 });
 
 describe("hosted bootstrap", () => {
+  test("joined people remain people and do not receive space-owner controls", async () => {
+    const base = hostedWorker(call => call.url.includes("/members?") ? json({ members: [
+      { actorId: "gh-1", displayName: "Alex", kind: "person", participation: "teammate", revoked: 0 },
+    ] }) : json({ error: "not_found" }, 404));
+    stubFetch(call => call.url === `/api/chat/spaces/${SPACE_ID}` ? json({ isOwner: false, channels: [{ id: "channel-one", title: "General" }] }) : base(call));
+    const api = createHostedChatApi();
+    expect((await api.bootstrap({ space: "work" })).viewer.isOperator).toBe(false);
+    const member = (await api.members("channel-one", "work")).members[0]!;
+    expect(member.kind).toBe("person");
+    expect(member.participation).toBeUndefined();
+    expect(member.reception.summary).toBe("Member");
+  });
+
+  test("message corrections preserve revision metadata and send a CSRF-protected scoped command", async () => {
+    const metadata = { chatCorrection: { revision: 2, deletedAt: 1234, changedBy: "owner" } };
+    stubFetch(hostedWorker(call => call.url.includes("/corrections?") ? json({ ok: true, message: {
+      id: "m-1", actorId: "owner", body: "", createdAt: 100, replyToMessageId: "root", metadata,
+    } }) : json({ error: "not_found" }, 404)));
+    const api = createHostedChatApi();
+    await api.bootstrap({ space: "work" });
+    const result = await api.correctMessage!("channel-one", "m-1", { expectedRevision: 1, deleted: true }, "work");
+    expect(result.message).toMatchObject({ id: "m-1", body: "", replyToMessageId: "root", metadata });
+    const write = calls.find(call => call.url.includes("/corrections?"))!;
+    expect(write.url).toBe(`/api/channels/channel-one/corrections?space=${SPACE_ID}`);
+    expect(write.headers["x-csrf-token"]).toBe("csrf-1");
+    expect(write.body).toEqual({ messageId: "m-1", change: { expectedRevision: 1, deleted: true } });
+  });
+
   test("composes the session, the space list and the selected space", async () => {
     stubFetch(hostedWorker());
     const found = await createHostedChatApi().bootstrap();
@@ -146,6 +174,8 @@ describe("slug to space id", () => {
             id: "m1",
             channelId: "channel-one",
             actorId: "gh-1",
+            actorName: "Former teammate",
+            mentions: [{ actorId: "gh-1", label: "Alex" }],
             body: "hello",
             createdAt: 5,
             replyToMessageId: null,
@@ -158,6 +188,8 @@ describe("slug to space id", () => {
 
     expect(urls().at(-1)).toBe(`/api/channels/channel-one/feed?space=${SPACE_ID}`);
     expect(feed.messages.map((message) => message.id)).toEqual(["m1"]);
+    expect(feed.messages[0]?.actorName).toBe("Former teammate");
+    expect(feed.messages[0]?.mentions).toEqual([{ actorId: "gh-1", label: "Alex" }]);
     // The Worker has no asks, so the surface is told there are none rather than
     // being handed a shape it would draw request state from.
     expect(feed.requests).toEqual([]);
@@ -188,6 +220,7 @@ describe("slug to space id", () => {
     expect(urls().at(-1)).toBe(`/api/channels/c1/members?space=${SPACE_ID}`);
     // A revoked membership is somebody who left, not a member with a flag on.
     expect(members.members.map((member) => member.actorId)).toEqual(["agent-1"]);
+    expect(members.authoritative).toBe(true);
   });
 });
 
@@ -207,14 +240,14 @@ describe("writes", () => {
 
     const api = createHostedChatApi();
     await api.bootstrap();
-    await api.postMessage("channel-one", { requestId: "req-1", body: "hi", space: "work" });
+    await api.postMessage("channel-one", { requestId: "req-1", body: "hi", space: "work", mentionActorIds: ["person-alex"] });
 
     const post = calls.at(-1)!;
     expect(post.url).toBe(`/api/channels/channel-one/messages?space=${SPACE_ID}`);
     expect(post.method).toBe("POST");
     expect(post.headers["content-type"]).toBe("application/json");
     expect(post.headers["x-csrf-token"]).toBe("csrf-1");
-    expect(post.body).toEqual({ requestId: "req-1", body: "hi" });
+    expect(post.body).toEqual({ requestId: "req-1", body: "hi", mentionActorIds: ["person-alex"] });
   });
 
   test("a rotated token is recovered once, and the retry replays the same body", async () => {
@@ -316,8 +349,6 @@ describe("capabilities the Worker does not have", () => {
 
     const refusals: (() => Promise<unknown>)[] = [
       () => api.postAsk("c1", { requestId: "r", body: "b", targetActorId: "agent-1" }),
-      () => api.invites("c1"),
-      () => api.revokeInvite("c1", "invite-1", "gh-1"),
       () => api.invitePreview("tok"),
       () => api.joinInvite("tok", "Agent"),
       () => api.me(),
@@ -336,15 +367,104 @@ describe("capabilities the Worker does not have", () => {
 
   test("the declaration matches what is actually implemented", () => {
     expect(HOSTED_CHAT_CAPABILITIES.asks).toBe(false);
-    expect(HOSTED_CHAT_CAPABILITIES.inviteList).toBe(false);
-    expect(HOSTED_CHAT_CAPABILITIES.inviteRevoke).toBe(false);
+    expect(HOSTED_CHAT_CAPABILITIES.inviteList).toBe(true);
+    expect(HOSTED_CHAT_CAPABILITIES.inviteRevoke).toBe(true);
     expect(HOSTED_CHAT_CAPABILITIES.liveStream).toBe(false);
     expect(HOSTED_CHAT_CAPABILITIES.memberDetail).toBe(false);
     expect(HOSTED_CHAT_CAPABILITIES.reactions).toBe(false);
     expect(HOSTED_CHAT_CAPABILITIES.attachments).toBe(true);
     expect(HOSTED_CHAT_CAPABILITIES.namedFirstChannel).toBe(false);
-    expect(HOSTED_CHAT_CAPABILITIES.inviteKinds).toEqual(["api"]);
+    expect(HOSTED_CHAT_CAPABILITIES.inviteKinds).toEqual(["teammate", "api"]);
     expect(HOSTED_CHAT_CAPABILITIES.signIn.startPath).toBe("/auth/github/start");
     expect(HOSTED_CHAT_CAPABILITIES.signIn.returnToParam).toBe("return_to");
   });
+});
+
+
+describe("hosted personal read state", () => {
+  test("maps the space and authenticates acknowledgements without supplying an actor or sequence", async () => {
+    const state = { channelId: "channel-one", actorId: "gh-1", lanes: [] };
+    stubFetch(hostedWorker(call => call.url.includes("/read-state?")
+      ? json(call.method === "GET" ? state : { ok: true }) : json({}, 404)));
+    const api = createHostedChatApi();
+    await api.bootstrap();
+    expect(HOSTED_CHAT_CAPABILITIES.readState).toBe(true);
+    expect(await api.readState!("channel-one", "work")).toEqual(state);
+    await api.markRead!("channel-one", { messageId: "reply", rootMessageId: "root", space: "work" });
+    const acknowledgement = calls.at(-1)!;
+    expect(acknowledgement.url).toBe(`/api/channels/channel-one/read-state?space=${SPACE_ID}`);
+    expect(acknowledgement.body).toEqual({ messageId: "reply", rootMessageId: "root" });
+    expect(acknowledgement.headers["x-csrf-token"]).toBe("csrf-1");
+  });
+});
+
+
+test("search safely encodes query and cursor while keeping the selected space", async () => {
+  stubFetch(hostedWorker(call => call.url.includes("/search?") ? json({ messages: [], nextCursor: null }) : json({}, 404)));
+  const api = createHostedChatApi();
+  await api.bootstrap();
+  await api.searchMessages!("channel-one", "100% & shipping", "cursor+value", "work");
+  const url = new URL(calls.at(-1)!.url, "https://fixture.test");
+  expect(url.searchParams.get("q")).toBe("100% & shipping");
+  expect(url.searchParams.get("cursor")).toBe("cursor+value");
+  expect(url.searchParams.get("space")).toBe(SPACE_ID);
+});
+
+
+describe("hosted human invitations", () => {
+  test("previews without consuming, then joins with session CSRF and no chosen identity", async () => {
+    stubFetch(hostedWorker(call => call.url.endsWith("/preview")
+      ? json({ kind: "teammate", channelId: "c1", channelTitle: "general", space: { id: SPACE_ID, title: "Work" }, expiresAt: 123, alreadyMember: false })
+      : call.url.endsWith("/join") ? json({ ok: true, actorId: "gh-1", conversationId: "c1", space: { id: SPACE_ID, slug: "work", title: "Work" } }) : json({}, 404)));
+    const api = createHostedChatApi();
+    expect((await api.previewHumanInvitation("token")).kind).toBe("teammate");
+    expect(calls.map(call => call.method)).toEqual(["GET"]);
+    const joined = await api.acceptHumanInvitation("token");
+    expect(joined.space.slug).toBe("work");
+    const write = calls.find(call => call.method === "POST")!;
+    expect(write.url).toBe("/api/invites/token/join");
+    expect(write.body).toEqual({});
+    expect(write.headers["x-csrf-token"]).toBe("csrf-1");
+  });
+});
+
+
+test("member removal targets one channel and carries only the target identity with session CSRF", async () => {
+  stubFetch(hostedWorker(call => call.url.includes("/members/revoke?") ? json({ ok: true }) : json({}, 404)));
+  const api = createHostedChatApi();
+  await api.bootstrap({ space: "work" });
+  await api.removeMember!("channel-one", "person-two", "work");
+  const sent = calls.find(call => call.url.includes("/members/revoke?"))!;
+  expect(sent.url).toBe(`/api/channels/channel-one/members/revoke?space=${SPACE_ID}`);
+  expect(sent.body).toEqual({ actorId: "person-two" });
+  expect(sent.headers["x-csrf-token"]).toBe("csrf-1");
+  expect(HOSTED_CHAT_CAPABILITIES.memberRemove).toBe(true);
+});
+
+
+test("invitation management uses non-secret IDs and server-side authorship", async () => {
+  const invite = { id: "hash-id", kind: "teammate", state: "active" };
+  stubFetch(hostedWorker(call => call.method === "POST"
+    ? json({ ok: true, invite: { ...invite, state: "revoked" } }) : json({ invites: [invite] })));
+  const api = createHostedChatApi();
+  await api.bootstrap({ space: "work" });
+  expect((await api.invites("channel-one", "work")).invites[0]?.kind).toBe("teammate");
+  expect((await api.revokeInvite("channel-one", "hash-id", "forged-author", "work")).invite.state).toBe("revoked");
+  const write = calls.find(call => call.method === "POST")!;
+  expect(write.url).toBe(`/api/channels/channel-one/invites/revoke?space=${SPACE_ID}`);
+  expect(write.body).toEqual({ inviteId: "hash-id" });
+  expect(write.headers["x-csrf-token"]).toBe("csrf-1");
+});
+
+test("hosted presence uses authenticated CSRF writes with no draft payload", async () => {
+  stubFetch(hostedWorker(() => json({ people: [] })));
+  const api = createHostedChatApi();
+  const beat = { clientId: "tab", sequence: 1, active: true, typing: true, threadId: "root" };
+  await api.bootstrap();
+  await api.presence!("channel-one", beat, "work");
+  const call = calls.find(call => call.url.includes("/presence?"))!;
+  expect(call.url).toBe(`/api/channels/channel-one/presence?space=${SPACE_ID}`);
+  expect(call.method).toBe("POST");
+  expect(call.headers["x-csrf-token"]).toBeTruthy();
+  expect(call.body).toEqual(beat);
 });

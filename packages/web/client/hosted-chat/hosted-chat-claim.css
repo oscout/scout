@@ -1,0 +1,22 @@
+/* The refused-claim notice — see `HostedClaimNotice.tsx`. One raised strip at
+   the bottom of the window, above the surface, flat with a hairline. */
+.hcc-notice {
+  position: fixed;
+  left: 50%;
+  bottom: var(--space-3xl);
+  transform: translateX(-50%);
+  z-index: 50;
+  width: min(560px, calc(100vw - 32px));
+  display: flex;
+  align-items: center;
+  gap: var(--space-lg);
+  padding: var(--space-md) var(--space-md) var(--space-md) var(--space-xl);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+  color: var(--ink);
+  font-size: var(--text-md);
+  line-height: var(--leading-snug);
+  box-shadow: 0 12px 34px var(--shadow-soft);
+}
+.hcc-notice > span { flex: 1; min-width: 0; }

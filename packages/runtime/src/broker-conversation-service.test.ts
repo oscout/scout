@@ -81,9 +81,13 @@ function createHarness(input: {
       upsertedActors.push(nextActor);
       snapshot.actors[nextActor.id] = nextActor;
     },
-    async upsertConversation(nextConversation) {
-      upsertedConversations.push(nextConversation);
-      snapshot.conversations[nextConversation.id] = nextConversation;
+    async updateConversation(conversationId, mutate) {
+      const current = snapshot.conversations[conversationId];
+      const next = mutate(current);
+      if (!next) return { updated: false, conversation: current ?? null };
+      upsertedConversations.push(next);
+      snapshot.conversations[next.id] = next;
+      return { updated: true, conversation: next };
     },
   });
 

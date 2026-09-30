@@ -450,11 +450,26 @@ export function parseHerdrTopology(inputs: {
   workspaceList?: string;
   tabList?: string;
   paneList?: string;
+  agentList?: string;
   snapshot?: string;
 }): HerdrWorkspaceProjection[] {
   const workspaceResult = inputs.workspaceList ? unwrapHerdrResult(inputs.workspaceList) : null;
   const tabResult = inputs.tabList ? unwrapHerdrResult(inputs.tabList) : null;
   const paneResult = inputs.paneList ? unwrapHerdrResult(inputs.paneList) : null;
+  const agentResult = inputs.agentList ? unwrapHerdrResult(inputs.agentList) : null;
+  const agentsRaw = Array.isArray(agentResult?.agents) ? agentResult.agents : [];
+  const namesByTerminal = new Map<string, { paneId: string; name: string }>();
+  const duplicateTerminals = new Set<string>();
+  for (const entry of agentsRaw) {
+    if (!entry || typeof entry !== "object") continue;
+    const agent = entry as Record<string, unknown>;
+    const terminalId = herdrString(agent.terminal_id);
+    const paneId = herdrString(agent.pane_id);
+    const name = herdrString(agent.name);
+    if (!terminalId || !paneId || !name) continue;
+    if (namesByTerminal.has(terminalId)) duplicateTerminals.add(terminalId);
+    namesByTerminal.set(terminalId, { paneId, name });
+  }
   const layoutsByTab = inputs.snapshot ? parseHerdrSnapshotLayouts(inputs.snapshot) : new Map<string, HerdrTabLayout>();
 
   const workspacesRaw = Array.isArray(workspaceResult?.workspaces)
@@ -471,6 +486,11 @@ export function parseHerdrTopology(inputs: {
     const tabId = herdrString(record.tab_id);
     const workspaceId = herdrString(record.workspace_id);
     if (!paneId || !tabId || !workspaceId) continue;
+    const terminalId = herdrString(record.terminal_id);
+    // Some Herdr versions expose the assigned name only in agent list. Join
+    // by the actual terminal AND pane, never title/cwd or enumeration order.
+    // A pane replaced between the two reads must not inherit its old name.
+    const namedAgent = terminalId && !duplicateTerminals.has(terminalId) ? namesByTerminal.get(terminalId) : undefined;
     const agentSessionRaw = record.agent_session;
     const agentSession: HerdrAgentSessionRef | null = agentSessionRaw && typeof agentSessionRaw === "object"
       ? (() => {
@@ -498,9 +518,17 @@ export function parseHerdrTopology(inputs: {
       : null;
     const pane: HerdrPaneProjection = {
       paneId,
-      terminalId: herdrString(record.terminal_id),
+      terminalId,
       tabId,
       workspaceId,
+      // Current herdr reports the title separately and keeps `label` for the
+      // name the operator assigned (`--label`, or a rename). Only when a title
+      // exists is `label` that name; alone, it is an older herdr's title.
+      name: herdrString(record.name)
+        ?? (herdrString(record.terminal_title_stripped) ?? herdrString(record.terminal_title)
+          ? herdrString(record.label)
+          : null)
+        ?? (namedAgent?.paneId === paneId ? namedAgent.name : null),
       // herdr reports a pane's human-readable string as its terminal title, not
       // as `label`: `terminal_title` carries the agent's own status glyphs and
       // `terminal_title_stripped` the plain text. Reading `label` alone left
@@ -624,6 +652,7 @@ export function parseHerdrPersistedTopology(value: unknown): HerdrWorkspaceProje
           terminalId: null,
           tabId,
           workspaceId,
+          name: herdrString(paneRecord.name),
           label: null,
           agent: agentName,
           agentStatus: "unknown" as const,
@@ -724,11 +753,14 @@ async function readHerdrTopologyUncached(sessionName: string, env: RuntimeEnv): 
     );
     // Geometry is additive: an older herdr without `api snapshot` (or a busy
     // one timing out) must not take the whole projection down with it.
-    const snapshot = await exec(["api", "snapshot"]).then((r) => r.stdout).catch(() => undefined);
+    const [snapshot, agentList] = await Promise.all([
+      exec(["api", "snapshot"]).then((r) => r.stdout).catch(() => undefined),
+      exec(["agent", "list"]).then((r) => r.stdout).catch(() => undefined),
+    ]);
     return {
       session: sessionName,
       running: true,
-      workspaces: parseHerdrTopology({ workspaceList, tabList, paneList, snapshot }),
+      workspaces: parseHerdrTopology({ workspaceList, tabList, paneList, agentList, snapshot }),
       observedAt: Date.now(),
     };
   } catch {

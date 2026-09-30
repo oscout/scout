@@ -82,6 +82,21 @@ export type ScoutHostRevealMode =
   | "xdgOpen"
   | "windowsSelect";
 
+/** `open` is macOS-only. Off darwin those modes resolve to no command. */
+export function revealCommandForPlatform(
+  mode: ScoutHostRevealMode,
+  targetPath: string,
+  platform: NodeJS.Platform = process.platform,
+): { file: string; args: string[] } | null {
+  if ((mode === "darwinReveal" || mode === "darwinOpen") && platform !== "darwin") {
+    return null;
+  }
+  if (mode === "darwinReveal") return { file: "open", args: ["-R", targetPath] };
+  if (mode === "darwinOpen") return { file: "open", args: [targetPath] };
+  if (mode === "xdgOpen") return { file: "xdg-open", args: [targetPath] };
+  return { file: "explorer.exe", args: [`/select,${targetPath}`] };
+}
+
 function tmuxSocketArgs(socketPath: string | null | undefined): string[] {
   const socket = socketPath?.trim();
   return socket ? ["-S", socket] : [];
@@ -300,16 +315,11 @@ export const scoutHost = {
   },
   reveal: {
     open(targetPath: string, mode: ScoutHostRevealMode, options: { timeoutMs?: number } = {}) {
-      if (mode === "darwinReveal") {
-        return execSystemFile("open", ["-R", targetPath], { timeoutMs: timeoutMs(options, 1_500) });
+      const command = revealCommandForPlatform(mode, targetPath);
+      if (!command) {
+        return Promise.resolve({ stdout: "", stderr: "", exitCode: 0 });
       }
-      if (mode === "darwinOpen") {
-        return execSystemFile("open", [targetPath], { timeoutMs: timeoutMs(options, 1_500) });
-      }
-      if (mode === "xdgOpen") {
-        return execSystemFile("xdg-open", [targetPath], { timeoutMs: timeoutMs(options, 1_500) });
-      }
-      return execSystemFile("explorer.exe", [`/select,${targetPath}`], { timeoutMs: timeoutMs(options, 1_500) });
+      return execSystemFile(command.file, command.args, { timeoutMs: timeoutMs(options, 1_500) });
     },
   },
 } as const;

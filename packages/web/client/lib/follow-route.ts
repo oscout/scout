@@ -20,10 +20,16 @@ export function mergeFollowTargets(
     workId: firstPresent(resolved.workId, fallback.workId),
     sessionId: firstPresent(resolved.sessionId, fallback.sessionId),
     targetAgentId: firstPresent(resolved.targetAgentId, fallback.targetAgentId),
+    harnessSessionId: firstPresent(resolved.harnessSessionId, fallback.harnessSessionId),
   };
 }
 
 export function tailQueryForFollowTarget(target: FollowTarget): string | null {
+  // Tail events are keyed by the harness's own session id. Scout ids
+  // (session-/flt-/inv-/chn-) only ever match rows that quote them, so when
+  // the harness id is known it is the whole filter.
+  const harnessSessionId = cleanFollowId(target.harnessSessionId);
+  if (harnessSessionId) return harnessSessionId;
   const terms = [
     target.sessionId,
     target.flightId,

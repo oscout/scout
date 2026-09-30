@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { SessionRegistryError } from "@openscout/agent-sessions";
 
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -89,6 +90,22 @@ function restoreEnvironment(name: string, value: string | undefined) {
 }
 
 describe("bridgeRouter sync compatibility", () => {
+  test("turnInterrupt preserves the turn guard and maps stale state to conflict", async () => {
+    const calls: string[][] = [];
+    const bridge = { interrupt: (sessionId: string) => calls.push([sessionId]),
+      interruptTurn: (sessionId: string, turnId: string) => {
+        if (turnId === "stale") throw new SessionRegistryError("CONFLICT", "Stale turn");
+        calls.push([sessionId, turnId]);
+      } } as unknown as Bridge;
+    const caller = createCaller(bridge);
+    expect(await caller.turnInterrupt({ sessionId: "session", turnId: "current" })).toEqual({ ok: true });
+    await expect(caller.turnInterrupt({ sessionId: "session", turnId: "stale" })).rejects.toMatchObject({ code: "CONFLICT" });
+    await expect(caller.turnInterrupt({ sessionId: "session", turnId: "" })).rejects.toMatchObject({ code: "BAD_REQUEST" });
+    expect(calls).toEqual([["session", "current"]]);
+    await caller.turnInterrupt({ sessionId: "session" });
+    expect(calls).toEqual([["session", "current"], ["session"]]);
+  });
+
   test("mobile.artifactPresent scopes a relative host artifact to the session workspace", async () => {
     const root = mkdtempSync(join(tmpdir(), "openscout-artifact-router-"));
     writeFileSync(join(root, "index.html"), '<img src="shot.png">');

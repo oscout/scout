@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, peekApiGet } from "../../lib/api.ts";
 import { copyTextToClipboard } from "../../lib/clipboard.ts";
-import { useBrokerEvents } from "../../lib/sse.ts";
+import { isBrokerDataEvent, useBrokerEvents } from "../../lib/sse.ts";
 import {
   filterActivityByMachineScope,
   machineScopedAgentIds,
@@ -187,7 +187,9 @@ export function ActivityScreen({ navigate }: { navigate: (r: Route) => void }) {
     };
   }, [load]);
 
-  useBrokerEvents(scheduleRefresh);
+  useBrokerEvents((event) => {
+    if (isBrokerDataEvent(event)) scheduleRefresh();
+  });
 
   const metrics = useMemo(() => {
     const actors = new Set(visibleActivity.map((item) => item.actorName ?? "system"));

@@ -1,7 +1,7 @@
 /* The Comms page: one stage, with the conversations kept beside it in columns
    (CommsDeck). On the agent surface the stage is the agent's own conversation
    or the thread the route names, under a strip of its conversations. Hairlines
-   only; the single accent stays a precedence signal (needs-you), green means
+   only; the single accent stays a precedence signal (requests), green means
    working. */
 
 /* Columns kept beside the stage take their width from the stage; past the

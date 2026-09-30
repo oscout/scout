@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { agentStateLabel, isAgentOnline } from "../../lib/agent-state.ts";
 import { api } from "../../lib/api.ts";
-import { useBrokerEvents } from "../../lib/sse.ts";
+import { isBrokerDataEvent, useBrokerEventsRefresh } from "../../lib/sse.ts";
 import { timeAgo } from "../../lib/time.ts";
 import { openContent } from "../../scout/slots/openContent.ts";
 import { AgentAvatar } from "../../components/AgentAvatar.tsx";
@@ -85,7 +85,7 @@ export function ProjectAgentProfileHero({
     setCatalog(null);
     void load();
   }, [load]);
-  useBrokerEvents(() => {
+  useBrokerEventsRefresh(isBrokerDataEvent, () => {
     void load();
   });
 

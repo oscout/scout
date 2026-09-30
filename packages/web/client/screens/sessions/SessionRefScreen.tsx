@@ -15,6 +15,7 @@ import type {
 import { BackToPicker } from "../../scout/slots/BackToPicker.tsx";
 import { ConversationScreen } from "../chat/ConversationScreen.tsx";
 import { SessionObserve, SessionObserveContextRail } from "./SessionObserve.tsx";
+import { SessionRetrospective, sessionRetrospectiveIsComplete } from "./SessionRetrospective.tsx";
 import {
   SessionRefObserveHeader,
   sessionRefObserveOriginLabel,
@@ -276,6 +277,16 @@ export function SessionRefScreen({
           machineId={machineId}
           navigate={navigate}
         />
+        {sessionRetrospectiveIsComplete(lookup.observe.data, lookup.observe.source) && (
+          <SessionRetrospective
+            data={lookup.observe.data}
+            sessionRef={lookup.observe.sessionId ?? lookup.observe.refId}
+            harness={lookup.observe.data.metadata?.session?.adapterType
+              ?? lookup.observe.data.metadata?.session?.source
+              ?? lookup.observe.data.metadata?.session?.originator
+              ?? ""}
+          />
+        )}
         <SessionObserve
           data={lookup.observe.data}
           agentId={lookup.observe.agentId ?? lookup.session?.agentId ?? undefined}

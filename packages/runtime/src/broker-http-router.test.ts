@@ -1,3 +1,4 @@
+import { ChatQuestionError } from "./chat-question-transition.js";
 import { clearOperatorTitle, markOperatorTitled } from "./conversation-title.js";
 import { EventEmitter } from "node:events";
 import { generateKeyPairSync } from "node:crypto";
@@ -262,6 +263,22 @@ async function requestRouter(
 }
 
 describe("createBrokerHttpRouter", () => {
+  test("question response route preserves version conflicts and rejects malformed identity", async () => {
+    const calls: unknown[] = [];
+    const harness = createHarness({ respondToChatQuestion: async (...args) => {
+      calls.push(args);
+      throw new ChatQuestionError(409, "This question changed.");
+    } });
+    const path = "/v1/conversations/channel/questions/question/respond";
+    const conflict = await requestRouter(harness, "POST", path, { body: { actorId: "maya", isOperator: false, change: { action: "close", expectedUpdatedAt: 2 } } });
+    expect(conflict.response.status).toBe(409);
+    expect(conflict.body).toEqual({ error: "This question changed.", status: 409 });
+    expect(calls).toEqual([["channel", "question", "maya", false, { action: "close", expectedUpdatedAt: 2 }]]);
+    const malformed = await requestRouter(harness, "POST", path, { body: { actorId: "maya", change: {} } });
+    expect(malformed.response.status).toBe(400);
+    expect(calls).toHaveLength(1);
+  });
+
 
   function seedConversation(harness: Harness): ConversationDefinition {
     const conversation: ConversationDefinition = {
@@ -779,6 +796,25 @@ describe("createBrokerHttpRouter", () => {
         code: -32700,
       },
     });
+  });
+
+  test("preference operations never resolve a read boundary or acknowledge deliveries", async () => {
+    const changes: unknown[] = [];
+    let acknowledgements = 0;
+    const harness = createHarness({
+      updateChatPreferences: async (conversationId, actorId, change) => {
+        changes.push({ conversationId, actorId, change });
+        return { notificationMode: "muted", followedThreadIds: [] };
+      },
+      acknowledgeDeliveriesForReadCursor: async () => { acknowledgements++; },
+    });
+    const updated = await requestRouter(harness, "POST", "/v1/conversations/conversation-1/read-cursors", {
+      body: { operation: "preferences", actorId: "agent-1", change: { notificationMode: "muted" } },
+    });
+    expect(updated.response.status).toBe(200);
+    expect(changes).toEqual([{ conversationId: "conversation-1", actorId: "agent-1", change: { notificationMode: "muted" } }]);
+    expect(harness.cursorBodies).toEqual([]);
+    expect(acknowledgements).toBe(0);
   });
 
   test("wires read cursor GET and POST routes through explicit dependencies", async () => {

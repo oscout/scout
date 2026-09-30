@@ -78,4 +78,16 @@ describe("buildScoutAskRoute", () => {
       scope: { projectRoot: "/tmp/talkie", nodeId: "mini" },
     });
   });
+
+  test("routes a copied session address to that exact host-scoped session", () => {
+    expect(buildScoutAskRoute({
+      to: "sess.6773faf3c863ce885044@arts-mini",
+      currentDirectory: "/tmp/openscout",
+    })).toEqual({
+      kind: "session_id",
+      sessionId: "sess.6773faf3c863ce885044",
+      host: "arts-mini",
+      value: "session:sess.6773faf3c863ce885044@arts-mini",
+    });
+  });
 });

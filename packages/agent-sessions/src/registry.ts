@@ -44,6 +44,8 @@ export function isSessionRegistryError(error: unknown): error is SessionRegistry
 
 export class SessionRegistry {
   private sessions = new Map<string, Adapter>();
+  private readonly submittedInterrupts = new Map<string, string>();
+  private readonly submittedDecisions = new Map<string, Set<string>>();
   private listeners = new Set<(event: SequencedEvent) => void>();
   private readonly buffers = new Map<string, OutboundBuffer>();
   private readonly stateTracker = new StateTracker();
@@ -107,6 +109,8 @@ export class SessionRegistry {
       // poisoned session entry.
       await adapter.shutdown().catch(() => undefined);
       this.sessions.delete(sessionId);
+      this.submittedDecisions.delete(sessionId);
+      this.submittedInterrupts.delete(sessionId);
       this.stateTracker.removeSession(sessionId);
       this.buffers.delete(sessionId);
       throw error;
@@ -136,6 +140,24 @@ export class SessionRegistry {
     adapter.interrupt();
   }
 
+  /** Guard a UI interruption against a newer turn and uncertain duplicate delivery. */
+  interruptTurn(sessionId: string, turnId: string): void {
+    const adapter = this.sessions.get(sessionId);
+    if (!adapter) throw new SessionRegistryError("NOT_FOUND", `No session: ${sessionId}`);
+    const snapshot = this.getSessionSnapshot(sessionId);
+    const turn = snapshot?.turns.find(candidate => candidate.id === turnId);
+    if (!turnId || snapshot?.currentTurnId !== turnId || turn?.status !== "streaming") {
+      throw new SessionRegistryError("CONFLICT", "The requested turn is no longer active; refresh session state.");
+    }
+    if (this.submittedInterrupts.get(sessionId) === turnId) {
+      throw new SessionRegistryError("CONFLICT", "An interruption was already submitted for this turn; wait for observed session state.");
+    }
+    // Reserve before forwarding. A thrown adapter call may have delivered the
+    // interrupt remotely; retry must not spill into another turn.
+    this.submittedInterrupts.set(sessionId, turnId);
+    adapter.interrupt();
+  }
+
   answer(answer: QuestionAnswer): void {
     const adapter = this.sessions.get(answer.sessionId);
     if (!adapter) {
@@ -161,6 +183,14 @@ export class SessionRegistry {
       throw new SessionRegistryError("CONFLICT", "Stale approval version");
     }
 
+    const key = JSON.stringify([input.turnId, input.blockId, input.version]);
+    const submitted = this.submittedDecisions.get(input.sessionId) ?? new Set<string>();
+    if (submitted.has(key)) throw new SessionRegistryError("CONFLICT", "This approval decision was already submitted. Await the session update before deciding again.");
+    // Adapters may return before a remote decision is acknowledged. Reserve the
+    // exact version before forwarding, including synchronous reentrant calls.
+    // A thrown/uncertain delivery does not authorize replay of the same version.
+    submitted.add(key);
+    this.submittedDecisions.set(input.sessionId, submitted);
     adapter.decide(input.turnId, input.blockId, input.decision, input.reason);
   }
 
@@ -172,6 +202,8 @@ export class SessionRegistry {
 
     await adapter.shutdown();
     this.sessions.delete(sessionId);
+    this.submittedDecisions.delete(sessionId);
+    this.submittedInterrupts.delete(sessionId);
 
     const closedEvent: AgentSessionStreamEvent = { event: "session:closed", sessionId };
     this.stateTracker.trackEvent(sessionId, closedEvent);

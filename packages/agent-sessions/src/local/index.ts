@@ -21,12 +21,15 @@ import {
 import { buildLocalCodexLaunchArgs } from "./codex-launch-args.js";
 
 export {
+  CODEX_ATTACHED_CAPABILITY_GAPS,
   CodexAppServerClient,
   CodexAppServerExitError,
   CodexAppServerRequesterTimeoutError,
   CodexAppServerTransport,
   CodexThreadHeldExternallyError,
+  buildCodexAppServerIdentity,
   codexAppServerSessionKey,
+  defaultCodexAppServerControlSocketPath,
   ensureCodexAppServerLocalAgentOnline,
   getOrCreateCodexAppServerClient,
   interruptCodexAppServerLocalAgent,
@@ -45,6 +48,9 @@ export {
 export type {
   CodexAppServerApprovalPolicy,
   CodexAppServerClientInfo,
+  CodexAppServerConnectionConfig,
+  CodexAppServerConnectionMode,
+  CodexAppServerIdentity,
   CodexAppServerExitKind,
   CodexAppServerInterruptOptions,
   CodexAppServerInvocationOptions,
@@ -385,7 +391,7 @@ function timeoutError(timeoutMs: number): Error {
   return new Error(`Timed out waiting for local agent turn after ${timeoutMs}ms.`);
 }
 
-async function waitForTurnEnd(options: {
+export async function waitForTurnEnd(options: {
   registry: SessionRegistry;
   sessionId: string;
   text: string;
@@ -413,15 +419,19 @@ async function waitForTurnEnd(options: {
         callback();
       };
 
+      // Settle BEFORE interrupting: interrupt() emits turn:end("stopped")
+      // synchronously, which the subscriber below would settle on first and
+      // overwrite the specific error with the generic interrupted message.
+      // The settled latch keeps whichever reason lands first.
       timeout = setTimeout(() => {
-        registry.interrupt(sessionId);
         settle(() => reject(timeoutError(options.timeoutMs)));
+        registry.interrupt(sessionId);
       }, options.timeoutMs);
 
       if (signal) {
         const abort = (): void => {
-          registry.interrupt(sessionId);
           settle(() => reject(abortError()));
+          registry.interrupt(sessionId);
         };
         signal.addEventListener("abort", abort, { once: true });
         removeAbortListener = () => signal.removeEventListener("abort", abort);
@@ -434,7 +444,20 @@ async function waitForTurnEnd(options: {
         }
 
         if (terminal.kind === "rejected") {
-          settle(() => reject(new Error(terminal.message ?? "Local agent turn failed.")));
+          settle(() => {
+            let message = terminal.message ?? "Local agent turn failed.";
+            // ACP surfaces the provider stop reason on providerMeta — a
+            // truncated or refused turn should say why, not just "failed".
+            if (message === "Local agent turn failed.") {
+              const stopReason = stringValue(
+                nestedRecord(registry.getSessionSnapshot(sessionId)?.session.providerMeta, "acp")?.lastStopReason,
+              );
+              if (stopReason) {
+                message = `Local agent turn failed (${stopReason}).`;
+              }
+            }
+            reject(new Error(message));
+          });
           return;
         }
 

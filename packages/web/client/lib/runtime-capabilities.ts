@@ -10,6 +10,8 @@ import {
 import {
   runtimeCatalogFromRunnerOptions,
   type RuntimeCatalog,
+  type RuntimePreset,
+  type RuntimeShortlistEntry,
 } from "./runtime-catalog.ts";
 
 export type RuntimeCapabilityCatalog = {
@@ -37,6 +39,9 @@ export type RuntimeCapabilityCatalog = {
     harnesses: string[];
     models?: string[];
   }>;
+  /** Resolved runtime lists — project/user/harness/broker layers folded. */
+  shortlist?: RuntimeShortlistEntry[];
+  presets?: RuntimePreset[];
 };
 
 const SEED_DEFAULT_HARNESS = scoutRuntimeDefaultHarness() ?? "";
@@ -100,6 +105,8 @@ export function runtimeCatalogFromCapabilities(
       harnesses: candidate.harnesses,
       ...(candidate.models?.length ? { models: [...candidate.models] } : {}),
     })),
+    ...(catalog.shortlist?.length ? { shortlist: catalog.shortlist } : {}),
+    ...(catalog.presets?.length ? { presets: catalog.presets } : {}),
   });
 }
 

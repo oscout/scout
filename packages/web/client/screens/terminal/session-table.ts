@@ -1,3 +1,5 @@
+import type { TerminalSessionRecord } from "@openscout/protocol";
+
 import type { TerminalListItem } from "../../lib/terminal-sessions.ts";
 import { timeAgoWithSuffix } from "../../lib/time.ts";
 
@@ -61,6 +63,9 @@ export function terminalSessionStateLabel(item: TerminalListItem): string {
     : null;
   if (item.surface.state === "exited") return "exited";
   if (attached && attached > 0) return `${attached} attached`;
+  // A detached herdr session is one whose server is down, not one nobody is
+  // looking at (tmux's meaning), so it reads as stopped.
+  if (item.surface.backend === "herdr" && item.surface.state === "detached") return "stopped";
   return item.surface.state ?? "live";
 }
 
@@ -170,12 +175,12 @@ export function toggleTerminalSessionSort(
  * today). Read defensively: the host owns the shape, and anything unexpected
  * is simply absent.
  */
-function lastKnownLayout(item: TerminalListItem): {
+function lastKnownLayout(session: TerminalSessionRecord): {
   savedAt: number | null;
   panes: number | null;
   agents: string[];
 } | null {
-  const value = item.session.metadata?.lastKnownLayout;
+  const value = session.metadata?.lastKnownLayout;
   if (!value || typeof value !== "object") return null;
   const record = value as Record<string, unknown>;
   const savedAt = typeof record.savedAt === "number" && Number.isFinite(record.savedAt) && record.savedAt > 0
@@ -200,7 +205,7 @@ function lastKnownLayout(item: TerminalListItem): {
  * honest answer.
  */
 export function inactiveTerminalItemDetail(item: TerminalListItem, now = Date.now()): string {
-  const lastKnown = lastKnownLayout(item);
+  const lastKnown = lastKnownLayout(item.session);
   const parts: string[] = [];
   const activityAt = terminalSessionActivityAt(item) ?? lastKnown?.savedAt ?? null;
   if (activityAt !== null) parts.push(`last active ${timeAgoWithSuffix(activityAt, now)}`);
@@ -209,4 +214,19 @@ export function inactiveTerminalItemDetail(item: TerminalListItem, now = Date.no
   if (lastKnown && lastKnown.agents.length > 0) parts.push(lastKnown.agents.slice(0, 3).join(", "));
   if (item.cwdLabel) parts.push(item.cwdLabel);
   return parts.join(" · ") || item.detail || item.session.sourceSessionId;
+}
+
+/**
+ * What a stopped host session's tile says about it: when it was last active,
+ * how many panes it held, and which agents lived there. Null when the host
+ * persisted nothing, which is the one case "not running yet" is true.
+ */
+export function stoppedHostSessionDetail(session: TerminalSessionRecord, now = Date.now()): string | null {
+  const lastKnown = lastKnownLayout(session);
+  if (!lastKnown) return null;
+  const parts: string[] = [];
+  if (lastKnown.savedAt !== null) parts.push(`last active ${timeAgoWithSuffix(lastKnown.savedAt, now)}`);
+  if (lastKnown.panes !== null) parts.push(lastKnown.panes === 1 ? "1 pane" : `${lastKnown.panes} panes`);
+  if (lastKnown.agents.length > 0) parts.push(lastKnown.agents.slice(0, 3).join(", "));
+  return parts.length > 0 ? parts.join(" · ") : null;
 }

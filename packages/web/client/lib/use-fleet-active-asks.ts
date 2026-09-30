@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { api } from "./api.ts";
+import { loadFleet } from "./fleet-store.ts";
 import {
   buildFleetActiveAskIndex,
   type FleetActiveAskIndex,
@@ -22,7 +22,7 @@ export function useFleetActiveAsks(): FleetActiveAskIndex {
   const refreshTimerRef = useRef<number | null>(null);
 
   const load = useCallback(async () => {
-    const data = await api<FleetState>("/api/fleet").catch(() => null);
+    const data = await loadFleet().catch(() => null);
     setFleet(data);
   }, []);
 

@@ -265,7 +265,7 @@ describe("providers command", () => {
         },
         alternatives: [
           expect.objectContaining({
-            label: "Opus 5",
+            label: expect.stringMatching(/^Opus 5/),
             fit: 91,
             taskRationale: expect.stringContaining("structural understanding"),
             quotaRisk: false,

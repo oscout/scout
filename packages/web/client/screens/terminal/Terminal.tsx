@@ -107,6 +107,7 @@ import {
   DEFAULT_TERMINAL_SESSION_SORT,
   sortTerminalSessionItems,
   terminalSessionActivityAt,
+  stoppedHostSessionDetail,
   terminalSessionStateLabel,
   TERMINAL_SESSION_COLUMNS,
   toggleTerminalSessionSort,
@@ -1237,6 +1238,18 @@ function isTileSessionLive(
   ));
 }
 
+/** The host session record a tile names, live or stopped, when the inventory has one. */
+function tileHostSession(
+  tile: TerminalWorkspaceTileModel,
+  sessions: TerminalSessionRecord[],
+): TerminalSessionRecord | null {
+  if (tile.kind === "registered") return tile.target.session;
+  if (tile.kind !== "fresh" || !tile.sessionName) return null;
+  return sessions.find((session) => session.surfaces.some((surface) =>
+    surface.backend === tile.backend && surface.sessionName === tile.sessionName
+  )) ?? null;
+}
+
 function registeredTerminalTargetKey(target: RegisteredTerminalTarget): string {
   return `${target.session.id}:${surfaceKey(target.surface)}`;
 }
@@ -2330,6 +2343,7 @@ function TerminalHome({ navigate }: { navigate: TerminalNavigate }) {
                   resolution={activeCellStatuses.get(tile.id) ?? null}
                   onRevive={reviveCell}
                   live={isTileSessionLive(tile, state.sessions)}
+                  hostSession={tileHostSession(tile, state.sessions)}
                 />
               </div>
             ))}
@@ -3448,6 +3462,7 @@ function TerminalWorkspaceTile({
   resolution,
   onRevive,
   live = false,
+  hostSession = null,
 }: {
   tile: TerminalWorkspaceTileModel;
   navigate: TerminalNavigate;
@@ -3456,7 +3471,10 @@ function TerminalWorkspaceTile({
   onRevive?: (cellId: string) => void;
   /** Whether a host session with this tile's name is currently live. */
   live?: boolean;
+  /** The host's record for this tile's session, when it has one. */
+  hostSession?: TerminalSessionRecord | null;
 }) {
+  const stoppedDetail = hostSession ? stoppedHostSessionDetail(hostSession) : null;
   if (tile.kind === "registered") {
     // A registered herdr cell binds to the whole herdr session, and herdr owns
     // the layout — so it projects the session's live topology like a hosted
@@ -3468,6 +3486,7 @@ function TerminalWorkspaceTile({
           backend="herdr"
           sessionName={tile.target.surface.sessionName}
           live={tile.target.surface.state === "live"}
+          stoppedDetail={stoppedDetail}
           onClose={onClose}
           navigate={navigate}
         />
@@ -3536,6 +3555,7 @@ function TerminalWorkspaceTile({
         backend={tile.backend}
         sessionName={tile.sessionName}
         live={live}
+        stoppedDetail={stoppedDetail}
         onClose={onClose}
         navigate={navigate}
       />
@@ -3555,6 +3575,7 @@ function HostedTerminalWorkspaceTile({
   backend,
   sessionName,
   live,
+  stoppedDetail = null,
   onClose,
   navigate,
 }: {
@@ -3562,6 +3583,8 @@ function HostedTerminalWorkspaceTile({
   backend: TerminalCellBackend;
   sessionName?: string;
   live: boolean;
+  /** Last-known shape of a session that ran before and is now stopped. */
+  stoppedDetail?: string | null;
   onClose: (tileId: string) => void;
   navigate?: TerminalNavigate;
 }) {
@@ -3620,7 +3643,7 @@ function HostedTerminalWorkspaceTile({
           <span className="s-term-workspace-tile-name">{host?.label ?? backend}</span>
         </div>
         <div className="s-term-bar-meta">
-          <span className="s-term-label">{live ? "running" : "not running"}</span>
+          <span className="s-term-label">{live ? "running" : stoppedDetail ? "stopped" : "not running"}</span>
           {sessionName && <span className="s-term-session" title={sessionName}>{sessionName}</span>}
         </div>
         <div className="s-term-bar-actions">
@@ -3692,11 +3715,12 @@ function HostedTerminalWorkspaceTile({
       ) : (
         <div className="s-term-workspace-unavailable-body">
           <TerminalIcon size={22} strokeWidth={1.5} />
-          <strong>{live ? `Running in ${host?.label ?? backend}` : `Not running yet`}</strong>
+          <strong>{live ? `Running in ${host?.label ?? backend}` : stoppedDetail ? "Stopped" : "Not running yet"}</strong>
           <span>
             {live
               ? `Scout keeps this session for you. Open it in ${host?.label ?? backend} to use it.`
-              : `Scout can start a ${host?.label ?? backend} session and keep it for you.`}
+              : stoppedDetail
+                ?? `Scout can start a ${host?.label ?? backend} session and keep it for you.`}
           </span>
           {!live && (
             <button
@@ -3705,7 +3729,7 @@ function HostedTerminalWorkspaceTile({
               onClick={start}
               disabled={state === "starting" || !sessionName}
             >
-              {state === "starting" ? "Starting…" : "Start it"}
+              {state === "starting" ? "Starting…" : stoppedDetail ? "Start it again" : "Start it"}
             </button>
           )}
           {error && <code>{error}</code>}

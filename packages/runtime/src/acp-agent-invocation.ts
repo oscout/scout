@@ -45,7 +45,40 @@ type AcpPoolEntry = {
   nativeSessionId?: string;
 };
 
-const DEFAULT_ACP_HARD_CEILING_MS = 30 * 60_000;
+// Env-tunable like the OPENSCOUT_TMUX_VERIFY_* deadlines — a VARIANT, not a
+// one-way door. 60 min: 30 min was below a realistic multi-chapter turn and
+// capped every ACP turn on every node regardless of what the ask declared.
+const DEFAULT_ACP_HARD_CEILING_MS = 60 * 60_000;
+const DEFAULT_ACP_HARD_CEILING_MAX_MS = 6 * 60 * 60_000;
+
+function configuredAcpHardCeilingMs(): number {
+  const parsed = Number.parseInt(process.env.OPENSCOUT_ACP_HARD_CEILING_MS ?? "", 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_ACP_HARD_CEILING_MS;
+}
+
+function configuredAcpHardCeilingMaxMs(): number {
+  const parsed = Number.parseInt(process.env.OPENSCOUT_ACP_HARD_CEILING_MAX_MS ?? "", 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_ACP_HARD_CEILING_MAX_MS;
+}
+
+/**
+ * The turn deadline passed to the local agent client. The requester's wait
+ * (options.timeoutMs) deliberately does not feed it — a caller willing to
+ * wait hours does not license an hours-long turn. An explicit execution
+ * budget (invocation.execution.turnBudgetMs → hardCeilingMs) is the only
+ * per-invocation override. Whatever the source, the result is clamped to the
+ * administrator maximum OPENSCOUT_ACP_HARD_CEILING_MAX_MS (default 6 h) —
+ * a defense-in-depth bound independent of the HTTP schema's own 6 h limit.
+ */
+export function acpTurnCeilingMs(
+  options: Pick<AcpAgentInvocationOptions, "hardCeilingMs">,
+): number {
+  return Math.min(
+    options.hardCeilingMs ?? configuredAcpHardCeilingMs(),
+    configuredAcpHardCeilingMaxMs(),
+  );
+}
+
 const activeAcpSessions = new Map<string, Promise<AcpPoolEntry>>();
 
 function harnessForAdapter(adapterType: AcpAgentInvocationOptions["adapterType"]): LocalAgentHarness {
@@ -151,7 +184,7 @@ export async function invokeAcpAgent(
   const entry = await entryForInvocation(options);
   const turn = entry.client.turn({
     input: options.prompt,
-    timeoutMs: options.hardCeilingMs ?? DEFAULT_ACP_HARD_CEILING_MS,
+    timeoutMs: acpTurnCeilingMs(options),
   }).then((result) => {
     const nativeSessionId = result.session.nativeId?.trim()
       || entry.nativeSessionId

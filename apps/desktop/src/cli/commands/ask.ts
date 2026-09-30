@@ -1,3 +1,4 @@
+import { flightSessionTrace } from "@openscout/protocol";
 import type { ScoutCommandContext } from "../context.ts";
 import { defaultScoutContextDirectory } from "../context.ts";
 import {
@@ -26,9 +27,19 @@ const DEFAULT_ASK_DISPATCH_SETTLE_MS = 4_000;
 
 export function renderAskCommandHelp(): string {
   return [
-    "Usage: scout ask [(--to <existing-target> | --ref <ref> | --project <path> | --profile <runtime-profile>)] [--runtime <harness/model/effort>] [--harness <runtime>] [--model <model>] [--effort <level>] [--new] [--placement <background|foreground> | --foreground] [--notify | --reply-mode <inline|notify|none>] [--prompt-file <path> | <message>]",
+    "Usage: scout ask [(--to <existing-target> | --ref <ref> | --project <path> | --profile <runtime-profile>)] [--runtime <harness/model/effort>] [--harness <runtime>] [--model <model>] [--effort <level>] [--new] [--placement <background|foreground|attached> | --foreground] [--notify | --reply-mode <inline|notify|none>] [--prompt-file <path> | <message>]",
     "",
     "Ask one agent to do work or return a concrete answer.",
+    "Async receipts show the routed target, harness evidence, and a scout wait command (including --notify).",
+    "",
+    "First collaboration (replace the project path; keep the returned ref):",
+    '  scout ask --project /path/to/repo --harness claude --notify "Review the changes and report back."',
+    "  scout status RETURNED_REF --json",
+    "  scout wait RETURNED_REF --timeout 30",
+    '  scout ask --ref RETURNED_REF "Continue with this correction."',
+    "Queued or acknowledged is not completed. A wait timeout does not cancel work; observe the same ref again, do not duplicate the ask.",
+    "If acknowledgement is lost, reconcile any returned ids and broker activity before retrying. An unresolved receipt is not proof that nothing ran.",
+    "For exact runtimes, inspect executionResolution: requested/resolved show launch intent; observed/drift show harness evidence. Missing observed values remain unknown.",
     "",
     "Operator questions: scout ask --operator --question <text> [--option <choice> ...] [--permission]",
     "",
@@ -74,7 +85,7 @@ export function renderAskCommandHelp(): string {
     "  --label <label>                   -> attach a durable work label; repeatable",
     "  --notify                          -> asynchronous ask; return now and surface completion later",
     "  --reply-mode <mode>                -> inline (default), notify, or none",
-    "  --placement <placement>           -> background (default) or foreground",
+    "  --placement <placement>           -> background (default), foreground, or attached (Codex: use the running Codex app-server daemon)",
     "  --foreground                      -> alias for --placement foreground",
     "",
     "Examples:",
@@ -110,24 +121,47 @@ export function renderScoutAskReceipt(value: {
   flight?: ScoutFlightRecord | null;
 }): string {
   const { ids } = value.receipt;
+  const bindingRef = renderBindingRef(ids.bindingRef);
   const pieces = [
-    ids.targetAgentId ? `asked ${ids.targetAgentId}` : "ask queued",
+    ids.targetAgentId ? `Routed to ${ids.targetAgentId}` : "Ask queued",
+    renderScoutAskHarness(value.receipt, value.flight),
+    bindingRef,
     ids.flightId ? `flight ${ids.flightId}` : null,
     ids.conversationId ? renderConversationRoute(ids.conversationId) : null,
     ids.sessionAlias ? `alias ${ids.sessionAlias}` : null,
-    renderBindingRef(ids.bindingRef),
   ].filter((piece): piece is string => Boolean(piece));
+  const waitRef = bindingRef ?? ids.invocationId ?? ids.flightId;
   const delivery = renderScoutAskDeliveryStatus(value.flight);
-  const suffix = value.replyMode === "notify"
-    ? delivery
-      ? `${delivery} Scout will surface the completion when it arrives.`
-      : "Scout will surface the completion when it arrives."
-    : delivery
-      ? `${delivery} ${ids.invocationId ? `Next: scout wait ${ids.invocationId} --timeout 600` : "Follow the ask receipt to continue."}`
-      : ids.invocationId
-        ? `Next: scout wait ${ids.invocationId} --timeout 600`
-        : "Follow the ask receipt to continue.";
-  return `${pieces.join(" · ")}. ${suffix}`;
+  const terminal = value.flight && ["completed", "failed", "cancelled"].includes(value.flight.state);
+  return [
+    `${pieces.join(" · ")}.`,
+    delivery,
+    value.replyMode === "notify" && !terminal ? "Scout will surface the completion when it arrives." : null,
+    waitRef ? `Follow: scout wait ${quoteWaitReference(waitRef)} --timeout 600` : "No wait reference returned; inspect the ask receipt.",
+  ].filter((line): line is string => Boolean(line)).join("\n");
+}
+
+function renderScoutAskHarness(receipt: ScoutAskReceipt, flight?: ScoutFlightRecord | null): string {
+  const trace = flightSessionTrace(flight).at(-1);
+  // A receipt may describe an earlier session. Do not carry its observed
+  // harness across a newer dispatch without matching session identity.
+  const receiptResolution = receipt.executionResolution;
+  const resolution = trace
+    ? trace.executionResolution ?? (receiptResolution?.sessionId === trace.sessionId ? receiptResolution : undefined)
+    : receiptResolution;
+  const harness = resolution?.harness;
+  const name = harness?.observed ?? trace?.harness ?? harness?.resolved ?? harness?.requested;
+  if (!name) return "harness unconfirmed";
+  const evidence = harness?.observed ? "observed" : trace?.harness ? "dispatched" : harness?.resolved ? "selected" : "requested; unconfirmed";
+  const differences = [
+    harness?.requested && harness.requested !== name ? `requested ${harness.requested}` : null,
+    harness?.resolved && harness.resolved !== name && harness.resolved !== harness.requested ? `selected ${harness.resolved}` : null,
+  ].filter(Boolean);
+  return `harness ${name} (${[evidence, ...differences].join("; ")})`;
+}
+
+function quoteWaitReference(ref: string): string {
+  return /^[a-zA-Z0-9_.:-]+$/.test(ref) ? ref : "'" + ref.replace(/'/g, "'\\''") + "'";
 }
 
 function renderScoutAskDeliveryStatus(
@@ -216,7 +250,7 @@ function isSettledInitialDispatchFlight(flight: ScoutFlightRecord): boolean {
   return flight.state === "queued";
 }
 
-async function loadInitialScoutAskFlight(
+export async function loadInitialScoutAskFlight(
   brokerUrl: string,
   flightId: string,
   timeoutMs = DEFAULT_ASK_DISPATCH_SETTLE_MS,
@@ -240,7 +274,7 @@ function renderBindingRef(bindingRef?: string | null): string | null {
   return bindingRef.startsWith("ref:") ? bindingRef : `ref:${bindingRef}`;
 }
 
-function formatScoutAskReceiptError(
+export function formatScoutAskReceiptError(
   receipt: ScoutAskReceipt,
   targetLabel: string | undefined,
 ): string {

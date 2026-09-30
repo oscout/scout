@@ -1,4 +1,7 @@
-import { basename } from "node:path";
+import { randomUUID } from "node:crypto";
+import { existsSync } from "node:fs";
+import { homedir } from "node:os";
+import { basename, join } from "node:path";
 
 import type { ActorIdentity, AgentEndpoint, NodeDefinition } from "@openscout/protocol";
 
@@ -13,6 +16,7 @@ import { compareLocalEndpointPreference, endpointCandidateState } from "./broker
 import { findLiveClaudeSession } from "./claude-session-records.js";
 import { sessionObservationMetadata, type LocalEndpointSessionObservation } from "./session-observation.js";
 import { locateHarnessSession } from "./session-locator.js";
+import { execSystemFile } from "./system-probes/exec.js";
 
 /**
  * Flat session dispatch, local rung (T3) plus mesh rung (T4).
@@ -27,8 +31,16 @@ import { locateHarnessSession } from "./session-locator.js";
  * dispatch through the existing cross-node forwarding path.
  */
 
+/** Set when the wake continued a live session as a Scout-owned fork instead of resuming it. */
+export type ForkedSessionWake = {
+  /** The live session the fork branched from (left untouched). */
+  sourceSessionId: string;
+  /** The fork's own native session id; the reply is delivered here. */
+  sessionId: string;
+};
+
 export type LocalSessionWakeResult =
-  | { ok: true; endpoint: AgentEndpoint; actor?: ActorIdentity }
+  | { ok: true; endpoint: AgentEndpoint; actor?: ActorIdentity; forkedSession?: ForkedSessionWake }
   | { ok: false; reason: string; detail: string; remediation?: string };
 
 export type LocalSessionWakeDeps = {
@@ -41,8 +53,46 @@ export type LocalSessionWakeDeps = {
   locate?: typeof locateHarnessSession;
   observeEndpointSession?: (endpoint: AgentEndpoint) => Promise<LocalEndpointSessionObservation | null>;
   findLiveClaudeSession?: (nativeSessionId: string) => Promise<{ sessionId: string } | null>;
+  /**
+   * Whether a Codex thread is held open by another writer (its CLI, desktop
+   * app, or another app-server). Only consulted when the caller opts into
+   * `forkIfLive`; plain exact-session wakes keep the park-until-released path.
+   */
+  isCodexThreadLive?: (threadId: string) => Promise<boolean>;
+  /** Mints the native id for a new fork. Test seam. */
+  createForkSessionId?: () => string;
   log?: (message: string) => void;
 };
+
+/**
+ * Codex enforces one writer per thread with a lock file under
+ * `$CODEX_HOME/thread-writer-locks/<thread>.lock`, removed on release. The lock
+ * file is live evidence only while a process holds it open; a leftover file
+ * with no holder (crash) is stale. Probe failures fail closed (throw).
+ */
+export async function isCodexThreadHeldByWriter(threadId: string, options: {
+  codexHome?: string;
+  exists?: (path: string) => boolean;
+  holders?: (path: string) => Promise<string[]>;
+} = {}): Promise<boolean> {
+  const codexHome = options.codexHome ?? (process.env.CODEX_HOME?.trim() || join(homedir(), ".codex"));
+  const lockPath = join(codexHome, "thread-writer-locks", `${threadId}.lock`);
+  if (!(options.exists ?? existsSync)(lockPath)) return false;
+  const holders = await (options.holders ?? lockFileHolders)(lockPath);
+  return holders.length > 0;
+}
+
+async function lockFileHolders(path: string): Promise<string[]> {
+  try {
+    const result = await execSystemFile("lsof", ["-t", path], { timeoutMs: 3000, maxStdoutBytes: 4096 });
+    return result.stdout.split(/\s+/u).filter(Boolean);
+  } catch (error) {
+    const failure = error as { exitCode?: number; stdout?: string; stderr?: string };
+    // lsof exits 1 with no output when nothing holds the file open.
+    if (failure.exitCode === 1 && !failure.stderr?.trim()) return [];
+    throw error;
+  }
+}
 
 /** Stable scout session marker for a native id so re-asks hit the same endpoint. */
 export function flatDispatchSessionId(harness: string, nativeSessionId: string): string {
@@ -152,10 +202,31 @@ export async function wakeLocalHarnessSession(
     try {
       const live = await (deps.findLiveClaudeSession ?? findLiveClaudeSession)(session.nativeSessionId);
       if (live) {
+        if (input.forkIfLive) {
+          return forkLiveClaudeSession(deps, { sourceSessionId: session.nativeSessionId, cwd, endpoints });
+        }
         return { ok: false, reason: "session_live_unbound", detail: `session ${session.nativeSessionId} is already running without a verified Scout endpoint`, remediation: "attach the existing session before retrying its exact continuation" };
       }
     } catch (error) {
       return { ok: false, reason: "session_runtime_unobserved", detail: `cannot verify live ownership of session ${session.nativeSessionId}: ${error instanceof Error ? error.message : String(error)}` };
+    }
+  }
+
+  // Codex has no fork path here yet (Scout's app-server transport only resumes
+  // or starts threads), so a caller that asked for fork-if-live must not get a
+  // second writer on a thread the operator still has open.
+  if (session.harness === "codex" && input.forkIfLive) {
+    try {
+      if (await (deps.isCodexThreadLive ?? isCodexThreadHeldByWriter)(session.nativeSessionId)) {
+        return {
+          ok: false,
+          reason: "session_live_fork_unsupported",
+          detail: `codex session ${session.nativeSessionId} is open in another Codex app and cannot be forked from Scout yet`,
+          remediation: "close the session where it is open, then retry",
+        };
+      }
+    } catch (error) {
+      return { ok: false, reason: "session_runtime_unobserved", detail: `cannot verify whether codex session ${session.nativeSessionId} is open elsewhere: ${error instanceof Error ? error.message : String(error)}` };
     }
   }
 
@@ -187,6 +258,73 @@ export async function wakeLocalHarnessSession(
       reason: "session_wake_failed",
       detail: error instanceof Error ? error.message : String(error),
     };
+  }
+}
+
+function isTerminalEndpointState(state: AgentEndpoint["state"] | undefined): boolean {
+  return state === "offline" || state === "failed" || state === "stopped";
+}
+
+/**
+ * Continue a Claude session that is live in the operator's terminal as a
+ * Scout-owned fork: `claude --resume <source> --fork-session --session-id <fork>`
+ * branches the source history into a new session id we mint up front, so the
+ * source transcript and its terminal are never written by Scout. Repeat asks
+ * while the source stays live reuse the same fork.
+ */
+async function forkLiveClaudeSession(
+  deps: LocalSessionWakeDeps,
+  input: { sourceSessionId: string; cwd: string; endpoints: AgentEndpoint[] },
+): Promise<LocalSessionWakeResult> {
+  const priorForks = input.endpoints
+    .filter((endpoint) =>
+      endpoint.harness === "claude"
+      && endpoint.metadata?.flatDispatch === true
+      && endpoint.metadata?.forkedFromSessionId === input.sourceSessionId
+      && typeof endpoint.metadata?.nativeSessionId === "string")
+    .sort((left, right) => Number(right.metadata?.startedAt ?? 0) - Number(left.metadata?.startedAt ?? 0));
+  const prior = priorForks[0];
+  const forkSessionId = prior ? String(prior.metadata!.nativeSessionId) : (deps.createForkSessionId ?? randomUUID)();
+  const forkedSession = { sourceSessionId: input.sourceSessionId, sessionId: forkSessionId };
+  if (prior && !isTerminalEndpointState(prior.state)) {
+    return { ok: true, endpoint: prior, forkedSession, ...(deps.actorFor?.(prior.agentId) ? { actor: deps.actorFor(prior.agentId) } : {}) };
+  }
+
+  let spawn: ReturnType<typeof resolveCardlessSessionSpawnTarget>;
+  try {
+    spawn = resolveCardlessSessionSpawnTarget("claude");
+  } catch (error) {
+    return { ok: false, reason: "session_not_resumable", detail: error instanceof Error ? error.message : String(error) };
+  }
+  const scoutSessionId = flatDispatchSessionId("claude", forkSessionId);
+  const cardlessInput = {
+    sessionId: scoutSessionId,
+    handle: scoutSessionId,
+    transport: spawn.transport,
+    harness: spawn.harness,
+    cwd: input.cwd,
+    projectRoot: input.cwd,
+    nodeId: deps.nodeId,
+    externalSessionId: forkSessionId,
+    nativeSessionId: forkSessionId,
+    flatDispatch: true,
+    displayName: `${basename(input.cwd)}:${forkSessionId.slice(0, 8)} (fork of ${input.sourceSessionId.slice(0, 8)})`,
+  };
+  try {
+    const actor = buildCardlessSessionActor(cardlessInput);
+    const built = buildCardlessSessionEndpoint(cardlessInput);
+    const endpoint: AgentEndpoint = {
+      ...built,
+      metadata: { ...built.metadata, forkedFromSessionId: input.sourceSessionId },
+    };
+    await deps.registry.upsertActor(actor);
+    await deps.registry.upsertEndpoint(endpoint);
+    deps.log?.(
+      `[openscout-runtime] flat-dispatch fork claude:${input.sourceSessionId} -> ${forkSessionId} (source is live) cwd=${input.cwd}`,
+    );
+    return { ok: true, endpoint, actor, forkedSession };
+  } catch (error) {
+    return { ok: false, reason: "session_wake_failed", detail: error instanceof Error ? error.message : String(error) };
   }
 }
 
@@ -257,6 +395,105 @@ export async function wakeSessionOnPeers(
       `[openscout-runtime] mesh session wake: ${input.nativeSessionId} lives on ${peer.id}; adopted endpoint ${response.endpoint.id}`,
     );
     return { ok: true, peerNodeId: peer.id, endpoint: response.endpoint };
+  }
+  return { ok: false, peersTried: tried };
+}
+
+export const MESH_SESSION_START_PATH = "/v1/mesh/sessions/start";
+
+export type MeshProjectSessionStartInput = {
+  projectPath: string;
+  harness?: string;
+  model?: string;
+  reasoningEffort?: string;
+  placement?: string;
+  requesterId?: string;
+};
+
+export type PeerSessionStartResponse = PeerSessionWakeResponse;
+
+export type PeerSessionStartDeps = Omit<PeerSessionWakeDeps, "peers"> & {
+  peers: NodeDefinition[];
+  /** Project roots of agents homed on a peer, used to try likely owners first. */
+  peerProjectRoots: (nodeId: string) => string[];
+};
+
+export type PeerSessionStartResult =
+  | { ok: true; peerNodeId: string; endpoint: AgentEndpoint; actor?: ActorIdentity }
+  | { ok: false; peersTried: number };
+
+function sharedPathDepth(left: string, right: string): number {
+  const leftParts = left.split("/").filter(Boolean);
+  const rightParts = right.split("/").filter(Boolean);
+  let depth = 0;
+  while (depth < leftParts.length && depth < rightParts.length && leftParts[depth] === rightParts[depth]) {
+    depth += 1;
+  }
+  return depth;
+}
+
+/**
+ * Order peers by how closely their known project roots match the requested
+ * path, so `/Users/arach/dev/x` goes to the machine whose agents live under
+ * `/Users/arach` before any other peer is asked.
+ */
+export function rankPeersForProjectPath(
+  peers: NodeDefinition[],
+  projectPath: string,
+  peerProjectRoots: (nodeId: string) => string[],
+): NodeDefinition[] {
+  const scored = peers.map((peer) => ({
+    peer,
+    depth: Math.max(0, ...peerProjectRoots(peer.id).map((root) => sharedPathDepth(projectPath, root))),
+  }));
+  return scored
+    .sort((left, right) => right.depth - left.depth || left.peer.id.localeCompare(right.peer.id))
+    .map((entry) => entry.peer);
+}
+
+/**
+ * New-session twin of T4: the project path does not exist on this machine, so
+ * ask trusted reachable peers to start a cardless session there. The first
+ * peer that owns the path registers the session under its own node id; the
+ * origin adopts that endpoint and dispatches through peer forwarding, exactly
+ * as it does for a woken session.
+ */
+export async function startSessionOnPeers(
+  deps: PeerSessionStartDeps,
+  input: MeshProjectSessionStartInput,
+): Promise<PeerSessionStartResult> {
+  let tried = 0;
+  const peers = rankPeersForProjectPath(
+    deps.peers.filter((peer) => peer.brokerUrl && peer.id !== deps.localNodeId),
+    input.projectPath,
+    deps.peerProjectRoots,
+  );
+  for (const peer of peers) {
+    tried += 1;
+    let response: PeerSessionStartResponse;
+    try {
+      response = await deps.postJson<PeerSessionStartResponse>(peer.brokerUrl!, MESH_SESSION_START_PATH, input);
+    } catch (error) {
+      deps.log?.(
+        `[openscout-runtime] mesh session start failed on ${peer.id}: ${error instanceof Error ? error.message : String(error)}`,
+      );
+      continue;
+    }
+    if (!response?.ok || !response.endpoint) continue;
+    if (response.endpoint.nodeId !== peer.id) {
+      deps.log?.(
+        `[openscout-runtime] mesh session start on ${peer.id} returned endpoint owned by ${response.endpoint.nodeId}; ignoring`,
+      );
+      continue;
+    }
+    if (response.actor) {
+      await deps.registry.upsertActor(response.actor);
+    }
+    await deps.registry.upsertEndpoint(response.endpoint);
+    deps.log?.(
+      `[openscout-runtime] mesh session start: ${input.projectPath} lives on ${peer.id}; adopted endpoint ${response.endpoint.id}`,
+    );
+    return { ok: true, peerNodeId: peer.id, endpoint: response.endpoint, ...(response.actor ? { actor: response.actor } : {}) };
   }
   return { ok: false, peersTried: tried };
 }

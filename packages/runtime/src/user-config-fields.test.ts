@@ -85,3 +85,81 @@ describe("user config field registry", () => {
     expect(() => parseUserConfigFieldValue(field, ["sarcastic"])).toThrow(/expected one of/i);
   });
 });
+
+describe("runtime list fields", () => {
+  test("registers runtime-shortlist and runtime-presets", () => {
+    expect(findUserConfigField("runtime-shortlist")?.key).toBe("runtimeShortlist");
+    expect(findUserConfigField("runtime-presets")?.key).toBe("runtimePresets");
+  });
+
+  test("parses, applies, and reads back shortlist specs", () => {
+    const field = findUserConfigField("runtime-shortlist")!;
+    const specs = parseUserConfigFieldValue(field, ["claude/opus-5, codex"]);
+    expect(specs).toEqual(["claude/opus-5", "codex"]);
+
+    const config = {};
+    applyUserConfigField(config, field, specs);
+    expect(config.runtimeShortlist).toEqual(["claude/opus-5", "codex"]);
+    expect(formatUserConfigFieldGet(field, config)).toBe("claude/opus-5, codex");
+
+    clearUserConfigField(config, field);
+    expect(config.runtimeShortlist).toBeUndefined();
+  });
+
+  test("does not pass runtime specs through agent-name slugification", () => {
+    const field = findUserConfigField("runtime-shortlist")!;
+    const config = {};
+    applyUserConfigField(
+      config,
+      field,
+      parseUserConfigFieldValue(field, ["claude/Opus-5.x"]),
+    );
+    expect(config.runtimeShortlist).toEqual(["claude/Opus-5.x"]);
+  });
+
+  test("rejects invalid shortlist specs and effort suffixes", () => {
+    const field = findUserConfigField("runtime-shortlist")!;
+    expect(() => parseUserConfigFieldValue(field, ["notharness/x"])).toThrow(/invalid runtime spec/i);
+    expect(() => parseUserConfigFieldValue(field, ["claude/opus/high"])).toThrow(/not an effort/i);
+  });
+
+  test("parses preset grammar with labels and slugified ids", () => {
+    const field = findUserConfigField("runtime-presets")!;
+    const presets = parseUserConfigFieldValue(
+      field,
+      ["Fusion Thing:Fusion=claude/fable-5.1/medium, spark=codex/gpt-6-astra/high"],
+    );
+    expect(presets).toEqual([
+      { id: "fusion-thing", label: "Fusion", runtime: "claude/fable-5.1/medium" },
+      { id: "spark", runtime: "codex/gpt-6-astra/high" },
+    ]);
+
+    const config = {};
+    applyUserConfigField(config, field, presets);
+    expect(formatUserConfigFieldGet(field, config)).toBe(
+      "fusion-thing:Fusion=claude/fable-5.1/medium, spark=codex/gpt-6-astra/high",
+    );
+  });
+
+  test("rejects preset ids that collide with reserved grammar words", () => {
+    const field = findUserConfigField("runtime-presets")!;
+    expect(() => parseUserConfigFieldValue(field, ["fable=claude/opus"])).toThrow(/reserved/i);
+    expect(() => parseUserConfigFieldValue(field, ["claude=claude/opus"])).toThrow(/harness/i);
+    expect(() => parseUserConfigFieldValue(field, ["high=claude/opus"])).toThrow(/effort/i);
+    expect(() => parseUserConfigFieldValue(field, ["noparen"])).toThrow(/id\[:Label\]=/);
+    expect(() => parseUserConfigFieldValue(field, ["x=notharness/y"])).toThrow(/invalid runtime spec/i);
+  });
+
+  test("clearing runtime fields removes the keys", () => {
+    const presets = findUserConfigField("runtime-presets")!;
+    const shortlist = findUserConfigField("runtime-shortlist")!;
+    const config = {
+      runtimePresets: [{ id: "a", runtime: "claude/opus" }],
+      runtimeShortlist: ["codex/x"],
+    };
+    clearUserConfigField(config, presets);
+    clearUserConfigField(config, shortlist);
+    expect(config.runtimePresets).toBeUndefined();
+    expect(config.runtimeShortlist).toBeUndefined();
+  });
+});

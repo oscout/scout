@@ -1,4 +1,4 @@
-import type { WebAgent } from "../../db/types/web.ts";
+import type { WebAgent } from "../../../shared/api/web.ts";
 
 export type TmuxHostAttentionItem = {
   id: string;

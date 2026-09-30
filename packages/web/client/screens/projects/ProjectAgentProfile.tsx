@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react
 import { api } from "../../lib/api.ts";
 import { filterAgentsByMachineScope } from "../../lib/machine-scope.ts";
 import { routeMachineId } from "../../lib/router.ts";
-import { useBrokerEventsRefresh } from "../../lib/sse.ts";
+import { isBrokerDataEvent, useBrokerEventsRefresh } from "../../lib/sse.ts";
 import { useScout } from "../../scout/Provider.tsx";
 import type { AgentTab, Route, SessionEntry } from "../../lib/types.ts";
 import { AgentsSubnav } from "../agents/AgentsSubnav.tsx";
@@ -41,7 +41,7 @@ export function ProjectAgentProfile({
   // Debounced: a burst of broker events used to fan out into one full
   // conversations refetch per event, and every caller of the deduped request
   // re-parsed the same multi-hundred-KB body — enough to pin the main thread.
-  useBrokerEventsRefresh(() => true, () => {
+  useBrokerEventsRefresh(isBrokerDataEvent, () => {
     void load();
   });
 

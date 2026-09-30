@@ -1,0 +1,18 @@
+{
+  "repository": "open-telemetry/opentelemetry-proto",
+  "revision": "8654ab7a5a43ca25fe8046e59dcd6935c3f76de0",
+  "tag": "v1.7.0",
+  "files": [
+    "LICENSE",
+    "opentelemetry/proto/common/v1/common.proto",
+    "opentelemetry/proto/resource/v1/resource.proto",
+    "opentelemetry/proto/trace/v1/trace.proto",
+    "opentelemetry/proto/logs/v1/logs.proto",
+    "opentelemetry/proto/metrics/v1/metrics.proto",
+    "opentelemetry/proto/collector/trace/v1/trace_service.proto",
+    "opentelemetry/proto/collector/logs/v1/logs_service.proto",
+    "opentelemetry/proto/collector/metrics/v1/metrics_service.proto"
+  ],
+  "generator": "scripts/generate-otlp-schema.mjs",
+  "protobufjs": "7.6.6"
+}

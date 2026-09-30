@@ -2,15 +2,16 @@ import { type ReactNode, useCallback, useEffect, useMemo, useState } from "react
 import "../../scout/slots/ctx-panel.css";
 import "./left.css";
 import { normalizeAgentState } from "../../lib/agent-state.ts";
-import { api, peekApiGet } from "../../lib/api.ts";
+import { peekApiGet } from "../../lib/api.ts";
+import { loadFleet } from "../../lib/fleet-store.ts";
 import {
   filterAgentsByMachineScope,
   filterFleetByMachineScope,
   machineScopedAgentIds,
 } from "../../lib/machine-scope.ts";
 import { routeMachineId } from "../../lib/router.ts";
-import { dismissOperatorAttention, routeForOperatorAttention } from "../../lib/operator-attention.ts";
-import { useBrokerEvents } from "../../lib/sse.ts";
+import { useBrokerEventsRefresh } from "../../lib/sse.ts";
+import { FLEET_REFRESH_POLICY } from "../../lib/broker-event-kinds.ts";
 import { timeAgo } from "../../lib/time.ts";
 import { useScout } from "../../scout/Provider.tsx";
 import { openAgent } from "../../scout/slots/openAgent.ts";
@@ -18,21 +19,13 @@ import { RailRow } from "../../scout/slots/RailRow.tsx";
 import type {
   Agent,
   FleetActivity,
-  FleetAttentionItem,
   FleetState,
   Route,
 } from "../../lib/types.ts";
 
-const FLEET_REFRESH_EVENTS = new Set([
-  "message.posted",
-  "flight.updated",
-  "collaboration.event.appended",
-  "agent.updated",
-]);
 
 const RECENT_AGENTS_LIMIT = 4;
 const RECENT_ACTIVITY_LIMIT = 4;
-const NEEDS_ATTENTION_LIMIT = 3;
 const FLEET_PATH = "/api/fleet";
 const ROUTE_CACHE_MAX_AGE_MS = 30_000;
 
@@ -45,7 +38,6 @@ export function HomeLeft({ prepend }: HomeLeftProps) {
   const [initialFleet] = useState(() => peekApiGet<FleetState>(FLEET_PATH, ROUTE_CACHE_MAX_AGE_MS));
   const [fleet, setFleet] = useState<FleetState | null>(initialFleet);
   const [fleetLoaded, setFleetLoaded] = useState(initialFleet !== null);
-  const [dismissed, setDismissed] = useState<ReadonlySet<string>>(() => new Set());
   const machineId = routeMachineId(route);
   const scopedAgentIds = useMemo(
     () => machineScopedAgentIds(agents, machineId),
@@ -62,7 +54,7 @@ export function HomeLeft({ prepend }: HomeLeftProps) {
 
   const load = useCallback(async () => {
     try {
-      setFleet(await api<FleetState>(FLEET_PATH));
+      setFleet(await loadFleet());
     } catch {
       // Preserve last-known fleet data; the status bar owns connectivity errors.
     } finally {
@@ -74,43 +66,13 @@ export function HomeLeft({ prepend }: HomeLeftProps) {
     void load();
   }, [load]);
 
-  useBrokerEvents((event) => {
-    if (FLEET_REFRESH_EVENTS.has(event.kind)) {
-      void load();
-    }
-  });
+  useBrokerEventsRefresh(FLEET_REFRESH_POLICY.matches, () => void load());
 
   const recentAgents = useMemo(() => sortRecentAgents(scopedAgents).slice(0, RECENT_AGENTS_LIMIT), [scopedAgents]);
   const recentActivity = useMemo(
     () => (scopedFleet?.activity ?? []).slice(0, RECENT_ACTIVITY_LIMIT),
     [scopedFleet],
   );
-  const attentionSelection = useMemo(
-    () => selectNeedsAttentionItems(scopedFleet?.needsAttention ?? [], dismissed),
-    [scopedFleet, dismissed],
-  );
-
-  const dismissAttention = useCallback(async (item: FleetAttentionItem) => {
-    // Drop the row before the round trip. Dismissing is the operator's own
-    // call, so the rail should reflect it immediately rather than after the
-    // POST and the fleet reload it triggers; a failed dismiss puts it back.
-    setDismissed((current) => new Set(current).add(item.recordId));
-    try {
-      await dismissOperatorAttention({
-        recordKind: item.kind,
-        recordId: item.recordId,
-        itemUpdatedAt: item.updatedAt,
-      });
-    } catch {
-      setDismissed((current) => {
-        const next = new Set(current);
-        next.delete(item.recordId);
-        return next;
-      });
-      return;
-    }
-    void load();
-  }, [load]);
 
   return (
     <div className="ctx-panel base-rail">
@@ -129,14 +91,6 @@ export function HomeLeft({ prepend }: HomeLeftProps) {
         loading={!fleetLoaded}
         onSelect={(item) => navigate(routeForActivity(item))}
         onSeeAll={() => navigate({ view: "activity" })}
-      />
-
-      <NeedsAttentionSection
-        items={attentionSelection.items}
-        totalCount={attentionSelection.totalCount}
-        loading={!fleetLoaded}
-        onSelect={(item) => navigate(routeForOperatorAttention(item))}
-        onDismiss={(item) => void dismissAttention(item)}
       />
     </div>
   );
@@ -231,83 +185,6 @@ function RecentActivitySection({
   );
 }
 
-export function NeedsAttentionSection({
-  items,
-  totalCount,
-  loading,
-  onSelect,
-  onDismiss,
-}: {
-  items: FleetAttentionItem[];
-  totalCount: number;
-  loading: boolean;
-  onSelect: (item: FleetAttentionItem) => void;
-  onDismiss: (item: FleetAttentionItem) => void;
-}) {
-  // Attention is a precedence layer, not permanent navigation. When nobody
-  // actually needs the operator, leave the rail quiet instead of reserving a
-  // section to announce the absence of alerts.
-  if (!loading && items.length === 0) {
-    return null;
-  }
-
-  return (
-    <section className="ctx-panel-section base-rail-section">
-      <SectionLabel
-        title="Needs attention"
-        meta={totalCount > 0 ? `${totalCount}` : undefined}
-      />
-      {loading ? (
-        <RailLoadingRows rows={2} />
-      ) : (
-        items.map((item) => {
-          const label = item.agentName ?? item.agentId ?? "operator";
-          return (
-            <RailRow
-              key={item.recordId}
-              name={item.title}
-              meta={timeAgo(item.updatedAt)}
-              tone="in_turn"
-              unread
-              title={`${label} · ${item.kind}`}
-              onClick={() => onSelect(item)}
-              actions={
-                <button
-                  type="button"
-                  className="rr-row-action"
-                  title="Dismiss — stop asking until this changes"
-                  aria-label="Dismiss"
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    onDismiss(item);
-                  }}
-                >
-                  Dismiss
-                </button>
-              }
-            />
-          );
-        })
-      )}
-    </section>
-  );
-}
-
-export function selectNeedsAttentionItems(
-  items: FleetAttentionItem[],
-  dismissed: ReadonlySet<string>,
-  limit = NEEDS_ATTENTION_LIMIT,
-): { items: FleetAttentionItem[]; totalCount: number } {
-  const ordered = [...items]
-    .filter((item) => !dismissed.has(item.recordId))
-    .sort((left, right) =>
-      left.updatedAt - right.updatedAt || left.recordId.localeCompare(right.recordId));
-
-  return {
-    items: ordered.slice(0, limit),
-    totalCount: ordered.length,
-  };
-}
 
 function RailLoadingRows({ rows = 3 }: { rows?: number }) {
   return (

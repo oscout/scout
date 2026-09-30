@@ -102,6 +102,10 @@ export async function resolveSetupSourceRoots(
 }
 
 export async function runSetupCommand(context: ScoutCommandContext, args: string[]): Promise<void> {
+  if (args.includes("--help") || args.includes("-h")) {
+    context.output.writeText("Usage: scout setup [--source-root <path>] [--default-harness <name>] [--context-root <path>] [--json]\n\nConfigure project discovery and install/start the local broker.\nRepeat --source-root to add workspace roots. Prompts for a root in an interactive terminal.\nUse scout doctor to inspect readiness without requesting setup.");
+    return;
+  }
   const options = parseSetupCommandOptions(args, defaultScoutContextDirectory(context));
   const settings = await readOpenScoutSettings({ currentDirectory: options.currentDirectory });
   const hasSavedSettings = existsSync(resolveOpenScoutSupportPaths().settingsPath);

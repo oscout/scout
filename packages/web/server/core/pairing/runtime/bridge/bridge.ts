@@ -69,6 +69,10 @@ export class Bridge {
     this.registry.interrupt(sessionId);
   }
 
+  interruptTurn(sessionId: string, turnId: string): void {
+    this.registry.interruptTurn(sessionId, turnId);
+  }
+
   /** Route a user's answer to a QuestionBlock back to the adapter. */
   answerQuestion(answer: QuestionAnswer): void {
     this.registry.answer(answer);

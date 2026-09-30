@@ -38,6 +38,7 @@ import { resolveClaudeStatuslineDirectory } from "@openscout/runtime/claude-stat
 import { buildPiRpcCredentialEnv } from "@openscout/runtime/pi-rpc";
 import { execSystemFile } from "@openscout/runtime/system-probes";
 import { db, resolveDbPath } from "./db/internal/db.ts";
+import { closeWebDb, webDb } from "./db/internal/web-db.ts";
 
 const CACHE_TTL_MS = 60 * 1000;
 const FIVE_HOUR_MS = 5 * 3600 * 1000;
@@ -53,7 +54,6 @@ const REMOTE_QUOTA_FRESH_MS = 5 * 60 * 1000;
 const GH_CLI_TIMEOUT_MS = 4000;
 const KIMI_USAGE_TIMEOUT_MS = 4000;
 const MINIMAX_REMAINS_TIMEOUT_MS = 4000;
-const DB_BUSY_TIMEOUT_MS = 2_500;
 const QUOTA_HISTORY_BUCKET_MS = 60 * 60 * 1000;
 const QUOTA_HISTORY_LOOKBACK_MS = WEEK_MS;
 const QUOTA_HISTORY_ID_PREFIX = "budget:quota:history:";
@@ -135,14 +135,12 @@ export type CloudAccount = {
 let cached: { value: ServiceBudgetsResponse; expiresAt: number } | null = null;
 let inflightNormal: Promise<ServiceBudgetsResponse> | null = null;
 let inflightForce: Promise<ServiceBudgetsResponse> | null = null;
-let quotaWriteDb: Database | null = null;
 
 export function resetServiceBudgetsCache(): void {
   cached = null;
   inflightNormal = null;
   inflightForce = null;
-  quotaWriteDb?.close();
-  quotaWriteDb = null;
+  closeWebDb();
 }
 
 export async function loadServiceBudgets(forceRefresh = false): Promise<ServiceBudgetsResponse> {
@@ -508,6 +506,8 @@ type ServiceQuotaSnapshot = {
 };
 
 type StoredQuotaWindowRow = ServiceQuotaSnapshot & {
+  id: string;
+  createdAt: number;
   metadataJson: string | null;
 };
 
@@ -735,12 +735,36 @@ function loadPersistedProviderQuotaSnapshots(input: {
   harness: string;
   maxAgeMs: number;
 }): ServiceQuotaSnapshot[] {
-  let rows: StoredQuotaWindowRow[];
+  const now = Date.now();
+  const lookbackMs = Math.max(input.maxAgeMs, QUOTA_HISTORY_LOOKBACK_MS);
+  // Two writers, one shape: the web server's own harvest, and the windows the
+  // broker observed on endpoints. The web copy wins an id both hold — the
+  // control plane may still carry rows this server wrote there before it had
+  // its own database.
+  const byId = new Map<string, StoredQuotaWindowRow>();
+  for (const database of [webDb, db]) {
+    for (const row of readPersistedQuotaRows(database, now - lookbackMs, input)) {
+      if (!byId.has(row.id)) byId.set(row.id, row);
+    }
+  }
+  return [...byId.values()]
+    .sort((left, right) => right.capturedAt - left.capturedAt || right.createdAt - left.createdAt)
+    .slice(0, PERSISTED_QUOTA_ROW_LIMIT)
+    .map(({ id: _id, createdAt: _createdAt, metadataJson, ...row }) => ({
+      ...row,
+      metadata: parseMetadataJson(metadataJson),
+    }));
+}
+
+function readPersistedQuotaRows(
+  database: () => Database,
+  capturedSince: number,
+  input: { provider: string; harness: string },
+): StoredQuotaWindowRow[] {
   try {
-    const now = Date.now();
-    const lookbackMs = Math.max(input.maxAgeMs, QUOTA_HISTORY_LOOKBACK_MS);
-    rows = db().query(
+    return database().query(
       `SELECT
+        id,
         source,
         provider,
         harness,
@@ -755,22 +779,19 @@ function loadPersistedProviderQuotaSnapshots(input: {
         reset_at AS resetAt,
         window_ms AS windowMs,
         captured_at AS capturedAt,
-        metadata_json AS metadataJson
+        metadata_json AS metadataJson,
+        created_at AS createdAt
       FROM budget_quota_window_snapshots
       WHERE source IN ('provider_reported', 'manual', 'observed')
         AND captured_at >= ?1
         AND (provider = ?2 OR harness = ?3)
       ORDER BY captured_at DESC, created_at DESC
       LIMIT ?4`,
-    ).all(now - lookbackMs, input.provider, input.harness, PERSISTED_QUOTA_ROW_LIMIT) as StoredQuotaWindowRow[];
+    ).all(capturedSince, input.provider, input.harness, PERSISTED_QUOTA_ROW_LIMIT) as StoredQuotaWindowRow[];
   } catch {
+    // The broker has not created its schema yet, or the file is missing.
     return [];
   }
-
-  return rows.map((row) => ({
-    ...row,
-    metadata: parseMetadataJson(row.metadataJson),
-  }));
 }
 
 function selectLatestQuotaSnapshots(
@@ -2123,21 +2144,11 @@ function formatRequestCount(n: number): string {
 
 /* ── shared ─────────────────────────────────────────────────────────── */
 
-function quotaDb(): Database {
-  if (!quotaWriteDb) {
-    quotaWriteDb = new Database(resolveDbPath(), { create: true });
-    quotaWriteDb.exec(`PRAGMA busy_timeout = ${DB_BUSY_TIMEOUT_MS};`);
-    quotaWriteDb.exec("PRAGMA journal_mode = WAL;");
-    quotaWriteDb.exec("PRAGMA synchronous = NORMAL;");
-  }
-  return quotaWriteDb;
-}
-
 function persistQuotaSnapshots(snapshots: ServiceQuotaSnapshot[]): void {
   if (snapshots.length === 0) return;
 
   try {
-    const writer = quotaDb();
+    const writer = webDb();
     const statement = writer.query(
       `INSERT INTO budget_quota_window_snapshots (
         id, source, provider, harness, transport, model, agent_id, endpoint_id,
@@ -2233,8 +2244,8 @@ function persistQuotaSnapshots(snapshots: ServiceQuotaSnapshot[]): void {
       pruneHistory.run(createdAt - QUOTA_HISTORY_LOOKBACK_MS - QUOTA_HISTORY_BUCKET_MS);
     })();
   } catch {
-    // Quota harvesting is best-effort. If the broker has not created the
-    // control-plane schema yet, the direct readers still return a UI gauge.
+    // Quota harvesting is best-effort; the direct readers still return a UI
+    // gauge when the write fails.
   }
 }
 

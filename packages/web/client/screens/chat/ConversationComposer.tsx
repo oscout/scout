@@ -301,19 +301,19 @@ export function ConversationComposer({
       canSend={hasContent}
       sendTitle={
         steerArmed
-          ? "Steer — interrupt this turn and send now (Cmd+Enter)"
+          ? "Steer — interrupt this turn and send now (Enter)"
           : queueMode
-            ? "Queue for the next turn (Cmd+Enter)"
-            : "Send (Cmd+Enter)"
+            ? "Queue for the next turn (Enter)"
+            : "Send (Enter) · Shift+Enter for a new line"
       }
       sendAriaLabel={
         steerArmed
-          ? "Steer — interrupt this turn and send now (Cmd+Enter)"
+          ? "Steer — interrupt this turn and send now"
           : queueMode
-            ? "Queue message for the next turn (Cmd+Enter)"
+            ? "Queue message for the next turn"
             : composeAction === "steer"
-              ? "Send follow-up (Cmd+Enter)"
-              : "Send message (Cmd+Enter)"
+              ? "Send follow-up"
+              : "Send message"
       }
       showAttach
       onAttach={attachments.openPicker}

@@ -120,7 +120,7 @@ export async function readMobileTerminalStatus(
       maxStderrBytes: 4 * 1024,
     }).catch(() => ({ stdout: "", stderr: "", exitCode: 0 })),
     execSystemFile(tmuxPath, [
-      "list-panes", "-t", sessionName, "-F",
+      "-u", "list-panes", "-t", sessionName, "-F",
       "#{pane_width}\t#{pane_height}\t#{pane_current_command}",
     ], {
       timeoutMs: 2_000,

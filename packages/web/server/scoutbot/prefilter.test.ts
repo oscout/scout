@@ -1,7 +1,55 @@
-import { describe, expect, test } from "bun:test";
-import { prefilterHandle } from "./prefilter.ts";
+import { afterAll, describe, expect, mock, test } from "bun:test";
+
+// /flight falls back to the durable store for flights the broker's hot set
+// rotated out — stub it so tests never open the real control-plane database.
+let durableFlightResult: Record<string, unknown> | null = null;
+mock.module("../db-queries.ts", () => ({
+  queryFlightRecordById: () => durableFlightResult,
+}));
+
+const { prefilterHandle } = await import("./prefilter.ts");
+
+mock.restore();
+
+afterAll(() => {
+  mock.restore();
+});
 
 describe("scoutbot prefilter", () => {
+  test("/flight falls back to SQLite for a flight rotated out of the broker hot set", () => {
+    durableFlightResult = {
+      id: "flight-rotated",
+      invocationId: "inv-rotated",
+      requesterId: "operator",
+      targetAgentId: "hudson",
+      state: "completed",
+      summary: "rotated completion",
+      output: "all done",
+      startedAt: 1000,
+      completedAt: 2000,
+      metadata: {},
+    };
+    try {
+      const reply = prefilterHandle("/flight flight-rotated", {
+        actors: {},
+        agents: {},
+        endpoints: {},
+        conversations: {},
+        messages: {},
+        nodes: {},
+        flights: {},
+      }, 5000);
+
+      expect(reply?.metadata).toMatchObject({ matched_rule: "slash.flight" });
+      expect(reply?.body).toContain("rotated completion");
+      expect(reply?.body).toContain("wound down");
+      expect(reply?.body).toContain("id flight-rotated");
+      expect(reply?.body).toContain("output: all done");
+    } finally {
+      durableFlightResult = null;
+    }
+  });
+
   test("answers /agents with matched rule metadata (hands as work facets)", () => {
     const reply = prefilterHandle("/agents", {
       actors: {},
@@ -190,7 +238,7 @@ describe("scoutbot prefilter", () => {
       scoutbotAction: "status",
     });
     expect(reply?.body).toContain("ON YOU · 0");
-    expect(reply?.body).toContain("Nothing needs you.");
+    expect(reply?.body).toContain("No open requests.");
     expect(reply?.body).toContain("RECENT");
     expect(reply?.body).not.toContain("eff:low");
   });

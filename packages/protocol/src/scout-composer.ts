@@ -1,6 +1,7 @@
 import { parseAgentIdentity } from "./agent-identity.js";
 import { AGENT_HARNESSES, type AgentHarness } from "./actors.js";
 import type { ScoutRouteTarget } from "./scout-dispatch.js";
+import { parseScoutSessionHostAddress } from "./session-handle.js";
 
 export const SCOUT_COMPOSER_ROUTE_OPERATOR = ">>" as const;
 export const SCOUT_TARGET_HANDLE_SHORTHAND = "⌖" as const;
@@ -100,10 +101,28 @@ function parseRouteAliasTarget(rawValue: string): ScoutRouteTarget | null {
   return { kind: "route_alias", alias, value: `alias:${alias}` };
 }
 
+function parseSessionHostAddressTarget(value: string): ScoutRouteTarget | null {
+  const address = parseScoutSessionHostAddress(value);
+  if (!address) {
+    return null;
+  }
+  return {
+    kind: "session_id",
+    sessionId: address.handle,
+    host: address.host,
+    value: `session:${address.handle}@${address.host}`,
+  };
+}
+
 function parseSessionRouteTarget(rawValue: string): ScoutRouteTarget | null {
   const value = rawValue.replace(/^@+/, "");
   if (!isRouteValue(value)) {
     return null;
+  }
+
+  const hostAddress = parseSessionHostAddressTarget(value);
+  if (hostAddress) {
+    return hostAddress;
   }
 
   const harnessSeparator = value.indexOf(":");
@@ -179,6 +198,13 @@ export function parseScoutComposerRouteTarget(value: string): ScoutRouteTarget |
     if (prefixed) {
       return prefixed;
     }
+  }
+
+  // Bare `sess.<token>@<host>` — the copyable session address. Agent labels
+  // never contain `@`, so this cannot shadow an existing selector.
+  const hostAddress = parseSessionHostAddressTarget(token);
+  if (hostAddress) {
+    return hostAddress;
   }
 
   return parseAgentLabelTarget(token);

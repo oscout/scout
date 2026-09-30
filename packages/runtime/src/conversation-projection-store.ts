@@ -1169,16 +1169,39 @@ export class ConversationProjectionStore {
           addMemberConversations(entry.endpoint.agentId);
           break;
         case "agent.endpoint.delete":
-          // The durable delete entry carries only endpointId, and canonical
-          // application has already removed its agent preimage. Re-evaluate
-          // direct chats conservatively until the journal grows a delete
-          // preimage or explicit agentId.
-          for (const row of this.db.query<{ id: string }>(
-            "SELECT id FROM conversations WHERE kind = 'direct'",
-          ).all()) {
-            ids.add(row.id);
+          if (entry.agentId) {
+            // The entry carries its preimage — the member lookup is exact
+            // (membership-removal upserts in the same batch already marked
+            // the affected rooms anyway).
+            addMemberConversations(entry.agentId);
+          } else {
+            // Legacy entries (pre-preimage journals) carry only endpointId and
+            // canonical application has already removed it — re-evaluate
+            // direct chats conservatively.
+            for (const row of this.db.query<{ id: string }>(
+              "SELECT id FROM conversations WHERE kind = 'direct'",
+            ).all()) {
+              ids.add(row.id);
+            }
           }
           break;
+        case "agent.delete":
+        case "actor.delete": {
+          if (entry.conversationIds) {
+            // The preimage lists the memberships captured before the cascade
+            // delete — re-evaluate exactly those conversations.
+            for (const id of entry.conversationIds) ids.add(id);
+          } else {
+            // Legacy entries have no preimage and the member rows are already
+            // gone — re-evaluate every direct conversation.
+            for (const row of this.db.query<{ id: string }>(
+              "SELECT id FROM conversations WHERE kind = 'direct'",
+            ).all()) {
+              ids.add(row.id);
+            }
+          }
+          break;
+        }
         case "node.upsert":
           for (const row of this.db.query<{ id: string }>(
             "SELECT id FROM conversations WHERE authority_node_id = ?1",

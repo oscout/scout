@@ -208,7 +208,7 @@ function ScoutNavigationBar({ title, center, actions, search }: ScoutNavigationB
           {actions}
 
           {search && (
-            <div className="hidden sm:block relative w-[220px] max-w-[34vw] bg-card border border-input rounded px-2.5 shadow-[inset_0_1px_0_oklch(var(--foreground)/0.02)] hover:border-ring/60 focus-within:border-ring focus-within:bg-card transition-colors duration-200">
+            <div data-field-shell className="hidden sm:block relative w-[220px] max-w-[34vw] bg-card border border-input rounded px-2.5 shadow-[inset_0_1px_0_oklch(var(--foreground)/0.02)] hover:border-[var(--field-focus)] focus-within:border-[var(--field-focus)] focus-within:bg-card transition-colors duration-200">
               <Search size={11} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-muted-foreground" />
               <input
                 type="text"

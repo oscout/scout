@@ -18,6 +18,7 @@ import {
 import type {
   AgentTab,
   DispatchFilter,
+  DispatchWindow,
   FollowPreferredView,
   OpsMode,
   ProjectSet,
@@ -97,6 +98,12 @@ function parseDispatchFilter(value: string | null): DispatchFilter | undefined {
   return value === "delivered" || value === "failed" || value === "all" ? value : undefined;
 }
 
+function parseDispatchWindow(value: string | null): DispatchWindow | undefined {
+  return value === "1h" || value === "today" || value === "24h" || value === "7d" || value === "all"
+    ? value
+    : undefined;
+}
+
 function parseSearchMode(value: string | undefined): SearchMode | undefined {
   return value === "indexer" || value === "knowledge" ? value : undefined;
 }
@@ -110,9 +117,16 @@ function parseSettingsSection(value: string | undefined): SettingsSection | unde
     case "comms":
     case "credentials":
     case "voice":
+    case "terminal":
+    case "assistants":
     case "devices":
+    case "mesh":
+    case "system":
     case "about":
       return value;
+    // The page is titled Keys; the URL keeps its older name.
+    case "keys":
+      return "credentials";
     // Alias for the communications section label used in chrome.
     case "communications":
       return "comms";
@@ -313,7 +327,7 @@ export function routeFromUrl(urlLike: string | URL): Route {
       : undefined;
   const agentsV2IndexRaw = url.searchParams.get("view")?.trim();
   const agentsV2IndexView: ProjectsIndexView | undefined =
-    agentsV2IndexRaw === "sessions" || agentsV2IndexRaw === "agents"
+    agentsV2IndexRaw === "sessions" || agentsV2IndexRaw === "agents" || agentsV2IndexRaw === "projects"
       ? (agentsV2IndexRaw as ProjectsIndexView)
       : undefined;
   const agentsV2StateRaw = url.searchParams.get("state")?.trim();
@@ -593,10 +607,16 @@ export function routeFromUrl(urlLike: string | URL): Route {
   if (parts[0] === "dispatch" || parts[0] === "broker") {
     const attemptId = url.searchParams.get("attempt")?.trim() || undefined;
     const filter = parseDispatchFilter(url.searchParams.get("filter"));
+    const focus = [...new Set(url.searchParams.getAll("focus").map((value) => value.trim()).filter(Boolean))];
+    const window = parseDispatchWindow(url.searchParams.get("window"));
+    const between = focus.length >= 2 && url.searchParams.get("between") === "1";
     return {
       view: "broker",
       ...(attemptId ? { attemptId } : {}),
       ...(filter && filter !== "all" ? { filter } : {}),
+      ...(focus.length > 0 ? { focus } : {}),
+      ...(between ? { between: true } : {}),
+      ...(window && window !== "all" ? { window } : {}),
     };
   }
   if (parts[0] === "code") {
@@ -874,6 +894,9 @@ export function routePath(r: Route, pathname?: string): string {
       const params = new URLSearchParams();
       if (r.attemptId) params.set("attempt", r.attemptId);
       if (r.filter && r.filter !== "all") params.set("filter", r.filter);
+      for (const key of r.focus ?? []) params.append("focus", key);
+      if (r.between && (r.focus?.length ?? 0) >= 2) params.set("between", "1");
+      if (r.window && r.window !== "all") params.set("window", r.window);
       return `/dispatch${searchSuffix(params)}`;
     }
     case "code": {

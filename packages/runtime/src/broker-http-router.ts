@@ -1,3 +1,7 @@
+import { isAllowedHostWebRequest, type HostWebRequest, type HostWebResponse } from "./host-web-request.js";
+import { ChatQuestionError } from "./chat-question-transition.js";
+import { ChatMessageCorrectionError } from "@openscout/protocol";
+import type { BrokerExternalSessionService } from "./broker-external-session-service.js";
 import { writeBrokerSnapshot } from "./broker-snapshot-response.js";
 import type { RuntimeHttpRequestLike, RuntimeHttpResponseLike } from "./portable-types.js";
 import { performance } from "node:perf_hooks";
@@ -33,7 +37,7 @@ import type { ActiveScoutBrokerService } from "./broker-api.js";
 import { a2aJsonRpcError, type BrokerA2AService } from "./broker-a2a-service.js";
 import {
   brokerDeliverRequestSchema,
-  brokerInvocationRequestSchema,
+  brokerInvocationRequestSchemaFor,
 } from "./broker-command-boundary-schemas.js";
 import {
   parseInboxReasons,
@@ -78,6 +82,7 @@ import {
   throwIfAborted,
 } from "./broker-http-helpers.js";
 import { handleBrokerHttpEntityWriteRoute } from "./broker-http-entity-write-routes.js";
+import { handleBrokerGuestRoute, type BrokerGuestHttpDeps } from "./broker-guest-http-routes.js";
 import type { BrokerManagedSessionHttpService } from "./broker-managed-session-http-service.js";
 import type {
   ManagedLocalSessionAttachBody,
@@ -153,10 +158,11 @@ export type BrokerHttpJournal = {
  *
  * Channel invitations are read-modify-write over one conversation's invitation
  * set, so the mutation must happen inside the broker rather than as a
- * whole-conversation upsert from a surface. These three kinds are the crossing
+ * whole-conversation upsert from a surface. These kinds are the crossing
  * point; nothing else is admitted here.
  */
 const CHANNEL_INVITE_COMMAND_KINDS = new Set<string>([
+  "channel.member.remove",
   "channel.invite.create",
   "channel.invite.revoke",
   "channel.invite.redeem",
@@ -201,6 +207,22 @@ export type BrokerHttpRouterDeps = {
     | { ok: true; endpoint: AgentEndpoint; actor?: ActorIdentity }
     | { ok: false; reason: string; detail: string; remediation?: string }
   >;
+  /**
+   * Mesh session start: a peer asks this node to start a new cardless session
+   * in a project that exists on this machine, and returns the registered
+   * endpoint so the peer can adopt it. Local start only — never fans out.
+   */
+  startMeshProjectSession?: (input: {
+    projectPath: string;
+    harness?: string;
+    model?: string;
+    reasoningEffort?: string;
+    placement?: string;
+    requesterId?: string;
+  }) => Promise<
+    | { ok: true; endpoint: AgentEndpoint; actor?: ActorIdentity }
+    | { ok: false; reason: string; detail: string }
+  >;
   threadEvents: ThreadEventPlane;
   handleCommand: (command: ControlCommand) => Promise<unknown>;
   handleInvocationRequest: (payload: InvocationRequest & BrokerRouteTargetInput) => Promise<unknown>;
@@ -219,12 +241,18 @@ export type BrokerHttpRouterDeps = {
     },
   ) => Promise<ConversationReadCursor>;
   recordReadCursor: (cursor: ConversationReadCursor) => Promise<void>;
+  respondToChatQuestion?: (channelId: string, questionId: string, actorId: string, isOperator: boolean, change: unknown) => Promise<import("@openscout/protocol").CollaborationRecord>;
+  correctChatMessage?: (channelId: string, messageId: string, actorId: string, canModerate: boolean, change: unknown) => Promise<MessageRecord>;
+  updateConversationPins?: (conversationId: string, actorId: string, change: unknown) => Promise<ConversationDefinition | null>;
+  updateChatPreferences?: (conversationId: string, actorId: string, change: unknown) => Promise<unknown>;
   /** Canonical field mutation; reads current conversation inside the writer. */
   setConversationTitle: (conversationId: string, named: string) => Promise<ConversationDefinition | null>;
   acknowledgeDeliveriesForReadCursor: (cursor: ConversationReadCursor) => Promise<unknown>;
   deliveryAcceptanceService: BrokerDeliveryAcceptanceService;
   rendezvousService: BrokerRendezvousService;
+  externalSessionService?: BrokerExternalSessionService;
   routeAliasService?: BrokerRouteAliasService;
+  forwardHostWebRequest?: (input: HostWebRequest & { nodeId: string }) => Promise<HostWebResponse>;
   forwardRouteAliasRequest?: (input: {
     nodeSelector: string;
     path: string;
@@ -275,6 +303,12 @@ export type BrokerHttpRouterDeps = {
     applyScope: (scope: "local" | "mesh") => Promise<unknown>;
     getState: () => unknown;
   };
+  /**
+   * Scout guest access (docs/proposals/scout-tailscale.md): `/v1/guest/*`
+   * for gate-verified guest keys and loopback `/v1/guest-grants*`. When
+   * absent, those paths fall through to 404.
+   */
+  guest?: BrokerGuestHttpDeps;
 };
 
 const tailDiscoveryScopes = new Set<TailDiscoveryScope>(["hot", "shallow", "deep"]);
@@ -387,6 +421,7 @@ export function createBrokerHttpRouter(
     meshDiscoveryService,
     meshHttpService,
     wakeMeshHarnessSession,
+    startMeshProjectSession,
     threadEvents,
     handleCommand,
     handleInvocationRequest,
@@ -395,15 +430,21 @@ export function createBrokerHttpRouter(
     listReadCursorsForConversation,
     resolveReadCursor,
     recordReadCursor,
+    updateChatPreferences,
     setConversationTitle,
+    updateConversationPins,
+    correctChatMessage,
+    respondToChatQuestion,
     acknowledgeDeliveriesForReadCursor,
     deliveryAcceptanceService,
     rendezvousService,
     routeAliasService,
     forwardRouteAliasRequest,
+    forwardHostWebRequest,
     machines,
     meshTrust,
     meshBind,
+    guest,
   } = deps;
 
   return async function routeRequest(request: RuntimeHttpRequestLike, response: RuntimeHttpResponseLike): Promise<void> {
@@ -414,6 +455,9 @@ export function createBrokerHttpRouter(
   // refused even while the ingress gate runs in verify-warn. Undefined
   // context means the request never crossed the gate (tests, in-process) —
   // treated as local.
+  // Guest routes are answered before any other routing, so a guest request
+  // never reaches peer, forwarding, or local handlers.
+  if (guest && await handleBrokerGuestRoute(request, response, url, method, guest)) return;
   const denyRemoteMutation = (): boolean => {
     if (request.transportContext?.transport !== "remote") return false;
     json(response, 403, { error: "forbidden", detail: "route is machine-local" });
@@ -466,6 +510,31 @@ export function createBrokerHttpRouter(
     json(response, forwarded.status, forwarded.body);
     return true;
   };
+
+  if (method === "POST" && (url.pathname === "/v1/external-sessions/ack" || url.pathname === "/v1/external-sessions/poll" || url.pathname === "/v1/external-sessions/attach" || url.pathname === "/v1/external-sessions/get" || url.pathname === "/v1/external-sessions/reply")) {
+    if (!deps.externalSessionService) { json(response, 503, { error: "external_sessions_unavailable" }); return; }
+    try {
+      const input = await readRequestBody<Record<string, unknown>>(request);
+      if (typeof input.ownerId !== "string" || !input.ownerId.trim()) throw new Error("external_session_owner_required");
+      const string = (key: string) => {
+        const value = input[key];
+        if (typeof value !== "string" || !value.trim()) throw new Error(`external_session_${key}_required`);
+        return value;
+      };
+      const service = deps.externalSessionService;
+      const result = url.pathname.endsWith("/attach")
+        ? await service.attach({ ownerId: input.ownerId, connectionId: typeof input.connectionId === "string" ? input.connectionId : undefined, nativeSessionId: string("nativeSessionId") })
+        : url.pathname.endsWith("/reply")
+        ? await service.reply({ ownerId: input.ownerId, sessionId: string("sessionId"), deliveryId: string("deliveryId"), replyToken: typeof input.replyToken === "string" ? input.replyToken : undefined, body: string("body") })
+        : url.pathname.endsWith("/poll")
+        ? await service.poll({ ownerId: input.ownerId, sessionId: string("sessionId"), cursor: typeof input.cursor === "string" ? input.cursor : undefined, limit: typeof input.limit === "number" ? input.limit : undefined })
+        : url.pathname.endsWith("/ack")
+        ? await service.acknowledge({ ownerId: input.ownerId, sessionId: string("sessionId"), deliveryId: string("deliveryId") })
+        : service.get({ ownerId: input.ownerId, sessionId: string("sessionId") });
+      json(response, 200, result);
+    } catch (error) { badRequest(response, error); }
+    return;
+  }
 
   if ((url.pathname.startsWith("/v1/aliases") || url.pathname.startsWith("/v1/mesh/aliases")) && !routeAliasService) {
     json(response, 503, { error: "aliases_unavailable", detail: "route aliases require broker SQLite persistence" });
@@ -575,6 +644,9 @@ export function createBrokerHttpRouter(
   const readCursorsMatch = method === "GET" || method === "POST"
     ? url.pathname.match(/^\/v1\/conversations\/([^/]+)\/read-cursors$/)
     : null;
+  const conversationQuestionMatch = method === "POST" ? url.pathname.match(/^\/v1\/conversations\/([^/]+)\/questions\/([^/]+)\/respond$/) : null;
+  const conversationCorrectionsMatch = method === "POST" ? url.pathname.match(/^\/v1\/conversations\/([^/]+)\/corrections$/) : null;
+  const conversationPinsMatch = method === "POST" ? url.pathname.match(/^\/v1\/conversations\/([^/]+)\/pins$/) : null;
   const conversationTitleMatch = method === "POST"
     ? url.pathname.match(/^\/v1\/conversations\/([^/]+)\/title$/)
     : null;
@@ -637,6 +709,23 @@ export function createBrokerHttpRouter(
         `A2A JSON-RPC parse error: ${error instanceof Error ? error.message : String(error)}`,
       ));
     }
+    return;
+  }
+
+  if (method === "POST" && (url.pathname === "/v1/hosts/web-request" || url.pathname === "/v1/mesh/web-request")) {
+    try {
+      const input = await readRequestBody<HostWebRequest & { nodeId?: string }>(request, { maxBytes: 36 * 1024 * 1024, requireJsonContentType: true });
+      if (!isAllowedHostWebRequest(input)) {
+        json(response, 400, { error: "unsupported_host_operation" });
+        return;
+      }
+      const result = url.pathname === "/v1/mesh/web-request"
+        ? await webControl.requestForHost(input)
+        : input.nodeId && forwardHostWebRequest
+          ? await forwardHostWebRequest({ ...input, nodeId: input.nodeId })
+          : { status: 400, body: { error: "Exact destination node is required" } };
+      json(response, 200, result);
+    } catch (error) { badRequest(response, error); }
     return;
   }
 
@@ -978,13 +1067,13 @@ export function createBrokerHttpRouter(
     const requestedScope = url.searchParams.get("scope");
     const scope = url.pathname === "/v1/mesh/snapshot"
       ? "agents"
-      : requestedScope === "conversations" || requestedScope === "agents"
+      : requestedScope === "conversations" || requestedScope === "agents" || requestedScope === "identity"
         ? requestedScope
         : undefined;
     const controller=new AbortController();const abort=()=>controller.abort(new Error('Snapshot request closed'));
     response.on('close',abort);response.on('error',abort);request.on('aborted',abort);
     try{
-      const query={since:parseSince(url),scope:scope as "agents"|"conversations"|undefined};
+      const query={since:parseSince(url),scope:scope as "agents"|"conversations"|"identity"|undefined};
       if(brokerService.withSnapshot)await brokerService.withSnapshot(query,snapshot=>writeBrokerSnapshot(response,snapshot,{encodedBodies:deps.encodedSnapshotBodies,onFlushedBytes:deps.onSnapshotFlushedBytes,signal:controller.signal}),{signal:controller.signal});
       else await writeBrokerSnapshot(response,await brokerService.readSnapshot(query),{encodedBodies:deps.encodedSnapshotBodies,onFlushedBytes:deps.onSnapshotFlushedBytes});
     }finally{response.off?.('close',abort);response.off?.('error',abort);}
@@ -1175,12 +1264,20 @@ export function createBrokerHttpRouter(
       const conversationId = decodeURIComponent(readCursorsMatch[1] ?? "");
       const body = await readRequestBody<{
         actorId?: string;
+        operation?: "preferences";
+        change?: unknown;
         readerNodeId?: string;
         lastReadMessageId?: string;
         lastReadSeq?: number;
         lastReadAt?: number;
         metadata?: Record<string, unknown>;
       }>(request);
+      if (body.operation === "preferences") {
+        if (!updateChatPreferences || typeof body.actorId !== "string" || !body.actorId.trim()) throw new Error("Preference writer and actor are required.");
+        const preferences = await updateChatPreferences(conversationId, body.actorId, body.change);
+        json(response, 200, { ok: true, preferences });
+        return;
+      }
       const cursor = await resolveReadCursor(conversationId, body);
       await recordReadCursor(cursor);
       const acknowledgedDeliveries = await acknowledgeDeliveriesForReadCursor(cursor);
@@ -1199,6 +1296,45 @@ export function createBrokerHttpRouter(
    * The operator mark rides on metadata, and the derivation side reads it back
    * (see conversation-title.ts) so nothing automatic renames it again.
    */
+  if (conversationQuestionMatch) {
+    try {
+      if (!respondToChatQuestion) throw new Error("Question responses are unavailable.");
+      const body = await readRequestBody<{ actorId?: unknown; isOperator?: unknown; change?: unknown }>(request);
+      if (typeof body.actorId !== "string" || !body.actorId.trim() || typeof body.isOperator !== "boolean") throw new ChatQuestionError(400, "Invalid question response identity.");
+      const record = await respondToChatQuestion(decodeURIComponent(conversationQuestionMatch[1]!), decodeURIComponent(conversationQuestionMatch[2]!), body.actorId, body.isOperator, body.change);
+      json(response, 200, { ok: true, record });
+    } catch (error) {
+      if (error instanceof ChatQuestionError) json(response, error.status, { error: error.message, status: error.status });
+      else badRequest(response, error);
+    }
+    return;
+  }
+
+  if (conversationCorrectionsMatch) {
+    try {
+      if (!correctChatMessage) throw new Error("Message corrections are unavailable.");
+      const body = await readRequestBody<{ messageId?: unknown; actorId?: unknown; canModerate?: unknown; change?: unknown }>(request);
+      if (typeof body.actorId !== "string" || !body.actorId.trim() || typeof body.messageId !== "string" || typeof body.canModerate !== "boolean") throw new Error("Invalid message correction request.");
+      const message = await correctChatMessage(decodeURIComponent(conversationCorrectionsMatch[1]!), body.messageId, body.actorId, body.canModerate, body.change);
+      json(response, 200, { ok: true, message });
+    } catch (error) {
+      if (error instanceof ChatMessageCorrectionError) json(response, error.status, { error: error.message, status: error.status });
+      else badRequest(response, error);
+    }
+    return;
+  }
+
+  if (conversationPinsMatch) {
+    try {
+      if (!updateConversationPins) throw new Error("Channel pins are unavailable.");
+      const body = await readRequestBody<{ actorId?: unknown; change?: unknown }>(request);
+      if (typeof body.actorId !== "string" || !body.actorId.trim()) throw new Error("actorId is required");
+      const conversation = await updateConversationPins(decodeURIComponent(conversationPinsMatch[1]!), body.actorId, body.change);
+      json(response, conversation ? 200 : 404, conversation ? { ok: true, conversation } : { error: "unknown conversation" });
+    } catch (error) { badRequest(response, error); }
+    return;
+  }
+
   if (conversationTitleMatch) {
     try {
       const conversationId = decodeURIComponent(conversationTitleMatch[1] ?? "");
@@ -1233,6 +1369,11 @@ export function createBrokerHttpRouter(
 
   if (method === "GET" && url.pathname === "/v1/collaboration/records") {
     json(response, 200, await brokerService.readCollaborationRecords?.({
+      conversationId: url.searchParams.get("conversationId") ?? undefined,
+      includeThreads: url.searchParams.get("includeThreads") === "true",
+      orderByCreatedAt: url.searchParams.get("orderByCreatedAt") === "true",
+      afterCreatedAt: url.searchParams.has("afterCreatedAt") ? Number(url.searchParams.get("afterCreatedAt")) : undefined,
+      afterId: url.searchParams.get("afterId") ?? undefined,
       limit: parseLimit(url),
       kind: url.searchParams.get("kind") ?? undefined,
       state: url.searchParams.get("state") ?? undefined,
@@ -1812,6 +1953,45 @@ export function createBrokerHttpRouter(
     return;
   }
 
+  if (method === "POST" && url.pathname === "/v1/mesh/sessions/start") {
+    try {
+      const input = await readRequestBody<{
+        projectPath?: string;
+        harness?: string;
+        model?: string;
+        reasoningEffort?: string;
+        placement?: string;
+        requesterId?: string;
+      }>(request);
+      const projectPath = input?.projectPath?.trim();
+      if (!projectPath) {
+        json(response, 400, { error: "projectPath is required" });
+        return;
+      }
+      if (!startMeshProjectSession) {
+        json(response, 200, {
+          ok: false,
+          reason: "unsupported",
+          detail: "this broker does not support mesh session start",
+        });
+        return;
+      }
+      const optional = (value: string | undefined) => value?.trim() || undefined;
+      // Domain misses ride a 200 {ok:false} body, as with mesh session wake.
+      json(response, 200, await startMeshProjectSession({
+        projectPath,
+        ...(optional(input?.harness) ? { harness: optional(input?.harness) } : {}),
+        ...(optional(input?.model) ? { model: optional(input?.model) } : {}),
+        ...(optional(input?.reasoningEffort) ? { reasoningEffort: optional(input?.reasoningEffort) } : {}),
+        ...(optional(input?.placement) ? { placement: optional(input?.placement) } : {}),
+        ...(optional(input?.requesterId) ? { requesterId: optional(input?.requesterId) } : {}),
+      }));
+    } catch (error) {
+      badRequest(response, error);
+    }
+    return;
+  }
+
   if (method === "POST" && url.pathname === "/v1/mesh/collaboration/records") {
     try {
       const bundle = await readRequestBody<MeshCollaborationRecordBundle>(request);
@@ -2103,7 +2283,12 @@ export function createBrokerHttpRouter(
 
   if (method === "POST" && url.pathname === "/v1/invocations") {
     try {
-      const payload = await readValidatedRequestBody(request, brokerInvocationRequestSchema);
+      const runtimeCatalogSnapshot = await brokerService.readRuntimeCatalog?.({})
+        .catch(() => null);
+      const payload = await readValidatedRequestBody(
+        request,
+        brokerInvocationRequestSchemaFor(runtimeCatalogSnapshot?.catalog),
+      );
       if (
         payload.target?.kind === "route_alias"
         && await forwardAliasIfRemote(payload.target.scope?.nodeId, url.pathname, "POST", payload)

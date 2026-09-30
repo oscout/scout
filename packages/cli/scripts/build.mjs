@@ -15,6 +15,7 @@ import {
 import { spawnSync } from "node:child_process";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { stageScoutd } from "./stage-scoutd.mjs";
 
 import {
   buildControlPlaneClientAndCopy,
@@ -321,21 +322,28 @@ function buildAndPackageScoutd() {
   // package. Apple Silicon macOS is the first-class release path today. If
   // platform support expands, select first-class prebuilts per {os, cpu}
   // instead of accepting mismatched binaries or source-build fallbacks.
-  mkdirSync(dirname(scoutdPackagedBinary), { recursive: true });
-  copyFileSync(scoutdReleaseBinary, scoutdPackagedBinary);
-  chmodSync(scoutdPackagedBinary, 0o755);
-  const sign = spawnSync(
-    "bash",
-    [scoutdSignScript, scoutdReleaseBinary, scoutdPackagedBinary],
-    { cwd: repoRoot, stdio: "inherit" },
-  );
-  if ((sign.status ?? 1) !== 0) {
-    if (required || process.env.OPENSCOUT_REQUIRE_SCOUTD_SIGN === "1") {
-      console.error("  ERROR: scoutd signing failed.");
-      return false;
-    }
-    console.warn("  WARN: scoutd signing failed; continuing because this is a dev build.");
-  }
+  // Stage, sign, then rename over the packaged path. The live supervisor runs
+  // this exact file; writing or re-signing it in place rewrites the running
+  // image, and the kernel SIGKILLs scoutd ("Code Signature Invalid"), taking
+  // the broker, web server and every open lane down with it.
+  const signatureRequired = required || process.env.OPENSCOUT_REQUIRE_SCOUTD_SIGN === "1";
+  const staged = stageScoutd({
+    sourceBinary: scoutdReleaseBinary,
+    packagedBinary: scoutdPackagedBinary,
+    requireSignature: signatureRequired,
+    sign: (stagedBinary) => {
+      const result = spawnSync("bash", [scoutdSignScript, scoutdReleaseBinary, stagedBinary], {
+        cwd: repoRoot, stdio: "inherit",
+      });
+      const signed = (result.status ?? 1) === 0;
+      if (!signed) {
+        if (signatureRequired) console.error("  ERROR: scoutd signing failed.");
+        else console.warn("  WARN: scoutd signing failed; continuing because this is a dev build.");
+      }
+      return signed;
+    },
+  });
+  if (!staged) return false;
   const sizeMb = (statSync(scoutdPackagedBinary).size / (1024 * 1024)).toFixed(1);
   console.log(`  packaged scoutd -> ${scoutdPackagedBinary} (${sizeMb} MB, darwin-arm64)`);
   return true;

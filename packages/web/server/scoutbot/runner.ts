@@ -39,6 +39,8 @@ import {
 } from "./role.ts";
 
 export interface ScoutbotRunnerHandle {
+  /** Set when bootstrap could not reach the broker; this handle answers nothing. */
+  readonly inert?: true;
   stop(): Promise<void>;
   getThreads(): Promise<ScoutbotThreadListResponse>;
   createThread(input: { name: string; model: string; reasoningEffort?: string; pins?: ScoutbotThreadPins }): Promise<ScoutbotThreadRecord>;
@@ -283,6 +285,7 @@ function stopLegacyRunner(log: ScoutbotRunnerLog): void {
 
 function inertHandle(): ScoutbotRunnerHandle {
   return {
+    inert: true,
     async stop() { /* inert */ },
     async getThreads() { throw new Error("scoutbot runner is inert because broker is unreachable"); },
     async createThread() { throw new Error("broker unreachable"); },

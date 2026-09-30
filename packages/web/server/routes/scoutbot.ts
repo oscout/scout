@@ -52,6 +52,11 @@ import {
 import { SESSION_RECAP_SYSTEM_PROMPT, buildSessionRecap } from "../session-recap.ts";
 import { loadSessionRefObservePayload } from "../core/observe/service.ts";
 import {
+  generateSessionRetrospectiveLabels,
+  jevRetrospectiveStatus,
+  SessionRetrospectiveJevError,
+} from "../session-retrospective-jev.ts";
+import {
   createScoutbotReminderStore,
   ScoutbotReminderError,
 } from "../scoutbot-reminders.ts";
@@ -61,6 +66,8 @@ import {
   type ScoutbotRunnerHandle,
 } from "../scoutbot/runner.ts";
 import { SCOUTBOT_REASONING_EFFORT } from "../scoutbot/role.ts";
+import { scoutbotAskActionBody, scoutbotBriefBody, scoutbotChatBody, scoutbotConfigBody, scoutbotPrewarmBody } from "../../shared/api/scoutbot.ts";
+import { readJsonBody } from "../request-body.ts";
 
 export type WebTailRuntime = {
   getTailDiscovery: typeof getTailDiscovery;
@@ -506,6 +513,76 @@ async function buildScoutbotAssistantControlState(
   };
 }
 
+type ScoutbotAssistantControlState = Awaited<ReturnType<typeof buildScoutbotAssistantControlState>>;
+
+/**
+ * The slice of control state a live voice turn needs. The full snapshot runs
+ * ~60k tokens and every token is prefilled before the first spoken word, so a
+ * spoken answer gets headline state only: no briefing evidence, full harness
+ * inventory, broker attempt logs, heartrate series, or full session list.
+ */
+export function compactScoutbotStateForSpeech(state: ScoutbotAssistantControlState) {
+  return {
+    build: state.build,
+    agents: state.agents.slice(0, 24).map((agent) => ({
+      id: agent.id,
+      name: agent.name,
+      handle: agent.handle,
+      state: agent.state,
+      harness: agent.harness,
+      project: agent.project,
+      branch: agent.branch,
+      updatedAt: agent.updatedAt,
+    })),
+    fleet: {
+      generatedAt: state.fleet.generatedAt,
+      totals: state.fleet.totals,
+      activeAsks: state.fleet.activeAsks.slice(0, 8),
+      needsAttention: state.fleet.needsAttention.slice(0, 8),
+      recentCompleted: state.fleet.recentCompleted.slice(0, 5),
+    },
+    operatorAttention: state.operatorAttention
+      ? {
+          generatedAt: state.operatorAttention.generatedAt,
+          totals: state.operatorAttention.totals,
+          items: state.operatorAttention.items.slice(0, 8),
+        }
+      : null,
+    broker: {
+      generatedAt: state.broker.generatedAt,
+      windowMs: state.broker.windowMs,
+      totals: state.broker.totals,
+      rates: state.broker.rates,
+    },
+    activeWork: state.activeWork.slice(0, 10),
+    activeRuns: state.activeRuns.slice(0, 10),
+    activeFlights: state.activeFlights.slice(0, 10),
+    sessions: state.sessions.slice(0, 8),
+    recentMessages: state.recentMessages.slice(0, 8),
+    recentActivity: state.recentActivity.slice(0, 8),
+    mesh: state.mesh,
+    // Organic Claude/Codex sessions are most of what's "happening", and the
+    // instructions tell the model to count them, so a spoken turn keeps the
+    // totals and a few sessions without commands, pids, or transcript paths.
+    harnessActivity: state.harnessActivity
+      ? {
+          generatedAt: state.harnessActivity.generatedAt,
+          totals: state.harnessActivity.totals,
+          processes: state.harnessActivity.processes.slice(0, 8).map((p) => ({
+            harness: p.harness,
+            cwd: p.cwd,
+            etime: p.etime,
+          })),
+          transcripts: state.harnessActivity.transcripts.slice(0, 8).map((t) => ({
+            harness: t.harness,
+            project: t.project,
+            mtimeMs: t.mtimeMs,
+          })),
+        }
+      : null,
+  };
+}
+
 function isScoutbotAssistantRoute(route: unknown): boolean {
   return Boolean(
     route
@@ -782,10 +859,13 @@ export async function createScoutbotWebServices(
   const scoutbotAssistant = createScoutbotAssistantService({
     currentDirectory,
     usage,
-    loadContext: async (route) => ({
-      ...(await buildScoutbotAssistantControlState(currentDirectory, tailRuntime, loadOperatorAttention, loadBuildInfo, route)),
-      reminders: scoutbotReminders.getState(),
-    }),
+    loadContext: async (route, contextOptions) => {
+      const state = await buildScoutbotAssistantControlState(currentDirectory, tailRuntime, loadOperatorAttention, loadBuildInfo, route);
+      return {
+        ...(contextOptions?.spoken ? compactScoutbotStateForSpeech(state) : state),
+        reminders: scoutbotReminders.getState(),
+      };
+    },
     resolveApiKey: resolveOpenAIApiKey,
     invokeCodex: options.invokeCodex
       ?? createDefaultScoutbotCodexInvoker(currentDirectory),
@@ -813,7 +893,10 @@ export async function createScoutbotWebServices(
           await runner.stop();
           return null;
         }
-        scoutbotRunner = runner;
+        // An inert runner answers nothing. Caching it made one failed broker
+        // read at bootstrap permanent until the web server restarted; leave
+        // it uncached so the next caller retries.
+        if (!runner.inert) scoutbotRunner = runner;
         return runner;
       })
       .catch((error) => {
@@ -953,10 +1036,9 @@ export function mountScoutbotRoutes(
   });
   app.get("/api/scoutbot/config", (c) => c.json(assistant.getConfig()));
   app.post("/api/scoutbot/config", async (c) => {
-    const body = (await c.req.json().catch(() => ({}))) as {
-      model?: string | null;
-      systemPrompt?: string | null;
-    };
+    const parsed = await readJsonBody(c, scoutbotConfigBody);
+    if (!parsed.ok) return parsed.response;
+    const body = parsed.body;
     return c.json({
       config: assistant.updateConfig({
         model: body.model,
@@ -1008,15 +1090,44 @@ export function mountScoutbotRoutes(
       return c.json({ error: message }, status as 400 | 408 | 500 | 502 | 503 | 504);
     }
   });
-  app.post("/api/scoutbot/chat", async (c) => {
+  // Reads local config only; nothing leaves the machine until the operator
+  // reviews the preview and confirms a send (POST below).
+  app.get("/api/session-retrospective/jev/status", (c) => c.json(jevRetrospectiveStatus()));
+  app.post("/api/session-retrospective/jev", async (c) => {
     const body = (await c.req.json().catch(() => ({}))) as {
-      body?: string;
-      route?: unknown;
-      uiContext?: unknown;
-      voiceTurn?: unknown;
-      stream?: unknown;
-      usageMode?: unknown;
+      sessionRef?: unknown;
+      harness?: unknown;
+      confirmed?: unknown;
+      preview?: unknown;
     };
+    try {
+      const result = await generateSessionRetrospectiveLabels({
+        sessionRef: body.sessionRef,
+        harness: body.harness,
+        confirmed: body.confirmed,
+        preview: body.preview,
+        loadObserve: (ref) => loadSessionRefObservePayload(ref),
+        signal: c.req.raw.signal,
+      });
+      return c.json(result);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Jev retrospective failed.";
+      const status = error instanceof SessionRetrospectiveJevError ? error.status : 500;
+      return c.json({ error: message }, status as 400 | 404 | 409 | 502 | 503 | 504);
+    }
+  });
+  // Local Live calls this when recording starts so the spoken snapshot is
+  // gathered while the operator talks, not after the transcript lands.
+  app.post("/api/scoutbot/prewarm", async (c) => {
+    const parsed = await readJsonBody(c, scoutbotPrewarmBody);
+    if (!parsed.ok) return parsed.response;
+    assistant.prewarmSpokenContext(parsed.body.route);
+    return c.json({ ok: true }, 202);
+  });
+  app.post("/api/scoutbot/chat", async (c) => {
+    const parsed = await readJsonBody(c, scoutbotChatBody);
+    if (!parsed.ok) return parsed.response;
+    const body = parsed.body;
     const voiceTurn = normalizeVoiceTurn(body.voiceTurn);
     if (body.voiceTurn !== undefined && !voiceTurn) {
       return c.json({ error: "voiceTurn requires non-negative integer turn and gen" }, 400);
@@ -1107,12 +1218,9 @@ export function mountScoutbotRoutes(
     }
   });
   app.post("/api/scoutbot/actions/ask", async (c) => {
-    const body = (await c.req.json().catch(() => ({}))) as {
-      targetLabel?: string;
-      targetAgentId?: string;
-      body?: string;
-      channel?: string;
-    };
+    const parsed = await readJsonBody(c, scoutbotAskActionBody);
+    if (!parsed.ok) return parsed.response;
+    const body = parsed.body;
     const targetLabel = body.targetLabel?.trim() || body.targetAgentId?.trim() || "";
     const targetAgentId = body.targetAgentId?.trim();
     const requestBody = body.body?.trim() ?? "";
@@ -1156,10 +1264,9 @@ export function mountScoutbotRoutes(
     });
   });
   app.post("/api/scoutbot/brief", async (c) => {
-    const body = (await c.req.json().catch(() => ({}))) as {
-      route?: unknown;
-      ttlMs?: number | null;
-    };
+    const parsed = await readJsonBody(c, scoutbotBriefBody);
+    if (!parsed.ok) return parsed.response;
+    const body = parsed.body;
 
     try {
       let captured: ScoutbotBriefCapture | null = null;

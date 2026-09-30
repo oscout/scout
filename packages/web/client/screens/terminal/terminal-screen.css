@@ -1739,7 +1739,7 @@ a.s-term-topline-button {
 }
 
 .s-term-picker-search:focus-within {
-  border-color: color-mix(in srgb, var(--accent) 50%, transparent);
+  border-color: var(--field-focus);
   color: rgb(var(--term-warm-rgb) / 0.8);
 }
 

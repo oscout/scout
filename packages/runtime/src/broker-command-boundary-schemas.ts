@@ -9,6 +9,7 @@ import {
   type InvocationRequest,
   type ScoutDeliverRequest,
   type ScoutOperatorSignal,
+  type ScoutOwnedRuntimeCatalog,
   type ScoutRouteTarget,
 } from "@openscout/protocol";
 
@@ -134,23 +135,30 @@ const invocationSessionLineageSchema = z.object({
   metadata: metadataMapSchema.optional(),
 }).passthrough();
 
-const invocationExecutionPreferenceSchema = z.object({
+const invocationExecutionPreferenceSchema = (runtimeCatalog?: ScoutOwnedRuntimeCatalog) => z.object({
   harness: z.enum(AGENT_HARNESSES).optional(),
   model: optionalNonEmptyString,
   reasoningEffort: z.enum(SCOUT_REASONING_EFFORTS).optional(),
   permissionProfile: z.enum(SCOUT_PERMISSION_PROFILES).optional(),
-  placement: z.enum(["background", "foreground"]).optional(),
+  placement: z.enum(["background", "foreground", "attached"]).optional(),
   session: z.enum(INVOCATION_SESSION_POLICIES).optional(),
   targetSessionId: optionalNonEmptyString,
   forkFromStateId: optionalNonEmptyString,
   forkFromSessionId: optionalNonEmptyString,
   forkContext: invocationForkContextOptionsSchema.optional(),
   lineage: invocationSessionLineageSchema.optional(),
+  // Hard per-turn budget — a requester may wait far longer than any single
+  // turn should run, so this is capped independently of timeoutMs.
+  turnBudgetMs: z.number().int().positive().max(6 * 60 * 60_000).optional(),
 }).passthrough().superRefine((execution, ctx) => {
   for (const message of validateInvocationExecutionPreference(execution)) {
     ctx.addIssue({ code: "custom", message });
   }
-  for (const issue of validateScoutRuntimeTuple(execution)) {
+  // Tuple legality runs against the supplied owned catalog — the broker's live
+  // snapshot on request paths — not a compiled-in harness/model list. Callers
+  // without a live snapshot get the bundled default (see the parameter doc on
+  // validateScoutRuntimeTuple).
+  for (const issue of validateScoutRuntimeTuple(execution, undefined, runtimeCatalog)) {
     ctx.addIssue({
       code: "custom",
       path: [issue.dimension],
@@ -192,9 +200,10 @@ export const brokerDeliverRequestSchema: z.ZodType<ScoutDeliverRequest> = z.obje
   operatorSignal: brokerOperatorSignalSchema.optional(),
 }).passthrough();
 
-export const brokerInvocationRequestSchema: z.ZodType<
-  InvocationRequest & BrokerRouteTargetInput
-> = z.object({
+export function brokerInvocationRequestSchemaFor(
+  runtimeCatalog?: ScoutOwnedRuntimeCatalog,
+): z.ZodType<InvocationRequest & BrokerRouteTargetInput> {
+  return z.object({
   id: nonEmptyString,
   requesterId: nonEmptyString,
   requesterNodeId: nonEmptyString,
@@ -206,7 +215,7 @@ export const brokerInvocationRequestSchema: z.ZodType<
   conversationId: optionalNonEmptyString,
   messageId: optionalNonEmptyString,
   context: metadataMapSchema.optional(),
-  execution: invocationExecutionPreferenceSchema.optional(),
+  execution: invocationExecutionPreferenceSchema(runtimeCatalog).optional(),
   ensureAwake: z.boolean(),
   stream: z.boolean(),
   timeoutMs: z.number().int().positive().optional(),
@@ -218,3 +227,9 @@ export const brokerInvocationRequestSchema: z.ZodType<
   targetLabel: nonEmptyString.nullish(),
   routePolicy: scoutRoutePolicySchema.nullish(),
 }).passthrough();
+}
+
+/** Boundary schema validated against the bundled catalog; request paths that
+ * can supply the broker's live snapshot should use
+ * `brokerInvocationRequestSchemaFor` instead. */
+export const brokerInvocationRequestSchema = brokerInvocationRequestSchemaFor();

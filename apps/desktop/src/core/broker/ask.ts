@@ -76,6 +76,7 @@ type ScoutAskDeliveryResult = {
   executionResolution?: ScoutAskReceipt["executionResolution"];
   workItem?: ScoutAskResult["workItem"];
   targetDiagnostic?: ScoutAskResult["targetDiagnostic"];
+  preflightFailure?: ScoutAskResult["preflightFailure"];
 };
 
 type ScoutAskResolvedTarget = {
@@ -139,6 +140,21 @@ function buildScoutAskReceipt(input: {
   currentDirectory: string;
 }): ScoutAskReceipt {
   if (!input.result.usedBroker) {
+    const failure = input.result.preflightFailure;
+    if (failure && failure.reason !== "health_failed") {
+      const endpoint = failure.reason === "node_read_failed"
+        ? "/v1/node"
+        : "/v1/snapshot";
+      return {
+        ok: false,
+        state: "failed",
+        ids: {},
+        error: {
+          code: "preflight_failed",
+          message: `broker preflight failed: ${endpoint} read failed (${failure.detail}); the broker is up — the request is safe to retry`,
+        },
+      };
+    }
     return {
       ok: false,
       state: "failed",
@@ -237,6 +253,7 @@ function askTargetFor(to: string): ScoutRouteTarget | null {
       kind: "session_id",
       sessionId: parsed.sessionId,
       ...(parsed.harness ? { harness: parsed.harness } : {}),
+      ...(parsed.host ? { host: parsed.host } : {}),
       ...(parsed.value ? { value: parsed.value } : {}),
     };
   }

@@ -234,6 +234,13 @@ describe("SessionRegistry", () => {
     expect(adapter!.decisions).toEqual([
       { turnId: "turn-1", blockId: "block-1", decision: "approve", reason: "looks good" },
     ]);
+    // No adapter status has arrived yet: a duplicate or opposite decision must
+    // not cross the adapter boundary again while remote delivery is pending.
+    for (const decision of ["approve", "deny"] as const) {
+      expect(() => registry.decide({ sessionId: session.id, turnId: "turn-1", blockId: "block-1", version: 2, decision })).toThrow("already submitted");
+    }
+    expect(adapter!.decisions).toHaveLength(1);
+
 
     adapter!.emit({
       event: "block:action:status",
@@ -250,6 +257,50 @@ describe("SessionRegistry", () => {
       decision: "approve",
     })).toThrow("Stale approval version");
     expect(adapter!.decisions).toHaveLength(1);
+    adapter!.emit({ event: "block:action:status", sessionId: session.id, turnId: "turn-1", blockId: "block-1", status: "awaiting_approval" });
+    adapter!.emit({ event: "block:action:approval", sessionId: session.id, turnId: "turn-1", blockId: "block-1", approval: { version: 3 } });
+    registry.decide({ sessionId: session.id, turnId: "turn-1", blockId: "block-1", version: 3, decision: "deny" });
+    expect(adapter!.decisions).toHaveLength(2);
+    adapter!.emit({ event: "block:action:approval", sessionId: session.id, turnId: "turn-1", blockId: "block-1", approval: { version: 4 } });
+    let attempts = 0;
+    adapter!.decide = () => { attempts++; throw new Error("Delivery uncertain"); };
+    const uncertain = { sessionId: session.id, turnId: "turn-1", blockId: "block-1", version: 4, decision: "approve" as const };
+    expect(() => registry.decide(uncertain)).toThrow("Delivery uncertain");
+    expect(() => registry.decide(uncertain)).toThrow("already submitted");
+    expect(attempts).toBe(1);
+  });
+
+  test("turn-scoped interrupts reject stale, terminal and duplicate requests", async () => {
+    let adapter!: TestApprovalAdapter;
+    const registry = new SessionRegistry({ adapters: { test: config => (adapter = new TestApprovalAdapter(config)) } });
+    await registry.createSession("test", { sessionId: "interrupt-session" });
+    let calls = 0;
+    adapter.interrupt = () => { calls++; };
+    const start = (id: string) => adapter.emit({ event: "turn:start", sessionId: "interrupt-session", turn: {
+      id, sessionId: "interrupt-session", status: "started", startedAt: new Date().toISOString(), blocks: [],
+    } });
+    expect(() => registry.interruptTurn("missing", "turn-1")).toThrow("No session");
+    expect(() => registry.interruptTurn("interrupt-session", "turn-1")).toThrow("no longer active");
+    start("turn-1");
+    expect(() => registry.interruptTurn("interrupt-session", "stale")).toThrow("no longer active");
+    registry.interruptTurn("interrupt-session", "turn-1");
+    expect(calls).toBe(1);
+    expect(registry.getSessionSnapshot("interrupt-session")?.turns[0]?.status).toBe("streaming");
+    expect(() => registry.interruptTurn("interrupt-session", "turn-1")).toThrow("already submitted");
+    start("turn-2");
+    expect(() => registry.interruptTurn("interrupt-session", "turn-1")).toThrow("no longer active");
+    adapter.interrupt = () => { calls++; throw new Error("Uncertain delivery"); };
+    expect(() => registry.interruptTurn("interrupt-session", "turn-2")).toThrow("Uncertain delivery");
+    expect(() => registry.interruptTurn("interrupt-session", "turn-2")).toThrow("already submitted");
+    expect(calls).toBe(2);
+    adapter.emit({ event: "turn:end", sessionId: "interrupt-session", turnId: "turn-2", status: "interrupted" });
+    expect(() => registry.interruptTurn("interrupt-session", "turn-2")).toThrow("no longer active");
+    await registry.closeSession("interrupt-session");
+    await registry.createSession("test", { sessionId: "interrupt-session" });
+    adapter.interrupt = () => { calls++; };
+    start("turn-2");
+    registry.interruptTurn("interrupt-session", "turn-2");
+    expect(calls).toBe(3);
   });
 
   test("buffers replay independently per session", async () => {

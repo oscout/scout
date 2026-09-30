@@ -7,7 +7,7 @@ use ratatui::style::{Color, Modifier, Style};
 /// Ambient ramp is the Nightwatch calibration: ASH/SMOKE stay readable as
 /// machine chatter, HEARTH actually lifts off GROUND. Ember is the single
 /// chromatic hue (live, selected, pulse, prompt). SIGNAL is a brighter gold
-/// reserved for needs-you. FAULT is failure.
+/// reserved for requests. FAULT is failure.
 pub const GROUND: Color = Color::Rgb(12, 10, 8); // #0C0A08 — the room. Warm near-black.
 pub const HEARTH: Color = Color::Rgb(34, 28, 22); // #221C16 — selected fill; must read as a tile.
 pub const HAIR: Color = Color::Rgb(58, 50, 40); // #3A3228 — hairlines, idle pulse cells.
@@ -16,7 +16,7 @@ pub const SMOKE: Color = Color::Rgb(196, 182, 166); // #C4B6A6 — secondary tex
 pub const BONE: Color = Color::Rgb(240, 230, 216); // #F0E6D8 — human words and assistant prose.
 pub const EMBER: Color = Color::Rgb(255, 133, 51); // #FF8533 — the one live hue. Pulse, selected, live.
 pub const EMBER_DIM: Color = Color::Rgb(196, 94, 36); // #C45E24 — cooled coal; older pulse cells.
-pub const SIGNAL: Color = Color::Rgb(255, 196, 77); // #FFC44D — earned gold. Blocked / needs-you only.
+pub const SIGNAL: Color = Color::Rgb(255, 196, 77); // #FFC44D — earned gold. Blocked / requests only.
 pub const FAULT: Color = Color::Rgb(226, 86, 77); // #E2564D — earned failure.
 
 /// Ember decay / recency ramp. Fresh coal → spent coal. Never cool zinc.

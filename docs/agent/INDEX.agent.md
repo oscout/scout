@@ -10,7 +10,9 @@ Not governance docs. Not proposals. Compressed ontology + invariants.
 |---|---|
 | [README.agent.md](./README.agent.md) | repo entry, paths, non-negotiables |
 | [broker.agent.md](./broker.agent.md) | canonical writer, records, routing outcomes |
+| [otlp.agent.md](./otlp.agent.md) | opt-in OTLP receiver, sanitization, bounded inspection and lifecycle |
 | [scout-comms.agent.md](./scout-comms.agent.md) | CLI/MCP workflows, send vs ask |
+| [scout-chat.agent.md](./scout-chat.agent.md) | chat invites: what joining does, trust model, `chat info` |
 | [runtime-sessions.agent.md](./runtime-sessions.agent.md) | agent/session/endpoint lifecycle |
 | [pairing-runtime.agent.md](./pairing-runtime.agent.md) | mobile bridge, QR, relay (not broker) |
 | [scoutd.agent.md](./scoutd.agent.md) | launchd, supervise, doctor |
@@ -21,6 +23,7 @@ Not governance docs. Not proposals. Compressed ontology + invariants.
 | Task | Read |
 |---|---|
 | send/ask/route | `scout-comms.agent.md` → `broker.agent.md` |
+| joining a pasted Scout Chat invite | `scout-chat.agent.md` |
 | start/wake/attach harness | `runtime-sessions.agent.md` → `broker.agent.md` |
 | mobile pair / QR | `pairing-runtime.agent.md` |
 | local service broken | `scoutd.agent.md` |

@@ -5,6 +5,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent a
 import { isAgentBusy, isAgentOnline, normalizeAgentState } from "../../lib/agent-state.ts";
 import { stateColor } from "../../lib/colors.ts";
 import { api } from "../../lib/api.ts";
+import { loadFleet } from "../../lib/fleet-store.ts";
 import { useBrokerEvents } from "../../lib/sse.ts";
 import { timeAgo } from "../../lib/time.ts";
 import { DataTable, type DataTableColumn } from "../../components/DataTable/DataTable.tsx";
@@ -444,7 +445,7 @@ export function OpsAgentsView({
   const load = useCallback(async () => {
     const ids = agents.map((agent) => agent.id).join(",");
     const [fleetResult, sessionsResult, activityResult, observeResult] = await Promise.allSettled([
-      api<FleetState>("/api/fleet"),
+      loadFleet(),
       api<SessionEntry[]>("/api/conversations"),
       api<ActivityItem[]>("/api/activity"),
       ids ? api<AgentObservePayload[]>(`/api/observe/agents?ids=${encodeURIComponent(ids)}`) : Promise.resolve([]),

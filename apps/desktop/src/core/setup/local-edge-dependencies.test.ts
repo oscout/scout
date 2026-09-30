@@ -90,7 +90,6 @@ describe("local edge dependencies", () => {
     const report = ensureScoutLocalEdgeTrust({
       env: { PATH: directory, HOME: directory },
       platform: "darwin",
-      commonDirectories: [],
       runCommand: (command, args) => {
         calls.push([command, ...args].join(" "));
         if (command === "security" && args[0] === "verify-cert") {

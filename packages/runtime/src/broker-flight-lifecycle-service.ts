@@ -151,6 +151,7 @@ export function staleLocalDeliveryReason(
   delivery: DeliveryIntent,
   options: { now?: number; graceMs?: number; latestAttemptAt?: number } = {},
 ): string | null {
+  if (delivery.metadata?.externalSession === true) return null;
   if (delivery.targetKind !== "agent" || !staleReconcileableDeliveryStatuses.has(delivery.status)) {
     return null;
   }
@@ -432,6 +433,8 @@ export class BrokerFlightLifecycleService {
 
     const updatedAt = flight.completedAt ?? this.now();
     await this.options.journal.visitDeliveries(async (delivery) => {
+      // External receipts report provider evidence, not local flight projections.
+      if (delivery.metadata?.externalSession === true) return;
       if (!(delivery.messageId === invocation.messageId
         && delivery.targetId === flight.targetAgentId
         && delivery.status !== status

@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { api, peekApiGet } from "../../lib/api.ts";
+import { loadFleet } from "../../lib/fleet-store.ts";
 import { filterAgentsByMachineScope } from "../../lib/machine-scope.ts";
 import { routeMachineId } from "../../lib/router.ts";
-import { useBrokerEventsRefresh } from "../../lib/sse.ts";
-import { isScoutSurfaceActive, onScoutSurfaceActivated } from "../../lib/surface-activity.ts";
+import { useBrokerRefresh } from "../../lib/broker-refresh.ts";
+import { AGENT_DIRECTORY_REFRESH_POLICY } from "../../lib/broker-event-kinds.ts";
 import { useScout } from "../../scout/Provider.tsx";
 import { AgentDirectoryStudioInjection } from "../../studio/AgentDirectoryStudioInjection.tsx";
 import type {
@@ -61,7 +62,7 @@ export function AgentsScreen({
   const load = useCallback(async () => {
     const [sessionsResult, fleetResult, discoveryResult] = await Promise.allSettled([
       api<SessionEntry[]>(CONVERSATIONS_PATH),
-      api<FleetState>(FLEET_PATH),
+      loadFleet(),
       api<TailDiscoverySnapshot>(DISCOVERY_PATH),
     ]);
     if (sessionsResult.status === "fulfilled") setSessions(sessionsResult.value);
@@ -73,23 +74,7 @@ export function AgentsScreen({
   useEffect(() => {
     void load();
   }, [load]);
-  useEffect(() => {
-    const refreshIfActive = () => {
-      if (isScoutSurfaceActive()) void load();
-    };
-    const id = window.setInterval(refreshIfActive, 10_000);
-    const stopActivationListener = onScoutSurfaceActivated(refreshIfActive);
-    return () => {
-      window.clearInterval(id);
-      stopActivationListener();
-    };
-  }, [load]);
-  useBrokerEventsRefresh(
-    () => true,
-    () => {
-      if (isScoutSurfaceActive()) void load();
-    },
-  );
+  useBrokerRefresh(() => void load(), AGENT_DIRECTORY_REFRESH_POLICY);
 
   const selectedAgent = resolveSelectedAgent(scopedAgents, selectedAgentId);
   const selectedAgentWasAliased = Boolean(

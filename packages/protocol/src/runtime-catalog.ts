@@ -28,6 +28,32 @@ function text(value: unknown): string | null {
     : null;
 }
 
+function presentation<K extends string>(
+  value: unknown,
+  path: string,
+  errors: string[],
+  keys: readonly K[],
+): Record<K, string> | undefined {
+  if (value === undefined) return undefined;
+  const input = record(value);
+  if (!input) {
+    errors.push(`${path} must be an object`);
+    return undefined;
+  }
+  const result = {} as Record<K, string>;
+  for (const key of keys) {
+    const field = input[key];
+    if (field === undefined) continue;
+    const parsed = text(field);
+    if (!parsed) {
+      errors.push(`${path}.${key} must be a non-empty trimmed string`);
+      continue;
+    }
+    result[key] = parsed;
+  }
+  return result;
+}
+
 function effortList(value: unknown, path: string, errors: string[]): ScoutReasoningEffort[] | null | undefined {
   if (value === null) return null;
   if (!Array.isArray(value)) {
@@ -88,6 +114,9 @@ function model(value: unknown, path: string, errors: string[]): ScoutOwnedRuntim
     ...(defaultEffort && reasoningEfforts.has(defaultEffort)
       ? { defaultReasoningEffort: defaultEffort as ScoutReasoningEffort }
       : {}),
+    ...(input.presentation !== undefined
+      ? { presentation: presentation(input.presentation, `${path}.presentation`, errors, ["detail"]) }
+      : {}),
   };
 }
 
@@ -146,6 +175,9 @@ function harness(value: unknown, path: string, errors: string[]): ScoutOwnedRunt
     reasoningEfforts: efforts,
     ...(defaultEffort && reasoningEfforts.has(defaultEffort)
       ? { defaultReasoningEffort: defaultEffort as ScoutReasoningEffort }
+      : {}),
+    ...(input.presentation !== undefined
+      ? { presentation: presentation(input.presentation, `${path}.presentation`, errors, ["short", "monogram"]) }
       : {}),
     models,
   };

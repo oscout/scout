@@ -16,11 +16,17 @@ describe("broker daemon local agent routing", () => {
     const projectRoot = join(controlHome, "projects", "implicit-project");
     mkdirSync(projectRoot, { recursive: true });
     broker.writeRelayAgentRegistry(supportDirectory, {});
+    // Claude has trusted this folder, so the cardless session keeps tmux;
+    // an untrusted folder would route to headless claude_stream_json.
+    writeFileSync(join(controlHome, ".claude.json"), JSON.stringify({
+      projects: { [join(controlHome, "projects")]: { hasTrustDialogAccepted: true } },
+    }));
 
     const harness = await broker.startBroker({
       controlHome,
       env: {
         HOME: controlHome,
+        CLAUDE_CONFIG_DIR: "",
         OPENSCOUT_SUPPORT_DIRECTORY: supportDirectory,
         OPENSCOUT_CORE_AGENTS: "",
         OPENSCOUT_LOCAL_AGENT_SYNC_INTERVAL_MS: "0",
@@ -148,9 +154,9 @@ describe("broker daemon local agent routing", () => {
         harness: "claude",
         projectRoot,
         metadata: expect.objectContaining({
-          model: "claude-opus-5",
+          model: "claude-opus-5-5",
           reasoningEffort: "high",
-          launchArgs: ["--model", "claude-opus-5", "--effort", "high"],
+          launchArgs: ["--model", "claude-opus-5-5", "--effort", "high"],
         }),
       }),
     ]));

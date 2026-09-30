@@ -40,13 +40,20 @@ import { HarnessMark } from "../HarnessMark.tsx";
 import {
   describeRuntime,
   effortsFor,
+  harnessFor,
+  matchPreset,
   modelsFor,
+  orderModelsWithShortlist,
   reconcileRuntime,
   resolveModel,
+  runtimeListOriginLabel,
   searchRuntimeOptions,
   seedRuntime,
+  valueForPreset,
+  type PinnedRuntimeOption,
   type RuntimeCatalog,
   type RuntimeOption,
+  type RuntimePreset,
   type RuntimeValue,
 } from "../../lib/runtime-catalog.ts";
 import "./runtime-picker.css";
@@ -92,33 +99,80 @@ const PANEL_W = 400;
  * rest; the cap only keeps a pasted model id from stretching the toolbar.
  */
 const MODEL_CH_MAX = 14;
-/** Enough headroom to open upward; below this the panel flips down. */
+/**
+ * First-paint guess at the panel's height, used only until the real panel has
+ * rendered once and `scrollHeight` can be read — a live catalog makes it
+ * taller than this, and the estimate is never a bound.
+ */
 const PANEL_H_ESTIMATE = 300;
+/** The panel never shrinks below this — past it, the bands scroll instead. */
+const PANEL_MIN_H = 160;
 const GAP = 8;
+
+/** WKWebView-safe viewport height: the visible area, not the layout one. */
+function viewportHeight(): number {
+  return window.visualViewport?.height ?? window.innerHeight;
+}
+
+/**
+ * Which side of the chip the panel opens on, and how tall it may grow.
+ *
+ * Up where the real panel fits above, down where it only fits below, and
+ * otherwise on whichever side has more room with the height capped — a panel
+ * that cannot fit whole gets `maxHeight` and scrolls its bands rather than
+ * running off the edge of the viewport.
+ */
+export function resolvePanelPlacement(input: {
+  rectTop: number;
+  rectBottom: number;
+  viewportHeight: number;
+  panelHeight: number;
+  gap: number;
+}): { placement: "up" | "down"; maxHeight: number } {
+  const roomAbove = input.rectTop - input.gap * 2;
+  const roomBelow = input.viewportHeight - input.rectBottom - input.gap * 2;
+  // Composer toolbars sit at the foot of the screen, so prefer upward.
+  const placement: "up" | "down" =
+    input.panelHeight <= roomAbove
+      ? "up"
+      : input.panelHeight <= roomBelow
+        ? "down"
+        : roomAbove >= roomBelow ? "up" : "down";
+  return {
+    placement,
+    maxHeight: Math.max(PANEL_MIN_H, placement === "up" ? roomAbove : roomBelow),
+  };
+}
 
 // ── Roving focus ─────────────────────────────────────────────────────────────
 
-type Group = "harness" | "model" | "effort";
-const GROUP_ORDER: Group[] = ["harness", "model", "effort"];
+type Group = "preset" | "harness" | "model" | "effort";
+const GROUP_ORDER: Group[] = ["preset", "harness", "model", "effort"];
 
 /**
  * Every band lays its options left-to-right. Horizontal arrows move within a
  * band; vertical arrows cross between Harness, Model and Effort.
  */
 const ORIENTATION: Record<Group, "vertical" | "horizontal"> = {
+  preset: "horizontal",
   harness: "horizontal",
   model: "horizontal",
   effort: "horizontal",
 };
 
-interface PanelCtx {
+export interface PanelCtx {
   value: RuntimeValue;
+  catalog: RuntimeCatalog;
   set: (patch: Partial<RuntimeValue>) => void;
+  applyPreset: (preset: RuntimePreset) => void;
   status: RuntimeStatus;
   statusMessage?: string;
   onRetry?: () => void;
   harnesses: RuntimeOption[];
+  presets: RuntimePreset[];
   models: RuntimeOption[];
+  modelsPinned: PinnedRuntimeOption[];
+  modelsRest: RuntimeOption[];
   efforts: RuntimeOption[] | null;
   harnessLabel: string;
   searchable: boolean;
@@ -288,8 +342,85 @@ function ModelStatus({ ctx }: { ctx: PanelCtx }) {
   );
 }
 
-function ModelOptions({ ctx }: { ctx: PanelCtx }) {
+/**
+ * One named `<harness>[/<model>[/<effort>]]` tuple per chip — the whole
+ * runtime decision in one press. The band renders only when the resolved
+ * layers produced presets; absent entirely otherwise.
+ */
+export function PresetOptions({ ctx }: { ctx: PanelCtx }) {
+  if (!ctx.presets.length) return null;
+  const matched = matchPreset(ctx.catalog, ctx.value);
+  return (
+    <div className="s-rt-options" role="group" aria-label="Presets">
+      {ctx.presets.map((preset, index) => {
+        const on = matched?.id === preset.id;
+        const harnessLabel =
+          harnessFor(ctx.catalog, preset.harness)?.label ?? preset.harness;
+        return (
+          <button
+            key={preset.id}
+            type="button"
+            aria-pressed={on}
+            onClick={() => ctx.applyPreset(preset)}
+            data-on={on || undefined}
+            title={
+              `${preset.harness}/${preset.model ?? "default"}/${preset.effort ?? ""} · ` +
+              runtimeListOriginLabel(preset.origin, harnessLabel, "preset")
+            }
+            {...ctx.cell("preset", index)}
+            className="s-rt-opt s-rt-preset-opt"
+          >
+            <HarnessMark
+              harness={preset.harness || "unknown"}
+              size={13}
+              className="s-rt-opt-mark"
+              title={null}
+            />
+            <span>{preset.label}</span>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+export function ModelOptions({ ctx }: { ctx: PanelCtx }) {
   if (ctx.status !== "ready" || ctx.models.length === 0) return <ModelStatus ctx={ctx} />;
+  const renderOption = (
+    model: RuntimeOption,
+    index: number,
+    pinnedOrigin?: PinnedRuntimeOption["pinnedOrigin"],
+  ) => {
+    const on = model.value === ctx.value.model;
+    const modelDisabled = model.disabled ?? false;
+    return (
+      <button
+        key={model.value || "default"}
+        type="button"
+        role="option"
+        aria-selected={on}
+        /* Kept in the list but unselectable — and still focusable, so the
+           reason stays reachable by keyboard and assistive technology. */
+        aria-disabled={modelDisabled || undefined}
+        onClick={() => {
+          if (!modelDisabled) ctx.set({ model: model.value });
+        }}
+        data-on={on || undefined}
+        data-disabled={modelDisabled || undefined}
+        data-pinned={pinnedOrigin ? "" : undefined}
+        title={
+          pinnedOrigin
+            ? runtimeListOriginLabel(pinnedOrigin, ctx.harnessLabel)
+            : model.note
+        }
+        {...ctx.cell("model", index)}
+        style={{ animationDelay: `${Math.min(index, 6) * 16}ms` }}
+        className="s-rt-opt s-rt-model-opt"
+      >
+        {model.label}
+      </button>
+    );
+  };
   return (
     <div
       key={ctx.value.harness}
@@ -297,32 +428,12 @@ function ModelOptions({ ctx }: { ctx: PanelCtx }) {
       aria-label="Model"
       className="s-rt-models"
     >
-      {ctx.models.map((model, index) => {
-        const on = model.value === ctx.value.model;
-        const modelDisabled = model.disabled ?? false;
-        return (
-          <button
-            key={model.value || "default"}
-            type="button"
-            role="option"
-            aria-selected={on}
-            /* Kept in the list but unselectable — and still focusable, so the
-               reason stays reachable by keyboard and assistive technology. */
-            aria-disabled={modelDisabled || undefined}
-            onClick={() => {
-              if (!modelDisabled) ctx.set({ model: model.value });
-            }}
-            data-on={on || undefined}
-            data-disabled={modelDisabled || undefined}
-            title={model.note}
-            {...ctx.cell("model", index)}
-            style={{ animationDelay: `${Math.min(index, 6) * 16}ms` }}
-            className="s-rt-opt s-rt-model-opt"
-          >
-            {model.label}
-          </button>
-        );
-      })}
+      {ctx.modelsPinned.map((model, index) => renderOption(model, index, model.pinnedOrigin))}
+      {ctx.modelsPinned.length > 0 && ctx.modelsRest.length > 0 ? (
+        <span className="s-rt-models-rule" role="separator" />
+      ) : null}
+      {ctx.modelsRest.map((model, index) =>
+        renderOption(model, ctx.modelsPinned.length + index))}
     </div>
   );
 }
@@ -366,7 +477,23 @@ export function RuntimePicker({
     [catalog, controlledValue, onChange, value],
   );
 
+  /**
+   * A preset is the whole tuple in one commit — reconcile it against the
+   * current value so an effort the ladder lacks clamps, then take the same
+   * commit path as `set`.
+   */
+  const applyPreset = useCallback(
+    (preset: RuntimePreset) => {
+      const next = valueForPreset(catalog, preset, value);
+      if (controlledValue === undefined) setUncontrolled(next);
+      onChange?.(next);
+      if (next.harness !== value.harness) setQuery("");
+    },
+    [catalog, controlledValue, onChange, value],
+  );
+
   const harnesses = catalog.harnesses;
+  const presets = catalog.presets ?? [];
   const allModels = useMemo(
     () => modelsFor(catalog, value.harness),
     [catalog, value.harness],
@@ -380,9 +507,26 @@ export function RuntimePicker({
     if (custom.note !== "custom") return allModels;
     return [...allModels, custom];
   }, [allModels, catalog, value]);
+  /**
+   * Pin-first, never hide: shortlisted models for this harness lead, then a
+   * divider, then the rest of the list in catalog order. The filter applies
+   * to both halves so a query still narrows the whole band.
+   */
+  const { pinned, rest } = useMemo(
+    () => orderModelsWithShortlist(withCustom, catalog.shortlist, value.harness),
+    [withCustom, catalog.shortlist, value.harness],
+  );
+  const modelsPinned = useMemo(
+    () => searchRuntimeOptions(pinned, query) as PinnedRuntimeOption[],
+    [pinned, query],
+  );
+  const modelsRest = useMemo(
+    () => searchRuntimeOptions(rest, query),
+    [rest, query],
+  );
   const models = useMemo(
-    () => searchRuntimeOptions(withCustom, query),
-    [withCustom, query],
+    () => [...modelsPinned, ...modelsRest],
+    [modelsPinned, modelsRest],
   );
   const catalogEfforts = effortsFor(catalog, value.harness, value.model);
   const efforts = showEffort === false ? null : showEffort === true
@@ -392,6 +536,11 @@ export function RuntimePicker({
     searchable === "auto" ? withCustom.length > SEARCH_THRESHOLD : searchable;
 
   const description = describeRuntime(catalog, value);
+  /**
+   * An exact preset match reads as its name — the operator chose "Fusion",
+   * not a coincidental tuple — while effort stays the live value's own rung.
+   */
+  const chipModelLabel = matchPreset(catalog, value)?.label ?? description.modelLabel;
 
   // ── Roving focus ───────────────────────────────────────────────────────────
 
@@ -403,15 +552,20 @@ export function RuntimePicker({
 
   const counts = useMemo<Record<Group, number>>(
     () => ({
+      preset: presets.length,
       harness: harnesses.length,
       model: status === "ready" ? models.length : 0,
       effort: efforts?.length ?? 0,
     }),
-    [efforts?.length, harnesses.length, models.length, status],
+    [efforts?.length, harnesses.length, models.length, presets.length, status],
   );
 
   const selectedIndex = useCallback(
     (group: Group) => {
+      if (group === "preset") {
+        const hit = matchPreset(catalog, value);
+        return Math.max(0, presets.findIndex((p) => p.id === hit?.id));
+      }
       if (group === "harness") {
         return Math.max(0, harnesses.findIndex((h) => h.value === value.harness));
       }
@@ -420,7 +574,7 @@ export function RuntimePicker({
       }
       return Math.max(0, efforts?.findIndex((e) => e.value === value.effort) ?? 0);
     },
-    [efforts, harnesses, models, value],
+    [catalog, efforts, harnesses, models, presets, value],
   );
 
   const focusCell = useCallback((group: Group, index: number) => {
@@ -529,27 +683,42 @@ export function RuntimePicker({
     left: number;
     top: number;
     placement: "up" | "down";
+    maxHeight: number;
   } | null>(null);
 
   const measure = useCallback(() => {
     const trigger = triggerRef.current;
     if (!trigger) return;
     const rect = trigger.getBoundingClientRect();
-    const roomAbove = rect.top;
-    const roomBelow = window.innerHeight - rect.bottom;
-    // Composer toolbars sit at the foot of the screen, so prefer upward.
-    const placement: "up" | "down" =
-      roomAbove >= PANEL_H_ESTIMATE || roomAbove >= roomBelow ? "up" : "down";
+    // The real panel height once it has rendered; the estimate before that.
+    const panelHeight = panelRef.current?.scrollHeight ?? PANEL_H_ESTIMATE;
+    const { placement, maxHeight } = resolvePanelPlacement({
+      rectTop: rect.top,
+      rectBottom: rect.bottom,
+      viewportHeight: viewportHeight(),
+      panelHeight,
+      gap: GAP,
+    });
     const width = Math.min(PANEL_W, window.innerWidth - GAP * 2);
     const left = Math.min(
       Math.max(GAP, rect.right - width),
       Math.max(GAP, window.innerWidth - width - GAP),
     );
-    setAnchor({
+    const next = {
       left,
       top: placement === "up" ? rect.top - GAP : rect.bottom + GAP,
       placement,
-    });
+      maxHeight,
+    };
+    // Measure→render→measure is a loop unless an identical reading is a no-op.
+    setAnchor((current) =>
+      current
+        && current.left === next.left
+        && current.top === next.top
+        && current.placement === next.placement
+        && current.maxHeight === next.maxHeight
+        ? current
+        : next);
   }, []);
 
   useLayoutEffect(() => {
@@ -558,11 +727,18 @@ export function RuntimePicker({
     const onReflow = () => measure();
     window.addEventListener("scroll", onReflow, true);
     window.addEventListener("resize", onReflow);
+    // The panel's own height is an input to placement: a harness switch or a
+    // filtered list changes it, so re-measure when the box changes size.
+    // `anchor` is a dep because the panel only exists once an anchor does.
+    const observer =
+      typeof ResizeObserver !== "undefined" ? new ResizeObserver(onReflow) : null;
+    if (panelRef.current) observer?.observe(panelRef.current);
     return () => {
       window.removeEventListener("scroll", onReflow, true);
       window.removeEventListener("resize", onReflow);
+      observer?.disconnect();
     };
-  }, [open, measure]);
+  }, [open, anchor, measure]);
 
   // ── Open / close ───────────────────────────────────────────────────────────
 
@@ -626,12 +802,17 @@ export function RuntimePicker({
 
   const ctx: PanelCtx = {
     value,
+    catalog,
     set,
+    applyPreset,
     status,
     statusMessage,
     onRetry,
     harnesses,
+    presets,
     models,
+    modelsPinned,
+    modelsRest,
     efforts,
     harnessLabel: description.harnessLabel,
     searchable: isSearchable,
@@ -677,8 +858,8 @@ export function RuntimePicker({
             {/* Keyed so a changed model cross-fades in place rather than
                 swapping between two frames. The chip hugs the new width —
                 the fade is what softens that. */}
-            <span key={description.modelLabel} className="s-rt-chip-model-text">
-              {description.modelLabel}
+            <span key={chipModelLabel} className="s-rt-chip-model-text">
+              {chipModelLabel}
             </span>
           </span>
           {efforts && description.effortLabel ? (
@@ -706,65 +887,75 @@ export function RuntimePicker({
               style={{
                 left: anchor.left,
                 width: Math.min(PANEL_W, window.innerWidth - GAP * 2),
+                maxHeight: anchor.maxHeight,
                 ...(anchor.placement === "up"
-                  ? { bottom: window.innerHeight - anchor.top }
+                  ? { bottom: viewportHeight() - anchor.top }
                   : { top: anchor.top }),
               }}
             >
-              <section className="s-rt-band" style={{ animationDelay: "20ms" }}>
-                <BandHeading>Harness</BandHeading>
-                <div className="s-rt-options" role="radiogroup" aria-label="Harness">
-                  {harnesses.map((harness, index) => {
-                    const on = harness.value === value.harness;
-                    const harnessDisabled = harness.disabled ?? false;
-                    return (
-                      <button
-                        key={harness.value || "default"}
-                        type="button"
-                        role="radio"
-                        aria-checked={on}
-                        aria-disabled={harnessDisabled || undefined}
-                        onClick={() => {
-                          if (!harnessDisabled) ctx.set({ harness: harness.value });
-                        }}
-                        data-on={on || undefined}
-                        data-disabled={harnessDisabled || undefined}
-                        title={harness.note}
-                        {...ctx.cell("harness", index)}
-                        className="s-rt-opt s-rt-harness-opt"
-                      >
-                        <HarnessMark
-                          harness={harness.value || "unknown"}
-                          size={13}
-                          className="s-rt-opt-mark"
-                          title={null}
-                        />
-                        <span>{harness.label}</span>
-                      </button>
-                    );
-                  })}
-                </div>
-              </section>
-
-              <section className="s-rt-band" style={{ animationDelay: "45ms" }}>
-                <BandHeading>Model</BandHeading>
-                {isSearchable ? <SearchField ctx={ctx} /> : null}
-                <ModelOptions ctx={ctx} />
-                {description.model.note ? (
-                  <p className="s-rt-band-note">{description.model.note}</p>
+              <div className="s-rt-panel-body">
+                {presets.length ? (
+                  <section className="s-rt-band" style={{ animationDelay: "10ms" }}>
+                    <BandHeading>Presets</BandHeading>
+                    <PresetOptions ctx={ctx} />
+                  </section>
                 ) : null}
-              </section>
 
-              <section className="s-rt-band" style={{ animationDelay: "70ms" }}>
-                <BandHeading>Effort</BandHeading>
-                <div className="s-rt-effort">
-                  {efforts ? (
-                    <EffortLadder ctx={ctx} />
-                  ) : (
-                    <EffortAbsent harnessLabel={description.harnessLabel} />
-                  )}
-                </div>
-              </section>
+                <section className="s-rt-band" style={{ animationDelay: "20ms" }}>
+                  <BandHeading>Harness</BandHeading>
+                  <div className="s-rt-options" role="radiogroup" aria-label="Harness">
+                    {harnesses.map((harness, index) => {
+                      const on = harness.value === value.harness;
+                      const harnessDisabled = harness.disabled ?? false;
+                      return (
+                        <button
+                          key={harness.value || "default"}
+                          type="button"
+                          role="radio"
+                          aria-checked={on}
+                          aria-disabled={harnessDisabled || undefined}
+                          onClick={() => {
+                            if (!harnessDisabled) ctx.set({ harness: harness.value });
+                          }}
+                          data-on={on || undefined}
+                          data-disabled={harnessDisabled || undefined}
+                          title={harness.note}
+                          {...ctx.cell("harness", index)}
+                          className="s-rt-opt s-rt-harness-opt"
+                        >
+                          <HarnessMark
+                            harness={harness.value || "unknown"}
+                            size={13}
+                            className="s-rt-opt-mark"
+                            title={null}
+                          />
+                          <span>{harness.label}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </section>
+
+                <section className="s-rt-band" style={{ animationDelay: "45ms" }}>
+                  <BandHeading>Model</BandHeading>
+                  {isSearchable ? <SearchField ctx={ctx} /> : null}
+                  <ModelOptions ctx={ctx} />
+                  {description.model.note ? (
+                    <p className="s-rt-band-note">{description.model.note}</p>
+                  ) : null}
+                </section>
+
+                <section className="s-rt-band" style={{ animationDelay: "70ms" }}>
+                  <BandHeading>Effort</BandHeading>
+                  <div className="s-rt-effort">
+                    {efforts ? (
+                      <EffortLadder ctx={ctx} />
+                    ) : (
+                      <EffortAbsent harnessLabel={description.harnessLabel} />
+                    )}
+                  </div>
+                </section>
+              </div>
             </div>,
             document.body,
           )
@@ -784,19 +975,28 @@ export {
   RUNTIME_EFFORTS,
   describeRuntime,
   effortsFor,
+  matchPreset,
   modelsFor,
+  orderModelsWithShortlist,
   reconcileRuntime,
   resolveModel,
   runtimeCatalogFromRunnerOptions,
+  runtimeListOriginLabel,
   searchRuntimeOptions,
   seedRuntime,
   supportsEffort,
+  valueForPreset,
 } from "../../lib/runtime-catalog.ts";
 export type {
+  PinnedRuntimeOption,
   RuntimeCatalog,
   RuntimeDescription,
   RuntimeEffort,
   RuntimeHarness,
   RuntimeOption,
+  RuntimePreset,
+  RuntimePresetOrigin,
+  RuntimeShortlistEntry,
+  RuntimeShortlistOrigin,
   RuntimeValue,
 } from "../../lib/runtime-catalog.ts";

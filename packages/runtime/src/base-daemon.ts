@@ -41,6 +41,18 @@ import {
   resolveJetStreamConfig,
   type JetStreamRuntimeConfig,
 } from "./jetstream/index.js";
+import {
+  MESH_BRIDGE_EXIT_UNCONFIGURED,
+  findRecordedLiveMeshBridgePid,
+  inspectLaunchdJob,
+  legacyMeshBridgeLaunchdTarget,
+  meshBridgeArgs,
+  meshBridgeStatePath,
+  readProcessIdentity,
+  resolveMeshBridgeDesiredState,
+  resolveMeshBridgeEntrypoint,
+  type MeshBridgeDesiredState,
+} from "./mesh-bridge-supervisor.js";
 import { openScoutNetworkServiceEnvironment } from "./open-scout-network.js";
 import { readTailscaleSelfWebHostsSync } from "./tailscale.js";
 
@@ -55,6 +67,13 @@ const CHILD_SHUTDOWN_TIMEOUT_MS = 15_000;
 const WEB_START_RETRY_MS = 5_000;
 const PAIRING_RECONCILE_INTERVAL_MS = 500;
 const PAIRING_STOP_TIMEOUT_MS = 5_000;
+const MESH_BRIDGE_RECONCILE_INTERVAL_MS = 5_000;
+const MESH_BRIDGE_STOP_TIMEOUT_MS = 6_000;
+// An unconfigured bridge (no relay token) is not a crash; retry rarely.
+const MESH_BRIDGE_UNCONFIGURED_RETRY_MS = 5 * 60_000;
+// Backoff resets only after the bridge has stayed up this long, so a bridge
+// that crashes every few seconds keeps backing off.
+const MESH_BRIDGE_STABLE_AFTER_MS = 60_000;
 const MENU_BUNDLE_ID = "app.openscout.scout.menu";
 const PROCESS_NAME = "scout-base";
 // openscout-runtime.mjs runs broker-daemon in-process (no second bun child),
@@ -82,6 +101,16 @@ let pairingRestartGeneration: number | null = null;
 let pairingRestartDelayMs = RESTART_MIN_DELAY_MS;
 let pairingNextStartAt = 0;
 let pairingSupervisionClaimed = false;
+let meshBridgeProcess: ChildProcess | null = null;
+let meshBridgeConfigMtimeMs = 0;
+let meshBridgeRestartDelayMs = RESTART_MIN_DELAY_MS;
+let meshBridgeNextStartAt = 0;
+let meshBridgeReconcileTimer: NodeJS.Timeout | null = null;
+let meshBridgeLastIdleReason: string | null = null;
+let meshBridgeReconcileInFlight = false;
+let meshBridgeStartedAt = 0;
+/** Config mtime when the bridge last exited unconfigured; a change lifts the cooldown. */
+let meshBridgeUnconfiguredMtimeMs: number | null = null;
 
 const parentPid = Number.parseInt(process.env.OPENSCOUT_PARENT_PID ?? "0", 10);
 
@@ -263,11 +292,15 @@ function resolveEdgeScheme(): OpenScoutLocalEdgeScheme {
   if (value === "http" || value === "https" || value === "both") {
     return value;
   }
-  return "http";
+  // Serve https beside http: browsers only hand the microphone (live voice)
+  // to a secure page, and a named .local host over http is not one.
+  return "both";
 }
 
+// "both" keeps advertising http so existing links and paired devices that do
+// not trust the local CA keep working; https is an extra door, not the default.
 function forwardedProtoForEdgeScheme(scheme: OpenScoutLocalEdgeScheme): "http" | "https" {
-  return scheme === "http" ? "http" : "https";
+  return scheme === "https" ? "https" : "http";
 }
 
 function resolveEdgeConfig(): OpenScoutLocalEdgeConfig {
@@ -755,6 +788,187 @@ function startPairingSupervision(): void {
   void reconcilePairingController();
 }
 
+function writeMeshBridgeState(state: Record<string, unknown>): void {
+  try {
+    ensureDirectory(join(config.supportDirectory, "runtime"));
+    writeFileSync(meshBridgeStatePath(config.supportDirectory), `${JSON.stringify({ ...state, updatedAt: Date.now() }, null, 2)}\n`);
+  } catch (error) {
+    warn("could not record mesh bridge state", error instanceof Error ? error.message : String(error));
+  }
+}
+
+function spawnMeshBridge(desired: Extract<MeshBridgeDesiredState, { run: true }>): void {
+  if (shuttingDown || meshBridgeProcess) return;
+  const moduleDirectory = dirname(fileURLToPath(import.meta.url));
+  const repoRoot = resolveOpenScoutRepoRoot({
+    startDirectories: [process.env.OPENSCOUT_SETUP_CWD, process.cwd(), moduleDirectory],
+  });
+  const entrypoint = resolveMeshBridgeEntrypoint({
+    repoRoot,
+    moduleDirectory,
+    serviceMode: config.mode,
+    env: process.env,
+  });
+  const bun = resolveBunExecutable();
+  if (!entrypoint || !bun) {
+    warn("mesh bridge entrypoint or Bun executable could not be resolved");
+    meshBridgeNextStartAt = Date.now() + meshBridgeRestartDelayMs;
+    meshBridgeRestartDelayMs = Math.min(meshBridgeRestartDelayMs * 2, RESTART_MAX_DELAY_MS);
+    return;
+  }
+
+  const child = spawn(bun.path, meshBridgeArgs(entrypoint, desired.configPath), {
+    cwd: repoRoot ?? process.cwd(),
+    env: { ...process.env, OPENSCOUT_PARENT_PID: String(process.pid) },
+    stdio: ["ignore", logFile("mesh-bridge.stdout.log"), logFile("mesh-bridge.stderr.log")],
+  });
+  meshBridgeProcess = child;
+  meshBridgeStartedAt = Date.now();
+  meshBridgeUnconfiguredMtimeMs = null;
+  meshBridgeConfigMtimeMs = desired.configMtimeMs;
+  meshBridgeLastIdleReason = null;
+  log("mesh bridge started", { pid: child.pid, entrypoint });
+  // The start time lets a later base fence exactly this process, never a
+  // process that inherited its pid.
+  const processStartedAt = child.pid ? readProcessIdentity(child.pid)?.startedAt ?? null : null;
+  writeMeshBridgeState({
+    state: "running",
+    pid: child.pid ?? null,
+    processStartedAt,
+    entrypoint,
+    configPath: desired.configPath,
+    startedAt: Date.now(),
+  });
+  const settle = (code: number | null, signal: NodeJS.Signals | null, error?: string) => {
+    if (meshBridgeProcess !== child) return;
+    meshBridgeProcess = null;
+    if (shuttingDown) return;
+    if (code === MESH_BRIDGE_EXIT_UNCONFIGURED) {
+      warn("mesh bridge has no relay token; retrying later", { retryInMs: MESH_BRIDGE_UNCONFIGURED_RETRY_MS });
+      meshBridgeNextStartAt = Date.now() + MESH_BRIDGE_UNCONFIGURED_RETRY_MS;
+      meshBridgeUnconfiguredMtimeMs = desired.configMtimeMs;
+      writeMeshBridgeState({ state: "unconfigured", pid: null, reason: "no relay token" });
+      return;
+    }
+    warn(error ? "mesh bridge failed to start" : "mesh bridge exited", error ?? { code, signal });
+    meshBridgeNextStartAt = Date.now() + meshBridgeRestartDelayMs;
+    meshBridgeRestartDelayMs = Math.min(meshBridgeRestartDelayMs * 2, RESTART_MAX_DELAY_MS);
+    writeMeshBridgeState({ state: "restarting", pid: null, lastExit: { code, signal }, nextStartAt: meshBridgeNextStartAt });
+  };
+  child.once("error", (error) => settle(null, null, error.message));
+  child.once("exit", (code, signal) => settle(code, signal));
+}
+
+async function reconcileMeshBridge(): Promise<void> {
+  if (shuttingDown || meshBridgeReconcileInFlight) return;
+  meshBridgeReconcileInFlight = true;
+  try {
+    await reconcileMeshBridgeOnce();
+  } catch (error) {
+    warn("mesh bridge reconciliation failed", error instanceof Error ? error.message : String(error));
+  } finally {
+    meshBridgeReconcileInFlight = false;
+  }
+}
+
+async function reconcileMeshBridgeOnce(): Promise<void> {
+  const desired = resolveMeshBridgeDesiredState({ supportDirectory: config.supportDirectory, env: process.env });
+  const running = meshBridgeProcess && !isChildExited(meshBridgeProcess) ? meshBridgeProcess : null;
+
+  if (!desired.run) {
+    if (running) {
+      log("stopping mesh bridge", { reason: desired.reason });
+      meshBridgeProcess = null;
+      await terminateChildProcess(running, "mesh bridge", MESH_BRIDGE_STOP_TIMEOUT_MS);
+    }
+    if (meshBridgeLastIdleReason !== desired.reason) {
+      meshBridgeLastIdleReason = desired.reason;
+      if (desired.reason === "legacy-launch-agent") {
+        warn("mesh bridge is still installed as its own LaunchAgent; run `scout mesh bridge install` to hand it to scout-base");
+      }
+      writeMeshBridgeState({ state: "idle", pid: null, reason: desired.reason });
+    }
+    meshBridgeNextStartAt = 0;
+    meshBridgeRestartDelayMs = RESTART_MIN_DELAY_MS;
+    return;
+  }
+
+  if (running) {
+    if (desired.configMtimeMs !== meshBridgeConfigMtimeMs) {
+      log("mesh bridge config changed; restarting it");
+      meshBridgeProcess = null;
+      await terminateChildProcess(running, "mesh bridge", MESH_BRIDGE_STOP_TIMEOUT_MS);
+      meshBridgeNextStartAt = 0;
+    } else {
+      if (Date.now() - meshBridgeStartedAt >= MESH_BRIDGE_STABLE_AFTER_MS) {
+        meshBridgeRestartDelayMs = RESTART_MIN_DELAY_MS;
+      }
+      return;
+    }
+  }
+
+  // Rewriting the config (e.g. `scout mesh bridge install` after adding the
+  // token) lifts the unconfigured cooldown instead of waiting it out.
+  if (meshBridgeUnconfiguredMtimeMs !== null && desired.configMtimeMs !== meshBridgeUnconfiguredMtimeMs) {
+    meshBridgeUnconfiguredMtimeMs = null;
+    meshBridgeNextStartAt = 0;
+  }
+
+  if (shuttingDown || Date.now() < meshBridgeNextStartAt) return;
+  // The legacy plist can be gone while its job is still loaded (deleted by
+  // hand). Only a confirmed-absent job clears the way; unknown defers too.
+  if (process.platform === "darwin") {
+    const legacyJob = inspectLaunchdJob(legacyMeshBridgeLaunchdTarget());
+    if (legacyJob !== "absent") {
+      const reason = `legacy-launchd-job-${legacyJob}`;
+      if (meshBridgeLastIdleReason !== reason) {
+        meshBridgeLastIdleReason = reason;
+        warn("mesh bridge deferred: the legacy launchd job is not confirmed absent", { state: legacyJob });
+        writeMeshBridgeState({ state: "idle", pid: null, reason });
+      }
+      return;
+    }
+  }
+  // A previous scout-base that died without shutdown (SIGKILL, crash) leaves
+  // its bridge holding the relay until that bridge's parent watcher notices.
+  // Fence it before starting ours so two never hold this node's connection.
+  await fencePreviousMeshBridge();
+  if (shuttingDown) return;
+  spawnMeshBridge(desired);
+}
+
+async function fencePreviousMeshBridge(): Promise<void> {
+  const pid = findRecordedLiveMeshBridgePid(config.supportDirectory);
+  if (pid === null || pid === process.pid) return;
+  warn("stopping a mesh bridge left by a previous scout-base", { pid });
+  try {
+    process.kill(pid, "SIGTERM");
+  } catch {
+    return;
+  }
+  const deadline = Date.now() + MESH_BRIDGE_STOP_TIMEOUT_MS;
+  while (Date.now() < deadline) {
+    try {
+      process.kill(pid, 0);
+    } catch {
+      return;
+    }
+    await sleep(100);
+  }
+  try {
+    process.kill(pid, "SIGKILL");
+  } catch {
+    // Exited between the last probe and the signal.
+  }
+}
+
+function startMeshBridgeSupervision(): void {
+  meshBridgeReconcileTimer = setInterval(() => {
+    void reconcileMeshBridge();
+  }, MESH_BRIDGE_RECONCILE_INTERVAL_MS);
+  meshBridgeReconcileTimer.unref();
+  void reconcileMeshBridge();
+}
 
 function isChildExited(child: ChildProcess): boolean {
   return child.exitCode !== null || child.signalCode !== null;
@@ -822,12 +1036,17 @@ async function shutdown(exitCode = 0): Promise<void> {
     clearInterval(pairingReconcileTimer);
     pairingReconcileTimer = null;
   }
-  // Broker owns scout-web; base owns pairing and the edge children. Scout.app
+  if (meshBridgeReconcileTimer) {
+    clearInterval(meshBridgeReconcileTimer);
+    meshBridgeReconcileTimer = null;
+  }
+  // Broker owns scout-web; base owns pairing, the mesh bridge and the edge children. Scout.app
   // owns only its embedded helper through LaunchServices.
   const activeCaddyProcess = caddyProcess;
   stopEdgeProcesses();
   await Promise.all([
     stopPairingController(),
+    terminateChildProcess(meshBridgeProcess, "mesh bridge", MESH_BRIDGE_STOP_TIMEOUT_MS),
     terminateChildProcess(brokerProcess, "broker"),
     terminateChildProcess(activeCaddyProcess, "local edge", 2_000),
   ]);
@@ -909,5 +1128,6 @@ await startJetStreamSidecar();
 spawnBroker();
 startLocalEdge();
 startPairingSupervision();
+startMeshBridgeSupervision();
 startMenuBarApp();
 void startWebWhenBrokerIsReady();

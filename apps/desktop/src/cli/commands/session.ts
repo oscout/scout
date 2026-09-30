@@ -5,7 +5,12 @@ import { homedir } from "node:os";
 import { basename, join, resolve } from "node:path";
 
 import { buildHarnessResumeCommand, findHarnessEntry } from "@openscout/runtime/harness-catalog";
-import { SQLiteControlPlaneStore } from "@openscout/runtime";
+import {
+  SQLiteControlPlaneStore,
+  endpointMatchesTargetSessionAddress,
+  runtimeSessionAddressEntries,
+  type RuntimeSessionAddressEntry,
+} from "@openscout/runtime";
 import type {
   TerminalBackend,
   TerminalSessionRecord,
@@ -13,9 +18,11 @@ import type {
 } from "@openscout/protocol";
 
 import type { ScoutCommandContext } from "../context.ts";
+import { defaultScoutContextDirectory } from "../context.ts";
 import { ScoutCliError } from "../errors.ts";
 import { readCliInputFile } from "../input-file.ts";
 import { readScoutWebJson } from "../web-api.ts";
+import { readScoutBrokerSnapshotResult, resolveScoutSenderId } from "../../core/broker/service.ts";
 
 const SESSION_HELP = `scout session — actions on a harness session
 
@@ -25,6 +32,8 @@ Usage:
   scout session handoff ...                 Alias for session intake
   scout session onboard ...                 Alias for session intake
   scout session list [--harness <name>] [--backend tmux|zellij]
+  scout session address [<selector>] [--all] [--limit <n>]
+                                            Copyable sess.<token>@<host> addresses
   scout session fork <session-id> [prompt]   Fork a recorded session into a new one
   scout session fork --last [prompt]         Fork the most recent recorded session
   scout session touched <session-id>         Show files observed in a session
@@ -43,6 +52,13 @@ Options (fork):
   --last                Fork the most recent session instead of naming an id
   --prompt-file <path>  Read the kickoff prompt from a file
   --all                 With no id, widen the picker beyond the current directory
+
+Address prints your own session's address with no selector, or the addresses
+a selector names (session handle, native session id, actor id, or an address).
+Anyone can then reach that exact conversation with no agent card:
+  scout ask --to sess.<token>@<host> "..."
+Each row reports reachability: live, resumable (Scout will try the exact
+wake), or unavailable. An address never falls back to a fresh session.
 
 Intake gives an existing harness session a Scout-owned terminal home. It creates
 or reuses a deterministic terminal backend session and starts the harness-native
@@ -71,6 +87,10 @@ export async function runSessionCommand(context: ScoutCommandContext, args: stri
     case "ls":
       await runSessionListAction(context, args.slice(1));
       return;
+    case "address":
+    case "addr":
+      await runSessionAddressAction(context, args.slice(1));
+      return;
     case "fork":
       await runSessionForkAction(context, args.slice(1));
       return;
@@ -80,7 +100,7 @@ export async function runSessionCommand(context: ScoutCommandContext, args: stri
       return;
     default:
       throw new ScoutCliError(
-        `unknown session action: ${action} (try: scout session intake|list|fork|touched <session-id>)`,
+        `unknown session action: ${action} (try: scout session intake|list|address|fork|touched <session-id>)`,
       );
   }
 }
@@ -113,6 +133,109 @@ type SessionListPayload = {
   count: number;
   sessions: TerminalSessionRecord[];
 };
+
+type SessionAddressPayload = {
+  ok: true;
+  action: "session_address";
+  selector: string | null;
+  scope: "self" | "selector" | "all";
+  count: number;
+  addresses: RuntimeSessionAddressEntry[];
+  note?: string;
+};
+
+const SESSION_ENV_KEYS = [
+  "CODEX_THREAD_ID",
+  "OPENSCOUT_CODEX_THREAD_ID",
+  "CLAUDE_CODE_SESSION_ID",
+  "CLAUDE_SESSION_ID",
+] as const;
+
+async function runSessionAddressAction(context: ScoutCommandContext, args: string[]): Promise<void> {
+  if (args.includes("--help") || args.includes("-h")) {
+    context.output.writeText(SESSION_HELP);
+    return;
+  }
+  let all = false;
+  let limit = 20;
+  const positional: string[] = [];
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index]!;
+    if (arg === "--all") {
+      all = true;
+    } else if (arg === "--limit") {
+      const value = Number(args[index + 1]);
+      if (!Number.isInteger(value) || value < 1) throw new ScoutCliError("--limit expects a positive integer");
+      limit = value;
+      index += 1;
+    } else if (arg.startsWith("--")) {
+      throw new ScoutCliError(`unknown option for session address: ${arg}`);
+    } else {
+      positional.push(arg);
+    }
+  }
+  if (positional.length > 1) throw new ScoutCliError("session address takes at most one selector");
+
+  const snapshotResult = await readScoutBrokerSnapshotResult();
+  if (!snapshotResult.ok) throw new ScoutCliError(`could not read the Scout broker: ${snapshotResult.detail}`);
+  const snapshot = snapshotResult.snapshot;
+  const endpoints = Object.values(snapshot.endpoints);
+
+  const selector = positional[0]?.trim() || null;
+  let scope: SessionAddressPayload["scope"];
+  let selected: typeof endpoints;
+  if (all) {
+    scope = "all";
+    selected = endpoints;
+  } else if (selector) {
+    scope = "selector";
+    selected = endpoints.filter((endpoint) =>
+      endpoint.agentId === selector || endpointMatchesTargetSessionAddress(snapshot, endpoint, selector)
+    );
+  } else {
+    scope = "self";
+    const senderId = await resolveScoutSenderId(null, defaultScoutContextDirectory(context), context.env);
+    const sessionIds = SESSION_ENV_KEYS
+      .map((key) => context.env[key]?.trim())
+      .filter((value): value is string => Boolean(value));
+    selected = endpoints.filter((endpoint) =>
+      endpoint.agentId === senderId
+      || sessionIds.some((sessionId) => endpointMatchesTargetSessionAddress(snapshot, endpoint, sessionId))
+    );
+  }
+
+  const entries = runtimeSessionAddressEntries(snapshot, selected);
+  const addresses = all
+    ? entries.filter((entry) => entry.reachability !== "unavailable").slice(0, limit)
+    : entries.slice(0, limit);
+  const payload: SessionAddressPayload = {
+    ok: true,
+    action: "session_address",
+    selector,
+    scope,
+    count: addresses.length,
+    addresses,
+    ...(addresses.length === 0
+      ? {
+          note: scope === "self"
+            ? "This sender has no broker-registered session yet. It gets an address once its harness session attaches to Scout."
+            : "No known session matches. Only sessions this broker has observed have addresses; another host's sessions appear only once that host shares them.",
+        }
+      : {}),
+  };
+  context.output.writeValue(payload, renderSessionAddresses);
+}
+
+function renderSessionAddresses(payload: SessionAddressPayload): string {
+  if (payload.addresses.length === 0) return payload.note ?? "No session addresses.";
+  const width = Math.max(...payload.addresses.map((entry) => entry.address.length));
+  return payload.addresses.map((entry) => [
+    entry.address.padEnd(width),
+    entry.reachability.padEnd(11),
+    entry.harness.padEnd(8),
+    entry.projectRoot ? basename(entry.projectRoot) : "",
+  ].join("  ").trimEnd()).join("\n");
+}
 
 type SessionTouchedPayload = {
   refId: string | null;

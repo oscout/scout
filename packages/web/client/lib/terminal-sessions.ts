@@ -173,6 +173,9 @@ export function terminalConditionLabel(session: TerminalSessionRecord, surface: 
   const state = typeof session.metadata?.backendState === "string"
     ? session.metadata.backendState
     : surface.state;
+  // A detached herdr session's server is down; tmux's "detached" means running
+  // with nobody looking. Same word, opposite meaning, so herdr says stopped.
+  if (surface.backend === "herdr" && state === "detached") return "stopped";
   return state ?? "ready";
 }
 

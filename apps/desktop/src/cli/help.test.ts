@@ -4,7 +4,7 @@ import { renderScoutHelp } from "./help.ts";
 
 describe("renderScoutHelp", () => {
   test("documents the operator loop, lifecycle, and routing model", () => {
-    const help = renderScoutHelp("0.2.99");
+    const help = renderScoutHelp("0.2.99", true);
 
     expect(help).toContain("Fast path:");
     expect(help).toContain("Orientation (only when route or sender is unclear):");
@@ -29,4 +29,12 @@ describe("renderScoutHelp", () => {
     expect(help).toContain("MCP parity:");
     expect(help).toContain("scout card create");
   });
+});
+
+ test("default help is short and points to command help and complete reference", () => {
+  const help = renderScoutHelp("test");
+  expect(help.split("\n").length).toBeLessThan(26);
+  expect(help).toContain("scout help --detail");
+  expect(help).toContain("scout <command> --help");
+  expect(help).toContain("doctor");
 });

@@ -21,6 +21,7 @@ import {
   endpointStateAfterSuccessfulSessionWarmup,
   areHarnessBinariesAvailable,
   brokerSnapshotMessages,
+  getLocalAgentConfig,
   invokeLocalAgentEndpoint,
   listArchivedLocalAgentIds,
   loadRegisteredLocalAgentBindings,
@@ -30,7 +31,9 @@ import {
   renderLocalAgentSystemPromptTemplate,
   resolveLocalAgentContextWindowUsage,
   resolveLocalAgentScoutCliPath,
+  startLocalAgent,
   stripLocalAgentReplyMetadata,
+  waitForReadyComposer,
 } from "./local-agents";
 import { buildCardlessSessionEndpoint } from "./broker-cardless-session";
 import { DEFAULT_BROKER_URL } from "./broker-process-manager";
@@ -210,6 +213,32 @@ for await (const line of rl) {
 }
 
 describe("local agent prompts", () => {
+  test("only attached placement routes Codex to the running app-server socket", () => {
+    const baseEndpoint = {
+      id: "endpoint.codex-attach",
+      agentId: "session-codex-attach",
+      nodeId: "node-1",
+      harness: "codex" as const,
+      transport: "codex_app_server" as const,
+      state: "idle" as const,
+      cwd: "/tmp/openscout",
+    };
+    for (const placement of [undefined, "background", "foreground"]) {
+      expect(buildCodexEndpointSessionOptions({
+        ...baseEndpoint,
+        metadata: placement ? { placement } : {},
+      }).connection).toBeUndefined();
+    }
+    expect(buildCodexEndpointSessionOptions({
+      ...baseEndpoint,
+      metadata: { placement: "attached", codexConnection: "attach" },
+    }).connection).toEqual({ mode: "attach" });
+    expect(buildCodexEndpointSessionOptions({
+      ...baseEndpoint,
+      metadata: { placement: "attached", codexSocketPath: "/tmp/x/control.sock" },
+    }).connection).toEqual({ mode: "attach", socketPath: "/tmp/x/control.sock" });
+  });
+
   test("separates managed background Codex state from the operator foreground store", () => {
     const supportDirectory = mkdtempSync(join(tmpdir(), "openscout-placement-"));
     const operatorCodexHome = join(supportDirectory, "operator-codex");
@@ -463,6 +492,52 @@ describe("local agent prompts", () => {
     expect(SUPPORTED_LOCAL_AGENT_HARNESSES).toContain("grok-acp");
     expect(SUPPORTED_LOCAL_AGENT_HARNESSES).toContain("kimi");
     expect(SUPPORTED_SCOUT_HARNESSES).toContain("kimi");
+  });
+
+  test("binds an OpenCode card to the opencode_acp transport instead of falling back to claude", async () => {
+    const tempRoot = mkdtempSync(join(tmpdir(), "openscout-opencode-card-"));
+    tempPaths.add(tempRoot);
+    const supportDirectory = join(tempRoot, "support");
+    const projectRoot = join(tempRoot, "projects", "openscout");
+    process.env.OPENSCOUT_SUPPORT_DIRECTORY = supportDirectory;
+    mkdirSync(projectRoot, { recursive: true });
+    mkdirSync(supportDirectory, { recursive: true });
+
+    const status = await startLocalAgent({
+      projectPath: projectRoot,
+      agentName: "opencode-scout",
+      displayName: "Opencode Scout",
+      harness: "opencode",
+      model: "opencode-go/deepseek-v4.1-flash",
+      ensureOnline: false,
+    });
+
+    expect(status.harness).toBe("opencode");
+    expect(status.transport).toBe("opencode_acp");
+
+    const config = await getLocalAgentConfig(status.agentId);
+    expect(config?.runtime.harness).toBe("opencode");
+    expect(config?.runtime.transport).toBe("opencode_acp");
+    expect(config?.model).toBe("opencode-go/deepseek-v4.1-flash");
+  });
+
+  test("fails closed on an explicit unknown harness instead of defaulting to claude", async () => {
+    const tempRoot = mkdtempSync(join(tmpdir(), "openscout-unknown-harness-"));
+    tempPaths.add(tempRoot);
+    const supportDirectory = join(tempRoot, "support");
+    const projectRoot = join(tempRoot, "projects", "openscout");
+    process.env.OPENSCOUT_SUPPORT_DIRECTORY = supportDirectory;
+    mkdirSync(projectRoot, { recursive: true });
+    mkdirSync(supportDirectory, { recursive: true });
+
+    // `opencode2` is the product-V2 integration, not a routable harness. An
+    // explicit request must error rather than silently produce a claude agent.
+    await expect(startLocalAgent({
+      projectPath: projectRoot,
+      agentName: "unknown-harness-scout",
+      harness: "opencode2" as never,
+      ensureOnline: false,
+    })).rejects.toThrow('Unsupported local agent harness "opencode2"');
   });
 
   test("hydrates persisted Codex thread ids onto local endpoint metadata", async () => {
@@ -1339,5 +1414,115 @@ describe("listArchivedLocalAgentIds", () => {
       },
     }), "utf8");
     expect(await listArchivedLocalAgentIds()).toEqual(["bravo.node"]);
+  });
+});
+
+describe("waitForReadyComposer deadline", () => {
+  const budget = { timeoutMs: 45_000, graceMs: 10_000, ceilingMs: 120_000, pollMs: 250 };
+
+  function fakePane(captureTail: () => Promise<string>) {
+    let now = 0;
+    return {
+      now,
+      options: {
+        sessionName: "sess",
+        harnessLabel: "Claude Code",
+        ...budget,
+        isAlive: () => true,
+        captureTail,
+        isReady: (tail: string) => tail === "READY",
+        sleep: async (ms: number) => { now += ms; },
+        now: () => now,
+      },
+      elapsed: () => now,
+    };
+  }
+
+  test("a pane that keeps printing past the timeout succeeds when it goes ready later", async () => {
+    // Tail changes every poll — each change earns grace past its observation —
+    // then the composer shows ready at 70 s, past the 45 s timeout.
+    let polls = 0;
+    const pane = fakePane(async () => paneNow() < 70_000 ? `boot-${"abcdefghijklmnopqrstuvwxyz"[polls++ % 26]}` : "READY");
+    function paneNow() { return pane.options.now(); }
+    await expect(waitForReadyComposer(pane.options)).resolves.toBeUndefined();
+    expect(pane.elapsed()).toBeGreaterThanOrEqual(70_000);
+  });
+
+  test("a burst of redraws near the deadline buys one grace window, not the ceiling", async () => {
+    // The tail changes on every poll through the 45 s timeout, then freezes.
+    // Banking grace would stack ~180 × 10 s and pin the deadline at the 120 s
+    // ceiling; grace following the last change buys exactly one grace window.
+    let polls = 0;
+    const pane = fakePane(async () => (
+      paneNow() < 45_000 ? `boot-${"abcdefghijklmnopqrstuvwxyz"[polls++ % 26]}` : "frozen"
+    ));
+    function paneNow() { return pane.options.now(); }
+    await expect(waitForReadyComposer(pane.options))
+      .rejects.toThrow("did not show a ready Claude Code composer within 55000ms");
+    expect(pane.elapsed()).toBe(55_000);
+  });
+
+  test("a spinner-and-clock pane is treated as frozen and fails at the timeout", async () => {
+    // Spinner frames and an advancing clock change every poll but are not
+    // progress — normalized away before the change check.
+    const frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+    let polls = 0;
+    const pane = fakePane(async () => {
+      const seconds = polls++;
+      const clock = `12:${String(Math.floor(seconds / 60)).padStart(2, "0")}:${String(seconds % 60).padStart(2, "0")}`;
+      return `\x1b[2K${frames[seconds % frames.length]} waiting ${clock} (${seconds}s)`;
+    });
+    await expect(waitForReadyComposer(pane.options))
+      .rejects.toThrow("did not show a ready Claude Code composer within 45000ms");
+    expect(pane.elapsed()).toBe(45_000);
+  });
+
+  test("a bare N/M progress counter keeps earning grace until ready", async () => {
+    // "Loading 5/70" changes every poll — bare counters are real progress, not
+    // noise, so grace keeps extending and readiness at 70 s lands.
+    let polls = 0;
+    const pane = fakePane(async () =>
+      paneNow() < 70_000 ? `Loading ${polls++ % 71}/70` : "READY"
+    );
+    function paneNow() { return pane.options.now(); }
+    await expect(waitForReadyComposer(pane.options)).resolves.toBeUndefined();
+    expect(pane.elapsed()).toBeGreaterThanOrEqual(70_000);
+  });
+
+  test("a pane frozen at the same tail fails at the timeout", async () => {
+    const pane = fakePane(async () => "frozen");
+    await expect(waitForReadyComposer(pane.options))
+      .rejects.toThrow("did not show a ready Claude Code composer within 45000ms");
+    expect(pane.elapsed()).toBe(45_000);
+  });
+
+  test("a pane that never stops changing fails at the absolute ceiling", async () => {
+    let polls = 0;
+    const pane = fakePane(async () => `tick-${"abcdefghijklmnopqrstuvwxyz"[polls++ % 26]}`);
+    await expect(waitForReadyComposer(pane.options))
+      .rejects.toThrow("did not show a ready Claude Code composer within 120000ms");
+    expect(pane.elapsed()).toBe(120_000);
+  });
+
+  test("a pane that exits before going ready fails immediately", async () => {
+    const pane = fakePane(async () => "booting");
+    let alive = true;
+    pane.options.isAlive = () => {
+      const was = alive;
+      alive = false;
+      return was;
+    };
+    await expect(waitForReadyComposer(pane.options))
+      .rejects.toThrow("exited before Claude Code was ready");
+  });
+
+  test("a blocking dialog fails on the first poll instead of waiting out the deadline", async () => {
+    const pane = fakePane(async () => "TRUST");
+    await expect(waitForReadyComposer({
+      ...pane.options,
+      isReady: () => true,
+      blockingDialog: (tail) => tail === "TRUST" ? "Claude Code is waiting on its folder-trust prompt." : null,
+    })).rejects.toThrow("tmux session sess: Claude Code is waiting on its folder-trust prompt.");
+    expect(pane.elapsed()).toBe(0);
   });
 });

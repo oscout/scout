@@ -39,6 +39,7 @@ import {
   readClaudeStatuslineSessionSnapshot,
 } from "./claude-statusline.js";
 import {
+  endpointSessionIdIsUnverified,
   sessionObservationMetadata,
   type LocalEndpointSessionObservation,
 } from "./session-observation.js";
@@ -55,6 +56,7 @@ import { invokeCursorAcpAgent } from "./cursor-acp-invocation.js";
 import { invokeOpencodeAcpAgent } from "./opencode-acp-invocation.js";
 import { invokeDevinAcpAgent } from "./devin-acp-invocation.js";
 import { shutdownAcpAgentSession } from "./acp-agent-invocation.js";
+import { findHarnessEntry } from "./harness-catalog.js";
 
 import {
   answerClaudeStreamJsonQuestion,
@@ -147,6 +149,7 @@ import {
   parseScoutPermissionProfile,
 } from "./permission-policy.js";
 import { RequesterWaitTimeoutError } from "./requester-timeout.js";
+import { locateHarnessSession } from "./session-locator.js";
 import { resolveOperatorHandle, resolveOperatorName } from "./user-config.js";
 
 const MODULE_DIRECTORY = dirname(fileURLToPath(import.meta.url));
@@ -999,10 +1002,31 @@ function normalizeTmuxSessionName(value: string | undefined, agentId: string): s
 }
 
 function normalizeLocalAgentHarness(value: string | undefined): AgentHarness {
-  if (value === "codex" || value === "claude" || value === "grok" || value === "grok-acp" || value === "kimi" || value === "pi" || value === "cursor" || value === "devin") {
+  if (value === "codex" || value === "claude" || value === "grok" || value === "grok-acp" || value === "kimi" || value === "pi" || value === "cursor" || value === "opencode" || value === "devin") {
     return value;
   }
   return DEFAULT_LOCAL_AGENT_HARNESS;
+}
+
+/**
+ * Resolve an explicit harness request at a boundary (card create, scout up).
+ * An omitted harness keeps the documented default; an explicit value the
+ * catalog does not know must fail closed instead of silently becoming claude.
+ * `normalizeLocalAgentHarness` stays lenient because it also reads persisted
+ * records, where an unknown harness must not brick an old agent.
+ */
+function resolveRequestedLocalAgentHarness(value: string | undefined): AgentHarness | undefined {
+  const trimmed = value?.trim();
+  if (!trimmed) {
+    return undefined;
+  }
+  const entry = findHarnessEntry(trimmed);
+  if (!entry) {
+    throw new Error(
+      `Unsupported local agent harness "${trimmed}". Use one of: ${SUPPORTED_LOCAL_AGENT_HARNESSES.join(", ")}`,
+    );
+  }
+  return normalizeLocalAgentHarness(entry.harness);
 }
 
 function normalizeLocalAgentTransport(value: string | undefined, harness: AgentHarness): RelayRuntimeTransport {
@@ -1020,6 +1044,10 @@ function normalizeLocalAgentTransport(value: string | undefined, harness: AgentH
 
   if (harness === "devin") {
     return "devin_acp";
+  }
+
+  if (harness === "opencode") {
+    return "opencode_acp";
   }
 
   if (harness === "grok-acp") {
@@ -1201,7 +1229,7 @@ function readLaunchModelForHarness(harness: AgentHarness, launchArgs: string[] |
   if (harness === "codex") {
     return readCodexAppServerModelFromLaunchArgs(launchArgs) ?? undefined;
   }
-  if (harness === "claude" || harness === "grok") {
+  if (harness === "claude" || harness === "grok" || harness === "opencode") {
     return readClaudeLaunchModel(launchArgs ?? []);
   }
   if (harness === "pi") {
@@ -1246,7 +1274,7 @@ function stripLaunchModelForHarness(harness: AgentHarness, launchArgs: string[])
     return next;
   }
 
-  if (harness === "claude" || harness === "grok" || harness === "pi") {
+  if (harness === "claude" || harness === "grok" || harness === "pi" || harness === "opencode") {
     const next: string[] = [];
     const normalized = normalizeLocalAgentLaunchArgs(launchArgs);
     for (let index = 0; index < normalized.length; index += 1) {
@@ -1294,7 +1322,7 @@ function buildLaunchArgsForRequestedModel(harness: AgentHarness, model: string):
   if (harness === "claude" || harness === "grok") {
     return ["--model", model];
   }
-  if (harness === "pi") {
+  if (harness === "pi" || harness === "opencode") {
     return ["--model", model];
   }
   return [];
@@ -1542,7 +1570,9 @@ function normalizeManagedHarness(value: string | undefined, fallback: ManagedAge
                 ? "kimi"
                 : value === "pi"
                   ? "pi"
-                  : fallback;
+                  : value === "opencode"
+                    ? "opencode"
+                    : fallback;
 }
 
 function normalizeLocalHarnessProfiles(agentId: string, record: LocalAgentRecord): RelayHarnessProfiles {
@@ -2141,7 +2171,10 @@ export async function ensureLocalSessionEndpointOnline(endpoint: AgentEndpoint):
     // Keep that provisional id private to the live app-server client so the
     // first real turn reuses the client instead of rebuilding it and trying
     // thread/resume against history that does not exist yet.
-    return { externalSessionId: result.durableThreadId };
+    return {
+      externalSessionId: result.durableThreadId,
+      ...(result.codexAppServer ? { metadata: { codexAppServer: result.codexAppServer } } : {}),
+    };
   }
 
   if (endpoint.transport === "claude_stream_json") {
@@ -2831,7 +2864,29 @@ export function buildCodexEndpointSessionOptions(endpoint: AgentEndpoint): Codex
     sandbox: attachedCodexSandbox(endpoint),
     threadId,
     requireExistingThread: Boolean(threadId) && !ownsSessionThread,
+    ...codexConnectionForEndpoint(endpoint),
   });
+}
+
+/**
+ * Opt-in only: `placement: "attached"` routes the session to the Codex
+ * app-server that is already running on this machine (the daemon control
+ * socket) instead of spawning a private one. Every other placement keeps the
+ * Scout-spawned server.
+ */
+export function codexConnectionForEndpoint(
+  endpoint: AgentEndpoint,
+): Pick<CodexAppServerSessionOptions, "connection"> {
+  if (endpoint.metadata?.placement !== "attached" && endpoint.metadata?.codexConnection !== "attach") {
+    return {};
+  }
+  const socketPath = endpointMetadataString(endpoint, "codexSocketPath");
+  return {
+    connection: {
+      mode: "attach",
+      ...(socketPath ? { socketPath: resolve(expandHomePath(socketPath)) } : {}),
+    },
+  };
 }
 
 /**
@@ -2871,7 +2926,7 @@ export function codexHomeForEndpoint(endpoint: AgentEndpoint): string {
   return operatorCodexHome();
 }
 
-function operatorCodexHome(): string {
+export function operatorCodexHome(): string {
   const explicitSource = process.env.OPENSCOUT_CODEX_HOME_SOURCE?.trim();
   if (explicitSource) return resolve(expandHomePath(explicitSource));
 
@@ -3620,8 +3675,22 @@ const TMUX_VERIFY_BUSY_DEADLINE_MS = parseNonNegativeInteger(
 const TMUX_CAPTURE_TAIL_LINES = 20;
 const TMUX_DEFAULT_COLUMNS = parsePositiveInteger(process.env.OPENSCOUT_LOCAL_AGENT_TMUX_COLUMNS, 160);
 const TMUX_DEFAULT_ROWS = parsePositiveInteger(process.env.OPENSCOUT_LOCAL_AGENT_TMUX_ROWS, 48);
-const TMUX_READY_TIMEOUT_MS = 20_000;
+// Env-tunable like the TMUX_VERIFY_* deadlines above — VARIANTS, not one-way
+// doors. The initial deadline was 20 s; measured `claude` boots on the
+// reporting box took 14–20 s, so the floor is 45 s. A pane that keeps
+// redrawing is still booting, not hung: each changed tail pushes the deadline
+// out by TMUX_READY_GRACE_MS, capped by the absolute ceiling (default 120 s).
+const TMUX_READY_TIMEOUT_MS = parseNonNegativeInteger(
+  process.env.OPENSCOUT_TMUX_READY_TIMEOUT_MS,
+  45_000,
+);
+const TMUX_READY_GRACE_MS = 10_000;
+const TMUX_READY_CEILING_MS = parseNonNegativeInteger(
+  process.env.OPENSCOUT_TMUX_READY_CEILING_MS,
+  120_000,
+);
 const TMUX_READY_POLL_MS = 250;
+const TMUX_REPLY_LIVENESS_INTERVAL_MS = 2_000;
 const TMUX_READY_TAIL_LINES = 80;
 
 export interface TmuxPromptDispatchResult {
@@ -3763,35 +3832,106 @@ async function captureTmuxPaneTail(sessionName: string, lines: number): Promise<
   }) ?? "";
 }
 
+/**
+ * Poll a pane tail until the harness composer shows ready. The deadline
+ * extends while the pane is still changing — a booting harness redraws, a
+ * hung one does not — but an absolute ceiling bounds the total wait so a
+ * pane that never stops changing still fails.
+ */
+export async function waitForReadyComposer(options: {
+  sessionName: string;
+  harnessLabel: string;
+  timeoutMs: number;
+  graceMs: number;
+  ceilingMs: number;
+  pollMs?: number;
+  isAlive: () => boolean;
+  captureTail: () => Promise<string>;
+  isReady: (paneTail: string) => boolean;
+  /** A dialog the harness will never leave on its own; fail at once, naming it. */
+  blockingDialog?: (paneTail: string) => string | null;
+  sleep: (ms: number) => Promise<void>;
+  now?: () => number;
+}): Promise<void> {
+  const now = options.now ?? Date.now;
+  const startedAt = now();
+  const ceiling = startedAt + options.ceilingMs;
+  let deadline = Math.min(startedAt + options.timeoutMs, ceiling);
+  let paneTail = "";
+  let previousTail: string | undefined;
+  while (now() < deadline) {
+    if (!options.isAlive()) {
+      throw new Error(`tmux session ${options.sessionName} exited before ${options.harnessLabel} was ready.`);
+    }
+
+    paneTail = await options.captureTail();
+    const blocked = options.blockingDialog?.(paneTail);
+    if (blocked) {
+      throw new Error(`tmux session ${options.sessionName}: ${blocked}`);
+    }
+    if (options.isReady(paneTail)) {
+      return;
+    }
+
+    const normalizedTail = normalizeTmuxReadyTail(paneTail);
+    if (previousTail !== undefined && normalizedTail !== previousTail) {
+      // Grace follows the last change — a changed tail earns graceMs past its
+      // observation, never deadline + graceMs, so a burst of redraws cannot
+      // bank the whole ceiling.
+      deadline = Math.min(ceiling, Math.max(deadline, now() + options.graceMs));
+    }
+    previousTail = normalizedTail;
+    await options.sleep(options.pollMs ?? TMUX_READY_POLL_MS);
+  }
+
+  const elapsed = now() - startedAt;
+  const tail = stripTerminalControlSequences(paneTail).trim().split(/\r?\n/).slice(-20).join("\n").trim();
+  throw new Error(
+    `tmux session ${options.sessionName} did not show a ready ${options.harnessLabel} composer within ${elapsed}ms.`
+      + (tail ? `\nRecent pane tail:\n${tail}` : ""),
+  );
+}
+
 async function waitForTmuxHarnessReady(sessionName: string, harness: AgentHarness): Promise<void> {
   if (harness !== "claude" && harness !== "grok") {
     return;
   }
 
-  const harnessLabel = harness === "grok" ? "Grok CLI" : "Claude Code";
-  const deadline = Date.now() + TMUX_READY_TIMEOUT_MS;
-  let paneTail = "";
-  while (Date.now() < deadline) {
-    if (!isLocalAgentSessionAlive(sessionName)) {
-      throw new Error(`tmux session ${sessionName} exited before ${harnessLabel} was ready.`);
-    }
+  await waitForReadyComposer({
+    sessionName,
+    harnessLabel: harness === "grok" ? "Grok CLI" : "Claude Code",
+    timeoutMs: TMUX_READY_TIMEOUT_MS,
+    graceMs: TMUX_READY_GRACE_MS,
+    ceilingMs: TMUX_READY_CEILING_MS,
+    isAlive: () => isLocalAgentSessionAlive(sessionName),
+    captureTail: () => captureTmuxPaneTail(sessionName, TMUX_READY_TAIL_LINES),
+    isReady: tmuxPaneTailShowsReadyComposer,
+    blockingDialog: tmuxPaneTailBlockingHarnessDialog,
+    sleep: tmuxDispatchSleep,
+  });
+}
 
-    paneTail = await captureTmuxPaneTail(sessionName, TMUX_READY_TAIL_LINES);
-    if (tmuxPaneTailShowsReadyComposer(paneTail)) {
-      return;
-    }
-
-    await tmuxDispatchSleep(TMUX_READY_POLL_MS);
+/**
+ * Claude Code's first-run folder-trust dialog ("Quick safety check ... Yes, I
+ * trust this folder"). Its `❯ No, exit` selection cursor looks like a composer,
+ * so without this check Scout typed the prompt into the dialog and Enter chose
+ * "No, exit" — the harness quit and the flight sat in `running`.
+ */
+export function tmuxPaneTailBlockingHarnessDialog(paneTail: string): string | null {
+  const cleanedTail = stripTerminalControlSequences(paneTail);
+  if (/Yes,\s*I\s*trust\s*this\s*folder/i.test(cleanedTail)) {
+    const folder = /Accessing\s+workspace:\s*\n?\s*(\S[^\n]*)/i.exec(cleanedTail)?.[1]?.trim();
+    return `Claude Code is waiting on its folder-trust prompt${folder ? ` for ${folder}` : ""}. `
+      + "Open `claude` in that folder once and choose \"Yes, I trust this folder\", "
+      + "or send the ask without a tmux transport.";
   }
-
-  const tail = stripTerminalControlSequences(paneTail).trim().split(/\r?\n/).slice(-20).join("\n").trim();
-  throw new Error(
-    `tmux session ${sessionName} did not show a ready ${harnessLabel} composer within ${TMUX_READY_TIMEOUT_MS}ms.`
-      + (tail ? `\nRecent pane tail:\n${tail}` : ""),
-  );
+  return null;
 }
 
 export function tmuxPaneTailShowsReadyComposer(paneTail: string): boolean {
+  if (tmuxPaneTailBlockingHarnessDialog(paneTail)) {
+    return false;
+  }
   const cleanedTail = stripTerminalControlSequences(paneTail);
   const lines = cleanedTail.split(/\r?\n/);
   const anchor = findActiveTmuxComposerAnchor(lines);
@@ -3872,6 +4012,15 @@ function textContainsPromptFragment(haystack: string, prompt: string): boolean {
 
 function stripTerminalControlSequences(value: string): string {
   return value.replace(/\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])/g, "");
+}
+
+// Spinner frames, clocks, and elapsed/percent tokens redraw every poll
+// without the harness making real progress — normalize them away so that
+// noise alone never counts as a changed pane tail. Bare numbers and N/M
+// progress counters are kept: they are real output.
+function normalizeTmuxReadyTail(paneTail: string): string {
+  return stripTerminalControlSequences(paneTail)
+    .replace(/[⠁-⣿◐◓◑◒|\/\-\\]|\b\d{1,2}:\d{2}(?::\d{2})?\b|\b\d+(?:\.\d+)?\s?(?:ms|s|m|h)\b|\b\d+(?:\.\d+)?\s?%/g, "");
 }
 
 type TmuxComposerAnchor = {
@@ -4020,12 +4169,24 @@ export async function requireClaudeNativeSessionBeforeDelivery(
   throw new Error(`Exact Claude continuation session ${nativeSessionId} has no verified live process; no task was sent.`);
 }
 
-/** Exact native Claude continuation must survive a tmux worker restart. */
-export function flatSessionEndpointLaunchArgs(endpoint: AgentEndpoint): string[] {
+/**
+ * Exact native Claude continuation must survive a tmux worker restart.
+ *
+ * A fork endpoint (metadata.forkedFromSessionId) launches as
+ * `--resume <source> --fork-session --session-id <fork>` until the fork's own
+ * transcript exists; after that it resumes the fork like any exact session.
+ */
+export function flatSessionEndpointLaunchArgs(
+  endpoint: AgentEndpoint,
+  options: { claudeSessionExists?: (nativeSessionId: string) => boolean } = {},
+): string[] {
   const args = normalizeLocalAgentLaunchArgs(endpoint.metadata?.launchArgs);
   if (endpoint.transport !== "tmux" || endpoint.harness !== "claude" || endpoint.metadata?.flatDispatch !== true) return args;
   const nativeId = endpointMetadataString(endpoint, "nativeSessionId") ?? endpointMetadataString(endpoint, "externalSessionId");
   if (!nativeId) throw new Error("Exact Claude continuation has no native session id.");
+  const forkSource = endpointMetadataString(endpoint, "forkedFromSessionId");
+  const forkPending = Boolean(forkSource) && forkSource !== nativeId
+    && !(options.claudeSessionExists ?? claudeNativeSessionExists)(nativeId);
   const clean: string[] = [];
   for (let i = 0; i < args.length; i += 1) {
     const arg = args[i]!;
@@ -4033,7 +4194,12 @@ export function flatSessionEndpointLaunchArgs(endpoint: AgentEndpoint): string[]
     if (["--continue", "-c", "--fork-session"].includes(arg) || /^(--resume|--session-id)=/.test(arg)) continue;
     clean.push(arg);
   }
+  if (forkPending) return [...clean, "--resume", forkSource!, "--fork-session", "--session-id", nativeId];
   return [...clean, "--resume", nativeId];
+}
+
+function claudeNativeSessionExists(nativeSessionId: string): boolean {
+  return locateHarnessSession({ nativeSessionId, harness: "claude" }).ok;
 }
 
 function buildLocalAgentLaunchCommand(
@@ -4487,6 +4653,16 @@ async function ensureLocalAgentOnlineOnce(agentName: string, record: LocalAgentR
   invalidateTmuxSessions({ reason: "local-agent.new-session" });
   const paneId = paneResult.stdout.trim();
   try {
+    await execSystemFile(
+      "tmux",
+      ["set-option", "-t", normalizedRecord.tmuxSession, SCOUT_LAUNCHED_TMUX_OPTION, "1"],
+      { timeoutMs: 2_000 },
+    );
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    console.warn(`[openscout-runtime] unable to tag ${normalizedRecord.tmuxSession} as Scout-launched: ${reason}`);
+  }
+  try {
     writeRelayAgentProcessLease({
       agentId: agentName,
       sessionName: normalizedRecord.tmuxSession,
@@ -4735,7 +4911,7 @@ export type ResolvedAgentIdentity = {
 
 export async function resolveLocalAgentIdentity(input: StartLocalAgentInput): Promise<ResolvedAgentIdentity> {
   const projectPath = normalizeProjectPath(input.projectPath);
-  const preferredHarness = input.harness ? normalizeLocalAgentHarness(input.harness) : undefined;
+  const preferredHarness = resolveRequestedLocalAgentHarness(input.harness);
   const requestedDefinitionId = input.agentName?.trim()
     ? assertScoutAgentNameForWrite(input.agentName.trim())
     : "";
@@ -4836,7 +5012,7 @@ export async function resolveLocalAgentIdentity(input: StartLocalAgentInput): Pr
 
 export async function startLocalAgent(input: StartLocalAgentInput): Promise<ScoutLocalAgentStatus> {
   const projectPath = normalizeProjectPath(input.projectPath);
-  const preferredHarness = input.harness ? normalizeLocalAgentHarness(input.harness) : undefined;
+  const preferredHarness = resolveRequestedLocalAgentHarness(input.harness);
   const currentDirectory = input.currentDirectory ?? projectPath;
   const effectiveCwd = input.cwdOverride ? normalizeProjectPath(input.cwdOverride) : undefined;
   const shouldEnsureOnline = input.ensureOnline !== false;
@@ -5489,6 +5665,32 @@ function buildLocalAgentBinding(
  * named here (or claimed by a process lease) may ever be reaped. Covers every
  * harness profile plus the raw and legacy (`relay-<agentId>`) session names.
  */
+/**
+ * tmux session option Scout sets on every session it launches. It lives on
+ * the session itself, so it survives broker restarts, and it is how the idle
+ * reaper tells Scout's sessions from the operator's.
+ */
+export const SCOUT_LAUNCHED_TMUX_OPTION = "@openscout-launched";
+
+export async function listScoutLaunchedTmuxSessions(): Promise<Set<string>> {
+  try {
+    const { stdout } = await execSystemFile(
+      "tmux",
+      ["list-sessions", "-F", `#{session_name}|#{${SCOUT_LAUNCHED_TMUX_OPTION}}`],
+      { timeoutMs: 2_000, maxStdoutBytes: 512 * 1024 },
+    );
+    const launched = new Set<string>();
+    for (const line of stdout.split("\n")) {
+      const cut = line.lastIndexOf("|");
+      if (cut > 0 && line.slice(cut + 1).trim() === "1") launched.add(line.slice(0, cut));
+    }
+    return launched;
+  } catch {
+    // No tmux server, or tmux missing: nothing is provably Scout's.
+    return new Set();
+  }
+}
+
 export async function listRelayAgentTmuxSessionOwners(): Promise<Map<string, string>> {
   const owners = new Map<string, string>();
   const overrides = await readRelayAgentOverrides();
@@ -5503,6 +5705,10 @@ export async function listRelayAgentTmuxSessionOwners(): Promise<Map<string, str
     names.add(normalizeTmuxSessionName(record.tmuxSession, agentId));
     // Legacy fallback name used when no session id was configured.
     names.add(normalizeTmuxSessionName(undefined, agentId));
+    // Launches without a saved profile use the per-harness default name.
+    for (const harness of MANAGED_AGENT_HARNESSES) {
+      names.add(defaultLocalAgentSessionId(agentId, harness));
+    }
     const profiles = normalizeLocalHarnessProfiles(agentId, record);
     for (const profile of Object.values(profiles)) {
       if (profile?.sessionId) {
@@ -5669,6 +5875,14 @@ type LocalAgentInvocationResult = {
   metadata?: Record<string, unknown>;
 };
 
+export type LocalAgentInvocationHooks = {
+  /**
+   * Harness identity observed before the turn ends. The caller persists it at
+   * once so a turn that never completes cleanly still leaves the endpoint bound.
+   */
+  onSessionObserved?: (metadata: Record<string, unknown>) => Promise<void> | void;
+};
+
 /** The `--name` Scout passes when it launches this agent's harness into tmux. */
 export function localAgentLaunchName(agentName: string): string {
   return `${agentName}-relay-agent`;
@@ -5782,6 +5996,7 @@ async function observedRuntimeMetadataAfterInvocation(
 export async function invokeLocalAgentEndpoint(
   endpoint: AgentEndpoint,
   invocation: InvocationRequest,
+  hooks: LocalAgentInvocationHooks = {},
 ): Promise<LocalAgentInvocationResult> {
   const agentRuntimeId = endpoint.agentId;
   const definitionId = String(endpoint.metadata?.definitionId ?? endpoint.metadata?.agentName ?? endpoint.agentId);
@@ -5811,7 +6026,10 @@ export async function invokeLocalAgentEndpoint(
     return {
       output: result.output,
       externalSessionId: result.threadId,
-      metadata: await observedRuntimeMetadataAfterInvocation(endpoint),
+      metadata: {
+        ...await observedRuntimeMetadataAfterInvocation(endpoint),
+        ...(result.codexAppServer ? { codexAppServer: result.codexAppServer } : {}),
+      },
     };
   }
 
@@ -5861,6 +6079,7 @@ export async function invokeLocalAgentEndpoint(
       prompt,
       name: String(endpoint.metadata?.agentName ?? endpoint.metadata?.definitionId ?? "Grok ACP"),
       timeoutMs: invocation.timeoutMs,
+      hardCeilingMs: invocation.execution?.turnBudgetMs,
       ...(adapterOptions ? { adapterOptions } : {}),
     });
 
@@ -5882,6 +6101,7 @@ export async function invokeLocalAgentEndpoint(
       prompt,
       name: String(endpoint.metadata?.agentName ?? endpoint.metadata?.definitionId ?? "Kimi Code ACP"),
       timeoutMs: invocation.timeoutMs,
+      hardCeilingMs: invocation.execution?.turnBudgetMs,
     });
 
     return {
@@ -5903,6 +6123,7 @@ export async function invokeLocalAgentEndpoint(
       prompt,
       name: String(endpoint.metadata?.agentName ?? endpoint.metadata?.definitionId ?? "OpenCode ACP"),
       timeoutMs: invocation.timeoutMs,
+      hardCeilingMs: invocation.execution?.turnBudgetMs,
       ...(model ? { adapterOptions: { model } } : {}),
     });
 
@@ -5925,6 +6146,7 @@ export async function invokeLocalAgentEndpoint(
       prompt,
       name: String(endpoint.metadata?.agentName ?? endpoint.metadata?.definitionId ?? "Devin ACP"),
       timeoutMs: invocation.timeoutMs,
+      hardCeilingMs: invocation.execution?.turnBudgetMs,
       ...(model ? { adapterOptions: { model } } : {}),
     });
 
@@ -5946,6 +6168,7 @@ export async function invokeLocalAgentEndpoint(
       prompt,
       name: String(endpoint.metadata?.agentName ?? endpoint.metadata?.definitionId ?? "Cursor ACP"),
       timeoutMs: invocation.timeoutMs,
+      hardCeilingMs: invocation.execution?.turnBudgetMs,
     });
 
     return {
@@ -6083,6 +6306,7 @@ export async function invokeLocalAgentEndpoint(
       prompt,
       name: definitionId,
       timeoutMs: invocation.timeoutMs,
+      hardCeilingMs: invocation.execution?.turnBudgetMs,
     };
     const endpointModel = endpointMetadataString(endpoint, "model");
     const grokAdapterOptions = grokAcpAdapterOptions(
@@ -6131,14 +6355,18 @@ export async function invokeLocalAgentEndpoint(
   await sendLocalAgentPrompt(agentRuntimeId, onlineRecord, buildLocalAgentNudge(agentRuntimeId, invocation, flightId));
   // The harness is up once the prompt landed, so its own session record exists
   // to be read. Evidence rides back on the result and never fails the turn.
-  const observedSessionMetadata = async (): Promise<Pick<LocalAgentInvocationResult, "metadata">> => {
+  const observedSessionMetadata = async (attempts = 1): Promise<Pick<LocalAgentInvocationResult, "metadata">> => {
     if (normalizeLocalAgentHarness(onlineRecord.harness) !== "claude") return {};
-    const observation = await observeTmuxClaudeSession({
-      tmuxSession: onlineRecord.tmuxSession,
-      launchName: localAgentLaunchName(agentRuntimeId),
-      cwd: onlineRecord.cwd,
-    }).catch(() => null);
-    return observation ? { metadata: sessionObservationMetadata(endpoint, observation) } : {};
+    for (let attempt = 0; attempt < attempts; attempt += 1) {
+      const observation = await observeTmuxClaudeSession({
+        tmuxSession: onlineRecord.tmuxSession,
+        launchName: localAgentLaunchName(agentRuntimeId),
+        cwd: onlineRecord.cwd,
+      }).catch(() => null);
+      if (observation) return { metadata: sessionObservationMetadata(endpoint, observation) };
+      if (attempt + 1 < attempts) await sleep(250);
+    }
+    return {};
   };
 
   if (invocation.action === "wake") {
@@ -6148,7 +6376,18 @@ export async function invokeLocalAgentEndpoint(
     };
   }
 
+  // A harness spawned for this turn still owes its id. Settle it now, not at
+  // turn end: a turn that never completes cleanly (broker restart, stale-flight
+  // reconcile) would otherwise leave the endpoint unbound for its whole life.
+  if (hooks.onSessionObserved && endpointSessionIdIsUnverified(endpoint)) {
+    const early = await observedSessionMetadata(4);
+    if (early.metadata) {
+      await Promise.resolve(hooks.onSessionObserved(early.metadata)).catch(() => undefined);
+    }
+  }
+
   const deadline = Date.now() + timeoutSeconds * 1000;
+  let nextLivenessCheckAt = Date.now() + TMUX_REPLY_LIVENESS_INTERVAL_MS;
   while (Date.now() <= deadline) {
     const messages = await readBrokerMessagesSince(askedAt - 1);
 
@@ -6161,6 +6400,17 @@ export async function invokeLocalAgentEndpoint(
         output: stripLocalAgentReplyMetadata(message.body, flightId, invocation.requesterId),
         ...await observedSessionMetadata(),
       };
+    }
+
+    // A harness that quit can never reply. Without this the requester timeout
+    // below parks the flight as "still working" forever.
+    if (onlineRecord.transport === "tmux" && onlineRecord.tmuxSession && Date.now() >= nextLivenessCheckAt) {
+      nextLivenessCheckAt = Date.now() + TMUX_REPLY_LIVENESS_INTERVAL_MS;
+      if (!await isLocalAgentSessionAliveAsync(onlineRecord.tmuxSession)) {
+        throw new Error(
+          `tmux session ${onlineRecord.tmuxSession} exited before ${agentRuntimeId} replied.`,
+        );
+      }
     }
 
     await sleep(500);

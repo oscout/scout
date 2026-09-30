@@ -16,6 +16,28 @@
 .cw-root--scoped {
   padding-top: var(--space-lg);
 }
+/* The Agents landing: toolbar, list and feed share one left-aligned column
+   so the age at the row's end stays in reach of its name. The scroller
+   itself stays full width so the scrollbar keeps to the pane edge. */
+.cw-root[data-home] > * {
+  width: 100%;
+  max-width: 1040px;
+}
+/* ...and the project rows take the feed's columns: the title holds the
+   same 220px lead column as the feed's names, so paths start where the
+   feed's sentences start and ages share one right edge. Keep in step with
+   --ahf-who in agents-home-feed.css. */
+.cw-root[data-home] .cw-workspaceTitle {
+  width: 220px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cw-root[data-home] { container-type: inline-size; }
+@container (max-width: 640px) {
+  .cw-root[data-home] .cw-workspaceTitle { width: 140px; }
+}
 
 /* ── toolbar ── */
 
@@ -441,15 +463,25 @@
   color: var(--pi-ink);
   font-weight: 600;
 }
-.cw-workspaceRoot {
+/* Middle column: what the project holds, where the feed puts its sentence. */
+.cw-workspaceState {
   flex: 1;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  color: var(--pi-dim);
+  color: var(--pi-muted);
   font-family: var(--pi-mono);
   font-size: var(--text-xs);
+  font-variant-numeric: tabular-nums;
+}
+/* Right side: the path, then the age on the row's edge. */
+.cw-workspaceRoot {
+  max-width: 320px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--pi-dim);
 }
 .cw-workspaceMeta {
   flex: none;

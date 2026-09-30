@@ -1,15 +1,16 @@
 import type { BrokerMessageHistory } from "./broker-message-history.js";
 import { readableCanonicalMessage, readableJournalKinds } from "./broker-journal-record-contract.js";
 import { shareLoadedRecordStrings } from "./broker-record-strings.js";
-import { captureMessageRecords } from "./broker-message-records.js";
+import { captureMessageRecords, asyncMessageRecordView } from "./broker-message-records.js";
 import type { BrokerMemoryMaintenance } from "./broker-memory-maintenance.js";
+import { applyHistoryRotationEviction, emptyHistoryRotationPlan, planHistoryRotation, type HistoryRotationContext, type HistoryRotationPlan } from "./history-rotation.js";
 import { setImmediate as yieldReadTurn } from "node:timers/promises";
 import { readableDelivery, readableDeliveryStatus, readableMetadata, type BrokerRecordRead } from "./broker-record-reader.js";
 import { BrokerMessageBodyCache, BrokerMessageBodyCacheUnavailable, type MessageBodyCacheOptions } from "./broker-message-body-cache.js";
 import { once } from "node:events";
 import { createReadStream, createWriteStream } from "node:fs";
-import { appendFile, mkdir, rename, stat, unlink } from "node:fs/promises";
-import { dirname } from "node:path";
+import { appendFile, mkdir, readdir, rename, stat, unlink } from "node:fs/promises";
+import { basename, dirname } from "node:path";
 import { createInterface } from "node:readline";
 
 import type {
@@ -38,16 +39,23 @@ import type {
 
 import {
   createRuntimeRegistrySnapshot,
+  type RuntimeActorIdentity,
+  type RuntimeAgentDefinition,
   type RuntimeRegistrySnapshot,
 } from "./registry.js";
 import type { BrokerInvocationDispatchJob } from "./broker-dispatch-job.js";
 
 export type BrokerJournalEntry =
   | { kind: "node.upsert"; node: NodeDefinition }
-  | { kind: "actor.upsert"; actor: ActorIdentity }
-  | { kind: "agent.upsert"; agent: AgentDefinition }
+  | { kind: "actor.upsert"; actor: RuntimeActorIdentity }
+  | { kind: "agent.upsert"; agent: RuntimeAgentDefinition }
+  // conversationIds is the delete preimage — the memberships captured before
+  // the row went away — so the conversation projection can re-evaluate exactly
+  // those rooms instead of scanning every direct conversation.
+  | { kind: "agent.delete"; agentId: string; conversationIds?: string[] }
   | { kind: "agent.endpoint.upsert"; endpoint: AgentEndpoint }
-  | { kind: "agent.endpoint.delete"; endpointId: string }
+  | { kind: "agent.endpoint.delete"; endpointId: string; agentId?: string }
+  | { kind: "actor.delete"; actorId: string; conversationIds?: string[] }
   | { kind: "conversation.upsert"; conversation: ConversationDefinition }
   | { kind: "binding.upsert"; binding: ConversationBinding }
   | { kind: "message.record"; message: MessageRecord }
@@ -74,11 +82,43 @@ export type BrokerJournalEntry =
       leaseOwner?: string | null;
       leaseExpiresAt?: number | null;
     }
-  | { kind: "scout.dispatch.record"; dispatch: ScoutDispatchRecord };
+  | { kind: "scout.dispatch.record"; dispatch: ScoutDispatchRecord }
+  // Week-clock hot-set rotation marker: the snapshot and journal keep only the
+  // live windows; SQLite holds everything. One logical stream — only the
+  // newest survives compaction.
+  | {
+      kind: "history.rotate";
+      cutoff: number;
+      rotatedAt: number;
+      /**
+       * The ids the writer verified as persisted in durable SQLite before
+       * journaling this marker. Apply removes exactly these records and
+       * compaction dooms exactly these lines — eligibility is never
+       * recomputed. Absent only on markers written before the verified
+       * plan landed; those fall back to recomputing the closure rules.
+       */
+      evicted?: {
+        messageIds: string[];
+        invocationIds: string[];
+        flightIds: string[];
+        deliveryIds: string[];
+        collaborationEventIds: string[];
+        /**
+         * Optional only for markers written between the verified-marker
+         * change and delivery-attempt verification; absent means no
+         * attempts were doomed — an empty set must evict nothing.
+         */
+        deliveryAttemptIds?: string[];
+      };
+    };
 
 
 type JournalSnapshotState = {
   snapshot: RuntimeRegistrySnapshot;
+  /** Actor ids deleted by a tombstone entry. Not part of the wire snapshot —
+   * replayed deletes rebuild it so the runtime can fence stale roster writes
+   * that would resurrect a retired actor's membership. */
+  retiredActorIds: Set<string>;
   collaborationEvents: CollaborationEvent[];
   deliveries: Map<string, DeliveryIntent>;
   deliveryAttempts: Map<string, DeliveryAttempt[]>;
@@ -139,10 +179,14 @@ const DEFAULT_BROKER_JOURNAL_COMPACTION_POLICY: BrokerJournalCompactionPolicy = 
 type DedupableJournalEntry =
   | BrokerJournalEntry & { kind: "node.upsert" }
   | BrokerJournalEntry & { kind: "actor.upsert" }
+  | BrokerJournalEntry & { kind: "actor.delete" }
   | BrokerJournalEntry & { kind: "agent.upsert" }
+  | BrokerJournalEntry & { kind: "agent.delete" }
   | BrokerJournalEntry & { kind: "agent.endpoint.upsert" }
+  | BrokerJournalEntry & { kind: "agent.endpoint.delete" }
   | BrokerJournalEntry & { kind: "conversation.upsert" }
-  | BrokerJournalEntry & { kind: "binding.upsert" };
+  | BrokerJournalEntry & { kind: "binding.upsert" }
+  | BrokerJournalEntry & { kind: "history.rotate" };
 
 type JournalVisitReport = {
   rawLines: number;
@@ -150,6 +194,57 @@ type JournalVisitReport = {
   invalidLines: number;
   blankLines: number;
 };
+
+type AppliedHistoryRotation = HistoryRotationPlan & {
+  cutoff: number;
+};
+
+/** The `evicted` wire shape on a `history.rotate` marker, as id Sets. */
+function historyRotationPlanFromMarker(
+  evicted: NonNullable<Extract<BrokerJournalEntry, { kind: "history.rotate" }>["evicted"]>,
+): HistoryRotationPlan {
+  const plan = emptyHistoryRotationPlan();
+  for (const id of evicted.messageIds) plan.messageIds.add(id);
+  for (const id of evicted.invocationIds) plan.invocationIds.add(id);
+  for (const id of evicted.flightIds) plan.flightIds.add(id);
+  for (const id of evicted.deliveryIds) plan.deliveryIds.add(id);
+  for (const id of evicted.deliveryAttemptIds ?? []) plan.deliveryAttemptIds.add(id);
+  for (const id of evicted.collaborationEventIds) plan.collaborationEventIds.add(id);
+  return plan;
+}
+
+/**
+ * Whether a record line that predates the rotate marker was evicted by it:
+ * "all" drops the whole line, "partial" (a deliveries.record carrying both
+ * doomed and surviving intents) keeps the line filtered, "none" keeps it.
+ */
+function historyRotationDropsEntry(
+  rotations: readonly AppliedHistoryRotation[],
+  entry: BrokerJournalEntry,
+): "all" | "partial" | "none" {
+  if (rotations.length === 0) return "none";
+  switch (entry.kind) {
+    case "message.record":
+      return rotations.some((r) => r.messageIds.has(entry.message.id)) ? "all" : "none";
+    case "flight.record":
+      return rotations.some((r) => r.flightIds.has(entry.flight.id)) ? "all" : "none";
+    case "invocation.record":
+      return rotations.some((r) => r.invocationIds.has(entry.invocation.id)) ? "all" : "none";
+    case "deliveries.record": {
+      const kept = entry.deliveries.filter(
+        (delivery) => !rotations.some((r) => r.deliveryIds.has(delivery.id)),
+      );
+      if (kept.length === 0) return "all";
+      return kept.length === entry.deliveries.length ? "none" : "partial";
+    }
+    case "delivery.attempt.record":
+      return rotations.some((r) => r.deliveryAttemptIds.has(entry.attempt.id)) ? "all" : "none";
+    case "collaboration.event.record":
+      return rotations.some((r) => r.collaborationEventIds.has(entry.event.id)) ? "all" : "none";
+    default:
+      return "none";
+  }
+}
 
 export type BrokerJournalReplayBoundary = {
   endByteExclusive: number;
@@ -264,14 +359,25 @@ function dedupeKey(entry: BrokerJournalEntry): string | null {
       return `${entry.kind}:${entry.node.id}`;
     case "actor.upsert":
       return `${entry.kind}:${entry.actor.id}`;
+    case "actor.delete":
+      // A delete shares its upsert's key so compaction keeps only the final
+      // state for the record — whether that state is a row or its absence.
+      return `actor.upsert:${entry.actorId}`;
     case "agent.upsert":
       return `${entry.kind}:${entry.agent.id}`;
+    case "agent.delete":
+      return `agent.upsert:${entry.agentId}`;
     case "agent.endpoint.upsert":
       return `${entry.kind}:${entry.endpoint.id}`;
+    case "agent.endpoint.delete":
+      return `agent.endpoint.upsert:${entry.endpointId}`;
     case "conversation.upsert":
       return `${entry.kind}:${entry.conversation.id}`;
     case "binding.upsert":
       return `${entry.kind}:${entry.binding.id}`;
+    case "history.rotate":
+      // One logical rotation stream — compaction keeps only the newest marker.
+      return "history.rotate";
     default:
       return null;
   }
@@ -334,6 +440,7 @@ export class FileBackedBrokerJournal {
 
   private readonly state: JournalSnapshotState = {
     snapshot: createRuntimeRegistrySnapshot(),
+    retiredActorIds: new Set<string>(),
     collaborationEvents: [],
     deliveries: new Map<string, DeliveryIntent>(),
     deliveryAttempts: new Map<string, DeliveryAttempt[]>(),
@@ -345,6 +452,11 @@ export class FileBackedBrokerJournal {
   private loaded = false;
 
   private latestLoadReport: BrokerJournalLoadReport | null = null;
+
+  /** Eviction sets per applied history.rotate, in journal order. Compaction
+   * drops a record line when ANY rotation after the line doomed it — later
+   * markers alone cannot describe what earlier ones evicted. */
+  private appliedRotations: AppliedHistoryRotation[] = [];
 
   private writeQueue: Promise<void> = Promise.resolve();
 
@@ -397,6 +509,7 @@ export class FileBackedBrokerJournal {
 
     if(this.messageHistory){await mkdir(dirname(this.filePath),{recursive:true});await appendFile(this.filePath, "", "utf8");}
     const startedAt = Date.now();
+    await this.reapOrphanedCompactionTemps();
     const sourceBytes = await stat(this.filePath).then((value) => value.size).catch((error) => {
       const code = error && typeof error === "object" && "code" in error
         ? (error as { code?: unknown }).code
@@ -435,6 +548,24 @@ export class FileBackedBrokerJournal {
       }
     });
     const scanMs = Date.now() - scanStartedAt;
+    // Rotated-out history lines are reclaim too, but they never appear in the
+    // dedupe map — measure them in a second streaming pass only when a rotate
+    // marker is present. Each line is evaluated against the rotations that
+    // come after it (earlier markers cannot describe a later record's fate).
+    const rotationIndex = latestIndexByKey.get("history.rotate");
+    if (this.appliedRotations.length > 0 && rotationIndex !== undefined) {
+      const remaining = [...this.appliedRotations];
+      await this.visitEntries((entry, index, encodedLineBytes) => {
+        if (index >= rotationIndex) return;
+        if (entry.kind === "history.rotate") {
+          remaining.shift();
+          return;
+        }
+        if (historyRotationDropsEntry(remaining, entry) === "all") {
+          estimatedReclaimBytes += encodedLineBytes;
+        }
+      });
+    }
     const estimatedReclaimRatio = sourceBytes > 0
       ? estimatedReclaimBytes / sourceBytes
       : 0;
@@ -460,6 +591,21 @@ export class FileBackedBrokerJournal {
         const start = Date.now();
         await this.rewriteCompactedEntries(latestIndexByKey, sourceBytes);
         this.startupCompactionMs = Date.now() - start;
+        // The load report was published before this deferred compaction ran —
+        // fold the real numbers back in so consumers do not read `compaction
+        // 0ms`, a stale post-compaction size, or a total that ended before the
+        // work did.
+        const compactedBytes = await stat(this.filePath).then((value) => value.size).catch(() => 0);
+        if (this.latestLoadReport) {
+          const completedAt = Date.now();
+          this.latestLoadReport = {
+            ...this.latestLoadReport,
+            completedAt,
+            totalMs: completedAt - this.latestLoadReport.startedAt,
+            compactionMs: this.startupCompactionMs,
+            compactedBytes,
+          };
+        }
       }
       this.startupPhase = "history";
       // Unlike accepted(), startup must surface failed history coverage.
@@ -486,6 +632,49 @@ export class FileBackedBrokerJournal {
       countsByKind,
     };
     return this.latestLoadReport;
+  }
+
+  /**
+   * Remove `broker-journal.jsonl.<pid>.<ts>.tmp` siblings left behind when a
+   * broker died mid-compaction. The pid is the third dot-field of the temp
+   * basename; only files whose pid is not a live process are touched.
+   */
+  private async reapOrphanedCompactionTemps(): Promise<void> {
+    const journalBase = basename(this.filePath);
+    const prefix = `${journalBase}.`;
+    let names: string[];
+    try {
+      names = await readdir(dirname(this.filePath));
+    } catch {
+      return;
+    }
+    let removed = 0;
+    let removedBytes = 0;
+    for (const name of names) {
+      if (!name.startsWith(prefix) || !name.endsWith(".tmp")) continue;
+      const pidField = name.slice(prefix.length, -".tmp".length).split(".")[0];
+      const pid = Number.parseInt(pidField ?? "", 10);
+      if (!Number.isSafeInteger(pid) || pid <= 0) continue;
+      if (pid === process.pid) continue;
+      let dead = false;
+      try {
+        process.kill(pid, 0);
+      } catch (error) {
+        // ESRCH means no such process — the compaction temp is an orphan.
+        // EPERM means the pid exists but is not ours; leave its file alone.
+        dead = (error as NodeJS.ErrnoException).code === "ESRCH";
+      }
+      if (!dead) continue;
+      const orphanPath = `${dirname(this.filePath)}/${name}`;
+      const size = await stat(orphanPath).then((value) => value.size).catch(() => 0);
+      await unlink(orphanPath).then(
+        () => { removed += 1; removedBytes += size; },
+        () => undefined,
+      );
+    }
+    if (removed > 0) {
+      console.log(`[openscout-runtime] reaped ${removed} orphaned journal compaction temp file(s), ${removedBytes} bytes`);
+    }
   }
 
   /**
@@ -669,6 +858,15 @@ export class FileBackedBrokerJournal {
     return cloneSnapshot(this.state.snapshot);
   }
 
+  /**
+   * Actor ids retired by `actor.delete` tombstones — including tombstones
+   * that survived compaction — used to seed the runtime's stale-roster fence
+   * at hydration. Live view; callers must not mutate.
+   */
+  retiredActorIds(): ReadonlySet<string> {
+    return this.state.retiredActorIds;
+  }
+
   async appendEntries(entriesInput: BrokerJournalEntry | BrokerJournalEntry[]): Promise<BrokerJournalEntry[]> {
     const entries = Array.isArray(entriesInput) ? entriesInput : [entriesInput];
     if (entries.length === 0) {
@@ -715,6 +913,11 @@ export class FileBackedBrokerJournal {
   }
 
   listCollaborationRecords(options: {
+    conversationId?: string;
+    includeThreads?: boolean;
+    orderByCreatedAt?: boolean;
+    afterCreatedAt?: number;
+    afterId?: string;
     limit?: number;
     kind?: CollaborationRecord["kind"];
     state?: string;
@@ -723,11 +926,18 @@ export class FileBackedBrokerJournal {
   } = {}): CollaborationRecord[] {
     const limit = options.limit ?? 200;
     return Object.values(this.state.snapshot.collaborationRecords)
+      .filter(record => !options.conversationId || record.conversationId === options.conversationId
+        || Boolean(options.includeThreads && record.conversationId && this.state.snapshot.conversations[record.conversationId]?.kind === "thread"
+          && this.state.snapshot.conversations[record.conversationId]?.parentConversationId === options.conversationId))
+      .filter(record => options.afterCreatedAt == null || record.createdAt > options.afterCreatedAt
+        || (record.createdAt === options.afterCreatedAt && record.id > (options.afterId ?? "")))
       .filter((record) => !options.kind || record.kind === options.kind)
       .filter((record) => !options.state || record.state === options.state)
       .filter((record) => !options.ownerId || record.ownerId === options.ownerId)
       .filter((record) => !options.nextMoveOwnerId || record.nextMoveOwnerId === options.nextMoveOwnerId)
-      .sort((left, right) => right.updatedAt - left.updatedAt)
+      .sort((left, right) => options.orderByCreatedAt
+        ? left.createdAt - right.createdAt || (left.id < right.id ? -1 : left.id > right.id ? 1 : 0)
+        : right.updatedAt - left.updatedAt)
       .slice(0, limit);
   }
 
@@ -798,6 +1008,26 @@ export class FileBackedBrokerJournal {
           ? left.createdAt - right.createdAt
           : left.attempt - right.attempt
       ));
+  }
+
+  /** Every journaled delivery attempt by id — the verifier's expected records. */
+  deliveryAttemptsById(): Map<string, DeliveryAttempt> {
+    const found = new Map<string, DeliveryAttempt>();
+    for (const attempts of this.state.deliveryAttempts.values()) {
+      for (const attempt of attempts) {
+        found.set(attempt.id, attempt);
+      }
+    }
+    return found;
+  }
+
+  /** Every journaled collaboration event by id — the verifier's expected records. */
+  collaborationEventsById(): Map<string, CollaborationEvent> {
+    const found = new Map<string, CollaborationEvent>();
+    for (const event of this.state.collaborationEvents) {
+      found.set(event.id, event);
+    }
+    return found;
   }
 
   getDurableAction(actionId: string): DurableAction | null {
@@ -918,9 +1148,40 @@ export class FileBackedBrokerJournal {
     const temporaryPath = `${this.filePath}.${process.pid}.${Date.now()}.tmp`;
     const output = createWriteStream(temporaryPath, { encoding: "utf8", flags: "wx" });
     const lastFlightById = new Map<string, FlightRecord>();
+    // Every history.rotate marker applied during the scan kept its eviction
+    // sets in `appliedRotations`. A record line is dropped when ANY rotation
+    // after it doomed the record — the marker itself survives via the shared
+    // "history.rotate" dedupe key, so only the newest one is written.
+    const rotationIndex = latestIndexByKey.get("history.rotate");
+    const remainingRotations = rotationIndex !== undefined ? [...this.appliedRotations] : [];
 
     try {
       await this.visitEntries(async (entry, index) => {
+        if (entry.kind === "history.rotate") {
+          remainingRotations.shift();
+        }
+        let writeEntry = entry;
+        if (index < (rotationIndex ?? -1) && remainingRotations.length > 0) {
+          switch (historyRotationDropsEntry(remainingRotations, entry)) {
+            case "all":
+              return;
+            case "partial":
+              if (entry.kind === "deliveries.record") {
+                writeEntry = {
+                  ...entry,
+                  deliveries: entry.deliveries.filter(
+                    (delivery) => !remainingRotations.some(
+                      (rotation) => rotation.deliveryIds.has(delivery.id),
+                    ),
+                  ),
+                };
+              }
+              break;
+            case "none":
+              break;
+          }
+        }
+
         if (entry.kind === "flight.record") {
           const previous = lastFlightById.get(entry.flight.id);
           lastFlightById.set(entry.flight.id, entry.flight);
@@ -932,9 +1193,13 @@ export class FileBackedBrokerJournal {
           if (key && latestIndexByKey.get(key) !== index) {
             return;
           }
+          // A latest-entry delete is KEPT as a tombstone. SQLite recovery
+          // replays a checkpoint suffix onto an existing database — it cannot
+          // infer deletes from absence, so dropping the tombstone would leave
+          // the deleted row (and its references) in the store permanently.
         }
 
-        if (!output.write(`${JSON.stringify(entry)}\n`, "utf8")) {
+        if (!output.write(`${JSON.stringify(writeEntry)}\n`, "utf8")) {
           await once(output, "drain");
         }
       }, prefixBytes === undefined ? {} : { endByteExclusive: prefixBytes });
@@ -961,8 +1226,11 @@ export class FileBackedBrokerJournal {
       }
     } catch (error) {
       output.destroy();
-      await unlink(temporaryPath).catch(() => undefined);
       throw error;
+    } finally {
+      // After publish() the path no longer exists (it was renamed away); on any
+      // failure the half-written temp must not survive to the next boot.
+      await unlink(temporaryPath).catch(() => undefined);
     }
   }
 
@@ -987,11 +1255,20 @@ export class FileBackedBrokerJournal {
         case "node.upsert": copy("nodes"); break;
         case "actor.upsert": copy("actors"); break;
         case "agent.upsert": copy("agents"); copy("actors"); break;
+        case "agent.delete": copy("agents"); copy("endpoints"); break;
+        case "actor.delete": copy("actors"); break;
         case "agent.endpoint.upsert":
         case "agent.endpoint.delete": copy("endpoints"); break;
         case "conversation.upsert": copy("conversations"); break;
         case "binding.upsert": copy("bindings"); break;
         case "flight.record": copy("flights"); break;
+        case "history.rotate":
+          // The rotation deletes from the maps it touches — copy them so the
+          // dedupe check cannot evict live records from the real snapshot.
+          if (!asyncMessageRecordView(nextSnapshot.messages)) copy("messages");
+          copy("flights");
+          copy("invocations");
+          break;
       }
       this.applyToSnapshot(nextSnapshot, entry);
     }
@@ -1024,6 +1301,10 @@ export class FileBackedBrokerJournal {
         return !sameValue(snapshot.conversations[entry.conversation.id], entry.conversation);
       case "binding.upsert":
         return !sameValue(snapshot.bindings[entry.binding.id], entry.binding);
+      case "history.rotate":
+        // A same-cutoff repeat changes nothing — the daemon also checks, but
+        // the journal must not accumulate duplicate markers.
+        return this.appliedRotations.at(-1)?.cutoff !== entry.cutoff;
       default:
         return true;
     }
@@ -1043,6 +1324,7 @@ export class FileBackedBrokerJournal {
           snapshot.actors[entry.agent.id] = {
             id: entry.agent.id,
             kind: entry.agent.kind,
+            createdAt: entry.agent.createdAt,
             displayName: entry.agent.displayName,
             handle: entry.agent.handle,
             labels: entry.agent.labels,
@@ -1056,6 +1338,20 @@ export class FileBackedBrokerJournal {
       case "agent.endpoint.delete":
         delete snapshot.endpoints[entry.endpointId];
         return;
+      case "agent.delete":
+        delete snapshot.agents[entry.agentId];
+        // Deleting an agent also deletes its endpoints. The caller journals an
+        // agent.endpoint.delete per endpoint first; these deletes must be
+        // idempotent when those entries already removed them.
+        for (const endpoint of Object.values(snapshot.endpoints)) {
+          if (endpoint.agentId === entry.agentId) {
+            delete snapshot.endpoints[endpoint.id];
+          }
+        }
+        return;
+      case "actor.delete":
+        delete snapshot.actors[entry.actorId];
+        return;
       case "conversation.upsert":
         snapshot.conversations[entry.conversation.id] = entry.conversation;
         return;
@@ -1065,6 +1361,13 @@ export class FileBackedBrokerJournal {
       case "flight.record":
         snapshot.flights[entry.flight.id] = entry.flight;
         return;
+      case "history.rotate": {
+        const evicted = entry.evicted
+          ? historyRotationPlanFromMarker(entry.evicted)
+          : planHistoryRotation(snapshot, entry.cutoff, this.historyRotationContext());
+        applyHistoryRotationEviction(snapshot, evicted);
+        return;
+      }
       default:
         return;
     }
@@ -1076,14 +1379,19 @@ export class FileBackedBrokerJournal {
         this.state.snapshot.nodes[entry.node.id] = entry.node;
         return;
       case "actor.upsert":
+        // Re-registration revives the identity — clear the tombstone.
+        this.state.retiredActorIds.delete(entry.actor.id);
         this.state.snapshot.actors[entry.actor.id] = entry.actor;
         return;
       case "agent.upsert":
+        // An agent registration synthesizes its actor identity — revive it.
+        this.state.retiredActorIds.delete(entry.agent.id);
         this.state.snapshot.agents[entry.agent.id] = entry.agent;
         if (!this.state.snapshot.actors[entry.agent.id]) {
           this.state.snapshot.actors[entry.agent.id] = {
             id: entry.agent.id,
             kind: entry.agent.kind,
+            createdAt: entry.agent.createdAt,
             displayName: entry.agent.displayName,
             handle: entry.agent.handle,
             labels: entry.agent.labels,
@@ -1096,6 +1404,22 @@ export class FileBackedBrokerJournal {
         return;
       case "agent.endpoint.delete":
         delete this.state.snapshot.endpoints[entry.endpointId];
+        return;
+      case "agent.delete":
+        delete this.state.snapshot.agents[entry.agentId];
+        // Deleting an agent also deletes its endpoints; idempotent when the
+        // caller's agent.endpoint.delete entries already removed them.
+        for (const endpoint of Object.values(this.state.snapshot.endpoints)) {
+          if (endpoint.agentId === entry.agentId) {
+            delete this.state.snapshot.endpoints[endpoint.id];
+          }
+        }
+        return;
+      case "actor.delete":
+        // The tombstone is the fact: mark retired even when the row is
+        // already absent (idempotent replay).
+        this.state.retiredActorIds.add(entry.actorId);
+        delete this.state.snapshot.actors[entry.actorId];
         return;
       case "conversation.upsert":
         this.state.snapshot.conversations[entry.conversation.id] = entry.conversation;
@@ -1188,11 +1512,76 @@ export class FileBackedBrokerJournal {
       case "scout.dispatch.record":
         this.state.scoutDispatches.push(entry.dispatch);
         return;
+      case "history.rotate":
+        this.applyHistoryRotation(entry);
+        return;
       default: {
         const exhaustive: never = entry;
         return exhaustive;
       }
     }
+  }
+
+  /**
+   * The dependency-closure context history rotation needs: this journal's
+   * delivery intents and invocation dispatch jobs (both live outside the
+   * rotated snapshot) plus a presence probe for disk-backed message history.
+   * The daemon passes the same context to the runtime mirror so both sides
+   * evict identical records.
+   */
+  historyRotationContext(): HistoryRotationContext {
+    return {
+      deliveries: this.state.deliveries.values(),
+      dispatchJobs: this.state.invocationDispatchJobs.values(),
+      collaborationEvents: this.state.collaborationEvents,
+      deliveryAttempts: [...this.state.deliveryAttempts.values()].flat(),
+      // Under the disk-backed async history the records map is a proxy that
+      // cannot answer `in`; assume present so referent-absent never evicts
+      // a delivery whose message is safely on disk.
+      messageIdPresent: asyncMessageRecordView(this.state.snapshot.messages)
+        ? () => true
+        : undefined,
+    };
+  }
+
+  /**
+   * Apply a `history.rotate` marker to the hot state. Modern markers carry
+   * the id sets the writer verified against durable SQLite — apply removes
+   * exactly those records and records them on `appliedRotations` so
+   * compaction drops exactly the same journal lines; eligibility is never
+   * recomputed. Markers written before the `evicted` sets existed fall back
+   * to recomputing the closure rules. Registry, conversation, and binding
+   * records are untouched — that is the retention sweep's job.
+   */
+  private applyHistoryRotation(
+    entry: Extract<BrokerJournalEntry, { kind: "history.rotate" }>,
+  ): void {
+    const evicted = entry.evicted
+      ? historyRotationPlanFromMarker(entry.evicted)
+      : planHistoryRotation(this.state.snapshot, entry.cutoff, this.historyRotationContext());
+    applyHistoryRotationEviction(this.state.snapshot, evicted);
+
+    for (const deliveryId of evicted.deliveryIds) {
+      this.state.deliveries.delete(deliveryId);
+    }
+    for (const [deliveryId, attempts] of this.state.deliveryAttempts) {
+      const kept = attempts.filter((attempt) => !evicted.deliveryAttemptIds.has(attempt.id));
+      if (kept.length === 0) {
+        this.state.deliveryAttempts.delete(deliveryId);
+      } else if (kept.length !== attempts.length) {
+        this.state.deliveryAttempts.set(deliveryId, kept);
+      }
+    }
+    this.state.collaborationEvents = this.state.collaborationEvents.filter(
+      (event) => !evicted.collaborationEventIds.has(event.id),
+    );
+
+    this.appliedRotations.push({ cutoff: entry.cutoff, ...evicted });
+  }
+
+  /** Cutoff of the newest applied `history.rotate` marker, if any. */
+  historyRotationCutoff(): number | null {
+    return this.appliedRotations.at(-1)?.cutoff ?? null;
   }
 
   listScoutDispatches(options: { limit?: number; askedLabel?: string } = {}): ScoutDispatchRecord[] {

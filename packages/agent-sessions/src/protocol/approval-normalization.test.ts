@@ -97,7 +97,7 @@ describe("extractPendingApprovalRequests", () => {
         {
           id: "turn-1",
           status: "streaming",
-          startedAt: Date.now(),
+          startedAt: 1720000000000,
           blocks: [
             {
               status: "streaming",
@@ -137,6 +137,11 @@ describe("extractPendingApprovalRequests", () => {
     };
 
     expect(extractPendingApprovalRequests(snapshot)).toHaveLength(1);
-    expect(extractPendingApprovalRequests(snapshot)[0]?.description).toBe("hudson");
+    expect(extractPendingApprovalRequests(snapshot)[0]).toMatchObject({ description: "hudson", turnId: "turn-1", turnStartedAt: 1720000000000, version: 2 });
+    // Unknown source timing must remain unknown, never become the current clock.
+    snapshot.turns[0]!.startedAt = Number.NaN;
+    expect(extractPendingApprovalRequests(snapshot)[0]).not.toHaveProperty("turnStartedAt");
+    snapshot.turns[0]!.startedAt = -1;
+    expect(extractPendingApprovalRequests(snapshot)[0]).not.toHaveProperty("turnStartedAt");
   });
 });

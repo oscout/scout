@@ -333,7 +333,7 @@ function askActivity(
 ): { label: string; tone: "working" | "attention" | "pending" } | null {
   if (!ask) return null;
   if (ask.status === "working") return { label: "working", tone: "working" };
-  if (ask.status === "needs_attention") return { label: "needs you", tone: "attention" };
+  if (ask.status === "needs_attention") return { label: "asking", tone: "attention" };
   if (ask.status === "queued") return { label: "starting", tone: "pending" };
   return null;
 }

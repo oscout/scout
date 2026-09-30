@@ -11,6 +11,7 @@ import {
   type ScoutDeliverRequest,
   type ScoutDispatchEnvelope,
   type ScoutDispatchRecord,
+  type ScoutOwnedRuntimeCatalog,
 } from "@openscout/protocol";
 
 import { BrokerDeliveryAcceptanceService } from "./broker-delivery-acceptance-service.js";
@@ -114,6 +115,7 @@ function createHarness(input: {
   isOperatorTarget?: (payload: ScoutDeliverRequest) => boolean;
   isScoutTarget?: (payload: ScoutDeliverRequest) => boolean;
   cardlessEndpointHarness?: AgentEndpoint["harness"];
+  runtimeCatalog?: ScoutOwnedRuntimeCatalog;
   now?: number;
 } = {}) {
   const agent = testAgent();
@@ -160,6 +162,9 @@ function createHarness(input: {
     nodeId: "node-1",
     operatorActorId: "operator",
     runtimeSnapshot: () => snapshot,
+    ...(input.runtimeCatalog
+      ? { readRuntimeCatalog: async () => ({ catalog: input.runtimeCatalog! }) }
+      : {}),
     createId: (prefix) => `${prefix}-${++idCounter}`,
     syncRegisteredLocalAgentsIfChanged: async (reason) => {
       localAgentSyncReasons.push(reason);
@@ -411,6 +416,9 @@ describe("BrokerDeliveryAcceptanceService", () => {
       conversationId: "dm.agent.operator",
       requesterId: "agent-1",
       requesterNodeId: "node-1",
+      body: "I found the root cause and am continuing with the fix.",
+      requesterName: "agent-one",
+      createdAt: 11000,
     }]);
   });
 
@@ -664,6 +672,42 @@ describe("BrokerDeliveryAcceptanceService", () => {
     }));
   });
 
+  test("a live exact session continued as a fork targets the fork everywhere downstream", async () => {
+    const forkEndpoint = testEndpoint({
+      id: "endpoint-fork",
+      agentId: "flat-claude-fork-id",
+      sessionId: "flat-claude-fork-id",
+    });
+    const harness = createHarness({
+      now: 20_300,
+      resolution: {
+        kind: "resolved_session",
+        session: {
+          sessionId: "flat-claude-fork-id",
+          actorId: "flat-claude-fork-id",
+          endpoint: forkEndpoint,
+          label: "session:claude:fork-id",
+          nodeId: "node-1",
+        },
+        sessionFork: { sourceSessionId: "source-id", sessionId: "fork-id" },
+      },
+    });
+
+    const result = await harness.service.accept({
+      id: "deliver-fork",
+      body: "reply from the phone",
+      intent: "consult",
+      target: { kind: "session_id", sessionId: "source-id", harness: "claude", forkIfLive: true },
+      caller: { actorId: "operator", nodeId: "node-1" },
+    });
+
+    expect(result).toEqual(expect.objectContaining({ kind: "delivery", targetSessionId: "fork-id" }));
+    expect(harness.acceptedInvocations[0]?.execution).toEqual(expect.objectContaining({
+      session: "existing",
+      targetSessionId: "fork-id",
+    }));
+  });
+
   test("accepts and queues delivery to an offline session endpoint instead of refusing", async () => {
     // SCO-098: a resolved session whose endpoint is offline (non-terminal) is
     // the store-and-forward case — record the message and dispatch so the
@@ -757,7 +801,7 @@ describe("BrokerDeliveryAcceptanceService", () => {
       projectPath: "/tmp/openscout",
       execution: {
         harness: "claude",
-        model: "claude-opus-5",
+        model: "claude-opus-5-5",
         reasoningEffort: "high",
         session: "new",
       },
@@ -767,7 +811,7 @@ describe("BrokerDeliveryAcceptanceService", () => {
     }]);
     expect(harness.acceptedInvocations[0]?.execution).toEqual({
       harness: "claude",
-      model: "claude-opus-5",
+      model: "claude-opus-5-5",
       reasoningEffort: "high",
       session: "existing",
       targetSessionId: "session-cardless",
@@ -775,7 +819,7 @@ describe("BrokerDeliveryAcceptanceService", () => {
     expect(harness.acceptedInvocations[0]?.executionResolution).toEqual(expect.objectContaining({
       schemaVersion: "openscout.execution-resolution.v1",
       harness: expect.objectContaining({ resolved: "claude", source: "profile", drift: "unknown" }),
-      model: expect.objectContaining({ resolved: "claude-opus-5", source: "profile", drift: "unknown" }),
+      model: expect.objectContaining({ resolved: "claude-opus-5-5", source: "profile", drift: "unknown" }),
       reasoningEffort: expect.objectContaining({ resolved: "high", source: "profile", drift: "unknown" }),
     }));
   });
@@ -1114,5 +1158,44 @@ describe("BrokerDeliveryAcceptanceService", () => {
     expect(harness.recordedWorkItemPayloads[0]?.workItem?.metadata).toEqual(
       expect.objectContaining({ aliasResolution }),
     );
+  });
+
+  test("model selectability follows the live runtime catalog, not the bundled default", async () => {
+    // Two catalogs that disagree with the bundled data: one grants kimi a
+    // model, the other strips every model from claude. Which one the service
+    // reads decides the verdict — no harness name is special-cased in code.
+    const base = {
+      schemaVersion: "openscout.runtime-catalog.v1" as const,
+      revision: "2026-09-20.9",
+    };
+    const kimiWithModel: ScoutOwnedRuntimeCatalog = {
+      ...base,
+      harnesses: [
+        { id: "claude", label: "Claude", enabled: true, default: true, reasoningEfforts: null, models: [] },
+        { id: "kimi", label: "Kimi", enabled: true, reasoningEfforts: null, models: [
+          { id: "kimi-live-1", label: "Kimi Live", enabled: true },
+        ] },
+      ],
+    };
+
+    const permissive = createHarness({ runtimeCatalog: kimiWithModel });
+    const accepted = await permissive.service.accept({
+      id: "deliver-live-kimi",
+      body: "review",
+      intent: "consult",
+      targetAgentId: "agent-1",
+      caller: { actorId: "operator", nodeId: "node-1" },
+      execution: { harness: "kimi", model: "kimi-live-1" },
+    });
+    expect(accepted.kind).toBe("delivery");
+
+    await expect(permissive.service.accept({
+      id: "deliver-live-claude",
+      body: "review",
+      intent: "consult",
+      targetAgentId: "agent-1",
+      caller: { actorId: "operator", nodeId: "node-1" },
+      execution: { harness: "claude", model: "claude-opus-5" },
+    })).rejects.toThrow("unsupported_model_dimension");
   });
 });

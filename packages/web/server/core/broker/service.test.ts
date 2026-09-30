@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import { Database } from "bun:sqlite";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -20,14 +21,18 @@ import {
   markScoutConversationRead,
   openScoutPeerSession,
   readScoutBrokerHealth,
+  readScoutChatQuestionHistory,
   readScoutBrokerTailDiscovery,
   readScoutBrokerTailRecent,
   resolveScoutBrokerUrl,
   ScoutDirectDeliveryUnavailableError,
   sendScoutConversationSteer,
   sendScoutConversationMessage,
+  cancelScoutChatFlight,
   sendScoutDirectMessage,
   sendScoutMessage,
+  waitForScoutFlight,
+  watchScoutMessages,
 } from "./service.ts";
 
 const originalHome = process.env.HOME;
@@ -552,6 +557,116 @@ describe("readScoutBrokerHealth", () => {
   });
 });
 
+describe("broker status resilience", () => {
+  test("distinguishes a slow ready response, degraded HTTP, invalid health, and recovery", async () => {
+    useIsolatedOpenScoutHome();
+    let now = 10_000;
+    Date.now = () => now;
+    let mode = "slow";
+    globalThis.fetch = (async () => {
+      if (mode === "slow") { now += 1_200; return jsonResponse({ ok: true }); }
+      if (mode === "degraded") return jsonResponse({ error: "warming" }, 503);
+      if (mode === "invalid") return jsonResponse({ ok: "true" });
+      return jsonResponse({ ok: true });
+    }) as typeof fetch;
+    const slow = await readScoutBrokerHealth();
+    expect(slow).toMatchObject({ reachable: true, ok: true, observation: { state: "slow", lastSuccessAt: 11_200, durationMs: 1_200 } });
+    now += 100;
+    mode = "degraded";
+    expect(await readScoutBrokerHealth()).toMatchObject({ reachable: true, ok: false, observation: { state: "degraded", statusCode: 503, lastSuccessAt: 11_200 } });
+    mode = "invalid";
+    expect(await readScoutBrokerHealth()).toMatchObject({ reachable: true, ok: false, observation: { state: "degraded", lastSuccessAt: 11_200 } });
+    mode = "ready";
+    expect(await readScoutBrokerHealth()).toMatchObject({ ok: true, observation: { state: "healthy", lastSuccessAt: 11_300 } });
+  });
+
+  test("bounds a slow health probe even with an unbounded caller signal and preserves prior success", async () => {
+    useIsolatedOpenScoutHome();
+    globalThis.fetch = (async () => jsonResponse({ ok: true })) as typeof fetch;
+    const success = await readScoutBrokerHealth();
+    let aborted = false;
+    globalThis.fetch = (async (_input, init) => new Promise((_resolve, reject) => {
+      const signal = init!.signal!;
+      signal.addEventListener("abort", () => { aborted = true; reject(signal.reason); }, { once: true });
+    })) as typeof fetch;
+    const started = Date.now();
+    const health = await readScoutBrokerHealth(undefined, { signal: new AbortController().signal, timeoutMs: 20 });
+    expect(Date.now() - started).toBeLessThan(500);
+    expect(aborted).toBe(true);
+    expect(health).toMatchObject({ ok: false, observation: { state: "timed_out", lastSuccessAt: success.observation!.lastSuccessAt } });
+    globalThis.fetch = (async () => { throw new Error("Connection refused"); }) as typeof fetch;
+    expect(await readScoutBrokerHealth()).toMatchObject({ reachable: false, ok: false, observation: { state: "unreachable" } });
+    globalThis.fetch = (async () => jsonResponse({ ok: true })) as typeof fetch;
+    expect(await readScoutBrokerHealth()).toMatchObject({ reachable: true, ok: true, observation: { state: "healthy" } });
+  });
+
+  test("bounds the whole context read when health succeeds but the snapshot stalls", async () => {
+    useIsolatedOpenScoutHome();
+    let snapshotAborted = false;
+    globalThis.fetch = (async (input, init) => {
+      const url = new URL(input instanceof Request ? input.url : String(input));
+      if (url.pathname === "/health") return jsonResponse({ ok: true });
+      if (url.pathname === "/v1/node") return jsonResponse({ id: "node-1" });
+      return new Promise((_resolve, reject) => init!.signal!.addEventListener("abort", () => {
+        snapshotAborted = true;
+        reject(init!.signal!.reason);
+      }, { once: true }));
+    }) as typeof fetch;
+    const started = Date.now();
+    expect(await loadScoutBrokerContext(undefined, { since: 993, signal: new AbortController().signal })).toBeNull();
+    expect(snapshotAborted).toBe(true);
+    expect(Date.now() - started).toBeLessThan(6_500);
+  }, 10_000);
+
+  test("cold context failures back off and retry after the short failure window", async () => {
+    useIsolatedOpenScoutHome();
+    let now = 10_000;
+    Date.now = () => now;
+    let calls = 0;
+    globalThis.fetch = (async () => { calls += 1; throw new Error("unavailable"); }) as typeof fetch;
+    expect(await loadScoutBrokerContext(undefined, { since: 992 })).toBeNull();
+    expect(await loadScoutBrokerContext(undefined, { since: 992 })).toBeNull();
+    expect(calls).toBe(1);
+    now += 2_001;
+    expect(await loadScoutBrokerContext(undefined, { since: 992 })).toBeNull();
+    expect(calls).toBe(2);
+  });
+
+  test("failed context refreshes retain provenance, expire old data, and recover", async () => {
+    useIsolatedOpenScoutHome();
+    let now = 10_000;
+    Date.now = () => now;
+    let failing = false;
+    globalThis.fetch = (async (input, init) => {
+      const url = new URL(input instanceof Request ? input.url : String(input));
+      if (url.pathname === "/health") return jsonResponse({ ok: true });
+      if (url.pathname === "/v1/node") return jsonResponse({ id: "node-1" });
+      if (failing) throw new Error("snapshot unavailable");
+      return jsonResponse({ nodes: {}, messages: {} });
+    }) as typeof fetch;
+    const first = await loadScoutBrokerContext(undefined, { since: 991 });
+    expect(first?.freshness).toMatchObject({ lastSuccessAt: 10_000, stale: false });
+    failing = true;
+    now += 30_001;
+    const stale = await loadScoutBrokerContext(undefined, { since: 991 });
+    expect(stale?.freshness).toMatchObject({ lastSuccessAt: 10_000, stale: true, refreshing: true });
+    await Bun.sleep(0);
+    const failed = await loadScoutBrokerContext(undefined, { since: 991 });
+    expect(failed?.freshness).toMatchObject({ lastSuccessAt: 10_000, lastFailureAt: now, stale: true });
+    now += 30_001;
+    await loadScoutBrokerContext(undefined, { since: 991 });
+    await Bun.sleep(0);
+    now += 30_001;
+    expect(await loadScoutBrokerContext(undefined, { since: 991 })).toBeNull();
+    await Bun.sleep(0);
+    failing = false;
+    now += 30_001;
+    expect(await loadScoutBrokerContext(undefined, { since: 991 })).toBeNull();
+    await Bun.sleep(0);
+    expect((await loadScoutBrokerContext(undefined, { since: 991 }))?.freshness).toMatchObject({ lastSuccessAt: now, stale: false, lastFailureAt: null });
+  });
+});
+
 describe("readScoutBrokerTailRecent", () => {
   test("requests transcript backfill for a cold tail snapshot", async () => {
     useIsolatedOpenScoutHome();
@@ -567,6 +682,22 @@ describe("readScoutBrokerTailRecent", () => {
     expect(requestedUrl?.pathname).toBe("/v1/tail/recent");
     expect(requestedUrl?.searchParams.get("limit")).toBe("50");
     expect(requestedUrl?.searchParams.get("transcripts")).toBe("1");
+    expect(requestedUrl?.searchParams.has("mode")).toBe(false);
+  });
+
+  test("asks for each session's latest reply when the feed wants it", async () => {
+    useIsolatedOpenScoutHome();
+    let requestedUrl: URL | null = null;
+    globalThis.fetch = (async (input, init) => {
+      const request = input instanceof Request ? input : new Request(input, init);
+      requestedUrl = new URL(request.url);
+      return jsonResponse({ events: [] });
+    }) as typeof fetch;
+
+    await readScoutBrokerTailRecent(60, undefined, { mode: "assistant-replies", windowMs: 48 * 60 * 60 * 1_000 });
+
+    expect(requestedUrl?.searchParams.get("mode")).toBe("assistant-replies");
+    expect(requestedUrl?.searchParams.get("windowMs")).toBe(String(24 * 60 * 60 * 1_000));
   });
 });
 
@@ -1150,6 +1281,18 @@ describe("sendScoutConversationMessage", () => {
     expect(retriedMessagePosts[0]?.body.id).toMatch(/^m-client-/);
 
     requests.length = 0;
+    const attention = await sendScoutConversationMessage({
+      conversationId: "chn-iris", senderId: "operator", body: "@fable quoted text",
+      clientMessageId: "attention-1", notifyParticipantAgents: false, resolveMentionsFromBody: false,
+      attentionMentions: [{ actorId: "fable", label: "Fable" }], currentDirectory: home,
+    });
+    expect(attention.invokedTargets).toEqual([]);
+    expect(requests.some(request => request.path === "/v1/invocations" || request.path === "/v1/deliver")).toBe(false);
+    expect(requests.find(request => request.path === "/v1/messages")?.body).toMatchObject({
+      mentions: [{ actorId: "fable", label: "Fable" }], audience: { delivery: "none" },
+    });
+
+    requests.length = 0;
     const threadResult = await sendScoutConversationMessage({
       conversationId: "chn-iris-thread",
       senderId: "operator",
@@ -1595,6 +1738,7 @@ describe("sendScoutConversationSteer", () => {
       senderId: "operator",
       body: "Review the current implementation.",
       targetParticipantIds: ["hudson.main.mini"],
+      attentionMentions: [{ actorId: "operator", label: "Operator" }, { actorId: "narrative-studio.main.mini", label: "Narrative" }],
       intent: "invoke",
       execution: { harness: "claude", model: "opus-test" },
       currentDirectory: home,
@@ -1607,6 +1751,9 @@ describe("sendScoutConversationSteer", () => {
       invokedTargets: ["hudson.main.mini"],
     });
     const invokeMessagePost = requests.find((request) => request.path === "/v1/messages")?.body;
+    expect(requests.filter(request => request.path === "/v1/invocations")).toHaveLength(1);
+    expect(invokeMessagePost.audience.notify).toEqual(["hudson.main.mini"]);
+    expect(invokeMessagePost.mentions.map((mention: any) => mention.actorId)).toEqual(["hudson.main.mini", "operator", "narrative-studio.main.mini"]);
     expect(invokeMessagePost).toMatchObject({
       conversationId: "c.hudson-narrative",
       metadata: expect.objectContaining({
@@ -2064,4 +2211,258 @@ describe("sendScoutDirectMessage", () => {
     })).rejects.toBeInstanceOf(ScoutDirectDeliveryUnavailableError);
     expect(deliveryRequests).toBe(1);
   });
+});
+
+describe("waitForScoutFlight", () => {
+  test("reads the conversations-scoped snapshot and resolves a rotated terminal flight from SQLite", async () => {
+    useIsolatedOpenScoutHome();
+    // Seed the durable control-plane row directly — the broker's hot set has
+    // already rotated this terminal flight out. closeDb() forces the readonly
+    // handle to reopen against this test's isolated database.
+    const dbPath = join(process.env.OPENSCOUT_CONTROL_HOME!, "control-plane.sqlite");
+    mkdirSync(process.env.OPENSCOUT_CONTROL_HOME!, { recursive: true });
+    const seed = new Database(dbPath, { create: true });
+    seed.exec(`CREATE TABLE invocations (
+      id TEXT PRIMARY KEY,
+      requester_id TEXT NOT NULL,
+      requester_node_id TEXT NOT NULL,
+      target_agent_id TEXT NOT NULL,
+      target_node_id TEXT,
+      action TEXT NOT NULL,
+      task TEXT NOT NULL,
+      collaboration_record_id TEXT,
+      conversation_id TEXT,
+      message_id TEXT,
+      context_json TEXT,
+      execution_json TEXT,
+      execution_resolution_json TEXT,
+      ensure_awake INTEGER NOT NULL DEFAULT 1,
+      stream INTEGER NOT NULL DEFAULT 1,
+      timeout_ms INTEGER,
+      labels_json TEXT,
+      metadata_json TEXT,
+      created_at INTEGER NOT NULL,
+      flight_id TEXT,
+      state TEXT,
+      summary TEXT,
+      output TEXT,
+      error TEXT,
+      started_at INTEGER,
+      completed_at INTEGER,
+      flight_metadata_json TEXT
+    )`);
+    seed.prepare(
+      `INSERT INTO invocations (id, requester_id, requester_node_id, target_agent_id,
+        action, task, ensure_awake, stream, created_at, flight_id, state, summary,
+        started_at, completed_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(
+      "inv-rotated", "operator", "node-1", "worker-1",
+      "run", "old work", 1, 0, 1_700_000_000_000, "flt-rotated", "completed",
+      "finished long ago", 1_700_000_000_000, 1_700_000_100_000,
+    );
+    seed.close();
+    const { closeDb } = await import("../../db-queries.ts");
+    closeDb();
+
+    const requestedPaths: string[] = [];
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      const url = new URL(input instanceof Request ? input.url : String(input));
+      requestedPaths.push(`${url.pathname}${url.search}`);
+      return jsonResponse({ flights: {} });
+    }) as typeof fetch;
+
+    try {
+      const flight = await waitForScoutFlight("http://broker.test", "flt-rotated", {
+        timeoutSeconds: 5,
+      });
+      expect(flight.state).toBe("completed");
+      expect(flight.summary).toBe("finished long ago");
+      expect(requestedPaths).toEqual(["/v1/snapshot?scope=conversations"]);
+    } finally {
+      closeDb();
+    }
+  });
+
+  test("keeps polling the broker while the flight is non-terminal", async () => {
+    useIsolatedOpenScoutHome();
+    const requestedPaths: string[] = [];
+    let polls = 0;
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      const url = new URL(input instanceof Request ? input.url : String(input));
+      requestedPaths.push(`${url.pathname}${url.search}`);
+      polls += 1;
+      return jsonResponse({
+        flights: {
+          "flt-live": {
+            id: "flt-live",
+            invocationId: "inv-live",
+            requesterId: "operator",
+            targetAgentId: "worker-1",
+            state: polls === 1 ? "running" : "completed",
+            startedAt: 1_700_000_000_000,
+          },
+        },
+      });
+    }) as typeof fetch;
+
+    const flight = await waitForScoutFlight("http://broker.test", "flt-live", {
+      timeoutSeconds: 5,
+    });
+    expect(flight.state).toBe("completed");
+    expect(polls).toBe(2);
+    expect(requestedPaths.every((path) => path === "/v1/snapshot?scope=conversations")).toBe(true);
+  });
+});
+
+describe("watchScoutMessages", () => {
+  test("resolves a rotated invocation from SQLite for live flight lifecycle events", async () => {
+    useIsolatedOpenScoutHome();
+    // The invocation rotated out of the broker hot set but SQLite retains it;
+    // the flight.updated event stream references it by invocationId.
+    const dbPath = join(process.env.OPENSCOUT_CONTROL_HOME!, "control-plane.sqlite");
+    mkdirSync(process.env.OPENSCOUT_CONTROL_HOME!, { recursive: true });
+    const seed = new Database(dbPath, { create: true });
+    seed.exec(`CREATE TABLE invocations (
+      id TEXT PRIMARY KEY,
+      requester_id TEXT NOT NULL,
+      requester_node_id TEXT NOT NULL,
+      target_agent_id TEXT NOT NULL,
+      target_node_id TEXT,
+      action TEXT NOT NULL,
+      task TEXT NOT NULL,
+      collaboration_record_id TEXT,
+      conversation_id TEXT,
+      message_id TEXT,
+      context_json TEXT,
+      execution_json TEXT,
+      execution_resolution_json TEXT,
+      ensure_awake INTEGER NOT NULL DEFAULT 1,
+      stream INTEGER NOT NULL DEFAULT 1,
+      timeout_ms INTEGER,
+      labels_json TEXT,
+      metadata_json TEXT,
+      created_at INTEGER NOT NULL,
+      flight_id TEXT,
+      state TEXT,
+      summary TEXT,
+      output TEXT,
+      error TEXT,
+      started_at INTEGER,
+      completed_at INTEGER,
+      flight_metadata_json TEXT
+    )`);
+    seed.prepare(
+      `INSERT INTO invocations (id, requester_id, requester_node_id, target_agent_id,
+        action, task, ensure_awake, stream, created_at, conversation_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(
+      "inv-rotated", "operator", "node-1", "worker-1",
+      "run", "old work", 1, 0, 1_700_000_000_000, "chn-rotated",
+    );
+    seed.close();
+    const { closeDb } = await import("../../db-queries.ts");
+    closeDb();
+
+    const encoder = new TextEncoder();
+    const events = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(encoder.encode(
+          `data: ${JSON.stringify({
+            kind: "flight.updated",
+            payload: {
+              flight: {
+                id: "flt-rotated",
+                invocationId: "inv-rotated",
+                requesterId: "operator",
+                targetAgentId: "worker-1",
+                state: "running",
+                startedAt: 1_700_000_000_000,
+              },
+            },
+          })}\n\n`,
+        ));
+        controller.close();
+      },
+    });
+
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      const url = new URL(input instanceof Request ? input.url : String(input));
+      if (url.pathname === "/health") {
+        return jsonResponse({ ok: true, nodeId: "node-1", meshId: "mesh-1" });
+      }
+      if (url.pathname === "/v1/node") {
+        return jsonResponse({ id: "node-1" });
+      }
+      if (url.pathname === "/v1/snapshot") {
+        // The rotated invocation is absent from every broker read.
+        return jsonResponse({
+          agents: {},
+          actors: {},
+          endpoints: {},
+          conversations: {},
+          messages: {},
+          invocations: {},
+          flights: {},
+        });
+      }
+      if (url.pathname === "/v1/events/stream") {
+        return new Response(events, {
+          status: 200,
+          headers: { "content-type": "text/event-stream" },
+        });
+      }
+      return jsonResponse({ error: "not found" }, 404);
+    }) as unknown as typeof fetch;
+
+    try {
+      const lifecycles: Array<Record<string, unknown>> = [];
+      await watchScoutMessages({
+        conversationId: "chn-rotated",
+        onMessage: () => undefined,
+        onLifecycle: (record) => lifecycles.push({ ...record }),
+      });
+      expect(lifecycles).toEqual([
+        expect.objectContaining({
+          conversationId: "chn-rotated",
+          invocationId: "inv-rotated",
+          flightId: "flt-rotated",
+          state: "working",
+        }),
+      ]);
+    } finally {
+      closeDb();
+    }
+  });
+});
+
+
+describe("Chat cancellation broker contract", () => {
+  test("only an acknowledged terminal result changes the client state", async () => {
+    let response: unknown = { error: { code: -32004 } };
+    globalThis.fetch = (async (_input, init) => {
+      expect(JSON.parse(String(init?.body))).toMatchObject({ method: "CancelTask", params: { id: "flight-chat" } });
+      return Response.json(response);
+    }) as typeof fetch;
+    expect(await cancelScoutChatFlight("flight-chat", "http://broker.test")).toMatchObject({ ok: false, status: 409 });
+    response = { result: { status: { state: "TASK_STATE_WORKING" } } };
+    expect(await cancelScoutChatFlight("flight-chat", "http://broker.test")).toMatchObject({ ok: false, status: 502 });
+    response = { result: { status: { state: "TASK_STATE_CANCELED" } } };
+    expect(await cancelScoutChatFlight("flight-chat", "http://broker.test")).toEqual({ ok: true, state: "cancelled" });
+  });
+});
+
+test("retained question history queries both terminal states with broker scope and cursor", async () => {
+  const urls: URL[] = [];
+  globalThis.fetch = (async (input, init) => {
+    const request = input instanceof Request ? input : new Request(input, init);
+    const url = new URL(request.url); urls.push(url);
+    return jsonResponse([{ id: url.searchParams.get("state") }]);
+  }) as typeof fetch;
+  const result = await readScoutChatQuestionHistory("http://history.test", "room/a", { createdAt: 123, id: "q+2" });
+  expect(result.map(row => row.id).sort()).toEqual(["closed", "declined"]);
+  for (const url of urls) {
+    expect(url.pathname).toBe("/v1/collaboration/records");
+    expect(Object.fromEntries(url.searchParams)).toMatchObject({ conversationId: "room/a", kind: "question", includeThreads: "true", orderByCreatedAt: "true", afterCreatedAt: "123", afterId: "q+2", limit: "51" });
+  }
 });

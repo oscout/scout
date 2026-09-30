@@ -16,6 +16,7 @@ function liveRouteInventory(): string[] {
   const routes = new Set<string>([
     ...extractRouteInventory(readFileSync(join(import.meta.dir, "broker-http-router.ts"), "utf8")),
     ...extractRouteInventory(readFileSync(join(import.meta.dir, "broker-http-entity-write-routes.ts"), "utf8")),
+    ...extractRouteInventory(readFileSync(join(import.meta.dir, "broker-guest-http-routes.ts"), "utf8")),
   ]);
   return [...routes].sort();
 }
@@ -104,7 +105,8 @@ describe("mesh route matrix", () => {
     }
     expect(counts.get("public")).toBe(3);
     expect(counts.get("observe")).toBe(4); // nodes, node-state, snapshot and invocation-stream
-    expect(counts.get("control")).toBe(9); // 8 mesh POST routes + the /trpc upgrade
-    expect(counts.get("local")).toBe(Object.keys(meshRouteMatrixEntries()).length - 16);
+    expect(counts.get("control")).toBe(11); // 10 mesh POST routes + the /trpc upgrade
+    expect(counts.get("guest")).toBe(9); // discovery, asks, and five mailbox routes
+    expect(counts.get("local")).toBe(Object.keys(meshRouteMatrixEntries()).length - 27);
   });
 });

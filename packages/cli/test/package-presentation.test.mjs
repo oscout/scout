@@ -16,7 +16,8 @@ test("npm metadata points visitors to the OpenScout project", () => {
     directory: "packages/cli",
   });
   assert.deepEqual(packageJson.bugs, { url: "https://github.com/oscout/scout/issues" });
-  assert.match(packageJson.description, /Local-first control plane/);
+  assert.match(packageJson.description, /^Coordinate Claude Code, Codex/);
+  assert.match(packageJson.description, /local-first/);
   assert.equal(packageJson.engines?.bun, ">=1.3");
   assert.ok(packageJson.files?.includes("NOTICE"), "NOTICE must ship with the Apache-2.0 package");
 
@@ -27,8 +28,8 @@ test("npm metadata points visitors to the OpenScout project", () => {
 
 test("npm README keeps the branded product introduction", () => {
   assert.match(readme, /src="https:\/\/openscout\.app\/og\.png"/);
-  assert.match(readme, /The coordination layer for the coding agents you already run\./);
+  assert.match(readme, /Coordinate Claude Code, Codex, Cursor, OpenCode, Kimi, Grok, Pi, and Devin\./);
   assert.match(readme, /https:\/\/openscout\.app\/docs\/quickstart/);
-  assert.match(readme, /high-trust local developer pilots/);
+  assert.match(readme, /https:\/\/openscout\.app\/contact/);
   assert.match(readme, /The Rust TUI launched by `scout tui`.*not installed by/s);
 });

@@ -20,6 +20,8 @@ ports, while staying well above privileged system ports.
 | Design studio | `43140` | `design/studio` Next dev server |
 | NATS JetStream | `43150` | Opt-in; loopback only; `OPENSCOUT_JETSTREAM_PORT` overrides |
 | NATS monitoring | `43151` | Opt-in; loopback only; `OPENSCOUT_JETSTREAM_MONITOR_PORT` overrides |
+| OTLP ingest (proposed, SCO-105) | `43160` | OTLP/HTTP receiver for agent telemetry; loopback only; `OPENSCOUT_OTLP_PORT` overrides |
+| Scout Chat local Worker | `43170` | `apps/hosted-chat`; OAuth callbacks use `http://localhost:43170` |
 
 ### Shared local edge
 
@@ -48,6 +50,7 @@ with the main checkout:
 | Web app server | `43200-43899` |
 | Vite asset server | `43900-44599` |
 | Pairing bridge | `44600-45299` |
+| OTLP ingest | `45300-45999` |
 
 Ports with established protocol meaning stay conventional. The local edge uses
 HTTP `80` and HTTPS `443` when enabled, and SSH terminal access remains port

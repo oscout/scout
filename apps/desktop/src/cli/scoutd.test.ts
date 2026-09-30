@@ -1,10 +1,33 @@
 import { describe, expect, test } from "bun:test";
+import { chmodSync, existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
+import { doctorNativeCheck, renderDoctorCheck } from "./doctor-checks.ts";
 import {
+  loadNativeScoutdDoctorReport,
   nativeScoutdCommandTimeoutMs,
   normalizeNativeScoutdDoctorReport,
   renderNativeScoutdDoctorSection,
+  runNativeScoutdJson,
 } from "./scoutd.ts";
+
+function withPlatform<T>(platform: NodeJS.Platform, run: () => T): T {
+  const previous = Object.getOwnPropertyDescriptor(process, "platform");
+  Object.defineProperty(process, "platform", { configurable: true, enumerable: true, value: platform });
+  const restore = () => {
+    if (previous) Object.defineProperty(process, "platform", previous);
+  };
+  try {
+    const result = run();
+    if (result instanceof Promise) return result.finally(restore) as T;
+    restore();
+    return result;
+  } catch (error) {
+    restore();
+    throw error;
+  }
+}
 
 describe("native scoutd doctor helpers", () => {
   test("allows the native restart lifecycle to reach its own stop and start deadlines", () => {
@@ -69,6 +92,15 @@ describe("native scoutd doctor helpers", () => {
     expect(rendered).toContain("pid 42 ppid 1");
   });
 
+  test("preserves a connected health timeout without rendering it as ready", () => {
+    const report = normalizeNativeScoutdDoctorReport({
+      scoutdPath: "/opt/openscout/scoutd", source: "package",
+      raw: { status: { health: { reachable: true, ok: false, state: "timed_out", checkedAt: 123, durationMs: 1000, transport: "unix_socket" } } },
+    });
+    expect(report.status).toMatchObject({ reachable: true, healthOk: false, healthState: "timed_out", healthCheckedAt: 123, healthDurationMs: 1000 });
+    expect(renderNativeScoutdDoctorSection(report)).toContain("Health: timed_out (1000ms)");
+  });
+
   test("renders unsupported repairs without failing the doctor path", () => {
     const report = normalizeNativeScoutdDoctorReport({
       scoutdPath: "/opt/openscout/scoutd",
@@ -113,5 +145,37 @@ describe("native scoutd doctor helpers", () => {
     const rendered = renderNativeScoutdDoctorSection(report);
     expect(rendered).toContain("Build: 0.2.75");
     expect(rendered).toContain("Remove stale broker socket [applied]");
+  });
+
+  test("does not spawn scoutd on linux and doctor reports the supervisor as not applicable", async () => {
+    const root = mkdtempSync(join(tmpdir(), "openscout-scoutd-linux-doctor-"));
+    const marker = join(root, "spawned");
+    const scoutd = join(root, "scoutd");
+    writeFileSync(scoutd, `#!/bin/sh\ntouch ${JSON.stringify(marker)}\n`, "utf8");
+    chmodSync(scoutd, 0o755);
+    try {
+      await withPlatform("linux", async () => {
+        const outcome = await runNativeScoutdJson("doctor", {
+          env: { ...process.env, OPENSCOUT_SCOUTD_BIN: scoutd },
+        });
+        expect(outcome.ok).toBe(false);
+        if (!outcome.ok) {
+          expect(outcome.reason).toBe("not-applicable");
+          expect(outcome.error).toBe("native supervisor: not applicable on linux");
+        }
+        const report = await loadNativeScoutdDoctorReport({
+          env: { ...process.env, OPENSCOUT_SCOUTD_BIN: scoutd },
+        });
+        expect(report.notApplicableDetail).toBe("native supervisor: not applicable on linux");
+        expect(report.error).toBeNull();
+        const check = doctorNativeCheck(report);
+        expect(check.state).toBe("working");
+        expect(renderDoctorCheck(check)).toBe("OK native: native supervisor: not applicable on linux");
+        expect(renderNativeScoutdDoctorSection(report)).toBe("\nnative supervisor: not applicable on linux");
+      });
+      expect(existsSync(marker)).toBe(false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });

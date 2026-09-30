@@ -100,6 +100,9 @@ Session invariants:
 - exact session asks should route work by `targetSessionId` to continue context;
   asks without a target session may route by agent/project and create the
   lightest usable fresh session/card
+- every known session has a derived, copyable address `sess.<token>@<host>`
+  (see [runtime-sessions.md](./runtime-sessions.md#session-addresses)); first
+  contact with a known session needs the address only, never a card
 - forked asks should route work to a new execution session seeded from
   `forkFromStateId` or `forkFromSessionId`; the source session is context, not
   the work target

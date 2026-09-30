@@ -58,7 +58,7 @@
 }
 
 .s-moving-signal-item {
-  border-bottom: 1px solid color-mix(in srgb, var(--border) 60%, transparent);
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 45%, transparent);
 }
 
 .s-moving-signal-item:last-child {
@@ -67,12 +67,12 @@
 
 .s-moving-signal-row {
   display: grid;
-  grid-template-columns: 52px 22px minmax(120px, 180px) minmax(0, 1fr) auto;
-  gap: var(--space-sm) var(--space-md);
+  grid-template-columns: 44px 16px minmax(96px, 168px) minmax(0, 1fr) auto;
+  gap: var(--space-sm) var(--space-lg);
   align-items: center;
   width: 100%;
   margin: 0;
-  padding: 8px var(--space-xl);
+  padding: var(--space-md) var(--space-xl);
   border: 0;
   border-left: 2px solid transparent;
   background: transparent;
@@ -131,8 +131,8 @@
 
 .s-moving-signal-project {
   font-family: var(--font-mono);
-  font-size: var(--text-xs);
-  color: var(--muted);
+  font-size: var(--text-sm);
+  color: var(--dim);
   overflow: hidden;
   text-overflow: ellipsis;
 }
@@ -143,21 +143,18 @@
   padding: 1px 5px;
 }
 
+/* What the agent is doing, in its own words: plain sans text, not a boxed
+   code pill. Seven boxes in seven rows was the loudest thing on Home. */
 .s-moving-signal-action {
   min-width: 0;
-  justify-self: start;
-  max-width: 100%;
-  font-family: var(--font-mono);
-  font-size: var(--text-xs);
-  color: color-mix(in srgb, var(--ink) 88%, transparent);
+  justify-self: stretch;
+  font-family: var(--font-sans);
+  font-size: var(--text-lg);
+  color: color-mix(in srgb, var(--ink) 90%, transparent);
   line-height: var(--leading-tight);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  background: color-mix(in srgb, var(--ink) 4.5%, transparent);
-  border: 1px solid color-mix(in srgb, var(--border) 65%, transparent);
-  border-radius: var(--radius-md);
-  padding: 3px 8px;
 }
 
 .s-moving-signal-ctx-badge {

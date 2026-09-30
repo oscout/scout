@@ -21,10 +21,20 @@ import {
   resolveAppBundlePaths,
   resolveLaunchdLabel,
   startLaunchdJob,
+  REQUIRED_SUPERVISED_LAYERS,
   SUPERVISED_LAYERS,
   terminateProcesses,
   verifyTree,
 } from "../app-lifecycle.ts";
+import {
+  DEFAULT_DRAIN_TIMEOUT_MS,
+  describeActiveFlight,
+  formatDuration,
+  parseDrainTimeout,
+  readActiveFlights,
+  resolveControlPlaneDbPath,
+  waitForIdleFleet,
+} from "../app-drain.ts";
 import type { ScoutCommandContext } from "../context.ts";
 import { defaultScoutContextDirectory } from "../context.ts";
 import { ScoutCliError } from "../errors.ts";
@@ -50,6 +60,9 @@ type ScoutAppCommand = {
   action: ScoutAppAction;
   scope: StopScope;
   json: boolean;
+  /** Skip waiting for in-flight work before bringing services down. */
+  now: boolean;
+  drainTimeoutMs: number;
 };
 
 type LayerReport = {
@@ -85,6 +98,14 @@ export function renderAppCommandHelp(): string {
     "                stop. This is what a rebuild needs: the new bundle",
     "                invalidates the processes running from it, but not the",
     "                services, and bouncing those disconnects every agent.",
+    "  --now         Do not wait for in-flight work. Without it, stop and",
+    "                restart first wait for every waking/running flight to",
+    "                finish, because the tree going down kills harnesses the",
+    "                broker spawned mid-turn. Queued flights do not block; the",
+    "                broker re-dispatches them at startup.",
+    "  --timeout <t>  How long to wait for in-flight work (90s, 15m, 2h; bare",
+    "                number = minutes; default 30m). On timeout nothing is",
+    "                stopped and the blocking flights are listed.",
     "  --json        Structured output.",
     "",
     "Aliases:",
@@ -107,6 +128,8 @@ export function renderAppCommandHelp(): string {
     "Examples:",
     "  scout app status",
     "  scout app restart",
+    "  scout app restart --timeout 1h",
+    "  scout app restart --now",
     "  scout app status --json",
   ].join("\n");
 }
@@ -114,25 +137,41 @@ export function renderAppCommandHelp(): string {
 export function parseAppCommand(args: string[]): ScoutAppCommand {
   const json = args.includes("--json");
   const scope: StopScope = args.includes("--apps-only") ? "apps" : "all";
-  const positional = args.filter((arg) => !arg.startsWith("-"));
+  const now = args.includes("--now");
+  let drainTimeoutMs = DEFAULT_DRAIN_TIMEOUT_MS;
+  const positional: string[] = [];
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index]!;
+    if (arg === "--timeout" || arg.startsWith("--timeout=")) {
+      const value = arg === "--timeout" ? args[++index] : arg.slice("--timeout=".length);
+      const parsed = value === undefined ? null : parseDrainTimeout(value);
+      if (parsed === null) {
+        throw new ScoutCliError(`invalid --timeout: ${value ?? "(missing)"} (try 90s, 15m, 2h)`);
+      }
+      drainTimeoutMs = parsed;
+      continue;
+    }
+    if (!arg.startsWith("-")) positional.push(arg);
+  }
   const first = positional[0];
+  const base = { scope, json, now, drainTimeoutMs };
 
   if (!first) {
-    return { action: "status", scope, json };
+    return { action: "status", ...base };
   }
 
   switch (first) {
     case "status":
-      return { action: "status", scope, json };
+      return { action: "status", ...base };
     case "stop":
     case "down":
     case "quit":
-      return { action: "stop", scope, json };
+      return { action: "stop", ...base };
     case "start":
     case "up":
-      return { action: "start", scope, json };
+      return { action: "start", ...base };
     case "restart":
-      return { action: "restart", scope, json };
+      return { action: "restart", ...base };
     default:
       throw new ScoutCliError(`unknown subcommand: ${first} (try: scout app)`);
   }
@@ -241,7 +280,7 @@ export function startTreeReady(tree: LifecycleTree, scope: StopScope): boolean {
   if (!appsReady || scope === "apps") {
     return appsReady;
   }
-  return SUPERVISED_LAYERS.every((layer) => tree.layers[layer].length > 0);
+  return REQUIRED_SUPERVISED_LAYERS.every((layer) => tree.layers[layer].length > 0);
 }
 
 async function stopSuite(paths: AppBundlePaths, steps: string[], scope: StopScope): Promise<LifecycleTree> {
@@ -312,7 +351,7 @@ async function startSuite(
 
     supervisedReadiness = waitFor(
       paths,
-      (tree) => SUPERVISED_LAYERS.every((layer) => tree.layers[layer].length > 0),
+      (tree) => REQUIRED_SUPERVISED_LAYERS.every((layer) => tree.layers[layer].length > 0),
       SUPERVISED_READY_TIMEOUT_MS,
     );
   }
@@ -328,7 +367,7 @@ async function startSuite(
 
   if (supervisedReadiness) {
     const supervised = await supervisedReadiness;
-    const missing = SUPERVISED_LAYERS.filter((layer) => supervised.layers[layer].length === 0);
+    const missing = REQUIRED_SUPERVISED_LAYERS.filter((layer) => supervised.layers[layer].length === 0);
     steps.push(missing.length === 0
       ? "supervised tree ready"
       : `supervised tree still starting — missing ${missing.join(", ")}`);
@@ -405,6 +444,56 @@ export function lifecycleProblems(
   return verifyTree(tree).map((problem) => problem.message);
 }
 
+/**
+ * Wait for in-flight work before the supervised tree comes down. Throws
+ * (stopping nothing) when the fleet does not go quiet within the timeout.
+ */
+async function drainFleet(
+  context: ScoutCommandContext,
+  command: ScoutAppCommand,
+  steps: string[],
+): Promise<void> {
+  const dbPath = resolveControlPlaneDbPath(context.env);
+  const readFlights = () => {
+    try {
+      return readActiveFlights(dbPath);
+    } catch (error) {
+      throw new ScoutCliError(
+        `cannot read in-flight work from ${dbPath}: ${error instanceof Error ? error.message : String(error)}. `
+          + `Re-run with --now to ${command.action} without waiting.`,
+      );
+    }
+  };
+  const result = await waitForIdleFleet({
+    readFlights,
+    timeoutMs: command.drainTimeoutMs,
+    onWaiting: (state, waitedMs) => {
+      const clock = Date.now();
+      context.stderr(
+        `Waiting for ${state.blocking.length} in-flight flight${state.blocking.length === 1 ? "" : "s"} before ${command.action}`
+          + ` (${formatDuration(waitedMs)} of ${formatDuration(command.drainTimeoutMs)}; --now skips):`,
+      );
+      for (const flight of state.blocking) context.stderr(`  ${describeActiveFlight(flight, clock)}`);
+    },
+  });
+  const clock = Date.now();
+  for (const flight of result.stale) {
+    steps.push(`ignored stale flight ${describeActiveFlight(flight, clock)}`);
+  }
+  if (!result.idle) {
+    throw new ScoutCliError(
+      [
+        `Still ${result.blocking.length} flight${result.blocking.length === 1 ? "" : "s"} in flight after ${formatDuration(result.waitedMs)}; nothing was stopped.`,
+        ...result.blocking.map((flight) => `  ${describeActiveFlight(flight, clock)}`),
+        `Wait longer with --timeout, or ${command.action} anyway with --now.`,
+      ].join("\n"),
+    );
+  }
+  steps.push(result.waitedMs > 0
+    ? `waited ${formatDuration(result.waitedMs)} for in-flight work`
+    : "no in-flight work");
+}
+
 function renderAppResult(result: ScoutAppResult): string {
   const lines: string[] = [result.message, ""];
 
@@ -439,7 +528,9 @@ function renderAppResult(result: ScoutAppResult): string {
 }
 
 export async function runAppCommand(context: ScoutCommandContext, args: string[]): Promise<void> {
-  if (HELP_FLAGS.has(args[0] ?? "")) {
+  // Anywhere in argv, not just first: `scout app restart --help` used to fall
+  // through and perform the restart.
+  if (args.some((arg) => HELP_FLAGS.has(arg))) {
     context.output.writeText(renderAppCommandHelp());
     return;
   }
@@ -477,6 +568,14 @@ export async function runAppCommand(context: ScoutCommandContext, args: string[]
     throw error;
   }
   const steps: string[] = [];
+
+  if (
+    (command.action === "stop" || command.action === "restart")
+    && command.scope === "all"
+    && !command.now
+  ) {
+    await drainFleet(context, command, steps);
+  }
 
   let tree: LifecycleTree;
   switch (command.action) {

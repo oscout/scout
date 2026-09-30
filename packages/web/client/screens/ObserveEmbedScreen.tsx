@@ -2,8 +2,9 @@ import { ExternalLink } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 
 import { api } from "../lib/api.ts";
+import { messagePermalinkAnchor } from "../lib/message-permalink.ts";
 import { describeObserveEvidence } from "../lib/observe-fidelity.ts";
-import { useBrokerEvents } from "../lib/sse.ts";
+import { isBrokerDataEvent, useBrokerEventsRefresh } from "../lib/sse.ts";
 import { formatAbsoluteTimestamp } from "../lib/time.ts";
 import type { AgentObservePayload } from "../lib/types.ts";
 import { SessionObserve } from "./sessions/SessionObserve.tsx";
@@ -38,7 +39,7 @@ export function InitiatingAsk({
     || ask.task.split("\n").length > COLLAPSED_ASK_LINE_LIMIT;
   const conversationHref = ask.conversationId
     ? `/messages/${encodeURIComponent(ask.conversationId)}${
-        ask.messageId ? `#msg-${encodeURIComponent(ask.messageId)}` : ""
+        ask.messageId ? `#${encodeURIComponent(messagePermalinkAnchor(ask.messageId))}` : ""
       }`
     : null;
   const flightHref = `/flights/${encodeURIComponent(ask.flightId)}/observe${
@@ -115,7 +116,7 @@ export function ObserveEmbedScreen({ agentId }: ObserveEmbedScreenProps) {
     return () => window.clearInterval(interval);
   }, [load]);
 
-  useBrokerEvents(() => {
+  useBrokerEventsRefresh(isBrokerDataEvent, () => {
     void load(true);
   });
 

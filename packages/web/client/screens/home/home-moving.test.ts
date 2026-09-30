@@ -22,6 +22,8 @@ function agent(overrides: Partial<Agent> = {}): Agent {
     definitionId: "agent-1",
     name: "codex.main",
     handle: null,
+    authorityNodeId: null,
+    authorityNodeName: null,
     agentClass: "general",
     state: "available",
     harness: "codex",

@@ -166,6 +166,7 @@ export function ContextCaptureHost({
           initialFiles={restoredDraft?.files}
           initialAttachmentFeedback={restoredDraft?.attachmentFeedback ?? undefined}
           initialIntent={restoredDraft?.intent}
+          initialMachineId={restoredDraft?.machineId}
           initialProjectPath={restoredDraft?.projectPath}
           initialProjectQuery={restoredDraft?.projectQuery}
           initialForwardContext={restoredDraft?.forwardContext}

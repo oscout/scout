@@ -52,7 +52,9 @@ nativeTest("native primary navigation follows the web area order", () => {
     home: "home", comms: "chat", agents: "projects", terminals: "sessions",
     dispatch: "dispatch", search: "search", ops: "ops",
   };
-  expect(sections.map((section) => nativeToWeb[section]))
+  // Spaces embeds the shared chat room natively; the web reaches it inside Chat.
+  const nativeOnly = new Set(["spaces"]);
+  expect(sections.filter((section) => !nativeOnly.has(section)).map((section) => nativeToWeb[section]))
     .toEqual(PRIMARY_AREAS.filter((area) => area.id !== "settings").map((area) => area.id));
 });
 

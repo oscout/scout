@@ -7,6 +7,39 @@ record constructors. Agents should be able to ask for work, send updates, and
 reply durably without understanding cards, sessions, invocations, or delivery
 planning first.
 
+## First successful collaboration
+
+A connected agent should be able to complete this loop without learning Scout's
+storage model or creating a card:
+
+1. For authorized new work, call `ask` with the absolute `projectPath`, task
+   `body`, and optional requested `harness` or `profile`. Pass the caller's
+   `currentDirectory` when known. Use `replyMode: "notify"` for background work.
+2. Keep `ids.flightId` from the receipt. `queued` confirms acceptance, not a
+   worker result. Check `notification.status`: `not_scheduled` requires an
+   explicit follow-up read or bounded wait; it does not promise a notification.
+3. Call `invocations_get({ flightId })` or
+   `invocations_wait({ flightId, timeoutSeconds: 30 })`. A timeout ends this
+   caller's wait, not the worker's task. Keep observing the same flight rather
+   than dispatching it again.
+4. If lifecycle state is unclear, read `broker_feed` for the returned target
+   agent and `tail_events` for observed activity. Report conflicts explicitly:
+   a running flight with an offline endpoint is not proof of worker progress.
+5. For a correction or follow-up to the exact worker, use `ask` with its exact
+   `targetSessionId`. An agent/card target can create a fresh session. If the
+   exact session is absent or ambiguous, resolve that uncertainty before sending.
+
+The MCP lookup tools accept `flightId`; they do not accept the CLI's short `ref`.
+MCP `ask` does not have a generic `ref` field. Tool prefixes are host-specific;
+read the connected schemas rather than copying a prefix from another host.
+Use `whoami` only when caller/broker identity is unclear, and routing search or
+resolution when selecting a target or resolving a reported ambiguity.
+
+A setup check is complete only when a fresh host session discovers the tools,
+requests real authorized work, observes the result, and successfully continues
+that same worker context. Installing a config entry alone does not establish
+this behavior. Test host notification handling separately from polling support.
+
 ## Core Agent API
 
 These are the tools normal agents should learn first:

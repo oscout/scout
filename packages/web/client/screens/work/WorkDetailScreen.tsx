@@ -20,6 +20,7 @@ import { BackToPicker } from "../../scout/slots/BackToPicker.tsx";
 import { openContent } from "../../scout/slots/openContent.ts";
 import { TailView } from "../shared/TailView.tsx";
 import type { Route, WorkDetail, WorkMaterial, WorkMaterialContent, WorkMaterialsInventory } from "../../lib/types.ts";
+import { formatWorkMaterialDiff, workMaterialDiffTotal } from "../../../shared/api/work-materials.ts";
 
 type ActionCue = {
   eyebrow: string;
@@ -691,9 +692,8 @@ function inventoryModeLabel(mode: WorkMaterialsInventory["mode"]): string {
 }
 
 function materialSummary(material: WorkMaterial): string {
-  const stats = material.diffStat
-    ? `+${material.diffStat.additions} / -${material.diffStat.deletions}`
-    : material.status;
+  const diff = material.diffStat ? workMaterialDiffTotal(material.diffStat) : null;
+  const stats = diff ? `+${diff.additions} / -${diff.deletions}` : material.status;
   return `${material.path} · ${stats} · ${material.confidence} confidence`;
 }
 
@@ -727,7 +727,7 @@ function WorkMaterialList({
           <div className="s-work-material-row-meta">
             <span>{material.status}</span>
             {material.diffStat && (
-              <span>+{material.diffStat.additions} -{material.diffStat.deletions}</span>
+              <span>{formatWorkMaterialDiff(material.diffStat)}</span>
             )}
             <span>{material.confidence}</span>
           </div>

@@ -26,6 +26,8 @@ import { spawnSync } from "node:child_process";
 import { existsSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
 
+import { classifyScoutBridge } from "./machine-update.ts";
+
 export type ProcessRecord = {
   pid: number;
   ppid: number;
@@ -50,10 +52,16 @@ export type LifecycleLayerName =
   | "web"
   | "app"
   | "menu"
-  | "pairing";
+  | "pairing"
+  | "bridge";
 
 /** Leaf-first. The launchd tree is bootout'd as a unit before its sweep. */
-export const SUPERVISED_LAYERS: LifecycleLayerName[] = ["pairing", "web", "edge", "broker", "probes", "base", "scoutd"];
+export const SUPERVISED_LAYERS: LifecycleLayerName[] = ["bridge", "pairing", "web", "edge", "broker", "probes", "base", "scoutd"];
+/** Supervised layers that run only when configured; absence is healthy. */
+export const OPTIONAL_SUPERVISED_LAYERS: LifecycleLayerName[] = ["bridge"];
+/** Supervised layers a started tree must hold. */
+export const REQUIRED_SUPERVISED_LAYERS: LifecycleLayerName[] = SUPERVISED_LAYERS
+  .filter((layer) => !OPTIONAL_SUPERVISED_LAYERS.includes(layer));
 export const LAUNCH_SERVICES_LAYERS: LifecycleLayerName[] = ["menu", "app"];
 
 export const SCOUT_LAUNCHD_LABEL = "app.openscout";
@@ -124,6 +132,7 @@ const EMPTY_LAYERS = (): Record<LifecycleLayerName, LifecycleProcess[]> => ({
   app: [],
   menu: [],
   pairing: [],
+  bridge: [],
 });
 
 /**
@@ -409,6 +418,13 @@ export function classifyProcesses(
     }
     if (record.args.includes("scoutd probes serve")) {
       push(record, "probes", supervisedIsOurs(record));
+      continue;
+    }
+    // The suite's own mesh bridge, supervised by scout-base. Harness-held and
+    // legacy launchd bridges are not descendants of our service roots; they
+    // stay out of the tree (machine-update reports them as unmanaged).
+    if (classifyScoutBridge(record.args) === "mesh") {
+      if (supervisedIsOurs(record)) push(record, "bridge", true);
       continue;
     }
     if (record.args.includes("pairing-runtime-controller")) {
@@ -795,6 +811,18 @@ export function verifyTree(tree: LifecycleTree): VerifyProblem[] {
   // duplicate base processes are unhealthy, not fallback eligibility.
   const pairingOwner = tree.layers.base[0] ?? menu;
   ownedBy(pairing, pairingOwner, "pairing");
+
+  // The mesh bridge is optional (it runs only when configured), so absence is
+  // healthy; a second one would hold this node's relay connection twice.
+  const bridges = tree.layers.bridge;
+  if (bridges.length > 1) {
+    problems.push({
+      layer: "bridge",
+      message: `expected at most one bridge process, found ${bridges.length} (pids ${bridges.map((entry) => entry.pid).join(", ")})`,
+    });
+  } else {
+    ownedBy(bridges[0] ?? null, base, "bridge");
+  }
 
   // A process that names one of this checkout's paths but is detached from the
   // expected ownership tree is ours-and-malformed, not a harmless sibling.

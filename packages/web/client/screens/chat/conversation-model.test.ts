@@ -239,6 +239,8 @@ describe("conversation feed rows", () => {
       body: "body",
       createdAt: at,
       class: "agent",
+      replyToMessageId: null,
+      threadConversationId: null,
       ...overrides,
     };
   }

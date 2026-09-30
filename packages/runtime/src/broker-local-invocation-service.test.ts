@@ -155,7 +155,11 @@ function createHarness(input: {
   resolveError?: Error;
   invokeResult?: { output: string; externalSessionId?: string; metadata?: Record<string, unknown> };
   invokeError?: Error;
-  invokeEndpoint?: (endpoint: AgentEndpoint, invocation: InvocationRequest) => Promise<{ output: string; externalSessionId?: string; metadata?: Record<string, unknown> }>;
+  invokeEndpoint?: (
+    endpoint: AgentEndpoint,
+    invocation: InvocationRequest,
+    hooks?: { onSessionObserved?: (metadata: Record<string, unknown>) => Promise<void> | void },
+  ) => Promise<{ output: string; externalSessionId?: string; metadata?: Record<string, unknown> }>;
   ensureResult?: { externalSessionId?: string | null; metadata?: Record<string, unknown> };
   ensureEndpoint?: (endpoint: AgentEndpoint) => Promise<{ externalSessionId?: string | null; metadata?: Record<string, unknown> }>;
   previousEndpoint?: AgentEndpoint;
@@ -277,9 +281,9 @@ function createHarness(input: {
       }
       return input.invokeResult ?? { output: "agent reply" };
     },
-    async invokeLocalAgentEndpoint(nextEndpoint, nextInvocation) {
+    async invokeLocalAgentEndpoint(nextEndpoint, nextInvocation, hooks) {
       if (input.invokeEndpoint) {
-        return input.invokeEndpoint(nextEndpoint, nextInvocation);
+        return input.invokeEndpoint(nextEndpoint, nextInvocation, hooks);
       }
       if (input.invokeError) {
         throw input.invokeError;
@@ -460,6 +464,47 @@ describe("BrokerLocalInvocationService", () => {
         model: expect.objectContaining({ observed: "gpt-5.6-sol", drift: "match" }),
         reasoningEffort: expect.objectContaining({ observed: "high", drift: "mismatch" }),
       }),
+    }));
+  });
+
+  test("records which Codex app-server served an attached session in the dispatch trace", async () => {
+    const endpoint = testEndpoint({
+      harness: "codex",
+      transport: "codex_app_server",
+      metadata: { placement: "attached", codexConnection: "attach" },
+    });
+    const codexAppServer = {
+      connection: "attached",
+      socketPath: "/Users/op/.codex/app-server-control/app-server-control.sock",
+      pid: null,
+      userAgent: "Codex Desktop/0.147.0",
+      appServerVersion: "0.147.0",
+      codexHome: "/Users/op/.codex",
+      platformOs: "macos",
+      capabilityGaps: ["scout_mcp_injection", "launch_args", "process_env"],
+      connectedAt: 19_000,
+    };
+    const harness = createHarness({
+      endpoint,
+      invokeResult: { output: "done", metadata: { codexAppServer } },
+      now: 20_000,
+    });
+    const executionResolution = createScoutExecutionResolution({
+      requested: { harness: "codex" },
+      resolved: { harness: "codex" },
+      source: { harness: "flag" },
+      resolvedAt: 10_000,
+    });
+
+    harness.seedFlight(testFlight());
+    await harness.service.execute(testInvocation({ executionResolution }));
+
+    expect(harness.persistedFlights[0]?.metadata?.dispatchAck).toEqual(expect.objectContaining({
+      placement: "attached",
+    }));
+    expect(harness.persistedFlights.at(-1)?.metadata?.dispatchAck).toEqual(expect.objectContaining({
+      placement: "attached",
+      executionResolution: expect.objectContaining({ codexAppServer }),
     }));
   });
 
@@ -1119,5 +1164,59 @@ describe("tmux session observation across the invocation boundary", () => {
       ensureAwake: true,
     }));
     expect(exact?.id).toBe(endpoint.id);
+  });
+
+  test("a harness spawned mid-turn is bound before the turn ends and stays bound if the turn fails", async () => {
+    const nativeId = "4b073f76-a315-4d55-8042-efa553901fc0";
+    const endpoint = testEndpoint({
+      id: "endpoint.session-muiialba-muzkmi.tmux",
+      transport: "tmux",
+      harness: "claude",
+      state: "idle",
+      sessionId: "session-muiialba-muzkmi",
+      metadata: {
+        source: "scout-cardless-session",
+        sessionBacked: true,
+        cardless: true,
+        pendingExternalSession: true,
+        pendingExternalSessionAt: 9_000,
+      },
+    });
+    const observation: LocalEndpointSessionObservation = {
+      sessionId: nativeId,
+      runtime: { harness: "claude" },
+      runtimeSource: "claude-session-record",
+      evidence: { source: "claude-session-record", tmuxSession: "session-muiialba-muzkmi", pid: 91934 },
+      observedAt: 12_000,
+    };
+    let boundMidTurn: AgentEndpoint | undefined;
+    const harness = createHarness({
+      endpoint,
+      async invokeEndpoint(running, _invocation, hooks) {
+        await hooks?.onSessionObserved?.(sessionObservationMetadata(running, observation));
+        boundMidTurn = harness.persistedEndpoints.at(-1);
+        // The turn never completes cleanly and its end-of-turn evidence is lost.
+        throw new Error("tmux harness exited");
+      },
+    });
+    harness.seedFlight(testFlight());
+
+    await harness.service.execute(testInvocation());
+
+    expect(boundMidTurn).toEqual(expect.objectContaining({
+      state: "active",
+      metadata: expect.objectContaining({
+        externalSessionId: nativeId,
+        pendingExternalSession: false,
+        observedSessionId: nativeId,
+        lastInvocationId: "invocation-1",
+      }),
+    }));
+    expect(harness.persistedFlights.at(-1)?.state).toBe("failed");
+    expect(harness.persistedEndpoints.at(-1)?.metadata).toEqual(expect.objectContaining({
+      externalSessionId: nativeId,
+      pendingExternalSession: false,
+      observedSessionId: nativeId,
+    }));
   });
 });

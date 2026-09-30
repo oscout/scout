@@ -14,7 +14,7 @@ import type {
 import { requestScoutBrokerJsonWithTrace } from "./broker-api.js";
 import { CONTROL_PLANE_SCHEMA_VERSION } from "./schema-version.js";
 import { openControlPlaneSqliteDatabase } from "./sqlite-adapter.js";
-import { resolveOpenScoutSupportPaths } from "./support-paths.js";
+import { defaultOpenScoutSupportDirectory, resolveOpenScoutSupportPaths } from "./support-paths.js";
 import {
   openScoutNetworkDiscoveryEnabled,
 } from "./open-scout-network.js";
@@ -64,6 +64,8 @@ export type BrokerServiceConfig = {
 };
 
 export type BrokerHealthSnapshot = {
+  state?: string;
+  durationMs?: number;
   reachable: boolean;
   ok: boolean;
   checkedAt: number;
@@ -594,9 +596,10 @@ export function resolveBrokerServiceConfig(): BrokerServiceConfig {
   const serviceAdapter = resolveBrokerServiceAdapter();
   const uid = typeof process.getuid === "function" ? process.getuid() : Number.parseInt(process.env.UID ?? "0", 10);
   // Resolve paths but reject anything under /tmp — remote-install sessions
-  // set env vars to transient tmp dirs that don't survive reboots.
+  // set env vars to transient tmp dirs that don't survive reboots. The
+  // replacement is the platform default, same as an unset support env.
   const supportPaths = resolveOpenScoutSupportPaths();
-  const defaultSupportDir = join(homedir(), "Library", "Application Support", "OpenScout");
+  const defaultSupportDir = defaultOpenScoutSupportDirectory();
   const supportDirectory = isTmpPath(supportPaths.supportDirectory) ? defaultSupportDir : supportPaths.supportDirectory;
   const runtimeDirectory = join(supportDirectory, "runtime");
   const logsDirectory = join(supportDirectory, "logs", "broker");
@@ -701,7 +704,16 @@ function workspaceScoutdAllowed(): boolean {
   return raw === "1" || raw === "true" || raw === "yes" || raw === "on";
 }
 
+/** macOS ships a native supervisor. Other platforms must not resolve or spawn it. */
+export function nativeSupervisorNotApplicableDetail(platform: NodeJS.Platform = process.platform): string {
+  return platform === "linux"
+    ? "native supervisor: not applicable on linux"
+    : `native supervisor: not applicable on ${platform}`;
+}
+
 export function resolveScoutdCommand(config: BrokerServiceConfig = resolveBrokerServiceConfig()): ScoutdCommand | null {
+  if (process.platform !== "darwin") return null;
+
   const explicit = resolveEnvExecutable(process.env.OPENSCOUT_SCOUTD_BIN);
   if (explicit) {
     return { path: explicit, source: "env" };
@@ -862,6 +874,8 @@ function normalizeNativeServiceStatus(input: NativeServiceStatus, config: Broker
       reachable: healthReachable,
       ok: healthOk,
       checkedAt: readNumber(healthRecord.checkedAt) ?? Date.now(),
+      state: readString(healthRecord.state),
+      durationMs: readNumber(healthRecord.durationMs),
       transport: healthTransport,
       socketPath: config.brokerSocketPath,
       ...(healthSocketFallbackError ? { socketFallbackError: healthSocketFallbackError } : {}),
@@ -1021,6 +1035,9 @@ export async function runScoutdServiceCommand(
 
   const scoutd = resolveScoutdCommand(config);
   if (!scoutd) {
+    if (process.platform !== "darwin") {
+      throw new Error(nativeSupervisorNotApplicableDetail());
+    }
     throw new Error(
       "Unable to locate scoutd for broker service management. Build scoutd with `npm run scoutd:build`, install a package that includes scoutd, or set OPENSCOUT_SCOUTD_BIN.",
     );

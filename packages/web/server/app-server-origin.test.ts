@@ -42,6 +42,19 @@ describe("resolveOpenScoutWebApplicationServerIdentity", () => {
     }
   });
 
+  test("accepts the https origin only when the loopback edge forwarded it", () => {
+    const identity = resolveOpenScoutWebApplicationServerIdentity({}, "M1.local", { webLocalName: "m1.scout.local" }, []);
+    const request = () => new Request("http://m1.scout.local/api/health", {
+      headers: { origin: "https://m1.scout.local", "x-forwarded-proto": "https" },
+    });
+    expect(isTrustedScoutApiRequest(request(), identity, "127.0.0.1")).toBe(true);
+    expect(isTrustedScoutApiRequest(request(), identity, "192.168.1.40")).toBe(false);
+    const unforwarded = new Request("http://m1.scout.local/api/health", {
+      headers: { origin: "https://m1.scout.local" },
+    });
+    expect(isTrustedScoutApiRequest(unforwarded, identity, "127.0.0.1")).toBe(false);
+  });
+
   test("trusts the public origin host and explicit trusted hosts", () => {
     expect(
       resolveOpenScoutWebApplicationServerIdentity(

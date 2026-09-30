@@ -11,6 +11,7 @@ import {
   type ScoutbotDirectiveParseResult,
 } from "./directives.ts";
 import { SCOUTBOT_AGENT_ID } from "./role.ts";
+import { queryFlightRecordById } from "../db-queries.ts";
 
 export type ScoutbotBrokerSnapshot = ScoutBrokerSnapshot & {
   endpoints?: Record<string, ScoutBrokerEndpointRecord>;
@@ -124,7 +125,7 @@ function renderHelp(): string {
     "Scout commands — work-first (FOCUS shape):",
     "- `/report [note]` — send diagnostics; use `--local-only` to save without upload",
     "- `/feedback <note>` — send a note; add `--diagnostics` for traces",
-    "- `/status` — ON YOU (needs you), then RECENT work",
+    "- `/status` — ON YOU (requests), then RECENT work",
     "- `/recent` — recent work fleet-wide; `/recent @agent` for one hand",
     "- `/agents` — agents as facets of current work (not an endpoint roster)",
     "- `/doing @agent` — what work a hand is on",
@@ -170,7 +171,7 @@ function renderAgents(snapshot: ScoutbotBrokerSnapshot, now: number): string {
       ?? byAgent.get(normalizeAgent(agent.handle ?? ""))
       ?? byAgent.get(normalizeAgent(label));
     if (work) {
-      const laneNote = work.lane === "on-you" ? "needs you" : work.live ? "moving" : "recent";
+      const laneNote = work.lane === "on-you" ? "asking" : work.live ? "moving" : "recent";
       activeLines.push(`· ${label} — ${work.title}\n  #${work.project} · ${laneNote} · ${work.ago}`);
     } else {
       quietLabels.push(label);
@@ -208,7 +209,7 @@ function renderStatus(snapshot: ScoutbotBrokerSnapshot, rawArg = "", now: number
 
   const lines: string[] = [
     `ON YOU · ${onYou.length}`,
-    ...(onYou.length > 0 ? onYou.slice(0, 8).map(formatWorkRow) : ["Nothing needs you."]),
+    ...(onYou.length > 0 ? onYou.slice(0, 8).map(formatWorkRow) : ["No open requests."]),
     "",
     "RECENT",
     ...(recent.length > 0 ? recent.slice(0, 10).map(formatWorkRow) : ["No recent work in the broker snapshot."]),
@@ -258,9 +259,9 @@ function renderBlocked(snapshot: ScoutbotBrokerSnapshot, rawAgent: string, now: 
       || key === normalizeAgent(agentLabel(agent));
   });
   if (onYou.length === 0) {
-    return `${agentLabel(agent)} has nothing waiting on you in the broker snapshot.`;
+    return `${agentLabel(agent)} has no open requests in the broker snapshot.`;
   }
-  return `${agentLabel(agent)} — needs you:\n${onYou.slice(0, 5).map(formatWorkRow).join("\n")}`;
+  return `${agentLabel(agent)} — requests:\n${onYou.slice(0, 5).map(formatWorkRow).join("\n")}`;
 }
 
 /**
@@ -350,19 +351,30 @@ function renderLatest(snapshot: ScoutbotBrokerSnapshot, rawAgent: string, now: n
   return lines.join("\n");
 }
 
+function durableFlightRecordById(id: string): ScoutBrokerFlightRecord | null {
+  try {
+    return queryFlightRecordById(id);
+  } catch {
+    return null;
+  }
+}
+
 /** Keep /flight for id lookup; frame as a work unit, not a roster entry. */
 function renderFlight(snapshot: ScoutbotBrokerSnapshot, rawFlightId: string, now: number): string {
   const id = rawFlightId.trim();
   if (!id) return "Usage: `/flight <id>` — inspect one work unit by id.";
   const flight = (snapshot.flights ?? {})[id]
-    ?? Object.values(snapshot.flights ?? {}).find((candidate) => candidate.id.endsWith(id));
+    ?? Object.values(snapshot.flights ?? {}).find((candidate) => candidate.id.endsWith(id))
+    // Rotated out of the broker's hot window — SQLite retains the record.
+    // The control-plane database can be absent on a fresh install.
+    ?? durableFlightRecordById(id);
   if (!flight) return `I do not see work ${id}.`;
 
   const agent = findAgent(snapshot, flight.targetAgentId);
   const agentName = agent ? agentLabel(agent) : formatAgent(flight.targetAgentId);
   const project = agent ? projectForAgent(snapshot, agent) : "—";
   const title = workTitleFromFlight(flight);
-  const lane = isOnYouFlight(flight) ? "needs you" : isTerminalFlight(flight.state) ? "wound down" : "moving";
+  const lane = isOnYouFlight(flight) ? "asking" : isTerminalFlight(flight.state) ? "wound down" : "moving";
   const ts = flight.completedAt ?? flight.startedAt;
 
   return [

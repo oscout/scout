@@ -28,9 +28,9 @@ describe("projectMessageReactionChips", () => {
       "a",
     );
     expect(chips).toEqual([
-      { emoji: "👍", count: 2, me: true },
-      { emoji: "❤️", count: 1, me: false },
-      { emoji: "🎉", count: 1, me: true },
+      { emoji: "👍", count: 2, me: true, actorIds: ["b", "a"] },
+      { emoji: "❤️", count: 1, me: false, actorIds: ["c"] },
+      { emoji: "🎉", count: 1, me: true, actorIds: ["a"] },
     ]);
   });
 

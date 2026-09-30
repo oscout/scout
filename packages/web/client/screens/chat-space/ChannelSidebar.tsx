@@ -17,7 +17,9 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { ConversationDefinition } from "@openscout/protocol";
+import { Users } from "lucide-react";
+import type { ChatReadState, ConversationDefinition } from "@openscout/protocol";
+import { summarizeChatReadState } from "../../../shared/chat-read-state.ts";
 
 import type { ScoutThemePreference } from "../../lib/theme.ts";
 import { useChatCapabilities } from "./chat-transport.tsx";
@@ -183,6 +185,8 @@ export function ChannelSidebar({
   activeSpace,
   selectedId,
   addressedChannelIds,
+  readStates = {},
+  questionCounts = {},
   canCreate,
   viewerName,
   viewerIsHost,
@@ -194,6 +198,8 @@ export function ChannelSidebar({
   onCreateSpace,
   onDeleteSpace,
   onInvite,
+  onOpenTeam,
+  teamOpen,
   onExpandRail,
   onOpenProfile,
   onThemePreference,
@@ -206,6 +212,8 @@ export function ChannelSidebar({
   activeSpace: string;
   selectedId: string | null;
   addressedChannelIds: ReadonlySet<string>;
+  readStates?: Record<string, ChatReadState>;
+  questionCounts?: Record<string, number>;
   canCreate: boolean;
   viewerName: string;
   viewerIsHost: boolean;
@@ -217,6 +225,8 @@ export function ChannelSidebar({
   onDeleteSpace: ((slug: string) => Promise<void>) | null;
   onCreateSpace: (input: { title: string; channel: string }) => Promise<void>;
   onInvite: () => void;
+  onOpenTeam: () => void;
+  teamOpen: boolean;
   onExpandRail: () => void;
   /** Null while no channel is open, because the card lives in that channel's panel. */
   onOpenProfile: (() => void) | null;
@@ -245,18 +255,29 @@ export function ChannelSidebar({
   }, [busy, onCreate, title, topic]);
 
   const row = (conversation: ConversationDefinition, isChannel: boolean) => {
+    const questionCount = questionCounts[conversation.id] ?? 0;
+    const questionLabel = `${questionCount} ${questionCount === 1 ? "question needs" : "questions need"} your response`;
     const addressed = addressedChannelIds.has(conversation.id);
+    const readState = readStates[conversation.id];
+    const attention = readState ? summarizeChatReadState(readState) : null;
+    const unread = Boolean(attention && (attention.unread > 0 || attention.incomplete));
+    const unreadLabel = attention
+      ? `${attention.unread}${attention.incomplete ? "+" : ""} unread messages${attention.mentions ? `, ${attention.mentions} mentions` : ""}${attention.replies ? `, ${attention.replies} thread replies` : ""}`
+      : undefined;
     const name = isChannel ? conversation.title.replace(/^#/u, "") : conversation.title;
     return (
       <button
         key={conversation.id}
         type="button"
         data-side-row
+        data-channel-id={conversation.id}
+        data-unread={unread}
         className={railed ? "chat-rail-row" : "chat-side-row"}
         aria-label={isChannel ? channelLabel(conversation.title) : name}
         aria-current={conversation.id === selectedId}
         data-addressed={addressed}
-        title={railed ? (isChannel ? channelLabel(conversation.title) : name) : undefined}
+        title={unread ? `${name}: ${unreadLabel}` : railed ? (isChannel ? channelLabel(conversation.title) : name) : undefined}
+        aria-describedby={[unread ? `chat-unread-${conversation.id}` : "", questionCount ? `chat-questions-${conversation.id}` : ""].filter(Boolean).join(" ") || undefined}
         onClick={() => onSelect(conversation.id)}
         onKeyDown={(event) => {
           if (event.key === "ArrowDown") {
@@ -283,6 +304,12 @@ export function ChannelSidebar({
             <span className="chat-row-name">{name}</span>
           </>
         )}
+        {unread && attention ? (
+          <span id={`chat-unread-${conversation.id}`} className="chat-unread-count" data-mentioned={attention.mentions > 0} aria-label={unreadLabel}>
+            {railed ? "•" : `${attention.unread || ""}${attention.incomplete ? "+" : ""}`}
+          </span>
+        ) : null}
+        {questionCount > 0 ? <span id={`chat-questions-${conversation.id}`} className="chat-question-count" title={questionLabel} aria-label={questionLabel}>{railed ? "?" : `? ${questionCount}`}</span> : null}
         {addressed ? (
           <span className="dot dot--accent dot--sm" aria-label="Addressed to you, unanswered" />
         ) : null}
@@ -337,8 +364,17 @@ export function ChannelSidebar({
         </div>
 
         <div className="chat-sidebar-foot">
-          <button type="button" className="chat-rail-row" aria-label="Invite someone" onClick={onInvite}>
+          {!capabilities.invitesRequireOwner || viewerIsHost ? <button type="button" className="chat-rail-row" aria-label="Invite someone" onClick={onInvite}>
             <span className="chat-rail-glyph">+</span>
+          </button> : null}
+          <button
+            type="button"
+            className="chat-rail-row"
+            aria-label="Team"
+            aria-pressed={teamOpen}
+            onClick={onOpenTeam}
+          >
+            <Users size={16} aria-hidden="true" />
           </button>
         </div>
         {identity}
@@ -429,8 +465,16 @@ export function ChannelSidebar({
       </div>
 
       <div className="chat-sidebar-foot">
-        <button type="button" className="btn btn--ghost btn--sm" onClick={onInvite}>
+        {!capabilities.invitesRequireOwner || viewerIsHost ? <button type="button" className="btn btn--ghost btn--sm" onClick={onInvite}>
           + Invite
+        </button> : null}
+        <button
+          type="button"
+          className="btn btn--ghost btn--sm"
+          aria-pressed={teamOpen}
+          onClick={onOpenTeam}
+        >
+          Team
         </button>
       </div>
       {identity}

@@ -89,7 +89,11 @@ export async function getScoutMobileRuntimeCapabilities(
     defaultsByHarness: scoutRuntimeDefaultsByHarness(runtimeCatalog),
     harnesses: runtimeCatalog.harnesses
       .filter((entry) => entry.enabled && entry.listed !== false)
-      .map((entry) => ({ id: entry.id, label: entry.label })),
+      .map((entry) => ({
+        id: entry.id,
+        label: entry.label,
+        ...(entry.presentation ? { presentation: entry.presentation } : {}),
+      })),
     models,
     efforts: scoutRuntimeEffortCatalog(runtimeCatalog).map((effort) => ({
       ...effort,
@@ -102,7 +106,7 @@ export async function getScoutMobileRuntimeCapabilities(
 
 /// Shared, TTL-cached reader for the per-agent needs-attention index. Same
 /// sourcing as web /api/agents (see core/attention/build-agent-attention-index),
-/// so the phone's "Needs you" band mirrors the web fleet. Module-level so the
+/// so the phone's "Requests" band mirrors the web fleet. Module-level so the
 /// short TTL cache is shared across mobile agents/home pulls.
 const readMobileAgentAttentionIndex = createAgentAttentionIndexReader();
 
@@ -140,12 +144,16 @@ export type ScoutMobileAgentSummary = {
   state: "offline" | "available" | "working";
   statusLabel: string;
   sessionId: string | null;
+  /// The harness's own session id (Claude/Codex transcript UUID) when the
+  /// broker recorded one — the key the tail uses, so the phone can tell an
+  /// agent's session from a terminal session it only observes. Additive.
+  harnessSessionId: string | null;
   /// The broker chat the phone should open for this agent. It is an existing
   /// opaque chat id, or null when no chat has been created yet.
   conversationId: string | null;
   lastActiveAt: number | null;
   /// True when the agent is waiting on the operator (a pending question,
-  /// approval, or handoff). Feeds the phone's "Needs you" band. Additive and
+  /// approval, or handoff). Feeds the phone's "Requests" band. Additive and
   /// backward-compatible: older clients ignore it.
   needsAttention: boolean;
   /// The pending ask text when `needsAttention` is true, else null. A flat
@@ -671,11 +679,20 @@ export function buildMobileAgentSummary(
     state,
     statusLabel: state === "working" ? "Working" : state === "available" ? "Available" : "Offline",
     sessionId: endpoint?.sessionId ?? null,
+    harnessSessionId: mobileEndpointHarnessSessionId(endpoint),
     conversationId: mobileAgentConversationId(snapshot, agent.id),
     lastActiveAt,
     needsAttention: attentionEntry !== null,
     pendingAsk: attentionEntry?.ask ?? null,
   };
+}
+
+/** The harness transcript id the broker recorded for an endpoint, if any. */
+function mobileEndpointHarnessSessionId(
+  endpoint: { metadata?: Record<string, unknown> | null } | null | undefined,
+): string | null {
+  const value = endpoint?.metadata?.externalSessionId;
+  return typeof value === "string" && value.trim() ? value.trim() : null;
 }
 
 function buildMobileSessionSummaries(snapshot: ScoutBrokerSnapshot): ScoutMobileSessionSummary[] {
@@ -827,7 +844,7 @@ async function loadMobileRelayState(): Promise<{
   }
 
   // Build the SAME per-agent attention index the web /api/agents path uses, so
-  // the phone's "Needs you" band surfaces the identical set of waiting agents.
+  // the phone's "Requests" band surfaces the identical set of waiting agents.
   // Never throws — a broken source yields an empty index, not an empty fleet.
   const attention = await readMobileAgentAttentionIndex(broker);
 
@@ -1235,6 +1252,7 @@ export async function createScoutSession(
     state: brokerEndpoint?.state === "offline" ? "offline" : "available",
     statusLabel: brokerEndpoint?.state === "offline" ? "Offline" : "Available",
     sessionId: localAgent.sessionId,
+    harnessSessionId: mobileEndpointHarnessSessionId(brokerEndpoint),
     conversationId: directSession.conversation.id,
     lastActiveAt: null,
     needsAttention: false,

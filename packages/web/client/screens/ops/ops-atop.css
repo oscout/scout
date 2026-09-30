@@ -138,7 +138,7 @@
 }
 
 .s-atop-search:focus-within {
-  border-color: var(--accent);
+  border-color: var(--field-focus);
 }
 
 .s-atop-search-prompt {

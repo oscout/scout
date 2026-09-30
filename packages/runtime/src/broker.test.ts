@@ -309,4 +309,40 @@ describe("InMemoryControlRuntime", () => {
     expect(runtime.flightForInvocation("inv-1")?.id).toBe(flight.id);
     expect(runtime.recentEvents().some((event) => event.kind === "invocation.requested")).toBe(true);
   });
+
+  test("retired actor tombstones mark deletes and clear on re-registration", async () => {
+    const runtime = createInMemoryControlRuntime(
+      {},
+      { localNodeId: "node-1", retiredActorIds: ["actor-gone"] },
+    );
+
+    // Hydrated tombstones are visible.
+    expect(runtime.isRetiredActor("actor-gone")).toBe(true);
+    expect(runtime.isRetiredActor("actor-1")).toBe(false);
+
+    // deleteActor retires the id even when no row is present.
+    runtime.deleteActor("actor-1");
+    expect(runtime.isRetiredActor("actor-1")).toBe(true);
+
+    // A fresh actor registration revives the identity.
+    await runtime.upsertActor({ id: "actor-1", kind: "agent", displayName: "One" });
+    expect(runtime.isRetiredActor("actor-1")).toBe(false);
+
+    // Agent registration synthesizes its actor — it also revives.
+    runtime.deleteActor("agent-1");
+    expect(runtime.isRetiredActor("agent-1")).toBe(true);
+    await runtime.upsertAgent({
+      id: "agent-1",
+      kind: "agent",
+      definitionId: "agent-1",
+      displayName: "Agent",
+      agentClass: "general",
+      capabilities: [],
+      wakePolicy: "manual",
+      homeNodeId: "node-1",
+      authorityNodeId: "node-1",
+      advertiseScope: "local",
+    });
+    expect(runtime.isRetiredActor("agent-1")).toBe(false);
+  });
 });

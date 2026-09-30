@@ -40,7 +40,7 @@ describe("InitiatingAsk", () => {
     expect(html).toContain(">Ask<");
     expect(html).not.toContain("Initiating ask");
     expect(html).toContain("Arach");
-    expect(html).toContain('href="/messages/chn-design#msg-msg-ask"');
+    expect(html).toContain('href="/messages/chn-design#msg-ask"');
     expect(html).toContain('href="/flights/flt-1/observe?session=session-1"');
   });
 

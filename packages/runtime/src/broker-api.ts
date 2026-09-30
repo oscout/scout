@@ -146,6 +146,11 @@ export type ScoutBrokerConversationProjectionQuery = {
 };
 
 export type ScoutBrokerCollaborationRecordQuery = {
+  conversationId?: string;
+  includeThreads?: boolean;
+  orderByCreatedAt?: boolean;
+  afterCreatedAt?: number;
+  afterId?: string;
   kind?: string;
   state?: string;
   ownerId?: string;
@@ -489,6 +494,14 @@ async function requestBrokerWire<T>(
   };
 }
 
+/** A completed HTTP response is evidence of reachability, even on failure. */
+export class ScoutBrokerHttpError extends Error {
+  constructor(public readonly status: number, path: string, body: string) {
+    super(`${path} returned ${status}: ${body}`);
+    this.name = "ScoutBrokerHttpError";
+  }
+}
+
 export async function requestScoutBrokerJsonWithTrace<T>(
   baseUrl: string,
   path: string,
@@ -510,7 +523,7 @@ export async function requestScoutBrokerJsonWithTrace<T>(
     if (parsedJson && options.acceptErrorJson?.(parsed)) {
       return { value: parsed, trace };
     }
-    throw new Error(`${path} returned ${response.status}: ${response.text}`);
+    throw new ScoutBrokerHttpError(response.status, path, response.text);
   }
 
   if (parsedJson) {
@@ -669,7 +682,7 @@ export async function maybeReadJsonFromActiveScoutBrokerService<T>(
     const requestedScope = url.searchParams.get("scope");
     return handled(await service.readSnapshot({
       since: parsePositiveInt(url.searchParams.get("since")) ?? null,
-      scope: requestedScope === "conversations" || requestedScope === "agents"
+      scope: requestedScope === "conversations" || requestedScope === "agents" || requestedScope === "identity"
         ? requestedScope
         : undefined,
     }) as T);
@@ -768,6 +781,11 @@ export async function maybeReadJsonFromActiveScoutBrokerService<T>(
       return unhandled();
     }
     return handled(await service.readCollaborationRecords({
+      conversationId: trimOrUndefined(url.searchParams.get("conversationId")),
+      includeThreads: url.searchParams.get("includeThreads") === "true",
+      orderByCreatedAt: url.searchParams.get("orderByCreatedAt") === "true",
+      afterCreatedAt: url.searchParams.has("afterCreatedAt") ? Number(url.searchParams.get("afterCreatedAt")) : undefined,
+      afterId: trimOrUndefined(url.searchParams.get("afterId")),
       kind: trimOrUndefined(url.searchParams.get("kind")),
       state: trimOrUndefined(url.searchParams.get("state")),
       ownerId: trimOrUndefined(url.searchParams.get("ownerId")),

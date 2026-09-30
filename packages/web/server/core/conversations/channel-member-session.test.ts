@@ -42,6 +42,8 @@ function createApp() {
   app.post(`/api/channels/:id/messages`, (c) => c.json({ posted: true }));
   app.post(`/api/channels/:id/reactions`, (c) => c.json({ ok: true }));
   app.post(`/api/channels/:id/reactions/remove`, (c) => c.json({ ok: true }));
+  app.get(`/api/channels/:id/read-state`, (c) => c.json({ ok: true }));
+  app.post(`/api/channels/:id/read-state`, (c) => c.json({ ok: true }));
   app.post("/api/blobs", (c) => c.json({ id: "blob-1" }));
   app.get("/api/blobs/:id", (c) => c.json({ id: c.req.param("id") }));
   app.get("/api/link-preview", (c) => c.json({ preview: { url: c.req.query("url") } }));
@@ -55,6 +57,15 @@ const withCookie = (token: string) => ({
 });
 
 describe("the invited member boundary", () => {
+  test("read positions require a current credential for the named room", async () => {
+    const { app, members } = createApp();
+    const { token } = members.mint({ actorId: "person-maya", displayName: "Maya", channelId: CHANNEL, participation: "api" });
+    for (const method of ["GET", "POST"]) {
+      expect((await app.request(`http://localhost/api/channels/${CHANNEL}/read-state`, { method })).status).toBe(401);
+      expect((await app.request(`http://localhost/api/channels/${CHANNEL}/read-state`, { method, ...withCookie(token) })).status).toBe(200);
+      expect((await app.request(`http://localhost/api/channels/${OTHER_CHANNEL}/read-state`, { method, ...withCookie(token) })).status).toBe(401);
+    }
+  });
   test("an invitation can be previewed and accepted without any credential", async () => {
     const { app } = createApp();
 
@@ -521,6 +532,9 @@ describe("a credential belongs to one space", () => {
       method: "POST",
       path: `/api/channels/${WORK_CHANNEL}/asks/flt-1/cancel`,
     })).toBe(true);
+    expect(channelMemberMayAccess({ grant, method: "POST", path: `/api/channels/${WORK_CHANNEL}/questions/q/respond` })).toBe(true);
+    expect(channelMemberMayAccess({ grant: { ...grant, participation: "api" }, method: "POST", path: `/api/channels/${WORK_CHANNEL}/questions/q/respond` })).toBe(false);
+    expect(channelMemberMayAccess({ grant, method: "POST", path: "/api/channels/not-joined/questions/q/respond" })).toBe(false);
     expect(channelMemberMayAccess({ grant: null, method: "GET", path: "/api/link-preview" })).toBe(false);
     // Creating one is the host's. A scoped credential must never be able to
     // widen its own reach, and a new namespace is the widest widening there is.

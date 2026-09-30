@@ -11,6 +11,7 @@ export interface KimiAcpInvocationOptions {
   prompt: string;
   name?: string;
   timeoutMs?: number;
+  hardCeilingMs?: number;
 }
 
 export type KimiAcpInvocationResult = AcpAgentInvocationResult;

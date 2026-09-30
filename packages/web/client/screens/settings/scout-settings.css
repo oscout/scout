@@ -1,0 +1,337 @@
+/* Scout Settings — take A · Quiet (design/studio/views/scout-settings-revamp.tsx)
+ *
+ * One page for the web app, the Scout app's embed, and the menu's Settings
+ * window. Each page states its purpose in one line, then groups hairline cards
+ * of rows: a title, one sentence, and the control on the right. Type is
+ * Scout's: Inter Tight for the page title, Inter for the interface, JetBrains
+ * Mono for labels and states.
+ *
+ * Frame: the sidebar lies on the window frame and the content is one stage
+ * card with a rounded top-leading corner (the macOS shell's
+ * HudAppShellStage.card, radius 10). Where the host already draws that card
+ * (the Scout app's stage), `data-frame="flat"` drops it.
+ *
+ * Colors come from the active Scout theme, so palette and accent choices
+ * apply here as they do everywhere else. */
+
+.sq-win {
+  --sq-side: color-mix(in srgb, var(--ink) 4%, var(--bg));
+  --sq-paper: var(--bg);
+  --sq-card: var(--surface);
+  --sq-ink: var(--ink);
+  --sq-soft: var(--muted);
+  --sq-label: var(--dim);
+  --sq-rule: color-mix(in srgb, var(--ink) 9%, transparent);
+  --sq-rule-strong: color-mix(in srgb, var(--ink) 18%, transparent);
+  --sq-wash: color-mix(in srgb, var(--ink) 6%, transparent);
+  --sq-live: var(--green);
+  --sq-danger: var(--red);
+  --sq-display: "Inter Tight", var(--font-sans);
+  --sq-sans: var(--font-sans);
+  --sq-mono: var(--font-mono);
+  --sq-top: 0px;
+
+  display: flex;
+  height: 100%;
+  min-height: 0;
+  background: var(--sq-side);
+  color: var(--sq-ink);
+  font-family: var(--sq-sans);
+  font-size: 13.5px;
+  line-height: 1.45;
+  -webkit-font-smoothing: antialiased;
+}
+.sq-win[data-inset] { --sq-top: 28px; }
+.sq-win * { box-sizing: border-box; }
+.sq-win :focus-visible { outline: 2px solid var(--sq-ink); outline-offset: 2px; }
+
+/* ── sidebar ─────────────────────────────────────────────────────────────── */
+
+.sq-side {
+  display: flex;
+  flex-direction: column;
+  width: 224px;
+  flex: none;
+  min-height: 0;
+  padding-top: var(--sq-top);
+}
+.sq-side-eyebrow {
+  margin: 22px 18px 8px;
+  font: 500 10.5px/1 var(--sq-mono);
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--sq-label);
+}
+.sq-nav { flex: 1; display: flex; flex-direction: column; min-height: 0; overflow-y: auto; padding-bottom: 8px; }
+.sq-nav-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 34px;
+  padding: 0 16px 0 18px;
+  color: var(--sq-soft);
+  font: 450 13.5px var(--sq-sans);
+  text-decoration: none;
+  cursor: pointer;
+}
+.sq-nav-row:hover { color: var(--sq-ink); }
+.sq-nav-row[aria-current="page"] { background: var(--sq-wash); color: var(--sq-ink); font-weight: 500; }
+.sq-nav-icon { width: 16px; height: 16px; flex: none; }
+.sq-nav-label { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sq-nav-key { font: 10px var(--sq-mono); color: var(--sq-label); opacity: 0; }
+.sq-nav-row:hover .sq-nav-key,
+.sq-nav-row[aria-current="page"] .sq-nav-key { opacity: 0.8; }
+
+.sq-foot { border-top: 1px solid var(--sq-rule); }
+.sq-update {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: calc(100% - 20px);
+  margin: 10px 10px 0;
+  padding: 9px 10px;
+  border: 1px solid var(--sq-ink);
+  border-radius: 8px;
+  background: var(--sq-ink);
+  color: var(--sq-paper);
+  font: 500 12.5px var(--sq-sans);
+  text-align: left;
+  cursor: pointer;
+}
+.sq-update:hover { opacity: 0.9; }
+.sq-update:disabled { opacity: 0.6; cursor: default; }
+.sq-update svg { width: 16px; height: 16px; flex: none; }
+.sq-update span { flex: 1; min-width: 0; }
+.sq-update small { display: block; font: 10.5px var(--sq-mono); opacity: 0.7; }
+.sq-brand {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 48px;
+  padding: 0 18px;
+}
+.sq-mark { width: 16px; height: 16px; color: var(--sq-ink); flex: none; }
+.sq-brand-name { font: 600 14px var(--sq-display); letter-spacing: -0.01em; }
+.sq-brand-version { font: 10.5px var(--sq-mono); color: var(--sq-label); }
+
+/* ── the stage card ──────────────────────────────────────────────────────── */
+
+.sq-main {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  margin-top: calc(var(--sq-top) + 12px);
+  overflow-y: auto;
+  background: var(--sq-paper);
+  border-top: 1px solid var(--sq-rule-strong);
+  border-left: 1px solid var(--sq-rule-strong);
+  border-top-left-radius: 10px;
+  scrollbar-gutter: stable;
+}
+.sq-win[data-frame="flat"] .sq-main {
+  margin-top: 0;
+  border-top: 0;
+  border-top-left-radius: 0;
+  border-left-color: var(--sq-rule);
+}
+.sq-page { max-width: 680px; padding: 40px 44px 72px; animation: sq-rise 280ms cubic-bezier(0.16, 1, 0.3, 1) both; }
+@keyframes sq-rise { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+@media (prefers-reduced-motion: reduce) { .sq-page { animation: none; } }
+.sq-head { display: flex; align-items: baseline; gap: 16px; }
+.sq-title { flex: 1; margin: 0; font: 600 28px/1.1 var(--sq-display); letter-spacing: -0.02em; color: var(--sq-ink); }
+.sq-promise { margin: 8px 0 0; font-size: 14px; line-height: 1.45; color: var(--sq-soft); }
+.sq-sections { display: flex; flex-direction: column; gap: 28px; margin-top: 32px; }
+.sq-save { font: 500 10.5px/1 var(--sq-mono); letter-spacing: 0.12em; text-transform: uppercase; color: var(--sq-label); }
+.sq-save[data-state="error"] { color: var(--sq-danger); }
+
+/* ── groups and rows ─────────────────────────────────────────────────────── */
+
+.sq-label {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0 0 8px;
+  padding: 0 2px;
+  font: 500 10.5px/1 var(--sq-mono);
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--sq-label);
+}
+.sq-mac-tag {
+  margin-left: auto;
+  padding: 3px 6px;
+  border: 1px solid var(--sq-rule);
+  border-radius: 4px;
+  font-size: 9.5px;
+  letter-spacing: 0.14em;
+}
+.sq-card { overflow: hidden; border: 1px solid var(--sq-rule); border-radius: 10px; background: var(--sq-card); }
+.sq-note { margin: 8px 0 0; padding: 0 2px; font-size: 12px; line-height: 1.55; color: var(--sq-soft); }
+.sq-note[data-tone="error"] { color: var(--sq-danger); }
+.sq-empty { padding: 16px; font-size: 12.5px; color: var(--sq-soft); }
+
+.sq-row { display: flex; align-items: center; gap: 24px; min-height: 54px; padding: 12px 16px; }
+.sq-card > * + * { border-top: 1px solid var(--sq-rule); }
+.sq-row[data-dim] { opacity: 0.5; }
+.sq-row[data-stack] { flex-direction: column; align-items: stretch; gap: 10px; }
+.sq-row-text { flex: 1; min-width: 0; }
+.sq-row-title { font-size: 13.5px; font-weight: 500; color: var(--sq-ink); overflow-wrap: anywhere; }
+.sq-row-detail { margin-top: 2px; font-size: 12px; line-height: 1.45; color: var(--sq-soft); overflow-wrap: anywhere; }
+.sq-row-control { display: flex; align-items: center; gap: 10px; flex: none; }
+.sq-row[data-stack] .sq-row-control { flex: auto; align-self: stretch; width: 100%; min-width: 0; }
+
+.sq-fact { display: flex; justify-content: space-between; gap: 24px; padding: 11px 16px; font-size: 13px; }
+.sq-fact > span:first-child { flex: none; color: var(--sq-soft); }
+.sq-fact > span:last-child { min-width: 0; text-align: right; overflow-wrap: anywhere; }
+.sq-mono { font-family: var(--sq-mono); font-size: 11.5px; }
+.sq-value { font: 12px var(--sq-mono); color: var(--sq-soft); }
+
+/* ── controls ────────────────────────────────────────────────────────────── */
+
+.sq-toggle {
+  position: relative;
+  width: 38px;
+  height: 22px;
+  flex: none;
+  padding: 0;
+  border: 1px solid var(--sq-rule-strong);
+  border-radius: 11px;
+  background: var(--sq-wash);
+  cursor: pointer;
+  transition: background-color 200ms, border-color 200ms;
+}
+.sq-toggle > span {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--sq-card);
+  box-shadow: 0 1px 2px rgb(0 0 0 / 0.25);
+  transition: transform 200ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+.sq-toggle[aria-checked="true"] { background: var(--sq-ink); border-color: var(--sq-ink); }
+.sq-toggle[aria-checked="true"] > span { transform: translateX(16px); }
+.sq-toggle:disabled { opacity: 0.45; cursor: default; }
+
+.sq-select-wrap { position: relative; display: inline-flex; color: var(--sq-label); }
+.sq-select-wrap svg { position: absolute; right: 9px; top: 50%; transform: translateY(-50%); pointer-events: none; }
+.sq-select {
+  width: 184px;
+  height: 28px;
+  padding: 0 26px 0 10px;
+  appearance: none;
+  border: 1px solid var(--sq-rule-strong);
+  border-radius: 7px;
+  background: var(--sq-paper);
+  color: var(--sq-ink);
+  font: 12.5px var(--sq-sans);
+  text-overflow: ellipsis;
+}
+.sq-select:disabled { opacity: 0.5; }
+
+.sq-input,
+.sq-textarea {
+  border: 1px solid var(--sq-rule-strong);
+  border-radius: 7px;
+  background: var(--sq-paper);
+  color: var(--sq-ink);
+  font: 13px var(--sq-sans);
+}
+.sq-input { width: 184px; height: 28px; padding: 0 10px; }
+.sq-input[data-narrow] { width: 140px; }
+.sq-input.sq-mono,
+.sq-textarea.sq-mono { font-family: var(--sq-mono); font-size: 12px; }
+.sq-textarea { width: 100%; padding: 8px 10px; line-height: 1.5; resize: vertical; }
+.sq-input:focus,
+.sq-textarea:focus { outline: none; border-color: var(--sq-ink); }
+
+.sq-range { display: inline-flex; align-items: center; gap: 10px; }
+.sq-range input { width: 144px; accent-color: var(--sq-ink); }
+.sq-range output { min-width: 40px; font: 11.5px var(--sq-mono); color: var(--sq-soft); text-align: right; }
+
+.sq-button {
+  height: 28px;
+  padding: 0 12px;
+  border: 1px solid var(--sq-rule-strong);
+  border-radius: 7px;
+  background: var(--sq-paper);
+  color: var(--sq-ink);
+  font: 500 12.5px var(--sq-sans);
+  white-space: nowrap;
+  text-decoration: none;
+  display: inline-flex;
+  align-items: center;
+  cursor: pointer;
+}
+.sq-button:hover { border-color: var(--sq-label); }
+.sq-button:disabled { opacity: 0.5; cursor: default; }
+.sq-button[data-quiet] { border-color: transparent; background: transparent; color: var(--sq-soft); padding: 0 6px; }
+.sq-button[data-quiet]:hover { color: var(--sq-ink); }
+.sq-button[data-danger] { color: var(--sq-danger); }
+.sq-button[data-primary] { border-color: var(--sq-ink); background: var(--sq-ink); color: var(--sq-paper); }
+.sq-button[data-primary]:hover { opacity: 0.9; }
+
+.sq-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font: 500 10.5px/1 var(--sq-mono);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--sq-label);
+  white-space: nowrap;
+}
+.sq-status > span { width: 6px; height: 6px; border-radius: 50%; border: 1px solid var(--sq-label); }
+.sq-status[data-ok] { color: var(--sq-live); }
+.sq-status[data-ok] > span { border-color: var(--sq-live); background: var(--sq-live); }
+.sq-status[data-bad] { color: var(--sq-danger); }
+.sq-status[data-bad] > span { border-color: var(--sq-danger); }
+
+.sq-hues { display: flex; gap: 10px; }
+.sq-hue {
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  cursor: pointer;
+  box-shadow: inset 0 0 0 1px rgb(0 0 0 / 0.12);
+}
+.sq-hue[aria-checked="true"] { box-shadow: 0 0 0 2px var(--sq-card), 0 0 0 3px var(--sq-ink); }
+
+.sq-cast { width: 100%; min-width: 0; margin: 0 -4px; }
+.sq-cast .s-settings-cast-grid {
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 152px), 1fr));
+}
+
+/* ── narrow: the sidebar stays, and steps down ─────────────────────────────
+ * Sized by the window, not the viewport: the Scout app's stage is ~680px wide
+ * inside a full-width screen. Page list always visible; it narrows, then
+ * becomes an icon rail. */
+
+.sq-win { container: sq-win / inline-size; }
+
+@container sq-win (max-width: 860px) {
+  .sq-side { width: 184px; }
+  .sq-side-eyebrow { margin-left: 16px; }
+  .sq-nav-row { padding: 0 12px 0 16px; }
+  .sq-nav-key { display: none; }
+  .sq-page { padding: 32px 28px 64px; }
+}
+
+@container sq-win (max-width: 600px) {
+  .sq-side { width: 52px; }
+  .sq-side-eyebrow, .sq-nav-label, .sq-brand-name, .sq-brand-version { display: none; }
+  .sq-nav-row { justify-content: center; padding: 0; margin: 1px 8px; height: 34px; border-radius: 7px; }
+  .sq-brand { justify-content: center; padding: 0; }
+  .sq-update { justify-content: center; width: auto; margin: 10px 8px 0; padding: 8px 0; }
+  .sq-update span { display: none; }
+  .sq-page { padding: 24px 16px 56px; }
+  .sq-row { flex-wrap: wrap; gap: 12px; }
+  .sq-row-control { flex-wrap: wrap; }
+}
+
+/* The embed root (/embed/settings) gives the window a definite height. */
+.s-discovered-embed.sq-embed { height: 100vh; min-height: 0; }

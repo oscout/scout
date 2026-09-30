@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import type { WebAgent } from "../../db/types/web.ts";
+import type { WebAgent } from "../../../shared/api/web.ts";
 import {
   collectTmuxHostAttention,
   detectClaudeTmuxHostAttention,

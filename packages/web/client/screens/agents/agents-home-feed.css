@@ -1,0 +1,246 @@
+/* Agents · Home feed — the whole Agents page (the project list is its own
+   Projects tab). One post per agent-day, tweet-shaped: a 48px avatar with
+   the harness as a corner badge (every row gets both), then
+
+     name · /project · state · age
+     what they said, wrapping to three lines
+
+   Rows bleed 12px so avatars sit on the heading's left edge. Scoped under `.s-ahf`, which
+   aliases the studio's `--s-*` skin tokens onto the web's live theme. */
+
+.s-ahf {
+  --s-ink: var(--scout-chrome-ink-strong);
+  --s-muted: var(--scout-chrome-ink-soft);
+  --s-dim: var(--scout-chrome-ink-faint);
+  --s-accent: var(--accent);
+  --s-font-sans: var(--hud-font-sans);
+  --s-font-mono: var(--hud-font-mono);
+  --ahf-wash: color-mix(in srgb, var(--hud-ink) 4%, transparent);
+  --ahf-hairline: var(--sys-hairline, var(--hud-border));
+  --ahf-ground: var(--hud-bg);
+  /* Standalone cap; inset, the Projects index (.cw-root[data-home]) sets it. */
+  --ahf-max: 1040px;
+
+  container-type: inline-size;
+  height: 100%;
+  min-height: 0;
+  overflow-y: auto;
+  background: var(--hud-bg);
+  color: var(--s-ink);
+  font-family: var(--s-font-sans);
+}
+
+.ahf-column { max-width: calc(var(--ahf-max) + 24px); padding: 8px 12px 32px; }
+
+/* Inset: inside the Projects index, which owns scroll, padding, and ground. */
+.s-ahf[data-inset] {
+  height: auto;
+  margin-top: 16px;
+  overflow: visible;
+  border-top: 1px solid var(--ahf-hairline);
+  background: transparent;
+}
+/* The whole Agents page: nothing above it to rule off. */
+.s-ahf[data-inset]:first-child { margin-top: 0; border-top: none; }
+.s-ahf[data-inset] .ahf-column { max-width: none; margin: 0 -12px; padding: 0; }
+
+/* ── Sections ────────────────────────────────────────────────────────── */
+
+.ahf-section { display: flex; flex-direction: column; margin-top: 24px; }
+.ahf-section:first-child { margin-top: 12px; }
+
+.ahf-label {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 24px;
+  margin: 0 0 4px;
+  padding: 0 12px;
+  color: var(--s-dim);
+  font-family: var(--s-font-mono);
+  font-size: var(--text-xs);
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  font-variant-numeric: tabular-nums;
+}
+.ahf-labelSep { color: color-mix(in srgb, var(--s-dim) 55%, var(--hud-bg)); }
+.ahf-label [data-tone="live"] { color: var(--s-accent); }
+
+.ahf-empty {
+  margin: 0;
+  padding: 4px 12px;
+  color: var(--s-dim);
+  font-size: var(--text-sm);
+}
+
+/* ── Row: a post ─────────────────────────────────────────────────────── */
+
+/* Tweet-shaped: a 48px avatar with the harness as a 26px corner badge —
+   big enough to read which harness worked last at a glance, then
+   who · where · when on one line and what they said under it. */
+.ahf-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+  width: 100%;
+  padding: 12px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.ahf-row:hover:not(:disabled) { background: var(--ahf-wash); }
+.ahf-row:disabled { cursor: default; }
+/* Open in the detail panel. */
+.ahf-row[data-selected] { background: color-mix(in srgb, var(--hud-ink) 7%, transparent); }
+.ahf-row:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--s-accent) 70%, white);
+  outline-offset: 2px;
+}
+
+.ahf-avatar { position: relative; display: inline-flex; flex: none; width: 48px; height: 48px; }
+
+/* The harness, small, on the avatar's lower-right corner, cut out of the
+   ground so it reads as a badge rather than part of the sprite. */
+.ahf-badge {
+  position: absolute;
+  right: -5px;
+  bottom: -5px;
+  display: inline-grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  background: var(--hud-bg);
+  box-shadow: 0 0 0 1px var(--ahf-hairline);
+  color: var(--s-ink);
+}
+.ahf-row:hover:not(:disabled) .ahf-badge { background: color-mix(in srgb, var(--hud-ink) 4%, var(--hud-bg)); }
+
+/* Reviewers share the 48px slot: two 34px coins on the diagonal. */
+.ahf-pile { position: relative; width: 48px; height: 48px; }
+.ahf-pile > * { position: absolute; border-radius: 50%; box-shadow: 0 0 0 1.5px var(--ahf-ground); }
+.ahf-pile > :first-child { top: 0; left: 0; }
+.ahf-pile > :nth-child(2) { right: 0; bottom: 0; }
+
+.ahf-main {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1;
+  min-width: 0;
+  max-width: 72ch;
+}
+
+.ahf-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+  line-height: 20px;
+}
+.ahf-agent {
+  flex: none;
+  max-width: 60%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--s-ink);
+  font-size: var(--text-md);
+  font-weight: 600;
+}
+
+.ahf-facts {
+  display: flex;
+  min-width: 0;
+  align-items: baseline;
+  overflow: hidden;
+  color: var(--s-dim);
+  font-family: var(--s-font-mono);
+  font-size: var(--text-xs);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.ahf-facts > * + *::before {
+  content: "·";
+  margin: 0 6px;
+  color: color-mix(in srgb, var(--s-dim) 55%, var(--hud-bg));
+}
+.ahf-facts [data-status="done"] { color: var(--s-muted); }
+.ahf-facts [data-status="blocked"] { color: var(--s-ink); }
+.ahf-facts .ahf-live { color: var(--s-accent); }
+
+.ahf-state {
+  color: var(--s-ink);
+  text-decoration: underline;
+  text-decoration-color: var(--ahf-hairline);
+  text-underline-offset: 3px;
+}
+
+/* What they said: wraps like a post, up to three lines. */
+.ahf-text {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  color: color-mix(in srgb, var(--s-ink) 90%, transparent);
+  font-size: var(--text-md);
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+.ahf-row[data-tone="ack"] .ahf-text,
+.ahf-row[data-working] .ahf-text { color: var(--s-muted); }
+.ahf-row:hover:not(:disabled) .ahf-text { color: var(--s-ink); }
+
+.ahf-note {
+  margin-top: 2px;
+  color: var(--s-dim);
+  font-family: var(--s-font-mono);
+  font-size: var(--text-xs);
+  line-height: 16px;
+}
+
+/* ── Seen-to-here rule ───────────────────────────────────────────────── */
+
+.ahf-seen {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 20px;
+  padding: 0 12px;
+  color: var(--s-accent);
+  font-family: var(--s-font-mono);
+  font-size: var(--text-2xs);
+  letter-spacing: 0.06em;
+}
+.ahf-seen::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: color-mix(in srgb, var(--s-accent) 40%, transparent);
+}
+
+/* ── Loading ─────────────────────────────────────────────────────────── */
+
+.ahf-loading { display: grid; gap: 4px; margin-top: 12px; padding: 0 12px; }
+.ahf-loading span { height: 80px; border-radius: 6px; background: var(--ahf-wash); }
+
+.ahf-breathe { animation: ahf-breathe 2s ease-in-out infinite; }
+@keyframes ahf-breathe {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.55; }
+}
+
+/* ── Narrow container ─────────────────────────────────────────────────── */
+
+@container (max-width: 480px) {
+  .ahf-row { gap: 10px; padding: 10px 8px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ahf-breathe { animation: none; }
+}

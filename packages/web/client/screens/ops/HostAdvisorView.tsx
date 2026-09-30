@@ -14,7 +14,8 @@ import {
 } from "lucide-react";
 import { HarnessMark, harnessLabel } from "../../components/HarnessMark.tsx";
 import { api } from "../../lib/api.ts";
-import { useBrokerEvents } from "../../lib/sse.ts";
+import { loadFleet } from "../../lib/fleet-store.ts";
+import { isBrokerDataEvent, useBrokerEventsRefresh } from "../../lib/sse.ts";
 import { timeAgo } from "../../lib/time.ts";
 import type {
   ActivityItem,
@@ -252,7 +253,7 @@ export function HostAdvisorView({
         api<KnowledgeStatus>("/api/knowledge/status"),
         api<PairingState>("/api/pairing-state"),
         api<{ sessions: TerminalSessionSummary[] }>("/api/terminal-sessions"),
-        api<FleetState>("/api/fleet"),
+        loadFleet(),
         api<SessionEntry[]>("/api/sessions"),
         api<ActivityItem[]>("/api/activity"),
       ]);
@@ -289,7 +290,7 @@ export function HostAdvisorView({
     void loadData();
   }, [loadData]);
 
-  useBrokerEvents(() => {
+  useBrokerEventsRefresh(isBrokerDataEvent, () => {
     void loadData(true);
   });
 

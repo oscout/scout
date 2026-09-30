@@ -126,7 +126,8 @@ export type ChannelInviteRejectionReason =
   | "exhausted"
   | "scope_mismatch"
   | "channel_mismatch"
-  | "missing_identity";
+  | "missing_identity"
+  | "membership_removed";
 
 export interface ChannelInviteRejection {
   reason: ChannelInviteRejectionReason;
@@ -305,6 +306,8 @@ export function findChannelInviteByTokenHash(
  * understand the offer, and nothing that could be replayed into membership.
  */
 export interface ChannelInvitePublicView {
+  /** Explicit where the issuer supports single-use human invitations. */
+  kind?: "teammate" | "agent" | "api";
   id: ScoutId;
   channelId: ScoutId;
   /** Public authorship, used to show who may revoke this invitation. */

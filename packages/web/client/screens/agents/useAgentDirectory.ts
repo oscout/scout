@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { api } from "../../lib/api.ts";
+import { loadFleet } from "../../lib/fleet-store.ts";
 import { filterAgentsByMachineScope } from "../../lib/machine-scope.ts";
 import { routeMachineId } from "../../lib/router.ts";
-import { useBrokerEventsRefresh } from "../../lib/sse.ts";
-import { isScoutSurfaceActive, onScoutSurfaceActivated } from "../../lib/surface-activity.ts";
+import { useBrokerRefresh } from "../../lib/broker-refresh.ts";
+import { AGENT_DIRECTORY_REFRESH_POLICY } from "../../lib/broker-event-kinds.ts";
 import { useScout } from "../../scout/Provider.tsx";
 import type {
   FleetAsk,
@@ -36,7 +37,7 @@ export function useAgentDirectory(): { projects: DirProject[] } {
   const load = useCallback(async () => {
     const [s, f, d] = await Promise.allSettled([
       api<SessionEntry[]>("/api/conversations"),
-      api<FleetState>("/api/fleet"),
+      loadFleet(),
       api<TailDiscoverySnapshot>("/api/tail/discover"),
     ]);
     if (s.status === "fulfilled") setSessions(s.value);
@@ -47,23 +48,7 @@ export function useAgentDirectory(): { projects: DirProject[] } {
   useEffect(() => {
     void load();
   }, [load]);
-  useEffect(() => {
-    const refreshIfActive = () => {
-      if (isScoutSurfaceActive()) void load();
-    };
-    const id = window.setInterval(refreshIfActive, 10_000);
-    const stopActivationListener = onScoutSurfaceActivated(refreshIfActive);
-    return () => {
-      window.clearInterval(id);
-      stopActivationListener();
-    };
-  }, [load]);
-  useBrokerEventsRefresh(
-    () => true,
-    () => {
-      if (isScoutSurfaceActive()) void load();
-    },
-  );
+  useBrokerRefresh(() => void load(), AGENT_DIRECTORY_REFRESH_POLICY);
 
   const asksByAgent = useMemo(() => {
     const m = new Map<string, FleetAsk[]>();

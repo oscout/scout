@@ -92,7 +92,7 @@ export function readTmuxSessions(): TmuxSession[] {
 }
 
 function readTmuxSessionOutput(): string {
-  const output = runOptionalCommand("tmux", ["ls", "-F", "#{session_name}\t#{session_created}"]);
+  const output = runOptionalCommand("tmux", ["-u", "ls", "-F", "#{session_name}\t#{session_created}"]);
   if (output === null) {
     throw new Error("tmux unavailable");
   }

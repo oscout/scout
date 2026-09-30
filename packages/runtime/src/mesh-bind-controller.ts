@@ -119,12 +119,13 @@ type LiveTlsListener = {
  */
 export function findMeshTlsBindAddresses(
   interfaces?: NodeJS.Dict<import("node:os").NetworkInterfaceInfo[]>,
+  tailscaleOnly = false,
 ): string[] {
   const addresses: string[] = [];
   const lan = findLanIPv4Address(interfaces);
-  if (lan) addresses.push(lan);
+  if (lan && !tailscaleOnly) addresses.push(lan);
   const tailscale = findTailscaleIPv4Address(interfaces);
-  if (tailscale && tailscale !== lan) addresses.push(tailscale);
+  if (tailscale && !addresses.includes(tailscale)) addresses.push(tailscale);
   return addresses;
 }
 
@@ -138,7 +139,7 @@ export function createMeshBindController(deps: MeshBindControllerDeps): MeshBind
   let applying = Promise.resolve();
   let started = false;
 
-  const resolveAddresses = deps.resolveTlsAddresses ?? (() => findMeshTlsBindAddresses());
+  const resolveAddresses = deps.resolveTlsAddresses ?? (() => findMeshTlsBindAddresses(undefined, env.OPENSCOUT_MESH_TLS_TAILSCALE_ONLY === "1"));
   const loadTls = deps.loadTlsIdentity
     ?? (() => loadOrCreateTlsIdentity(
       deps.supportDirectory,

@@ -117,7 +117,10 @@ export type MessageComposerProps = {
   textareaRef?: RefObject<HTMLTextAreaElement | null>;
   /** Extra key handling before the send shortcut. Return true to stop. */
   onKeyDown?: (event: ReactKeyboardEvent<HTMLTextAreaElement>) => boolean | void;
-  /** Use Enter to send while preserving Shift+Enter for a line break. */
+  /**
+   * Enter sends and Shift+Enter breaks the line (the default). Pass false for
+   * long-form fields where Enter should break and only Cmd/Ctrl+Enter sends.
+   */
   sendOnEnter?: boolean;
   onSelect?: (event: SyntheticEvent<HTMLTextAreaElement>) => void;
   onBlur?: () => void;
@@ -229,8 +232,8 @@ function MessageComposerControl({
   canSend,
   stopMode = false,
   onStop,
-  sendTitle = "Send (Cmd+Enter)",
-  sendAriaLabel = "Send message (Cmd+Enter)",
+  sendTitle = "Send (Enter) · Shift+Enter for a new line",
+  sendAriaLabel = "Send message",
   stopAriaLabel = "Stop agent",
   showDictation = true,
   onDictationStatusChange,
@@ -254,7 +257,7 @@ function MessageComposerControl({
   status,
   textareaRef,
   onKeyDown,
-  sendOnEnter = false,
+  sendOnEnter = true,
   onSelect,
   onBlur,
   density = "panel",
@@ -262,7 +265,7 @@ function MessageComposerControl({
   className,
   rows = 1,
   autoResize = true,
-  maxHeightPx = 160,
+  maxHeightPx = 280,
   "aria-label": ariaLabel = "Message",
 }: Omit<MessageComposerProps, "renderWhenEmbedded">) {
   const localRef = useRef<HTMLTextAreaElement | null>(null);
@@ -450,6 +453,7 @@ function MessageComposerControl({
             disabled={disabled}
             rows={rows}
             aria-label={ariaLabel}
+            enterKeyHint={sendOnEnter ? "send" : "enter"}
             onChange={handleChange}
             onKeyDown={handleKeyDown}
             onSelect={onSelect}

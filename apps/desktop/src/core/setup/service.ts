@@ -151,7 +151,7 @@ export async function loadScoutDoctorReport(input: {
   });
 }
 
-async function loadScoutLocalEdgeDoctorReport(env: NodeJS.ProcessEnv): Promise<ScoutLocalEdgeDoctorReport> {
+export async function loadScoutLocalEdgeDoctorReport(env: NodeJS.ProcessEnv): Promise<ScoutLocalEdgeDoctorReport> {
   const dependency = inspectScoutLocalEdgeDependencies({ env });
   const nodeHost = env.OPENSCOUT_WEB_ADVERTISED_HOST?.trim()
     || (env.OPENSCOUT_WEB_LOCAL_NAME?.trim()

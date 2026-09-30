@@ -65,6 +65,8 @@ export type DeliveryTransport =
   | "pairing_bridge"
   | "peer_broker"
   | "http"
+  | "mcp_poll"
+  | "devin_cloud_cli"
   | "webhook"
   | "telegram"
   | "discord"

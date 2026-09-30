@@ -20,9 +20,10 @@ import {
   type NavigateOptions,
 } from "../lib/router.ts";
 import { api } from "../lib/api.ts";
+import { listenForAmbientPageActions } from "../lib/ambient-voice-actions.ts";
 import { friendlyApiError, isOfflineApiError } from "../lib/api-errors.ts";
-import { useBrokerEvents } from "../lib/sse.ts";
-import { isScoutSurfaceActive, onScoutSurfaceActivated } from "../lib/surface-activity.ts";
+import { useBrokerRefresh, type BrokerRefreshPolicy } from "../lib/broker-refresh.ts";
+import { AGENT_ROSTER_EVENT_KINDS, matchesKinds } from "../lib/broker-event-kinds.ts";
 import { isAgentOnline } from "../lib/agent-state.ts";
 import { readCachedOperatorName, writeCachedOperatorName } from "../lib/operator-identity.ts";
 import {
@@ -162,20 +163,12 @@ export type ApiConnectionState = {
 // full ScoutProvider chrome. No behavior change for the app.
 export const ScoutContext = createContext<ScoutContextValue | null>(null);
 
-const AGENT_REFRESH_EVENT_KINDS = [
-  "hello",
-  "node.upserted",
-  "actor.registered",
-  "agent.registered",
-  "agent.endpoint.upserted",
-  "invocation.requested",
-  "flight.updated",
-  "delivery.state.changed",
-  "scout.dispatched",
-] as const;
-const AGENT_REFRESH_EVENT_KIND_SET = new Set<string>(AGENT_REFRESH_EVENT_KINDS);
-const AGENT_REFRESH_POLL_MS = 30_000;
-const AGENT_REFRESH_EVENT_DEBOUNCE_MS = 250;
+const AGENT_ROSTER_REFRESH_POLICY: BrokerRefreshPolicy = {
+  matches: matchesKinds(AGENT_ROSTER_EVENT_KINDS),
+  fallbackPollMs: 30_000,
+  // Online/offline can change without a roster event, so the net stays close.
+  livePollMs: 60_000,
+};
 
 
 function keepPreviousIfJsonEqual<T>(previous: T, next: T): T {
@@ -327,22 +320,18 @@ export function ScoutProvider({
   const inspectBrokerAttempt = useCallback((attempt: BrokerRouteAttempt) => {
     setBrokerAttemptCache(attempt);
     if (route.view === "broker" && route.attemptId === attempt.id) return;
+    // Inspecting a row keeps the Dispatch scope (filter, focus, window).
+    const { attemptId: _previous, ...scope } = route.view === "broker" ? route : { view: "broker" as const };
     navigate(
-      {
-        view: "broker",
-        attemptId: attempt.id,
-        ...(route.view === "broker" && route.filter ? { filter: route.filter } : {}),
-      },
+      { ...scope, view: "broker", attemptId: attempt.id },
       { replace: route.view === "broker" },
     );
   }, [navigate, route]);
   const clearBrokerAttempt = useCallback(() => {
     setBrokerAttemptCache(null);
     if (route.view === "broker" && route.attemptId) {
-      navigate(
-        { view: "broker", ...(route.filter ? { filter: route.filter } : {}) },
-        { replace: true },
-      );
+      const { attemptId: _closed, ...scope } = route;
+      navigate(scope, { replace: true });
     }
   }, [navigate, route]);
   const inspectKnowledgeHit = useCallback((hit: KnowledgeHit, query?: string, filters?: SearchFilters) => {
@@ -417,7 +406,6 @@ export function ScoutProvider({
   const scoutbotAgentId = scoutbotAgent?.id ?? resolveScoutbotAgentId(agents);
   const scoutbotDmConversationId = scoutbotAgent?.conversationId ?? null;
   const reloadInFlightRef = useRef<{ url: string; promise: Promise<void> } | null>(null);
-  const reloadEventTimerRef = useRef<number | null>(null);
   const agentInventoryUrl = route.view === "ops"
     ? "/api/agents"
     : "/api/agents?detail=summary";
@@ -511,20 +499,10 @@ export function ScoutProvider({
     void refreshOnboarding();
   }, [reload, refreshOnboarding]);
 
-  useEffect(() => {
-    const refreshIfVisible = () => {
-      if (!isScoutSurfaceActive()) return;
-      void reload();
-      if (onboardingStaleRef.current) void refreshOnboarding();
-    };
-
-    const interval = window.setInterval(refreshIfVisible, AGENT_REFRESH_POLL_MS);
-    const stopActivationListener = onScoutSurfaceActivated(refreshIfVisible);
-    return () => {
-      window.clearInterval(interval);
-      stopActivationListener();
-    };
-  }, [reload, refreshOnboarding]);
+  useBrokerRefresh(() => {
+    void reload();
+    if (onboardingStaleRef.current) void refreshOnboarding();
+  }, AGENT_ROSTER_REFRESH_POLICY);
 
   const onlineCount = useMemo(
     () => agents.filter((a) => isAgentOnline(a.state)).length,
@@ -562,6 +540,15 @@ export function ScoutProvider({
     }
   }, [navigate, openFilePreview, reload]);
 
+  // Always-on voice replies act on whichever visible page claims them.
+  const applyScoutbotUiActionRef = useRef(applyScoutbotUiAction);
+  applyScoutbotUiActionRef.current = applyScoutbotUiAction;
+  useEffect(() => {
+    // Ambient page actions are voice-driven; basic web ships no voice.
+    if (BASIC_WEB) return;
+    return listenForAmbientPageActions((action) => applyScoutbotUiActionRef.current(action));
+  }, []);
+
   const openFileInCode = useCallback((path: string, rootPath: string) => {
     const file = path.trim();
     const root = rootPath.trim();
@@ -589,25 +576,6 @@ export function ScoutProvider({
     applyScoutbotUiAction,
   });
   scoutbotBridgeRef.current = { applyScoutbotUiAction };
-
-  useBrokerEvents((event) => {
-    if (!isScoutSurfaceActive()) return;
-    if (AGENT_REFRESH_EVENT_KIND_SET.has(event.kind)) {
-      if (reloadEventTimerRef.current !== null) {
-        window.clearTimeout(reloadEventTimerRef.current);
-      }
-      reloadEventTimerRef.current = window.setTimeout(() => {
-        reloadEventTimerRef.current = null;
-        void reload();
-      }, AGENT_REFRESH_EVENT_DEBOUNCE_MS);
-    }
-  });
-
-  useEffect(() => () => {
-    if (reloadEventTimerRef.current !== null) {
-      window.clearTimeout(reloadEventTimerRef.current);
-    }
-  }, []);
 
   useEffect(() => {
     const handler = (event: Event) => {

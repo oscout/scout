@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -659,6 +659,30 @@ describe("progressive startup", () => {
     await journal.close(); await restarted.close();
   });
 
+  test("folds deferred compaction into the load report after hydration", async () => {
+    const { journal, journalPath } = createJournal({ progressiveStartup: true,
+      compactionPolicy: { minimumReclaimBytes: 1, minimumReclaimRatio: 0 } });
+    const actor = sampleActor();
+    writeFileSync(journalPath, Array.from({ length: 500 }, (_, i) => JSON.stringify({ kind: "actor.upsert", actor: { ...actor, displayName: `old-${i}` } }) + "\n").join(""));
+    const initial = await journal.load();
+    expect(initial.compactionRequired).toBe(true);
+    expect(initial.compactionReason).not.toBeNull();
+    // Deferred: the pre-hydration report cannot know the real numbers yet.
+    expect(initial.compactionMs).toBe(0);
+    await journal.finishStartup();
+    const report = journal.loadReport();
+    expect(report).not.toBeNull();
+    expect(report!.compactionMs).toBe(journal.startupStatus().compactionMs);
+    expect(report!.compactedBytes).toBeLessThan(report!.sourceBytes);
+    expect(report!.compactedBytes).toBe(statSync(journalPath).size);
+    expect(report!.compactionReason).toBe(initial.compactionReason);
+    // The deferred work folds into the reported totals as well — a reader sees
+    // the full cost of load + compaction, not just the eager prefix.
+    expect(report!.completedAt).toBeGreaterThanOrEqual(initial.completedAt);
+    expect(report!.totalMs).toBeGreaterThanOrEqual(initial.totalMs);
+    await journal.close();
+  });
+
   test("startup hydration rejects before load instead of caching a false completion", async () => {
     const { journal } = createJournal({ progressiveStartup: true });
     await expect(journal.finishStartup()).rejects.toThrow("must be loaded");
@@ -697,4 +721,424 @@ test("failed background compaction leaves the canonical prefix and accepted suff
   await recovered.load();
   expect(recovered.snapshot().actors[actor.id]?.displayName).toBe("accepted-during-failure");
   await journal.close(); await recovered.close();
+});
+
+describe("delete entries", () => {
+  const endpoint = {
+    id: "ep-1",
+    agentId: "agent-1",
+    nodeId: "node-1",
+    harness: "codex" as const,
+    transport: "local_socket" as const,
+    state: "offline" as const,
+  };
+
+  test("replays an uncompacted upsert/delete pair into an empty registry", async () => {
+    const { journal, journalPath } = createJournal({
+      compactionPolicy: { minimumReclaimBytes: 1_000_000_000, minimumReclaimRatio: 1 },
+    });
+    writeFileSync(
+      journalPath,
+      [
+        JSON.stringify({ kind: "actor.upsert", actor: sampleActor() }),
+        JSON.stringify({ kind: "agent.upsert", agent: sampleAgent() }),
+        JSON.stringify({ kind: "agent.endpoint.upsert", endpoint }),
+        JSON.stringify({ kind: "agent.endpoint.delete", endpointId: endpoint.id }),
+        JSON.stringify({ kind: "agent.delete", agentId: "agent-1" }),
+        JSON.stringify({ kind: "actor.delete", actorId: "agent-1" }),
+      ].join("\n") + "\n",
+      "utf8",
+    );
+
+    await journal.load();
+
+    expect(journal.snapshot().agents["agent-1"]).toBeUndefined();
+    expect(journal.snapshot().endpoints["ep-1"]).toBeUndefined();
+    expect(journal.snapshot().actors["agent-1"]).toBeUndefined();
+    expect(await journal.readEntries()).toHaveLength(6);
+  });
+
+  test("agent.delete alone removes the agent and its endpoints", async () => {
+    const { journal, journalPath } = createJournal({
+      compactionPolicy: { minimumReclaimBytes: 1_000_000_000, minimumReclaimRatio: 1 },
+    });
+    writeFileSync(
+      journalPath,
+      [
+        JSON.stringify({ kind: "agent.upsert", agent: sampleAgent() }),
+        JSON.stringify({ kind: "agent.endpoint.upsert", endpoint }),
+        // No endpoint.delete entry: agent.delete must still reap its endpoints.
+        JSON.stringify({ kind: "agent.delete", agentId: "agent-1" }),
+      ].join("\n") + "\n",
+      "utf8",
+    );
+
+    await journal.load();
+
+    expect(journal.snapshot().agents["agent-1"]).toBeUndefined();
+    expect(journal.snapshot().endpoints["ep-1"]).toBeUndefined();
+  });
+
+  test("compaction keeps the latest delete tombstone per key", async () => {
+    const { journal, journalPath } = createJournal({
+      compactionPolicy: { minimumReclaimBytes: 1, minimumReclaimRatio: 0 },
+    });
+    const message = sampleMessage();
+    writeFileSync(
+      journalPath,
+      [
+        JSON.stringify({ kind: "actor.upsert", actor: sampleActor() }),
+        JSON.stringify({ kind: "agent.upsert", agent: sampleAgent() }),
+        JSON.stringify({ kind: "agent.endpoint.upsert", endpoint }),
+        JSON.stringify({ kind: "agent.endpoint.delete", endpointId: endpoint.id }),
+        JSON.stringify({ kind: "agent.delete", agentId: "agent-1" }),
+        JSON.stringify({ kind: "actor.delete", actorId: "agent-1" }),
+        JSON.stringify({ kind: "message.record", message }),
+      ].join("\n") + "\n",
+      "utf8",
+    );
+
+    await journal.load();
+
+    const compacted = await journal.readEntries();
+    // Tombstones must survive compaction: SQLite recovery replays a suffix
+    // onto an existing database and cannot infer deletes from absence —
+    // dropping them would leave deleted rows (and their references) behind.
+    expect(compacted.map((entry) => entry.kind)).toEqual([
+      "agent.endpoint.delete",
+      "agent.delete",
+      "actor.delete",
+      "message.record",
+    ]);
+    expect(journal.snapshot().agents).toEqual({});
+    expect(journal.snapshot().endpoints).toEqual({});
+    expect(journal.snapshot().actors).toEqual({});
+  });
+
+  test("retired actor ids survive compaction, rebuild on restart, and clear on revival", async () => {
+    // The runtime fences stale whole-record roster writes against
+    // isRetiredActor — a restart from a compacted journal must rebuild the
+    // set from the surviving actor.delete tombstones.
+    const { journal, journalPath } = createJournal({
+      compactionPolicy: { minimumReclaimBytes: 1, minimumReclaimRatio: 0 },
+    });
+    writeFileSync(
+      journalPath,
+      [
+        JSON.stringify({ kind: "actor.upsert", actor: sampleActor() }),
+        JSON.stringify({ kind: "actor.delete", actorId: "agent-1" }),
+        // Revived: upsert after delete clears the tombstone.
+        JSON.stringify({ kind: "actor.upsert", actor: { ...sampleActor(), id: "agent-2" } }),
+        JSON.stringify({ kind: "actor.delete", actorId: "agent-2" }),
+        JSON.stringify({ kind: "actor.upsert", actor: { ...sampleActor(), id: "agent-2" } }),
+        // Revived via agent registration (synthesizes the actor identity).
+        JSON.stringify({ kind: "actor.delete", actorId: "agent-3" }),
+        JSON.stringify({ kind: "agent.upsert", agent: { ...sampleAgent(), id: "agent-3" } }),
+      ].join("\n") + "\n",
+      "utf8",
+    );
+
+    await journal.load();
+    expect(journal.retiredActorIds().has("agent-1")).toBe(true);
+    expect(journal.retiredActorIds().has("agent-2")).toBe(false);
+    expect(journal.retiredActorIds().has("agent-3")).toBe(false);
+    await journal.close();
+
+    // Restart replays the compacted journal: the tombstone survives and the
+    // later reviving upserts are still ordered after their deletes.
+    const restarted = new FileBackedBrokerJournal(journalPath, {
+      compactionPolicy: { minimumReclaimBytes: 1, minimumReclaimRatio: 0 },
+    });
+    await restarted.load();
+    expect(restarted.retiredActorIds().has("agent-1")).toBe(true);
+    expect(restarted.retiredActorIds().has("agent-2")).toBe(false);
+    expect(restarted.retiredActorIds().has("agent-3")).toBe(false);
+    await restarted.close();
+  });
+
+  test("replaying a compacted journal onto a lagging database still deletes", async () => {
+    // Regression for the tombstone-drop bug: an existing SQLite database that
+    // never applied the deletes must lose the rows on suffix replay.
+    const root = mkdtempSync(join(tmpdir(), "openscout-journal-recovery-"));
+    const journalPath = join(root, "journal.jsonl");
+    const actor = sampleActor();
+    const agent = sampleAgent();
+    writeFileSync(
+      journalPath,
+      [
+        JSON.stringify({ kind: "actor.upsert", actor }),
+        JSON.stringify({ kind: "agent.upsert", agent }),
+        JSON.stringify({ kind: "agent.endpoint.upsert", endpoint }),
+        JSON.stringify({ kind: "agent.endpoint.delete", endpointId: endpoint.id }),
+        JSON.stringify({ kind: "agent.delete", agentId: agent.id }),
+        JSON.stringify({ kind: "actor.delete", actorId: actor.id }),
+      ].join("\n") + "\n",
+      "utf8",
+    );
+
+    // Compact first (minimumReclaimBytes: 1 forces it), then replay the
+    // compacted journal onto a database that still has the rows.
+    const compactedJournal = new FileBackedBrokerJournal(journalPath, {
+      compactionPolicy: { minimumReclaimBytes: 1, minimumReclaimRatio: 0 },
+    });
+    await compactedJournal.load();
+    const replayJournal = new FileBackedBrokerJournal(journalPath, {
+      compactionPolicy: { minimumReclaimBytes: 1_000_000_000, minimumReclaimRatio: 1 },
+    });
+    await replayJournal.load();
+    expect(replayJournal.snapshot().agents).toEqual({});
+    expect(replayJournal.snapshot().endpoints).toEqual({});
+    expect(replayJournal.snapshot().actors).toEqual({});
+    await compactedJournal.close();
+    await replayJournal.close();
+  });
+
+  test("a delete is superseded by a later re-upsert under the same dedupe key", async () => {
+    const { journal, journalPath } = createJournal({
+      compactionPolicy: { minimumReclaimBytes: 1, minimumReclaimRatio: 0 },
+    });
+    writeFileSync(
+      journalPath,
+      [
+        JSON.stringify({ kind: "actor.delete", actorId: "agent-1" }),
+        JSON.stringify({ kind: "actor.upsert", actor: sampleActor() }),
+        JSON.stringify({ kind: "agent.endpoint.delete", endpointId: endpoint.id }),
+        JSON.stringify({ kind: "agent.endpoint.upsert", endpoint }),
+      ].join("\n") + "\n",
+      "utf8",
+    );
+
+    await journal.load();
+
+    const compacted = await journal.readEntries();
+    expect(compacted.map((entry) => entry.kind)).toEqual([
+      "actor.upsert",
+      "agent.endpoint.upsert",
+    ]);
+    expect(journal.snapshot().actors["agent-1"]?.displayName).toBe("Agent One");
+    expect(journal.snapshot().endpoints["ep-1"]).toEqual(endpoint);
+  });
+});
+
+describe("orphaned compaction temps", () => {
+  function deadPid(): number {
+    for (let pid = 400_000; pid < 4_000_000; pid++) {
+      try {
+        process.kill(pid, 0);
+      } catch {
+        return pid;
+      }
+    }
+    throw new Error("could not find a dead pid");
+  }
+
+  test("reaps temp files whose writer pid is dead and keeps the live ones", async () => {
+    const { journal, journalPath } = createJournal();
+    const dead = `${journalPath}.${deadPid()}.1700000000000.tmp`;
+    const mine = `${journalPath}.${process.pid}.1700000000001.tmp`;
+    const unrelated = join(journalPath, "..", "broker-journal.jsonl.other.tmp");
+    writeFileSync(dead, "orphaned bytes");
+    writeFileSync(mine, "in-flight bytes");
+    writeFileSync(unrelated, "not a pid field");
+
+    await journal.load();
+
+    expect(existsSync(dead)).toBe(false);
+    expect(existsSync(mine)).toBe(true);
+    expect(existsSync(unrelated)).toBe(true);
+  });
+});
+
+describe("history.rotate", () => {
+  const OLD = 1_699_000_000_000;
+  const CUTOFF = 1_700_000_000_000;
+  const NEW = 1_700_500_000_000;
+
+  const rotationFixture = (): string[] => {
+    const conversation = {
+      id: "conv-1",
+      kind: "channel",
+      title: "Ops",
+      visibility: "workspace",
+      shareMode: "shared",
+      authorityNodeId: "node-1",
+      participantIds: ["agent-1"],
+      createdAt: OLD,
+      updatedAt: OLD,
+    };
+    const delivery = (input: Record<string, unknown>) => ({
+      targetId: "agent-1",
+      targetKind: "agent",
+      transport: "local_socket",
+      reason: "direct_message",
+      policy: "best_effort",
+      ...input,
+    });
+    return [
+      // Registry + conversation records are the retention sweep's domain —
+      // rotation must never touch them.
+      JSON.stringify({ kind: "actor.upsert", actor: sampleActor() }),
+      JSON.stringify({ kind: "conversation.upsert", conversation }),
+      JSON.stringify({ kind: "message.record", message: { ...sampleMessage(), id: "msg-old", createdAt: OLD } }),
+      JSON.stringify({ kind: "message.record", message: { ...sampleMessage(), id: "msg-new", createdAt: NEW } }),
+      // Completed flight + its invocation: both rotate out.
+      JSON.stringify({ kind: "invocation.record", invocation: { ...sampleInvocation(), id: "inv-old", createdAt: OLD } }),
+      JSON.stringify({ kind: "flight.record", flight: { ...sampleFlight(), id: "flt-old", invocationId: "inv-old", state: "completed", startedAt: OLD, completedAt: OLD + 1_000 } }),
+      // An old invocation with a still-running flight: both survive.
+      JSON.stringify({ kind: "invocation.record", invocation: { ...sampleInvocation(), id: "inv-run", createdAt: OLD } }),
+      JSON.stringify({ kind: "flight.record", flight: { ...sampleFlight(), id: "flt-run", invocationId: "inv-run", state: "running", startedAt: OLD } }),
+      // A flight completed after the cutoff survives regardless of linkage.
+      JSON.stringify({ kind: "flight.record", flight: { ...sampleFlight(), id: "flt-new", invocationId: "inv-run", state: "completed", startedAt: NEW, completedAt: NEW + 1_000 } }),
+      JSON.stringify({ kind: "deliveries.record", deliveries: [
+        delivery({ id: "del-old", messageId: "msg-old", status: "completed" }),
+        delivery({ id: "del-live", invocationId: "inv-run", status: "running" }),
+        delivery({ id: "del-unlinked", status: "completed" }),
+      ] }),
+      JSON.stringify({ kind: "delivery.attempt.record", attempt: { id: "att-old", deliveryId: "del-old", attempt: 1, status: "sent", createdAt: OLD } }),
+      JSON.stringify({ kind: "delivery.attempt.record", attempt: { id: "att-new", deliveryId: "del-live", attempt: 1, status: "sent", createdAt: NEW } }),
+      JSON.stringify({ kind: "collaboration.event.record", event: { id: "ev-old", recordId: "rec-1", recordKind: "work_item", kind: "created", actorId: "agent-1", at: OLD } }),
+      JSON.stringify({ kind: "collaboration.event.record", event: { id: "ev-new", recordId: "rec-1", recordKind: "work_item", kind: "updated", actorId: "agent-1", at: NEW } }),
+      JSON.stringify({ kind: "history.rotate", cutoff: CUTOFF, rotatedAt: NEW + 2_000 }),
+      // Written after the marker: a pre-cutoff record is post-rotation history
+      // that stays live until the next rotation.
+      JSON.stringify({ kind: "message.record", message: { ...sampleMessage(), id: "msg-late", createdAt: OLD } }),
+    ];
+  };
+
+  const compactedPolicy = {
+    // Force compaction on load so the rewrite runs even on a small journal.
+    minimumReclaimBytes: 1,
+    minimumReclaimRatio: 0,
+    highWaterBytes: Number.MAX_SAFE_INTEGER,
+    highWaterMinimumReclaimBytes: Number.MAX_SAFE_INTEGER,
+  };
+
+  test("applies the rotation to the hot snapshot and keeps live records", async () => {
+    const { journal, journalPath } = createJournal();
+    writeFileSync(journalPath, rotationFixture().join("\n") + "\n", "utf8");
+
+    await journal.load();
+    const snapshot = journal.snapshot();
+
+    expect(snapshot.messages["msg-old"]).toBeUndefined();
+    expect(snapshot.messages["msg-new"]).toBeDefined();
+    expect(snapshot.messages["msg-late"]).toBeDefined();
+    expect(snapshot.flights["flt-old"]).toBeUndefined();
+    expect(snapshot.flights["flt-run"]).toBeDefined();
+    expect(snapshot.flights["flt-new"]).toBeDefined();
+    expect(snapshot.invocations["inv-old"]).toBeUndefined();
+    // inv-run still awaits its running flight.
+    expect(snapshot.invocations["inv-run"]).toBeDefined();
+    expect(journal.getDelivery("del-old")).toBeUndefined();
+    expect(journal.getDelivery("del-live")).toBeDefined();
+    // No referent means no age evidence — kept.
+    expect(journal.getDelivery("del-unlinked")).toBeDefined();
+    expect(journal.listDeliveryAttempts("del-old")).toEqual([]);
+    expect(journal.listDeliveryAttempts("del-live")).toHaveLength(1);
+    expect(journal.listCollaborationEvents().map((event) => event.id)).toEqual(["ev-new"]);
+    // Registry + conversation records untouched.
+    expect(snapshot.actors["agent-1"]).toBeDefined();
+    expect(snapshot.conversations["conv-1"]).toBeDefined();
+    expect(journal.historyRotationCutoff()).toBe(CUTOFF);
+  });
+
+  test("compaction drops rotated record lines and keeps only the newest rotate marker", async () => {
+    const { journal, journalPath } = createJournal({ compactionPolicy: compactedPolicy });
+    writeFileSync(
+      journalPath,
+      [
+        ...rotationFixture(),
+        JSON.stringify({ kind: "history.rotate", cutoff: CUTOFF + 1_000, rotatedAt: NEW + 3_000 }),
+      ].join("\n") + "\n",
+      "utf8",
+    );
+
+    await journal.load();
+    const entries = await journal.readEntries();
+    const kinds = entries.map((entry) => entry.kind);
+
+    expect(kinds.filter((kind) => kind === "history.rotate")).toEqual(["history.rotate"]);
+    expect(entries.find((entry) => entry.kind === "history.rotate")).toMatchObject({ cutoff: CUTOFF + 1_000 });
+    // Rotated record lines dropped; surviving history kept.
+    expect(kinds).toContain("message.record");
+    // msg-late predates the second marker but its OLD timestamp is doomed by
+    // the newer cutoff — its line is dropped too.
+    expect(entries.filter((entry) => entry.kind === "message.record").map((entry) => entry.message.id).sort())
+      .toEqual(["msg-new"]);
+    expect(entries.filter((entry) => entry.kind === "flight.record").map((entry) => entry.flight.id).sort())
+      .toEqual(["flt-new", "flt-run"]);
+    expect(entries.filter((entry) => entry.kind === "invocation.record").map((entry) => entry.invocation.id))
+      .toEqual(["inv-run"]);
+    expect(entries.filter((entry) => entry.kind === "delivery.attempt.record").map((entry) => entry.attempt.id))
+      .toEqual(["att-new"]);
+    expect(entries.filter((entry) => entry.kind === "collaboration.event.record").map((entry) => entry.event.id))
+      .toEqual(["ev-new"]);
+    // The partially doomed deliveries.record survives, filtered.
+    const deliveries = entries.find((entry) => entry.kind === "deliveries.record");
+    expect(deliveries?.kind === "deliveries.record" ? deliveries.deliveries.map((d) => d.id).sort() : [])
+      .toEqual(["del-live", "del-unlinked"]);
+    // The newest marker also rotated msg-late (OLD < CUTOFF + 1s).
+    const snapshot = journal.snapshot();
+    expect(Object.keys(snapshot.messages).sort()).toEqual(["msg-new"]);
+    expect(Object.keys(snapshot.flights).sort()).toEqual(["flt-new", "flt-run"]);
+    expect(Object.keys(snapshot.invocations)).toEqual(["inv-run"]);
+    expect(journal.historyRotationCutoff()).toBe(CUTOFF + 1_000);
+  });
+
+  test("uncompacted replay converges to the same state as compacted replay", async () => {
+    const { journalPath } = createJournal();
+    writeFileSync(journalPath, rotationFixture().join("\n") + "\n", "utf8");
+
+    const fresh = new FileBackedBrokerJournal(journalPath);
+    await fresh.load();
+    const freshSnapshot = fresh.snapshot();
+
+    // Force a compacting reload by duplicating a dedupable line above the
+    // reclaim floor.
+    const compactionJournal = new FileBackedBrokerJournal(journalPath, { compactionPolicy: compactedPolicy });
+    // A second instance on the same path replays the same bytes and compacts.
+    await compactionJournal.load();
+    const compactedSnapshot = compactionJournal.snapshot();
+
+    expect(Object.keys(compactedSnapshot.messages).sort()).toEqual(Object.keys(freshSnapshot.messages).sort());
+    expect(Object.keys(compactedSnapshot.flights).sort()).toEqual(Object.keys(freshSnapshot.flights).sort());
+    expect(Object.keys(compactedSnapshot.invocations).sort()).toEqual(Object.keys(freshSnapshot.invocations).sort());
+    expect(compactedSnapshot.actors).toEqual(freshSnapshot.actors);
+    expect(compactedSnapshot.conversations).toEqual(freshSnapshot.conversations);
+    expect(compactionJournal.listDeliveries()).toEqual(fresh.listDeliveries());
+    expect(compactionJournal.listCollaborationEvents()).toEqual(fresh.listCollaborationEvents());
+    expect(compactionJournal.listDeliveryAttempts("del-live")).toEqual(fresh.listDeliveryAttempts("del-live"));
+  });
+
+  test("a same-cutoff rotate marker is not appended twice", async () => {
+    const { journal } = createJournal();
+    await journal.load();
+
+    const first = await journal.appendEntries([{ kind: "history.rotate", cutoff: CUTOFF, rotatedAt: NEW }]);
+    expect(first).toHaveLength(1);
+    expect(journal.historyRotationCutoff()).toBe(CUTOFF);
+
+    const second = await journal.appendEntries([{ kind: "history.rotate", cutoff: CUTOFF, rotatedAt: NEW + 1_000 }]);
+    expect(second).toEqual([]);
+    expect((await journal.readEntries()).filter((entry) => entry.kind === "history.rotate")).toHaveLength(1);
+
+    const newer = await journal.appendEntries([{ kind: "history.rotate", cutoff: CUTOFF + 5_000, rotatedAt: NEW + 2_000 }]);
+    expect(newer).toHaveLength(1);
+    expect(journal.historyRotationCutoff()).toBe(CUTOFF + 5_000);
+  });
+});
+
+test("question history filters and cursor order match retained SQLite reads", async () => {
+  const { journal } = createJournal();
+  await journal.load();
+  await journal.appendEntries({ kind: "conversation.upsert", conversation: { id: "thread", title: "Thread", shareMode: "shared", kind: "thread", parentConversationId: "room", authorityNodeId: "node", participantIds: [], visibility: "workspace", createdAt: 1 } });
+  for (const [id, conversationId, createdAt, updatedAt] of [["a", "room", 1, 100], ["b", "thread", 1, 300], ["c", "room", 2, 200], ["hidden", "other", 1, 500]] as const) {
+    await journal.appendEntries({ kind: "collaboration.record", record: { id, kind: "question", conversationId, createdAt, updatedAt,
+      title: id, createdById: "operator", state: "closed", acceptanceState: "accepted", answer: `answer ${id}` } });
+  }
+  const query = { kind: "question" as const, state: "closed", conversationId: "room", includeThreads: true, orderByCreatedAt: true, limit: 2 };
+  expect(journal.listCollaborationRecords(query).map(row => row.id)).toEqual(["a", "b"]);
+  expect(journal.listCollaborationRecords({ ...query, afterCreatedAt: 1, afterId: "b" })).toMatchObject([{ id: "c", answer: "answer c" }]);
+  expect(journal.listCollaborationRecords({ ...query, includeThreads: false }).map(row => row.id)).toEqual(["a", "c"]);
+  expect(journal.listCollaborationRecords({ ...query, orderByCreatedAt: false }).map(row => row.id)).toEqual(["b", "c"]);
 });

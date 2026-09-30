@@ -1,146 +1,164 @@
 /* ── Shared types for the Scout web UI ── */
 import type { SearchFilters } from "./knowledge-search.ts";
-export type Agent = {
-  id: string;
-  definitionId: string;
-  name: string;
-  handle: string | null;
-  agentClass: string;
-  harness: string | null;
-  state: string | null;
-  projectRoot: string | null;
-  cwd: string | null;
-  updatedAt: number | null;
-  createdAt: number | null;
-  transport: string | null;
-  selector: string | null;
-  defaultSelector: string | null;
-  nodeQualifier: string | null;
-  workspaceQualifier: string | null;
-  wakePolicy: string | null;
-  capabilities: string[];
-  project: string | null;
-  branch: string | null;
-  /** Canonical git remote identity (`host/org/repo`) when the server resolved one. */
-  repoKey?: string | null;
-  role: string | null;
-  model: string | null;
-  modelProvider?: string | null;
-  reasoningEffort?: string | null;
-  harnessSessionId: string | null;
-  terminalSurface: TerminalSurfaceDescriptor | null;
-  harnessLogPath: string | null;
-  conversationId: string | null;
-  authorityNodeId?: string | null;
-  authorityNodeName?: string | null;
-  homeNodeId: string | null;
-  homeNodeName: string | null;
-  ownerId: string | null;
-  ownerName: string | null;
-  ownerHandle: string | null;
-  staleLocalRegistration: boolean;
-  retiredFromFleet: boolean;
-  replacedByAgentId: string | null;
-  providerName?: string | null;
-  providerUrl?: string | null;
-  protocol?: string | null;
-  skills?: string[];
-  brokerActivity?: AgentBrokerActivity[];
-  authorityProfile?: AgentAuthorityProfile | null;
-  runtimePolicy?: AgentRuntimePolicy | null;
+import type {
+  WebActivityItem,
+  WebAgent,
+  WebAgentAuthorityProfile,
+  WebAgentBrokerActivity,
+  WebAgentRun,
+  WebAgentRuntimePolicy,
+  WebBrokerDiagnostics,
+  WebBrokerDiagnosticsSource,
+  WebBrokerDialogueItem,
+  WebBrokerHistoryKey,
+  WebBrokerRouteAttempt,
+  WebFleetActivity,
+  WebFleetAsk,
+  WebFleetAttentionItem,
+  WebFleetState,
+  WebFlight,
+  WebFollowTarget,
+  WebServedMessage,
+  WebTerminalSurfaceDescriptor,
+  WebWorkDetailResponse,
+  WebWorkInvocation,
+  WebWorkItem,
+  WebWorkTimelineItem,
+  WebWorkTimelineKind,
+} from "../../shared/api/web.ts";
+import type {
+  WorkInventoryAgentRef,
+  WorkInventoryConfidence,
+  WorkInventoryMode,
+  WorkInventorySessionRef,
+  WorkInventorySource,
+  WorkMaterial,
+  WorkMaterialContent,
+  WorkMaterialEvidence,
+  WorkMaterialKind,
+  WorkMaterialStatus,
+  WorkMaterialsInventory,
+} from "../../shared/api/work-materials.ts";
+import type {
+  ObserveFile,
+  ObserveMetadata,
+  ObservePulse,
+  ObserveSessionMeta,
+  ObserveUsageMeta,
+} from "../../shared/api/observe.ts";
+import type {
+  AgentObservePayload as ServedAgentObservePayload,
+  ObserveData as ServedObserveData,
+  ObserveEvent as ServedObserveEvent,
+} from "../../shared/api/observe.ts";
+import type {
+  ObservedHarnessAgent,
+  ObservedHarnessGroup,
+  ObservedHarnessRelationship,
+  ObservedHarnessSourceRef,
+  ObservedHarnessTask,
+  ObservedHarnessTopology,
+} from "@openscout/agent-sessions";
+import type {
+  PlanDocument,
+  PlanDocumentKind,
+  PlanDocumentSource,
+  PlanDocumentStatus,
+  PlanDocumentStep,
+  PlanDocumentStepStatus,
+  PlanDocumentsResponse,
+} from "../../shared/api/plans.ts";
+import type {
+  Broadcast,
+  BroadcastTier,
+} from "../../shared/api/broadcasts.ts";
+import type {
+  WebMeshOpsFlight,
+  WebMeshOpsHost,
+  WebMeshOpsItem,
+} from "../../shared/api/web.ts";
+import type {
+  AgentRunMetrics,
+  MessageAttachment,
+} from "@openscout/protocol";
+import type {
+  MeshIssue,
+} from "../../shared/api/mesh.ts";
+export type {
+  MeshIssue,
+} from "../../shared/api/mesh.ts";
+export type {
+  AgentRunMetrics,
+  MessageAttachment,
+} from "@openscout/protocol";
+export type {
+  WebMeshOpsFlight,
+  WebMeshOpsHost,
+  WebMeshOpsItem,
+} from "../../shared/api/web.ts";
+export type {
+  Broadcast,
+  BroadcastTier,
+} from "../../shared/api/broadcasts.ts";
+export type {
+  PlanDocument,
+  PlanDocumentKind,
+  PlanDocumentSource,
+  PlanDocumentStatus,
+  PlanDocumentStep,
+  PlanDocumentStepStatus,
+  PlanDocumentsResponse,
+} from "../../shared/api/plans.ts";
+export type {
+  ObservedHarnessAgent,
+  ObservedHarnessGroup,
+  ObservedHarnessRelationship,
+  ObservedHarnessSourceRef,
+  ObservedHarnessTask,
+  ObservedHarnessTopology,
+} from "@openscout/agent-sessions";
+export type {
+  ObserveFile,
+  ObserveMetadata,
+  ObservePulse,
+  ObserveSessionMeta,
+  ObserveUsageMeta,
+} from "../../shared/api/observe.ts";
+export type {
+  WorkInventoryAgentRef,
+  WorkInventoryConfidence,
+  WorkInventoryMode,
+  WorkInventorySessionRef,
+  WorkInventorySource,
+  WorkMaterial,
+  WorkMaterialContent,
+  WorkMaterialEvidence,
+  WorkMaterialKind,
+  WorkMaterialStatus,
+  WorkMaterialsInventory,
+} from "../../shared/api/work-materials.ts";
+/**
+ * An observe event as the client handles it. The floor view also builds
+ * events from tail records and marks agent-to-agent messages with
+ * `communication`; the server never sends that field.
+ */
+export type ObserveEvent = ServedObserveEvent & {
+  communication?: { from: string; to: string; received: true; bodyAvailable: boolean };
 };
 
-export type AgentBrokerActivity = {
-  id: string;
-  kind: "message" | "invocation" | "flight";
-  at: number;
-  state: string | null;
-  summary: string;
-  conversationId: string | null;
-};
+export type ObserveData = Omit<ServedObserveData, "events"> & { events: ObserveEvent[] };
 
-export type AgentAuthorityProfile = {
-  roleId: string;
-  readTools: string[];
-  writeTools: string[];
-  shell: boolean;
-  codebaseWrites: boolean;
-};
+export type AgentObservePayload = Omit<ServedAgentObservePayload, "data"> & { data: ObserveData };
 
-export type AgentRuntimePolicy = {
-  approvalPolicy: string | null;
-  sandbox: string | null;
-  shellTool: boolean | null;
-};
+export type Agent = WebAgent;
 
-export type TerminalSurfaceDescriptor = {
-  backend: "tmux" | "zellij" | "herdr";
-  sessionName: string;
-  paneId: string | null;
-  socketDir: string | null;
-  /** Optional registry attach argv; preferred when rendering attach commands. */
-  attachCommand?: string[] | null;
-};
+export type AgentBrokerActivity = WebAgentBrokerActivity;
 
-export type ObservedHarnessTopology = {
-  schemaVersion: "openscout.observed-harness-topology.v1";
-  ownership: "harness_observed";
-  source: string;
-  observedAt: string;
-  groups: ObservedHarnessGroup[];
-  agents: ObservedHarnessAgent[];
-  tasks: ObservedHarnessTask[];
-  relationships: ObservedHarnessRelationship[];
-  sourceRefs?: ObservedHarnessSourceRef[];
-  limitations?: string[];
-};
+export type AgentAuthorityProfile = WebAgentAuthorityProfile;
 
-export type ObservedHarnessSourceRef = {
-  id: string;
-  kind: "file" | "directory" | "event" | "provider";
-  ref: string;
-  label?: string;
-};
+export type AgentRuntimePolicy = WebAgentRuntimePolicy;
 
-export type ObservedHarnessGroup = {
-  id: string;
-  kind: string;
-  name?: string;
-  sourceRef?: string;
-  providerMeta?: Record<string, unknown>;
-};
-
-export type ObservedHarnessAgent = {
-  id: string;
-  name?: string;
-  role?: string;
-  type?: string;
-  status?: string;
-  externalSessionId?: string;
-  cwd?: string;
-  model?: string;
-  sourceRef?: string;
-  providerMeta?: Record<string, unknown>;
-};
-
-export type ObservedHarnessTask = {
-  id: string;
-  title?: string;
-  state?: string;
-  assigneeId?: string;
-  dependencyIds?: string[];
-  sourceRef?: string;
-  providerMeta?: Record<string, unknown>;
-};
-
-export type ObservedHarnessRelationship = {
-  id: string;
-  kind: string;
-  fromId: string;
-  toId: string;
-  sourceRef?: string;
-  providerMeta?: Record<string, unknown>;
-};
+export type TerminalSurfaceDescriptor = WebTerminalSurfaceDescriptor;
 
 export type HarnessTopologyObservation = {
   id: string;
@@ -275,173 +293,27 @@ export type AgentConfigurationState = {
   gaps: string[];
 };
 
-export type Message = {
-  id: string;
-  conversationId: string;
-  actorId?: string | null;
-  actorName: string;
-  body: string;
-  createdAt: number;
-  class: string;
-  attachments?: MessageAttachment[];
-  metadata?: Record<string, unknown> | null;
-  /** Originating message this one replies to (e.g. the ask a turn answers). */
-  replyToMessageId?: string | null;
-};
+export type Message = WebServedMessage;
 
-export type MessageAttachment = {
-  id: string;
-  mediaType: string;
-  fileName?: string;
-  blobKey?: string;
-  url?: string;
-  metadata?: Record<string, unknown> | null;
-};
+export type ActivityItem = WebActivityItem;
 
-export type ActivityItem = {
-  id: string;
-  kind: string;
-  ts: number;
-  actorName: string | null;
-  title: string | null;
-  summary: string | null;
-  conversationId: string | null;
-  workspaceRoot: string | null;
-  agentId: string | null;
-  agentName: string | null;
-  flightId: string | null;
-  invocationId: string | null;
-  sessionId: string | null;
-  messageId: string | null;
-  recordId: string | null;
-};
+export type BrokerRouteAttempt = WebBrokerRouteAttempt;
 
-export type BrokerRouteAttempt = {
-  id: string;
-  kind: "success" | "failed_query" | "failed_delivery" | "delivery_attempt";
-  status: string;
-  ts: number;
-  actorName: string | null;
-  target: string | null;
-  route: string | null;
-  detail: string;
-  conversationId: string | null;
-  messageId: string | null;
-  deliveryId: string | null;
-  invocationId: string | null;
-  metadata?: Record<string, unknown> | null;
-};
+export type BrokerDialogueItem = WebBrokerDialogueItem;
 
-export type BrokerDialogueItem = {
-  id: string;
-  ts: number;
-  actorName: string | null;
-  conversationId: string;
-  body: string;
-  class: string;
-};
+export type BrokerHistoryKey = WebBrokerHistoryKey;
 
-export type BrokerHistoryKey = "attempts" | "failedQueries" | "failedDeliveries" | "dialogue";
+export type BrokerDiagnosticsSource = WebBrokerDiagnosticsSource;
 
-export type BrokerDiagnosticsSource = {
-  mode: "live_broker" | "sqlite_projection";
-  status: "current" | "degraded" | "unknown";
-  brokerReachable?: boolean | null;
-  latestMessageAt: number | null;
-  projectionLatestMessageAt: number | null;
-  liveMessageCount: number | null;
-  projectionMessageCount: number | null;
-  detail: string | null;
-};
+export type BrokerDiagnostics = WebBrokerDiagnostics;
 
-export type BrokerDiagnostics = {
-  generatedAt: number;
-  windowMs: number;
-  source?: BrokerDiagnosticsSource;
-  ledger: {
-    mode: "latest";
-    limit: number;
-    cursor: string | null;
-    cursors: Record<BrokerHistoryKey, string | null>;
-    hasMore: Record<BrokerHistoryKey, boolean>;
-  };
-  totals: {
-    successfulDispatches: number;
-    failedQueries: number;
-    failedDeliveries: number;
-    deliveryAttempts: number;
-    failedDeliveryAttempts: number;
-    dialogueMessages: number;
-  };
-  rates: {
-    messagesPerHour: number;
-    failedQueriesPerHour: number;
-    failedDeliveriesPerHour: number;
-    failureRate: number;
-  };
-  attempts: BrokerRouteAttempt[];
-  failedQueries: BrokerRouteAttempt[];
-  failedDeliveries: BrokerRouteAttempt[];
-  dialogue: BrokerDialogueItem[];
-};
+export type FleetActivity = WebFleetActivity;
 
-export type FleetActivity = ActivityItem & {
-  actorId: string | null;
-  agentId: string | null;
-  flightId: string | null;
-  invocationId: string | null;
-  messageId: string | null;
-  recordId: string | null;
-  sessionId: string | null;
-};
+export type FleetAsk = WebFleetAsk;
 
-export type FleetAsk = {
-  invocationId: string;
-  flightId: string | null;
-  agentId: string;
-  agentName: string | null;
-  conversationId: string | null;
-  collaborationRecordId: string | null;
-  task: string;
-  status: "queued" | "working" | "needs_attention" | "completed" | "failed";
-  statusLabel: string;
-  acknowledgedAt: number | null;
-  attention: "silent" | "badge" | "interrupt";
-  agentState: "offline" | "available" | "in_flight" | "working";
-  harness: string | null;
-  transport: string | null;
-  summary: string | null;
-  startedAt: number | null;
-  completedAt: number | null;
-  updatedAt: number;
-};
+export type FleetAttentionItem = WebFleetAttentionItem;
 
-export type FleetAttentionItem = {
-  kind: "work_item" | "question";
-  recordId: string;
-  title: string;
-  summary: string | null;
-  agentId: string | null;
-  agentName: string | null;
-  conversationId: string | null;
-  state: string;
-  acceptanceState: string;
-  updatedAt: number;
-};
-
-export type FleetState = {
-  generatedAt: number;
-  totals: {
-    active: number;
-    recentCompleted: number;
-    needsAttention: number;
-    activity: number;
-  };
-  activeAsks: FleetAsk[];
-  recentCompleted: FleetAsk[];
-  needsAttention: FleetAttentionItem[];
-  activity: FleetActivity[];
-};
+export type FleetState = WebFleetState;
 
 export type PairingSnapshot = {
   qrValue?: string | null;
@@ -559,54 +431,7 @@ export type AgentRunReviewState =
   | "rejected"
   | (string & {});
 
-export type AgentRunMetrics = {
-  inputTokens?: number;
-  outputTokens?: number;
-  totalTokens?: number;
-  estimatedUsd?: number;
-  wallClockMs?: number;
-  toolCallCount?: number;
-  retryCount?: number;
-};
-
-export type AgentRun = {
-  id: string;
-  source: AgentRunSource;
-  requesterId?: string;
-  agentId: string;
-  agentName?: string | null;
-  agentRevisionId?: string;
-  agentRevisionSnapshot?: Record<string, unknown> | null;
-  aliasId?: string;
-  workId?: string | null;
-  collaborationRecordId?: string | null;
-  conversationId?: string | null;
-  messageId?: string | null;
-  invocationId?: string | null;
-  flightIds?: string[];
-  parentRunId?: string | null;
-  rootRunId?: string | null;
-  recipeId?: string | null;
-  attempt?: number;
-  idempotencyKey?: string;
-  state: AgentRunState;
-  reviewState?: AgentRunReviewState;
-  terminalReason?: string | null;
-  input?: Record<string, unknown> | null;
-  output?: Record<string, unknown> | null;
-  artifactIds?: string[];
-  reviewTaskIds?: string[];
-  traceSessionIds?: string[];
-  createdAt?: number;
-  startedAt?: number | null;
-  updatedAt: number;
-  completedAt?: number | null;
-  harness?: string | null;
-  model?: string | null;
-  permissionProfile?: string | null;
-  metrics?: AgentRunMetrics;
-  metadata?: Record<string, unknown> | null;
-};
+export type AgentRun = WebAgentRun;
 
 export type RunItem = AgentRun;
 
@@ -618,31 +443,7 @@ export type RunsResponse =
       totals?: Record<string, number | undefined>;
     };
 
-export type Flight = {
-  id: string;
-  invocationId: string;
-  messageId?: string | null;
-  agentId: string;
-  agentName: string | null;
-  conversationId: string | null;
-  collaborationRecordId: string | null;
-  state: string;
-  summary: string | null;
-  startedAt: number | null;
-  completedAt: number | null;
-  sessions: FlightSessionTrace[];
-  dispatchOutcome?: {
-    status: string;
-    reason: string | null;
-    checkedAt: number | null;
-  } | null;
-  /**
-   * The requester stopped waiting for a synchronous result. The agent may
-   * still be running, but nobody is waiting on this turn any more, so it must
-   * not present as an active "working" turn.
-   */
-  requesterWaitTimedOut?: boolean;
-};
+export type Flight = WebFlight;
 
 export type FlightSessionTrace = {
   sessionId: string;
@@ -656,61 +457,9 @@ export type FlightSessionTrace = {
   endedAt?: number;
 };
 
-export type WorkInvocation = {
-  invocationId: string;
-  flightId: string | null;
-  action: string;
-  task: string;
-  source: string | null;
-  requestedHarness: string | null;
-  requestedModel: string | null;
-  requestedReasoningEffort: string | null;
-  requestedPermissionProfile: string | null;
-  targetSessionId: string | null;
-  requesterId: string | null;
-  requesterName: string | null;
-  targetAgentId: string | null;
-  targetAgentName: string | null;
-  resolvedHarness: string | null;
-  resolvedModel: string | null;
-  resolvedReasoningEffort: string | null;
-  observedHarness: string | null;
-  observedModel: string | null;
-  observedReasoningEffort: string | null;
-  resolvedTransport: string | null;
-  resolvedSessionId: string | null;
-  conversationId: string | null;
-  workId: string | null;
-  state: string | null;
-  summary: string | null;
-  createdAt: number;
-  startedAt: number | null;
-  completedAt: number | null;
-};
+export type WorkInvocation = WebWorkInvocation;
 
-export type WorkItem = {
-  id: string;
-  title: string;
-  summary: string | null;
-  ownerId: string | null;
-  ownerName: string | null;
-  nextMoveOwnerId: string | null;
-  nextMoveOwnerName: string | null;
-  conversationId: string | null;
-  createdAt: number;
-  updatedAt: number;
-  parentId: string | null;
-  parentTitle: string | null;
-  state: string;
-  acceptanceState: string;
-  priority: string | null;
-  currentPhase: string;
-  attention: "silent" | "badge" | "interrupt";
-  activeChildWorkCount: number;
-  activeFlightCount: number;
-  lastMeaningfulAt: number;
-  lastMeaningfulSummary: string | null;
-};
+export type WorkItem = WebWorkItem;
 
 /** An inbox row: agent + conversation summary merged. */
 export type InboxEntry = {
@@ -771,125 +520,6 @@ export type SessionEntry = {
 };
 
 export type ConversationEntry = SessionEntry;
-
-export type ObserveEvent = {
-  /** Explicit received inter-agent envelope, observed from the harness. */
-  communication?: { from: string; to: string; received: true; bodyAvailable: boolean };
-  id: string;
-  t: number;
-  /** Wall-clock epoch ms when known (preferred for horizon filtering and lane age labels). */
-  at?: number;
-  kind: "think" | "tool" | "ask" | "message" | "note" | "system" | "boot";
-  text: string;
-  tool?: string;
-  arg?: string;
-  diff?: { add: number; del: number; preview: string };
-  result?: Record<string, string | number>;
-  stream?: string[];
-  live?: boolean;
-  to?: string;
-  answer?: string;
-  answerT?: number;
-  detail?: string;
-};
-
-export type ObserveFile = {
-  path: string;
-  state: "read" | "created" | "modified";
-  touches: number;
-  lastT: number;
-};
-
-export type ObserveUsageMeta = {
-  assistantMessages?: number;
-  inputTokens?: number;
-  contextInputTokens?: number;
-  outputTokens?: number;
-  reasoningOutputTokens?: number;
-  cacheReadInputTokens?: number;
-  cacheCreationInputTokens?: number;
-  totalTokens?: number;
-  contextWindowTokens?: number;
-  webSearchRequests?: number;
-  webFetchRequests?: number;
-  serviceTier?: string;
-  speed?: string;
-  planType?: string;
-};
-
-export type ObserveSessionMeta = {
-  adapterType?: string;
-  model?: string;
-  cwd?: string;
-  nodeId?: string;
-  hostName?: string;
-  sessionStart?: number;
-  turnCount?: number;
-  externalSessionId?: string;
-  threadId?: string;
-  threadPath?: string;
-  gitBranch?: string;
-  cliVersion?: string;
-  entrypoint?: string;
-  originator?: string;
-  source?: string;
-  permissionMode?: string;
-  approvalPolicy?: string;
-  sandbox?: string;
-  userType?: string;
-  effort?: string;
-  modelProvider?: string;
-  timezone?: string;
-};
-
-export type ObserveMetadata = {
-  session?: ObserveSessionMeta;
-  usage?: ObserveUsageMeta;
-  topology?: ObservedHarnessTopology;
-};
-
-/**
- * Recent-activity histogram for the home sparkline (mirrors the server
- * `ObservePulse`). Event density over a trailing window; absent when no event
- * has a resolvable wall-clock time.
- */
-export type ObservePulse = {
-  /** Width of each bucket in ms. */
-  bucketMs: number;
-  /** Right edge (exclusive) of the last bucket — the window's "now". */
-  endMs: number;
-  /** Event count per bucket, oldest → newest; length === bucket count. */
-  counts: number[];
-};
-
-export type ObserveData = {
-  events: ObserveEvent[];
-  files: ObserveFile[];
-  contextUsage?: number[];
-  pulse?: ObservePulse;
-  live?: boolean;
-  metadata?: ObserveMetadata;
-};
-
-export type AgentObservePayload = {
-  agentId: string;
-  source: "history" | "live" | "unavailable";
-  fidelity: "timestamped" | "synthetic";
-  historyPath: string | null;
-  sessionId: string | null;
-  updatedAt: number;
-  initiatingAsk?: {
-    task: string;
-    requesterId: string;
-    requesterName: string;
-    requestedAt: number;
-    invocationId: string;
-    flightId: string;
-    conversationId: string | null;
-    messageId: string | null;
-  } | null;
-  data: ObserveData;
-};
 
 export type TmuxPeekPayload = {
   available: boolean;
@@ -995,21 +625,14 @@ export type OperatorProfile = {
   provisionalAgentNamesResolvedCount: number;
   provisionalAgentNamesPreview: string[];
   provisionalAgentNamesSource: ProvisionalAgentNamePoolSource;
-};
-
-/** Mesh status report from the broker. */
-export type MeshIssue = {
-  code:
-    | "broker_unreachable"
-    | "tailscale_stopped"
-    | "local_only"
-    | "mesh_loopback"
-    | "discovery_unconfigured";
-  severity: "warning" | "error";
-  title: string;
-  summary: string;
-  action: string | null;
-  actionCommand: string | null;
+  /**
+   * Editing drafts for the runtime lists — comma-separated `harness/model`
+   * specs and one `id[:Label]=harness/model/effort` per line. `save` translates
+   * them into the API arrays; the server validates and answers 400 with the
+   * reason when a spec does not parse.
+   */
+  runtimeShortlistText: string;
+  runtimePresetsText: string;
 };
 
 export type MeshStatus = {
@@ -1096,226 +719,15 @@ export type MeshStatus = {
   warnings: string[];
 };
 
-export type WorkTimelineKind =
-  | "collaboration_event"
-  | "flight_started"
-  | "flight_completed"
-  | "message";
+export type WorkTimelineKind = WebWorkTimelineKind;
 
-export type WorkTimelineItem = {
-  id: string;
-  kind: WorkTimelineKind;
-  at: number;
-  actorId: string | null;
-  actorName: string | null;
-  title: string | null;
-  summary: string | null;
-  detailKind: string | null;
-  flightId: string | null;
-  messageId: string | null;
-  conversationId: string | null;
-};
+export type WorkTimelineItem = WebWorkTimelineItem;
 
-export type WorkInventoryMode =
-  | "isolated-git-worktree"
-  | "shared-git-repo"
-  | "trace-only"
-  | "explicit-artifacts";
-
-export type WorkInventorySource = "broker" | "git" | "trace" | "mixed";
-export type WorkInventoryConfidence = "high" | "medium" | "low";
-
-export type WorkMaterialKind =
-  | "plan"
-  | "spec"
-  | "doc"
-  | "code"
-  | "test"
-  | "config"
-  | "asset"
-  | "other";
-
-export type WorkMaterialStatus =
-  | "added"
-  | "modified"
-  | "deleted"
-  | "renamed"
-  | "untracked"
-  | "observed";
-
-export type WorkMaterialEvidence =
-  | "broker"
-  | "git-status"
-  | "git-diff"
-  | "trace-read"
-  | "trace-write"
-  | "trace-edit"
-  | "trace-command"
-  | "inferred-path";
-
-export type WorkInventoryAgentRef = {
-  id: string;
-  name: string | null;
-  role: "owner" | "next-move" | "runner" | "session" | "observed-helper";
-  harness: string | null;
-  cwd: string | null;
-  projectRoot: string | null;
-  sessionId: string | null;
-  source: "broker" | "run" | "session" | "observe-topology";
-};
-
-export type WorkInventorySessionRef = {
-  id: string;
-  conversationId: string | null;
-  agentId: string | null;
-  agentName: string | null;
-  harness: string | null;
-  cwd: string | null;
-  source: "conversation" | "run-trace" | "observe";
-};
-
-export type WorkMaterial = {
-  id: string;
-  kind: WorkMaterialKind;
-  path: string;
-  status: WorkMaterialStatus;
-  agentId: string | null;
-  sessionId: string | null;
-  worktreeRoot: string | null;
-  scopePath: string | null;
-  baseRef: string | null;
-  headRef: string | null;
-  diffStat: { additions: number; deletions: number } | null;
-  evidence: WorkMaterialEvidence[];
-  confidence: WorkInventoryConfidence;
-};
-
-export type WorkMaterialsInventory = {
-  workId: string;
-  generatedAt: number;
-  mode: WorkInventoryMode;
-  source: WorkInventorySource;
-  confidence: WorkInventoryConfidence;
-  agents: WorkInventoryAgentRef[];
-  sessions: WorkInventorySessionRef[];
-  materials: WorkMaterial[];
-  totals: {
-    materials: number;
-    plans: number;
-    specs: number;
-    docs: number;
-    code: number;
-    tests: number;
-    config: number;
-    assets: number;
-    agents: number;
-    sessions: number;
-  };
-  limitations: string[];
-};
-
-export type WorkMaterialContent = {
-  workId: string;
-  materialId: string;
-  path: string;
-  title: string;
-  uri: string;
-  mediaType: string;
-  content: string;
-  sizeBytes: number;
-  truncated: boolean;
-  generatedAt: number;
-};
-
-export type WorkDetail = WorkItem & {
-  createdAt: number;
-  updatedAt: number;
-  parentId: string | null;
-  parentTitle: string | null;
-  childWork: WorkItem[];
-  activeFlights: Flight[];
-  timeline: WorkTimelineItem[];
-  primaryInvocation: WorkInvocation | null;
-  allFlights: Flight[];
-  inventory?: WorkMaterialsInventory;
-};
+export type WorkDetail = WebWorkDetailResponse;
 
 /* ── Mesh Ops (`GET /api/mesh-ops`) ── */
 
 export type MeshOpsAttention = "interrupt" | "badge" | "silent";
-
-/** The item's most recent execution attempt — flights are activity, not the grain. */
-export type WebMeshOpsFlight = {
-  id: string;
-  state: string;
-  summary: string | null;
-  startedAt: number | null;
-  completedAt: number | null;
-};
-
-/**
- * Mesh Ops row — a work item projected across the mesh with its venue host
- * and latest flight. Nullability mirrors WorkItem/WorkDetail.
- */
-export type WebMeshOpsItem = {
-  id: string;
-  kind: "work" | "session";
-  title: string;
-  summary: string | null;
-  state: string;
-  acceptanceState: string;
-  priority: string | null;
-  labels: string[];
-  ownerId: string | null;
-  ownerName: string | null;
-  nextMoveOwnerId: string | null;
-  updatedAt: number;
-  createdAt: number;
-  hostNodeId: string | null;
-  hostLabel: string | null;
-  projectRoot: string | null;
-  latestFlight: WebMeshOpsFlight | null;
-  activeFlightCount: number;
-  currentPhase: string | null;
-  lastMeaningfulAt: number | null;
-  lastMeaningfulSummary: string | null;
-  attention: MeshOpsAttention;
-  /** Present when the item waits on someone/something (e.g. "Held by operator"). */
-  waitingOn?: { kind?: string; label: string } | null;
-  /** Session rows only: the observed runtime detail behind the row. */
-  session?: {
-    harness: string;
-    state: string;
-    live: boolean;
-    alias: string | null;
-    agentLabel: string;
-    cwd: string | null;
-    startedAt: number | null;
-    lastSeenAt: number;
-    endedAt: number | null;
-    /** Broker delivery machinery (ephemeral `session-*` agents), not a named agent. */
-    relay: boolean;
-  } | null;
-};
-
-/**
- * A mesh host (broker `nodes` row) with a runtime-session rollup, so the
- * board can show every known machine — including ones with no current work.
- */
-export type WebMeshOpsHost = {
-  nodeId: string;
-  /** Short display name (host_name first label, else the node name). */
-  label: string;
-  hostName: string | null;
-  brokerUrl: string | null;
-  tailnetName: string | null;
-  lastSeenAt: number | null;
-  registeredAt: number | null;
-  /** Sessions in the mesh-ops lookback window on this host. */
-  sessionCount: number;
-  liveSessionCount: number;
-  lastActivityAt: number | null;
-};
 
 export type MeshOpsResponse = {
   generatedAt: string;
@@ -1323,90 +735,15 @@ export type MeshOpsResponse = {
   hosts: WebMeshOpsHost[];
 };
 
-export type PlanDocumentSource =
-  | "claude"
-  | "codex"
-  | "openscout"
-  | "workspace"
-  | "unknown";
-
-export type PlanDocumentKind =
-  | "claude_plan"
-  | "codex_plan"
-  | "openscout_plan"
-  | "markdown_plan";
-
-export type PlanDocumentStatus =
-  | "draft"
-  | "active"
-  | "blocked"
-  | "completed"
-  | "archived"
-  | "unknown";
-
-export type PlanDocumentStepStatus =
-  | "pending"
-  | "in_progress"
-  | "completed"
-  | "blocked"
-  | "unknown";
-
-export type PlanDocumentStep = {
-  id: string;
-  order: number;
-  text: string;
-  status: PlanDocumentStepStatus;
-  rawMarker: string | null;
-};
-
-export type PlanDocument = {
-  id: string;
-  title: string;
-  summary: string | null;
-  source: PlanDocumentSource;
-  documentKind: PlanDocumentKind;
-  status: PlanDocumentStatus;
-  confidence: "native" | "explicit" | "inferred";
-  path: string;
-  workspacePath: string | null;
-  workspaceName: string | null;
-  agentId: string | null;
-  agentName: string | null;
-  tags: string[];
-  body: string;
-  rawText: string;
-  steps: PlanDocumentStep[];
-  createdAt: number;
-  updatedAt: number;
-  provenance: {
-    root: string;
-    rootKind: "workspace" | "home";
-    relativePath: string;
-  };
-};
-
-export type PlanDocumentsResponse = {
-  generatedAt: number;
-  roots: Array<{
-    path: string;
-    kind: "workspace" | "home";
-    label: string;
-  }>;
-  documents: PlanDocument[];
-  totals: {
-    documents: number;
-    claude: number;
-    codex: number;
-    openscout: number;
-    workspace: number;
-  };
-};
-
 export type DispatchFilter = "all" | "delivered" | "failed";
+
+/** Dispatch time window, relative to now. `all` means every loaded row. */
+export type DispatchWindow = "1h" | "today" | "24h" | "7d" | "all";
 export type MessagesSort = "recent" | "name" | "unread";
 export type SearchMode = "knowledge" | "indexer";
 export type ProjectSet = "live" | "ephemeral" | "archived";
-export type ProjectsIndexView = "agents" | "sessions";
+/** Unscoped: "agents" (default) is the activity feed; "projects" is the project list. */
+export type ProjectsIndexView = "agents" | "sessions" | "projects";
 export type ProjectStateFilter = "needs" | "live" | "idle";
 export type MachineScopedRoute = {
   machineId?: string;
@@ -1473,7 +810,16 @@ export type Route =
   | ({ view: "mesh" } & MachineScopedRoute)
   // Mesh Ops — flagged work-item triage over the mesh; itemId deep-links a row.
   | ({ view: "mesh-ops"; itemId?: string } & MachineScopedRoute)
-  | { view: "broker"; attemptId?: string; filter?: DispatchFilter }
+  | {
+      view: "broker";
+      attemptId?: string;
+      filter?: DispatchFilter;
+      /** Focused dispatch parties (node keys). View-only: never a connection change. */
+      focus?: string[];
+      /** Only dispatches between focused parties. */
+      between?: boolean;
+      window?: DispatchWindow;
+    }
   | {
       view: "code";
       root?: string;
@@ -1535,6 +881,7 @@ export type OpsMode = "advisor" | "mission" | "issues" | "agents" | "tail" | "at
 export type FollowPreferredView = "tail" | "session" | "chat" | "work";
 /** URL-addressable settings surface sections (SCO-082 Phase B). */
 export type SettingsSection =
+  | "assistants"
   | "pairing"
   | "agents"
   | "appearance"
@@ -1542,17 +889,13 @@ export type SettingsSection =
   | "comms"
   | "credentials"
   | "voice"
+  | "terminal"
   | "devices"
+  | "mesh"
+  | "system"
   | "about";
 
-export type FollowTarget = {
-  flightId: string | null;
-  invocationId: string | null;
-  conversationId: string | null;
-  workId: string | null;
-  sessionId: string | null;
-  targetAgentId: string | null;
-};
+export type FollowTarget = WebFollowTarget;
 
 /* ── Tail (Ops > Tail) types ── */
 
@@ -1643,21 +986,6 @@ export type TailDiscoverySnapshot = {
     unattributed: number;
     transcripts?: number;
   };
-};
-
-/* ── Broadcast (fleet ticker) types ── */
-
-export type BroadcastTier = "info" | "warn" | "error";
-
-export type Broadcast = {
-  id: string;
-  tier: BroadcastTier;
-  text: string;
-  agent?: string;
-  project?: string;
-  ts: number;
-  ruleId: string;
-  key: string;
 };
 
 /* ── Ops types (Plan view) ── */

@@ -83,6 +83,8 @@ export function synthesizeOrganicAgents(
       definitionId: `harness:${p.source}:${p.pid}`,
       name: p.source,
       handle: null,
+      authorityNodeId: null,
+      authorityNodeName: null,
       agentClass: "organic",
       harness: p.source,
       state: "working",

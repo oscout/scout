@@ -443,7 +443,12 @@ function normalizeRoute(raw: unknown): Route | null {
           || record.section === "comms"
           || record.section === "credentials"
           || record.section === "voice"
+          || record.section === "appearance"
+          || record.section === "terminal"
           || record.section === "devices"
+          || record.section === "mesh"
+          || record.section === "system"
+          || record.section === "about"
           ? { section: record.section }
           : {}),
         ...(typeof record.agentId === "string" ? { agentId: record.agentId } : {}),

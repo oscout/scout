@@ -13,9 +13,9 @@
  * difference.
  */
 
-const CHANNEL_QUERY_KEY = "channel";
-const SPACE_QUERY_KEY = "space";
-const MESSAGE_QUERY_KEY = "message";
+export const CHANNEL_QUERY_KEY = "channel";
+export const SPACE_QUERY_KEY = "space";
+export const MESSAGE_QUERY_KEY = "message";
 
 export interface ChatAddressState {
   /**

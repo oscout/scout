@@ -872,3 +872,14 @@ test("health does not report an empty history while coverage is pending", async 
     { state: "restoring", mutationsAdmitted: false, historyReady: false });
   expect((await service.readHealth()).counts?.messages).toBeNull();
 });
+
+test("collaboration history rejects partial or unstable cursors", async () => {
+  const service = createReadOnlyBrokerCoreService(createRuntimeRegistrySnapshot());
+  for (const query of [
+    { afterCreatedAt: NaN, afterId: "q", orderByCreatedAt: true },
+    { afterCreatedAt: 1, afterId: "q" },
+    { afterId: "q", orderByCreatedAt: true },
+    { afterCreatedAt: 1, afterId: " ", orderByCreatedAt: true },
+  ]) await expect(service.readCollaborationRecords!(query)).rejects.toThrow("creation-order cursor");
+  expect(await service.readCollaborationRecords!({ afterCreatedAt: 1, afterId: "q", orderByCreatedAt: true })).toEqual([]);
+});

@@ -27,6 +27,11 @@ mock.module("react/jsx-runtime", () => ReactJsxRuntime);
 mock.module("react/jsx-dev-runtime", () => ReactJsxDevRuntime);
 
 import type {
+  ChannelInvitePublicView,
+  ConversationDefinition,
+} from "@openscout/protocol";
+
+import type {
   ChatCapabilities,
   ChannelMemberReception,
   ChannelMemberView,
@@ -38,6 +43,7 @@ const { ChatTransportProvider } = await import("./chat-transport.tsx");
 const { createQueryChatAddress } = await import("./chat-address.ts");
 const { ChannelComposer } = await import("./ChannelComposer.tsx");
 const { InviteSheet } = await import("./InviteSheet.tsx");
+const { TeamPanel } = await import("./TeamPanel.tsx");
 
 const NOW = new Date(2026, 8, 16, 14, 0, 0, 0).getTime();
 
@@ -135,6 +141,27 @@ describe("invitations", () => {
       onInvitesChanged: () => {},
     });
 
+  test("hosted's agent tab explains the whole path in place", () => {
+    const channel = { id: "conv-1", kind: "channel", title: "general", visibility: "private", shareMode: "local", authorityNodeId: "node-1", participantIds: [] };
+    const hosted = underCapabilities(HOSTED_CHAT_CAPABILITIES, createElement(InviteSheet, {
+      channel, space: "work", viewerActorId: "actor-me", viewerName: "Alex",
+      onClose: () => {}, onInvitesChanged: () => {}, initialKind: "api",
+    }));
+    expect(hosted).toContain("Invite an agent");
+    expect(hosted).toContain('aria-label="How an agent joins"');
+    expect(hosted).toContain("Paste it into your agent’s chat.");
+    expect(hosted).toContain("joins #general, and shows up in Members");
+    expect(hosted).toContain("Create agent invitation");
+    expect(hosted).not.toContain("No install");
+    // Local Chat keeps the no-install wording beside its installed Agent kind.
+    const local = underCapabilities(LOCAL_CHAT_CAPABILITIES, createElement(InviteSheet, {
+      channel, space: "work", viewerActorId: "actor-me", viewerName: "Alex",
+      onClose: () => {}, onInvitesChanged: () => {}, initialKind: "api",
+    }));
+    expect(local).toContain("Invite an agent with nothing installed");
+    expect(local).not.toContain("How an agent joins");
+  });
+
   test("only the redeemable kinds are offered, and one kind needs no switch", () => {
     const { local, hosted } = both(sheet);
 
@@ -143,13 +170,14 @@ describe("invitations", () => {
     for (const kind of ["Teammate", "Agent", "No install"]) {
       expect(local).toContain(`</svg> ${kind}</button>`);
     }
-    // The hosted Worker's only redemption path mints an API participant, so the
-    // other two are not offered — and with one kind left there is no switch to
-    // draw at all, rather than a switch with a single dead position.
-    expect(hosted).not.toContain("chat-invite-switch");
-    expect(hosted).not.toContain("</svg> Teammate</button>");
-    expect(hosted).not.toContain("</svg> Agent</button>");
-    // It is still the same sheet, opened on the one kind this server has.
+    // Hosted supports signed-in people and API agents, but not bound session agents.
+    expect(hosted).toContain("chat-invite-switch");
+    expect(hosted).toContain("</svg> Teammate</button>");
+    // The HTTP invitation is hosted's only agent path, so it is labelled Agent.
+    expect(hosted).toContain("</svg> Agent</button>");
+    expect(hosted).not.toContain("</svg> No install</button>");
+    expect(hosted).toContain("One person joins using their signed-in account.");
+    expect(hosted).not.toContain("They choose their own name");
     expect(hosted).toContain("chat-sheet");
     expect(hosted).toContain('aria-label="Invite to #general"');
 
@@ -157,7 +185,84 @@ describe("invitations", () => {
     expect(local).toContain("Members");
     // Hosted keeps no public invitation record, so it says the link is shown
     // once rather than promising a list that does not exist.
-    expect(hosted).not.toContain("Manage or revoke invitations in Members.");
+    expect(hosted).toContain("Members");
+  });
+});
+
+describe("the team panel", () => {
+  const teamChannel: ConversationDefinition = {
+    id: "conv-1",
+    kind: "channel",
+    title: "general",
+    visibility: "private",
+    shareMode: "local",
+    authorityNodeId: "node-1",
+    participantIds: [],
+  };
+
+  const activeInvite: ChannelInvitePublicView = {
+    id: "inv-1",
+    channelId: "conv-1",
+    scope: "channel_participation",
+    state: "active",
+    createdByActorId: "actor-host",
+    tokenHint: "vx3k",
+    createdAt: NOW - 3_600_000,
+    expiresAt: NOW + 6 * 86_400_000,
+    maxRedemptions: null,
+    redemptionCount: 0,
+    route: {
+      authorityNodeId: "node-1",
+      host: "arts-mini.tail1234.ts.net",
+      baseUrl: "https://arts-mini.tail1234.ts.net:43120",
+      reachability: "mesh",
+    },
+    redemptions: [],
+  };
+
+  const panel = () =>
+    createElement(TeamPanel, {
+      spaceTitle: "Home",
+      team: {
+        people: [],
+        unownedAgents: [],
+        invites: [{ channel: teamChannel, invite: activeInvite }],
+        channelErrors: [],
+      },
+      loading: false,
+      nowMs: NOW,
+      viewerActorId: "actor-me",
+      viewerIsOperator: true,
+      revokingInviteId: null,
+      onOpenMember: () => {},
+      onRevokeInvite: () => {},
+      onInvite: () => {},
+      inviteDisabled: false,
+      onClose: () => {},
+      overlay: false,
+    });
+
+  test("an unlistable invitation read is stated, not emptied", () => {
+    const { local, hosted } = both(panel);
+
+    // The hosted Worker never enumerates invitations, so the panel says the
+    // list is absent — a rendered-but-empty list would claim "none".
+    expect(hosted).not.toContain("does not list outstanding invitations");
+    expect(hosted).toContain("chat-invite-row");
+
+    // Local lists them: the outstanding invitation is a real row, tagged with
+    // the channel it admits to, and the operator may revoke it.
+    expect(local).toContain("chat-invite-row");
+    expect(local).toContain("#general");
+    expect(local).toContain(">Revoke</button>");
+    // The panel itself is the same component either way.
+    expect(hosted).toContain('aria-label="Team"');
+  });
+
+  test("both backends support member removal", () => {
+    const { local, hosted } = both(panel);
+    expect(local).not.toContain("does not support removing members");
+    expect(hosted).not.toContain("does not support removing members");
   });
 });
 
@@ -170,8 +275,6 @@ describe("the declaration itself", () => {
     expect(differences.sort()).toEqual([
       "asks",
       "inviteKinds",
-      "inviteList",
-      "inviteRevoke",
       "liveStream",
       "memberDetail",
       "namedFirstChannel",

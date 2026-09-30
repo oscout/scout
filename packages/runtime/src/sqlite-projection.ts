@@ -14,6 +14,7 @@ import type {
 } from "@openscout/protocol";
 
 import { randomUUID } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
 import { dirname, join } from "node:path";
 
 import {
@@ -24,11 +25,12 @@ import {
   type BrokerJournalReplayOptions,
   type BrokerJournalReplayReport,
 } from "./broker-journal.js";
-import { SQLiteControlPlaneStore, type ActivityItem } from "./sqlite-store.js";
+import { canonicalRecord, SQLiteControlPlaneStore, type ActivityItem, type CanonicalRecordContext, type PersistedRotationRecordKind } from "./sqlite-store.js";
 import {
   ConversationProjectionStore,
   type ConversationProjectionEventPage,
 } from "./conversation-projection-store.js";
+import { asyncMessageRecordView } from "./broker-message-records.js";
 import type { ObservedSessionProjectionUpdate } from "./observed-session-reducer.js";
 import {
   ConversationFeedArtifactPublisher,
@@ -39,6 +41,8 @@ import {
   NATIVE_READ_THREAD_ARTIFACT_DIRECTORY,
 } from "./conversation-thread-artifact.js";
 import type { ControlPlaneSqliteTransactionalDatabase } from "./sqlite-adapter.js";
+import type { BrokerPersistenceVerification, BrokerProjectionHealth } from "./broker-durable-store.js";
+import { emptyHistoryRotationPlan, type HistoryRotationPlan } from "./history-rotation.js";
 
 type ActivityQuery = Parameters<SQLiteControlPlaneStore["listActivityItems"]>[0];
 
@@ -209,6 +213,8 @@ function collectReplayParents(scan: ReplayParentScan, entry: BrokerJournalEntry)
       addRef(scan.referencedNodes, entry.endpoint.nodeId);
       break;
     case "agent.endpoint.delete":
+    case "agent.delete":
+    case "actor.delete":
     case "invocation.dispatch_job.record":
     case "journal.replay_barrier":
     case "control.event.record":
@@ -398,6 +404,12 @@ function applyJournalEntryToStore(
     case "agent.endpoint.delete":
       store.deleteEndpoint(entry.endpointId);
       return [];
+    case "agent.delete":
+      store.deleteAgent(entry.agentId);
+      return [];
+    case "actor.delete":
+      store.deleteActor(entry.actorId);
+      return [];
     case "conversation.upsert":
       store.upsertConversation(entry.conversation);
       return [];
@@ -463,6 +475,9 @@ function applyJournalEntryToStore(
       return [];
     case "scout.dispatch.record":
       store.recordScoutDispatch(entry.dispatch);
+      return [];
+    case "history.rotate":
+      // Rotation prunes the hot set only — SQLite keeps full history.
       return [];
     default: {
       const exhaustive: never = entry;
@@ -536,9 +551,18 @@ function isFatalStoreError(error: unknown): boolean {
 export class RecoverableSQLiteProjection {
   private readonly skipLedger = new ProjectionSkipLedger();
 
+  /**
+   * Live-path write batches that exhausted busy retries or hit a fatal store
+   * error. Reset when a full journal replay proves every write through its
+   * barrier durable again; malformed-entry skips stay counted in the ledger
+   * permanently because a reskipped row never lands.
+   */
+  private applyFailures = 0;
+
   private readonly reportSkippedEntry = (entry: BrokerJournalEntry, error: unknown): void => {
+    const reason = formatError(error).slice(0, 256);
     if (this.skipLedger.record(entry.kind, error)) {
-      console.warn(`[broker] sqlite projection skipped malformed ${entry.kind} entry: ${formatError(error).slice(0, 256)}`);
+      console.warn(`[broker] sqlite projection skipped malformed ${entry.kind} entry: ${reason}`);
     }
   };
 
@@ -708,7 +732,9 @@ export class RecoverableSQLiteProjection {
       const replay = await this.replayJournalInBatches(batch => {
         store.runReplayTransaction(() => {
           const entries = [...batch];
-          applyJournalEntriesToStore(store, entries, this.reportSkippedEntry);
+          applyJournalEntriesToStore(store, entries, (entry, error) => {
+            this.reportSkippedEntry(entry, error);
+          });
           this.applyConversationProjectionBatch(store, entries);
         });
       }, boundary, { afterBarrier });
@@ -739,15 +765,19 @@ export class RecoverableSQLiteProjection {
 
       try {
         await this.withBusyRetry(() => {
-          applyJournalEntriesToStore(store, entries, this.reportSkippedEntry);
+          applyJournalEntriesToStore(store, entries, (entry, error) => {
+            this.reportSkippedEntry(entry, error);
+          });
           this.applyConversationProjectionBatch(store, entries);
         });
       } catch (error) {
         if (isTransientStoreBusyError(error)) {
+          this.applyFailures += 1;
           await this.rebuildAfterExhaustedBusy(error);
           return;
         }
         if (isFatalStoreError(error)) {
+          this.applyFailures += 1;
           this.invalidateStore(error);
         } else {
           this.reportSkippedEntry({ kind: "unknown" } as never, error);
@@ -851,16 +881,20 @@ export class RecoverableSQLiteProjection {
 
       try {
         return await this.withBusyRetry(() => {
-          const threadEvents = applyJournalEntriesToStore(store, entries, this.reportSkippedEntry);
+          const threadEvents = applyJournalEntriesToStore(store, entries, (entry, error) => {
+            this.reportSkippedEntry(entry, error);
+          });
           this.applyConversationProjectionBatch(store, entries);
           return threadEvents;
         });
       } catch (error) {
         if (isTransientStoreBusyError(error)) {
+          this.applyFailures += 1;
           await this.rebuildAfterExhaustedBusy(error);
           return [];
         }
         if (isFatalStoreError(error)) {
+          this.applyFailures += 1;
           this.invalidateStore(error);
         } else {
           this.reportSkippedEntry({ kind: "unknown" } as never, error);
@@ -868,6 +902,135 @@ export class RecoverableSQLiteProjection {
         return [];
       }
     });
+  }
+
+  /**
+   * Health probe for the durable store's persistence boundary: a COARSE
+   * gate only — live-path apply failures since the last proven replay, and
+   * a reason whenever the projection cannot durably accept writes. It
+   * deliberately carries no per-record coverage claim and does not count
+   * skip-ledger entries: a permanently unprojectable record must not veto
+   * rotation of everything else — `verifyPersisted` keeps that record
+   * journaled while the rest still evict.
+   */
+  health(): BrokerProjectionHealth {
+    return {
+      failures: this.applyFailures,
+      unavailable: this.options.disabled
+        ? "sqlite projection disabled"
+        : this.closed
+          ? "sqlite projection closed"
+          : !this.startupRecoveryInitiated
+            ? "sqlite projection startup recovery not initiated"
+            : this.lastUnavailableReason,
+    };
+  }
+
+  /**
+   * Positive per-record coverage proof for a rotation plan. Runs inside the
+   * durable writer (which has already drained the projection queue), so a
+   * row observed here is durably committed before the caller journals the
+   * rotation marker that dooms the journal line. Every id the plan names is
+   * answered individually — `present` only when the stored row reads back
+   * EQUAL to the journaled record through the same row→record mapper
+   * `loadSnapshot` uses (canonicalized identically on both sides), so a
+   * missing row or stale contents — any field, not just existence or a
+   * flight's state pair — reports the id `missing` and it stays journaled
+   * for a later rotation.
+   *
+   * Fails closed: an unavailable store or any lookup error returns a fresh
+   * empty `present` with every planned id `missing` — `present` and
+   * `missing` always partition the plan, never overlap.
+   */
+  async verifyPersisted(plan: HistoryRotationPlan): Promise<BrokerPersistenceVerification> {
+    const allMissing = (): BrokerPersistenceVerification => ({
+      present: emptyHistoryRotationPlan(),
+      missing: {
+        messageIds: new Set(plan.messageIds),
+        invocationIds: new Set(plan.invocationIds),
+        flightIds: new Set(plan.flightIds),
+        deliveryIds: new Set(plan.deliveryIds),
+        deliveryAttemptIds: new Set(plan.deliveryAttemptIds),
+        collaborationEventIds: new Set(plan.collaborationEventIds),
+      },
+    });
+    if (this.options.disabled || this.closed) {
+      return allMissing();
+    }
+    await this.flush();
+    const store = await this.ensureStore();
+    if (!store) {
+      return allMissing();
+    }
+    try {
+      const present = emptyHistoryRotationPlan();
+      const missing = emptyHistoryRotationPlan();
+      const snapshot = this.journal.snapshot();
+      const matches = (
+        kind: PersistedRotationRecordKind,
+        stored: unknown,
+        expected: unknown,
+        expectedContext?: CanonicalRecordContext,
+      ): boolean => (
+        stored !== undefined
+        && expected !== undefined
+        && isDeepStrictEqual(
+          canonicalRecord(kind, stored as Record<string, unknown>),
+          canonicalRecord(kind, expected as Record<string, unknown>, expectedContext),
+        )
+      );
+
+      const storedMessages = store.readMessages([...plan.messageIds]);
+      for (const id of plan.messageIds) {
+        const expected = asyncMessageRecordView(snapshot.messages)
+          ? undefined
+          : snapshot.messages[id];
+        (matches("message", storedMessages.get(id), expected)
+          ? present : missing).messageIds.add(id);
+      }
+      const storedInvocations = store.readInvocations([...plan.invocationIds]);
+      for (const id of plan.invocationIds) {
+        (matches("invocation", storedInvocations.get(id), snapshot.invocations[id])
+          ? present : missing).invocationIds.add(id);
+      }
+      const storedFlights = store.readFlights([...plan.flightIds]);
+      for (const id of plan.flightIds) {
+        const expected = snapshot.flights[id];
+        // recordFlight normalizes a divergent identity to the parent
+        // invocation's — pass the journaled parent so the expected record is
+        // canonicalized through the same rule (stored rows carry the
+        // normalized identity already).
+        (matches("flight", storedFlights.get(id), expected, {
+          flightInvocation: expected === undefined
+            ? undefined
+            : snapshot.invocations[expected.invocationId],
+        })
+          ? present : missing).flightIds.add(id);
+      }
+      const storedDeliveries = store.readDeliveries([...plan.deliveryIds]);
+      for (const id of plan.deliveryIds) {
+        (matches("delivery", storedDeliveries.get(id), this.journal.getDelivery(id))
+          ? present : missing).deliveryIds.add(id);
+      }
+      const storedAttempts = store.readDeliveryAttempts([...plan.deliveryAttemptIds]);
+      const journaledAttempts = this.journal.deliveryAttemptsById();
+      for (const id of plan.deliveryAttemptIds) {
+        (matches("deliveryAttempt", storedAttempts.get(id), journaledAttempts.get(id))
+          ? present : missing).deliveryAttemptIds.add(id);
+      }
+      const storedEvents = store.readCollaborationEvents([...plan.collaborationEventIds]);
+      const journaledEvents = this.journal.collaborationEventsById();
+      for (const id of plan.collaborationEventIds) {
+        (matches("collaborationEvent", storedEvents.get(id), journaledEvents.get(id))
+          ? present : missing).collaborationEventIds.add(id);
+      }
+      return { present, missing };
+    } catch (error) {
+      if (!isTransientStoreBusyError(error)) {
+        this.invalidateStore(error);
+      }
+      return allMissing();
+    }
   }
 
   /**
@@ -1333,13 +1496,17 @@ export class RecoverableSQLiteProjection {
         }
         this.hydration.phase = "conversations";
         conversationProjection.reconcileAll();
-        // This autocommit is deliberately last among durable projection writes.
+        // This commit is deliberately last among durable projection writes.
         // A crash before it leaves the old checkpoint in place, making the next
         // boot idempotently replay the suffix again. A committed new checkpoint
         // therefore proves every journal fact through its barrier committed.
         if (replayBoundary.barrier) {
           writeReplayCheckpoint(store, replayBoundary.barrier);
         }
+        // The replay just proved every journaled write through the barrier
+        // durable, so transient live-path failures before it are resolved.
+        // Malformed-entry skips stay in the ledger — they never land.
+        this.applyFailures = 0;
         this.publishConversationFeed(conversationProjection);
         this.publishConversationThreads(store, conversationProjection);
         return store;

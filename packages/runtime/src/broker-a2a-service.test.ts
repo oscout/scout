@@ -249,6 +249,16 @@ describe("BrokerA2AService", () => {
     }));
   });
 
+  test("does not mark externally running or waiting work cancelled without interrupting it", async () => {
+    for (const state of ["waking", "running", "waiting"] as const) {
+      const { runtime, service, recordedFlights } = createService();
+      await runtime.commitInvocation({ id: "invocation-1", requesterId: "operator", requesterNodeId: "node-1", targetAgentId: "agent-1", action: "consult", task: "work", ensureAwake: true, stream: false, createdAt: 100 }, testFlight({ invocationId: "invocation-1", state }));
+      const response = await service.handleJsonRpc({ jsonrpc: "2.0", id: "cancel", method: "CancelTask", params: { id: "flight-1" } }, "http://broker.test");
+      expect(response.error?.code).toBe(-32004);
+      expect(recordedFlights).toHaveLength(0);
+    }
+  });
+
   test("cancels queued tasks and rejects unknown A2A methods", async () => {
     const { runtime, service, recordedFlights } = createService();
     const invocation: InvocationRequest = {

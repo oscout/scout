@@ -114,12 +114,18 @@ describe("createScoutMcpServer", () => {
       "sessions_search",
       "herdr_workspaces",
       "attachments_read",
+      "sessions_attach",
+      "sessions_get",
+      "sessions_poll",
+      "sessions_ack",
+      "sessions_reply",
       "aliases_set",
       "aliases_list",
       "aliases_resolve",
       "aliases_repoint",
       "aliases_unset",
       "whoami",
+      "feedback_send",
       "messages_inbox",
       "messages_channel",
       "broker_feed",
@@ -1079,6 +1085,56 @@ describe("createScoutMcpServer", () => {
     ).toBe("hudson.main");
   });
 
+  test("feedback_send files a note tagged as the mcp client with its sender", async () => {
+    let received: Record<string, any> | undefined;
+    const { client } = await connectTestServer({
+      resolveSenderId: async () => "hudson.main",
+      submitFeedback: async (feedback) => {
+        received = feedback as Record<string, any>;
+        return { id: "report-1", status: "saved", localPath: "/tmp/report-1.json" };
+      },
+    });
+
+    const result = await client.callTool({
+      name: "feedback_send",
+      arguments: { note: "  ask swallowed my flags  ", currentDirectory: "/worktree/app", localOnly: true },
+    });
+
+    expect(result.structuredContent).toEqual({
+      id: "report-1",
+      status: "saved",
+      localPath: "/tmp/report-1.json",
+    });
+    expect(received?.message).toBe("ask swallowed my flags");
+    expect(received?.client).toBe("mcp");
+    expect(received?.diagnostics).toBe(false);
+    expect(received?.localOnly).toBe(true);
+    expect(received?.reporter?.agentId).toBe("hudson.main");
+    expect(received?.reporter?.project).toBe("app");
+  });
+
+  test("feedback_send still files when the sender cannot be resolved", async () => {
+    let received: Record<string, any> | undefined;
+    const { client } = await connectTestServer({
+      resolveSenderId: async () => {
+        throw new Error("broker unreachable");
+      },
+      submitFeedback: async (feedback) => {
+        received = feedback as Record<string, any>;
+        return { id: "report-2", status: "uploaded", localPath: "/tmp/report-2.json" };
+      },
+    });
+
+    const result = await client.callTool({
+      name: "feedback_send",
+      arguments: { note: "broker down again" },
+    });
+
+    expect(result.isError).toBeFalsy();
+    expect(received?.message).toBe("broker down again");
+    expect(received?.reporter?.agentId).toBeUndefined();
+  });
+
   test("ask wraps the ScoutAskHandler primitive", async () => {
     let receivedAsk: ScoutAskCommand | undefined;
     const { client } = await connectTestServer({
@@ -1119,7 +1175,7 @@ describe("createScoutMcpServer", () => {
       workspace: "new_worktree",
       session: "new",
       replyToSessionId: "019ddb1b-test-thread",
-      replyMode: "none",
+      replyMode: "notify",
       currentDirectory: "/tmp/openscout-test",
       source: "scout-mcp",
       aliasScope: undefined,
@@ -1128,6 +1184,10 @@ describe("createScoutMcpServer", () => {
       ok: true,
       state: "queued",
       delivery: "none",
+      notification: {
+        method: "notifications/scout/reply",
+        status: "not_scheduled",
+      },
       ids: {
         targetAgentId: "talkie.main",
         invocationId: "inv-1",
@@ -1136,7 +1196,7 @@ describe("createScoutMcpServer", () => {
     });
     const content = result.content as Array<{ type: string; text: string }> | undefined;
     expect(content?.[0]?.text).toBe(
-      "Ask queued to talkie.main; flight flt-1.",
+      "Ask queued to talkie.main; flight flt-1. MCP notification was not scheduled; use invocations_wait with flightId=flt-1.",
     );
   });
 
@@ -1171,7 +1231,7 @@ describe("createScoutMcpServer", () => {
       projectPath: "/tmp/openscout-test/talkie",
       body: "How did you handle auth?",
       replyToSessionId: "019ddb1b-test-thread",
-      replyMode: "none",
+      replyMode: "notify",
       currentDirectory: "/tmp/openscout-test",
       source: "scout-mcp",
     });
@@ -1280,6 +1340,110 @@ describe("createScoutMcpServer", () => {
     expect(receivedWaitOptions).toMatchObject({ invocationId: "inv-1", signal: expect.any(AbortSignal) });
   });
 
+  test("ask without replyMode defaults to notify and schedules the reply notification", async () => {
+    let receivedAsk: ScoutAskCommand | undefined;
+    const { client } = await connectTestServer({
+      resolveSenderId: async () => "operator.main",
+      resolveBrokerUrl: () => "http://broker.test",
+      scoutAskHandler: async (input) => {
+        receivedAsk = input;
+        return {
+          ok: true,
+          state: "queued",
+          ids: {
+            targetAgentId: "talkie.main",
+            conversationId: "dm.operator.talkie",
+            messageId: "msg-1",
+            invocationId: "inv-1",
+            flightId: "flight-1",
+          },
+        };
+      },
+      getFlight: async () => ({
+        id: "flight-1",
+        invocationId: "inv-1",
+        requesterId: "operator.main",
+        targetAgentId: "talkie.main",
+        state: "running",
+      }),
+      waitForFlight: async () => ({
+        id: "flight-1",
+        invocationId: "inv-1",
+        requesterId: "operator.main",
+        targetAgentId: "talkie.main",
+        state: "completed",
+        output: "talkie replied",
+      }),
+    }, {
+      OPENSCOUT_MCP_ENABLE_NOTIFICATIONS: "1",
+    });
+
+    const notificationPromise = new Promise<{ params: { status: string; flightId: string } }>((resolve) => {
+      client.setNotificationHandler(
+        z.object({
+          method: z.literal("notifications/scout/reply"),
+          params: z
+            .object({ status: z.string(), flightId: z.string() })
+            .catchall(z.unknown()),
+        }),
+        (notification) => resolve(notification),
+      );
+    });
+
+    const result = await client.callTool({
+      name: "ask",
+      arguments: {
+        to: "talkie",
+        body: "Review this.",
+      },
+    });
+
+    expect(receivedAsk?.replyMode).toBe("notify");
+    expect(result.structuredContent).toMatchObject({
+      ok: true,
+      state: "queued",
+      delivery: "mcp_notification",
+      notification: {
+        method: "notifications/scout/reply",
+        status: "scheduled",
+      },
+      ids: {
+        targetAgentId: "talkie.main",
+        conversationId: "dm.operator.talkie",
+        flightId: "flight-1",
+      },
+    });
+
+    const notification = await notificationPromise;
+    expect(notification.params.status).toBe("completed");
+    expect(notification.params.flightId).toBe("flight-1");
+  });
+
+  test("ask keeps explicit replyMode none as an ids-only opt-out", async () => {
+    let receivedAsk: ScoutAskCommand | undefined;
+    const { client } = await connectTestServer({
+      resolveSenderId: async () => "operator.main",
+      scoutAskHandler: async (input) => {
+        receivedAsk = input;
+        return {
+          ok: true,
+          state: "queued",
+          ids: { targetAgentId: "talkie.main", invocationId: "inv-1", flightId: "flight-1" },
+        };
+      },
+    }, {
+      OPENSCOUT_MCP_ENABLE_NOTIFICATIONS: "1",
+    });
+
+    const result = await client.callTool({
+      name: "ask",
+      arguments: { to: "talkie", body: "Review this.", replyMode: "none" },
+    });
+
+    expect(receivedAsk?.replyMode).toBe("none");
+    expect(result.structuredContent).toMatchObject({ ok: true, delivery: "none" });
+  });
+
   test("ask does not schedule MCP reply notifications by default", async () => {
     const { client } = await connectTestServer({
       resolveSenderId: async () => "operator.main",
@@ -1324,6 +1488,39 @@ describe("createScoutMcpServer", () => {
       ids: {
         targetAgentId: "talkie.main",
         flightId: "flight-1",
+      },
+    });
+  });
+
+  test("ask surfaces a broker preflight failure as preflight_failed", async () => {
+    const { client } = await connectTestServer({
+      resolveSenderId: async () => "operator.main",
+      resolveBrokerUrl: () => "http://broker.test",
+      scoutAskHandler: async () => ({
+        ok: false,
+        state: "failed",
+        ids: {},
+        error: {
+          code: "preflight_failed",
+          message: "broker preflight failed: /v1/snapshot read failed (500); the broker is up — the request is safe to retry",
+        },
+      }),
+    });
+
+    const result = await client.callTool({
+      name: "ask",
+      arguments: {
+        to: "talkie",
+        body: "Review this.",
+      },
+    });
+
+    expect(result.structuredContent).toMatchObject({
+      ok: false,
+      state: "failed",
+      error: {
+        code: "preflight_failed",
+        message: "broker preflight failed: /v1/snapshot read failed (500); the broker is up — the request is safe to retry",
       },
     });
   });
@@ -3294,4 +3491,169 @@ test("disconnect cancels an unfinished MCP notification wait", async () => {
   await client.close();
   expect(waitSignal?.aborted).toBe(true);
   expect(cancelled).toBe(true);
+});
+
+describe("messages_send interaction", () => {
+  function sendDeps(calls: {
+    sendMessage: Array<Record<string, unknown>>;
+    sendMessageToAgentIds: Array<Record<string, unknown>>;
+    askQuestion: Array<Record<string, unknown>>;
+    askAgentById: Array<Record<string, unknown>>;
+  }): Parameters<typeof createScoutMcpServer>[0]["dependencies"] {
+    const flight = {
+      id: "flt-1",
+      invocationId: "inv-1",
+      requesterId: "operator",
+      targetAgentId: "hudson.main",
+      state: "queued" as const,
+    };
+    return {
+      resolveSenderId: async () => "operator",
+      resolveBrokerUrl: () => "http://broker.test",
+      searchAgents: async () => [],
+      resolveAgent: async () => ({ kind: "unresolved", candidate: null, candidates: [] }),
+      sendMessage: async (input) => {
+        calls.sendMessage.push(input as Record<string, unknown>);
+        return { usedBroker: true, invokedTargets: ["hudson.main"], unresolvedTargets: [], conversationId: "dm.hudson", messageId: "msg-1" };
+      },
+      sendMessageToAgentIds: async (input) => {
+        calls.sendMessageToAgentIds.push(input as Record<string, unknown>);
+        return { usedBroker: true, invokedTargetIds: ["hudson.main"], unresolvedTargetIds: [], conversationId: "dm.hudson", messageId: "msg-1" };
+      },
+      askQuestion: async (input) => {
+        calls.askQuestion.push(input as Record<string, unknown>);
+        return { usedBroker: true, flight, conversationId: "dm.hudson", messageId: "msg-2" };
+      },
+      askAgentById: async (input) => {
+        calls.askAgentById.push(input as Record<string, unknown>);
+        return { usedBroker: true, flight, conversationId: "dm.hudson", messageId: "msg-2" };
+      },
+      updateWorkItem: async () => {
+        throw new Error("not used");
+      },
+      waitForFlight: async () => {
+        throw new Error("not used");
+      },
+    };
+  }
+
+  function emptyCalls() {
+    return { sendMessage: [], sendMessageToAgentIds: [], askQuestion: [], askAgentById: [] } as {
+      sendMessage: Array<Record<string, unknown>>;
+      sendMessageToAgentIds: Array<Record<string, unknown>>;
+      askQuestion: Array<Record<string, unknown>>;
+      askAgentById: Array<Record<string, unknown>>;
+    };
+  }
+
+  test("a directed send stays message-only by default", async () => {
+    const calls = emptyCalls();
+    const { client } = await connectTestServer(sendDeps(calls));
+    const result = await client.callTool({
+      name: "messages_send",
+      arguments: { body: "branch pushed", targetAgentId: "hudson.main" },
+    });
+    expect(result.isError).not.toBe(true);
+    expect(calls.askAgentById).toHaveLength(0);
+    expect(calls.sendMessageToAgentIds).toHaveLength(1);
+    expect((result.structuredContent as { interaction?: string }).interaction).toBe("message");
+  });
+
+  test("interaction='work' with a targetAgentId is tracked work on the ask lifecycle", async () => {
+    const calls = emptyCalls();
+    const { client } = await connectTestServer(sendDeps(calls));
+    const result = await client.callTool({
+      name: "messages_send",
+      arguments: { body: "run the sweep and report back", targetAgentId: "hudson.main", interaction: "work" },
+    });
+    expect(result.isError).not.toBe(true);
+    expect(calls.sendMessageToAgentIds).toHaveLength(0);
+    expect(calls.askAgentById).toHaveLength(1);
+    expect(calls.askAgentById[0]).toMatchObject({
+      targetAgentId: "hudson.main",
+      replyMode: "notify",
+      source: "scout-mcp-send",
+    });
+    const structured = result.structuredContent as Record<string, unknown>;
+    expect(structured).toMatchObject({
+      interaction: "work",
+      flightId: "flt-1",
+      invocationId: "inv-1",
+      replyMode: "notify",
+      invokedTargetIds: ["hudson.main"],
+      notification: { method: "notifications/scout/reply", status: "not_scheduled" },
+    });
+    const content = result.content as Array<{ type: string; text: string }>;
+    expect(content[0]?.text).toContain("Tracked send to hudson.main");
+  });
+
+  test("interaction='work' with a targetLabel and replyMode='none' suppresses the callback", async () => {
+    const calls = emptyCalls();
+    const { client } = await connectTestServer(sendDeps(calls));
+    const result = await client.callTool({
+      name: "messages_send",
+      arguments: { body: "nightly sweep", targetLabel: "hudson", interaction: "work", replyMode: "none" },
+    });
+    expect(result.isError).not.toBe(true);
+    expect(calls.sendMessage).toHaveLength(0);
+    expect(calls.askQuestion).toHaveLength(1);
+    expect(calls.askQuestion[0]).toMatchObject({ targetLabel: "hudson", replyMode: "none" });
+    expect((result.structuredContent as Record<string, unknown>).notification).toBeNull();
+    const content = result.content as Array<{ type: string; text: string }>;
+    expect(content[0]?.text).toContain("Completion notifications suppressed");
+  });
+
+  test("interaction='work' fails closed on message-only routes", async () => {
+    const calls = emptyCalls();
+    const { client } = await connectTestServer(sendDeps(calls));
+    for (const args of [
+      { body: "status", targetLabel: "hudson", channel: "triage" },
+      { body: "status", targetAgentId: "hudson.main", mentionAgentIds: ["vox.main"] },
+      { body: "[ask:flt-9] the answer", targetAgentId: "hudson.main" },
+      { body: "done", targetLabel: "ref:7f3a9c21" },
+      { body: "@hudson build passed" },
+    ]) {
+      const result = await client.callTool({
+        name: "messages_send",
+        arguments: { ...args, interaction: "work" },
+      });
+      expect(result.isError).toBe(true);
+      const content = result.content as Array<{ type: string; text: string }>;
+      expect(content[0]?.text).toContain("needs exactly one directed target");
+    }
+    expect(calls.askAgentById).toHaveLength(0);
+    expect(calls.askQuestion).toHaveLength(0);
+    expect(calls.sendMessage).toHaveLength(0);
+    expect(calls.sendMessageToAgentIds).toHaveLength(0);
+  });
+
+  test("interaction='work' rejects conflicting targetAgentId and targetLabel", async () => {
+    const calls = emptyCalls();
+    const { client } = await connectTestServer(sendDeps(calls));
+    const result = await client.callTool({
+      name: "messages_send",
+      arguments: {
+        body: "completed result",
+        targetAgentId: "hudson.main",
+        targetLabel: "ref:7f3a9c21",
+        interaction: "work",
+      },
+    });
+    expect(result.isError).toBe(true);
+    const content = result.content as Array<{ type: string; text: string }>;
+    expect(content[0]?.text).toContain("exactly one routing field");
+    expect(calls.askAgentById).toHaveLength(0);
+    expect(calls.askQuestion).toHaveLength(0);
+  });
+
+  test("replyMode without interaction='work' fails closed", async () => {
+    const calls = emptyCalls();
+    const { client } = await connectTestServer(sendDeps(calls));
+    const result = await client.callTool({
+      name: "messages_send",
+      arguments: { body: "fyi", targetAgentId: "hudson.main", replyMode: "none" },
+    });
+    expect(result.isError).toBe(true);
+    expect(calls.sendMessageToAgentIds).toHaveLength(0);
+  });
 });

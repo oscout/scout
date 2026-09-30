@@ -9,6 +9,8 @@ function agent(overrides: Partial<Agent>): Agent {
     definitionId: "agent",
     name: "Agent",
     handle: null,
+    authorityNodeId: null,
+    authorityNodeName: null,
     agentClass: "general",
     harness: "codex",
     state: "working",

@@ -11,7 +11,7 @@ describe("runtime catalog", () => {
     const parsed = parseScoutRuntimeCatalog(SCOUT_RUNTIME_CATALOG);
     expect(parsed.ok).toBe(true);
     if (!parsed.ok) return;
-    expect(parsed.catalog.revision).toBe("2026-09-14.1");
+    expect(parsed.catalog.revision).toBe("2026-09-24.1");
     expect(parsed.catalog.harnesses.find((entry) => entry.id === "codex")?.models[0])
       .toEqual(expect.objectContaining({
         id: "gpt-6-astra",
@@ -19,8 +19,13 @@ describe("runtime catalog", () => {
         default: true,
         contextWindowTokens: 1_050_000,
       }));
-    expect(parsed.catalog.harnesses.find((entry) => entry.id === "claude")?.models)
+    const claude = parsed.catalog.harnesses.find((entry) => entry.id === "claude");
+    expect(claude?.models)
       .toContainEqual(expect.objectContaining({ id: "claude-fable-5", label: "Fable 5" }));
+    // Picker copy lives in the catalog, not in client code.
+    expect(claude?.presentation).toEqual({ short: "Claude", monogram: "✳" });
+    expect(claude?.models.find((model) => model.id === "claude-opus-5")?.presentation)
+      .toEqual({ detail: "Deepest" });
     expect(parsed.catalog.harnesses.find((entry) => entry.id === "grok")?.models[0]?.id)
       .toBe("grok-4.6");
     expect(parsed.catalog.harnesses.find((entry) => entry.id === "grok")?.models[0]?.contextWindowTokens)

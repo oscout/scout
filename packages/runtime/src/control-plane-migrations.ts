@@ -1,3 +1,4 @@
+import { GUEST_GRANTS_SQLITE_SCHEMA } from "./guest-access.js";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -391,6 +392,66 @@ WHERE latest.invocation_id = inv.id
     apply(database) {
       if (!hasTable(database, "machines")) {
         database.exec(MACHINES_SQLITE_SCHEMA);
+      }
+    },
+  },
+  {
+    // Indexes on foreign-key columns that reference `actors`. Without them a
+    // DELETE FROM actors triggers a full child-table scan per column — with
+    // tens of thousands of runtime_session_aliases rows that made each
+    // registry-retention actor delete cost ~30 ms. These live only here (not
+    // in CONTROL_PLANE_SQLITE_SCHEMA or the Drizzle schema) because the raw
+    // schema exec runs before the imperative column-adds and table rebuilds
+    // above, and several of these columns can be absent on legacy tables —
+    // the same reason idx_invocations_flight_id is imperative-only.
+    id: "actor-foreign-key-indexes",
+    description: "Indexes actor foreign-key columns so actor deletes are bounded.",
+    apply(database) {
+      const indexes: Array<[table: string, column: string, sql: string]> = [
+        ["runtime_session_aliases", "agent_id",
+          "CREATE INDEX IF NOT EXISTS idx_runtime_session_aliases_agent ON runtime_session_aliases (agent_id)"],
+        ["thread_events", "actor_id",
+          "CREATE INDEX IF NOT EXISTS idx_thread_events_actor ON thread_events (actor_id)"],
+        ["activity_items", "counterpart_id",
+          "CREATE INDEX IF NOT EXISTS idx_activity_items_counterpart ON activity_items (counterpart_id)"],
+        ["message_mentions", "actor_id",
+          "CREATE INDEX IF NOT EXISTS idx_message_mentions_actor ON message_mentions (actor_id)"],
+        ["message_reactions", "actor_id",
+          "CREATE INDEX IF NOT EXISTS idx_message_reactions_actor ON message_reactions (actor_id)"],
+        ["flights", "requester_id",
+          "CREATE INDEX IF NOT EXISTS idx_flights_requester ON flights (requester_id)"],
+        ["conversation_read_cursors", "actor_id",
+          "CREATE INDEX IF NOT EXISTS idx_read_cursors_actor ON conversation_read_cursors (actor_id)"],
+        ["collaboration_events", "actor_id",
+          "CREATE INDEX IF NOT EXISTS idx_collaboration_events_actor ON collaboration_events (actor_id)"],
+        ["collaboration_records", "created_by_id",
+          "CREATE INDEX IF NOT EXISTS idx_collaboration_records_created_by ON collaboration_records (created_by_id)"],
+      ];
+      for (const [table, column, sql] of indexes) {
+        if (hasColumn(database, table, column)) database.exec(sql);
+      }
+    },
+  },
+  {
+    // Additive owner-approved guest grants (docs/proposals/scout-tailscale.md).
+    // GuestGrantStore also creates the table on first use; an older build
+    // simply never reads it.
+    id: "guest-grants",
+    description: "Creates guest_grants for owner-approved Scout guest keys, separate from trusted_peers.",
+    apply(database) {
+      database.exec(GUEST_GRANTS_SQLITE_SCHEMA);
+    },
+  },
+  {
+    // The archive pages `events` by `ts < cutoff ORDER BY ts, id`. The only
+    // existing index is (kind, ts), so every page was a full table scan —
+    // 20+ seconds per 10k rows on a 1.2M-row table, held under the canonical
+    // writer. Measured on the live node: ~150 ms per page with this index.
+    id: "events-ts-id-index",
+    description: "Indexes events (ts, id) so archive paging is bounded.",
+    apply(database) {
+      if (hasColumn(database, "events", "ts")) {
+        database.exec("CREATE INDEX IF NOT EXISTS idx_events_ts_id ON events (ts, id)");
       }
     },
   },

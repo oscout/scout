@@ -340,4 +340,73 @@ describe("broker delivery routing", () => {
       expect(result.session.endpoint.metadata?.flatDispatch).toBe(true);
     }
   });
+
+  test("fork-if-live is forwarded to wake and routes to the fork, not the live source", async () => {
+    const runtime = createInMemoryControlRuntime({}, { localNodeId: "node-1" });
+    const sourceId = "4fad8bb9-b4d3-4432-be75-8cfd636e78c0";
+    const forkId = "9b1c2d3e-0000-4000-8000-000000000001";
+    const scoutSessionId = `flat-claude-${forkId}`;
+    const wakeInputs: unknown[] = [];
+    const router = new BrokerDeliveryRouter({
+      runtimeSnapshot: () => runtime.snapshot(),
+      nodeId: "node-1",
+      isInactiveLocalAgent: () => false,
+      wakeExactHarnessSession: async (input) => {
+        wakeInputs.push(input);
+        await runtime.upsertActor({
+          id: scoutSessionId,
+          kind: "session",
+          displayName: "openscout:9b1c2d3e",
+          handle: scoutSessionId,
+          labels: ["cardless-session", "session"],
+          metadata: { cardless: true, flatDispatch: true },
+        });
+        await runtime.upsertEndpoint({
+          id: `endpoint.${scoutSessionId}.node-1.tmux`,
+          agentId: scoutSessionId,
+          nodeId: "node-1",
+          harness: "claude",
+          transport: "tmux",
+          state: "idle",
+          cwd: "/Users/art/dev/openscout",
+          projectRoot: "/Users/art/dev/openscout",
+          sessionId: scoutSessionId,
+          metadata: { cardless: true, flatDispatch: true, externalSessionId: forkId, nativeSessionId: forkId, forkedFromSessionId: sourceId },
+        });
+        return { ok: true, forkedSession: { sourceSessionId: sourceId, sessionId: forkId } };
+      },
+    });
+
+    const result = await router.resolveWithImplicitProjectAgent({
+      target: { kind: "session_id", sessionId: sourceId, harness: "claude", forkIfLive: true },
+    }, { requesterId: "operator", reason: "phone reply" });
+
+    expect(wakeInputs).toEqual([{ nativeSessionId: sourceId, harness: "claude", projectPath: undefined, requesterId: "operator", forkIfLive: true }]);
+    expect(result.kind).toBe("resolved_session");
+    if (result.kind === "resolved_session") {
+      expect(result.sessionFork).toEqual({ sourceSessionId: sourceId, sessionId: forkId });
+      expect(result.session.endpoint.metadata?.nativeSessionId).toBe(forkId);
+    }
+  });
+
+  test("exact session wake without opt-in does not ask for a fork, and refusals keep their code", async () => {
+    const runtime = createInMemoryControlRuntime({}, { localNodeId: "node-1" });
+    const wakeInputs: Array<{ forkIfLive?: boolean }> = [];
+    const router = new BrokerDeliveryRouter({
+      runtimeSnapshot: () => runtime.snapshot(),
+      nodeId: "node-1",
+      isInactiveLocalAgent: () => false,
+      wakeExactHarnessSession: async (input) => {
+        wakeInputs.push(input);
+        return { ok: false, reason: "session_live_unbound", detail: "session is already running" };
+      },
+    });
+
+    const result = await router.resolveWithImplicitProjectAgent({
+      target: { kind: "session_id", sessionId: "4fad8bb9-b4d3-4432-be75-8cfd636e78c0", harness: "claude" },
+    }, { requesterId: "operator", reason: "cli ask" });
+
+    expect(wakeInputs[0]?.forkIfLive).toBeUndefined();
+    expect(result).toMatchObject({ kind: "unknown", detail: "session is already running", sessionWakeReason: "session_live_unbound" });
+  });
 });

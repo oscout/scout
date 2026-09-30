@@ -136,6 +136,12 @@ describe("ChannelComposer toolbar", () => {
 });
 
 describe("ChannelComposer routing boundary", () => {
+  test("a recovered target that is no longer present cannot silently become a channel post", () => {
+    const html = composer({ draft: "Run the release", askTargetId: "departed-agent" });
+    expect(html).toContain("The selected agent is unavailable");
+    expect(html).toContain("Post to channel instead");
+    expect(html).toContain('class="chat-composer-send" disabled=""');
+  });
   test("untargeted: the ask selector reads as an invitation, not a warning", () => {
     const html = composer();
     expect(html).toContain("Ask an agent");
@@ -146,29 +152,42 @@ describe("ChannelComposer routing boundary", () => {
     expect(html).not.toContain("chat-ask-target");
   });
 
-  test("targeted: the chip names the agent and the hint states the boundary", () => {
+  test("targeted: the armed control names the agent and the hint states the boundary", () => {
     const html = composer({ draft: "check the build", askTargetId: "actor-codex" });
-    expect(html).toContain("Asking");
-    expect(html).toContain("Maya&#x27;s Codex");
+    // The agent is named once, on the control that armed it — not again in a
+    // banner chip beside it.
+    expect(html).toContain('data-armed="true"');
+    expect(html).toContain('<span class="chat-composer-ask-name">Maya&#x27;s Codex</span>');
     expect(html).toContain("Creates a tracked request for Maya&#x27;s Codex");
     expect(html).toContain("reply lands in this thread");
     expect(html).toContain("Change agent");
-    // Send says where it is going, and the target stays clearable.
-    expect(html).toContain("aria-label=\"Send — asks Maya&#x27;s Codex\"");
+    // Send carries the mode, says where it is going, and the target stays clearable.
+    expect(html).toContain('data-mode="ask"');
+    expect(html).toContain("aria-label=\"Ask Maya&#x27;s Codex — creates a tracked request\"");
+    // Enter-to-send is assumed, not captioned.
+    expect(html).not.toContain("newline");
     expect(html).toContain("Clear ask target");
   });
 
-  test("thread: one reply target, so no ask selector and no channel hint", () => {
+  test("thread: agent selection is available while ordinary replies remain explicit", () => {
     const html = composer({ variant: "thread", placeholder: "Reply in thread…" });
     expect(html).toContain('data-variant="thread"');
-    expect(html).not.toContain("Ask an agent");
+    expect(html).toContain("Ask an agent");
     expect(html).not.toContain("Change agent");
-    expect(html).toContain("↵ send");
-    expect(html).not.toContain("⇧↵ newline");
+    expect(html).not.toContain("chat-enter");
     // Mentioning a member is still real in a thread: the feed highlights it.
     expect(html).toContain('aria-label="Mention a member"');
     expect(html).toContain('aria-label="Send reply"');
   });
+});
+
+test("thread asks keep their target and block a departed agent", () => {
+  const targeted = composer({ variant: "thread", draft: "Check this reply", askTargetId: "actor-codex" });
+  expect(targeted).toContain('data-mode="ask"');
+  expect(targeted).toContain("Creates a tracked request");
+  const unavailable = composer({ variant: "thread", draft: "Check this reply", askTargetId: "departed" });
+  expect(unavailable).toContain("Post reply instead");
+  expect(unavailable).toContain('class="chat-composer-send" disabled=""');
 });
 
 describe("mentionInsertion", () => {
@@ -193,4 +212,11 @@ describe("mentionInsertion", () => {
     expect(mentionInsertion("hi", 99)).toEqual({ next: "hi @", caret: 4 });
     expect(mentionInsertion("hi", -1)).toEqual({ next: "@hi", caret: 1 });
   });
+});
+
+test("an empty agent request explains the required instructions", () => {
+  const html = composer({ askTargetId: codex.actorId, draft: "  " });
+  expect(html).toContain("Add instructions for the agent before sending.");
+  expect(html).toMatch(/class="chat-composer-send"[^>]*disabled=""/);
+  expect(composer({ askTargetId: codex.actorId, draft: "Review this file" })).not.toContain("Add instructions for the agent before sending.");
 });

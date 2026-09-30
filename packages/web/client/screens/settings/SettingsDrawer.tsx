@@ -722,10 +722,11 @@ function AppearanceSection() {
 // ── Operator section ──────────────────────────────────────────────────
 
 function OperatorSection({
-  profile, update,
+  profile, update, saveError,
 }: {
   profile: OperatorProfile;
   update: (patch: Partial<OperatorProfile>) => void;
+  saveError?: string | null;
 }) {
   const { appearanceDetails, updateAppearanceDetails } = useScout();
   const [selectedMascot, setSelectedMascot] = useState(
@@ -923,6 +924,33 @@ function OperatorSection({
           columns={2}
         />
       </Field>
+
+      <SectionRule label="Runtime lists" right="pinned models & named presets" />
+      <Field
+        label="Model shortlist"
+        hint="harness/model, e.g. claude/opus-5, codex/gpt-5.6-sol — pinned first in every picker"
+      >
+        <TextInput
+          value={profile.runtimeShortlistText}
+          onChange={(v) => update({ runtimeShortlistText: v })}
+          mono
+        />
+      </Field>
+      <Field
+        label="Presets"
+        hint="One per line: id[:Label]=harness/model/effort, e.g. fusion:Fusion=claude/fable-5.1/medium"
+      >
+        <TextArea
+          value={profile.runtimePresetsText}
+          onChange={(v) => update({ runtimePresetsText: v })}
+          rows={4}
+        />
+      </Field>
+      {saveError ? (
+        <div className="s-settings-field-hint" role="alert" style={{ color: "var(--amber)" }}>
+          {saveError}
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -1883,7 +1911,23 @@ const DEFAULT_PROFILE: OperatorProfile = {
   provisionalAgentNamesResolvedCount: 0,
   provisionalAgentNamesPreview: [],
   provisionalAgentNamesSource: "default",
+  runtimeShortlistText: "",
+  runtimePresetsText: "",
 };
+
+/** `/api/user` returns presets as objects; the drawer edits grammar lines. */
+type OperatorUserResponse = OperatorProfile & {
+  runtimeShortlist?: string[];
+  runtimePresets?: Array<{ id: string; label?: string; runtime: string }>;
+};
+
+function runtimePresetsToText(
+  presets: OperatorUserResponse["runtimePresets"],
+): string {
+  return (presets ?? [])
+    .map((preset) => `${preset.id}${preset.label ? `:${preset.label}` : ""}=${preset.runtime}`)
+    .join("\n");
+}
 
 function SettingsExperience({
   open,
@@ -1913,6 +1957,7 @@ function SettingsExperience({
   const [serverCredentials, setServerCredentials] = useState<ServerCredentialState | null>(null);
   const [loaded, setLoaded] = useState(false);
   const [saveState, setSaveState] = useState<"saved" | "saving" | "error">("saved");
+  const [saveError, setSaveError] = useState<string | null>(null);
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const mountedRef = useRef(true);
   const activeSectionRef = useRef<HTMLElement | null>(null);
@@ -1937,13 +1982,19 @@ function SettingsExperience({
 
   const load = useCallback(async () => {
     try {
-      const userPromise = api<OperatorProfile>("/api/user");
+      const userPromise = api<OperatorUserResponse>("/api/user");
       const pairPromise = Promise.race([
         api<PairingState>("/api/pairing-state"),
         new Promise<never>((_, reject) => setTimeout(() => reject(new Error("timeout")), 3000)),
       ]);
       const [user, pair] = await Promise.allSettled([userPromise, pairPromise]);
-      if (user.status === "fulfilled") setProfile(user.value);
+      if (user.status === "fulfilled") {
+        setProfile({
+          ...user.value,
+          runtimeShortlistText: (user.value.runtimeShortlist ?? []).join(", "),
+          runtimePresetsText: runtimePresetsToText(user.value.runtimePresets),
+        });
+      }
       if (pair.status === "fulfilled") setPairing(pair.value);
       await loadCredentials();
     } finally {
@@ -1992,16 +2043,36 @@ function SettingsExperience({
     if (saveTimer.current) clearTimeout(saveTimer.current);
     setSaveState("saving");
     saveTimer.current = setTimeout(() => {
+      // The runtime list fields travel as their API shapes — spec arrays and
+      // grammar lines — so the server can validate them and answer 400 with
+      // the reason, which lands inline in the Runtime lists block.
+      const { runtimeShortlistText, runtimePresetsText, ...rest } = next;
       void api<OperatorProfile>("/api/user", {
         method: "POST",
-        body: JSON.stringify(next),
+        body: JSON.stringify({
+          ...rest,
+          runtimeShortlist: runtimeShortlistText
+            .split(",")
+            .map((entry) => entry.trim())
+            .filter(Boolean),
+          runtimePresets: runtimePresetsText
+            .split(/\r?\n/u)
+            .map((line) => line.trim())
+            .filter(Boolean),
+        }),
       })
         .then(() => refreshOnboarding())
         .then(() => {
-          if (mountedRef.current) setSaveState("saved");
+          if (mountedRef.current) {
+            setSaveState("saved");
+            setSaveError(null);
+          }
         })
-        .catch(() => {
-          if (mountedRef.current) setSaveState("error");
+        .catch((err) => {
+          if (mountedRef.current) {
+            setSaveState("error");
+            setSaveError(err instanceof Error ? err.message : "Could not save.");
+          }
         });
     }, 400);
   }, [refreshOnboarding]);
@@ -2076,7 +2147,7 @@ function SettingsExperience({
         <div className="s-settings-loading">Loading settings…</div>
       ) : (
         <>
-          {section === "operator" && <OperatorSection profile={profile} update={update} />}
+          {section === "operator" && <OperatorSection profile={profile} update={update} saveError={saveError} />}
           {section === "comms" && <CommsSection profile={profile} update={update} />}
           {section === "credentials" && (
             <CredentialsSection

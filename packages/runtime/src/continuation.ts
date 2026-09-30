@@ -1,0 +1,55 @@
+export {
+  CONTINUATION_LEVELS,
+  DEFAULT_CONTINUATION_LEVEL,
+  claudePermissionFloor,
+  codexPermissionFloor,
+  normalizeContinuationLevel,
+  type ClaudePermissionFloor,
+  type CodexPermissionFloor,
+  type ContinuationLevel,
+} from "./continuation/policy.js";
+export {
+  liveDialogMenuLines,
+  parseContinuationDialog,
+  stripTerminalControls,
+  type ContinuationDialog,
+  type ContinuationDialogAction,
+  type ContinuationDialogKind,
+  type ContinuationDialogOption,
+  type ContinuationOptionKind,
+} from "./continuation/dialog.js";
+export {
+  classifyContinuationPathRisk,
+  classifyContinuationRisk,
+  continuationAllowsRisk,
+  decideContinuation,
+  sameContinuationDecision,
+  type ContinuationAct,
+  type ContinuationRisk,
+  type ContinuationVerdict,
+} from "./continuation/decide.js";
+export {
+  CONTINUATION_MODEL_ID,
+  applyContinuationModelGuess,
+  continuationModelPrompt,
+  createXaiContinuationModel,
+  decideContinuationWithModel,
+  needsContinuationModel,
+  parseContinuationModelGuess,
+  type ContinuationModel,
+  type ContinuationModelGuess,
+} from "./continuation/model.js";
+export {
+  appendContinuationAudit,
+  claimContinuationActuation,
+  continuationAuditPath,
+  continuationPolicyPath,
+  loadContinuationPolicy,
+  parseContinuationPolicy,
+  resolveContinuationGrant,
+  type ContinuationAuditEntry,
+  type ContinuationGrant,
+  type ContinuationPaneScope,
+  type ContinuationPolicyFile,
+  type ResolvedContinuationGrant,
+} from "./continuation/grants.js";

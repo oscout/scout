@@ -137,6 +137,15 @@ function assistantReplySessionKey(event: TailEvent): string {
   return source && sessionId ? `${source}\u0000${sessionId}` : `event\u0000${event.id}`;
 }
 
+/**
+ * One transcript line, independent of its id. Line-numbered ids differ between
+ * the live watcher (its own running line counter) and the replay (index within
+ * the read window), so the same line arrives from both under two ids.
+ */
+function tailLineKey(event: TailEvent): string {
+  return [event.source, event.sessionId, event.ts, event.kind, event.summary].join("\u0000");
+}
+
 /** Collapse streaming fragments/history to the latest reply per harness session. */
 function latestAssistantReplies(events: Iterable<TailEvent>): TailEvent[] {
   const latestBySession = new Map<string, TailEvent>();
@@ -325,10 +334,11 @@ export class BrokerRepoTailService<TBrokerSnapshot> {
     const windowMs = parsePositiveIntParam(url, "windowMs", MAX_TAIL_RECENT_WINDOW_MS);
     const since = windowMs === undefined ? undefined : this.now() - windowMs;
     const eventsById = new Map<string, TailEvent>();
+    let transcriptEvents: TailEvent[] = [];
 
     if (includeTranscripts) {
       const discovery = await measure("tail-discover", () => this.options.getTailDiscovery(false));
-      const transcriptEvents = filterTailEventsForDisplay(
+      transcriptEvents = filterTailEventsForDisplay(
         await measure("tail-transcripts", () => this.options.readRecentTranscriptEvents(
           Math.max(limit, 800),
           {
@@ -340,15 +350,29 @@ export class BrokerRepoTailService<TBrokerSnapshot> {
           },
         )),
       );
-      for (const event of transcriptEvents) {
-        eventsById.set(event.id, event);
-      }
     }
 
     const mergeStart = performance.now();
     const bufferedEvents = filterTailEventsForDisplay(
       await measure("tail-live", () => this.options.readRecentLiveEvents(limit, { kinds })),
     );
+    // A replayed line the live buffer also holds is the same event under
+    // another id; the live copy wins. Counted, so genuinely repeated lines in
+    // one source still survive.
+    const liveLineCounts = new Map<string, number>();
+    for (const event of bufferedEvents) {
+      const key = tailLineKey(event);
+      liveLineCounts.set(key, (liveLineCounts.get(key) ?? 0) + 1);
+    }
+    for (const event of transcriptEvents) {
+      const key = tailLineKey(event);
+      const liveCount = liveLineCounts.get(key) ?? 0;
+      if (liveCount > 0) {
+        liveLineCounts.set(key, liveCount - 1);
+        continue;
+      }
+      eventsById.set(event.id, event);
+    }
     for (const event of bufferedEvents) {
       eventsById.set(event.id, event);
     }

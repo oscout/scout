@@ -11,7 +11,8 @@
  * session attach`, `herdr agent focus`), not a Scout control.
  *
  * The server builds this from `herdr --session <n> workspace list`,
- * `tab list`, and `pane list` JSON, plus the per-tab layout geometry from
+ * `tab list`, and `pane list` JSON, with assigned names from `agent list`
+ * joined by terminal + pane id, plus the per-tab layout geometry from
  * `herdr --session <n> api snapshot`. A session whose server is stopped
  * projects from its persisted `session.json` instead — same shape, marked by
  * `running: false` and `savedAt`; geometry, terminal ids, and live agent
@@ -36,10 +37,12 @@ export type HerdrAgentSessionRef = {
 
 export type HerdrPaneProjection = {
   paneId: string;
-  /** Herdr's stable terminal id; `herdr agent <verb>` accepts it as a target. */
+  /** Herdr's terminal identity; CLI read commands use the separately carried pane id. */
   terminalId: string | null;
   tabId: string;
   workspaceId: string;
+  /** Operator-assigned Herdr name; distinct from the changing terminal title. */
+  name?: string | null;
   label: string | null;
   /** Detected/reported agent label, e.g. "claude". Null for plain shells. */
   agent: string | null;

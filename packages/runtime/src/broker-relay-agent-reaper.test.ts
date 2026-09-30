@@ -17,6 +17,7 @@ function session(overrides: Partial<RelayAgentTmuxSession> = {}): RelayAgentTmux
     attached: 0,
     createdAtMs: NOW - TTL * 10,
     activityAtMs: NOW - TTL - 1,
+    launchedByScout: true,
     ...overrides,
   };
 }
@@ -51,6 +52,35 @@ function endpoint(overrides: Partial<AgentEndpoint> = {}): AgentEndpoint {
 }
 
 describe("idleRelayAgentSessionCandidates", () => {
+  test("a stale active launch placeholder does not outvote the newer idle endpoint", () => {
+    const snapshot = createRuntimeRegistrySnapshot();
+    const placeholder = endpoint({
+      id: "endpoint.session-old.launch.tmux",
+      state: "active",
+      metadata: { pendingExternalSession: true, startedAt: NOW - TTL * 5 },
+    });
+    const registry = endpoint({ state: "idle", metadata: { startedAt: NOW - TTL * 4 } });
+    snapshot.endpoints[placeholder.id] = placeholder;
+    snapshot.endpoints[registry.id] = registry;
+    expect(idleRelayAgentSessionCandidates({
+      sessions: [session()],
+      owners: owners(),
+      snapshot,
+      now: NOW,
+      idleTtlMs: TTL,
+    }).map((candidate) => candidate.session.name)).toEqual(["session-old"]);
+
+    // The newest endpoint being active still spares the session.
+    snapshot.endpoints[placeholder.id] = { ...placeholder, metadata: { startedAt: NOW - TTL * 3 } };
+    expect(idleRelayAgentSessionCandidates({
+      sessions: [session()],
+      owners: owners(),
+      snapshot,
+      now: NOW,
+      idleTtlMs: TTL,
+    })).toEqual([]);
+  });
+
   test("reaps an attributed relay session idle past its TTL", () => {
     const candidates = idleRelayAgentSessionCandidates({
       sessions: [session()],
@@ -66,6 +96,16 @@ describe("idleRelayAgentSessionCandidates", () => {
   test("never touches a session the relay registry does not claim", () => {
     expect(idleRelayAgentSessionCandidates({
       sessions: [session({ name: "operator-scratchpad" })],
+      owners: owners(),
+      snapshot: createRuntimeRegistrySnapshot(),
+      now: NOW,
+      idleTtlMs: TTL,
+    })).toEqual([]);
+  });
+
+  test("never touches a session the operator started, even one Scout registered", () => {
+    expect(idleRelayAgentSessionCandidates({
+      sessions: [session({ launchedByScout: false }), session({ name: "session-old", launchedByScout: undefined })],
       owners: owners(),
       snapshot: createRuntimeRegistrySnapshot(),
       now: NOW,

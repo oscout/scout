@@ -530,7 +530,7 @@ function resolveServerPort(env: NodeJS.ProcessEnv): number {
 
 function resolveServerEdgeScheme(env: NodeJS.ProcessEnv): OpenScoutLocalEdgeScheme {
   const value = env.OPENSCOUT_WEB_EDGE_SCHEME?.trim().toLowerCase();
-  if (!value) return "http";
+  if (!value) return "both";
   if (value === "http" || value === "https" || value === "both") return value;
   throw new ScoutCliError(`invalid edge scheme: ${value}`);
 }

@@ -39,7 +39,7 @@ import {
    surfaces under many rows — branch, worktree, clone, session), the ephemeral
    tail folds away, and decorations are stripped so type weight, spacing, and a
    single accent dot carry the hierarchy. One accent as a precedence ladder:
-   needs-you ▸ live ▸ idle.
+   request ▸ live ▸ idle.
 
    The spine is project → agent → session, rendered through the REAL shell
    slots: the projects rail lives in the left lane (AgentsLeft); this is the
@@ -292,7 +292,7 @@ function AgentRow({
               <span className="ap-sigil" aria-hidden>@</span>{handle}
             </span>
             {g.needs ? (
-              <span className="ap-needsWord">needs you</span>
+              <span className="ap-needsWord">asking</span>
             ) : tone === "live" ? (
               <span className="ap-rowState">working</span>
             ) : null}
@@ -437,7 +437,7 @@ function ProjectDetail({
     Boolean(selectedAgentId && g.nodes.some((n) => n.row.agent.id === selectedAgentId));
 
   // keyboard layer — j/k or ↑/↓ scrub a cursor down the roster, ↵ selects the
-  // cursor row into the inspector, ⌘↵ jumps to whoever needs you, ⌘K // / focus
+  // cursor row into the inspector, ⌘↵ jumps to the open request, ⌘K // / focus
   // search, Esc blurs the field. Inputs are guarded.
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
@@ -550,7 +550,7 @@ function ProjectDetail({
         {lead && !filtering && !sparse ? (
           <div className="ap-resume" data-tone={lead.needs ? "needs" : "live"} aria-live="polite">
             <span className="ap-dot" data-tone={lead.needs ? "needs" : "live"} aria-hidden />
-            <span className="ap-resumeLbl">{lead.needs ? "Waiting on you" : "Most recent"}</span>
+            <span className="ap-resumeLbl">{lead.needs ? "Open request" : "Most recent"}</span>
             <span className="ap-resumeWho">
               <span className="ap-sigil" aria-hidden>@</span>
               {lead.nodes[0].row.agent.handle?.trim() || lead.name}

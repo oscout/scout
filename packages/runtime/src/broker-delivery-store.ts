@@ -73,6 +73,21 @@ export class BrokerDeliveryStore {
     });
   };
 
+  /** Transform a fresh receipt under the canonical writer; never replace a stale snapshot. */
+  readonly mutateDelivery = async (
+    deliveryId: string,
+    update: (current: DeliveryIntent) => DeliveryIntent | null,
+  ): Promise<DeliveryIntent | undefined> => this.options.durableStore.runWrite(async () => {
+    const current = this.options.journal.getDelivery(deliveryId);
+    if (!current) return undefined;
+    const next = update(current);
+    if (!next) return current;
+    if (next.id !== current.id) throw new Error("delivery mutation cannot change identity");
+    await this.options.durableStore.commitEntries({ kind: "deliveries.record", deliveries: [next] }, async () => {});
+    this.publishDeliveryChanged(next, current.status);
+    return next;
+  });
+
   readonly recordDeliveryAttempt = async (attempt: DeliveryAttempt): Promise<void> => {
     await this.options.durableStore.runWrite(async () => {
       await this.options.durableStore.commitEntries(

@@ -12,7 +12,7 @@ import {
 const ASK_HARNESS_VALUES = SCOUT_LAUNCHABLE_HARNESSES;
 const ASK_WORKSPACE_VALUES = ["same", "new_worktree"] as const;
 const ASK_SESSION_VALUES = ["reuse", "new"] as const;
-const ASK_PLACEMENT_VALUES = ["background", "foreground"] as const;
+const ASK_PLACEMENT_VALUES = ["background", "foreground", "attached"] as const;
 const ASK_WORK_ITEM_PRIORITY_VALUES = [
   "low",
   "normal",
@@ -423,7 +423,12 @@ export function askReceiptStatus(
   if (receipt.ok) {
     return 202;
   }
-  if (receipt.error?.code === "broker_unreachable") {
+  // Broker health and read failures are infrastructure problems the caller
+  // can retry — never a 4xx request shape error.
+  if (
+    receipt.error?.code === "broker_unreachable"
+    || receipt.error?.code === "preflight_failed"
+  ) {
     return 502;
   }
   return receipt.state === "ambiguous" ? 409 : 422;

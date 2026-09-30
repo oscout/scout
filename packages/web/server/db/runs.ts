@@ -60,7 +60,7 @@ import { queryWorkItemById } from "./work.ts";
 // extraction. The import is local to db/ so there is no cycle through the
 // db-queries.ts barrel.
 import { querySessionById } from "./sessions.ts";
-import type { WebAgentRun, WebFlight, WebFollowTarget } from "./types/web.ts";
+import type { WebAgentRun, WebFlight, WebFollowTarget } from "../../shared/api/web.ts";
 
 function firstNonOperatorAgentId(
   ...candidateIds: Array<string | null | undefined>
@@ -88,9 +88,11 @@ type RunQueryRow = {
   message_id: string | null;
   context_json: string | null;
   execution_json: string | null;
+  execution_resolution_json: string | null;
   ensure_awake: number | string;
   stream: number | string;
   timeout_ms: number | string | null;
+  invocation_labels_json: string | null;
   invocation_metadata_json: string | null;
   invocation_created_at: number;
   agent_name: string | null;
@@ -151,8 +153,15 @@ function projectInvocationFromRunRow(row: RunQueryRow): InvocationRequest {
   if (context) invocation.context = context;
   const execution = parseOptionalExecution(row.execution_json);
   if (execution) invocation.execution = execution;
+  const executionResolution = parseJson<InvocationRequest["executionResolution"]>(
+    row.execution_resolution_json,
+    undefined,
+  );
+  if (executionResolution) invocation.executionResolution = executionResolution;
   const timeoutMs = optionalNumber(row.timeout_ms);
   if (timeoutMs !== undefined) invocation.timeoutMs = timeoutMs;
+  const labels = parseJson<string[] | undefined>(row.invocation_labels_json, undefined);
+  if (labels) invocation.labels = labels;
   const metadata = parseOptionalMetadata(row.invocation_metadata_json);
   if (metadata) invocation.metadata = metadata;
 
@@ -344,9 +353,11 @@ export function queryRuns(opts?: {
        inv.message_id,
        inv.context_json,
        inv.execution_json,
+       inv.execution_resolution_json,
        inv.ensure_awake,
        inv.stream,
        inv.timeout_ms,
+       inv.labels_json AS invocation_labels_json,
        inv.metadata_json AS invocation_metadata_json,
        ${invocationCreatedAtExpression} AS invocation_created_at,
        ac.display_name AS agent_name,
@@ -547,6 +558,127 @@ export function queryFlightRecordById(id: string): FlightRecord | null {
   };
 }
 
+// Durable overlay reads for the broker-rotation boundary. The invocation
+// row's shadow flight columns are the FlightRecord source (the flights
+// table is not joined — see the header note), so one projection covers
+// both invocation and flight overlays.
+const DURABLE_INVOCATION_SELECT_SQL = `SELECT
+    inv.id AS invocation_id,
+    inv.requester_id AS invocation_requester_id,
+    inv.requester_node_id,
+    inv.target_agent_id AS invocation_target_agent_id,
+    inv.target_node_id,
+    inv.action,
+    inv.task,
+    inv.collaboration_record_id,
+    NULL AS collaboration_record_kind,
+    inv.conversation_id,
+    inv.message_id,
+    inv.context_json,
+    inv.execution_json,
+    inv.execution_resolution_json,
+    inv.ensure_awake,
+    inv.stream,
+    inv.timeout_ms,
+    inv.labels_json AS invocation_labels_json,
+    inv.metadata_json AS invocation_metadata_json,
+    ${sqlTimestampMsExpression("inv.created_at")} AS invocation_created_at,
+    NULL AS agent_name,
+    inv.flight_id AS flight_id,
+    inv.id AS flight_invocation_id,
+    inv.requester_id AS flight_requester_id,
+    inv.target_agent_id AS flight_target_agent_id,
+    inv.state AS flight_state,
+    inv.summary AS flight_summary,
+    inv.output AS flight_output,
+    inv.error AS flight_error,
+    inv.flight_metadata_json AS flight_metadata_json,
+    ${sqlTimestampMsExpression("inv.started_at")} AS started_at,
+    ${sqlTimestampMsExpression("inv.completed_at")} AS completed_at
+  FROM invocations inv`;
+
+export function queryInvocationById(id: string): InvocationRequest | null {
+  const trimmed = id.trim();
+  if (!trimmed) return null;
+  const row = db().prepare(
+    `${DURABLE_INVOCATION_SELECT_SQL}
+     WHERE inv.id = ?
+     LIMIT 1`,
+  ).get(trimmed) as RunQueryRow | undefined;
+  return row ? projectInvocationFromRunRow(row) : null;
+}
+
+export function queryInvocations(opts: {
+  conversationId: string;
+}): InvocationRequest[] {
+  const conversationIds = opts.conversationId.trim()
+    ? conversationIdAliases(opts.conversationId)
+    : [];
+  if (conversationIds.length === 0) return [];
+  // Newest-first LIMIT so the overlay window tracks the rotation boundary —
+  // the broker's hot set already covers the oldest rows' successors, while an
+  // ASC LIMIT would pin the overlay to the oldest 200 forever.
+  const rows = db().prepare(
+    `${DURABLE_INVOCATION_SELECT_SQL}
+     WHERE inv.conversation_id IN (${sqlPlaceholders(conversationIds.length)})
+     ORDER BY ${sqlTimestampMsExpression("inv.created_at")} DESC, inv.id DESC
+     LIMIT 200`,
+  ).all(...conversationIds) as RunQueryRow[];
+  return rows.map(projectInvocationFromRunRow).reverse();
+}
+
+export function queryFlightRecords(opts: {
+  conversationId: string;
+}): FlightRecord[] {
+  const conversationIds = opts.conversationId.trim()
+    ? conversationIdAliases(opts.conversationId)
+    : [];
+  if (conversationIds.length === 0) return [];
+  const rows = db().prepare(
+    `${DURABLE_INVOCATION_SELECT_SQL}
+     WHERE inv.flight_id IS NOT NULL
+       AND inv.conversation_id IN (${sqlPlaceholders(conversationIds.length)})
+     ORDER BY COALESCE(${sqlTimestampMsExpression("inv.started_at")}, ${sqlTimestampMsExpression("inv.created_at")}, 0) DESC,
+       inv.flight_id DESC
+     LIMIT 200`,
+  ).all(...conversationIds) as RunQueryRow[];
+  return rows
+    .map((row) => projectFlightFromRunRow(row))
+    .filter((flight): flight is FlightRecord => flight !== undefined)
+    .reverse();
+}
+
+/**
+ * The harness conversation id behind one endpoint (by id) or behind a Scout
+ * session id (its most recently updated endpoint). Tail events are keyed by
+ * this id, so follow links need it to filter the tail to the right session.
+ * The per-transport resolver decides what counts (tmux → observed id only).
+ */
+function harnessSessionIdForEndpoint(
+  by: { endpointId: string } | { sessionId: string },
+): string | null {
+  const row = ("endpointId" in by
+    ? db().prepare(
+      `SELECT transport, session_id, metadata_json FROM agent_endpoints WHERE id = ? LIMIT 1`,
+    ).get(by.endpointId)
+    : db().prepare(
+      `SELECT transport, session_id, metadata_json FROM agent_endpoints
+       WHERE session_id = ? OR agent_id = ?
+       ORDER BY ${sqlTimestampMsCoalesceExpression("updated_at")} DESC
+       LIMIT 1`,
+    ).get(by.sessionId, by.sessionId)) as {
+      transport: string | null;
+      session_id: string | null;
+      metadata_json: string | null;
+    } | null;
+  if (!row) return null;
+  return resolveHarnessSessionId(
+    row.transport,
+    row.session_id,
+    parseJson<Record<string, unknown>>(row.metadata_json, {}),
+  );
+}
+
 export function queryFollowTarget(opts: {
   flightId?: string;
   invocationId?: string;
@@ -562,6 +694,7 @@ export function queryFollowTarget(opts: {
     workId: opts.workId?.trim() || null,
     sessionId: opts.sessionId?.trim() || null,
     targetAgentId: opts.targetAgentId?.trim() || null,
+    harnessSessionId: null,
   };
 
   if (target.flightId || target.invocationId) {
@@ -614,13 +747,23 @@ export function queryFollowTarget(opts: {
       target.conversationId = target.conversationId ?? row.conversation_id;
       target.workId = target.workId ?? row.collaboration_record_id;
       target.targetAgentId = target.targetAgentId ?? row.target_agent_id;
-      const flightSessionId = flightSessionTrace(
+      const lastTrace = flightSessionTrace(
         parseJson<Record<string, unknown>>(row.flight_metadata_json, {}),
-      ).at(-1)?.sessionId;
+      ).at(-1);
       target.sessionId = target.sessionId
-        ?? flightSessionId
+        ?? lastTrace?.sessionId
         ?? resolveHarnessSessionId(row.transport, row.session_id, endpointMeta);
+      // Use the endpoint the flight actually ran on. The agent's most
+      // recently updated endpoint is only a stand-in when the flight never
+      // recorded one; otherwise it can name a different session entirely.
+      target.harnessSessionId = lastTrace?.endpointId
+        ? harnessSessionIdForEndpoint({ endpointId: lastTrace.endpointId })
+        : resolveHarnessSessionId(row.transport, row.session_id, endpointMeta);
     }
+  }
+
+  if (!target.harnessSessionId && target.sessionId) {
+    target.harnessSessionId = harnessSessionIdForEndpoint({ sessionId: target.sessionId });
   }
 
   if (target.workId && !target.conversationId) {
@@ -638,6 +781,7 @@ export function queryFollowTarget(opts: {
     // SCO-030 may fold this back into `Conversations` once opaque ids land.
     const session = querySessionById(target.conversationId);
     target.sessionId = target.sessionId ?? session?.harnessSessionId ?? null;
+    target.harnessSessionId = target.harnessSessionId ?? session?.harnessSessionId ?? null;
     target.targetAgentId = firstNonOperatorAgentId(
       target.targetAgentId,
       session?.agentId,

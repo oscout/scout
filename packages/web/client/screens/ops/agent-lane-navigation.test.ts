@@ -4,6 +4,7 @@ import {
   isLaneSyntheticAgent,
   laneProfileRoute,
   laneSessionRoute,
+  laneTerminalHints,
   laneTraceRoute,
 } from "./agent-lane-navigation.ts";
 import type { AgentLane } from "./agent-lanes-model.ts";
@@ -14,6 +15,8 @@ function agent(overrides: Partial<Agent> = {}): Agent {
     definitionId: "scope",
     name: "scope",
     handle: null,
+    authorityNodeId: null,
+    authorityNodeName: null,
     agentClass: "general",
     harness: "grok",
     state: "working",
@@ -166,5 +169,25 @@ describe("agent lane navigation", () => {
       agentId: "scope.main",
       tab: "profile",
     });
+  });
+  test("terminal hints carry every session spelling for registered agents", () => {
+    const target = lane({
+      agent: agent({
+        conversationId: "dm.scope",
+        terminalSurface: { backend: "tmux", sessionName: "relay-scope", paneId: null, socketDir: null },
+      }),
+    });
+    const hints = laneTerminalHints(target);
+    expect(hints.agentId).toBe("scope.main");
+    expect(hints.sessionRefs).toContain("sess-live-1");
+    expect(hints.sessionRefs).toContain("dm.scope");
+    expect(hints.sessionRefs).toContain("relay-scope");
+  });
+
+  test("terminal hints never offer a synthetic id as a takeover agent", () => {
+    const synthetic = agent({ id: "native:grok:sess-live-1" });
+    const hints = laneTerminalHints(lane({ agent: synthetic, source: "native" }));
+    expect(hints.agentId).toBeUndefined();
+    expect(hints.sessionRefs).toContain("sess-live-1");
   });
 });

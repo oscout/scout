@@ -4,6 +4,7 @@ import {
   buildTmuxDispatchStrategy,
   buildTmuxLaunchShellCommand,
   buildTmuxPasteBufferArgs,
+  tmuxPaneTailBlockingHarnessDialog,
   tmuxPaneTailContainsPromptFragment,
   tmuxPaneTailShowsReadyComposer,
   tmuxVerifyDeadlineMs,
@@ -334,4 +335,40 @@ describe("tmux prompt-fragment detection", () => {
       expect(tmuxPaneTailContainsPromptFragment(entry.tail, brokerAskPrompt)).toBe(entry.containsPrompt);
     });
   }
+});
+
+// Captured from a cardless `scout ask --harness claude --new` launched from a
+// folder Claude Code had never opened (Linea's support folder, 2026-09-25).
+const claudeFolderTrustDialog = paneTail([
+  "────────────────────────────────────────────────────────────────────────────────",
+  " Accessing workspace:",
+  "",
+  " /Users/art/Library/Application Support/Linea/Scout",
+  "",
+  " Quick safety check: Is this a project you created or one you trust? (Like your own code, a well-known open source project, or work from your team). If not,",
+  " take a moment to review what's in this folder first.",
+  "",
+  " Claude Code'll be able to read, edit, and execute files here.",
+  "",
+  " Security guide",
+  "",
+  " ❯ No, exit",
+  "   Yes, I trust this folder",
+  "",
+  " Enter to confirm · Esc to cancel",
+]);
+
+describe("Claude folder-trust dialog", () => {
+  test("is not a ready composer even though `❯ No, exit` looks like one", () => {
+    expect(tmuxPaneTailShowsReadyComposer(claudeFolderTrustDialog)).toBe(false);
+  });
+
+  test("is reported as a blocking dialog that names the folder", () => {
+    const blocked = tmuxPaneTailBlockingHarnessDialog(claudeFolderTrustDialog);
+    expect(blocked).toContain("folder-trust prompt for /Users/art/Library/Application Support/Linea/Scout");
+  });
+
+  test("an ordinary ready composer is not blocking", () => {
+    expect(tmuxPaneTailBlockingHarnessDialog(paneTail(["❯ ", "─".repeat(40)]))).toBeNull();
+  });
 });

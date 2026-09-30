@@ -65,7 +65,7 @@ export function taskThreadTitle(
 export type QueueState = "needs_you" | "working" | "queued" | "quiet";
 
 const STATE_LABELS: Record<QueueState, string> = {
-  needs_you: "Needs you",
+  needs_you: "Requests",
   working: "Working",
   queued: "Starting",
   quiet: "Quiet",

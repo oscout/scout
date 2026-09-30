@@ -2,7 +2,7 @@
 
 export const SCOUT_RUNTIME_CATALOG_DATA = {
   "schemaVersion": "openscout.runtime-catalog.v1",
-  "revision": "2026-09-14.1",
+  "revision": "2026-09-24.1",
   "harnesses": [
     {
       "id": "claude",
@@ -17,14 +17,32 @@ export const SCOUT_RUNTIME_CATALOG_DATA = {
         "max"
       ],
       "defaultReasoningEffort": "medium",
+      "presentation": {
+        "short": "Claude",
+        "monogram": "✳"
+      },
       "models": [
+        {
+          "id": "claude-opus-5-5",
+          "label": "Opus 5.5",
+          "enabled": true,
+          "default": true,
+          "family": "Opus",
+          "version": "5.5",
+          "contextWindowTokens": 1000000,
+          "presentation": {
+            "detail": "Latest"
+          }
+        },
         {
           "id": "claude-opus-5",
           "label": "Opus 5",
           "enabled": true,
-          "default": true,
           "family": "Opus",
-          "version": "5"
+          "version": "5",
+          "presentation": {
+            "detail": "Deepest"
+          }
         },
         {
           "id": "claude-fable-5",
@@ -38,14 +56,20 @@ export const SCOUT_RUNTIME_CATALOG_DATA = {
           "label": "Sonnet 4.6",
           "enabled": true,
           "family": "Sonnet",
-          "version": "4.6"
+          "version": "4.6",
+          "presentation": {
+            "detail": "Balanced"
+          }
         },
         {
           "id": "claude-haiku-4-5",
           "label": "Haiku 4.5",
           "enabled": true,
           "family": "Haiku",
-          "version": "4.5"
+          "version": "4.5",
+          "presentation": {
+            "detail": "Fast"
+          }
         },
         {
           "id": "claude-opus-4-8",
@@ -81,6 +105,10 @@ export const SCOUT_RUNTIME_CATALOG_DATA = {
         "xhigh"
       ],
       "defaultReasoningEffort": "medium",
+      "presentation": {
+        "short": "Codex",
+        "monogram": "◈"
+      },
       "models": [
         {
           "id": "gpt-6-astra",
@@ -97,7 +125,50 @@ export const SCOUT_RUNTIME_CATALOG_DATA = {
             "high",
             "xhigh",
             "max"
-          ]
+          ],
+          "defaultReasoningEffort": "low",
+          "presentation": {
+            "detail": "Most capable"
+          }
+        },
+        {
+          "id": "gpt-6-sol",
+          "label": "6 Sol",
+          "enabled": true,
+          "description": "Complex coding and agentic workflows",
+          "family": "GPT",
+          "version": "6 Sol",
+          "contextWindowTokens": 272000,
+          "reasoningEfforts": [
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max",
+            "ultra"
+          ],
+          "presentation": {
+            "detail": "Coding"
+          }
+        },
+        {
+          "id": "gpt-6-luna",
+          "label": "6 Luna",
+          "enabled": true,
+          "description": "Efficient focused coding and repeatable tasks",
+          "family": "GPT",
+          "version": "6 Luna",
+          "contextWindowTokens": 272000,
+          "reasoningEfforts": [
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max"
+          ],
+          "presentation": {
+            "detail": "Efficient"
+          }
         },
         {
           "id": "gpt-5.6-sol",
@@ -111,7 +182,10 @@ export const SCOUT_RUNTIME_CATALOG_DATA = {
             "high",
             "xhigh",
             "ultra"
-          ]
+          ],
+          "presentation": {
+            "detail": "Frontier"
+          }
         },
         {
           "id": "gpt-5.6-terra",
@@ -125,14 +199,20 @@ export const SCOUT_RUNTIME_CATALOG_DATA = {
             "high",
             "xhigh",
             "ultra"
-          ]
+          ],
+          "presentation": {
+            "detail": "Frontier"
+          }
         },
         {
           "id": "gpt-5.6-luna",
           "label": "5.6 Luna",
           "enabled": true,
           "family": "GPT",
-          "version": "5.6 Luna"
+          "version": "5.6 Luna",
+          "presentation": {
+            "detail": "Efficient"
+          }
         },
         {
           "id": "gpt-5.5",
@@ -146,7 +226,10 @@ export const SCOUT_RUNTIME_CATALOG_DATA = {
           "label": "5.5 mini",
           "enabled": true,
           "family": "GPT",
-          "version": "5.5 mini"
+          "version": "5.5 mini",
+          "presentation": {
+            "detail": "Fast"
+          }
         }
       ]
     },
@@ -162,6 +245,10 @@ export const SCOUT_RUNTIME_CATALOG_DATA = {
         "xhigh"
       ],
       "defaultReasoningEffort": "high",
+      "presentation": {
+        "short": "Grok",
+        "monogram": "✕"
+      },
       "models": [
         {
           "id": "grok-4.6",
@@ -170,7 +257,10 @@ export const SCOUT_RUNTIME_CATALOG_DATA = {
           "default": true,
           "family": "Grok",
           "version": "4.6",
-          "contextWindowTokens": 500000
+          "contextWindowTokens": 500000,
+          "presentation": {
+            "detail": "Latest"
+          }
         },
         {
           "id": "grok-4.5",
@@ -193,6 +283,10 @@ export const SCOUT_RUNTIME_CATALOG_DATA = {
         "xhigh"
       ],
       "defaultReasoningEffort": "high",
+      "presentation": {
+        "short": "Grok",
+        "monogram": "✕"
+      },
       "models": [
         {
           "id": "grok-4.6",
@@ -201,7 +295,10 @@ export const SCOUT_RUNTIME_CATALOG_DATA = {
           "default": true,
           "family": "Grok",
           "version": "4.6",
-          "contextWindowTokens": 500000
+          "contextWindowTokens": 500000,
+          "presentation": {
+            "detail": "Latest"
+          }
         },
         {
           "id": "grok-4.5",
@@ -218,12 +315,17 @@ export const SCOUT_RUNTIME_CATALOG_DATA = {
       "label": "Kimi Code",
       "enabled": true,
       "reasoningEfforts": null,
+      "presentation": {
+        "short": "Kimi",
+        "monogram": "◐"
+      },
       "models": []
     },
     {
       "id": "flue",
       "label": "Flue",
       "enabled": true,
+      "listed": false,
       "reasoningEfforts": null,
       "models": []
     },

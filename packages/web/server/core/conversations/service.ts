@@ -27,6 +27,10 @@ import {
   type ScoutBrokerSnapshot,
 } from "../broker/service.ts";
 import {
+  queryFlightRecords,
+  queryInvocations,
+} from "../../db-queries.ts";
+import {
   MessageCursorError,
   clampMessagePageLimit,
   compareMessagesAsc,
@@ -203,6 +207,7 @@ export type ScoutConversationMessage = {
   replyToMessageId: string | null;
   threadConversationId: string | null;
   attachments: NonNullable<MessageRecord["attachments"]>;
+  mentions?: MessageRecord["mentions"];
   threadSummary?: {
     count: number;
     participants: string[];
@@ -241,7 +246,7 @@ function normalizeTimestamp(value: number | null | undefined): number | null {
   return ms === null ? null : Math.floor(ms / 1000);
 }
 
-function normalizeTimestampMs(value: number | null | undefined): number | null {
+export function normalizeTimestampMs(value: number | null | undefined): number | null {
   return epochMs(value);
 }
 
@@ -588,7 +593,7 @@ function latestMessageByConversation(snapshot: ScoutBrokerSnapshot): Map<string,
   return buckets;
 }
 
-function isTransientBrokerWaitStatusMessage(message: MessageRecord): boolean {
+export function isTransientBrokerWaitStatusMessage(message: MessageRecord): boolean {
   if (message.class !== "status" || metadataString(message.metadata, "source") !== "broker") {
     return false;
   }
@@ -687,6 +692,52 @@ function flightsByConversation(
     );
   }
   return buckets;
+}
+
+// Durable rows are the base and the broker's hot window overlays by id —
+// SQLite retains terminal invocations/flights the snapshot rotated out.
+// The control-plane database can be absent on a fresh install, so a durable
+// read failure degrades to the snapshot-only view rather than breaking the
+// list.
+function durableConversationInvocations(conversationId: string): InvocationRequest[] {
+  try {
+    return queryInvocations({ conversationId });
+  } catch {
+    return [];
+  }
+}
+
+function durableConversationFlights(conversationId: string): FlightRecord[] {
+  try {
+    return queryFlightRecords({ conversationId });
+  } catch {
+    return [];
+  }
+}
+
+function mergeInvocationRecords(
+  durable: InvocationRequest[],
+  brokerRows: InvocationRequest[],
+): InvocationRequest[] {
+  const byId = new Map(durable.map((invocation) => [invocation.id, invocation]));
+  for (const invocation of brokerRows) byId.set(invocation.id, invocation);
+  return [...byId.values()].sort((left, right) =>
+    (normalizeTimestampMs(left.createdAt) ?? 0) - (normalizeTimestampMs(right.createdAt) ?? 0)
+      || left.id.localeCompare(right.id)
+  );
+}
+
+function mergeFlightRecords(
+  durable: FlightRecord[],
+  brokerRows: FlightRecord[],
+): FlightRecord[] {
+  const byId = new Map(durable.map((flight) => [flight.id, flight]));
+  for (const flight of brokerRows) byId.set(flight.id, flight);
+  return [...byId.values()].sort((left, right) =>
+    (normalizeTimestampMs(left.completedAt ?? left.startedAt) ?? 0)
+      - (normalizeTimestampMs(right.completedAt ?? right.startedAt) ?? 0)
+      || left.id.localeCompare(right.id)
+  );
 }
 
 function conversationTurn(input: {
@@ -1247,10 +1298,14 @@ export async function getScoutConversations(
           (normalizeTimestampMs(left.createdAt) ?? 0) - (normalizeTimestampMs(right.createdAt) ?? 0)
           || left.id.localeCompare(right.id)
         );
-      const invocations = equivalentConversationIds
-        .flatMap((id) => invocationsByConversationId.get(id) ?? []);
-      const flights = equivalentConversationIds
-        .flatMap((id) => flightsByConversationId.get(id) ?? []);
+      const invocations = mergeInvocationRecords(
+        equivalentConversationIds.flatMap((id) => durableConversationInvocations(id)),
+        equivalentConversationIds.flatMap((id) => invocationsByConversationId.get(id) ?? []),
+      );
+      const flights = mergeFlightRecords(
+        equivalentConversationIds.flatMap((id) => durableConversationFlights(id)),
+        equivalentConversationIds.flatMap((id) => flightsByConversationId.get(id) ?? []),
+      );
       const latestMessage = messages.at(-1) ?? null;
       const messageCount = messages.length;
       const sessionId = latestConversationSessionId({ messages, invocations, flights });
@@ -1576,6 +1631,7 @@ export async function getScoutConversationMessages(
       replyToMessageId: message.replyToMessageId ?? null,
       threadConversationId: message.threadConversationId ?? null,
       attachments: message.attachments ?? [],
+      mentions: message.mentions,
       ...(threadSummary ? { threadSummary } : {}),
     };
   });

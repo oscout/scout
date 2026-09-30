@@ -9,7 +9,7 @@ test("mobile runtime capabilities expose the versioned legal tuple catalog", asy
   expect(catalog.catalogVersion).toBe("openscout.runtime-catalog.v1");
   expect(catalog.defaults).toEqual({
     harness: "claude",
-    model: "claude-opus-5",
+    model: "claude-opus-5-5",
     reasoningEffort: "medium",
   });
   expect(catalog.harnesses.map((harness) => harness.id)).toContain("codex");

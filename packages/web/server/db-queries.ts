@@ -34,14 +34,14 @@ export type {
   WebWorkItem,
   WebWorkTimelineItem,
   WebWorkTimelineKind,
-} from "./db/types/web.ts";
+} from "../shared/api/web.ts";
 export type {
   MobileAgentDetail,
   MobileAgentSummary,
   MobileSessionSummary,
   MobileWorkspaceSummary,
 } from "./db/types/mobile.ts";
-export type { HeartrateBucket } from "./db/types/common.ts";
+export type { HeartrateBucket } from "../shared/api/common.ts";
 
 export { queryAgentById, queryAgents } from "./db/agents.ts";
 export { queryRecentMessages } from "./db/messages.ts";
@@ -51,6 +51,9 @@ export {
   queryRuns,
   queryFlights,
   queryFlightRecordById,
+  queryFlightRecords,
+  queryInvocationById,
+  queryInvocations,
   queryFollowTarget,
 } from "./db/runs.ts";
 export {
