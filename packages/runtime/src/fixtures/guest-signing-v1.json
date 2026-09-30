@@ -1,0 +1,53 @@
+{
+  "description": "Scout guest request signing v1 (mesh-peer-auth canonical payload). Deterministic Ed25519 test key; never use outside tests.",
+  "seedHex": "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20",
+  "privateKeyPkcs8": "MC4CAQAwBQYDK2VwBCIEIAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8g",
+  "publicKeySpki": "MCowBQYDK2VwAyEAebVWLo/mVPlAeLES6KmLp5AfhTrmlb7X4OORC60ElmQ=",
+  "keyId": "646d6be49d9f0048f94f67749eca35156eed4f7a7be18e4fc4a94bfd44e300b0",
+  "cases": [
+    {
+      "method": "GET",
+      "path": "/v1/guest/whoami",
+      "body": "",
+      "destinationKeyId": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "ts": 1800000000000,
+      "nonce": "bm9uY2UtMDAwMDAwMDE=",
+      "bodySha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "payload": "v1\nGET\n/v1/guest/whoami\ne3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\naaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n1800000000000\nbm9uY2UtMDAwMDAwMDE=",
+      "signature": "kz7syKiDAWUhfsLSOIPYrcWvV7NKHZMAlmlEt0yw5qd+rnMRu9uWa04EOMFiKk2huARPxU5Jwmco4TETzEPbDA=="
+    },
+    {
+      "method": "GET",
+      "path": "/v1/guest/agents?query=helper%20bot",
+      "body": "",
+      "destinationKeyId": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "ts": 1800000000123,
+      "nonce": "n2",
+      "bodySha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "payload": "v1\nGET\n/v1/guest/agents?query=helper%20bot\ne3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\naaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n1800000000123\nn2",
+      "signature": "Q4SIKx+aPztKDpGmuc3fqMYk9bXO/Q+/z6ukQ/Y3h22YJlVr/x8lQhZaL3RBX/ZHyMX0p7KAMNqEo4isYP0PCQ=="
+    },
+    {
+      "method": "POST",
+      "path": "/v1/guest/asks",
+      "body": "{\"requestId\":\"ask-00001\",\"target\":\"scout.helper\",\"task\":\"Résumé ✓ \\\"quoted\\\"\\nline\"}",
+      "destinationKeyId": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "ts": 1800000000456,
+      "nonce": "n3+/=",
+      "bodySha256": "c2c3cf08c3c2ca772ea71b5740090a61d37b319ed1060fdea5e1804bdb8ef81f",
+      "payload": "v1\nPOST\n/v1/guest/asks\nc2c3cf08c3c2ca772ea71b5740090a61d37b319ed1060fdea5e1804bdb8ef81f\naaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n1800000000456\nn3+/=",
+      "signature": "DWT16Melxk3DX1i5varWbK27WTbTheLzJeEihO3Q+Q9UrMc11cUNaFgZ4aF5MqhaNWNv8jAhPL4iUpO/JA8IAQ=="
+    },
+    {
+      "method": "GET",
+      "path": "/v1/guest/asks/ask-00001?wait=20",
+      "body": "",
+      "destinationKeyId": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "ts": 1800000000789,
+      "nonce": "n4",
+      "bodySha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "payload": "v1\nGET\n/v1/guest/asks/ask-00001?wait=20\ne3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\naaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n1800000000789\nn4",
+      "signature": "jdKcS+41l1ix257gTjnHZDJ7KgNdqPEJkfCZAHIHicqFF7BUqiWxWwnGR01lL4LpJJ8GhWFbnx2fvljP6b9rAQ=="
+    }
+  ]
+}
