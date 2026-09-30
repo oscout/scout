@@ -701,7 +701,16 @@ function workspaceScoutdAllowed(): boolean {
   return raw === "1" || raw === "true" || raw === "yes" || raw === "on";
 }
 
+/** macOS ships a native supervisor. Other platforms must not resolve or spawn it. */
+export function nativeSupervisorNotApplicableDetail(platform: NodeJS.Platform = process.platform): string {
+  return platform === "linux"
+    ? "native supervisor: not applicable on linux"
+    : `native supervisor: not applicable on ${platform}`;
+}
+
 export function resolveScoutdCommand(config: BrokerServiceConfig = resolveBrokerServiceConfig()): ScoutdCommand | null {
+  if (process.platform !== "darwin") return null;
+
   const explicit = resolveEnvExecutable(process.env.OPENSCOUT_SCOUTD_BIN);
   if (explicit) {
     return { path: explicit, source: "env" };
@@ -1021,6 +1030,9 @@ export async function runScoutdServiceCommand(
 
   const scoutd = resolveScoutdCommand(config);
   if (!scoutd) {
+    if (process.platform !== "darwin") {
+      throw new Error(nativeSupervisorNotApplicableDetail());
+    }
     throw new Error(
       "Unable to locate scoutd for broker service management. Build scoutd with `npm run scoutd:build`, install a package that includes scoutd, or set OPENSCOUT_SCOUTD_BIN.",
     );

@@ -4,7 +4,7 @@ import { isolateOpenScoutUserDataForTests } from "./test-user-data-isolation.ts"
 
 isolateOpenScoutUserDataForTests();
 
-import { chmodSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -579,5 +579,26 @@ test("service autorun recognizes only its own source, dist and bundled entries",
   for (const name of ["broker-daemon.mjs", "base-daemon.mjs", "mesh-discover.mjs", "main.mjs"]) {
     const path = `/owned/runtime/${name}`;
     expect(isBrokerServiceEntrypoint(`file://${path}`, path)).toBe(false);
+  }
+});
+
+test("Linux never resolves even an explicitly configured native scoutd", async () => {
+  const previous = Object.getOwnPropertyDescriptor(process, "platform");
+  const root = mkdtempSync(join(tmpdir(), "scout-linux-native-"));
+  const scoutd = writeExecutable(join(root, "scoutd"));
+  Object.defineProperty(process, "platform", { configurable: true, value: "linux" });
+  try {
+    await withEnv({ OPENSCOUT_SCOUTD_BIN: scoutd }, async () => {
+      expect(resolveScoutdCommand(config)).toBeNull();
+      let spawned = false;
+      await expect(runScoutdServiceCommand("status", config, 1000, async () => {
+        spawned = true;
+        return "{}";
+      })).rejects.toThrow("native supervisor: not applicable on linux");
+      expect(spawned).toBe(false);
+    });
+  } finally {
+    if (previous) Object.defineProperty(process, "platform", previous);
+    rmSync(root, { recursive: true, force: true });
   }
 });
