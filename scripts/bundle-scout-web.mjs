@@ -179,11 +179,10 @@ export function copyControlPlaneClient(source, targetClientDir) {
       const relative = entry.slice(source.length + 1).replaceAll("\\", "/");
       if (relative === "crew-preview.html") return false;
       if (!relative.startsWith("crew/")) return true;
-      // CrewAvatar/CrewSprite request top-level portraits, authored eye
-      // patches and finished pose frames (CREW_POSES). Keep those paths
-      // intact, never the masters, runs or QA trees.
+      // CrewAvatar/CrewSprite request top-level portraits and authored eye
+      // patches. Keep those paths intact, never the masters, runs or QA trees.
       return /^crew\/[^/]+\.webp$/.test(relative)
-        || /^crew\/(?:sheets|poses)(?:\/[^/]+)?(?:\/[^/]+\.webp)?$/.test(relative);
+        || /^crew\/sheets(?:\/[^/]+)?(?:\/[^/]+\.webp)?$/.test(relative);
     },
   });
 }
