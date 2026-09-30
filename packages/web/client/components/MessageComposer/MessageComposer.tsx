@@ -18,6 +18,7 @@ import { useRouter } from "../../lib/router.ts";
 import { executeScoutVoiceIssueAction } from "../../lib/scout-voice.ts";
 import { useMessageComposerEmbedded } from "./MessageComposerEmbedBoundary.tsx";
 import { VoiceWaveform } from "./VoiceWaveform.tsx";
+import { BASIC_WEB } from "../../basic/profile.ts";
 import "./message-composer.css";
 
 export type MessageComposerDensity = "panel" | "thread" | "compact" | "bare";
@@ -461,7 +462,8 @@ function MessageComposerControl({
           />
         )}
 
-        {showVoiceLine ? (
+        {/* Basic web (npm) ships no voice: the line and mic compile out. */}
+        {!BASIC_WEB && showVoiceLine ? (
           <div
             className={voiceClass}
             role={isError ? "alert" : "status"}
@@ -549,7 +551,7 @@ function MessageComposerControl({
             <div className="s-msg-compose-tools">{toolsSlot}</div>
           ) : null}
 
-          {showDictation ? (
+          {!BASIC_WEB && showDictation ? (
             <DictationMic
               onAppend={handleDictationAppend}
               onStatus={handleDictationStatus}

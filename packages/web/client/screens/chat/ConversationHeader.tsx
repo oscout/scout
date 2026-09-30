@@ -12,6 +12,7 @@ import { BackToPicker } from "../../scout/slots/BackToPicker.tsx";
 import { openContent } from "../../scout/slots/openContent.ts";
 import { AstronautSuit } from "./AstronautSuit.tsx";
 import { useFacepileAttention } from "./use-facepile-attention.ts";
+import { BASIC_WEB } from "../../basic/profile.ts";
 import {
   conversationIdentityLabel,
   shortConversationIdentity,
@@ -293,7 +294,7 @@ export function ConversationHeader({
       </div>
 
       <div className="s-thread-center-header-right">
-        <div className="s-thread-view-toggle" role="group" aria-label="Conversation view">
+        {!BASIC_WEB && <div className="s-thread-view-toggle" role="group" aria-label="Conversation view">
           {CONVERSATION_VIEWS.map((option) => (
             <button
               key={option.id}
@@ -306,7 +307,7 @@ export function ConversationHeader({
               {option.label}
             </button>
           ))}
-        </div>
+        </div>}
         {participants.length > 0 && (
           <div
             className="s-thread-participants"

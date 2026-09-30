@@ -29,6 +29,17 @@ Realtime Scoutbot voice is a high-trust pilot controlled from **Settings → Voi
 
 The standalone npm release surface is `@openscout/scout`. It includes the `scout` CLI, the local broker/runtime, and this web application server/client. Keep this package modular internally, but avoid adding a separate public npm package unless there is a clear external integration story.
 
+### Basic web profile (npm)
+
+`@openscout/scout` ships the **basic** client, not the full app: Home (what's moving plus the delivery ledger with All / Needs attention / Delivered and a delivery detail), DMs (operator ↔ one-agent conversations, unread, thread, composer, start a DM) and Tail (live stream, filters, detail). Channels, flow/map/canvas views, terminals, voice, Mission Control, Host Advisor, settings and every other surface are left out of the build graph, not just hidden.
+
+- `bun run build:client:basic` (`OPENSCOUT_WEB_PROFILE=basic`) builds `client/basic/main.tsx` into `dist/basic-client/`. It defines `VITE_SCOUT_WEB_PROFILE=basic`, so `BASIC_WEB` (`client/basic/profile.ts`) is a compile-time constant and full-app branches drop out, and it prunes public assets only full surfaces load (`characters/`, crew masters, the crew preview page).
+- In the basic build every full-app URL is rewritten onto Home, DMs or Tail by `basicRoute` (`client/basic/profile.ts`): agent links open that agent's DM, session and follow links open a filtered Tail, everything else lands on Home.
+- `packages/cli/scripts/build.mjs` packages the basic client through `buildControlPlaneClientAndCopy` (`scripts/bundle-scout-web.mjs`), which refuses to package if `findBasicClientLeaks` finds a full-app marker, the unbuilt entry, or the 3D studio assets.
+- `bun run build:client` / `npm run build` still build the full app into `dist/client/`; a repo checkout's web server serves that one.
+
+The basic npm client does not provide the native apps' `/embed/*` or `/settings/*` surfaces; those URLs also fall back to Home. Native hosts that need these surfaces must use the full web build. The CLI, broker and server APIs remain in the package; this profile reduces the browser feature set, not the server API contract.
+
 ## Build (maintainers)
 
 From the repo root:
@@ -39,7 +50,7 @@ npm --prefix packages/web run build
 
 This builds:
 
-- `dist/client/` via Vite
+- `dist/client/` via Vite (the full app; the npm package uses `build:client:basic` instead, see above)
 - `dist/openscout-web-server.mjs` via `bun build`
 - `dist/pairing-runtime-controller.mjs` for the pairing runtime
 - `dist/openscout-terminal-relay.mjs` for the Node-hosted PTY relay

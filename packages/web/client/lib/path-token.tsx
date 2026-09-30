@@ -1,4 +1,5 @@
 import { useScout } from "../scout/Provider.tsx";
+import { BASIC_WEB } from "../basic/profile.ts";
 
 /* ── Filepath detection ──────────────────────────────────────────────────
  *
@@ -149,6 +150,15 @@ export function PathToken({ path }: { path: string }) {
     : isDirectoryLikePath(path)
       ? "dir"
       : "file";
+  // Basic web mounts no file preview overlay, so the path is text, not a control.
+  if (BASIC_WEB) {
+    return (
+      <code className="s-path-token" title={path}>
+        <PathIcon kind={kind} />
+        {path}
+      </code>
+    );
+  }
   return (
     <button
       type="button"

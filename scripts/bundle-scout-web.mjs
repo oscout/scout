@@ -4,7 +4,7 @@
  * relevant Vite clients into dist/ for published packages.
  */
 import { spawnSync } from "node:child_process";
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -96,7 +96,9 @@ export function bundleScoutTerminalRelayNode(repoRoot, outfile) {
 }
 
 /**
- * Run Vite client build in packages/web and copy dist/client → targetClientDir.
+ * Run the basic Vite client build in packages/web and copy dist/basic-client →
+ * targetClientDir. The npm package ships Home, DMs and Tail only; the repo's
+ * own web server keeps serving the full dist/client.
  * @param {string} repoRoot
  * @param {string} targetClientDir e.g. packages/cli/dist/control-plane-client
  * @returns {boolean}
@@ -108,21 +110,63 @@ export function buildControlPlaneClientAndCopy(repoRoot, targetClientDir) {
   // machines without Node). Fall back to `bun run build` when npm is absent.
   const hasNpm = spawnSync("npm", ["--version"], { stdio: "ignore" }).status === 0;
   const packageManager = hasNpm ? "npm" : "bun";
-  const build = spawnSync(packageManager, ["run", "build"], {
+  const build = spawnSync(packageManager, ["run", "build:client:basic"], {
     cwd: controlPlaneApp,
     stdio: "inherit",
   });
   if ((build.status ?? 1) !== 0) {
     return false;
   }
-  const source = resolve(controlPlaneApp, "dist/client");
+  const source = resolve(controlPlaneApp, "dist/basic-client");
   const indexHtml = resolve(source, "index.html");
   if (!existsSync(indexHtml)) {
     console.error("[bundle-scout-web] expected control-plane index.html after build at", indexHtml);
     return false;
   }
+  const leaks = findBasicClientLeaks(source);
+  if (leaks.length > 0) {
+    console.error(`[bundle-scout-web] basic client carries full-app surfaces; refusing to package:\n  ${leaks.join("\n  ")}`);
+    return false;
+  }
   copyControlPlaneClient(source, targetClientDir);
   return true;
+}
+
+/**
+ * Strings only full-app surfaces carry. Each one is present in the full
+ * dist/client and absent from dist/basic-client; finding one in the basic
+ * artifact means the profile flag stopped pruning that graph.
+ */
+export const BASIC_CLIENT_FORBIDDEN_MARKERS = [
+  "Mission Control",
+  "Host Advisor",
+  "Forward to new task",
+  "WebGLRenderer",
+  "xterm",
+  "createScoutApp",
+];
+
+/**
+ * Artifact-level check of the basic client: the basic entry, no 3D studio
+ * assets, and no full-app surface in any emitted script.
+ * @param {string} clientDir
+ * @returns {string[]} one line per leak; empty when clean
+ */
+export function findBasicClientLeaks(clientDir) {
+  const leaks = [];
+  const indexHtml = readFileSync(join(clientDir, "index.html"), "utf8");
+  if (indexHtml.includes("/main.tsx")) leaks.push("index.html: unbuilt /main.tsx entry");
+  if (existsSync(join(clientDir, "characters"))) leaks.push("characters/: ops 3D studio assets");
+  const assetsDir = join(clientDir, "assets");
+  const scripts = existsSync(assetsDir) ? readdirSync(assetsDir).filter((name) => name.endsWith(".js")) : [];
+  if (scripts.length === 0) leaks.push("assets/: no scripts emitted");
+  for (const name of scripts) {
+    const source = readFileSync(join(assetsDir, name), "utf8");
+    for (const marker of BASIC_CLIENT_FORBIDDEN_MARKERS) {
+      if (source.includes(marker)) leaks.push(`assets/${name}: ${JSON.stringify(marker)}`);
+    }
+  }
+  return leaks;
 }
 
 /** Copy runtime assets without the crew authoring masters or preview page. */

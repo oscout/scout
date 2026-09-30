@@ -1,3 +1,5 @@
+import { SlidePanel } from "../../components/SlidePanel/SlidePanel.tsx";
+import { BASIC_WEB } from "../../basic/profile.ts";
 import { ArrowDown, ArrowRight, AtSign, Check, ChevronDown, Copy, ExternalLink, Hash, LoaderCircle, Maximize2, MessageSquare, Minimize2, Paperclip, Plus, Radio, RefreshCw, SendHorizontal, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
@@ -398,10 +400,12 @@ function mergeBrokerPage(
 export function BrokerScreen({
   navigate,
   embedded = false,
+  basic = false,
   initialAttemptId,
 }: {
   navigate: (r: Route) => void;
   embedded?: boolean;
+  basic?: boolean;
   /** Embed deep link (`/embed/dispatch?attempt=…`); the shell uses the route. */
   initialAttemptId?: string;
 }) {
@@ -563,26 +567,29 @@ export function BrokerScreen({
   // the provider's cached attempt stays null there no matter what is clicked —
   // and routing through it would also rewrite the WebView's URL to the shell
   // path. The embed therefore keeps its own selection.
+  // Basic web has no shell rail either: it keeps the same local selection and
+  // shows the detail in a sheet over the page.
+  const localSelection = embedded || basic;
   const [embeddedSelection, setEmbeddedSelection] = useState<BrokerRouteAttempt | null>(null);
   /** Set once the deep-link seed has fired, or the operator has taken over. */
   const seedConsumedRef = useRef(false);
   const selectAttempt = useCallback((attempt: BrokerRouteAttempt) => {
-    if (embedded) {
+    if (localSelection) {
       // Any deliberate selection retires the deep-link seed (see below).
       seedConsumedRef.current = true;
       setEmbeddedSelection(attempt);
       return;
     }
     inspectBrokerAttempt(attempt);
-  }, [embedded, inspectBrokerAttempt]);
+  }, [localSelection, inspectBrokerAttempt]);
   const clearSelection = useCallback(() => {
-    if (embedded) {
+    if (localSelection) {
       seedConsumedRef.current = true;
       setEmbeddedSelection(null);
       return;
     }
     clearBrokerAttempt();
-  }, [clearBrokerAttempt, embedded]);
+  }, [clearBrokerAttempt, localSelection]);
 
   const activateLedgerRow = useCallback((index: number) => {
     const attempt = activeRows[index];
@@ -609,12 +616,12 @@ export function BrokerScreen({
     ? `${embeddedSelection.id} ${embeddedSelection.status} ${embeddedSelection.ts}`
     : null;
   useEffect(() => {
-    if (!embedded || !embeddedSelectionId) return;
+    if (!localSelection || !embeddedSelectionId) return;
     const fresh = feedRows.find((row) => row.id === embeddedSelectionId);
     if (!fresh) return;
     if (`${fresh.id} ${fresh.status} ${fresh.ts}` === embeddedSelectionSignature) return;
     setEmbeddedSelection(fresh);
-  }, [embedded, embeddedSelectionId, embeddedSelectionSignature, feedRows]);
+  }, [localSelection, embeddedSelectionId, embeddedSelectionSignature, feedRows]);
 
   // An embed deep link carries only an id, which the ledger may not hold yet —
   // an older attempt only appears after "Load older". So the seed stays armed
@@ -623,7 +630,7 @@ export function BrokerScreen({
   // resurrect one they dismissed. Failed queries and deliveries are searched
   // too; those ids never appear in the message feed.
   useEffect(() => {
-    if (!embedded || !initialAttemptId || !broker) return;
+    if (!localSelection || !initialAttemptId || !broker) return;
     if (seedConsumedRef.current || embeddedSelection) return;
     const match = feedRows.find((row) => row.id === initialAttemptId)
       ?? broker.attempts.find((row) => row.id === initialAttemptId)
@@ -632,7 +639,7 @@ export function BrokerScreen({
     if (!match) return;
     seedConsumedRef.current = true;
     setEmbeddedSelection(match);
-  }, [broker, embedded, embeddedSelection, feedRows, initialAttemptId]);
+  }, [broker, localSelection, embeddedSelection, feedRows, initialAttemptId]);
 
   useEffect(() => {
     const requestedAttemptId = route.view === "broker" ? route.attemptId : undefined;
@@ -652,11 +659,11 @@ export function BrokerScreen({
   // — the native host owns that chrome — so selecting a row used to update
   // context nothing rendered. The embed therefore carries its own detail pane
   // instead of the host trying to reproduce a web-side inspector natively.
-  const inspectorAttempt = embedded ? embeddedSelection : null;
+  const inspectorAttempt = localSelection ? embeddedSelection : null;
 
   // SCO-083: Dispatch is its own primary area — do not render OpsSubnav here.
   return (
-    <div className={`s-ops${embedded ? " s-ops--embedded" : ""}${inspectorAttempt ? " s-ops--split" : ""}`}>
+    <div className={`s-ops${embedded ? " s-ops--embedded" : ""}${embedded && inspectorAttempt ? " s-ops--split" : ""}`}>
       <div className="s-ops-body">
         <div className="sys-surface-page sys-surface-page-wide sys-surface-page-fluid sys-broker-page">
           <div className="sys-ledger-toolbar" aria-label="Dispatch controls">
@@ -713,6 +720,12 @@ export function BrokerScreen({
               </button>
             </div>
           </div>
+
+          {basic && broker && (
+            <p className="dsp-view-note dsp-view-note--lead">
+              Delivered means the message reached its recipient, not that the work is complete.
+            </p>
+          )}
 
           {error && (
             <div className="sys-banner sys-banner-warning">
@@ -785,7 +798,7 @@ export function BrokerScreen({
                 // Clicking a row inspects without navigating, so the deep-link
                 // id alone left every click unhighlighted. The inspected row is
                 // the selection; the route id only seeds it.
-                selectedAttemptId={embedded
+                selectedAttemptId={localSelection
                   ? embeddedSelection?.id ?? null
                   : selectedBrokerAttempt?.id
                     ?? (route.view === "broker" ? route.attemptId ?? null : null)}
@@ -808,7 +821,12 @@ export function BrokerScreen({
           )}
         </div>
 
-        {inspectorAttempt && (
+        {basic && inspectorAttempt && (
+          <SlidePanel open onClose={clearSelection} side="right" owner="openscout.dispatch" resizable defaultSize={520} minSize={360} maxSize={860} ariaLabel="Delivery detail">
+            <BrokerAttemptInspector attempt={inspectorAttempt} navigate={navigate} onClose={clearSelection} />
+          </SlidePanel>
+        )}
+        {embedded && inspectorAttempt && (
           <div className="s-broker-embed-detail">
             <BrokerAttemptInspector
               attempt={inspectorAttempt}
@@ -1783,15 +1801,17 @@ export function BrokerAttemptInspector({
                       Adjust
                       <ChevronDown size={11} aria-hidden="true" />
                     </button>
-                    <DictationMic
-                      className="sys-broker-composer-mic"
-                      disabled={forwardStatus === "sending"}
-                      onAppend={(text) => setMessageDraft((current) => current.trim() ? `${current.trimEnd()} ${text}` : text)}
-                      onError={(message) => {
-                        setForwardStatus("failed");
-                        setForwardMessage(message);
-                      }}
-                    />
+                    {!BASIC_WEB && (
+                      <DictationMic
+                        className="sys-broker-composer-mic"
+                        disabled={forwardStatus === "sending"}
+                        onAppend={(text) => setMessageDraft((current) => current.trim() ? `${current.trimEnd()} ${text}` : text)}
+                        onError={(message) => {
+                          setForwardStatus("failed");
+                          setForwardMessage(message);
+                        }}
+                      />
+                    )}
                   </div>
                   <button
                     type="submit"

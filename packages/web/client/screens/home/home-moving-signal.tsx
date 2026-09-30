@@ -48,6 +48,7 @@ import {
   usefulHeadline,
 } from "./home-live-action.ts";
 import type { HomeMovingSortMode } from "./home-moving.ts";
+import { BASIC_WEB } from "../../basic/profile.ts";
 import "./home-moving-signal.css";
 
 export type HomeMovingSignalCard =
@@ -781,11 +782,13 @@ function DockedSidecarInspector({
             className="btn btn--sm btn--accent s-moving-inspector-primary-action"
             onClick={() => navigate(row.observeRoute!)}
           >
-            <span>Observe Live</span>
+            <span>{BASIC_WEB ? basicObserveLabel(row.observeRoute) : "Observe Live"}</span>
             <ArrowRight size={11} aria-hidden="true" />
           </button>
         )}
-        {row.profileRoute && (
+        {/* Basic web folds profile and terminal into the agent's DM, which
+            the primary action already opens. */}
+        {!BASIC_WEB && row.profileRoute && (
           <button
             type="button"
             className="btn btn--sm btn--ghost"
@@ -794,7 +797,7 @@ function DockedSidecarInspector({
             <span>Profile</span>
           </button>
         )}
-        {row.terminalEnabled && row.terminalRoute && (
+        {!BASIC_WEB && row.terminalEnabled && row.terminalRoute && (
           <button
             type="button"
             className="btn btn--sm btn--ghost"
@@ -807,6 +810,11 @@ function DockedSidecarInspector({
       </footer>
     </div>
   );
+}
+
+/** Basic web routes agents to their DM and sessions to a filtered Tail. */
+function basicObserveLabel(route: Route): string {
+  return route.view === "sessions" || route.view === "ops" ? "View in Tail" : "Message";
 }
 
 /* ── Lightweight Hover Card ──────────────────────────────────────── */

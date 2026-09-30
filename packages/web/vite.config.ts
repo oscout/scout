@@ -1,10 +1,10 @@
 import tailwindcss from "@tailwindcss/vite";
 import react from "@vitejs/plugin-react-swc";
 import { execSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, rmSync } from "node:fs";
 import { createRequire } from "node:module";
 import { resolve } from "node:path";
-import { defineConfig } from "vite";
+import { defineConfig, type Plugin } from "vite";
 import { resolveOpenScoutWebRoutes } from "./shared/runtime-config.js";
 
 const require = createRequire(import.meta.url);
@@ -49,6 +49,38 @@ function resolveHudsonSdkSource(): string | null {
   return null;
 }
 
+/**
+ * `OPENSCOUT_WEB_PROFILE=basic` builds the npm package's web client: the same
+ * index.html booting `basic/main.tsx` (Home, DMs, Tail) into dist/basic-client.
+ * The ordinary build is untouched and stays the full app.
+ */
+const basicWeb = process.env.OPENSCOUT_WEB_PROFILE === "basic";
+/** Public files only full-app surfaces load (ops 3D studio, crew preview page, crew source masters). */
+const BASIC_WEB_OMITTED_PUBLIC = ["characters", "crew/masters", "crew-preview.html"];
+
+function basicWebPlugin(): Plugin {
+  let outDir = "";
+  return {
+    name: "scout-basic-entry",
+    configResolved(config) {
+      outDir = config.build.outDir;
+    },
+    transformIndexHtml: {
+      order: "pre",
+      // Basic has no standalone chat/invite surfaces, so it always bootstraps
+      // the operator API.
+      handler: (html) => html
+        .replace('src="/main.tsx"', 'src="/basic/main.tsx"')
+        .replace("if (!standalone)", "if (true)"),
+    },
+    closeBundle() {
+      for (const entry of BASIC_WEB_OMITTED_PUBLIC) {
+        rmSync(resolve(outDir, entry), { recursive: true, force: true });
+      }
+    },
+  };
+}
+
 const hudsonSdk = resolveHudsonSdkSource();
 const webNodeModules = resolve(__dirname, "node_modules");
 const bunTarget = process.env.OPENSCOUT_WEB_BUN_URL?.trim() || "http://127.0.0.1:43120";
@@ -74,7 +106,8 @@ function hudsonKitAlias(sourceFile: string, packageExport: string): string {
 export default defineConfig({
   root: resolve(__dirname, "client"),
   clearScreen: false,
-  plugins: [react(), tailwindcss()],
+  plugins: [react(), tailwindcss(), ...(basicWeb ? [basicWebPlugin()] : [])],
+  define: { "import.meta.env.VITE_SCOUT_WEB_PROFILE": JSON.stringify(basicWeb ? "basic" : "full") },
   server: {
     hmr: {
       path: routes.viteHmrPath,
@@ -116,7 +149,7 @@ export default defineConfig({
     },
   },
   build: {
-    outDir: resolve(__dirname, "dist/client"),
+    outDir: resolve(__dirname, basicWeb ? "dist/basic-client" : "dist/client"),
     emptyOutDir: true,
     sourcemap: false,
   },

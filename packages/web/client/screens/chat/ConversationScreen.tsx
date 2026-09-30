@@ -103,6 +103,7 @@ import {
   type ConversationHeaderParticipant,
 } from "./ConversationHeader.tsx";
 import { CommsFlowPane } from "./CommsFlowGraph.tsx";
+import { BASIC_WEB } from "../../basic/profile.ts";
 import type { BesideControl } from "./CommsSelection.tsx";
 import { useStage } from "./use-beside.ts";
 import {
@@ -1213,7 +1214,8 @@ export function ConversationScreen({
   ]);
   const presenceLineLabel = `${agentName}: ${displayTurnSnapshot.latest}`;
 
-  const openWorkingTerminal = workingAgentId && canOpenConversationTerminal(workingAgent)
+  // Basic web ships no terminal surface.
+  const openWorkingTerminal = !BASIC_WEB && workingAgentId && canOpenConversationTerminal(workingAgent)
     ? () => {
         openContent(
           navigate,
@@ -2189,18 +2191,21 @@ export function ConversationScreen({
           onSelect: () => beginReply(message, actorHandle),
         });
       }
-      items.push({
-        kind: "action",
-        label: "Forward to new task…",
-        onSelect: () => forwardMessage(
-          message,
-          actorLabel,
-          participant?.workspaceRoot
-          ?? messageAgent?.projectRoot
-          ?? messageAgent?.cwd
-          ?? undefined,
-        ),
-      });
+      // Forwarding opens context capture, which basic web does not mount.
+      if (!BASIC_WEB) {
+        items.push({
+          kind: "action",
+          label: "Forward to new task…",
+          onSelect: () => forwardMessage(
+            message,
+            actorLabel,
+            participant?.workspaceRoot
+            ?? messageAgent?.projectRoot
+            ?? messageAgent?.cwd
+            ?? undefined,
+          ),
+        });
+      }
       items.push({ kind: "separator" });
       if (sel) {
         items.push({
@@ -2361,10 +2366,11 @@ export function ConversationScreen({
             threadTitle={threadTitle}
             agentId={agent?.id ?? null}
             sessionId={conversationSessionId}
-            detailRoute={conversationDetailRoute}
+            // Basic web has no agent profile or group rooms: the DM is the detail.
+            detailRoute={BASIC_WEB ? null : conversationDetailRoute}
             participants={headerParticipants}
             operator={headerOperator}
-            canAddParticipants={canAddParticipants}
+            canAddParticipants={!BASIC_WEB && canAddParticipants}
             view={view}
             onChangeView={changeView}
             onToggleAddParticipant={() => {
@@ -2381,7 +2387,7 @@ export function ConversationScreen({
           />
         )}
 
-        {!embedded && addParticipantOpen && canAddParticipants && (
+        {!BASIC_WEB && !embedded && addParticipantOpen && canAddParticipants && (
           <AddParticipantForm
             agents={addableParticipantAgents}
             addParticipantId={addParticipantId}
@@ -2445,7 +2451,7 @@ export function ConversationScreen({
 
         {/* The same messages, two arrangements: in order, or by who was
             waiting on whom. The composer stays put under both. */}
-        {view !== "thread" ? (
+        {!BASIC_WEB && view !== "thread" ? (
           <CommsFlowPane
             messages={messages}
             view={view}
