@@ -502,7 +502,11 @@ export async function runOpenScoutOnboardingSetup(input: {
   let broker = await brokerServiceStatus();
   let brokerWarning: string | null = null;
   try {
-    broker = await startBrokerService();
+    // An externally supervised foreground broker is already running. Setup
+    // must not attempt a native lifecycle action or warn that it needs starting.
+    if (broker.serviceAdapter !== "headless-foreground" || !broker.health.ok) {
+      broker = await startBrokerService();
+    }
   } catch (error) {
     brokerWarning = error instanceof Error ? error.message : String(error);
     broker = await brokerServiceStatus();

@@ -96,8 +96,9 @@ export function renderScoutDoctorTailAfterStream(report: ScoutDoctorReport): str
     `  Installed: ${report.broker.installed ? "yes" : "no"}`,
     `  Loaded: ${report.broker.loaded ? "yes" : "no"}`,
     `  Reachable: ${report.broker.reachable ? "yes" : "no"}`,
-    `  LaunchAgent: ${report.broker.launchAgentPath}`,
-    `  Bootout: ${report.broker.bootoutCommand}`,
+    ...(report.broker.serviceAdapter === "headless-foreground"
+      ? ["  Lifecycle: foreground process (managed externally)"]
+      : [`  LaunchAgent: ${report.broker.launchAgentPath}`, `  Bootout: ${report.broker.bootoutCommand}`]),
     `  Stdout: ${report.broker.stdoutLogPath}`,
     `  Stderr: ${report.broker.stderrLogPath}`,
     "",
@@ -339,8 +340,9 @@ export function renderScoutDoctorReport(report: ScoutDoctorReport): string {
     `  Installed: ${report.broker.installed ? "yes" : "no"}`,
     `  Loaded: ${report.broker.loaded ? "yes" : "no"}`,
     `  Reachable: ${report.broker.reachable ? "yes" : "no"}`,
-    `  LaunchAgent: ${report.broker.launchAgentPath}`,
-    `  Bootout: ${report.broker.bootoutCommand}`,
+    ...(report.broker.serviceAdapter === "headless-foreground"
+      ? ["  Lifecycle: foreground process (managed externally)"]
+      : [`  LaunchAgent: ${report.broker.launchAgentPath}`, `  Bootout: ${report.broker.bootoutCommand}`]),
     `  Stdout: ${report.broker.stdoutLogPath}`,
     `  Stderr: ${report.broker.stderrLogPath}`,
     "",
@@ -369,7 +371,7 @@ export function renderScoutDoctorReport(report: ScoutDoctorReport): string {
 
 export function renderScoutSetupReport(report: ScoutSetupReport): string {
   const lines = [
-    "Scout initialized.",
+    report.broker.health.ok ? "Scout initialized; broker ready." : "Scout configured; broker is not ready.",
     `Context root: ${report.currentDirectory}`,
     `Support directory: ${report.setup.supportDirectory}`,
     `Settings: ${report.setup.settingsPath}`,
@@ -390,8 +392,9 @@ export function renderScoutSetupReport(report: ScoutSetupReport): string {
     `  Broker URL: ${report.broker.brokerUrl}`,
     ...renderBrokerHealthTransportLines(report.broker),
     `  Reachable: ${report.broker.reachable ? "yes" : "no"}`,
-    `  LaunchAgent: ${report.broker.launchAgentPath}`,
-    `  Bootout: ${report.broker.bootoutCommand}`,
+    ...(report.broker.serviceAdapter === "headless-foreground"
+      ? ["  Lifecycle: foreground process (managed externally)"]
+      : [`  LaunchAgent: ${report.broker.launchAgentPath}`, `  Bootout: ${report.broker.bootoutCommand}`]),
     `  Logs: ${report.broker.stdoutLogPath} | ${report.broker.stderrLogPath}`,
   ];
 
@@ -411,6 +414,9 @@ export function renderScoutSetupReport(report: ScoutSetupReport): string {
   lines.push(
     "",
     "Next:",
+    ...(report.broker.serviceAdapter === "headless-foreground" && !report.broker.health.ok
+      ? ["  openscout-runtime broker  # keep running in another shell or under your process manager"]
+      : []),
     "  scout doctor",
     "  scout runtimes",
   );

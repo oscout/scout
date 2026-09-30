@@ -119,4 +119,5 @@ export async function runSetupCommand(context: ScoutCommandContext, args: string
   );
   const report = await runScoutSetup(options);
   context.output.writeValue(report, renderScoutSetupReport);
+  if (!report.broker.health.ok) process.exitCode = 1;
 }
