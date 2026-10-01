@@ -1,6 +1,6 @@
 {
   "name": "@openscout/scout",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Coordinate Claude Code, Codex, Cursor, OpenCode, Kimi, Grok, Pi, and Devin agents with local-first messaging, task orchestration, and MCP.",
   "keywords": [
     "openscout",
@@ -64,8 +64,7 @@
     "bin",
     "dist",
     "README.md",
-    "NOTICE",
-    "server.json"
+    "NOTICE"
   ],
   "dependencies": {
     "@lydell/node-pty": "1.2.0-beta.12",
@@ -87,6 +86,5 @@
   },
   "devDependencies": {
     "@openscout/runtime": "workspace:*"
-  },
-  "mcpName": "io.github.oscout/scout"
+  }
 }

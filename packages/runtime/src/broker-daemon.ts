@@ -1,3 +1,8 @@
+import { IntegrationSlackEvents } from "./integration-slack-events.js";
+import { IntegrationSlackDeliveryService } from "./integration-slack-delivery.js";
+import { SlackWorkerSupervisor } from "./slack-worker-supervisor.js";
+import { verifySlackWorkerCredentials } from "./slack-worker-process.js";
+import { BrokerIntegrationSetupService } from "./broker-integration-setup.js";
 import { GuestGrantStore } from "./guest-access.js";
 import { BrokerExternalSessionService } from "./broker-external-session-service.js";
 import { externalSessionConnections, devinSessionTransport } from "./external-session-transport.js";
@@ -480,6 +485,12 @@ const bootstrapProjectionOptions = () => (
   projectionWarmStarted ? undefined : { enqueueProjection: false as const }
 );
 const routeAliasDatabase = sharedControlPlaneStore?.routeAliasDatabase ?? null;
+const integrationSetupService = routeAliasDatabase
+  ? new BrokerIntegrationSetupService({ database: routeAliasDatabase, ownerRealmId: meshId, nodeId, snapshot: () => runtime.snapshot(), verifyCredentials: verifySlackWorkerCredentials })
+  : undefined;
+const integrationSlackEvents = integrationSetupService && routeAliasDatabase ? new IntegrationSlackEvents(routeAliasDatabase, integrationSetupService) : undefined;
+const integrationSlackDelivery = integrationSetupService && routeAliasDatabase ? new IntegrationSlackDeliveryService(routeAliasDatabase, integrationSetupService) : undefined;
+const slackWorkerSupervisor = integrationSetupService ? new SlackWorkerSupervisor(integrationSetupService, () => brokerUrl) : undefined;
 const routeAliasService = routeAliasDatabase
   ? new BrokerRouteAliasService({
       store: new BrokerRouteAliasStore(routeAliasDatabase),
@@ -2546,6 +2557,9 @@ const routeRequest = createBrokerHttpRouter({
   rendezvousService,
   externalSessionService,
   routeAliasService,
+  integrationSetupService,
+  integrationSlackDelivery,
+  integrationSlackEvents,
   machines: machineService,
   guest: {
     sessions: externalSessionService,
@@ -3131,6 +3145,7 @@ if (startupTrafficGate.snapshot().mutationsAdmitted) {
     });
   }, 60_000).unref();
 
+  slackWorkerSupervisor?.start();
   if (routeAliasService) {
     routeAliasSweepTimer = setInterval(() => {
       routeAliasService.sweepExpired();
@@ -3144,6 +3159,7 @@ async function shutdownBroker(exitCode = 0): Promise<void> {
     return;
   }
   shuttingDown = true;
+  await slackWorkerSupervisor?.stop();
   await otlpReceiver?.close().catch(() => {
     console.warn("[openscout-runtime] OTLP receiver shutdown failed");
   });

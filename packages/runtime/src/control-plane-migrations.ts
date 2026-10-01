@@ -1,3 +1,7 @@
+import { INTEGRATION_SLACK_EVENTS_SCHEMA } from "./integration-slack-events.js";
+import { INTEGRATION_SLACK_DELIVERY_SCHEMA } from "./integration-slack-delivery.js";
+import { INTEGRATION_WORKER_SQLITE_SCHEMA } from "./integration-worker-leases.js";
+import { INTEGRATION_SETUP_SQLITE_SCHEMA } from "./integration-setup-schema.js";
 import { GUEST_GRANTS_SQLITE_SCHEMA } from "./guest-access.js";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
@@ -80,6 +84,26 @@ function repairSessionActorTargets(database: ControlPlaneSqliteDatabase): void {
 }
 
 export const CONTROL_PLANE_SCHEMA_MIGRATIONS: ControlPlaneSchemaMigration[] = [
+  {
+    id: "integration-setup-operations",
+    description: "Adds broker-owned resumable integration setup and idempotency records.",
+    apply(database) { database.exec(INTEGRATION_SETUP_SQLITE_SCHEMA); },
+  },
+  {
+    id: "integration-worker-leases",
+    description: "Adds durable, fenced integration worker leases.",
+    apply(database) { database.exec(INTEGRATION_WORKER_SQLITE_SCHEMA); },
+  },
+  {
+    id: "integration-slack-deliveries",
+    description: "Adds canonical Slack project thread lineage and delivery recovery records.",
+    apply(database) { database.exec(INTEGRATION_SLACK_DELIVERY_SCHEMA); },
+  },
+  {
+    id: "integration-slack-events",
+    description: "Adds durable observed Slack event intake before Socket Mode acknowledgement.",
+    apply(database) { database.exec(INTEGRATION_SLACK_EVENTS_SCHEMA); },
+  },
   {
     id: "session-actor-target-foreign-keys",
     description: "Allows canonical session actors in endpoint and work target references without creating agent cards.",

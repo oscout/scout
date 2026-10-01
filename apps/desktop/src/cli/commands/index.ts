@@ -24,6 +24,7 @@ export type ScoutCommandName =
   | "init"
   | "inbox"
   | "install"
+  | "integration"
   | "label"
   | "latest"
   | "machines"
@@ -52,11 +53,14 @@ export type ScoutCommandName =
   | "update"
   | "wait"
   | "watch"
+  | "web"
   | "who"
   | "whoami";
 
 export async function loadScoutCommandHandler(name: ScoutCommandName): Promise<ScoutCommandHandler> {
   switch (name) {
+    case "integration":
+      return (await import("./integration.ts")).runIntegrationCommand;
     case "app":
       return (await import("./app.ts")).runAppCommand;
     case "status":
@@ -141,6 +145,8 @@ export async function loadScoutCommandHandler(name: ScoutCommandName): Promise<S
       return (await import("./speak.ts")).runSpeakCommand;
     case "statusline":
       return (await import("./statusline.ts")).runStatuslineCommand;
+    case "web":
+      return (await import("./web.ts")).runWebCommand;
     case "tail":
       return (await import("./tail.ts")).runTailCommand;
     case "tell":

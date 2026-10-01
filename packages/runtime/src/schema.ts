@@ -1,3 +1,7 @@
+import { INTEGRATION_SLACK_EVENTS_SCHEMA } from "./integration-slack-events.js";
+import { INTEGRATION_SLACK_DELIVERY_SCHEMA } from "./integration-slack-delivery.js";
+import { INTEGRATION_WORKER_SQLITE_SCHEMA } from "./integration-worker-leases.js";
+import { INTEGRATION_SETUP_SQLITE_SCHEMA } from "./integration-setup-schema.js";
 export * from "./drizzle-schema.js";
 export { CONTROL_PLANE_SCHEMA_VERSION } from "./schema-version.js";
 
@@ -221,6 +225,10 @@ CREATE INDEX IF NOT EXISTS idx_machines_scout_node_id
 // or from the checked-in migration chain, so the mirror step cannot be
 // skipped or fudged.
 export const CONTROL_PLANE_SQLITE_SCHEMA = `
+${INTEGRATION_SETUP_SQLITE_SCHEMA}
+${INTEGRATION_WORKER_SQLITE_SCHEMA}
+${INTEGRATION_SLACK_DELIVERY_SCHEMA}
+${INTEGRATION_SLACK_EVENTS_SCHEMA}
 PRAGMA journal_mode = WAL;
 PRAGMA foreign_keys = ON;
 

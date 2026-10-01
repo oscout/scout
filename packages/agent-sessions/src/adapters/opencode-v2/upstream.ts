@@ -1,9 +1,9 @@
-// Publishable boundary around @opencode-ai/client@0.0.0-next-17226.
+// Publishable boundary around @opencode/client@2.0.21.
 //
 // The runtime values are official generated client/service implementations.
 // The local structural types intentionally describe only the stable surface
-// consumed by this adapter, preventing the beta package's broken extensionless
-// NodeNext declarations from leaking into @openscout/agent-sessions consumers.
+// consumed by this adapter, keeping the client's effect-typed declaration
+// graph out of @openscout/agent-sessions consumers.
 
 import {
   OpenCode as OfficialOpenCode,
@@ -21,7 +21,7 @@ export type Endpoint = {
 
 export type DiscoverOptions = {
   file?: string;
-  version?: string;
+  version?: string | ((version: string) => boolean);
 };
 
 export type EnsureOptions = DiscoverOptions & {
@@ -96,42 +96,74 @@ export type SessionPromptInput = {
   resume?: boolean | null;
 };
 
-export type SessionPendingUser = {
-  id: string;
-  sessionID: string;
-  timeCreated: number;
-  type: "user";
-  data: {
-    text: string;
-    files?: PromptFile[];
-    agents?: Array<{ name: string; mention?: { start: number; end: number; text: string } }>;
-    skills?: Array<{ id: string; mention?: { start: number; end: number; text: string } }>;
-    metadata?: Record<string, unknown>;
-  };
-  delivery: "steer" | "queue";
+export type SessionInboxDelivery = "steer" | "queue";
+
+export type SessionInboxUserPayload = {
+  text: string;
+  files?: PromptFile[];
+  agents?: Array<{ name: string; mention?: { start: number; end: number; text: string } }>;
+  skills?: Array<{ id: string; mention?: { start: number; end: number; text: string } }>;
+  metadata?: Record<string, unknown>;
 };
 
-export type SessionPendingMessage =
-  | {
-      type: "user";
-      data: SessionPendingUser["data"];
-      delivery: "steer" | "queue";
-    }
+export type SessionInboxUser = {
+  id: string;
+  sessionID: string;
+  time: { created: number };
+  type: "user";
+  payload: SessionInboxUserPayload;
+  delivery: SessionInboxDelivery;
+};
+
+export type SessionInboxItem =
+  | { type: "user"; payload: SessionInboxUserPayload; delivery: SessionInboxDelivery }
   | {
       type: "synthetic";
-      data: {
-        text: string;
-        description?: string;
-        metadata?: Record<string, unknown>;
-      };
-      delivery: "steer" | "queue";
-    };
+      payload: { text: string; description?: string; metadata?: Record<string, unknown> };
+      delivery: SessionInboxDelivery;
+    }
+  | { type: "compaction"; payload: Record<string, never>; delivery: SessionInboxDelivery }
+  | { type: "move"; payload: Record<string, unknown>; delivery: SessionInboxDelivery };
 
-export type SessionPendingInfo = {
+export type SessionInboxInfo = {
   id: string;
   sessionID: string;
   type: string;
 };
+
+export type ServerInfo = {
+  version: string;
+  pid: number;
+};
+
+export type FormOption = { value: string; label: string; description?: string };
+
+type FormFieldBase = {
+  key: string;
+  title?: string;
+  description?: string;
+  required?: boolean;
+  hidden?: boolean;
+  when?: Array<{ key: string; op: "eq" | "neq"; value: string | number | boolean }>;
+};
+
+export type FormField =
+  | FormFieldBase & { type: "string"; options?: FormOption[]; custom?: boolean; default?: string }
+  | FormFieldBase & { type: "number" | "integer"; default?: number }
+  | FormFieldBase & { type: "boolean"; default?: boolean }
+  | FormFieldBase & { type: "multiselect"; options: FormOption[]; custom?: boolean; default?: string[] }
+  | { key: string; type: "external"; url: string; title?: string; description?: string };
+
+export type FormInfo = {
+  id: string;
+  sessionID: string;
+  title: string;
+  metadata?: Record<string, unknown>;
+  fields: FormField[];
+};
+
+export type FormValue = string | number | boolean | string[];
+export type FormAnswer = Record<string, FormValue>;
 
 type EventEnvelope<Type extends string, Data> = {
   id: string;
@@ -154,17 +186,18 @@ type ToolContent =
 
 export type OpenCodeEvent =
   | EventEnvelope<"server.connected", Record<string, never>>
-  | EventEnvelope<"session.input.admitted", SessionData & {
-    inputID: string;
-    input: SessionPendingMessage;
+  | EventEnvelope<"session.inbox.enqueued", SessionData & {
+    inboxID: string;
+    item: SessionInboxItem;
   }>
-  | EventEnvelope<
-    "session.input.promoted" | "session.input.queued" | "session.input.steered" | "session.input.cancelled",
-    SessionData & { inputID: string }
-  >
+  | EventEnvelope<"session.inbox.delivered" | "session.inbox.cancelled", SessionData & { inboxID: string }>
+  | EventEnvelope<"session.inbox.delivery.changed", SessionData & {
+    inboxID: string;
+    delivery: SessionInboxDelivery;
+  }>
   | EventEnvelope<"session.execution.started" | "session.execution.succeeded", SessionData>
   | EventEnvelope<"session.execution.interrupted", SessionData & {
-    reason: "user" | "shutdown" | "superseded";
+    reason: "user" | "shutdown" | "superseded" | "inactivity";
   }>
   | EventEnvelope<"session.execution.failed", SessionData & { error: StructuredError }>
   | EventEnvelope<"session.idle", SessionData>
@@ -173,6 +206,7 @@ export type OpenCodeEvent =
     agent: string;
     model: ModelRef;
     snapshot?: string;
+    started?: number;
   }>
   | EventEnvelope<"session.step.ended", AssistantData & {
     finish: string;
@@ -231,37 +265,34 @@ export type OpenCodeEvent =
     requestID: string;
     reply: "once" | "always" | "reject";
   }>
-  | EventEnvelope<"question.asked", SessionData & {
-    id: string;
-    questions: Array<{
-      question: string;
-      header: string;
-      options: Array<{ label: string; description: string }>;
-      multiple?: boolean;
-      custom?: boolean;
-    }>;
-    tool?: { messageID: string; id: string };
-  }>
-  | EventEnvelope<"question.replied", SessionData & {
-    requestID: string;
-    answers: string[][];
-  }>
-  | EventEnvelope<"question.rejected", SessionData & { requestID: string }>;
+  | EventEnvelope<"form.created", { form: FormInfo }>
+  | EventEnvelope<"form.replied", SessionData & { id: string; answer: FormAnswer }>
+  | EventEnvelope<"form.cancelled", SessionData & { id: string }>;
 
 export type OpenCodeClient = {
-  health: {
-    get(options?: RequestOptions): Promise<{ healthy: true; version: string; pid: number }>;
+  server: {
+    info(options?: RequestOptions): Promise<ServerInfo>;
   };
   session: {
     active(options?: RequestOptions): Promise<Record<string, { type: "running" }>>;
     create(input?: SessionCreateInput, options?: RequestOptions): Promise<SessionInfo>;
     get(input: SessionGetInput, options?: RequestOptions): Promise<SessionInfo>;
-    prompt(input: SessionPromptInput, options?: RequestOptions): Promise<SessionPendingUser>;
-    interrupt(input: { sessionID: string }, options?: RequestOptions): Promise<void>;
+    prompt(input: SessionPromptInput, options?: RequestOptions): Promise<SessionInboxUser>;
+    interrupt(
+      input: { sessionID: string; resume?: boolean },
+      options?: RequestOptions,
+    ): Promise<{ interrupted: boolean } | void>;
     wait(input: { sessionID: string }, options?: RequestOptions): Promise<void>;
-    pending: {
-      list(input: { sessionID: string }, options?: RequestOptions): Promise<SessionPendingInfo[]>;
-      cancel(input: { sessionID: string; inputID: string }, options?: RequestOptions): Promise<void>;
+    inbox: {
+      list(input: { sessionID: string }, options?: RequestOptions): Promise<SessionInboxInfo[]>;
+      cancel(input: { sessionID: string; inboxID: string }, options?: RequestOptions): Promise<void>;
+    };
+    form: {
+      reply(input: {
+        sessionID: string;
+        formID: string;
+        answer: FormAnswer;
+      }, options?: RequestOptions): Promise<void>;
     };
   };
   event: {
@@ -271,15 +302,8 @@ export type OpenCodeClient = {
     reply(input: {
       sessionID: string;
       requestID: string;
-      reply: "once" | "always" | "reject";
+      decision: "once" | "always" | "reject";
       message?: string;
-    }, options?: RequestOptions): Promise<void>;
-  };
-  question: {
-    reply(input: {
-      sessionID: string;
-      requestID: string;
-      answers: readonly (readonly string[])[];
     }, options?: RequestOptions): Promise<void>;
   };
 };

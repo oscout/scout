@@ -6,6 +6,9 @@ import { createAdapter as createGrokAcpAdapter } from "../adapters/grok-acp/inde
 import { createAdapter as createKimiAcpAdapter } from "../adapters/kimi-acp/index.js";
 import { createAdapter as createCursorAcpAdapter } from "../adapters/cursor-acp/index.js";
 import { createAdapter as createOpencodeAcpAdapter } from "../adapters/opencode-acp/index.js";
+import { createAdapter as createOpencodeV2Adapter } from "../adapters/opencode-v2/index.js";
+import { findOpenCodeV2Binary } from "../adapters/opencode-v2/binary.js";
+import { createAdapter as createOpenclawAcpAdapter } from "../adapters/openclaw-acp/index.js";
 import { createAdapter as createDevinAcpAdapter } from "../adapters/devin-acp/index.js";
 import { createAdapter as createPiAdapter } from "../adapters/pi/index.js";
 import type { SequencedEvent } from "../buffer.js";
@@ -67,8 +70,8 @@ export type {
   CodexAppServerTurnResult,
 } from "./transports/codex-app-server.js";
 
-export type LocalAgentHarness = "codex" | "pi" | "grok" | "grok-acp" | "kimi" | "cursor" | "opencode" | "devin";
-export type LocalAgentResolvedHarness = "codex" | "pi" | "grok" | "kimi" | "cursor" | "opencode" | "devin";
+export type LocalAgentHarness = "codex" | "pi" | "grok" | "grok-acp" | "kimi" | "cursor" | "opencode" | "devin" | "openclaw";
+export type LocalAgentResolvedHarness = "codex" | "pi" | "grok" | "kimi" | "cursor" | "opencode" | "devin" | "openclaw";
 export type LocalAgentTransport =
   | "codex_app_server"
   | "pi_rpc"
@@ -76,7 +79,9 @@ export type LocalAgentTransport =
   | "kimi_acp"
   | "cursor_acp"
   | "opencode_acp"
-  | "devin_acp";
+  | "opencode_v2"
+  | "devin_acp"
+  | "openclaw_acp";
 export type LocalAgentWarmth = "warm" | "lazy";
 
 export type LocalAgentUsage = {
@@ -191,11 +196,14 @@ function resolveLocalTransport(
         : harness === "kimi"
           ? "kimi_acp"
           : harness === "opencode"
-            ? "opencode_acp"
+            ? defaultOpenCodeTransport()
             : harness === "devin"
               ? "devin_acp"
               : "cursor_acp";
-  const transport = requested ?? defaultTransport;
+  const transport = requested ?? (harness === "openclaw" ? "openclaw_acp" : defaultTransport);
+  if (harness === "openclaw" && transport !== "openclaw_acp") {
+    throw new Error(`Local harness openclaw does not support transport ${transport}.`);
+  }
 
   if (harness === "codex" && transport !== "codex_app_server") {
     throw new Error(`Local harness codex does not support transport ${transport}.`);
@@ -212,7 +220,7 @@ function resolveLocalTransport(
   if (harness === "cursor" && transport !== "cursor_acp") {
     throw new Error(`Local harness cursor does not support transport ${transport}.`);
   }
-  if (harness === "opencode" && transport !== "opencode_acp") {
+  if (harness === "opencode" && transport !== "opencode_acp" && transport !== "opencode_v2") {
     throw new Error(`Local harness opencode does not support transport ${transport}.`);
   }
   if (harness === "devin" && transport !== "devin_acp") {
@@ -222,7 +230,22 @@ function resolveLocalTransport(
   return transport;
 }
 
+/**
+ * OpenCode product V2 (`opencode2`) is the preferred OpenCode runtime. When it
+ * is installed, local turns use its shared service; otherwise they fall back to
+ * the V1 `opencode acp` bridge.
+ */
+export function defaultOpenCodeTransport(
+  env: NodeJS.ProcessEnv = process.env,
+  systemBinDirs?: readonly string[],
+): "opencode_v2" | "opencode_acp" {
+  return findOpenCodeV2Binary(env, systemBinDirs) ? "opencode_v2" : "opencode_acp";
+}
+
 function adapterSpecForTransport(transport: LocalAgentTransport): LocalAdapterSpec {
+  if (transport === "openclaw_acp") {
+    return { adapterType: "openclaw-acp", createAdapter: createOpenclawAcpAdapter };
+  }
   if (transport === "pi_rpc") {
     return {
       adapterType: "pi",
@@ -258,6 +281,13 @@ function adapterSpecForTransport(transport: LocalAgentTransport): LocalAdapterSp
     };
   }
 
+  if (transport === "opencode_v2") {
+    return {
+      adapterType: "opencode-v2",
+      createAdapter: createOpencodeV2Adapter,
+    };
+  }
+
   if (transport === "devin_acp") {
     return {
       adapterType: "devin-acp",
@@ -269,6 +299,7 @@ function adapterSpecForTransport(transport: LocalAgentTransport): LocalAdapterSp
 }
 
 function localSessionName(harness: LocalAgentResolvedHarness): string {
+  if (harness === "openclaw") return "Local OpenClaw ACP";
   if (harness === "codex") {
     return "Local Codex";
   }
@@ -276,7 +307,7 @@ function localSessionName(harness: LocalAgentResolvedHarness): string {
   if (harness === "grok") return "Local Grok ACP";
   if (harness === "kimi") return "Local Kimi Code ACP";
   if (harness === "devin") return "Local Devin ACP";
-  return harness === "opencode" ? "Local OpenCode ACP" : "Local Cursor ACP";
+  return harness === "opencode" ? "Local OpenCode" : "Local Cursor ACP";
 }
 
 function buildAdapterOptions(options: {
@@ -296,6 +327,9 @@ function buildAdapterOptions(options: {
   }
 
   return {
+    // This convenience client has no permission consumer. Direct adapter users
+    // can opt into interactive approval and answer through decide().
+    ...(options.transport === "openclaw_acp" ? { permissionMode: "safe_reject" } : {}),
     ...(options.adapterOptions ?? {}),
     ...(options.reuseKey ? { sessionId: options.reuseKey, sessionMode: "auto" } : {}),
     ...(options.transport === "cursor_acp" ? { cursorExtensions: true } : {}),
@@ -304,6 +338,8 @@ function buildAdapterOptions(options: {
     // OpenCode has no model flag on `acp`; its adapter turns this into a
     // config overlay on the child environment.
     ...(options.transport === "opencode_acp" && options.model ? { model: options.model } : {}),
+    // V2 takes `provider/model#variant` and sets it on the new native session.
+    ...(options.transport === "opencode_v2" && options.model ? { model: options.model } : {}),
     // Devin selects the model at process launch; its adapter turns this into
     // a `devin acp --model <id>` argument.
     ...(options.transport === "devin_acp" && options.model ? { model: options.model } : {}),
@@ -507,6 +543,13 @@ function nestedRecord(source: Record<string, unknown> | undefined, key: string):
 
 function nativeSessionId(snapshot: SessionState | null): string | undefined {
   const meta = snapshot?.session.providerMeta;
+  if (snapshot?.session.adapterType === "openclaw-acp") {
+    // OpenClaw's newSession UUID belongs to one bridge process. Cold resume
+    // resolves a Gateway session key, published separately in session info.
+    // Never return the ephemeral UUID as a usable continuation handle.
+    const info = nestedRecord(nestedRecord(meta, "acp"), "acpSessionInfo");
+    return stringValue(nestedRecord(info, "_meta")?.sessionKey);
+  }
   return stringValue(meta?.externalSessionId)
     ?? stringValue(meta?.threadId)
     ?? stringValue(nestedRecord(meta, "acp")?.acpSessionId);
@@ -738,6 +781,9 @@ export async function createLocalAgentClient(
 ): Promise<LocalAgentClient> {
   const harness = normalizeHarness(options.harness);
   const transport = resolveLocalTransport(harness, options.transport);
+  if (harness === "openclaw" && (options.model || options.reasoningEffort)) {
+    throw new Error("OpenClaw ACP model and effort are configured on the Gateway agent.");
+  }
   if (transport === "codex_app_server") {
     return createCodexLocalAgentClient({
       ...options,
@@ -795,6 +841,9 @@ export async function createLocalAgentClient(
 
   const runTurn = async (rawInput: string | LocalAgentClientTurnOptions): Promise<LocalAgentTurnResult> => {
     const turnOptions = normalizeTurnInput(rawInput);
+    if (harness === "openclaw" && turnOptions.model) {
+      throw new Error("OpenClaw ACP model is configured on the Gateway agent.");
+    }
     const localSession = await ensureSession(turnOptions);
     const warm = localSession.createdBeforeFirstTurn;
     const reused = turnCount > 0;

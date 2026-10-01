@@ -1,7 +1,7 @@
 import tailwindcss from "@tailwindcss/vite";
 import react from "@vitejs/plugin-react-swc";
 import { execSync } from "node:child_process";
-import { existsSync, rmSync } from "node:fs";
+import { existsSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { resolve } from "node:path";
 import { defineConfig, type Plugin } from "vite";
@@ -77,6 +77,8 @@ function basicWebPlugin(): Plugin {
       for (const entry of BASIC_WEB_OMITTED_PUBLIC) {
         rmSync(resolve(outDir, entry), { recursive: true, force: true });
       }
+      // The server reports this so the Mac app only opens surfaces basic has.
+      writeFileSync(resolve(outDir, "scout-web-profile.json"), `${JSON.stringify({ profile: "basic" })}\n`);
     },
   };
 }

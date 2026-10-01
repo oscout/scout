@@ -87,22 +87,22 @@
   },
   "nativeProtocol": {
     "outboundRequests": [
-      "GET /api/health",
+      "GET /api/info",
       "POST /api/session",
       "GET /api/session/active",
       "GET /api/session/:id",
-      "GET /api/session/:id/pending",
+      "GET /api/session/:id/inbox",
       "POST /api/session/:id/prompt",
-      "DELETE /api/session/:id/pending/:inputID",
-      "POST /api/session/:id/wait",
+      "DELETE /api/session/:id/inbox/:inboxID",
+      "POST /api/experimental/session/:id/wait",
       "POST /api/session/:id/interrupt",
       "POST /api/session/:id/permission/:requestID/reply",
-      "POST /api/session/:id/question/:requestID/reply"
+      "POST /api/session/:id/form/:formID/reply"
     ],
     "outboundNotifications": [],
     "inboundNotifications": [
       "server.connected",
-      "session.input.*",
+      "session.inbox.*",
       "session.execution.*",
       "session.step.*",
       "session.text.*",
@@ -111,7 +111,7 @@
       "session.usage.updated",
       "session.idle (compatibility fallback)",
       "permission.*",
-      "question.*"
+      "form.*"
     ],
     "inboundServerRequests": [],
     "messageFormats": [
@@ -151,11 +151,11 @@
     "fixtureSets": ["opencode-v2"]
   },
   "limitations": [
-    "OpenCode product V2 is beta; the adapter pins one exact @opencode-ai/client next build and rejects a mismatched server by default.",
+    "The adapter pins @opencode/client 2.0.21 and rejects a server outside the same major.minor line (2.0.x) by default.",
     "The shared background service is discovered or ensured but never stopped by adapter shutdown.",
     "The global /api/event stream is volatile and server-wide. Events are filtered by exact native session id; a disconnect fails an active turn before reconnecting instead of guessing across a possible event gap.",
     "Exact resume requires an idle native session and performs a delayed second idle/pending check to reduce the managed-service restart-continuity race without depending on the experimental durable session log.",
-    "A resumed native session must be idle at prompt admission. Prompt input ids are correlated through matching input.promoted events; simultaneous control of one native session by another client fails the local turn rather than mixing events.",
+    "A resumed native session must be idle at prompt admission. Prompt input ids are correlated through matching session.inbox.delivered events; simultaneous control of one native session by another client fails the local turn rather than mixing events.",
     "Originated input ids remain quarantined after interruption or an ambiguous transport edge until pending cancellation, matching late promotion plus native interruption, or bounded wait and idle/pending reconciliation. New prompts fail closed while cleanup is unresolved.",
     "The pinned beta server keeps no cancellation tombstone, so a delayed prompt request can theoretically re-admit the same id after cancellation. Native response/admission evidence, SSE correlation, and repeated quiescence checks reduce but cannot eliminate that residual client-side race; shutdown reports unconfirmed cleanup explicitly.",
     "A session-wide interrupt that ends with a Transport error or timeout remains an admission fence because its uninterruptible server handler may still apply later. New prompts fail closed, and shutdown reports the unresolved control instead of claiming clean cancellation.",

@@ -38,6 +38,7 @@ import {
   resolveScoutBrokerUrl,
 } from "./core/broker/service.ts";
 import { resolveOperatorName } from "@openscout/runtime/user-config";
+import { readWebClientProfile } from "@openscout/runtime/web-full-client";
 import { createAmbientVoiceController } from "./ambient-voice-controller.ts";
 import { synthesizeScoutSpeech } from "./scout-voice.ts";
 import {
@@ -1475,10 +1476,14 @@ export async function createOpenScoutWebServer(
     c.header("cache-control", "no-store");
     return c.json(readOpenScoutHostInfoFile() ?? fallbackOpenScoutHostInfo(options, currentDirectory));
   });
+  // Basic (npm) or full (installed with `scout web install`, or a source
+  // build). Native shells open only the surfaces the served client has.
+  const webClient = options.assetMode === "vite-proxy" ? "full" : readWebClientProfile(resolveStaticRoot(options.staticRoot));
   app.get(routes.healthPath, (c) =>
     c.json({
       ok: true,
       surface: "openscout-web",
+      webClient,
       currentDirectory,
       brokerUrl: resolveScoutBrokerUrl(),
       advertisedHost: options.advertisedHost,

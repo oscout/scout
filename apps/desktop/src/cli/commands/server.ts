@@ -17,6 +17,7 @@ import {
   type OpenScoutLocalEdgeScheme,
 } from "@openscout/runtime/local-edge";
 import { readTailscaleSelfWebHostsSync } from "@openscout/runtime/mesh/tailscale";
+import { readBundledScoutVersion, resolveInstalledWebFullClient } from "@openscout/runtime/web-full-client";
 import {
   resolveBunExecutable as resolveResolvedBunExecutable,
   resolveBundledEntrypoint,
@@ -357,7 +358,10 @@ function resolveBundledStaticClientRoot(entry: string, _mode: ScoutServerMode): 
   const entryDir = dirname(entry);
   const clientDirectory = join(entryDir, "client");
   const indexPath = join(clientDirectory, "index.html");
-  return existsSync(indexPath) ? clientDirectory : null;
+  if (!existsSync(indexPath)) return null;
+  // The bundled client is the basic one; prefer the installed full client
+  // built for this same version (`scout web install`).
+  return resolveInstalledWebFullClient(readBundledScoutVersion(entryDir)) ?? clientDirectory;
 }
 
 /** Prefer a fresh Vite build from an OpenScout repo checkout over a stale published CLI bundle. */

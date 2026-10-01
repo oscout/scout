@@ -1,7 +1,7 @@
-// Runtime-only bridge to the exact official product-V2 client. The package's
-// current next build publishes extensionless ESM imports that Node cannot load
-// directly. `npm run build` bundles this bridge into dist/upstream.js, so the
-// published OpenScout package keeps the official implementation without
-// depending on a consumer-side package-manager patch.
-export { OpenCode } from "@opencode-ai/client";
-export { Service } from "@opencode-ai/client/service";
+// Runtime-only bridge to the official product-V2 client. `npm run build`
+// bundles this bridge into dist/upstream.js (the Promise client and service
+// helper need only Node builtins), so the published OpenScout package carries
+// the official implementation without exposing the client's effect-typed
+// declarations or adding its dependency tree to consumers.
+export { OpenCode } from "@opencode/client";
+export { Service } from "@opencode/client/service";

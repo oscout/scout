@@ -1,6 +1,6 @@
 {
   "name": "@openscout/agent-sessions",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Browser-safe session boundary for OpenScout agent sessions",
   "license": "Apache-2.0",
   "type": "module",
@@ -188,6 +188,12 @@
       "types": "./dist/adapters/budget-observations.d.ts",
       "import": "./dist/adapters/budget-observations.js",
       "default": "./dist/adapters/budget-observations.js"
+    },
+    "./adapters/openclaw-acp": {
+      "bun": "./src/adapters/openclaw-acp/index.ts",
+      "types": "./dist/adapters/openclaw-acp/index.d.ts",
+      "import": "./dist/adapters/openclaw-acp/index.js",
+      "default": "./dist/adapters/openclaw-acp/index.js"
     }
   },
   "types": "./dist/index.d.ts",
@@ -225,6 +231,6 @@
     "typescript": "^5"
   },
   "dependencies": {
-    "@opencode-ai/client": "0.0.0-next-17226"
+    "@opencode/client": "2.0.21"
   }
 }

@@ -63,12 +63,6 @@ function findWorkspaceLeaks(pkg) {
 // @openscout/scout ships the prebuilt scoutd broker service binary; if it is
 // missing, npm-installed users hit "Unable to locate scoutd" for every broker
 // operation (resolveScoutdCommand in broker-process-manager.ts).
-export const CREW_RUNTIME_FILES = [
-  ...["milo", "brik", "sprout", "wrench", "vex", "lulu", "nori", "pip", "tuck", "fenn"].map((slug) => `${slug}-bust.webp`),
-  ...["milo", "brik", "sprout", "wrench", "vex", "pip", "tuck", "fenn"].map((slug) => `${slug}-chip-id.webp`),
-  ...["sprout", "eye-plate-v1"].flatMap((sheet) => ["blink-half", "blink-shut", "look-left", "look-right", "look-up"].map((pose) => `sheets/${sheet}/${pose}.webp`)),
-  "sheets/eye-plate-v1/rest.webp",
-].map((file) => `package/dist/client/crew/${file}`);
 
 const REQUIRED_PACKED_FILES = {
   "@openscout/scout": [
@@ -76,17 +70,14 @@ const REQUIRED_PACKED_FILES = {
     "package/dist/scout-control-plane-web.mjs",
     "package/dist/scout-web-server.mjs",
     "package/dist/client/index.html",
-    ...CREW_RUNTIME_FILES,
   ],
 };
 
 const FORBIDDEN_PACKED_PREFIXES = {
   "@openscout/scout": [
     "package/dist/client/characters/",
-    "package/dist/client/crew/masters/",
-    "package/dist/client/crew/_runs/",
-    "package/dist/client/crew/_qa/",
-    "package/dist/client/crew/poses/",
+    // Crew artwork stays out of npm entirely; the basic client never shows it.
+    "package/dist/client/crew/",
     "package/dist/client/crew-preview.html",
   ],
 };

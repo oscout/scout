@@ -1,3 +1,6 @@
+import type { IntegrationSlackEvents } from "./integration-slack-events.js";
+import type { IntegrationSlackDeliveryService } from "./integration-slack-delivery.js";
+import { BrokerIntegrationSetupService, IntegrationSetupError } from "./broker-integration-setup.js";
 import { isAllowedHostWebRequest, type HostWebRequest, type HostWebResponse } from "./host-web-request.js";
 import { ChatQuestionError } from "./chat-question-transition.js";
 import { ChatMessageCorrectionError } from "@openscout/protocol";
@@ -252,6 +255,9 @@ export type BrokerHttpRouterDeps = {
   rendezvousService: BrokerRendezvousService;
   externalSessionService?: BrokerExternalSessionService;
   routeAliasService?: BrokerRouteAliasService;
+  integrationSetupService?: BrokerIntegrationSetupService;
+  integrationSlackDelivery?: IntegrationSlackDeliveryService;
+  integrationSlackEvents?: IntegrationSlackEvents;
   forwardHostWebRequest?: (input: HostWebRequest & { nodeId: string }) => Promise<HostWebResponse>;
   forwardRouteAliasRequest?: (input: {
     nodeSelector: string;
@@ -439,6 +445,9 @@ export function createBrokerHttpRouter(
     deliveryAcceptanceService,
     rendezvousService,
     routeAliasService,
+    integrationSetupService,
+    integrationSlackDelivery,
+    integrationSlackEvents,
     forwardRouteAliasRequest,
     forwardHostWebRequest,
     machines,
@@ -533,6 +542,55 @@ export function createBrokerHttpRouter(
         : service.get({ ownerId: input.ownerId, sessionId: string("sessionId") });
       json(response, 200, result);
     } catch (error) { badRequest(response, error); }
+    return;
+  }
+
+  if (url.pathname === "/v1/integrations/setup" || url.pathname.startsWith("/v1/integrations/setup/")) {
+    // Even reads are local: setup reveals project bindings and operator actions.
+    if (denyRemoteMutation()) return;
+    if (forwardedNodeId) {
+      json(response, 403, { error: "forbidden", detail: "integration setup cannot be forwarded" });
+      return;
+    }
+    if (!integrationSetupService) {
+      json(response, 503, { error: "integrations_unavailable", detail: "integration setup requires broker SQLite persistence" });
+      return;
+    }
+    try {
+      const match = /^\/v1\/integrations\/setup\/([^/]+)(\/(?:resume|credentials|manifest|verify|rebind|lifecycle|worker|deliver|events))?$/.exec(url.pathname);
+      if (method === "POST" && url.pathname === "/v1/integrations/setup") {
+        json(response, 200, integrationSetupService.setup(await readRequestBody(request)));
+      } else if (method === "GET" && match?.[2] === "/manifest") {
+        json(response, 200, integrationSetupService.manifest(decodeURIComponent(match[1]!)));
+      } else if (method === "GET" && match && !match[2]) {
+        json(response, 200, integrationSetupService.get(decodeURIComponent(match[1]!)));
+      } else if (method === "POST" && match?.[2] === "/events") {
+        if (!integrationSlackEvents) throw new IntegrationSetupError("events_unavailable", "Slack event persistence is unavailable.", 503);
+        json(response, 200, integrationSlackEvents.request(decodeURIComponent(match[1]!), await readRequestBody(request)));
+      } else if (method === "POST" && match?.[2] === "/deliver") {
+        if (!integrationSlackDelivery) throw new IntegrationSetupError("delivery_unavailable", "Project Slack delivery is unavailable.", 503);
+        const result = await integrationSlackDelivery.deliver(decodeURIComponent(match[1]!), await readRequestBody(request), payload =>
+          brokerService.deliver ? brokerService.deliver(payload) : deliveryAcceptanceService.accept(payload));
+        json(response, result.kind === "delivery" ? 202 : result.kind === "question" ? 409 : 422, result);
+      } else if (method === "POST" && match?.[2] === "/rebind") {
+        json(response, 200, integrationSetupService.rebind(decodeURIComponent(match[1]!), await readRequestBody(request)));
+      } else if (method === "POST" && match?.[2] === "/verify") {
+        json(response, 200, integrationSetupService.verify(decodeURIComponent(match[1]!), await readRequestBody(request)));
+      } else if (method === "POST" && match?.[2] === "/lifecycle") {
+        json(response, 200, integrationSetupService.setLifecycle(decodeURIComponent(match[1]!), await readRequestBody(request)));
+      } else if (method === "POST" && match?.[2] === "/worker") {
+        json(response, 200, integrationSetupService.workerRequest(decodeURIComponent(match[1]!), await readRequestBody(request)));
+      } else if (method === "POST" && match?.[2] === "/credentials") {
+        json(response, 200, await integrationSetupService.attachCredentials(decodeURIComponent(match[1]!), await readRequestBody(request)));
+      } else if (method === "POST" && match?.[2] === "/resume") {
+        json(response, 200, integrationSetupService.resume(decodeURIComponent(match[1]!), await readRequestBody(request)));
+      } else {
+        json(response, 404, { error: "not_found" });
+      }
+    } catch (error) {
+      if (error instanceof IntegrationSetupError) json(response, error.status, { error: error.code, detail: error.message });
+      else json(response, 500, { error: "integration_setup_failed", detail: "Integration setup could not be persisted. Read status before retrying." });
+    }
     return;
   }
 

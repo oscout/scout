@@ -71,3 +71,6 @@ export * from "./chat-mentions.js";
 export * from "./agent-notifications.js";
 
 export * from "./mcp-core-tools.js";
+
+export * from "./integrations.js";
+export * from "./slack-manifest.js";

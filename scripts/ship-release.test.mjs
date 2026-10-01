@@ -14,7 +14,7 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
-import { CREW_RUNTIME_FILES, findFootprintFailures, findBasicPackedClientFailures } from "./check-packed-manifests.mjs";
+import { findFootprintFailures, findBasicPackedClientFailures } from "./check-packed-manifests.mjs";
 
 const repoRoot = new URL("..", import.meta.url);
 const currentVersion = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"))
@@ -1004,11 +1004,6 @@ test("the isolated retained Scout candidate is normalized and passes the exact a
     writeFileSync(join(fixture, "candidate/dist/client/index.html"), "<!doctype html>\n");
     mkdirSync(join(fixture, "candidate/dist/client/assets"), { recursive: true });
     writeFileSync(join(fixture, "candidate/dist/client/assets/basic-fixture.js"), 'const shell = "sb-shell";\n');
-    for (const file of CREW_RUNTIME_FILES) {
-      const output = join(fixture, "candidate", file.slice("package/".length));
-      mkdirSync(dirname(output), { recursive: true });
-      writeFileSync(output, "fixture runtime art\n");
-    }
     writeFileSync(join(fixture, "candidate/README.md"), "# Scout\n");
     const migrationSql = "CREATE TABLE retained (id INTEGER PRIMARY KEY);\n";
     const migrationJournal = JSON.stringify({ entries: [{ tag: "0000_retained", when: 1, breakpoints: false }] });
@@ -1081,17 +1076,20 @@ test("the isolated retained Scout candidate is normalized and passes the exact a
     rmSync(leakedCharacter);
     writeFileSync(join(fixture, "candidate/dist/client/assets/basic-fixture.js"), 'const shell = "sb-shell";');
 
-    rmSync(join(fixture, "candidate/dist/client/crew/sprout-bust.webp"));
-    const incompletePack = spawnSync("npm", ["pack", "--ignore-scripts", "--pack-destination", fixture], {
+    // Crew artwork stays out of npm entirely.
+    const leakedCrew = join(fixture, "candidate/dist/client/crew/sprout-bust.webp");
+    mkdirSync(dirname(leakedCrew), { recursive: true });
+    writeFileSync(leakedCrew, "fixture runtime art\n");
+    const crewPack = spawnSync("npm", ["pack", "--ignore-scripts", "--pack-destination", fixture], {
       cwd: join(fixture, "candidate"), encoding: "utf8",
       env: { ...process.env, npm_config_cache: join(fixture, "npm-cache") },
     });
-    assert.equal(incompletePack.status, 0, incompletePack.stderr);
-    const incompleteAudit = spawnSync(process.execPath, ["scripts/check-packed-manifests.mjs", "--tarball", tarball], {
+    assert.equal(crewPack.status, 0, crewPack.stderr);
+    const crewAudit = spawnSync(process.execPath, ["scripts/check-packed-manifests.mjs", "--tarball", tarball], {
       cwd: fixture, encoding: "utf8",
     });
-    assert.notEqual(incompleteAudit.status, 0);
-    assert.match(incompleteAudit.stderr, /missing required packed files[\s\S]*crew\/sprout-bust\.webp/);
+    assert.notEqual(crewAudit.status, 0);
+    assert.match(crewAudit.stderr, /crew\/sprout-bust\.webp/);
   } finally {
     rmSync(fixture, { recursive: true, force: true });
   }

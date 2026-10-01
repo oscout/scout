@@ -67,3 +67,4 @@ describe("session retrospective Jev profile", () => {
     expect(JSON.stringify(profile)).not.toContain("secret");
   });
 });
+

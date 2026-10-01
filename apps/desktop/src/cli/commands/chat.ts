@@ -313,7 +313,7 @@ export async function runChatCommand(context: ScoutCommandContext, args: string[
         accept: async data => {
           // Advance even over unrelated traffic; do not acknowledge work.
           room.cursor = data.nextCursor;
-          await saveCursor(cursorPath, room.cursor ?? null);
+          await saveCursor(cursorPath, room.cursor);
         },
         emit: data => context.output.writeValue(flags["count-only"] ? { count: data.messages.length } : data,
           value => flags["count-only"] ? String((value as { count: number }).count) : JSON.stringify(value, null, 2)),

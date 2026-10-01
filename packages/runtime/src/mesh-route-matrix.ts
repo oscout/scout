@@ -72,6 +72,8 @@ const MESH_ROUTE_MATRIX: Record<string, MeshRouteTier> = {
   "POST /v1/mesh/sessions/start": "control",
   "POST /v1/mesh/web-request": "control",
   "POST /v1/hosts/web-request": "local",
+  // Integration setup reveals project bindings; never forwarded.
+  "POST /v1/integrations/setup": "local",
   [TRPC_UPGRADE_ROUTE]: "control",
 
   // ── local: machine-local bind flip (handler also refuse-remote, §11.5/§11.9)

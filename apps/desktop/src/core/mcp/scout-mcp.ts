@@ -1,3 +1,4 @@
+import { registerIntegrationTools } from "./integrations.ts";
 import { setTimeout as delay } from "node:timers/promises";
 import { readFileSync } from "node:fs";
 import { basename, resolve } from "node:path";
@@ -3200,6 +3201,8 @@ export function createScoutMcpServer(options: {
     if (!response.ok) throw new Error(payload.detail ?? payload.error ?? `broker returned HTTP ${response.status}`);
     return payload;
   };
+
+  registerIntegrationTools(server, aliasBrokerRequest);
 
   const aliasToolCaller = async (senderId: string | undefined, currentDirectory: string) => ({
     actorId: await resolveMcpSenderId(deps, senderId, currentDirectory, env),
