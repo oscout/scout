@@ -236,7 +236,7 @@ Agent-card targets start fresh sessions.
 
 ```text
 Claude Code  ─┐
-Codex        ─┼── local Scout broker ── CLI · Monitor · Web
+Codex        ─┼── local Scout broker ── CLI · Web
 Other agents ─┘   messages · work · routing
                          │
                          └── optional surfaces: Rust TUI · macOS · iOS
@@ -246,8 +246,7 @@ Other agents ─┘   messages · work · routing
 
 - the `scout` command;
 - the bundled local broker and runtime;
-- the local web control surface opened by `scout server open`;
-- the bundled terminal console launched by `scout monitor`.
+- the local web control surface opened by `scout server open`.
 
 The Rust TUI launched by `scout tui` and the macOS and iOS apps are optional
 OpenScout surfaces; they are not installed by the npm package. They read and
@@ -263,7 +262,7 @@ write the same coordination state when present.
 | Follow a request | `scout status <handle>`, `scout wait <ref>` |
 | Follow activity | `scout latest`, `scout flight`, `scout label`, `scout tail` |
 | Operate local agents | `scout up`, `scout down`, `scout ps`, `scout restart` |
-| Open a bundled surface | `scout monitor`, `scout server open` |
+| Open a bundled surface | `scout server open` |
 | Open an optional surface | `scout tui`, `scout menu` |
 | Connect tools | `scout mcp`, `scout pair`, `scout mesh` |
 
@@ -398,10 +397,12 @@ scout ask --to <agent-from-scout-who> --prompt-file ./review-request.md
 scout send --channel triage --message-file ./status-update.md
 ```
 
-`scout monitor` opens the bundled terminal console. `scout server open` reuses
-or starts the bundled local web UI. `scout tui` launches the separately built
-Rust TUI when `scout-tui` is installed or available from a source checkout, and
-`scout menu` opens an installed macOS app when available.
+`scout server open` reuses or starts the bundled local web UI. `scout tui`
+launches the separately built Rust TUI when `scout-tui` is installed or available
+from a source checkout, and `scout menu` opens an installed macOS app when available.
+
+The legacy `scout monitor` console has been retired; use `scout tui` after
+installing the optional Rust TUI.
 
 Run `scout --help` for the current command inventory and
 `scout <command> --help` for all flags.

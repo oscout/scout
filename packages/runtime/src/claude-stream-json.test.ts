@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 
@@ -125,6 +125,37 @@ for await (const line of rl) {
 `);
   chmodSync(executablePath, 0o755);
   return executablePath;
+}
+
+// Emits init and result in a single stdout write so both events arrive in one
+// chunk: the turn resolves while the init catalog write is still in flight.
+function writeFakeClaudeExecutableWithSameChunkInit(baseDirectory: string, sessionId: string): string {
+  const executablePath = join(baseDirectory, "claude");
+  writeFileSync(executablePath, `#!/usr/bin/env bun
+import readline from "node:readline";
+
+const rl = readline.createInterface({
+  input: process.stdin,
+  crlfDelay: Infinity,
+});
+
+for await (const line of rl) {
+  const trimmed = line.trim();
+  if (!trimmed) continue;
+  const message = JSON.parse(trimmed);
+  const content = message?.message?.content;
+  process.stdout.write(
+    JSON.stringify({ type: "system", subtype: "init", session_id: ${JSON.stringify(sessionId)} }) + "\\n"
+      + JSON.stringify({ type: "result", result: \`reply: \${content}\` }) + "\\n",
+  );
+}
+`);
+  chmodSync(executablePath, 0o755);
+  return executablePath;
+}
+
+function readCatalogFile(runtimeDirectory: string): { activeSessionId: string | null; sessions: Array<{ id: string; endedAt?: number }> } {
+  return JSON.parse(readFileSync(join(runtimeDirectory, "session-catalog.json"), "utf8"));
 }
 
 describe("resolveClaudeStreamJsonOutput", () => {
@@ -306,6 +337,109 @@ describe("invokeClaudeStreamJsonAgent", () => {
     })).rejects.toThrow("completed without broker-visible output");
 
     await shutdownClaudeStreamJsonAgent(options);
+  });
+
+  test("shutdown drains the in-flight init catalog write before resolving", async () => {
+    const tempRoot = mkdtempSync(join(tmpdir(), "openscout-claude-drain-test-"));
+    tempPaths.add(tempRoot);
+    const fakeClaude = writeFakeClaudeExecutableWithSameChunkInit(tempRoot, "drained-claude-session");
+    process.env.OPENSCOUT_CLAUDE_BIN = fakeClaude;
+    process.env.PATH = [tempRoot, originalPath ?? ""].filter(Boolean).join(delimiter);
+
+    const runtimeDirectory = join(tempRoot, "runtime");
+    const options = {
+      agentName: "hudson-catalog-drain",
+      sessionId: "relay-hudson-catalog-drain",
+      cwd: process.cwd(),
+      systemPrompt: "You are a test Claude relay agent.",
+      runtimeDirectory,
+      logsDirectory: join(tempRoot, "logs"),
+      launchArgs: [],
+    } as const;
+
+    await expect(invokeClaudeStreamJsonAgent({
+      ...options,
+      prompt: "drain prompt",
+      timeoutMs: 5_000,
+    })).resolves.toEqual({ output: "reply: drain prompt", sessionId: "drained-claude-session" });
+
+    await shutdownClaudeStreamJsonAgent(options);
+
+    const catalog = readCatalogFile(runtimeDirectory);
+    expect(catalog.activeSessionId).toBe("drained-claude-session");
+    expect(catalog.sessions.map((session) => session.id)).toEqual(["drained-claude-session"]);
+    expect(readdirSync(runtimeDirectory).filter((name) => name.endsWith(".tmp"))).toEqual([]);
+  });
+
+  test("reset shutdown lands after a pending init catalog record", async () => {
+    const tempRoot = mkdtempSync(join(tmpdir(), "openscout-claude-reset-order-test-"));
+    tempPaths.add(tempRoot);
+    const fakeClaude = writeFakeClaudeExecutableWithSameChunkInit(tempRoot, "ordered-claude-session");
+    process.env.OPENSCOUT_CLAUDE_BIN = fakeClaude;
+    process.env.PATH = [tempRoot, originalPath ?? ""].filter(Boolean).join(delimiter);
+
+    const runtimeDirectory = join(tempRoot, "runtime");
+    const options = {
+      agentName: "hudson-catalog-reset-order",
+      sessionId: "relay-hudson-catalog-reset-order",
+      cwd: process.cwd(),
+      systemPrompt: "You are a test Claude relay agent.",
+      runtimeDirectory,
+      logsDirectory: join(tempRoot, "logs"),
+      launchArgs: [],
+    } as const;
+
+    await invokeClaudeStreamJsonAgent({ ...options, prompt: "order prompt", timeoutMs: 5_000 });
+    await shutdownClaudeStreamJsonAgent(options, { resetSession: true });
+
+    const catalog = readCatalogFile(runtimeDirectory);
+    expect(catalog.activeSessionId).toBeNull();
+    expect(catalog.sessions.map((session) => session.id)).toEqual(["ordered-claude-session"]);
+  });
+
+  test("reports init catalog write failures instead of leaving them unhandled", async () => {
+    const tempRoot = mkdtempSync(join(tmpdir(), "openscout-claude-catalog-error-test-"));
+    tempPaths.add(tempRoot);
+    const fakeClaude = writeFakeClaudeExecutableWithSameChunkInit(tempRoot, "unwritable-claude-session");
+    process.env.OPENSCOUT_CLAUDE_BIN = fakeClaude;
+    process.env.PATH = [tempRoot, originalPath ?? ""].filter(Boolean).join(delimiter);
+
+    const runtimeDirectory = join(tempRoot, "runtime");
+    const logsDirectory = join(tempRoot, "logs");
+    // A directory where the catalog file belongs makes the atomic rename fail.
+    mkdirSync(join(runtimeDirectory, "session-catalog.json"), { recursive: true });
+
+    const options = {
+      agentName: "hudson-catalog-error",
+      sessionId: "relay-hudson-catalog-error",
+      cwd: process.cwd(),
+      systemPrompt: "You are a test Claude relay agent.",
+      runtimeDirectory,
+      logsDirectory,
+      launchArgs: [],
+    } as const;
+
+    const originalConsoleError = console.error;
+    const consoleErrors: string[] = [];
+    console.error = (...args: unknown[]) => {
+      consoleErrors.push(args.map(String).join(" "));
+    };
+    try {
+      await expect(invokeClaudeStreamJsonAgent({
+        ...options,
+        prompt: "error prompt",
+        timeoutMs: 5_000,
+      })).resolves.toEqual({ output: "reply: error prompt", sessionId: "unwritable-claude-session" });
+      await shutdownClaudeStreamJsonAgent(options);
+    } finally {
+      console.error = originalConsoleError;
+    }
+
+    expect(consoleErrors.some((line) => line.includes("failed to record Claude session unwritable-claude-session"))).toBe(true);
+    expect(readFileSync(join(logsDirectory, "stderr.log"), "utf8")).toContain(
+      "failed to record Claude session unwritable-claude-session in catalog for hudson-catalog-error",
+    );
+    expect(readdirSync(runtimeDirectory).filter((name) => name.endsWith(".tmp"))).toEqual([]);
   });
 });
 

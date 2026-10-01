@@ -3287,12 +3287,12 @@ export async function sendScoutMessage(input: {
     currentDirectory,
   );
 
-  const mentionResolution = await resolveMentionTargets(
-    broker.snapshot,
-    input.body,
-    currentDirectory,
-  );
-  const selectors = extractAgentSelectors(input.body);
+  // A channel is a complete destination. Package names and other @ text in
+  // its body are payload, not additional targets or a request to wake agents.
+  const mentionResolution = input.channel
+    ? { resolved: [], unresolved: [], ambiguous: [] }
+    : await resolveMentionTargets(broker.snapshot, input.body, currentDirectory);
+  const selectors = input.channel ? [] : extractAgentSelectors(input.body);
 
   if (
     selectors.length === 1

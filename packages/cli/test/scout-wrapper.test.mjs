@@ -1,31 +1,41 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { createCliFixture, isolatedEnvironment } from "./helpers/cli-fixture.mjs";
 
-const testDirectory = path.dirname(fileURLToPath(import.meta.url));
-const packageDirectory = path.resolve(testDirectory, "..");
+const packageDirectory = createCliFixture();
 
-test("scout wrapper exposes the new Scout CLI surface", () => {
+test("scout wrapper keeps short help focused and sends the full inventory to detailed help", () => {
   const output = execFileSync("bun", ["./bin/scout.mjs", "--help"], {
     cwd: packageDirectory,
+    env: isolatedEnvironment(),
     encoding: "utf8",
   });
 
   assert.match(output, /\bsetup\b/);
-  assert.match(output, /\bpair\b/);
-  assert.match(output, /\bserver\b/);
-  assert.match(output, /Implicit ask shortcut:/);
-  assert.match(output, /scout @agent your request/);
-  assert.match(output, /Compatibility:/);
-  assert.match(output, /\binit\b/);
+  assert.match(output, /\bstatus\b/);
+  assert.match(output, /\bdoctor\b/);
+  assert.match(output, /scout help --detail/);
+  assert.doesNotMatch(output, /Implicit ask shortcut:/);
   assert.doesNotMatch(output, /\bscout dev\b/);
+
+  const detailed = execFileSync("bun", ["./bin/scout.mjs", "help", "--detail"], {
+    cwd: packageDirectory,
+    env: isolatedEnvironment(),
+    encoding: "utf8",
+  });
+  assert.match(detailed, /\bpair\b/);
+  assert.match(detailed, /\bserver\b/);
+  assert.match(detailed, /Implicit ask shortcut:/);
+  assert.match(detailed, /scout @agent your request/);
+  assert.match(detailed, /Compatibility:/);
+  assert.match(detailed, /\binit\b/);
 });
 
 test("scout wrapper exposes current ask routing help", () => {
   const output = execFileSync("bun", ["./bin/scout.mjs", "ask", "--help"], {
     cwd: packageDirectory,
+    env: isolatedEnvironment(),
     encoding: "utf8",
   });
 
@@ -41,6 +51,7 @@ test("scout wrapper rejects unsupported ask session reuse before routing", () =>
       ["./bin/scout.mjs", "ask", "--session", "reuse", "--harness", "codex", "smoke"],
       {
         cwd: packageDirectory,
+        env: isolatedEnvironment(),
         encoding: "utf8",
         stdio: "pipe",
       },

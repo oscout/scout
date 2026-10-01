@@ -68,6 +68,16 @@ test("local execution requires explicit confirmation before any mutation", () =>
   assert.match(result.stderr, /Refusing to publish without --yes/);
 });
 
+test("local npm-login authentication is an explicit plan option", () => {
+  const result = plan(currentVersion, "--auth", "npm-login");
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /local npm-login authentication/);
+  assert.doesNotMatch(result.stdout, /gh workflow run/);
+  const invalid = plan(currentVersion, "--auth", "automatic");
+  assert.notEqual(invalid.status, 0);
+  assert.match(invalid.stderr, /--auth must be token or npm-login/);
+});
+
 test("0.2.89 GitHub publication refuses legacy npm token authentication", () => {
   const result = spawnSync("bash", ["scripts/ship-npm.sh"], {
     cwd: repoRoot,
@@ -329,6 +339,15 @@ function createPublishFixture({
     `protocol_integrity=${JSON.stringify(protocolIntegrity)}`,
     `scout_integrity=${JSON.stringify(scoutReceipt.integrity)}`,
     'command="$1"',
+    'if [[ "$command" == "whoami" ]]; then',
+    '  echo whoami >> "$state_dir/auth.log"',
+    '  if [[ "${FIXTURE_NPM_LOGIN_FAILURE:-}" == "1" ]]; then exit 1; fi',
+    '  echo fixture-user',
+    '  exit 0',
+    'fi',
+    'if [[ "${SCOUT_NPM_AUTH_MODE:-}" == "npm-login" ]]; then',
+    '  for argument in "$@"; do [[ "$argument" != "--userconfig" ]] || exit 81; done',
+    'fi',
     'if [[ "$command" == "view" ]]; then',
     '  identity="$2"',
     '  field="$3"',
@@ -561,6 +580,69 @@ test("publish resumes from retained candidates and records them before npm mutat
     assert.match(mutations, /promote protocol\npromote scout\n/);
   } finally {
     rmSync(fixture, { recursive: true, force: true });
+  }
+});
+
+test("explicit npm-login publishes the retained pair without reading or copying credentials", () => {
+  const { fixture, stateDir } = createPublishFixture();
+  try {
+    const npmrc = join(fixture, "existing-npmrc");
+    writeFileSync(npmrc, "fixture npm login configuration\n");
+    writeFileSync(join(fixture, "fake-bin/secret"), "#!/bin/bash\nexit 99\n");
+    chmodSync(join(fixture, "fake-bin/secret"), 0o755);
+    const result = spawnSync("bash", ["scripts/ship-npm.sh", "--publish-prepared"], {
+      cwd: fixture,
+      encoding: "utf8",
+      env: { ...registryEnv(fixture), NPM_TOKEN: "", NODE_AUTH_TOKEN: "", SCOUT_NPM_AUTH_MODE: "npm-login", NPM_CONFIG_USERCONFIG: npmrc },
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(readFileSync(npmrc, "utf8"), "fixture npm login configuration\n");
+    assert.equal(readFileSync(join(stateDir, "auth.log"), "utf8"), "whoami\n");
+    assert.match(readFileSync(join(stateDir, "mutations.log"), "utf8"), /^publish protocol tag=scout-release-0-2-99\npublish scout tag=scout-release-0-2-99\npromote protocol\npromote scout\n/);
+    assert.doesNotMatch(result.stdout + result.stderr, /fixture-user|fixture npm login configuration/);
+  } finally {
+    rmSync(fixture, { recursive: true, force: true });
+  }
+});
+
+for (const [label, extra, expected] of [
+  ["missing login", { FIXTURE_NPM_LOGIN_FAILURE: "1" }, /existing authenticated npm login/],
+  ["token conflict", { NPM_TOKEN: "fixture-token" }, /cannot be combined with NPM_TOKEN/],
+  ["hosted authority", { GITHUB_ACTIONS: "true" }, /npm-login authentication is local-only/],
+  ["unknown mode", { SCOUT_NPM_AUTH_MODE: "automatic" }, /SCOUT_NPM_AUTH_MODE must be token or npm-login/],
+]) {
+  test(`npm-login fails closed before mutations: ${label}`, () => {
+    const { fixture, stateDir } = createPublishFixture();
+    try {
+      const result = spawnSync("bash", ["scripts/ship-npm.sh", "--publish-prepared"], {
+        cwd: fixture,
+        encoding: "utf8",
+        env: { ...registryEnv(fixture), NPM_TOKEN: "", NODE_AUTH_TOKEN: "", SCOUT_NPM_AUTH_MODE: "npm-login", ...extra },
+      });
+      assert.notEqual(result.status, 0);
+      assert.match(result.stderr, expected);
+      assert.equal(readFileSync(join(stateDir, "mutations.log"), "utf8"), "");
+    } finally {
+      rmSync(fixture, { recursive: true, force: true });
+    }
+  });
+}
+
+test("npm-login preparation and completed publication do not authenticate", () => {
+  for (const [mode, completeSet] of [["--prepare", false], ["--publish-prepared", true]]) {
+    const { fixture, stateDir } = createPublishFixture({ completeSet });
+    try {
+      const result = spawnSync("bash", ["scripts/ship-npm.sh", mode], {
+        cwd: fixture,
+        encoding: "utf8",
+        env: { ...registryEnv(fixture), NPM_TOKEN: "", NODE_AUTH_TOKEN: "", SCOUT_NPM_AUTH_MODE: "npm-login", FIXTURE_NPM_LOGIN_FAILURE: "1" },
+      });
+      assert.equal(result.status, 0, result.stderr);
+      assert.equal(existsSync(join(stateDir, "auth.log")), false);
+      assert.equal(readFileSync(join(stateDir, "mutations.log"), "utf8"), "");
+    } finally {
+      rmSync(fixture, { recursive: true, force: true });
+    }
   }
 });
 

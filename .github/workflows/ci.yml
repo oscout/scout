@@ -33,6 +33,12 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v5
 
+      - name: Set up Node for CLI launcher tests
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: "24.x"
+          package-manager-cache: false
+
       - name: Set up Bun
         uses: oven-sh/setup-bun@v2
         with:
@@ -56,12 +62,15 @@ jobs:
           bun run --cwd packages/session-trace-react check
           bun run --cwd apps/desktop check
 
+      - name: CLI launcher and package tests
+        run: bun run test:cli
+
       - name: Unit tests
         env:
           OPENSCOUT_CONFORMANCE: "1"
         run: |
-          if bun -e "const pkg = require('./package.json'); process.exit(pkg.scripts?.['test:unit'] ? 0 : 1)"; then
-            bun run test:unit
+          if bun -e "const pkg = require('./package.json'); process.exit(pkg.scripts?.['test:unit:source'] ? 0 : 1)"; then
+            bun run test:unit:source
           else
             bun run --cwd packages/protocol test
             bun run --cwd packages/agent-sessions test
