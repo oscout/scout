@@ -94,7 +94,9 @@ cleanup() {
 }
 trap cleanup EXIT
 
-NPM_READ_ARGS=(--registry "$NPM_REGISTRY_URL")
+# Scoped registry settings take precedence over npm's default --registry.
+# Pin both for every package read and mutation, including inherited logins.
+NPM_READ_ARGS=(--registry "$NPM_REGISTRY_URL" "--@openscout:registry=$NPM_REGISTRY_URL")
 PACKAGE_NAMES=()
 PACKAGE_VERSIONS=()
 PACKAGE_EXISTS=()

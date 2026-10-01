@@ -348,6 +348,11 @@ function createPublishFixture({
     'if [[ "${SCOUT_NPM_AUTH_MODE:-}" == "npm-login" ]]; then',
     '  for argument in "$@"; do [[ "$argument" != "--userconfig" ]] || exit 81; done',
     'fi',
+    'if [[ "$command" == "view" || "$command" == "publish" || "$command" == "dist-tag" ]]; then',
+    '  scoped_registry=""',
+    '  for argument in "$@"; do if [[ "$argument" == --@openscout:registry=* ]]; then scoped_registry="${argument#*=}"; fi; done',
+    '  [[ "$scoped_registry" == "https://registry.npmjs.org" ]] || { echo "unbound scoped registry" >&2; exit 82; }',
+    'fi',
     'if [[ "$command" == "view" ]]; then',
     '  identity="$2"',
     '  field="$3"',
@@ -587,8 +592,8 @@ test("explicit npm-login publishes the retained pair without reading or copying 
   const { fixture, stateDir } = createPublishFixture();
   try {
     const npmrc = join(fixture, "existing-npmrc");
-    writeFileSync(npmrc, "fixture npm login configuration\n");
-    writeFileSync(join(fixture, "fake-bin/secret"), "#!/bin/bash\nexit 99\n");
+    writeFileSync(npmrc, "@openscout:registry=https://foreign.invalid\n");
+    writeFileSync(join(fixture, "fake-bin/secret"), "#!/bin/bash\ntouch secret-helper-called\nexit 99\n");
     chmodSync(join(fixture, "fake-bin/secret"), 0o755);
     const result = spawnSync("bash", ["scripts/ship-npm.sh", "--publish-prepared"], {
       cwd: fixture,
@@ -596,10 +601,11 @@ test("explicit npm-login publishes the retained pair without reading or copying 
       env: { ...registryEnv(fixture), NPM_TOKEN: "", NODE_AUTH_TOKEN: "", SCOUT_NPM_AUTH_MODE: "npm-login", NPM_CONFIG_USERCONFIG: npmrc },
     });
     assert.equal(result.status, 0, result.stderr);
-    assert.equal(readFileSync(npmrc, "utf8"), "fixture npm login configuration\n");
+    assert.equal(readFileSync(npmrc, "utf8"), "@openscout:registry=https://foreign.invalid\n");
+    assert.equal(existsSync(join(fixture, "secret-helper-called")), false);
     assert.equal(readFileSync(join(stateDir, "auth.log"), "utf8"), "whoami\n");
     assert.match(readFileSync(join(stateDir, "mutations.log"), "utf8"), /^publish protocol tag=scout-release-0-2-99\npublish scout tag=scout-release-0-2-99\npromote protocol\npromote scout\n/);
-    assert.doesNotMatch(result.stdout + result.stderr, /fixture-user|fixture npm login configuration/);
+    assert.doesNotMatch(result.stdout + result.stderr, /fixture-user|foreign\.invalid/);
   } finally {
     rmSync(fixture, { recursive: true, force: true });
   }
@@ -608,6 +614,7 @@ test("explicit npm-login publishes the retained pair without reading or copying 
 for (const [label, extra, expected] of [
   ["missing login", { FIXTURE_NPM_LOGIN_FAILURE: "1" }, /existing authenticated npm login/],
   ["token conflict", { NPM_TOKEN: "fixture-token" }, /cannot be combined with NPM_TOKEN/],
+  ["node token conflict", { NODE_AUTH_TOKEN: "fixture-token" }, /cannot be combined with NPM_TOKEN or NODE_AUTH_TOKEN/],
   ["hosted authority", { GITHUB_ACTIONS: "true" }, /npm-login authentication is local-only/],
   ["unknown mode", { SCOUT_NPM_AUTH_MODE: "automatic" }, /SCOUT_NPM_AUTH_MODE must be token or npm-login/],
 ]) {

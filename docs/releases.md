@@ -144,6 +144,8 @@ configuration and terminal input/output. It does not read, copy, or write
 credentials, call secret-store helpers, or fall back to another authentication
 mode. `NPM_TOKEN` and `NODE_AUTH_TOKEN` must be unset; hosted execution rejects
 this mode. The lower-level publisher accepts `SCOUT_NPM_AUTH_MODE=npm-login`.
+Default and `@openscout` scoped registries are pinned to npmjs for every package
+read and mutation, including when the inherited login has a different scope registry.
 Token authentication remains the default, and both local modes retain the same
 source, signing, artifact, receipt, staging, and promotion gates.
 
