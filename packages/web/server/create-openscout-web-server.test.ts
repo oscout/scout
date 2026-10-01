@@ -111,6 +111,24 @@ describe("createOpenScoutWebServer", () => {
     });
   });
 
+  test("health reports which web client the server serves", async () => {
+    const full = await createOpenScoutWebServer({
+      currentDirectory: "/tmp/openscout",
+      assetMode: "static",
+      staticRoot: makeStaticRoot(),
+    });
+    await expect((await full.app.request("http://localhost/api/health")).json()).resolves.toMatchObject({ webClient: "full" });
+
+    const basicRoot = makeStaticRoot();
+    writeFileSync(join(basicRoot, "scout-web-profile.json"), JSON.stringify({ profile: "basic" }), "utf8");
+    const basic = await createOpenScoutWebServer({
+      currentDirectory: "/tmp/openscout",
+      assetMode: "static",
+      staticRoot: basicRoot,
+    });
+    await expect((await basic.app.request("http://localhost/api/health")).json()).resolves.toMatchObject({ webClient: "basic" });
+  });
+
   test("serves static app shell without browser storage", async () => {
     const server = await createOpenScoutWebServer({
       currentDirectory: "/tmp/openscout",

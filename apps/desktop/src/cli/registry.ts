@@ -9,6 +9,7 @@ export type ScoutCommandRegistration = {
 export const SCOUT_COMMANDS: ScoutCommandRegistration[] = [
   { name: "help", summary: "Show help text" },
   { name: "version", summary: "Print the Scout CLI version" },
+  { name: "integration", summary: "Prepare and resume local project-agent integrations" },
   { name: "setup", summary: "Bootstrap local settings and broker" },
   { name: "report", summary: "Upload diagnostics with a private local fallback" },
   { name: "feedback", summary: "Send a note, optionally with diagnostics" },
@@ -64,6 +65,7 @@ export const SCOUT_COMMANDS: ScoutCommandRegistration[] = [
   },
   { name: "pair", summary: "Pair a companion device via QR" },
   { name: "server", summary: "Run the Scout web UI (Bun; see: scout server start/open)" },
+  { name: "web", summary: "Install the full web app with a download key (login/install/status)" },
   { name: "tui", summary: "Launch the Scout TUI" },
   { name: "init", summary: "Write ~/.openscout/config.json with broker/web/pairing ports" },
 ];

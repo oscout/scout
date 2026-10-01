@@ -29,8 +29,8 @@ By default the adapter:
 
 Before prompt admission the adapter verifies that the native session has no
 active or pending work, assigns a branded V2 input id, correlates admission to
-that id, and withholds all output until the matching `session.input.promoted`
-edge. Promotion of another client's input fails the local turn instead of
+that id, and withholds all output until the matching `session.inbox.delivered`
+edge. Delivery of another client's input fails the local turn instead of
 attributing its events to Scout. Resume is persistent compatibility, not a
 multi-writer session lock. Exact resume also performs a delayed second idle
 check at attach time to reduce the managed-service restart-continuity race.
@@ -56,7 +56,7 @@ configuration state; this adapter does not copy ACP's V1 provider-key bridge.
 | `serviceFile` | Override the official service registration path. |
 | `autoStart` | Set false to discover only. Defaults to true. |
 | `command` | Full command array, or a binary string combined with `args`. Defaults to resolved `opencode2 serve --service`. |
-| `requiredVersion` | Health-gate the exact server version. Defaults to the pinned next-client build; it fails closed but never replaces a mismatched shared service. |
+| `requiredVersion` | Gate the server version reported by `GET /api/info` on the same major.minor line (2.0.x). Defaults to the pinned client version (`2.0.21`); `false` disables the gate. It fails closed but never replaces a mismatched shared service. |
 | `startupTimeoutMs` | Bounds adapter observation of discovery/startup, HTTP calls, and initial SSE connection (15s default). The official shared `Service.ensure()` has its own non-cancellable 120s convergence loop and may finish starting the service after this adapter attempt times out. |
 | `reconnectDelayMs` | Delay between stream rediscovery/stabilization checks (1s default). |
 | `model` | New-session model: `provider/model`, optionally with `#variant`; unqualified ids use provider `opencode`. Exact resume retains the native session's stored selection. |
@@ -92,10 +92,16 @@ Likewise, a transport-ambiguous session-wide `/interrupt` stays fenced: the
 adapter will not admit another prompt because that delayed control request
 could otherwise stop the new execution. Shutdown reports the unresolved fence.
 
+Interactive questions arrive as native forms (`form.created`). Each visible
+string, number, integer, boolean, or multiselect field becomes one question
+block, and the answers are coerced back into the form's typed answer map.
+Hidden fields keep their server default. `external` (browser hand-off) fields
+are not surfaced, so a form that needs one stays pending until it is answered
+in another OpenCode client.
+
 Generic `filesystem.changed` events are not attributed because they lack a session id;
 session-scoped step/tool file events are used instead.
 
-OpenCode product V2 is beta. The dependency is intentionally pinned to an exact
-`@opencode-ai/client` next build, and the default health gate rejects a different
-server build with an actionable error instead of silently falling back to V1 or
+The dependency is pinned to `@opencode/client` 2.0.21, and the default version
+gate rejects a server outside the 2.0.x line with an actionable error instead of silently falling back to V1 or
 ACP.

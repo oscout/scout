@@ -1,8 +1,9 @@
 # Third-party notices
 
 The OpenCode product-V2 adapter bundles the Promise client and local-service
-helper from `@opencode-ai/client@0.0.0-next-17226` so published Node consumers
-do not depend on that beta build's extensionless ESM imports.
+helper from `@opencode/client@2.0.21` (only that package's own modules are
+inlined) so published Node consumers do not inherit the client's dependency
+tree or its effect-typed declarations.
 
 ## OpenCode client
 

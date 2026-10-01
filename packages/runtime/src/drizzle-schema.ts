@@ -1105,7 +1105,65 @@ export const missionLogEntriesTable = sqliteTable("mission_log_entries", {
   index("idx_mission_log_entries_actor_at").on(table.actorId, desc(table.at)),
 ]);
 
+// Broker-owned integration setup; credentials live in the host secret facility.
+export const integrationSetupOperationsTable = sqliteTable("integration_setup_operations", {
+  id: text("id").primaryKey(),
+  ownerRealmId: text("owner_realm_id").notNull(),
+  scopeKey: text("scope_key").notNull(),
+  workspaceKey: text("workspace_key").notNull(),
+  appId: text("app_id"),
+  revision: integer("revision").notNull(),
+  recordJson: text("record_json").notNull(),
+}, (table) => [
+  check("integration_setup_revision_check", sql`${table.revision} >= 1`),
+  unique().on(table.ownerRealmId, table.scopeKey, table.workspaceKey),
+  uniqueIndex("idx_integration_setup_app").on(table.ownerRealmId, table.workspaceKey, table.appId).where(sql`app_id IS NOT NULL`),
+]);
+export const integrationSetupRequestsTable = sqliteTable("integration_setup_requests", {
+  ownerRealmId: text("owner_realm_id").notNull(),
+  requestKey: text("request_key").notNull(),
+  requestHash: text("request_hash").notNull(),
+  operationId: text("operation_id").notNull().references(() => integrationSetupOperationsTable.id, { onDelete: "restrict" }),
+}, (table) => [primaryKey({ columns: [table.ownerRealmId, table.requestKey] })]);
+
+export const integrationWorkerLeasesTable = sqliteTable("integration_worker_leases", {
+  operationId: text("operation_id").primaryKey().references(() => integrationSetupOperationsTable.id, { onDelete: "restrict" }),
+  ownerId: text("owner_id").notNull(),
+  generation: integer("generation").notNull(),
+  tokenHash: text("token_hash").notNull(),
+  expiresAt: integer("expires_at").notNull(),
+  state: text("state").notNull(),
+  updatedAt: integer("updated_at").notNull(),
+}, (table) => [
+  check("integration_worker_generation_check", sql`${table.generation} >= 1`),
+  check("integration_worker_state_check", sql`${table.state} IN ('starting', 'connected', 'stopped')`),
+]);
+
+export const integrationSlackThreadsTable = sqliteTable("integration_slack_threads", {
+  operationId: text("operation_id").notNull().references(() => integrationSetupOperationsTable.id, { onDelete: "restrict" }),
+  channelId: text("channel_id").notNull(), threadTs: text("thread_ts").notNull(), bindingRevision: integer("binding_revision").notNull(),
+  bindingRef: text("binding_ref").notNull(), updatedAt: integer("updated_at").notNull(),
+}, table => [primaryKey({ columns: [table.operationId, table.channelId, table.threadTs] })]);
+export const integrationSlackDeliveriesTable = sqliteTable("integration_slack_deliveries", {
+  operationId: text("operation_id").notNull().references(() => integrationSetupOperationsTable.id, { onDelete: "restrict" }),
+  eventKey: text("event_key").notNull(), channelId: text("channel_id").notNull(), threadTs: text("thread_ts").notNull(), userId: text("user_id").notNull(),
+  bindingRevision: integer("binding_revision").notNull(), requestJson: text("request_json").notNull(), responseJson: text("response_json"), updatedAt: integer("updated_at").notNull(),
+}, table => [primaryKey({ columns: [table.operationId, table.eventKey] }), index("idx_integration_slack_pending_thread").on(table.operationId, table.channelId, table.threadTs).where(sql`response_json IS NULL`)]);
+
+export const integrationSlackEventsTable = sqliteTable("integration_slack_events", {
+  operationId: text("operation_id").notNull().references(() => integrationSetupOperationsTable.id, { onDelete: "restrict" }),
+  eventId: text("event_id").notNull(), channelId: text("channel_id").notNull(), threadTs: text("thread_ts").notNull(), bindingRevision: integer("binding_revision").notNull(),
+  envelopeJson: text("envelope_json").notNull(), deliveryKey: text("delivery_key").notNull(), progressJson: text("progress_json"), resultCompletedAt: integer("result_completed_at"), state: text("state").notNull(), attempts: integer("attempts").notNull().default(0),
+  nextAttemptAt: integer("next_attempt_at").notNull(), receivedAt: integer("received_at").notNull(), updatedAt: integer("updated_at").notNull(),
+}, table => [primaryKey({ columns: [table.operationId, table.eventId] }), check("integration_slack_event_state_check", sql`${table.state} IN ('pending', 'processed')`), index("idx_integration_slack_pending_events").on(table.operationId, table.state, table.receivedAt)]);
+
 export const controlPlaneDrizzleSchema = {
+  integrationSlackEventsTable,
+  integrationSlackThreadsTable,
+  integrationSlackDeliveriesTable,
+  integrationWorkerLeasesTable,
+  integrationSetupOperationsTable,
+  integrationSetupRequestsTable,
   nodes: nodesTable,
   machines: machinesTable,
   trustedPeers: trustedPeersTable,

@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { ensureProviderTelemetryBootstrap } from "@openscout/runtime";
 import { resolveWebAuthToken, resolveWebPort } from "@openscout/runtime/local-config";
 import { resolveOpenScoutSetupContextRoot } from "@openscout/runtime/setup";
+import { readBundledScoutVersion, resolveInstalledWebFullClient } from "@openscout/runtime/web-full-client";
 import { resolveOpenScoutWebRoutes } from "../shared/runtime-config.js";
 import {
   createOpenScoutWebServer,
@@ -72,7 +73,9 @@ function resolveStaticRoot(): string | undefined {
   const selfDir = dirname(fileURLToPath(import.meta.url));
   const siblingClientRoot = join(selfDir, "client");
   if (existsSync(join(siblingClientRoot, "index.html"))) {
-    return siblingClientRoot;
+    // A packaged build bundles the basic client; `scout web install` can add
+    // the full one for this exact version.
+    return resolveInstalledWebFullClient(readBundledScoutVersion(selfDir)) ?? siblingClientRoot;
   }
   const sourceDistClientRoot = resolve(selfDir, "../dist/client");
   if (existsSync(join(sourceDistClientRoot, "index.html"))) {

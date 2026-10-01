@@ -141,6 +141,7 @@ const expectedRouteInventory = [
   "POST /v1/inbox/ack",
   "POST /v1/inbox/claim",
   "POST /v1/inbox/nack",
+  "POST /v1/integrations/setup",
   "POST /v1/invocations",
   "POST /v1/local-sessions/attach",
   "POST /v1/local-sessions/detach",

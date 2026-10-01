@@ -2,8 +2,12 @@ import { describe, expect, test } from "bun:test";
 
 import { StateTracker } from "../../state.js";
 import type { AgentSessionStreamEvent } from "../../protocol/primitives.js";
-import { createOpenCodeV2EventNormalizer } from "./normalizer.js";
-import type { OpenCodeEvent } from "./upstream.js";
+import {
+  answerableFormFields,
+  createOpenCodeV2EventNormalizer,
+  formAnswerFromSelections,
+} from "./normalizer.js";
+import type { FormInfo, OpenCodeEvent } from "./upstream.js";
 
 const SESSION_ID = "scout-session";
 const REMOTE_SESSION_ID = "ses_v2";
@@ -467,5 +471,122 @@ describe("OpenCodeV2EventNormalizer", () => {
       blockId,
       output: "not executed\noperator denied tool (PermissionDenied)",
     }));
+  });
+
+  const FORM: FormInfo = {
+    id: "frm_1",
+    sessionID: REMOTE_SESSION_ID,
+    title: "Deploy",
+    fields: [
+      {
+        key: "target",
+        type: "string",
+        title: "Target",
+        description: "Where should this deploy?",
+        options: [
+          { value: "prod", label: "Production" },
+          { value: "staging", label: "Staging", description: "Safe default" },
+        ],
+      },
+      { key: "token", type: "string", hidden: true, default: "auto" },
+      { key: "confirm", type: "boolean", title: "Confirm" },
+      { key: "replicas", type: "integer", title: "Replicas" },
+      {
+        key: "regions",
+        type: "multiselect",
+        title: "Regions",
+        options: [{ value: "us", label: "US" }, { value: "eu", label: "EU" }],
+      },
+      { key: "login", type: "external", url: "https://example.test/login" },
+    ],
+  };
+
+  test("maps native form fields to question blocks and settles them on form.replied", () => {
+    const harness = createHarness();
+    harness.prompt("turn-form");
+    const opened = harness.native({
+      id: "evt-form-created",
+      created: 1_754_000_000_040,
+      type: "form.created",
+      data: { form: FORM },
+    } satisfies OpenCodeEvent);
+    const blocks = opened.flatMap((event) =>
+      event.event === "block:start" && event.block.type === "question" ? [event.block] : []);
+    expect(blocks.map((block) => block.header)).toEqual(["Target", "Confirm", "Replicas", "Regions"]);
+    expect(blocks[0]).toMatchObject({
+      question: "Where should this deploy?",
+      options: [
+        { label: "Production", description: "" },
+        { label: "Staging", description: "Safe default" },
+      ],
+      multiSelect: false,
+    });
+    expect(blocks[1]!.options.map((option) => option.label)).toEqual(["Yes", "No"]);
+    expect(blocks[3]!.multiSelect).toBe(true);
+    expect(harness.normalizer.questionBlockIds("frm_1")).toEqual(blocks.map((block) => block.id));
+
+    const answered = harness.native({
+      id: "evt-form-replied",
+      created: 1_754_000_000_041,
+      type: "form.replied",
+      data: {
+        id: "frm_1",
+        sessionID: REMOTE_SESSION_ID,
+        answer: { target: "staging", confirm: true, replicas: 3, regions: ["us", "eu"] },
+      },
+    } satisfies OpenCodeEvent);
+    expect(answered.flatMap((event) =>
+      event.event === "block:question:answer" ? [event.answer] : [])).toEqual([
+      ["Staging"],
+      ["Yes"],
+      ["3"],
+      ["US", "EU"],
+    ]);
+    expect(harness.normalizer.questionBlockIds("frm_1")).toEqual([]);
+  });
+
+  test("denies every question block when the native form is cancelled", () => {
+    const harness = createHarness();
+    harness.prompt("turn-form-cancelled");
+    harness.native({
+      id: "evt-form-created-cancel",
+      created: 1_754_000_000_050,
+      type: "form.created",
+      data: { form: FORM },
+    } satisfies OpenCodeEvent);
+    const cancelled = harness.native({
+      id: "evt-form-cancelled",
+      created: 1_754_000_000_051,
+      type: "form.cancelled",
+      data: { id: "frm_1", sessionID: REMOTE_SESSION_ID },
+    } satisfies OpenCodeEvent);
+    const statuses = cancelled.flatMap((event) =>
+      event.event === "block:question:answer" ? [event.questionStatus] : []);
+    expect(statuses).toEqual(["denied", "denied", "denied", "denied"]);
+  });
+
+  test("ignores forms owned by another native session", () => {
+    const harness = createHarness();
+    harness.prompt("turn-foreign-form");
+    expect(harness.native({
+      id: "evt-form-foreign",
+      created: 1_754_000_000_060,
+      type: "form.created",
+      data: { form: { ...FORM, id: "frm_foreign", sessionID: "ses_other" } },
+    } satisfies OpenCodeEvent)).toEqual([]);
+  });
+
+  test("coerces question selections into a typed form answer", () => {
+    const fields = answerableFormFields(FORM);
+    expect(formAnswerFromSelections(fields, [
+      ["Production"],
+      ["No"],
+      ["4"],
+      ["EU"],
+    ])).toEqual({ target: "prod", confirm: false, replicas: 4, regions: ["eu"] });
+    // Free text passes through; uncoercible and empty answers are omitted for
+    // the server to default or reject.
+    expect(formAnswerFromSelections(fields, [["Canary"], ["maybe"], ["2.5"], []]))
+      .toEqual({ target: "Canary" });
   });
 });

@@ -1,6 +1,6 @@
 {
   "name": "@openscout/runtime",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Local runtime foundation for the OpenScout control plane",
   "type": "module",
   "bin": {
@@ -126,6 +126,12 @@
       "types": "./dist/harness-catalog.d.ts",
       "import": "./dist/harness-catalog.js",
       "default": "./dist/harness-catalog.js"
+    },
+    "./web-full-client": {
+      "bun": "./src/web-full-client.ts",
+      "types": "./dist/web-full-client.d.ts",
+      "import": "./dist/web-full-client.js",
+      "default": "./dist/web-full-client.js"
     },
     "./support-paths": {
       "bun": "./src/support-paths.ts",
@@ -343,6 +349,12 @@
       "types": "./dist/scout-bridge-command.d.ts",
       "import": "./dist/scout-bridge-command.js",
       "default": "./dist/scout-bridge-command.js"
+    },
+    "./slack-identities": {
+      "bun": "./src/slack-identities.ts",
+      "types": "./dist/slack-identities.d.ts",
+      "import": "./dist/slack-identities.js",
+      "default": "./dist/slack-identities.js"
     }
   },
   "types": "./dist/index.d.ts",

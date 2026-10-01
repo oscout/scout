@@ -2,7 +2,7 @@
 //
 // This module deliberately knows nothing about service discovery, HTTP, the
 // filesystem, or the process environment. The adapter shell owns those side
-// effects and feeds the official @opencode-ai/client event union into this
+// effects and feeds the official @opencode/client event union into this
 // state machine.
 
 import type {
@@ -19,7 +19,7 @@ import type {
   HarnessEventNormalizer,
   HarnessEventNormalizerContext,
 } from "../../protocol/normalizer.js";
-import type { OpenCodeEvent } from "./upstream.js";
+import type { FormAnswer, FormField, FormInfo, FormOption, OpenCodeEvent } from "./upstream.js";
 import {
   boundActionInlineText,
   boundOpaqueValue,
@@ -69,6 +69,7 @@ type ActiveTurnState = {
   approvalVersionByBlock: Map<string, number>;
   questionBlocks: Map<string, string[]>;
   questionRequestByBlock: Map<string, { requestId: string; index: number }>;
+  formFields: Map<string, readonly AnswerableFormField[]>;
 };
 
 type BlockDraft = Block extends infer Candidate
@@ -81,6 +82,85 @@ export type OpenCodeV2NormalizerOptions = {
   /** Exact native session id. Events from every other server session are ignored. */
   remoteSessionId?: string;
 };
+
+type AnswerableFormField = Exclude<FormField, { type: "external" }>;
+
+/**
+ * Form fields a question block can answer. Hidden fields keep the server's
+ * default unless answered, and external fields need a browser hand-off that
+ * Scout question blocks cannot represent, so neither becomes a block.
+ */
+export function answerableFormFields(form: FormInfo): AnswerableFormField[] {
+  return form.fields.filter(
+    (field): field is AnswerableFormField => field.type !== "external" && field.hidden !== true,
+  );
+}
+
+const BOOLEAN_OPTIONS: readonly FormOption[] = [
+  { value: "true", label: "Yes" },
+  { value: "false", label: "No" },
+];
+
+function formFieldOptions(field: AnswerableFormField): readonly FormOption[] {
+  if (field.type === "boolean") return BOOLEAN_OPTIONS;
+  if (field.type === "string" || field.type === "multiselect") return field.options ?? [];
+  return [];
+}
+
+function parseFormBoolean(value: string): boolean | undefined {
+  const normalized = value.trim().toLowerCase();
+  if (["true", "yes", "y", "1"].includes(normalized)) return true;
+  if (["false", "no", "n", "0"].includes(normalized)) return false;
+  return undefined;
+}
+
+/**
+ * Builds a form answer from per-field question selections (option labels or
+ * free text). Empty or uncoercible selections are omitted so the server applies
+ * defaults and `when` conditions, and rejects missing required fields itself.
+ */
+export function formAnswerFromSelections(
+  fields: readonly AnswerableFormField[],
+  selections: readonly (readonly string[])[],
+): FormAnswer {
+  const answer: FormAnswer = {};
+  for (const [index, field] of fields.entries()) {
+    const options = formFieldOptions(field);
+    const values = (selections[index] ?? [])
+      .map((selection) => options.find((option) => option.label === selection)?.value ?? selection)
+      .filter((value) => value.length > 0);
+    const first = values[0];
+    if (first === undefined) continue;
+    if (field.type === "multiselect") {
+      answer[field.key] = values;
+    } else if (field.type === "boolean") {
+      const value = parseFormBoolean(first);
+      if (value !== undefined) answer[field.key] = value;
+    } else if (field.type === "number" || field.type === "integer") {
+      const value = Number(first.trim());
+      if (first.trim() && Number.isFinite(value) && (field.type === "number" || Number.isInteger(value))) {
+        answer[field.key] = value;
+      }
+    } else {
+      answer[field.key] = first;
+    }
+  }
+  return answer;
+}
+
+/** Inverse of formAnswerFromSelections, reporting option labels where they exist. */
+export function formSelectionsFromAnswer(
+  fields: readonly AnswerableFormField[],
+  answer: FormAnswer,
+): string[][] {
+  return fields.map((field) => {
+    const value = answer[field.key];
+    if (value === undefined) return [];
+    const options = formFieldOptions(field);
+    const values = Array.isArray(value) ? value : [String(value)];
+    return values.map((entry) => options.find((option) => option.value === entry)?.label ?? entry);
+  });
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value && typeof value === "object" && !Array.isArray(value));
@@ -108,6 +188,8 @@ function eventShape(value: unknown): OpenCodeEvent | null {
 }
 
 function eventSessionId(event: OpenCodeEvent): string | undefined {
+  // form.created carries its owner inside the form rather than at top level.
+  if (event.type === "form.created") return stringValue(event.data.form?.sessionID);
   return stringValue((event.data as { sessionID?: unknown }).sessionID);
 }
 
@@ -356,12 +438,16 @@ export class OpenCodeV2EventNormalizer implements HarnessEventNormalizer {
         return this.openPermission(event.data);
       case "permission.replied":
         return this.resolvePermission(event.data.requestID, event.data.reply === "reject" ? "deny" : "approve");
-      case "question.asked":
-        return this.openQuestions(event.data.id, event.data.questions);
-      case "question.replied":
-        return this.resolveQuestions(event.data.requestID, event.data.answers, "answered");
-      case "question.rejected":
-        return this.resolveQuestions(event.data.requestID, [], "denied");
+      case "form.created":
+        return this.openForm(event.data.form);
+      case "form.replied":
+        return this.resolveQuestions(
+          event.data.id,
+          formSelectionsFromAnswer(this.current?.formFields.get(event.data.id) ?? [], event.data.answer),
+          "answered",
+        );
+      case "form.cancelled":
+        return this.resolveQuestions(event.data.id, [], "denied");
 
       default:
         return [];
@@ -412,6 +498,7 @@ export class OpenCodeV2EventNormalizer implements HarnessEventNormalizer {
     const blockIds = current?.questionBlocks.get(requestId);
     if (!current || !blockIds) return [];
     current.questionBlocks.delete(requestId);
+    current.formFields.delete(requestId);
     for (const blockId of blockIds) current.questionRequestByBlock.delete(blockId);
 
     const events: AgentSessionStreamEvent[] = [];
@@ -460,6 +547,7 @@ export class OpenCodeV2EventNormalizer implements HarnessEventNormalizer {
         approvalVersionByBlock: new Map(),
         questionBlocks: new Map(),
         questionRequestByBlock: new Map(),
+        formFields: new Map(),
       };
       events.push({
         event: "turn:start",
@@ -754,6 +842,22 @@ export class OpenCodeV2EventNormalizer implements HarnessEventNormalizer {
       },
     });
     return events;
+  }
+
+  private openForm(form: FormInfo): readonly AgentSessionStreamEvent[] {
+    const current = this.current;
+    if (!current || current.questionBlocks.has(form.id)) return [];
+    const fields = answerableFormFields(form);
+    current.formFields.set(form.id, fields);
+    return this.openQuestions(form.id, fields.map((field) => ({
+      header: field.title ?? form.title,
+      question: field.description ?? field.title ?? field.key,
+      options: formFieldOptions(field).map((option) => ({
+        label: option.label,
+        description: option.description ?? "",
+      })),
+      multiple: field.type === "multiselect",
+    })));
   }
 
   private openQuestions(

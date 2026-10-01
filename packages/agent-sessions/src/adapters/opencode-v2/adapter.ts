@@ -8,8 +8,6 @@
 // the breaking `/api/*` contract. The service is user-owned: this adapter may
 // ensure it exists, but never stops it on session shutdown.
 
-import { existsSync } from "node:fs";
-import { homedir } from "node:os";
 import { basename, isAbsolute, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
@@ -23,10 +21,12 @@ import {
   type OpenCodeClientOptions,
   type OpenCodeEvent,
   type ServiceFacade,
+  type FormField,
   type SessionInfo,
 } from "./upstream.js";
 
 import { BaseAdapter, type AdapterConfig } from "../../protocol/adapter.js";
+import { findOpenCodeV2Binary } from "./binary.js";
 import type {
   AgentSessionStreamEvent,
   Prompt,
@@ -34,11 +34,13 @@ import type {
 } from "../../protocol/primitives.js";
 import { redactSecrets, registerSecretValue } from "../../secret-redaction.js";
 import {
+  answerableFormFields,
   createOpenCodeV2EventNormalizer,
+  formAnswerFromSelections,
   type OpenCodeV2EventNormalizer,
 } from "./normalizer.js";
 
-export const OPENCODE_V2_CLIENT_VERSION = "0.0.0-next-17226";
+export const OPENCODE_V2_CLIENT_VERSION = "2.0.21";
 
 const DEFAULT_STARTUP_TIMEOUT_MS = 15_000;
 const DEFAULT_RECONNECT_DELAY_MS = 1_000;
@@ -76,6 +78,7 @@ type Deferred<T> = {
 };
 
 type PendingQuestionRequest = {
+  fields: Exclude<FormField, { type: "external" }>[];
   answers: string[][];
   answered: Set<number>;
   blockIds: string[];
@@ -133,16 +136,7 @@ function stringArray(value: unknown): string[] | undefined {
 }
 
 function defaultOpenCodeV2Binary(env: Record<string, string> | undefined): string {
-  const override = stringValue(env?.OPENCODE_V2_BIN) ?? stringValue(process.env.OPENCODE_V2_BIN);
-  if (override) return override;
-  const home = stringValue(env?.HOME) ?? homedir();
-  const candidates = [
-    "/opt/homebrew/bin/opencode2",
-    "/usr/local/bin/opencode2",
-    join(home, ".opencode", "bin", "opencode2"),
-    join(home, ".local", "bin", "opencode2"),
-  ];
-  return candidates.find((candidate) => existsSync(candidate)) ?? "opencode2";
+  return findOpenCodeV2Binary({ ...process.env, ...env }) ?? "opencode2";
 }
 
 function modelRef(value: unknown, variantValue: unknown): OpenCodeV2AdapterOptions["model"] {
@@ -157,6 +151,13 @@ function modelRef(value: unknown, variantValue: unknown): OpenCodeV2AdapterOptio
   if (!id) return undefined;
   const variant = stringValue(variantValue) ?? inlineVariant;
   return { id, providerID, ...(variant ? { variant } : {}) };
+}
+
+/** OpenCode keeps the V2 wire API stable within a major.minor line (2.0.x). */
+function sameMinorVersion(actual: string, required: string): boolean {
+  const line = (version: string) => /^v?(\d+)\.(\d+)(?:[.+-]|$)/.exec(version.trim())?.slice(1, 3).join(".");
+  const requiredLine = line(required);
+  return requiredLine !== undefined && line(actual) === requiredLine;
 }
 
 function parseOptions(config: AdapterConfig): OpenCodeV2AdapterOptions {
@@ -463,7 +464,7 @@ export class OpenCodeV2Adapter extends BaseAdapter {
     void this.client.permission.reply({
       sessionID: this.nativeSessionId,
       requestID: requestId,
-      reply: decision === "approve" ? "once" : "reject",
+      decision: decision === "approve" ? "once" : "reject",
       ...(reason ? { message: reason } : {}),
     }, { signal: AbortSignal.timeout(this.options.startupTimeoutMs) }).then(
       () => this.emitNormalized(this.normalizer.resolvePermission(requestId, decision)),
@@ -492,16 +493,16 @@ export class OpenCodeV2Adapter extends BaseAdapter {
     this.pendingQuestions.delete(descriptor.requestId);
     const turnId = this.normalizer.currentTurnId;
     const inputId = this.activeRemoteInputId;
-    void this.client.question.reply({
+    void this.client.session.form.reply({
       sessionID: this.nativeSessionId,
-      requestID: descriptor.requestId,
-      answers: pending.answers,
+      formID: descriptor.requestId,
+      answer: formAnswerFromSelections(pending.fields, pending.answers),
     }, { signal: AbortSignal.timeout(this.options.startupTimeoutMs) }).then(
       () => this.emitNormalized(this.normalizer.resolveQuestions(descriptor.requestId, pending.answers)),
       (error: unknown) => {
         const replyError = normalizedError(error, "OpenCode V2 question reply failed.");
         if (this.normalizer.questionBlockIds(descriptor.requestId).length === 0) {
-          // question.replied/rejected is the authoritative acknowledgement,
+          // form.replied/cancelled is the authoritative acknowledgement,
           // even when its HTTP reply is lost afterward.
           this.emit("error", replyError);
           return;
@@ -550,7 +551,7 @@ export class OpenCodeV2Adapter extends BaseAdapter {
         if (this.unresolvedSessionInterrupts.size > 0) {
           throw new Error("A prior OpenCode V2 session interrupt is still transport-ambiguous.");
         }
-        const pending = await this.client.session.pending.list(
+        const pending = await this.client.session.inbox.list(
           { sessionID: this.nativeSessionId },
           { signal: shutdownSignal },
         );
@@ -558,8 +559,8 @@ export class OpenCodeV2Adapter extends BaseAdapter {
           const originated = this.originatedInputs.get(input.id);
           if (!originated?.cleanupRequested) continue;
           this.updateOriginatedInput(originated, { admitted: true });
-          await this.client.session.pending.cancel(
-            { sessionID: this.nativeSessionId, inputID: input.id },
+          await this.client.session.inbox.cancel(
+            { sessionID: this.nativeSessionId, inboxID: input.id },
             { signal: shutdownSignal },
           ).catch(() => undefined);
         }
@@ -679,17 +680,17 @@ export class OpenCodeV2Adapter extends BaseAdapter {
       baseUrl: endpoint.url,
       ...(headers ? { headers } : {}),
     });
-    const health = await client.health.get({ signal });
+    const info = await client.server.info({ signal });
     if (signal.aborted || this.shuttingDown) throw abortReason(signal);
-    if (this.options.requiredVersion && health.version !== this.options.requiredVersion) {
+    if (this.options.requiredVersion && !sameMinorVersion(info.version, this.options.requiredVersion)) {
       throw new Error(
-        `OpenCode V2 service ${health.version} does not match the pinned client ${this.options.requiredVersion}. `
-        + "Update OpenScout's @opencode-ai/client pin or run the matching opencode2 build.",
+        `OpenCode V2 service ${info.version} is not compatible with the pinned client ${this.options.requiredVersion}. `
+        + "Update OpenScout's @opencode/client pin or run a matching opencode2 build.",
       );
     }
     this.endpoint = endpoint;
     this.client = client;
-    this.serverVersion = health.version;
+    this.serverVersion = info.version;
   }
 
   private async refreshClient(signal: AbortSignal): Promise<void> {
@@ -727,7 +728,7 @@ export class OpenCodeV2Adapter extends BaseAdapter {
       if (this.unresolvedSessionInterrupts.size > 0) {
         throw new Error("A prior OpenCode V2 session interrupt is still transport-ambiguous.");
       }
-      const pending = await this.client.session.pending.list(
+      const pending = await this.client.session.inbox.list(
         { sessionID: this.nativeSessionId },
         { signal: request.signal },
       );
@@ -735,8 +736,8 @@ export class OpenCodeV2Adapter extends BaseAdapter {
         if (!this.recoveryInputIds.has(input.id)) continue;
         const originated = this.originatedInputs.get(input.id);
         if (originated) this.updateOriginatedInput(originated, { admitted: true });
-        await this.client.session.pending.cancel(
-          { sessionID: this.nativeSessionId, inputID: input.id },
+        await this.client.session.inbox.cancel(
+          { sessionID: this.nativeSessionId, inboxID: input.id },
           { signal: request.signal },
         ).catch(() => undefined);
       }
@@ -783,7 +784,7 @@ export class OpenCodeV2Adapter extends BaseAdapter {
     if (!this.client || !this.nativeSessionId) return;
     const [active, pending] = await Promise.all([
       this.client.session.active({ signal }),
-      this.client.session.pending.list({ sessionID: this.nativeSessionId }, { signal }),
+      this.client.session.inbox.list({ sessionID: this.nativeSessionId }, { signal }),
     ]);
     if (active[this.nativeSessionId] || pending.length > 0) {
       throw new Error(`OpenCode V2 session ${this.nativeSessionId} is not quiescent ${context}.`);
@@ -946,16 +947,18 @@ export class OpenCodeV2Adapter extends BaseAdapter {
   }
 
   private handleNativeEvent(event: OpenCodeEvent): void {
-    const data = event.data as { sessionID?: string };
-    if (!this.nativeSessionId || data.sessionID !== this.nativeSessionId) return;
+    const sessionID = event.type === "form.created"
+      ? event.data.form.sessionID
+      : (event.data as { sessionID?: string }).sessionID;
+    if (!this.nativeSessionId || sessionID !== this.nativeSessionId) return;
 
-    if (event.type === "session.input.admitted") {
-      const originated = this.originatedInputs.get(event.data.inputID);
+    if (event.type === "session.inbox.enqueued") {
+      const originated = this.originatedInputs.get(event.data.inboxID);
       if (originated) {
         this.updateOriginatedInput(originated, { admitted: true });
         if (originated.cleanupRequested) void this.attemptInputCleanup(originated.id);
       }
-      if (this.normalizer.turnOpen && event.data.inputID === this.activeRemoteInputId) {
+      if (this.normalizer.turnOpen && event.data.inboxID === this.activeRemoteInputId) {
         this.activeInputAdmitted = true;
       }
       // Admission alone does not own output. Another client may queue behind
@@ -963,8 +966,8 @@ export class OpenCodeV2Adapter extends BaseAdapter {
       // changes which input the execution is processing.
       return;
     }
-    if (event.type === "session.input.promoted") {
-      const originated = this.originatedInputs.get(event.data.inputID);
+    if (event.type === "session.inbox.delivered") {
+      const originated = this.originatedInputs.get(event.data.inboxID);
       if (originated) {
         this.updateOriginatedInput(originated, { admitted: true, promoted: true });
         if (originated.cleanupRequested || !this.normalizer.turnOpen) {
@@ -974,7 +977,7 @@ export class OpenCodeV2Adapter extends BaseAdapter {
         }
       }
       if (!this.normalizer.turnOpen) return;
-      if (event.data.inputID !== this.activeRemoteInputId) {
+      if (event.data.inboxID !== this.activeRemoteInputId) {
         // If our input had already promoted, its model step has crossed into a
         // coalesced foreign input. The foreign input now owns the execution, so
         // fail locally but do not interrupt it. If ours was still queued,
@@ -992,13 +995,13 @@ export class OpenCodeV2Adapter extends BaseAdapter {
       this.setStatus("active");
       return;
     }
-    if (event.type === "session.input.queued" || event.type === "session.input.steered") {
+    if (event.type === "session.inbox.delivery.changed") {
       return;
     }
-    if (event.type === "session.input.cancelled") {
-      const originated = this.originatedInputs.get(event.data.inputID);
+    if (event.type === "session.inbox.cancelled") {
+      const originated = this.originatedInputs.get(event.data.inboxID);
       if (originated) this.retireOriginatedInput(originated.id);
-      if (this.normalizer.turnOpen && event.data.inputID === this.activeRemoteInputId) {
+      if (this.normalizer.turnOpen && event.data.inboxID === this.activeRemoteInputId) {
         if (originated?.cleanupRequested) {
           this.emitNormalized(this.normalizer.ingest({
             source: "adapter_control",
@@ -1033,7 +1036,7 @@ export class OpenCodeV2Adapter extends BaseAdapter {
     if (this.normalizer.turnOpen && !this.activeInputPromoted) {
       // execution.started precedes input promotion in product V2 and may
       // describe a coalesced busy period. Output ownership begins only at the
-      // matching input.promoted edge, never at session or execution scope.
+      // matching inbox.delivered edge, never at session or execution scope.
       if (executionTerminal) {
         this.failActiveTurn(new Error(
           "OpenCode V2 execution ended before the local input was promoted; the pending input was quarantined.",
@@ -1058,17 +1061,18 @@ export class OpenCodeV2Adapter extends BaseAdapter {
       sequence: this.sequence++,
       payload: event,
     });
-    if (event.type === "question.asked") {
-      const blockIds = [...this.normalizer.questionBlockIds(event.data.id)];
-      this.pendingQuestions.set(event.data.id, {
+    if (event.type === "form.created") {
+      const blockIds = [...this.normalizer.questionBlockIds(event.data.form.id)];
+      this.pendingQuestions.set(event.data.form.id, {
+        fields: answerableFormFields(event.data.form),
         answers: blockIds.map(() => []),
         answered: new Set(),
         blockIds,
       });
-    } else if (event.type === "question.replied" || event.type === "question.rejected") {
-      this.pendingQuestions.delete(event.data.requestID);
+    } else if (event.type === "form.replied" || event.type === "form.cancelled") {
+      this.pendingQuestions.delete(event.data.id);
     }
-    // EventEmitter listeners run synchronously. Populate/retire question
+    // EventEmitter listeners run synchronously. Populate/retire form
     // routing before exposing normalized blocks so an immediate answer cannot
     // race and disappear.
     this.emitNormalized(normalized);
@@ -1168,7 +1172,7 @@ export class OpenCodeV2Adapter extends BaseAdapter {
         );
       }
       const active = await client.session.active({ signal: request.signal });
-      const pending = await client.session.pending.list(
+      const pending = await client.session.inbox.list(
         { sessionID: nativeSessionId },
         { signal: request.signal },
       );
@@ -1219,7 +1223,7 @@ export class OpenCodeV2Adapter extends BaseAdapter {
         return;
       }
       // The HTTP response is also authoritative admission evidence. Normally
-      // the durable session.input.admitted event arrives first; accepting the
+      // the durable session.inbox.enqueued event arrives first; accepting the
       // response covers a scheduler delay without weakening input-id checks.
       if (this.activeRemoteInputId === remoteInputId && this.normalizer.turnOpen) {
         this.activeInputAdmitted = true;
@@ -1320,8 +1324,8 @@ export class OpenCodeV2Adapter extends BaseAdapter {
             AbortSignal.timeout(2_000),
           );
         } else {
-          await client.session.pending.cancel(
-            { sessionID: nativeSessionId, inputID: inputId },
+          await client.session.inbox.cancel(
+            { sessionID: nativeSessionId, inboxID: inputId },
             { signal: AbortSignal.timeout(2_000) },
           );
         }

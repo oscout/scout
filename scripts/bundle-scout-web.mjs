@@ -169,8 +169,12 @@ export function findBasicClientLeaks(clientDir) {
   return leaks;
 }
 
-/** Copy runtime assets without the crew authoring masters or preview page. */
-export function copyControlPlaneClient(source, targetClientDir) {
+/**
+ * Copy runtime assets without the crew authoring masters or preview page.
+ * Crew artwork stays out of the public npm package entirely (the basic client
+ * never shows it); the private full-app download keeps the runtime frames.
+ */
+export function copyControlPlaneClient(source, targetClientDir, { includeCrew = false } = {}) {
   rmSync(targetClientDir, { recursive: true, force: true });
   mkdirSync(dirname(targetClientDir), { recursive: true });
   cpSync(source, targetClientDir, {
@@ -179,10 +183,12 @@ export function copyControlPlaneClient(source, targetClientDir) {
       const relative = entry.slice(source.length + 1).replaceAll("\\", "/");
       if (relative === "crew-preview.html") return false;
       if (!relative.startsWith("crew/")) return true;
-      // CrewAvatar/CrewSprite request top-level portraits and authored eye
-      // patches. Keep those paths intact, never the masters, runs or QA trees.
+      if (!includeCrew) return false;
+      // CrewAvatar/CrewSprite request top-level portraits, authored eye
+      // patches and finished pose frames (CREW_POSES). Keep those paths
+      // intact, never the masters, runs or QA trees.
       return /^crew\/[^/]+\.webp$/.test(relative)
-        || /^crew\/sheets(?:\/[^/]+)?(?:\/[^/]+\.webp)?$/.test(relative);
+        || /^crew\/(?:sheets|poses)(?:\/[^/]+)?(?:\/[^/]+\.webp)?$/.test(relative);
     },
   });
 }

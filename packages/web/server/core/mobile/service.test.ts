@@ -4,7 +4,7 @@ import { SCOUT_RUNTIME_CATALOG } from "@openscout/protocol";
 import { getScoutMobileRuntimeCapabilities } from "./service.ts";
 
 test("mobile runtime capabilities expose the versioned legal tuple catalog", async () => {
-  const catalog = await getScoutMobileRuntimeCapabilities(undefined, async () => null);
+  const catalog = await getScoutMobileRuntimeCapabilities();
   expect(catalog.schemaVersion).toBe("openscout.runtime-capabilities.v1");
   expect(catalog.catalogVersion).toBe("openscout.runtime-catalog.v1");
   expect(catalog.defaults).toEqual({

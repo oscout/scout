@@ -132,3 +132,5 @@ export {
   registeredSecretSources,
   unpatchConsoleForSecrets,
 } from "./secret-redaction.js";
+
+export { createAdapter as createOpenclawAcpAdapter } from "./adapters/openclaw-acp/index.js";

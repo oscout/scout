@@ -148,6 +148,34 @@
       "when": 1789778404718,
       "tag": "0020_message_reactions",
       "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "6",
+      "when": 1790834107216,
+      "tag": "0021_integration_setup",
+      "breakpoints": true
+    },
+    {
+      "idx": 22,
+      "version": "6",
+      "when": 1790835319188,
+      "tag": "0022_integration_worker_leases",
+      "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "6",
+      "when": 1790836074526,
+      "tag": "0023_integration_slack_delivery",
+      "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "6",
+      "when": 1790836679807,
+      "tag": "0024_integration_slack_events",
+      "breakpoints": true
     }
   ]
 }

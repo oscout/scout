@@ -13,7 +13,7 @@ import type {
   EnsureOptions,
   OpenCodeClient,
   OpenCodeEvent,
-  SessionPendingInfo,
+  SessionInboxInfo,
 } from "./upstream.js";
 
 type SessionInfo = Awaited<ReturnType<OpenCodeClient["session"]["get"]>>;
@@ -23,7 +23,7 @@ type SessionPromptInput = Parameters<OpenCodeClient["session"]["prompt"]>[0];
 type SessionInterruptInput = Parameters<OpenCodeClient["session"]["interrupt"]>[0];
 type RequestOptions = Parameters<OpenCodeClient["session"]["interrupt"]>[1];
 type PermissionReplyInput = Parameters<OpenCodeClient["permission"]["reply"]>[0];
-type QuestionReplyInput = Parameters<OpenCodeClient["question"]["reply"]>[0];
+type QuestionReplyInput = Parameters<OpenCodeClient["session"]["form"]["reply"]>[0];
 type ClientOptions = Parameters<OpenCodeV2Dependencies["makeClient"]>[0];
 
 const activeAdapters = new Set<OpenCodeV2Adapter>();
@@ -87,14 +87,14 @@ function inputAdmitted(id: string, sessionID: string, inputID: string): OpenCode
   return {
     id,
     created: 1_754_000_000_050,
-    type: "session.input.admitted",
+    type: "session.inbox.enqueued",
     durable: { aggregateID: sessionID, seq: 1, version: 1 },
     data: {
       sessionID,
-      inputID,
-      input: {
+      inboxID: inputID,
+      item: {
         type: "user",
-        data: { text: "fixture" },
+        payload: { text: "fixture" },
         delivery: "queue",
       },
     },
@@ -105,9 +105,9 @@ function inputPromoted(id: string, sessionID: string, inputID: string): OpenCode
   return {
     id,
     created: 1_754_000_000_075,
-    type: "session.input.promoted",
+    type: "session.inbox.delivered",
     durable: { aggregateID: sessionID, seq: 2, version: 1 },
-    data: { sessionID, inputID },
+    data: { sessionID, inboxID: inputID },
   } satisfies OpenCodeEvent;
 }
 
@@ -115,9 +115,9 @@ function inputCancelled(id: string, sessionID: string, inputID: string): OpenCod
   return {
     id,
     created: 1_754_000_000_080,
-    type: "session.input.cancelled",
+    type: "session.inbox.cancelled",
     durable: { aggregateID: sessionID, seq: 3, version: 1 },
-    data: { sessionID, inputID },
+    data: { sessionID, inboxID: inputID },
   } satisfies OpenCodeEvent;
 }
 
@@ -189,11 +189,11 @@ function createFakeClient(nativeSession: SessionInfo) {
   const permissionReplyCalls: PermissionReplyInput[] = [];
   const questionReplyCalls: QuestionReplyInput[] = [];
   const activeSessions: Record<string, { type: "running" }> = {};
-  const pendingInputs: SessionPendingInfo[] = [];
+  const pendingInputs: SessionInboxInfo[] = [];
 
   const client = {
-    health: {
-      get: async () => ({ healthy: true as const, version: OPENCODE_V2_CLIENT_VERSION, pid: 4242 }),
+    server: {
+      info: async () => ({ version: OPENCODE_V2_CLIENT_VERSION, pid: 4242 }),
     },
     session: {
       active: async () => ({ ...activeSessions }),
@@ -210,9 +210,9 @@ function createFakeClient(nativeSession: SessionInfo) {
         return {
           id: input.id!,
           sessionID: nativeSession.id,
-          timeCreated: 1_754_000_000_000,
+          time: { created: 1_754_000_000_000 },
           type: "user" as const,
-          data: {
+          payload: {
             text: input.text,
             ...(input.files ? { files: [...input.files] } : {}),
           },
@@ -225,14 +225,19 @@ function createFakeClient(nativeSession: SessionInfo) {
       wait: async (input: unknown) => {
         waitCalls.push(input);
       },
-      pending: {
+      inbox: {
         list: async () => [...pendingInputs],
         cancel: async (input: unknown) => {
           pendingCancelCalls.push(input);
-          if (input && typeof input === "object" && "inputID" in input) {
-            const index = pendingInputs.findIndex((pending) => pending.id === input.inputID);
+          if (input && typeof input === "object" && "inboxID" in input) {
+            const index = pendingInputs.findIndex((pending) => pending.id === input.inboxID);
             if (index >= 0) pendingInputs.splice(index, 1);
           }
+        },
+      },
+      form: {
+        reply: async (input: QuestionReplyInput) => {
+          questionReplyCalls.push(input);
         },
       },
     },
@@ -242,11 +247,6 @@ function createFakeClient(nativeSession: SessionInfo) {
     permission: {
       reply: async (input: PermissionReplyInput) => {
         permissionReplyCalls.push(input);
-      },
-    },
-    question: {
-      reply: async (input: QuestionReplyInput) => {
-        questionReplyCalls.push(input);
       },
     },
   } as unknown as OpenCodeClient;
@@ -417,6 +417,32 @@ describe("OpenCodeV2Adapter", () => {
     expect(fakeService.stopCalls).toEqual([]);
     expect(fakeClient.feed.closedSubscriptions).toBe(1);
     expect(adapter.session.status).toBe("closed");
+  });
+
+  test("gates the server version on the pinned major.minor line unless requiredVersion is false", async () => {
+    const startWith = async (version: string, options: Record<string, unknown> = {}) => {
+      const fakeClient = createFakeClient(sessionInfo("ses-version", "/workspace/version"));
+      fakeClient.client.server.info = async () => ({ version, pid: 4242 });
+      const fakeService = createFakeService({ discovered: { url: "http://127.0.0.1:7340" } });
+      const injected = injectedDependencies(fakeClient.client, fakeService.service);
+      fakeClient.feed.push(SERVER_CONNECTED);
+      const adapter = new OpenCodeV2Adapter({
+        sessionId: `scout-version-${version}`,
+        cwd: "/workspace/version",
+        options,
+      }, injected.dependencies);
+      activeAdapters.add(adapter);
+      adapter.on("error", () => undefined);
+      await adapter.start();
+      return adapter;
+    };
+
+    expect(OPENCODE_V2_CLIENT_VERSION).toBe("2.0.21");
+    expect((await startWith("2.0.21")).session.status).toBe("idle");
+    expect((await startWith("2.0.34")).session.status).toBe("idle");
+    await expect(startWith("2.1.0")).rejects.toThrow(/not compatible with the pinned client 2\.0\.21/);
+    await expect(startWith("0.0.0-next-17226")).rejects.toThrow(/not compatible/);
+    expect((await startWith("3.0.0", { requiredVersion: false })).session.status).toBe("idle");
   });
 
   test("bounds startup when shared-service discovery or ensure never settles", async () => {
@@ -673,9 +699,9 @@ describe("OpenCodeV2Adapter", () => {
       return {
         id: input.id!,
         sessionID: "ses-prompt-invalid-request",
-        timeCreated: 1_754_000_000_000,
+        time: { created: 1_754_000_000_000 },
         type: "user",
-        data: { text: input.text },
+        payload: { text: input.text },
         delivery: "queue",
       };
     };
@@ -750,7 +776,7 @@ describe("OpenCodeV2Adapter", () => {
     const quarantinedInputId = fakeClient.promptCalls[0]!.id!;
     expect(fakeClient.pendingCancelCalls).toEqual([{
       sessionID: "ses-prompt-transport-error",
-      inputID: quarantinedInputId,
+      inboxID: quarantinedInputId,
     }]);
     expect(collector.events.filter((event) => event.event === "turn:end")).toEqual([
       expect.objectContaining({ status: "failed" }),
@@ -786,7 +812,7 @@ describe("OpenCodeV2Adapter", () => {
       fakeClient.permissionReplyCalls.push(input);
       await permissionReply;
     };
-    fakeClient.client.question.reply = async (input) => {
+    fakeClient.client.session.form.reply = async (input) => {
       fakeClient.questionReplyCalls.push(input);
       await questionReply;
     };
@@ -843,15 +869,19 @@ describe("OpenCodeV2Adapter", () => {
     fakeClient.feed.push({
       id: "evt-native-replies-question-asked",
       created: 1_754_000_000_132,
-      type: "question.asked",
+      type: "form.created",
       data: {
-        sessionID: "ses-native-interactive-replies",
-        id: "question-native-reply",
-        questions: [{
-          header: "Continue?",
-          question: "Should this turn remain active?",
-          options: [{ label: "Proceed", description: "Keep the turn active." }],
-        }],
+        form: {
+          id: "question-native-reply",
+          sessionID: "ses-native-interactive-replies",
+          title: "Continue?",
+          fields: [{
+            key: "continue",
+            type: "string",
+            description: "Should this turn remain active?",
+            options: [{ value: "proceed", label: "Proceed", description: "Keep the turn active." }],
+          }],
+        },
       },
     } satisfies OpenCodeEvent);
     await waitFor(
@@ -875,11 +905,11 @@ describe("OpenCodeV2Adapter", () => {
     fakeClient.feed.push({
       id: "evt-native-replies-question-replied",
       created: 1_754_000_000_133,
-      type: "question.replied",
+      type: "form.replied",
       data: {
         sessionID: "ses-native-interactive-replies",
-        requestID: "question-native-reply",
-        answers: [["Proceed"]],
+        id: "question-native-reply",
+        answer: { continue: "proceed" },
       },
     } satisfies OpenCodeEvent);
 
@@ -972,12 +1002,12 @@ describe("OpenCodeV2Adapter", () => {
     adapter.send({ sessionId: "scout-pending-interrupt", text: "stop before promotion" });
     await waitFor(() => fakeClient.promptCalls.length === 1, "the pending interrupt prompt");
     const inputId = fakeClient.promptCalls[0]!.id!;
-    fakeClient.client.session.pending.cancel = async (input) => {
+    fakeClient.client.session.inbox.cancel = async (input) => {
       fakeClient.pendingCancelCalls.push(input);
       fakeClient.feed.push(inputCancelled(
         "evt-pending-interrupt-cancelled",
         "ses-pending-interrupt",
-        input.inputID,
+        input.inboxID,
       ));
       await Bun.sleep(1);
     };
@@ -989,7 +1019,7 @@ describe("OpenCodeV2Adapter", () => {
     );
     expect(fakeClient.pendingCancelCalls).toContainEqual({
       sessionID: "ses-pending-interrupt",
-      inputID: inputId,
+      inboxID: inputId,
     });
     expect(collector.events.filter((event) => event.event === "turn:end")).toEqual([
       expect.objectContaining({ status: "stopped" }),
@@ -1012,9 +1042,9 @@ describe("OpenCodeV2Adapter", () => {
         return {
           id: input.id!,
           sessionID: "ses-cancel-admission-race",
-          timeCreated: 1_754_000_000_000,
+          time: { created: 1_754_000_000_000 },
           type: "user",
-          data: { text: input.text },
+          payload: { text: input.text },
           delivery: "queue",
         };
       }
@@ -1030,7 +1060,7 @@ describe("OpenCodeV2Adapter", () => {
     const firstCancel = new Promise<void>((_resolve, reject) => {
       rejectFirstCancel = reject;
     });
-    fakeClient.client.session.pending.cancel = async (input) => {
+    fakeClient.client.session.inbox.cancel = async (input) => {
       fakeClient.pendingCancelCalls.push(input);
       if (fakeClient.pendingCancelCalls.length === 1) await firstCancel;
     };
@@ -1070,8 +1100,8 @@ describe("OpenCodeV2Adapter", () => {
       "the post-admission exact-id cleanup retry",
     );
     expect(fakeClient.pendingCancelCalls).toEqual([
-      { sessionID: "ses-cancel-admission-race", inputID: firstInputId },
-      { sessionID: "ses-cancel-admission-race", inputID: firstInputId },
+      { sessionID: "ses-cancel-admission-race", inboxID: firstInputId },
+      { sessionID: "ses-cancel-admission-race", inboxID: firstInputId },
     ]);
     expect(collector.events.filter((event) => event.event === "turn:end")).toEqual([
       expect.objectContaining({ status: "stopped" }),
@@ -1183,9 +1213,9 @@ describe("OpenCodeV2Adapter", () => {
       return {
         id: input.id!,
         sessionID: "ses-promoted-cleanup-generation",
-        timeCreated: 1_754_000_000_000,
+        time: { created: 1_754_000_000_000 },
         type: "user",
-        data: { text: input.text },
+        payload: { text: input.text },
         delivery: "queue",
       };
     };
@@ -1222,9 +1252,9 @@ describe("OpenCodeV2Adapter", () => {
     resolveFirstPrompt({
       id: firstInput.id!,
       sessionID: "ses-promoted-cleanup-generation",
-      timeCreated: 1_754_000_000_000,
+      time: { created: 1_754_000_000_000 },
       type: "user",
-      data: { text: firstInput.text },
+      payload: { text: firstInput.text },
       delivery: "queue",
     });
     await Bun.sleep(1);
@@ -1312,9 +1342,9 @@ describe("OpenCodeV2Adapter", () => {
     resolveFirstPrompt({
       id: firstInputId,
       sessionID: "ses-promoted-cleanup-transport",
-      timeCreated: 1_754_000_000_000,
+      time: { created: 1_754_000_000_000 },
       type: "user",
-      data: { text: "Turn A" },
+      payload: { text: "Turn A" },
       delivery: "queue",
     });
     await Bun.sleep(1);
@@ -1366,7 +1396,7 @@ describe("OpenCodeV2Adapter", () => {
       fakeClient.promptCalls.push(input);
       return promptResponse;
     };
-    fakeClient.client.session.pending.cancel = async (input) => {
+    fakeClient.client.session.inbox.cancel = async (input) => {
       fakeClient.pendingCancelCalls.push(input);
       throw { _tag: "Conflict", message: "input is not pending" };
     };
@@ -1395,9 +1425,9 @@ describe("OpenCodeV2Adapter", () => {
     resolvePrompt({
       id: input.id!,
       sessionID: "ses-late-promotion",
-      timeCreated: 1_754_000_000_000,
+      time: { created: 1_754_000_000_000 },
       type: "user",
-      data: { text: input.text },
+      payload: { text: input.text },
       delivery: "queue",
     });
 
@@ -1441,7 +1471,7 @@ describe("OpenCodeV2Adapter", () => {
     }));
     expect(fakeClient.pendingCancelCalls).toContainEqual({
       sessionID: "ses-pre-promotion-failure",
-      inputID: inputId,
+      inboxID: inputId,
     });
   });
 
@@ -1476,23 +1506,27 @@ describe("OpenCodeV2Adapter", () => {
     fakeClient.feed.push({
       id: "evt-question-asked",
       created: 1_754_000_000_120,
-      type: "question.asked",
+      type: "form.created",
       data: {
-        sessionID: "ses-question",
-        id: "question-1",
-        questions: [{
-          header: "Continue?",
-          question: "Should the adapter continue?",
-          options: [{ label: "Proceed", description: "Continue the turn." }],
-        }],
+        form: {
+          id: "question-1",
+          sessionID: "ses-question",
+          title: "Continue?",
+          fields: [{
+            key: "continue",
+            type: "string",
+            description: "Should the adapter continue?",
+            options: [{ value: "proceed", label: "Proceed", description: "Continue the turn." }],
+          }],
+        },
       },
     } satisfies OpenCodeEvent);
 
     await waitFor(() => fakeClient.questionReplyCalls.length === 1, "the synchronous question reply");
     expect(fakeClient.questionReplyCalls).toEqual([{
       sessionID: "ses-question",
-      requestID: "question-1",
-      answers: [["Proceed"]],
+      formID: "question-1",
+      answer: { continue: "proceed" },
     }]);
     fakeClient.feed.push(executionSucceeded("evt-question-succeeded", "ses-question"));
   });
@@ -1516,7 +1550,7 @@ describe("OpenCodeV2Adapter", () => {
       fakeClient.permissionReplyCalls.push(input);
       await permissionReply;
     };
-    fakeClient.client.question.reply = async (input) => {
+    fakeClient.client.session.form.reply = async (input) => {
       fakeClient.questionReplyCalls.push(input);
       await questionReply;
     };
@@ -1563,15 +1597,19 @@ describe("OpenCodeV2Adapter", () => {
     fakeClient.feed.push({
       id: "evt-stale-replies-question",
       created: 1_754_000_000_121,
-      type: "question.asked",
+      type: "form.created",
       data: {
-        sessionID: "ses-stale-interactive-replies",
-        id: "question-a",
-        questions: [{
-          header: "Continue?",
-          question: "Should Turn A continue?",
-          options: [{ label: "Proceed", description: "Continue Turn A." }],
-        }],
+        form: {
+          id: "question-a",
+          sessionID: "ses-stale-interactive-replies",
+          title: "Continue?",
+          fields: [{
+            key: "continue",
+            type: "string",
+            description: "Should Turn A continue?",
+            options: [{ value: "proceed", label: "Proceed", description: "Continue Turn A." }],
+          }],
+        },
       },
     } satisfies OpenCodeEvent);
     await waitFor(
@@ -1684,7 +1722,7 @@ describe("OpenCodeV2Adapter", () => {
     await waitFor(() => fakeClient.pendingCancelCalls.length === 1, "the owned pending-input cancellation");
     expect(fakeClient.pendingCancelCalls).toEqual([{
       sessionID: "ses-shared",
-      inputID: ownedInputId,
+      inboxID: ownedInputId,
     }]);
   });
 
@@ -1827,7 +1865,7 @@ describe("OpenCodeV2Adapter", () => {
     };
     const makeClientCalls: ClientOptions[] = [];
     let nextId = 0;
-    first.client.session.pending.cancel = async (input) => {
+    first.client.session.inbox.cancel = async (input) => {
       first.pendingCancelCalls.push(input);
       throw {
         _tag: "ServiceUnavailable",
@@ -1874,7 +1912,7 @@ describe("OpenCodeV2Adapter", () => {
     await waitFor(() => second.waitCalls.length === 1, "the cleanup-state recovery wait");
     expect(second.pendingCancelCalls).toEqual([{
       sessionID: native.id,
-      inputID: retainedInputId,
+      inboxID: retainedInputId,
     }]);
     expect(second.interruptCalls).toHaveLength(1);
     expect(second.waitCalls).toEqual([{ sessionID: native.id }]);

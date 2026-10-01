@@ -2,13 +2,6 @@ import { useEffect, useState } from "react";
 import { api } from "../../lib/api.ts";
 import type { FollowTarget, Route } from "../../lib/types.ts";
 
-type TailFollowTarget = FollowTarget & { harnessSessionId?: string | null };
-
-/** Public brokers return the resolved harness id as sessionId; newer ones name it explicitly. */
-export function resolvedFollowTailQuery(target: TailFollowTarget): string | undefined {
-  return target.harnessSessionId?.trim() || target.sessionId?.trim() || undefined;
-}
-
 /**
  * A follow link lands on the tail with Scout ids (flight, invocation, session,
  * chat) in the URL. Tail events carry the harness's own session id instead,
@@ -31,9 +24,9 @@ export function useFollowTailQuery(route: Route, tailQuery: string | undefined):
   useEffect(() => {
     if (!key) return;
     let cancelled = false;
-    api<TailFollowTarget>(`/api/follow?${key}`)
+    api<FollowTarget>(`/api/follow?${key}`)
       .then((target) => {
-        const harnessSessionId = resolvedFollowTailQuery(target);
+        const harnessSessionId = target.harnessSessionId?.trim();
         if (!cancelled && harnessSessionId) setResolved({ key, query: harnessSessionId });
       })
       .catch(() => {});
