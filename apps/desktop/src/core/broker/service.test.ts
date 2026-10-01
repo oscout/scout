@@ -2884,8 +2884,20 @@ describe("sendScoutMessage", () => {
     );
   }, 15000);
 
-  test("routes plain named-channel sends to the definitive opaque conversation", async () => {
-    useIsolatedOpenScoutHome();
+  test.each([
+    "plain channel update",
+    "Review @openscout/scout",
+    "Review @openscout/scout and @openscout/protocol",
+    "@talkie this stays in the channel",
+  ])("routes explicit-channel body as payload: %s", async (body) => {
+    const home = useIsolatedOpenScoutHome();
+    const workspaceRoot = join(home, "dev");
+    const talkieRoot = join(workspaceRoot, "talkie");
+    mkdirSync(join(talkieRoot, ".git"), { recursive: true });
+    writeFileSync(join(talkieRoot, "AGENTS.md"), "# talkie\n", "utf8");
+    await writeOpenScoutSettings({
+      discovery: { workspaceRoots: [workspaceRoot], includeCurrentRepo: false },
+    });
     const naturalKey = namedChannelNaturalKey("huddle-v1");
     const canonicalId = stableChannelId(naturalKey);
     const captured: {
@@ -2894,8 +2906,9 @@ describe("sendScoutMessage", () => {
         participantIds: string[];
         metadata?: Record<string, unknown>;
       };
-      message?: { conversationId: string; body: string };
+      message?: { conversationId: string; body: string; mentions?: unknown[]; audience?: unknown };
     } = {};
+    const requests: string[] = [];
     const snapshot = {
       actors: {},
       agents: {},
@@ -2929,6 +2942,7 @@ describe("sendScoutMessage", () => {
     globalThis.fetch = (async (input, init) => {
       const request = input instanceof Request ? input : new Request(input, init);
       const url = new URL(request.url);
+      requests.push(`${request.method} ${url.pathname}`);
       if (request.method === "GET" && url.pathname === "/health") {
         return jsonResponse({ ok: true, nodeId: "node-1", meshId: "mesh-1" });
       }
@@ -2954,12 +2968,20 @@ describe("sendScoutMessage", () => {
 
     const result = await sendScoutMessage({
       senderId: "operator",
-      body: "plain channel update",
+      body,
       channel: "huddle-v1",
-      currentDirectory: process.cwd(),
+      currentDirectory: workspaceRoot,
     });
 
     expect(result.conversationId).toBe(canonicalId);
+    expect(result.messageId).toBeTruthy();
+    expect(result.unresolvedTargets).toEqual([]);
+    expect(result.invokedTargets).toEqual([]);
+    expect(requests).not.toContain("POST /v1/deliver");
+    expect(requests).not.toContain("POST /v1/invocations");
+    expect(requests).not.toContain("POST /v1/agents");
+    expect(captured.message?.mentions).toEqual([]);
+    expect(captured.message?.audience).toBeUndefined();
     expect(captured.conversation).toMatchObject({
       id: canonicalId,
       participantIds: ["legacy-agent", "operator"],
@@ -2967,7 +2989,7 @@ describe("sendScoutMessage", () => {
     });
     expect(captured.message).toMatchObject({
       conversationId: canonicalId,
-      body: "plain channel update",
+      body,
     });
   });
 

@@ -4,7 +4,7 @@
 # GitHub OIDC publication pre-verifies both immutable candidates, then publishes
 # them directly to latest in dependency order. npm trusted publishing authorizes
 # `npm publish`, but not the separate `npm dist-tag` mutations used by the
-# local token-authenticated two-phase path. A completed release is idempotent; a
+# local authenticated two-phase path. A completed release is idempotent; a
 # partial immutable package set fails closed so attempts cannot mix candidates.
 
 set -euo pipefail
@@ -34,8 +34,27 @@ esac
 
 # Local overrides may provide NPM_TOKEN, but the stable registry and final
 # dist-tag are intentionally not configurable for a canonical public release.
+readonly NPM_AUTH_MODE="${SCOUT_NPM_AUTH_MODE:-token}"
 [[ -f .env.local ]] && set -a && source .env.local && set +a
 [[ -f .env ]] && set -a && source .env && set +a
+
+case "$NPM_AUTH_MODE" in
+  token) ;;
+  npm-login)
+    if [[ "${GITHUB_ACTIONS:-}" == "true" ]]; then
+      echo "ERROR: npm-login authentication is local-only; hosted publication requires OIDC" >&2
+      exit 1
+    fi
+    if [[ -n "${NPM_TOKEN:-}" || -n "${NODE_AUTH_TOKEN:-}" ]]; then
+      echo "ERROR: npm-login authentication cannot be combined with NPM_TOKEN or NODE_AUTH_TOKEN" >&2
+      exit 1
+    fi
+    ;;
+  *)
+    echo "ERROR: SCOUT_NPM_AUTH_MODE must be token or npm-login" >&2
+    exit 1
+    ;;
+esac
 
 NPM_REGISTRY_URL="https://registry.npmjs.org"
 FINAL_NPM_TAG="${NPM_TAG:-latest}"
@@ -75,7 +94,9 @@ cleanup() {
 }
 trap cleanup EXIT
 
-NPM_READ_ARGS=(--registry "$NPM_REGISTRY_URL")
+# Scoped registry settings take precedence over npm's default --registry.
+# Pin both for every package read and mutation, including inherited logins.
+NPM_READ_ARGS=(--registry "$NPM_REGISTRY_URL" "--@openscout:registry=$NPM_REGISTRY_URL")
 PACKAGE_NAMES=()
 PACKAGE_VERSIONS=()
 PACKAGE_EXISTS=()
@@ -483,6 +504,16 @@ configure_publish_credentials() {
     # Never probe a runner-local credential helper that could silently replace
     # OIDC with a legacy token after the earlier environment check.
     echo "Relying on npm trusted publishing/OIDC."
+    return
+  fi
+  if [[ "$NPM_AUTH_MODE" == "npm-login" ]]; then
+    # Inherit the operator's existing npm configuration and terminal. Never
+    # read/copy credentials, invoke a secret helper, or fall back to tokens.
+    if ! npm whoami --registry "$NPM_REGISTRY_URL" >/dev/null; then
+      echo "ERROR: npm-login requires an existing authenticated npm login; run npm login separately" >&2
+      exit 1
+    fi
+    echo "Using the existing npm login; npm may request browser authentication."
     return
   fi
   if [[ -z "${NPM_TOKEN:-}" ]] && command -v secret >/dev/null 2>&1; then

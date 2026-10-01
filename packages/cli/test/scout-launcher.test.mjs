@@ -4,46 +4,28 @@ import {
   copyFileSync,
   existsSync,
   mkdirSync,
-  mkdtempSync,
-  realpathSync,
-  rmSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
 import test from "node:test";
 import assert from "node:assert/strict";
+import { createCliFixture, isolatedEnvironment, temporaryDirectory } from "./helpers/cli-fixture.mjs";
 
-const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
-const scoutBin = resolve(repoRoot, "packages/cli/bin/scout.mjs");
-const scoutLauncher = resolve(repoRoot, "packages/cli/bin/scout");
-const nodeEntrypoint = resolve(repoRoot, "packages/cli/dist/node/main.mjs");
+const repoRoot = createCliFixture();
+const scoutBin = resolve(repoRoot, "bin/scout.mjs");
+const scoutLauncher = resolve(repoRoot, "bin/scout");
+const nodeEntrypoint = resolve(repoRoot, "dist/node/main.mjs");
 const packageJson = JSON.parse(execFileSync(process.execPath, [
   "-e",
-  "process.stdout.write(JSON.stringify(require('./packages/cli/package.json')))",
+  "process.stdout.write(JSON.stringify(require('./package.json')))",
 ], { cwd: repoRoot, encoding: "utf8" }));
-const temporaryDirectories = new Set();
-
-function temporaryDirectory(prefix) {
-  const directory = realpathSync(mkdtempSync(resolve(tmpdir(), prefix)));
-  temporaryDirectories.add(directory);
-  return directory;
-}
-
-test.after(() => {
-  for (const directory of temporaryDirectories) {
-    rmSync(directory, { recursive: true, force: true });
-  }
-});
 
 function bunlessEnv(extra = {}) {
-  return {
+  return isolatedEnvironment({
     ...extra,
-    HOME: temporaryDirectory("openscout-launcher-home-"),
     PATH: "/usr/bin:/bin",
-  };
+  });
 }
 
 function launcherEnv() {
@@ -114,9 +96,7 @@ test("reports unsupported Node commands instead of failing in the shebang", () =
 });
 
 test("runs bundled headless service status directly on Node when packaged", () => {
-  if (!existsSync(nodeEntrypoint)) {
-    return;
-  }
+  assert.ok(existsSync(nodeEntrypoint), "headless entry must be built for this test");
   const result = spawnSync(process.execPath, [scoutBin, "service", "status", "--json"], {
     cwd: repoRoot,
     env: bunlessEnv({
@@ -133,9 +113,7 @@ test("runs bundled headless service status directly on Node when packaged", () =
 });
 
 test("prints a direct next step after headless setup", { timeout: 15_000 }, () => {
-  if (!existsSync(nodeEntrypoint)) {
-    return;
-  }
+  assert.ok(existsSync(nodeEntrypoint), "headless entry must be built for this test");
   const work = temporaryDirectory("openscout-launcher-work-");
   const result = spawnSync(process.execPath, [scoutBin, "setup", "--source-root", work], {
     cwd: work,

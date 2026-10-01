@@ -52,12 +52,14 @@ function usage() {
     "Options:",
     "  --execute              Resume or run the package release.",
     "  --yes                  Required with --execute.",
+    "  --auth <token|npm-login>",
+    "                         Local authentication mode; token is the default.",
     "  --release-notes-file <path>",
     "                         Use explicit GitHub release notes.",
     "",
     "Execution never bumps or commits. Prepare and merge the reviewed release",
     "version first, then run from a clean public main checkout.",
-    "Execution uses local token authentication and signed artifacts, without OIDC",
+    "Execution uses explicit local authentication and signed artifacts, without OIDC",
     "provenance. Hosted publication is a separate, explicitly opted-in workflow.",
     "",
   ].join("\n");
@@ -77,6 +79,7 @@ function parseArgs(argv) {
     execute: false,
     yes: false,
     releaseNotesFile: null,
+    auth: process.env.SCOUT_NPM_AUTH_MODE ?? "token",
   };
   let target = null;
 
@@ -94,7 +97,11 @@ function parseArgs(argv) {
     }
     if (arg === "--execute") options.execute = true;
     else if (arg === "--yes") options.yes = true;
-    else if (arg === "--release-notes-file") {
+    else if (arg === "--auth") {
+      options.auth = argv[++index];
+    } else if (arg.startsWith("--auth=")) {
+      options.auth = arg.slice("--auth=".length);
+    } else if (arg === "--release-notes-file") {
       options.releaseNotesFile = argv[index + 1] ?? null;
       index += 1;
     } else if (arg.startsWith("--release-notes-file=")) {
@@ -109,6 +116,9 @@ function parseArgs(argv) {
   }
 
   if (!target) throw new Error("Missing release version target.");
+  if (!["token", "npm-login"].includes(options.auth)) {
+    throw new Error("--auth must be token or npm-login.");
+  }
   if (!/^\d+\.\d+\.\d+$/.test(target)) {
     throw new Error("Invalid stable version: " + target);
   }
@@ -267,7 +277,7 @@ function printPlan(version, options) {
   );
   console.log("  DRY bash scripts/ship-npm.sh --prepare");
   console.log("  DRY bash scripts/ship-npm.sh --publish-prepared");
-  console.log("  DRY local token authentication; signed artifacts; no OIDC provenance");
+  console.log("  DRY local " + options.auth + " authentication; signed artifacts; no OIDC provenance");
   console.log("  DRY bash scripts/ship-npm.sh --verify-published");
   console.log("  DRY attach the exact npm integrity receipt to " + tag);
   const note = options.releaseNotesFile
@@ -460,6 +470,7 @@ function main() {
   if (process.env.GITHUB_ACTIONS === "true") {
     throw new Error("This entry point is local-only; opt into the hosted workflow separately.");
   }
+  process.env.SCOUT_NPM_AUTH_MODE = options.auth;
 
   assertCanonicalLocalSource();
   assertCleanWorktree();

@@ -45,6 +45,24 @@ Commit the source, version manifests, `apps/desktop/src/shared/product.ts`,
 `docs.json`, and lockfile on a review branch. Merge only after the standalone
 checks and packed artifact audit pass.
 
+## 0.3.0 package review follow-up
+
+This release makes an explicitly selected channel authoritative for message
+routing, so body text such as scoped npm package names cannot prevent a channel
+update. Claude catalog discovery now tracks pending persistence work and awaits
+it during shutdown, so session catalog writes settle before shutdown completes.
+
+The npm guide lists only the bundled CLI, broker/runtime, and basic web surface.
+The retired `scout monitor` console is no longer advertised as installed; the
+Rust TUI remains a separate optional installation.
+
+Root `bun run test:unit` includes the dedicated CLI suite. Public CI runs those
+tests as an explicit step before the source unit suite. Launcher tests build
+fresh temporary JavaScript fixtures and isolate HOME, broker endpoints, sockets,
+and service settings; they do not depend on existing `dist` output or package a
+native supervisor. The signed tarball audit and isolated installed-package smoke
+remain separate release gates.
+
 ## 0.2.110 source update
 
 This release brings the reviewed CLI, broker, protocol, and web source updates
@@ -111,6 +129,25 @@ a private temporary npm configuration and removes it on exit. Local publication
 explicitly disables npm provenance generation. It neither stores credentials in
 receipts nor falls back to hosted credentials. Signed build prerequisites still
 apply; do not bypass the binary signing gate.
+
+When package policy requires interactive two-factor authentication, explicitly
+select the operator's existing npm login instead:
+
+```bash
+npm login --registry https://registry.npmjs.org # establish a login separately
+bun run ship -- <version> --execute --yes --auth npm-login
+```
+
+Run this mode in an interactive terminal so npm can present browser or OTP
+challenges. It verifies the existing login with `npm whoami` and inherits npm
+configuration and terminal input/output. It does not read, copy, or write
+credentials, call secret-store helpers, or fall back to another authentication
+mode. `NPM_TOKEN` and `NODE_AUTH_TOKEN` must be unset; hosted execution rejects
+this mode. The lower-level publisher accepts `SCOUT_NPM_AUTH_MODE=npm-login`.
+Default and `@openscout` scoped registries are pinned to npmjs for every package
+read and mutation, including when the inherited login has a different scope registry.
+Token authentication remains the default, and both local modes retain the same
+source, signing, artifact, receipt, staging, and promotion gates.
 
 Local publication uploads protocol and Scout under a version-specific staging
 tag, verifies both against retained candidates, and only then promotes the pair

@@ -1,7 +1,7 @@
 import type { RuntimeTimer } from "./portable-types.js";
 import { randomUUID } from "node:crypto";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
-import { appendFile, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -208,14 +208,62 @@ export function readSessionCatalogSync(runtimeDirectory: string): SessionCatalog
   }
 }
 
+// Catalog read-modify-write cycles are serialized per runtime directory so a
+// reset can never be overtaken by an earlier init record, and shutdown can
+// drain pending writes before callers tear the directory down.
+const sessionCatalogWriteTails = new Map<string, Promise<void>>();
+
+async function drainSessionCatalogWrites(runtimeDirectory: string): Promise<void> {
+  let tail = sessionCatalogWriteTails.get(runtimeDirectory);
+  while (tail) {
+    await tail;
+    const next = sessionCatalogWriteTails.get(runtimeDirectory);
+    tail = next === tail ? undefined : next;
+  }
+}
+
 async function readSessionCatalog(runtimeDirectory: string): Promise<SessionCatalog> {
+  await drainSessionCatalogWrites(runtimeDirectory);
   return readSessionCatalogSync(runtimeDirectory);
 }
 
-async function writeSessionCatalog(runtimeDirectory: string, catalog: SessionCatalog): Promise<void> {
+async function writeSessionCatalogAtomic(runtimeDirectory: string, catalog: SessionCatalog): Promise<void> {
   const catalogPath = join(runtimeDirectory, SESSION_CATALOG_FILENAME);
+  const tempPath = `${catalogPath}.${process.pid}.${randomUUID()}.tmp`;
   await mkdir(runtimeDirectory, { recursive: true });
-  await writeFile(catalogPath, JSON.stringify(catalog, null, 2) + "\n");
+  try {
+    await writeFile(tempPath, JSON.stringify(catalog, null, 2) + "\n");
+    await rename(tempPath, catalogPath);
+  } catch (error) {
+    await rm(tempPath, { force: true }).catch(() => undefined);
+    throw error;
+  }
+}
+
+// Without reportError the failure rejects the returned promise. With it, the
+// report runs inside the queue so drains also cover the error reporting.
+function updateSessionCatalog(
+  runtimeDirectory: string,
+  mutate: (catalog: SessionCatalog) => SessionCatalog,
+  reportError?: (error: unknown) => Promise<void>,
+): Promise<void> {
+  const previous = sessionCatalogWriteTails.get(runtimeDirectory) ?? Promise.resolve();
+  const write = previous.then(() =>
+    writeSessionCatalogAtomic(runtimeDirectory, mutate(readSessionCatalogSync(runtimeDirectory))),
+  );
+  const operation = reportError ? write.catch(reportError) : write;
+  const tail = operation.then(() => undefined, () => undefined);
+  sessionCatalogWriteTails.set(runtimeDirectory, tail);
+  void tail.then(() => {
+    if (sessionCatalogWriteTails.get(runtimeDirectory) === tail) {
+      sessionCatalogWriteTails.delete(runtimeDirectory);
+    }
+  });
+  return operation;
+}
+
+function clearActiveSession(catalog: SessionCatalog): SessionCatalog {
+  return { ...catalog, activeSessionId: null };
 }
 
 function catalogRecordSession(
@@ -926,10 +974,10 @@ class ClaudeStreamJsonSession {
 
     if (options.resetSession) {
       this.claudeSessionId = null;
-      const catalog = await readSessionCatalog(this.catalogDirectory);
-      catalog.activeSessionId = null;
-      await writeSessionCatalog(this.catalogDirectory, catalog);
+      await updateSessionCatalog(this.catalogDirectory, clearActiveSession);
+      return;
     }
+    await drainSessionCatalogWrites(this.catalogDirectory);
   }
 
   private async ensureReadyForTurn(): Promise<void> {
@@ -1020,6 +1068,9 @@ class ClaudeStreamJsonSession {
     child.stderr.setEncoding("utf8");
 
     child.stdout.on("data", (chunk: string) => {
+      if (this.process !== child) {
+        return;
+      }
       void appendFile(this.stdoutLogPath, redactSecrets(chunk)).catch(() => undefined);
       this.lineBuffer += chunk;
       const lines = this.lineBuffer.split("\n");
@@ -1064,11 +1115,18 @@ class ClaudeStreamJsonSession {
       const nextSessionId = event.session_id ?? event.sessionId ?? null;
       if (nextSessionId && nextSessionId !== this.claudeSessionId) {
         this.claudeSessionId = nextSessionId;
-        void (async () => {
-          const catalog = await readSessionCatalog(this.catalogDirectory);
-          const updated = catalogRecordSession(catalog, nextSessionId, this.options.cwd);
-          await writeSessionCatalog(this.catalogDirectory, updated);
-        })();
+        const cwd = this.options.cwd;
+        const agentName = this.options.agentName;
+        const stderrLogPath = this.stderrLogPath;
+        void updateSessionCatalog(
+          this.catalogDirectory,
+          (catalog) => catalogRecordSession(catalog, nextSessionId, cwd),
+          async (error) => {
+            const message = `[openscout] failed to record Claude session ${nextSessionId} in catalog for ${agentName}: ${errorMessage(error)}`;
+            console.error(`[openscout-runtime] ${message}`);
+            await appendFile(stderrLogPath, `${message}\n`).catch(() => undefined);
+          },
+        );
       }
       return;
     }
@@ -1122,7 +1180,9 @@ function getOrCreateSession(options: SessionRequestOptions): ClaudeStreamJsonSes
     if (existing.matches(options)) {
       return existing;
     }
-    void existing.shutdown({ resetSession: false });
+    void existing.shutdown({ resetSession: false }).catch((error) => {
+      console.error(`[openscout-runtime] failed to shut down replaced Claude session for ${options.agentName}: ${errorMessage(error)}`);
+    });
     sessions.delete(key);
   }
 
@@ -1194,9 +1254,9 @@ export async function shutdownClaudeStreamJsonAgent(
   const session = sessions.get(key);
   if (!session) {
     if (shutdownOptions.resetSession) {
-      const catalog = await readSessionCatalog(options.runtimeDirectory);
-      catalog.activeSessionId = null;
-      await writeSessionCatalog(options.runtimeDirectory, catalog);
+      await updateSessionCatalog(options.runtimeDirectory, clearActiveSession);
+    } else {
+      await drainSessionCatalogWrites(options.runtimeDirectory);
     }
     return;
   }
