@@ -27,6 +27,30 @@ proportional local checks against the exact reviewed head and current main base;
 observe required GitHub rules and feedback before merging. Hosted runs can
 provide additional evidence when explicitly requested.
 
+## Package publication versus the latest downloadable installer
+
+Scout keeps one shared version across npm packages and native apps. Sharing a
+version does not make them one publication: package publication and the
+downloadable installer have separate owners and separate release steps.
+
+- **Package publication** (this repository): `@openscout/protocol` and
+  `@openscout/scout` on npm, plus a GitHub release on `oscout/scout` whose only
+  asset is the npm integrity `receipt.json`.
+- **Latest downloadable installer** (private product): the signed macOS DMG,
+  built and verified as a local operator task rather than in CI. GitHub's
+  **Latest** release, and therefore `/releases/latest` download links, belongs
+  to the release that carries that verified installer.
+
+`bun run ship` therefore never claims GitHub Latest. It creates a missing
+package release with `--latest=false`, and when it finalizes a draft or
+prerelease it also passes `--latest=false`, so a receipt-only release cannot
+replace the downloadable installer as Latest. It never edits an existing
+stable release: a retry or receipt verification against a release that is
+already Latest, such as a verified native release for the same version, leaves
+that state unchanged instead of demoting it. Marking a release Latest is a
+separate step owned by the native installer release after its DMG is attached
+and verified; package publication neither requires nor performs it.
+
 ## Prepare and review
 
 Choose an explicit unused version. Never use `patch` to recover from registry
@@ -160,7 +184,7 @@ artifacts, wrong source, missing receipt, foreign authority, and historical
 candidates remain forbidden.
 
 After registry verification succeeds, the command creates or verifies the final
-public GitHub release and attaches `receipt.json`. Existing receipts are never
+public GitHub release, without marking it Latest, and attaches `receipt.json`. Existing receipts are never
 clobbered: their size and anonymously downloaded SHA-256 must match the retained
 receipt. An upload command succeeding alone is not a verified release.
 

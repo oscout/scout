@@ -5,6 +5,10 @@
  * Release preparation is intentionally separate. Execution only accepts an
  * already-versioned, reviewed, clean public main commit. Completed matching
  * release state is idempotent; partial immutable npm state fails closed.
+ *
+ * Package releases carry only the npm integrity receipt. They never claim the
+ * repository's GitHub "Latest" release, which belongs to the release carrying
+ * the downloadable native installer; existing release Latest state is preserved.
  */
 import { createHash } from "node:crypto";
 import { execFileSync, spawnSync } from "node:child_process";
@@ -56,6 +60,9 @@ function usage() {
     "                         Local authentication mode; token is the default.",
     "  --release-notes-file <path>",
     "                         Use explicit GitHub release notes.",
+    "",
+    "The GitHub release carries the npm receipt and is created with --latest=false;",
+    "GitHub Latest stays on the downloadable native installer release.",
     "",
     "Execution never bumps or commits. Prepare and merge the reviewed release",
     "version first, then run from a clean public main checkout.",
@@ -283,7 +290,8 @@ function printPlan(version, options) {
   const note = options.releaseNotesFile
     ? " --notes-file " + options.releaseNotesFile
     : " --generate-notes";
-  console.log("  DRY create, finalize, or verify GitHub release " + tag + note);
+  console.log("  DRY create, finalize, or verify GitHub release " + tag + note + " --latest=false");
+  console.log("  DRY leave GitHub Latest (downloadable native installer) unchanged");
 }
 
 function localTagCommit(tag) {
@@ -375,6 +383,9 @@ function ensureGithubRelease(tag, options) {
       "--repo", CANONICAL_GITHUB_REPOSITORY,
       "--verify-tag",
       "--title", "Scout " + tag,
+      // A receipt-only package release must not displace the native installer
+      // release that GitHub's /releases/latest downloads resolve to.
+      "--latest=false",
     ];
     if (options.releaseNotesFile) args.push("--notes-file", options.releaseNotesFile);
     else args.push("--generate-notes");
@@ -387,6 +398,7 @@ function ensureGithubRelease(tag, options) {
       "release", "edit", tag,
       "--repo", CANONICAL_GITHUB_REPOSITORY,
       "--draft=false",
+      "--latest=false",
     ]);
     release = inspectGithubRelease(tag);
   }
@@ -395,6 +407,7 @@ function ensureGithubRelease(tag, options) {
       "release", "edit", tag,
       "--repo", CANONICAL_GITHUB_REPOSITORY,
       "--prerelease=false",
+      "--latest=false",
     ]);
     release = inspectGithubRelease(tag);
   }
