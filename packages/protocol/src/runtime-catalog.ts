@@ -134,6 +134,9 @@ function harness(value: unknown, path: string, errors: string[]): ScoutOwnedRunt
   if (input.listed !== undefined && typeof input.listed !== "boolean") {
     errors.push(`${path}.listed must be boolean when provided`);
   }
+  if (input.allowCustomModels !== undefined && typeof input.allowCustomModels !== "boolean") {
+    errors.push(`${path}.allowCustomModels must be boolean when provided`);
+  }
   if (input.default === true && input.enabled !== true) errors.push(`${path} cannot be default while disabled`);
   const efforts = effortList(input.reasoningEfforts, `${path}.reasoningEfforts`, errors);
   if (!id || !launchableHarnesses.has(id) || !label || typeof input.enabled !== "boolean" || efforts === undefined) {
@@ -171,6 +174,7 @@ function harness(value: unknown, path: string, errors: string[]): ScoutOwnedRunt
     label,
     enabled: input.enabled,
     ...(typeof input.listed === "boolean" ? { listed: input.listed } : {}),
+    ...(typeof input.allowCustomModels === "boolean" ? { allowCustomModels: input.allowCustomModels } : {}),
     ...(input.default === true ? { default: true } : {}),
     reasoningEfforts: efforts,
     ...(defaultEffort && reasoningEfforts.has(defaultEffort)

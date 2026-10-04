@@ -7,13 +7,13 @@ import { normalizeTimestampMs } from "../lib/time.ts";
 /** Compile-time npm surface selection; the ordinary web build remains full. */
 export const BASIC_WEB = import.meta.env.VITE_SCOUT_WEB_PROFILE === "basic";
 
-/** The three destinations the basic web client carries. */
-export type BasicArea = "home" | "dms" | "tail";
+/** The destinations the basic web client carries. */
+export type BasicArea = "home" | "dms" | "tail" | "settings";
 
 /**
- * Folds any full-app route onto the basic surface. Home, DMs and Tail keep
- * their own state; agent routes become that agent's DM, session and follow
- * links become a filtered Tail, and everything else lands on Home.
+ * Folds any full-app route onto the basic surface. Home, DMs, Tail and
+ * Settings keep their own state; agent routes become that agent's DM, session
+ * and follow links become a filtered Tail, and everything else lands on Home.
  */
 export function basicRoute(route: Route): Route {
   switch (route.view) {
@@ -58,12 +58,25 @@ export function basicRoute(route: Route): Route {
         ...(route.sessionId ? { sessionId: route.sessionId } : {}),
         ...(route.targetAgentId ? { targetAgentId: route.targetAgentId } : {}),
       };
+    case "settings":
+      return basicSettingsRoute(route);
     case "ops":
       // Tail is the only operator surface basic carries; the rest go Home.
       return route.mode === "tail" ? { view: "ops", mode: "tail", ...pickFollow(route) } : { view: "inbox" };
     default:
       return { view: "inbox" };
   }
+}
+
+/**
+ * Settings is the same page set the Mac app embeds from basic (`/embed/settings`),
+ * so Operator, Devices and Solo Pro are reachable from the browser too. Agent
+ * configuration and the legacy pairing page are full-app screens.
+ */
+function basicSettingsRoute(route: Extract<Route, { view: "settings" }>): Route {
+  if (route.section === "agents") return route.agentId ? basicAgentRoute(route.agentId) : { view: "settings" };
+  if (route.section === "pairing") return { view: "settings", section: "devices" };
+  return route.section ? { view: "settings", section: route.section } : { view: "settings" };
 }
 
 /** An agent opens as its DM; a synthetic (observed-session) agent has no DM, so it opens in Tail. */
@@ -96,6 +109,8 @@ export function basicArea(route: Route): BasicArea {
       return "dms";
     case "ops":
       return "tail";
+    case "settings":
+      return "settings";
     default:
       return "home";
   }
@@ -143,4 +158,17 @@ export function isBasicDmUnread(
   const lastMessageAt = normalizeTimestampMs(session.lastMessageAt);
   if (!lastMessageAt) return false;
   return lastMessageAt > (lastViewed[session.id] ?? baseline);
+}
+
+/** Native-host embeds the basic client carries; every other embed needs the full app. */
+export const BASIC_EMBED_PATHS = ["/embed/settings", "/embed/home", "/embed/thread", "/embed/session"] as const;
+export type BasicEmbedPath = (typeof BASIC_EMBED_PATHS)[number];
+
+/** Whether a path is a native-host embed (any of them, carried or not). */
+export function isEmbedPath(pathname: string): boolean {
+  return pathname.startsWith("/embed/") || pathname === "/ops/lanes/embed";
+}
+
+export function isBasicEmbedPath(pathname: string): pathname is BasicEmbedPath {
+  return (BASIC_EMBED_PATHS as readonly string[]).includes(pathname);
 }

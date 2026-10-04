@@ -46,3 +46,15 @@ export const askBody = z.object({
   execution: executionOverride.optional(),
 });
 export type AskBody = z.input<typeof askBody>;
+
+// POST /api/sessions/reply: a reply to a harness session seen in the tail.
+// Same delivery as the phone's askSession: into the live place, else resume.
+export const sessionReplyBody = z.object({
+  sessionId: z.string().min(1),
+  harness: z.string().nullable().optional(),
+  cwd: z.string().nullable().optional(),
+  body: z.string(),
+  clientMessageId: z.string().nullable().optional(),
+  source: z.string().optional(),
+});
+export type SessionReplyBody = z.input<typeof sessionReplyBody>;

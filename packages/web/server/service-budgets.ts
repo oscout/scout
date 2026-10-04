@@ -34,6 +34,7 @@ import {
 } from "@openscout/agent-sessions";
 import { Database } from "bun:sqlite";
 import { epochMs } from "@openscout/protocol";
+import { healProviderTelemetryIfStale } from "@openscout/runtime";
 import { resolveClaudeStatuslineDirectory } from "@openscout/runtime/claude-statusline";
 import { buildPiRpcCredentialEnv } from "@openscout/runtime/pi-rpc";
 import { execSystemFile } from "@openscout/runtime/system-probes";
@@ -209,7 +210,7 @@ async function loadCodexGauge(forceRefresh = false): Promise<ServiceGauge | null
     harness: "codex",
     maxAgeMs: LOCAL_QUOTA_FRESH_MS,
   });
-  if (!forceRefresh && fresh) return fresh;
+  if (!forceRefresh && fresh && !quotaGaugeAwaitingReset(fresh)) return fresh;
 
   const fallback = loadPersistedProviderQuotaGauge({
     id: "codex",
@@ -512,6 +513,7 @@ type StoredQuotaWindowRow = ServiceQuotaSnapshot & {
 };
 
 async function loadClaudeGauge(): Promise<ServiceGauge | null> {
+  healClaudeCaptureInBackground();
   const statusline = loadClaudeStatuslineGauge();
   if (statusline) return statusline;
 
@@ -522,6 +524,20 @@ async function loadClaudeGauge(): Promise<ServiceGauge | null> {
     harness: "claude",
     maxAgeMs: WEEK_MS,
   });
+}
+
+/* Quota only shows up while the statusline capture is wired. If capture has
+   gone stale, let the runtime re-check and repair the wiring (throttled, and a
+   no-op when healthy) without holding up this read. */
+function healClaudeCaptureInBackground(): void {
+  void healProviderTelemetryIfStale({ env: process.env })
+    .then((report) => {
+      if (report?.claude.status === "installed") {
+        console.warn(`[scout] Repaired Claude quota capture (statusline → ${report.claude.wrapperPath})`);
+        resetServiceBudgetsCache();
+      }
+    })
+    .catch((error) => debugServiceBudgetProvider("claude", "statusline heal failed", error));
 }
 
 type ClaudeStatuslineSnapshot = Record<string, unknown>;
@@ -863,7 +879,13 @@ function quotaGaugeFromSnapshots(input: {
   // A live weekly window must not hide a supported 5-hour window that just
   // reset. Keep the latest expired sibling when it was observed recently, but
   // do not present the pre-reset percentage as current usage.
-  if (latestByWindow.size > 0 && !input.allowExpiredWindows) {
+  //
+  // When *every* window has reset, the provider has simply gone quiet since
+  // its last reading (no Claude session ticking the statusline, say). The
+  // windows rolled over; they are not still at their old percentages. Keep
+  // them all, as awaiting a fresh reading.
+  if (!input.allowExpiredWindows) {
+    const everyWindowExpired = latestByWindow.size === 0;
     const expiredSiblings = selectLatestQuotaSnapshots(snapshots, {
       minCurrentCapturedAt,
       now,
@@ -872,7 +894,7 @@ function quotaGaugeFromSnapshots(input: {
     for (const [key, row] of expiredSiblings) {
       if (latestByWindow.has(key)) continue;
       if (!quotaSnapshotIsExpired(row, now)) continue;
-      if (!shouldRetainExpiredWindow(row, now)) continue;
+      if (!everyWindowExpired && !shouldRetainExpiredWindow(row, now)) continue;
       latestByWindow.set(key, row);
       awaitingKeys.add(key);
     }
@@ -959,6 +981,11 @@ function quotaHistoryByWindow(snapshots: ServiceQuotaSnapshot[]): Map<string, Se
 function quotaSnapshotWindowKey(row: ServiceQuotaSnapshot): string {
   const resource = stringValue(row.metadata?.resource) ?? stringValue(row.metadata?.modelName) ?? "";
   return [resource, formatStoredQuotaWindowLabel(row)].join(":");
+}
+
+/** A window rolled over since the last reading: a "fresh" gauge still needs a re-read. */
+function quotaGaugeAwaitingReset(gauge: ServiceGauge): boolean {
+  return gauge.kind === "quota" && (gauge.windows ?? []).some((window) => window.awaitingReset === true);
 }
 
 function quotaSnapshotIsExpired(row: ServiceQuotaSnapshot, now: number): boolean {
@@ -1138,7 +1165,7 @@ async function loadKimiGauge(forceRefresh = false): Promise<ServiceGauge | null>
     harness: "kimi",
     maxAgeMs: REMOTE_QUOTA_FRESH_MS,
   });
-  if (!forceRefresh && fresh) return fresh;
+  if (!forceRefresh && fresh && !quotaGaugeAwaitingReset(fresh)) return fresh;
   const persisted = loadPersistedProviderQuotaGauge({
     id: "kimi",
     label: "kimi",
@@ -1837,7 +1864,7 @@ async function loadMinimaxGauge(forceRefresh = false): Promise<ServiceGauge | nu
     harness: "minimax",
     maxAgeMs: REMOTE_QUOTA_FRESH_MS,
   });
-  if (!forceRefresh && fresh) return fresh;
+  if (!forceRefresh && fresh && !quotaGaugeAwaitingReset(fresh)) return fresh;
   const persisted = loadPersistedProviderQuotaGauge({
     id: "minimax",
     label: "minimax",
@@ -1997,7 +2024,7 @@ async function loadGithubGauge(forceRefresh = false): Promise<ServiceGauge | nul
     harness: "github",
     maxAgeMs: 15 * 60 * 1000,
   });
-  if (!forceRefresh && fresh) return fresh;
+  if (!forceRefresh && fresh && !quotaGaugeAwaitingReset(fresh)) return fresh;
 
   let stdout: string;
   const fixtureJson = process.env[GH_RATE_LIMIT_JSON_ENV];

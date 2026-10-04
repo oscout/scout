@@ -335,3 +335,43 @@
 
 /* The embed root (/embed/settings) gives the window a definite height. */
 .s-discovered-embed.sq-embed { height: 100vh; min-height: 0; }
+
+/* ── Solo Pro ────────────────────────────────────────────────────────────── */
+
+.sq-pro-summary {
+  padding: 18px 18px 16px;
+  border: 1px solid var(--sq-rule);
+  border-left: 3px solid var(--sq-label);
+  border-radius: 10px;
+  background: var(--sq-card);
+}
+.sq-pro-summary[data-phase="active"] { border-left-color: var(--sq-live); }
+.sq-pro-summary[data-phase="finish_setup"],
+.sq-pro-summary[data-phase="not_ready"] { border-left-color: var(--sq-ink); }
+.sq-pro-headline { font: 600 17px/1.25 var(--sq-display); letter-spacing: -0.01em; color: var(--sq-ink); }
+.sq-pro-lead { margin: 6px 0 0; font-size: 13px; line-height: 1.5; color: var(--sq-soft); }
+.sq-pro-summary-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 14px; }
+.sq-pro-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.sq-pro-command {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 28px;
+  padding: 0 2px 0 10px;
+  border: 1px solid var(--sq-rule);
+  border-radius: 6px;
+  background: var(--sq-wash);
+}
+.sq-pro-command code { color: var(--sq-ink); white-space: nowrap; }
+.sq-pro-optional {
+  margin-left: 8px;
+  font: 500 9.5px/1 var(--sq-mono);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--sq-label);
+}
+/* The page's groups stay direct flex children of .sq-sections. */
+.sq-pro { display: contents; }
+@container sq-win (max-width: 600px) {
+  .sq-pro .sq-row-text { flex-basis: 100%; }
+}

@@ -1957,6 +1957,51 @@ a.s-term-topline-button {
   white-space: nowrap;
 }
 
+.s-term-herdr-preview-list {
+  grid-template-columns: minmax(0, 1fr);
+  grid-auto-rows: max-content;
+  align-content: start;
+  max-height: 300px;
+  overflow-y: auto;
+}
+
+.s-herdr-preview { width: 100%; min-width: 0; }
+.s-herdr-preview-controls { display: flex; justify-content: flex-end; gap: 2px; margin: 0 0 8px; }
+.s-herdr-preview-controls button { padding: 4px 9px; border: 1px solid transparent; border-radius: 4px; background: transparent; color: var(--muted); font: inherit; font-size: 11px; cursor: pointer; }
+.s-herdr-preview-controls button[aria-pressed="true"] { color: var(--ink); border-color: var(--border); background: rgb(var(--term-ink-rgb) / 0.07); }
+.s-herdr-preview .s-herdr-tabs { overflow-x: auto; margin-bottom: 10px; }
+.s-herdr-preview .s-herdr-tab { flex-shrink: 0; font-size: 10px; white-space: nowrap; }
+.s-herdr-preview .s-herdr-layout { min-height: 150px; max-height: 260px; }
+.s-herdr-preview .s-herdr-layout-pane { cursor: default; }
+.s-herdr-preview .s-herdr-layout-pane-head { width: 100%; min-width: 0; }
+.s-herdr-preview .s-herdr-pane-label { font-size: 10px; }
+.s-herdr-preview .s-herdr-cwd { max-width: 100%; font-size: 10px; color: var(--muted); }
+.s-herdr-preview-pane-kind { color: var(--muted); font-size: 9px; }
+.s-herdr-preview :is(button):focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+.s-term-herdr-preview-list .s-term-picker-item {
+  min-height: 68px;
+  cursor: default;
+  touch-action: auto;
+  user-select: text;
+}
+
+.s-term-herdr-preview-list .s-term-picker-item-summary {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-2xs);
+  width: 100%;
+}
+
+.s-term-herdr-preview-list .s-term-picker-item-main span {
+  color: rgb(var(--term-ink-rgb) / 0.65);
+}
+
+.s-term-herdr-preview-list .s-term-picker-item-meta {
+  flex-wrap: wrap;
+  color: rgb(var(--term-ink-rgb) / 0.72);
+}
+
 .s-term-multiplexer-peek .ctx-panel-tmux-peek-screen,
 .s-term-multiplexer-peek .ctx-panel-tmux-peek-empty {
   max-height: 240px;
@@ -2358,6 +2403,30 @@ a.s-term-topline-button {
   background: rgb(var(--term-danger-rgb) / 0.07);
   font-family: var(--font-mono);
   color: rgb(var(--term-danger-ink-rgb) / 0.88);
+}
+
+.s-term-relay-surface,
+.s-term-relay-canvas {
+  position: relative;
+  display: flex;
+  flex: 1;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+}
+
+.s-term-relay-notice {
+  position: absolute;
+  inset: 0;
+  overflow: auto;
+  background: var(--term-bg);
+}
+
+.s-term-relay-canvas > [role="application"] {
+  flex: 1;
+  width: 100%;
+  min-width: 0;
 }
 
 .s-term-home-error span {

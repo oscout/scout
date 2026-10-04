@@ -329,8 +329,8 @@
   color: var(--accent);
 }
 
-.hd-gauge-reset--stale strong {
-  color: var(--red);
+.hd-gauge-reset--unknown strong {
+  color: var(--dim);
 }
 
 .hd-gauge-toggle {

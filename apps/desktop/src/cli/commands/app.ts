@@ -1,3 +1,8 @@
+import { parseAppCommand as parseLifecycleAppCommand, renderAppCommandHelp, type ScoutAppCommand } from "../../../../../packages/cli/bin/lifecycle-preflight.mjs";
+export { renderAppCommandHelp };
+export function parseAppCommand(args: string[]): ScoutAppCommand {
+  try { return parseLifecycleAppCommand(args); } catch (error) { throw new ScoutCliError((error as Error).message); }
+}
 import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
@@ -27,10 +32,8 @@ import {
   verifyTree,
 } from "../app-lifecycle.ts";
 import {
-  DEFAULT_DRAIN_TIMEOUT_MS,
   describeActiveFlight,
   formatDuration,
-  parseDrainTimeout,
   readActiveFlights,
   resolveControlPlaneDbPath,
   waitForIdleFleet,
@@ -56,15 +59,6 @@ const SUPERVISED_READY_TIMEOUT_MS = 120_000;
 const SUPERVISED_DRAIN_TIMEOUT_MS = 20_000;
 const POLL_MS = 250;
 
-type ScoutAppCommand = {
-  action: ScoutAppAction;
-  scope: StopScope;
-  json: boolean;
-  /** Skip waiting for in-flight work before bringing services down. */
-  now: boolean;
-  drainTimeoutMs: number;
-};
-
 type LayerReport = {
   layer: LifecycleLayerName;
   pids: number[];
@@ -81,101 +75,6 @@ type ScoutAppResult = {
   steps: string[];
   message: string;
 };
-
-export function renderAppCommandHelp(): string {
-  return [
-    "scout app — OpenScout application lifecycle",
-    "",
-    "Usage:",
-    "  scout app status",
-    "  scout app stop",
-    "  scout app start",
-    "  scout app restart",
-    "",
-    "Options:",
-    "  --apps-only   Act only on the macOS app and its menu helper, leaving the",
-    "                launchd services alone — on start and restart as well as on",
-    "                stop. This is what a rebuild needs: the new bundle",
-    "                invalidates the processes running from it, but not the",
-    "                services, and bouncing those disconnects every agent.",
-    "  --now         Do not wait for in-flight work. Without it, stop and",
-    "                restart first wait for every waking/running flight to",
-    "                finish, because the tree going down kills harnesses the",
-    "                broker spawned mid-turn. Queued flights do not block; the",
-    "                broker re-dispatches them at startup.",
-    "  --timeout <t>  How long to wait for in-flight work (90s, 15m, 2h; bare",
-    "                number = minutes; default 30m). On timeout nothing is",
-    "                stopped and the blocking flights are listed.",
-    "  --json        Structured output.",
-    "",
-    "Aliases:",
-    "  stop = down = quit",
-    "  start = up",
-    "",
-    "Ownership:",
-    "  launchd        -> scoutd -> base/probes -> pairing/broker/edge -> web",
-    "  LaunchServices -> Scout  -> embedded ScoutMenu",
-    "",
-    "Behavior:",
-    "  Stop walks the tree leaf-first. The LaunchServices apps are signalled",
-    "  individually (TERM, then KILL if they linger); the launchd tree comes down",
-    "  with one bootout, because killing a supervised child only makes scoutd",
-    "  start a new one. Processes are matched by executable path, so a Scout from",
-    "  another checkout is reported rather than killed.",
-    "",
-    "  `scout up` / `scout down` manage local agents. This command manages the app.",
-    "",
-    "Examples:",
-    "  scout app status",
-    "  scout app restart",
-    "  scout app restart --timeout 1h",
-    "  scout app restart --now",
-    "  scout app status --json",
-  ].join("\n");
-}
-
-export function parseAppCommand(args: string[]): ScoutAppCommand {
-  const json = args.includes("--json");
-  const scope: StopScope = args.includes("--apps-only") ? "apps" : "all";
-  const now = args.includes("--now");
-  let drainTimeoutMs = DEFAULT_DRAIN_TIMEOUT_MS;
-  const positional: string[] = [];
-  for (let index = 0; index < args.length; index += 1) {
-    const arg = args[index]!;
-    if (arg === "--timeout" || arg.startsWith("--timeout=")) {
-      const value = arg === "--timeout" ? args[++index] : arg.slice("--timeout=".length);
-      const parsed = value === undefined ? null : parseDrainTimeout(value);
-      if (parsed === null) {
-        throw new ScoutCliError(`invalid --timeout: ${value ?? "(missing)"} (try 90s, 15m, 2h)`);
-      }
-      drainTimeoutMs = parsed;
-      continue;
-    }
-    if (!arg.startsWith("-")) positional.push(arg);
-  }
-  const first = positional[0];
-  const base = { scope, json, now, drainTimeoutMs };
-
-  if (!first) {
-    return { action: "status", ...base };
-  }
-
-  switch (first) {
-    case "status":
-      return { action: "status", ...base };
-    case "stop":
-    case "down":
-    case "quit":
-      return { action: "stop", ...base };
-    case "start":
-    case "up":
-      return { action: "start", ...base };
-    case "restart":
-      return { action: "restart", ...base };
-    default:
-      throw new ScoutCliError(`unknown subcommand: ${first} (try: scout app)`);
-  }
-}
 
 function findRepoDistDirectory(startDirectory: string): string | null {
   let current = resolve(startDirectory);

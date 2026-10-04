@@ -1,5 +1,7 @@
+import { realpathSync } from "node:fs";
 import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
-import { basename, dirname, join } from "node:path";
+import { tmpdir } from "node:os";
+import { basename, dirname, isAbsolute, join, relative } from "node:path";
 
 import { readBoundedClaudeFile } from "./claude-session-records.js";
 
@@ -207,6 +209,10 @@ export async function readClaudeStatuslineDelegate(
     if (!isRecord(parsed)) return null;
     const command = stringValue(parsed.command);
     if (!command) return null;
+    // A Scout wrapper is never the user's own statusline. Older installs
+    // adopted a scratch install's wrapper as the delegate; delegating to it
+    // loops between wrappers or runs a deleted temp script.
+    if (claudeStatuslineCommandWrapperPath(command)) return null;
     return {
       version: 1,
       command,
@@ -236,7 +242,64 @@ export function isOpenScoutClaudeStatuslineCommand(command: string, wrapperPath 
   const trimmed = command.trim();
   if (!trimmed) return false;
   if (trimmed.includes(wrapperPath)) return true;
+  // Another install's wrapper (a different support directory) is still Scout:
+  // adopting it as a delegate would make the two wrappers call each other, or
+  // point the delegate chain at a ghost once that install is deleted.
+  if (claudeStatuslineCommandWrapperPath(trimmed)) return true;
+  if (/\/runtime\/statusline\/claude-statusline\.sh(?:["'\s]|$)/u.test(trimmed)) return true;
   return /(?:^|\s|["'])\S*scout(?:["']|\s)+statusline\s+claude(?:\s|$)/u.test(trimmed);
+}
+
+/**
+ * The Scout wrapper script a statusline command runs, when the command is a
+ * bare (optionally quoted) path to one. Other command shapes return null.
+ */
+export function claudeStatuslineCommandWrapperPath(command: string): string | null {
+  const trimmed = command.trim();
+  const quoted = /^'([^']+)'$/u.exec(trimmed) ?? /^"([^"]+)"$/u.exec(trimmed);
+  const path = quoted ? quoted[1]! : trimmed;
+  if (!quoted && /\s/u.test(path)) return null;
+  return basename(path) === "claude-statusline.sh" ? path : null;
+}
+
+/**
+ * True when the wrapper would live in a temp directory but the Claude settings
+ * that point at it would not — an isolated OPENSCOUT_SUPPORT_DIRECTORY (a smoke
+ * test, a scratch install) running against the operator's real HOME. Wiring
+ * that up points the real ~/.claude/settings.json at a script that disappears
+ * with the temp directory, and quota capture silently stops.
+ */
+export function isClaudeStatuslineWrapperIsolatedFromSettings(
+  settingsPath: string,
+  wrapperPath = resolveClaudeStatuslineWrapperPath(),
+): boolean {
+  const tempRoots = [tmpdir(), "/tmp"].map(canonicalPath);
+  const inTemp = (path: string) => {
+    const canonical = canonicalPath(path);
+    return tempRoots.some((root) => isPathInside(canonical, root));
+  };
+  return inTemp(wrapperPath) && !inTemp(settingsPath);
+}
+
+/** realpath of the deepest existing ancestor, with the missing tail re-appended. */
+function canonicalPath(path: string): string {
+  const tail: string[] = [];
+  let current = path;
+  for (;;) {
+    try {
+      return join(realpathSync(current), ...tail);
+    } catch {
+      const parent = dirname(current);
+      if (parent === current) return path;
+      tail.unshift(basename(current));
+      current = parent;
+    }
+  }
+}
+
+function isPathInside(child: string, parent: string): boolean {
+  const rel = relative(parent, child);
+  return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
 }
 
 export function formatClaudeStatuslineFallback(snapshot: ClaudeStatuslineSnapshot | null): string {

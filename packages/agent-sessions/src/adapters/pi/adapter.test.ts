@@ -388,3 +388,50 @@ describe("PiAdapter event mapping", () => {
     }));
   });
 });
+
+describe("Pi setup and runtime evidence", () => {
+  test("reports interactive extension setup instead of silently waiting", () => {
+    const adapter = new PiAdapter({ sessionId: "setup", name: "setup", cwd: "/tmp" });
+    const errors: Error[] = [];
+    adapter.on("error", error => errors.push(error));
+    (adapter as any).handleEvent({
+      type: "extension_ui_request", id: "setup-1", method: "select",
+      title: "Choose provider", options: ["Attached integration"],
+    });
+    expect(errors[0]?.message).toContain("Run pi in this project");
+    expect(adapter.session.status).toBe("closed");
+  });
+
+  test("normalizes native off effort and waits through nonterminal recovery", () => {
+    const adapter = new PiAdapter({ sessionId: "recovery", name: "recovery", cwd: "/tmp" });
+    const event = (value: unknown) => (adapter as any).handleEvent(value);
+    event({ type: "response", command: "get_state", success: true,
+      data: { model: { id: "org/model", provider: "fixture" }, thinkingLevel: "off" } });
+    expect(adapter.session.reasoningEffort).toBe("none");
+    expect(adapter.session.providerMeta?.observeRuntime).toMatchObject({ model: "org/model", modelProvider: "fixture", effort: "off" });
+    event({ type: "agent_start" });
+    event({ type: "agent_end", isTerminal: false });
+    expect(adapter.session.providerMeta?.turnPhase).toBe("continuing");
+    event({ type: "auto_retry_start" });
+    event({ type: "agent_end" });
+    expect(adapter.session.providerMeta?.turnPhase).toBe("continuing");
+    event({ type: "auto_retry_end", success: true });
+    event({ type: "agent_end", isTerminal: true });
+    expect(adapter.session.providerMeta?.turnPhase).toBe("idle");
+  });
+
+  test("records observed get_state defaults without requested launch flags", () => {
+    const adapter = new PiAdapter({ sessionId: "observed", name: "observed", cwd: "/tmp" });
+    (adapter as any).handleEvent({
+      type: "response", command: "get_state", success: true,
+      data: { model: { id: "native-default", provider: "attached-provider" }, thinkingLevel: "low" },
+    });
+    expect(adapter.session.model).toBe("native-default");
+    expect(adapter.session.reasoningEffort).toBe("low");
+    expect(adapter.session.providerMeta?.observeRuntime).toEqual({
+      source: "pi_rpc", model: "native-default", modelProvider: "attached-provider", effort: "low",
+    });
+    expect(buildPiProcessEnv({}, { PI_CODING_AGENT_DIR: "/tmp/isolated-pi" }).PI_CODING_AGENT_DIR)
+      .toBe("/tmp/isolated-pi");
+  });
+});

@@ -584,6 +584,7 @@ function addTracePathMentions(
   event: ObserveEvent,
   agentId: string | null,
   sessionId: string | null,
+  cwd: string | null,
 ): void {
   const values = [
     event.text,
@@ -594,7 +595,7 @@ function addTracePathMentions(
   for (const value of values) {
     for (const path of extractPathMentions(value)) {
       upsertMaterial(state, {
-        path,
+        path: resolveTracePath(path, cwd),
         status: "observed",
         agentId,
         sessionId,
@@ -605,6 +606,15 @@ function addTracePathMentions(
   }
 }
 
+function resolveTracePath(value: string, cwd: string | null): string {
+  const expanded = expandHome(value) ?? value;
+  if (isAbsolute(expanded) || !cwd) return expanded;
+  // Use the recorded execution directory, never the web server's cwd.
+  // Command fragments from a later `cd` stay unrooted unless they exist here.
+  const candidate = resolve(cwd, expanded);
+  return existsSync(candidate) ? candidate : expanded;
+}
+
 async function addObservePayload(
   state: InventoryBuildState,
   payload: AgentObservePayload | SessionRefObservePayload,
@@ -612,6 +622,7 @@ async function addObservePayload(
   const agentId = "agentId" in payload ? payload.agentId : null;
   const sessionId = payload.sessionId ?? payload.data.metadata?.session?.externalSessionId ?? null;
   const sessionMeta = payload.data.metadata?.session;
+  const traceCwd = normalizeExistingPath(sessionMeta?.cwd);
   if (sessionId) {
     addSessionRef(state, {
       id: sessionId,
@@ -637,7 +648,7 @@ async function addObservePayload(
 
   for (const file of payload.data.files) {
     upsertMaterial(state, {
-      path: file.path,
+      path: resolveTracePath(file.path, traceCwd),
       status: statusFromObserveFile(file),
       agentId,
       sessionId,
@@ -647,7 +658,7 @@ async function addObservePayload(
   }
 
   for (const event of payload.data.events) {
-    addTracePathMentions(state, event, agentId, sessionId);
+    addTracePathMentions(state, event, agentId, sessionId, traceCwd);
   }
 
   const topology = (payload.data.metadata as (
@@ -730,6 +741,12 @@ function materialConfidence(
 }
 
 function finalizeMaterials(state: InventoryBuildState): WorkMaterial[] {
+  const relevance = (material: { evidence: WorkMaterialEvidence[]; touchedByTrace: boolean; worktreeRoot: string | null }): number => {
+    if (material.evidence.includes("trace-write") || material.evidence.includes("trace-edit")) return 0;
+    if (material.touchedByTrace && material.worktreeRoot) return 1;
+    if (material.touchedByTrace) return 2;
+    return 3;
+  };
   return [...state.materials.values()]
     .map((draft) => {
       const evidence = [...draft.evidence].sort();
@@ -743,11 +760,12 @@ function finalizeMaterials(state: InventoryBuildState): WorkMaterial[] {
         confidence: materialConfidence(draft, state.gitContexts),
       };
     })
-    .sort((left, right) =>
-      materialSortRank(left) - materialSortRank(right)
+    // Preserve this execution's concrete files before applying the bounded
+    // display limit; a shared checkout can contain hundreds of other edits.
+    .sort((left, right) => relevance(left) - relevance(right)
+      || materialSortRank(left) - materialSortRank(right)
       || statusRank(right.status) - statusRank(left.status)
-      || left.path.localeCompare(right.path)
-    )
+      || left.path.localeCompare(right.path))
     .slice(0, MAX_MATERIALS);
 }
 
@@ -887,6 +905,24 @@ function addConversationSession(state: InventoryBuildState, session: MobileSessi
   });
 }
 
+function addInvocationSession(state: InventoryBuildState): void {
+  const invocation = state.work.primaryInvocation;
+  const sessionId = invocation?.resolvedSessionId ?? invocation?.targetSessionId;
+  if (!invocation || !sessionId) return;
+  // A broker-owned, cardless session may have neither a projected agent row
+  // nor a native session on the conversation summary. Keep the execution's
+  // exact session reference so observe can resolve its transcript and cwd.
+  addSessionRef(state, {
+    id: sessionId,
+    conversationId: invocation.conversationId ?? state.work.conversationId,
+    agentId: invocation.targetAgentId,
+    agentName: invocation.targetAgentName,
+    harness: invocation.resolvedHarness ?? invocation.requestedHarness,
+    cwd: null,
+    source: "run-trace",
+  });
+}
+
 async function addObserveEvidence(state: InventoryBuildState): Promise<void> {
   const agentIds = [...state.agentRefs.values()]
     .filter((ref) => !ref.id.startsWith("observed:"))
@@ -965,6 +1001,7 @@ export async function buildWorkMaterialsInventory(
   }
 
   const runs = queryRuns({ workId: work.id, active: false, limit: 100 });
+  addInvocationSession(state);
   addRunEvidence(state, runs);
   addConversationSession(state, work.conversationId ? querySessionById(work.conversationId) : null);
   await addGitContextsForAgents(state);

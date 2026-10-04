@@ -1,0 +1,228 @@
+// Pure, Node-safe lifecycle grammar shared by launchers and command handlers.
+// Keep service, settings, filesystem and runtime imports out of this module.
+import { resolve } from "node:path";
+
+export const DEFAULT_DRAIN_TIMEOUT_MS = 30 * 60_000;
+
+export function parseScoutArgv(argv) {
+  let command = null;
+  let helpRequested = false;
+  let versionRequested = false;
+  let outputMode = "plain";
+  const args = [];
+
+  for (const token of argv) {
+    if (token === "--json") {
+      outputMode = "json";
+      continue;
+    }
+
+    if (command === null && (token === "--help" || token === "-h" || token === "help")) {
+      helpRequested = true;
+      continue;
+    }
+
+    if (command === null && (token === "--version" || token === "-v" || token === "version")) {
+      versionRequested = true;
+      continue;
+    }
+
+    if (command === null) {
+      command = token;
+      continue;
+    }
+
+    args.push(token);
+  }
+
+  return {
+    command,
+    args,
+    helpRequested,
+    versionRequested,
+    outputMode,
+  };
+}
+
+export function parseDrainTimeout(value) {
+  const match = /^(\d+(?:\.\d+)?)(s|m|h)?$/.exec(value.trim());
+  if (!match) return null;
+  const amount = Number(match[1]);
+  const unit = match[2] ?? "m";
+  const scale = unit === "s" ? 1_000 : unit === "h" ? 3_600_000 : 60_000;
+  const duration = Math.round(amount * scale);
+  return Number.isSafeInteger(duration) ? duration : null;
+}
+
+export function renderAppCommandHelp() {
+  return [
+    "scout app — OpenScout application lifecycle",
+    "",
+    "Usage:",
+    "  scout app status",
+    "  scout app stop",
+    "  scout app start",
+    "  scout app restart",
+    "",
+    "Options:",
+    "  --apps-only   Act only on the macOS app and its menu helper, leaving the",
+    "                launchd services alone — on start and restart as well as on",
+    "                stop. This is what a rebuild needs: the new bundle",
+    "                invalidates the processes running from it, but not the",
+    "                services, and bouncing those disconnects every agent.",
+    "  --now         Do not wait for in-flight work. Without it, stop and",
+    "                restart first wait for every waking/running flight to",
+    "                finish, because the tree going down kills harnesses the",
+    "                broker spawned mid-turn. Queued flights do not block; the",
+    "                broker re-dispatches them at startup.",
+    "  --timeout <t>  How long to wait for in-flight work (90s, 15m, 2h; bare",
+    "                number = minutes; default 30m). On timeout nothing is",
+    "                stopped and the blocking flights are listed.",
+    "  --json        Structured output.",
+    "",
+    "Aliases:",
+    "  stop = down = quit",
+    "  start = up",
+    "",
+    "Ownership:",
+    "  launchd        -> scoutd -> base/probes -> pairing/broker/edge -> web",
+    "  LaunchServices -> Scout  -> embedded ScoutMenu",
+    "",
+    "Behavior:",
+    "  Stop walks the tree leaf-first. The LaunchServices apps are signalled",
+    "  individually (TERM, then KILL if they linger); the launchd tree comes down",
+    "  with one bootout, because killing a supervised child only makes scoutd",
+    "  start a new one. Processes are matched by executable path, so a Scout from",
+    "  another checkout is reported rather than killed.",
+    "",
+    "  `scout up` / `scout down` manage local agents. This command manages the app.",
+    "",
+    "Examples:",
+    "  scout app status",
+    "  scout app restart",
+    "  scout app restart --timeout 1h",
+    "  scout app restart --now",
+    "  scout app status --json",
+  ].join("\n");
+}
+
+export function parseAppCommand(args) {
+  const json = args.includes("--json");
+  const scope = args.includes("--apps-only") ? "apps" : "all";
+  const now = args.includes("--now");
+  let drainTimeoutMs = DEFAULT_DRAIN_TIMEOUT_MS;
+  const positional = [];
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg === "--timeout" || arg.startsWith("--timeout=")) {
+      const value = arg === "--timeout" ? args[++index] : arg.slice("--timeout=".length);
+      const parsed = value === undefined ? null : parseDrainTimeout(value);
+      if (parsed === null) {
+        throw new Error(`invalid --timeout: ${value ?? "(missing)"} (try 90s, 15m, 2h)`);
+      }
+      drainTimeoutMs = parsed;
+      continue;
+    }
+    if (arg.startsWith("-")) {
+      if (!["--json", "--apps-only", "--now"].includes(arg)) {
+        throw new Error(`unexpected argument for app: ${arg}`);
+      }
+    } else positional.push(arg);
+  }
+  if (positional.length > 1) throw new Error(`unexpected arguments for app: ${positional.join(" ")}`);
+  const first = positional[0];
+  const base = { scope, json, now, drainTimeoutMs };
+
+  if (!first) {
+    return { action: "status", ...base };
+  }
+
+  switch (first) {
+    case "status":
+      return { action: "status", ...base };
+    case "stop":
+    case "down":
+    case "quit":
+      return { action: "stop", ...base };
+    case "start":
+    case "up":
+      return { action: "start", ...base };
+    case "restart":
+      return { action: "restart", ...base };
+    default:
+      throw new Error(`unknown subcommand: ${first} (try: scout app)`);
+  }
+}
+
+
+export const UP_HELP = "Usage: scout up <name|path> [--name <alias>] [--harness <harness>] [--provider <provider>] [--model <model>] [--reasoning-effort <effort>] [--permission-profile <profile>]\nStart a local agent.";
+export const SETUP_HELP = "Usage: scout setup [--source-root <path>] [--default-harness <name>] [--context-root <path>] [--json]\n\nConfigure project discovery and install/start the local broker.\nRepeat --source-root to add workspace roots. Prompts for a root in an interactive terminal.\nUse scout doctor to inspect readiness without requesting setup.";
+
+function flagValue(args, index, flag) {
+  const inline = args[index].startsWith(flag + "=");
+  const value = inline ? args[index].slice(flag.length + 1) : args[index + 1];
+  if (!value?.trim() || (!inline && value.startsWith("-"))) throw new Error(`missing value for ${flag}`);
+  return { value, nextIndex: inline ? index : index + 1 };
+}
+
+export function parseUpCommandOptions(args) {
+  const fields = { "--name": "agentName", "--harness": "harness", "--model": "model", "--provider": "provider", "--reasoning-effort": "reasoningEffort", "--effort": "reasoningEffort", "--permission-profile": "permissionProfile" };
+  const options = { target: null };
+  for (let index = 0; index < args.length; index++) {
+    const arg = args[index];
+    if (arg === "--json") continue;
+    const flag = arg.split("=")[0];
+    if (Object.hasOwn(fields, flag)) {
+      const parsed = flagValue(args, index, flag);
+      options[fields[flag]] = parsed.value;
+      index = parsed.nextIndex;
+    } else if (arg.startsWith("-")) {
+      throw new Error(`unexpected argument for up: ${arg}`);
+    } else if (options.target !== null) {
+      throw new Error(`unexpected arguments for up: ${args.join(" ")}`);
+    } else options.target = arg;
+  }
+  if (!options.target?.trim()) throw new Error(UP_HELP);
+  return options;
+}
+
+export function parseSetupCommandOptions(args, defaultCurrentDirectory) {
+  let currentDirectory = defaultCurrentDirectory;
+  const sourceRoots = [];
+  let defaultHarness = null;
+  for (let index = 0; index < args.length; index++) {
+    const arg = args[index];
+    if (arg === "--json") continue;
+    const flag = arg.split("=")[0];
+    if (!["--context-root", "--source-root", "--default-harness"].includes(flag)) {
+      throw new Error(`unexpected arguments for setup: ${args.join(" ")}`);
+    }
+    const parsed = flagValue(args, index, flag);
+    index = parsed.nextIndex;
+    if (flag === "--context-root") currentDirectory = resolve(parsed.value);
+    else if (flag === "--source-root") sourceRoots.push(resolve(parsed.value));
+    else {
+      if (!["claude", "codex", "cursor", "grok", "pi", "opencode", "devin"].includes(parsed.value)) {
+        throw new Error(`invalid default harness: ${parsed.value}`);
+      }
+      defaultHarness = parsed.value;
+    }
+  }
+  return { currentDirectory, sourceRoots, defaultHarness };
+}
+
+// Return help or validate the complete lexical grammar before service maintenance.
+export function preflightLifecycle(argv, currentDirectory = process.cwd()) {
+  const input = parseScoutArgv(argv);
+  if (input.versionRequested) return null;
+  let { command, args } = input;
+  if (command === "relay") { command = args[0] ?? null; args = args.slice(1); }
+  if (!["setup", "up", "app"].includes(command)) return null;
+  if (input.helpRequested || args.includes("--help") || args.includes("-h") || (command === "app" && args.includes("help"))) {
+    return command === "app" ? renderAppCommandHelp() : command === "up" ? UP_HELP : SETUP_HELP;
+  }
+  if (command === "app") parseAppCommand(args);
+  else if (command === "up") parseUpCommandOptions(args);
+  else parseSetupCommandOptions(args, currentDirectory);
+  return null;
+}

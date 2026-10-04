@@ -117,7 +117,7 @@ export function classifyEndpoint(
 ): EndpointClassification {
   const candidateState = endpointCandidateState(endpoint?.state);
   const onlineState = isEndpointOnlineState(endpoint?.state);
-  const stale = !endpoint || endpoint.metadata?.staleLocalRegistration === true;
+  const stale = !endpoint || hasRetiredEndpointRegistration(endpoint);
   const busy = endpoint?.state === "active" || endpoint?.state === "waiting";
   const supportedTransport = Boolean(
     endpoint
@@ -180,11 +180,17 @@ const TERMINAL_ENDPOINT_STATES: ReadonlySet<AgentState> = new Set<AgentState>([
   "stopped",
 ]);
 
+/** Explicit retirement evidence, unlike an offline heartbeat or failed probe. */
+export function hasRetiredEndpointRegistration(endpoint: AgentEndpoint): boolean {
+  return endpoint.metadata?.staleLocalRegistration === true
+    || (endpoint.state === "offline" && Boolean(metadataStringValue(endpoint.metadata, "replacedByAgentId")));
+}
+
 export function isStaleLocalEndpoint(
   snapshot: RuntimeRegistrySnapshot,
   endpoint: AgentEndpoint | null,
 ): boolean {
-  if (!endpoint || endpoint.metadata?.staleLocalRegistration === true) {
+  if (!endpoint || hasRetiredEndpointRegistration(endpoint)) {
     return true;
   }
 

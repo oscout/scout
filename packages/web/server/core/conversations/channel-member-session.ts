@@ -1,9 +1,12 @@
-import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
+import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
+
+import { closeSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, writeFileSync, unlinkSync } from "node:fs";
+import { join } from "node:path";
 
 import { DEFAULT_CHAT_SPACE_SLUG, normalizeChatSpaceSlug } from "@openscout/protocol";
 
 /**
- * Browser credentials for people who joined through a channel invitation.
+ * Scoped browser and API credentials admitted through a channel invitation.
  *
  * A teammate who redeems an invitation is not an operator. They must be able to
  * open the channel they were invited to and nothing else, which means they need
@@ -17,10 +20,10 @@ import { DEFAULT_CHAT_SPACE_SLUG, normalizeChatSpaceSlug } from "@openscout/prot
  *
  * The credential survives a web server restart, because signing a teammate out
  * whenever the host restarts their server is not a security property -- it is
- * just a way to lose the room. It survives by being *verifiable* rather than by
- * being stored: the cookie carries the grant and an HMAC over it, so a restarted
- * process can check a cookie it has never seen without keeping a durable
- * credential file anywhere.
+ * just a way to lose the room. The signed grant proves scope; a private,
+ * token-hash-keyed lease records sliding API expiry, browser idle activity and
+ * revocation. No bearer secrets are stored in that ledger. Legacy unexpired
+ * signatures are adopted lazily; expired signatures cannot create a new lease.
  *
  * The signing key is derived from the host's own API token, never equal to it.
  * Two consequences are deliberate: rotating the operator token signs every
@@ -37,8 +40,14 @@ import { DEFAULT_CHAT_SPACE_SLUG, normalizeChatSpaceSlug } from "@openscout/prot
 
 export const CHANNEL_MEMBER_COOKIE = "openscout_member";
 
-/** Twelve hours. Long enough for a working day, short enough to expire. */
+/** Twelve-hour API idle lease, matching hosted MEMBER_TTL. */
 export const CHANNEL_MEMBER_SESSION_TTL_MS = 12 * 60 * 60 * 1000;
+/** Match hosted MEMBER_TTL / ACTIVITY_WRITE_MS; API leases have no absolute cap. */
+export const CHANNEL_MEMBER_ACTIVITY_WRITE_MS = 60_000;
+/** Hosted human account sessions are separately capped, never uncapped API leases. */
+export const CHANNEL_BROWSER_ABSOLUTE_MS = 7 * 24 * 60 * 60 * 1000;
+export const CHANNEL_BROWSER_IDLE_MS = 24 * 60 * 60 * 1000;
+export const CHANNEL_BROWSER_ACTIVITY_WRITE_MS = 5 * 60_000;
 
 export interface ChannelMemberGrant {
   actorId: string;
@@ -46,6 +55,8 @@ export interface ChannelMemberGrant {
   /** Channels this member joined. Access is checked against this list only. */
   channelIds: string[];
   expiresAt: number;
+  /** Present on newly issued browser sessions; old cookies retain their signed 12h cap. */
+  createdAt?: number;
   /**
    * `"api"` for a lightweight participant that joined over HTTP with no
    * install and no session; absent for a browser member or a redeemed session.
@@ -92,6 +103,8 @@ export interface ChannelMemberSessionAuthority {
     spaceSlug?: string | null;
   }): { token: string; grant: ChannelMemberGrant };
   validate(token: string | null | undefined, nowMs?: number): ChannelMemberGrant | null;
+  /** Call only after a successful request AND a fresh membership/space check. */
+  recordSuccessfulUse(token: string, nowMs?: number): ChannelMemberGrant | null;
   /**
    * Add a channel to an existing member's grant when they redeem another
    * invitation. The grant is inside the token, so widening it mints a new token
@@ -143,13 +156,50 @@ function signMemberGrant(key: Buffer, payload: string): string {
 }
 
 export function createChannelMemberSessionAuthority(
-  options?: { signingSecret?: string | null },
+  options?: { signingSecret?: string | null; leaseDirectory?: string },
 ): ChannelMemberSessionAuthority {
   const sessions = new Map<string, StoredMemberSession>();
   // Revocations have to outlive the session map, or a revoked but unexpired
   // token would simply be re-verified from its own signature and let back in.
   const revoked = new Map<string, number>();
   const key = memberSigningKey(options?.signingSecret);
+  type Lease = { expiresAt: number; lastSeenAt: number; revoked: boolean };
+  // One tiny atomic record per credential, not a whole-history rewrite per poll.
+  // Only the web authority writes this directory. Missing storage uses signed
+  // expiry, never creates a fresh lease for an expired token; corrupt storage
+  // fails closed rather than quietly resurrecting it.
+  const leases = new Map<string, Lease | null>();
+  const leasePath = (token: string) => options?.leaseDirectory && key
+    ? join(options.leaseDirectory, `${createHash("sha256").update(token).digest("hex")}.json`) : null;
+  const readLease = (token: string): Lease | null => {
+    if (leases.has(token)) return leases.get(token)!;
+    const path = leasePath(token);
+    let lease: Lease | null = null;
+    if (path) {
+      try {
+        const value = JSON.parse(readFileSync(path, "utf8"));
+        if (!Number.isFinite(value.expiresAt) || !Number.isFinite(value.lastSeenAt) || typeof value.revoked !== "boolean") throw new Error("Invalid member lease");
+        lease = value;
+      } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+    }
+    leases.set(token, lease);
+    return lease;
+  };
+  const writeLease = (token: string, lease: Lease) => {
+    const path = leasePath(token);
+    if (path) {
+      mkdirSync(options!.leaseDirectory!, { recursive: true, mode: 0o700 });
+      const temp = `${path}.${randomBytes(8).toString("hex")}.tmp`;
+      try {
+        const fd = openSync(temp, "wx", 0o600);
+        try { writeFileSync(fd, JSON.stringify(lease)); fsyncSync(fd); } finally { closeSync(fd); }
+        renameSync(temp, path);
+        const directory = openSync(options!.leaseDirectory!, "r");
+        try { fsyncSync(directory); } finally { closeSync(directory); }
+      } finally { try { unlinkSync(temp); } catch {} }
+    }
+    leases.set(token, lease);
+  };
 
   const prune = (nowMs: number) => {
     for (const [token, session] of sessions) {
@@ -186,11 +236,15 @@ export function createChannelMemberSessionAuthority(
       const parsed = JSON.parse(Buffer.from(payload, "base64url").toString("utf8")) as
         Partial<ChannelMemberGrant>;
       const actorId = typeof parsed.actorId === "string" ? parsed.actorId.trim() : "";
-      const expiresAt = typeof parsed.expiresAt === "number" ? parsed.expiresAt : 0;
+      const lease = readLease(token);
+      const expiresAt = lease && parsed.participation === "api" ? lease.expiresAt : parsed.expiresAt ?? 0;
+      if (lease?.revoked) return null;
+      if (parsed.participation !== "api" && parsed.createdAt !== undefined &&
+        (!Number.isFinite(parsed.createdAt) || (lease?.lastSeenAt ?? parsed.createdAt) + CHANNEL_BROWSER_IDLE_MS <= nowMs)) return null;
       const channelIds = Array.isArray(parsed.channelIds)
         ? parsed.channelIds.filter((id): id is string => typeof id === "string" && Boolean(id.trim()))
         : [];
-      if (!actorId || !channelIds.length || expiresAt <= nowMs) return null;
+      if (!actorId || !channelIds.length || !Number.isFinite(expiresAt) || expiresAt <= nowMs) return null;
       return {
         actorId,
         displayName: typeof parsed.displayName === "string" && parsed.displayName.trim()
@@ -198,6 +252,7 @@ export function createChannelMemberSessionAuthority(
           : actorId,
         channelIds,
         expiresAt,
+        ...(parsed.createdAt !== undefined ? { createdAt: parsed.createdAt } : {}),
         // Only the exact marker counts. Anything else is a session member,
         // which is the wider grant -- so this reads strictly and never widens
         // on a value it does not recognise.
@@ -216,6 +271,23 @@ export function createChannelMemberSessionAuthority(
     return grant;
   };
 
+  const validate = (token: string | null | undefined, nowMs = Date.now()): ChannelMemberGrant | null => {
+    const candidate = token?.trim();
+    if (!candidate || revoked.has(candidate)) return null;
+    const session = sessions.get(candidate);
+    if (session) {
+      const lease = readLease(candidate);
+      if (lease?.revoked) return null;
+      const expiresAt = session.participation === "api" && lease ? lease.expiresAt : session.expiresAt;
+      if (expiresAt <= nowMs || (session.participation !== "api" && session.createdAt !== undefined &&
+        (lease?.lastSeenAt ?? session.createdAt) + CHANNEL_BROWSER_IDLE_MS <= nowMs)) return null;
+      const { token: _token, ...grant } = session;
+      return { ...grant, expiresAt };
+    }
+    const recovered = decode(candidate, nowMs);
+    return recovered ? store(candidate, recovered) : null;
+  };
+
   return {
     mint({ actorId, displayName, channelId, nowMs = Date.now(), participation, spaceSlug }) {
       prune(nowMs);
@@ -224,7 +296,8 @@ export function createChannelMemberSessionAuthority(
         actorId: actorId.trim(),
         displayName: displayName.trim() || actorId.trim(),
         channelIds: [channelId.trim()],
-        expiresAt: nowMs + CHANNEL_MEMBER_SESSION_TTL_MS,
+        expiresAt: nowMs + (participation === "api" ? CHANNEL_MEMBER_SESSION_TTL_MS : CHANNEL_BROWSER_ABSOLUTE_MS),
+        ...(participation === "api" ? {} : { createdAt: nowMs }),
         ...(participation === "api" ? { participation: "api" as const } : {}),
         // The default space is written as absence, so a default-space
         // credential is byte-identical to one minted before spaces existed.
@@ -235,43 +308,28 @@ export function createChannelMemberSessionAuthority(
       return { token, grant };
     },
 
-    validate(token, nowMs = Date.now()) {
-      const candidate = token?.trim();
-      if (!candidate) return null;
-      if (revoked.has(candidate)) return null;
+    validate,
 
-      const session = sessions.get(candidate);
-      if (session) {
-        if (session.expiresAt <= nowMs) {
-          sessions.delete(candidate);
-          return null;
-        }
-        // The map lookup already matched exactly; the constant-time compare is
-        // here so the code does not depend on Map internals for that property.
-        if (!constantTimeEquals(session.token, candidate)) return null;
-        const { token: _token, ...grant } = session;
-        return grant;
-      }
-
-      // Not in memory. Either this process restarted or the entry was pruned --
-      // in both cases the signature is what decides, not our recollection.
-      const recovered = decode(candidate, nowMs);
-      if (!recovered) return null;
-      return store(candidate, recovered);
+    recordSuccessfulUse(token, nowMs = Date.now()) {
+      const candidate = token.trim();
+      const grant = validate(candidate, nowMs);
+      if (!grant) return null;
+      const prior = readLease(candidate);
+      const api = grant.participation === "api";
+      // Legacy browser cookies remain fixed; no implicit widening on upgrade.
+      if (!api && grant.createdAt === undefined) return grant;
+      const throttle = api ? CHANNEL_MEMBER_ACTIVITY_WRITE_MS : CHANNEL_BROWSER_ACTIVITY_WRITE_MS;
+      if (prior && prior.lastSeenAt > nowMs - throttle) return grant;
+      const next = { ...grant, expiresAt: api ? nowMs + CHANNEL_MEMBER_SESSION_TTL_MS : grant.expiresAt };
+      writeLease(candidate, { expiresAt: next.expiresAt, lastSeenAt: nowMs, revoked: false });
+      return store(candidate, next);
     },
 
     grantChannel(token, channelId, options = {}) {
       const nowMs = options.nowMs ?? Date.now();
       const candidate = token.trim();
       if (revoked.has(candidate)) return null;
-      const current = sessions.get(candidate)
-        ? (() => {
-            const session = sessions.get(candidate)!;
-            if (session.expiresAt <= nowMs) return null;
-            const { token: _token, ...grant } = session;
-            return grant;
-          })()
-        : decode(candidate, nowMs);
+      const current = validate(candidate, nowMs);
       if (!current) return null;
 
       // The space check happens before anything is mutated, so a refusal
@@ -292,6 +350,8 @@ export function createChannelMemberSessionAuthority(
       // The grant travels inside the token, so widening it has to mint a new
       // one. The old token is revoked rather than left valid beside it.
       const minted = encode(grant);
+      writeLease(candidate, { expiresAt: grant.expiresAt, lastSeenAt: nowMs, revoked: true });
+      writeLease(minted, { expiresAt: grant.expiresAt, lastSeenAt: nowMs, revoked: false });
       sessions.delete(candidate);
       revoked.set(candidate, grant.expiresAt);
       store(minted, grant);
@@ -301,9 +361,11 @@ export function createChannelMemberSessionAuthority(
     revoke(token) {
       const candidate = token.trim();
       const session = sessions.get(candidate);
-      sessions.delete(candidate);
       const decoded = session ?? decode(candidate, Date.now());
-      revoked.set(candidate, decoded?.expiresAt ?? Date.now() + CHANNEL_MEMBER_SESSION_TTL_MS);
+      const expiresAt = decoded?.expiresAt ?? Date.now() + CHANNEL_MEMBER_SESSION_TTL_MS;
+      writeLease(candidate, { expiresAt, lastSeenAt: Date.now(), revoked: true });
+      sessions.delete(candidate);
+      revoked.set(candidate, expiresAt);
     },
   };
 }
@@ -460,7 +522,7 @@ export function channelMemberCookie(
     "Path=/",
     "HttpOnly",
     "SameSite=Strict",
-    `Max-Age=${Math.floor(CHANNEL_MEMBER_SESSION_TTL_MS / 1000)}`,
+    `Max-Age=${Math.floor(CHANNEL_BROWSER_ABSOLUTE_MS / 1000)}`,
     ...(domain ? [`Domain=${domain}`] : []),
     ...(secure ? ["Secure"] : []),
   ].join("; ");

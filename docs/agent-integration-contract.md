@@ -338,3 +338,35 @@ Before calling an integration "Scout-native", verify:
 - it documents its permission and wake behavior
 - it can recover or explain state after broker/session restart
 - it reports token usage or marked estimates when available
+
+## Pi background dispatch
+
+`scout ask --project /path/to/project --harness pi --notify "Read the fixture and report back."`
+creates a broker-owned session and flight using Pi's persistent `--mode rpc`
+transport. No prewarmed worker or agent card is required. Pi must be on the
+broker's PATH. Configure a working provider in Pi first (`pi /login`, a selected
+provider's API-key environment, or a provider extension), then verify `pi -p`
+in the same project. The worker retains Pi's skills and extensions; Scout does
+not invent provider credentials. `PI_CODING_AGENT_DIR` is honored for an explicit
+Pi-native configuration scope. Explicit model ids are passed through to Pi
+(including extension/provider-qualified ids); Scout does not select a default
+provider or model. Scout effort `none` maps to Pi `off`, and Pi's thinking
+levels through `max` are accepted; `ultra` is rejected.
+
+Some extensions require an interactive first-run choice even when `pi -p`
+works. Complete that setup with interactive `pi` in the project before dispatch.
+Scout rejects answer-required extension UI requests with setup guidance; it
+never silently selects a provider, grants an approval, or leaves the flight
+waiting for an invisible dialog. Pi currently supports background placement
+only. An extension needing interactive input during work must be used through
+Pi's native UI instead.
+
+Dispatch acceptance and a running acknowledgement are not completion. A Pi
+prompt can contain several tool/model turns; Scout waits for `agent_end` and
+captures the final assistant turn, not intermediate tool narration. RPC errors,
+provider errors, unexpected process exit, and missing final output fail the
+tracked execution. Observed model and thinking level come from Pi's RPC state
+and assistant records; launch arguments alone do not prove harness acceptance.
+Pi's native session id is linked to the stable Scout session, not substituted
+for it. The broker remains the writer of the final reply and flight result;
+Pi's complete transcript remains harness-owned.

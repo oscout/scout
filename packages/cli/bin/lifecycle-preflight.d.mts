@@ -1,0 +1,14 @@
+export type ScoutCliInput = { command: string | null; args: string[]; helpRequested: boolean; versionRequested: boolean; outputMode: "plain" | "json" };
+export type ScoutAppCommand = { action: "status" | "stop" | "start" | "restart"; scope: "apps" | "all"; json: boolean; now: boolean; drainTimeoutMs: number };
+export type ScoutUpOptions = { target: string; agentName?: string; harness?: string; model?: string; provider?: string; reasoningEffort?: string; permissionProfile?: string };
+export type ScoutSetupOptions = { currentDirectory: string; sourceRoots: string[]; defaultHarness: string | null };
+export const DEFAULT_DRAIN_TIMEOUT_MS: number;
+export const UP_HELP: string;
+export const SETUP_HELP: string;
+export function parseScoutArgv(argv: string[]): ScoutCliInput;
+export function parseDrainTimeout(value: string): number | null;
+export function renderAppCommandHelp(): string;
+export function parseAppCommand(args: string[]): ScoutAppCommand;
+export function parseUpCommandOptions(args: string[]): ScoutUpOptions;
+export function parseSetupCommandOptions(args: string[], defaultCurrentDirectory: string): ScoutSetupOptions;
+export function preflightLifecycle(argv: string[], currentDirectory?: string): string | null;

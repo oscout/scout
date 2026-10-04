@@ -1,3 +1,4 @@
+import { handleBrokerAccessRoute, type BrokerAccessHttpDeps } from "./broker-access-http-routes.js";
 import type { IntegrationSlackEvents } from "./integration-slack-events.js";
 import type { IntegrationSlackDeliveryService } from "./integration-slack-delivery.js";
 import { BrokerIntegrationSetupService, IntegrationSetupError } from "./broker-integration-setup.js";
@@ -135,6 +136,8 @@ import {
 import { normalizeConversationTitle } from "./conversation-title.js";
 
 export type BrokerHttpRuntime = {
+  /** Metadata-only peek: endpoint readers must not detach/message-scan the registry. */
+  peek?: () => { endpoints: Record<string, AgentEndpoint> };
   snapshot: () => { nodes: Record<string, NodeDefinition>; conversations: Record<string, ConversationDefinition> };
   recentEvents: (limit: number) => unknown;
   collaborationRecord: (recordId: string) => CollaborationRecord | undefined;
@@ -315,6 +318,7 @@ export type BrokerHttpRouterDeps = {
    * absent, those paths fall through to 404.
    */
   guest?: BrokerGuestHttpDeps;
+  access?: BrokerAccessHttpDeps;
 };
 
 const tailDiscoveryScopes = new Set<TailDiscoveryScope>(["hot", "shallow", "deep"]);
@@ -466,6 +470,19 @@ export function createBrokerHttpRouter(
   // treated as local.
   // Guest routes are answered before any other routing, so a guest request
   // never reaches peer, forwarding, or local handlers.
+  if (method === "POST" && url.pathname === "/v1/access/admin") {
+    if (deps.access) { await handleBrokerAccessRoute(request, response, url, method, deps.access); return; }
+    json(response, 503, { error: "access_unavailable" }); return;
+  }
+  if (method === "POST" && url.pathname === "/v1/access/policy") {
+    if (deps.access) { await handleBrokerAccessRoute(request, response, url, method, deps.access); return; }
+    json(response, 503, { error: "access_unavailable" }); return;
+  }
+  if (method === "POST" && url.pathname === "/v1/access/rpc") {
+    if (deps.access) { await handleBrokerAccessRoute(request, response, url, method, deps.access); return; }
+    json(response, 503, { error: "access_unavailable" }); return;
+  }
+  if (request.transportContext?.scoped) { json(response, 403, { error: "access_denied" }); return; }
   if (guest && await handleBrokerGuestRoute(request, response, url, method, guest)) return;
   const denyRemoteMutation = (): boolean => {
     if (request.transportContext?.transport !== "remote") return false;
@@ -2358,6 +2375,17 @@ export function createBrokerHttpRouter(
     } catch (error) {
       badRequest(response, error);
     }
+    return;
+  }
+
+  // Local endpoint inventory. Registration already uses POST /v1/endpoints;
+  // this read avoids pretending agents-only discovery carries live sessions.
+  if (method === "GET" && url.pathname === "/v1/endpoints") {
+    if (!runtime.peek) { json(response, 503, { error: "endpoint_inventory_unavailable" }); return; }
+    const agentId = url.searchParams.get("agentId"), endpointId = url.searchParams.get("endpointId");
+    const all = runtime.peek().endpoints;
+    const endpoints = endpointId ? (all[endpointId] ? [all[endpointId]!] : []) : Object.values(all);
+    json(response, 200, { endpoints: endpoints.filter(e => !agentId || e.agentId === agentId) });
     return;
   }
 

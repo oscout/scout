@@ -4,11 +4,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 
-import type { AgentObservePayload } from "./core/observe/service.ts";
+import type { AgentObservePayload, SessionRefObservePayload } from "./core/observe/service.ts";
 import type { WebAgent, WebWorkDetail } from "./db-queries.ts";
 
 const tempRoots = new Set<string>();
 let agentObservePayload: AgentObservePayload | null = null;
+let sessionObservePayload: SessionRefObservePayload | null = null;
+let requestedSessionRefs: string[] = [];
 const originalHome = process.env.HOME;
 
 const agents: WebAgent[] = [
@@ -58,7 +60,10 @@ mock.module("./db-queries.ts", () => ({
 
 mock.module("./core/observe/service.ts", () => ({
   loadAgentObservePayload: async () => agentObservePayload,
-  loadSessionRefObservePayload: async () => null,
+  loadSessionRefObservePayload: async (id: string) => {
+    requestedSessionRefs.push(id);
+    return id === "scout-session-1" ? sessionObservePayload : null;
+  },
 }));
 
 const { buildWorkMaterialsInventory, readWorkMaterialContent } = await import("./work-materials.ts");
@@ -73,6 +78,8 @@ beforeEach(() => {
   const home = makeTempRoot("openscout-work-materials-home-");
   process.env.HOME = home;
   agentObservePayload = null;
+  sessionObservePayload = null;
+  requestedSessionRefs = [];
   agents[0]!.cwd = null;
   agents[0]!.projectRoot = null;
 });
@@ -226,6 +233,52 @@ describe("readWorkMaterialContent", () => {
 });
 
 describe("buildWorkMaterialsInventory", () => {
+  test("finds materials through a cardless invocation's exact execution session", async () => {
+    const repoRoot = makeTempRoot("openscout-work-materials-cardless-");
+    initRepo(repoRoot);
+    writeFileSync(join(repoRoot, "README.md"), "base\n");
+    commitAll(repoRoot, "base");
+    writeFileSync(join(repoRoot, "implementation.ts"), "export const ready = true;\n");
+    // More unrelated shared-checkout changes than the inventory limit must
+    // not crowd the current session's actual file out of the result.
+    for (let index = 0; index < 90; index += 1) {
+      writeFileSync(join(repoRoot, `unrelated-${index}.test.ts`), "// other work\n");
+    }
+    useObservedFile("implementation.ts", repoRoot);
+    sessionObservePayload = {
+      ...agentObservePayload!, kind: "broker", refId: "scout-session-1",
+      agentId: "cardless-agent", sessionId: "native-session-1",
+    };
+    agentObservePayload = null;
+    const work = makeWork();
+    work.ownerId = "cardless-agent";
+    work.primaryInvocation = {
+      resolvedSessionId: "scout-session-1", targetSessionId: "old-session",
+      targetAgentId: "cardless-agent", targetAgentName: "Worker",
+      resolvedHarness: "claude", requestedHarness: "claude", conversationId: null,
+    } as NonNullable<WebWorkDetail["primaryInvocation"]>;
+
+    const inventory = await buildWorkMaterialsInventory(work);
+    expect(requestedSessionRefs).toContain("scout-session-1");
+    expect(requestedSessionRefs).not.toContain("old-session");
+    expect(inventory.materials.find((file) => file.path === "implementation.ts")?.evidence).toContain("trace-read");
+    expect(inventory.materials.filter((file) => file.path === "implementation.ts")).toHaveLength(1);
+    expect(inventory.materials).toHaveLength(80);
+    expect(inventory.sessions.find((session) => session.id === "native-session-1")?.cwd).toBe(repoRoot);
+    expect(inventory.limitations).not.toContain("No related git repository was detected; inventory is trace-derived.");
+  });
+
+  test("uses the requested execution session when resolution is not yet recorded", async () => {
+    const work = makeWork();
+    work.primaryInvocation = {
+      resolvedSessionId: null, targetSessionId: "scout-session-1",
+      targetAgentId: "cardless-agent", targetAgentName: "Worker",
+      resolvedHarness: null, requestedHarness: "claude", conversationId: null,
+    } as NonNullable<WebWorkDetail["primaryInvocation"]>;
+    await buildWorkMaterialsInventory(work);
+    expect(requestedSessionRefs).toContain("scout-session-1");
+  });
+
   test("reports branch contribution stats for committed files", async () => {
     const repoRoot = makeTempRoot("openscout-work-materials-branch-");
     initRepo(repoRoot);

@@ -1,3 +1,5 @@
+import { verifyLocalAdminRequest, LOCAL_ADMIN_HEADER } from "./mesh-access-local-auth.js";
+import type { AccessProof } from "./mesh-access.js";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { Duplex } from "node:stream";
 import { Readable } from "node:stream";
@@ -6,6 +8,7 @@ import { json } from "./broker-http-helpers.js";
 import {
   PEER_AUTH_HEADERS,
   verifyPeerRequest,
+  verifyScopedPeerRequest,
   type PeerAuthLookup,
   type PeerAuthPrincipal,
   type PeerNonceClaim,
@@ -65,7 +68,7 @@ export function classifyMeshTransport(remoteAddress: string | undefined | null):
 }
 
 export type MeshIngressDecision =
-  | { action: "allow"; principal?: PeerAuthPrincipal; guest?: RuntimeGuestAuthPrincipal }
+  | { action: "allow"; principal?: PeerAuthPrincipal; guest?: RuntimeGuestAuthPrincipal; scoped?: AccessProof }
   | { action: "deny"; status: number; reason: string; hard?: true };
 
 /**
@@ -127,7 +130,29 @@ export function evaluateGuestIngress(input: {
   return { action: "allow", guest: { keyId: verified.principal.keyId, grantId } };
 }
 
+/** A dedicated proof envelope uses the existing body-bound transport signature. */
+export type ScopedIngressAccess = {
+  knownDevice: (keyId: string) => boolean;
+  verify: (envelope: unknown) => AccessProof;
+  accept: (proof: AccessProof) => AccessProof;
+};
+
+export function evaluateScopedIngress(input: MeshIngressVerifyInput): MeshIngressDecision {
+  try {
+    if (!input.scopedAccess) return { action: "deny", status: 503, reason: "scoped access unavailable", hard: true };
+    const envelope = JSON.parse(input.body?.toString() ?? "");
+    const proof = input.scopedAccess.verify(envelope);
+    if (proof.deviceId !== input.headers.peer) return { action: "deny", status: 401, reason: "device proof mismatch", hard: true };
+    const verified = verifyScopedPeerRequest({ ...input, path: input.requestTarget, delegation: proof.delegation,
+      lookupPeer: (id) => id === proof.deviceId ? { publicKey: proof.delegation.devicePublicKey, tier: "observe" } : undefined,
+      nonceClaim: { claim: (id, nonce, now) => input.nonceClaim.claim(`scoped:${id}`, nonce, now) } });
+    if (!verified.ok) return { action: "deny", status: 401, reason: "invalid scoped request signature", hard: true };
+    return { action: "allow", scoped: input.scopedAccess.accept(proof) };
+  } catch { return { action: "deny", status: 403, reason: "scoped access denied", hard: true }; }
+}
+
 export type MeshIngressVerifyInput = {
+  keyConflict?: (keyId: string) => boolean;
   transport: RuntimeTransportKind;
   method: string;
   /** pathname only — route tier lookup */
@@ -140,13 +165,21 @@ export type MeshIngressVerifyInput = {
   bootedAt: number;
   lookupPeer: PeerAuthLookup;
   lookupGuest?: GuestAuthLookup;
+  scopedAccess?: ScopedIngressAccess;
   nonceClaim: PeerNonceClaim;
   now?: number;
 };
 
 /** Pure gate decision; transport classification and mode application live outside. */
 export function evaluateMeshIngress(input: MeshIngressVerifyInput): MeshIngressDecision {
+  try {
+  if (input.headers.peer && input.keyConflict?.(input.headers.peer)) return { action: "deny", status: 403, reason: "credential class conflict", hard: true };
   const routeTier = meshRouteTierFor(input.method, input.pathname);
+  if (input.method.toUpperCase() === "POST" && input.pathname === "/v1/access/policy") return { action: "deny", status: 403, reason: "policy submissions require bounded HTTP handling", hard: true };
+  if (routeTier === "scoped") return evaluateScopedIngress(input);
+  if (input.headers.peer && input.scopedAccess?.knownDevice(input.headers.peer)) {
+    return { action: "deny", status: 403, reason: "scoped keys may only call scoped routes", hard: true };
+  }
   if (routeTier === "guest") {
     return evaluateGuestIngress({ ...input });
   }
@@ -186,6 +219,7 @@ export function evaluateMeshIngress(input: MeshIngressVerifyInput): MeshIngressD
     };
   }
   return { action: "allow", principal: verified.principal };
+  } catch { return { action: "deny", status: 503, reason: "credential store unavailable", hard: true }; }
 }
 
 export type MeshGateLogger = {
@@ -390,6 +424,10 @@ export function applyMeshGateMode(
 }
 
 export type MeshIngressGateDeps = {
+  /** Protected mode removes ambient loopback/Unix trust; never sent to remote peers. */
+  localAdminKey?: string;
+  keyConflict?: (keyId: string) => boolean;
+  scopedAccess?: ScopedIngressAccess;
   mode: MeshGateMode;
   destinationKeyId: string;
   /** process boot time; timestamps before it (minus grace) are rejected */
@@ -441,18 +479,23 @@ export function peerAuthHeadersFrom(headers: RuntimeHttpHeaders): PeerRequestHea
   };
 }
 
-async function bufferRequestBody(request: IncomingMessage): Promise<Buffer> {
-  const chunks: Buffer[] = [];
-  let received = 0;
-  for await (const chunk of request) {
-    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as Uint8Array);
-    received += buffer.byteLength;
-    if (received > MAX_VERIFIABLE_BODY_BYTES) {
-      throw new Error("request body too large to verify");
-    }
-    chunks.push(buffer);
-  }
-  return Buffer.concat(chunks);
+async function bufferRequestBody(request: IncomingMessage, maxBytes = MAX_VERIFIABLE_BODY_BYTES): Promise<Buffer> {
+  // Do not destroy the socket through async-iterator early return: send a bounded
+  // 413 response while draining remaining bytes without retaining them.
+  return new Promise((resolve, reject) => {
+    const chunks: Buffer[] = []; let received = 0;
+    const cleanup = () => { request.off("data", data); request.off("end", end); request.off("error", error); request.off("aborted", aborted); };
+    const error = (cause: Error) => { cleanup(); reject(cause); };
+    const aborted = () => error(new Error("request aborted"));
+    const end = () => { cleanup(); resolve(Buffer.concat(chunks)); };
+    const data = (chunk: Buffer | Uint8Array) => {
+      const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      received += buffer.byteLength;
+      if (received > maxBytes) { chunks.length = 0; cleanup(); request.resume(); reject(new Error("request body too large to verify")); return; }
+      chunks.push(buffer);
+    };
+    request.on("data", data); request.once("end", end); request.once("error", error); request.once("aborted", aborted);
+  });
 }
 
 /**
@@ -481,6 +524,7 @@ export function createMeshIngressGate(deps: MeshIngressGateDeps): MeshIngressGat
   const denialThrottle = new DenialThrottle();
 
   function effectiveMode(transport: RuntimeTransportKind): MeshGateMode {
+    if (deps.localAdminKey) return "enforce";
     // §11.6: non-loopback listeners force enforce for remote traffic.
     if (transport === "remote" && deps.forceRemoteEnforce?.()) {
       return "enforce";
@@ -496,6 +540,8 @@ export function createMeshIngressGate(deps: MeshIngressGateDeps): MeshIngressGat
         bootedAt: deps.bootedAt,
         lookupPeer: deps.lookupPeer,
         lookupGuest: deps.lookupGuest,
+        scopedAccess: deps.scopedAccess,
+        keyConflict: deps.keyConflict,
         nonceClaim: deps.nonceClaim,
       }),
       {
@@ -509,24 +555,80 @@ export function createMeshIngressGate(deps: MeshIngressGateDeps): MeshIngressGat
     );
   }
 
+  function requestTransport(request: IncomingMessage, remoteAddress = request.socket?.remoteAddress): RuntimeTransportKind {
+    const physical = classifyMeshTransport(remoteAddress);
+    if (deps.localAdminKey) return "remote";
+    return physical;
+  }
+
+  const policySubmissionRates = new Map<string, { until: number; count: number }>();
   return {
     transportFor(request: IncomingMessage): RuntimeTransportKind {
-      return classifyMeshTransport(request.socket?.remoteAddress);
+      return requestTransport(request);
     },
 
     async gateHttpRequest(request, response, next) {
-      const transport = classifyMeshTransport(request.socket?.remoteAddress);
+      let transport = requestTransport(request);
       const remoteAddress = request.socket?.remoteAddress;
       const url = new URL(request.url ?? "/", "http://localhost");
       const method = request.method ?? "GET";
       const headers = peerAuthHeadersFrom(request.headers);
       const routeTier = meshRouteTierFor(method, url.pathname);
+      let adminBody: Buffer | undefined;
+      if (deps.localAdminKey && classifyMeshTransport(remoteAddress) !== "remote" && request.headers[LOCAL_ADMIN_HEADER]) {
+        if (typeof request.headers[LOCAL_ADMIN_HEADER] !== "string" || !/^[a-f0-9]{64}$/.test(request.headers[LOCAL_ADMIN_HEADER] as string)) {
+          request.resume(); json(response, 401, { error: "invalid_local_admin_proof" }); return;
+        }
+        try { adminBody = await bufferRequestBody(request, 1024 * 1024); }
+        catch { json(response, 413, { error: "payload_too_large" }); return; }
+        const verified = verifyLocalAdminRequest(deps.localAdminKey, { method, path: request.url ?? url.pathname,
+          body: adminBody, headers: request.headers, destinationKeyId: deps.destinationKeyId, bootedAt: deps.bootedAt, nonceClaim: deps.nonceClaim });
+        if (!verified.ok) { json(response, 401, { error: "invalid_local_admin_proof" }); return; }
+        transport = classifyMeshTransport(remoteAddress);
+      }
+
+      let knownScopedDevice = false;
+      try {
+        if (headers.peer && deps.keyConflict?.(headers.peer)) { request.resume(); json(response, 403, { error: "credential_class_conflict" }); return; }
+        knownScopedDevice = Boolean(headers.peer && deps.scopedAccess?.knownDevice(headers.peer));
+      } catch { request.resume(); json(response, 503, { error: "credential_store_unavailable" }); return; }
+
+      if ((method.toUpperCase() === "POST" && url.pathname === "/v1/access/policy")) {
+        // Public carriage, not public authority: the handler accepts only signed
+        // material for already trusted networks. Bound memory and write rates.
+        if (!deps.localAdminKey) { request.resume(); json(response, 409, { error: "scoped_access_unenforced" }); return; }
+        const now = Date.now(), source = remoteAddress ?? "unix-socket";
+        for (const [key, rate] of policySubmissionRates) if (rate.until <= now) policySubmissionRates.delete(key);
+        const rate = policySubmissionRates.get(source) ?? { until: now + 60_000, count: 0 };
+        if (rate.count >= 20 || (!policySubmissionRates.has(source) && policySubmissionRates.size >= 128)) { request.resume(); json(response, 429, { error: "rate_limited" }); return; }
+        rate.count++; policySubmissionRates.set(source, rate);
+        let body: Buffer;
+        try { body = adminBody ?? await bufferRequestBody(request, 256 * 1024); if (body.length > 256 * 1024) throw new Error("too large"); }
+        catch { json(response, 413, { error: "payload_too_large" }); return; }
+        await next(replayBufferedRequest(request, body, { transport, ...(remoteAddress ? { remoteAddress } : {}) })); return;
+      }
+
+      if (routeTier === "scoped") {
+        let body: Buffer;
+        try { body = adminBody ?? await bufferRequestBody(request, 1024 * 1024); if (body.length > 1024 * 1024) throw new Error("scoped payload too large"); }
+        catch { json(response, 413, { error: "payload_too_large" }); return; }
+        const decision = decide({ transport, method, pathname: url.pathname, requestTarget: request.url ?? url.pathname, headers, body });
+        if (decision.action === "deny") { json(response, decision.status, { error: "access_denied", detail: decision.reason }); return; }
+        await next(replayBufferedRequest(request, body, { transport, ...(remoteAddress ? { remoteAddress } : {}), ...(decision.scoped ? { scoped: decision.scoped } : {}) }));
+        return;
+      }
+      if (knownScopedDevice) {
+        request.resume();
+        applyMeshGateMode({ action: "deny", status: 403, reason: "scoped keys may only call scoped routes", hard: true },
+          { mode: "enforce", method, pathname: url.pathname, keyId: headers.peer, logger, throttle: denialThrottle });
+        json(response, 403, { error: "access_denied", detail: "scoped keys may only call scoped routes" }); return;
+      }
 
       // Guest tier: always verified, on every transport, never verify-warn.
       if (routeTier === "guest") {
         let body: Buffer;
         try {
-          body = await bufferRequestBody(request);
+          body = adminBody ?? await bufferRequestBody(request);
         } catch (error) {
           json(response, 413, { error: "payload_too_large", detail: error instanceof Error ? error.message : String(error) });
           return;
@@ -572,7 +674,7 @@ export function createMeshIngressGate(deps: MeshIngressGateDeps): MeshIngressGat
           ...(remoteAddress ? { remoteAddress } : {}),
         };
         (request as RuntimeHttpRequestLike).transportContext = context;
-        await next(request as RuntimeHttpRequestLike);
+        await next(adminBody ? replayBufferedRequest(request, adminBody, context) : request as RuntimeHttpRequestLike);
         return;
       }
 
@@ -596,7 +698,7 @@ export function createMeshIngressGate(deps: MeshIngressGateDeps): MeshIngressGat
       // bytes, then replay it for the router.
       let body: Buffer;
       try {
-        body = await bufferRequestBody(request);
+        body = adminBody ?? await bufferRequestBody(request);
       } catch (error) {
         const decision = applyMeshGateMode(
           { action: "deny", status: 413, reason: error instanceof Error ? error.message : String(error) },
@@ -638,12 +740,13 @@ export function createMeshIngressGate(deps: MeshIngressGateDeps): MeshIngressGat
     },
 
     gateUpgrade(request, socket) {
+      if (deps.localAdminKey) { socket.write("HTTP/1.1 403 Forbidden\r\nconnection: close\r\n\r\n"); socket.destroy(); return false; }
       const remoteAddress = (socket as { remoteAddress?: string }).remoteAddress;
-      const transport = classifyMeshTransport(remoteAddress);
+      const transport = requestTransport(request, remoteAddress);
       const url = new URL(request.url ?? "/", "http://localhost");
       const method = request.method ?? "GET";
       const headers = peerAuthHeadersFrom(request.headers);
-      const decision: MeshIngressDecision = meshRouteTierFor(method, url.pathname) === "guest"
+      const decision: MeshIngressDecision = ["guest", "scoped"].includes(meshRouteTierFor(method, url.pathname))
         ? { action: "deny", status: 403, reason: "guest routes do not upgrade" }
         : decide({
           transport,

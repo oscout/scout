@@ -6,6 +6,7 @@ import {
   loadScoutDoctorReport,
 } from "../../core/setup/service.ts";
 import { resolveScoutWorkspaceRoot } from "../../shared/paths.ts";
+import { scoutTuiNeedsDownload, SCOUT_TUI_INSTALL_OFFER } from "./tui.ts";
 import {
   loadNativeScoutdDoctorReport,
   renderNativeScoutdDoctorSection,
@@ -51,6 +52,10 @@ export async function runDoctorCommand(context: ScoutCommandContext, args: strin
       return check;
     }));
     context.output.writeText(renderDoctorAssessment(checks));
+    // An offer only; doctor never downloads it.
+    if (scoutTuiNeedsDownload({ env: context.env, cwd: options.currentDirectory })) {
+      context.output.writeText(SCOUT_TUI_INSTALL_OFFER);
+    }
     return;
   }
   const repoRoot = (() => {

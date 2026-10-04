@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 
 import type {
   ScoutBrokerHealthPayload,
+  ScoutBrokerStorageStatus,
   ScoutBrokerBuildIdentity,
   ScoutBrokerChildServiceSnapshots,
   ScoutBrokerJsonRequestTrace,
@@ -76,6 +77,7 @@ export type BrokerHealthSnapshot = {
   meshId?: string;
   build?: ScoutBrokerBuildIdentity;
   services?: ScoutBrokerChildServiceSnapshots;
+  storage?: ScoutBrokerStorageStatus;
   counts?: {
     nodes: number;
     actors: number;
@@ -826,6 +828,21 @@ function readRuntimeFreshness(value: unknown): BrokerRuntimeFreshness | undefine
   };
 }
 
+function readNativeStorageStatus(health: Record<string, unknown>): ScoutBrokerStorageStatus | undefined {
+  let storage = health.storage;
+  // scoutd forwards the HTTP payload as a JSON string, not flattened fields.
+  if (!isRecord(storage) && typeof health.body === "string") {
+    try { storage = JSON.parse(health.body)?.storage; } catch { return undefined; }
+  }
+  if (!isRecord(storage) || !isRecord(storage.journal)) return undefined;
+  const journal = storage.journal;
+  if (journal.state === "ok") return { journal: { state: "ok" } };
+  if (journal.state !== "failing" || readNumber(journal.since) === undefined
+    || readNumber(journal.lastFailedAt) === undefined || readNumber(journal.failures) === undefined
+    || typeof journal.error !== "string" || (journal.code !== null && typeof journal.code !== "string")) return undefined;
+  return { journal: journal as ScoutBrokerStorageStatus["journal"] };
+}
+
 function normalizeNativeServiceStatus(input: NativeServiceStatus, config: BrokerServiceConfig): BrokerServiceStatus {
   const healthRecord = isRecord(input.health) ? input.health : {};
   const healthReachable = readBoolean(healthRecord.reachable) ?? readBoolean(input.reachable) ?? false;
@@ -888,6 +905,7 @@ function normalizeNativeServiceStatus(input: NativeServiceStatus, config: Broker
       ...(isRecord(healthRecord.services)
         ? { services: healthRecord.services as ScoutBrokerChildServiceSnapshots }
         : {}),
+      storage: readNativeStorageStatus(healthRecord),
       error: healthError,
     },
     ...(runtimeFreshness
@@ -1194,6 +1212,7 @@ export async function runHeadlessForegroundServiceCommand(
         counts: health.counts ?? undefined,
         build: health.build,
         services: health.services,
+        storage: health.storage,
       },
       lastLogLine: readLastLogLine([config.stderrLogPath, config.stdoutLogPath]),
     };
@@ -1342,6 +1361,11 @@ function formatBrokerServiceStatus(status: BrokerServiceStatus): string {
 
   if (status.health.socketFallbackError) {
     lines.push(`socket fallback: ${status.health.socketFallbackError}`);
+  }
+
+  const journalWrites = status.health.storage?.journal;
+  if (journalWrites?.state === "failing") {
+    lines.push(`journal writes: failing ×${journalWrites.failures} since ${new Date(journalWrites.since).toISOString()} (${journalWrites.code ?? journalWrites.error})`);
   }
 
   if (status.lastLogLine) {

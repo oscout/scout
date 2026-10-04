@@ -10,6 +10,7 @@ ports, while staying well above privileged system ports.
 
 | Service | Default port | Notes |
 | --- | ---: | --- |
+| Room listening (loopback) | `43112` | Base-supervised sibling process; `OPENSCOUT_LISTENING_PORT` overrides, clients may use `OPENSCOUT_LISTENING_URL` |
 | Broker HTTP/SSE/API | `43110` | `OPENSCOUT_BROKER_PORT` overrides |
 | Web app server | `43120` | `OPENSCOUT_WEB_PORT` / `SCOUT_WEB_PORT` override |
 | Web terminal relay | `43121` | Defaults to web port + 1 |

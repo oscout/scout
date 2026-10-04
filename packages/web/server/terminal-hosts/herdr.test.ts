@@ -1,6 +1,29 @@
 import { describe, expect, test } from "bun:test";
 
-import { herdrSessionNeedsFirstWorkspace, herdrTerminalHost, unwrapHerdrPaneRead } from "./herdr.ts";
+import type { HerdrSessionTopology } from "@openscout/protocol";
+import { herdrPreviewPane, herdrSessionNeedsFirstWorkspace, herdrTerminalHost, unwrapHerdrPaneRead } from "./herdr.ts";
+
+describe("herdr session previews", () => {
+  const topology = {
+    session: "scout", running: true, observedAt: 1,
+    workspaces: [
+      { focused: false, tabs: [{ focused: true, panes: [{ paneId: "w1:p1", focused: true }] }] },
+      { focused: true, tabs: [
+        { focused: false, panes: [{ paneId: "w2:p1", focused: true }] },
+        { focused: true, panes: [{ paneId: "w2:p2", focused: false }, { paneId: "w2:p3", focused: true }] },
+      ] },
+    ],
+  } as HerdrSessionTopology;
+
+  test("a session-level peek resolves to its focused pane, not its session name", () => {
+    expect(herdrPreviewPane(topology)).toBe("w2:p3");
+  });
+
+  test("saved layouts and empty sessions cannot supply live screen targets", () => {
+    expect(herdrPreviewPane({ ...topology, running: false })).toBeNull();
+    expect(herdrPreviewPane({ ...topology, workspaces: [] })).toBeNull();
+  });
+});
 
 /** An environment where no `herdr` binary can be found. */
 const NO_HERDR = { ...process.env, PATH: "/nonexistent-scout-probe", OPENSCOUT_HERDR_BIN: "" };

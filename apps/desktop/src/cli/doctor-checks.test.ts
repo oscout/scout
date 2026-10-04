@@ -12,6 +12,15 @@ test("transport failure is inconclusive, while a received unhealthy result is im
   expect(doctorBrokerCheck({ ...broker(true, false), health: { ...broker(true, false).health, state: "timed_out" } }).state).toBe("inconclusive");
 });
 
+test("a live broker whose journal writes fail is impaired", () => {
+  const check = doctorBrokerCheck({ health: { reachable: true, ok: true, storage: { journal: {
+    state: "failing", since: 1, lastFailedAt: 2, failures: 4, code: "ENOSPC", error: "ENOSPC: no space left on device, write",
+  } } } } as BrokerServiceStatus);
+  expect(check.state).toBe("impaired");
+  expect(check.detail).toContain("journal writes are failing (ENOSPC)");
+  expect(doctorBrokerCheck({ health: { reachable: true, ok: true, storage: { journal: { state: "ok" } } } } as BrokerServiceStatus).state).toBe("working");
+});
+
 test("one stalled subprocess does not prevent useful checks from finishing", async () => {
   const completed: string[] = [];
   const slow = runDoctorCheck("native", { ...input, timeoutMs: 150,

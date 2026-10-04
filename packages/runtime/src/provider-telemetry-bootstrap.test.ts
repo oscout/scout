@@ -1,11 +1,15 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 import { readManagedInstalls } from "./managed-installs.js";
-import { resolveClaudeStatuslineDelegatePath } from "./claude-statusline.js";
-import { ensureProviderTelemetryBootstrap } from "./provider-telemetry-bootstrap.js";
+import { resolveClaudeStatuslineDelegatePath, resolveClaudeStatuslineWrapperPath } from "./claude-statusline.js";
+import {
+  ensureProviderTelemetryBootstrap,
+  healProviderTelemetryIfStale,
+  resetProviderTelemetryHealThrottle,
+} from "./provider-telemetry-bootstrap.js";
 
 const originalHome = process.env.HOME;
 const originalSupportDirectory = process.env.OPENSCOUT_SUPPORT_DIRECTORY;
@@ -96,5 +100,61 @@ describe("provider telemetry bootstrap", () => {
       owner: "openscout",
       status: "active",
     }));
+  });
+
+  test("replaces a dead Scout wrapper from a deleted temp install without keeping it as the delegate", async () => {
+    const home = useTempHome("openscout-provider-telemetry-ghost-wrapper");
+    const settingsPath = join(home, ".claude", "settings.json");
+    const ghost = "'/var/folders/zz/T/scout110-install-gone/support/runtime/statusline/claude-statusline.sh'";
+    mkdirSync(join(home, ".claude"), { recursive: true });
+    writeFileSync(settingsPath, JSON.stringify({
+      statusLine: { type: "command", command: ghost, padding: 0 },
+    }, null, 2), "utf8");
+
+    const report = await ensureProviderTelemetryBootstrap();
+    const settings = JSON.parse(readFileSync(settingsPath, "utf8")) as {
+      statusLine: Record<string, unknown>;
+    };
+
+    expect(report.claude.status).toBe("installed");
+    expect(settings.statusLine.command).toBe(`'${report.claude.wrapperPath}'`);
+    expect(existsSync(resolveClaudeStatuslineDelegatePath())).toBe(false);
+  });
+
+  test("reinstalls when the wrapper's scout binary has moved", async () => {
+    const home = useTempHome("openscout-provider-telemetry-moved-binary");
+    const settingsPath = join(home, ".claude", "settings.json");
+    const wrapperPath = resolveClaudeStatuslineWrapperPath();
+    mkdirSync(join(home, ".claude"), { recursive: true });
+    mkdirSync(dirname(wrapperPath), { recursive: true });
+    writeFileSync(wrapperPath, "#!/bin/sh\nexec '/nonexistent/old-prefix/scout' statusline claude --delegate \"$@\"\n", "utf8");
+    writeFileSync(settingsPath, JSON.stringify({
+      statusLine: { type: "command", command: `'${wrapperPath}'`, padding: 0 },
+    }, null, 2), "utf8");
+
+    const report = await ensureProviderTelemetryBootstrap();
+
+    expect(report.claude.status).toBe("installed");
+    expect(readFileSync(wrapperPath, "utf8")).not.toContain("/nonexistent/old-prefix/scout");
+  });
+
+  test("self-heals a broken wiring when capture is stale, then throttles", async () => {
+    const home = useTempHome("openscout-provider-telemetry-heal");
+    const settingsPath = join(home, ".claude", "settings.json");
+    const ghost = "'/var/folders/zz/T/scout110-install-gone/support/runtime/statusline/claude-statusline.sh'";
+    mkdirSync(join(home, ".claude"), { recursive: true });
+    writeFileSync(settingsPath, JSON.stringify({
+      statusLine: { type: "command", command: ghost, padding: 0 },
+    }, null, 2), "utf8");
+    resetProviderTelemetryHealThrottle();
+
+    const healed = await healProviderTelemetryIfStale();
+    const settings = JSON.parse(readFileSync(settingsPath, "utf8")) as {
+      statusLine: Record<string, unknown>;
+    };
+
+    expect(healed?.claude.status).toBe("installed");
+    expect(settings.statusLine.command).toBe(`'${resolveClaudeStatuslineWrapperPath()}'`);
+    expect(await healProviderTelemetryIfStale()).toBeNull();
   });
 });

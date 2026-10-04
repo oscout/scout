@@ -6,7 +6,7 @@ import { api } from "../../lib/api.ts";
 import { pairingTone } from "../../lib/status-tone.ts";
 import { timeAgo } from "../../lib/time.ts";
 import type { PairingState, Route } from "../../lib/types.ts";
-import { pairingDeepLinks } from "../../../shared/pairing-link.js";
+import { pairingDeepLinks, pairingWebLink } from "../../../shared/pairing-link.js";
 import { AgentConfigurationScreen } from "../agents/AgentConfigurationScreen.tsx";
 import { isScoutSettingsSection, ScoutSettings } from "./ScoutSettings.tsx";
 import "../system-surfaces-redesign.css";
@@ -272,7 +272,7 @@ function PairingSettingsScreen() {
   }, [loadPairing]);
 
   const qrSvg = useMemo(() => {
-    const value = pairing?.pairing?.qrValue?.trim();
+    const value = pairingWebLink(pairing?.pairing?.qrValue);
     if (!value) return null;
     return renderSVG(value, { border: 2, ecc: "M", pixelSize: 8 });
   }, [pairing?.pairing?.qrValue]);

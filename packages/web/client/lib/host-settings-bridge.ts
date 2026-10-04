@@ -201,6 +201,7 @@ function call<T>(method: string, params?: Record<string, unknown>): Promise<T> {
 
 export const hostSettings = {
   snapshot: () => call<HostSettingsSnapshot>("snapshot"),
+  speechCatalog: () => call<HostSettingsSnapshot>("spokenReplies.catalog"),
   set: (key: HostSettingKey, value: string | number | boolean) =>
     call<HostSettingsSnapshot>("set", { key, value }),
   requestPermission: (kind: HostPermissionKind) => call<HostSettingsSnapshot>("permission", { kind }),

@@ -6,7 +6,11 @@ import {
   type BrokerRefreshScheduler,
 } from "./broker-refresh-controller.ts";
 import { isBrokerEventStreamLive, useBrokerEvents } from "./sse.ts";
-import { isScoutSurfaceActive, onScoutSurfaceActivated } from "./surface-activity.ts";
+import {
+  isScoutSurfaceActive,
+  isScoutSurfaceVisible,
+  onScoutSurfaceActivated,
+} from "./surface-activity.ts";
 
 export type { BrokerRefreshPolicy } from "./broker-refresh-controller.ts";
 
@@ -31,7 +35,9 @@ export function useBrokerRefresh(refresh: () => void, policy: BrokerRefreshPolic
     const controller = createBrokerRefreshController({
       refresh: () => refreshRef.current(),
       policy: () => policyRef.current,
-      isActive: () => isScoutSurfaceActive(),
+      isActive: () => policyRef.current.activeWhen === "visible"
+        ? isScoutSurfaceVisible()
+        : isScoutSurfaceActive(),
       isLive: isBrokerEventStreamLive,
       scheduler: browserScheduler,
     });

@@ -77,6 +77,13 @@
     "owner": "desktop"
   },
   {
+    "path": "apps/desktop/src/cli/commands/tui-distribution.test.ts",
+    "symbol": "spawnSync",
+    "category": "test",
+    "reason": "packs a fixture release archive with tar and injects a fake spawnSync to assert the downloaded scout-tui launch argv",
+    "owner": "desktop"
+  },
+  {
     "path": "apps/desktop/src/cli/commands/tui.test.ts",
     "symbol": "spawnSync",
     "category": "test",
@@ -91,6 +98,13 @@
     "owner": "desktop"
   },
   {
+    "path": "apps/desktop/src/cli/release-binary.ts",
+    "symbol": "spawnSync",
+    "category": "cli",
+    "reason": "one-shot tar extract of a sha256-verified release download (scout tui first run / scout tui install)",
+    "owner": "desktop"
+  },
+  {
     "path": "apps/desktop/src/cli/machine-update-remote.test.ts",
     "symbol": "spawnSync",
     "category": "test",
@@ -98,7 +112,7 @@
     "owner": "desktop"
   },
   {
-    "path": "apps/desktop/src/cli/main.ts",
+    "path": "apps/desktop/src/cli/main-dispatch.ts",
     "symbol": "spawnSync",
     "category": "cli",
     "reason": "desktop CLI launchctl/scout discovery one-shots",
@@ -420,20 +434,6 @@
     "owner": "runtime"
   },
   {
-    "path": "packages/runtime/src/slack-worker-process.ts",
-    "symbol": "node:child_process",
-    "category": "process-lifecycle",
-    "reason": "spawns the bundled Slack companion with secrets kept out of its env, and reads its identity",
-    "owner": "runtime"
-  },
-  {
-    "path": "packages/runtime/src/slack-worker-supervisor.ts",
-    "symbol": "node:child_process",
-    "category": "process-lifecycle",
-    "reason": "supervises the long-running Slack companion worker process",
-    "owner": "runtime"
-  },
-  {
     "path": "packages/runtime/src/system-probes.test.ts",
     "symbol": "execFileSync",
     "category": "test",
@@ -684,5 +684,61 @@
     "category": "test",
     "reason": "spawns a plain NODE_ENV=production script to prove injected continuation authority is ignored outside the test runner",
     "owner": "web"
+  },
+  {
+    "path": "apps/desktop/src/cli/lifecycle-preflight.test.ts",
+    "symbol": "spawnSync",
+    "category": "test",
+    "reason": "bounded isolated source CLI processes mock broker maintenance before any service action",
+    "owner": "desktop"
+  },
+  {
+    "path": "packages/runtime/src/slack-worker-process.ts",
+    "symbol": "node:child_process",
+    "category": "process-lifecycle",
+    "reason": "bounded asynchronous credential-verification child with explicit timeout and process-group cleanup",
+    "owner": "runtime"
+  },
+  {
+    "path": "packages/runtime/src/slack-worker-supervisor.ts",
+    "symbol": "node:child_process",
+    "category": "process-lifecycle",
+    "reason": "asynchronous broker-owned Slack worker supervision and cleanup",
+    "owner": "runtime"
+  },
+  {
+    "path": "packages/runtime/src/room-listening-supervisor.ts",
+    "symbol": "node:child_process",
+    "category": "process-lifecycle",
+    "reason": "ChildProcess type for injectable base-owned listening supervision; no direct spawn",
+    "owner": "runtime"
+  },
+  {
+    "path": "packages/runtime/src/room-listening-supervisor.test.ts",
+    "symbol": "node:child_process",
+    "category": "test",
+    "reason": "ChildProcess type for fake injected supervisor children",
+    "owner": "runtime"
+  },
+  {
+    "path": "packages/runtime/src/room-listening-service.test.ts",
+    "symbol": "node:child_process",
+    "category": "test",
+    "reason": "isolated asynchronous listening-service subprocess with owned temporary state and cleanup",
+    "owner": "runtime"
+  },
+  {
+    "path": "packages/runtime/src/mesh-access-ingress-posture.ts",
+    "symbol": "node:child_process",
+    "category": "probe-exec",
+    "reason": "read-only relay inventory uses asynchronous allowlisted commands with 1.5-second timeouts and bounded output",
+    "owner": "runtime"
+  },
+  {
+    "path": "packages/runtime/src/mesh-access-startup.test.ts",
+    "symbol": "Bun.spawn",
+    "category": "test",
+    "reason": "isolated child verifies protected admin environment removal; owns and waits for child exit",
+    "owner": "runtime"
   }
 ]

@@ -578,6 +578,7 @@ function assertEndpointPlacementMatches(endpoint: AgentEndpoint, invocation: Inv
 type ObservedRuntime = {
   harness?: string;
   model?: string;
+  modelProvider?: string;
   reasoningEffort?: string;
 };
 
@@ -593,9 +594,18 @@ export function observedRuntimeForEndpoint(endpoint: AgentEndpoint): ObservedRun
   return {
     harness: stringValue(observed.harness) ?? stringValue(metadata.observedHarness),
     model: stringValue(observed.model) ?? stringValue(metadata.observedModel),
+    modelProvider: stringValue(observed.modelProvider),
     reasoningEffort: stringValue(observed.reasoningEffort)
       ?? stringValue(metadata.observedReasoningEffort),
   };
+}
+
+/** Pi accepts both native IDs and provider/native-ID selectors. Provider is
+ * observed separately; never infer it from launch arguments or split native IDs. */
+export function observedModelForExpected(observed: ObservedRuntime, expected?: string | null): string | undefined {
+  if (observed.harness?.toLowerCase() !== "pi" || !observed.model || !observed.modelProvider
+    || observed.model.toLowerCase() === expected?.toLowerCase()) return observed.model;
+  return `${observed.modelProvider}/${observed.model}`;
 }
 
 function assertEndpointObservedRuntimeMatches(
@@ -614,7 +624,8 @@ function assertEndpointObservedRuntimeMatches(
   for (const dimension of ["harness", "model", "reasoningEffort"] as const) {
     const expected = requested[dimension];
     if (!expected) continue;
-    const actual = observed[dimension] ?? (dimension === "harness" ? resumeHarness : undefined);
+    const actual = (dimension === "model" ? observedModelForExpected(observed, expected) : observed[dimension])
+      ?? (dimension === "harness" ? resumeHarness : undefined);
     if (!actual) {
       const pendingActual = provisioned?.[dimension];
       if (pendingActual) {

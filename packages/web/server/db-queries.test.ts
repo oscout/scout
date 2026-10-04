@@ -4720,6 +4720,18 @@ describe("web db query work items", () => {
     }
   });
 
+  test("reads an exact set of work ids in one bounded query", () => {
+    const store = createSeededStore();
+
+    try {
+      expect(queryWorkItems({ ids: ["work-1-child", "work-missing"] }).map((item) => item.id))
+        .toEqual(["work-1-child"]);
+      expect(queryWorkItems({ ids: ["work-1", "work-1-child"], limit: 1 })).toHaveLength(1);
+    } finally {
+      store.close();
+    }
+  });
+
   test("operator dismissal silences derived work attention until the record changes", () => {
     const store = createSeededStore();
 

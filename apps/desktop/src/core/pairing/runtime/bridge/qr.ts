@@ -7,14 +7,25 @@
 import { renderUnicodeCompact } from "uqr";
 import type { QRPayload } from "../security/index.ts";
 
+// Mirrors pairingWebLink in packages/web/shared/pairing-link.js. The iOS app
+// claims this path as a universal link, so the phone's Camera opens Scout;
+// without the app the page offers the install. The app's own scanner reads
+// the same link. The payload rides in the fragment, which browsers never
+// send, so it stays out of server logs.
+const PAIRING_WEB_LINK_BASE = "https://openscout.app/pair";
+
+export function pairingWebLink(payload: QRPayload): string {
+  return `${PAIRING_WEB_LINK_BASE}#payload=${encodeURIComponent(JSON.stringify(payload))}`;
+}
+
 /**
  * Render a QR payload as a scannable terminal QR code.
  *
- * The QR encodes the JSON-stringified payload so the phone camera
- * can scan it and get: relay URL, room ID, and bridge public key.
+ * The QR encodes the pairing web link, which carries the JSON payload
+ * (relay URL, room ID, bridge public key) in its `#payload=` fragment.
  */
 export function renderQRCode(payload: QRPayload): string {
-  const data = JSON.stringify(payload);
+  const data = pairingWebLink(payload);
 
   // renderUnicodeCompact uses ▀/▄/█/space to pack two rows per line —
   // this produces a smaller, more scannable code in the terminal.

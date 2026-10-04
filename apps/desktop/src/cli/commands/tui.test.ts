@@ -57,7 +57,7 @@ describe("scout tui", () => {
     expect(resolveScoutTuiLaunch({
       env: { SCOUT_TUI_BIN: bin, PATH: "" },
       cwd: dir,
-    })).toEqual({ kind: "bin", command: bin, args: [] });
+    })).toEqual({ kind: "bin", command: bin, args: [], source: "env" });
   });
 
   test("uses the checkout release binary before cargo run", () => {
@@ -68,7 +68,7 @@ describe("scout tui", () => {
     expect(resolveScoutTuiLaunch({
       env: { PATH: "" },
       cwd: join(root, "crates/scout-tui"),
-    })).toEqual({ kind: "bin", command: bin, args: [] });
+    })).toEqual({ kind: "bin", command: bin, args: [], source: "checkout" });
   });
 
   test("falls back to cargo run from a checkout without a built binary", () => {
@@ -80,6 +80,8 @@ describe("scout tui", () => {
     expect(resolveScoutTuiLaunch({
       env: { PATH: "" },
       cwd: root,
+      appBundles: [],
+      supportDirectory: tempDir("openscout-tui-support-"),
     })).toEqual({
       kind: "cargo",
       command: cargo,

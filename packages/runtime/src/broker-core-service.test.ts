@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import type { ScoutBrokerProjectionStatus } from "./broker-api.js";
+import type { ScoutBrokerProjectionStatus, ScoutBrokerStorageStatus } from "./broker-api.js";
 import { createBrokerCoreService } from "./broker-core-service.js";
 import { createRuntimeRegistrySnapshot, type RuntimeRegistrySnapshot } from "./registry.js";
 import type { ActivityItem } from "./sqlite-store.js";
@@ -10,6 +10,7 @@ function createReadOnlyBrokerCoreService(
   projectionStatus?: ScoutBrokerProjectionStatus,
   startupStatus?: { state: "restoring" | "ready"; mutationsAdmitted: boolean; historyReady?: boolean },
   runtimeCalls?: string[],
+  storageStatus?: ScoutBrokerStorageStatus,
 ) {
   return createBrokerCoreService({
     baseUrl: "http://broker.test",
@@ -81,6 +82,9 @@ function createReadOnlyBrokerCoreService(
       : {}),
     ...(startupStatus
       ? { readStartupStatus: () => startupStatus }
+      : {}),
+    ...(storageStatus
+      ? { readStorageStatus: () => storageStatus }
       : {}),
     executeCommand: async () => ({ ok: true }),
   });
@@ -198,6 +202,30 @@ describe("createBrokerCoreService", () => {
 
     expect(health.ok).toBe(true);
     expect(health.startup).toEqual(startup);
+  });
+
+  test("reports failing journal writes as storage status while the broker stays live", async () => {
+    const storage = {
+      journal: {
+        state: "failing",
+        since: 10,
+        lastFailedAt: 20,
+        failures: 3,
+        code: "ENOSPC",
+        error: "ENOSPC: no space left on device, write",
+      },
+    } satisfies ScoutBrokerStorageStatus;
+
+    const health = await createReadOnlyBrokerCoreService(
+      createRuntimeRegistrySnapshot(),
+      undefined,
+      undefined,
+      undefined,
+      storage,
+    ).readHealth();
+
+    expect(health.ok).toBe(true);
+    expect(health.storage).toEqual(storage);
   });
 
   test("builds broker reads around runtime state and delegates writes", async () => {

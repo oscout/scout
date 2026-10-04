@@ -76,6 +76,11 @@ export type ScoutBrokerProjectionStatus = {
 
 export type ScoutBrokerStartupStatus = import("./broker-startup-traffic-gate.js").BrokerStartupTrafficGateSnapshot;
 
+/** Whether the broker can write. `ok` on health stays liveness; this says if writes land. */
+export type ScoutBrokerStorageStatus = {
+  journal: import("./broker-journal.js").BrokerJournalWriteStatus;
+};
+
 export type ScoutBrokerHealthPayload = {
   ok: boolean;
   nodeId: string | null;
@@ -84,6 +89,7 @@ export type ScoutBrokerHealthPayload = {
   services?: ScoutBrokerChildServiceSnapshots;
   projection?: ScoutBrokerProjectionStatus;
   startup?: ScoutBrokerStartupStatus;
+  storage?: ScoutBrokerStorageStatus;
   counts: {
     nodes: number;
     actors: number;

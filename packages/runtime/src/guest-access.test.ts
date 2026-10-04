@@ -125,7 +125,7 @@ describe("guest grant store", () => {
     expect(() => store().install({ requestId: "r", clientPublicKey: rsa, label: "x", allowedTargets: ["a"] }, NOW)).toThrow(/Ed25519/);
     const peer = identity();
     const grants = store((keyId) => keyId === nodeKeyId(peer.publicKey));
-    expect(() => grants.install({ requestId: "r", clientPublicKey: peer.publicKey, label: "x", allowedTargets: ["a"] }, NOW)).toThrow(/mesh peer/);
+    expect(() => grants.install({ requestId: "r", clientPublicKey: peer.publicKey, label: "x", allowedTargets: ["a"] }, NOW)).toThrow(/reserved for another mesh credential/);
   });
 });
 
@@ -241,7 +241,7 @@ describe("guest ingress tier", () => {
 
 describe("cross-language signing vectors", () => {
   test("TypeScript canonicalization and signatures match the checked-in vectors", () => {
-    const vectors = JSON.parse(readFileSync(join(import.meta.dir, "./fixtures/guest-signing-v1.json"), "utf8")) as {
+    const vectors = JSON.parse(readFileSync(join(import.meta.dir, "../../scout-tailscale/tests/vectors/signing-v1.json"), "utf8")) as {
       privateKeyPkcs8: string; publicKeySpki: string; keyId: string;
       cases: Array<{ method: string; path: string; body: string; destinationKeyId: string; ts: number; nonce: string; bodySha256: string; payload: string; signature: string }>;
     };

@@ -1,0 +1,49 @@
+.s-connection-state, .s-connection-trace { --connection-ink: var(--ink, var(--hud-ink, #e6e9ed)); }
+
+@font-face {
+  font-family: "Scout SF Mono Light";
+  src: local("SF Mono Light"), local("SFMono-Light");
+  font-style: normal;
+  font-weight: 300;
+  font-display: swap;
+}
+
+.s-connection-state {
+  min-width: 0;
+  min-height: 240px;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  padding: clamp(20px, 4vw, 36px) 20px 12px;
+  color: color-mix(in srgb, var(--connection-ink) 92%, transparent);
+  font-family: var(--font-sans);
+}
+.s-connection-state-message { max-width: 360px; margin-top: auto; text-align: center; }
+.s-connection-state-mark { display: inline-flex; margin-bottom: 14px; color: color-mix(in srgb, var(--connection-ink) 60%, transparent); }
+.s-connection-state[data-state="loading"] .s-connection-state-mark svg { animation: scout-connection-spin 1.6s linear infinite; }
+.s-connection-state[data-state="error"] .s-connection-state-mark { color: var(--status-warn, #d9b66b); }
+.s-connection-state h2 { margin: 0; font-size: 15px; font-weight: 560; line-height: 1.4; }
+.s-connection-state p { margin: 8px 0 0; color: color-mix(in srgb, var(--connection-ink) 70%, transparent); font-size: 12px; line-height: 1.6; text-wrap: pretty; }
+.s-connection-state-retry { display: inline-flex; align-items: center; gap: 7px; padding: 7px 12px; border: 1px solid color-mix(in srgb, var(--connection-ink) 20%, transparent); border-radius: 6px; background: color-mix(in srgb, var(--connection-ink) 6%, transparent); color: inherit; font: inherit; font-size: 12px; cursor: pointer; }
+.s-connection-state-retry:hover { background: color-mix(in srgb, var(--connection-ink) 12%, transparent); }
+.s-connection-state :is(button, summary, [tabindex]):focus-visible { outline: 2px solid var(--hud-accent, currentColor); outline-offset: 3px; }
+.s-connection-state-details { width: min(100%, 420px); color: color-mix(in srgb, var(--connection-ink) 70%, transparent); font-size: 11px; }
+.s-connection-state-details summary { cursor: pointer; text-align: center; }
+.s-connection-trace-disclosure { align-self: stretch; margin-top: auto; color: color-mix(in srgb, var(--connection-ink) 60%, transparent); font-size: 11px; }
+.s-connection-trace-disclosure > summary { text-align: center; cursor: pointer; padding: 6px; }
+.s-connection-state-details pre { max-height: 100px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 11px; }
+.s-connection-trace { align-self: stretch; min-width: 0; margin-top: auto; padding: 10px 12px; border-top: 1px solid color-mix(in srgb, var(--connection-ink) 8%, transparent); background: color-mix(in srgb, var(--connection-ink) 2.5%, transparent); font-family: "Scout SF Mono Light", "SF Mono", ui-monospace, Menlo, monospace; font-size: 10px; font-weight: 300; line-height: 1.6; }
+.s-connection-trace-title { display: flex; justify-content: space-between; gap: 12px; margin-bottom: 5px; color: color-mix(in srgb, var(--connection-ink) 70%, transparent); }
+.s-connection-trace-title span { color: color-mix(in srgb, var(--connection-ink) 55%, transparent); }
+.s-connection-trace-lines { max-height: 92px; overflow-y: auto; }
+.s-connection-trace-line { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 12px; color: color-mix(in srgb, var(--connection-ink) 68%, transparent); }
+.s-connection-trace-line time { color: color-mix(in srgb, var(--connection-ink) 55%, transparent); font-variant-numeric: tabular-nums; }
+.s-connection-trace-line span { overflow-wrap: anywhere; white-space: pre-wrap; }
+.s-connection-state--compact { min-height: 0; height: auto; padding: 20px; }
+.s-connection-state--compact .s-connection-state-message { margin-top: 0; }
+.s-connection-state--compact .s-connection-trace { margin-top: 10px; }
+@keyframes scout-connection-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .s-connection-state[data-state="loading"] .s-connection-state-mark svg { animation: none; } }

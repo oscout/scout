@@ -4,7 +4,11 @@ import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
+import { isTestRunnerProcess } from "./support-paths.js";
+
 import {
+  claudeStatuslineCommandWrapperPath,
+  isClaudeStatuslineWrapperIsolatedFromSettings,
   isOpenScoutClaudeStatuslineCommand,
   resolveClaudeStatuslineLatestPath,
   resolveClaudeStatuslineWrapperPath,
@@ -27,7 +31,7 @@ export type ProviderTelemetryBootstrapReport = {
       | "already-installed"
       | "skipped"
       | "error";
-    reason?: "settings-missing" | "disabled";
+    reason?: "settings-missing" | "disabled" | "owned-by-other-install" | "isolated-support-directory";
     command?: string;
     previousCommand?: string;
     error?: string;
@@ -82,6 +86,23 @@ async function readJsonRecord(path: string): Promise<Record<string, unknown> | n
   }
 }
 
+/**
+ * The wrapper execs an absolute scout path baked in at install time. If that
+ * binary moved (reinstall, new prefix), the wrapper fails on every render and
+ * capture stops, so a missing target means "not installed".
+ */
+async function wrapperExecTargetExists(wrapperPath: string): Promise<boolean> {
+  let content: string;
+  try {
+    content = await readFile(wrapperPath, "utf8");
+  } catch {
+    return false;
+  }
+  const target = content.match(/^exec\s+'([^']+)'/mu)?.[1];
+  if (!target || !target.startsWith("/")) return true;
+  return existsSync(target);
+}
+
 async function readClaudeStatuslineCommand(settingsPath: string): Promise<string | undefined> {
   const settings = await readJsonRecord(settingsPath);
   const statusLine = isRecord(settings?.statusLine) ? settings.statusLine : null;
@@ -127,6 +148,7 @@ function reportFromInstall(
     settingsPath: install.settingsPath,
     wrapperPath: install.wrapperPath,
     status: install.status,
+    ...(install.reason ? { reason: install.reason } : {}),
     command: install.command,
     ...(install.previousCommand ? { previousCommand: install.previousCommand } : {}),
     ...(install.error ? { error: install.error } : {}),
@@ -169,9 +191,28 @@ export async function ensureProviderTelemetryBootstrap(options: {
     };
   }
 
+  if (isClaudeStatuslineWrapperIsolatedFromSettings(settingsPath, wrapperPath)) {
+    return {
+      skipped: false,
+      claude: {
+        settingsPath,
+        wrapperPath,
+        status: "skipped",
+        reason: "isolated-support-directory",
+      },
+      statuslineLatest: await readStatuslineLatest(freshnessMs),
+    };
+  }
+
   const command = await readClaudeStatuslineCommand(settingsPath);
+  // A wrapper path in the command must be *ours*: a statusline left pointing at
+  // another (possibly deleted) install's wrapper is not installed here. The
+  // installer reclaims a dead one and leaves a live one alone.
+  const commandWrapperPath = command ? claudeStatuslineCommandWrapperPath(command) : null;
   const alreadyInstalled = command
-    ? isOpenScoutClaudeStatuslineCommand(command, wrapperPath) && existsSync(wrapperPath)
+    ? (commandWrapperPath ? commandWrapperPath === wrapperPath : isOpenScoutClaudeStatuslineCommand(command, wrapperPath))
+      && existsSync(wrapperPath)
+      && await wrapperExecTargetExists(wrapperPath)
     : false;
   const claude = alreadyInstalled
     ? {
@@ -187,4 +228,41 @@ export async function ensureProviderTelemetryBootstrap(options: {
     claude,
     statuslineLatest: await readStatuslineLatest(freshnessMs),
   };
+}
+
+const HEAL_STALE_AFTER_MS = 10 * 60 * 1000;
+const HEAL_MIN_INTERVAL_MS = 10 * 60 * 1000;
+let lastHealAttemptAt = 0;
+
+/**
+ * Self-heal for quota capture. When Claude's statusline capture has gone
+ * stale, re-run the (idempotent) bootstrap so a broken wiring — settings
+ * pointed at a deleted wrapper, a wrapper whose scout binary moved — is
+ * repaired without waiting for a restart. A healthy install is a no-op, and
+ * attempts are throttled, so callers can invoke this on every quota read.
+ * Returns null when nothing was attempted.
+ */
+export async function healProviderTelemetryIfStale(options: {
+  env?: RuntimeEnv;
+  staleAfterMs?: number;
+  minIntervalMs?: number;
+} = {}): Promise<ProviderTelemetryBootstrapReport | null> {
+  // Under a test runner, only heal inside an isolated support directory; the
+  // isolation guard in the bootstrap then keeps the real ~/.claude untouched.
+  if (isTestRunnerProcess() && !process.env.OPENSCOUT_SUPPORT_DIRECTORY?.trim()) return null;
+  const staleAfterMs = options.staleAfterMs ?? HEAL_STALE_AFTER_MS;
+  const now = Date.now();
+  if (now - lastHealAttemptAt < (options.minIntervalMs ?? HEAL_MIN_INTERVAL_MS)) return null;
+  const latest = await readStatuslineLatest(staleAfterMs);
+  if (latest.status === "fresh") return null;
+  lastHealAttemptAt = now;
+  return ensureProviderTelemetryBootstrap({
+    ...(options.env ? { env: options.env } : {}),
+    statuslineFreshnessMs: staleAfterMs,
+  });
+}
+
+/** Test hook: forget the last heal attempt so throttling starts fresh. */
+export function resetProviderTelemetryHealThrottle(): void {
+  lastHealAttemptAt = 0;
 }

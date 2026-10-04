@@ -25,6 +25,8 @@ import {
 
 import { ensureHarnessCatalogOverrideFile } from "./harness-catalog.js";
 import {
+  claudeStatuslineCommandWrapperPath,
+  isClaudeStatuslineWrapperIsolatedFromSettings,
   isOpenScoutClaudeStatuslineCommand,
   resolveClaudeStatuslineDelegatePath,
   resolveClaudeStatuslineWrapperPath,
@@ -972,15 +974,12 @@ function normalizeCapabilities(value: unknown): AgentCapability[] {
 }
 
 function normalizeHarness(value: string | undefined, fallback: AgentHarness): AgentHarness {
-  return value === "codex"
-    ? "codex"
-    : value === "claude"
-      ? "claude"
-      : value === "cursor"
-        ? "cursor"
-        : value === "pi"
-          ? "pi"
-          : fallback;
+  // Every managed harness survives a settings read. This used to keep only
+  // claude/codex/cursor/pi, so a saved devin, opencode, grok-acp or kimi choice
+  // was silently read back as Claude.
+  return (MANAGED_AGENT_HARNESSES as readonly string[]).includes(value ?? "")
+    ? value as ManagedAgentHarness
+    : fallback;
 }
 
 function normalizeTransport(
@@ -1002,6 +1001,14 @@ function normalizeTransport(
 
   if (harness === "opencode") {
     return "opencode_acp";
+  }
+
+  if (harness === "grok-acp") {
+    return "grok_acp";
+  }
+
+  if (harness === "kimi") {
+    return "kimi_acp";
   }
 
   if (harness === "pi" && value === undefined) {
@@ -2173,7 +2180,9 @@ export async function installScoutSkillToHarnesses(): Promise<ScoutSkillInstallR
 }
 
 export type ClaudeStatuslineInstallReport = {
-  status: "installed" | "error";
+  status: "installed" | "skipped" | "error";
+  /** Why a skipped install left Claude's settings alone. */
+  reason?: "owned-by-other-install" | "isolated-support-directory";
   settingsPath: string;
   wrapperPath: string;
   delegatePath: string;
@@ -2218,6 +2227,19 @@ export async function installClaudeStatuslineTool(): Promise<ClaudeStatuslineIns
   const delegatePath = resolveClaudeStatuslineDelegatePath();
   const command = shellQuote(wrapperPath);
 
+  // An isolated (temp) support directory must not rewire the real
+  // ~/.claude/settings.json: the wrapper vanishes with the temp directory.
+  if (isClaudeStatuslineWrapperIsolatedFromSettings(settingsPath, wrapperPath)) {
+    return {
+      status: "skipped",
+      reason: "isolated-support-directory",
+      settingsPath,
+      wrapperPath,
+      delegatePath,
+      command,
+    };
+  }
+
   try {
     const scoutInvocation = resolveScoutStatuslineInvocation();
     await mkdir(dirname(wrapperPath), { recursive: true });
@@ -2240,6 +2262,26 @@ export async function installClaudeStatuslineTool(): Promise<ClaudeStatuslineIns
     const previousIsScout = previousCommand
       ? isOpenScoutClaudeStatuslineCommand(previousCommand, wrapperPath)
       : false;
+
+    // ~/.claude/settings.json is shared by every Scout install on this login.
+    // A run with its own support directory (an install smoke test, a scratch
+    // OPENSCOUT_SUPPORT_DIRECTORY) must not repoint Claude at its wrapper while
+    // another install's wrapper is still live: once that run's temp directory
+    // is deleted, Claude quota capture silently stops for the real install.
+    const previousWrapperPath = previousCommand
+      ? claudeStatuslineCommandWrapperPath(previousCommand)
+      : null;
+    if (previousWrapperPath && previousWrapperPath !== wrapperPath && existsSync(previousWrapperPath)) {
+      return {
+        status: "skipped",
+        reason: "owned-by-other-install",
+        settingsPath,
+        wrapperPath,
+        delegatePath,
+        command,
+        previousCommand,
+      };
+    }
 
     if (previousCommand && !previousIsScout) {
       await writeClaudeStatuslineDelegate({

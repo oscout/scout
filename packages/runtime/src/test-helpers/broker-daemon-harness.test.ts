@@ -1,3 +1,5 @@
+import { signLocalAdminRequest } from "../mesh-access-local-auth.js";
+import { randomBytes } from "node:crypto";
 import { afterEach, expect } from "bun:test";
 import { appendFileSync, chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -20,6 +22,7 @@ export type BrokerHarness = {
   nodeId: string;
   child: ReturnType<typeof Bun.spawn>;
   outputDrain: Promise<void>[];
+  localAdminKey?: string;
 };
 
 export type TestConversationIdentity = {
@@ -60,6 +63,17 @@ export function createBrokerDaemonTestHarness() {
   }
 
   const harnesses = new Set<BrokerHarness>();
+  const adminKeys = new Map<string, string>();
+  const brokerKeys = new Map<string, string>();
+  const adminHeaders = async (url: string, method: string, path: string, body?: string): Promise<Record<string, string>> => {
+    if (!adminKeys.has(url)) return {};
+    if (!brokerKeys.has(url)) {
+      const response = await fetch(url + "/v1/node");
+      const node = await response.json() as { card: { keyId: string } };
+      brokerKeys.set(url, node.card.keyId);
+    }
+    return signLocalAdminRequest(adminKeys.get(url)!, { method, path, body, destinationKeyId: brokerKeys.get(url)! });
+  };
   const hangingServers = new Set<ReturnType<typeof Bun.serve>>();
   const pairingHomes = new Set<string>();
   const temporaryDirectories = new Set<string>();
@@ -97,18 +111,25 @@ export function createBrokerDaemonTestHarness() {
     controlHome?: string;
     env?: Record<string, string | undefined>;
     waitForMutationReady?: boolean;
+    protectedLocal?: boolean;
+    preload?: string;
   } = {}): Promise<BrokerHarness> {
     const controlHome = input.controlHome ?? mkdtempSync(join(tmpdir(), "openscout-runtime-test-"));
     const port = 38000 + Math.floor(Math.random() * 2000);
     const baseUrl = buildDefaultBrokerUrl(DEFAULT_BROKER_HOST, port);
+    const localAdminKey = input.protectedLocal ? randomBytes(32).toString("hex") : undefined;
+    const adminKeyFile = join(controlHome, "admin-key");
+    if (localAdminKey) { writeFileSync(adminKeyFile, localAdminKey, { mode: 0o600 }); adminKeys.set(baseUrl, localAdminKey); }
     const derivedNodeId = `node-${basename(controlHome).toLowerCase().replace(/[^a-z0-9-]+/g, "-")}`;
     const child = Bun.spawn({
-      cmd: ["bun", "run", "src/broker-daemon.ts"],
+      cmd: ["bun", "run", ...(input.preload ? ["--preload", input.preload] : []), "src/broker-daemon.ts"],
       cwd: runtimeDir,
       env: {
         ...process.env,
         OPENSCOUT_CONTROL_HOME: controlHome,
         OPENSCOUT_BROKER_HOST: DEFAULT_BROKER_HOST,
+        OPENSCOUT_ADVERTISE_SCOPE: "local",
+        OPENSCOUT_LOCAL_ADMIN_KEY_FILE: undefined,
         OPENSCOUT_BROKER_PORT: String(port),
         OPENSCOUT_BROKER_URL: baseUrl,
         OPENSCOUT_BROKER_SOCKET_PATH: join(controlHome, "broker.sock"),
@@ -122,6 +143,7 @@ export function createBrokerDaemonTestHarness() {
         // runner is SIGKILLed, which once stranded 26 live test brokers for four days.
         OPENSCOUT_PARENT_PID: String(process.pid),
         ...input.env,
+        ...(localAdminKey ? { OPENSCOUT_LOCAL_ADMIN_KEY_FILE: adminKeyFile } : {}),
       },
       stdout: "pipe",
       stderr: "pipe",
@@ -141,7 +163,7 @@ export function createBrokerDaemonTestHarness() {
       throw new Error(`Owned broker failed startup: ${String(error)}\n${outputTail}`);
     }
     const node = await getJson<{ id: string }>(baseUrl, "/v1/node");
-    const harness = { baseUrl, controlHome, nodeId: node.id, child, outputDrain };
+    const harness = { baseUrl, controlHome, nodeId: node.id, child, outputDrain, localAdminKey };
     harnesses.add(harness);
     return harness;
   }
@@ -226,7 +248,7 @@ export function createBrokerDaemonTestHarness() {
     let lastError: unknown;
     for (let attempt = 0; attempt < 60; attempt += 1) {
       try {
-        const response = await fetch(`${baseUrl}/health`);
+        const response = await fetch(`${baseUrl}/health`, { headers: await adminHeaders(baseUrl, "GET", "/health") });
         if (response.ok) {
           const health = await response.json() as {
             ok?: boolean;
@@ -281,6 +303,7 @@ export function createBrokerDaemonTestHarness() {
     const response = await fetch(`${baseUrl}${path}`, {
       method: "POST",
       headers: {
+        ...await adminHeaders(baseUrl, "POST", path, JSON.stringify(body)),
         "content-type": "application/json",
         accept: "application/json",
       },
@@ -298,6 +321,7 @@ export function createBrokerDaemonTestHarness() {
     const response = await fetch(`${baseUrl}${path}`, {
       method: "POST",
       headers: {
+        ...await adminHeaders(baseUrl, "POST", path, JSON.stringify(body)),
         "content-type": "application/json",
         accept: "application/json",
       },
@@ -312,7 +336,7 @@ export function createBrokerDaemonTestHarness() {
 
   async function getJson<T>(baseUrl: string, path: string): Promise<T> {
     const response = await fetch(`${baseUrl}${path}`, {
-      headers: { accept: "application/json" },
+      headers: { ...await adminHeaders(baseUrl, "GET", path), accept: "application/json" },
     });
     if (!response.ok) {
       throw new Error(`${path} returned ${response.status}: ${await response.text()}`);
@@ -328,6 +352,7 @@ export function createBrokerDaemonTestHarness() {
     const response = await fetch(`${baseUrl}${path}`, {
       ...init,
       headers: {
+        ...await adminHeaders(baseUrl, init.method ?? "GET", path, typeof init.body === "string" ? init.body : undefined),
         accept: "application/json",
         ...(init.body ? { "content-type": "application/json" } : {}),
         ...(init.headers ?? {}),
@@ -585,6 +610,7 @@ export function createBrokerDaemonTestHarness() {
     try {
       const response = await fetch(`${baseUrl}/v1/thread-watches/${encodeURIComponent(watchId)}/stream`, {
         headers: {
+          ...await adminHeaders(baseUrl, "GET", `/v1/thread-watches/${encodeURIComponent(watchId)}/stream`),
           accept: "text/event-stream",
         },
         signal: controller.signal,
@@ -673,6 +699,7 @@ export function createBrokerDaemonTestHarness() {
     try {
       const response = await fetch(`${baseUrl}/v1/invocations/${encodeURIComponent(invocationId)}/stream`, {
         headers: {
+          ...await adminHeaders(baseUrl, "GET", `/v1/invocations/${encodeURIComponent(invocationId)}/stream`),
           accept: "text/event-stream",
         },
         signal: controller.signal,

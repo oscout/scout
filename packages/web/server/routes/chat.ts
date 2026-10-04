@@ -1,3 +1,4 @@
+import { readLocalRoomListeningPage, RoomListeningPageError } from "../room-listening-page.ts";
 import { inboxDatabaseRevision } from "../db/inbox-revision.ts";
 import { ChannelInboxCoordinator } from "../../shared/channel-inbox-coordinator.ts";
 import { subscribeInboxChanges } from "../channel-inbox-source.ts";
@@ -46,7 +47,7 @@ import { cookieValue, isForwardedHttpsScoutRequest } from "../server-core.ts";
 import { endpointFreshnessMs } from "../core/agent-endpoints.ts";
 import { blobServeHeaders, getImageBlob } from "../image-blob-store.ts";
 import { localPathFromBlobKey, resolveChatAttachments } from "../chat-attachments.ts";
-import { queryFlightRecordById, queryRecentMessages, type WebMessage } from "../db-queries.ts";
+import { queryConversationDefinitionById, queryFlightRecordById, queryRecentMessages, type WebMessage } from "../db-queries.ts";
 import {
   loadScoutBrokerContext,
   loadScoutReadCursors,
@@ -66,7 +67,7 @@ import {
   cancelScoutChatFlight,
 } from "../core/broker/service.ts";
 import { channelAskDispatchNote, planChannelAsks } from "../core/conversations/channel-ask.ts";
-import { CHANNEL_MEMBER_COOKIE, channelMemberCookie } from "../core/conversations/channel-member-session.ts";
+import { CHANNEL_MEMBER_COOKIE, channelMemberCookie, channelMemberBearerToken, channelMemberMayAccess } from "../core/conversations/channel-member-session.ts";
 import {
   apiParticipantActor,
   apiParticipantActorId,
@@ -168,6 +169,39 @@ export type ChatRouteDeps = {
 
 export function mountChatRoutes(app: Hono, deps: ChatRouteDeps) {
   const { options, readChannelMemberGrant, channelMemberSessions, chatPresence, currentDirectory, chatSendLimiter } = deps;
+
+  // Validation alone is not activity: a rejected route, removed member or
+  // wrong-space request must never buy more credential lifetime. Recheck the
+  // current roster after successful work, including empty observer polls.
+  const renewMember = (request: Request): ChannelMemberGrant | null => {
+    const token = [cookieValue(request, CHANNEL_MEMBER_COOKIE),
+      channelMemberBearerToken(request.headers.get("authorization"))]
+      .find(candidate => candidate && channelMemberSessions.validate(candidate));
+    if (!token) return null;
+    const grant = channelMemberSessions.validate(token);
+    const url = new URL(request.url);
+    if (!grant || !channelMemberMayAccess({ grant, method: request.method, path: url.pathname })) return null;
+    const selected = resolveChatSpaceFor(request);
+    if (!selected.ok) return null;
+    const channel = /^\/api\/channels\/([^/]+)/.exec(url.pathname)?.[1];
+    const channelIds = channel ? [decodeURIComponent(channel)] : grant.channelIds;
+    const active = channelIds.some(id => {
+      let conversation: ConversationDefinition | null;
+      try { conversation = queryConversationDefinitionById(id) as ConversationDefinition | null; }
+      catch { return false; }
+      return conversation && !channelMemberRosterDecision({ grant, brokerReachable: true, conversation })
+        && !chatChannelSpaceDecision({ channelSpaceSlug: channelSpaceSlug(conversation), selectedSpaceSlug: selected.slug,
+          grantSpaceSlug: grant.spaceSlug ?? DEFAULT_CHAT_SPACE_SLUG });
+    });
+    return active ? channelMemberSessions.recordSuccessfulUse(token) : null;
+  };
+  app.use("/api/*", async (c, next) => {
+    await next();
+    if (c.res.status >= 200 && c.res.status < 300) {
+      const grant = renewMember(c.req.raw);
+      if (grant) c.header("x-openscout-member-expires-at", String(grant.expiresAt));
+    }
+  });
 
   /* -- channel invitations ------------------------------------------------- */
 
@@ -1815,6 +1849,44 @@ export function mountChatRoutes(app: Hono, deps: ChatRouteDeps) {
       return c.json({ error: error instanceof ChatReadPositionError ? error.message : "Read position could not be saved. Try again shortly." },
         error instanceof ChatReadPositionError ? 400 : 502);
     }
+  });
+
+  // Custody proof for the separate local listening service. Point-read the
+  // web's read-only projection; never request a message-bearing broker snapshot.
+  app.get("/api/channels/:id/:listeningResource{listening-membership|listening}", async (c) => {
+    const grant = readChannelMemberGrant(c.req.raw);
+    if (!grant) return c.json({ error: "Member credential required" }, 401);
+    const channelId = c.req.param("id");
+    if (!isOpaqueChannelId(channelId)) return c.json({ error: "Invalid channel" }, 400);
+    const space = resolveChatSpaceFor(c.req.raw);
+    if (!space.ok) return c.json({ error: space.error }, space.status);
+    let conversation: ConversationDefinition | null;
+    try { conversation = queryConversationDefinitionById(channelId) as ConversationDefinition | null; }
+    catch { return c.json({ error: "Membership source unavailable" }, 503); }
+    const denied = channelMemberRosterDecision({ grant, brokerReachable: true, conversation });
+    if (denied) return c.json({ error: denied.error }, denied.status);
+    if (!conversation || conversation.kind !== "channel") return c.json({ error: "Channel unavailable" }, 404);
+    const spaceDenial = chatChannelSpaceDecision({ channelSpaceSlug: channelSpaceSlug(conversation),
+      selectedSpaceSlug: space.slug, grantSpaceSlug: grant.spaceSlug ?? DEFAULT_CHAT_SPACE_SLUG });
+    if (spaceDenial) return c.json({ error: spaceDenial.error }, spaceDenial.status);
+    c.header("cache-control", "no-store");
+    const membership = { actorId: grant.actorId, channelId, space: channelSpaceSlug(conversation),
+      nodeId: conversation.authorityNodeId, expiresAt: grant.expiresAt };
+    if (c.req.param("listeningResource") === "listening-membership") {
+      const renewed = renewMember(c.req.raw);
+      if (!renewed) return c.json({ error: "Member credential unavailable" }, 401);
+      return c.json({ ...membership, expiresAt: renewed.expiresAt });
+    }
+    // Stable signing authority required for restart-safe opaque source cursors.
+    if (!options.authToken) return c.json({ error: "listening_authority_unconfigured" }, 503);
+    try {
+      const page = readLocalRoomListeningPage({ channelId, actorId: grant.actorId,
+        cursor: c.req.query("cursor"), secret: options.authToken, limit: Number(c.req.query("limit") ?? 100), afterMessageId: c.req.query("afterMessageId") });
+      const renewed = renewMember(c.req.raw);
+      if (!renewed) return c.json({ error: "Member credential unavailable" }, 401);
+      return c.json({ ...page, membership: { ...membership, expiresAt: renewed.expiresAt } });
+    }
+    catch (error) { return c.json({ error: error instanceof RoomListeningPageError ? error.message : "source_unavailable" }, error instanceof RoomListeningPageError ? 409 : 503); }
   });
 
   /**

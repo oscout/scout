@@ -2,6 +2,12 @@ import { useLayoutEffect, useRef, useState } from "react";
 import { Activity, RefreshCw } from "lucide-react";
 import type { Route } from "../../lib/types.ts";
 import "./home-hero.css";
+import {
+  formatResetChip,
+  formatResetRelative,
+  formatWeeklyResetCountdown,
+  quotaWindowRolledOver,
+} from "./quota-reset.ts";
 
 type HeartrateBucketView = { ts: number; count: number; value: number };
 
@@ -25,6 +31,8 @@ type ServiceQuotaWindowGauge = {
   capturedAt?: number;
   source?: string;
   history?: ServiceQuotaHistoryPoint[];
+  /** The last reading predates this window's reset; current usage is unknown. */
+  awaitingReset?: boolean;
 };
 
 export type ServiceGauge =
@@ -84,40 +92,6 @@ function gaugeTone(fill: number): GaugeTone {
   return "ok";
 }
 
-const SHORT_WEEKDAY = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
-
-function formatResetChip(resetAt: number, now: Date): { label: string; imminent: boolean } {
-  const diffMs = resetAt - now.getTime();
-  const sameDay = new Date(resetAt).toDateString() === now.toDateString();
-  const reset = new Date(resetAt);
-  const hh = String(reset.getHours()).padStart(2, "0");
-  const mm = String(reset.getMinutes()).padStart(2, "0");
-  const imminent = diffMs > 0 && diffMs < 6 * 3600 * 1000;
-  if (sameDay) {
-    return { label: `${hh}:${mm}`, imminent };
-  }
-  return { label: `${SHORT_WEEKDAY[reset.getDay()]} ${hh}:${mm}`, imminent };
-}
-
-function formatResetRelative(resetAt: number, now: Date): string {
-  const rawDiffSec = Math.floor((resetAt - now.getTime()) / 1000);
-  const stale = rawDiffSec < 0;
-  const diffSec = Math.abs(rawDiffSec);
-  let label: string;
-  if (diffSec >= 86400) {
-    const d = Math.floor(diffSec / 86400);
-    const h = Math.floor((diffSec % 86400) / 3600);
-    label = h > 0 ? `${d}d ${h}h` : `${d}d`;
-  } else if (diffSec >= 3600) {
-    const h = Math.floor(diffSec / 3600);
-    const m = Math.floor((diffSec % 3600) / 60);
-    label = m > 0 ? `${h}h ${m}m` : `${h}h`;
-  } else {
-    label = `${Math.max(1, Math.floor(diffSec / 60))}m`;
-  }
-  return stale ? `stale ${label}` : label;
-}
-
 function quotaWindows(g: Extract<ServiceGauge, { kind: "quota" }>): ServiceQuotaWindowGauge[] {
   return g.windows && g.windows.length > 0
     ? g.windows
@@ -147,8 +121,11 @@ function formatLegacyQuotaLabel(label: string): string {
 function buildTooltip(g: Extract<ServiceGauge, { kind: "quota" }>, now: Date): string {
   return quotaWindows(g)
     .map((window) => {
+      if (quotaWindowRolledOver(window, now)) {
+        return `${window.label}: rolled over, awaiting a fresh reading`;
+      }
       const chip = formatResetChip(window.resetAt, now);
-      const rel = formatResetRelative(window.resetAt, now);
+      const rel = formatResetRelative(window, now);
       return `${window.label}: ${window.usedLabel} / ${window.capLabel} ${window.unitLabel} · resets ${chip.label} (in ${rel})`;
     })
     .join(" · ");
@@ -187,7 +164,13 @@ function splitQuotaWindows(windows: ServiceQuotaWindowGauge[]): {
   return { shortWindow, longWindow };
 }
 
-function usageLabel(window: ServiceQuotaWindowGauge): string {
+/** A rolled-over window's last reading belongs to the previous cycle. */
+function currentWindowFill(window: ServiceQuotaWindowGauge, now: Date): number {
+  return quotaWindowRolledOver(window, now) ? 0 : window.fill;
+}
+
+function usageLabel(window: ServiceQuotaWindowGauge, now: Date): string {
+  if (quotaWindowRolledOver(window, now)) return "—";
   if (window.capLabel === "100%" && window.usedLabel.endsWith("%")) {
     return window.usedLabel;
   }
@@ -198,10 +181,11 @@ function EmptyGaugeCell() {
   return <span className="hd-gauge-cell hd-gauge-cell--empty">—</span>;
 }
 
-function QuotaUsageCell({ window }: { window: ServiceQuotaWindowGauge | null }) {
+function QuotaUsageCell({ window, now }: { window: ServiceQuotaWindowGauge | null; now: Date }) {
   if (!window) return <EmptyGaugeCell />;
-  const windowPct = Math.round(window.fill * 100);
-  const windowTone = gaugeTone(window.fill);
+  const fill = currentWindowFill(window, now);
+  const windowPct = Math.round(fill * 100);
+  const windowTone = gaugeTone(fill);
   return (
     <span className="hd-gauge-cell hd-gauge-cell--usage">
       <span className="hd-gauge-window-name label-xs">{window.label}</span>
@@ -211,7 +195,7 @@ function QuotaUsageCell({ window }: { window: ServiceQuotaWindowGauge | null }) 
           style={{ width: `${windowPct}%` }}
         />
       </span>
-      <span className="hd-gauge-window-used">{usageLabel(window)}</span>
+      <span className="hd-gauge-window-used">{usageLabel(window, now)}</span>
     </span>
   );
 }
@@ -227,7 +211,7 @@ function QuotaResetCell({
 }) {
   if (!window) return <EmptyGaugeCell />;
   if (featured) {
-    const countdown = formatWeeklyResetCountdown(window.resetAt, now);
+    const countdown = formatWeeklyResetCountdown(window, now);
     return (
       <span
         className={`hd-gauge-cell hd-gauge-reset hd-gauge-reset--featured hd-gauge-reset--${countdown.tone}`}
@@ -244,87 +228,12 @@ function QuotaResetCell({
     );
   }
   const chip = formatResetChip(window.resetAt, now);
-  const rel = formatResetRelative(window.resetAt, now);
+  const rel = formatResetRelative(window, now);
   return (
     <span className={`hd-gauge-cell hd-gauge-reset${chip.imminent ? " hd-gauge-reset--imminent" : ""}`}>
       ↻ {rel}
     </span>
   );
-}
-
-function formatWeeklyResetCountdown(resetAt: number, now: Date): {
-  primary: string;
-  secondary: string;
-  ariaLabel: string;
-  tone: "normal" | "imminent" | "due" | "stale";
-  dateTime?: string;
-} {
-  if (!Number.isFinite(resetAt)) {
-    return {
-      primary: "—",
-      secondary: "unknown",
-      ariaLabel: "Weekly reset time unknown",
-      tone: "stale",
-    };
-  }
-
-  const diffMs = resetAt - now.getTime();
-  const reset = new Date(resetAt);
-  if (!Number.isFinite(reset.getTime())) {
-    return {
-      primary: "—",
-      secondary: "unknown",
-      ariaLabel: "Weekly reset time unknown",
-      tone: "stale",
-    };
-  }
-  const dateTime = reset.toISOString();
-  if (diffMs <= 0) {
-    const overdueMs = Math.abs(diffMs);
-    if (overdueMs <= 90_000) {
-      return {
-        primary: "reset due",
-        secondary: "refreshing…",
-        ariaLabel: "Weekly reset due; refreshing usage",
-        tone: "due",
-        dateTime,
-      };
-    }
-    const overdueMinutes = Math.floor(overdueMs / 60_000);
-    const overdueLabel = overdueMinutes >= 60
-      ? `+${Math.floor(overdueMinutes / 60)}h ${overdueMinutes % 60}m`
-      : `+${Math.max(1, overdueMinutes)}m`;
-    return {
-      primary: overdueMs <= 6 * 60 * 60_000 ? "reset due" : "stale",
-      secondary: overdueLabel,
-      ariaLabel: `Weekly reset data ${overdueLabel} overdue`,
-      tone: overdueMs <= 6 * 60 * 60_000 ? "due" : "stale",
-      dateTime,
-    };
-  }
-
-  const totalSeconds = Math.floor(diffMs / 1000);
-  const days = Math.floor(totalSeconds / 86_400);
-  const hours = Math.floor((totalSeconds % 86_400) / 3_600);
-  const minutes = Math.floor((totalSeconds % 3_600) / 60);
-  const seconds = totalSeconds % 60;
-  const clock = [hours, minutes, seconds].map((value) => String(value).padStart(2, "0")).join(":");
-  const primary = days > 0 ? `${days}d ${clock}` : clock;
-  const today = reset.toDateString() === now.toDateString();
-  const absolute = reset.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-  const secondary = today
-    ? `today ${absolute}`
-    : `${reset.toLocaleDateString([], { weekday: "short" })} ${absolute}`;
-  const coarse = days > 0
-    ? `${days} ${days === 1 ? "day" : "days"} ${hours} hours`
-    : `${hours} hours ${minutes} minutes`;
-  return {
-    primary,
-    secondary,
-    ariaLabel: `Weekly quota resets in ${coarse}; ${secondary}`,
-    tone: diffMs < 6 * 60 * 60_000 ? "imminent" : "normal",
-    dateTime,
-  };
 }
 
 function buildSmoothPath(points: { x: number; y: number }[]): string {
@@ -461,8 +370,10 @@ function Gauge({
   }
   const windows = quotaWindows(gauge);
   const { shortWindow, longWindow } = splitQuotaWindows(windows);
-  const tone = gaugeTone(Math.max(...windows.map((window) => window.fill)));
-  const pct = Math.round(Math.max(...windows.map((window) => window.fill)) * 100);
+  const peakFill = Math.max(...windows.map((window) => currentWindowFill(window, now)));
+  const tone = gaugeTone(peakFill);
+  const allRolledOver = windows.every((window) => quotaWindowRolledOver(window, now));
+  const pctLabel = allRolledOver ? "—" : `${Math.round(peakFill * 100)}%`;
   return (
     <Tag
       className={`hd-gauge hd-gauge--${tone}${onClick ? " hd-gauge--interactive" : ""}`}
@@ -472,11 +383,11 @@ function Gauge({
     >
       <span className="hd-gauge-head">
         <span className="hd-gauge-label">{gauge.label}</span>
-        <span className={`hd-gauge-pct hd-gauge-pct--${tone}`}>{pct}%</span>
+        <span className={`hd-gauge-pct hd-gauge-pct--${tone}`}>{pctLabel}</span>
       </span>
-      <QuotaUsageCell window={shortWindow} />
+      <QuotaUsageCell window={shortWindow} now={now} />
       <QuotaResetCell window={shortWindow} now={now} />
-      <QuotaUsageCell window={longWindow} />
+      <QuotaUsageCell window={longWindow} now={now} />
       <QuotaResetCell window={longWindow} now={now} featured />
     </Tag>
   );
@@ -599,7 +510,7 @@ export default function HomeHero(props: HomeHeroProps) {
   } = props;
   const [showAllGauges, setShowAllGauges] = useState(false);
 
-  const syncTone = error ? "err" : "ok";
+  const syncTone = loading || refreshing ? "pending" : error ? "err" : "ok";
   const subscriptionGauges = serviceGauges.filter(isQuotaGauge);
   const sortedGauges = sortedServiceGauges(subscriptionGauges);
   const compactGauges = topServiceGauges(subscriptionGauges);
@@ -629,7 +540,7 @@ export default function HomeHero(props: HomeHeroProps) {
         </div>
         <span className="s-section-rule-line" aria-hidden="true" />
         <div className="hd-vitals-right">
-          {error && <span className="dot dot--warning" aria-hidden="true" />}
+          {error && !loading && !refreshing && <span className="dot dot--warning" aria-hidden="true" />}
           <span className={`hd-meta hd-meta--${syncTone}`}>{syncLabel}</span>
           <button
             type="button"

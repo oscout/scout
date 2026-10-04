@@ -1,0 +1,114 @@
+/* Scout's existing neutral/lime language, isolated from the operator shell. */
+:root { font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color-scheme: dark light; }
+body { margin: 0; }
+.access-shell { --canvas: oklch(0.17 0.005 260); --panel: oklch(0.20 0.005 260); --hover: oklch(0.25 0.006 260); --line: oklch(0.32 0.005 260); --ink: oklch(0.93 0.006 100); --muted: oklch(0.70 0.008 260); --accent: oklch(0.87 0.19 125); --on-accent: oklch(0.20 0.025 125); --danger: oklch(0.77 0.13 25); display: grid; grid-template-columns: 208px minmax(0,1fr); min-height: 100dvh; color: var(--ink); background: var(--canvas); font-size: 14px; line-height: 1.5; }
+.access-shell * { box-sizing: border-box; }
+.access-shell button, .access-shell input, .access-shell select, .access-shell textarea { font: inherit; }
+.access-shell button { display: inline-flex; align-items: center; justify-content: center; gap: 8px; border: 1px solid var(--line); border-radius: 6px; padding: 8px 12px; color: var(--ink); background: var(--panel); cursor: pointer; min-height: 36px; }
+.access-shell button:hover { background: var(--hover); }
+.access-shell button:disabled { opacity: .5; cursor: default; }
+.access-shell :focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.access-shell h1, .access-shell h2, .access-shell h3, .access-shell p { margin: 0; }
+.access-shell h1 { font-size: clamp(25px, 2.5vw, 34px); font-weight: 550; letter-spacing: -.035em; line-height: 1.2; }
+.access-shell h2 { font-size: 17px; font-weight: 560; letter-spacing: -.015em; }
+.access-shell h3 { font-size: 14px; font-weight: 600; }
+.access-shell p { color: var(--muted); }
+.access-shell small { display: block; color: var(--muted); font-size: 12px; }
+.access-shell strong { font-weight: 550; }
+.access-shell .access-primary { background: var(--accent); border-color: var(--accent); color: var(--on-accent); font-weight: 600; }
+.access-shell .access-danger { color: var(--danger); }
+.access-nav { padding: 27px 16px 20px; border-right: 1px solid var(--line); display: flex; flex-direction: column; background: var(--panel); }
+.access-brand { display: flex; align-items: center; gap: 10px; color: var(--ink); text-decoration: none; font-weight: 650; font-size: 21px; padding: 0 12px 40px; letter-spacing: -.03em; }
+.access-brand svg { width: 25px; height: 25px; }
+.access-nav-label { font-size: 11px; color: var(--muted); padding: 0 12px 10px; text-transform: uppercase; letter-spacing: .08em; }
+.access-nav nav { display: grid; gap: 5px; }
+.access-nav nav button { justify-content: flex-start; border-color: transparent; padding: 10px 12px; color: var(--muted); }
+.access-nav nav button[aria-current] { color: var(--ink); background: var(--hover); border-color: var(--line); }
+.access-nav nav button[aria-current] svg { color: var(--accent); }
+.access-nav-footer { display: flex; gap: 10px; margin-top: auto; padding: 28px 10px 0; color: var(--muted); font-size: 12px; }
+.access-content { min-width: 0; }
+.access-topbar { min-height: 64px; border-bottom: 1px solid var(--line); padding: 14px 32px; display: flex; align-items: center; justify-content: space-between; color: var(--muted); font-size: 12px; }
+.access-topbar > div { display: flex; align-items: center; gap: 14px; }
+.access-topbar button { border: 0; background: transparent; padding: 6px; }
+.access-main { max-width: 1440px; margin: 0 auto; padding: 38px 36px 64px; }
+.access-heading { display: flex; justify-content: space-between; gap: 24px; align-items: center; margin-bottom: 20px; }
+.access-heading h1 { margin: 9px 0 12px; }
+.access-heading-actions { display: flex; gap: 8px; flex-shrink: 0; }
+.access-eyebrow { font-size: 12px; }
+.access-role { color: var(--ink); margin-left: 8px; padding-left: 10px; border-left: 1px solid var(--line); }
+.access-freshness { display: flex; justify-content: space-between; gap: 12px; padding: 12px 0; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); color: var(--muted); font-size: 11px; margin-bottom: 28px; font-variant-numeric: tabular-nums; }
+.access-overview { display: grid; grid-template-columns: minmax(0,1fr) 280px; gap: 32px; }
+.access-context { padding-left: 24px; border-left: 1px solid var(--line); }
+.access-context h2 { margin-bottom: 12px; }
+.access-context dl { margin: 24px 0; }
+.access-context dt { color: var(--muted); font-size: 11px; margin-top: 16px; }
+.access-context dd { margin: 3px 0 0; font-size: 12px; }
+.access-projects { margin-top: 18px; }
+.access-projects section { margin-bottom: 24px; }
+.access-projects h3 { color: var(--muted); font-size: 12px; padding: 8px 0; border-bottom: 1px solid var(--line); }
+.access-shell .access-agent, .access-shell .access-person, .access-shell .access-work { width: 100%; padding: 16px 10px; border: 0; border-bottom: 1px solid var(--line); background: transparent; border-radius: 0; text-align: left; justify-content: flex-start; gap: 12px; }
+.access-agent > span, .access-person > span:nth-child(2), .access-work > span:first-child { flex: 1; min-width: 0; }
+.access-agent > svg:first-child { color: var(--muted); }
+.access-agent strong, .access-person strong { display: block; }
+.access-agent small, .access-person small, .access-work small { margin-top: 3px; overflow-wrap: anywhere; }
+.access-shell .is-selected { background: var(--hover); box-shadow: inset 2px 0 var(--accent); }
+.access-state { font-size: 11px; color: var(--muted); white-space: nowrap; }
+.access-section-title { display: flex; align-items: center; justify-content: space-between; gap: 14px; margin: 28px 0 14px; }
+.access-section-title > span { font-size: 11px; color: var(--muted); }
+.access-empty { padding: 38px 24px; border: 1px dashed var(--line); margin-top: 18px; }
+.access-empty p { margin-top: 8px; }
+.access-empty button { margin-top: 16px; }
+.access-empty.compact { padding: 20px; }
+.access-empty.compact p { color: var(--ink); margin: 0 0 6px; }
+.access-shell .access-notice { border-left: 2px solid var(--line); padding: 9px 12px; font-size: 12px; line-height: 1.6; margin: 18px 0; }
+.access-error { border: 1px solid var(--danger); padding: 12px 16px; margin-bottom: 24px; color: var(--danger); border-radius: 6px; }
+.access-split { display: grid; grid-template-columns: minmax(240px, .8fr) minmax(0, 1.2fr); gap: 30px; align-items: start; }
+.access-detail { border-left: 1px solid var(--line); padding-left: 30px; min-width: 0; }
+.access-avatar { width: 31px; height: 31px; display: grid; place-items: center; background: var(--hover); border: 1px solid var(--line); border-radius: 50%; font-size: 12px; flex-shrink: 0; }
+.access-identity { font-family: ui-monospace, monospace; font-size: 11px; overflow-wrap: anywhere; margin-top: 8px !important; }
+.access-grant { padding: 16px 0; border-bottom: 1px solid var(--line); }
+.access-grant small { margin-top: 4px; }
+.access-device { display: flex; align-items: center; gap: 16px; padding: 20px 4px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+.access-device > div { flex: 1; min-width: 160px; }
+.access-device > svg { color: var(--muted); }
+.access-device small { margin-top: 4px; }
+.access-device button { font-size: 12px; }
+.access-editor { border: 1px solid var(--line); background: var(--panel); padding: 24px; margin: 24px 0; border-radius: 8px; }
+.access-editor h2, .access-editor h3 { margin-bottom: 12px; }
+.access-shell label { display: flex; flex-direction: column; gap: 7px; font-size: 12px; margin: 16px 0; }
+.access-shell input:not([type=checkbox]), .access-shell textarea, .access-shell select { width: 100%; border: 1px solid var(--line); border-radius: 5px; background: var(--canvas); color: var(--ink); padding: 10px; min-height: 40px; }
+.access-shell textarea { resize: vertical; }
+.access-shell input[type=checkbox] { accent-color: var(--accent); width: 15px; height: 15px; flex-shrink: 0; }
+.access-shell .access-check { flex-direction: row; align-items: center; gap: 9px; margin: 11px 0; }
+.access-shell fieldset { border: 0; border-top: 1px solid var(--line); padding: 15px 0 8px; margin: 22px 0 0; min-width: 0; }
+.access-shell legend { font-size: 12px; font-weight: 600; padding-right: 12px; }
+.access-scope-group { margin: 14px 0; }
+.access-scope-group > strong { font-size: 12px; }
+.access-form-actions { display: flex; align-items: center; justify-content: flex-end; gap: 8px; margin-top: 18px; flex-wrap: wrap; }
+.access-preview-button { margin: 8px 8px 0 0; }
+.access-preview { border: 1px solid var(--line); padding: 16px; margin-top: 16px; }
+.access-preview p + p { margin-top: 10px; }
+.access-result pre, .access-signing-preview pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 420px; overflow: auto; padding: 16px; background: var(--panel); border: 1px solid var(--line); font-size: 12px; }
+.access-login { max-width: 390px; margin: 8vh auto 40px; }
+.access-login > svg { color: var(--accent); margin-bottom: 24px; }
+.access-login h1 { margin-bottom: 16px; }
+.access-login form { margin: 28px 0; }
+.access-login form button { width: 100%; margin-top: 8px; }
+.access-login > small { border-top: 1px solid var(--line); padding-top: 20px; }
+.access-modal-backdrop { position: fixed; inset: 0; background: rgb(0 0 0 / .65); display: grid; place-items: center; padding: 24px; z-index: 20; }
+.access-signing-preview { max-width: 640px; width: 100%; max-height: 90dvh; overflow: auto; background: var(--canvas); border: 1px solid var(--line); padding: 28px; border-radius: 10px; }
+@media (prefers-color-scheme: light) { .access-shell { --canvas: oklch(0.985 0.003 100); --panel: oklch(0.965 0.004 100); --hover: oklch(0.925 0.006 100); --line: oklch(0.85 0.008 100); --ink: oklch(0.25 0.007 260); --muted: oklch(0.48 0.008 260); --accent: oklch(0.48 0.12 130); --on-accent: white; --danger: oklch(0.5 0.17 25); } }
+@media (max-width: 1100px) { .access-shell { grid-template-columns: 176px minmax(0,1fr); } .access-main { padding: 28px 24px; } .access-overview { grid-template-columns: minmax(0,1fr); } .access-context { border-left: 0; border-top: 1px solid var(--line); padding: 24px 0 0; } .access-heading { align-items: flex-start; } .access-heading-actions { flex-direction: column; } }
+@media (max-width: 720px) { .access-shell { display: block; } .access-nav { padding: 16px; border-right: 0; border-bottom: 1px solid var(--line); } .access-brand { padding: 0 0 16px; font-size: 19px; } .access-nav-label, .access-nav-footer { display: none; } .access-nav nav { grid-template-columns: repeat(4,1fr); gap: 4px; } .access-nav nav button { padding: 8px 4px; justify-content: center; gap: 5px; font-size: 11px; } .access-topbar { padding: 10px 20px; min-height: 48px; } .access-main { padding: 24px 20px 48px; } .access-heading { flex-wrap: wrap; gap: 18px; } .access-heading-actions { flex-direction: row; } .access-freshness { flex-direction: column; gap: 4px; } .access-split { grid-template-columns: minmax(0,1fr); } .access-detail { border-left: 0; border-top: 1px solid var(--line); padding: 24px 0 0; } .access-device { gap: 10px; } .access-device button { flex: 1; } .access-editor { padding: 18px; } .access-section-title { align-items: flex-start; } .access-section-title > span { max-width: 110px; text-align: right; } .access-login { margin-top: 28px; } }
+@media (prefers-reduced-motion: reduce) { .access-shell * { scroll-behavior: auto !important; } }
+.access-pagination { display: flex; justify-content: space-between; gap: 14px; align-items: center; margin-top: 30px; padding-top: 20px; border-top: 1px solid var(--line); }
+.access-pagination span { color: var(--muted); font-size: 11px; text-align: center; }
+.access-signing-preview { color: var(--ink); }
+.access-signing-preview::backdrop { background: rgb(0 0 0 / .65); }
+.access-key { display: block; font-size: 11px; color: var(--muted); overflow-wrap: anywhere; }
+.access-change-summary { margin: 22px 0; display: grid; grid-template-columns: 120px minmax(0,1fr); gap: 10px 18px; font-size: 12px; }
+.access-change-summary dt { color: var(--muted); }
+.access-change-summary dd { margin: 0; overflow-wrap: anywhere; }
+.access-signing-preview summary { cursor: pointer; font-size: 12px; color: var(--muted); }
+.access-signing-preview > form > p { margin-top: 10px; }
+@media (max-width: 720px) { .access-signing-preview { padding: 20px; max-width: calc(100vw - 24px); } .access-change-summary { grid-template-columns: 90px minmax(0,1fr); gap: 8px 12px; } }

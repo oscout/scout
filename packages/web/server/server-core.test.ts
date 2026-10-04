@@ -768,3 +768,10 @@ describe("participant inbox LAN scope", () => {
     expect(isScoutWebRequestAllowedFromPeer(new Request("http://mac.local/api/sessions"), "192.168.1.50", "chat")).toBe(false);
   });
 });
+
+test("remote room listening is exposed only as a room GET, never as accumulator custody", () => {
+  const allow = (path: string, method = "GET") => isScoutWebRequestAllowedFromPeer(new Request(`http://node.local${path}`, { method }), "192.168.1.50", "chat");
+  expect(allow("/api/channels/room/listening?space=home")).toBe(true);
+  expect(allow("/api/channels/room/listening", "POST")).toBe(false);
+  expect(allow("/v1/chat-listening/enroll", "POST")).toBe(false);
+});

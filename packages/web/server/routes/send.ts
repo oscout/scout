@@ -28,7 +28,8 @@ import { recordInput } from "../web-flights.ts";
 import { metadataStringValue } from "../metadata-values.ts";
 import { optionalString, coerceAgentHarness } from "../request-values.ts";
 import type { ScoutbotWebServices } from "./scoutbot.ts";
-import { askBody, chatMessageSendBody, sendBody } from "../../shared/api/send.ts";
+import { askBody, chatMessageSendBody, sendBody, sessionReplyBody } from "../../shared/api/send.ts";
+import { askMobileHarnessSession } from "../core/mobile/ask-session.ts";
 import { readJsonBody } from "../request-body.ts";
 
 function inferDirectTargetAgentId(
@@ -609,6 +610,21 @@ export function mountSendRoutes(app: Hono, deps: SendRouteDeps) {
       ...(result.conversationId ? { chatId: result.conversationId } : {}),
       runIds: result.flight ? [`run:flight:${result.flight.id}`] : [],
     });
+  });
+
+  // Reply to a harness session by id (the TUI's composer). Lands in the live
+  // place or resumes; expected refusals come back as { ok: false, message }.
+  app.post("/api/sessions/reply", async (c) => {
+    const parsed = await readJsonBody(c, sessionReplyBody);
+    if (!parsed.ok) return parsed.response;
+    const { source, ...input } = parsed.body;
+    const result = await askMobileHarnessSession(input, {
+      ask: askScoutQuestion,
+      senderId: resolveOperatorName().trim() || "operator",
+      fallbackCurrentDirectory: currentDirectory,
+      source: source?.trim() || "scout-web",
+    });
+    return c.json(result);
   });
 
   app.post("/api/ask", async (c) => {

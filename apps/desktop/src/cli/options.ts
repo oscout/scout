@@ -1,3 +1,4 @@
+import { parseSetupCommandOptions as parseLifecycleSetupOptions } from "../../../../packages/cli/bin/lifecycle-preflight.mjs";
 import { resolve } from "node:path";
 
 import {
@@ -582,35 +583,8 @@ export function parseSetupCommandOptions(
   args: string[],
   defaultCurrentDirectory: string,
 ): ScoutSetupCommandOptions {
-  const parsed = parseContextRootPrefix(args, defaultCurrentDirectory);
-  const sourceRoots: string[] = [];
-  let defaultHarness: string | null = null;
-
-  for (let index = 0; index < parsed.args.length; index += 1) {
-    const current = parsed.args[index] ?? "";
-    if (current === "--source-root" || current.startsWith("--source-root=")) {
-      const value = parseFlagValue(parsed.args, index, "--source-root");
-      sourceRoots.push(resolve(value.value));
-      index = value.nextIndex;
-      continue;
-    }
-    if (current === "--default-harness" || current.startsWith("--default-harness=")) {
-      const value = parseFlagValue(parsed.args, index, "--default-harness");
-      if (!["claude", "codex", "cursor", "grok", "pi", "opencode", "devin"].includes(value.value)) {
-        throw new ScoutCliError(`invalid default harness: ${value.value}`);
-      }
-      defaultHarness = value.value;
-      index = value.nextIndex;
-      continue;
-    }
-    unexpectedArgs("setup", args);
-  }
-
-  return {
-    currentDirectory: parsed.currentDirectory,
-    sourceRoots,
-    defaultHarness,
-  };
+  try { return parseLifecycleSetupOptions(args, defaultCurrentDirectory); }
+  catch (error) { throw new ScoutCliError((error as Error).message); }
 }
 
 export function parseContextRootCommandOptions(

@@ -182,3 +182,9 @@ describe("runAppCommand help", () => {
     expect(written[0]).toContain("scout app — OpenScout application lifecycle");
   });
 });
+
+test("app rejects unsupported flags and extra actions before lifecycle work", () => {
+  for (const args of [["restart", "--unsupported"], ["stop", "-x"], ["start", "restart"]]) {
+    expect(() => parseAppCommand(args)).toThrow("unexpected");
+  }
+});

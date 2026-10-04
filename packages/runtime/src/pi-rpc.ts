@@ -386,10 +386,11 @@ function extractTurnText(snapshot: SessionState | null, turnId: string): string 
 
 function terminalTurnError(snapshot: SessionState | null, turnId: string): string | null {
   const turn = snapshot?.turns.find((candidate) => candidate.id === turnId);
-  if (!turn || turn.status !== "error") {
+  if (!turn || (turn.status !== "error" && turn.status !== "interrupted")) {
     return null;
   }
-  return extractTurnText(snapshot, turnId) || "Pi RPC turn failed.";
+  const error = turn.blocks.flatMap(({ block }) => block.type === "error" ? [block.message] : []).join("\n").trim();
+  return error || (turn.status === "interrupted" ? "Pi RPC turn was interrupted." : "Pi RPC turn failed.");
 }
 
 class PiRpcAgentSession {
@@ -422,6 +423,9 @@ class PiRpcAgentSession {
       return { sessionId: this.options.sessionId };
     }
 
+    // RPC rejection can mark the session unhealthy while its child still runs.
+    // Keep ownership until the old adapter has been retired before replacement.
+    if (this.adapter) await this.shutdown();
     await mkdir(this.options.runtimeDirectory, { recursive: true });
     await mkdir(this.options.logsDirectory, { recursive: true });
     await writeFile(join(this.options.runtimeDirectory, "prompt.txt"), this.options.systemPrompt);
@@ -444,9 +448,11 @@ class PiRpcAgentSession {
     this.lastError = null;
     this.tracker.createSession(this.options.sessionId, adapter.session);
     adapter.on("event", (event) => {
+      if (this.adapter !== adapter) return;
       this.tracker.trackEvent(this.options.sessionId, event);
     });
     adapter.on("error", (error) => {
+      if (this.adapter !== adapter) return;
       this.lastError = error;
       this.tracker.trackEvent(this.options.sessionId, {
         event: "session:update",
@@ -497,6 +503,7 @@ class PiRpcAgentSession {
 
     return new Promise<string>((resolve, reject) => {
       let turnId: string | null = null;
+      let started = false;
       let settled = false;
       const cleanup = () => {
         adapter.off("event", onEvent);
@@ -513,29 +520,37 @@ class PiRpcAgentSession {
         finish(() => reject(error));
       };
       const onEvent = (event: AgentSessionStreamEvent) => {
-        if (event.event === "turn:start" && !turnId) {
+        if (event.event === "turn:start") {
+          // Pi may do several tool/model turns for one prompt. Only agent_end
+          // (projected as idle) means the whole request is finished.
+          started = true;
           turnId = event.turn.id;
           return;
         }
-        if (event.event !== "turn:end" || event.turnId !== turnId) {
-          return;
-        }
-        const snapshot = this.snapshot;
-        const error = terminalTurnError(snapshot, event.turnId);
+        if (event.event !== "session:update") return;
+        if (event.session.providerMeta?.turnPhase === "agent_start") started = true;
+        if (!started || event.session.providerMeta?.turnPhase !== "idle") return;
+        // A failed model turn may recover through provider retry or compaction.
+        // Only the adapter's terminal agent_end settles the whole request.
+        const error = turnId ? terminalTurnError(this.snapshot, turnId) : null;
         if (error) {
           finish(() => reject(new Error(error)));
           return;
         }
-        const output = extractTurnText(snapshot, event.turnId);
+        const output = turnId ? extractTurnText(this.snapshot, turnId) : "";
         if (!output.trim()) {
-          turnId = null;
+          finish(() => reject(new Error("Pi finished without a final assistant result; verify pi -p with the configured provider before retrying.")));
           return;
         }
         finish(() => resolve(output));
       };
       const timer = setTimeout(() => {
-        adapter.interrupt();
-        finish(() => reject(new Error(`Pi RPC invocation timed out after ${timeoutMs}ms.`)));
+        finish(() => {
+          adapter.interrupt();
+          // A timed-out process can still emit recovery events. Retire it so
+          // those events cannot complete the next queued request.
+          void this.shutdown().finally(() => reject(new Error(`Pi RPC invocation timed out after ${timeoutMs}ms.`)));
+        });
       }, timeoutMs);
 
       adapter.on("event", onEvent);

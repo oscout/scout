@@ -6,6 +6,7 @@ import { api } from "../lib/api.ts";
 import { isScoutSurfaceActive, onScoutSurfaceActivated } from "../lib/surface-activity.ts";
 import { ensureAgentChat } from "../lib/agent-chat.ts";
 import { useScout } from "./Provider.tsx";
+import { onboardingTakeoverActive } from "./takeover/onboarding-gate.ts";
 import { localMachineLabel } from "../lib/mesh-buckets.ts";
 import type { MeshStatus, Route } from "../lib/types.ts";
 import { MachineScopeControl } from "../components/MachineScopeControl.tsx";
@@ -332,18 +333,9 @@ export function useScoutTakeover(): TakeoverState | null {
   // Until the first fetch resolves we pass through; false negatives would
   // block the app on reloads and true would flash a takeover for returning
   // users. Waiting one RTT is cheap and correct.
-  if (!onboarding) return null;
-  if (onboardingSkipped || onboarding.needed === false || onboarding.skippedAt || onboarding.completedAt) {
-    return { active: false, dismissible: true };
-  }
-  const needsLocal = !onboarding.hasLocalConfig;
-  const needsProject = !onboarding.hasProjectConfig;
-  const needsName = !onboarding.hasOperatorName;
-  // Core inputs done but the broker/runtime aren't ready yet: SetupStep is
-  // still owed. The early return above already excludes completed/skipped
-  // onboarding, so this only fires while first-run is genuinely unfinished.
-  const needsSetup = !onboarding.brokerReachable || !onboarding.hasReadyRuntime;
-  const active = needsLocal || needsName || needsProject || needsSetup;
+  const active = onboardingTakeoverActive(onboarding, onboardingSkipped);
+  if (active === null) return null;
+  if (!active) return { active: false, dismissible: true };
   return {
     active,
     dismissible: true,

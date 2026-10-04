@@ -196,8 +196,8 @@ const SHELL_STYLES = [
 }[];
 
 const THEME_PALETTES = [
-  { id: "scout", label: "Scout", sub: "Near-neutral control room", spec: "SLATE · LIME" },
-  { id: "graphite", label: "Graphite", sub: "Monochrome technical chassis", spec: "BLACK · SLATE" },
+  { id: "scout", label: "Scout", sub: "Near-neutral control room", spec: "SLATE · AMBER" },
+  { id: "graphite", label: "Graphite", sub: "Neutral graphite surfaces", spec: "BLACK · SLATE" },
   { id: "polar", label: "Polar", sub: "Nord-inspired arctic slate", spec: "POLAR · FROST" },
   { id: "solar", label: "Solar", sub: "Solarized-inspired measured contrast", spec: "TEAL · PAPER" },
 ] as const satisfies readonly {
@@ -1771,6 +1771,14 @@ function AboutSection() {
 
   return (
     <div className="s-settings-about">
+      <section aria-label="Contact and support">
+        <p>OpenScout is built by Arach Tchoupani.</p>
+        <nav className="s-settings-about-actions" aria-label="Support links">
+          <a className="s-btn" href="https://openscout.app/contact" target="_blank" rel="noopener noreferrer">Contact the founder ↗</a>
+          <a className="s-btn" href="https://github.com/oscout/scout/issues" target="_blank" rel="noopener noreferrer">Report an issue ↗</a>
+          <a className="s-btn" href="https://openscout.app/privacy" target="_blank" rel="noopener noreferrer">Privacy ↗</a>
+        </nav>
+      </section>
       <div className="s-settings-about-summary">
         <div>
           <span className="s-settings-about-product">OpenScout Web</span>

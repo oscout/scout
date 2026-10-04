@@ -1,6 +1,7 @@
+import { createRoomListeningSupervisor } from "./room-listening-supervisor.js";
 import type { RuntimeErrnoError } from "./portable-types.js";
 import { spawn, type ChildProcess } from "node:child_process";
-import { existsSync, mkdirSync, openSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, mkdirSync, openSync, writeFileSync } from "node:fs";
 import { homedir, networkInterfaces } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -252,6 +253,24 @@ function spawnBroker(): void {
     }
   });
 }
+
+// A sibling base child: broker restarts do not cycle room accumulation.
+const roomListeningSupervisor = createRoomListeningSupervisor({
+  spawn: () => {
+    if (!config.bunExecutable) throw new Error("Bun is required for room listening");
+    const stdout = logFile("room-listening.stdout.log"), stderr = logFile("room-listening.stderr.log");
+    try {
+      return spawn(config.bunExecutable, ["run", runtimeEntrypoint(config), "listening"], {
+        argv0: "scout-listening", cwd: config.runtimePackageDir,
+        env: { ...process.env, OPENSCOUT_PARENT_PID: String(process.pid),
+          OPENSCOUT_CONTROL_HOME: config.controlHome, OPENSCOUT_BROKER_URL: brokerControlUrl },
+        stdio: ["ignore", stdout, stderr],
+      });
+    } finally { closeSync(stdout); closeSync(stderr); }
+  },
+  terminate: child => terminateChildProcess(child, "room listening"),
+  warn: message => warn(message),
+});
 
 function scheduleBrokerRestart(): void {
   const delay = brokerRestartDelayMs;
@@ -1045,6 +1064,7 @@ async function shutdown(exitCode = 0): Promise<void> {
   const activeCaddyProcess = caddyProcess;
   stopEdgeProcesses();
   await Promise.all([
+    roomListeningSupervisor.stop(),
     stopPairingController(),
     terminateChildProcess(meshBridgeProcess, "mesh bridge", MESH_BRIDGE_STOP_TIMEOUT_MS),
     terminateChildProcess(brokerProcess, "broker"),
@@ -1126,6 +1146,7 @@ anchorBaseDaemonLifetime();
 // feature is off, which is the default.
 await startJetStreamSidecar();
 spawnBroker();
+roomListeningSupervisor.start();
 startLocalEdge();
 startPairingSupervision();
 startMeshBridgeSupervision();

@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 //! Turns a raw tail event into a renderable row: one of eight quiet tiers,
 //! with tool name/target pulled out of the raw payload while we still have it.
 
@@ -24,21 +22,6 @@ pub enum Class {
     ToolResult,
     /// task start/complete, world state, turn markers.
     Sys,
-}
-
-impl Class {
-    pub fn glyph(self) -> &'static str {
-        match self {
-            Class::Human => "›",
-            Class::Machine => "·",
-            Class::Convo => "·",
-            Class::Plan => "·",
-            Class::Json => "◦",
-            Class::Tool => "▸",
-            Class::ToolResult => "↳",
-            Class::Sys => "◦",
-        }
-    }
 }
 
 pub fn classify(mut event: TailEvent) -> Row {

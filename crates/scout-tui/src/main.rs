@@ -1,12 +1,14 @@
-//! THESIS: The TUI is a night instrument, not an attention inbox.
+//! THESIS: One calm list of observed work, requests, and outcomes.
 //! OWN-WORLD: Warm near-black room canvas (#0C0A08), BONE primary text,
 //! ASH machine details, EMBER live/selected, SIGNAL gold for requests.
 //! STORY: What is moving; last thought already on screen; draft a response.
-//! FORM: Seven takes on one fleet (Now, Horizon, Twin, Mesh, Quota, Harvest, Grid).
+//! FORM: Calm list first; legacy fleet views behind explicit keys.
 
 mod app;
 mod ask;
+mod calm;
 mod classify;
+mod deliver;
 mod draw;
 mod feed;
 mod git;
@@ -17,8 +19,9 @@ mod providers;
 mod theme;
 
 use std::io::{self, Write};
+use std::sync::mpsc::Receiver;
 use std::sync::mpsc::TryRecvError;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crossterm::cursor::Show;
 use crossterm::event::{
@@ -35,10 +38,26 @@ use ratatui::Terminal;
 use app::{
     clean_summary, short_session, twin_visible_columns, App, Composition, HitKind, Pointer, Take,
 };
+use ask::spawn_asker;
 use feed::{fetch_recent, spawn_tail};
 use git::spawn_git;
 use machines::spawn_machines;
 use providers::spawn_providers;
+
+/// How long the loop waits for input before checking the workers again.
+const INPUT_POLL: Duration = Duration::from_millis(80);
+/// Live spinners only; unfocused, non-live views redraw on worker/input changes.
+const ANIMATION_TICK: Duration = Duration::from_millis(90);
+
+/// Apply every queued worker snapshot; true when at least one arrived.
+fn drain<T>(rx: &Receiver<T>, mut apply: impl FnMut(T)) -> bool {
+    let mut any = false;
+    while let Ok(item) = rx.try_recv() {
+        apply(item);
+        any = true;
+    }
+    any
+}
 
 struct TerminalGuard;
 
@@ -69,7 +88,7 @@ fn sync_pointer(app: &mut App, next: Pointer) {
 fn pointer_for_hit(kind: Option<HitKind>) -> Pointer {
     match kind {
         Some(HitKind::Split) => Pointer::EwResize,
-        Some(_) => Pointer::Pointer,
+        Some(_) => Pointer::Hand,
         None => Pointer::Default,
     }
 }
@@ -183,8 +202,28 @@ fn handle_key(app: &mut App, key: KeyEvent, terminal_width: u16) -> bool {
         return false;
     }
 
+    if app.filtering {
+        match key.code {
+            KeyCode::Esc => {
+                app.filtering = false;
+                app.filter.clear();
+            }
+            KeyCode::Enter => app.filtering = false,
+            KeyCode::Backspace => {
+                app.filter.pop();
+            }
+            KeyCode::Down => app.move_cursor(1),
+            KeyCode::Up => app.move_cursor(-1),
+            KeyCode::Char(c) => app.filter.push(c),
+            _ => {}
+        }
+        return false;
+    }
+
     if app.composing {
         match key.code {
+            // The calm list keeps the draft: Esc only steps out of the composer.
+            KeyCode::Esc if app.calm() => app.composing = false,
             KeyCode::Esc => {
                 app.cancel_compose();
             }
@@ -202,9 +241,35 @@ fn handle_key(app: &mut App, key: KeyEvent, terminal_width: u16) -> bool {
         return false;
     }
 
+    if app.calm() {
+        if let Some(()) = handle_calm_key(app, key.code) {
+            return false;
+        }
+    }
+    if app.fleet_view && matches!(key.code, KeyCode::Esc | KeyCode::Char('f')) {
+        app.fleet_view = false;
+        app.take = Take::Now;
+        return false;
+    }
+    if matches!(
+        key.code,
+        KeyCode::Char('1') | KeyCode::Char('/') | KeyCode::Tab | KeyCode::BackTab
+    ) {
+        app.fleet_view = false;
+    }
     // Normal instrument key navigation
     match (key.code, key.modifiers) {
-        (KeyCode::Char('q'), _) => return true,
+        (KeyCode::Char('q'), _) => app.take = Take::Quota,
+        (KeyCode::Char('f'), _) => {
+            app.take = Take::Now;
+            app.fleet_view = true;
+        }
+        (KeyCode::Char('/'), _) => {
+            app.take = Take::Now;
+            app.filtering = true;
+        }
+        (KeyCode::Char('a'), _) if app.take != Take::Mesh => app.begin_compose(),
+        (KeyCode::Enter, _) if app.take == Take::Now && !app.fleet_view => app.take = Take::Twin,
         (KeyCode::Char('?'), _) => {
             app.help = true;
         }
@@ -304,6 +369,55 @@ fn handle_key(app: &mut App, key: KeyEvent, terminal_width: u16) -> bool {
     }
 
     false
+}
+
+/// The calm list's keys. None lets the key fall through to the legacy takes
+/// (1–7 switch views). No letter quits; Esc backs out one level.
+fn handle_calm_key(app: &mut App, code: KeyCode) -> Option<()> {
+    let detail = app.calm_detail;
+    match code {
+        KeyCode::Down | KeyCode::Char('j') if detail => {
+            app.detail_scroll = app.detail_scroll.saturating_sub(1)
+        }
+        KeyCode::Up | KeyCode::Char('k') if detail => app.detail_scroll += 1,
+        KeyCode::PageDown if detail => app.detail_scroll = app.detail_scroll.saturating_sub(10),
+        KeyCode::PageUp if detail => app.detail_scroll += 10,
+        KeyCode::Down | KeyCode::Char('j') => app.move_cursor(1),
+        KeyCode::Up | KeyCode::Char('k') => app.move_cursor(-1),
+        KeyCode::PageDown => app.move_cursor(8),
+        KeyCode::PageUp => app.move_cursor(-8),
+        KeyCode::Char('g') | KeyCode::Home if !detail => app.move_cursor(isize::MIN / 2),
+        KeyCode::Char('G') | KeyCode::End if !detail => app.move_cursor(isize::MAX / 2),
+        KeyCode::Enter if !detail && app.selected_agent().is_some() => {
+            app.calm_detail = true;
+            app.detail_scroll = 0;
+        }
+        KeyCode::Esc => {
+            if detail {
+                app.calm_detail = false;
+            } else {
+                app.filter.clear();
+            }
+        }
+        KeyCode::Char('a') | KeyCode::Char('i') | KeyCode::Tab
+            if app.selected_agent().is_some() =>
+        {
+            app.begin_compose()
+        }
+        KeyCode::Char('/') => {
+            app.calm_detail = false;
+            app.filter.clear();
+            app.filtering = true;
+        }
+        KeyCode::Char('?') => app.help = true,
+        KeyCode::Char('f') => {
+            app.calm_detail = false;
+            app.fleet_view = true;
+        }
+        KeyCode::Char('1'..='7') | KeyCode::BackTab => return None,
+        _ => {}
+    }
+    Some(())
 }
 
 fn handle_mouse(app: &mut App, mouse: MouseEvent) -> bool {
@@ -407,89 +521,113 @@ fn main() -> io::Result<()> {
     let (mesh_tx, machines_rx) = spawn_machines();
     let providers_rx = spawn_providers();
     let (git_cwd_tx, git_rx) = spawn_git();
+    let (ask_tx, ask_rx) = spawn_asker();
     let mut sent_cwds: Vec<String> = Vec::new();
     let mut app = App::new(args.take);
     if let Some(comp) = args.composition {
         app.set_composition(comp);
     }
     let mut done = false;
+    let mut dirty = true;
+    let mut tail_down = false;
+    let mut last_draw = Instant::now();
+    let mut live_until = 0u64;
+    let mut was_animated = false;
 
     while !done {
+        let mut ingested = false;
         loop {
             match rx.try_recv() {
-                Ok(snap) => app.ingest(snap),
+                Ok(snap) => {
+                    app.ingest(snap);
+                    ingested = true;
+                }
                 Err(TryRecvError::Empty) => break,
                 Err(TryRecvError::Disconnected) => {
-                    app.error = Some("tail disconnected".into());
+                    if !tail_down {
+                        tail_down = true;
+                        app.error = Some("tail disconnected".into());
+                        dirty = true;
+                    }
                     break;
                 }
             }
         }
+        dirty |= ingested;
 
-        loop {
-            match machines_rx.try_recv() {
-                Ok(snap) => {
-                    app.set_machines(snap.machines, snap.error, snap.registry_ready, snap.notice)
-                }
-                Err(TryRecvError::Empty) => break,
-                Err(TryRecvError::Disconnected) => break,
-            }
-        }
+        dirty |= drain(&machines_rx, |snap| {
+            app.set_machines(snap.machines, snap.error, snap.registry_ready, snap.notice)
+        });
+        dirty |= drain(&providers_rx, |snap| {
+            app.set_plans(snap.plans, snap.error, snap.ready)
+        });
+        dirty |= drain(&git_rx, |snap| {
+            app.set_git(snap.churn, snap.untracked, snap.roots, snap.error)
+        });
+        dirty |= drain(&ask_rx, |result| app.finish_ask(result));
 
         if let Some(action) = app.take_mesh_action() {
             if mesh_tx.send(action).is_err() {
                 app.mesh_busy = false;
                 app.mesh_notice = Some("mesh worker stopped".into());
+                dirty = true;
             }
         }
-
-        loop {
-            match providers_rx.try_recv() {
-                Ok(snap) => app.set_plans(snap.plans, snap.error, snap.ready),
-                Err(TryRecvError::Empty) => break,
-                Err(TryRecvError::Disconnected) => break,
-            }
-        }
-
-        loop {
-            match git_rx.try_recv() {
-                Ok(snap) => app.set_git(snap.churn, snap.untracked, snap.roots, snap.error),
-                Err(TryRecvError::Empty) => break,
-                Err(TryRecvError::Disconnected) => break,
+        if let Some(request) = app.take_ask_request() {
+            if ask_tx.send(request).is_err() {
+                app.finish_ask(Err("ask worker stopped; draft kept".into()));
+                dirty = true;
             }
         }
 
         // The git prober only looks where the fleet is actually working.
-        let cwds = app.session_cwds();
-        if cwds != sent_cwds {
-            let _ = git_cwd_tx.send(cwds.clone());
-            sent_cwds = cwds;
+        if ingested {
+            let cwds = app.session_cwds();
+            if cwds != sent_cwds {
+                let _ = git_cwd_tx.send(cwds.clone());
+                sent_cwds = cwds;
+            }
         }
 
-        terminal.draw(|frame| draw::draw(frame, &mut app))?;
+        // Compute the expiry only on changes; do not rebuild the fleet every input poll.
+        if dirty {
+            live_until = app
+                .agents()
+                .iter()
+                .filter(|a| a.live)
+                .map(|a| app::event_ts_ms(a.last_ts).saturating_add(90_000))
+                .max()
+                .unwrap_or(0);
+        }
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
+        let animated = app.composing
+            || app.filtering
+            || (app.take == Take::Now && !app.fleet_view && now < live_until);
+        dirty |= animated != was_animated;
+        was_animated = animated;
+        if dirty || (animated && last_draw.elapsed() >= ANIMATION_TICK) {
+            terminal.draw(|frame| draw::draw(frame, &mut app))?;
+            dirty = false;
+            last_draw = Instant::now();
+        }
 
-        if event::poll(Duration::from_millis(80))? {
-            let mut redraw = false;
+        if event::poll(INPUT_POLL)? {
             loop {
                 match event::read()? {
                     Event::Key(key) if key.kind != KeyEventKind::Release => {
                         done = handle_key(&mut app, key, terminal.size()?.width) || done;
-                        redraw = true;
+                        dirty = true;
                     }
-                    Event::Mouse(mouse) => {
-                        if handle_mouse(&mut app, mouse) {
-                            redraw = true;
-                        }
-                    }
-                    Event::Resize(_, _) => redraw = true,
+                    Event::Mouse(mouse) if handle_mouse(&mut app, mouse) => dirty = true,
+                    Event::Resize(_, _) => dirty = true,
                     _ => {}
                 }
                 if done || !event::poll(Duration::ZERO)? {
                     break;
                 }
-            }
-            if redraw && !done {
-                terminal.draw(|frame| draw::draw(frame, &mut app))?;
             }
         }
     }
@@ -520,7 +658,162 @@ mod tests {
     }
 
     #[test]
-    fn enter_never_discards_or_claims_to_send_a_draft() {
+    fn no_letter_quits_and_esc_never_quits() {
+        let mut app = App::new(Take::Now);
+        add_agents(&mut app, 3);
+        for c in ['q', 'Q', 'x'] {
+            assert!(!handle_key(
+                &mut app,
+                KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE),
+                80
+            ));
+        }
+        assert_eq!(app.take, Take::Now);
+        for _ in 0..5 {
+            assert!(!handle_key(
+                &mut app,
+                KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
+                80
+            ));
+        }
+        assert!(handle_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
+            80
+        ));
+    }
+
+    #[test]
+    fn esc_backs_out_one_level_at_a_time() {
+        let mut app = App::new(Take::Now);
+        add_agents(&mut app, 3);
+        press(&mut app, KeyCode::Enter);
+        assert!(app.calm_detail);
+        press(&mut app, KeyCode::Char('a'));
+        assert!(app.composing);
+        press(&mut app, KeyCode::Char('h'));
+        press(&mut app, KeyCode::Esc);
+        assert!(!app.composing && app.calm_detail, "composer → session");
+        assert_eq!(app.draft, "h", "Esc keeps the draft");
+        press(&mut app, KeyCode::Esc);
+        assert!(!app.calm_detail, "session → list");
+        press(&mut app, KeyCode::Char('f'));
+        assert!(app.fleet_view);
+        press(&mut app, KeyCode::Esc);
+        assert!(!app.fleet_view && app.take == Take::Now, "fleet → list");
+        press(&mut app, KeyCode::Char('?'));
+        assert!(app.help);
+        press(&mut app, KeyCode::Esc);
+        assert!(!app.help, "keys → list");
+    }
+
+    #[test]
+    fn filter_types_moves_and_esc_clears() {
+        let mut app = App::new(Take::Now);
+        add_agents(&mut app, 12);
+        press(&mut app, KeyCode::Char('/'));
+        for c in "response 1".chars() {
+            press(&mut app, KeyCode::Char(c));
+        }
+        assert_eq!(app.filter, "response 1");
+        // "response 1", "response 10", "response 11"
+        assert_eq!(app.agents().len(), 3);
+        press(&mut app, KeyCode::Down);
+        assert!(app.filtering, "arrows move without leaving the filter");
+        press(&mut app, KeyCode::Enter);
+        assert!(!app.filtering);
+        assert_eq!(app.filter, "response 1", "Enter keeps the filter");
+        press(&mut app, KeyCode::Esc);
+        assert!(app.filter.is_empty(), "Esc clears it");
+        press(&mut app, KeyCode::Char('/'));
+        press(&mut app, KeyCode::Char('z'));
+        press(&mut app, KeyCode::Esc);
+        assert!(!app.filtering && app.filter.is_empty());
+    }
+
+    #[test]
+    fn g_and_shift_g_jump_to_the_ends() {
+        let mut app = App::new(Take::Now);
+        add_agents(&mut app, 10);
+        press(&mut app, KeyCode::Char('G'));
+        let last = app.agents().last().unwrap().id.clone();
+        assert_eq!(app.selected_agent().unwrap().id, last);
+        press(&mut app, KeyCode::Char('g'));
+        let first = app.agents().first().unwrap().id.clone();
+        assert_eq!(app.selected_agent().unwrap().id, first);
+        press(&mut app, KeyCode::PageDown);
+        assert_eq!(app.selected_agent().unwrap().id, app.agents()[8].id);
+    }
+
+    #[test]
+    fn selection_holds_when_another_session_jumps_ahead() {
+        let mut app = App::new(Take::Now);
+        add_agents(&mut app, 6);
+        press(&mut app, KeyCode::Char('j'));
+        press(&mut app, KeyCode::Char('j'));
+        let held = app.selected_agent().unwrap().id;
+        // The oldest session speaks again and moves to the top.
+        app.ingest_event(feed::TailEvent {
+            id: "late".into(),
+            ts: 1_700_000_100_000,
+            source: "codex".into(),
+            session_id: "session-0".into(),
+            kind: "assistant".into(),
+            summary: "back again".into(),
+            project: Some("openscout".into()),
+            cwd: None,
+            raw: None,
+        });
+        assert_eq!(app.agents()[0].id, "session-0");
+        assert_eq!(app.selected_agent().unwrap().id, held);
+        press(&mut app, KeyCode::Char('j'));
+        let next = app.selected_agent().unwrap().id;
+        let list = app.agents();
+        let at = list.iter().position(|a| a.id == held).unwrap();
+        assert_eq!(
+            next,
+            list[at + 1].id,
+            "j moves from the held row, not a stale index"
+        );
+    }
+
+    #[test]
+    fn title_skips_command_skill_and_continuation_boilerplate() {
+        assert!(app::prompt_title(
+            "<command-message>scout</command-message> <command-name>/scout</command-name>"
+        )
+        .is_empty());
+        assert!(app::prompt_title(
+            "Base directory for this skill: /tmp/skill # enormous instructions"
+        )
+        .is_empty());
+        assert!(
+            app::prompt_title("This session is being continued from earlier. Summary: things")
+                .is_empty()
+        );
+        let mut app = App::new(Take::Now);
+        for (n, prompt) in [
+            (1, "<command-message>scout</command-message>"),
+            (2, "Review the TUI"),
+            (3, "Continue"),
+        ] {
+            app.ingest_event(feed::TailEvent {
+                id: format!("title-{n}"),
+                ts: 1_700_000_000_000 + n,
+                source: "grok".into(),
+                session_id: "test".into(),
+                kind: "user".into(),
+                summary: prompt.into(),
+                project: None,
+                cwd: None,
+                raw: None,
+            });
+        }
+        assert_eq!(app.session_title("test"), "Review the TUI");
+    }
+
+    #[test]
+    fn enter_queues_the_ask_without_blocking_or_dropping_the_draft() {
         let mut app = App::new(Take::Now);
         add_agents(&mut app, 1);
         app.begin_compose();
@@ -534,10 +827,43 @@ mod tests {
         assert!(!app.composing);
         assert_eq!(app.draft, "Please continue with the review");
         assert!(!app.composer_ok);
+        assert!(app.ask_busy());
+        assert_eq!(app.composer_notice.as_deref(), Some("asking @codex·ion0…"));
         assert_eq!(
-            app.composer_notice.as_deref(),
-            Some("Sending is not wired; draft was not sent.")
+            app.take_ask_request(),
+            Some(ask::AskRequest {
+                session_id: "session-0".into(),
+                handle: "@codex·ion0".into(),
+                harness: "codex".into(),
+                body: "Please continue with the review".into(),
+            })
         );
+
+        app.finish_ask(Err("broker unreachable".into()));
+        assert!(!app.ask_busy());
+        assert_eq!(app.draft, "Please continue with the review");
+        assert_eq!(app.composer_notice.as_deref(), Some("broker unreachable"));
+    }
+
+    #[test]
+    fn a_landed_ask_clears_only_the_draft_it_sent() {
+        let mut app = App::new(Take::Now);
+        add_agents(&mut app, 1);
+        app.begin_compose();
+        app.draft = "first".into();
+        press(&mut app, KeyCode::Enter);
+        assert!(app.take_ask_request().is_some());
+
+        app.finish_ask(Ok("asked @codex·ion0".into()));
+        assert!(app.composer_ok);
+        assert!(app.draft.is_empty());
+
+        app.begin_compose();
+        app.draft = "second".into();
+        press(&mut app, KeyCode::Enter);
+        app.draft = "typed while it flew".into();
+        app.finish_ask(Ok("asked @codex·ion0".into()));
+        assert_eq!(app.draft, "typed while it flew");
     }
 
     #[test]
@@ -559,7 +885,7 @@ mod tests {
 
     #[test]
     fn escape_cancels_and_clears_a_draft() {
-        let mut app = App::new(Take::Now);
+        let mut app = App::new(Take::Twin);
         app.begin_compose();
         app.draft = "Never mind".into();
 
@@ -812,6 +1138,8 @@ mod tests {
     #[test]
     fn tab_cycles_the_spine_and_skips_twin_and_grid() {
         let mut app = App::new(Take::Now);
+        // Tab asks on the calm list; the spine starts from the fleet.
+        app.fleet_view = true;
         press(&mut app, KeyCode::Tab);
         assert_eq!(app.take, Take::Horizon);
         press(&mut app, KeyCode::Tab);

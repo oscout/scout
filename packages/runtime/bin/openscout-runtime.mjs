@@ -10,6 +10,7 @@ const packageDir = resolve(binDir, "..");
 const distDir = resolve(binDir, "../dist");
 const sourceDir = resolve(binDir, "../src");
 const sourceMain = {
+  listening: resolve(sourceDir, "room-listening-daemon.ts"),
   base: resolve(sourceDir, "base-daemon.ts"),
   broker: resolve(sourceDir, "broker-daemon.ts"),
   service: resolve(sourceDir, "broker-process-manager.ts"),
@@ -17,6 +18,7 @@ const sourceMain = {
   otel: resolve(sourceDir, "otlp/entry.ts"),
 };
 const distMain = {
+  listening: resolve(distDir, "room-listening-daemon.js"),
   base: resolve(distDir, "base-daemon.js"),
   broker: resolve(distDir, "broker-daemon.js"),
   service: resolve(distDir, "broker-process-manager.js"),
@@ -24,6 +26,7 @@ const distMain = {
   otel: resolve(distDir, "otlp/entry.js"),
 };
 const processNames = {
+  listening: "scout-listening",
   base: "scout-base",
   broker: "scout-broker",
   service: "scout-service",
@@ -33,6 +36,32 @@ const processNames = {
 const npmCommand = process.platform === "win32" ? "npm.cmd" : "npm";
 
 const [, , command = "service", ...args] = process.argv;
+// Handle lifecycle help and validate arguments before importing or building any
+// entrypoint. Daemon modules start work as a top-level import side effect.
+const lifecycleCommands = new Set(["base", "broker", "service", "discover"]);
+if (command === "--help" || command === "-h" || command === "help"
+    || (lifecycleCommands.has(command) && args.some(arg => arg === "--help" || arg === "-h"))) {
+  console.log("Usage: openscout-runtime <base|broker|service|discover> [options]\n"
+    + "  base / broker        Run the daemon in the foreground (no flags).\n"
+    + "  service [install|start|stop|restart|uninstall|status] [--json]\n"
+    + "                       Manage the local broker service; default: status.\n"
+    + "  discover [seed ...]  Discover mesh peers through the broker.\n"
+    + "  --help, -h           Show help without starting or changing anything.");
+  process.exit(0);
+}
+if (lifecycleCommands.has(command)) {
+  const positional = args.filter(arg => !arg.startsWith("-"));
+  const invalid = command === "service"
+    ? args.some(arg => arg.startsWith("-") && arg !== "--json")
+      || positional.length > 1
+      || (positional.length === 1 && !["install", "start", "stop", "restart", "uninstall", "status"].includes(positional[0]))
+    : command === "discover" ? args.some(arg => arg.startsWith("-")) : args.length > 0;
+  if (invalid) {
+    console.error(`Unsupported arguments for openscout-runtime ${command}: ${args.join(" ")} (try --help)`);
+    process.exit(1);
+  }
+}
+
 
 if (!(command in sourceMain)) {
   console.error(`Unknown openscout-runtime command: ${command}`);

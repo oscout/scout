@@ -88,6 +88,7 @@ function fakeStore(): SQLiteControlPlaneStore {
     writerDb: database,
     trustedPeer: () => undefined,
     listTrustedPeers: () => [],
+    knownTrustedPeerKey: () => false,
     upsertTrustedPeer: () => undefined,
     revokeTrustedPeer: () => false,
     claimPeerNonce: () => true,

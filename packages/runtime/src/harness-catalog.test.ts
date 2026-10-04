@@ -137,6 +137,52 @@ describe("harness catalog", () => {
     expect(report.ready).toBe(true);
   });
 
+  test("local-only readiness never runs a command, and a skipped healthcheck is not a pass", () => {
+    // Cursor's readiness is only `cursor-agent status` (it asks Cursor); there
+    // is no local credential signal, so local-only can't call it signed in.
+    const cursor = createBuiltInHarnessCatalog().find((entry) => entry.name === "cursor");
+    expect(cursor?.readiness?.healthcheckCommand).toBeTruthy();
+    expect(cursor?.readiness?.allOf ?? []).toEqual([]);
+    expect(cursor?.readiness?.anyOf ?? []).toEqual([]);
+    const ran: string[] = [];
+    const binaryOnly = {
+      env: {},
+      whichBinary: () => "/usr/local/bin/cursor-agent",
+      requirementExists: () => false,
+      runCommand: (command: string) => {
+        ran.push(command);
+        return true;
+      },
+    };
+
+    const local = evaluateHarnessReadiness(cursor!, { ...binaryOnly, localOnly: true });
+    expect(ran).toEqual([]);
+    expect(local.installed).toBe(true);
+    expect(local.ready).toBe(false);
+    expect(local.state).toBe("configured");
+    expect(local.detail).toContain("Sign-in isn't checked here");
+
+    // The full check is still the authority: it verifies, then asks `cursor-agent status`.
+    const full = evaluateHarnessReadiness(cursor!, binaryOnly);
+    expect(ran).toEqual(["cursor-agent --version >/dev/null 2>&1", "cursor-agent status >/dev/null 2>&1"]);
+    expect(full.ready).toBe(true);
+  });
+
+  test("local-only readiness still reports ready on real local evidence", () => {
+    const claude = createBuiltInHarnessCatalog().find((entry) => entry.name === "claude");
+    const report = evaluateHarnessReadiness(claude!, {
+      env: { ANTHROPIC_API_KEY: "test-key" },
+      whichBinary: () => "/usr/local/bin/claude",
+      requirementExists: () => false,
+      runCommand: () => {
+        throw new Error("local-only readiness ran a command");
+      },
+      localOnly: true,
+    });
+    expect(report.ready).toBe(true);
+    expect(report.state).toBe("ready");
+  });
+
   test("readiness reports pi ready when binary and auth file are present", () => {
     const pi = createBuiltInHarnessCatalog().find((entry) => entry.name === "pi");
     expect(pi).toBeTruthy();

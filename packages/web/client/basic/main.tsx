@@ -16,7 +16,18 @@ import {
   SCOUT_THEME_STORAGE_KEY,
 } from "../lib/theme.ts";
 import { ScoutProvider } from "../scout/Provider.tsx";
+import { FeatureFlagsProvider } from "hudsonkit/flags";
+
+import { MessageComposerEmbedBoundary } from "../components/MessageComposer/MessageComposerEmbedBoundary.tsx";
+import {
+  SCOUT_AUDIENCE_ORDER,
+  SCOUT_DEFAULT_AUDIENCE,
+  SCOUT_FLAG_STORAGE_KEY,
+  scoutFlagInitialLayers,
+  scoutFlags,
+} from "../lib/scout-flags.ts";
 import { BasicApp, BasicBootErrorBoundary } from "./BasicApp.tsx";
+import { BasicEmbed, isEmbedPath } from "./BasicEmbed.tsx";
 import "../styles/tokens.css";
 import "../styles/primitives.css";
 import "../arc-tailwind.css";
@@ -32,6 +43,8 @@ const initialTheme = resolveScoutStartupTheme();
 const initialTemplate = resolveScoutStartupTemplate();
 applyScoutThemeToDocument(initialTheme, initialTemplate, resolveScoutStartupAppearanceDetails());
 
+const embedPath = isEmbedPath(window.location.pathname) ? window.location.pathname : null;
+
 createRoot(rootElement).render(
   <StrictMode>
     <BasicBootErrorBoundary>
@@ -41,7 +54,20 @@ createRoot(rootElement).render(
         storageKey={SCOUT_THEME_STORAGE_KEY}
       >
         <ScoutProvider initialTheme={initialTheme}>
-          <BasicApp />
+          {embedPath ? (
+            // Same flag stack the full app's embeds mount under.
+            <MessageComposerEmbedBoundary>
+              <FeatureFlagsProvider
+                registry={scoutFlags}
+                audience={SCOUT_DEFAULT_AUDIENCE}
+                audienceOrder={SCOUT_AUDIENCE_ORDER}
+                storageKey={SCOUT_FLAG_STORAGE_KEY}
+                initialLayers={scoutFlagInitialLayers()}
+              >
+                <BasicEmbed pathname={embedPath} />
+              </FeatureFlagsProvider>
+            </MessageComposerEmbedBoundary>
+          ) : <BasicApp />}
         </ScoutProvider>
       </ThemeProvider>
     </BasicBootErrorBoundary>

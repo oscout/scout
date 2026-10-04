@@ -1,3 +1,5 @@
+import { assessSetupCompletion } from "@openscout/runtime/onboarding";
+import { SETUP_HELP } from "../../../../../packages/cli/bin/lifecycle-preflight.mjs";
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -10,6 +12,7 @@ import { runScoutSetup } from "../../core/setup/service.ts";
 import { renderScoutSetupReport } from "../../ui/terminal/setup.ts";
 import { readOpenScoutSettings } from "@openscout/runtime/setup";
 import { resolveOpenScoutSupportPaths } from "@openscout/runtime/support-paths";
+import { scoutTuiNeedsDownload, SCOUT_TUI_INSTALL_OFFER } from "./tui.ts";
 
 type SourceRootPrompt = (suggestedRoot: string, additionalRootCount: number) => Promise<string>;
 
@@ -103,7 +106,7 @@ export async function resolveSetupSourceRoots(
 
 export async function runSetupCommand(context: ScoutCommandContext, args: string[]): Promise<void> {
   if (args.includes("--help") || args.includes("-h")) {
-    context.output.writeText("Usage: scout setup [--source-root <path>] [--default-harness <name>] [--context-root <path>] [--json]\n\nConfigure project discovery and install/start the local broker.\nRepeat --source-root to add workspace roots. Prompts for a root in an interactive terminal.\nUse scout doctor to inspect readiness without requesting setup.");
+    context.output.writeText(SETUP_HELP);
     return;
   }
   const options = parseSetupCommandOptions(args, defaultScoutContextDirectory(context));
@@ -113,7 +116,7 @@ export async function runSetupCommand(context: ScoutCommandContext, args: string
     // The prompt reads stdin, but context.isTty only describes stdout. Without
     // the stdin check, a piped stdin under a TTY stdout blocks on a question
     // nobody can answer.
-    { ...context, isTty: context.isTty && Boolean(process.stdin.isTTY) },
+    { ...context, isTty: context.isTty && Boolean(process.stdin.isTTY) && !context.env.SSH_CONNECTION && !context.env.SSH_TTY },
     options.currentDirectory,
     options.sourceRoots,
     {
@@ -122,5 +125,20 @@ export async function runSetupCommand(context: ScoutCommandContext, args: string
     },
   );
   const report = await runScoutSetup(options);
-  context.output.writeValue(report, renderScoutSetupReport);
+  const completion = assessSetupCompletion({ ...report,
+    defaultHarness: report.setup.settings.agents.defaultHarness,
+    failures: [
+      ...report.scoutSkill.entries.filter((entry) => entry.status === "error")
+        .map((entry) => entry.error ?? `Skill install failed: ${entry.id}`),
+      ...(report.claudeStatusline.status === "error"
+        ? [report.claudeStatusline.error ?? "Claude statusline install failed"] : []),
+    ],
+  }, { interactive: context.isTty && Boolean(process.stdin.isTTY) && context.output.mode !== "json",
+    ssh: Boolean(context.env.SSH_CONNECTION || context.env.SSH_TTY) });
+  context.output.writeValue({ ...report, ...completion }, (value) => renderScoutSetupReport(value, completion));
+  if (completion.outcome === "failed") process.exitCode = 1;
+  // An offer only; setup never downloads it.
+  if (context.output.mode !== "json" && scoutTuiNeedsDownload({ env: context.env, cwd: options.currentDirectory })) {
+    context.output.writeText(SCOUT_TUI_INSTALL_OFFER);
+  }
 }

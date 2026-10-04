@@ -55,6 +55,7 @@ import {
   storePairingAttachmentBlob,
 } from "./fileserver.ts";
 import { createArtifactPresentation } from "./artifact-presentation.ts";
+import { getMobileMeshNodes } from "./mobile-mesh-nodes.ts";
 import {
   SecureTransport,
   type SocketLike,
@@ -650,6 +651,13 @@ async function handleRPCInner(
         return {
           id: req.id,
           result: await getScoutMobileAgents(p, resolveMobileCurrentDirectory()),
+        };
+      }
+
+      case "mobile/mesh/nodes": {
+        return {
+          id: req.id,
+          result: await getMobileMeshNodes(),
         };
       }
 

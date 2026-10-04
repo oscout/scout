@@ -1,8 +1,9 @@
+export { assessSetupCompletion, hasUsableScoutApp, type SetupCompletion } from "./setup-completion.js";
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 
-import type { AgentHarness } from "@openscout/protocol";
+import { SCOUT_RUNTIME_CATALOG, type AgentHarness } from "@openscout/protocol";
 
 import {
   brokerServiceStatus,
@@ -19,14 +20,18 @@ import {
 } from "./local-config.js";
 import {
   loadHarnessCatalogSnapshot,
+  resolveHarnessSessionDefaults,
   type HarnessCatalogSnapshot,
+  type HarnessReadinessState,
 } from "./harness-catalog.js";
 import {
   DEFAULT_OPERATOR_NAME,
   installClaudeStatuslineTool,
   initializeOpenScoutSetup,
   installScoutSkillToHarnesses,
+  MANAGED_AGENT_HARNESSES,
   readOpenScoutSettings,
+  type ManagedAgentHarness,
   type ClaudeStatuslineInstallReport,
   type RelayRuntimeTransport,
   writeOpenScoutSettings,
@@ -76,6 +81,8 @@ export type OpenScoutOnboardingState = {
   completedAt: number | null;
   needed: boolean;
   steps: OpenScoutOnboardingStep[];
+  /** Setup choices with the readiness this read observed; absent if the catalog couldn't load. */
+  harnesses?: OnboardingHarnessObservation[];
 };
 
 export type OpenScoutOnboardingSetupResult = {
@@ -112,27 +119,69 @@ function projectConfigPath(projectRoot: string): string {
   return join(projectRoot, ".openscout", "project.json");
 }
 
-function normalizeDefaultHarness(value: string | undefined | null): AgentHarness {
-  return value === "codex"
-    ? "codex"
-    : value === "cursor"
-      ? "cursor"
-      : value === "devin"
-        ? "devin"
-        : value === "opencode"
-          ? "opencode"
-          : value === "pi"
-            ? "pi"
-            : "claude";
+/**
+ * Harnesses first-run setup offers, in catalog order: the Scout runtime
+ * catalog's enabled, listed harnesses that Scout can run as a managed agent.
+ * The catalog is the authority; there is no second list here.
+ */
+export const ONBOARDING_HARNESS_CHOICES: readonly ManagedAgentHarness[] = SCOUT_RUNTIME_CATALOG.harnesses
+  .filter((entry) => entry.enabled !== false && entry.listed !== false)
+  .map((entry) => entry.id)
+  .filter((id): id is ManagedAgentHarness => (MANAGED_AGENT_HARNESSES as readonly string[]).includes(id));
+
+export class OnboardingHarnessError extends Error {
+  readonly value: string;
+  constructor(value: string) {
+    super(`Unknown harness "${value}". Choose one of: ${ONBOARDING_HARNESS_CHOICES.join(", ")}.`);
+    this.name = "OnboardingHarnessError";
+    this.value = value;
+  }
 }
 
-function defaultTransportForHarness(harness: AgentHarness): RelayRuntimeTransport {
-  if (harness === "codex") return "codex_app_server";
-  if (harness === "cursor") return "cursor_acp";
-  if (harness === "devin") return "devin_acp";
-  if (harness === "opencode") return "opencode_acp";
-  if (harness === "pi") return "pi_rpc";
-  return "tmux";
+/**
+ * Canonical onboarding harness for a user-supplied name, or null. Catalog
+ * aliases resolve to their session harness (`grok` → `grok-acp`); anything
+ * not offered is null rather than quietly becoming Claude.
+ */
+export function parseOnboardingHarness(value: string | null | undefined): ManagedAgentHarness | null {
+  const trimmed = value?.trim().toLowerCase();
+  if (!trimmed) return null;
+  const canonical = resolveHarnessSessionDefaults(trimmed)?.harness ?? trimmed;
+  return ONBOARDING_HARNESS_CHOICES.find((choice) => choice === canonical) ?? null;
+}
+
+/** The transport the runtime harness catalog launches this harness with. */
+export function onboardingTransportForHarness(harness: ManagedAgentHarness): RelayRuntimeTransport {
+  const transport = resolveHarnessSessionDefaults(harness)?.transport;
+  if (!transport) {
+    throw new Error(`Harness catalog has no session defaults for "${harness}".`);
+  }
+  return transport as RelayRuntimeTransport;
+}
+
+/**
+ * What the state read already observed about one setup choice. Local evidence
+ * only (see `localOnly` readiness): no vault, provider status or network call.
+ * `configured` with `ready: false` means installed but sign-in unverified
+ * locally (e.g. Cursor); only `ready: true` counts toward setup completion.
+ */
+export type OnboardingHarnessObservation = {
+  id: ManagedAgentHarness;
+  label: string;
+  state: HarnessReadinessState;
+  ready: boolean;
+  detail: string;
+};
+
+/** The setup choices, in catalog order, from a snapshot the caller already has. */
+export function onboardingHarnessObservations(catalog: HarnessCatalogSnapshot): OnboardingHarnessObservation[] {
+  return ONBOARDING_HARNESS_CHOICES.flatMap((id) => {
+    const entry = catalog.entries.find((candidate) => candidate.name === id);
+    if (!entry) return [];
+    const label = SCOUT_RUNTIME_CATALOG.harnesses.find((harness) => harness.id === id)?.label ?? entry.label;
+    const report = entry.readinessReport;
+    return [{ id, label, state: report.state, ready: report.ready, detail: report.detail }];
+  });
 }
 
 async function nearestProjectConfig(startDirectory: string | null | undefined): Promise<{
@@ -271,7 +320,9 @@ export async function loadOpenScoutOnboardingState(options: {
   const contextRoot = settings.discovery.contextRoot ?? null;
   const project = await resolveProjectConfig({ currentDirectory, contextRoot });
   const broker = options.broker ?? await brokerServiceStatus().catch(() => null);
-  const catalog = options.catalog ?? await loadHarnessCatalogSnapshot().catch(() => null);
+  // This read is polled while setup is on screen (the Mac app's gate), so it
+  // counts ready runtimes from local evidence without harness auth/status calls.
+  const catalog = options.catalog ?? await loadHarnessCatalogSnapshot({ localOnly: true }).catch(() => null);
   const readyRuntimeCount = catalog?.entries.filter((entry) => entry.readinessReport.ready).length ?? 0;
   const hasReadyRuntime = readyRuntimeCount > 0;
   const hasLocalConfig = localConfigExists();
@@ -321,6 +372,7 @@ export async function loadOpenScoutOnboardingState(options: {
     completedAt: settings.onboarding.completedAt,
     needed: !(settings.onboarding.skippedAt || settings.onboarding.completedAt || coreComplete),
     steps,
+    ...(catalog ? { harnesses: onboardingHarnessObservations(catalog) } : {}),
   };
 }
 
@@ -392,7 +444,18 @@ export async function saveOpenScoutOnboardingProject(input: {
   const existingSettings = await readOpenScoutSettings({
     currentDirectory: input.currentDirectory ?? contextRoot,
   });
-  const defaultHarness = normalizeDefaultHarness(input.defaultHarness ?? existingSettings.agents.defaultHarness);
+  // An explicit choice must be one setup offers; a stored one is kept as is
+  // (with its stored transport) so existing configurations don't shift.
+  const chosenHarness = input.defaultHarness?.trim() ? parseOnboardingHarness(input.defaultHarness) : null;
+  if (input.defaultHarness?.trim() && !chosenHarness) {
+    throw new OnboardingHarnessError(input.defaultHarness.trim());
+  }
+  const agents = chosenHarness
+    ? { defaultHarness: chosenHarness, defaultTransport: onboardingTransportForHarness(chosenHarness) }
+    : {
+      defaultHarness: existingSettings.agents.defaultHarness,
+      defaultTransport: existingSettings.agents.defaultTransport,
+    };
   const now = input.now ?? nowMs();
 
   // An empty `sourceRoots` means "this caller has nothing to say about roots" —
@@ -410,10 +473,7 @@ export async function saveOpenScoutOnboardingProject(input: {
       contextRoot,
       ...(rootsProvided ? { workspaceRoots: sourceRoots } : {}),
     },
-    agents: {
-      defaultHarness,
-      defaultTransport: defaultTransportForHarness(defaultHarness),
-    },
+    agents,
     onboarding: {
       ...(rootsProvided ? { sourceRootsAnsweredAt: now } : {}),
       harnessChosenAt: now,
@@ -498,15 +558,21 @@ export async function runOpenScoutOnboardingSetup(input: {
     installScoutSkillToHarnesses(),
     installClaudeStatuslineTool(),
   ]);
-  const catalog = await loadHarnessCatalogSnapshot();
   let broker = await brokerServiceStatus();
   let brokerWarning: string | null = null;
   try {
-    broker = await startBrokerService();
+    // A healthy existing broker needs no lifecycle action on a rerun,
+    // including an externally supervised foreground broker.
+    if (!broker.health.ok) {
+      broker = await startBrokerService();
+    }
   } catch (error) {
     brokerWarning = error instanceof Error ? error.message : String(error);
     broker = await brokerServiceStatus();
   }
+  // Verify the post-start observation, not a pre-start snapshot.
+  broker = await brokerServiceStatus();
+  const catalog = await loadHarnessCatalogSnapshot();
   await triggerMeshDiscovery(broker);
 
   await markOpenScoutOnboardingCommand({
@@ -593,8 +659,11 @@ export async function markOpenScoutOnboardingCommand(input: {
 export async function ensureOpenScoutOnboardingCompletion(options: {
   currentDirectory?: string;
   now?: number;
+  broker?: BrokerServiceStatus | null;
+  catalog?: HarnessCatalogSnapshot | null;
 } = {}): Promise<OpenScoutOnboardingState> {
-  const state = await loadOpenScoutOnboardingState({ currentDirectory: options.currentDirectory });
+  const observed = { broker: options.broker, catalog: options.catalog };
+  const state = await loadOpenScoutOnboardingState({ currentDirectory: options.currentDirectory, ...observed });
   if (state.completedAt || state.skippedAt) {
     return state;
   }
@@ -613,7 +682,7 @@ export async function ensureOpenScoutOnboardingCompletion(options: {
   }, {
     currentDirectory: options.currentDirectory,
   });
-  return loadOpenScoutOnboardingState({ currentDirectory: options.currentDirectory });
+  return loadOpenScoutOnboardingState({ currentDirectory: options.currentDirectory, ...observed });
 }
 
 export async function skipOpenScoutOnboarding(options: {

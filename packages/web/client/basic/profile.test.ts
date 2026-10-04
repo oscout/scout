@@ -7,6 +7,9 @@ const React = (await import("../../node_modules/react/index.js")) as typeof Reac
 mock.module("react", () => React);
 
 const {
+  BASIC_EMBED_PATHS,
+  isBasicEmbedPath,
+  isEmbedPath,
   basicArea,
   basicDmConversations,
   basicRoute,
@@ -84,14 +87,29 @@ describe("basic route policy", () => {
       { view: "ops", mode: "issues" },
       { view: "search" },
       { view: "mesh" },
-      { view: "settings" },
       { view: "briefings" },
     ] as Route[]) {
       expect(basicRoute(route)).toEqual({ view: "inbox" });
     }
   });
 
-  test("areas map to the three nav destinations", () => {
+  test("Settings is carried, so Solo Pro and Operator are reachable from the browser", () => {
+    expect(basicRoute({ view: "settings" })).toEqual({ view: "settings" });
+    expect(basicRoute({ view: "settings", section: "pro" })).toEqual({ view: "settings", section: "pro" });
+    expect(basicRoute({ view: "settings", section: "operator" })).toEqual({ view: "settings", section: "operator" });
+    expect(basicArea({ view: "settings", section: "pro" })).toBe("settings");
+  });
+
+  test("full-app settings screens fold onto what basic has", () => {
+    expect(basicRoute({ view: "settings", section: "pairing" })).toEqual({ view: "settings", section: "devices" });
+    expect(basicRoute({ view: "settings", section: "agents" })).toEqual({ view: "settings" });
+    expect(basicRoute({ view: "settings", section: "agents", agentId: "agent-a" })).toEqual({
+      view: "messages",
+      agentId: "agent-a",
+    });
+  });
+
+  test("areas map to the nav destinations", () => {
     expect(basicArea({ view: "inbox" })).toBe("home");
     expect(basicArea({ view: "broker" } as Route)).toBe("home");
     expect(basicArea({ view: "messages" })).toBe("dms");
@@ -146,5 +164,25 @@ describe("basic DM restriction", () => {
     expect(isBasicDmUnread(recent, {}, now + 1)).toBe(false);
     expect(isBasicDmUnread(recent, { "dm-1": now }, 0)).toBe(false);
     expect(isBasicDmUnread({ id: "dm-1", lastMessageAt: null }, {}, 0)).toBe(false);
+  });
+});
+
+describe("basic embeds", () => {
+  test("carries the Mac panes basic has a screen for", () => {
+    expect([...BASIC_EMBED_PATHS].sort()).toEqual(["/embed/home", "/embed/session", "/embed/settings", "/embed/thread"]);
+  });
+
+  test("every native embed path is an embed, carried or not", () => {
+    for (const path of ["/embed/settings", "/embed/terminal", "/embed/observe/agent-1", "/ops/lanes/embed"]) {
+      expect(isEmbedPath(path)).toBe(true);
+    }
+    expect(isEmbedPath("/settings")).toBe(false);
+    expect(isEmbedPath("/c/abc")).toBe(false);
+  });
+
+  test("full-app embeds are not carried", () => {
+    for (const path of ["/embed/ops", "/embed/terminal", "/embed/code", "/embed/voice", "/ops/lanes/embed"]) {
+      expect(isBasicEmbedPath(path)).toBe(false);
+    }
   });
 });

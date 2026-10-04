@@ -1,0 +1,101 @@
+/* Work-page control that grants a work item, its agent, or its project
+   permission to surface on the desktop companion. */
+
+.co-surface {
+  position: relative;
+  display: inline-flex;
+}
+
+.co-surface > button[data-on] {
+  border-color: color-mix(in srgb, var(--accent) 34%, transparent);
+  color: var(--accent);
+}
+
+.co-surface-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 20;
+  width: min(300px, calc(100vw - 32px));
+  display: grid;
+  gap: 2px;
+  padding: 10px;
+  border: 1px solid color-mix(in srgb, var(--border) 95%, transparent);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+  box-shadow: 0 10px 28px -14px color-mix(in srgb, var(--ink) 40%, transparent);
+}
+
+.co-surface-lede {
+  margin: 0 0 4px;
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-sm);
+}
+
+.co-surface-option {
+  display: grid;
+  grid-template-columns: auto 72px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  min-height: 30px;
+  padding: 0 4px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: var(--text-sm);
+}
+
+.co-surface-option:hover {
+  background: color-mix(in srgb, var(--accent) 6%, transparent);
+}
+
+.co-surface-option input {
+  margin: 0;
+  accent-color: var(--accent);
+}
+
+.co-surface-kind {
+  color: var(--muted);
+}
+
+.co-surface-name {
+  overflow: hidden;
+  color: var(--ink);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.co-surface-hint,
+.co-surface-error {
+  margin: 6px 0 0;
+  font-size: var(--text-xs);
+  line-height: 1.4;
+}
+
+.co-surface-hint {
+  color: var(--muted);
+}
+
+.co-surface-error {
+  color: var(--danger, var(--ink));
+}
+
+/* Work-page pin control and its bridge error, shown beside it rather than
+   only in a tooltip. */
+.co-host-control {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.co-host-error {
+  max-width: 260px;
+  overflow: hidden;
+  color: var(--danger, var(--ink));
+  font-size: var(--text-xs);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

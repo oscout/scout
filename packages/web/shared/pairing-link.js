@@ -1,5 +1,15 @@
 export const SCOUT_PAIRING_DEEP_LINK_SCHEME = "scout";
 export const SCOUT_PAIRING_DEEP_LINK_PATH = "pair";
+// What the pairing QR encodes. The iOS app claims this path as a universal
+// link, so the phone's Camera opens Scout directly; without the app the page
+// offers the install and a scout:// hand-off. The payload rides in the
+// fragment, which browsers never send, so it stays out of server logs.
+export const SCOUT_PAIRING_WEB_LINK_BASE = "https://openscout.app/pair";
+
+export function pairingWebLink(qrValue) {
+  const payload = typeof qrValue === "string" ? qrValue.trim() : "";
+  return payload ? `${SCOUT_PAIRING_WEB_LINK_BASE}#payload=${encodeURIComponent(payload)}` : null;
+}
 
 export function pairingDeepLink(qrValue) {
   const payload = typeof qrValue === "string" ? qrValue.trim() : "";

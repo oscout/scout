@@ -24,6 +24,7 @@ import {
   MessageSquare,
   Mic,
   Network,
+  PackageCheck,
   Palette,
   Smartphone,
   SquareTerminal,
@@ -53,7 +54,8 @@ import {
   type HostSettingKey,
   type HostSettingsSnapshot,
 } from "../../lib/host-settings-bridge.ts";
-import { routePath } from "../../lib/router.ts";
+import { canNavigateBrowserBack, navigateBrowserBack, routePath } from "../../lib/router.ts";
+
 import {
   fetchScoutVoiceHistory,
   fetchScoutVoiceSettings,
@@ -90,11 +92,13 @@ import { CastPicker } from "../../components/CastPicker.tsx";
 import { SpriteAvatar } from "../../components/SpriteAvatar.tsx";
 import { SCOUT_REALTIME_VOICE_FLAG } from "../../../shared/realtime-voice.ts";
 import type { LocalHttpsState } from "../../../shared/api/local-https.ts";
+import type { SoloProAction, SoloProComponent, SoloProPhase, SoloProStatus } from "@openscout/runtime/solo-pro";
 import {
   SCOUT_VOICE_PLAYBACK_ENV,
   type ScoutVoicePlaybackSettings,
 } from "../../../shared/voice-playback.ts";
 import { useScout } from "../../scout/Provider.tsx";
+import { OnboardingEmbedGate } from "../../scout/takeover/OnboardingEmbedGate.tsx";
 import { defineSurface } from "../../surfaces/types.ts";
 // CastPicker is styled by the older settings sheet.
 import "./settings-drawer.css";
@@ -104,7 +108,7 @@ import "./scout-settings.css";
 
 export type ScoutSettingsSection = Extract<
   SettingsSection,
-  "appearance" | "operator" | "comms" | "voice" | "terminal" | "credentials" | "assistants" | "devices" | "mesh" | "system" | "about"
+  "appearance" | "operator" | "comms" | "voice" | "terminal" | "credentials" | "assistants" | "devices" | "mesh" | "pro" | "system" | "about"
 >;
 
 type PageDef = {
@@ -126,8 +130,9 @@ const PAGES: PageDef[] = [
   { id: "assistants", title: "Connected assistants", promise: "Review requests and manage assistants allowed into your Scout.", icon: UserRound, hostOnly: true },
   { id: "devices", title: "Devices", promise: "Phones and iPads that can reach this Scout.", icon: Smartphone },
   { id: "mesh", title: "Mesh", promise: "The other Scouts this Mac works with.", icon: Network },
+  { id: "pro", title: "Solo Pro", promise: "Whether this account has it, what is installed here, and what is running.", icon: PackageCheck },
   { id: "system", title: "System", promise: "What is running, and what to do when it isn't.", icon: Activity },
-  { id: "about", title: "About", promise: "Which Scout this is, down to the commit.", icon: Info },
+  { id: "about", title: "About", promise: "Contact, support, and which Scout this is.", icon: Info },
 ];
 
 export function isScoutSettingsSection(value: unknown): value is ScoutSettingsSection {
@@ -665,7 +670,7 @@ function AppearancePage({ host }: { host: Host }) {
               onChange={(value) => appearance.setTheme(value as OptionValue<typeof MODE_OPTIONS>)}
             />
           </Row>
-          <Row title="Theme" detail="Scout is near-neutral slate. Graphite, Polar and Solar are the alternatives.">
+          <Row title="Theme" detail="Graphite with a touch of amber is the default. Scout, Polar and Solar offer other palettes.">
             <Select
               label="Theme"
               value={appearanceDetails.palette}
@@ -1088,6 +1093,13 @@ function voicePermissionState(entry: ScoutVoicePermissionStatus | null): HostPer
 }
 
 function VoicePage({ host }: { host: Host }) {
+  // Opening Voice is the deliberate credential-dependent action. Generic
+  // settings snapshots and first-run setup must not initialize speech keys.
+  const { available: nativeVoiceAvailable, run: runNativeVoice } = host;
+  useEffect(() => {
+    if (nativeVoiceAvailable) void runNativeVoice(() => hostSettings.speechCatalog());
+  }, [nativeVoiceAvailable, runNativeVoice]);
+
   const realtimeAvailable = useOptionalFlag(SCOUT_REALTIME_VOICE_FLAG, true);
   const [settings, setSettings] = useState<ScoutVoiceSettings | null>(null);
   const [devices, setDevices] = useState<ScoutVoiceInputDevice[]>([]);
@@ -1218,7 +1230,7 @@ function VoicePage({ host }: { host: Host }) {
                 onChange={(value) => host.set("spokenReplies.voice", value)}
               />
             </Row>
-            <Row title="Model" detail="Runs on this Mac. Nothing leaves it." dim={!onMac}>
+            <Row title="Model" detail="Local models run on this Mac. Cloud models send text to their provider." dim={!onMac}>
               <Select
                 label="Model"
                 value={spoken.model}
@@ -2026,6 +2038,215 @@ function SystemPage({ host }: { host: Host }) {
   );
 }
 
+/* ── Solo Pro ───────────────────────────────────────────────────────────── */
+
+// Three facts, kept apart: what the account has (asked of the download host
+// only when you check), what is installed here, and what is running. Setup
+// happens in the existing CLI; this page shows the command and never installs.
+
+const SOLO_PRO_LEAD: Record<SoloProPhase, string> = {
+  active: "Access is confirmed, and every required part is installed and running.",
+  finish_setup: "This account has Solo Pro. Install what is missing below; there is nothing to buy.",
+  not_ready: "The full web app is installed, but this web server isn't serving it yet.",
+  no_access: "This machine keeps working as Solo. Anything already installed stays where it is.",
+  unconfirmed: "Scout hasn't confirmed what this account has. Nothing is turned on or off while it's unknown.",
+};
+
+function SoloProActions({
+  actions,
+  onCheck,
+  checking,
+  copy,
+}: {
+  actions: SoloProAction[];
+  onCheck: () => void;
+  checking: boolean;
+  copy: (text: string) => void;
+}) {
+  if (actions.length === 0) return null;
+  return (
+    <div className="sq-pro-actions">
+      {actions.map((action) =>
+        action.kind === "command" ? (
+          <span key={action.command} className="sq-pro-command" title={action.label}>
+            <code className="sq-mono">{action.command}</code>
+            <Button quiet onClick={() => copy(action.command)}>Copy</Button>
+          </span>
+        ) : action.kind === "link" ? (
+          <a key={action.href} className="sq-button" href={action.href} target="_blank" rel="noopener noreferrer">
+            {action.label} ↗
+          </a>
+        ) : (
+          <Button key="check" disabled={checking} onClick={onCheck}>{checking ? "Checking" : action.label}</Button>
+        ),
+      )}
+    </div>
+  );
+}
+
+function soloProInstalledStatus(component: SoloProComponent) {
+  switch (component.installed) {
+    case "installed": return <Status ok>Installed</Status>;
+    case "missing": return component.required ? <Status bad>Missing</Status> : <Status>Not installed</Status>;
+    case "not_applicable": return <Status>Not on this OS</Status>;
+    default: return <Status>Unknown</Status>;
+  }
+}
+
+function soloProReadyStatus(component: SoloProComponent) {
+  switch (component.ready) {
+    case "ready": return <Status ok>Ready</Status>;
+    case "not_ready": return component.required ? <Status bad>Not ready</Status> : <Status>Not running</Status>;
+    case "not_applicable": return <Status>Not on this OS</Status>;
+    default: return <Status>Unknown</Status>;
+  }
+}
+
+function hasNavigationApi(): boolean {
+  return typeof window !== "undefined" && "navigation" in window;
+}
+
+function SoloProPage({ navigate }: { navigate: (route: Route) => void }) {
+  const [status, setStatus] = useState<SoloProStatus | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [checking, setChecking] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const { state: copyState, copy } = useCopy();
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      setStatus(await api<SoloProStatus>("/api/solo-pro"));
+      setError(null);
+    } catch (err) {
+      setError(errorText(err, "Couldn't read Solo Pro status from this Scout."));
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  const check = async () => {
+    setChecking(true);
+    try {
+      setStatus(await api<SoloProStatus>("/api/solo-pro/access/check", { method: "POST" }));
+      setError(null);
+    } catch (err) {
+      setError(errorText(err, "Couldn't run the check."));
+    } finally {
+      setChecking(false);
+    }
+  };
+
+  const backToWork = () => {
+    // Back only when the Navigation API can vouch for a previous Scout entry
+    // (it lists same-origin entries only). history.length can't: it counts
+    // whatever page linked here. Otherwise go Home.
+    if (hasNavigationApi() && canNavigateBrowserBack()) navigateBrowserBack();
+    else navigate({ view: "inbox" });
+  };
+
+  if (!status) {
+    return (
+      <Section label="Solo Pro" note={error ? <span style={{ color: "var(--sq-danger)" }}>{error}</span> : undefined}>
+        {error ? (
+          <Row title="Couldn't read this machine" detail="The page asks this Scout's web server; nothing about your account changed.">
+            <Button disabled={loading} onClick={() => void load()}>{loading ? "Reading" : "Try again"}</Button>
+          </Row>
+        ) : <div className="sq-empty">Checking this machine…</div>}
+      </Section>
+    );
+  }
+
+  const { access, components } = status;
+  // The tag names the machine the facts describe; only a Mac gets "This Mac".
+  const onMac = status.platform === "darwin";
+  const accessStatus = access.state === "granted" ? <Status ok>Solo Pro</Status>
+    : access.state === "denied" ? <Status>Solo</Status>
+      : <Status bad={access.state === "credential_rejected" || access.state === "unavailable"}>{access.title}</Status>;
+  const actionProps = { onCheck: () => void check(), checking, copy };
+
+  return (
+    <div className="sq-pro">
+      <div className="sq-pro-summary" data-phase={status.phase} role="status">
+        <div className="sq-pro-headline">{status.headline}</div>
+        <p className="sq-pro-lead">{SOLO_PRO_LEAD[status.phase]}</p>
+        <div className="sq-pro-summary-actions">
+          <Button primary={status.phase === "active"} onClick={backToWork}>Back to your work</Button>
+          <Button quiet disabled={loading} onClick={() => void load()}>{loading ? "Reading" : "Read again"}</Button>
+        </div>
+      </div>
+
+      <Section
+        label="Access"
+        note={access.checkedAt
+          ? access.keyWhere
+            ? `Checked ${timeAgo(access.checkedAt)} with the download key in ${access.keyWhere}. Scout never shows the key.`
+            : `Checked ${timeAgo(access.checkedAt)}. No download key was found, so nothing was sent.`
+          : "Checking asks console.openscout.app once with the download key from scout web login. Scout never shows the key."}
+      >
+        <Row title="Full web app on this account" detail={access.detail}>{accessStatus}</Row>
+        {access.actions.length > 0 ? (
+          <div className="sq-row" data-stack>
+            <SoloProActions actions={access.actions} {...actionProps} />
+          </div>
+        ) : null}
+      </Section>
+
+      <Section label="Installed" mac={onMac}>
+        {components.map((component) => (
+          <Row
+            key={component.id}
+            stack={component.installed === "missing" && component.actions.length > 0}
+            title={<>{component.label}{component.required ? null : <span className="sq-pro-optional">optional</span>}</>}
+            detail={component.installedDetail}
+          >
+            {component.installed === "missing" ? (
+              <>
+                {soloProInstalledStatus(component)}
+                <SoloProActions actions={component.actions} {...actionProps} />
+              </>
+            ) : soloProInstalledStatus(component)}
+          </Row>
+        ))}
+      </Section>
+
+      <Section
+        label="Ready"
+        mac={onMac}
+        note={copyState === "error"
+          ? "Clipboard access was denied."
+          : copyState === "copied"
+            ? "Copied. Run it in a terminal on this machine."
+            : "Installing or restarting keeps your agents, projects, history and pairings. scout web install only swaps the web app and restarts the web server."}
+      >
+        {components.filter((component) => component.installed === "installed").map((component) => (
+          <Row
+            key={component.id}
+            stack={component.ready === "not_ready" && component.actions.length > 0}
+            title={component.label}
+            detail={component.readyDetail}
+          >
+            {component.ready === "not_ready" ? (
+              <>
+                {soloProReadyStatus(component)}
+                <SoloProActions actions={component.actions} {...actionProps} />
+              </>
+            ) : soloProReadyStatus(component)}
+          </Row>
+        ))}
+        {components.every((component) => component.installed !== "installed") ? (
+          <div className="sq-empty">Nothing is installed yet.</div>
+        ) : null}
+      </Section>
+      {error ? <Note error>{error}</Note> : null}
+    </div>
+  );
+}
+
 /* ── About ──────────────────────────────────────────────────────────────── */
 
 function UpdateSection({ host }: { host: Host }) {
@@ -2093,6 +2314,17 @@ function AboutPage({ host }: { host: Host }) {
 
   return (
     <>
+      <Section label="Contact & support">
+        <Row title="Founder" detail="OpenScout is built by Arach Tchoupani.">
+          <a className="sq-button" href="https://openscout.app/contact" target="_blank" rel="noopener noreferrer">Contact the founder ↗</a>
+        </Row>
+        <Row title="Feedback" detail="Report a bug or share a pilot result in public GitHub issues.">
+          <a className="sq-button" href="https://github.com/oscout/scout/issues" target="_blank" rel="noopener noreferrer">Report an issue ↗</a>
+        </Row>
+        <Row title="Privacy" detail="How OpenScout handles your data.">
+          <a className="sq-button" href="https://openscout.app/privacy" target="_blank" rel="noopener noreferrer">Privacy ↗</a>
+        </Row>
+      </Section>
       <UpdateSection host={host} />
       <Section label="Scout">
         {app ? <Fact k="App" v={`${app.appVersion}${app.build ? ` (${app.build})` : ""}`} /> : null}
@@ -2253,6 +2485,7 @@ export function ScoutSettings({
                         : def.id === "assistants" ? <AssistantsPage />
                         : def.id === "devices" ? <DevicesPage navigate={navigate} />
                           : def.id === "mesh" ? <MeshPage host={host} />
+                          : def.id === "pro" ? <SoloProPage navigate={navigate} />
                             : def.id === "system" ? <SystemPage host={host} />
                               : <AboutPage host={host} />}
           </div>
@@ -2288,7 +2521,12 @@ export function SettingsEmbedScreen({
     url.searchParams.set("section", next);
     window.history.replaceState(window.history.state, "", url);
   }, []);
-  return <ScoutSettings section={section} onSectionChange={change} navigate={navigate} frame={frame} inset={inset} />;
+  const settings = <ScoutSettings section={section} onSectionChange={change} navigate={navigate} frame={frame} inset={inset} />;
+  // Opened without a section, the page is the Mac app's first-run window: it
+  // shows setup until the canonical record is completed or skipped. Hosts that
+  // ask for a page (the menu's Settings window always does) go straight there.
+  const [gated] = useState(() => initial === undefined);
+  return gated ? <OnboardingEmbedGate>{settings}</OnboardingEmbedGate> : settings;
 }
 
 export const scoutSurface = defineSurface({

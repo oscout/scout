@@ -85,6 +85,7 @@ import { createArtifactPresentation } from "./artifact-presentation.ts";
 import { readFileSync, readdirSync, realpathSync, statSync } from "fs";
 import { basename, isAbsolute, join, relative, resolve } from "path";
 import { homedir } from "os";
+import { getMobileMeshNodes } from "./mobile-mesh-nodes.ts";
 
 // ---------------------------------------------------------------------------
 // Context
@@ -688,6 +689,9 @@ const mobileRouter = t.router({
   runtimeCapabilities: procedure
     .input(z.object({ projectRoot: z.string().optional() }).optional())
     .query(({ input }) => getScoutMobileRuntimeCapabilities(input?.projectRoot)),
+
+  meshNodes: procedure
+    .query(() => getMobileMeshNodes()),
 
   inbox: procedure
     .query(({ ctx }) => ({

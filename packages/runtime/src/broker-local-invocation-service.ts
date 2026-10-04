@@ -23,6 +23,7 @@ import {
   localEndpointProviderSessionId,
   localEndpointTraceSessionId,
   observedRuntimeForEndpoint,
+  observedModelForExpected,
   promoteLocalEndpointProviderSession,
 } from "./broker-local-endpoint-resolver.js";
 import {
@@ -110,7 +111,8 @@ function executionResolutionWithObservedEndpoint(
     requested: resolution[key].requested,
     resolved: resolution[key].resolved,
     source: resolution[key].source,
-    observed: observed[key] ?? resolution[key].observed,
+    observed: (key === "model" ? observedModelForExpected(observed, resolution[key].resolved) : observed[key])
+      ?? resolution[key].observed,
     observedAt: observed[key] ? observedAt : resolution[key].observedAt,
   });
   const sessionId = localEndpointTraceSessionId(endpoint);

@@ -10,6 +10,7 @@ type SharedStoreSurface = Pick<
   | "isClosed"
   | "writerDb"
   | "trustedPeer"
+  | "knownTrustedPeerKey"
   | "listTrustedPeers"
   | "upsertTrustedPeer"
   | "revokeTrustedPeer"
@@ -55,6 +56,8 @@ export class LazyControlPlaneStore<TStore extends SharedStoreSurface = SQLiteCon
     }
     return this.current;
   }
+
+  knownTrustedPeerKey(keyId: string): boolean { return this.get().knownTrustedPeerKey(keyId); }
 
   trustedPeer(...args: Parameters<SQLiteControlPlaneStore["trustedPeer"]>): ReturnType<SQLiteControlPlaneStore["trustedPeer"]> {
     return this.get().trustedPeer(...args);

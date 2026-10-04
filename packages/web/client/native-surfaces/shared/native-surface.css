@@ -2,14 +2,14 @@
 
 :root {
   color-scheme: dark;
-  --hud-bg: #070908;
-  --hud-surface: #111411;
-  --hud-ink: #f2f4ef;
-  --hud-muted: #aab1a7;
-  --hud-dim: #777e75;
-  --hud-border: rgba(239, 244, 237, 0.09);
-  --hud-accent: #a6ef87;
-  --hud-accent-soft: rgba(166, 239, 135, 0.1);
+  --hud-bg: #09090a;
+  --hud-surface: #1e1e22;
+  --hud-ink: #f2f2f4;
+  --hud-muted: #acacb4;
+  --hud-dim: #8a8a92;
+  --hud-border: rgba(242, 242, 244, 0.09);
+  --hud-accent: #e4ac59;
+  --hud-accent-soft: rgba(228, 172, 89, 0.1);
   --hud-status-ok: #79d99a;
   --hud-status-warn: #ddbd69;
   --hud-status-error: #ff806f;
@@ -34,10 +34,10 @@
   --shadow-soft: 0 12px 34px rgba(0, 0, 0, 0.42);
   --shadow-card: 0 8px 22px rgba(0, 0, 0, 0.22);
   --shadow-card-hover: 0 12px 28px rgba(0, 0, 0, 0.3);
-  --focus-ring: 0 0 0 3px rgba(166, 239, 135, 0.28);
+  --focus-ring: 0 0 0 3px rgba(228, 172, 89, 0.28);
   font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  background: #070908;
-  color: #f2f4ef;
+  background: #09090a;
+  color: #f2f2f4;
 }
 
 * { box-sizing: border-box; }
@@ -48,7 +48,7 @@ body {
   background:
     linear-gradient(rgba(255, 255, 255, 0.018) 1px, transparent 1px),
     linear-gradient(90deg, rgba(255, 255, 255, 0.018) 1px, transparent 1px),
-    #070908;
+    #09090a;
   background-size: 24px 24px;
 }
 
@@ -71,7 +71,7 @@ body {
   justify-content: space-between;
   gap: 24px;
   padding: 4px 2px 18px;
-  border-bottom: 1px solid rgba(239, 244, 237, 0.1);
+  border-bottom: 1px solid rgba(242, 242, 244, 0.1);
 }
 
 .native-surface__eyebrow,
@@ -91,7 +91,7 @@ body {
 
 .native-surface__revision {
   padding: 6px 8px;
-  border: 1px solid rgba(239, 244, 237, 0.1);
+  border: 1px solid rgba(242, 242, 244, 0.1);
   border-radius: 4px;
 }
 
@@ -103,7 +103,7 @@ body {
   justify-content: center;
   gap: 13px;
   padding: 36px;
-  border: 1px solid rgba(239, 244, 237, 0.08);
+  border: 1px solid rgba(242, 242, 244, 0.08);
   border-radius: 8px;
   background: rgba(13, 16, 14, 0.88);
   text-align: left;
@@ -119,8 +119,8 @@ body {
 }
 
 .native-surface__state--ready .native-surface__signal {
-  background: #a6ef87;
-  box-shadow: 0 0 14px rgba(166, 239, 135, 0.55);
+  background: #e4ac59;
+  box-shadow: 0 0 14px rgba(228, 172, 89, 0.55);
 }
 
 .native-surface__state--error .native-surface__signal { background: #ff806f; }

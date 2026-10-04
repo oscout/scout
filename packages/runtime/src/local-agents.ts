@@ -5978,10 +5978,15 @@ async function observedRuntimeMetadataAfterInvocation(
     }
     const model = snapshot.session.model?.trim();
     const reasoningEffort = snapshot.session.reasoningEffort?.trim();
+    const nativeRuntime = snapshot.session.providerMeta?.observeRuntime;
+    const modelProvider = nativeRuntime && typeof nativeRuntime === "object" && !Array.isArray(nativeRuntime)
+      && typeof (nativeRuntime as Record<string, unknown>).modelProvider === "string"
+      ? String((nativeRuntime as Record<string, unknown>).modelProvider).trim() : undefined;
     return {
       observedRuntime: {
         harness: endpoint.harness,
         ...(model ? { model } : {}),
+        ...(modelProvider ? { modelProvider } : {}),
         ...(reasoningEffort ? { reasoningEffort } : {}),
       },
       observedRuntimeAt: Date.now(),

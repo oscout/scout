@@ -48,9 +48,9 @@ export const SCOUT_THEME_STORAGE_KEY = "openscout.theme";
 export const SCOUT_DEFAULT_THEME_TEMPLATE: ScoutThemeTemplate = "hudson";
 export const SCOUT_DEFAULT_APPEARANCE_DETAILS: ScoutAppearanceDetails = {
   shell: "scout",
-  palette: "scout",
+  palette: "graphite",
   contrast: "balanced",
-  accent: "theme",
+  accent: "amber",
   avatarStyle: "crew",
   avatarSize: "regular",
   operatorCharacter: "milo",

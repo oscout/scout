@@ -125,6 +125,20 @@ describe("broker http helpers", () => {
     expect(bad.status).toBe(400);
     expect(JSON.parse(bad.body)).toEqual({ error: "bad_request", detail: "nope" });
 
+    const full = new FakeResponse();
+    badRequest(full as never, Object.assign(new Error("ENOSPC: no space left on device, write"), { code: "ENOSPC" }));
+    expect(full.status).toBe(507);
+    expect(JSON.parse(full.body)).toEqual({ error: "storage_full", detail: "ENOSPC: no space left on device, write" });
+
+    const sqliteFull = new FakeResponse();
+    badRequest(sqliteFull as never, new Error("database or disk is full"));
+    expect(sqliteFull.status).toBe(507);
+
+    const readOnly = new FakeResponse();
+    badRequest(readOnly as never, Object.assign(new Error("EROFS: read-only file system"), { code: "EROFS" }));
+    expect(readOnly.status).toBe(503);
+    expect(JSON.parse(readOnly.body).error).toBe("storage_unavailable");
+
     const stale = new FakeResponse();
     conflict(stale as never, "lease changed");
     expect(stale.status).toBe(409);

@@ -14,6 +14,8 @@ import {
   ensureOpenScoutOnboardingCompletion,
   ensureOpenScoutOnboardingLocalConfig,
   loadOpenScoutOnboardingState,
+  ONBOARDING_HARNESS_CHOICES,
+  parseOnboardingHarness,
   restartOpenScoutOnboarding,
   runOpenScoutOnboardingSetup,
   saveOpenScoutOnboardingIdentity,
@@ -112,7 +114,15 @@ export function mountOnboardingRoutes(app: Hono, deps: OnboardingRouteDeps) {
     const sourceRoots = (body.sourceRoots ?? [])
       .map((entry) => entry.trim())
       .filter((entry): entry is string => Boolean(entry && entry.length > 0));
-    const harness = body.defaultHarness === "codex" ? "codex" : "claude";
+    // Keep the chosen harness; an unknown one is an error, never Claude.
+    const requestedHarness = body.defaultHarness?.trim();
+    const harness = requestedHarness ? parseOnboardingHarness(requestedHarness) : null;
+    if (requestedHarness && !harness) {
+      return c.json({
+        error: `Unknown harness "${requestedHarness}". Choose one of: ${ONBOARDING_HARNESS_CHOICES.join(", ")}.`,
+        choices: ONBOARDING_HARNESS_CHOICES,
+      }, 400);
+    }
 
     // Reject folders that do not exist before we save — otherwise a typo'd
     // root gets silently `mkdir -p`'d by downstream setup.

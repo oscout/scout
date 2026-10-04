@@ -112,6 +112,8 @@ export type RuntimeRequestTransportContext = {
   peer?: RuntimePeerAuthPrincipal;
   /** present only after the ingress gate verified a guest grant signature */
   guest?: RuntimeGuestAuthPrincipal;
+  /** Verified principal proof; never accepted from forwarded body identity fields. */
+  scoped?: import("./mesh-access.js").AccessProof;
 };
 
 /** A verified guest key and its active grant (never a mesh peer). */

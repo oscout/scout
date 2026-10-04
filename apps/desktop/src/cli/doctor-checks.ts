@@ -26,6 +26,13 @@ export function doctorBrokerCheck(broker: Awaited<ReturnType<typeof getRuntimeBr
     name: "broker", state: "inconclusive", detail: "Health response unavailable; service state is unknown.",
     next: "scout doctor --detail",
   };
+  // Alive but unable to write: every send fails while health still says ok.
+  const journalWrites = broker.health.storage?.journal;
+  if (broker.health.ok && journalWrites?.state === "failing") return {
+    name: "broker", state: "impaired",
+    detail: brief(`Broker is up but journal writes are failing (${journalWrites.code ?? journalWrites.error}); messages will not be recorded.`),
+    next: journalWrites.code === "ENOSPC" ? "Free disk space; writes resume on their own." : NEXT_DETAIL,
+  };
   return {
     name: "broker", state: broker.health.ok ? "working" : "impaired",
     detail: broker.health.ok ? "Broker health responded OK." : "Broker responded with unhealthy status.",
