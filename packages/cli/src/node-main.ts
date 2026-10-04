@@ -1,3 +1,5 @@
+import { assessSetupCompletion } from "@openscout/runtime/onboarding";
+import { parseSetupCommandOptions, parseScoutArgv, preflightLifecycle } from "../bin/lifecycle-preflight.mjs";
 import {
   brokerServiceStatus,
   type BrokerServiceStatus,
@@ -62,11 +64,15 @@ type InitOptions = {
 
 process.env.OPENSCOUT_RUNTIME_HOST ??= "node";
 
-const args = process.argv.slice(2);
-const command = args[0] ?? "help";
+const input = parseScoutArgv(process.argv.slice(2));
+const args = [input.command ?? "help", ...input.args, ...(input.outputMode === "json" ? ["--json"] : [])];
+const command = args[0];
 
 try {
-  switch (command) {
+  const help = preflightLifecycle(process.argv.slice(2));
+  if (help !== null) { console.log(help); }
+  else if (input.helpRequested) { writeHelp(); }
+  else switch (command) {
     case "--help":
     case "-h":
     case "help":
@@ -158,36 +164,7 @@ function parseContextRoot(args: string[], defaultCurrentDirectory = process.cwd(
 
 function parseSetupOptions(args: string[]): SetupOptions {
   const { output, rest } = parseOutput(args);
-  const parsed = parseContextRoot(rest);
-  const sourceRoots: string[] = [];
-  let defaultHarness: string | null = null;
-
-  for (let index = 0; index < parsed.rest.length; index += 1) {
-    const arg = parsed.rest[index] ?? "";
-    if (arg === "--source-root" || arg.startsWith("--source-root=")) {
-      const value = parseFlagValue(parsed.rest, index, "--source-root");
-      sourceRoots.push(resolve(value.value));
-      index = value.nextIndex;
-      continue;
-    }
-    if (arg === "--default-harness" || arg.startsWith("--default-harness=")) {
-      const value = parseFlagValue(parsed.rest, index, "--default-harness");
-      if (!["claude", "codex", "cursor", "grok", "pi", "opencode", "devin"].includes(value.value)) {
-        throw new Error(`invalid default harness: ${value.value}`);
-      }
-      defaultHarness = value.value;
-      index = value.nextIndex;
-      continue;
-    }
-    throw new Error(`unexpected arguments for setup: ${parsed.rest.join(" ")}`);
-  }
-
-  return {
-    currentDirectory: parsed.currentDirectory,
-    sourceRoots,
-    defaultHarness,
-    output,
-  };
+  return { ...parseSetupCommandOptions(rest, process.cwd()), output };
 }
 
 function parseDoctorOptions(args: string[]): DoctorOptions {
@@ -340,20 +317,34 @@ async function runConfigCommand(args: string[]): Promise<void> {
 }
 
 async function runSetupCommand(args: string[]): Promise<void> {
+  if (args.includes("--help") || args.includes("-h")) {
+    console.log("Usage: scout setup [--source-root <path>] [--default-harness <name>] [--json]\nConfigure project discovery and install/start the local broker.");
+    return;
+  }
   const options = parseSetupOptions(args);
   const report = await runOpenScoutOnboardingSetup({
     currentDirectory: options.currentDirectory,
     sourceRoots: options.sourceRoots,
     defaultHarness: options.defaultHarness,
   });
+  const completion = assessSetupCompletion({ ...report,
+    defaultHarness: report.setup.settings.agents.defaultHarness,
+    failures: [
+      ...report.scoutSkill.entries.filter((entry) => entry.status === "error")
+        .map((entry) => entry.error ?? `Skill install failed: ${entry.id}`),
+      ...(report.claudeStatusline.status === "error"
+        ? [report.claudeStatusline.error ?? "Claude statusline install failed"] : []),
+    ],
+  }, { interactive: false });
+  if (completion.outcome === "failed") process.exitCode = 1;
   if (options.output === "json") {
-    writeJson(report);
+    writeJson({ ...report, ...completion });
     return;
   }
 
   const setup = report.setup;
   const lines = [
-    "Scout setup complete",
+    completion.headline,
     `Support directory: ${setup.supportDirectory}`,
     `Settings: ${setup.settingsPath}`,
     `Harness catalog: ${setup.harnessCatalogPath}`,
@@ -364,9 +355,18 @@ async function runSetupCommand(args: string[]): Promise<void> {
     `Broker URL: ${report.broker.brokerUrl}`,
     `Broker reachable: ${report.broker.reachable ? "yes" : "no"}`,
   ];
-  if (report.brokerWarning) {
-    lines.push("Next step: run `openscout-runtime broker` in this shell or under your process manager.");
+  if (report.brokerWarning) lines.push(`Error: ${report.brokerWarning}`);
+  if (completion.outcome === "handoff" && report.brokerHandoff) {
+    lines.push(report.brokerHandoff.detail);
+  } else if (!report.broker.health.ok) {
+    lines.push(`Health error: ${report.broker.health.error ?? "Broker health verification failed"}`);
   }
+  for (const entry of report.scoutSkill.entries.filter((entry) => entry.status === "error")) lines.push(`Error: ${entry.error ?? `Skill install failed: ${entry.id}`}`);
+  if (report.claudeStatusline.status === "error") lines.push(`Error: ${report.claudeStatusline.error ?? "Claude statusline install failed"}`);
+  lines.push(`Logs: ${report.broker.stdoutLogPath} | ${report.broker.stderrLogPath}`);
+  lines.push(`Next: ${completion.nextStep}`, `Browser: ${completion.webUrl} (starts on demand)`);
+  if (completion.browserGuidance) lines.push(completion.browserGuidance);
+  lines.push("Also available:", ...completion.alsoAvailable.map((step) => `  ${step}`));
   process.stdout.write(`${lines.join("\n")}\n`);
 }
 

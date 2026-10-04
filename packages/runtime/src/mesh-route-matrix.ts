@@ -20,9 +20,9 @@
  * stay `local` and must never be promoted to `observe`.
  */
 
-export type MeshRouteTier = "local" | "observe" | "control" | "public" | "guest";
+export type MeshRouteTier = "local" | "observe" | "control" | "public" | "guest" | "scoped";
 
-export const MESH_ROUTE_TIERS: readonly MeshRouteTier[] = ["local", "observe", "control", "public", "guest"];
+export const MESH_ROUTE_TIERS: readonly MeshRouteTier[] = ["local", "observe", "control", "public", "guest", "scoped"];
 
 /** Rank for grant-tier satisfaction checks; `local`/`public` never compare. */
 const GRANT_TIER_RANK: Record<"observe" | "control", number> = { observe: 1, control: 2 };
@@ -36,6 +36,10 @@ export const TRPC_UPGRADE_ROUTE = "GET /trpc";
  * TRPC_UPGRADE_ROUTE allowlist entry, which the inventory test exempts).
  */
 const MESH_ROUTE_MATRIX: Record<string, MeshRouteTier> = {
+  "POST /v1/access/rpc": "scoped",
+  "POST /v1/access/policy": "public",
+  "POST /v1/access/admin": "local",
+
   // ── public: node card + enrollment handshake ────────────────────────────
   "GET /v1/node": "public",
   "POST /v1/trust/enroll/begin": "public",
@@ -72,8 +76,6 @@ const MESH_ROUTE_MATRIX: Record<string, MeshRouteTier> = {
   "POST /v1/mesh/sessions/start": "control",
   "POST /v1/mesh/web-request": "control",
   "POST /v1/hosts/web-request": "local",
-  // Integration setup reveals project bindings; never forwarded.
-  "POST /v1/integrations/setup": "local",
   [TRPC_UPGRADE_ROUTE]: "control",
 
   // ── local: machine-local bind flip (handler also refuse-remote, §11.5/§11.9)
@@ -104,6 +106,7 @@ const MESH_ROUTE_MATRIX: Record<string, MeshRouteTier> = {
   "GET /v1/conversations/:id/thread-snapshot": "local",
   "GET /v1/deliveries": "local",
   "GET /v1/delivery-attempts": "local",
+  "GET /v1/endpoints": "local",
   "GET /v1/events": "local",
   "GET /v1/events/stream": "local",
   "GET /v1/home": "local",
@@ -172,6 +175,7 @@ const MESH_ROUTE_MATRIX: Record<string, MeshRouteTier> = {
   "POST /v1/inbox/ack": "local",
   "POST /v1/inbox/claim": "local",
   "POST /v1/inbox/nack": "local",
+  "POST /v1/integrations/setup": "local",
   "POST /v1/invocations": "local",
   "POST /v1/local-sessions/attach": "local",
   "POST /v1/local-sessions/detach": "local",

@@ -220,7 +220,7 @@ export class GuestGrantStore {
     this.ensure();
     const parsed = parseGuestGrantInstall(input, now);
     if (this.isPeerKey(parsed.keyId)) {
-      throw new GuestAccessError("key_in_use", "this key is enrolled as a mesh peer and cannot be a guest", 409);
+      throw new GuestAccessError("key_in_use", "this key is reserved for another mesh credential type and cannot be a guest", 409);
     }
     const run = this.db.transaction((): { grant: GuestGrantRecord; created: boolean } => {
       const existing = this.db.query<GuestGrantRow>("SELECT * FROM guest_grants WHERE request_id = ?1")
@@ -273,6 +273,11 @@ export class GuestGrantStore {
       return { grant, created: true };
     });
     return run();
+  }
+
+  knownKey(keyId: string): boolean {
+    this.ensure();
+    return Boolean(this.db.query("SELECT id FROM guest_grants WHERE key_id = ?1 LIMIT 1").get(keyId));
   }
 
   /** The one active grant for a signing key, or undefined. */

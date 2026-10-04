@@ -1,3 +1,7 @@
+import { requireProtectedAccessState, protectAccessDirectories, removeLocalAdminEnvironment } from "./mesh-access-startup.js";
+import { inspectMeshAccessIngressPosture } from "./mesh-access-ingress-posture.js";
+import { readLocalAdminKey, preserveProtectedIngress } from "./mesh-access-local-auth.js";
+import { MeshAccessStore } from "./mesh-access-store.js";
 import { IntegrationSlackEvents } from "./integration-slack-events.js";
 import { IntegrationSlackDeliveryService } from "./integration-slack-delivery.js";
 import { SlackWorkerSupervisor } from "./slack-worker-supervisor.js";
@@ -418,6 +422,11 @@ const startupBoundaryTestDelayMs = Number.parseInt(
 // Mesh trust cone rollout (docs/proposals/mesh-trust-cone.md §10): the ingress
 // gate verifies everything but only warns until OPENSCOUT_MESH_GATE=enforce.
 const meshGateMode = resolveMeshGateMode(process.env);
+const localAdminKey = readLocalAdminKey(process.env.OPENSCOUT_LOCAL_ADMIN_KEY_FILE);
+removeLocalAdminEnvironment(process.env);
+requireProtectedAccessState(dbPath, Boolean(localAdminKey));
+if (localAdminKey) { process.umask(0o077); protectAccessDirectories(controlHome, supportDirectory, dbPath); }
+preserveProtectedIngress(resolveOpenScoutSupportPaths().supportDirectory, localAdminKey);
 
 ensureOpenScoutCleanSlateSync();
 const existingBroker = await probeExistingBroker();
@@ -490,7 +499,8 @@ const integrationSetupService = routeAliasDatabase
   : undefined;
 const integrationSlackEvents = integrationSetupService && routeAliasDatabase ? new IntegrationSlackEvents(routeAliasDatabase, integrationSetupService) : undefined;
 const integrationSlackDelivery = integrationSetupService && routeAliasDatabase ? new IntegrationSlackDeliveryService(routeAliasDatabase, integrationSetupService) : undefined;
-const slackWorkerSupervisor = integrationSetupService ? new SlackWorkerSupervisor(integrationSetupService, () => brokerUrl) : undefined;
+// Slack workers do not carry protected-local request signatures yet.
+const slackWorkerSupervisor = !localAdminKey && integrationSetupService ? new SlackWorkerSupervisor(integrationSetupService, () => brokerUrl) : undefined;
 const routeAliasService = routeAliasDatabase
   ? new BrokerRouteAliasService({
       store: new BrokerRouteAliasStore(routeAliasDatabase),
@@ -513,16 +523,30 @@ const brokerBootedAt = Date.now();
 const trustedPeerStore = sharedControlPlaneStore;
 // Guest grants (docs/proposals/scout-tailscale.md) share the control-plane
 // database but never the trusted_peers table or its tiers.
-const guestGrantStore = sharedControlPlaneStore
+const guestGrantStore: GuestGrantStore | null = sharedControlPlaneStore
   ? new GuestGrantStore(
       sharedControlPlaneStore.routeAliasDatabase,
-      (keyId) => Boolean(trustedPeerStore?.trustedPeer(keyId)),
+      (keyId) => Boolean(trustedPeerStore?.knownTrustedPeerKey(keyId)) || Boolean(meshAccessStore?.knownDevice(keyId)) || Boolean(meshAccessStore?.knownPrincipal(keyId)),
     )
+  : null;
+const meshAccessStore: MeshAccessStore | null = sharedControlPlaneStore
+  ? new MeshAccessStore(sharedControlPlaneStore.routeAliasDatabase, nodeIdentityKeyId,
+      (keyId) => keyId === nodeIdentityKeyId || Boolean(trustedPeerStore?.knownTrustedPeerKey(keyId)) || Boolean(guestGrantStore?.knownKey(keyId)))
   : null;
 // Bind controller is assigned after the HTTP server stack is built; the gate
 // reads forceRemoteEnforce via this ref so §11.6 can key off live listeners.
 let meshBindController: MeshBindController | null = null;
 const meshIngressGate = createMeshIngressGate({
+  localAdminKey,
+  keyConflict: (id) => [Boolean(trustedPeerStore?.knownTrustedPeerKey(id)), Boolean(guestGrantStore?.knownKey(id)), Boolean(meshAccessStore?.knownDevice(id)), Boolean(meshAccessStore?.knownPrincipal(id))].filter(Boolean).length > 1,
+  scopedAccess: meshAccessStore ? {
+    knownDevice: (keyId) => meshAccessStore.knownDevice(keyId),
+    accept: (proof) => meshAccessStore.acceptDelegation(proof.delegation),
+    verify: (envelope) => {
+      if (!scopedAccessAvailable()) throw new Error("scoped access requires protected local ingress");
+      return meshAccessStore.verifyDelegation((envelope as { delegation: import("./mesh-access.js").AccessDelegation }).delegation);
+    },
+  } : undefined,
   mode: meshGateMode,
   destinationKeyId: nodeIdentityKeyId,
   bootedAt: brokerBootedAt,
@@ -553,6 +577,10 @@ const trustEnrollmentService = new TrustEnrollmentService({
   fingerprint: nodeIdentityFingerprint,
 });
 const trustEndpointRateLimiter = new TrustEndpointRateLimiter();
+function scopedAccessAvailable(): boolean {
+  if (!meshAccessStore || !localAdminKey || effectiveGateMode() !== "enforce") return false;
+  return meshAccessStore.healthy();
+}
 function currentSignedNodeCard() {
   const bind = meshBindController?.getState();
   const endpoints = bind && bind.endpoints.length > 0 ? bind.endpoints : [brokerUrl];
@@ -560,7 +588,7 @@ function currentSignedNodeCard() {
     nodeId,
     label: nodeName,
     version: loadOpenScoutRuntimeBuildIdentity().version ?? "dev",
-    capabilities: currentLocalNode().capabilities ?? [],
+    capabilities: [...(currentLocalNode().capabilities ?? []), ...(scopedAccessAvailable() ? ["scout-access/1"] : [])],
     endpoints,
     ...(bind?.tlsSpkiFingerprint
       ? { tls: { spkiFingerprint: bind.tlsSpkiFingerprint } }
@@ -568,7 +596,7 @@ function currentSignedNodeCard() {
   });
 }
 function effectiveGateMode() {
-  return meshBindController?.hasNonLoopbackListener() ? "enforce" as const : meshGateMode;
+  return localAdminKey || meshBindController?.hasNonLoopbackListener() ? "enforce" as const : meshGateMode;
 }
 
 /**
@@ -614,7 +642,7 @@ const jetStreamConfig = (() => {
     return null;
   }
 })();
-const jetStreamService = jetStreamConfig?.enabled
+const jetStreamService = !localAdminKey && jetStreamConfig?.enabled
   ? new BrokerJetStreamService({
       config: jetStreamConfig,
       journal,
@@ -1046,7 +1074,7 @@ if (sseKeepAliveIntervalMs > 0) {
 
 let irohBridgeService: IrohBridgeService | undefined;
 let localIrohEntrypoint = resolveIrohMeshEntrypointFromEnv();
-if (!localIrohEntrypoint) {
+if (!localAdminKey && !localIrohEntrypoint) {
   try {
     irohBridgeService = await startIrohBridgeServeFromEnv({ brokerUrl });
     localIrohEntrypoint = irohBridgeService?.entrypoint;
@@ -2080,6 +2108,12 @@ function launchArgsForCardlessSession(
       ...(reasoningEffort ? ["--reasoning-effort", reasoningEffort] : []),
     ];
   }
+  if (harness === "pi") {
+    return [
+      ...(model ? ["--model", model] : []),
+      ...(reasoningEffort ? ["--thinking", reasoningEffort === "none" ? "off" : reasoningEffort] : []),
+    ];
+  }
   return [];
 }
 
@@ -2444,6 +2478,7 @@ const brokerService = createBrokerCoreService({
   readProjectionStatus: () => projection.statusSnapshot(),
   readMemoryStatus: () => ({ maintenance: memoryMaintenance?.status() ?? { enabled: false }, messageBodies: journal.messageBodyCacheStatus(), messageHistory: messageHistory?.status() ?? {enabled:false} }),
   readStartupStatus: () => ({ ...startupTrafficGate.snapshot(), journal: journal.startupStatus() }),
+  readStorageStatus: () => ({ journal: journal.writeStatus() }),
   readHome: () => homeService.read(),
   // Observe-tier twin of the home feed: bounded, scoped to agents homed here,
   // and readable by a signed peer where /v1/home never is (mesh trust cone §4).
@@ -2561,6 +2596,26 @@ const routeRequest = createBrokerHttpRouter({
   integrationSlackDelivery,
   integrationSlackEvents,
   machines: machineService,
+  access: {
+    access: meshAccessStore, nodeId, nodeKeyId: nodeIdentityKeyId,
+    enforced: scopedAccessAvailable,
+    legacyPeers: () => trustedPeerStore?.listTrustedPeers() ?? [],
+    ingressPosture: () => inspectMeshAccessIngressPosture({ protectedLocalIngress: Boolean(localAdminKey),
+      supportDirectory: resolveOpenScoutSupportPaths().supportDirectory, entrypoints: currentLocalNode().meshEntrypoints ?? [] }),
+    listAgents: () => Object.values(runtime.snapshot().agents).filter((agent) => agent.authorityNodeId === nodeId).map((agent) => {
+      const roots = new Set(runtime.endpointsForAgent(agent.id, { nodeId }).map((endpoint) => brokerTargetProjectRoot(agent, endpoint)).filter((root): root is string => Boolean(root)));
+      const metadataRoot = brokerTargetProjectRoot(agent, null);
+      if (metadataRoot) roots.add(metadataRoot);
+      // Ambiguous agent/project binding supplies no project authority.
+      return { id: agent.id, displayName: agent.displayName, ...(roots.size === 1 ? { projectRoot: [...roots][0] } : {}) };
+    }),
+    ensureGuestActor: (actor) => upsertActorDurably(actor),
+    openThread: ({ requesterId, targetAgentId }) => ensureBrokerDeliveryConversation({ requesterId, targetAgentId }),
+    postMessage: (message) => postConversationMessage(message),
+    invoke: (invocation) => handleInvocationRequest(invocation),
+    existingInvocation: (id) => runtime.snapshot().invocations[id],
+    flightForInvocation: (id) => runtime.flightForInvocation(id),
+  },
   guest: {
     sessions: externalSessionService,
     grants: guestGrantStore,
@@ -2588,6 +2643,7 @@ const routeRequest = createBrokerHttpRouter({
       if (!trustedPeerStore) {
         return false;
       }
+      if (meshAccessStore?.knownDevice(grant.keyId) || meshAccessStore?.knownPrincipal(grant.keyId)) return false;
       trustedPeerStore.upsertTrustedPeer(grant);
       return true;
     },
@@ -3006,7 +3062,7 @@ try {
   throw error;
 }
 
-const otlpReceiver = await startBrokerOtlpReceiver(controlHome);
+const otlpReceiver = localAdminKey ? undefined : await startBrokerOtlpReceiver(controlHome);
 
 setTimeout(() => {
   if (!startupTrafficGate.snapshot().mutationsAdmitted) return;

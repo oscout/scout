@@ -419,6 +419,25 @@ describe("runScoutdServiceCommand shell-out", () => {
     expect(result.health).toMatchObject({ reachable: true, ok: false, state: "timed_out", checkedAt: 1700000000, durationMs: 1001 });
   });
 
+  test("preserves journal failure from the native health response body", async () => {
+    const scoutd = writeExecutable(join(mkdtempSync(join(tmpdir(), "openscout-scoutd-storage-")), "scoutd"));
+    const storage = { journal: { state: "failing", since: 1, lastFailedAt: 2, failures: 3, code: "ENOSPC", error: "disk full" } };
+    for (const fields of [{ body: JSON.stringify({ ok: true, storage }) }, { storage }]) {
+      const result = await withEnv({ OPENSCOUT_SCOUTD_BIN: scoutd }, () =>
+        runScoutdServiceCommand("status", config, 45_000, async () => JSON.stringify({
+          health: { reachable: true, ok: true, ...fields },
+        })));
+      expect(result.health.storage).toEqual(storage);
+      const { doctorBrokerCheck } = await import("../../../apps/desktop/src/cli/doctor-checks.ts");
+      expect(doctorBrokerCheck(result).state).toBe("impaired");
+    }
+    for (const body of ["not JSON", "null", JSON.stringify({ storage: { journal: { state: "failing" } } })]) {
+      const result = await withEnv({ OPENSCOUT_SCOUTD_BIN: scoutd }, () =>
+        runScoutdServiceCommand("status", config, 45_000, async () => JSON.stringify({ health: { reachable: true, ok: true, body } })));
+      expect(result.health.storage).toBeUndefined();
+    }
+  });
+
   test("parses scoutd JSON into the normalized status shape", async () => {
     const status = {
       label: "app.openscout",

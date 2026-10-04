@@ -4,11 +4,16 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import type { BrokerServiceStatus } from "./broker-process-manager.js";
-import type { HarnessCatalogSnapshot } from "./harness-catalog.js";
+import { loadHarnessCatalogSnapshot, type HarnessCatalogSnapshot } from "./harness-catalog.js";
 import {
+  ensureOpenScoutOnboardingCompletion,
   ensureOpenScoutOnboardingLocalConfig,
   loadOpenScoutOnboardingState,
   markOpenScoutOnboardingCommand,
+  ONBOARDING_HARNESS_CHOICES,
+  OnboardingHarnessError,
+  parseOnboardingHarness,
+  onboardingHarnessObservations,
   saveOpenScoutOnboardingIdentity,
   saveOpenScoutOnboardingProject,
 } from "./onboarding.js";
@@ -341,4 +346,158 @@ describe("OpenScout onboarding contract", () => {
     expect(ready.completedAt).toBe(13);
     expect(ready.hasReadyRuntime).toBe(true);
   });
+});
+
+describe("onboarding harness choices", () => {
+  // Settings writes take seconds on a cold disk; a timed-out write would leak into the next test.
+  const SETTINGS_WRITE_TIMEOUT_MS = 30_000;
+  const EXPECTED_TRANSPORTS = {
+    claude: "tmux",
+    codex: "codex_app_server",
+    "grok-acp": "grok_acp",
+    kimi: "kimi_acp",
+    cursor: "cursor_acp",
+    opencode: "opencode_acp",
+    pi: "pi_rpc",
+    devin: "devin_acp",
+  } as const;
+
+  test("the choices are the runtime catalog's enabled, listed, managed harnesses", () => {
+    expect([...ONBOARDING_HARNESS_CHOICES]).toEqual(["claude", "codex", "grok-acp", "kimi", "cursor", "opencode", "pi", "devin"]);
+  });
+
+  test("parsing keeps supported values, resolves catalog aliases, and rejects the rest", () => {
+    for (const id of ONBOARDING_HARNESS_CHOICES) expect(parseOnboardingHarness(id)).toBe(id);
+    expect(parseOnboardingHarness(" Kimi ")).toBe("kimi");
+    expect(parseOnboardingHarness("grok")).toBe("grok-acp");
+    expect(parseOnboardingHarness("flue")).toBeNull();
+    expect(parseOnboardingHarness("gpt")).toBeNull();
+    expect(parseOnboardingHarness("")).toBeNull();
+  });
+
+  for (const [harness, transport] of Object.entries(EXPECTED_TRANSPORTS)) {
+    test(`${harness} round-trips through settings with the ${transport} transport`, async () => {
+      const home = prepareHome(`roundtrip-${harness}`);
+      const repo = join(home, "dev", "alpha");
+      mkdirSync(repo, { recursive: true });
+
+      const state = await saveOpenScoutOnboardingProject({
+        currentDirectory: repo,
+        contextRoot: repo,
+        sourceRoots: [repo],
+        defaultHarness: harness,
+        now: 31,
+      });
+
+      const settings = await readOpenScoutSettings({ currentDirectory: repo });
+      expect(settings.agents.defaultHarness).toBe(harness);
+      expect(settings.agents.defaultTransport).toBe(transport);
+      expect(state.defaultHarness).toBe(harness);
+    }, SETTINGS_WRITE_TIMEOUT_MS);
+  }
+
+  test("an unknown harness is rejected and nothing is written", async () => {
+    const home = prepareHome("unknown-harness");
+    const repo = join(home, "dev", "alpha");
+    mkdirSync(repo, { recursive: true });
+    await saveOpenScoutOnboardingProject({ currentDirectory: repo, contextRoot: repo, sourceRoots: [repo], defaultHarness: "kimi", now: 41 });
+
+    await expect(saveOpenScoutOnboardingProject({
+      currentDirectory: repo,
+      contextRoot: repo,
+      sourceRoots: [repo],
+      defaultHarness: "flue",
+      now: 42,
+    })).rejects.toBeInstanceOf(OnboardingHarnessError);
+
+    const settings = await readOpenScoutSettings({ currentDirectory: repo });
+    expect(settings.agents.defaultHarness).toBe("kimi");
+    expect(settings.agents.defaultTransport).toBe("kimi_acp");
+    expect(settings.onboarding.harnessChosenAt).toBe(41);
+  }, SETTINGS_WRITE_TIMEOUT_MS);
+
+  test("existing configurations keep their harness and stored transport", async () => {
+    const home = prepareHome("legacy-transport");
+    const repo = join(home, "dev", "alpha");
+    mkdirSync(repo, { recursive: true });
+    await writeOpenScoutSettings({
+      agents: { defaultHarness: "claude", defaultTransport: "claude_stream_json" },
+    }, { currentDirectory: repo });
+
+    await saveOpenScoutOnboardingProject({ currentDirectory: repo, contextRoot: repo, sourceRoots: [repo], now: 51 });
+
+    const settings = await readOpenScoutSettings({ currentDirectory: repo });
+    expect(settings.agents.defaultHarness).toBe("claude");
+    expect(settings.agents.defaultTransport).toBe("claude_stream_json");
+  }, SETTINGS_WRITE_TIMEOUT_MS);
+
+  test("a saved grok-acp or kimi default is no longer read back as Claude", async () => {
+    const home = prepareHome("settings-read");
+    const repo = join(home, "dev", "alpha");
+    mkdirSync(repo, { recursive: true });
+    for (const [harness, transport] of [["grok-acp", "grok_acp"], ["kimi", "kimi_acp"], ["devin", "devin_acp"], ["opencode", "opencode_acp"]] as const) {
+      // Transport omitted on disk: the read path must derive it from the harness.
+      await writeOpenScoutSettings({ agents: { defaultHarness: harness } }, { currentDirectory: repo });
+      const settings = await readOpenScoutSettings({ currentDirectory: repo });
+      expect(settings.agents.defaultHarness).toBe(harness);
+      expect(settings.agents.defaultTransport).toBe(transport);
+    }
+  }, SETTINGS_WRITE_TIMEOUT_MS);
+
+  async function localSnapshot(home: string, binaries: string[], env: Record<string, string> = {}) {
+    return loadHarnessCatalogSnapshot({
+      localOnly: true,
+      overridePath: join(home, "no-overrides.json"),
+      env,
+      whichBinary: (binary) => (binaries.includes(binary) ? `/bin/${binary}` : null),
+      requirementExists: () => false,
+      runCommand: (command) => {
+        throw new Error(`setup readiness ran a command: ${command}`);
+      },
+    });
+  }
+
+  test("state exposes the catalog's choices with the readiness the read observed, run locally", async () => {
+    const home = prepareHome("observations");
+    const catalog = await localSnapshot(home, ["claude", "cursor-agent", "codex"], { ANTHROPIC_API_KEY: "x" });
+    const observed = onboardingHarnessObservations(catalog);
+    expect(observed.map((option) => option.id)).toEqual([...ONBOARDING_HARNESS_CHOICES]);
+    const byId = Object.fromEntries(observed.map((option) => [option.id, option]));
+    expect(byId.claude).toMatchObject({ label: "Claude Code", state: "ready", ready: true });
+    // Installed, but sign-in is only knowable by asking Cursor: unverified, not ready.
+    expect(byId.cursor).toMatchObject({ state: "configured", ready: false });
+    expect(byId.codex).toMatchObject({ state: "installed", ready: false });
+    expect(byId.kimi).toMatchObject({ state: "missing", ready: false });
+
+    const state = await loadOpenScoutOnboardingState({ currentDirectory: home, broker: fakeBroker(false), catalog });
+    expect(state.harnesses).toEqual(observed);
+  });
+
+  test("a logged-out Cursor-only Mac never completes setup from the binary alone", async () => {
+    const home = prepareHome("cursor-only");
+    const repo = join(home, "dev", "alpha");
+    mkdirSync(repo, { recursive: true });
+    writeProjectConfig(repo);
+    await ensureOpenScoutOnboardingLocalConfig({ currentDirectory: repo, now: 10 });
+    await saveOpenScoutOnboardingIdentity({ currentDirectory: repo, name: "Ada", now: 11 });
+    const catalog = await localSnapshot(home, ["cursor-agent"]);
+
+    // The canonical GET path (`/api/onboarding/state`) and the runtimes command.
+    const polled = await ensureOpenScoutOnboardingCompletion({ currentDirectory: repo, broker: fakeBroker(true), catalog, now: 12 });
+    expect(polled.hasLocalConfig && polled.hasOperatorName && polled.hasProjectConfig && polled.brokerReachable).toBe(true);
+    expect(polled.hasReadyRuntime).toBe(false);
+    expect(polled.readyRuntimeCount).toBe(0);
+    expect(polled.completedAt).toBeNull();
+    expect(polled.needed).toBe(true);
+    expect(polled.harnesses?.find((option) => option.id === "cursor")).toMatchObject({ state: "configured", ready: false });
+
+    const marked = await markOpenScoutOnboardingCommand({ command: "runtimes", currentDirectory: repo, broker: fakeBroker(true), catalog, now: 13 });
+    expect(marked.completedAt).toBeNull();
+    expect((await readOpenScoutSettings({ currentDirectory: repo })).onboarding.completedAt).toBeNull();
+
+    // A runtime with real local evidence does complete it.
+    const withClaude = await localSnapshot(home, ["cursor-agent", "claude"], { ANTHROPIC_API_KEY: "x" });
+    const done = await ensureOpenScoutOnboardingCompletion({ currentDirectory: repo, broker: fakeBroker(true), catalog: withClaude, now: 14 });
+    expect(done.completedAt).toBe(14);
+  }, SETTINGS_WRITE_TIMEOUT_MS);
 });

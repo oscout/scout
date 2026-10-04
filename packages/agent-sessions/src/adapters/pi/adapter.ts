@@ -48,6 +48,8 @@ const BASE_PROCESS_ENV_KEYS = [
   "LANG",
   "LC_ALL",
   "LC_CTYPE",
+  // Pi-native configuration scope, also used for isolated dispatch validation.
+  "PI_CODING_AGENT_DIR",
 ] as const;
 
 type EnvSource = Record<string, string | undefined>;
@@ -268,6 +270,7 @@ export class PiAdapter extends BaseAdapter {
   private toolBlockByToolCallId = new Map<string, Block>();
   private toolOutputByToolCallId = new Map<string, string>();
   private sawStreamingTextInTurn = false;
+  private recoveryActivities = new Set<string>();
 
   constructor(config: AdapterConfig) {
     super(config);
@@ -299,8 +302,7 @@ export class PiAdapter extends BaseAdapter {
       observeRuntime: {
         source: "pi_rpc",
         entrypoint: "pi --mode rpc",
-        ...(selected ? { modelProvider: selected } : {}),
-        ...(thinking ? { effort: thinking } : {}),
+
       },
     };
 
@@ -330,7 +332,6 @@ export class PiAdapter extends BaseAdapter {
       }
     });
     child.onExit((code, signal) => {
-      if (code === 0) return;
       void stderrEnded.then(() => {
         if (this.process !== child || this.session.status === "closed") {
           return;
@@ -455,7 +456,8 @@ export class PiAdapter extends BaseAdapter {
         this.handleTurnEndPayload(event);
         this.closeOpenBlocks();
         if (this.currentTurn) {
-          this.endTurn(this.currentTurn, "completed");
+          this.endTurn(this.currentTurn, event.message?.stopReason === "error" ? "failed"
+            : event.message?.stopReason === "aborted" ? "stopped" : "completed");
         }
         this.updateSessionProviderMeta({
           turnPhase: "ended",
@@ -502,6 +504,7 @@ export class PiAdapter extends BaseAdapter {
           if (this.currentTurn) {
             this.emitError(this.currentTurn, event.error);
           }
+          this.emit("error", new Error(String(event.error)));
         }
         break;
       }
@@ -512,7 +515,23 @@ export class PiAdapter extends BaseAdapter {
         break;
       }
 
+      case "auto_retry_start":
+      case "auto_compaction_start": {
+        this.recoveryActivities.add(event.type);
+        this.updateSessionProviderMeta({ turnPhase: "recovering" });
+        break;
+      }
+      case "auto_retry_end":
+      case "auto_compaction_end": {
+        this.recoveryActivities.delete(event.type.replace(/_end$/, "_start"));
+        break;
+      }
       case "agent_end": {
+        if (event.isTerminal === false || (event.isTerminal !== true && this.recoveryActivities.size > 0)) {
+          this.updateSessionProviderMeta({ turnPhase: "continuing" });
+          break;
+        }
+        this.recoveryActivities.clear();
         this.updateSessionProviderMeta({ turnPhase: "idle", lastCompletedAt: new Date().toISOString() });
         this.requestState();
         this.setStatus("idle");
@@ -541,8 +560,23 @@ export class PiAdapter extends BaseAdapter {
         this.handleToolExecutionEnd(event);
         break;
 
-      // Extension UI requests and compaction/retry events are session-level
-      // details for now; they stay visible in Pi's own transcript.
+      case "extension_ui_request": {
+        // Background dispatch cannot safely choose provider/login/approval
+        // answers on the operator's behalf. Fail explicitly, never fabricate
+        // consent or let a first-run dialog strand a tracked flight.
+        if (["select", "confirm", "input", "editor", "custom"].includes(event.method)) {
+          this.emit("error", new Error(
+            "Pi extension requires interactive setup: "
+            + String(event.title ?? event.method)
+            + ". Run pi in this project, complete the extension setup, then retry scout ask --harness pi.",
+          ));
+          void this.shutdown();
+        }
+        break;
+      }
+
+      // Compaction/retry and non-interactive UI notifications are session-level
+      // details; they remain owned by Pi.
     }
   }
 
@@ -729,6 +763,9 @@ export class PiAdapter extends BaseAdapter {
   }
 
   private handleTurnEndPayload(event: any): void {
+    if (this.currentTurn && typeof event.message?.errorMessage === "string") {
+      this.emitError(this.currentTurn, event.message.errorMessage);
+    }
     if (event.message?.role === "assistant") {
       this.handleMessageRecord(event);
       this.updateSessionMetadataFromMessageRecord(event, event.message);
@@ -1044,6 +1081,11 @@ export class PiAdapter extends BaseAdapter {
     }
     this.updateSessionProviderMeta({
       ...(provider ? { provider } : {}),
+      observeRuntime: {
+        source: "pi_rpc",
+        ...(model ? { model } : {}),
+        ...(provider ? { modelProvider: provider } : {}),
+      },
       ...(usage ? { observeUsage: usage } : {}),
     });
   }
@@ -1115,6 +1157,10 @@ export class PiAdapter extends BaseAdapter {
       this.session.model = model;
     }
 
+    if (typeof data.thinkingLevel === "string") {
+      this.session.reasoningEffort = data.thinkingLevel === "off" ? "none" : data.thinkingLevel;
+    }
+
     const sessionId = typeof data.sessionId === "string" ? data.sessionId : undefined;
     const sessionFile = typeof data.sessionFile === "string" ? data.sessionFile : undefined;
     const pendingMessageCount = typeof data.pendingMessageCount === "number"
@@ -1124,6 +1170,12 @@ export class PiAdapter extends BaseAdapter {
     const followUpMode = typeof data.followUpMode === "string" ? data.followUpMode : undefined;
     const sessionName = typeof data.sessionName === "string" ? data.sessionName : undefined;
     this.updateSessionProviderMeta({
+      observeRuntime: {
+        source: "pi_rpc",
+        ...(model ? { model } : {}),
+        ...(typeof data.model?.provider === "string" ? { modelProvider: data.model.provider } : {}),
+        ...(typeof data.thinkingLevel === "string" ? { effort: data.thinkingLevel } : {}),
+      },
       ...(sessionId ? { externalSessionId: sessionId, threadId: sessionId } : {}),
       ...(sessionFile ? { threadPath: sessionFile } : {}),
       ...(pendingMessageCount !== undefined ? { pendingMessageCount } : {}),

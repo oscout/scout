@@ -1,0 +1,113 @@
+/* Preserve the casefile layout; use Scout's tighter corners only on this page. */
+.s-work-casefile {
+  --radius-md: 3px;
+  --radius-lg: 3px;
+  --radius-xl: 4px;
+  --radius-2xl: 4px;
+}
+
+.s-work-casefile .s-work-casefile-topbar {
+  flex-wrap: wrap;
+  gap: var(--space-sm);
+}
+
+.s-work-embed {
+  height: 100dvh;
+  overflow: auto;
+  padding: var(--space-lg);
+  box-sizing: border-box;
+}
+
+.s-work-embed .s-work-casefile {
+  width: 100%;
+  max-width: 1440px;
+  margin-inline: auto;
+}
+
+/* A bounded, keyboard-scrollable inventory with fixed column alignment. */
+.s-work-material-table-scroll {
+  --doc-focus-accent: var(--accent);
+  max-height: 300px;
+  overflow: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+.s-work-material-table-scroll:focus-visible { outline: 1px solid var(--accent); outline-offset: 2px; }
+.s-work-material-table { width: 100%; min-width: 560px; table-layout: fixed; border-spacing: 0; font-size: var(--text-sm); }
+.s-work-material-col-file { width: 36%; }
+.s-work-material-col-folder { width: 34%; }
+.s-work-material-col-status { width: 16%; }
+.s-work-material-col-changes { width: 14%; }
+.s-work-material-table th { position: sticky; top: 0; z-index: 1; background: var(--surface); color: var(--muted); text-align: left; font-weight: 600; border-bottom: 1px solid var(--border); padding: 7px 8px; }
+.s-work-material-table td { height: 32px; padding: 0 8px; border-bottom: 1px solid color-mix(in srgb, var(--border) 50%, transparent); color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.s-work-material-table td:first-child { padding: 0; }
+.s-work-material-table tr:last-child td { border-bottom: 0; }
+.s-work-material-table tr:hover td, .s-work-material-table tr[data-selected="true"] td { background: color-mix(in srgb, var(--accent) 7%, transparent); }
+.s-work-material-cell-path { font-family: var(--font-mono); }
+.s-work-material-table .s-work-files-tree-row { min-height: 32px; }
+.s-work-material-table .s-work-files-tree-chevron { display: none; }
+.s-work-material-table .s-work-files-tree-row:focus-visible { outline: 1px solid var(--accent); outline-offset: -1px; }
+
+/* The file inventory sets the row height; even a long brief only fills it. */
+.s-work-material-card-primary {
+  contain: size;
+  min-height: 0;
+  min-width: 0;
+  overflow: hidden;
+}
+.s-work-material-card-primary > :not(.s-work-brief-excerpt) { flex-shrink: 0; }
+.s-work-brief-excerpt {
+  flex: 1 1 0;
+  min-height: 0;
+  overflow: hidden;
+  mask-image: linear-gradient(to bottom, #000 calc(100% - 24px), transparent);
+}
+.s-work-brief-excerpt .s-text-document-surface { padding: 0; background: transparent; border: 0; }
+.s-work-brief-excerpt .s-text-document-markdown { padding: 0; font-size: var(--text-md); line-height: 1.55; color: var(--muted); overflow-wrap: anywhere; }
+.s-work-brief-excerpt .s-text-document-markdown > :first-child { margin-top: 0; }
+.s-work-material-card-primary .s-work-material-card-actions { margin-top: auto; padding-top: var(--space-sm); border-top: 1px solid var(--border); }
+@media (max-width: 1080px) {
+  .s-work-material-card-primary { contain: none; height: 340px; box-sizing: border-box; }
+}
+
+/* A continuous time axis: compact events, with long reports on demand. */
+.s-work-event-track { list-style: none; margin: 0; padding: 0; }
+.s-work-event { position: relative; display: grid; grid-template-columns: 88px 24px minmax(0, 1fr); column-gap: 14px; padding: 0 0 22px; }
+.s-work-event:last-child { padding-bottom: 0; }
+.s-work-event:not(:last-child)::after { content: ""; position: absolute; top: 24px; bottom: 0; left: 113.5px; width: 1px; background: var(--border); }
+.s-work-event-time { display: flex; flex-direction: column; align-items: flex-end; gap: 3px; padding-top: 3px; color: var(--muted); font: var(--text-xs)/1.4 var(--font-mono); }
+.s-work-event-time time { color: var(--ink); }
+.s-work-event-date { margin-bottom: 2px; }
+.s-work-event-node { display: grid; place-items: center; width: 24px; height: 24px; box-sizing: border-box; border: 1px solid var(--border); border-radius: 50%; color: var(--accent); background: var(--surface); }
+.s-work-event[data-kind="message"] .s-work-event-node { color: var(--green); }
+.s-work-event-content { min-width: 0; padding-top: 3px; }
+.s-work-event-heading { display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 12px; margin-bottom: 6px; }
+.s-work-event-heading strong { font-size: var(--text-md); font-weight: 600; color: var(--ink); text-transform: capitalize; }
+.s-work-event-heading > span { color: var(--muted); font-size: var(--text-sm); }
+.s-work-event-copy { color: var(--ink); font-size: var(--text-md); line-height: 1.55; white-space: pre-wrap; overflow-wrap: anywhere; }
+.s-work-event-detail summary { cursor: pointer; color: var(--muted); font-size: var(--text-md); line-height: 1.55; overflow-wrap: anywhere; }
+.s-work-event-detail summary:focus-visible { outline: 1px solid var(--accent); outline-offset: 3px; }
+.s-work-event-disclosure { display: inline-block; margin-left: 8px; color: var(--accent); font-size: var(--text-sm); }
+.s-work-event-detail[open] .s-work-event-copy { margin-top: 10px; }
+.s-work-event-more { align-self: flex-start; margin-left: 140px; }
+@media (max-width: 600px) {
+  .s-work-event { grid-template-columns: 64px 24px minmax(0, 1fr); column-gap: 8px; }
+  .s-work-event:not(:last-child)::after { left: 83.5px; }
+  .s-work-event-more { margin-left: 104px; }
+}
+
+/* Execution metadata is a compact record, independent of prompt length. */
+.s-work-ask-grid { gap: 14px; align-items: start; }
+.s-work-ask-facts { gap: 0 16px; align-content: start; }
+.s-work-ask-facts div { display: flex; align-items: baseline; gap: 8px; padding: 7px 0; border: 0; border-bottom: 1px solid var(--border); border-radius: 0; background: none; }
+.s-work-ask-facts dt { flex: 0 0 106px; margin: 0; font-size: var(--text-2xs); letter-spacing: var(--tracking-sm); }
+.s-work-ask-facts dd { min-width: 0; flex: 1; }
+.s-work-ask-prompt { display: flex; flex-direction: column; gap: 10px; padding: 12px; }
+.s-work-ask-prompt .s-work-ask-label { margin: 0; }
+.s-work-ask-excerpt { max-height: 174px; overflow: hidden; mask-image: linear-gradient(to bottom, #000 calc(100% - 20px), transparent); }
+.s-work-ask-prompt p { font-size: var(--text-md); line-height: 1.5; }
+.s-work-ask-prompt > button { align-self: flex-start; }
+@media (max-width: 600px) { .s-work-ask-facts { grid-template-columns: 1fr; } .s-work-ask-facts dt { flex-basis: 120px; } }

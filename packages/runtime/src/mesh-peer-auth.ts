@@ -1,11 +1,13 @@
 import { createHash, randomBytes } from "node:crypto";
 
 import {
+  canonicalJson,
   nodeKeyId,
   signNodePayload,
   verifyNodeSignature,
   type NodeIdentity,
 } from "./node-identity.js";
+import type { AccessDelegation } from "./mesh-access.js";
 
 /**
  * Mesh trust cone (docs/proposals/mesh-trust-cone.md section 4): every
@@ -175,7 +177,7 @@ export class PeerNonceCache implements PeerNonceClaim {
   }
 }
 
-export function verifyPeerRequest(input: {
+export type VerifyPeerRequestInput = {
   method: string;
   /** pathname including query string, exactly as received */
   path: string;
@@ -194,7 +196,13 @@ export function verifyPeerRequest(input: {
   bootedAt: number;
   now?: number;
   maxSkewMs?: number;
-}): VerifyPeerRequestResult {
+};
+
+export function verifyPeerRequest(input: VerifyPeerRequestInput): VerifyPeerRequestResult {
+  return verifySignedPeerRequest(input, peerRequestSigningPayload);
+}
+
+function verifySignedPeerRequest(input: VerifyPeerRequestInput, buildPayload: typeof peerRequestSigningPayload): VerifyPeerRequestResult {
   const now = input.now ?? Date.now();
   const maxSkewMs = input.maxSkewMs ?? PEER_AUTH_MAX_SKEW_MS;
   const { peer, ts, nonce, signature } = input.headers;
@@ -215,7 +223,7 @@ export function verifyPeerRequest(input: {
   }
   let payload: string;
   try {
-    payload = peerRequestSigningPayload({
+    payload = buildPayload({
       method: input.method,
       path: input.path,
       bodySha256Hex: sha256Hex(input.body ?? ""),
@@ -233,4 +241,56 @@ export function verifyPeerRequest(input: {
     return { ok: false, reason: "nonce replay" };
   }
   return { ok: true, principal: { keyId: peer, tier: enrolled.tier } };
+}
+
+/** Scoped signatures use an explicit domain separate from legacy machine access.
+ * The delegation hash includes its signature, binding the exact certificate.
+ */
+export function scopedPeerRequestSigningPayload(input: Parameters<typeof peerRequestSigningPayload>[0] & {
+  networkId: string;
+  principalId: string;
+  delegationHash: string;
+}): string {
+  for (const value of [input.networkId, input.principalId, input.delegationHash]) {
+    if (!/^[0-9a-f]{64}$/.test(value)) throw new Error("invalid scoped signing context");
+  }
+  return [
+    "v2-scoped",
+    ...peerRequestSigningPayload(input).split("\n").slice(1),
+    input.networkId,
+    input.principalId,
+    input.delegationHash,
+  ].join("\n");
+}
+
+function scopedContext(delegation: AccessDelegation) {
+  return { networkId: delegation.networkId, principalId: delegation.principalId, delegationHash: sha256Hex(canonicalJson(delegation)) };
+}
+
+export function signScopedPeerRequest(identity: NodeIdentity, input: Parameters<typeof signPeerRequest>[1] & {
+  delegation: AccessDelegation;
+}): ReturnType<typeof signPeerRequest> {
+  const ts = input.ts ?? Date.now();
+  const nonce = input.nonce ?? randomBytes(16).toString("base64");
+  const payload = scopedPeerRequestSigningPayload({
+    method: input.method, path: input.path, bodySha256Hex: sha256Hex(input.body ?? ""),
+    destinationKeyId: input.destinationKeyId, ts, nonce, ...scopedContext(input.delegation),
+  });
+  return {
+    [PEER_AUTH_HEADERS.peer]: nodeKeyId(identity.publicKey),
+    [PEER_AUTH_HEADERS.ts]: String(ts),
+    [PEER_AUTH_HEADERS.nonce]: nonce,
+    [PEER_AUTH_HEADERS.signature]: signNodePayload(identity, payload),
+  };
+}
+
+/** Caller validates the body delegation and supplies that expected context.
+ * No unsigned context headers are accepted. The caller owns nonce namespacing.
+ */
+export function verifyScopedPeerRequest(input: VerifyPeerRequestInput & {
+  delegation: AccessDelegation;
+}): VerifyPeerRequestResult {
+  return verifySignedPeerRequest(input, (components) => scopedPeerRequestSigningPayload({
+    ...components, ...scopedContext(input.delegation),
+  }));
 }

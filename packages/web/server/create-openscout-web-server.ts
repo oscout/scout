@@ -38,7 +38,7 @@ import {
   resolveScoutBrokerUrl,
 } from "./core/broker/service.ts";
 import { resolveOperatorName } from "@openscout/runtime/user-config";
-import { readWebClientProfile } from "@openscout/runtime/web-full-client";
+import { readBundledScoutVersion, readWebClientProfile } from "@openscout/runtime/web-full-client";
 import { createAmbientVoiceController } from "./ambient-voice-controller.ts";
 import { synthesizeScoutSpeech } from "./scout-voice.ts";
 import {
@@ -133,6 +133,7 @@ import { mountConversationRoutes } from "./routes/conversations.ts";
 import { mountMeshRoutes } from "./routes/mesh.ts";
 import { mountLocalHttpsRoutes } from "./routes/local-https.ts";
 import { mountOnboardingRoutes } from "./routes/onboarding.ts";
+import { mountSoloProRoutes } from "./routes/solo-pro.ts";
 import { mountScoutbotThreadRoutes } from "./routes/scoutbot-threads.ts";
 import { mountBlobRoutes } from "./routes/blobs.ts";
 import { mountSendRoutes } from "./routes/send.ts";
@@ -1378,6 +1379,7 @@ export async function createOpenScoutWebServer(
   // falls back to memory only rather than signing with a guessable key.
   const channelMemberSessions = createChannelMemberSessionAuthority({
     signingSecret: options.authToken ?? null,
+    leaseDirectory: join(localConfigHome(), "channel-member-leases"),
   });
   // Two ways to carry the same grant. A browser has the cookie; an HTTP client
   // that joined over the API has a bearer token, because expecting a
@@ -1575,6 +1577,19 @@ export async function createOpenScoutWebServer(
   mountLocalHttpsRoutes(app, { options });
 
   mountOnboardingRoutes(app, { currentDirectory });
+
+  {
+    // A packaged build knows its Scout version (and so which full client
+    // `scout web install` would put beside it); a source checkout doesn't.
+    const bundled = resolveBundledStaticClientRoot(import.meta.url);
+    mountSoloProRoutes(app, {
+      scoutVersion: existsSync(resolve(bundled, "index.html")) ? readBundledScoutVersion(dirname(bundled)) : null,
+      served: {
+        profile: webClient,
+        root: options.assetMode === "vite-proxy" ? null : resolveStaticRoot(options.staticRoot),
+      },
+    });
+  }
 
   mountTerminalRoutes(app, { options, routes });
 

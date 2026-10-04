@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import { pairingDeepLink, pairingDeepLinks } from "../../shared/pairing-link.js";
+import { pairingDeepLink, pairingDeepLinks, pairingWebLink } from "../../shared/pairing-link.js";
 
 describe("pairingDeepLink", () => {
   test("uses the iOS Scout URL scheme for pairing payloads", () => {
@@ -63,5 +63,26 @@ describe("pairingDeepLink", () => {
     });
 
     expect(pairingDeepLinks(qrValue).tailnet).toBe(`scout://pair?payload=${encodeURIComponent(qrValue)}`);
+  });
+});
+
+describe("pairingWebLink", () => {
+  test("puts the payload on the openscout.app pairing link the QR encodes", () => {
+    const qrValue = JSON.stringify({
+      v: 1,
+      relay: "ws://mac.tailnet.ts.net:43131",
+      room: "room-1",
+      publicKey: "a".repeat(64),
+      expiresAt: 1_780_958_228_426,
+    });
+
+    const link = pairingWebLink(qrValue);
+    expect(link).toBe(`https://openscout.app/pair#payload=${encodeURIComponent(qrValue)}`);
+    expect(new URLSearchParams(new URL(link!).hash.slice(1)).get("payload")).toBe(qrValue);
+  });
+
+  test("does not create an empty pairing link", () => {
+    expect(pairingWebLink("  ")).toBeNull();
+    expect(pairingWebLink(undefined)).toBeNull();
   });
 });

@@ -40,15 +40,14 @@ broker and service package currently targets Apple Silicon macOS.
 npm install -g @openscout/scout
 scout --version
 scout setup
-scout doctor
 ```
 
 Prefer Bun for global packages? `bun add -g @openscout/scout` installs the
 same package. Bun is required for the local broker and agent coordination.
 
 Installing the package does not silently start services. `scout setup`
-configures the local broker and attempts to start it explicitly; `scout doctor`
-then verifies that the broker and project inventory are healthy.
+configures the local broker, starts it only when unhealthy, and verifies its own
+outcome. `scout doctor` remains optional later troubleshooting.
 
 ## Make your first handoff: Claude Code or Codex
 
@@ -321,8 +320,22 @@ and attempts to start the broker. A CLI-only setup can make its inputs explicit:
 ```bash
 scout config set name "Ada"
 scout setup --source-root ~/dev --default-harness codex
-scout doctor
 ```
+
+Setup prints one next command and never opens or downloads a GUI. “Scout is
+ready” requires a healthy broker and an explicitly ready harness; otherwise it
+reports running with an observed login command (or runtime inspection when no
+supported login is known). Broker or install failures exit nonzero, including
+with `--json`. Existing JSON fields remain; `outcome`, `headline`, `nextStep`,
+`alsoAvailable`, `webUrl`, and `browserGuidance` are additive.
+
+`--source-root` is repeatable; `--default-harness` and `--context-root` supply
+remaining supported choices. JSON, SSH, and non-TTY setup do not prompt. Reruns
+without overrides preserve saved roots, harness, identity, and configuration;
+a healthy broker is not restarted. SSH output includes a browser tunnel example.
+Optional Mac installation, phone pairing (no mandatory Tailscale), browser, and
+terminal tools remain available later. Installing the Mac app first still needs
+separate native bootstrap work; CLI setup does not implement that flow.
 
 `scout doctor` reports readiness and the next useful command. `FAIL` means an
 observed impairment; `?` means the diagnostic was inconclusive. Use
@@ -427,3 +440,24 @@ For commercial support or to learn more about our plans,
 
 Apache-2.0. See the [license](https://github.com/oscout/scout/blob/main/LICENSE)
 and [notice](https://github.com/oscout/scout/blob/main/packages/cli/NOTICE).
+
+## Lifecycle help safety
+
+`scout setup --help`, `scout up --help`, and `scout app restart --help`
+(and `-h`) are handled by the launcher before runtime selection. They work
+without Bun or built CLI bundles and do not install, start, stop, or restart
+anything. Help takes precedence over other arguments, including global help
+and `scout app help`. A shared parser validates lifecycle arguments before
+broker maintenance in both the packaged launcher and the source CLI; malformed
+positionals, empty values, and unknown flags fail without bootstrapping.
+
+Both runtime launchers handle help for `base`, `broker`, `service`, and
+`discover` before importing daemon modules or attempting a build. Unsupported
+lifecycle flags fail before dispatch. Daemon configuration remains environment
+based; `base` and `broker` accept no positional arguments or flags other than
+help. `service` accepts a lifecycle action and `--json`; `discover` accepts
+positional seeds. The separate `otel` command retains its own parser.
+
+Regression checks: `node --test packages/cli/test/lifecycle-help.test.mjs`.
+These use isolated temporary launchers with poisoned runtime entries rather
+than running potentially mutating commands against the local suite.

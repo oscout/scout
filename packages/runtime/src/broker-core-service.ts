@@ -45,6 +45,7 @@ import type {
   ScoutBrokerMessageQuery,
   ScoutBrokerProjectionStatus,
   ScoutBrokerStartupStatus,
+  ScoutBrokerStorageStatus,
 } from "./broker-api.js";
 import { loadOpenScoutRuntimeBuildIdentity } from "./build-info.js";
 import { readInvocationLifecycle as readInvocationLifecycleModel } from "./invocation-lifecycle-read-model.js";
@@ -133,6 +134,7 @@ export type BrokerCoreServiceDeps = {
   readChildServices?: () => ScoutBrokerChildServiceSnapshots;
   readProjectionStatus?: () => ScoutBrokerProjectionStatus;
   readStartupStatus?: () => ScoutBrokerStartupStatus;
+  readStorageStatus?: () => ScoutBrokerStorageStatus;
   readMemoryStatus?: () => unknown;
   readHome?: () => Promise<unknown>;
   readMeshNodeState?: () => Promise<unknown> | unknown;
@@ -879,6 +881,7 @@ export function createBrokerCoreService(
         ...(startup
           ? { startup }
           : {}),
+        ...(deps.readStorageStatus ? { storage: deps.readStorageStatus() } : {}),
         ...(deps.readMemoryStatus ? { memory: deps.readMemoryStatus() } : {}),
         counts: {
           nodes: Object.keys(snapshot.nodes).length,

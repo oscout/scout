@@ -1309,3 +1309,15 @@ describe("integration setup HTTP boundaries", () => {
     } finally { database.close(); }
   });
 });
+
+test("endpoint inventory uses metadata-only peek, supports exact selection and never scans a snapshot", async () => {
+  const endpoint = { id: "endpoint-proof", agentId: "session-proof", nodeId: "node-1", sessionId: "native-proof", state: "idle", harness: "claude" } as any;
+  const h = createHarness();
+  h.deps.runtime.snapshot = () => { throw Error("must not scan message history"); };
+  h.deps.runtime.peek = () => ({ endpoints: { [endpoint.id]: endpoint } });
+  expect((await requestRouter(h, "GET", "/v1/endpoints?endpointId=endpoint-proof")).body).toEqual({ endpoints: [endpoint] });
+  expect((await requestRouter(h, "GET", "/v1/endpoints?agentId=other")).body).toEqual({ endpoints: [] });
+  expect((await requestRouter(h, "GET", "/v1/endpoints?endpointId=missing")).body).toEqual({ endpoints: [] });
+  delete h.deps.runtime.peek;
+  expect((await requestRouter(h, "GET", "/v1/endpoints")).response.status).toBe(503);
+});

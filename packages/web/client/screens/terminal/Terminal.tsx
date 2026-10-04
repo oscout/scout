@@ -32,6 +32,8 @@ import {
   useState,
 } from "react";
 import { useContextMenu } from "../../components/ContextMenu.tsx";
+import { ConnectionState, useConnectionTrace } from "../../components/ConnectionState.tsx";
+import { terminalLoadNotice, terminalRelayNotice, terminalRelayTraceError } from "./terminal-connection-state.ts";
 import { api } from "../../lib/api.ts";
 import { copyTextToClipboard } from "../../lib/clipboard.ts";
 import { actorColor } from "../../lib/colors.ts";
@@ -144,6 +146,9 @@ import { useTerminalRelay, TerminalRelay } from "hudsonkit/terminal";
 import { usePersistentState } from "@hudsonkit";
 import { queueTakeover } from "../../lib/terminal-takeover.ts";
 import { useHerdrTopology } from "../../lib/herdr-topology.ts";
+import { HerdrSessionPreview } from "./HerdrSessionPreview.tsx";
+import { herdrSessionSummary } from "./herdr-session-summary.ts";
+import { isStoppedHostItem } from "./terminal-nav-model.ts";
 import { AgentStatusDot, HerdrSessionScreen, herdrTabSummary, herdrTerminalRoute } from "./HerdrSession.tsx";
 import {
   SCOUT_TERMINAL_SEND_LINE_EVENT,
@@ -314,15 +319,39 @@ function terminalTypography(): { fontFamily: string; fontSize: number } {
 
 function ScoutTerminalRelay(props: ComponentProps<typeof TerminalRelay>) {
   const typography = terminalTypography();
+  const { apiConnection, reload } = useScout();
+  const [attempted, setAttempted] = useState(false);
+  useEffect(() => {
+    if (props.relay.status !== "disconnected") setAttempted(true);
+  }, [props.relay.status]);
+  const notice = terminalRelayNotice({ ...props.relay, attempted, apiOffline: apiConnection.status === "offline" });
+  const trace = useConnectionTrace([
+    `Scout connection: ${apiConnection.status}`,
+    `Terminal: ${props.relay.status}`,
+    terminalRelayTraceError(props.relay.error),
+  ].filter(Boolean).join(" · "));
   // "auto" lets Hudson load @xterm/addon-webgl and fall back to the DOM
   // renderer on context loss. Callers can still pin "dom" or "webgl".
   return (
-    <TerminalRelay
-      {...props}
-      renderer={props.renderer ?? "auto"}
-      fontFamily={typography.fontFamily}
-      fontSize={typography.fontSize}
-    />
+    <div className="s-term-relay-surface">
+      {/* Keep xterm mounted through reconnects so its scrollback survives. */}
+      <div className="s-term-relay-canvas" aria-hidden={notice ? true : undefined} inert={notice ? true : undefined} style={notice ? { visibility: "hidden" } : undefined}>
+        <TerminalRelay
+          {...props}
+          renderer={props.renderer ?? "auto"}
+          fontFamily={typography.fontFamily}
+          fontSize={typography.fontSize}
+        />
+      </div>
+      {notice && (
+        <div className="s-term-relay-notice">
+          <ConnectionState notice={notice} trace={trace} onRetry={() => {
+            void reload();
+            props.relay.connect();
+          }} />
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -364,6 +393,7 @@ function useTerminalSessionsTarget(
   return {
     target,
     loadState: state.state,
+    loadError: state.state === "failed" ? state.error : null,
     loadSessions,
     hasSessionHint: Boolean(terminalSessionId),
   };
@@ -1181,10 +1211,13 @@ function RegisteredTerminalSessions({
   mode?: "observe" | "takeover";
   navigate: (route: Route) => void;
 }) {
-  const { target, loadState, loadSessions, hasSessionHint } = useTerminalSessionsTarget(
+  const { target, loadState, loadError, loadSessions, hasSessionHint } = useTerminalSessionsTarget(
     terminalSessionId,
     terminalSurfaceKey,
   );
+  const notice = terminalLoadNotice(loadState, loadError);
+  const trace = useConnectionTrace(loadState === "loading" ? "Requesting terminal inventory" :
+    loadState === "failed" ? `Terminal inventory request failed: ${loadError}` : "Terminal inventory received");
 
   if (target && mode) {
     return (
@@ -1201,6 +1234,8 @@ function RegisteredTerminalSessions({
   if (target) {
     return <TerminalSummary target={target} navigate={navigate} />;
   }
+
+  if (notice) return <div className="s-term s-term--empty-main"><ConnectionState notice={notice} trace={trace} onRetry={loadSessions} /></div>;
 
   return (
     <div className="s-term s-term--empty-main">
@@ -1407,7 +1442,6 @@ function TerminalHome({ navigate }: { navigate: TerminalNavigate }) {
     void fetchTerminalSessions({ includeDiscovered: true })
       .then((sessions) => setState({ state: "ready", sessions }))
       .catch((error) => {
-        if (options.silent) return;
         setState((current) => ({
           state: "failed",
           sessions: current.sessions,
@@ -1415,6 +1449,13 @@ function TerminalHome({ navigate }: { navigate: TerminalNavigate }) {
         }));
       });
   }, []);
+
+  const inventoryNotice = terminalLoadNotice(state.state, state.state === "failed" ? state.error : null);
+  const inventoryTrace = useConnectionTrace(state.state === "loading" ? "Requesting terminal inventory" :
+    state.state === "failed" ? `Terminal inventory request failed: ${state.error}` : `Terminal inventory received: ${state.sessions.length} sessions`);
+  const inventoryStatus = inventoryNotice && (
+    <ConnectionState notice={inventoryNotice} trace={inventoryTrace} onRetry={() => loadSessions()} compact />
+  );
 
   useEffect(() => {
     loadSessions();
@@ -1495,6 +1536,7 @@ function TerminalHome({ navigate }: { navigate: TerminalNavigate }) {
     [agents, liveTerminalItems],
   );
   const selectedMultiplexer = multiplexerItems.find((item) => item.id === selectedMultiplexerId)
+    ?? multiplexerItems.find((item) => item.surface.state === "live")
     ?? multiplexerItems[0]
     ?? null;
 
@@ -1609,7 +1651,6 @@ function TerminalHome({ navigate }: { navigate: TerminalNavigate }) {
     [pickerHits, pickerTier],
   );
   const pickerHighlight = useMemo(() => terminalSearchHighlight(pickerTerms), [pickerTerms]);
-  const sessionError = state.state === "failed" ? state.error : null;
   const workspaceDefinitions = deck.workspaces;
   const activeWorkspace = deck.workspaces.find((workspace) => workspace.id === deck.activeWorkspaceId) ?? null;
   const workspaceLayout = terminalWorkspaceLayoutOf({
@@ -2249,6 +2290,7 @@ function TerminalHome({ navigate }: { navigate: TerminalNavigate }) {
         header={terminalHeader}
         workspaces={workspaceDefinitions}
         sessionsReady={state.state !== "loading"}
+        connectionStatus={inventoryStatus}
         onOpen={enterWorkspace}
         onCreate={() => startWorkspaceBuilder()}
         onEdit={startWorkspaceBuilder}
@@ -2304,12 +2346,7 @@ function TerminalHome({ navigate }: { navigate: TerminalNavigate }) {
       <div className="s-term-workspace">
         <h1 className="s-term-visually-hidden">{activeWorkspace?.name ?? "Terminal workspace"}</h1>
 
-        {sessionError && (
-          <div className="s-term-home-error">
-            <span>Terminal registry unavailable</span>
-            <code>{sessionError}</code>
-          </div>
-        )}
+        {inventoryStatus}
 
         {workspaceSyncError && (
           <div className="s-term-home-error">
@@ -2381,7 +2418,8 @@ function TerminalHome({ navigate }: { navigate: TerminalNavigate }) {
               <TerminalIcon size={14} strokeWidth={1.8} />
               <h2 id="terminal-picker-title">Add to workspace</h2>
               <span className="s-term-picker-head-count">
-                {liveTerminalItems.length} terminal{liveTerminalItems.length === 1 ? "" : "s"} on this host
+                {state.state === "loading" ? "Loading terminals…" : state.state === "failed" ? "Inventory unavailable" :
+                  `${liveTerminalItems.filter((item) => !isStoppedHostItem(item)).length} running · ${liveTerminalItems.filter(isStoppedHostItem).length} stopped`}
               </span>
             </div>
             <div className="s-term-picker-actions">
@@ -2461,15 +2499,15 @@ function TerminalHome({ navigate }: { navigate: TerminalNavigate }) {
                   },
                   {
                     source: "agent",
-                    label: "Agent sessions",
-                    detail: "Agent-owned · managed terminals",
+                    label: "Linked agents",
+                    detail: "Scout agents linked to a terminal in this inventory",
                     count: terminalAgents.length,
                     icon: Zap,
                   },
                   {
                     source: "session",
-                    label: "Recent sessions",
-                    detail: "Individual · previously opened by Scout",
+                    label: "Scout terminals",
+                    detail: "Terminals registered with Scout",
                     count: engagedSessionItems.length,
                     icon: TerminalIcon,
                   },
@@ -2491,8 +2529,8 @@ function TerminalHome({ navigate }: { navigate: TerminalNavigate }) {
                       <strong>{label}</strong>
                       <small>{detail}</small>
                     </span>
-                    <em aria-label={`${state.state === "loading" ? "Loading" : count} ${label.toLowerCase()}`}>
-                      {state.state === "loading" ? "·" : count}
+                    <em aria-label={`${state.state === "loading" ? "Loading" : state.state === "failed" ? "Unavailable" : count} ${label.toLowerCase()}`}>
+                      {state.state === "loading" ? "·" : state.state === "failed" ? "—" : count}
                     </em>
                   </button>
                 ))}
@@ -2571,7 +2609,7 @@ function TerminalHome({ navigate }: { navigate: TerminalNavigate }) {
                       ? "Start from ownership: open the terminal associated with a managed agent, or add that surface here."
                       : "Return to individual terminal sessions Scout has already opened or registered."}
                 </p>
-                {pickerSource === "multiplexer" ? (
+                {state.state !== "ready" && terminalItems.length === 0 ? null : pickerSource === "multiplexer" ? (
                   <TerminalMultiplexerPicker
                     items={multiplexerItems}
                     selectedId={selectedMultiplexer?.id ?? null}
@@ -2591,8 +2629,8 @@ function TerminalHome({ navigate }: { navigate: TerminalNavigate }) {
                   />
                 ) : engagedSessionItems.length === 0 && state.state !== "loading" ? (
                   <div className="s-term-picker-empty s-term-picker-empty--explained">
-                    <strong>No recent sessions yet</strong>
-                    <span>Open or register a terminal session and it will appear here.</span>
+                    <strong>No terminals registered with Scout</strong>
+                    <span>Existing Herdr sessions are listed under Multiplexer setups.</span>
                   </div>
                 ) : (
                   <TerminalSessionPicker
@@ -2621,6 +2659,7 @@ function TerminalWorkspaceLibrary({
   header,
   workspaces,
   sessionsReady,
+  connectionStatus,
   onOpen,
   onCreate,
   onEdit,
@@ -2629,6 +2668,7 @@ function TerminalWorkspaceLibrary({
   header: ReactNode;
   workspaces: TerminalWorkspaceDefinition[];
   sessionsReady: boolean;
+  connectionStatus?: ReactNode;
   onOpen: (workspace: TerminalWorkspaceDefinition) => void;
   onCreate: () => void;
   onEdit: (workspace: TerminalWorkspaceDefinition) => void;
@@ -2639,8 +2679,9 @@ function TerminalWorkspaceLibrary({
       {header}
       <main className="s-term-workspace-library">
         <h1 className="s-term-visually-hidden">Terminal workspaces</h1>
+        {connectionStatus}
 
-        {workspaces.length === 0 ? (
+        {workspaces.length === 0 && connectionStatus ? null : workspaces.length === 0 ? (
           <section className="s-term-workspace-library-empty">
             <Grid2X2 size={24} strokeWidth={1.5} />
             <h2>Create your first terminal workspace</h2>
@@ -3087,8 +3128,10 @@ function TerminalPickerItem({
       </div>
       <div className="s-term-picker-item-meta">
         <span>{item.surface.backend}</span>
-        <span>{terminalSessionStateLabel(item)}</span>
-        <span title={item.session.cwd ?? undefined}>{item.project}</span>
+        {terminalSessionStateLabel(item) !== "live" && <span>{terminalSessionStateLabel(item)}</span>}
+        {item.project !== "backend-only" && item.project !== "unscoped" && (
+          <span title={item.session.cwd ?? undefined}>{item.project}</span>
+        )}
       </div>
     </>
   );
@@ -3177,7 +3220,10 @@ function TerminalMultiplexerPicker({
           );
         })}
       </div>
-      <section className="s-term-picker-preview" aria-label={`${selected.title} live preview`}>
+      <section className="s-term-picker-preview" aria-label={`${selected.title} preview`}>
+        {selected.surface.backend === "herdr" ? (
+          <HerdrPickerPreview key={selected.surface.sessionName} sessionName={selected.surface.sessionName} />
+        ) : (<>
         <div className="s-term-picker-preview-title">
           <div>
             <strong>{selected.title}</strong>
@@ -3195,8 +3241,41 @@ function TerminalMultiplexerPicker({
         ) : (
           <div className="s-term-picker-empty">This host does not expose a web preview</div>
         )}
+        </>)}
       </section>
     </div>
+  );
+}
+
+function HerdrPickerPreview({ sessionName }: { sessionName: string }) {
+  const { topology, error, loading, refresh } = useHerdrTopology(sessionName);
+  const trace = useConnectionTrace(loading ? `Requesting Herdr layout: ${sessionName}` : error
+    ? `Herdr layout request failed: ${error}` : topology?.running ? "Received live Herdr layout" : "Received saved Herdr layout");
+  if (loading && !topology) return <ConnectionState notice={{ kind: "loading", title: `Loading ${sessionName}`, detail: "Reading this Herdr session’s layout and pane states." }} trace={trace} />;
+  if (error && !topology) return <ConnectionState notice={terminalLoadNotice("failed", error)!} trace={trace} onRetry={refresh} />;
+  const panes = topology?.workspaces.flatMap((workspace) => workspace.tabs.flatMap((tab) =>
+    tab.panes.map((pane) => ({ workspace, tab, pane })))) ?? [];
+  return (
+    <>
+      <div className="s-term-picker-preview-title">
+        <div>
+          <strong>{sessionName}</strong>
+          <span>{error ? "Could not refresh Herdr layout" : !topology ? "Reading Herdr layout…" :
+            topology.running ? "Herdr · running" : topology.unavailable === "unreadable" ? "Herdr · live layout unavailable" : "Herdr · stopped"}</span>
+          {topology && (topology.running || topology.savedAt) && <span>{herdrSessionSummary(topology)}{(!topology.running || error) && " · last known"}</span>}
+        </div>
+        <button type="button" className="s-term-workspace-action" onClick={refresh} disabled={loading}>{loading ? "Refreshing…" : "Refresh"}</button>
+      </div>
+      {error && <ConnectionState notice={terminalLoadNotice("failed", error)!} trace={trace} onRetry={refresh} compact />}
+      {topology && !topology.running && (
+        <p className="s-term-picker-hint">{topology.unavailable === "unreadable"
+          ? "Herdr is running, but its live layout could not be read."
+          : topology.savedAt ? "This is a saved layout. Open the session to start it again."
+          : "Herdr is stopped. Open the session to start it again."}</p>
+      )}
+      {topology && <HerdrSessionPreview topology={topology} stale={Boolean(error)} />}
+      {topology?.running && panes.length === 0 && <div className="s-term-picker-empty">Herdr reports no panes in this session.</div>}
+    </>
   );
 }
 
@@ -3216,8 +3295,8 @@ function TerminalAgentPicker({
   if (agents.length === 0) {
     return (
       <div className="s-term-picker-empty s-term-picker-empty--explained">
-        <strong>No agent owns a terminal on this host right now</strong>
-        <span>Agents whose terminal has exited still turn up in search, under Exited.</span>
+        <strong>No Scout agents are linked to these terminals</strong>
+        <span>Agents running inside Herdr are shown in their multiplexer setup.</span>
       </div>
     );
   }
@@ -3630,10 +3709,6 @@ function HostedTerminalWorkspaceTile({
   const herdrTabs = isHerdr && topology?.running
     ? topology.workspaces.flatMap((workspace) => workspace.tabs.map((tab) => ({ workspace, tab })))
     : [];
-  const herdrPanes = herdrTabs.flatMap(({ tab }) => tab.panes);
-  const herdrAgentCount = new Set(
-    herdrPanes.map((pane) => pane.agent).filter((agent): agent is string => Boolean(agent)),
-  ).size;
 
   return (
     <section className="s-term-workspace-tile s-term-workspace-tile--hosted" aria-label={`${host?.label ?? backend} session`}>
@@ -3670,48 +3745,11 @@ function HostedTerminalWorkspaceTile({
         </div>
       </div>
       {herdrTabs.length > 0 ? (
-        <button type="button" className="s-term-workspace-hosted-body s-term-workspace-hosted-body--link" onClick={openProjection}>
-          {/* A summary of the session, not a picture of it: the tile has room for
-              one line per tab, and what an operator needs from a glance is how
-              much is in there, which of it is an agent, and what that agent is
-              on. The layout replica and the pane table live in the session view
-              this button opens. */}
-          <span className="s-term-workspace-hosted-stat">
-            {herdrTabs.length} {herdrTabs.length === 1 ? "workspace" : "workspaces"}
-            {" · "}{herdrPanes.length} {herdrPanes.length === 1 ? "pane" : "panes"}
-            {herdrAgentCount > 0 && <>{" · "}{herdrAgentCount} {herdrAgentCount === 1 ? "agent" : "agents"}</>}
-          </span>
-          {herdrTabs.map(({ workspace, tab }) => {
-            const summary = herdrTabSummary(workspace, tab);
-            // The focused pane is the one herdr would put you in; failing that
-            // the first. Its title is the session's most specific signal — an
-            // agent's current task, or the shell's own prompt line.
-            const lead = tab.panes.find((pane) => pane.focused) ?? tab.panes[0] ?? null;
-            const subject = lead?.label ?? (lead?.agent ? null : "shell");
-            return (
-              <span
-                className="s-term-workspace-hosted-tab"
-                key={tab.tabId}
-                title={[summary.label, lead?.agent, subject].filter(Boolean).join(" · ")}
-              >
-                <span className="s-term-workspace-hosted-tab-dots">
-                  {summary.statuses.map((status, index) => (
-                    <AgentStatusDot key={`${tab.tabId}:${index}`} status={status} />
-                  ))}
-                </span>
-                <span className="s-term-workspace-hosted-tab-label">{summary.label}</span>
-                {lead?.agent && (
-                  <span className="s-term-workspace-hosted-tab-agent">{lead.agent}</span>
-                )}
-                {/* Always rendered, empty or not: it is the row's flexible column,
-                    and without it the pane count collapses against the label. */}
-                <span className="s-term-workspace-hosted-tab-subject">{subject}</span>
-                <span className="s-term-workspace-hosted-tab-count">{summary.statuses.length}</span>
-              </span>
-            );
-          })}
-          <span className="s-term-workspace-hosted-hint">Open the session</span>
-        </button>
+        <div className="s-term-workspace-hosted-body">
+          <span className="s-term-workspace-hosted-stat">{topology && herdrSessionSummary(topology)}</span>
+          {topology && <HerdrSessionPreview topology={topology} />}
+          <button type="button" className="s-term-workspace-action" onClick={openProjection}>Open the session</button>
+        </div>
       ) : (
         <div className="s-term-workspace-unavailable-body">
           <TerminalIcon size={22} strokeWidth={1.5} />

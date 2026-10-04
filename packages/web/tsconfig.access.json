@@ -1,0 +1,5 @@
+{
+  "extends": "./tsconfig.json",
+  "include": ["client/scoped-access/**/*.ts", "client/scoped-access/**/*.tsx", "server/scoped-access/**/*.ts"],
+  "exclude": ["server/**/*.test.ts"]
+}

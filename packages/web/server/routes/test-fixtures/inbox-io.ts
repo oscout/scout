@@ -7,6 +7,7 @@ export const queryBrokerFlightsForWeb = () => state.flights ?? [];
 export const normalizeTimestampMs = (n:any) => Number(n);
 export const isTransientBrokerWaitStatusMessage = () => false;
 export const queryFlightRecordById = () => undefined;
+export const queryConversationDefinitionById = () => null;
 export const loadScoutReadCursors = (...args:any[]) => { throw new Error("Unexpected fixture call loadScoutReadCursors"); };
 export const markScoutConversationRead = (...args:any[]) => { throw new Error("Unexpected fixture call markScoutConversationRead"); };
 export const updateScoutChatPreferences = (...args:any[]) => { throw new Error("Unexpected fixture call updateScoutChatPreferences"); };

@@ -1,7 +1,7 @@
 import tailwindcss from "@tailwindcss/vite";
 import react from "@vitejs/plugin-react-swc";
 import { execSync } from "node:child_process";
-import { existsSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { resolve } from "node:path";
 import { defineConfig, type Plugin } from "vite";
@@ -55,6 +55,7 @@ function resolveHudsonSdkSource(): string | null {
  * The ordinary build is untouched and stays the full app.
  */
 const basicWeb = process.env.OPENSCOUT_WEB_PROFILE === "basic";
+const accessWeb = process.env.OPENSCOUT_WEB_PROFILE === "access";
 /** Public files only full-app surfaces load (ops 3D studio, crew preview page, crew source masters). */
 const BASIC_WEB_OMITTED_PUBLIC = ["characters", "crew/masters", "crew-preview.html"];
 
@@ -108,8 +109,9 @@ function hudsonKitAlias(sourceFile: string, packageExport: string): string {
 export default defineConfig({
   root: resolve(__dirname, "client"),
   clearScreen: false,
-  plugins: [react(), tailwindcss(), ...(basicWeb ? [basicWebPlugin()] : [])],
-  define: { "import.meta.env.VITE_SCOUT_WEB_PROFILE": JSON.stringify(basicWeb ? "basic" : "full") },
+  ...(accessWeb ? { publicDir: false as const } : {}),
+  plugins: [react(), tailwindcss(), ...(basicWeb ? [basicWebPlugin()] : []), ...(accessWeb ? [{ name: "scout-access-public", closeBundle() { copyFileSync(resolve(__dirname, "client/public/favicon.ico"), resolve(__dirname, "dist/access-client/favicon.ico")); } }] : [])],
+  define: { "import.meta.env.VITE_SCOUT_WEB_PROFILE": JSON.stringify(accessWeb ? "access" : basicWeb ? "basic" : "full") },
   server: {
     // The portal name (DEFAULT_SCOUT_WEB_PORTAL_HOST) and its subdomains, so
     // dev work is reachable as scout.local:43122 like the service is.
@@ -154,7 +156,8 @@ export default defineConfig({
     },
   },
   build: {
-    outDir: resolve(__dirname, basicWeb ? "dist/basic-client" : "dist/client"),
+    outDir: resolve(__dirname, accessWeb ? "dist/access-client" : basicWeb ? "dist/basic-client" : "dist/client"),
+    ...(accessWeb ? { rollupOptions: { input: resolve(__dirname, "client/scoped-access/index.html") } } : {}),
     emptyOutDir: true,
     sourcemap: false,
   },

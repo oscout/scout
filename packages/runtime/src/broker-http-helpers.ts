@@ -209,9 +209,38 @@ export function notFound(response: RuntimeHttpResponseLike): void {
   json(response, 404, { error: "not_found" });
 }
 
+const STORAGE_FULL_CODES = new Set(["ENOSPC", "EDQUOT", "SQLITE_FULL"]);
+const STORAGE_UNAVAILABLE_CODES = new Set(["EROFS", "EIO", "SQLITE_IOERR"]);
+
+/**
+ * A request can fail because the broker cannot write, not because the request
+ * was wrong. Those are server conditions (507 when storage is full, 503 when it
+ * is unusable), so callers can tell a full disk from a malformed request.
+ */
+export function storageFailureStatus(error: unknown): { status: 503 | 507; error: "storage_full" | "storage_unavailable" } | null {
+  const code = error && typeof error === "object" && "code" in error ? (error as { code?: unknown }).code : undefined;
+  const message = error instanceof Error ? error.message : "";
+  if ((typeof code === "string" && STORAGE_FULL_CODES.has(code))
+    || /no space left on device|database or disk is full/i.test(message)) {
+    return { status: 507, error: "storage_full" };
+  }
+  if (typeof code === "string" && (STORAGE_UNAVAILABLE_CODES.has(code) || code.startsWith("SQLITE_IOERR_"))) {
+    return { status: 503, error: "storage_unavailable" };
+  }
+  return null;
+}
+
 export function badRequest(response: RuntimeHttpResponseLike, error: unknown): void {
   if (error instanceof BrokerMessageBodyCacheUnavailable || error instanceof BrokerRecordCacheUnavailable) {
     json(response, 503, { error: error.code, detail: error.message });
+    return;
+  }
+  const storage = storageFailureStatus(error);
+  if (storage) {
+    json(response, storage.status, {
+      error: storage.error,
+      detail: error instanceof Error ? error.message : String(error),
+    });
     return;
   }
   if (error instanceof BrokerHttpRequestError) {

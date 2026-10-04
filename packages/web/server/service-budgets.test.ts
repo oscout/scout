@@ -270,18 +270,66 @@ describe("service budgets", () => {
     const response = await loadServiceBudgets(true);
     const claude = response.gauges.find((gauge) => gauge.id === "claude");
 
+    // Both resets have passed since that reading: the windows rolled over, so
+    // the pre-reset 28% / 47% are no longer current usage.
     expect(claude).toEqual(expect.objectContaining({
       id: "claude",
       label: "claude",
       kind: "quota",
-      usedLabel: "47%",
+      usedLabel: "—",
       capLabel: "100%",
       unitLabel: "7d",
     }));
     expect(claude && claude.kind === "quota" ? claude.windows : []).toEqual([
-      expect.objectContaining({ label: "5h", usedLabel: "28%" }),
-      expect.objectContaining({ label: "7d", usedLabel: "47%" }),
+      expect.objectContaining({ label: "5h", usedLabel: "—", awaitingReset: true, fill: 0 }),
+      expect.objectContaining({ label: "7d", usedLabel: "—", awaitingReset: true, fill: 0 }),
     ]);
+    rawDb.close();
+  });
+
+  test("rolls every Claude window over when the last statusline reading predates all resets", async () => {
+    const root = mkdtempSync(join(tmpdir(), "openscout-service-budgets-claude-rolled-over-"));
+    tempPaths.add(root);
+    const controlHome = join(root, "control-plane");
+    const home = join(root, "home");
+    process.env.OPENSCOUT_CONTROL_HOME = controlHome;
+    process.env.HOME = home;
+    process.env.OPENSCOUT_SUPPORT_DIRECTORY = join(home, "Library", "Application Support", "OpenScout");
+    process.env.PATH = "";
+    mkdirSync(controlHome, { recursive: true });
+
+    const rawDb = new Database(join(controlHome, "control-plane.sqlite"));
+    createQuotaTable(rawDb);
+
+    // The cockpit bug: capture stopped 29h ago, so the 5h reset is 25h past
+    // and the weekly reset 23h past. Before, the gauge kept 7% / 86% with
+    // those past resets and the cockpit counted "stale +23h" into the past.
+    const statuslineDir = join(home, "Library", "Application Support", "OpenScout", "runtime", "statusline");
+    mkdirSync(statuslineDir, { recursive: true });
+    const now = Date.now();
+    const hour = 60 * 60 * 1000;
+    const weeklyResetAt = now - 23 * hour;
+    writeFileSync(join(statuslineDir, "claude-latest.json"), JSON.stringify({
+      session_id: "claude-statusline-session",
+      rate_limits: {
+        five_hour: { used_percentage: 7, resets_at: Math.floor((now - 25 * hour) / 1000) },
+        seven_day: { used_percentage: 86, resets_at: Math.floor(weeklyResetAt / 1000) },
+      },
+      openscoutCapturedAt: now - 29 * hour,
+    }), "utf8");
+
+    const response = await loadServiceBudgets(true);
+    const claude = response.gauges.find((gauge) => gauge.id === "claude");
+    const windows = claude && claude.kind === "quota" ? claude.windows ?? [] : [];
+
+    expect(claude).toEqual(expect.objectContaining({ kind: "quota", fill: 0, usedLabel: "—" }));
+    expect(windows).toEqual([
+      expect.objectContaining({ label: "5h", usedLabel: "—", awaitingReset: true, fill: 0 }),
+      expect.objectContaining({ label: "7d", usedLabel: "—", awaitingReset: true, fill: 0 }),
+    ]);
+    // No reset is reported in the past; the weekly one is carried a cycle on.
+    for (const window of windows) expect(window.resetAt).toBeGreaterThan(now);
+    expect(windows[1]!.resetAt).toBe(Math.floor(weeklyResetAt / 1000) * 1000 + 7 * 24 * hour);
     rawDb.close();
   });
 

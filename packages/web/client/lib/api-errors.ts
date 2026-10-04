@@ -4,7 +4,7 @@ export function friendlyApiError(cause: unknown): string {
 }
 
 export function isOfflineApiError(message: string | null | undefined): boolean {
-  return message === "Scout server is unreachable";
+  return Boolean(message && isNetworkApiError(message));
 }
 
 function isNetworkApiError(message: string): boolean {

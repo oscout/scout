@@ -34,7 +34,7 @@ const OPENSCOUT_RPC_CUTOVER_MARKER = "rpc-runtime-cutover-v1";
  * the runner by its entrypoint: under bun test the main module is always a
  * test file.
  */
-function isTestRunnerProcess(): boolean {
+export function isTestRunnerProcess(): boolean {
   if (process.env.NODE_ENV === "test") return true;
   const entry = typeof Bun !== "undefined" ? Bun.main : process.argv[1] ?? "";
   return /[._](test|spec)\.[cm]?[jt]sx?$/.test(entry);

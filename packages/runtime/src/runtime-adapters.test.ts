@@ -19,6 +19,10 @@ describe("runtime adapter planning", () => {
     });
   });
 
+  test("Bun on Linux defaults to the portable foreground lifecycle without overrides", () => {
+    expect(planRuntimeAdapters({ host: "bun", platform: "linux", env: {} }).service).toBe("headless-foreground");
+  });
+
   test("plans Node headless adapters on Linux", () => {
     expect(planRuntimeAdapters({ host: "node", platform: "linux", env: {} })).toEqual({
       host: "node",

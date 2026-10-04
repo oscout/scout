@@ -1,10 +1,8 @@
-import { Activity, BookOpen, Clipboard, Code2, ExternalLink, FileText, FolderTree, MessageSquare, Radio } from "lucide-react";
+import { Activity, ExternalLink, FileText, MessageSquare, Radio } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { DocumentFocusViewer, type DocumentFocusKind } from "../../components/DocumentFocusViewer.tsx";
-import { SessionHopMenu } from "../../components/SessionHopMenu.tsx";
 import { StatusPill } from "../../components/StatusPill.tsx";
 import { createTextDocument } from "../../components/TextDocumentSurface.tsx";
-import { WorkFilesViewer } from "./WorkFilesViewer.tsx";
 import { renderWithMentions } from "../../lib/mentions.tsx";
 import { api, peekApiGet } from "../../lib/api.ts";
 import {
@@ -13,14 +11,31 @@ import {
 } from "../../lib/machine-scope.ts";
 import { routeMachineId } from "../../lib/router.ts";
 import { useBrokerEvents } from "../../lib/sse.ts";
-import { workChildTone, workTone } from "../../lib/status-tone.ts";
+import { workChildTone } from "../../lib/status-tone.ts";
 import { timeAgo } from "../../lib/time.ts";
 import { useScout } from "../../scout/Provider.tsx";
 import { BackToPicker } from "../../scout/slots/BackToPicker.tsx";
 import { openContent } from "../../scout/slots/openContent.ts";
 import { TailView } from "../shared/TailView.tsx";
-import type { Route, WorkDetail, WorkMaterial, WorkMaterialContent, WorkMaterialsInventory } from "../../lib/types.ts";
-import { formatWorkMaterialDiff, workMaterialDiffTotal } from "../../../shared/api/work-materials.ts";
+import { useFollowTailQuery } from "../ops/follow-tail-query.ts";
+import { initialWorkBriefSummary, workTailRoute, workMaterialImageUrl } from "./work-detail-context.ts";
+import { workTimelineRows } from "./work-timeline-rows.ts";
+import {
+  CopyMark,
+  copyText,
+  formatBytes,
+  WorkFileBrowser,
+  WorkLinks,
+  WorkMasthead,
+  WorkRequestCard,
+  WorkRunCard,
+} from "./WorkCasefileSections.tsx";
+import { CompanionPinButton } from "../companion/CompanionPinButton.tsx";
+import { CompanionSurfaceButton } from "../companion/CompanionSurfaceButton.tsx";
+import { useEmbedHeadline } from "../../surfaces/useEmbedHeadline.ts";
+import "../agents/agents-detail-redesign.css";
+import "./work-detail.css";
+import type { Route, WorkDetail, WorkMaterial, WorkMaterialContent } from "../../lib/types.ts";
 
 type ActionCue = {
   eyebrow: string;
@@ -235,360 +250,6 @@ function idsText(detail: WorkDetail): string {
   ].filter(Boolean).join("\n");
 }
 
-function copyText(value: string): void {
-  void navigator.clipboard?.writeText(value);
-}
-
-function WorkAskOverview({
-  detail,
-  navigate,
-}: {
-  detail: WorkDetail;
-  navigate: (r: Route) => void;
-}) {
-  const { route } = useScout();
-  const ask = detail.primaryInvocation;
-  const tailQuery = buildWorkTailContext(detail).query;
-  const ids = idsText(detail);
-  const sourceLabel = askSourceLabel(ask?.source);
-  const resolvedAgent = ask?.targetAgentName ?? ask?.targetAgentId ?? detail.ownerName ?? detail.ownerId ?? "—";
-  const prompt = ask?.task ?? initialWorkBriefSummary(detail) ?? detail.summary ?? "No original prompt captured.";
-  const observeRoute: Route | null = ask?.resolvedSessionId
-    ? {
-        view: "sessions",
-        sessionId: ask.resolvedSessionId,
-        ...(ask.targetAgentId ? { agentId: ask.targetAgentId } : {}),
-      }
-    : ask?.targetAgentId
-    ? { view: "agents-v2", agentId: ask.targetAgentId, tab: "observe" }
-    : null;
-  const observeLabel = ask?.resolvedSessionId ? "Observe session" : "Observe agent";
-  const tailRoute: Route = {
-    view: "ops",
-    mode: "tail",
-    ...(tailQuery ? { tailQuery } : {}),
-    workId: detail.id,
-    ...(ask?.flightId ? { flightId: ask.flightId } : {}),
-    ...(ask?.invocationId ? { invocationId: ask.invocationId } : {}),
-    ...(detail.conversationId ? { conversationId: detail.conversationId } : {}),
-    ...(ask?.resolvedSessionId ? { sessionId: ask.resolvedSessionId } : {}),
-    ...(ask?.targetAgentId ? { targetAgentId: ask.targetAgentId } : {}),
-  };
-
-  return (
-    <section className="s-work-casefile-section s-work-ask-overview" data-kind="ask" data-work-id={detail.id} data-flight-id={ask?.flightId ?? undefined} data-invocation-id={ask?.invocationId ?? undefined} data-agent-id={ask?.targetAgentId ?? undefined}>
-      <div className="s-work-ask-head">
-        <div>
-          <div className="s-work-ask-badges">
-            <span className="s-work-ask-badge s-work-ask-badge-primary">RUN created</span>
-            <span className="s-work-ask-badge">{sourceLabel}</span>
-            {ask?.state && <span className="s-work-ask-badge">{ask.state}</span>}
-          </div>
-          <h2 className="s-agent-section-title s-work-ask-title">Message / work source of truth</h2>
-          <p className="s-work-ask-lifecycle">{askLifecycleLabel(detail)}</p>
-        </div>
-      </div>
-
-      <div className="s-work-ask-grid">
-        <div className="s-work-ask-prompt">
-          <span className="s-work-ask-label">Original prompt</span>
-          <p>{renderWithMentions(prompt)}</p>
-        </div>
-        <dl className="s-work-ask-facts">
-          <div><dt>Requested harness</dt><dd>{ask?.requestedHarness ?? "default"}</dd></div>
-          <div><dt>Requested model</dt><dd>{ask?.requestedModel ?? "default"}</dd></div>
-          <div><dt>Requested effort</dt><dd>{ask?.requestedReasoningEffort ?? "default"}</dd></div>
-          <div><dt>Resolved agent</dt><dd>{resolvedAgent}</dd></div>
-          <div><dt>Resolved harness</dt><dd>{ask?.resolvedHarness ?? "—"}</dd></div>
-          <div><dt>Resolved model</dt><dd>{ask?.resolvedModel ?? "—"}</dd></div>
-          <div><dt>Resolved effort</dt><dd>{ask?.resolvedReasoningEffort ?? "—"}</dd></div>
-          <div><dt>Observed model</dt><dd>{ask?.observedModel ?? "—"}</dd></div>
-          <div><dt>Observed effort</dt><dd>{ask?.observedReasoningEffort ?? "—"}</dd></div>
-          <div><dt>Session</dt><dd>{ask?.resolvedSessionId ?? ask?.targetSessionId ?? "—"}</dd></div>
-          <div><dt>Flight</dt><dd>{ask?.flightId ?? "—"}</dd></div>
-          <div><dt>Invocation</dt><dd>{ask?.invocationId ?? "—"}</dd></div>
-          <div><dt>Work</dt><dd>{detail.id}</dd></div>
-          <div><dt>Conversation</dt><dd>{detail.conversationId ?? "—"}</dd></div>
-        </dl>
-      </div>
-
-      <div className="s-work-ask-actions">
-        {observeRoute && (
-          <WorkActionButton primary icon={<Radio aria-hidden="true" size={13} strokeWidth={1.8} />} onClick={() => openContent(navigate, observeRoute, { returnTo: route })}>{observeLabel}</WorkActionButton>
-        )}
-        <WorkActionButton icon={<Clipboard aria-hidden="true" size={13} strokeWidth={1.8} />} onClick={() => copyText(workAskStatusText(detail))}>Copy status</WorkActionButton>
-        {detail.conversationId && (
-          <WorkActionButton icon={<MessageSquare aria-hidden="true" size={13} strokeWidth={1.8} />} onClick={() => openContent(navigate, { view: "conversation", conversationId: detail.conversationId! }, { returnTo: route })}>Open chat</WorkActionButton>
-        )}
-        <WorkActionButton icon={<ExternalLink aria-hidden="true" size={13} strokeWidth={1.8} />} onClick={() => openContent(navigate, { view: "work", workId: detail.id }, { returnTo: route })}>Open work</WorkActionButton>
-        {ask?.resolvedSessionId && (
-          <WorkActionButton icon={<Radio aria-hidden="true" size={13} strokeWidth={1.8} />} onClick={() => openContent(navigate, { view: "sessions", sessionId: ask.resolvedSessionId! }, { returnTo: route })}>Open session</WorkActionButton>
-        )}
-        <SessionHopMenu
-          className="s-work-action-button"
-          label="Terminal"
-          hints={{ agentId: ask?.targetAgentId, sessionRefs: [ask?.resolvedSessionId, ask?.targetSessionId] }}
-          navigate={navigate}
-          returnTo={route}
-        />
-        <WorkActionButton icon={<Activity aria-hidden="true" size={13} strokeWidth={1.8} />} onClick={() => openContent(navigate, tailRoute, { returnTo: route })}>Scout tail</WorkActionButton>
-        {ids && <WorkActionButton icon={<Clipboard aria-hidden="true" size={13} strokeWidth={1.8} />} onClick={() => copyText(ids)}>Copy MCP ids</WorkActionButton>}
-        {detail.conversationId && (
-          <WorkActionButton icon={<MessageSquare aria-hidden="true" size={13} strokeWidth={1.8} />} onClick={() => openContent(navigate, { view: "conversation", conversationId: detail.conversationId! }, { returnTo: route })}>Nudge agent</WorkActionButton>
-        )}
-      </div>
-    </section>
-  );
-}
-
-function WorkMaterials({
-  detail,
-  navigate,
-}: {
-  detail: WorkDetail;
-  navigate: (r: Route) => void;
-}) {
-  const hasThread = Boolean(detail.conversationId);
-  const inventory = detail.inventory ?? fallbackInventory(detail);
-  const planMaterials = inventory.materials.filter((material) =>
-    material.kind === "plan" || material.kind === "spec"
-  );
-  const docMaterials = inventory.materials.filter((material) => material.kind === "doc");
-  const codeMaterials = inventory.materials.filter((material) =>
-    material.kind === "code"
-    || material.kind === "test"
-    || material.kind === "config"
-    || material.kind === "asset"
-    || material.kind === "other"
-  );
-  const hasPlanMaterials = planMaterials.length > 0;
-  const hasDocMaterials = docMaterials.length > 0;
-  const briefSummary = initialWorkBriefSummary(detail);
-  const primarySummary = planMaterials[0]
-    ? materialSummary(planMaterials[0])
-    : briefSummary ?? "No plan or spec file detected yet.";
-  const viewableMaterials = [...planMaterials, ...docMaterials, ...codeMaterials]
-    .filter((material) => material.status !== "deleted");
-  const [briefOpen, setBriefOpen] = useState(false);
-  const [selectedMaterialId, setSelectedMaterialId] = useState<string | null>(null);
-  const [materialContent, setMaterialContent] = useState<WorkMaterialContent | null>(null);
-  const [materialError, setMaterialError] = useState<string | null>(null);
-  const [loadingMaterialId, setLoadingMaterialId] = useState<string | null>(null);
-  const [filesViewerOpen, setFilesViewerOpen] = useState(false);
-  const [filesInitialKind, setFilesInitialKind] = useState<"all" | "plan" | "doc" | "code">("all");
-
-  const openMaterial = useCallback((materialId: string) => {
-    setBriefOpen(false);
-    setSelectedMaterialId(materialId);
-  }, []);
-
-  const openBrief = useCallback(() => {
-    setSelectedMaterialId(null);
-    setBriefOpen(true);
-  }, []);
-
-  const openFiles = useCallback((kind: "all" | "plan" | "doc" | "code") => {
-    setBriefOpen(false);
-    setSelectedMaterialId(null);
-    setFilesInitialKind(kind);
-    setFilesViewerOpen(true);
-  }, []);
-
-  useEffect(() => {
-    if (selectedMaterialId && !viewableMaterials.some((material) => material.id === selectedMaterialId)) {
-      setSelectedMaterialId(null);
-    }
-  }, [selectedMaterialId, viewableMaterials]);
-
-  useEffect(() => {
-    if (!selectedMaterialId) {
-      setMaterialContent(null);
-      setMaterialError(null);
-      setLoadingMaterialId(null);
-      return;
-    }
-    let cancelled = false;
-    setLoadingMaterialId(selectedMaterialId);
-    setMaterialError(null);
-    void api<WorkMaterialContent>(
-      `/api/work/${encodeURIComponent(detail.id)}/material?materialId=${encodeURIComponent(selectedMaterialId)}`,
-    )
-      .then((content) => {
-        if (!cancelled) {
-          setMaterialContent(content);
-        }
-      })
-      .catch((error) => {
-        if (!cancelled) {
-          setMaterialContent(null);
-          setMaterialError(error instanceof Error ? error.message : String(error));
-        }
-      })
-      .finally(() => {
-        if (!cancelled) {
-          setLoadingMaterialId(null);
-        }
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [detail.id, selectedMaterialId]);
-
-  return (
-    <section className="s-work-casefile-section s-work-materials-section">
-      <div className="s-agent-section-heading">
-        <div>
-          <h2 className="s-agent-section-title">Work materials</h2>
-          <p className="s-work-section-note">
-            {inventoryModeLabel(inventory.mode)} · {inventory.source} evidence · {inventory.confidence} confidence
-          </p>
-        </div>
-        <div className="s-work-inventory-meta" aria-label="Inventory totals">
-          <span>{inventory.totals.materials} files</span>
-          <span>{inventory.totals.agents} agents</span>
-          <span>{inventory.totals.sessions} sessions</span>
-        </div>
-      </div>
-      <div className="s-work-material-grid">
-        <article className="s-work-material-card s-work-material-card-primary">
-          <div className="s-work-material-head">
-            <span className="s-work-material-icon" aria-hidden="true">
-              <FileText size={15} strokeWidth={1.8} />
-            </span>
-            <div>
-              <div className="s-work-material-kicker">{hasPlanMaterials ? "Plans & specs" : "Brief"}</div>
-              <div className="s-work-material-title">
-                {hasPlanMaterials ? `${planMaterials.length} surfaced` : briefSummary ? "Original request" : "No plan file yet"}
-              </div>
-            </div>
-          </div>
-          <p className="s-work-material-copy">{primarySummary}</p>
-          <WorkMaterialList
-            materials={planMaterials.slice(0, 3)}
-            empty="No plan or spec files detected yet."
-            selectedId={selectedMaterialId}
-            onOpen={openMaterial}
-          />
-          <div className="s-work-material-card-actions">
-            {briefSummary && (
-              <button
-                type="button"
-                className={`s-work-material-link${briefOpen ? " s-work-material-link-active" : ""}`}
-                onClick={openBrief}
-              >
-                <FileText aria-hidden="true" size={13} strokeWidth={1.8} />
-                View request
-              </button>
-            )}
-            {planMaterials.length > 3 && (
-              <button
-                type="button"
-                className="s-work-material-link"
-                onClick={() => openFiles("plan")}
-              >
-                <FolderTree aria-hidden="true" size={13} strokeWidth={1.8} />
-                View all {planMaterials.length}
-              </button>
-            )}
-          </div>
-        </article>
-
-        <div className={`s-work-material-evidence-stack${hasDocMaterials ? "" : " s-work-material-evidence-stack-single"}`}>
-          {hasDocMaterials && (
-            <article className="s-work-material-card s-work-material-card-docs">
-              <div className="s-work-material-head">
-                <span className="s-work-material-icon" aria-hidden="true">
-                  <BookOpen size={15} strokeWidth={1.8} />
-                </span>
-                <div>
-                  <div className="s-work-material-kicker">Docs</div>
-                  <div className="s-work-material-title">{docMaterials.length} documents</div>
-                </div>
-              </div>
-              <WorkMaterialList
-                materials={docMaterials.slice(0, 3)}
-                empty="Docs from git or trace evidence will appear here."
-                selectedId={selectedMaterialId}
-                onOpen={openMaterial}
-              />
-              {docMaterials.length > 3 && (
-                <div className="s-work-material-card-actions">
-                  <button
-                    type="button"
-                    className="s-work-material-link"
-                    onClick={() => openFiles("doc")}
-                  >
-                    <FolderTree aria-hidden="true" size={13} strokeWidth={1.8} />
-                    View all {docMaterials.length}
-                  </button>
-                </div>
-              )}
-            </article>
-          )}
-
-          <article className="s-work-material-card s-work-material-card-code">
-            <div className="s-work-material-head">
-              <span className="s-work-material-icon" aria-hidden="true">
-                <Code2 size={15} strokeWidth={1.8} />
-              </span>
-              <div>
-                <div className="s-work-material-kicker">Code</div>
-                <div className="s-work-material-title">
-                  {codeMaterials.length > 0 ? `${codeMaterials.length} related files` : "No code yet"}
-                </div>
-              </div>
-            </div>
-            <WorkMaterialList
-              materials={codeMaterials.slice(0, 5)}
-              empty="Changed code from git or session traces will appear here."
-              selectedId={selectedMaterialId}
-              onOpen={openMaterial}
-            />
-            {codeMaterials.length > 5 && (
-              <div className="s-work-material-card-actions">
-                <button
-                  type="button"
-                  className="s-work-material-link"
-                  onClick={() => openFiles("code")}
-                >
-                  <FolderTree aria-hidden="true" size={13} strokeWidth={1.8} />
-                  View all {codeMaterials.length}
-                </button>
-              </div>
-            )}
-          </article>
-        </div>
-      </div>
-      <WorkBriefViewer
-        detail={detail}
-        summary={briefSummary}
-        open={briefOpen}
-        hasThread={hasThread}
-        navigate={navigate}
-        onClose={() => setBriefOpen(false)}
-      />
-      <WorkMaterialViewer
-        material={viewableMaterials.find((material) => material.id === selectedMaterialId) ?? null}
-        content={materialContent}
-        loading={Boolean(loadingMaterialId)}
-        error={materialError}
-        onClose={() => setSelectedMaterialId(null)}
-      />
-      <WorkFilesViewer
-        workId={detail.id}
-        workTitle={detail.title}
-        materials={viewableMaterials}
-        open={filesViewerOpen}
-        initialKind={filesInitialKind}
-        onClose={() => setFilesViewerOpen(false)}
-      />
-      {inventory.limitations.length > 0 && (
-        <div className="s-work-inventory-note">{inventory.limitations[0]}</div>
-      )}
-    </section>
-  );
-}
-
 function WorkBriefViewer({
   detail,
   summary,
@@ -637,103 +298,6 @@ function WorkBriefViewer({
         : []}
       onClose={onClose}
     />
-  );
-}
-
-function initialWorkBriefSummary(detail: WorkDetail): string | null {
-  const oldestFirst = [...detail.timeline].sort((a, b) => a.at - b.at);
-  const createdEvent = oldestFirst.find((item) =>
-    item.kind === "collaboration_event"
-    && item.detailKind === "created"
-    && item.summary
-  );
-  const openingMessage = oldestFirst.find((item) => item.kind === "message" && item.summary);
-  return createdEvent?.summary ?? openingMessage?.summary ?? null;
-}
-
-function fallbackInventory(detail: WorkDetail): WorkMaterialsInventory {
-  return {
-    workId: detail.id,
-    generatedAt: Date.now(),
-    mode: "trace-only",
-    source: "broker",
-    confidence: "low",
-    agents: [],
-    sessions: [],
-    materials: [],
-    totals: {
-      materials: 0,
-      plans: 0,
-      specs: 0,
-      docs: 0,
-      code: 0,
-      tests: 0,
-      config: 0,
-      assets: 0,
-      agents: 0,
-      sessions: 0,
-    },
-    limitations: ["Inventory is not available from this server yet."],
-  };
-}
-
-function inventoryModeLabel(mode: WorkMaterialsInventory["mode"]): string {
-  switch (mode) {
-    case "isolated-git-worktree":
-      return "Isolated git worktree";
-    case "shared-git-repo":
-      return "Shared git repo";
-    case "explicit-artifacts":
-      return "Explicit artifacts";
-    case "trace-only":
-    default:
-      return "Trace-only";
-  }
-}
-
-function materialSummary(material: WorkMaterial): string {
-  const diff = material.diffStat ? workMaterialDiffTotal(material.diffStat) : null;
-  const stats = diff ? `+${diff.additions} / -${diff.deletions}` : material.status;
-  return `${material.path} · ${stats} · ${material.confidence} confidence`;
-}
-
-function WorkMaterialList({
-  materials,
-  empty,
-  selectedId,
-  onOpen,
-}: {
-  materials: WorkMaterial[];
-  empty: string;
-  selectedId?: string | null;
-  onOpen?: (materialId: string) => void;
-}) {
-  if (materials.length === 0) {
-    return <div className="s-work-material-empty">{empty}</div>;
-  }
-
-  return (
-    <div className="s-work-material-list">
-      {materials.map((material) => (
-        <button
-          key={material.id}
-          type="button"
-          className={`s-work-material-row${selectedId === material.id ? " s-work-material-row-active" : ""}`}
-          title={material.path}
-          onClick={() => onOpen?.(material.id)}
-          disabled={!onOpen || material.status === "deleted"}
-        >
-          <div className="s-work-material-path">{material.path}</div>
-          <div className="s-work-material-row-meta">
-            <span>{material.status}</span>
-            {material.diffStat && (
-              <span>{formatWorkMaterialDiff(material.diffStat)}</span>
-            )}
-            <span>{material.confidence}</span>
-          </div>
-        </button>
-      ))}
-    </div>
   );
 }
 
@@ -796,98 +360,6 @@ function documentFocusKindForMaterial(material: WorkMaterial): DocumentFocusKind
   return "code";
 }
 
-function formatBytes(value: number): string {
-  if (value < 1024) {
-    return `${value} B`;
-  }
-  if (value < 1024 * 1024) {
-    return `${Math.round(value / 1024)} KB`;
-  }
-  return `${(value / (1024 * 1024)).toFixed(1)} MB`;
-}
-
-function compactId(id: string): string {
-  const parts = id.split(".");
-  return parts[parts.length - 1] || id;
-}
-
-type WorkTailContext = {
-  query: string;
-  label: string;
-};
-
-function addTailTerm(terms: Set<string>, value: string | null | undefined): void {
-  const trimmed = value?.trim();
-  if (!trimmed || trimmed.length < 3) return;
-  terms.add(trimmed);
-}
-
-function addWorkPathTailTerms(terms: Set<string>, value: string | null | undefined): void {
-  addTailTerm(terms, value);
-  const normalized = value?.trim().replace(/\/+$/, "");
-  const lastSegment = normalized?.split("/").filter(Boolean).at(-1);
-  if (lastSegment && lastSegment.length >= 3) {
-    terms.add(lastSegment);
-  }
-}
-
-function prettyWorkPath(value: string): string {
-  return value.replace(/^\/Users\/[^/]+/, "~");
-}
-
-function buildWorkTailContext(detail: WorkDetail): WorkTailContext {
-  const terms = new Set<string>();
-  const labelParts: string[] = [];
-  const ownerLabel = detail.ownerName ?? detail.ownerId ?? detail.nextMoveOwnerName ?? detail.nextMoveOwnerId;
-
-  addTailTerm(terms, detail.id);
-  addTailTerm(terms, detail.conversationId);
-  addTailTerm(terms, detail.ownerId);
-  addTailTerm(terms, detail.nextMoveOwnerId);
-  addTailTerm(terms, detail.ownerName);
-  addTailTerm(terms, detail.nextMoveOwnerName);
-
-  for (const flight of detail.activeFlights) {
-    addTailTerm(terms, flight.id);
-    addTailTerm(terms, flight.invocationId);
-    addTailTerm(terms, flight.agentId);
-    addTailTerm(terms, flight.agentName);
-    addTailTerm(terms, flight.conversationId);
-    addTailTerm(terms, flight.collaborationRecordId);
-  }
-
-  for (const agent of detail.inventory?.agents ?? []) {
-    addTailTerm(terms, agent.id);
-    addTailTerm(terms, agent.name);
-    addTailTerm(terms, agent.sessionId);
-    addWorkPathTailTerms(terms, agent.cwd);
-    addWorkPathTailTerms(terms, agent.projectRoot);
-  }
-
-  const primarySession = detail.inventory?.sessions.find((session) => session.cwd)
-    ?? detail.inventory?.sessions[0]
-    ?? null;
-  for (const session of detail.inventory?.sessions ?? []) {
-    addTailTerm(terms, session.id);
-    addTailTerm(terms, session.conversationId);
-    addTailTerm(terms, session.agentId);
-    addTailTerm(terms, session.agentName);
-    addWorkPathTailTerms(terms, session.cwd);
-  }
-
-  if (ownerLabel) {
-    labelParts.push(ownerLabel);
-  }
-  if (primarySession?.cwd) {
-    labelParts.push(prettyWorkPath(primarySession.cwd));
-  }
-
-  return {
-    query: [...terms].slice(0, 20).join("|"),
-    label: labelParts.length > 0 ? labelParts.join(" · ") : `Case ${compactId(detail.id)}`,
-  };
-}
-
 function timelineKindLabel(item: WorkDetail["timeline"][number]): string {
   if (item.kind === "message") {
     return item.title || (item.detailKind === "agent" ? "reply" : "thread update");
@@ -899,37 +371,61 @@ function timelineKindLabel(item: WorkDetail["timeline"][number]): string {
 }
 
 function WorkTimelinePanel({ detail }: { detail: WorkDetail }) {
-  const items = detail.timeline.slice(0, 18);
+  const [showAll, setShowAll] = useState(false);
+  const rows = useMemo(() => workTimelineRows(detail.timeline), [detail.timeline]);
+  const items = showAll ? rows : rows.slice(0, 18);
   if (items.length === 0) return null;
   return (
     <section className="s-work-casefile-section s-work-timeline-panel">
       <div className="s-agent-section-heading">
         <div>
           <h2 className="s-agent-section-title">Timeline</h2>
-          <p className="s-work-section-note">Run lifecycle, follow-up requirements, flight state, and replies attached to this work item.</p>
+          <p className="s-work-section-note">The request, progress, and replies · newest first</p>
         </div>
+        <span className="s-work-section-note">
+          {detail.timeline.length} events{rows.length !== detail.timeline.length ? ` · ${rows.length} rows` : ""}
+        </span>
       </div>
-      <div className="s-work-timeline-list">
-        {items.map((item) => (
-          <article
-            key={item.id}
-            className={`s-work-timeline-row s-work-timeline-row-${item.kind}`}
-            data-kind={item.kind}
-            data-flight-id={item.flightId ?? undefined}
-            data-work-id={detail.id}
-            data-conversation-id={item.conversationId ?? detail.conversationId ?? undefined}
-          >
-            <span className="s-work-timeline-badge">{timelineKindLabel(item)}</span>
-            <div className="s-work-timeline-body">
-              <div className="s-work-timeline-meta">
-                <span>{item.actorName ?? item.actorId ?? "system"}</span>
+      <ol className="s-work-event-track">
+        {items.map(({ item, body, ref, folded }, index) => {
+          const date = new Date(item.at);
+          const startsDay = index === 0 || date.toDateString() !== new Date(items[index - 1]!.item.at).toDateString();
+          const long = (body?.length ?? 0) > 400;
+          const Icon = item.kind === "message" ? MessageSquare : item.kind.startsWith("flight") ? Radio : item.detailKind === "created" ? FileText : Activity;
+          return (
+            <li key={item.id} className="s-work-event" data-kind={item.kind}
+              data-flight-id={item.flightId ?? undefined} data-work-id={detail.id}
+              data-conversation-id={item.conversationId ?? detail.conversationId ?? undefined}>
+              <div className="s-work-event-time">
+                {startsDay && <span className="s-work-event-date">{date.toLocaleDateString(undefined, { month: "short", day: "numeric" })}</span>}
+                <time dateTime={date.toISOString()} title={date.toLocaleString()}>{date.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false })}</time>
                 <span>{timeAgo(item.at)}</span>
               </div>
-              {item.summary && <p>{renderWithMentions(item.summary)}</p>}
-            </div>
-          </article>
-        ))}
-      </div>
+              <span className="s-work-event-node" aria-hidden="true"><Icon size={12} strokeWidth={1.8} /></span>
+              <div className="s-work-event-content">
+                <div className="s-work-event-heading">
+                  <strong>{timelineKindLabel(item).replace(/_/g, " ")}</strong>
+                  <span>{item.actorName ?? item.actorId ?? "system"}</span>
+                  {ref && <code className="s-work-event-ref" title={`ask:${ref}`}>{ref}<CopyMark value={ref} label="Copy ask handle" /></code>}
+                </div>
+                {body && (long ? (
+                  <details className="s-work-event-detail">
+                    <summary><span>{body.replace(/\s+/g, " ").slice(0, 200)}…</span><span className="s-work-event-disclosure">Full update</span></summary>
+                    <div className="s-work-event-copy">{renderWithMentions(body)}</div>
+                  </details>
+                ) : <div className="s-work-event-copy">{renderWithMentions(body)}</div>)}
+                {folded.length > 0 && (
+                  <div className="s-work-event-folded">
+                    + folded: {folded.map(({ item: echo, sameText }) =>
+                      `${timelineKindLabel(echo).replace(/_/g, " ")}${sameText ? " with the same text" : ""}`).join(" · ")}
+                  </div>
+                )}
+              </div>
+            </li>
+          );
+        })}
+      </ol>
+      {rows.length > 18 && <button type="button" className="s-work-material-link s-work-event-more" onClick={() => setShowAll(!showAll)}>{showAll ? "Show recent events" : `Show all ${rows.length} rows`}</button>}
     </section>
   );
 }
@@ -942,7 +438,9 @@ function WorkTailPanel({
   navigate: (r: Route) => void;
 }) {
   const { route } = useScout();
-  const tailContext = buildWorkTailContext(detail);
+  const tailRoute = workTailRoute(detail);
+  const tailQuery = useFollowTailQuery(tailRoute, detail.id);
+  const tailLabel = detail.primaryInvocation?.targetAgentName ?? detail.ownerName ?? "this work session";
 
   return (
     <section className="s-work-casefile-section s-work-tail-section">
@@ -952,14 +450,14 @@ function WorkTailPanel({
             <Activity aria-hidden="true" size={15} strokeWidth={1.8} />
             Live tail
           </h2>
-          <p className="s-work-section-note">Filtered to {tailContext.label}</p>
+          <p className="s-work-section-note">Filtered to {tailLabel}</p>
         </div>
         <WorkActionButton
           icon={<ExternalLink aria-hidden="true" size={13} strokeWidth={1.8} />}
           onClick={() =>
             openContent(
               navigate,
-              { view: "ops", mode: "tail", tailQuery: tailContext.query || undefined },
+              tailRoute,
               { returnTo: route },
             )}
         >
@@ -969,8 +467,8 @@ function WorkTailPanel({
       <div className="s-work-tail-frame">
         <TailView
           navigate={navigate}
-          initialFilter={tailContext.query}
-          filterLabel={tailContext.label}
+          initialFilter={tailQuery}
+          filterLabel={tailLabel}
           filterScope="context"
           chrome="embedded"
         />
@@ -979,10 +477,33 @@ function WorkTailPanel({
   );
 }
 
+/** The selected material's content, fetched once per pick. */
+function useMaterialContent(workId: string, materialId: string | null) {
+  const [state, setState] = useState<{ id: string | null; content: WorkMaterialContent | null; error: string | null }>({ id: null, content: null, error: null });
+  useEffect(() => {
+    if (!materialId) return;
+    let cancelled = false;
+    void api<WorkMaterialContent>(
+      `/api/work/${encodeURIComponent(workId)}/material?materialId=${encodeURIComponent(materialId)}`,
+    )
+      .then((content) => { if (!cancelled) setState({ id: materialId, content, error: null }); })
+      .catch((err) => { if (!cancelled) setState({ id: materialId, content: null, error: err instanceof Error ? err.message : String(err) }); });
+    return () => { cancelled = true; };
+  }, [workId, materialId]);
+  const current = materialId !== null && state.id === materialId;
+  return {
+    content: current ? state.content : null,
+    error: current ? state.error : null,
+    loading: materialId !== null && !current,
+  };
+}
+
 export function WorkDetailScreen({
   workId,
   navigate,
+  embedded = false,
 }: {
+  embedded?: boolean;
   workId: string;
   navigate: (r: Route) => void;
 }) {
@@ -995,6 +516,12 @@ export function WorkDetailScreen({
   const [detail, setDetail] = useState<WorkDetail | null>(initialDetail);
   const [error, setError] = useState<string | null>(null);
   const [loaded, setLoaded] = useState(initialDetail !== null);
+  const [jsonOpen, setJsonOpen] = useState(false);
+  const [briefOpen, setBriefOpen] = useState(false);
+  const [selectedMaterialId, setSelectedMaterialId] = useState<string | null>(null);
+  const [materialViewerOpen, setMaterialViewerOpen] = useState(false);
+  const { content: materialContent, loading: loadingMaterial, error: materialError } = useMaterialContent(workId, workMaterialImageUrl(workId, detail?.inventory?.materials.find((m) => m.id === selectedMaterialId)) ? null : selectedMaterialId);
+  useEmbedHeadline(detail?.title ?? "Work progress", embedded);
 
   const load = useCallback(async () => {
     setError(null);
@@ -1035,10 +562,16 @@ export function WorkDetailScreen({
     [detail, scopedAgentIds],
   );
 
+  // Embedded (the Mac app's Work window) there is no picker to go back to;
+  // the way out is the full page in Scout.
+  const backControl = embedded
+    ? <a className="s-work-action-button" href={`/work/${encodeURIComponent(workId)}`} target="_blank" rel="noreferrer">Open in Scout</a>
+    : <BackToPicker slot="work" fallback={{ view: "inbox" }} navigate={navigate} />;
+
   if (!loaded) {
     return (
       <div>
-        <BackToPicker slot="work" fallback={{ view: "inbox" }} navigate={navigate} />
+        {backControl}
         <div className="s-empty"><p>Loading…</p></div>
       </div>
     );
@@ -1047,7 +580,7 @@ export function WorkDetailScreen({
   if (!detail || !scopedDetail) {
     return (
       <div className="s-work-not-found">
-        <BackToPicker slot="work" fallback={{ view: "inbox" }} navigate={navigate} />
+        {backControl}
         <div className="s-work-not-found-body">
           <div className="s-work-not-found-glyph" aria-hidden="true">&#x25A1;</div>
           <h2 className="s-work-not-found-title">
@@ -1070,67 +603,92 @@ export function WorkDetailScreen({
   const signal = signalLabel(visibleDetail.attention);
   const ownerLabel = visibleDetail.ownerName ?? visibleDetail.ownerId ?? "Unassigned";
   const nextMoveLabel = visibleDetail.nextMoveOwnerName ?? visibleDetail.nextMoveOwnerId ?? "—";
-  const actionCue = buildActionCue({
-    detail: visibleDetail,
-    signal,
-    ownerLabel,
-    nextMoveLabel,
-  });
+  const actionCue = visibleDetail.state === "done"
+    ? null
+    : buildActionCue({ detail: visibleDetail, signal, ownerLabel, nextMoveLabel });
   const hasLowerContent = visibleDetail.activeFlights.length > 0 || visibleDetail.childWork.length > 0;
+  const briefSummary = visibleDetail.primaryInvocation?.task?.trim() || initialWorkBriefSummary(visibleDetail);
+  const askState = visibleDetail.primaryInvocation?.state;
+  const ownerAgent = agents.find((agent) => agent.id === visibleDetail.ownerId);
+  const viewedMaterial = visibleDetail.inventory?.materials.find((m) => m.id === selectedMaterialId) ?? null;
 
   return (
     <div className="s-work-detail s-work-casefile">
-      <div className="s-work-casefile-topbar">
-        <BackToPicker slot="work" fallback={{ view: "inbox" }} navigate={navigate} />
-        <span className="s-work-casefile-record">Case {compactId(visibleDetail.id)}</span>
-      </div>
+      <WorkMasthead
+        detail={visibleDetail}
+        embedded={embedded}
+        leading={embedded ? null : backControl}
+        tools={<>
+          <CompanionPinButton className="s-wc-btn" workId={workId} machineId={machineId} />
+          <CompanionSurfaceButton className="s-wc-btn" workId={workId} workTitle={visibleDetail.title} agentId={visibleDetail.ownerId} agentName={visibleDetail.ownerName} projectRoot={ownerAgent?.projectRoot} projectName={ownerAgent?.project} />
+        </>}
+        progressLink={() => {
+          const link = new URL("/embed/work", window.location.origin);
+          link.searchParams.set("workId", workId);
+          if (machineId) link.searchParams.set("machineId", machineId);
+          return link.toString();
+        }}
+        onJson={() => setJsonOpen(true)}
+        cue={actionCue}
+        links={<WorkLinks detail={visibleDetail} embedded={embedded} navigate={navigate} onSelectMaterial={setSelectedMaterialId} />}
+      />
 
+      <DocumentFocusViewer
+        open={jsonOpen}
+        kind="code"
+        title="Work JSON"
+        eyebrow="Current page data"
+        subtitle={visibleDetail.title}
+        notice="This snapshot refreshes with the page when broker events arrive. It is not a replayable event stream."
+        document={jsonOpen ? createTextDocument({
+          id: `${visibleDetail.id}:json`,
+          title: "work.json",
+          mediaType: "application/json",
+          value: JSON.stringify(visibleDetail, null, 2),
+          readOnly: true,
+        }) : null}
+        actions={[{ label: "Copy JSON", onClick: () => copyText(JSON.stringify(visibleDetail, null, 2)) }]}
+        onClose={() => setJsonOpen(false)}
+      />
       {error && <p className="s-error">{error}</p>}
-
-      <section className="s-work-casefile-hero">
-        <div className="s-work-casefile-hero-main">
-          <div className="s-work-casefile-title-row">
-            <h1 className="s-work-casefile-title">{visibleDetail.title}</h1>
-            <StatusPill tone={workTone(visibleDetail)} variant="pill">{visibleDetail.currentPhase}</StatusPill>
-          </div>
-          {visibleDetail.lastMeaningfulSummary && (
-            <div className="s-work-casefile-summary">
-              {renderWithMentions(visibleDetail.lastMeaningfulSummary)}
-            </div>
-          )}
-          <div className="s-work-casefile-meta">
-            <span>Updated {timeAgo(visibleDetail.updatedAt)}</span>
-            <span>{ownerLabel}</span>
-            <span>{stateLabel(visibleDetail.state)}</span>
-            {signal && <span>{signal}</span>}
-            {visibleDetail.priority && <span>Priority {visibleDetail.priority}</span>}
-          </div>
-        </div>
-
-        <aside className={`s-work-next-move s-work-next-move-${actionCue.tone}`}>
-          <div className="s-work-next-move-kicker">{actionCue.eyebrow}</div>
-          <div className="s-work-next-move-title">{actionCue.title}</div>
-          <p className="s-work-next-move-copy">{actionCue.body}</p>
-          <div className="s-work-next-move-actions">
-            {visibleDetail.conversationId && (
-              <WorkActionButton
-                primary
-                icon={<MessageSquare aria-hidden="true" size={14} strokeWidth={1.8} />}
-                onClick={() => openContent(navigate, { view: "conversation", conversationId: visibleDetail.conversationId! }, { returnTo: route })}
-              >
-                Open thread
-              </WorkActionButton>
-            )}
-          </div>
-        </aside>
-      </section>
 
       <div className="s-work-casefile-layout s-work-casefile-layout-main">
         <div className="s-work-casefile-main s-work-casefile-main-materials">
-          <WorkAskOverview detail={visibleDetail} navigate={navigate} />
-          <WorkMaterials detail={visibleDetail} navigate={navigate} />
+          <WorkRequestCard key={visibleDetail.id} detail={visibleDetail} onOpenOriginal={() => setBriefOpen(true)} />
+          <WorkRunCard
+            detail={visibleDetail}
+            navigate={navigate}
+            lifecycleNote={askState && askState !== "completed" ? askLifecycleLabel(visibleDetail) : null}
+            statusText={workAskStatusText(visibleDetail)}
+            idsText={idsText(visibleDetail)}
+          />
+          <WorkFileBrowser
+            detail={visibleDetail}
+            selectedId={selectedMaterialId}
+            onSelect={setSelectedMaterialId}
+            content={materialContent}
+            loading={loadingMaterial}
+            error={materialError}
+            onOpen={() => setMaterialViewerOpen(true)}
+          />
           <WorkTimelinePanel detail={visibleDetail} />
         </div>
+
+        <WorkBriefViewer
+          detail={visibleDetail}
+          summary={briefSummary}
+          open={briefOpen}
+          hasThread={Boolean(visibleDetail.conversationId)}
+          navigate={navigate}
+          onClose={() => setBriefOpen(false)}
+        />
+        <WorkMaterialViewer
+          material={materialViewerOpen ? viewedMaterial : null}
+          content={materialContent}
+          loading={loadingMaterial}
+          error={materialError}
+          onClose={() => setMaterialViewerOpen(false)}
+        />
 
         <WorkTailPanel detail={visibleDetail} navigate={navigate} />
 

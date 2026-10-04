@@ -28,7 +28,7 @@ import {
   type SetupResult,
   type ScoutSkillInstallReport,
 } from "@openscout/runtime/setup";
-import { runOpenScoutOnboardingSetup } from "@openscout/runtime/onboarding";
+import { runOpenScoutOnboardingSetup, type OpenScoutBrokerHandoff } from "@openscout/runtime/onboarding";
 import { loadHarnessCatalogSnapshot } from "@openscout/runtime/harness-catalog";
 import type { BrokerServiceStatus } from "@openscout/runtime/broker-process-manager";
 import {
@@ -98,6 +98,8 @@ export type ScoutSetupReport = {
   setup: SetupResult;
   broker: BrokerServiceStatus;
   brokerWarning: string | null;
+  /** Headless foreground adapter with no broker yet: an expected handoff, not a failure. */
+  brokerHandoff: OpenScoutBrokerHandoff | null;
   localEdge: ScoutLocalEdgeDependencyReport;
   catalog: Awaited<ReturnType<typeof loadHarnessCatalogSnapshot>>;
   scoutSkill: ScoutSkillInstallReport;
@@ -286,6 +288,7 @@ export async function runScoutSetup(input: {
       setup: setupResult.setup,
       broker: setupResult.broker,
       brokerWarning: setupResult.brokerWarning,
+      brokerHandoff: setupResult.brokerHandoff,
       localEdge,
       catalog: setupResult.catalog,
       scoutSkill: setupResult.scoutSkill,

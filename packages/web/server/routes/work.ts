@@ -11,6 +11,7 @@ import {
   writeProjectHeuristicsFile,
 } from "../material-heuristics.ts";
 import type { WebWorkDetailResponse } from "../../shared/api/web.ts";
+import { workListOptions } from "./work-list-query.ts";
 
 export type WorkRouteDeps = {
   currentDirectory: string;
@@ -65,21 +66,8 @@ export function mountWorkRoutes(app: Hono, deps: WorkRouteDeps) {
     }));
   });
   const handleListWork = (c: Context) => {
-    const agentId = c.req.query("agentId");
-    const conversationId = c.req.query("conversationId");
-    const activeOnly = c.req.query("active") !== "false";
-    const rawLimit = Number(c.req.query("limit"));
-    const limit = Number.isFinite(rawLimit)
-      ? Math.min(250, Math.max(1, Math.floor(rawLimit)))
-      : undefined;
-    return c.json(
-      queryWorkItems({
-        agentId: agentId || undefined,
-        conversationId: conversationId || undefined,
-        activeOnly,
-        limit,
-      }),
-    );
+    const options = workListOptions((name) => c.req.query(name));
+    return c.json(options ? queryWorkItems(options) : []);
   };
   const handleWorkDetail = async (c: Context) => {
     const workId = c.req.param("id");

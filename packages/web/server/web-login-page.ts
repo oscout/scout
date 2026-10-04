@@ -16,22 +16,24 @@ export function renderScoutWebLoginPage(bootstrapPath = "/api/bootstrap.js"): st
 <style>
   :root {
     color-scheme: light dark;
-    --bg: #f6f6f4;
+    --bg: #f7f7f8;
     --panel: #ffffff;
-    --ink: #1a1c1a;
-    --muted: #6b6f6b;
-    --line: #d9dbd7;
-    --accent: #0f8a5f;
+    --ink: #1a1a1d;
+    --muted: #68686d;
+    --line: #d9d9dd;
+    --accent: #9d5d03;
+    --accent-ink: #fff;
     --danger: #b3403a;
   }
   @media (prefers-color-scheme: dark) {
     :root {
-      --bg: #121412;
-      --panel: #1a1d1a;
-      --ink: #e8eae6;
-      --muted: #8a8f8a;
-      --line: #2a2e2a;
-      --accent: #2bb583;
+      --bg: #121214;
+      --panel: #202024;
+      --ink: #ededf0;
+      --muted: #a4a4ad;
+      --line: #34343a;
+      --accent: #e4ac59;
+      --accent-ink: #171717;
       --danger: #d76a63;
     }
   }
@@ -78,7 +80,7 @@ export function renderScoutWebLoginPage(bootstrapPath = "/api/bootstrap.js"): st
     border: 0;
     border-radius: 6px;
     background: var(--accent);
-    color: #fff;
+    color: var(--accent-ink);
     font: inherit;
     font-weight: 600;
     cursor: pointer;

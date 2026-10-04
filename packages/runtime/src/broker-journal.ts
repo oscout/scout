@@ -9,7 +9,7 @@ import { readableDelivery, readableDeliveryStatus, readableMetadata, type Broker
 import { BrokerMessageBodyCache, BrokerMessageBodyCacheUnavailable, type MessageBodyCacheOptions } from "./broker-message-body-cache.js";
 import { once } from "node:events";
 import { createReadStream, createWriteStream } from "node:fs";
-import { appendFile, mkdir, readdir, rename, stat, unlink } from "node:fs/promises";
+import { appendFile, mkdir, open, readdir, rename, stat, truncate, unlink } from "node:fs/promises";
 import { basename, dirname } from "node:path";
 import { createInterface } from "node:readline";
 
@@ -430,6 +430,16 @@ function journalCompactionReason(
   return null;
 }
 
+/** Health of canonical journal appends. `failing` clears on the next success. */
+export type BrokerJournalWriteStatus =
+  | { state: "ok" }
+  | { state: "failing"; since: number; lastFailedAt: number; failures: number; code: string | null; error: string };
+
+function errorCode(error: unknown): string | null {
+  const code = error && typeof error === "object" && "code" in error ? (error as { code?: unknown }).code : undefined;
+  return typeof code === "string" ? code : null;
+}
+
 export class FileBackedBrokerJournal {
   private readonly filePath: string;
 
@@ -458,7 +468,16 @@ export class FileBackedBrokerJournal {
    * markers alone cannot describe what earlier ones evicted. */
   private appliedRotations: AppliedHistoryRotation[] = [];
 
+  // Serializes journal writes. Every link must settle fulfilled: one failed
+  // append (a full disk) would otherwise reject every later write forever.
   private writeQueue: Promise<void> = Promise.resolve();
+
+  private writeFailure: Extract<BrokerJournalWriteStatus, { state: "failing" }> | null = null;
+
+  // Keep the original boundary until rollback succeeds; never append behind
+  // bytes from an unacknowledged write, even when the rollback itself fails.
+  private pendingRollbackBytes: number | null = null;
+  private appendPrefix: string | null = null;
 
   private readonly compactionPolicy: BrokerJournalCompactionPolicy;
   private readonly progressiveStartup: boolean;
@@ -474,6 +493,71 @@ export class FileBackedBrokerJournal {
   startupStatus() { return { phase: this.startupPhase, entries: this.replayedEntries,
     messageCount: this.startupPhase === "complete" ? this.messageHistory?.status().count ?? Object.keys(this.state.snapshot.messages).length : null,
     bytes: this.replayedBytes, totalBytes: this.startupSourceBytes, compactionMs: this.startupCompactionMs, error: this.startupError }; }
+
+  writeStatus(): BrokerJournalWriteStatus {
+    return this.writeFailure ? { ...this.writeFailure } : { state: "ok" };
+  }
+
+  /**
+   * Append whole lines or nothing. A failed append (ENOSPC mid-write) can
+   * leave a partial line; the next append would fuse onto it and replay would
+   * drop both records. Roll the file back to its length before the attempt.
+   */
+  private async appendLines(payload: string): Promise<void> {
+    try {
+      await this.repairFailedAppend();
+      const before = await stat(this.filePath).then((value) => value.size, (error) => {
+        if (errorCode(error) === "ENOENT") return 0;
+        throw error;
+      });
+      // A previous process may have left an unterminated line. Separate it
+      // from new records so replay can reject only that old fragment. Preserve
+      // complete legacy records that happen to lack a trailing newline.
+      if (this.appendPrefix === null && before > 0) {
+        const file = await open(this.filePath, "r");
+        try {
+          const last = Buffer.alloc(1);
+          await file.read(last, 0, 1, before - 1);
+          this.appendPrefix = last[0] === 10 ? "" : "\n";
+        } finally {
+          await file.close();
+        }
+      }
+      try {
+        await appendFile(this.filePath, (this.appendPrefix ?? "") + payload, "utf8");
+        this.appendPrefix = "";
+      } catch (error) {
+        this.pendingRollbackBytes = before;
+        // Preserve the original append error for this caller. Subsequent
+        // writes retry repair and report its error until storage recovers.
+        await this.repairFailedAppend().catch(() => undefined);
+        throw error;
+      }
+    } catch (error) {
+      const now = Date.now();
+      this.writeFailure = {
+        state: "failing",
+        since: this.writeFailure?.since ?? now,
+        lastFailedAt: now,
+        failures: (this.writeFailure?.failures ?? 0) + 1,
+        code: errorCode(error),
+        error: error instanceof Error ? error.message : String(error),
+      };
+      throw error;
+    }
+    this.writeFailure = null;
+  }
+
+  private async repairFailedAppend(): Promise<void> {
+    const boundary = this.pendingRollbackBytes;
+    if (boundary === null) return;
+    await truncate(this.filePath, boundary).catch(error => {
+      // An append can fail before creating a previously absent journal.
+      if (boundary !== 0 || errorCode(error) !== "ENOENT") throw error;
+    });
+    this.pendingRollbackBytes = null;
+  }
+
   finishStartup(): Promise<void> {
     if (!this.loaded) return Promise.reject(new Error("Journal must be loaded before startup hydration."));
     if (this.startupWork) return this.startupWork;
@@ -785,7 +869,8 @@ export class FileBackedBrokerJournal {
 
   async readEntries(): Promise<BrokerJournalEntry[]> {
     const entries: BrokerJournalEntry[] = [];
-    await this.visitEntries((entry) => { entries.push(entry); });
+    const boundary = await this.captureReplayBoundary();
+    await this.visitEntries((entry) => { entries.push(entry); }, boundary);
     return entries;
   }
 
@@ -794,13 +879,14 @@ export class FileBackedBrokerJournal {
   } = {}): Promise<BrokerJournalReplayBoundary> {
     let boundary: BrokerJournalReplayBoundary = { endByteExclusive: 0 };
     const capture = this.writeQueue.then(async () => {
+      await this.repairFailedAppend();
       if (options.barrier) {
         await mkdir(dirname(this.filePath), { recursive: true });
         const entry: BrokerJournalEntry = {
           kind: "journal.replay_barrier",
           barrier: options.barrier,
         };
-        await appendFile(this.filePath, `${JSON.stringify(entry)}\n`, "utf8");
+        await this.appendLines(`${JSON.stringify(entry)}\n`);
         // Deliberately a no-op for domain state, but keeping all journal state
         // transitions on this path prevents future entry kinds from silently
         // diverging between capture and ordinary append.
@@ -828,6 +914,7 @@ export class FileBackedBrokerJournal {
     boundary?: BrokerJournalReplayBoundary,
     options: BrokerJournalReplayOptions = {},
   ): Promise<BrokerJournalReplayReport> {
+    boundary ??= await this.captureReplayBoundary();
     let afterBarrierFound = options.afterBarrier === undefined;
     let visitedEntries = 0;
     await this.visitEntries(
@@ -877,7 +964,7 @@ export class FileBackedBrokerJournal {
     let prepared = retained;
     let acceptedEncodedBytes = 0;
     let preparationError: BrokerMessageBodyCacheUnavailable | undefined;
-    this.writeQueue = this.writeQueue.then(async () => {
+    const write = this.writeQueue.then(async () => {
       await mkdir(dirname(this.filePath), { recursive: true });
       if (retained.length === 0) {
         return;
@@ -895,7 +982,7 @@ export class FileBackedBrokerJournal {
       }
       const payload = retained.map((entry) => JSON.stringify(entry)).join("\n") + "\n";
       if (this.memoryMaintenance) acceptedEncodedBytes = Buffer.byteLength(payload, "utf8");
-      await appendFile(this.filePath, payload, "utf8");
+      await this.appendLines(payload);
       for (const entry of prepared) {
         this.apply(entry);
       }
@@ -905,8 +992,11 @@ export class FileBackedBrokerJournal {
         await this.messageHistory?.accepted();
       }
     });
+    // This caller sees the failure; the queue must not, or one failed append
+    // rejects every write after it until the broker restarts.
+    this.writeQueue = write.then(() => undefined, () => undefined);
 
-    await this.writeQueue;
+    await write;
     if (preparationError) throw preparationError;
     this.memoryMaintenance?.accepted(prepared, acceptedEncodedBytes);
     return prepared;
@@ -1204,6 +1294,9 @@ export class FileBackedBrokerJournal {
         }
       }, prefixBytes === undefined ? {} : { endByteExclusive: prefixBytes });
       const publish = async () => {
+        // The saved rollback offset belongs to the current file. Repair before
+        // copying its suffix or replacing it with a differently sized prefix.
+        await this.repairFailedAppend();
         if (prefixBytes !== undefined) {
           // The prefix rewrite runs cooperatively while control registrations
           // append. Capture/copy its accepted suffix under the canonical writer
@@ -1217,6 +1310,7 @@ export class FileBackedBrokerJournal {
         output.end();
         await once(output, "finish");
         await rename(temporaryPath, this.filePath);
+        this.appendPrefix = "";
       };
       if (prefixBytes === undefined) await publish();
       else {

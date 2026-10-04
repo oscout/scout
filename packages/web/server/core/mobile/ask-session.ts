@@ -47,6 +47,8 @@ export type MobileAskSessionDeps = {
   senderId: string;
   /** Sender context when the phone sends no cwd. */
   fallbackCurrentDirectory?: string;
+  /** Recorded on the ask; defaults to the phone. */
+  source?: string;
   /** Types the reply into the live session; injectable for tests. */
   deliverInPlace?: (input: { sessionId: string; harness?: string | null; body: string }) => Promise<InPlaceDelivery>;
 };
@@ -131,7 +133,7 @@ export async function askMobileHarnessSession(
       // Sender-context only: the broker wakes the session in the cwd recorded
       // in its own transcript, not this directory.
       currentDirectory: cwd ?? deps.fallbackCurrentDirectory,
-      source: "scout-mobile",
+      source: deps.source ?? "scout-mobile",
     });
   } catch {
     return mobileAskSessionRefusal("delivery_failed");

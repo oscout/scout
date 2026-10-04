@@ -947,6 +947,25 @@ describe("BrokerLocalEndpointResolver", () => {
     expect(harness.isolatedInvocations).toEqual([]);
   });
 
+  test.each([
+    ["model", "fixture", "model", true],
+    ["model", "fixture", "fixture/model", true],
+    ["model", "fixture", "wrong/model", false],
+    ["model", undefined, "fixture/model", false],
+    ["org/model", "fixture", "fixture/org/model", true],
+    ["org/model", "fixture", "org/model", true],
+    ["org/model", "fixture", "wrong/org/model", false],
+  ])("compares observed Pi model %s and provider %s to %s", async (model, modelProvider, required, matches) => {
+    const harness = createResolver();
+    const endpoint = testEndpoint({ id: "pi-observed", sessionId: "pi-observed-session", harness: "pi", transport: "pi_rpc",
+      metadata: { alive: true, observedRuntime: { harness: "pi", model, modelProvider, reasoningEffort: "none" } } });
+    await harness.runtime.upsertEndpoint(endpoint);
+    const result = harness.resolver.resolveLocalEndpointForInvocation(testInvocation({ ensureAwake: true,
+      execution: { harness: "pi", model: required as string, reasoningEffort: "none", targetSessionId: endpoint.sessionId } }));
+    if (matches) await expect(result).resolves.toEqual(endpoint);
+    else await expect(result).rejects.toThrow("session_runtime_mismatch");
+  });
+
   test("allows the first exact invocation into a matching Scout-provisioned pending session", async () => {
     const harness = createResolver();
     const endpoint = testEndpoint({

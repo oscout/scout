@@ -1,3 +1,4 @@
+import { assessSetupCompletion, type SetupCompletion } from "@openscout/runtime/onboarding";
 import type {
   ScoutDoctorReport,
   ScoutLocalEdgeDoctorReport,
@@ -96,8 +97,9 @@ export function renderScoutDoctorTailAfterStream(report: ScoutDoctorReport): str
     `  Installed: ${report.broker.installed ? "yes" : "no"}`,
     `  Loaded: ${report.broker.loaded ? "yes" : "no"}`,
     `  Reachable: ${report.broker.reachable ? "yes" : "no"}`,
-    `  LaunchAgent: ${report.broker.launchAgentPath}`,
-    `  Bootout: ${report.broker.bootoutCommand}`,
+    ...(report.broker.serviceAdapter === "headless-foreground"
+      ? ["  Lifecycle: foreground process (managed externally)"]
+      : [`  LaunchAgent: ${report.broker.launchAgentPath}`, `  Bootout: ${report.broker.bootoutCommand}`]),
     `  Stdout: ${report.broker.stdoutLogPath}`,
     `  Stderr: ${report.broker.stderrLogPath}`,
     "",
@@ -339,8 +341,9 @@ export function renderScoutDoctorReport(report: ScoutDoctorReport): string {
     `  Installed: ${report.broker.installed ? "yes" : "no"}`,
     `  Loaded: ${report.broker.loaded ? "yes" : "no"}`,
     `  Reachable: ${report.broker.reachable ? "yes" : "no"}`,
-    `  LaunchAgent: ${report.broker.launchAgentPath}`,
-    `  Bootout: ${report.broker.bootoutCommand}`,
+    ...(report.broker.serviceAdapter === "headless-foreground"
+      ? ["  Lifecycle: foreground process (managed externally)"]
+      : [`  LaunchAgent: ${report.broker.launchAgentPath}`, `  Bootout: ${report.broker.bootoutCommand}`]),
     `  Stdout: ${report.broker.stdoutLogPath}`,
     `  Stderr: ${report.broker.stderrLogPath}`,
     "",
@@ -367,9 +370,9 @@ export function renderScoutDoctorReport(report: ScoutDoctorReport): string {
   return lines.join("\n");
 }
 
-export function renderScoutSetupReport(report: ScoutSetupReport): string {
+export function renderScoutSetupReport(report: ScoutSetupReport, completion: SetupCompletion = assessSetupCompletion(report)): string {
   const lines = [
-    "Scout initialized.",
+    completion.headline,
     `Context root: ${report.currentDirectory}`,
     `Support directory: ${report.setup.supportDirectory}`,
     `Settings: ${report.setup.settingsPath}`,
@@ -390,13 +393,23 @@ export function renderScoutSetupReport(report: ScoutSetupReport): string {
     `  Broker URL: ${report.broker.brokerUrl}`,
     ...renderBrokerHealthTransportLines(report.broker),
     `  Reachable: ${report.broker.reachable ? "yes" : "no"}`,
-    `  LaunchAgent: ${report.broker.launchAgentPath}`,
-    `  Bootout: ${report.broker.bootoutCommand}`,
+    ...(report.broker.serviceAdapter === "headless-foreground"
+      ? ["  Lifecycle: foreground process (managed externally)"]
+      : [`  LaunchAgent: ${report.broker.launchAgentPath}`, `  Bootout: ${report.broker.bootoutCommand}`]),
     `  Logs: ${report.broker.stdoutLogPath} | ${report.broker.stderrLogPath}`,
   ];
 
   if (report.brokerWarning) {
-    lines.push(`  Warning: ${report.brokerWarning}`);
+    lines.push(`  Error: ${report.brokerWarning}`);
+  }
+  for (const entry of report.scoutSkill.entries.filter((entry) => entry.status === "error")) {
+    lines.push(`  Error: ${entry.error ?? `Skill install failed: ${entry.id}`}`);
+  }
+  if (report.claudeStatusline.status === "error") lines.push(`  Error: ${report.claudeStatusline.error ?? "Claude statusline install failed"}`);
+  if (completion.outcome === "handoff" && report.brokerHandoff) {
+    lines.push(`  ${report.brokerHandoff.detail}`);
+  } else if (!report.broker.health.ok) {
+    lines.push(`  Health error: ${report.broker.health.error ?? "Broker health verification failed"}`);
   }
 
   lines.push("", ...renderLocalEdgeDependencyReport(report.localEdge));
@@ -408,12 +421,9 @@ export function renderScoutSetupReport(report: ScoutSetupReport): string {
     lines.push(`    Detail: ${entry.readinessReport.detail}`);
   }
 
-  lines.push(
-    "",
-    "Next:",
-    "  scout doctor",
-    "  scout runtimes",
-  );
+  lines.push("", `Next: ${completion.nextStep}`, `Browser: ${completion.webUrl} (starts on demand)`);
+  if (completion.browserGuidance) lines.push(completion.browserGuidance);
+  lines.push("", "Also available:", ...completion.alsoAvailable.map((step) => `  ${step}`));
 
   return lines.join("\n");
 }

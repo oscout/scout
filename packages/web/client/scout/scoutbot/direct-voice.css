@@ -1,6 +1,6 @@
 /* Direct Voice ("Local Live") room theme.
-   Light pins the warm-paper room; dark re-rooms the same panel in the hue-260
-   slate of the surrounding control room, so the mode switch stops being a
+   Light pins the warm-paper room; dark re-rooms the same panel in the graphite
+   and amber of the surrounding control room, so the mode switch stops being a
    full-viewport luminance flip. Every color the panel consumes lands here as a
    token — the TSX reads vars, never literals. */
 
@@ -72,7 +72,7 @@
 }
 
 :root[data-scout-theme="dark"] .dvp-room {
-  --scout-chrome-bg: oklch(0.118 0.004 260);
+  --scout-chrome-bg: oklch(0.14 0.0021 286.1);
   --scout-chrome-ink: oklch(0.975 0.006 260);
   --scout-chrome-ink-strong: oklch(0.975 0.006 260);
   --scout-chrome-ink-faint: oklch(0.8 0.008 260);
@@ -80,17 +80,17 @@
   --scout-chrome-border-soft: oklch(0.975 0.006 260 / 0.08);
   --scout-chrome-hover: oklch(0.975 0.006 260 / 0.05);
   --scout-chrome-active: oklch(0.975 0.006 260 / 0.09);
-  --scout-accent: oklch(0.86 0.17 125);
-  --hud-bg: oklch(0.118 0.004 260);
+  --scout-accent: oklch(0.78 0.12 75);
+  --hud-bg: oklch(0.14 0.0021 286.1);
   --hud-surface: oklch(0.205 0.005 260);
   --hud-ink: oklch(0.975 0.006 260);
   --hud-muted: oklch(0.8 0.008 260);
   --hud-dim: oklch(0.7 0.007 260);
   --hud-border: oklch(0.975 0.006 260 / 0.08);
-  --hud-accent: oklch(0.86 0.17 125);
-  --hud-accent-soft: oklch(0.86 0.17 125 / 0.08);
+  --hud-accent: oklch(0.78 0.12 75);
+  --hud-accent-soft: oklch(0.78 0.12 75 / 0.08);
 
-  --dvp-bg: oklch(0.118 0.004 260);
+  --dvp-bg: oklch(0.14 0.0021 286.1);
   --dvp-ink: oklch(0.975 0.006 260);
   --dvp-heading: oklch(0.975 0.006 260);
   --dvp-body: oklch(0.9 0.006 260);
@@ -100,19 +100,19 @@
   --dvp-divider: oklch(0.975 0.006 260 / 0.12);
   --dvp-hover: oklch(0.975 0.006 260 / 0.05);
   --dvp-well: oklch(0.16 0.004 260);
-  --dvp-accent: oklch(0.86 0.17 125);
-  --dvp-accent-ink: color-mix(in srgb, oklch(0.86 0.17 125) 70%, oklch(0.975 0.006 260));
+  --dvp-accent: oklch(0.78 0.12 75);
+  --dvp-accent-ink: color-mix(in srgb, oklch(0.78 0.12 75) 70%, oklch(0.975 0.006 260));
   --dvp-accent-soft: oklch(0.86 0.17 125 / 0.16);
-  --dvp-focus: oklch(0.86 0.17 125);
+  --dvp-focus: oklch(0.78 0.12 75);
   --dvp-meta: oklch(0.8 0.008 260);
   --dvp-meta-dim: oklch(0.7 0.007 260);
-  --dvp-you-meta: color-mix(in srgb, oklch(0.86 0.17 125) 60%, oklch(0.975 0.006 260));
+  --dvp-you-meta: color-mix(in srgb, oklch(0.78 0.12 75) 60%, oklch(0.975 0.006 260));
   --dvp-phase: oklch(0.975 0.006 260);
   --dvp-helper: oklch(0.7 0.007 260);
-  --dvp-mic-label: color-mix(in srgb, oklch(0.86 0.17 125) 55%, oklch(0.975 0.006 260));
-  --dvp-mic-icon: color-mix(in srgb, oklch(0.86 0.17 125) 50%, oklch(0.975 0.006 260));
+  --dvp-mic-label: color-mix(in srgb, oklch(0.78 0.12 75) 55%, oklch(0.975 0.006 260));
+  --dvp-mic-icon: color-mix(in srgb, oklch(0.78 0.12 75) 50%, oklch(0.975 0.006 260));
   --dvp-footer: oklch(0.7 0.007 260);
-  --dvp-stage-active: color-mix(in srgb, oklch(0.86 0.17 125) 70%, oklch(0.975 0.006 260));
+  --dvp-stage-active: color-mix(in srgb, oklch(0.78 0.12 75) 70%, oklch(0.975 0.006 260));
   --dvp-stage-dim: oklch(0.62 0.007 260);
   --dvp-error: color-mix(in srgb, oklch(0.72 0.18 25) 70%, oklch(0.975 0.006 260));
   --dvp-dot-off: oklch(0.72 0.18 25);
@@ -122,7 +122,7 @@
   --dvp-switch-border: oklch(0.975 0.006 260 / 0.12);
   --dvp-switch-bg: oklch(0.975 0.006 260 / 0.06);
   --dvp-switch-active-bg: oklch(0.975 0.006 260);
-  --dvp-switch-active-ink: oklch(0.118 0.004 260);
+  --dvp-switch-active-ink: oklch(0.14 0.0021 286.1);
   --dvp-switch-idle: oklch(0.8 0.008 260);
   --dvp-switch-hover: oklch(0.975 0.006 260 / 0.08);
   --dvp-dial-bg: oklch(0.205 0.005 260);
@@ -135,5 +135,5 @@
   --dvp-wave: oklch(0.975 0.006 260 / 0.35);
   --dvp-wave-active: oklch(0.975 0.006 260 / 0.6);
   --dvp-orb: oklch(0.975 0.006 260 / 0.35);
-  --dvp-orb-active: oklch(0.86 0.17 125);
+  --dvp-orb-active: oklch(0.78 0.12 75);
 }

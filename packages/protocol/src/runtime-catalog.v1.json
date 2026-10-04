@@ -1,6 +1,6 @@
 {
   "schemaVersion": "openscout.runtime-catalog.v1",
-  "revision": "2026-09-24.1",
+  "revision": "2026-10-01.1",
   "harnesses": [
     {
       "id": "claude",
@@ -84,7 +84,7 @@
         { "id": "opencode/laguna-s-2.1-free", "label": "Laguna S 2.1 (free)", "enabled": true, "family": "Laguna", "version": "S 2.1 Free" }
       ]
     },
-    { "id": "pi", "label": "Pi", "enabled": true, "reasoningEfforts": null, "models": [] },
+    { "id": "pi", "label": "Pi", "enabled": true, "allowCustomModels": true, "reasoningEfforts": ["none", "minimal", "low", "medium", "high", "xhigh", "max"], "models": [] },
     {
       "id": "devin",
       "label": "Devin",

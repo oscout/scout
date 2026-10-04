@@ -40,13 +40,14 @@ describe("mesh route matrix", () => {
     expect(Object.keys(matrix).filter((route) => !live.includes(route))).toEqual([TRPC_UPGRADE_ROUTE]);
   });
 
-  test("the public surface is exactly the node card and enrollment handshake", () => {
+  test("the public surface is exactly node card, enrollment handshake and bounded signed-policy carriage", () => {
     const publicRoutes = Object.entries(meshRouteMatrixEntries())
       .filter(([, tier]) => tier === "public")
       .map(([route]) => route)
       .sort();
     expect(publicRoutes).toEqual([
       "GET /v1/node",
+      "POST /v1/access/policy",
       "POST /v1/trust/enroll/begin",
       "POST /v1/trust/enroll/reveal",
     ]);
@@ -103,10 +104,11 @@ describe("mesh route matrix", () => {
     for (const tier of Object.values(meshRouteMatrixEntries())) {
       counts.set(tier, (counts.get(tier) ?? 0) + 1);
     }
-    expect(counts.get("public")).toBe(3);
+    expect(counts.get("public")).toBe(4);
     expect(counts.get("observe")).toBe(4); // nodes, node-state, snapshot and invocation-stream
     expect(counts.get("control")).toBe(11); // 10 mesh POST routes + the /trpc upgrade
     expect(counts.get("guest")).toBe(9); // discovery, asks, and five mailbox routes
-    expect(counts.get("local")).toBe(Object.keys(meshRouteMatrixEntries()).length - 27);
+    expect(counts.get("scoped")).toBe(1);
+    expect(counts.get("local")).toBe(Object.keys(meshRouteMatrixEntries()).length - 29);
   });
 });

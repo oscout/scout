@@ -294,6 +294,9 @@ function verifyScoutWebBundleBoots(outfile) {
     OPENSCOUT_CONTROL_HOME: join(smokeRoot, "control"),
     OPENSCOUT_RELAY_HUB: join(smokeRoot, "relay"),
     OPENSCOUT_HOME: join(smokeRoot, "home"),
+    // The server writes into ~/.claude (statusline) on boot; keep that in the
+    // sandbox too, or every build rewires the real ~/.claude/settings.json.
+    HOME: join(smokeRoot, "home"),
     NODE_ENV: "production",
   };
 

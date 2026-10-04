@@ -146,6 +146,13 @@ export type HarnessCatalogLoadOptions = {
   whichBinary?: (binary: string) => string | null;
   requirementExists?: (requirement: Extract<HarnessRequirement, { kind: "file" }>) => boolean;
   runCommand?: (command: string) => boolean;
+  /**
+   * Readiness from local evidence only: binary on PATH plus credential env/file
+   * presence. Skips `verify` and `healthcheckCommand`, which run the harness
+   * (some ask the provider, e.g. `cursor-agent status`). A harness whose
+   * readiness rests on a skipped healthcheck reports `configured`, not ready.
+   */
+  localOnly?: boolean;
 };
 
 const DEFAULT_SUPPORT: HarnessCatalogSupport = {
@@ -553,7 +560,10 @@ const BUILT_IN_HARNESS_CATALOG: HarnessCatalogEntry[] = [
         { kind: "env", key: "GEMINI_API_KEY" },
       ],
       loginCommand: "pi /login",
-      notReadyMessage: "Pi is installed but still needs a subscription login, API key, or auth file.",
+      notReadyMessage: "Configure Pi with pi /login, a provider API key, or a provider extension; verify pi -p before retrying scout ask --harness pi.",
+    },
+    sessionDefaults: {
+      defaultTransport: "pi_rpc",
     },
     resume: {
       command: "pi",
@@ -882,9 +892,11 @@ export function evaluateHarnessReadiness(
   const binaryPath = codexInventory
     ? codexInventory.selectedPath
     : (binary ? whichBinary(binary) : null);
-  const verifyCommand = platform === "win32"
-    ? entry.install?.verifyWin ?? entry.install?.verify
-    : entry.install?.verify;
+  const verifyCommand = options.localOnly
+    ? undefined
+    : platform === "win32"
+      ? entry.install?.verifyWin ?? entry.install?.verify
+      : entry.install?.verify;
   const verifiedInstall = verifyCommand ? runCommand(verifyCommand) : null;
   const installed = binary
     ? Boolean(binaryPath || verifiedInstall)
@@ -909,8 +921,12 @@ export function evaluateHarnessReadiness(
   }
 
   const configured = installed && missing.length === 0;
+  // Local-only mode skips the healthcheck, so a harness that depends on one
+  // (Cursor: `cursor-agent status`, no local credential signal) stays
+  // unverified. Skipping the check must never read as passing it.
+  const unverified = Boolean(configured && readiness?.healthcheckCommand && options.localOnly);
   const healthcheckPassed = configured && readiness?.healthcheckCommand
-    ? runCommand(readiness.healthcheckCommand)
+    ? (options.localOnly ? false : runCommand(readiness.healthcheckCommand))
     : configured;
   const ready = configured && healthcheckPassed;
 
@@ -926,6 +942,9 @@ export function evaluateHarnessReadiness(
     state = "installed";
     detail = readiness?.notReadyMessage
       ?? `${entry.label} is installed but still needs configuration.`;
+  } else if (unverified) {
+    state = "configured";
+    detail = `${entry.label} is installed. Sign-in isn't checked here; it's confirmed when an agent starts.`;
   } else if (!ready) {
     state = "configured";
     detail = `${entry.label} is configured but its readiness check is failing.`;

@@ -816,6 +816,8 @@ export function queryInferredWorkTimelineFlights(
 export function queryWorkItems(opts?: {
   agentId?: string;
   conversationId?: string;
+  /** Exact work ids, for callers that track a known set (the desktop companion). */
+  ids?: readonly string[];
   activeOnly?: boolean;
   limit?: number;
 }): WebWorkItem[] {
@@ -829,6 +831,7 @@ export function queryWorkItems(opts?: {
       ? `cr.conversation_id IN (${sqlPlaceholders(conversationIds.length)})`
       : null,
     opts?.agentId ? "(cr.owner_id = ? OR cr.next_move_owner_id = ?)" : null,
+    opts?.ids && opts.ids.length > 0 ? `cr.id IN (${sqlPlaceholders(opts.ids.length)})` : null,
   ]);
 
   const sql = `SELECT
@@ -952,6 +955,9 @@ export function queryWorkItems(opts?: {
   }
   if (opts?.agentId) {
     params.push(opts.agentId, opts.agentId);
+  }
+  if (opts?.ids && opts.ids.length > 0) {
+    params.push(...opts.ids);
   }
   params.push(limit);
 

@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::OnceLock;
@@ -7,6 +5,7 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
+use crate::ask::AskRequest;
 use crate::classify::{classify, Class};
 use crate::feed::{Snapshot, TailEvent};
 
@@ -64,30 +63,6 @@ impl Take {
         }
     }
 
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            Take::Now => "Now",
-            Take::Horizon => "Horizon",
-            Take::Twin => "Twin",
-            Take::Mesh => "Mesh",
-            Take::Quota => "Quota",
-            Take::Harvest => "Harvest",
-            Take::Grid => "Grid",
-        }
-    }
-
-    pub fn next(&self) -> Self {
-        match self {
-            Take::Now => Take::Horizon,
-            Take::Horizon => Take::Twin,
-            Take::Twin => Take::Mesh,
-            Take::Mesh => Take::Quota,
-            Take::Quota => Take::Harvest,
-            Take::Harvest => Take::Grid,
-            Take::Grid => Take::Now,
-        }
-    }
-
     /// Now → Horizon → Mesh → Harvest → Quota → Now. Twin and Grid stay off Tab.
     pub fn next_spine(&self) -> Self {
         match self {
@@ -108,18 +83,6 @@ impl Take {
             Take::Quota => Take::Harvest,
         }
     }
-
-    pub fn all() -> &'static [Take] {
-        &[
-            Take::Now,
-            Take::Horizon,
-            Take::Twin,
-            Take::Mesh,
-            Take::Quota,
-            Take::Harvest,
-            Take::Grid,
-        ]
-    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -131,15 +94,6 @@ pub enum Composition {
 }
 
 impl Composition {
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            Composition::Focus => "focus",
-            Composition::Watch => "watch",
-            Composition::Review => "review",
-            Composition::Quad => "quad",
-        }
-    }
-
     pub fn title(&self) -> &'static str {
         match self {
             Composition::Focus => "1 Focus (one conversation in hand)",
@@ -345,33 +299,24 @@ pub enum MeshAction {
     Refresh,
 }
 
+/// A run of activity on a thread track, in percent of the 30-minute window.
 #[derive(Clone, Debug)]
 pub struct ThreadSegment {
     pub start: u8,
     pub width: u8,
-    pub kind: &'static str,
 }
 
 #[derive(Clone, Debug)]
 pub struct ConversationThread {
-    pub id: String,
-    pub work: String,
     pub handle: String,
-    pub project: String,
     pub age: String,
-    pub state: &'static str,
+    pub live: bool,
     pub segments: Vec<ThreadSegment>,
-    pub splice: Option<u8>,
-    pub finish: Option<u8>,
-    pub continuity: Vec<String>,
-    pub last: String,
-    pub motion: Vec<u8>,
 }
 
 #[derive(Clone, Debug)]
 pub struct Agent {
     pub id: String,
-    pub name: String,
     pub handle: String,
     pub harness: String,
     pub project: String,
@@ -444,7 +389,6 @@ pub enum FileState {
 #[derive(Clone, Debug)]
 pub struct HarvestTree {
     pub session_id: String,
-    pub who: String,
     pub handle: String,
     pub source: String,
     pub project: String,
@@ -466,6 +410,14 @@ enum DeckAssignment {
 
 pub struct App {
     pub take: Take,
+    pub filtering: bool,
+    pub fleet_view: bool,
+    /// The calm list's opened session: its conversation, newest at the bottom.
+    pub calm_detail: bool,
+    /// Lines scrolled up from the bottom of the opened session.
+    pub detail_scroll: usize,
+    pub filter: String,
+    pub animation_start: Instant,
     pub composition: Composition,
     pub focused_slot: usize,
     pub cursor: usize,
@@ -485,6 +437,10 @@ pub struct App {
     pub composer_notice: Option<String>,
     /// True when `composer_notice` is a successful ask receipt.
     pub composer_ok: bool,
+    /// An ask waiting for the worker thread to pick it up.
+    pub ask_request: Option<AskRequest>,
+    /// The body of the ask the worker is posting right now, if any.
+    ask_in_flight: Option<String>,
     pub help: bool,
     pub events: VecDeque<Row>,
     seen: HashMap<String, ()>,
@@ -522,7 +478,7 @@ pub enum HitKind {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Pointer {
     Default,
-    Pointer,
+    Hand,
     EwResize,
 }
 
@@ -530,7 +486,7 @@ impl Pointer {
     pub fn osc(self) -> &'static str {
         match self {
             Pointer::Default => "\x1b]22;default\x07",
-            Pointer::Pointer => "\x1b]22;pointer\x07",
+            Pointer::Hand => "\x1b]22;pointer\x07",
             Pointer::EwResize => "\x1b]22;ew-resize\x07",
         }
     }
@@ -580,7 +536,15 @@ impl App {
             draft: String::new(),
             composer_notice: None,
             composer_ok: false,
+            ask_request: None,
+            ask_in_flight: None,
             help: false,
+            filtering: false,
+            fleet_view: false,
+            calm_detail: false,
+            detail_scroll: 0,
+            filter: String::new(),
+            animation_start: Instant::now(),
             events: VecDeque::new(),
             seen: HashMap::new(),
             error: None,
@@ -849,13 +813,6 @@ impl App {
         }
     }
 
-    /// Keep the draft visible and explicitly report that no broker action ran.
-    pub fn submit_compose_disabled(&mut self) {
-        self.composing = false;
-        self.composer_ok = false;
-        self.composer_notice = Some("Sending is not wired; draft was not sent.".into());
-    }
-
     pub fn submit_compose(&mut self) {
         let draft = self.draft.trim().to_string();
         self.composer_ok = false;
@@ -870,17 +827,43 @@ impl App {
             return;
         };
         self.composing = false;
-        if cfg!(test) {
-            self.composer_notice = Some("Sending is not wired; draft was not sent.".into());
+        if self.ask_busy() {
+            self.composer_notice = Some("an ask is still in flight; draft kept".into());
             return;
         }
-        match crate::ask::post_ask(&agent.id, &agent.handle, &draft) {
+        // The POST runs on the ask worker so a slow broker never freezes the
+        // frame; `finish_ask` reports the receipt when it lands.
+        self.composer_notice = Some(format!("asking {}…", agent.handle));
+        self.ask_in_flight = Some(self.draft.clone());
+        self.ask_request = Some(AskRequest {
+            session_id: agent.id,
+            handle: agent.handle,
+            harness: agent.harness,
+            body: draft,
+        });
+    }
+
+    pub fn ask_busy(&self) -> bool {
+        self.ask_in_flight.is_some()
+    }
+
+    pub fn take_ask_request(&mut self) -> Option<AskRequest> {
+        self.ask_request.take()
+    }
+
+    pub fn finish_ask(&mut self, result: Result<String, String>) {
+        let sent = self.ask_in_flight.take();
+        match result {
             Ok(receipt) => {
-                self.draft.clear();
+                // Keep anything typed after the ask went out.
+                if sent.as_deref() == Some(self.draft.as_str()) {
+                    self.draft.clear();
+                }
                 self.composer_ok = true;
                 self.composer_notice = Some(receipt);
             }
             Err(err) => {
+                self.composer_ok = false;
                 self.composer_notice = Some(err);
             }
         }
@@ -967,7 +950,14 @@ impl App {
                     None
                 };
 
-                let doing = clean_summary(&last_event.summary);
+                // What the session is doing is its latest event with words in
+                // it; a bare "[attachment]" marker says nothing.
+                let doing = rows
+                    .iter()
+                    .rev()
+                    .map(|r| clean_summary(&r.event.summary))
+                    .find(|summary| !is_stream_marker(summary))
+                    .unwrap_or_else(|| clean_summary(&last_event.summary));
 
                 // The latest thought with words in it. Bare stream markers like
                 // "[assistant]" carry no thought, so they are skipped rather
@@ -1001,7 +991,6 @@ impl App {
 
                 Agent {
                     id: session_id,
-                    name: short_name,
                     handle,
                     harness,
                     project,
@@ -1021,14 +1010,121 @@ impl App {
         // Ordering: requests first, then live, then most recent activity.
         // Recency — never the alphabet — decides who sits near the top.
         agents.sort_by(|a, b| {
-            b.needs
-                .cmp(&a.needs)
-                .then_with(|| b.live.cmp(&a.live))
-                .then_with(|| event_ts_ms(b.last_ts).cmp(&event_ts_ms(a.last_ts)))
-                .then_with(|| a.id.cmp(&b.id))
+            if self.take == Take::Now {
+                calm_group(a).cmp(&calm_group(b))
+            } else {
+                b.needs.cmp(&a.needs).then_with(|| b.live.cmp(&a.live))
+            }
+            .then_with(|| event_ts_ms(b.last_ts).cmp(&event_ts_ms(a.last_ts)))
+            .then_with(|| a.id.cmp(&b.id))
         });
 
+        if self.calm() {
+            // Ended sessions with nothing said yet would be blank rows; the
+            // list counts them in one line instead (see calm_silent_count).
+            agents.retain(|a| a.live || a.needs || self.has_words(&a.id));
+        }
+        if self.take == Take::Now && !self.filter.is_empty() {
+            let query = self.filter.to_lowercase();
+            agents.retain(|a| {
+                format!("{} {} {}", self.session_title(&a.id), a.harness, a.id)
+                    .to_lowercase()
+                    .contains(&query)
+            });
+        }
         agents
+    }
+
+    /// True while the calm list (or its opened session) owns the screen.
+    pub fn calm(&self) -> bool {
+        self.take == Take::Now && !self.fleet_view
+    }
+
+    fn session_rows<'a>(&'a self, id: &'a str) -> impl Iterator<Item = &'a Row> + 'a {
+        self.events.iter().filter(move |r| r.event.session_id == id)
+    }
+
+    fn is_words(r: &Row) -> bool {
+        match r.cls {
+            Class::Human => !prompt_title(&r.event.summary).is_empty(),
+            Class::Convo => {
+                r.event.kind == "assistant" && !is_stream_marker(&r.text) && !is_thinking(&r.text)
+            }
+            _ => false,
+        }
+    }
+
+    /// Someone typed or the agent said something in the retained window.
+    pub fn has_words(&self, id: &str) -> bool {
+        self.session_rows(id).any(Self::is_words)
+    }
+
+    /// Ended sessions the calm list leaves out because nothing was said yet.
+    pub fn calm_silent_count(&self) -> usize {
+        let shown: HashSet<String> = self.agents().into_iter().map(|a| a.id).collect();
+        let mut said = HashSet::new();
+        let mut all = HashSet::new();
+        for r in &self.events {
+            all.insert(r.event.session_id.as_str());
+            if Self::is_words(r) {
+                said.insert(r.event.session_id.as_str());
+            }
+        }
+        all.iter()
+            .filter(|id| !said.contains(*id) && !shown.contains(**id))
+            .count()
+    }
+
+    /// The last thing the agent said, as one plain line.
+    pub fn session_outcome(&self, id: &str) -> String {
+        self.session_rows(id)
+            .filter(|r| r.cls == Class::Convo && Self::is_words(r))
+            .max_by_key(|r| event_ts_ms(r.event.ts))
+            .map(|r| plain(&r.text))
+            .unwrap_or_default()
+    }
+
+    /// Tool and plan steps, oldest first, as one plain line each.
+    pub fn session_steps(&self, id: &str) -> Vec<String> {
+        let mut steps: Vec<&Row> = self
+            .session_rows(id)
+            .filter(|r| matches!(r.cls, Class::Tool | Class::Plan))
+            .collect();
+        steps.sort_by_key(|r| event_ts_ms(r.event.ts));
+        steps.iter().map(|r| step_line(&r.text)).collect()
+    }
+
+    // TODO: replace with a real session titler. Until then: the first prompt a
+    // person typed, else the agent's first line, else the current step.
+    pub fn session_title(&self, id: &str) -> String {
+        let first = |cls: Class| {
+            self.session_rows(id)
+                .filter(|r| r.cls == cls)
+                .map(|r| {
+                    let text = if cls == Class::Human {
+                        prompt_title(&r.event.summary)
+                    } else if r.event.kind == "assistant" && !is_stream_marker(&r.text) {
+                        first_sentence(&plain(&r.text))
+                    } else {
+                        String::new()
+                    };
+                    (event_ts_ms(r.event.ts), text)
+                })
+                .filter(|(_, text)| !text.is_empty())
+                .min_by_key(|(ts, _)| *ts)
+                .map(|(_, text)| text)
+        };
+        first(Class::Human)
+            .or_else(|| first(Class::Convo))
+            .or_else(|| self.session_steps(id).pop())
+            .unwrap_or_else(|| {
+                let harness = self
+                    .session_rows(id)
+                    .next()
+                    .map(|r| r.event.source.clone())
+                    .unwrap_or_else(|| "agent".into());
+                format!("{harness} session")
+            })
     }
 
     pub fn selected_agent(&self) -> Option<Agent> {
@@ -1128,13 +1224,10 @@ impl App {
             return;
         }
         let len = agents.len() as isize;
-        let next = (self.cursor as isize + delta).clamp(0, len - 1);
+        let from = selection_index(&agents, self.selected_session_id.as_deref(), self.cursor);
+        let next = (from as isize + delta).clamp(0, len - 1);
         self.cursor = next as usize;
         self.selected_session_id = agents.get(self.cursor).map(|agent| agent.id.clone());
-    }
-
-    pub fn swap_twin(&mut self) {
-        self.cycle_deck_focus(1, 2);
     }
 
     pub fn plans(&self) -> &[Plan] {
@@ -1220,7 +1313,6 @@ impl App {
             // yield is an empty shelf, not a missing row.
             trees.push(HarvestTree {
                 session_id: agent.id.clone(),
-                who: agent.name.clone(),
                 handle: agent.handle.clone(),
                 source: agent.harness.clone(),
                 project: agent.project.clone(),
@@ -1348,28 +1440,17 @@ impl App {
                             segments.push(ThreadSegment {
                                 start: (s * 100 / BUCKETS) as u8,
                                 width: (((i - s) * 100 / BUCKETS).max(2)) as u8,
-                                kind: "active",
                             });
                             run_start = None;
                         }
                         _ => {}
                     }
                 }
-                let motion: Vec<u8> = a.ticks.iter().map(|t| (t * 8.0) as u8).collect();
-                let state = if a.live { "live" } else { "quiet" };
                 ConversationThread {
-                    id: a.id.clone(),
-                    work: a.doing.clone(),
-                    handle: a.handle.clone(),
-                    project: a.project.clone(),
-                    age: a.age.clone(),
-                    state,
+                    handle: a.handle,
+                    age: a.age,
+                    live: a.live,
                     segments,
-                    splice: None,
-                    finish: None,
-                    continuity: vec![format!("{} · {} · {}", a.harness, a.host, a.age)],
-                    last: a.thought.clone(),
-                    motion,
                 }
             })
             .collect()
@@ -1585,12 +1666,18 @@ pub fn pad_right(text: &str, width: usize) -> String {
     }
 }
 
+/// Wall-clock HH:MM in the operator's local zone, the same clock their
+/// terminal's other panes show.
 pub fn format_clock(ts: i64) -> String {
-    let ts_ms = event_ts_ms(ts);
-    let secs = (ts_ms / 1000) % 86400;
-    let hours = (secs / 3600) % 24;
-    let mins = (secs / 60) % 60;
-    format!("{:02}:{:02}", hours, mins)
+    let secs = (event_ts_ms(ts) / 1000) as libc::time_t;
+    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
+    let (hours, mins) = if unsafe { libc::localtime_r(&secs, &mut tm) }.is_null() {
+        let day = secs.rem_euclid(86_400);
+        (day / 3600, (day / 60) % 60)
+    } else {
+        (tm.tm_hour as libc::time_t, tm.tm_min as libc::time_t)
+    };
+    format!("{hours:02}:{mins:02}")
 }
 
 pub fn format_age(ts: i64) -> String {
@@ -1791,6 +1878,114 @@ fn save_detail_split(split: u16) {
     }
     let body = serde_json::json!({ "detailSplit": split.clamp(28, 75) });
     let _ = std::fs::write(path, body.to_string());
+}
+
+/// Working, requests, then ended sessions; requests are never counted twice.
+pub fn calm_group(a: &Agent) -> u8 {
+    if a.needs {
+        1
+    } else if a.live {
+        0
+    } else {
+        2
+    }
+}
+
+/// Markdown and links read as plain words on one line.
+pub fn plain(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = clean_summary(text);
+    // [label](url) -> label
+    while let Some(open) = rest.find('[') {
+        let Some(mid) = rest[open..].find("](").map(|i| open + i) else {
+            break;
+        };
+        let Some(close) = rest[mid..].find(')').map(|i| mid + i) else {
+            break;
+        };
+        out.push_str(&rest[..open]);
+        out.push_str(&rest[open + 1..mid]);
+        rest = rest[close + 1..].to_string();
+    }
+    out.push_str(&rest);
+    let out = out.replace("**", "").replace("__", "").replace('`', "");
+    out.trim_start_matches(['#', '-', '*', ' '])
+        .trim()
+        .to_string()
+}
+
+fn first_sentence(text: &str) -> String {
+    let end = text
+        .char_indices()
+        .find(|(i, c)| {
+            matches!(c, '.' | '!' | '?' | ':') && text[i + c.len_utf8()..].starts_with(' ')
+        })
+        .map(|(i, _)| i)
+        .unwrap_or(text.len());
+    text[..end].trim().to_string()
+}
+
+/// One line per step: tool commands can carry whole heredocs.
+pub fn step_line(text: &str) -> String {
+    let line = plain(text.lines().next().unwrap_or(""));
+    // "cd <dir> && cmd" reads as cmd; the directory is the session's own.
+    let rest = line.as_str();
+    for prefix in ["run_terminal_command · ", "Bash · ", "bash · ", "exec · "] {
+        if let Some(cmd) = rest.strip_prefix(prefix) {
+            let cmd = cmd.trim_start();
+            let cmd = match cmd.strip_prefix("cd ").and_then(|c| c.split_once("&&")) {
+                Some((_, after)) => after.trim_start(),
+                None => cmd,
+            };
+            return format!("{}{}", prefix, cmd);
+        }
+    }
+    match rest.strip_prefix("cd ").and_then(|c| c.split_once("&&")) {
+        Some((_, after)) => after.trim_start().to_string(),
+        None => rest.to_string(),
+    }
+}
+
+/// Reasoning the harness streams as "[thinking] …" is not something said.
+pub fn is_thinking(text: &str) -> bool {
+    text.trim_start().starts_with("[thinking]")
+}
+
+pub fn prompt_title(prompt: &str) -> String {
+    let prompt = prompt.trim();
+    if [
+        "Base directory for this skill:",
+        "This session is being continued",
+        "# AGENTS.md instructions",
+        "## Page contract",
+    ]
+    .iter()
+    .any(|prefix| prompt.starts_with(prefix))
+    {
+        return String::new();
+    }
+
+    let mut skip = false;
+    let mut lines = Vec::new();
+    for line in prompt.lines() {
+        let line = line.trim();
+        if line.starts_with("<") {
+            skip = !line.starts_with("</") && !line.contains("</");
+            continue;
+        }
+        if skip {
+            continue;
+        }
+        if line.starts_with("Base directory for this skill:")
+            || line.starts_with("This session is being continued")
+        {
+            continue;
+        }
+        if !line.is_empty() {
+            lines.push(line);
+        }
+    }
+    clean_summary(&lines.join(" "))
 }
 
 #[cfg(test)]

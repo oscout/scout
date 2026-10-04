@@ -892,6 +892,7 @@ export type SettingsSection =
   | "terminal"
   | "devices"
   | "mesh"
+  | "pro"
   | "system"
   | "about";
 

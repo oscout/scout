@@ -347,3 +347,76 @@ body,
   white-space: pre-wrap;
   color: var(--amber);
 }
+
+/* ── Native-host embeds ───────────────────────────────────────────────── */
+
+.sb-embed-home {
+  height: 100vh;
+  height: 100dvh;
+  overflow: auto;
+  background: var(--bg);
+}
+
+.sb-embed-miss {
+  padding: 24px;
+  color: var(--ink);
+  background: var(--bg);
+  min-height: 100vh;
+}
+
+.sb-embed-miss h1 {
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.sb-embed-miss p {
+  color: var(--muted);
+}
+
+/* ── Next step (Home) ──────────────────────────────────────────────────── */
+
+.sb-next {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  margin-bottom: var(--space-2xl);
+}
+
+.sb-next-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-lg);
+  padding: var(--space-md) var(--space-lg);
+}
+
+.sb-next-row + .sb-next-row {
+  border-top: 1px solid var(--border);
+}
+
+.sb-next-text {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  font-size: var(--text-sm);
+  color: var(--muted);
+}
+
+.sb-next-text strong {
+  color: var(--ink);
+  font-weight: 600;
+}
+
+.sb-next-row--quiet .sb-next-text {
+  color: var(--dim);
+}
+
+.sb-next-error {
+  color: var(--red);
+}
+
+.sb-main--home .s-fleet-home-inner > .sb-next + .s-fleet-section {
+  margin-top: 0;
+}

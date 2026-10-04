@@ -198,37 +198,68 @@ function TreeRow({
     );
   }
 
-  const isSelected = node.material.id === selectedId;
-  const isImage = isImageMaterial(node.material);
-  const statusBadge = statusGlyph(node.material.status);
-  const isDisabled = node.material.status === "deleted";
+  return <WorkMaterialFileRow material={node.material} selected={node.material.id === selectedId} depth={depth} onSelect={onSelect} />;
+}
+
+/** Shared file row for the work inventory and its full file browser. */
+export function WorkMaterialFileRow({ material, selected, depth = 0, showFolder = false, hideStatus = false, onSelect }: {
+  material: WorkMaterial;
+  selected: boolean;
+  depth?: number;
+  showFolder?: boolean;
+  hideStatus?: boolean;
+  onSelect?: (material: WorkMaterial) => void;
+}) {
+  const split = material.path.lastIndexOf("/");
+  const name = material.path.slice(split + 1);
+  const folder = split >= 0 ? material.path.slice(0, split) : "";
+  const statusBadge = statusGlyph(material.status);
   return (
     <button
       type="button"
-      className={`s-work-files-tree-row s-work-files-tree-file${
-        isSelected ? " s-work-files-tree-file-selected" : ""
-      }`}
+      className={`s-work-files-tree-row s-work-files-tree-file${selected ? " s-work-files-tree-file-selected" : ""}${showFolder ? " s-work-files-list-row" : ""}`}
       style={{ paddingLeft: `${8 + depth * 12}px` }}
-      onClick={() => onSelect(node.material)}
-      disabled={isDisabled}
-      title={node.path}
+      onClick={() => onSelect?.(material)}
+      disabled={!onSelect || material.status === "deleted"}
+      title={`${material.path} · ${material.status} · ${material.confidence} confidence`}
     >
-      <span className="s-work-files-tree-chevron" aria-hidden="true" />
+      {!showFolder && <span className="s-work-files-tree-chevron" aria-hidden="true" />}
       <span className="s-work-files-tree-icon" aria-hidden="true">
-        {isImage
-          ? <ImageIcon size={12} strokeWidth={1.8} />
-          : <FileText size={12} strokeWidth={1.8} />}
+        {isImageMaterial(material) ? <ImageIcon size={12} strokeWidth={1.8} /> : <FileText size={12} strokeWidth={1.8} />}
       </span>
-      <span className="s-work-files-tree-name">{node.name}</span>
-      {statusBadge && (
-        <span
-          className={`s-work-files-tree-status s-work-files-tree-status-${node.material.status}`}
-          aria-label={node.material.status}
-        >
-          {statusBadge}
-        </span>
-      )}
+      <span className="s-work-files-tree-name">{name}</span>
+      {showFolder && folder && <span className="s-work-files-list-folder">{folder}</span>}
+      {showFolder && material.diffStat && <span className="s-work-files-list-diff">{formatWorkMaterialDiff(material.diffStat)}</span>}
+      {!hideStatus && statusBadge && <span className={`s-work-files-tree-status s-work-files-tree-status-${material.status}`} aria-label={material.status}>{statusBadge}</span>}
     </button>
+  );
+}
+
+/** Scroll within the work page; reuse the browser's file-opening row. */
+export function WorkMaterialTable({ materials, selectedId, onSelect }: {
+  materials: WorkMaterial[];
+  selectedId?: string | null;
+  onSelect?: (material: WorkMaterial) => void;
+}) {
+  return (
+    <div className="s-work-material-table-scroll" tabIndex={0} role="region" aria-label="Scrollable work files">
+      <table className="s-work-material-table" aria-label="Work files">
+        <colgroup><col className="s-work-material-col-file" /><col className="s-work-material-col-folder" /><col className="s-work-material-col-status" /><col className="s-work-material-col-changes" /></colgroup>
+        <thead><tr><th scope="col">File</th><th scope="col">Folder</th><th scope="col">Status</th><th scope="col">Changes</th></tr></thead>
+        <tbody>{materials.map((material) => {
+          const slash = material.path.lastIndexOf("/");
+          const folder = slash >= 0 ? material.path.slice(0, slash) : "—";
+          return (
+            <tr key={material.id} data-selected={selectedId === material.id}>
+              <td><WorkMaterialFileRow material={material} selected={selectedId === material.id} hideStatus onSelect={onSelect} /></td>
+              <td title={folder}><span className="s-work-material-cell-path">{folder}</span></td>
+              <td title={`${material.confidence} confidence`}>{material.status}</td>
+              <td>{material.diffStat ? formatWorkMaterialDiff(material.diffStat) : "—"}</td>
+            </tr>
+          );
+        })}</tbody>
+      </table>
+    </div>
   );
 }
 

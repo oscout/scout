@@ -18,11 +18,11 @@
   --secondary-foreground: 0.95 0.006 260;
   --muted: 0.23 0.005 260;
   --muted-foreground: 0.80 0.008 260;
-  --accent: 0.86 0.17 125;
-  --accent-foreground: 0.14 0.02 125;
+  --accent: 0.78 0.12 75;
+  --accent-foreground: 0.18 0.01 75;
   --border: 0.40 0.007 260;
   --input: 0.44 0.008 260;
-  --ring: 0.86 0.17 125;
+  --ring: 0.78 0.12 75;
 }
 
 [data-scout-theme-mode="light"][data-scout-palette="scout"] {
@@ -39,11 +39,11 @@
   --secondary-foreground: 0.28 0.012 80;
   --muted: 0.94 0.006 84;
   --muted-foreground: 0.56 0.014 80;
-  --accent: 0.72 0.16 125;
+  --accent: 0.54 0.12 65;
   --accent-foreground: 0.99 0.003 85;
   --border: 0.84 0.01 82;
   --input: 0.78 0.012 82;
-  --ring: 0.72 0.16 125;
+  --ring: 0.54 0.12 65;
 }
 
 [data-scout-theme-mode="dark"][data-scout-palette="graphite"] {
@@ -233,15 +233,15 @@
 }
 
 [data-scout-theme-mode="dark"][data-scout-accent="amber"] {
-  --accent: 0.82 0.15 85;
-  --accent-foreground: 0.18 0.03 85;
-  --ring: 0.82 0.15 85;
+  --accent: 0.78 0.12 75;
+  --accent-foreground: 0.18 0.01 75;
+  --ring: 0.78 0.12 75;
 }
 
 [data-scout-theme-mode="light"][data-scout-accent="amber"] {
-  --accent: 0.68 0.16 75;
+  --accent: 0.54 0.12 65;
   --accent-foreground: 0.99 0 0;
-  --ring: 0.68 0.16 75;
+  --ring: 0.54 0.12 65;
 }
 
 /* Hudson maps --hud-dim to muted-foreground at 78% alpha, which drops

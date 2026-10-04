@@ -61,6 +61,8 @@ mock.module("hudsonkit/terminal", () => ({
 mock.module(new URL("./scout/Provider.tsx", import.meta.url).pathname, () => ({
   useScout: () => ({
     agents: scoutAgents,
+    apiConnection: { status: "online", message: null, lastCheckedAt: 1 },
+    reload: async () => {},
   }),
   useOptionalScout: () => ({
     agents: scoutAgents,

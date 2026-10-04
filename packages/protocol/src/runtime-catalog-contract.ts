@@ -62,6 +62,8 @@ export interface ScoutOwnedRuntimeHarness {
    * as a separate operator choice.
    */
   listed?: boolean;
+  /** Accept provider/extension model ids without inventing a Scout default. */
+  allowCustomModels?: boolean;
   default?: boolean;
   reasoningEfforts: readonly ScoutReasoningEffort[] | null;
   defaultReasoningEffort?: ScoutReasoningEffort | null;

@@ -35,6 +35,7 @@ describe("SCO-070 cardless sessions", () => {
     });
     expect(resolveCardlessSessionSpawnTarget("codex")).toEqual({ harness: "codex", transport: "codex_app_server" });
     expect(resolveCardlessSessionSpawnTarget("grok")).toEqual({ harness: "grok-acp", transport: "grok_acp" });
+    expect(resolveCardlessSessionSpawnTarget("pi")).toEqual({ harness: "pi", transport: "pi_rpc" });
     expect(resolveCardlessSessionSpawnTarget("kimi")).toEqual({ harness: "kimi", transport: "kimi_acp" });
     expect(resolveCardlessSessionSpawnTarget("cursor")).toEqual({
       harness: "cursor",

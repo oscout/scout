@@ -93,6 +93,13 @@ describe("runtime execution contracts", () => {
     });
   });
 
+  test("Pi accepts its native thinking ladder but not ultra", () => {
+    expect(validateScoutRuntimeTuple({ harness: "pi", model: "custom-provider/custom-model", reasoningEffort: "low" })).toEqual([]);
+    expect(validateScoutRuntimeTuple({ harness: "pi", reasoningEffort: "none" })).toEqual([]);
+    expect(validateScoutRuntimeTuple({ harness: "pi", reasoningEffort: "ultra" }))
+      .toEqual([expect.objectContaining({ code: "reasoning_effort_harness_mismatch" })]);
+  });
+
   test("records requested, resolved, observed, and drift independently", () => {
     const resolution = createScoutExecutionResolution({
       requested: { harness: "codex", model: "5.6", reasoningEffort: "xhigh" },

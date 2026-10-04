@@ -179,12 +179,12 @@ describe("scout web", () => {
     const encrypted: DistKeyStore = {
       where: "test vault",
       encrypted: true,
-      read: () => vault.get("key") ?? null,
-      write: (key) => (vault.set("key", key), true),
-      remove: () => vault.delete("key"),
+      read: async () => vault.get("key") ?? null,
+      write: async (key) => (vault.set("key", key), true),
+      remove: async () => vault.delete("key"),
     };
     const file = fileDistKeyStore(support);
-    file.write("osdist_stale");
+    await file.write("osdist_stale");
 
     const run = harness({ keyStores: [encrypted, file] });
     await runWebCommand(run.context, ["login", "--key", KEY], run.deps);
@@ -200,16 +200,37 @@ describe("scout web", () => {
     expect(vault.size).toBe(0);
   });
 
-  test("the Keychain store passes the key on stdin, never in argv", () => {
+  test("the Keychain store passes the key on stdin, never in argv", async () => {
     const calls: Array<{ command: string; args: string[]; input?: string }> = [];
-    const store = keychainDistKeyStore((command, args, input) => {
+    const store = keychainDistKeyStore(async (command, args, input) => {
       calls.push({ command, args, input });
       return { status: 0, stdout: "" };
     });
-    expect(store.write(KEY)).toBe(true);
+    expect(await store.write(KEY)).toBe(true);
     expect(calls[0]!.args).toEqual(["-i"]);
     expect(calls[0]!.args.join(" ")).not.toContain(KEY);
     expect(calls[0]!.input).toContain(KEY);
-    expect(store.write('osdist_"; rm -rf ~')).toBe(false);
+    expect(await store.write('osdist_"; rm -rf ~')).toBe(false);
+  });
+
+  test("logout clears every store, and a store that fails to save falls through to the next", async () => {
+    const removed: string[] = [];
+    const failing: DistKeyStore = {
+      where: "stuck vault",
+      encrypted: true,
+      read: async () => null,
+      write: async () => false,
+      remove: async () => (removed.push("stuck vault"), false),
+    };
+    const run = harness({ keyStores: [failing, fileDistKeyStore(support)] });
+    await runWebCommand(run.context, ["login", "--key", KEY], run.deps);
+    expect(run.lines.join("\n")).toContain(`Key saved in ${distKeyPath(support)}`);
+    expect(removed).toEqual(["stuck vault"]);
+
+    run.lines.length = 0;
+    await runWebCommand(run.context, ["logout"], run.deps);
+    expect(removed).toEqual(["stuck vault", "stuck vault"]);
+    expect(existsSync(distKeyPath(support))).toBe(false);
+    expect(run.lines.join("\n")).toContain("Download key removed.");
   });
 });

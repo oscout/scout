@@ -447,6 +447,7 @@ function normalizeRoute(raw: unknown): Route | null {
           || record.section === "terminal"
           || record.section === "devices"
           || record.section === "mesh"
+          || record.section === "pro"
           || record.section === "system"
           || record.section === "about"
           ? { section: record.section }

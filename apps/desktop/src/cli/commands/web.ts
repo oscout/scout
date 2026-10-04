@@ -1,13 +1,26 @@
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { createWriteStream, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { createWriteStream, existsSync, mkdirSync, readdirSync, renameSync, rmSync } from "node:fs";
+import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { Writable } from "node:stream";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import type { ReadableStream as NodeWebReadableStream } from "node:stream/web";
 
+import {
+  DIST_KEY_KEYCHAIN_SERVICE,
+  DIST_KEY_PREFIX,
+  SCOUT_DIST_DEFAULT_URL,
+  defaultDistKeyStores,
+  distBaseUrl,
+  distKeyPath,
+  fileDistKeyStore,
+  keychainDistKeyStore,
+  resolveDistKey,
+  secretServiceDistKeyStore,
+  type DistKeyStore,
+} from "@openscout/runtime/dist-access";
 import { resolveOpenScoutSupportPaths } from "@openscout/runtime/support-paths";
 import {
   readWebFullClientProfile,
@@ -21,8 +34,8 @@ import { ScoutCliError } from "../errors.ts";
 import { SCOUT_APP_VERSION } from "../../shared/product.ts";
 import { requestScoutWebControl } from "./server.ts";
 
-export const SCOUT_DIST_DEFAULT_URL = "https://console.openscout.app";
-const DIST_KEY_PREFIX = "osdist_";
+export { DIST_KEY_KEYCHAIN_SERVICE, SCOUT_DIST_DEFAULT_URL, distKeyPath, fileDistKeyStore, keychainDistKeyStore, secretServiceDistKeyStore };
+export type { DistKeyStore };
 const DOWNLOAD_TIMEOUT_MS = 5 * 60_000;
 
 type ScoutFetch = (input: string | URL, init?: RequestInit) => Promise<Response>;
@@ -59,131 +72,16 @@ export function renderWebCommandHelp(): string {
   ].join("\n");
 }
 
-function distBaseUrl(env: NodeJS.ProcessEnv): string {
-  return (env.OPENSCOUT_DIST_URL?.trim() || SCOUT_DIST_DEFAULT_URL).replace(/\/+$/, "");
-}
-
 function supportDirectoryOf(deps: ScoutWebCommandDeps): string {
   return deps.supportDirectory ?? resolveOpenScoutSupportPaths().supportDirectory;
 }
 
-export function distKeyPath(supportDirectory: string): string {
-  return join(supportDirectory, "web", "dist-key");
+async function distKeyStores(deps: ScoutWebCommandDeps, env: NodeJS.ProcessEnv): Promise<DistKeyStore[]> {
+  return deps.keyStores ?? await defaultDistKeyStores(supportDirectoryOf(deps), env);
 }
 
-/**
- * Where a saved download key lives. The OS credential store when there is one
- * (macOS Keychain, or the Secret Service via secret-tool on Linux desktops),
- * so the key is encrypted at rest; otherwise a 0600 file, which `scout web
- * status` reports as unencrypted. The key always reaches the store on stdin,
- * never in argv.
- */
-export type DistKeyStore = {
-  where: string;
-  encrypted: boolean;
-  read(): string | null;
-  write(key: string): boolean;
-  remove(): boolean;
-};
-
-type SpawnText = (command: string, args: string[], input?: string) => { status: number | null; stdout: string };
-
-const spawnText: SpawnText = (command, args, input) => {
-  const result = spawnSync(command, args, { input, encoding: "utf8", stdio: ["pipe", "pipe", "ignore"] });
-  return { status: result.error ? null : result.status, stdout: result.stdout ?? "" };
-};
-
-export const DIST_KEY_KEYCHAIN_SERVICE = "OPENSCOUT_DIST_KEY";
-const SAFE_KEY = /^[A-Za-z0-9_]+$/;
-
-export function keychainDistKeyStore(spawn: SpawnText = spawnText): DistKeyStore {
-  return {
-    where: `macOS Keychain (${DIST_KEY_KEYCHAIN_SERVICE})`,
-    encrypted: true,
-    read() {
-      const result = spawn("security", ["find-generic-password", "-a", "openscout", "-s", DIST_KEY_KEYCHAIN_SERVICE, "-w"]);
-      return result.status === 0 ? result.stdout.trim() || null : null;
-    },
-    write(key) {
-      // `security -i` reads the command from stdin, so the key stays out of argv.
-      if (!SAFE_KEY.test(key)) return false;
-      const script = `add-generic-password -U -a openscout -s ${DIST_KEY_KEYCHAIN_SERVICE} -l "Scout download key" -w "${key}"\n`;
-      return spawn("security", ["-i"], script).status === 0;
-    },
-    remove() {
-      return spawn("security", ["delete-generic-password", "-a", "openscout", "-s", DIST_KEY_KEYCHAIN_SERVICE]).status === 0;
-    },
-  };
-}
-
-export function secretServiceDistKeyStore(spawn: SpawnText = spawnText): DistKeyStore {
-  const attributes = ["service", "openscout-dist", "account", "default"];
-  return {
-    where: "Secret Service (secret-tool, service openscout-dist)",
-    encrypted: true,
-    read() {
-      const result = spawn("secret-tool", ["lookup", ...attributes]);
-      return result.status === 0 ? result.stdout.trim() || null : null;
-    },
-    write(key) {
-      return spawn("secret-tool", ["store", "--label=Scout download key", ...attributes], key).status === 0;
-    },
-    remove() {
-      return spawn("secret-tool", ["clear", ...attributes]).status === 0;
-    },
-  };
-}
-
-export function fileDistKeyStore(supportDirectory: string): DistKeyStore {
-  const path = distKeyPath(supportDirectory);
-  return {
-    where: `${path} (not encrypted)`,
-    encrypted: false,
-    read() {
-      try {
-        return readFileSync(path, "utf8").trim() || null;
-      } catch {
-        return null;
-      }
-    },
-    write(key) {
-      mkdirSync(dirname(path), { recursive: true });
-      writeFileSync(path, `${key}\n`, { mode: 0o600 });
-      return true;
-    },
-    remove() {
-      const existed = existsSync(path);
-      rmSync(path, { force: true });
-      return existed;
-    },
-  };
-}
-
-/** Encrypted stores first, the file last; every store is read so a key saved before a store appeared is still found. */
-function distKeyStores(deps: ScoutWebCommandDeps, env: NodeJS.ProcessEnv): DistKeyStore[] {
-  if (deps.keyStores) return deps.keyStores;
-  const stores: DistKeyStore[] = [];
-  if (process.platform === "darwin") stores.push(keychainDistKeyStore());
-  else if (env.DBUS_SESSION_BUS_ADDRESS && spawnText("secret-tool", ["--version"]).status !== null) {
-    stores.push(secretServiceDistKeyStore());
-  }
-  stores.push(fileDistKeyStore(supportDirectoryOf(deps)));
-  return stores;
-}
-
-function readSavedKey(stores: DistKeyStore[]): { key: string; store: DistKeyStore } | null {
-  for (const store of stores) {
-    const key = store.read();
-    if (key) return { key, store };
-  }
-  return null;
-}
-
-function resolveKey(context: ScoutCommandContext, stores: DistKeyStore[]): { key: string; where: string } | null {
-  const fromEnv = context.env.SCOUT_DIST_KEY?.trim();
-  if (fromEnv) return { key: fromEnv, where: "SCOUT_DIST_KEY" };
-  const saved = readSavedKey(stores);
-  return saved ? { key: saved.key, where: saved.store.where } : null;
+async function resolveKey(context: ScoutCommandContext, stores: DistKeyStore[]): Promise<{ key: string; where: string } | null> {
+  return await resolveDistKey(context.env, stores);
 }
 
 function readFlagValue(args: string[], name: string): string | undefined {
@@ -263,17 +161,25 @@ async function runLogin(context: ScoutCommandContext, args: string[], deps: Scou
 
   // Save to the first store that takes it, then clear the rest so no stale
   // copy outlives a logout.
-  const stores = distKeyStores(deps, context.env);
-  const saved = stores.find((store) => store.write(key));
+  const stores = await distKeyStores(deps, context.env);
+  let saved: DistKeyStore | undefined;
+  for (const store of stores) {
+    if (await store.write(key)) {
+      saved = store;
+      break;
+    }
+  }
   if (!saved) throw new ScoutCliError("Couldn't save the download key.");
-  for (const store of stores) if (store !== saved) store.remove();
+  for (const store of stores) if (store !== saved) await store.remove();
   const who = body?.login ? ` as ${body.login}` : "";
   const label = body?.label ? ` (key "${body.label}")` : "";
   context.output.writeText(`Signed in${who}${label}. Key saved in ${saved.where}.\nNext: scout web install`);
 }
 
-function runLogout(context: ScoutCommandContext, deps: ScoutWebCommandDeps): void {
-  const removed = distKeyStores(deps, context.env).map((store) => store.remove()).some(Boolean);
+async function runLogout(context: ScoutCommandContext, deps: ScoutWebCommandDeps): Promise<void> {
+  let removed = false;
+  // Every store, in order, so no copy outlives a logout.
+  for (const store of await distKeyStores(deps, context.env)) removed = (await store.remove()) || removed;
   context.output.writeText(removed ? "Download key removed." : "No saved download key.");
 }
 
@@ -285,7 +191,7 @@ async function defaultRestartWeb(): Promise<string> {
 async function runInstall(context: ScoutCommandContext, args: string[], deps: ScoutWebCommandDeps): Promise<void> {
   const supportDirectory = supportDirectoryOf(deps);
   const version = readFlagValue(args, "--version") ?? deps.version ?? SCOUT_APP_VERSION;
-  const resolved = resolveKey(context, distKeyStores(deps, context.env));
+  const resolved = await resolveKey(context, await distKeyStores(deps, context.env));
   if (!resolved) {
     throw new ScoutCliError("No download key. Make one at https://console.openscout.app/#downloads, then: scout web login");
   }
@@ -375,7 +281,7 @@ function runUninstall(context: ScoutCommandContext, deps: ScoutWebCommandDeps): 
 async function runStatus(context: ScoutCommandContext, deps: ScoutWebCommandDeps): Promise<void> {
   const supportDirectory = supportDirectoryOf(deps);
   const version = deps.version ?? SCOUT_APP_VERSION;
-  const key = resolveKey(context, distKeyStores(deps, context.env));
+  const key = await resolveKey(context, await distKeyStores(deps, context.env));
   const installed = resolveInstalledWebFullClient(version, { env: context.env, supportDirectory });
   const status = {
     version,

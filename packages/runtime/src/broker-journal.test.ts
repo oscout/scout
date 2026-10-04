@@ -1,5 +1,6 @@
-import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { afterEach, describe, expect, spyOn, test } from "bun:test";
+import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import * as fsPromises from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -1141,4 +1142,148 @@ test("question history filters and cursor order match retained SQLite reads", as
   expect(journal.listCollaborationRecords({ ...query, afterCreatedAt: 1, afterId: "b" })).toMatchObject([{ id: "c", answer: "answer c" }]);
   expect(journal.listCollaborationRecords({ ...query, includeThreads: false }).map(row => row.id)).toEqual(["a", "c"]);
   expect(journal.listCollaborationRecords({ ...query, orderByCreatedAt: false }).map(row => row.id)).toEqual(["b", "c"]);
+});
+
+describe("journal append failures", () => {
+  const retire = (actorId: string) => ({ kind: "actor.delete" as const, actorId });
+
+  test("a failed append does not wedge the appends after it", async () => {
+    const { journal, journalPath } = createJournal();
+    await journal.load();
+    await journal.appendEntries(retire("before"));
+
+    chmodSync(journalPath, 0o444);
+    await expect(journal.appendEntries(retire("during"))).rejects.toThrow();
+    expect(journal.writeStatus()).toMatchObject({ state: "failing", failures: 1, code: "EACCES" });
+
+    chmodSync(journalPath, 0o644);
+    await journal.appendEntries(retire("after"));
+    expect(journal.writeStatus()).toEqual({ state: "ok" });
+
+    const reloaded = new FileBackedBrokerJournal(journalPath);
+    await reloaded.load();
+    expect([...reloaded.retiredActorIds()].sort()).toEqual(["after", "before"]);
+  });
+
+  test("failed rollback blocks queued writes until the original boundary is repaired", async () => {
+    const { journal, journalPath } = createJournal();
+    await journal.load();
+    await journal.appendEntries(retire("before"));
+    const before = readFileSync(journalPath, "utf8");
+    const realAppendFile = fsPromises.appendFile;
+    const append = spyOn(fsPromises, "appendFile").mockImplementationOnce(async (path, data) => {
+      await realAppendFile(path, String(data).slice(0, 12), "utf8");
+      throw Object.assign(new Error("disk full"), { code: "ENOSPC" });
+    });
+    const rollback = spyOn(fsPromises, "truncate").mockRejectedValue(
+      Object.assign(new Error("rollback unavailable"), { code: "EIO" }),
+    );
+    try {
+      await expect(journal.appendEntries(retire("torn"))).rejects.toThrow("disk full");
+      expect(journal.writeStatus()).toMatchObject({ state: "failing", code: "ENOSPC" });
+      const blocked = [journal.appendEntries(retire("blocked-a")), journal.appendEntries(retire("blocked-b"))];
+      expect((await Promise.allSettled(blocked)).map(result => result.status)).toEqual(["rejected", "rejected"]);
+      expect(append).toHaveBeenCalledTimes(1);
+      expect(journal.writeStatus()).toMatchObject({ state: "failing", failures: 3, code: "EIO" });
+      expect([...journal.retiredActorIds()]).toEqual(["before"]);
+    } finally {
+      rollback.mockRestore();
+      append.mockRestore();
+    }
+    await journal.appendEntries(retire("after"));
+    expect(readFileSync(journalPath, "utf8")).toBe(before + JSON.stringify(retire("after")) + "\n");
+    expect(journal.writeStatus()).toEqual({ state: "ok" });
+    const reloaded = new FileBackedBrokerJournal(journalPath);
+    expect((await reloaded.load()).invalidLines).toBe(0);
+    expect([...reloaded.retiredActorIds()].sort()).toEqual(["after", "before"]);
+  });
+
+  test("canonical readers reject complete records from a failed partial batch until rollback succeeds", async () => {
+    const { journal, journalPath } = createJournal();
+    await journal.load();
+    await journal.appendEntries(retire("before"));
+    const realAppendFile = fsPromises.appendFile;
+    const append = spyOn(fsPromises, "appendFile").mockImplementationOnce(async (path, data) => {
+      await realAppendFile(path, String(data).split("\n")[0] + "\n", "utf8");
+      throw new Error("disk full");
+    });
+    const rollback = spyOn(fsPromises, "truncate").mockRejectedValue(new Error("rollback failed"));
+    try {
+      await expect(journal.appendEntries([retire("unacknowledged"), retire("never-written")])).rejects.toThrow();
+      await expect(journal.captureReplayBoundary()).rejects.toThrow("rollback failed");
+      await expect(journal.readEntries()).rejects.toThrow("rollback failed");
+      const visited: unknown[] = [];
+      await expect(journal.replay(entry => { visited.push(entry); })).rejects.toThrow("rollback failed");
+      expect(visited).toEqual([]);
+    } finally { append.mockRestore(); rollback.mockRestore(); }
+    expect(await journal.readEntries()).toEqual([retire("before")]);
+    await journal.appendEntries(retire("after"));
+    const reloaded = new FileBackedBrokerJournal(journalPath);
+    await reloaded.load();
+    expect([...reloaded.retiredActorIds()].sort()).toEqual(["after", "before"]);
+  });
+
+  test("deferred compaction repairs a failed append before moving the rollback boundary", async () => {
+    const { journal, journalPath } = createJournal({ progressiveStartup: true,
+      compactionPolicy: { minimumReclaimBytes: 1, minimumReclaimRatio: 0 } });
+    const actor = sampleActor();
+    writeFileSync(journalPath, Array.from({ length: 50 }, (_, i) => JSON.stringify({
+      kind: "actor.upsert", actor: { ...actor, displayName: `old-${i}` },
+    }) + "\n").join(""));
+    expect((await journal.load()).compactionRequired).toBe(true);
+    const realAppendFile = fsPromises.appendFile;
+    const append = spyOn(fsPromises, "appendFile").mockImplementationOnce(async (path, data) => {
+      await realAppendFile(path, String(data).slice(0, 12), "utf8");
+      throw new Error("disk full");
+    });
+    const rollback = spyOn(fsPromises, "truncate").mockRejectedValueOnce(new Error("rollback failed"));
+    try {
+      await expect(journal.appendEntries(retire("torn"))).rejects.toThrow("disk full");
+    } finally {
+      append.mockRestore();
+      rollback.mockRestore();
+    }
+    await journal.finishStartup();
+    await journal.appendEntries(retire("after"));
+    const reloaded = new FileBackedBrokerJournal(journalPath);
+    expect((await reloaded.load()).invalidLines).toBe(0);
+    expect([...reloaded.retiredActorIds()]).toEqual(["after"]);
+    expect(reloaded.snapshot().actors[actor.id]?.displayName).toBe("old-49");
+  });
+
+  test.each([false, true])("appends safely after a previous process left an unterminated line (complete=%s)", async complete => {
+    const { journalPath } = createJournal();
+    const line = JSON.stringify(retire("before"));
+    writeFileSync(journalPath, complete ? line : line.slice(0, 12));
+    const journal = new FileBackedBrokerJournal(journalPath);
+    await journal.load();
+    await journal.appendEntries(retire("after"));
+    const reloaded = new FileBackedBrokerJournal(journalPath);
+    expect((await reloaded.load()).invalidLines).toBe(complete ? 0 : 1);
+    expect([...reloaded.retiredActorIds()].sort()).toEqual(complete ? ["after", "before"] : ["after"]);
+  });
+
+  test("a torn append is rolled back so the next record is not fused onto it", async () => {
+    const { journal, journalPath } = createJournal();
+    await journal.load();
+    await journal.appendEntries(retire("before"));
+
+    const realAppendFile = fsPromises.appendFile;
+    const spy = spyOn(fsPromises, "appendFile").mockImplementationOnce(async (path, data) => {
+      await realAppendFile(path, String(data).slice(0, 12), "utf8");
+      throw Object.assign(new Error("ENOSPC: no space left on device, write"), { code: "ENOSPC" });
+    });
+    try {
+      await expect(journal.appendEntries(retire("torn"))).rejects.toThrow("ENOSPC");
+    } finally {
+      spy.mockRestore();
+    }
+    expect(journal.writeStatus()).toMatchObject({ state: "failing", code: "ENOSPC" });
+
+    await journal.appendEntries(retire("after"));
+    const reloaded = new FileBackedBrokerJournal(journalPath);
+    const report = await reloaded.load();
+    expect(report.invalidLines).toBe(0);
+    expect([...reloaded.retiredActorIds()].sort()).toEqual(["after", "before"]);
+  });
 });

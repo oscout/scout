@@ -9,9 +9,10 @@ import {
   invalidateHerdrSessions,
   parseHerdrAgentList,
   readHerdrSessions,
+  readHerdrTopology,
 } from "@openscout/runtime/system-probes";
 import { formatTerminalSurfaceId } from "@openscout/protocol";
-import type { TerminalSurface } from "@openscout/protocol";
+import type { HerdrSessionTopology, TerminalSurface } from "@openscout/protocol";
 
 import { errorReason, probeCommand } from "./tmux.ts";
 import { readHerdrLastKnownState, type HerdrLastKnownState } from "./herdr-session-state.ts";
@@ -71,12 +72,18 @@ export const herdrTerminalHost: TerminalHostAdapter = {
       const lastKnown = !session.running && session.sessionDir
         ? await readHerdrLastKnownState(session.sessionDir)
         : null;
+      const topology = session.running ? await readHerdrTopology(session.name, { env: context.env }) : null;
+      const liveCwd = topology?.running
+        ? topology.workspaces.flatMap((workspace) => workspace.tabs.flatMap((tab) => tab.panes))
+          .map((pane) => pane.foregroundCwd ?? pane.cwd).find(Boolean)
+        : null;
+      const cwd = liveCwd ?? lastKnown?.cwds[0];
       return {
         name: session.name,
         state: session.running ? "live" : "detached",
         // The last-known pane cwd stands in for a live one: a stopped session
         // has no current directory, but "where was this" is what the row needs.
-        ...(lastKnown?.cwds[0] ? { cwd: lastKnown.cwds[0] } : {}),
+        ...(cwd ? { cwd } : {}),
         metadata: {
           isDefault: session.isDefault,
           running: session.running,
@@ -150,12 +157,17 @@ export const herdrTerminalHost: TerminalHostAdapter = {
 
   async capture(target, context = {}) {
     try {
+      // Session names scope the command; agent read requires a pane target.
+      const paneId = target.paneId ?? herdrPreviewPane(
+        await readHerdrTopology(target.sessionName, { env: context.env }),
+      );
+      if (!paneId) return null;
       const { stdout } = await execSystemFile("herdr", [
         "--session",
         target.sessionName,
         "agent",
         "read",
-        target.paneId ?? target.sessionName,
+        paneId,
         "--source",
         "visible",
         "--format",
@@ -182,6 +194,14 @@ export const herdrTerminalHost: TerminalHostAdapter = {
     }
   },
 };
+
+export function herdrPreviewPane(topology: HerdrSessionTopology): string | null {
+  if (!topology.running) return null;
+  const workspace = topology.workspaces.find((entry) => entry.focused) ?? topology.workspaces[0];
+  const tab = workspace?.tabs.find((entry) => entry.focused) ?? workspace?.tabs[0];
+  const pane = tab?.panes.find((entry) => entry.focused) ?? tab?.panes[0];
+  return pane?.paneId ?? null;
+}
 
 /**
  * `agent read --format text` still answers in the CLI's JSON envelope

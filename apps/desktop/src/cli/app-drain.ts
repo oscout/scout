@@ -18,7 +18,7 @@ import { join } from "node:path";
  * is wedged and not answering HTTP.
  */
 
-export const DEFAULT_DRAIN_TIMEOUT_MS = 30 * 60_000;
+export { DEFAULT_DRAIN_TIMEOUT_MS, parseDrainTimeout } from "../../../../packages/cli/bin/lifecycle-preflight.mjs";
 /**
  * A flight still `running` after this long is treated as orphaned — its
  * harness died without the broker hearing. It is reported, but does not hold
@@ -103,16 +103,6 @@ export function formatDuration(ms: number): string {
   const minutes = Math.floor(seconds / 60);
   if (minutes < 60) return `${minutes}m`;
   return `${Math.floor(minutes / 60)}h${String(minutes % 60).padStart(2, "0")}m`;
-}
-
-/** `90s`, `15m`, `2h`, or bare minutes. */
-export function parseDrainTimeout(value: string): number | null {
-  const match = /^(\d+(?:\.\d+)?)(s|m|h)?$/.exec(value.trim());
-  if (!match) return null;
-  const amount = Number(match[1]);
-  const unit = match[2] ?? "m";
-  const scale = unit === "s" ? 1_000 : unit === "h" ? 3_600_000 : 60_000;
-  return Math.round(amount * scale);
 }
 
 export async function waitForIdleFleet(options: {

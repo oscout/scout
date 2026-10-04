@@ -8,6 +8,17 @@ export function isScoutSurfaceActive(
   return typeof target.hasFocus !== "function" || target.hasFocus();
 }
 
+/**
+ * Visible, focused or not. For watch surfaces (the Home cockpit left open on
+ * a second screen) that must stay current while the operator works elsewhere.
+ */
+export function isScoutSurfaceVisible(
+  target: Pick<Document, "visibilityState"> | undefined = globalThis.document,
+): boolean {
+  if (!target) return true;
+  return target.visibilityState === "visible";
+}
+
 type SurfaceActivationDocument = SurfaceDocument
   & Pick<Document, "addEventListener" | "removeEventListener">;
 type SurfaceActivationWindow = Pick<Window, "addEventListener" | "removeEventListener">;

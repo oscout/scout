@@ -1,0 +1,254 @@
+/* Desktop companion, edge mode: the crew standing along the bottom of the
+   screen. The page fills a full-width transparent band the Mac host places on
+   the visible frame; only elements marked data-hit take the pointer, and the
+   host passes every other click through to the desktop. Colors come from the
+   --co-* tokens (the --hud-* palette); the one accent is the emerald. */
+
+html.ce-edge-mode,
+html.ce-edge-mode body,
+html.ce-edge-mode #root { overflow: hidden !important; }
+
+.ce-root {
+  --ce-pop: var(--co-card);
+  --ce-ink: var(--co-ink);
+  --ce-ink-2: var(--co-muted);
+  --ce-line: var(--co-hair);
+  --ce-pop-line: var(--co-hair-strong);
+  --ce-accent: var(--co-accent);
+  --ce-accent-ink: oklch(0.24 0.05 160);
+  --ce-ease: cubic-bezier(0.33, 0, 0.2, 1);
+  position: fixed;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+  font: 12px/1.38 var(--co-sans);
+  color: var(--ce-ink);
+  -webkit-font-smoothing: antialiased;
+  user-select: none;
+}
+.ce-root *, .ce-root *::before, .ce-root *::after { box-sizing: border-box; }
+.ce-root button { font: inherit; color: inherit; cursor: pointer; }
+.ce-root [data-hit] { pointer-events: auto; }
+.ce-root :focus-visible { outline: 2px solid var(--ce-accent); outline-offset: 2px; }
+
+/* ── the crew ──────────────────────────────────────────────────────── */
+.ce-crew { position: absolute; inset: 0; }
+.ce-slot {
+  position: absolute;
+  bottom: 0;
+  transform: translateX(-50%);
+  width: 30px;
+  height: 34px;
+  padding: 0;
+  border: 0;
+  background: none;
+  display: grid;
+  place-items: end center;
+  border-radius: 8px 8px 0 0;
+  transition: opacity 200ms ease-out, background-color 160ms ease-out;
+}
+/* Only a walker glides; arrivals, re-layouts and resizes land at once. */
+.ce-slot.is-walk { transition: left 1.6s var(--ce-ease), opacity 200ms ease-out; }
+.ce-slot:hover, .ce-slot.is-open { background: color-mix(in oklch, var(--ce-ink) 8%, transparent); }
+.ce-slot.is-unlit { opacity: 0.38; }
+.ce-slot.is-lit { background: color-mix(in oklch, var(--ce-accent) 14%, transparent); }
+
+.ce-fig { position: relative; display: inline-grid; place-items: end center; line-height: 0; }
+.ce-fig__body {
+  position: relative;
+  display: block;
+  transform-origin: 50% 100%;
+  transition: transform 700ms var(--ce-ease), filter 300ms ease-out, opacity 300ms ease-out;
+}
+.ce-fig__art { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; filter: drop-shadow(0 1px 0.6px oklch(0 0 0 / 0.55)); }
+.ce-fig__sprite { display: grid; place-items: end center; width: 100%; height: 100%; filter: drop-shadow(0 1px 0.6px oklch(0 0 0 / 0.5)); }
+
+/* The plate carries state; the pose never does. */
+.ce-fig__plate {
+  position: absolute;
+  right: calc(var(--fig) * -0.24);
+  top: calc(var(--fig) * -0.14);
+  width: max(10px, calc(var(--fig) * 0.42));
+  height: max(10px, calc(var(--fig) * 0.42));
+  line-height: 0;
+}
+.ce-fig__plate:empty { display: none; }
+.ce-plate { width: 100%; height: 100%; overflow: visible; }
+.ce-plate circle:first-child { fill: var(--ce-pop); stroke: color-mix(in oklch, var(--ce-ink) 45%, transparent); stroke-width: 1; }
+.ce-plate path { fill: none; stroke: var(--ce-ink); stroke-width: 1.3; stroke-linecap: round; stroke-linejoin: round; }
+.ce-plate .is-dot { fill: var(--ce-ink); stroke: none; }
+.ce-plate.is-ask circle:first-child { fill: var(--ce-accent); stroke: none; }
+.ce-plate.is-ask path { stroke: var(--ce-accent-ink); }
+.ce-plate.is-ask .is-dot { fill: var(--ce-accent-ink); }
+.ce-plate.is-offline circle:first-child { stroke-dasharray: 2 1.6; }
+
+/* Working, walking a step: a small bob, leaning into the direction. */
+.ce-fig.is-moving .ce-fig__body { animation: ce-bob 0.3s cubic-bezier(0.3, 0, 0.4, 1) infinite alternate; }
+.ce-fig.is-moving[data-facing="right"] .ce-fig__body { transform: rotate(4deg); }
+.ce-fig.is-moving[data-facing="left"] .ce-fig__body { transform: rotate(-4deg); }
+@keyframes ce-bob { from { translate: 0 0; } to { translate: 0 calc(var(--fig) * -0.1); } }
+
+/* Resting: the head peeks over the edge. */
+.ce-fig.is-sunk .ce-fig__body { transform: translateY(54%); }
+.ce-fig.is-resting .ce-fig__body { opacity: 0.88; }
+
+/* Needs you: stands a touch taller, and hops once when it starts needing you. */
+.ce-fig.is-needs .ce-fig__body { transform: translateY(-1px) scale(1.06); }
+.ce-fig.is-hop .ce-fig__body { animation: ce-jump 0.9s cubic-bezier(0.3, 0, 0.3, 1) 1; }
+@keyframes ce-jump {
+  0% { translate: 0 0; }
+  22% { translate: 0 calc(var(--fig) * -0.55); }
+  44% { translate: 0 0; }
+  62% { translate: 0 calc(var(--fig) * -0.2); }
+  80%, 100% { translate: 0 0; }
+}
+
+.ce-fig.is-disconnected .ce-fig__body { filter: grayscale(1); opacity: 0.5; animation: none; }
+.ce-fig.is-reduced .ce-fig__body { animation: none; }
+
+/* ── arrivals ──────────────────────────────────────────────────────── */
+.ce-arrive, .ce-sway { display: grid; place-items: end center; position: relative; }
+.ce-arrive.is-chute { animation: ce-fall 2.6s cubic-bezier(0.25, 0.1, 0.3, 1) both; }
+@keyframes ce-fall { from { translate: var(--dx) var(--dy); } to { translate: 0 0; } }
+.ce-arrive.is-chute > .ce-sway { transform-origin: 50% -16px; animation: ce-sway 0.75s ease-in-out 3 alternate both; }
+@keyframes ce-sway { from { rotate: -7deg; } to { rotate: 6deg; } }
+.ce-arrive.is-visitor { animation: ce-walk-in 3.4s cubic-bezier(0.2, 0, 0.3, 1) both; }
+@keyframes ce-walk-in { from { translate: var(--dx) 0; } to { translate: 0 0; } }
+
+.ce-canopy { position: absolute; bottom: calc(100% - 3px); left: 50%; width: 30px; height: 24px; translate: -50% 0; overflow: visible; animation: ce-canopy 2.6s linear both; transform-origin: 50% 100%; }
+.ce-canopy__dome { fill: oklch(0.8 0.07 var(--hue)); stroke: oklch(0.45 0.08 var(--hue)); stroke-width: 1; stroke-linejoin: round; }
+.ce-canopy__lines { fill: none; stroke: color-mix(in oklch, var(--ce-ink) 55%, transparent); stroke-width: 0.8; }
+@keyframes ce-canopy { 0%, 86% { opacity: 1; scale: 1 1; } 100% { opacity: 0; scale: 1.15 0.3; } }
+
+/* ── +N and home ───────────────────────────────────────────────────── */
+.ce-slot.is-stack { width: auto; min-width: 44px; padding: 0 4px; }
+.ce-stack__n {
+  font: 600 10px/1 var(--co-mono);
+  margin: 0 0 6px;
+  padding: 3px 5px;
+  border-radius: 4px;
+  background: color-mix(in oklch, var(--ce-pop) 92%, transparent);
+  border: 1px solid var(--ce-pop-line);
+}
+
+.ce-home {
+  position: absolute;
+  bottom: 2px;
+  transform: translateX(-50%);
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  display: grid;
+  place-items: center;
+  border-radius: 7px;
+  border: 1px solid var(--ce-pop-line);
+  background: color-mix(in oklch, var(--ce-pop) 88%, transparent);
+  box-shadow: var(--co-shadow);
+}
+.ce-home:hover, .ce-home.is-open { background: var(--ce-pop); border-color: color-mix(in oklch, var(--ce-ink) 26%, transparent); }
+.ce-home__mark { width: 14px; height: 14px; }
+.ce-home__ask, .ce-home__off { position: absolute; top: -3px; right: -3px; width: 8px; height: 8px; border-radius: 50%; box-shadow: 0 0 0 1.5px var(--ce-pop); }
+.ce-home__ask { background: var(--ce-accent); }
+.ce-home__off { background: none; border: 1px dashed var(--ce-ink-2); }
+.ce-home__ask + .ce-home__off { right: 7px; }
+
+.ce-empty, .ce-status {
+  position: absolute;
+  margin: 0;
+  font: 10.5px/1 var(--co-mono);
+  color: var(--ce-ink-2);
+  white-space: nowrap;
+  padding: 4px 6px;
+  border-radius: 4px;
+  background: color-mix(in oklch, var(--ce-pop) 80%, transparent);
+}
+.ce-empty { bottom: 6px; }
+.ce-status { bottom: 34px; }
+.ce-root.is-offline .ce-status { color: var(--co-error); }
+
+/* ── origin pins ───────────────────────────────────────────────────── */
+.ce-pin {
+  position: absolute;
+  bottom: 40px;
+  transform: translateX(-50%);
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 20px;
+  min-width: 32px;
+  padding: 0 6px 0 5px;
+  border-radius: 10px;
+  border: 1px solid var(--ce-pop-line);
+  background: var(--ce-pop);
+  box-shadow: var(--co-shadow);
+}
+.ce-pin.is-lit, .ce-pin.is-open { border-color: color-mix(in oklch, var(--ce-accent) 70%, transparent); }
+.ce-pin__mark { width: 10px; height: 10px; }
+.ce-pin__n { font: 600 10px/1 var(--co-mono); }
+.ce-pin__ask { position: absolute; top: -2px; right: -2px; width: 7px; height: 7px; border-radius: 50%; background: var(--ce-accent); box-shadow: 0 0 0 1.5px var(--ce-pop); }
+
+/* ── popover ───────────────────────────────────────────────────────── */
+.ce-pop {
+  position: absolute;
+  bottom: 66px;
+  overflow: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  background: var(--ce-pop);
+  border: 1px solid var(--ce-pop-line);
+  border-radius: 10px;
+  box-shadow: 0 18px 40px oklch(0 0 0 / 0.32), 0 2px 6px oklch(0 0 0 / 0.18);
+  padding: 10px;
+  user-select: text;
+  animation: ce-pop-in 180ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+@keyframes ce-pop-in { from { opacity: 0; translate: 0 4px; } }
+.ce-root.is-reduced .ce-pop { animation: none; }
+.ce-pop.is-kept { border-color: color-mix(in oklch, var(--ce-ink) 26%, transparent); }
+
+/* The stack's card and sheet sit inside without their own frame. */
+.ce-pop .co-card, .ce-pop .co-sheet { box-shadow: none; border: 0; background: none; padding: 0; margin: 0; }
+.ce-pop .co-card + .ce-pop__facts { margin-top: 10px; padding-top: 9px; border-top: 1px solid var(--ce-line); }
+
+.ce-pop__state { display: grid; grid-template-columns: 14px 1fr auto; gap: 7px; align-items: start; margin: 0 0 9px; padding-bottom: 9px; border-bottom: 1px solid var(--ce-line); line-height: 1.4; }
+.ce-pop__plate { width: 14px; height: 14px; margin-top: 2px; line-height: 0; }
+.ce-pop__plate:empty { border-radius: 50%; border: 1px solid color-mix(in oklch, var(--ce-ink) 30%, transparent); }
+.ce-pop__state[data-visible="working"] .ce-pop__plate:empty { border-color: var(--ce-accent); }
+.ce-pop__exact { color: var(--ce-ink-2); }
+.ce-pop__note { display: block; color: var(--ce-ink-2); font-size: 11px; margin-top: 2px; }
+.ce-pop__portrait { display: grid; place-items: end center; height: 36px; padding-right: 6px; }
+.ce-pop__portrait .ce-fig__plate { display: none; }
+
+.ce-pop__facts { display: grid; grid-template-columns: 58px 1fr; gap: 5px 10px; margin: 10px 0 0; }
+.ce-pop__facts dt { font: 10px/1.6 var(--co-mono); color: var(--ce-ink-2); }
+.ce-pop__facts dd { margin: 0; line-height: 1.45; min-width: 0; }
+.ce-pop__facts small { color: var(--ce-ink-2); }
+.ce-link { border: 0; background: none; padding: 0; text-align: left; color: var(--ce-ink); text-decoration: underline; text-decoration-color: color-mix(in oklch, var(--ce-ink) 30%, transparent); text-underline-offset: 2px; }
+.ce-link:hover { text-decoration-color: var(--ce-accent); }
+.ce-none { color: var(--ce-ink-2); }
+
+.ce-pop__eyebrow { margin: 0 0 4px; font: 10px/1.4 var(--co-mono); color: var(--ce-ink-2); }
+.ce-pop__why { margin: 0 0 6px; color: var(--ce-ink-2); line-height: 1.45; }
+.ce-pop__hint { margin: 8px 0 0; font-size: 10.5px; color: var(--ce-ink-2); }
+
+.ce-list { list-style: none; margin: 4px 0 0; padding: 0; display: flex; flex-direction: column; gap: 1px; }
+.ce-list button { width: 100%; display: grid; grid-template-columns: 28px 1fr; gap: 8px; align-items: end; text-align: left; border: 0; background: none; padding: 5px 6px; border-radius: 6px; min-height: 34px; }
+.ce-list button:hover { background: color-mix(in oklch, var(--ce-ink) 7%, transparent); }
+.ce-list .ce-fig { justify-self: center; }
+.ce-list__t { display: flex; flex-direction: column; min-width: 0; }
+.ce-list__t b { font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ce-list__t small { color: var(--ce-ink-2); font-size: 10.5px; }
+
+.ce-surfaced .co-who { display: block; }
+
+/* Layout and anchor controls in the shared settings sheet. */
+.co-seg { display: inline-flex; gap: 2px; padding: 2px; border-radius: 6px; border: 1px solid var(--co-hair); }
+.co-seg-btn { border: 1px solid transparent; background: none; padding: 3px 8px; border-radius: 4px; color: var(--co-muted); min-height: 24px; cursor: pointer; }
+.co-seg-btn:hover { color: var(--co-ink); }
+.co-seg-btn[aria-checked="true"] { border-color: var(--co-hair-strong); color: var(--co-ink); background: var(--co-card); }
+.co-seg-btn:focus-visible { outline: 1.5px solid var(--co-accent); outline-offset: 1px; }
+
+@media (prefers-reduced-motion: reduce) {
+  .ce-slot, .ce-fig__body, .ce-pop, .ce-arrive, .ce-sway { transition: none !important; animation: none !important; }
+  .ce-canopy { display: none; }
+}

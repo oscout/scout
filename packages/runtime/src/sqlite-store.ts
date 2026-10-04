@@ -2605,6 +2605,12 @@ export class SQLiteControlPlaneStore {
   }
 
   upsertTrustedPeer(peer: TrustedPeerRecord): void {
+    for (const [table, column] of [["guest_grants", "key_id"], ["mesh_access_devices", "key_id"], ["mesh_access_principals", "principal_id"]]) {
+      if (this.db.query("SELECT name FROM sqlite_master WHERE type='table' AND name=?1").get(table)
+        && this.db.query(`SELECT ${column} FROM ${table} WHERE ${column}=?1 LIMIT 1`).get(peer.keyId)) {
+        throw new Error("key_in_use: guest/scoped device/principal keys cannot become legacy mesh peers");
+      }
+    }
     this.db.query(
       `INSERT INTO trusted_peers (
         key_id, public_key, fingerprint, node_id, label, tier, granted_via,
@@ -2674,6 +2680,10 @@ export class SQLiteControlPlaneStore {
       WHERE key_id = ?1`,
     ).run(keyId, spkiFingerprint) as { changes?: number };
     return (result.changes ?? 0) > 0;
+  }
+
+  knownTrustedPeerKey(keyId: string): boolean {
+    return Boolean(this.db.query("SELECT key_id FROM trusted_peers WHERE key_id=?1").get(keyId));
   }
 
   trustedPeer(keyId: string): TrustedPeerRecord | undefined {

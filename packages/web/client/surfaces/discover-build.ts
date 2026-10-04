@@ -22,7 +22,7 @@ function isComponentType(value: unknown): value is ComponentType<EmbedScreenProp
   return typeof value === "function";
 }
 
-function registerSurface(modulePath: string, mod: SurfaceModule): RegisteredSurface | null {
+export function registerSurface(modulePath: string, mod: SurfaceModule): RegisteredSurface | null {
   const definition = mod.scoutSurface;
   if (!definition?.embed) return null;
 

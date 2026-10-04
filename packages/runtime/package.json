@@ -1,6 +1,6 @@
 {
   "name": "@openscout/runtime",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "description": "Local runtime foundation for the OpenScout control plane",
   "type": "module",
   "bin": {
@@ -126,6 +126,18 @@
       "types": "./dist/harness-catalog.d.ts",
       "import": "./dist/harness-catalog.js",
       "default": "./dist/harness-catalog.js"
+    },
+    "./dist-access": {
+      "bun": "./src/dist-access.ts",
+      "types": "./dist/dist-access.d.ts",
+      "import": "./dist/dist-access.js",
+      "default": "./dist/dist-access.js"
+    },
+    "./solo-pro": {
+      "bun": "./src/solo-pro.ts",
+      "types": "./dist/solo-pro.d.ts",
+      "import": "./dist/solo-pro.js",
+      "default": "./dist/solo-pro.js"
     },
     "./web-full-client": {
       "bun": "./src/web-full-client.ts",
@@ -349,6 +361,36 @@
       "types": "./dist/scout-bridge-command.d.ts",
       "import": "./dist/scout-bridge-command.js",
       "default": "./dist/scout-bridge-command.js"
+    },
+    "./mesh/node-identity": {
+      "bun": "./src/node-identity.ts",
+      "types": "./dist/node-identity.d.ts",
+      "import": "./dist/node-identity.js",
+      "default": "./dist/node-identity.js"
+    },
+    "./mesh/access": {
+      "bun": "./src/mesh-access.ts",
+      "types": "./dist/mesh-access.d.ts",
+      "import": "./dist/mesh-access.js",
+      "default": "./dist/mesh-access.js"
+    },
+    "./mesh/peer-auth": {
+      "bun": "./src/mesh-peer-auth.ts",
+      "types": "./dist/mesh-peer-auth.d.ts",
+      "import": "./dist/mesh-peer-auth.js",
+      "default": "./dist/mesh-peer-auth.js"
+    },
+    "./mesh/local-auth": {
+      "bun": "./src/mesh-access-local-auth.ts",
+      "types": "./dist/mesh-access-local-auth.d.ts",
+      "import": "./dist/mesh-access-local-auth.js",
+      "default": "./dist/mesh-access-local-auth.js"
+    },
+    "./mesh/pinned-https-client": {
+      "bun": "./src/mesh-pinned-https-client.ts",
+      "types": "./dist/mesh-pinned-https-client.d.ts",
+      "import": "./dist/mesh-pinned-https-client.js",
+      "default": "./dist/mesh-pinned-https-client.js"
     },
     "./slack-identities": {
       "bun": "./src/slack-identities.ts",

@@ -125,8 +125,12 @@ test("prints a direct next step after headless setup", { timeout: 15_000 }, () =
     encoding: "utf8",
   });
 
-  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.status, 0, `${result.stderr}\n${result.stdout}`);
+  assert.match(result.stdout, /^Scout is set up\. Start the broker to finish\./);
   assert.match(result.stdout, /Next step: run `openscout-runtime broker`/);
+  assert.match(result.stdout, /Next: openscout-runtime broker/);
+  // An expected handoff, not an error: no failure headline or error lines.
+  assert.doesNotMatch(result.stdout, /setup failed|^Error:|Health error/m);
   assert.doesNotMatch(result.stdout, /cannot start a background service/);
   assert.doesNotMatch(result.stdout, /service adapter cannot/);
 });

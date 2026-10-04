@@ -15,16 +15,16 @@ export type ThemeVars = CSSProperties & Record<`--${string}`, string>;
 // Exported for the design-sync lightweight preview provider (client/_ds/) — it
 // reuses these vars so cards render on the real dark theme. No behavior change.
 export const DARK_THEME_VARS: ThemeVars = {
-  "--hud-bg": "oklch(0.118 0.004 260)",
-  "--hud-surface": "oklch(0.205 0.005 260)",
-  "--hud-ink": "oklch(0.975 0.006 260)",
-  "--hud-muted": "oklch(0.80 0.008 260)",
-  "--hud-dim": "oklch(0.70 0.007 260)",
-  "--hud-border": "oklch(0.975 0.006 260 / 0.08)",
-  "--hud-accent": "oklch(0.86 0.17 125)",
-  "--hud-accent-soft": "oklch(0.86 0.17 125 / 0.08)",
+  "--hud-bg": "oklch(0.14 0.0021 286.1)",
+  "--hud-surface": "oklch(0.235 0.0039 286.1)",
+  "--hud-ink": "oklch(0.96 0.0013 286.4)",
+  "--hud-muted": "oklch(0.79 0.0129 286.1)",
+  "--hud-dim": "oklch(0.70 0.01 286)",
+  "--hud-border": "oklch(0.96 0.0013 286.4 / 0.08)",
+  "--hud-accent": "oklch(0.78 0.12 75)",
+  "--hud-accent-soft": "oklch(0.78 0.12 75 / 0.08)",
   "--hud-shadow-soft": "oklch(0.08 0.004 260 / 0.42)",
-  "--hud-chrome-border": "oklch(0.975 0.006 260 / 0.04)",
+  "--hud-chrome-border": "oklch(0.96 0.0013 286.4 / 0.04)",
   "--hud-shadow-panel": "0 12px 34px oklch(0.08 0.004 260 / 0.45)",
   "--hud-shadow-panel-hover": "0 14px 38px oklch(0.08 0.004 260 / 0.52)",
   "--hud-shadow-bar": "0 -10px 28px oklch(0.08 0.004 260 / 0.38)",
@@ -33,21 +33,15 @@ export const DARK_THEME_VARS: ThemeVars = {
   "--hud-status-ok": "oklch(0.80 0.15 155)",
   "--hud-status-warn": "oklch(0.82 0.15 85)",
   "--hud-status-error": "oklch(0.72 0.18 25)",
-  /* HudsonKit's Tailwind utilities (`bg-background`, `text-foreground`, used by
-   * chrome/Frame) read raw OKLCH channels via `oklch(var(--background))`, a
-   * layer separate from the --hud-* tokens above. HudsonKit only flips them
-   * under [data-hudson-template][data-hudson-theme], a pair Scout never sets,
-   * so Frame's full-viewport plane stayed dark in light mode while content
-   * inherited light inks — dark-on-dark rails. Point the channels at Scout's
-   * own canvas/ink instead of adopting HudsonKit's cool light (hue 213), which
-   * would put a second white next to Scout's warm paper. */
-  "--background": "0.132 0.004 260",
-  "--foreground": "0.965 0.006 260",
-  "--card": "0.178 0.005 260",
-  "--card-foreground": "0.965 0.006 260",
-  "--popover": "0.178 0.005 260",
-  "--popover-foreground": "0.965 0.006 260",
-  "--muted-foreground": "0.72 0.008 260",
+  // Standalone surfaces carry raw channels as well as resolved Hudson tokens.
+  // The operator provider omits both sets so the selected CSS palette wins.
+  "--background": "0.14 0.0021 286.1",
+  "--foreground": "0.96 0.0013 286.4",
+  "--card": "0.235 0.0039 286.1",
+  "--card-foreground": "0.96 0.0013 286.4",
+  "--popover": "0.235 0.0039 286.1",
+  "--popover-foreground": "0.96 0.0013 286.4",
+  "--muted-foreground": "0.79 0.0129 286.1",
   // Scout semantic colors (web-only; no HudsonKit equivalent).
   "--scrim": "rgba(0, 0, 0, 0.5)",
   "--scrim-soft": "rgba(0, 0, 0, 0.3)",
@@ -75,29 +69,27 @@ export const DARK_THEME_VARS: ThemeVars = {
 };
 
 export const LIGHT_THEME_VARS: ThemeVars = {
-  // Paper neutrals: keep warm hue (~78) and a little chroma so muted/dim
-  // read as taupe/ink, not cool slate gray (Repos empty-state critique).
-  "--hud-bg": "oklch(0.982 0.008 78)",
-  "--hud-surface": "oklch(0.994 0.006 78)",
-  "--hud-ink": "oklch(0.26 0.018 72)",
-  "--hud-muted": "oklch(0.50 0.028 70)",
-  "--hud-dim": "oklch(0.64 0.022 72)",
-  "--hud-border": "oklch(0.86 0.016 75 / 0.92)",
-  "--hud-accent": "oklch(0.72 0.16 125)",
-  "--hud-accent-soft": "oklch(0.72 0.16 125 / 0.11)",
+  // Neutral graphite in light mode, with amber reserved for interaction.
+  "--hud-bg": "oklch(0.975 0.002 286)",
+  "--hud-surface": "oklch(0.998 0.001 286)",
+  "--hud-ink": "oklch(0.22 0.004 286)",
+  "--hud-muted": "oklch(0.5517 0.0138 285.9)",
+  "--hud-dim": "oklch(0.59 0.01 286)",
+  "--hud-border": "oklch(0.82 0.008 286 / 0.92)",
+  "--hud-accent": "oklch(0.54 0.12 65)",
+  "--hud-accent-soft": "oklch(0.54 0.12 65 / 0.11)",
   "--hud-shadow-soft": "oklch(0.42 0.02 70 / 0.11)",
   "--hud-status-ok": "oklch(0.64 0.16 155)",
   "--hud-status-warn": "oklch(0.72 0.15 85)",
   "--hud-status-error": "oklch(0.62 0.19 25)",
-  /* See DARK_THEME_VARS: raw channels behind HudsonKit's Tailwind utilities,
-   * held on Scout's warm paper canvas rather than HudsonKit's cool light. */
-  "--background": "0.978 0.004 85",
-  "--foreground": "0.24 0.01 80",
-  "--card": "0.992 0.003 85",
-  "--card-foreground": "0.24 0.01 80",
-  "--popover": "0.992 0.003 85",
-  "--popover-foreground": "0.24 0.01 80",
-  "--muted-foreground": "0.56 0.014 80",
+  // Raw channels for standalone Hudson components.
+  "--background": "0.975 0.002 286",
+  "--foreground": "0.22 0.004 286",
+  "--card": "0.998 0.001 286",
+  "--card-foreground": "0.22 0.004 286",
+  "--popover": "0.998 0.001 286",
+  "--popover-foreground": "0.22 0.004 286",
+  "--muted-foreground": "0.5517 0.0138 285.9",
   // Scout semantic colors (web-only; no HudsonKit equivalent).
   "--scrim": "rgba(28, 24, 20, 0.30)",
   "--scrim-soft": "rgba(28, 24, 20, 0.16)",

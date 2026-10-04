@@ -1,3 +1,4 @@
+import { chatListeningRequest } from "./chat-listening.ts";
 import { createHash, randomUUID } from "node:crypto";
 import { lookup } from "node:dns/promises";
 import { isIP } from "node:net";
@@ -166,6 +167,24 @@ export function renderChatHelp(commandName = "scout chat"): string {
   ${commandName} wait [--for 10m] [--count-only] [--json]
   ${commandName} watch [--mentions] [--for 10m] [--once] [--compact] [--reset-cursor] [--channel <id>]
   ${commandName} status
+  ${commandName} enroll --agent <durable-agent-id> [--channel <id>]
+  ${commandName} enroll --binding session --session <native-id> --herdr-session scout --pane w1:p1 --harness claude [--facing operator]
+  ${commandName} status --agent <durable-agent-id>
+  ${commandName} catch-up <subscription-id> --agent <durable-agent-id> [--limit 50]
+  ${commandName} ack <subscription-id> <receipt> --agent <durable-agent-id>
+  ${commandName} unenroll <subscription-id> --agent <durable-agent-id>
+
+Local Scout listening is explicit: join, then enroll to copy that room credential
+into private listening-service custody. It continues after this CLI/session exits. No watch,
+wait, harness delivery or revive is used. Existing history is the initial baseline;
+new messages are retained for catch-up, with structured mentions/replies flagged.
+catch-up is one-shot and does not mark read: ack its returned receipt explicitly.
+status --agent separates membership, connection, relevant pending and all unread.
+unenroll stops ingestion and removes service credentials, retaining catch-up history.
+These commands never start/restart Scout. Use --agent or --session explicitly (not cwd).
+Session bindings require a verified live exact session; unknown probes preserve the binding,
+confirmed unavailability ends it. Room ingestion continues independently. No resume/fork/spawn. --facing overrides its
+recorded operator/background default; it does not enable delivery.
 
 info reads an invitation without using it: channel, where posts go, what
 the link grants, and when it expires. Run it before joining.
@@ -200,18 +219,29 @@ export async function runChatCommand(context: ScoutCommandContext, args: string[
   for (let i = 0; i < args.length; i++) {
     const arg = args[i]!;
     if (["--poll", "--once", "--compact", "--reset-cursor", "--mentions", "--count-only"].includes(arg)) flags[arg.slice(2)] = "true";
-    else if (["--name", "--channel", "--request-id", "--for", "--mention"].includes(arg)) {
+    else if (["--name", "--channel", "--request-id", "--for", "--mention", "--agent", "--limit", "--binding", "--session", "--facing", "--herdr-session", "--pane", "--harness", "--endpoint"].includes(arg)) {
       const value = args[++i]; if (!value || value.startsWith("--")) throw new Error(`Missing value for ${arg}`);
       if (arg === "--mention") mentions.push(value); else flags[arg.slice(2)] = value;
     } else if (arg.startsWith("--")) throw new Error(`Unknown chat option: ${arg}`);
     else positional.push(arg);
   }
   const [command, ...values] = positional;
+  if (flags.session && !flags.agent) flags.agent = `session:${flags.session}`;
   if (command === "info") {
     if (values.length !== 1) throw new Error(`Usage: ${commandName} info <invite-url>`);
     context.output.writeValue(await describeChatInvite(values[0]!), info => renderChatInviteInfo(info, commandName));
     return;
   }
+  if (["catch-up", "ack", "unenroll"].includes(command ?? "") || (command === "status" && flags.agent)) {
+    if (!flags.agent) throw new Error("--agent <durable-agent-id> is required.");
+    if ((command === "catch-up" || command === "unenroll") && values.length !== 1
+      || command === "ack" && values.length !== 2 || command === "status" && values.length !== 0) throw new Error("Invalid listening command arguments. See chat --help.");
+    const result = await chatListeningRequest(context, command!, { agentId: flags.agent,
+      subscriptionId: values[0], ...(command === "ack" ? { receipt: values[1] } : {}),
+      ...(flags.limit ? { limit: Number(flags.limit) } : {}) });
+    context.output.writeValue(result, value => JSON.stringify(value, null, 2)); return;
+  }
+  if (command === "enroll" && (!flags.agent || values.length)) throw new Error("Usage: chat enroll --agent <durable-agent-id> [--channel <id>]");
   const scope = createHash("sha256").update(`${context.cwd}\n${currentChatSession(context.env) ?? "shell"}`).digest("hex");
   const directory = join(context.env.OPENSCOUT_CHAT_HOME ?? join(homedir(), ".openscout", "chat"), scope);
   await mkdir(directory, { recursive: true, mode: 0o700 });
@@ -245,6 +275,12 @@ export async function runChatCommand(context: ScoutCommandContext, args: string[
   const matching = flags.channel ? Object.values(state.rooms).filter(r => r.channelId === flags.channel) : [state.rooms[state.active ?? ""]].filter(Boolean);
   if (matching.length !== 1) throw new Error("Join a room first, or select one unambiguous joined room with --channel.");
   const room = matching[0]!;
+  if (command === "enroll") {
+    const result = await chatListeningRequest(context, "enroll", { agentId: flags.agent, membership: room,
+      binding: { mode: flags.binding ?? (flags.session ? "session" : "agent"), sessionId: flags.session,
+        facing: flags.facing, herdrSession: flags["herdr-session"], pane: flags.pane, harness: flags.harness, endpointId: flags.endpoint } });
+    context.output.writeValue(result, value => JSON.stringify(value, null, 2)); return;
+  }
   if (command === "status") { context.output.writeValue({ channelId: room.channelId, title: room.title, space: room.space, spaceTitle: room.spaceTitle ?? null, mode: room.sessionId ? "session" : "polling" }, r => `#${r.title} in ${r.spaceTitle ?? r.space} — ${r.mode}`); return; }
   if (command === "read") {
     const { data } = await chatRequest(room.origin, chatPath(room, "feed"), { token: room.token });

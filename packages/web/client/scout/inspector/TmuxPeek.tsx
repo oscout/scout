@@ -32,7 +32,7 @@ type TmuxPeekFrame = {
 
 function buildPeekUrl(input: {
   agentId?: string | null;
-  surface?: Pick<TerminalSurfaceDescriptor, "backend" | "sessionName"> | null;
+  surface?: Pick<TerminalSurfaceDescriptor, "backend" | "sessionName" | "paneId"> | null;
   lines: number;
   columns: number;
 }): string | null {
@@ -46,6 +46,7 @@ function buildPeekUrl(input: {
   if (input.surface) {
     params.set("backend", input.surface.backend);
     params.set("sessionName", input.surface.sessionName);
+    if (input.surface.paneId) params.set("paneId", input.surface.paneId);
     return `/api/terminal-sessions/peek?${params.toString()}`;
   }
   return null;
@@ -62,7 +63,7 @@ export function TmuxPeekPanel({
   className,
 }: {
   agentId?: string | null | undefined;
-  surface?: Pick<TerminalSurfaceDescriptor, "backend" | "sessionName"> | null;
+  surface?: Pick<TerminalSurfaceDescriptor, "backend" | "sessionName" | "paneId"> | null;
   enabled?: boolean;
   lines?: number;
   columns?: number;
@@ -179,11 +180,11 @@ export function TmuxPeekPanel({
           : peek?.available
             ? "Pane is empty."
             : "Loading terminal peek...";
-  const frameStatusLabel = frame
+  const frameStatusLabel = frame && peek?.available && !error
     ? frame.changedAt && !frame.steady
       ? "Changed"
       : frame.steady
-        ? "At rest"
+        ? "Unchanged"
         : "Peeked"
     : null;
   const frameStatusAt = frame?.changedAt ?? frame?.observedAt ?? null;

@@ -54,7 +54,7 @@ export function isModelSelectableHarness(
   catalog: ScoutOwnedRuntimeCatalog = SCOUT_RUNTIME_CATALOG,
 ): boolean {
   const entry = scoutRuntimeHarness(harness, catalog);
-  return entry?.enabled === true && entry.models.some((model) => model.enabled);
+  return entry?.enabled === true && (entry.allowCustomModels === true || entry.models.some((model) => model.enabled));
 }
 
 export function scoutRuntimeDefaultHarness(
@@ -602,7 +602,8 @@ export function validateScoutRuntimeTuple(
     });
   } else if (model && harness && catalog) {
     const known = catalog.models.find((candidate) => candidate.id.toLowerCase() === model.toLowerCase());
-    if (known && !known.harnesses.includes(harness as ScoutLaunchableHarness)) {
+    if (known && scoutRuntimeHarness(harness, ownedCatalog)?.allowCustomModels !== true
+      && !known.harnesses.includes(harness as ScoutLaunchableHarness)) {
       issues.push({
         code: "model_harness_mismatch",
         dimension: "model",

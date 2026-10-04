@@ -22,6 +22,7 @@ import {
 import { api } from "../lib/api.ts";
 import { listenForAmbientPageActions } from "../lib/ambient-voice-actions.ts";
 import { friendlyApiError, isOfflineApiError } from "../lib/api-errors.ts";
+import { readWithRetry } from "../lib/api-retry.ts";
 import { useBrokerRefresh, type BrokerRefreshPolicy } from "../lib/broker-refresh.ts";
 import { AGENT_ROSTER_EVENT_KINDS, matchesKinds } from "../lib/broker-event-kinds.ts";
 import { isAgentOnline } from "../lib/agent-state.ts";
@@ -57,6 +58,7 @@ import type {
 } from "../lib/context-capture-draft.ts";
 import { SCOUT_REALTIME_VOICE_FLAG } from "../../shared/realtime-voice.ts";
 import { BASIC_WEB } from "../basic/profile.ts";
+import { friendlyOnboardingError } from "./takeover/onboarding-errors.ts";
 
 declare global {
   interface Window {
@@ -78,6 +80,7 @@ export interface OnboardingState {
   contextRoot?: string | null;
   sourceRoots?: string[];
   defaultHarness?: string;
+  harnesses?: Array<{ id: string; label: string; state: string; ready: boolean; detail: string }>;
   operatorName: string | null;
   operatorNameSuggestion: string | null;
   brokerReachable?: boolean;
@@ -87,6 +90,9 @@ export interface OnboardingState {
   completedAt?: number | null;
   needed?: boolean;
 }
+
+/** Why the last onboarding read or skip didn't land. Load errors clear on the next good read. */
+export type OnboardingError = { kind: "load" | "skip"; message: string };
 
 export interface ScoutContextValue {
   route: Route;
@@ -109,8 +115,12 @@ export interface ScoutContextValue {
    *  the first frame. `null` only on a genuine first load. */
   operatorName: string | null;
   refreshOnboarding: () => Promise<void>;
+  onboardingError: OnboardingError | null;
   onboardingSkipped: boolean;
   skipOnboarding: () => void;
+  /** Re-arms a skipped first run. Clears only the setup timestamps; the
+   *  takeover then shows whichever real fact is still missing. */
+  resumeOnboarding: () => Promise<void>;
 
   settingsOpen: boolean;
   openSettings: () => void;
@@ -185,6 +195,15 @@ function keepPreviousIfJsonEqual<T>(previous: T, next: T): T {
 export { DARK_THEME_VARS, LIGHT_THEME_VARS };
 
 const HUDSON_MANAGED_THEME_VARS = new Set([
+  // Raw palette inputs must come from appearance.css too. Inline fallback
+  // values would override the chosen palette before Hudson resolves it.
+  "--background",
+  "--foreground",
+  "--card",
+  "--card-foreground",
+  "--popover",
+  "--popover-foreground",
+  "--muted-foreground",
   "--hud-bg",
   "--hud-surface",
   "--hud-ink",
@@ -256,6 +275,7 @@ export function ScoutProvider({
    */
   const [operatorName, setOperatorName] = useState<string | null>(readCachedOperatorName);
   const [onboardingSkipped, setOnboardingSkipped] = useState(false);
+  const [onboardingError, setOnboardingError] = useState<OnboardingError | null>(null);
   // Selection objects are cached for immediate inspector payload; the URL is
   // the durable source of truth for attempt/hit/session ids (SCO-082 Phase B).
   const [brokerAttemptCache, setBrokerAttemptCache] = useState<BrokerRouteAttempt | null>(null);
@@ -406,11 +426,13 @@ export function ScoutProvider({
   const scoutbotAgentId = scoutbotAgent?.id ?? resolveScoutbotAgentId(agents);
   const scoutbotDmConversationId = scoutbotAgent?.conversationId ?? null;
   const reloadInFlightRef = useRef<{ url: string; promise: Promise<void> } | null>(null);
+  const connectedOnceRef = useRef(false);
   const agentInventoryUrl = route.view === "ops"
     ? "/api/agents"
     : "/api/agents?detail=summary";
 
   const markApiOnline = useCallback(() => {
+    connectedOnceRef.current = true;
     setApiConnection({
       status: "online",
       message: null,
@@ -436,7 +458,9 @@ export function ScoutProvider({
 
     const request = (async () => {
       try {
-        const agentsResult = await api<Agent[]>(agentInventoryUrl);
+        const agentsResult = await readWithRetry("Agent roster", () => api<Agent[]>(agentInventoryUrl), () => {}, {
+          retries: connectedOnceRef.current ? 0 : 2,
+        });
         setAgents((previous) => keepPreviousIfJsonEqual(previous, agentsResult));
         markApiOnline();
       } catch (cause) {
@@ -461,18 +485,20 @@ export function ScoutProvider({
       const state = await api<OnboardingState>("/api/onboarding/state");
       onboardingStaleRef.current = false;
       setOnboarding(state);
+      setOnboardingError((current) => (current?.kind === "load" ? null : current));
       const resolved = state.operatorName?.trim() || state.operatorNameSuggestion?.trim() || null;
       setOperatorName(resolved);
       writeCachedOperatorName(resolved);
-      markApiOnline();
     } catch (cause) {
-      markApiFailure(cause);
+      // Roster reads own connection status. An optional setup read must not
+      // announce an outage while the initial roster request is still pending.
       // Placeholder while the API is unreachable. `needed: false` is load-
       // bearing: without it the takeover treats the synthesized state as an
       // armed first-run and parks every tab that loads during a broker
       // restart on "Finish setup". The stale flag re-fetches the real state
       // from the poll loop once the API answers again.
       onboardingStaleRef.current = true;
+      setOnboardingError({ kind: "load", message: friendlyOnboardingError("init", cause) });
       setOnboarding({
         hasLocalConfig: true,
         hasProjectConfig: true,
@@ -485,13 +511,27 @@ export function ScoutProvider({
         needed: false,
       });
     }
-  }, [markApiFailure, markApiOnline]);
+  }, []);
 
   const skipOnboarding = useCallback(() => {
-    setOnboardingSkipped(true);
+    // Keep the form and its answers until the service confirms the skip.
+    // A failed write must remain visible on web as well as in the Mac embed.
+    setOnboardingError((current) => (current?.kind === "skip" ? null : current));
     void api("/api/onboarding/skip", { method: "POST", body: "{}" })
-      .then(() => refreshOnboarding())
-      .catch(() => null);
+      .then(() => {
+        setOnboardingSkipped(true);
+        return refreshOnboarding();
+      })
+      .catch((cause) => {
+        setOnboardingError({ kind: "skip", message: friendlyOnboardingError("setup", cause) });
+      });
+  }, [refreshOnboarding]);
+
+  const resumeOnboarding = useCallback(async () => {
+    setOnboardingError(null);
+    await api("/api/onboarding/restart", { method: "POST", body: "{}" });
+    setOnboardingSkipped(false);
+    await refreshOnboarding();
   }, [refreshOnboarding]);
 
   useEffect(() => {
@@ -605,7 +645,7 @@ export function ScoutProvider({
       route, navigate, navigateBack, canNavigateBack,
       agents, agentsLoaded, onlineCount, apiConnection, reload,
       appearanceDetails, updateAppearanceDetails,
-      onboarding, operatorName, refreshOnboarding, onboardingSkipped, skipOnboarding,
+      onboarding, operatorName, refreshOnboarding, onboardingError, onboardingSkipped, skipOnboarding, resumeOnboarding,
       settingsOpen, openSettings, closeSettings,
       scoutbotAgentId, scoutbotConversationId: scoutbotDmConversationId, applyScoutbotUiAction,
       selectedBrokerAttempt, inspectBrokerAttempt, clearBrokerAttempt,
@@ -618,7 +658,7 @@ export function ScoutProvider({
       route, navigate, navigateBack, canNavigateBack,
       agents, agentsLoaded, onlineCount, apiConnection, reload,
       appearanceDetails, updateAppearanceDetails,
-      onboarding, operatorName, refreshOnboarding, onboardingSkipped, skipOnboarding,
+      onboarding, operatorName, refreshOnboarding, onboardingError, onboardingSkipped, skipOnboarding, resumeOnboarding,
       settingsOpen, openSettings, closeSettings,
       scoutbotAgentId, scoutbotDmConversationId, applyScoutbotUiAction,
       selectedBrokerAttempt, inspectBrokerAttempt, clearBrokerAttempt,
@@ -632,8 +672,8 @@ export function ScoutProvider({
   return (
     <ScoutContext.Provider value={value}>
       {/* Two nested scopes, and the nesting is load-bearing. The outer element
-        * hosts Hudson's and Scout's *raw* palette input (`--accent: 0.86 0.17
-        * 125`), which HudsonKit resolves into `--hud-*` colors. The inner
+        * hosts Hudson's and Scout's *raw* palette input (`--accent: 0.78 0.12
+        * 75`), which HudsonKit resolves into `--hud-*` colors. The inner
         * element hosts Scout's legacy aliases (`--accent: var(--hud-accent)`).
         * They cannot share an element: HudsonKit declares the raw triplets at
         * [data-hudson-template][data-hudson-theme] (0,2,0) and appearance.css

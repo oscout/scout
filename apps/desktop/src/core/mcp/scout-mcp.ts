@@ -1,4 +1,6 @@
 import { registerIntegrationTools } from "./integrations.ts";
+import { registerChatListeningTools } from "./chat-listening-tools.ts";
+import { chatListeningRequest } from "../../cli/commands/chat-listening.ts";
 import { setTimeout as delay } from "node:timers/promises";
 import { readFileSync } from "node:fs";
 import { basename, resolve } from "node:path";
@@ -3203,6 +3205,11 @@ export function createScoutMcpServer(options: {
   };
 
   registerIntegrationTools(server, aliasBrokerRequest);
+
+  registerChatListeningTools(server, (operation, body) => chatListeningRequest(
+    { env },
+    operation, body,
+  ));
 
   const aliasToolCaller = async (senderId: string | undefined, currentDirectory: string) => ({
     actorId: await resolveMcpSenderId(deps, senderId, currentDirectory, env),

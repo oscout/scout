@@ -1,10 +1,8 @@
-#![allow(dead_code)]
-
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
-use ratatui::text::{Line, Span};
+use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Borders, Padding, Paragraph};
 use ratatui::Frame;
 use unicode_width::UnicodeWidthStr;
@@ -21,6 +19,14 @@ use crate::theme::{
     SIGNAL, SMOKE,
 };
 
+/// Quota's left pane below this width trades label room for the gauge reading.
+const QUOTA_NARROW_PANE: usize = 60;
+/// Columns kept after the used-% for "(resets 6d 16h)".
+const QUOTA_RESET_ROOM: usize = 18;
+
+/// Help rows beyond its two lists: section headers, a spacer, border, padding.
+const HELP_CHROME_ROWS: usize = 9;
+
 const SPARK_BARS: &[char] = &[' ', ' ', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
 const EIGHTHS: &[char] = &[' ', '▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
 
@@ -34,6 +40,12 @@ fn wrap_text(text: &str, width: usize, max_lines: usize) -> Vec<String> {
     for word in text.split_whitespace() {
         let word_len = UnicodeWidthStr::width(word);
         let cur_len = UnicodeWidthStr::width(current.as_str());
+        // A word wider than a whole line gets clipped wherever it lands, so
+        // let it fill the current line rather than strand "cd" on its own.
+        if word_len > width && !current.is_empty() && cur_len + 2 < width {
+            current = truncate(&format!("{current} {word}"), width);
+            continue;
+        }
         if !current.is_empty() && cur_len + 1 + word_len > width {
             lines.push(std::mem::take(&mut current));
         }
@@ -58,12 +70,53 @@ fn wrap_text(text: &str, width: usize, max_lines: usize) -> Vec<String> {
     lines
 }
 
-fn notice_prefix(ok: bool) -> Span<'static> {
-    if ok {
+fn notice_prefix(app: &App) -> Span<'static> {
+    if app.ask_busy() {
+        Span::styled("ASKING · ", Style::default().fg(EMBER_DIM))
+    } else if app.composer_ok {
         Span::styled("ASKED · ", Style::default().fg(EMBER))
     } else {
         Span::styled("NOT SENT · ", Style::default().fg(SIGNAL))
     }
+}
+
+/// A failed or refused ask leaves its draft behind; say how to get back to it.
+fn draft_retained(app: &App) -> bool {
+    !app.composer_ok && !app.ask_busy()
+}
+
+/// A Paragraph that ends an over-wide line on "…" instead of slicing it
+/// silently at the pane edge.
+fn clipped<'a>(text: impl Into<Text<'a>>, width: u16) -> Paragraph<'a> {
+    let mut text = text.into();
+    for line in &mut text.lines {
+        fit_line(line, width as usize);
+    }
+    Paragraph::new(text)
+}
+
+pub(crate) fn fit_line(line: &mut Line<'_>, width: usize) {
+    if line.width() <= width {
+        return;
+    }
+    let mut used = 0;
+    let mut kept = Vec::new();
+    for span in line.spans.drain(..) {
+        let span_w = span.width();
+        if used + span_w < width {
+            used += span_w;
+            kept.push(span);
+            continue;
+        }
+        // This span reaches the edge with more behind it, so it carries the ellipsis.
+        let room = width - used;
+        kept.push(Span::styled(
+            truncate(&format!("{}…", span.content), room),
+            span.style,
+        ));
+        break;
+    }
+    line.spans = kept;
 }
 
 /// Pad `lines` with blanks so `tail` renders on the bottom rows of an `height`-row pane.
@@ -86,14 +139,6 @@ fn file_state_label(state: FileState) -> &'static str {
         FileState::Outside => "outside repo",
         FileState::Unknown => "no git read",
     }
-}
-
-/// Bar length proportional to the largest diff on screen, minimum one cell.
-fn scale_bar(value: usize, max: usize, cap: usize) -> usize {
-    if value == 0 || cap == 0 {
-        return 0;
-    }
-    ((value * cap) / max.max(1)).clamp(1, cap)
 }
 
 fn now_ms() -> u64 {
@@ -164,6 +209,12 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             Style::default().fg(ASH),
         ));
         frame.render_widget(Paragraph::new(msg), area);
+        return;
+    }
+
+    // The calm list draws its own keys overlay on top of itself.
+    if app.calm() {
+        crate::calm::draw_calm(frame, app, area);
         return;
     }
 
@@ -746,7 +797,7 @@ fn draw_take_horizon(
         }
     }
 
-    frame.render_widget(Paragraph::new(lines), list_area);
+    frame.render_widget(clipped(lines, list_area.width), list_area);
 
     // Fleet pulse skyline: every event in the last 30 minutes, bucketed across the width.
     if let Some(pulse_rect) = pulse_area {
@@ -851,7 +902,7 @@ fn draw_fleet_pulse(frame: &mut Frame, app: &App, agents: &[Agent], area: Rect) 
         Span::styled("now", Style::default().fg(PHOSPHOR)),
     ]));
 
-    frame.render_widget(Paragraph::new(lines), area);
+    frame.render_widget(clipped(lines, area.width), area);
 }
 /// TAKE 3 · TWIN / DECK (Multi-Column Live Stream Deck · TweetDeck Style)
 fn draw_take_twin(
@@ -1032,7 +1083,7 @@ fn draw_deck_column(
             Style::default().fg(SMOKE),
         )));
     }
-    frame.render_widget(Paragraph::new(header_lines), header_area);
+    frame.render_widget(clipped(header_lines, header_area.width), header_area);
 
     // --- 2. HAIRLINE DIVIDER ---
     let div_char = if is_focus { "━" } else { "─" };
@@ -1055,9 +1106,9 @@ fn draw_deck_column(
             dock_spans.push(Span::styled(app.draft.clone(), Style::default().fg(BONE)));
             dock_spans.push(Span::styled("█", Style::default().fg(EMBER)));
         } else if let Some(notice) = &app.composer_notice {
-            dock_spans.push(notice_prefix(app.composer_ok));
+            dock_spans.push(notice_prefix(app));
             dock_spans.push(Span::styled(notice.clone(), Style::default().fg(ASH)));
-            if !app.composer_ok {
+            if draft_retained(app) {
                 dock_spans.push(Span::styled(
                     " · [i] edit retained draft",
                     Style::default().fg(BONE),
@@ -1080,7 +1131,7 @@ fn draw_deck_column(
             Style::default().fg(HAIR),
         ));
     }
-    frame.render_widget(Paragraph::new(Line::from(dock_spans)), dock_area);
+    frame.render_widget(clipped(Line::from(dock_spans), dock_area.width), dock_area);
 }
 
 /// TAKE 4 · MESH (Interactive Topology Graph, Pairwise Route Matrix & Inter-Agent Channels)
@@ -1348,7 +1399,7 @@ fn draw_machine_list(frame: &mut Frame, app: &mut App, agents: &[Agent], area: R
         );
     }
 
-    frame.render_widget(Paragraph::new(lines), area);
+    frame.render_widget(clipped(lines, area.width), area);
 }
 
 fn draw_machine_detail(frame: &mut Frame, app: &App, agents: &[Agent], area: Rect) {
@@ -1512,7 +1563,7 @@ fn draw_machine_detail(frame: &mut Frame, app: &App, agents: &[Agent], area: Rec
     ])];
     anchor_bottom(&mut lines, tail, h);
 
-    frame.render_widget(Paragraph::new(lines), area);
+    frame.render_widget(clipped(lines, area.width), area);
 }
 
 /// A named gap: what is missing and why, instead of sample data standing in for it.
@@ -1591,8 +1642,16 @@ fn draw_take_quota(frame: &mut Frame, app: &mut App, area: Rect, _agents: &[Agen
     left_lines.push(Line::from(""));
 
     // Rows per plan derived from the actual window count, not a guessed constant.
+    // The used-% is the reading that matters, so the label and gauge give way
+    // on a narrow pane before it does: indent, label, gauge, " 100% ", then
+    // room for the reset note.
     let pane_w = left_area.width as usize;
-    let gauge_w = pane_w.saturating_sub(84).clamp(20, 44);
+    let narrow = pane_w < QUOTA_NARROW_PANE;
+    let name_w = if narrow { 10 } else { 22 };
+    let label_w = if narrow { 6 } else { 18 };
+    let gauge_w = pane_w
+        .saturating_sub(3 + label_w + 1 + 6 + QUOTA_RESET_ROOM)
+        .clamp(6, 44);
     let rows_per_plan = 2 + plans.iter().map(|p| p.windows.len()).max().unwrap_or(2);
     let max_visible_plans = ((left_area.height as usize).saturating_sub(3) / rows_per_plan).max(1);
     let plan_start_idx = if app.plan_index >= max_visible_plans {
@@ -1620,7 +1679,10 @@ fn draw_take_quota(frame: &mut Frame, app: &mut App, area: Rect, _agents: &[Agen
                 format!("{mark} "),
                 Style::default().fg(if is_sel { PHOSPHOR } else { ASH }),
             ),
-            Span::styled(format!("{:<23}", truncate(&p.name, 22)), name_style),
+            Span::styled(
+                format!("{} ", pad_right(&truncate(&p.name, name_w), name_w)),
+                name_style,
+            ),
         ];
         if !p.plan.is_empty() {
             head_spans.push(Span::styled(
@@ -1655,7 +1717,7 @@ fn draw_take_quota(frame: &mut Frame, app: &mut App, area: Rect, _agents: &[Agen
             let mut win_spans = Vec::new();
             win_spans.push(Span::styled("   ", Style::default()));
             win_spans.push(Span::styled(
-                format!("{:<19}", truncate(&w.label, 18)),
+                format!("{} ", pad_right(&truncate(&w.label, label_w), label_w)),
                 Style::default().fg(ASH),
             ));
             win_spans.push(Span::styled(
@@ -1673,7 +1735,7 @@ fn draw_take_quota(frame: &mut Frame, app: &mut App, area: Rect, _agents: &[Agen
                 Style::default().fg(if w.used > 80 { SIGNAL } else { BONE }),
             ));
             win_spans.push(Span::styled(
-                format!("(resets {}) ", w.reset),
+                format!("({}) ", reset_note(&w.reset)),
                 Style::default().fg(ASH),
             ));
             win_spans.push(Span::styled(spark_str, Style::default().fg(PHOSPHOR)));
@@ -1716,7 +1778,7 @@ fn draw_take_quota(frame: &mut Frame, app: &mut App, area: Rect, _agents: &[Agen
         }
     }
 
-    frame.render_widget(Paragraph::new(left_lines), left_area);
+    frame.render_widget(clipped(left_lines, left_area.width), left_area);
 
     // Right: Selected Provider Deep Inspection Card
     if let Some(p) = selected_plan {
@@ -1787,7 +1849,7 @@ fn draw_take_quota(frame: &mut Frame, app: &mut App, area: Rect, _agents: &[Agen
                         Style::default().fg(ASH),
                     ),
                     Span::styled(
-                        format!("{:>3}% · resets {} · {}", w.used, w.reset, w.pace),
+                        format!("{:>3}% · {} · {}", w.used, reset_note(&w.reset), w.pace),
                         Style::default().fg(if w.used > 80 { SIGNAL } else { SMOKE }),
                     ),
                 ]));
@@ -1840,7 +1902,17 @@ fn draw_take_quota(frame: &mut Frame, app: &mut App, area: Rect, _agents: &[Agen
         ];
         anchor_bottom(&mut right_lines, tail, rh);
 
-        frame.render_widget(Paragraph::new(right_lines), right_area);
+        frame.render_widget(clipped(right_lines, right_area.width), right_area);
+    }
+}
+
+/// "resets 4d 12h" ahead of the reset; "reset 21h ago" once the window has
+/// already rolled, instead of the contradictory "resets 21h ago".
+fn reset_note(reset: &str) -> String {
+    if reset.ends_with(" ago") {
+        format!("reset {reset}")
+    } else {
+        format!("resets {reset}")
     }
 }
 
@@ -2029,7 +2101,7 @@ fn draw_take_harvest(frame: &mut Frame, app: &mut App, area: Rect) {
         }
     }
 
-    frame.render_widget(Paragraph::new(lines), left_area);
+    frame.render_widget(clipped(lines, left_area.width), left_area);
 
     // Right: Harvest Inspection / File Diff Card
     if let Some((t, maybe_file)) = selected_item {
@@ -2208,7 +2280,7 @@ fn draw_take_harvest(frame: &mut Frame, app: &mut App, area: Rect) {
             anchor_bottom(&mut right_lines, tail, rh);
         }
 
-        frame.render_widget(Paragraph::new(right_lines), right_area);
+        frame.render_widget(clipped(right_lines, right_area.width), right_area);
     }
 }
 
@@ -2349,7 +2421,7 @@ fn draw_slot_panel(
         Span::styled(format!("{:<14}", module.label()), header_style),
         Span::styled(format!(" · {}", module.job()), Style::default().fg(ASH)),
     ]);
-    frame.render_widget(Paragraph::new(header_line), header_area);
+    frame.render_widget(clipped(header_line, header_area.width), header_area);
 
     match module {
         ModuleKind::Current => draw_module_current(frame, app, content_area, selected),
@@ -2400,7 +2472,7 @@ fn draw_module_current(frame: &mut Frame, _app: &App, area: Rect, selected: Opti
                 ),
             ]));
         }
-        frame.render_widget(Paragraph::new(lines), area);
+        frame.render_widget(clipped(lines, area.width), area);
     } else {
         let msg = Line::from(Span::styled(
             " No active agent in hand",
@@ -2422,15 +2494,10 @@ fn draw_module_threads(frame: &mut Frame, app: &App, area: Rect) {
         ));
     }
     for t in threads.iter().take(area.height as usize) {
-        let mark = match t.state {
-            "live" => "●",
-            "quiet" => "○",
-            _ => "·",
-        };
-        let color = match t.state {
-            "live" => PHOSPHOR,
-            "quiet" => SMOKE,
-            _ => ASH,
+        let (mark, color) = if t.live {
+            ("●", PHOSPHOR)
+        } else {
+            ("○", SMOKE)
         };
 
         // Render segment track
@@ -2439,14 +2506,9 @@ fn draw_module_threads(frame: &mut Frame, app: &App, area: Rect) {
             let start = ((seg.start as usize * track_w) / 100).min(track_w.saturating_sub(1));
             let len = ((seg.width as usize * track_w) / 100).max(1);
             let end = (start + len).min(track_w);
-            let segment_char = if seg.kind == "active" { '■' } else { '┄' };
             for cell in track_chars.iter_mut().take(end).skip(start) {
-                *cell = segment_char;
+                *cell = '■';
             }
-        }
-        if let Some(sp) = t.splice {
-            let sp_idx = ((sp as usize * track_w) / 100).min(track_w.saturating_sub(1));
-            track_chars[sp_idx] = '×';
         }
         let track_str: String = track_chars.into_iter().collect();
 
@@ -2458,12 +2520,12 @@ fn draw_module_threads(frame: &mut Frame, app: &App, area: Rect) {
             ),
             Span::styled(
                 track_str,
-                Style::default().fg(if t.state == "live" { PHOSPHOR } else { HAIR }),
+                Style::default().fg(if t.live { PHOSPHOR } else { HAIR }),
             ),
             Span::styled(format!(" {:>3}", t.age), Style::default().fg(ASH)),
         ]));
     }
-    frame.render_widget(Paragraph::new(lines), area);
+    frame.render_widget(clipped(lines, area.width), area);
 }
 
 fn draw_module_motion(frame: &mut Frame, _app: &App, area: Rect, agents: &[Agent]) {
@@ -2488,7 +2550,7 @@ fn draw_module_motion(frame: &mut Frame, _app: &App, area: Rect, agents: &[Agent
             Span::styled(format!(" {:>3}", a.age), Style::default().fg(ASH)),
         ]));
     }
-    frame.render_widget(Paragraph::new(lines), area);
+    frame.render_widget(clipped(lines, area.width), area);
 }
 
 fn draw_module_runtime(frame: &mut Frame, app: &App, area: Rect) {
@@ -2523,7 +2585,7 @@ fn draw_module_runtime(frame: &mut Frame, app: &App, area: Rect) {
             ),
         ]));
     }
-    frame.render_widget(Paragraph::new(lines), area);
+    frame.render_widget(clipped(lines, area.width), area);
 }
 
 /// One dim line naming what is missing — modules never invent filler rows.
@@ -2555,7 +2617,7 @@ fn draw_module_usage(frame: &mut Frame, app: &App, area: Rect) {
             ]));
         }
     }
-    frame.render_widget(Paragraph::new(lines), area);
+    frame.render_widget(clipped(lines, area.width), area);
 }
 
 fn draw_module_since(frame: &mut Frame, app: &App, area: Rect) {
@@ -2567,6 +2629,19 @@ fn draw_module_since(frame: &mut Frame, app: &App, area: Rect) {
         ));
     }
     for r in records.iter().take(area.height as usize) {
+        // " HH:MM + actor········· " leads every row; the file name is the
+        // useful end of the path, so the path gives way from the left.
+        let repeats = if r.repeats > 1 {
+            format!(" ×{}", r.repeats)
+        } else {
+            String::new()
+        };
+        let tool = r.change.split_once(' ').map_or("", |(tool, _)| tool);
+        let room = (area.width as usize).saturating_sub(23 + repeats.chars().count());
+        let change = format!(
+            "{tool} {}",
+            truncate_path(&r.path, room.saturating_sub(tool.chars().count() + 1))
+        );
         lines.push(Line::from(vec![
             Span::styled(format!(" {} ", r.time), Style::default().fg(ASH)),
             Span::styled(
@@ -2577,21 +2652,11 @@ fn draw_module_since(frame: &mut Frame, app: &App, area: Rect) {
                 format!("{:<14}", truncate(&r.actor, 13)),
                 Style::default().fg(BONE),
             ),
-            Span::styled(
-                truncate(&r.change, area.width.saturating_sub(32) as usize),
-                Style::default().fg(SMOKE),
-            ),
-            Span::styled(
-                if r.repeats > 1 {
-                    format!(" ×{}", r.repeats)
-                } else {
-                    String::new()
-                },
-                Style::default().fg(ASH),
-            ),
+            Span::styled(change, Style::default().fg(SMOKE)),
+            Span::styled(repeats, Style::default().fg(ASH)),
         ]));
     }
-    frame.render_widget(Paragraph::new(lines), area);
+    frame.render_widget(clipped(lines, area.width), area);
 }
 
 fn draw_module_compare(frame: &mut Frame, app: &App, area: Rect, selected: Option<&Agent>) {
@@ -2614,7 +2679,7 @@ fn draw_module_compare(frame: &mut Frame, app: &App, area: Rect, selected: Optio
             ),
             Style::default().fg(SMOKE),
         )));
-        frame.render_widget(Paragraph::new(lines), cols[0]);
+        frame.render_widget(clipped(lines, cols[0].width), cols[0]);
     }
     if let Some(p) = peer {
         let mut lines = Vec::new();
@@ -2629,7 +2694,7 @@ fn draw_module_compare(frame: &mut Frame, app: &App, area: Rect, selected: Optio
             ),
             Style::default().fg(SMOKE),
         )));
-        frame.render_widget(Paragraph::new(lines), cols[1]);
+        frame.render_widget(clipped(lines, cols[1].width), cols[1]);
     }
 }
 
@@ -2667,7 +2732,7 @@ fn draw_module_harvest(frame: &mut Frame, app: &App, area: Rect) {
             ),
         ]));
     }
-    frame.render_widget(Paragraph::new(lines), area);
+    frame.render_widget(clipped(lines, area.width), area);
 }
 
 fn draw_module_horizon(frame: &mut Frame, _app: &App, area: Rect, agents: &[Agent]) {
@@ -2688,7 +2753,7 @@ fn draw_module_horizon(frame: &mut Frame, _app: &App, area: Rect, agents: &[Agen
             Span::styled(track, Style::default().fg(PHOSPHOR)),
         ]));
     }
-    frame.render_widget(Paragraph::new(lines), area);
+    frame.render_widget(clipped(lines, area.width), area);
 }
 
 fn draw_hero_card(frame: &mut Frame, agent: &Agent, area: Rect) {
@@ -2814,7 +2879,8 @@ fn draw_hero_card(frame: &mut Frame, agent: &Agent, area: Rect) {
         lines.push(Line::from(track_spans));
     }
 
-    frame.render_widget(Paragraph::new(lines), area);
+    // Hold one column back so a clipped hero never butts into the floor plan.
+    frame.render_widget(clipped(lines, area.width.saturating_sub(1)), area);
 }
 
 fn draw_floor_plan_chips(frame: &mut Frame, app: &mut App, agents: &[Agent], area: Rect) {
@@ -2891,7 +2957,7 @@ fn draw_floor_plan_chips(frame: &mut Frame, app: &mut App, agents: &[Agent], are
         )));
     }
 
-    frame.render_widget(Paragraph::new(lines), area);
+    frame.render_widget(clipped(lines, area.width), area);
 }
 
 fn draw_also_moving_side(
@@ -2953,7 +3019,7 @@ fn draw_also_moving_side(
         ]));
     }
 
-    frame.render_widget(Paragraph::new(lines), area);
+    frame.render_widget(clipped(lines, area.width), area);
 }
 
 fn is_stream_ash_noise(row: &Row) -> bool {
@@ -2977,14 +3043,16 @@ fn draw_trace_stream(frame: &mut Frame, app: &App, session_id: &str, area: Rect)
     let max_lines = area.height as usize;
     let width = area.width as usize;
 
+    // `events` is newest-first: keep the newest rows that fit, then print
+    // them oldest-to-newest so the latest line sits on the bottom edge.
     let matching: Vec<&Row> = app
         .events
         .iter()
         .filter(|r| r.event.session_id == session_id && !is_stream_ash_noise(r))
-        .take(max_lines.saturating_mul(3).max(max_lines))
+        .take(max_lines)
         .collect();
 
-    for r in matching.iter().rev().take(max_lines) {
+    for r in matching.into_iter().rev() {
         let time = format_clock(r.event.ts);
         let mut spans = Vec::new();
         spans.push(Span::styled(format!("{time}  "), Style::default().fg(ASH)));
@@ -3048,7 +3116,7 @@ fn draw_trace_stream(frame: &mut Frame, app: &App, session_id: &str, area: Rect)
         )));
     }
 
-    frame.render_widget(Paragraph::new(lines), area);
+    frame.render_widget(clipped(lines, area.width), area);
 }
 
 fn draw_dock(frame: &mut Frame, app: &App, handle: &str, area: Rect) {
@@ -3062,9 +3130,9 @@ fn draw_dock(frame: &mut Frame, app: &App, handle: &str, area: Rect) {
         spans.push(Span::styled(app.draft.clone(), Style::default().fg(BONE)));
         spans.push(Span::styled("█", Style::default().fg(EMBER)));
     } else if let Some(notice) = &app.composer_notice {
-        spans.push(notice_prefix(app.composer_ok));
+        spans.push(notice_prefix(app));
         spans.push(Span::styled(notice.clone(), Style::default().fg(ASH)));
-        if !app.composer_ok {
+        if draft_retained(app) {
             spans.push(Span::styled(
                 " · [i] edit retained draft",
                 Style::default().fg(BONE),
@@ -3077,7 +3145,7 @@ fn draw_dock(frame: &mut Frame, app: &App, handle: &str, area: Rect) {
             Style::default().fg(BONE),
         ));
     }
-    frame.render_widget(Paragraph::new(Line::from(spans)), area);
+    frame.render_widget(clipped(Line::from(spans), area.width), area);
 }
 
 fn draw_agent_detail_card(frame: &mut Frame, app: &App, agent: &Agent, area: Rect) {
@@ -3169,7 +3237,7 @@ fn draw_agent_detail_card(frame: &mut Frame, app: &App, agent: &Agent, area: Rec
         ]));
     }
 
-    frame.render_widget(Paragraph::new(lines), area);
+    frame.render_widget(clipped(lines, area.width), area);
 }
 
 fn draw_footer(frame: &mut Frame, app: &App, area: Rect, selected: Option<&Agent>) {
@@ -3186,7 +3254,7 @@ fn draw_footer(frame: &mut Frame, app: &App, area: Rect, selected: Option<&Agent
             ));
         }
     } else if let Some(notice) = &app.composer_notice {
-        spans.push(notice_prefix(app.composer_ok));
+        spans.push(notice_prefix(app));
         spans.push(Span::styled(notice.clone(), Style::default().fg(ASH)));
     } else if app.take == Take::Grid {
         let mods = app.composition.modules();
@@ -3333,16 +3401,12 @@ fn draw_footer(frame: &mut Frame, app: &App, area: Rect, selected: Option<&Agent
         }
     }
 
-    frame.render_widget(Paragraph::new(Line::from(spans)), area);
+    frame.render_widget(clipped(Line::from(spans), area.width), area);
 }
 
 fn draw_help(frame: &mut Frame, area: Rect) {
     let takes: &[(&str, &str, &str)] = &[
-        (
-            "1",
-            "Now",
-            "Signature 3-band composition (Hero + Floor Plan + Trace)",
-        ),
+        ("1", "Now", "Calm list: Working, Requests, Earlier"),
         (
             "2",
             "Horizon",
@@ -3375,49 +3439,42 @@ fn draw_help(frame: &mut Frame, area: Rect) {
         ),
     ];
     let controls: &[(&str, &str)] = &[
-        ("j / k", "Navigate sessions / machines / harvest trees"),
+        ("↑↓ / j / k", "Navigate sessions / machines / harvest trees"),
+        ("a / /", "Ask selected session / filter the calm list"),
+        ("f", "Fleet; Esc or f returns to the calm list"),
         ("click", "Select a row, or a take in the mast (1–7)"),
         ("scroll", "Same as j / k"),
-        (
-            "[ / ]",
-            "Narrow / widen the left field (Horizon, Mesh, Harvest, Quota)",
-        ),
+        ("[ / ]", "Narrow / widen the left pane"),
         ("drag │", "Resize the dossier column"),
         (
             "h / j / k / l",
             "Move to the neighboring Grid slot, or Twin column",
         ),
-        (
-            "Tab",
-            "Cycle spine takes (Now, Horizon, Mesh, Harvest, Quota)",
-        ),
+        ("Tab", "Cycle Now → Horizon → Mesh → Harvest → Quota"),
         (
             "Shift+Tab",
-            "Reverse spine; Twin columns or Grid slots on those takes",
+            "Reverse; on Twin or Grid, the previous column or slot",
         ),
-        (
-            "g",
-            "Cycle Horizon → Mesh → Harvest; on Grid, cycle composition",
-        ),
-        (
-            "p / Enter",
-            "Ping the selected Mesh machine via scout mesh ping",
-        ),
-        (
-            "a / x / r",
-            "Announce, withdraw, or refresh this machine on the mesh",
-        ),
+        ("g", "Horizon → Mesh → Harvest; on Grid, next composition"),
+        ("p / Enter", "Ping the selected Mesh machine"),
+        ("a / x / r", "Announce, withdraw, or refresh this machine"),
         (
             "i / Enter",
-            "Draft for the selected session · Enter sends through /api/ask",
+            "Draft in detail; Enter opens detail from the list",
         ),
+        ("Esc", "Back to Now"),
         ("?", "Toggle this help"),
-        ("q / Esc", "Quit, or fall back to Now"),
+        ("Ctrl+C", "Quit"),
     ];
 
+    // The mast already names every take, so a short terminal keeps the
+    // controls and lets the take glossary go.
+    let show_takes = area.height as usize >= takes.len() + controls.len() + HELP_CHROME_ROWS;
     let mut lines = Vec::new();
-    lines.push(Line::from(Span::styled("TAKES", Style::default().fg(ASH))));
-    for (num, name, desc) in takes {
+    if show_takes {
+        lines.push(Line::from(Span::styled("TAKES", Style::default().fg(ASH))));
+    }
+    for (num, name, desc) in takes.iter().filter(|_| show_takes) {
         lines.push(Line::from(vec![
             Span::styled(format!("  {num}  "), Style::default().fg(PHOSPHOR)),
             Span::styled(
@@ -3427,14 +3484,16 @@ fn draw_help(frame: &mut Frame, area: Rect) {
             Span::styled(*desc, Style::default().fg(SMOKE)),
         ]));
     }
-    lines.push(Line::from(""));
+    if show_takes {
+        lines.push(Line::from(""));
+    }
     lines.push(Line::from(Span::styled(
         "CONTROLS",
         Style::default().fg(ASH),
     )));
     for (key, desc) in controls {
         lines.push(Line::from(vec![
-            Span::styled(format!("  {key:<12}"), Style::default().fg(BONE)),
+            Span::styled(format!("  {key:<14}"), Style::default().fg(BONE)),
             Span::styled(*desc, Style::default().fg(SMOKE)),
         ]));
     }
@@ -3449,11 +3508,14 @@ fn draw_help(frame: &mut Frame, area: Rect) {
             Line::from(""),
         ];
         plain.extend(lines);
-        frame.render_widget(Paragraph::new(plain), area);
+        frame.render_widget(clipped(plain, area.width), area);
         return;
     }
 
-    let card_w = 76u16.min(area.width.saturating_sub(4));
+    // Size the card to its longest row (plus border and padding) so no
+    // description is sliced at the frame.
+    let content_w = lines.iter().map(Line::width).max().unwrap_or(0) as u16;
+    let card_w = (content_w + 6).min(area.width.saturating_sub(4));
     let card_h = (lines.len() as u16 + 4).min(area.height.saturating_sub(2));
     let card = Rect {
         x: area.x + (area.width - card_w) / 2,
@@ -3480,7 +3542,7 @@ fn draw_help(frame: &mut Frame, area: Rect) {
         );
     let inner = block.inner(card);
     frame.render_widget(block, card);
-    frame.render_widget(Paragraph::new(lines), inner);
+    frame.render_widget(clipped(lines, inner.width), inner);
 }
 
 fn draw_empty_state(frame: &mut Frame, area: Rect) {
@@ -3547,6 +3609,49 @@ mod tests {
     }
 
     #[test]
+    fn now_trace_keeps_the_newest_event_on_screen() {
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).expect("test terminal");
+        let mut app = App::new(Take::Now);
+        app.fleet_view = true;
+        for id in 0..200 {
+            app.ingest_event(event(id, "session-a", 1_700_000_000_000 + id as i64 * 1000));
+        }
+
+        terminal
+            .draw(|frame| draw(frame, &mut app))
+            .expect("Now should render a long trace");
+
+        let rendered = rendered_text(&terminal);
+        assert!(rendered.contains("response 199"), "newest row was clipped");
+        assert!(
+            !rendered.contains("response 0 "),
+            "oldest row crowded out the newest"
+        );
+    }
+
+    #[test]
+    fn doing_skips_bare_stream_markers() {
+        let mut app = App::new(Take::Now);
+        let mut words = event(1, "session-a", 1_700_000_000_000);
+        words.summary = "running the build".into();
+        let mut marker = event(2, "session-a", 1_700_000_001_000);
+        marker.summary = "[attachment]".into();
+        app.ingest_event(words);
+        app.ingest_event(marker);
+
+        assert_eq!(app.agents()[0].doing, "running the build");
+    }
+
+    #[test]
+    fn wrap_keeps_a_short_word_with_the_long_path_after_it() {
+        let lines = wrap_text("cd /a/very/long/path/that/cannot/fit && ls", 20, 1);
+        assert_eq!(lines, vec!["cd /a/very/long/pat…".to_string()]);
+        assert_eq!(reset_note("21h ago"), "reset 21h ago");
+        assert_eq!(reset_note("4d 12h"), "resets 4d 12h");
+    }
+
+    #[test]
     fn grid_mast_renders_at_85_columns_without_slicing_unicode() {
         let backend = TestBackend::new(85, 24);
         let mut terminal = Terminal::new(backend).expect("test terminal");
@@ -3604,34 +3709,33 @@ mod tests {
     }
 
     #[test]
-    fn now_footer_keeps_selected_agent_at_ordinary_width() {
-        let backend = TestBackend::new(85, 24);
-        let mut terminal = Terminal::new(backend).expect("test terminal");
+    fn calm_list_keeps_composer_and_keys_at_ordinary_width() {
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
         let mut app = App::new(Take::Now);
         app.ingest_event(event(1, "session-a", 1_700_000_000_000));
-        let selected = app
-            .selected_agent()
-            .expect("ingested session should be selected")
-            .handle;
-
-        terminal
-            .draw(|frame| draw(frame, &mut app))
-            .expect("ordinary-width Now should render");
-
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
         let footer = rendered_footer(&terminal);
-        assert!(footer.contains("Enter sends") || footer.contains("draft"));
-        assert!(footer.contains("? help"));
-        assert!(
-            footer.contains(&format!("selected: {selected}")),
-            "selected agent was truncated: {footer:?}"
-        );
+        assert!(footer.contains("a ask"));
+        assert!(footer.contains("⌃c quit"));
+        assert!(footer.contains("? keys"));
+        let text: String = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        assert!(text.contains("Nothing is waiting on you."));
+        assert!(text.contains("a  to ask"));
+        assert!(!text.contains("FLEET FLOOR PLAN"));
     }
 
     #[test]
     fn help_lists_the_draft_shortcut() {
         let backend = TestBackend::new(85, 28);
         let mut terminal = Terminal::new(backend).expect("test terminal");
-        let mut app = App::new(Take::Now);
+        let mut app = App::new(Take::Horizon);
         app.help = true;
 
         terminal
@@ -3640,10 +3744,72 @@ mod tests {
 
         let rendered = rendered_text(&terminal);
         assert!(rendered.contains("i / Enter"));
-        assert!(rendered.contains("Draft for the selected session"));
+        assert!(rendered.contains("Draft in detail"));
         assert!(rendered.contains("harvest trees"));
-        assert!(rendered.contains("Cycle Horizon"));
-        assert!(rendered.contains("Enter sends") || rendered.contains("draft"));
+        assert!(rendered.contains("on Grid, next composition"));
+        assert!(
+            rendered.contains("h / j / k / l "),
+            "key column overlaps its text"
+        );
+        assert!(rendered.contains("Enter opens detail"));
+    }
+
+    #[test]
+    fn help_fits_an_80x24_terminal() {
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).expect("test terminal");
+        let mut app = App::new(Take::Horizon);
+        app.help = true;
+
+        terminal
+            .draw(|frame| draw(frame, &mut app))
+            .expect("help overlay should render");
+
+        let rendered = rendered_text(&terminal);
+        assert!(
+            rendered.contains("Quit"),
+            "last control row fell off the card"
+        );
+        assert!(rendered.contains("Narrow / widen the left pane"));
+        assert!(!rendered.contains('…'), "a help row was clipped");
+    }
+
+    #[test]
+    fn quota_keeps_the_used_percent_on_a_narrow_pane() {
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).expect("test terminal");
+        let mut app = App::new(Take::Quota);
+        app.set_plans(
+            vec![crate::app::Plan {
+                id: "claude".into(),
+                name: "Claude".into(),
+                plan: "Max".into(),
+                source: "Claude local status".into(),
+                availability: "constrained".into(),
+                confidence: "fresh".into(),
+                burn_rate: "underused".into(),
+                primary_roles: Vec::new(),
+                failover: String::new(),
+                windows: vec![crate::app::QuotaWindow {
+                    label: "7d".into(),
+                    used: 86,
+                    reset: "21h 14m".into(),
+                    spark: Vec::new(),
+                    pace: "ahead".into(),
+                    confidence: "fresh".into(),
+                    source: "Claude local status".into(),
+                }],
+                status: None,
+            }],
+            None,
+            true,
+        );
+
+        terminal
+            .draw(|frame| draw(frame, &mut app))
+            .expect("quota should render at 80 columns");
+
+        assert!(rendered_text(&terminal).contains("86%"));
     }
 
     #[test]

@@ -27,6 +27,12 @@ export type BrokerRefreshPolicy = {
   fallbackPollMs: number;
   livePollMs: number;
   debounceMs?: number;
+  /**
+   * When the surface counts as active. Defaults to "focused" (visible and
+   * focused). Watch surfaces use "visible" so they keep refreshing while on
+   * screen but unfocused.
+   */
+  activeWhen?: "focused" | "visible";
 };
 
 export type BrokerRefreshScheduler = {

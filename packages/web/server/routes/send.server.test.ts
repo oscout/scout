@@ -19,6 +19,39 @@ await loadWebServerUnderTest();
 installWebServerTestHooks();
 
 describe("createOpenScoutWebServer: send routes", () => {
+  test("replies to a harness session by id through the phone's session path", async () => {
+    const server = await createOpenScoutWebServer({
+      currentDirectory: "/tmp/openscout",
+      assetMode: "static",
+      staticRoot: makeStaticRoot(),
+    });
+    const response = await server.app.request("http://localhost/api/sessions/reply", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        sessionId: "no-such-live-session-7f3a",
+        harness: "grok",
+        body: "keep going",
+        source: "scout-tui",
+      }),
+    });
+
+    expect(response.status).toBe(200);
+    expect(askScoutQuestionCalls).toEqual([
+      expect.objectContaining({
+        target: expect.objectContaining({ kind: "session_id", sessionId: "no-such-live-session-7f3a" }),
+        body: "keep going",
+        source: "scout-tui",
+        currentDirectory: "/tmp/openscout",
+      }),
+    ]);
+    await expect(response.json()).resolves.toMatchObject({
+      ok: true,
+      mode: "resumed",
+      sourceSessionId: "no-such-live-session-7f3a",
+    });
+  });
+
   test("keeps a stable client message identity through a direct Chat invoke", async () => {
     stubs.querySessionByIdImpl = () => ({
       kind: "direct",

@@ -3,6 +3,8 @@ import "./activity-stream.css";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ExternalLink } from "lucide-react";
+import { ConnectionState, ConnectionTraceLog, useConnectionTraceLog } from "../../components/ConnectionState.tsx";
+import { homeLoadNotice, loadHomeSource } from "./home-loading.ts";
 import HomeHero, {
   type ServiceGauge,
 } from "./HomeHero.tsx";
@@ -13,7 +15,11 @@ import { readHomeLayoutHint, writeHomeLayoutHint } from "./home-layout-hint.ts";
 import { useObservePolling } from "../../lib/observe.ts";
 import { useBrokerRefresh, type BrokerRefreshPolicy } from "../../lib/broker-refresh.ts";
 import { AGENT_ROSTER_EVENT_KINDS, FLEET_EVENT_KINDS, matchesKinds } from "../../lib/broker-event-kinds.ts";
-import { isScoutSurfaceActive, onScoutSurfaceActivated } from "../../lib/surface-activity.ts";
+import {
+  isScoutSurfaceActive,
+  isScoutSurfaceVisible,
+  onScoutSurfaceActivated,
+} from "../../lib/surface-activity.ts";
 import {
   compareTimestampsDesc,
   normalizeTimestampMs,
@@ -120,6 +126,9 @@ const HOME_FLEET_REFRESH_POLICY: BrokerRefreshPolicy = {
   matches: matchesKinds(FLEET_EVENT_KINDS, AGENT_ROSTER_EVENT_KINDS),
   fallbackPollMs: 15_000,
   livePollMs: 30_000,
+  // The cockpit is a watch surface: left open on a second screen it must not
+  // freeze ("Last updated 1h") just because focus is in another app.
+  activeWhen: "visible",
 };
 const HEARTRATE_COMBINED_EVENT_THRESHOLD = 3;
 const ROUTE_CACHE_MAX_AGE_MS = 30_000;
@@ -287,15 +296,18 @@ function isOfflineSyncError(message: string | null): boolean {
 export function HomeContent({
   navigate,
   basic = false,
+  lead,
   children,
 }: {
   navigate: (r: Route) => void;
   /** Basic web: no hero, coordination stream or quiet-start panels. */
   basic?: boolean;
+  /** Basic web: a next-step strip above What's moving. */
+  lead?: React.ReactNode;
   /** Extra Home sections, laid out after What's moving. */
   children?: React.ReactNode;
 }) {
-  const { agents: allAgents, onboarding, reload, route } = useScout();
+  const { agents: allAgents, onboarding, reload, route, apiConnection } = useScout();
   const machineId = routeMachineId(route);
   const scopedAgentIds = useMemo(
     () => machineScopedAgentIds(allAgents, machineId),
@@ -373,6 +385,8 @@ export function HomeContent({
   const [layoutHint] = useState(readHomeLayoutHint);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const { trace: loadTrace, append: traceLoad } = useConnectionTraceLog();
+  useEffect(() => { traceLoad(`Scout connection: ${apiConnection.status}`); }, [apiConnection.status, traceLoad]);
   const [lastLoadedAt, setLastLoadedAt] = useState<number | null>(null);
   const requestIdRef = useRef(0);
   const lastForegroundRefreshAtRef = useRef(0);
@@ -399,7 +413,7 @@ export function HomeContent({
     const requestId = ++requestIdRef.current;
     const hasSnapshot = fleetRef.current !== null;
 
-    if (!hasSnapshot && mode !== "background") {
+    if (!hasSnapshot) {
       setLoading(true);
       setError(null);
     } else {
@@ -412,15 +426,18 @@ export function HomeContent({
     }).toString();
 
     // Heartrate only feeds the hero's velocity chart, which basic omits.
-    const [fleetResult, heartrateResult, agentsResult] = await Promise.allSettled([
-      loadFleet(fleetQuery),
+    const [fleetResult, heartrateResult] = await Promise.allSettled([
+      loadHomeSource("Home activity", () => loadFleet(fleetQuery), traceLoad, {
+        retries: hasSnapshot && mode === "background" ? 0 : 2,
+        active: () => requestId === requestIdRef.current,
+      }),
       basic
         ? Promise.resolve(null)
-        : api<{
+        : loadHomeSource("Activity chart", () => api<{
           windowLabel: string;
           bucketLabel?: string;
           buckets: HeartrateBucketView[];
-        }>("/api/heartrate"),
+        }>("/api/heartrate"), traceLoad),
       reload(),
     ]);
 
@@ -436,21 +453,19 @@ export function HomeContent({
       setHeartrateBucketLabel(heartrateResult.value.bucketLabel ?? "");
     }
 
-    const errors = [
-      settledError(fleetResult),
-      settledError(heartrateResult),
-      settledError(agentsResult),
-    ].filter((message): message is string => Boolean(message));
-    setError(errors[0] ?? null);
-    if (errors.length < 4) {
+    // Optional chart/roster reads cannot turn a successful Home load into an
+    // outage. Their own surfaces and the trace carry those diagnostics.
+    setError(settledError(fleetResult));
+    if (fleetResult.status === "fulfilled") {
       setLastLoadedAt(Date.now());
     }
     setLoading(false);
     setRefreshing(false);
-  }, [basic, reload, lookbackOption]);
+  }, [basic, reload, lookbackOption, traceLoad]);
 
   useEffect(() => {
     void load();
+    return () => { requestIdRef.current++; };
   }, [load]);
   useBrokerRefresh(() => void load("background"), HOME_FLEET_REFRESH_POLICY);
 
@@ -459,9 +474,11 @@ export function HomeContent({
     let cancelled = false;
     const fetchBudgets = async () => {
       try {
+        traceLoad("Service budgets: requesting");
         const gauges = await fetchServiceGauges();
-        if (!cancelled) setServiceGauges(gauges);
+        if (!cancelled) { setServiceGauges(gauges); traceLoad("Service budgets: received"); }
       } catch {
+        if (!cancelled) traceLoad("Service budgets: unavailable; continuing without quotas");
         // Silent: gauges are best-effort. If the endpoint fails, we just hide them.
       } finally {
         if (!cancelled) setGaugesSettled(true);
@@ -469,7 +486,7 @@ export function HomeContent({
     };
     void fetchBudgets();
     const id = setInterval(() => {
-      if (isScoutSurfaceActive()) void fetchBudgets();
+      if (isScoutSurfaceVisible()) void fetchBudgets();
     }, SERVICE_BUDGETS_REFRESH_MS);
     const refreshWhenVisible = () => {
       if (document.visibilityState === "visible" && isScoutSurfaceActive()) {
@@ -484,10 +501,11 @@ export function HomeContent({
       window.removeEventListener("focus", refreshWhenVisible);
       document.removeEventListener("visibilitychange", refreshWhenVisible);
     };
-  }, [basic, fetchServiceGauges]);
+  }, [basic, fetchServiceGauges, traceLoad]);
 
   const loadLocalTailSnapshot = useCallback(async () => {
     try {
+      traceLoad("Local activity: requesting");
       const params = new URLSearchParams({
         limit: String(localTailRecentLimit),
         transcripts: "true",
@@ -497,13 +515,15 @@ export function HomeContent({
         api<TailDiscoverySnapshot>("/api/tail/discover").catch(() => null),
       ]);
       setTailEvents(recent.events ?? []);
+      traceLoad("Local activity: received");
       if (discovery) setTailDiscovery(discovery);
     } catch {
+      traceLoad("Local activity: unavailable; Home activity can still load");
       // Silent: the embedded Tail view owns the visible error/empty state.
     } finally {
       setTailSettled(true);
     }
-  }, [localTailRecentLimit]);
+  }, [localTailRecentLimit, traceLoad]);
 
   useEffect(() => {
     void loadLocalTailSnapshot();
@@ -532,7 +552,7 @@ export function HomeContent({
 
   useEffect(() => {
     const id = setInterval(() => {
-      if (isScoutSurfaceActive()) setNowMs(Date.now());
+      if (isScoutSurfaceVisible()) setNowMs(Date.now());
     }, 1000);
     return () => clearInterval(id);
   }, []);
@@ -736,7 +756,8 @@ export function HomeContent({
   }, [scopedFleet?.activity, movingWindow.windowMs, nowMs, agents, operatorName]);
 
   const syncLabel = loading
-    ? "syncing"
+    ? "Loading Scout…"
+    : refreshing ? "Refreshing…"
     : error
       ? `${isOfflineSyncError(error) ? "offline" : "sync issue"} · ${lastLoadedAt ? timeAgo(lastLoadedAt) : "waiting"}`
       : lastLoadedAt
@@ -840,18 +861,24 @@ export function HomeContent({
       ? `What's moving · ${movingCardCount} of ${totalMovingCount}`
       : `What's moving · ${totalMovingCount}`;
 
+  if (!fleet && error && !loading) {
+    return <div className="s-home-load-state"><ConnectionState notice={homeLoadNotice(error)} trace={loadTrace} onRetry={() => void load("manual")} /></div>;
+  }
+
   return (
-    <div className="s-fleet-home">
+    <div className="s-home-surface">
+    <div className="s-fleet-home" aria-busy={loading || undefined}>
       <div className="s-fleet-home-inner">
         {/* ── Home header ─────────────────────────────────────────── */}
         {!basic && <HomeHero {...heroProps} />}
-        {basic && error && (
+        {basic && error && !refreshing && (
           <div className="sys-banner sys-banner-warning" role="alert">
             <strong>Refresh failed.</strong>
             <span>{error}</span>
             <button type="button" className="s-link-btn" onClick={() => void load("manual")}>Retry</button>
           </div>
         )}
+        {basic && lead}
 
         {/* ── What's moving ──────────────────────────────────────── */}
         {/* Always mounted: a quiet line when nothing moves, so the sections
@@ -996,6 +1023,10 @@ export function HomeContent({
 
         {children}
       </div>
+    </div>
+    {(loading || (!basic && !gaugesSettled) || !tailSettled) && (
+      <ConnectionTraceLog trace={loadTrace} label="Loading Scout" />
+    )}
     </div>
   );
 }

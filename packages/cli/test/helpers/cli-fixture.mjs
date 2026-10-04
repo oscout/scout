@@ -50,7 +50,7 @@ export function createCliFixture() {
   const directory = temporaryDirectory("scout-cli-package-");
   mkdirSync(join(directory, "bin"));
   mkdirSync(join(directory, "dist", "node"), { recursive: true });
-  for (const name of ["scout", "scout.mjs"]) {
+  for (const name of ["scout", "scout.mjs", "lifecycle-preflight.mjs"]) {
     copyFileSync(join(packageDirectory, "bin", name), join(directory, "bin", name));
   }
   const manifest = JSON.parse(readFileSync(join(packageDirectory, "package.json"), "utf8"));

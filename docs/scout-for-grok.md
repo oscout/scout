@@ -16,6 +16,8 @@ Canonical URL on the site: [openscout.app/docs/scout-for-grok](https://openscout
 
 ---
 
+For a complete worked handoff, read [Claude Code and Grok collaboration](https://openscout.app/blog/claude-code-grok-collaboration). For the shared client, broker, worker, and result model, read [Use coding agents through an MCP client](https://openscout.app/blog/use-coding-agents-from-mcp-clients).
+
 ## 1. Hosted connector (Grok Bot ↔ your mesh)
 
 **Connector URL:** `https://mcp.oscout.net`

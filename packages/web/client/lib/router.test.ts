@@ -23,6 +23,12 @@ const { resolveRoutedSessionId, resolveSelectedSessionId, sortSessionsByRecency 
 describe("scope route parsing", () => {
   const origin = "http://127.0.0.1:43120";
 
+  test("work embed keeps work identity and machine scope", () => {
+    expect(routeFromUrl(`${origin}/embed/work?workId=work-review&machineId=machine-a`)).toEqual({
+      view: "work", workId: "work-review", machineId: "machine-a",
+    });
+  });
+
   test("scope lanes routes map to ops lanes", () => {
     expect(routeFromUrl(`${origin}${SCOPE_PATH_PREFIX}`)).toEqual({
       view: "ops",

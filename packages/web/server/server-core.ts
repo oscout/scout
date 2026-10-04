@@ -359,6 +359,8 @@ export function isScoutWebRequestAllowedFromPeer(
   if (scope === "chat" && request.headers.get("upgrade") === null) {
     const path = url.pathname;
     const read = request.method === "GET" || request.method === "HEAD";
+    // Room accumulator read only; credential/roster checks remain in the room route.
+    if (request.method === "GET" && /^\/api\/channels\/[^/]+\/listening$/.test(path)) return true;
     // This is a network exposure boundary, not authentication. Room API
     // handlers still enforce the invitation/member/operator grants.
     if (read && (path === "/chat" || path === "/pair"

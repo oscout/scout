@@ -161,3 +161,11 @@ To clear stale Scout dev listeners:
 ```bash
 bun run dev:cleanup:ports
 ```
+
+## Scoped access pane
+
+The isolated Network / People / Services / Devices pane has its own client build
+(`bun run build:client:access`) and authenticated server entrypoint. It is not
+mounted in this package's ambient operator server or the npm basic profile.
+Deployment requires separate OS custody, a dedicated HTTPS cookie hostname and
+explicit scoped credentials. Follow [the scoped pane guide](../../docs/scoped-access-pane.md).

@@ -271,6 +271,57 @@ describe("setup inventory", () => {
     }));
   });
 
+  test("does not repoint Claude away from another install's live statusline wrapper", async () => {
+    const home = join(tmpdir(), `openscout-claude-statusline-owned-test-${Date.now()}-${Math.random().toString(16).slice(2)}`);
+    const settingsPath = join(home, ".claude", "settings.json");
+    // The real install's wrapper, still live.
+    const liveWrapper = join(home, "Library", "Application Support", "OpenScout", "runtime", "statusline", "claude-statusline.sh");
+
+    testDirectories.add(home);
+    process.env.HOME = home;
+    // A scratch run (an install smoke test) with its own support directory.
+    process.env.OPENSCOUT_SUPPORT_DIRECTORY = join(home, "scratch-install", "support");
+    mkdirSync(join(home, ".claude"), { recursive: true });
+    mkdirSync(join(liveWrapper, ".."), { recursive: true });
+    writeFileSync(liveWrapper, "#!/bin/sh\n", "utf8");
+    writeFileSync(settingsPath, JSON.stringify({
+      statusLine: { type: "command", command: `'${liveWrapper}'`, padding: 0 },
+    }, null, 2), "utf8");
+
+    const report = await installClaudeStatuslineTool();
+    const settings = JSON.parse(readFileSync(settingsPath, "utf8")) as {
+      statusLine: Record<string, unknown>;
+    };
+
+    expect(report).toEqual(expect.objectContaining({ status: "skipped", reason: "owned-by-other-install" }));
+    expect(settings.statusLine.command).toBe(`'${liveWrapper}'`);
+    expect(existsSync(resolveClaudeStatuslineDelegatePath())).toBe(false);
+  });
+
+  test("reclaims Claude's statusline from a deleted install's wrapper without adopting it as a delegate", async () => {
+    const home = join(tmpdir(), `openscout-claude-statusline-reclaim-test-${Date.now()}-${Math.random().toString(16).slice(2)}`);
+    const settingsPath = join(home, ".claude", "settings.json");
+    const deadWrapper = join(home, "gone-install", "support", "runtime", "statusline", "claude-statusline.sh");
+
+    testDirectories.add(home);
+    process.env.HOME = home;
+    process.env.OPENSCOUT_SUPPORT_DIRECTORY = join(home, "Library", "Application Support", "OpenScout");
+    mkdirSync(join(home, ".claude"), { recursive: true });
+    writeFileSync(settingsPath, JSON.stringify({
+      statusLine: { type: "command", command: `'${deadWrapper}'`, padding: 0 },
+    }, null, 2), "utf8");
+
+    const report = await installClaudeStatuslineTool();
+    const settings = JSON.parse(readFileSync(settingsPath, "utf8")) as {
+      statusLine: Record<string, unknown>;
+    };
+
+    expect(report.status).toBe("installed");
+    expect(settings.statusLine.command).toBe(`'${report.wrapperPath}'`);
+    // The dead wrapper is Scout's own, not a user statusline to delegate to.
+    expect(existsSync(resolveClaudeStatuslineDelegatePath())).toBe(false);
+  });
+
   test("resolves the configured setup context root from persisted settings when no env override is present", async () => {
     const home = join(tmpdir(), `openscout-setup-context-test-${Date.now()}-${Math.random().toString(16).slice(2)}`);
     const sourceRoot = join(home, "dev");

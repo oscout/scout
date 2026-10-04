@@ -5,6 +5,8 @@ import { spawnSync } from "node:child_process";
 import { delimiter, dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
+import { preflightLifecycle } from "./lifecycle-preflight.mjs";
+
 const binDir = dirname(fileURLToPath(import.meta.url));
 const bunDistEntry = resolve(binDir, "../dist/main.mjs");
 const bunStatuslineEntry = resolve(binDir, "../dist/statusline.mjs");
@@ -18,6 +20,13 @@ if (!process.env.SCOUT_APP_VERSION && packageVersion) {
 }
 
 const command = process.argv[2];
+try {
+  const help = preflightLifecycle(process.argv.slice(2));
+  if (help !== null) { console.log(help); process.exit(0); }
+} catch (error) {
+  console.error(error.message);
+  process.exit(1);
+}
 if (command === "--version" || command === "-v" || command === "version") {
   process.stdout.write(`${packageVersion ?? "0.0.0"}\n`);
   process.exit(0);

@@ -46,7 +46,10 @@ Presence (docs/proposals/mesh-trust-cone.md §11.5):
 MCP gateway (docs/eng/sco-095-remote-mcp-gateway.md):
   scout mesh bridge       Hold the outbound MCP relay connection (spike harness)
 
-Trust cone (docs/proposals/mesh-trust-cone.md):
+Scoped identity and resource access:
+  scout mesh access       Person/service keys, policy, grants, and signed calls
+
+Legacy machine trust (docs/proposals/mesh-trust-cone.md):
   scout mesh peers        List trusted peers
   scout mesh grant        Adjust a peer's tier
   scout mesh revoke       Revoke a trusted peer
@@ -132,6 +135,12 @@ export async function runMeshCommand(context: ScoutCommandContext, args: string[
     case "bridge": {
       const { runMeshBridgeCommand } = await import("./mesh-bridge.ts");
       await runMeshBridgeCommand(context, args.slice(1));
+      return;
+    }
+
+    case "access": {
+      const { runMeshAccessCommand } = await import("./mesh-access.ts");
+      await runMeshAccessCommand(context, args.slice(1));
       return;
     }
 

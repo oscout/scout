@@ -121,6 +121,7 @@ function parseSettingsSection(value: string | undefined): SettingsSection | unde
     case "assistants":
     case "devices":
     case "mesh":
+    case "pro":
     case "system":
     case "about":
       return value;
@@ -294,6 +295,13 @@ function routeScopeKey(route: Route): string {
 export function routeFromUrl(urlLike: string | URL): Route {
   const url = resolveAppUrl(urlLike);
   const parts = url.pathname.replace(/^\/+/, "").split("/").filter(Boolean);
+  if (url.pathname === "/embed/work") {
+    const canonical = new URL(url);
+    const workId = url.searchParams.get("workId")?.trim();
+    canonical.pathname = workId ? `/work/${encodeURIComponent(workId)}` : "/work";
+    canonical.searchParams.delete("workId");
+    return routeFromUrl(canonical);
+  }
   if (parts[0] === "embed" && ["home", "search", "ops"].includes(parts[1] ?? "")) {
     const canonical = new URL(url);
     const area = parts[1]!;
@@ -1433,8 +1441,9 @@ export function basicCanonicalHref(pathname: string, searchStr: string, hash: st
  * only whitelisted global search params carry over.
  */
 export function canonicalHrefForRoute(pathname: string, searchStr: string, hash: string): string | null {
-  if (BASIC_WEB) return basicCanonicalHref(pathname, searchStr, hash);
+  // Embeds own their URL in both clients; a native host loaded that exact path.
   if (isStandaloneEmbedPath(pathname)) return null;
+  if (BASIC_WEB) return basicCanonicalHref(pathname, searchStr, hash);
   const routeUrl = `${pathname}${searchStr}`;
   const raw = routeFromUrl(routeUrl);
   const normalized = normalizeRoute(raw);

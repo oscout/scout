@@ -1,0 +1,184 @@
+# Source of truth: arach/openscout scripts/public-workflows/release-scout-tui.yml.
+# scripts/sync-public-core.mjs installs it into oscout/scout; edit it there, not here.
+#
+# Builds the scout-tui binary for each prebuilt platform and attaches it to the
+# public GitHub release for the version, where `scout tui` downloads it on first
+# run. The npm package never carries it and has no install scripts.
+#
+#   scout-tui-<version>-<target>.tar.gz   target: darwin-arm64, darwin-x64, linux-x64, linux-arm64
+#   scout-tui-<version>-sha256sums.txt    sha256sum of each archive
+#
+# Linux builds are static musl, so they run regardless of the host's libc.
+name: Release scout-tui
+
+on:
+  workflow_run:
+    workflows: ["Release Package npm"]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing public release tag (vX.Y.Z)"
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-scout-tui-${{ github.event.workflow_run.head_sha || inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  resolve:
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-24.04
+    outputs:
+      tag: ${{ steps.release.outputs.tag }}
+      version: ${{ steps.release.outputs.version }}
+      sha: ${{ steps.release.outputs.sha }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || format('refs/tags/{0}', inputs.tag) }}
+          fetch-depth: 0
+
+      - name: Resolve release tag
+        id: release
+        shell: bash
+        env:
+          INPUT_TAG: ${{ inputs.tag || '' }}
+        run: |
+          set -euo pipefail
+          sha="$(git rev-parse HEAD^{commit})"
+          version="$(node -p 'require("./packages/cli/package.json").version')"
+          tag="${INPUT_TAG:-v$version}"
+          if [[ "$tag" != "v$version" ]]; then
+            echo "Tag $tag does not match packages/cli version $version" >&2
+            exit 1
+          fi
+          tag_sha="$(git rev-parse "refs/tags/$tag^{commit}" 2>/dev/null || true)"
+          if [[ "$tag_sha" != "$sha" ]]; then
+            echo "Tag $tag resolves to ${tag_sha:-nothing}, expected $sha" >&2
+            exit 1
+          fi
+          git fetch --no-tags origin refs/heads/main
+          git merge-base --is-ancestor HEAD FETCH_HEAD || {
+            echo "Release tag is not reachable from public main." >&2
+            exit 1
+          }
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: resolve
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - target: darwin-arm64
+            rust: aarch64-apple-darwin
+            runner: macos-15
+            run: true
+          - target: darwin-x64
+            rust: x86_64-apple-darwin
+            runner: macos-15
+            run: false
+          - target: linux-x64
+            rust: x86_64-unknown-linux-musl
+            runner: ubuntu-24.04
+            run: true
+          - target: linux-arm64
+            rust: aarch64-unknown-linux-musl
+            runner: ubuntu-24.04-arm
+            run: true
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    env:
+      CARGO_PROFILE_RELEASE_STRIP: symbols
+      CARGO_PROFILE_RELEASE_LTO: "true"
+      CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "1"
+      MACOSX_DEPLOYMENT_TARGET: "11.0"
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ needs.resolve.outputs.sha }}
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
+        with:
+          targets: ${{ matrix.rust }}
+
+      - name: Install musl tools
+        if: ${{ startsWith(matrix.target, 'linux-') }}
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+
+      - name: Build
+        run: cargo build --release --locked --target ${{ matrix.rust }} --manifest-path crates/scout-tui/Cargo.toml
+
+      - name: Check and pack
+        shell: bash
+        env:
+          VERSION: ${{ needs.resolve.outputs.version }}
+          TARGET: ${{ matrix.target }}
+          RUST_TARGET: ${{ matrix.rust }}
+          RUN_SMOKE: ${{ matrix.run }}
+        run: |
+          set -euo pipefail
+          bin="target/$RUST_TARGET/release/scout-tui"
+          file "$bin"
+          if [[ "$TARGET" == linux-* ]] && ! file "$bin" | grep -Eq 'statically linked|static-pie linked'; then
+            echo "::error::$bin is not statically linked" >&2
+            exit 1
+          fi
+          if [[ "$RUN_SMOKE" == "true" ]]; then
+            "$bin" --help > /dev/null
+          fi
+          mkdir -p dist
+          archive="dist/scout-tui-$VERSION-$TARGET.tar.gz"
+          tar -czf "$archive" -C "$(dirname "$bin")" scout-tui
+          ls -l "$bin" "$archive"
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: scout-tui-${{ matrix.target }}
+          path: dist/*.tar.gz
+          if-no-files-found: error
+          retention-days: 30
+
+  publish:
+    needs: [resolve, build]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: scout-tui-*
+          path: dist
+          merge-multiple: true
+
+      - name: Upload to the public release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.resolve.outputs.tag }}
+          VERSION: ${{ needs.resolve.outputs.version }}
+        run: |
+          set -euo pipefail
+          cd dist
+          count="$(ls scout-tui-"$VERSION"-*.tar.gz | wc -l)"
+          if [[ "$count" -ne 4 ]]; then
+            echo "Expected 4 archives, found $count" >&2
+            exit 1
+          fi
+          manifest="scout-tui-$VERSION-sha256sums.txt"
+          sha256sum scout-tui-"$VERSION"-*.tar.gz > "$manifest"
+          cat "$manifest"
+          if ! gh release view "$TAG" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --verify-tag --title "$TAG" --notes "" --latest=false
+          fi
+          # Archives first, manifest last: the CLI reads the manifest before
+          # any archive, so it never sees a checksum for a missing file.
+          gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" --clobber scout-tui-"$VERSION"-*.tar.gz
+          gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" --clobber "$manifest"

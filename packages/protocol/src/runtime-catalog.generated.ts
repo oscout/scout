@@ -2,7 +2,7 @@
 
 export const SCOUT_RUNTIME_CATALOG_DATA = {
   "schemaVersion": "openscout.runtime-catalog.v1",
-  "revision": "2026-09-24.1",
+  "revision": "2026-10-01.1",
   "harnesses": [
     {
       "id": "claude",
@@ -412,7 +412,16 @@ export const SCOUT_RUNTIME_CATALOG_DATA = {
       "id": "pi",
       "label": "Pi",
       "enabled": true,
-      "reasoningEfforts": null,
+      "allowCustomModels": true,
+      "reasoningEfforts": [
+        "none",
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ],
       "models": []
     },
     {

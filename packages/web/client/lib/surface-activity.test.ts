@@ -1,6 +1,10 @@
 import { describe, expect, test } from "bun:test";
 
-import { isScoutSurfaceActive, onScoutSurfaceActivated } from "./surface-activity.ts";
+import {
+  isScoutSurfaceActive,
+  isScoutSurfaceVisible,
+  onScoutSurfaceActivated,
+} from "./surface-activity.ts";
 
 describe("isScoutSurfaceActive", () => {
   test("pauses hidden browser tabs", () => {
@@ -26,6 +30,16 @@ describe("isScoutSurfaceActive", () => {
 
   test("keeps non-DOM callers active", () => {
     expect(isScoutSurfaceActive(undefined)).toBe(true);
+  });
+});
+
+describe("isScoutSurfaceVisible", () => {
+  test("keeps a watch surface live while on screen but unfocused", () => {
+    expect(isScoutSurfaceVisible({ visibilityState: "visible" })).toBe(true);
+  });
+
+  test("still pauses hidden surfaces", () => {
+    expect(isScoutSurfaceVisible({ visibilityState: "hidden" })).toBe(false);
   });
 });
 

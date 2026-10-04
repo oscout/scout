@@ -71,9 +71,9 @@ describe("Scout theme contract", () => {
       agentCharacters: { stray: 42 },
     })).toEqual({
       shell: "scout",
-      palette: "scout",
+      palette: "graphite",
       contrast: "balanced",
-      accent: "theme",
+      accent: "amber",
       avatarStyle: "crew",
       avatarSize: "regular",
       operatorCharacter: "milo",

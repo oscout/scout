@@ -1,12 +1,16 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdirSync, readFileSync, rmSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import {
   captureClaudeStatuslineSnapshot,
+  claudeStatuslineCommandWrapperPath,
   claudeStatuslineObservedRuntime,
   formatClaudeStatuslineFallback,
+  isClaudeStatuslineWrapperIsolatedFromSettings,
+  isOpenScoutClaudeStatuslineCommand,
+  readClaudeStatuslineDelegate,
   readClaudeStatuslineSessionSnapshot,
   resolveClaudeStatuslineHistoryPath,
   resolveClaudeStatuslineLatestPath,
@@ -29,6 +33,32 @@ afterEach(() => {
     rmSync(directory, { recursive: true, force: true });
   }
   testDirectories.clear();
+});
+
+describe("Claude statusline delegate", () => {
+  test("ignores a delegate that is another Scout install's wrapper", async () => {
+    const home = join(tmpdir(), `openscout-claude-statusline-delegate-${Date.now()}-${Math.random().toString(16).slice(2)}`);
+    testDirectories.add(home);
+    mkdirSync(home, { recursive: true });
+    const path = join(home, "claude-delegate.json");
+    // What an old smoke run left behind in the real support directory.
+    writeFileSync(path, JSON.stringify({
+      version: 1,
+      command: "'/var/folders/xx/T/openscout-web-bundle-smoke-abc/support/runtime/statusline/claude-statusline.sh'",
+      source: "claude-settings.statusLine",
+    }), "utf8");
+    expect(await readClaudeStatuslineDelegate(path)).toBeNull();
+
+    writeFileSync(path, JSON.stringify({ version: 1, command: "~/.claude/custom-statusline.sh" }), "utf8");
+    expect((await readClaudeStatuslineDelegate(path))?.command).toBe("~/.claude/custom-statusline.sh");
+  });
+
+  test("recognises a wrapper path as Scout's, whichever install wrote it", () => {
+    expect(claudeStatuslineCommandWrapperPath("'/tmp/x y/support/runtime/statusline/claude-statusline.sh'"))
+      .toBe("/tmp/x y/support/runtime/statusline/claude-statusline.sh");
+    expect(claudeStatuslineCommandWrapperPath("~/.claude/custom-statusline.sh")).toBeNull();
+    expect(isOpenScoutClaudeStatuslineCommand("'/tmp/other/claude-statusline.sh'", "/real/claude-statusline.sh")).toBe(true);
+  });
 });
 
 describe("Claude statusline capture", () => {
@@ -96,5 +126,30 @@ describe("Claude statusline capture", () => {
     }));
     expect(history).toHaveLength(1);
     expect(formatClaudeStatuslineFallback(latest)).toBe("Scout | Opus 4.8 | openscout | ctx 31% | 5h 12% | 7d 70%");
+  });
+});
+
+describe("Claude statusline install guards", () => {
+  const tempWrapper = join(tmpdir(), "scout-smoke-x", "support", "runtime", "statusline", "claude-statusline.sh");
+
+  test("flags a temp wrapper wired into settings outside the temp directory", () => {
+    expect(isClaudeStatuslineWrapperIsolatedFromSettings("/Users/operator/.claude/settings.json", tempWrapper)).toBe(true);
+  });
+
+  test("allows a fully sandboxed home and a normal install", () => {
+    expect(isClaudeStatuslineWrapperIsolatedFromSettings(
+      join(tmpdir(), "scout-smoke-x", "home", ".claude", "settings.json"),
+      tempWrapper,
+    )).toBe(false);
+    expect(isClaudeStatuslineWrapperIsolatedFromSettings(
+      "/Users/operator/.claude/settings.json",
+      "/Users/operator/Library/Application Support/OpenScout/runtime/statusline/claude-statusline.sh",
+    )).toBe(false);
+  });
+
+  test("recognizes a Scout wrapper from another support directory as Scout's own", () => {
+    const current = "/Users/operator/Library/Application Support/OpenScout/runtime/statusline/claude-statusline.sh";
+    expect(isOpenScoutClaudeStatuslineCommand(`'${tempWrapper}'`, current)).toBe(true);
+    expect(isOpenScoutClaudeStatuslineCommand("bun ~/.claude/statusline/index.ts", current)).toBe(false);
   });
 });

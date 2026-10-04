@@ -1,6 +1,6 @@
 {
   "name": "@openscout/web",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "private": true,
   "description": "Standalone lightweight Scout web UI with its own bundled Bun server",
   "license": "Apache-2.0",
@@ -16,8 +16,11 @@
   "scripts": {
     "build": "node ./scripts/build.mjs",
     "check": "node ./scripts/typecheck.mjs",
+    "check:access": "tsc -p tsconfig.access.json",
     "check:update": "node ./scripts/typecheck.mjs --update",
     "build:client": "vite build",
+    "build:client:access": "OPENSCOUT_WEB_PROFILE=access vite build",
+    "build:access-server": "bun build ./server/scoped-access/index.ts --target=bun --format=esm --outfile ./dist/openscout-access-server.mjs",
     "build:client:basic": "OPENSCOUT_WEB_PROFILE=basic vite build",
     "build:hosted-chat": "vite build --config vite.hosted-chat.config.ts",
     "build:native-surfaces": "node ./scripts/build-native-surfaces.mjs",

@@ -116,3 +116,25 @@ describe("runUpCommand", () => {
     );
   });
 });
+
+test("up help and unsupported flags never resolve or start an agent", async () => {
+  const resolveAgent = mock(async () => { throw new Error("unexpected lookup"); });
+  const startAgent = mock(async () => { throw new Error("unexpected start"); });
+  mock.module("@openscout/runtime/local-agents", () => ({
+    resolveLocalAgentByName: resolveAgent, SUPPORTED_LOCAL_AGENT_HARNESSES,
+  }));
+  mock.module("../../core/agents/service.ts", () => ({ upScoutAgent: startAgent }));
+  const writeText = mock(() => {});
+  const context = {
+    cwd: "/tmp/current", env: {}, stdout: () => {}, stderr: () => {}, isTty: false,
+    output: { mode: "plain" as const, writeText, writeValue: mock(() => {}) },
+  };
+  const { runUpCommand } = await import("./up.ts");
+  for (const flag of ["--help", "-h"]) await runUpCommand(context, [".", flag]);
+  expect(writeText.mock.calls.length).toBe(2);
+  for (const flag of ["--unsupported", "-x"]) {
+    await expect(runUpCommand(context, [".", flag])).rejects.toThrow("unexpected argument");
+  }
+  expect(resolveAgent).not.toHaveBeenCalled();
+  expect(startAgent).not.toHaveBeenCalled();
+});

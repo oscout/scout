@@ -164,16 +164,19 @@ const HERDR_TOPOLOGY_POLL_MS = 3_000;
 export function useHerdrTopology(
   sessionName: string | null,
   options: { pollMs?: number; enabled?: boolean } = {},
-): { topology: HerdrSessionTopology | null; error: string | null; refresh: () => void } {
+): { topology: HerdrSessionTopology | null; error: string | null; loading: boolean; refresh: () => void } {
   const enabled = options.enabled ?? true;
   const pollMs = options.pollMs ?? HERDR_TOPOLOGY_POLL_MS;
   const [topology, setTopology] = useState<HerdrSessionTopology | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
   const [tick, setTick] = useState(0);
 
   useEffect(() => {
     if (!sessionName || !enabled) return;
     let cancelled = false;
+    setLoading(true);
+    setError(null);
 
     const load = () => {
       void fetchHerdrTopology(sessionName)
@@ -181,10 +184,12 @@ export function useHerdrTopology(
           if (cancelled) return;
           setTopology(next);
           setError(null);
+          setLoading(false);
         })
         .catch((cause) => {
           if (cancelled) return;
           setError(cause instanceof Error ? cause.message : String(cause));
+          setLoading(false);
         });
     };
 
@@ -200,8 +205,13 @@ export function useHerdrTopology(
   }, [sessionName, enabled, pollMs, tick]);
 
   return {
-    topology,
+    topology: topology?.session === sessionName ? topology : null,
     error,
-    refresh: () => setTick((value) => value + 1),
+    loading,
+    refresh: () => {
+      setLoading(true);
+      setError(null);
+      setTick((value) => value + 1);
+    },
   };
 }
