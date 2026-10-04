@@ -1,13 +1,8 @@
 import { describe, expect, test } from "bun:test";
 
-import { RESERVED_CHAT_PATHS } from "../../../../apps/hosted-chat/src/paths.ts";
-import { checkSpaceName, claimFromSearch, claimReturnTo, RESERVED_SPACE_NAMES } from "./hosted-chat-claim.ts";
+import { checkSpaceName, claimFromSearch, claimReturnTo } from "./hosted-chat-claim.ts";
 
 describe("space name claims", () => {
-  test("the client's reserved names are the Worker's", () => {
-    expect([...RESERVED_SPACE_NAMES].sort()).toEqual([...RESERVED_CHAT_PATHS].sort());
-  });
-
   test("typed names fold to the slug they become", () => {
     expect(checkSpaceName("  Release Train ")).toEqual({ ok: true, slug: "release-train" });
     expect(checkSpaceName("atlas_ops")).toEqual({ ok: true, slug: "atlas-ops" });

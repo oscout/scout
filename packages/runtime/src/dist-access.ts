@@ -5,9 +5,14 @@
 // there is one place that knows where the key lives and how whoami answers.
 // The key itself never leaves this module: callers get where it is stored,
 // never what it is.
-import { spawnSync } from "node:child_process";
+//
+// Store commands (`security`, `secret-tool`) run through the sanctioned async
+// exec helper with a time limit, so a locked keychain or an unanswered prompt
+// never blocks the web server's event loop.
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+
+import { execSystemFile, ProbeCommandError } from "./system-probes/exec.js";
 
 export const SCOUT_DIST_DEFAULT_URL = "https://console.openscout.app";
 export const SCOUT_DIST_KEYS_URL = "https://console.openscout.app/#downloads";
@@ -32,17 +37,45 @@ export function distKeyPath(supportDirectory: string): string {
 export type DistKeyStore = {
   where: string;
   encrypted: boolean;
-  read(): string | null;
-  write(key: string): boolean;
-  remove(): boolean;
+  read(): Promise<string | null>;
+  write(key: string): Promise<boolean>;
+  remove(): Promise<boolean>;
 };
 
-export type SpawnText = (command: string, args: string[], input?: string) => { status: number | null; stdout: string };
+/** `status` is null when the command couldn't run or ran out of time. */
+export type SpawnText = (command: string, args: string[], input?: string) => Promise<{ status: number | null; stdout: string }>;
 
-const spawnText: SpawnText = (command, args, input) => {
-  const result = spawnSync(command, args, { input, encoding: "utf8", stdio: ["pipe", "pipe", "ignore"] });
-  return { status: result.error ? null : result.status, stdout: result.stdout ?? "" };
-};
+/**
+ * Long enough to answer a Keychain prompt from `scout web login` or the
+ * explicit access check; short enough that a stuck store gives up.
+ */
+export const DIST_KEY_STORE_TIMEOUT_MS = 60_000;
+
+/** Runs a store command off the event loop, killed after `timeoutMs`. Input goes on stdin. */
+export function storeCommandRunner(options: { timeoutMs?: number } = {}): SpawnText {
+  const timeoutMs = options.timeoutMs ?? DIST_KEY_STORE_TIMEOUT_MS;
+  return async (command, args, input) => {
+    try {
+      const result = await execSystemFile(command, args, {
+        input,
+        timeoutMs,
+        probeId: `dist-key.${command}`,
+        maxStdoutBytes: 64 * 1024,
+        maxStderrBytes: 16 * 1024,
+      });
+      return { status: result.exitCode, stdout: result.stdout };
+    } catch (error) {
+      // A non-zero exit is an answer ("not found"); anything else (timeout,
+      // missing binary, output cap) means the store didn't answer.
+      if (error instanceof ProbeCommandError && error.code === "exit") {
+        return { status: error.exitCode ?? null, stdout: "" };
+      }
+      return { status: null, stdout: "" };
+    }
+  };
+}
+
+const spawnText = storeCommandRunner();
 
 const SAFE_KEY = /^[A-Za-z0-9_]+$/;
 
@@ -50,18 +83,18 @@ export function keychainDistKeyStore(spawn: SpawnText = spawnText): DistKeyStore
   return {
     where: `macOS Keychain (${DIST_KEY_KEYCHAIN_SERVICE})`,
     encrypted: true,
-    read() {
-      const result = spawn("security", ["find-generic-password", "-a", "openscout", "-s", DIST_KEY_KEYCHAIN_SERVICE, "-w"]);
+    async read() {
+      const result = await spawn("security", ["find-generic-password", "-a", "openscout", "-s", DIST_KEY_KEYCHAIN_SERVICE, "-w"]);
       return result.status === 0 ? result.stdout.trim() || null : null;
     },
-    write(key) {
+    async write(key) {
       // `security -i` reads the command from stdin, so the key stays out of argv.
       if (!SAFE_KEY.test(key)) return false;
       const script = `add-generic-password -U -a openscout -s ${DIST_KEY_KEYCHAIN_SERVICE} -l "Scout download key" -w "${key}"\n`;
-      return spawn("security", ["-i"], script).status === 0;
+      return (await spawn("security", ["-i"], script)).status === 0;
     },
-    remove() {
-      return spawn("security", ["delete-generic-password", "-a", "openscout", "-s", DIST_KEY_KEYCHAIN_SERVICE]).status === 0;
+    async remove() {
+      return (await spawn("security", ["delete-generic-password", "-a", "openscout", "-s", DIST_KEY_KEYCHAIN_SERVICE])).status === 0;
     },
   };
 }
@@ -71,15 +104,15 @@ export function secretServiceDistKeyStore(spawn: SpawnText = spawnText): DistKey
   return {
     where: "Secret Service (secret-tool, service openscout-dist)",
     encrypted: true,
-    read() {
-      const result = spawn("secret-tool", ["lookup", ...attributes]);
+    async read() {
+      const result = await spawn("secret-tool", ["lookup", ...attributes]);
       return result.status === 0 ? result.stdout.trim() || null : null;
     },
-    write(key) {
-      return spawn("secret-tool", ["store", "--label=Scout download key", ...attributes], key).status === 0;
+    async write(key) {
+      return (await spawn("secret-tool", ["store", "--label=Scout download key", ...attributes], key)).status === 0;
     },
-    remove() {
-      return spawn("secret-tool", ["clear", ...attributes]).status === 0;
+    async remove() {
+      return (await spawn("secret-tool", ["clear", ...attributes])).status === 0;
     },
   };
 }
@@ -89,19 +122,19 @@ export function fileDistKeyStore(supportDirectory: string): DistKeyStore {
   return {
     where: `${path} (not encrypted)`,
     encrypted: false,
-    read() {
+    async read() {
       try {
         return readFileSync(path, "utf8").trim() || null;
       } catch {
         return null;
       }
     },
-    write(key) {
+    async write(key) {
       mkdirSync(dirname(path), { recursive: true });
       writeFileSync(path, `${key}\n`, { mode: 0o600 });
       return true;
     },
-    remove() {
+    async remove() {
       const existed = existsSync(path);
       rmSync(path, { force: true });
       return existed;
@@ -110,29 +143,29 @@ export function fileDistKeyStore(supportDirectory: string): DistKeyStore {
 }
 
 /** Encrypted stores first, the file last; every store is read so a key saved before a store appeared is still found. */
-export function defaultDistKeyStores(supportDirectory: string, env: NodeJS.ProcessEnv = process.env): DistKeyStore[] {
+export async function defaultDistKeyStores(supportDirectory: string, env: NodeJS.ProcessEnv = process.env): Promise<DistKeyStore[]> {
   const stores: DistKeyStore[] = [];
   if (process.platform === "darwin") stores.push(keychainDistKeyStore());
-  else if (env.DBUS_SESSION_BUS_ADDRESS && spawnText("secret-tool", ["--version"]).status !== null) {
+  else if (env.DBUS_SESSION_BUS_ADDRESS && (await spawnText("secret-tool", ["--version"])).status !== null) {
     stores.push(secretServiceDistKeyStore());
   }
   stores.push(fileDistKeyStore(supportDirectory));
   return stores;
 }
 
-export function readSavedDistKey(stores: DistKeyStore[]): { key: string; store: DistKeyStore } | null {
+export async function readSavedDistKey(stores: DistKeyStore[]): Promise<{ key: string; store: DistKeyStore } | null> {
   for (const store of stores) {
-    const key = store.read();
+    const key = await store.read();
     if (key) return { key, store };
   }
   return null;
 }
 
 /** SCOUT_DIST_KEY first, then the saved key, the same order `scout web` uses. */
-export function resolveDistKey(env: NodeJS.ProcessEnv, stores: DistKeyStore[]): { key: string; where: string } | null {
+export async function resolveDistKey(env: NodeJS.ProcessEnv, stores: DistKeyStore[]): Promise<{ key: string; where: string } | null> {
   const fromEnv = env.SCOUT_DIST_KEY?.trim();
   if (fromEnv) return { key: fromEnv, where: "SCOUT_DIST_KEY" };
-  const saved = readSavedDistKey(stores);
+  const saved = await readSavedDistKey(stores);
   return saved ? { key: saved.key, where: saved.store.where } : null;
 }
 
@@ -174,7 +207,7 @@ function scrub(text: string, key: string): string {
 export async function checkExpandedWebAccess(options: CheckExpandedWebAccessOptions): Promise<ExpandedWebAccess> {
   const env = options.env ?? process.env;
   const now = options.now ?? Date.now;
-  const resolved = resolveDistKey(env, options.stores);
+  const resolved = await resolveDistKey(env, options.stores);
   if (!resolved) return { state: "no_credential", checkedAt: now() };
   const { key, where } = resolved;
   const host = distBaseUrl(env);

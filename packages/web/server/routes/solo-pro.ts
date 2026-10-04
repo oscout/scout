@@ -18,7 +18,7 @@ export type SoloProRouteDeps = {
   served: SoloProServedClient;
   env?: NodeJS.ProcessEnv;
   probes?: SoloProProbes;
-  keyStores?: () => DistKeyStore[];
+  keyStores?: () => DistKeyStore[] | Promise<DistKeyStore[]>;
   fetchImpl?: (input: string | URL, init?: RequestInit) => Promise<Response>;
   now?: () => number;
 };
@@ -57,8 +57,9 @@ export function mountSoloProRoutes(app: Hono, deps: SoloProRouteDeps) {
   });
 
   app.post("/api/solo-pro/access/check", async (c) => {
-    // Concurrent clicks share one request to the host.
-    inFlight ??= checkExpandedWebAccess({ env, stores: keyStores(), fetchImpl: deps.fetchImpl, now: deps.now })
+    // Concurrent clicks share one request to the host. The stores are built and
+    // read only here, asynchronously, so a slow keychain never holds the server.
+    inFlight ??= (async () => checkExpandedWebAccess({ env, stores: await keyStores(), fetchImpl: deps.fetchImpl, now: deps.now }))()
       .finally(() => {
         inFlight = null;
       });

@@ -356,7 +356,11 @@ async function runSetupCommand(args: string[]): Promise<void> {
     `Broker reachable: ${report.broker.reachable ? "yes" : "no"}`,
   ];
   if (report.brokerWarning) lines.push(`Error: ${report.brokerWarning}`);
-  if (!report.broker.health.ok) lines.push(`Health error: ${report.broker.health.error ?? "Broker health verification failed"}`);
+  if (completion.outcome === "handoff" && report.brokerHandoff) {
+    lines.push(report.brokerHandoff.detail);
+  } else if (!report.broker.health.ok) {
+    lines.push(`Health error: ${report.broker.health.error ?? "Broker health verification failed"}`);
+  }
   for (const entry of report.scoutSkill.entries.filter((entry) => entry.status === "error")) lines.push(`Error: ${entry.error ?? `Skill install failed: ${entry.id}`}`);
   if (report.claudeStatusline.status === "error") lines.push(`Error: ${report.claudeStatusline.error ?? "Claude statusline install failed"}`);
   lines.push(`Logs: ${report.broker.stdoutLogPath} | ${report.broker.stderrLogPath}`);

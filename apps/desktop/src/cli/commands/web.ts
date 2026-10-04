@@ -76,12 +76,12 @@ function supportDirectoryOf(deps: ScoutWebCommandDeps): string {
   return deps.supportDirectory ?? resolveOpenScoutSupportPaths().supportDirectory;
 }
 
-function distKeyStores(deps: ScoutWebCommandDeps, env: NodeJS.ProcessEnv): DistKeyStore[] {
-  return deps.keyStores ?? defaultDistKeyStores(supportDirectoryOf(deps), env);
+async function distKeyStores(deps: ScoutWebCommandDeps, env: NodeJS.ProcessEnv): Promise<DistKeyStore[]> {
+  return deps.keyStores ?? await defaultDistKeyStores(supportDirectoryOf(deps), env);
 }
 
-function resolveKey(context: ScoutCommandContext, stores: DistKeyStore[]): { key: string; where: string } | null {
-  return resolveDistKey(context.env, stores);
+async function resolveKey(context: ScoutCommandContext, stores: DistKeyStore[]): Promise<{ key: string; where: string } | null> {
+  return await resolveDistKey(context.env, stores);
 }
 
 function readFlagValue(args: string[], name: string): string | undefined {
@@ -161,17 +161,25 @@ async function runLogin(context: ScoutCommandContext, args: string[], deps: Scou
 
   // Save to the first store that takes it, then clear the rest so no stale
   // copy outlives a logout.
-  const stores = distKeyStores(deps, context.env);
-  const saved = stores.find((store) => store.write(key));
+  const stores = await distKeyStores(deps, context.env);
+  let saved: DistKeyStore | undefined;
+  for (const store of stores) {
+    if (await store.write(key)) {
+      saved = store;
+      break;
+    }
+  }
   if (!saved) throw new ScoutCliError("Couldn't save the download key.");
-  for (const store of stores) if (store !== saved) store.remove();
+  for (const store of stores) if (store !== saved) await store.remove();
   const who = body?.login ? ` as ${body.login}` : "";
   const label = body?.label ? ` (key "${body.label}")` : "";
   context.output.writeText(`Signed in${who}${label}. Key saved in ${saved.where}.\nNext: scout web install`);
 }
 
-function runLogout(context: ScoutCommandContext, deps: ScoutWebCommandDeps): void {
-  const removed = distKeyStores(deps, context.env).map((store) => store.remove()).some(Boolean);
+async function runLogout(context: ScoutCommandContext, deps: ScoutWebCommandDeps): Promise<void> {
+  let removed = false;
+  // Every store, in order, so no copy outlives a logout.
+  for (const store of await distKeyStores(deps, context.env)) removed = (await store.remove()) || removed;
   context.output.writeText(removed ? "Download key removed." : "No saved download key.");
 }
 
@@ -183,7 +191,7 @@ async function defaultRestartWeb(): Promise<string> {
 async function runInstall(context: ScoutCommandContext, args: string[], deps: ScoutWebCommandDeps): Promise<void> {
   const supportDirectory = supportDirectoryOf(deps);
   const version = readFlagValue(args, "--version") ?? deps.version ?? SCOUT_APP_VERSION;
-  const resolved = resolveKey(context, distKeyStores(deps, context.env));
+  const resolved = await resolveKey(context, await distKeyStores(deps, context.env));
   if (!resolved) {
     throw new ScoutCliError("No download key. Make one at https://console.openscout.app/#downloads, then: scout web login");
   }
@@ -273,7 +281,7 @@ function runUninstall(context: ScoutCommandContext, deps: ScoutWebCommandDeps): 
 async function runStatus(context: ScoutCommandContext, deps: ScoutWebCommandDeps): Promise<void> {
   const supportDirectory = supportDirectoryOf(deps);
   const version = deps.version ?? SCOUT_APP_VERSION;
-  const key = resolveKey(context, distKeyStores(deps, context.env));
+  const key = await resolveKey(context, await distKeyStores(deps, context.env));
   const installed = resolveInstalledWebFullClient(version, { env: context.env, supportDirectory });
   const status = {
     version,

@@ -14,6 +14,27 @@ test("unhealthy and partial failure are failure, with recovery", () => {
   expect(assessSetupCompletion({ ...input(), failures: ["error"] }, local).nextStep).toBe("scout setup");
   expect(assessSetupCompletion({ ...input(), broker: { health: { ok: false }, serviceAdapter: "headless-foreground" } }, local).nextStep).toBe("openscout-runtime broker");
 });
+test("headless foreground handoff is its own outcome: not ready, not failed", () => {
+  const headlessDown = { health: { ok: false }, serviceAdapter: "headless-foreground" };
+  const brokerHandoff = { command: "openscout-runtime broker" };
+  // Even with a ready harness, a broker the operator hasn't started isn't "ready".
+  const handoff = assessSetupCompletion({ ...input(), broker: headlessDown, brokerHandoff }, local);
+  expect(handoff.outcome).toBe("handoff");
+  expect(handoff.headline).toBe("Scout is set up. Start the broker to finish.");
+  expect(handoff.nextStep).toBe("openscout-runtime broker");
+  expect(handoff.alsoAvailable.join(" ")).not.toContain("scout doctor");
+
+  // The handoff only excuses the broker being down; real failures still fail.
+  expect(assessSetupCompletion({ ...input(), broker: headlessDown, brokerHandoff, failures: ["skill install failed"] }, local).outcome).toBe("failed");
+  expect(assessSetupCompletion({ ...input(), broker: headlessDown, brokerHandoff, brokerWarning: "spawn failed" }, local).outcome).toBe("failed");
+  expect(assessSetupCompletion({ ...input(), broker: headlessDown, brokerHandoff, localEdge: { status: "error" } }, local).outcome).toBe("failed");
+  // Without a handoff (e.g. a reachable but unhealthy headless broker), down is a failure.
+  expect(assessSetupCompletion({ ...input(), broker: headlessDown }, local).outcome).toBe("failed");
+  // A broker that appeared but is unhealthy must not be excused by a stale handoff.
+  expect(assessSetupCompletion({ ...input(), broker: { ...headlessDown, reachable: true }, brokerHandoff }, local).outcome).toBe("failed");
+  // A handoff recorded while the broker is actually healthy changes nothing.
+  expect(assessSetupCompletion({ ...input(), brokerHandoff }, local).outcome).toBe("ready");
+});
 test("no authenticated harness uses observed login, unknown never ready", () => {
   expect(assessSetupCompletion(input(false), local).nextStep).toBe("codex login");
   const unknown = { ...input(), catalog: { entries: [{ readinessReport: { ready: true, state: "unknown" } }] } };

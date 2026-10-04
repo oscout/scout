@@ -1,13 +1,8 @@
 import { describe, expect, test } from "bun:test";
 
-import { CHAT_AUTH_ERROR_PARAM } from "../../../../apps/hosted-chat/src/auth.ts";
-import { AUTH_ERROR_PARAM, authErrorFromSearch, readAuthError } from "./hosted-chat-auth-error.ts";
+import { authErrorFromSearch, readAuthError } from "./hosted-chat-auth-error.ts";
 
 describe("why a sign-in did not finish", () => {
-  test("the client reads the parameter the Worker writes", () => {
-    expect(AUTH_ERROR_PARAM).toBe(CHAT_AUTH_ERROR_PARAM);
-  });
-
   test("a cancelled sign-in says nothing was created", () => {
     const notice = readAuthError("oauth_denied")!;
     expect(notice.message).toContain("cancelled");

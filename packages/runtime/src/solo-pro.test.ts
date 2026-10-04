@@ -1,4 +1,5 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
+import { EventEmitter } from "node:events";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -14,6 +15,7 @@ import {
   type SoloProServedClient,
   type SoloProStatus,
 } from "./solo-pro.ts";
+import { resetExecSystemTransportForTests, setExecSystemSpawnForTests } from "./system-probes/exec.js";
 
 const VERSION = "1.4.0";
 const INSTALLED = `/support/web/full/${VERSION}`;
@@ -44,7 +46,7 @@ function probes(world: World = {}): SoloProProbes {
     platform: world.platform ?? "darwin",
     installedFullClient: (version) => (world.fullInstalled ?? true) && version === VERSION ? INSTALLED : null,
     installedFullClientVersions: () => [...((world.fullInstalled ?? true) ? [VERSION] : []), ...(world.otherVersions ?? [])],
-    nativeApp: () => world.native ?? ((world.platform ?? "darwin") === "darwin" ? APP_RUNNING : { state: "not_applicable" }),
+    nativeApp: async () => world.native ?? ((world.platform ?? "darwin") === "darwin" ? APP_RUNNING : { state: "not_applicable" }),
     herdrInstalled: async () => world.herdr ?? true,
     herdrRunningSessions: async () => (world.herdrSessions === undefined ? 1 : world.herdrSessions),
   };
@@ -277,7 +279,7 @@ describe("observeNativeApp: discovery, validity, running", () => {
       home: HOME,
       exists: (path) => path in bundles || plists.has(path),
       isExecutableFile: (path) => executables.has(path),
-      plistString: (plist, key) => {
+      plistString: async (plist, key) => {
         const bundle = plists.get(plist);
         if (!bundle) return null;
         if (key === "CFBundleIdentifier") return bundle.id === undefined ? "app.openscout.scout" : bundle.id;
@@ -285,76 +287,76 @@ describe("observeNativeApp: discovery, validity, running", () => {
         if (key === "CFBundleShortVersionString") return bundle.version ?? "1.4.0";
         return null;
       },
-      processExecutables: () => processes,
+      processExecutables: async () => processes,
     };
   }
 
-  test("finds Scout.app in /Applications", () => {
-    expect(observeNativeApp(io({ "/Applications/Scout.app": {} }))).toMatchObject({ state: "installed", path: "/Applications/Scout.app", development: false });
+  test("finds Scout.app in /Applications", async () => {
+    expect(await observeNativeApp(io({ "/Applications/Scout.app": {} }))).toMatchObject({ state: "installed", path: "/Applications/Scout.app", development: false });
   });
 
-  test("finds a per-user install in ~/Applications", () => {
-    expect(observeNativeApp(io({ [`${HOME}/Applications/Scout.app`]: {} }))).toMatchObject({ state: "installed", path: `${HOME}/Applications/Scout.app` });
+  test("finds a per-user install in ~/Applications", async () => {
+    expect(await observeNativeApp(io({ [`${HOME}/Applications/Scout.app`]: {} }))).toMatchObject({ state: "installed", path: `${HOME}/Applications/Scout.app` });
   });
 
-  test("finds the legacy OpenScout.app name", () => {
-    const found = observeNativeApp(io({ "/Applications/OpenScout.app": { executable: "OpenScout", version: "0.2.100" } }));
+  test("finds the legacy OpenScout.app name", async () => {
+    const found = await observeNativeApp(io({ "/Applications/OpenScout.app": { executable: "OpenScout", version: "0.2.100" } }));
     expect(found).toMatchObject({ state: "installed", path: "/Applications/OpenScout.app", version: "0.2.100" });
   });
 
-  test("a bundle without a usable executable is damaged, and a valid one elsewhere still wins", () => {
-    expect(observeNativeApp(io({ "/Applications/Scout.app": { executableOk: false } }))).toMatchObject({
+  test("a bundle without a usable executable is damaged, and a valid one elsewhere still wins", async () => {
+    expect(await observeNativeApp(io({ "/Applications/Scout.app": { executableOk: false } }))).toMatchObject({
       state: "damaged",
       path: "/Applications/Scout.app",
       problem: expect.stringContaining("not executable"),
     });
-    expect(observeNativeApp(io({ "/Applications/Scout.app": { executableOk: false }, [`${HOME}/Applications/Scout.app`]: {} })))
+    expect(await observeNativeApp(io({ "/Applications/Scout.app": { executableOk: false }, [`${HOME}/Applications/Scout.app`]: {} })))
       .toMatchObject({ state: "installed", path: `${HOME}/Applications/Scout.app` });
   });
 
-  test("an empty folder named Scout.app, or a plist naming no executable, is damaged, not installed", () => {
-    expect(observeNativeApp(io({ "/Applications/Scout.app": { plist: false } }))).toMatchObject({ state: "damaged", problem: "it has no Info.plist" });
-    expect(observeNativeApp(io({ "/Applications/Scout.app": { executable: null } }))).toMatchObject({ state: "damaged" });
+  test("an empty folder named Scout.app, or a plist naming no executable, is damaged, not installed", async () => {
+    expect(await observeNativeApp(io({ "/Applications/Scout.app": { plist: false } }))).toMatchObject({ state: "damaged", problem: "it has no Info.plist" });
+    expect(await observeNativeApp(io({ "/Applications/Scout.app": { executable: null } }))).toMatchObject({ state: "damaged" });
   });
 
-  test("a different app that happens to be called Scout.app is not Scout", () => {
-    expect(observeNativeApp(io({ "/Applications/Scout.app": { id: "com.example.scout" } }))).toMatchObject({
+  test("a different app that happens to be called Scout.app is not Scout", async () => {
+    expect(await observeNativeApp(io({ "/Applications/Scout.app": { id: "com.example.scout" } }))).toMatchObject({
       state: "damaged",
       problem: expect.stringContaining("com.example.scout"),
     });
   });
 
-  test("nothing found reports every place searched", () => {
-    const found = observeNativeApp(io({}));
+  test("nothing found reports every place searched", async () => {
+    const found = await observeNativeApp(io({}));
     expect(found).toEqual({
       state: "missing",
       searched: ["/Applications/Scout.app", `${HOME}/Applications/Scout.app`, "/Applications/OpenScout.app", `${HOME}/Applications/OpenScout.app`],
     });
   });
 
-  test("running means the app's executable or its menu helper, not any process under the bundle", () => {
+  test("running means the app's executable or its menu helper, not any process under the bundle", async () => {
     const bundle = "/Applications/Scout.app";
     const unrelated = [`${bundle}/Contents/Resources/bin/some-tool`, `${bundle}/Contents/MacOS/ScoutHelperThatIsNotScout`];
-    expect(observeNativeApp(io({ [bundle]: {} }, unrelated))).toMatchObject({ running: { app: false, menu: false } });
-    expect(observeNativeApp(io({ [bundle]: {} }, [`${bundle}/Contents/MacOS/Scout`]))).toMatchObject({ running: { app: true, menu: false } });
-    expect(observeNativeApp(io({ [bundle]: {} }, [`${bundle}/Contents/Library/LoginItems/ScoutMenu.app/Contents/MacOS/ScoutMenu`])))
+    expect(await observeNativeApp(io({ [bundle]: {} }, unrelated))).toMatchObject({ running: { app: false, menu: false } });
+    expect(await observeNativeApp(io({ [bundle]: {} }, [`${bundle}/Contents/MacOS/Scout`]))).toMatchObject({ running: { app: true, menu: false } });
+    expect(await observeNativeApp(io({ [bundle]: {} }, [`${bundle}/Contents/Library/LoginItems/ScoutMenu.app/Contents/MacOS/ScoutMenu`])))
       .toMatchObject({ running: { app: false, menu: true } });
-    expect(observeNativeApp(io({ [bundle]: {} }, null))).toMatchObject({ running: null });
+    expect(await observeNativeApp(io({ [bundle]: {} }, null))).toMatchObject({ running: null });
   });
 
-  test("a development build running from a checkout counts as installed", () => {
+  test("a development build running from a checkout counts as installed", async () => {
     const dev = "/Users/me/dev/openscout/apps/macos/dist/Scout.app";
-    const found = observeNativeApp(io({ [dev]: {} }, [`${dev}/Contents/MacOS/Scout`]));
+    const found = await observeNativeApp(io({ [dev]: {} }, [`${dev}/Contents/MacOS/Scout`]));
     expect(found).toMatchObject({ state: "installed", path: dev, development: true, running: { app: true, menu: false } });
   });
 
-  test("a process path that merely looks like a dev bundle isn't trusted without a valid bundle", () => {
+  test("a process path that merely looks like a dev bundle isn't trusted without a valid bundle", async () => {
     const fake = "/tmp/x/Scout.app";
-    expect(observeNativeApp(io({}, [`${fake}/Contents/MacOS/Scout`]))).toMatchObject({ state: "missing" });
+    expect(await observeNativeApp(io({}, [`${fake}/Contents/MacOS/Scout`]))).toMatchObject({ state: "missing" });
   });
 
-  test("off macOS it is not applicable", () => {
-    expect(observeNativeApp(io({ "/Applications/Scout.app": {} }, [], "linux"))).toEqual({ state: "not_applicable" });
+  test("off macOS it is not applicable", async () => {
+    expect(await observeNativeApp(io({ "/Applications/Scout.app": {} }, [], "linux"))).toEqual({ state: "not_applicable" });
   });
 });
 
@@ -371,6 +373,49 @@ describe("defaultSoloProProbes: physical installation of the full client", () =>
       expect(forcedBasic.installedFullClient("9.9.9")).toBeNull();
     } finally {
       rmSync(support, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("defaultSoloProProbes: probes never hold the event loop", () => {
+  afterEach(() => resetExecSystemTransportForTests());
+
+  test("a ps or plutil that never answers gives up per command and the loop keeps running", async () => {
+    const spawned: Array<{ command: string; killed: () => boolean }> = [];
+    setExecSystemSpawnForTests(((command: string) => {
+      let killed = false;
+      const child = Object.assign(new EventEmitter(), {
+        stdout: new EventEmitter(),
+        stderr: new EventEmitter(),
+        exitCode: null,
+        kill: () => (killed = true),
+        unref() {},
+      });
+      spawned.push({ command, killed: () => killed });
+      return child;
+    }) as never);
+    const home = mkdtempSync(join(tmpdir(), "solo-pro-home-"));
+    try {
+      const probes = defaultSoloProProbes({ env: { HOME: home }, platform: "darwin", probeTimeoutMs: 100 });
+      let ticks = 0;
+      const ticker = setInterval(() => { ticks += 1; }, 10);
+      const started = Date.now();
+      let observed: NativeAppObservation;
+      try {
+        observed = await probes.nativeApp();
+      } finally {
+        clearInterval(ticker);
+      }
+      const elapsed = Date.now() - started;
+      // ps, then at most three plutil reads for a bundle at /Applications, each capped.
+      expect(elapsed).toBeLessThan(2_000);
+      expect(ticks).toBeGreaterThanOrEqual(3);
+      expect(spawned[0]!.command).toBe("ps");
+      expect(spawned.every((entry) => entry.killed())).toBe(true);
+      // A probe that ran out of time is "couldn't tell", never "running".
+      if (observed.state === "installed") expect(observed.running).toBeNull();
+    } finally {
+      rmSync(home, { recursive: true, force: true });
     }
   });
 });

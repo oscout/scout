@@ -24,25 +24,32 @@ const probes: SoloProProbes = {
   platform: "darwin",
   installedFullClient: (version) => (version === VERSION ? INSTALLED : null),
   installedFullClientVersions: () => [VERSION],
-  nativeApp: () => ({ state: "installed", path: "/Applications/Scout.app", version: VERSION, development: false, running: { app: true, menu: true } }),
+  nativeApp: async () => ({ state: "installed", path: "/Applications/Scout.app", version: VERSION, development: false, running: { app: true, menu: true } }),
   herdrInstalled: async () => true,
   herdrRunningSessions: async () => 1,
 };
 
-function setup(options: { key?: string | null; respond?: () => Promise<Response> } = {}) {
+function setup(options: {
+  key?: string | null;
+  respond?: () => Promise<Response>;
+  readKey?: () => Promise<string | null>;
+  probes?: SoloProProbes;
+} = {}) {
   let keyReads = 0;
+  let storeBuilds = 0;
   let requests = 0;
   const store: DistKeyStore = {
     where: "macOS Keychain (OPENSCOUT_DIST_KEY)",
     encrypted: true,
-    read: () => {
+    read: async () => {
       keyReads += 1;
+      if (options.readKey) return options.readKey();
       return options.key === undefined ? KEY : options.key;
     },
-    write: () => {
+    write: async () => {
       throw new Error("the routes must never write a key");
     },
-    remove: () => {
+    remove: async () => {
       throw new Error("the routes must never remove a key");
     },
   };
@@ -51,19 +58,22 @@ function setup(options: { key?: string | null; respond?: () => Promise<Response>
     scoutVersion: VERSION,
     served: { profile: "full", root: INSTALLED },
     env: {},
-    probes,
-    keyStores: () => [store],
+    probes: options.probes ?? probes,
+    keyStores: async () => {
+      storeBuilds += 1;
+      return [store];
+    },
     fetchImpl: async () => {
       requests += 1;
       return options.respond ? options.respond() : Response.json({ login: "octo", label: null });
     },
   });
-  return { app, counts: () => ({ keyReads, requests }) };
+  return { app, counts: () => ({ keyReads, requests }), storeBuilds: () => storeBuilds };
 }
 
 describe("/api/solo-pro", () => {
   test("GET reads no key and makes no request, however often it is polled", async () => {
-    const { app, counts } = setup();
+    const { app, counts, storeBuilds } = setup();
     for (let i = 0; i < 3; i += 1) {
       const response = await app.request("http://localhost/api/solo-pro");
       expect(response.status).toBe(200);
@@ -72,6 +82,55 @@ describe("/api/solo-pro", () => {
       expect(body).toMatchObject({ phase: "unconfirmed", access: { state: "unchecked" } });
     }
     expect(counts()).toEqual({ keyReads: 0, requests: 0 });
+    // The key stores aren't even built until someone checks.
+    expect(storeBuilds()).toBe(0);
+  });
+
+  test("a pending keychain read during a check doesn't hold other requests", async () => {
+    let answer: (key: string | null) => void = () => {};
+    const { app, counts } = setup({ readKey: () => new Promise((resolve) => { answer = resolve; }) });
+    const check = app.request("http://localhost/api/solo-pro/access/check", { method: "POST" });
+    await Bun.sleep(0);
+    expect(counts().keyReads).toBe(1);
+
+    const meanwhile = await app.request("http://localhost/api/solo-pro");
+    expect(meanwhile.status).toBe(200);
+    expect(await meanwhile.json()).toMatchObject({ access: { state: "unchecked" } });
+
+    answer(KEY);
+    const checked = await (await check).json() as { phase: string };
+    expect(checked.phase).toBe("active");
+    expect(counts()).toEqual({ keyReads: 1, requests: 1 });
+  });
+
+  test("a pending native-app probe doesn't hold other requests", async () => {
+    let release: () => void = () => {};
+    let calls = 0;
+    const slow: SoloProProbes = {
+      ...probes,
+      // The first probe hangs (a stuck ps); later ones answer.
+      nativeApp: () => {
+        calls += 1;
+        if (calls > 1) return probes.nativeApp();
+        return new Promise((resolve) => {
+          release = () => resolve({ state: "missing", searched: [] });
+        });
+      },
+    };
+    const { app } = setup({ probes: slow });
+    let firstDone = false;
+    const first = app.request("http://localhost/api/solo-pro").then((response) => {
+      firstDone = true;
+      return response;
+    });
+    await Bun.sleep(0);
+    const second = await app.request("http://localhost/api/solo-pro");
+    expect(second.status).toBe(200);
+    expect(firstDone).toBe(false);
+
+    release();
+    const body = await (await first).json() as { components: Array<{ id: string; installed: string }> };
+    expect(body.components.find((component) => component.id === "native_app")?.installed).toBe("missing");
   });
 
   test("POST check asks once, and later GETs reuse the answer without asking again", async () => {

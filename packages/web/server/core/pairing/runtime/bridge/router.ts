@@ -102,6 +102,7 @@ import {
   storePairingAttachmentBlob,
 } from "./fileserver.ts";
 import { createArtifactPresentation } from "./artifact-presentation.ts";
+import { getMobileMeshNodes } from "./mobile-mesh-nodes.ts";
 import { getMobileMeshStatus } from "./mobile-mesh-status.ts";
 
 import { readFileSync, readdirSync, realpathSync, statSync } from "fs";
@@ -1031,6 +1032,9 @@ const mobileRouter = t.router({
 
   meshStatus: procedure
     .query(() => getMobileMeshStatus()),
+
+  meshNodes: procedure
+    .query(() => getMobileMeshNodes()),
 
   inbox: procedure
     .query(async ({ ctx }) => ({

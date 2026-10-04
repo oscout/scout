@@ -56,6 +56,7 @@ import {
   storePairingAttachmentBlob,
 } from "./fileserver.ts";
 import { createArtifactPresentation } from "./artifact-presentation.ts";
+import { getMobileMeshNodes } from "./mobile-mesh-nodes.ts";
 import { getMobileMeshStatus } from "./mobile-mesh-status.ts";
 import {
   SecureTransport,
@@ -667,6 +668,13 @@ async function handleRPCInner(
         return {
           id: req.id,
           result: await getMobileMeshStatus(),
+        };
+      }
+
+      case "mobile/mesh/nodes": {
+        return {
+          id: req.id,
+          result: await getMobileMeshNodes(),
         };
       }
 

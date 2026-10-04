@@ -89,10 +89,21 @@ export type OpenScoutOnboardingSetupResult = {
   setup: SetupResult;
   broker: BrokerServiceStatus;
   brokerWarning: string | null;
+  /**
+   * Set when the service adapter leaves broker start to a foreground process
+   * (headless-foreground) and none is running yet: setup did its part and the
+   * operator starts the broker. An expected handoff, not a broker failure.
+   */
+  brokerHandoff: OpenScoutBrokerHandoff | null;
   catalog: HarnessCatalogSnapshot;
   scoutSkill: ScoutSkillInstallReport;
   claudeStatusline: ClaudeStatuslineInstallReport;
   state: OpenScoutOnboardingState;
+};
+
+export type OpenScoutBrokerHandoff = {
+  command: string;
+  detail: string;
 };
 
 export type OpenScoutOnboardingCommandName = "setup" | "doctor" | "runtimes";
@@ -560,18 +571,33 @@ export async function runOpenScoutOnboardingSetup(input: {
   ]);
   let broker = await brokerServiceStatus();
   let brokerWarning: string | null = null;
-  try {
-    // A healthy existing broker needs no lifecycle action on a rerun,
-    // including an externally supervised foreground broker.
-    if (!broker.health.ok) {
-      broker = await startBrokerService();
+  let brokerHandoff: OpenScoutBrokerHandoff | null = null;
+  if (broker.serviceAdapter === "headless-foreground" && !broker.reachable) {
+    // This adapter has no start lifecycle: the broker runs as a foreground
+    // process the operator owns. Hand that step over instead of attempting an
+    // unsupported start. A reachable-but-unhealthy broker is still a failure.
+    brokerHandoff = {
+      command: "openscout-runtime broker",
+      detail: "Next step: run `openscout-runtime broker` in this shell or under your process manager. "
+        + "The headless service adapter leaves broker start to that foreground process.",
+    };
+  } else {
+    try {
+      // A healthy existing broker needs no lifecycle action on a rerun,
+      // including an externally supervised foreground broker.
+      if (!broker.health.ok) {
+        broker = await startBrokerService();
+      }
+    } catch (error) {
+      brokerWarning = error instanceof Error ? error.message : String(error);
+      broker = await brokerServiceStatus();
     }
-  } catch (error) {
-    brokerWarning = error instanceof Error ? error.message : String(error);
-    broker = await brokerServiceStatus();
   }
   // Verify the post-start observation, not a pre-start snapshot.
   broker = await brokerServiceStatus();
+  // A broker that appeared during setup is no longer a foreground handoff.
+  // Its current health must decide success, including a reachable failure.
+  if (broker.reachable) brokerHandoff = null;
   const catalog = await loadHarnessCatalogSnapshot();
   await triggerMeshDiscovery(broker);
 
@@ -587,6 +613,7 @@ export async function runOpenScoutOnboardingSetup(input: {
     setup,
     broker,
     brokerWarning,
+    brokerHandoff,
     catalog,
     scoutSkill,
     claudeStatusline,

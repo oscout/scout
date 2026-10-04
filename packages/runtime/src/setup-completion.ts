@@ -4,7 +4,11 @@ import { join } from "node:path";
 import { resolveWebPort } from "./local-config.js";
 
 export type SetupCompletion = {
-  outcome: "ready" | "running" | "failed";
+  /**
+   * `handoff`: setup finished its part, and the broker is the operator's to
+   * start (headless foreground adapter). Not ready, not failed, not running.
+   */
+  outcome: "ready" | "running" | "handoff" | "failed";
   headline: string;
   nextStep: string;
   alsoAvailable: string[];
@@ -26,8 +30,9 @@ export function hasUsableScoutApp(platform = process.platform, home = homedir())
 }
 
 export function assessSetupCompletion(input: {
-  broker: { health: { ok: boolean }; serviceAdapter?: string };
+  broker: { health: { ok: boolean }; reachable?: boolean; serviceAdapter?: string };
   brokerWarning?: string | null;
+  brokerHandoff?: { command: string } | null;
   catalog: { entries: Array<{ harness?: string; readinessReport: { ready?: boolean; state?: string; installed?: boolean; configured?: boolean; loginCommand?: string | null } }> };
   defaultHarness?: string;
   failures?: string[];
@@ -44,17 +49,25 @@ export function assessSetupCompletion(input: {
   const remote = surface.ssh ?? Boolean(process.env.SSH_CONNECTION || process.env.SSH_TTY);
   const interactive = surface.interactive ?? Boolean(process.stdin.isTTY && process.stdout.isTTY);
   const app = platform === "darwin" && (surface.appUsable ?? hasUsableScoutApp(platform));
-  const failed = !input.broker.health.ok || Boolean(input.brokerWarning) || Boolean(input.failures?.length) || input.localEdge?.status === "error";
+  // An intended broker handoff only excuses the broker being down; any other
+  // warning or install failure still fails setup.
+  const handoff = !input.broker.health.ok && input.broker.reachable !== true ? input.brokerHandoff ?? null : null;
+  const failed = (!input.broker.health.ok && !handoff) || Boolean(input.brokerWarning) || Boolean(input.failures?.length) || input.localEdge?.status === "error";
   // Only an explicit positive observation is task readiness; installed/unknown is not.
   const ready = input.catalog.entries.some((entry) => entry.readinessReport.ready === true && entry.readinessReport.state === "ready");
   const candidates = [...input.catalog.entries].sort((a, b) => Number(b.harness === input.defaultHarness) - Number(a.harness === input.defaultHarness));
   const login = candidates.find((entry) => entry.readinessReport.installed && entry.readinessReport.configured === false && !entry.readinessReport.ready && entry.readinessReport.loginCommand)?.readinessReport.loginCommand;
-  const outcome = failed ? "failed" : ready ? "ready" : "running";
+  const outcome = failed ? "failed" : handoff ? "handoff" : ready ? "ready" : "running";
   return {
     outcome,
-    headline: failed ? "Scout setup failed." : ready ? "Scout is ready." : "Scout is running. No agent is ready yet.",
+    headline: failed
+      ? "Scout setup failed."
+      : handoff
+        ? "Scout is set up. Start the broker to finish."
+        : ready ? "Scout is ready." : "Scout is running. No agent is ready yet.",
     nextStep: failed
       ? (!input.broker.health.ok && input.broker.serviceAdapter === "headless-foreground" ? "openscout-runtime broker" : "scout setup")
+      : handoff ? handoff.command
       : !ready ? login ?? "scout runtimes" : remote || !interactive ? "scout whoami" : app ? "scout menu" : "scout server open",
     alsoAvailable: [
       "scout server open — browser (local desktop)",

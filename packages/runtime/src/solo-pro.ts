@@ -10,12 +10,14 @@
 // check (`checkExpandedWebAccess`) that the caller caches; until one runs,
 // access is "unchecked", and an unconfirmed answer never becomes a yes or a no.
 // Nothing here installs, writes account state, or reads the download key.
-import { spawnSync } from "node:child_process";
+// `plutil` and `ps` run through the sanctioned async exec helper with a time
+// limit, so a slow probe never blocks the web server's event loop.
 import { accessSync, constants, existsSync, readdirSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 
 import { SCOUT_DIST_KEYS_URL, type ExpandedWebAccess } from "./dist-access.js";
+import { execSystemFile } from "./system-probes/exec.js";
 import { isHerdrAvailable, readHerdrSessions } from "./system-probes/herdr.js";
 import { resolveInstalledWebFullClient, webFullClientsDirectory } from "./web-full-client.js";
 
@@ -107,7 +109,7 @@ export type SoloProProbes = {
   installedFullClient(version: string | null): string | null;
   /** Versions with a full client under the support directory. */
   installedFullClientVersions(): string[];
-  nativeApp(): NativeAppObservation;
+  nativeApp(): Promise<NativeAppObservation>;
   herdrInstalled(): Promise<boolean>;
   /** Running herdr sessions; null when the probe failed. */
   herdrRunningSessions(): Promise<number | null>;
@@ -133,9 +135,9 @@ export type NativeAppProbeIO = {
   home: string;
   exists(path: string): boolean;
   isExecutableFile(path: string): boolean;
-  plistString(plistPath: string, key: string): string | null;
+  plistString(plistPath: string, key: string): Promise<string | null>;
   /** Full executable paths of running processes (`ps -axo comm=`), or null when `ps` can't answer. */
-  processExecutables(): string[] | null;
+  processExecutables(): Promise<string[] | null>;
 };
 
 export function scoutAppCandidatePaths(home: string): string[] {
@@ -144,16 +146,16 @@ export function scoutAppCandidatePaths(home: string): string[] {
 
 type BundleCheck = { ok: true; executable: string; version: string | null } | { ok: false; problem: string };
 
-function checkBundle(io: NativeAppProbeIO, bundle: string): BundleCheck {
+async function checkBundle(io: NativeAppProbeIO, bundle: string): Promise<BundleCheck> {
   const plist = join(bundle, "Contents", "Info.plist");
   if (!io.exists(plist)) return { ok: false, problem: "it has no Info.plist" };
-  const id = io.plistString(plist, "CFBundleIdentifier");
+  const id = await io.plistString(plist, "CFBundleIdentifier");
   if (id !== null && id !== SCOUT_APP_BUNDLE_ID) return { ok: false, problem: `its bundle id is ${id}, not ${SCOUT_APP_BUNDLE_ID}` };
-  const name = io.plistString(plist, "CFBundleExecutable");
+  const name = await io.plistString(plist, "CFBundleExecutable");
   if (!name) return { ok: false, problem: "its Info.plist names no executable" };
   const executable = join(bundle, "Contents", "MacOS", name);
   if (!io.isExecutableFile(executable)) return { ok: false, problem: `${join("Contents", "MacOS", name)} is missing or not executable` };
-  return { ok: true, executable, version: io.plistString(plist, "CFBundleShortVersionString") };
+  return { ok: true, executable, version: await io.plistString(plist, "CFBundleShortVersionString") };
 }
 
 /**
@@ -163,9 +165,9 @@ function checkBundle(io: NativeAppProbeIO, bundle: string): BundleCheck {
  * embedded menu helper, never for some other process that lives under the
  * bundle path. A development build running from a checkout counts as installed.
  */
-export function observeNativeApp(io: NativeAppProbeIO): NativeAppObservation {
+export async function observeNativeApp(io: NativeAppProbeIO): Promise<NativeAppObservation> {
   if (io.platform !== "darwin") return { state: "not_applicable" };
-  const processes = io.processExecutables();
+  const processes = await io.processExecutables();
   const running = (bundle: string, executable: string) => processes === null
     ? null
     : { app: processes.includes(executable), menu: processes.includes(join(bundle, EMBEDDED_MENU_EXECUTABLE)) };
@@ -174,7 +176,7 @@ export function observeNativeApp(io: NativeAppProbeIO): NativeAppObservation {
   let damaged: { path: string; problem: string } | null = null;
   for (const bundle of searched) {
     if (!io.exists(bundle)) continue;
-    const check = checkBundle(io, bundle);
+    const check = await checkBundle(io, bundle);
     if (check.ok) {
       return { state: "installed", path: bundle, version: check.version, development: false, running: running(bundle, check.executable) };
     }
@@ -183,7 +185,7 @@ export function observeNativeApp(io: NativeAppProbeIO): NativeAppObservation {
   for (const executable of processes ?? []) {
     const bundle = executable.match(DEVELOPMENT_APP_EXECUTABLE)?.[1];
     if (!bundle || searched.includes(bundle)) continue;
-    const check = checkBundle(io, bundle);
+    const check = await checkBundle(io, bundle);
     if (check.ok && check.executable === executable) {
       return { state: "installed", path: bundle, version: check.version, development: true, running: running(bundle, check.executable) };
     }
@@ -191,14 +193,28 @@ export function observeNativeApp(io: NativeAppProbeIO): NativeAppObservation {
   return damaged ? { state: "damaged", ...damaged } : { state: "missing", searched };
 }
 
-export function defaultSoloProProbes(options: { env?: NodeJS.ProcessEnv; supportDirectory?: string } = {}): SoloProProbes {
+/** Per command; a probe that runs out of time reads as "couldn't tell". */
+export const SOLO_PRO_PROBE_TIMEOUT_MS = 3_000;
+
+export function defaultSoloProProbes(options: {
+  env?: NodeJS.ProcessEnv;
+  supportDirectory?: string;
+  platform?: NodeJS.Platform;
+  probeTimeoutMs?: number;
+} = {}): SoloProProbes {
   const env = options.env ?? process.env;
-  const run = (command: string, args: string[]) => {
-    const result = spawnSync(command, args, { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 3_000 });
-    return { ok: !result.error && result.status === 0, stdout: result.stdout ?? "" };
+  const platform = options.platform ?? process.platform;
+  const timeoutMs = options.probeTimeoutMs ?? SOLO_PRO_PROBE_TIMEOUT_MS;
+  const run = async (command: string, args: string[]) => {
+    try {
+      const result = await execSystemFile(command, args, { timeoutMs, probeId: `solo-pro.${command}`, maxStderrBytes: 16 * 1024 });
+      return { ok: result.exitCode === 0, stdout: result.stdout };
+    } catch {
+      return { ok: false, stdout: "" };
+    }
   };
   const io: NativeAppProbeIO = {
-    platform: process.platform,
+    platform,
     home: env.HOME?.trim() || homedir(),
     exists: (path) => existsSync(path),
     isExecutableFile: (path) => {
@@ -210,17 +226,17 @@ export function defaultSoloProProbes(options: { env?: NodeJS.ProcessEnv; support
         return false;
       }
     },
-    plistString: (plistPath, key) => {
-      const result = run("plutil", ["-extract", key, "raw", "-o", "-", plistPath]);
+    plistString: async (plistPath, key) => {
+      const result = await run("plutil", ["-extract", key, "raw", "-o", "-", plistPath]);
       return result.ok ? result.stdout.trim() || null : null;
     },
-    processExecutables: () => {
-      const result = run("ps", ["-axo", "comm="]);
+    processExecutables: async () => {
+      const result = await run("ps", ["-axo", "comm="]);
       return result.ok ? result.stdout.split("\n").map((line) => line.trim()).filter(Boolean) : null;
     },
   };
   return {
-    platform: process.platform,
+    platform,
     // Physical installation for this version. The serving opt-out is passed
     // separately, so it never makes an installed client look missing.
     installedFullClient: (version) => resolveInstalledWebFullClient(version, { env: {}, supportDirectory: options.supportDirectory }),
@@ -374,10 +390,10 @@ function fullWebAppComponent(
 
 // Optional: Solo Pro is the full web app. Scout for Mac is reported on its own
 // and never decides whether Solo Pro is set up.
-function nativeAppComponent(probes: SoloProProbes): SoloProComponent {
+async function nativeAppComponent(probes: SoloProProbes): Promise<SoloProComponent> {
   const base = { id: "native_app" as const, label: "Scout for Mac", required: false };
   const install: SoloProAction = { kind: "command", label: "Install Scout for Mac", command: "scout install" };
-  const app = probes.nativeApp();
+  const app = await probes.nativeApp();
   switch (app.state) {
     case "not_applicable":
       return {
@@ -486,10 +502,11 @@ export async function readSoloProStatus(options: {
 }): Promise<SoloProStatus> {
   const env = options.env ?? process.env;
   const access = summarizeSoloProAccess(options.access);
+  const [nativeApp, herdr] = await Promise.all([nativeAppComponent(options.probes), herdrComponent(options.probes)]);
   const components = [
     fullWebAppComponent(options.probes, options.scoutVersion, options.served, env),
-    nativeAppComponent(options.probes),
-    await herdrComponent(options.probes),
+    nativeApp,
+    herdr,
   ];
   const phase = soloProPhase(access, components);
   return {

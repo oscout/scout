@@ -406,7 +406,11 @@ export function renderScoutSetupReport(report: ScoutSetupReport, completion: Set
     lines.push(`  Error: ${entry.error ?? `Skill install failed: ${entry.id}`}`);
   }
   if (report.claudeStatusline.status === "error") lines.push(`  Error: ${report.claudeStatusline.error ?? "Claude statusline install failed"}`);
-  if (!report.broker.health.ok) lines.push(`  Health error: ${report.broker.health.error ?? "Broker health verification failed"}`);
+  if (completion.outcome === "handoff" && report.brokerHandoff) {
+    lines.push(`  ${report.brokerHandoff.detail}`);
+  } else if (!report.broker.health.ok) {
+    lines.push(`  Health error: ${report.broker.health.error ?? "Broker health verification failed"}`);
+  }
 
   lines.push("", ...renderLocalEdgeDependencyReport(report.localEdge));
 

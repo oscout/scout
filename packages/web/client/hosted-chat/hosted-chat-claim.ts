@@ -13,7 +13,7 @@
 /**
  * The Worker's reserved first path segments (`apps/hosted-chat/src/paths.ts`,
  * `RESERVED_CHAT_PATHS`). A copy, because the client bundle does not import
- * Worker source; `hosted-chat-claim.test.ts` pins the two together.
+ * Worker source; the private `apps/hosted-chat/test/client-parity.spec.ts` pins the two together.
  */
 export const RESERVED_SPACE_NAMES: ReadonlySet<string> = new Set([
   "api", "auth", "admin", "settings", "login", "logout", "signup", "invite", "join", "health",

@@ -133,6 +133,13 @@
     "owner": "desktop"
   },
   {
+    "path": "apps/desktop/src/cli/commands/setup-completion-process.test.ts",
+    "symbol": "Bun.spawnSync",
+    "category": "test",
+    "reason": "runs `scout setup` in an isolated child Bun process against a temp HOME with a 20-second timeout to assert the completion output and exit code",
+    "owner": "tests"
+  },
+  {
     "path": "apps/desktop/src/core/broker/service.ts",
     "symbol": "node:child_process",
     "category": "process-lifecycle",
