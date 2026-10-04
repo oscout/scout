@@ -42,6 +42,8 @@ test("public release plan is reviewed-source-only and complete-state idempotent"
   assert.doesNotMatch(result.stdout, /gh workflow run/);
   assert.match(result.stdout, /git push --atomic origin HEAD:refs\/heads\/main/);
   assert.match(result.stdout, /ship-npm\.sh --verify-published/);
+  assert.match(result.stdout, /GitHub release v[\d.]+ --generate-notes --latest=false/);
+  assert.match(result.stdout, /GitHub Latest \(downloadable native installer\) unchanged/);
   assert.doesNotMatch(result.stdout, /bump-version|git commit|--follow-tags/);
   assert.doesNotMatch(result.stdout, /apps\/macos|appcast|include-ios|\.dmg/i);
 });
@@ -1252,7 +1254,7 @@ test("local candidates cannot acquire a false OIDC receipt claim", () => {
   } finally { rmSync(fixture, { recursive: true, force: true }); }
 });
 
-function createLocalReleaseFixture({ corruptReceipt = false } = {}) {
+function createLocalReleaseFixture({ corruptReceipt = false, initialRelease = "final" } = {}) {
   const state = createPublishFixture();
   const { fixture } = state;
   copyFileSync(new URL("ship-release.mjs", import.meta.url), join(fixture, "scripts/ship-release.mjs"));
@@ -1273,11 +1275,36 @@ function createLocalReleaseFixture({ corruptReceipt = false } = {}) {
     const corrupt = Buffer.from(receipt); corrupt[0] = 0;
     writeFileSync(remoteReceipt, corrupt);
   }
+  // Release state: "missing", or "<isDraft> <isPrerelease>". Every create/edit
+  // argv is logged so tests can assert how GitHub Latest was handled.
+  const releaseState = join(fixture, "gh-release-state");
+  const initialStates = { draft: "true false", prerelease: "false true", final: "false false" };
+  if (initialRelease !== "missing") writeFileSync(releaseState, initialStates[initialRelease]);
   writeFileSync(join(fixture, "fake-bin/gh"), `#!/bin/bash
+state='${releaseState}'
 if [[ "$1 $2" == "release view" ]]; then
+  if [[ ! -f "$state" ]]; then echo "release not found" >&2; exit 1; fi
+  read -r draft prerelease < "$state"
   assets='[]'
   if [[ -f '${remoteReceipt}' ]]; then assets='[{"name":"receipt.json","size":${receipt.length},"url":"https://github.com/oscout/scout/releases/download/v0.2.99/receipt.json"}]'; fi
-  echo '{"tagName":"v0.2.99","isDraft":false,"isPrerelease":false,"url":"https://github.com/oscout/scout/releases/tag/v0.2.99","assets":'"$assets"'}'
+  echo '{"tagName":"v0.2.99","isDraft":'"$draft"',"isPrerelease":'"$prerelease"',"url":"https://github.com/oscout/scout/releases/tag/v0.2.99","assets":'"$assets"'}'
+  exit 0
+fi
+if [[ "$1 $2" == "release create" ]]; then
+  [[ ! -f "$state" ]] || exit 96
+  echo "$*" >> '${fixture}/gh-release-calls.log'
+  echo "false false" > "$state"
+  exit 0
+fi
+if [[ "$1 $2" == "release edit" ]]; then
+  [[ -f "$state" ]] || exit 95
+  echo "$*" >> '${fixture}/gh-release-calls.log'
+  read -r draft prerelease < "$state"
+  for arg in "$@"; do
+    [[ "$arg" == "--draft=false" ]] && draft=false
+    [[ "$arg" == "--prerelease=false" ]] && prerelease=false
+  done
+  echo "$draft $prerelease" > "$state"
   exit 0
 fi
 if [[ "$1 $2" == "release upload" ]]; then
@@ -1315,3 +1342,38 @@ for (const corruptReceipt of [false, true]) {
     } finally { rmSync(fixture, { recursive: true, force: true }); }
   });
 }
+
+for (const initialRelease of ["missing", "draft", "prerelease"]) {
+  test(`local release publishes a ${initialRelease} receipt-only release without claiming GitHub Latest`, () => {
+    const { fixture } = createLocalReleaseFixture({ initialRelease });
+    try {
+      const result = spawnSync(process.execPath, ["scripts/ship-release.mjs", "0.2.99", "--execute", "--yes"], {
+        cwd: fixture, encoding: "utf8", env: { ...registryEnv(fixture), NPM_TOKEN: "test-only" },
+      });
+      assert.equal(result.status, 0, result.stderr);
+      const calls = readFileSync(join(fixture, "gh-release-calls.log"), "utf8").trim().split("\n");
+      assert.ok(calls.length > 0);
+      for (const call of calls) {
+        assert.match(call, /--latest=false/, call);
+        assert.doesNotMatch(call, /--latest(?!=false)/, call);
+      }
+      if (initialRelease === "missing") assert.match(calls[0], /^release create v0\.2\.99 /);
+      else assert.ok(calls.every((call) => call.startsWith("release edit v0.2.99 ")));
+      assert.equal(readFileSync(join(fixture, "gh-release-state"), "utf8").trim(), "false false");
+    } finally { rmSync(fixture, { recursive: true, force: true }); }
+  });
+}
+
+test("retrying an existing final release preserves its GitHub Latest state", () => {
+  const { fixture } = createLocalReleaseFixture({ initialRelease: "final" });
+  try {
+    const result = spawnSync(process.execPath, ["scripts/ship-release.mjs", "0.2.99", "--execute", "--yes"], {
+      cwd: fixture, encoding: "utf8", env: { ...registryEnv(fixture), NPM_TOKEN: "test-only" },
+    });
+    assert.equal(result.status, 0, result.stderr);
+    // An existing stable release may be the verified native installer release;
+    // the package publisher must not edit it, so it neither promotes nor demotes Latest.
+    assert.equal(existsSync(join(fixture, "gh-release-calls.log")), false);
+    assert.match(readFileSync(join(fixture, "gh-mutations.log"), "utf8"), /^upload$/m);
+  } finally { rmSync(fixture, { recursive: true, force: true }); }
+});
