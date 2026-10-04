@@ -176,7 +176,7 @@ jobs:
           sha256sum scout-tui-"$VERSION"-*.tar.gz > "$manifest"
           cat "$manifest"
           if ! gh release view "$TAG" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
-            gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --verify-tag --title "$TAG" --notes ""
+            gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --verify-tag --title "$TAG" --notes "" --latest=false
           fi
           # Archives first, manifest last: the CLI reads the manifest before
           # any archive, so it never sees a checksum for a missing file.

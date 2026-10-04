@@ -20,6 +20,15 @@ const repoRoot = new URL("..", import.meta.url);
 const currentVersion = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"))
   .version;
 
+test("TUI fallback releases leave GitHub Latest to the native installer", () => {
+  const workflow = readFileSync(new URL("../.github/workflows/release-scout-tui.yml", import.meta.url), "utf8");
+  const releaseCreates = workflow.match(/\bgh release create\b[^\n]*/g) ?? [];
+  assert.ok(releaseCreates.length > 0, "the fallback release creation remains covered");
+  for (const command of releaseCreates) {
+    assert.match(command, /--latest=false(?:\s|$)/, "TUI-only releases must not take Latest from the Mac installer");
+  }
+});
+
 function plan(...args) {
   return spawnSync(process.execPath, ["scripts/ship-release.mjs", ...args], {
     cwd: repoRoot,
