@@ -21,6 +21,17 @@ import {
   reportCompanionHitRegions,
   budgetHitRegions,
   COMPANION_MAX_REGIONS,
+  COMPANION_ANCHORS_EVENT,
+  COMPANION_FIGURE_DRAG_EVENT,
+  beginFigureDrag,
+  nudgeCompanionFigure,
+  onCompanionAnchors,
+  onCompanionFigureDrag,
+  parseCompanionFigures,
+  parseCompanionFigureDefaults,
+  sendCompanionFiguresHome,
+  setCompanionFigure,
+  setCompanionFigureDefaults,
 } from "./companion-host.ts";
 
 type Posted = { kind: string; id: string; method: string; params: Record<string, unknown> };
@@ -88,6 +99,11 @@ describe("parseCompanionHostState", () => {
       originPins: true,
       edgeAnchor: "right",
       edge: null,
+      figures: [
+        { workId: "work-1", size: null, motion: null, hidden: false, placement: { kind: "home" }, anchor: null, label: "Home row" },
+        { workId: "work-2", size: null, motion: null, hidden: false, placement: { kind: "home" }, anchor: null, label: "Home row" },
+      ],
+      figureDefaults: { size: 24, motion: "full" },
     });
   });
 
@@ -197,6 +213,8 @@ describe("bridge calls", () => {
       originPins: true,
       edgeAnchor: "right",
       edge: null,
+      figures: [{ workId: "work-9", size: null, motion: null, hidden: false, placement: { kind: "home" }, anchor: null, label: "Home row" }],
+      figureDefaults: { size: 24, motion: "full" },
     }]);
   });
 
@@ -228,7 +246,7 @@ describe("edge mode", () => {
       mode: "edge",
       originPins: false,
       edgeAnchor: "left",
-      edge: geometry,
+      edge: { ...geometry, band: null, visible: null, screen: null },
     });
   });
 
@@ -242,7 +260,17 @@ describe("edge mode", () => {
       dock: "top",
       obstacles: [{ start: 50, end: 10 }, { start: 10, end: 5000 }, { start: 100, end: 200, label: 7 }, "x"],
     });
-    expect(narrowed).toEqual({ width: 1000, height: 470, anchor: "right", dock: "hidden", obstacles: [{ start: 100, end: 200, label: "Scout window" }] });
+    expect(narrowed).toEqual({ width: 1000, height: 470, band: null, visible: null, screen: null, anchor: "right", dock: "hidden", obstacles: [{ start: 100, end: 200, label: "Scout window" }] });
+    // The full-display layer: band and visible frame as page rectangles.
+    expect(parseCompanionEdgeGeometry({
+      width: 1512,
+      height: 982,
+      band: { x: 0, y: 442, width: 1512, height: 470 },
+      visible: { x: 0, y: 33, width: 1512, height: 879 },
+      screen: { width: 1512, height: 982 },
+    })).toMatchObject({ band: { x: 0, y: 442, width: 1512, height: 470 }, visible: { y: 33 }, screen: { width: 1512, height: 982 } });
+    expect(parseCompanionEdgeGeometry({ width: 10, height: 10, band: { x: 0, y: 0, width: 0, height: 4 }, screen: { width: "big" } }))
+      .toMatchObject({ band: null, screen: null });
   });
 
   test("hit regions are cleaned and bounded before they reach the host", async () => {
@@ -332,5 +360,92 @@ describe("bridge timeout", () => {
     // A later call still round-trips normally.
     installHost();
     await expect(readCompanionState()).resolves.toMatchObject({ pins: [] });
+  });
+});
+
+describe("figures you place", () => {
+  const pins = [{ workId: "work-1" }, { workId: "work-2" }, { workId: "work-3" }];
+
+  test("one figure per pin, in pin order; malformed fields fall back", () => {
+    const figures = parseCompanionFigures([
+      { workId: "work-2", size: 48, motion: "calm", hidden: true, placement: { kind: "window", side: "top", t: 0.3, ownerBundleID: "com.apple.Safari", windowNumber: 9 },
+        anchor: { x: 400, y: 300, down: "bottom", covered: true, away: false }, label: "Standing on the Safari window" },
+      { workId: "work-1", size: 200, motion: "wild", hidden: "yes", placement: { kind: "free", x: 3, y: 0.2 }, anchor: { x: Number.NaN, y: 1 } },
+      { workId: "work-2", size: 16 },
+      { workId: "<x>", size: 32 },
+      "junk",
+    ], pins);
+    expect(figures.map((f) => f.workId)).toEqual(["work-1", "work-2", "work-3"]);
+    expect(figures[0]).toEqual({ workId: "work-1", size: null, motion: null, hidden: false, placement: { kind: "home" }, anchor: null, label: "Home row" });
+    // Window ids stay with the host; the page only sees the side.
+    expect(figures[1]).toEqual({
+      workId: "work-2", size: 48, motion: "calm", hidden: true,
+      placement: { kind: "window", side: "top", t: 0.3 },
+      anchor: { x: 400, y: 300, down: "bottom", covered: true, away: false },
+      label: "Standing on the Safari window",
+    });
+    expect(figures[2]!.placement).toEqual({ kind: "home" });
+    expect(parseCompanionFigures([{ workId: "work-1", size: 24.5 }], pins)[0]!.size).toBeNull();
+    expect(parseCompanionFigures([{ workId: "work-1", placement: { kind: "edge", edge: "middle", t: 0.5 } }], pins)[0]!.placement).toEqual({ kind: "home" });
+    expect(parseCompanionFigures([{ workId: "work-1", placement: { kind: "edge", edge: "left", t: 0.5 }, anchor: { x: 0, y: 10, down: "sideways" } }], pins)[0])
+      .toMatchObject({ placement: { kind: "edge", edge: "left", t: 0.5 }, anchor: { x: 0, y: 10, down: null, covered: false, away: false } });
+    expect(parseCompanionFigureDefaults({ size: 99, motion: "still" })).toEqual({ size: 24, motion: "still" });
+    expect(parseCompanionFigureDefaults(null)).toEqual({ size: 24, motion: "full" });
+  });
+
+  test("figure calls post only valid values", async () => {
+    installHost();
+    reply = () => ({ pins: [] });
+    beginFigureDrag("work-1");
+    beginFigureDrag("bad id");
+    await setCompanionFigure("work-1", { size: 48, motion: "default" });
+    await setCompanionFigure("work-1", { size: "default", hidden: true, home: true });
+    await expect(setCompanionFigure("work-1", { size: 12 })).rejects.toThrow("Nothing to change.");
+    await expect(setCompanionFigure("<x>", { hidden: true })).rejects.toThrow();
+    await nudgeCompanionFigure("work-1", 10, -1);
+    await expect(nudgeCompanionFigure("work-1", 101, 0)).rejects.toThrow();
+    await expect(nudgeCompanionFigure("work-1", Number.NaN, 0)).rejects.toThrow();
+    await setCompanionFigureDefaults({ size: 32, motion: "wild" as never });
+    await expect(setCompanionFigureDefaults({ size: 200 })).rejects.toThrow();
+    await sendCompanionFiguresHome();
+    expect(posted.map((message) => [message.method, message.params])).toEqual([
+      ["figureDrag", { workId: "work-1" }],
+      ["figure", { workId: "work-1", size: 48, motion: "default" }],
+      ["figure", { workId: "work-1", size: "default", hidden: true, home: true }],
+      ["figureNudge", { workId: "work-1", dx: 10, dy: -1 }],
+      ["figureDefaults", { size: 32 }],
+      ["figuresHome", {}],
+    ]);
+  });
+
+  test("drag and anchor events are narrowed before listeners see them", () => {
+    const target = installHost();
+    const drags: unknown[] = [];
+    const anchors: unknown[] = [];
+    const stopDrag = onCompanionFigureDrag((drag) => drags.push(drag));
+    const stopAnchors = onCompanionAnchors((update) => anchors.push({ anchors: Object.fromEntries(update.anchors), falling: update.falling }));
+    target.dispatchEvent(new CustomEvent(COMPANION_FIGURE_DRAG_EVENT, { detail: {
+      workId: "work-1", x: 10, y: 20, mod: "alt",
+      guide: { kind: "perch", spot: { x: 12, y: 30 }, from: { x: 0, y: 30 }, to: { x: 100, y: 30 }, horizontal: true },
+    } }));
+    target.dispatchEvent(new CustomEvent(COMPANION_FIGURE_DRAG_EVENT, { detail: { workId: "work-1", x: 10, y: 20, mod: "ctrl", guide: { kind: "teleport", spot: { x: 1, y: 1 } } } }));
+    target.dispatchEvent(new CustomEvent(COMPANION_FIGURE_DRAG_EVENT, { detail: { workId: "work-1", x: "far", y: 20 } }));
+    target.dispatchEvent(new CustomEvent(COMPANION_FIGURE_DRAG_EVENT, { detail: { workId: null, dropped: "work-1", fall: true } }));
+    target.dispatchEvent(new CustomEvent(COMPANION_ANCHORS_EVENT, { detail: {
+      figures: [{ workId: "work-1", anchor: { x: 5, y: 6, down: "top", covered: false, away: true }, label: "Away with the Safari window" }, { workId: "<x>" }],
+      falling: ["work-1", "<x>"],
+    } }));
+    stopDrag();
+    stopAnchors();
+    target.dispatchEvent(new CustomEvent(COMPANION_FIGURE_DRAG_EVENT, { detail: { workId: null } }));
+    expect(drags).toEqual([
+      { workId: "work-1", x: 10, y: 20, mod: "alt", guide: { kind: "perch", spot: { x: 12, y: 30 }, from: { x: 0, y: 30 }, to: { x: 100, y: 30 }, horizontal: true } },
+      { workId: "work-1", x: 10, y: 20, mod: null, guide: null },
+      { workId: null, dropped: "work-1", fall: true },
+    ]);
+    expect(anchors).toEqual([{
+      anchors: { "work-1": { anchor: { x: 5, y: 6, down: "top", covered: false, away: true }, label: "Away with the Safari window" } },
+      falling: ["work-1"],
+    }]);
   });
 });

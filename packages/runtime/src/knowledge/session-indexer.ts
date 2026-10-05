@@ -10,6 +10,8 @@ import {
   statSync,
   writeFileSync,
 } from "node:fs";
+import { spawn } from "node:child_process";
+import { open, opendir, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, join, relative, sep } from "node:path";
 
@@ -25,6 +27,7 @@ import type {
   KnowledgeFacets,
   KnowledgeIndexJob,
   KnowledgePortablePath,
+  KnowledgeSearchHit,
   KnowledgeSourceRef,
 } from "./types.js";
 
@@ -1323,5 +1326,385 @@ export async function indexRecentSessionKnowledge(
     };
   } finally {
     store.close();
+  }
+}
+
+export interface ScanRecentSessionKnowledgeInput {
+  q: string;
+  /** Cancels discovery, transcript reads and the owned ripgrep process. */
+  signal?: AbortSignal;
+  /** Lookback window in whole days (default 3). */
+  days?: number;
+  harness?: string | string[];
+  /** Only transcripts written at or after this time. */
+  updatedAfterMs?: number;
+  /** Newest transcripts to read (default 80). */
+  fileLimit?: number;
+  /** Hits to return (default 30). */
+  limit?: number;
+  /** Stop reading after this long and return what matched (default 2500ms). */
+  budgetMs?: number;
+}
+
+export interface ScanRecentSessionKnowledgeResult {
+  hits: KnowledgeSearchHit[];
+  /** Known scanned files; a lower bound when ripgrep is interrupted. */
+  scannedFiles: number;
+  totalFiles: number;
+  /** True when the time budget or hit limit ended the scan early. */
+  truncated: boolean;
+}
+
+const SCAN_HITS_PER_FILE = 3;
+const SCAN_RG_MAX_PER_FILE = 200;
+const SCAN_RG_MAX_OUTPUT_BYTES = 64 * 1024 * 1024;
+const SCAN_HEAD_BYTES = 256 * 1024;
+
+type ScanLine = { lineNo: number; byte: number; text: string };
+
+function scanSnippet(text: string, terms: string[]): string {
+  const compact = text.replace(/\s+/g, " ").trim();
+  if (compact.length <= 220) return compact;
+  const index = compact.toLowerCase().indexOf(terms[0] ?? "");
+  const start = Math.max(0, index >= 0 ? index - 70 : 0);
+  const end = Math.min(compact.length, start + 220);
+  return `${start > 0 ? "..." : ""}${compact.slice(start, end)}${end < compact.length ? "..." : ""}`;
+}
+
+type ScanBudget = { signal: AbortSignal; stopped: () => boolean };
+
+// Discovery belongs to the request budget too. Stream directory entries rather
+// than synchronously enumerating all transcript history before the first await.
+async function discoverScanFiles(cutoffMs: number, limit: number, harnessFilter: Set<Harness> | null, budget: ScanBudget) {
+  const files: SessionFile[] = [];
+  let inspected = 0;
+  for (const { harness, root } of sessionRoots(harnessFilter)) {
+    const stack = [root];
+    const visited = new Set<string>();
+    while (stack.length && !budget.stopped()) {
+      const directory = stack.pop()!;
+      try {
+        const directoryStat = await stat(directory);
+        const identity = `${directoryStat.dev}:${directoryStat.ino}`;
+        if (visited.has(identity) || budget.stopped()) continue;
+        visited.add(identity);
+        const entries = await opendir(directory);
+        for await (const entry of entries) {
+          if (budget.stopped()) break;
+          if (++inspected % 32 === 0) await yieldToEventLoop();
+          if (budget.stopped()) break;
+          const path = join(directory, entry.name);
+          // Keep existing symlink discovery semantics, but don't revisit cycles.
+          if (entry.isDirectory()) { stack.push(path); continue; }
+          if (!entry.isSymbolicLink() && !isHarnessTranscriptFile(harness, entry.name)) continue;
+          let info;
+          try { info = await stat(path); } catch { continue; }
+          if (budget.stopped()) break;
+          if (info.isDirectory()) { stack.push(path); continue; }
+          if (!isHarnessTranscriptFile(harness, entry.name) || info.mtimeMs < cutoffMs) continue;
+          files.push({ harness, path, mtimeMs: info.mtimeMs, size: info.size });
+          files.sort((left, right) => right.mtimeMs - left.mtimeMs);
+          if (files.length > limit) files.pop();
+        }
+      } catch {
+        // A transcript directory may disappear or be unreadable during discovery.
+      }
+    }
+    if (budget.stopped()) break;
+  }
+  return files;
+}
+
+let ripgrepPath: string | null | undefined;
+
+function findRipgrep(): string | null {
+  const override = process.env.OPENSCOUT_RG_PATH;
+  if (override === "none") return null;
+  if (override && existsSync(override)) return override;
+  if (ripgrepPath !== undefined) return ripgrepPath;
+  const candidates = ["/opt/homebrew/bin/rg", "/usr/local/bin/rg", "/usr/bin/rg"];
+  for (const dir of (process.env.PATH ?? "").split(":")) if (dir) candidates.push(join(dir, "rg"));
+  ripgrepPath = candidates.find((candidate) => existsSync(candidate)) ?? null;
+  return ripgrepPath;
+}
+
+/** Null means rg is unavailable; an aborted/capped scan must never start a fallback. */
+function ripgrepLines(files: string[], needle: string, budget: ScanBudget): Promise<{ lines: Map<string, ScanLine[]>; read: number; truncated: boolean } | null> {
+  const rg = findRipgrep();
+  if (!rg) return Promise.resolve(null);
+  if (!files.length || budget.stopped()) return Promise.resolve({ lines: new Map(), read: 0, truncated: budget.stopped() });
+  return new Promise((resolve) => {
+    const out = new Map<string, ScanLine[]>();
+    const child = spawn(rg, [
+      "--ignore-case", "--fixed-strings", "--line-number", "--byte-offset", "--no-heading",
+      "--with-filename", "--null", "--no-messages", "--max-count", String(SCAN_RG_MAX_PER_FILE),
+      "--", needle, ...files,
+    ], { stdio: ["ignore", "pipe", "ignore"] });
+    let carry = "";
+    let received = 0;
+    let capped = false;
+    let failed = false;
+    let killTimer: ReturnType<typeof setTimeout> | undefined;
+    const stop = () => {
+      child.kill();
+      // Don't leave an abandoned child if it fails to honor SIGTERM.
+      killTimer ??= setTimeout(() => child.kill("SIGKILL"), 250);
+    };
+    budget.signal.addEventListener("abort", stop, { once: true });
+    if (budget.stopped()) stop();
+    const take = (line: string) => {
+      const nul = line.indexOf("\0");
+      if (nul < 0) return;
+      const path = line.slice(0, nul);
+      const match = /^(\d+):(\d+):/u.exec(line.slice(nul + 1));
+      if (!match) return;
+      const list = out.get(path) ?? [];
+      list.push({ lineNo: Number(match[1]), byte: Number(match[2]), text: line.slice(nul + 1 + match[0].length) });
+      out.set(path, list);
+    };
+    child.stdout.setEncoding("utf8");
+    child.stdout.on("data", (chunk: string) => {
+      if (capped || budget.stopped()) return;
+      received += Buffer.byteLength(chunk, "utf8");
+      if (received > SCAN_RG_MAX_OUTPUT_BYTES) { capped = true; stop(); return; }
+      carry += chunk;
+      const lines = carry.split("\n");
+      carry = lines.pop() ?? "";
+      for (const line of lines) take(line);
+    });
+    child.on("error", () => { failed = true; });
+    // Await actual process/pipe closure before releasing an abandoned scan.
+    child.on("close", (code) => {
+      if (killTimer) clearTimeout(killTimer);
+      budget.signal.removeEventListener("abort", stop);
+      if (carry && !capped) take(carry);
+      const completed = !capped && !budget.stopped() && (code === 0 || code === 1);
+      // Completed rg visited the full input set. An interrupted rg only proves
+      // the files from which it emitted matches; unmatched visits are unknown.
+      resolve(failed && !budget.stopped() ? null : {
+        lines: out, read: completed ? files.length : out.size, truncated: !completed,
+      });
+    });
+  });
+}
+
+/** Stream the fallback so one large file cannot hide cancellation until EOF. */
+async function readerLines(files: string[], terms: string[], budget: ScanBudget) {
+  const out = new Map<string, ScanLine[]>();
+  const maybeYield = createYieldBudget();
+  let read = 0;
+  let matchedBytes = 0;
+  let capped = false;
+  for (const path of files) {
+    if (budget.stopped() || capped) break;
+    const stream = createReadStream(path, { encoding: "utf8", signal: budget.signal, highWaterMark: 64 * 1024 });
+    const list: ScanLine[] = [];
+    let carry = "";
+    let byte = 0;
+    let lineNo = 0;
+    let readAny = false;
+    let completed = false;
+    const take = (text: string) => {
+      lineNo++;
+      const lower = text.toLowerCase();
+      if (terms.every((term) => lower.includes(term))) {
+        matchedBytes += Buffer.byteLength(text, "utf8");
+        if (matchedBytes > SCAN_RG_MAX_OUTPUT_BYTES) capped = true;
+        else list.push({ lineNo, byte, text });
+      }
+      byte += Buffer.byteLength(text, "utf8") + 1;
+    };
+    try {
+      for await (const chunk of stream) {
+        if (budget.stopped()) break;
+        readAny = true;
+        carry += chunk;
+        let newline: number;
+        while ((newline = carry.indexOf("\n")) >= 0) {
+          take(carry.slice(0, newline));
+          carry = carry.slice(newline + 1);
+          await maybeYield();
+          if (budget.stopped() || capped) break;
+        }
+        // Bound an unterminated record by the existing scan output ceiling.
+        if (Buffer.byteLength(carry, "utf8") > SCAN_RG_MAX_OUTPUT_BYTES) capped = true;
+        if (budget.stopped() || capped) break;
+      }
+      if (carry && !budget.stopped() && !capped) take(carry);
+      completed = !budget.stopped() && !capped;
+    } catch {
+      // Abort or a concurrently removed/unreadable file ends this read.
+    } finally {
+      stream.destroy();
+    }
+    // A deadline can abort a later read after earlier records were collected.
+    if (readAny || completed) read++;
+    if (list.length) out.set(path, list);
+  }
+  return { lines: out, read, truncated: capped || budget.stopped() || read < files.length };
+}
+
+/** cwd and session id from the head of a transcript, without reading the whole file. */
+async function transcriptHead(file: SessionFile): Promise<{ cwd: string | null; sessionId: string | null }> {
+  let cwd: string | null = null;
+  const kimiAgent = basename(dirname(file.path));
+  const kimiSession = basename(dirname(dirname(dirname(file.path))));
+  let sessionId: string | null = file.harness === "kimi"
+    ? (kimiAgent === "main" ? kimiSession : `${kimiSession}:${kimiAgent}`)
+    : null;
+  let head = "";
+  try {
+    const handle = await open(file.path, "r");
+    try {
+      const buffer = Buffer.alloc(Math.min(SCAN_HEAD_BYTES, file.size));
+      const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
+      head = buffer.subarray(0, bytesRead).toString("utf8");
+    } finally {
+      await handle.close();
+    }
+  } catch {
+    return { cwd, sessionId };
+  }
+  let index = 0;
+  for (const line of head.split("\n").slice(0, -1)) {
+    if (cwd && sessionId) break;
+    if (!line.trim()) continue;
+    try {
+      const value = JSON.parse(line) as unknown;
+      if (!value || typeof value !== "object" || Array.isArray(value)) continue;
+      const record = normalizeRecord(value as Record<string, unknown>, index++, 0, file.harness);
+      cwd ??= inferCwd(record);
+      sessionId ??= record.refs?.sessionId ?? stringValue(record.meta?.id) ?? stringValue(record.meta?.sessionId) ?? null;
+    } catch {
+      // partial or non-JSON head line
+    }
+  }
+  return { cwd, sessionId };
+}
+
+/**
+ * Index-free search: find transcript records whose text holds every query
+ * term, newest transcripts first. It answers while the session index is
+ * missing or still building, shaped like an indexed hit so the same UI renders
+ * it. Uses ripgrep when present (one pass over all files), else reads each file
+ * in JS; both stop at the time budget and return what matched.
+ */
+export async function scanRecentSessionKnowledge(
+  input: ScanRecentSessionKnowledgeInput,
+): Promise<ScanRecentSessionKnowledgeResult> {
+  const terms = [...new Set(input.q.toLowerCase().split(/\s+/u).filter((term) => term.length > 1))];
+  if (terms.length === 0) return { hits: [], scannedFiles: 0, totalFiles: 0, truncated: false };
+  const days = clampPositiveInt(input.days, DEFAULT_DAYS, 30);
+  const cutoffMs = Math.max(Date.now() - days * 24 * 60 * 60 * 1000, input.updatedAfterMs ?? 0);
+  const limit = clampPositiveInt(input.limit, 30, 200);
+  input.signal?.throwIfAborted();
+  const budgetMs = clampPositiveInt(input.budgetMs, 2500, 15_000);
+  const deadline = Date.now() + budgetMs;
+  const controller = new AbortController();
+  const abort = () => controller.abort(input.signal?.reason);
+  input.signal?.addEventListener("abort", abort, { once: true });
+  const timer = setTimeout(() => controller.abort(), budgetMs);
+  const budget: ScanBudget = { signal: controller.signal, stopped: () => controller.signal.aborted || Date.now() >= deadline };
+  try {
+    const files = await discoverScanFiles(cutoffMs, clampPositiveInt(input.fileLimit, 80, 400), normalizeHarnessFilter(input.harness), budget);
+    const paths = files.map((file) => file.path);
+    // The longest term is the likeliest to be rare, so it filters hardest.
+    const needle = [...terms].sort((left, right) => right.length - left.length)[0]!;
+    const rg = await ripgrepLines(paths, needle, budget);
+    const fallback = rg ? null : await readerLines(paths, terms, budget);
+    const lines = rg?.lines ?? fallback!.lines;
+    const scannedFiles = rg?.read ?? fallback!.read;
+    let truncated = (rg?.truncated ?? fallback!.truncated) || budget.stopped();
+    const maybeYield = createYieldBudget();
+
+    // The collection deadline stops I/O, not assembly of matches already in
+    // memory. Existing file/output/hit bounds limit this phase; continue yielding
+    // and honor caller cancellation independently of the expired scan budget.
+    const phrase = terms.join(" ");
+    const hits: KnowledgeSearchHit[] = [];
+    for (const file of files) {
+      input.signal?.throwIfAborted();
+      if (hits.length >= limit) {
+        truncated = true;
+        break;
+      }
+      const candidates = lines.get(file.path);
+      if (!candidates?.length) continue;
+      const matches: Array<{ record: NormalizedRecord; text: string; byte: number; bytes: number; phrase: boolean }> = [];
+      for (const line of candidates) {
+        await maybeYield();
+        input.signal?.throwIfAborted();
+        const lower = line.text.toLowerCase();
+        if (!terms.every((term) => lower.includes(term))) continue;
+        let record: NormalizedRecord;
+        try {
+          const value = JSON.parse(line.text) as unknown;
+          if (!value || typeof value !== "object" || Array.isArray(value)) continue;
+          record = normalizeRecord(value as Record<string, unknown>, line.lineNo - 1, line.byte, file.harness);
+        } catch {
+          continue;
+        }
+        if (record.kind === "system_record" || record.kind === "unknown" || record.kind === "session_meta") continue;
+        const text = record.text ?? summarizeRecord(record);
+        const haystack = text.toLowerCase();
+        if (!terms.every((term) => haystack.includes(term))) continue;
+        matches.push({ record, text, byte: line.byte, bytes: Buffer.byteLength(line.text, "utf8"), phrase: haystack.includes(phrase) });
+      }
+      if (matches.length === 0) continue;
+      // Exact phrase first, then the newest record.
+      matches.sort((left, right) => Number(right.phrase) - Number(left.phrase) || right.record.i - left.record.i);
+
+      input.signal?.throwIfAborted();
+      const head = await transcriptHead(file);
+      input.signal?.throwIfAborted();
+      const resolvedSession = head.sessionId ?? basename(file.path).replace(/\.jsonl$/u, "");
+      const project = projectName(head.cwd, file.path);
+      const collectionId = `sessions/${file.harness}/${resolvedSession.replace(/[^A-Za-z0-9_.-]+/gu, "-").slice(0, 80)}-${stableId(file.path, 10)}`;
+      const when = new Date(file.mtimeMs).toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+      for (const match of matches.slice(0, SCAN_HITS_PER_FILE)) {
+        if (hits.length >= limit) break;
+        const sourceRef: KnowledgeSourceRef = {
+          kind: "harness_transcript",
+          harness: file.harness,
+          path: portablePath(file.path),
+          sessionId: resolvedSession,
+          recordRange: [match.record.i, match.record.i],
+          byteRange: [match.byte, match.byte + match.bytes],
+          anchor: { sizeBytes: file.size, mtimeMs: file.mtimeMs },
+        };
+        const id = `basic:${stableId(`${file.path}\0${match.record.i}`)}`;
+        hits.push({
+          id,
+          collectionId,
+          documentId: `${collectionId}/basic`,
+          chunkId: id,
+          title: `${file.harness} ${project} ${when} - ${trimOneLine(match.text, 80)}`,
+          snippet: scanSnippet(match.text, terms),
+          score: 0,
+          scoreSource: "fts",
+          origin: "mechanical",
+          ownership: "observed_source",
+          freshness: "fresh",
+          sourceRefs: [sourceRef],
+          drilldown: [{ kind: "harness_transcript", sourceRef }],
+          facets: {
+            harness: file.harness,
+            project,
+            ...(head.cwd ? { projectPath: head.cwd } : {}),
+            source: "sessions",
+            transcriptPath: file.path,
+            sessionId: resolvedSession,
+            documentKind: "events",
+            match: "basic",
+          },
+        });
+      }
+    }
+
+    input.signal?.throwIfAborted();
+    return { hits, scannedFiles, totalFiles: files.length, truncated };
+  } finally {
+    clearTimeout(timer);
+    input.signal?.removeEventListener("abort", abort);
   }
 }

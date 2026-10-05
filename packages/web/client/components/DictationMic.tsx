@@ -81,19 +81,50 @@ function wait(ms: number): Promise<void> {
   return new Promise((resolve) => window.setTimeout(resolve, ms));
 }
 
+/** Lets the containing composer end a take without going through the button. */
+export type DictationMicControl = {
+  /**
+   * Stop capture so the finalized transcript lands through `onAppend`.
+   * Returns false when there is no take to finish.
+   */
+  finish: () => boolean;
+  /** A take is in flight: starting, recording, transcribing, or its
+   *  transcript not yet delivered through `onAppend`. */
+  busy: () => boolean;
+};
+
 export function DictationMic({
   onAppend,
   onError,
   onStatus,
+  controlRef,
+  autoStart,
   disabled,
   className,
 }: {
   onAppend: (text: string) => void;
   onError?: (message: string) => void;
   onStatus?: (status: MicStatus) => void;
+  controlRef?: { current: DictationMicControl | null };
+  /** Start recording once, as soon as voice reports ready: a surface where
+   *  voice is the default way in. When voice is not ready nothing starts. */
+  autoStart?: boolean;
   disabled?: boolean;
   className?: string;
 }) {
+  // A take outlives many renders. Deliver its transcript through the latest
+  // `onAppend`, never the one captured at start — that closure holds the draft
+  // as it was then, and would restore text sent or edited in the meantime.
+  const onAppendRef = useRef(onAppend);
+  onAppendRef.current = onAppend;
+  // Finish requested while the session was still starting; honored once live.
+  const finishWhenLiveRef = useRef(false);
+  // Starting is async; a mic that unmounts meanwhile must not start capture.
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => { mountedRef.current = false; };
+  }, []);
   const clientRef = useRef(getSharedScoutVoiceClient());
   const liveRef = useRef<ScoutVoiceLiveHandle | null>(null);
   const historyRef = useRef<LevelHistory>(createLevelHistory(VOICE_WAVE_BARS));
@@ -230,6 +261,7 @@ export function DictationMic({
     historyRef.current.clear();
     setLevelsTick((n) => n + 1);
     setSessionState("starting");
+    finishWhenLiveRef.current = false;
     stopLevelSources();
 
     let engagement = await engageScoutVoiceDictation({
@@ -241,6 +273,7 @@ export function DictationMic({
       await wait(1800);
       engagement = await engageScoutVoiceDictation({ surface: "chat-composer" });
     }
+    if (!mountedRef.current) return;
 
     const canAttemptCapture = engagement.ready
       || engagement.issue?.code === "microphone_not_requested";
@@ -264,7 +297,7 @@ export function DictationMic({
     let live: ScoutVoiceLiveHandle | null = null;
     let sawStreamLevels = false;
     try {
-      live = await client.startLive({
+      const started = await client.startLive({
         onState: (state) => setSessionState(sessionStateFromVoice(state)),
         onPartial: (text) => {
           const prev = partialRef.current;
@@ -288,8 +321,18 @@ export function DictationMic({
           pushLevel(level);
         },
       });
+      if (!mountedRef.current) {
+        started.result.catch(() => undefined);
+        void started.cancel().catch(() => undefined);
+        return;
+      }
+      live = started;
       liveRef.current = live;
       setSessionState("recording");
+      if (finishWhenLiveRef.current) {
+        finishWhenLiveRef.current = false;
+        void stopRecordingRef.current();
+      }
 
       // Browser capture emits onLevel from the same MediaStream. Native has no
       // stream — wait a beat, then parallel-meter or speech-proxy from partials.
@@ -304,7 +347,10 @@ export function DictationMic({
           }
           pushLevel(level);
         });
-        if (meter && liveRef.current) {
+        if (meter && !liveRef.current) {
+          // The take ended (or the mic unmounted) while the meter was starting.
+          meter.stop();
+        } else if (meter) {
           meterRef.current = meter;
         } else if (liveRef.current && !levelsLiveRef.current) {
           levelsLiveRef.current = false;
@@ -324,7 +370,7 @@ export function DictationMic({
       setLevelsTick((n) => n + 1);
       const text = final.text?.trim() || recoverablePartial;
       if (text) {
-        onAppend(text);
+        onAppendRef.current(text);
       } else {
         reportError("No speech was detected. Check your microphone in Settings → Voice.");
       }
@@ -340,7 +386,7 @@ export function DictationMic({
       setLevelsTick((n) => n + 1);
       const message = error instanceof Error ? error.message : "Scout voice recording failed.";
       if (recoverablePartial) {
-        onAppend(recoverablePartial);
+        onAppendRef.current(recoverablePartial);
         if (!(error instanceof Error && error.name === "AbortError")) {
           reportError(`Recording ended early, but Scout recovered the partial transcript. ${message}`);
         }
@@ -350,7 +396,7 @@ export function DictationMic({
       reportError(message);
       void probeVoice(true);
     }
-  }, [onAppend, probeVoice, pushLevel, reportError, startSpeechProxyLoop, stopLevelSources]);
+  }, [probeVoice, pushLevel, reportError, startSpeechProxyLoop, stopLevelSources]);
 
   const stopRecording = useCallback(async () => {
     const live = liveRef.current;
@@ -376,13 +422,49 @@ export function DictationMic({
       setLevelsTick((n) => n + 1);
       const message = error instanceof Error ? error.message : "Scout voice recording did not finish.";
       if (recoverablePartial) {
-        onAppend(recoverablePartial);
+        onAppendRef.current(recoverablePartial);
         reportError(`Recording ended early, but Scout recovered the partial transcript. ${message}`);
       } else {
         reportError(message);
       }
     }
-  }, [onAppend, reportError, stopLevelSources]);
+  }, [reportError, stopLevelSources]);
+
+  const stopRecordingRef = useRef(stopRecording);
+  stopRecordingRef.current = stopRecording;
+  const sessionStateRef = useRef(sessionState);
+  sessionStateRef.current = sessionState;
+
+  useEffect(() => {
+    if (!controlRef) return;
+    controlRef.current = {
+      finish: () => {
+        switch (sessionStateRef.current) {
+          case "recording":
+            void stopRecordingRef.current();
+            return true;
+          case "starting":
+            finishWhenLiveRef.current = true;
+            return true;
+          case "processing":
+            return true;
+          default:
+            return false;
+        }
+      },
+      busy: () => liveRef.current !== null || sessionStateRef.current !== "idle",
+    };
+    return () => {
+      controlRef.current = null;
+    };
+  }, [controlRef]);
+
+  const autoStarted = useRef(false);
+  useEffect(() => {
+    if (!autoStart || disabled || autoStarted.current || voiceReady !== true || sessionState !== "idle") return;
+    autoStarted.current = true;
+    void startRecording();
+  }, [autoStart, disabled, voiceReady, sessionState, startRecording]);
 
   const onClick = useCallback(() => {
     if (sessionState === "recording") {
