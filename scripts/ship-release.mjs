@@ -579,7 +579,9 @@ function main() {
     throw new Error("Candidate cannot relabel a draft or stable release.");
   }
   const receiptPath = npmReleaseReceiptPath(version, head);
-  if (options.phase === "release" && (!existingRelease || existingRelease.isPrerelease) && existsSync(candidateReceiptPath(receiptPath))) {
+  const retainedCandidate = existsSync(candidateReceiptPath(receiptPath)) ||
+    existingRelease?.assets?.some(asset => asset.name === "candidate-receipt.json");
+  if (options.phase === "release" && (!existingRelease || existingRelease.isPrerelease) && retainedCandidate) {
     throw new Error("This is a retained candidate; use explicit --phase promote after validation.");
   }
   if (options.phase === "promote") {

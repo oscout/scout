@@ -1554,3 +1554,39 @@ test("interrupted candidate asset handoff cannot be finalized through the defaul
     assert.equal(existsSync(join(fixture, "remote-candidate-receipt.json")), true);
   } finally { rmSync(fixture, { recursive: true, force: true }); }
 });
+
+test("a public candidate marker holds default release when only the local marker is missing", () => {
+  const { fixture, stateDir } = createLocalReleaseFixture({ initialRelease: "missing" });
+  try {
+    const candidate = runCandidatePhase(fixture, "candidate");
+    assert.equal(candidate.status, 0, candidate.stderr);
+    const markerPath = join(fixture, "release-state/candidate-receipt.json");
+    const marker = readFileSync(markerPath);
+    const npmBefore = readFileSync(join(stateDir, "mutations.log"), "utf8");
+    const githubBefore = readFileSync(join(fixture, "gh-release-calls.log"), "utf8");
+    const uploadsBefore = readFileSync(join(fixture, "gh-mutations.log"), "utf8");
+    rmSync(markerPath);
+    for (const phase of ["release", "promote"]) {
+      const held = runCandidatePhase(fixture, phase);
+      assert.notEqual(held.status, 0, held.stdout);
+      assert.match(held.stderr, phase === "release" ? /explicit --phase promote/ : /Original candidate receipt is missing/);
+      assert.equal(readFileSync(join(stateDir, "mutations.log"), "utf8"), npmBefore);
+      assert.equal(readFileSync(join(fixture, "gh-release-calls.log"), "utf8"), githubBefore);
+      assert.equal(readFileSync(join(fixture, "gh-mutations.log"), "utf8"), uploadsBefore);
+      assert.doesNotMatch(held.stdout, /Building packages|^\$ bash scripts\/ship-npm\.sh --prepare/m);
+      assert.equal(readFileSync(join(fixture, "gh-release-state"), "utf8").trim(), "false true");
+    }
+    writeFileSync(markerPath, marker);
+    const promoted = runCandidatePhase(fixture, "promote");
+    assert.equal(promoted.status, 0, promoted.stderr);
+    const completedNpm = readFileSync(join(stateDir, "mutations.log"), "utf8");
+    const completedGithub = readFileSync(join(fixture, "gh-release-calls.log"), "utf8");
+    const completedUploads = readFileSync(join(fixture, "gh-mutations.log"), "utf8");
+    const stableRetry = runCandidatePhase(fixture, "release");
+    assert.equal(stableRetry.status, 0, stableRetry.stderr);
+    assert.equal(readFileSync(join(stateDir, "mutations.log"), "utf8"), completedNpm);
+    assert.equal(readFileSync(join(fixture, "gh-release-calls.log"), "utf8"), completedGithub);
+    assert.equal(readFileSync(join(fixture, "gh-mutations.log"), "utf8"), completedUploads);
+    assert.deepEqual(readFileSync(join(fixture, "remote-candidate-receipt.json")), marker);
+  } finally { rmSync(fixture, { recursive: true, force: true }); }
+});
