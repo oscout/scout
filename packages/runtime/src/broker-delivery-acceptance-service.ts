@@ -427,8 +427,17 @@ export class BrokerDeliveryAcceptanceService {
     throwIfAborted(options.signal);
     const askedLabel = askedLabelForRouteTarget(payload);
     const routeExecution = executionWithRouteParams(payload);
+    const requestedTargetSessionId =
+      payload.target?.kind === "session_id"
+        ? payload.target.sessionId.trim()
+        : payload.targetSessionId?.trim()
+        || payload.execution?.targetSessionId?.trim()
+        || this.options.metadataStringValue(payload.invocationMetadata, "targetSessionId")
+        || this.options.metadataStringValue(payload.messageMetadata, "targetSessionId")
+        || undefined;
+    const runtimeCatalogSnapshot = await this.options.readRuntimeCatalog?.().catch(() => null);
     const normalizedModel = routeExecution?.harness && routeExecution.model
-      ? normalizeScoutRuntimeModel(routeExecution.harness, routeExecution.model)
+      ? normalizeScoutRuntimeModel(routeExecution.harness, routeExecution.model, runtimeCatalogSnapshot?.catalog)
       : null;
     if (normalizedModel && !normalizedModel.ok) {
       throw new Error(`invalid_model: ${normalizedModel.error}`);
@@ -439,9 +448,8 @@ export class BrokerDeliveryAcceptanceService {
           ...(normalizedModel?.ok ? { model: normalizedModel.resolved } : {}),
         }
       : undefined;
-    const runtimeCatalogSnapshot = await this.options.readRuntimeCatalog?.().catch(() => null);
     const runtimeIssues = validateScoutRuntimeTuple(
-      execution ?? {},
+      { ...execution, ...(requestedTargetSessionId ? { targetSessionId: requestedTargetSessionId } : {}) },
       undefined,
       runtimeCatalogSnapshot?.catalog ?? undefined,
     );
@@ -467,14 +475,6 @@ export class BrokerDeliveryAcceptanceService {
     });
     const deliveryChannel = routeChannelForTarget(payload) ?? payload.channel?.trim();
     const attachments = normalizeDeliveryAttachments(payload.attachments, this.options.createId);
-    const requestedTargetSessionId =
-      payload.target?.kind === "session_id"
-        ? payload.target.sessionId.trim()
-        : payload.targetSessionId?.trim()
-        || payload.execution?.targetSessionId?.trim()
-        || this.options.metadataStringValue(payload.invocationMetadata, "targetSessionId")
-        || this.options.metadataStringValue(payload.messageMetadata, "targetSessionId")
-        || undefined;
     const replyToSessionId =
       payload.replyToSessionId?.trim()
       || this.options.metadataStringValue(payload.invocationMetadata, "replyToSessionId")

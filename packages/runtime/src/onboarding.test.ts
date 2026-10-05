@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -28,6 +28,8 @@ const originalEnv = {
   OPENSCOUT_CONTROL_HOME: process.env.OPENSCOUT_CONTROL_HOME,
   OPENSCOUT_RELAY_HUB: process.env.OPENSCOUT_RELAY_HUB,
   OPENSCOUT_SKIP_USER_PROJECT_HINTS: process.env.OPENSCOUT_SKIP_USER_PROJECT_HINTS,
+  OPENSCOUT_SETUP_CWD: process.env.OPENSCOUT_SETUP_CWD,
+  OPENSCOUT_OPERATOR_NAME: process.env.OPENSCOUT_OPERATOR_NAME,
 };
 
 const testDirectories = new Set<string>();
@@ -60,6 +62,7 @@ function prepareHome(name: string): string {
   process.env.OPENSCOUT_CONTROL_HOME = join(home, ".openscout", "control-plane");
   process.env.OPENSCOUT_RELAY_HUB = join(home, ".openscout", "relay");
   process.env.OPENSCOUT_SKIP_USER_PROJECT_HINTS = "1";
+  delete process.env.OPENSCOUT_SETUP_CWD;
   const settingsPath = resolveOpenScoutSupportPaths().settingsPath;
   if (!settingsPath.startsWith(home)) {
     throw new Error(`Test isolation failed: settings would write to ${settingsPath}`);
@@ -148,6 +151,165 @@ function fakeCatalog(ready: boolean): HarnessCatalogSnapshot {
 }
 
 describe("OpenScout onboarding contract", () => {
+  for (const packagePath of ["node_modules/@openscout/scout", ".bun/install/global/node_modules/@openscout/scout", ".npm-global/lib/node_modules/@openscout/scout"]) {
+    test(`packaged launch in ${packagePath} suggests a scan area without choosing a project`, async () => {
+      const home = prepareHome("packaged-launch");
+      const packagedCwd = join(home, packagePath);
+      mkdirSync(packagedCwd, { recursive: true });
+      writeFileSync(join(packagedCwd, "package.json"), '{"name":"@openscout/scout"}');
+      writeFileSync(join(home, "AGENTS.md"), "User-level agent instructions");
+      writeFileSync(join(home, "package.json"), '{"name":"global-tools"}');
+      writeProjectConfig(home);
+
+      const state = await loadOpenScoutOnboardingState({ currentDirectory: packagedCwd, broker: fakeBroker(false), catalog: fakeCatalog(false) });
+      expect(state.currentDirectory).toBe(packagedCwd);
+      expect(state.sourceRoots).toEqual([join(home, "dev")]);
+      expect(state.contextRoot).toBeNull();
+      expect(state.suggestedContextRoot).toBeNull();
+      expect(state.hasProjectConfig).toBe(false);
+      expect(state.projectRoot).toBeNull();
+      expect(existsSync(join(home, "dev"))).toBe(false);
+      expect(existsSync(join(packagedCwd, ".openscout"))).toBe(false);
+    });
+  }
+
+  test("home-level harness instructions do not become a project or scan its parent", async () => {
+    const home = prepareHome("home-markers");
+    mkdirSync(home, { recursive: true });
+    writeFileSync(join(home, "CLAUDE.md"), "Personal instructions");
+    const state = await loadOpenScoutOnboardingState({ currentDirectory: home, broker: fakeBroker(false), catalog: fakeCatalog(false) });
+    expect(state.sourceRoots).toEqual([join(home, "dev")]);
+    expect(state.suggestedContextRoot).toBeNull();
+    expect(state.hasProjectConfig).toBe(false);
+  });
+
+  test("packaged cwd inference preserves legacy roots for migration", async () => {
+    const home = prepareHome("legacy-roots");
+    const packagedCwd = join(home, "node_modules", "@openscout", "scout");
+    const relay = process.env.OPENSCOUT_RELAY_HUB!;
+    mkdirSync(packagedCwd, { recursive: true });
+    mkdirSync(relay, { recursive: true });
+    const oldRoot = join(home, "old-projects");
+    const oldAgentRoot = join(home, "other-projects", "alpha");
+    writeFileSync(join(relay, "config.json"), JSON.stringify({ projectRoot: oldRoot }));
+    writeFileSync(join(relay, "agents.json"), JSON.stringify({ alpha: { cwd: oldAgentRoot } }));
+    const state = await loadOpenScoutOnboardingState({ currentDirectory: packagedCwd, broker: fakeBroker(false), catalog: fakeCatalog(false) });
+    expect(state.sourceRoots).toEqual([oldRoot, join(home, "other-projects")]);
+    expect(state.suggestedContextRoot).toBeNull();
+  });
+
+  test("a genuine project cwd remains the workspace suggestion despite home markers", async () => {
+    const home = prepareHome("genuine-project");
+    const repo = join(home, "dev", "alpha");
+    const cwd = join(repo, "src");
+    mkdirSync(cwd, { recursive: true });
+    writeFileSync(join(repo, "package.json"), '{"name":"alpha"}');
+    writeFileSync(join(home, "AGENTS.md"), "User instructions");
+    const state = await loadOpenScoutOnboardingState({ currentDirectory: cwd, broker: fakeBroker(false), catalog: fakeCatalog(false) });
+    expect(state.suggestedContextRoot).toBe(repo);
+    expect(state.sourceRoots).toEqual([join(home, "dev")]);
+    expect(state.hasProjectConfig).toBe(false);
+  });
+
+  test("a package within a real repository keeps the repo inference and its nearest saved project config", async () => {
+    const home = prepareHome("monorepo-project");
+    const repo = join(home, "dev", "alpha");
+    const packageRoot = join(repo, "packages", "client");
+    const cwd = join(packageRoot, "src");
+    mkdirSync(cwd, { recursive: true });
+    mkdirSync(join(repo, ".git"), { recursive: true });
+    writeFileSync(join(packageRoot, "package.json"), '{"name":"client"}');
+    writeProjectConfig(packageRoot);
+    const state = await loadOpenScoutOnboardingState({ currentDirectory: cwd, broker: fakeBroker(false), catalog: fakeCatalog(false) });
+    expect(state.suggestedContextRoot).toBe(repo);
+    expect(state.sourceRoots).toEqual([join(home, "dev")]);
+    expect(state.projectRoot).toBe(packageRoot);
+  });
+
+  test("saved scan/context roots take precedence over the server startup directory", async () => {
+    const home = prepareHome("saved-project-roots");
+    const saved = join(home, "work", "saved");
+    const override = join(home, "work", "override");
+    const packagedCwd = join(home, "node_modules", "@openscout", "scout");
+    mkdirSync(packagedCwd, { recursive: true });
+    writeProjectConfig(saved);
+    writeProjectConfig(override);
+    await writeOpenScoutSettings({ discovery: { contextRoot: saved, workspaceRoots: [home] } }, { currentDirectory: packagedCwd });
+    const savedState = await loadOpenScoutOnboardingState({ currentDirectory: packagedCwd, broker: fakeBroker(false), catalog: fakeCatalog(false) });
+    expect(savedState.sourceRoots).toEqual([home]);
+    expect(savedState.suggestedContextRoot).toBe(saved);
+    expect(savedState.projectRoot).toBe(saved);
+    process.env.OPENSCOUT_SETUP_CWD = override;
+    const explicitState = await loadOpenScoutOnboardingState({ currentDirectory: packagedCwd, broker: fakeBroker(false), catalog: fakeCatalog(false) });
+    expect(explicitState.sourceRoots).toEqual([home]);
+    expect(explicitState.contextRoot).toBe(saved);
+    expect(explicitState.suggestedContextRoot).toBe(saved);
+    expect(explicitState.projectRoot).toBe(saved);
+  });
+
+  test("a genuine startup project remains a fallback before any workspace is saved", async () => {
+    const home = prepareHome("startup-project");
+    const repo = join(home, "work", "alpha");
+    writeProjectConfig(repo);
+    process.env.OPENSCOUT_SETUP_CWD = repo;
+    const state = await loadOpenScoutOnboardingState({ currentDirectory: "/", broker: fakeBroker(false), catalog: fakeCatalog(false) });
+    expect(state.contextRoot).toBe(repo);
+    expect(state.projectRoot).toBe(repo);
+  });
+
+  for (const startup of ["package", "root", "home"] as const) {
+    test(`broker-injected ${startup} startup cwd cannot override the project chosen during onboarding`, async () => {
+      const home = prepareHome(`injected-${startup}`);
+      const packaged = join(home, ".bun", "install", "global", "node_modules", "@openscout", "scout");
+      mkdirSync(packaged, { recursive: true });
+      writeFileSync(join(packaged, "package.json"), '{"name":"@openscout/scout"}');
+      const cwd = startup === "package" ? packaged : startup === "root" ? "/" : home;
+      process.env.OPENSCOUT_SETUP_CWD = cwd;
+      const before = await loadOpenScoutOnboardingState({ currentDirectory: cwd, broker: fakeBroker(false), catalog: fakeCatalog(false) });
+      expect(before.contextRoot).toBeNull();
+      expect(before.suggestedContextRoot).toBeNull();
+      expect(before.hasProjectConfig).toBe(false);
+      expect(before.sourceRoots).toEqual([join(home, "dev")]);
+
+      const repo = join(home, "work", "alpha");
+      writeProjectConfig(repo);
+      await saveOpenScoutOnboardingProject({ currentDirectory: cwd, contextRoot: repo, sourceRoots: [repo], defaultHarness: "codex" });
+      const after = await loadOpenScoutOnboardingState({ currentDirectory: cwd, broker: fakeBroker(false), catalog: fakeCatalog(false) });
+      expect(after.contextRoot).toBe(repo);
+      expect(after.suggestedContextRoot).toBe(repo);
+      expect(after.projectRoot).toBe(repo);
+      expect(after.hasProjectConfig).toBe(true);
+      expect(after.sourceRoots).toEqual([repo]);
+      expect(existsSync(join(packaged, ".openscout"))).toBe(false);
+    });
+  }
+
+  test("a removed saved workspace returns to project selection instead of adopting an ancestor or startup project", async () => {
+    const home = prepareHome("removed-workspace");
+    const parent = join(home, "work");
+    const saved = join(parent, "alpha");
+    writeProjectConfig(parent);
+    writeProjectConfig(saved);
+    await writeOpenScoutSettings({ discovery: { contextRoot: saved, workspaceRoots: [parent] } });
+    rmSync(saved, { recursive: true });
+    process.env.OPENSCOUT_SETUP_CWD = parent;
+    const state = await loadOpenScoutOnboardingState({ currentDirectory: parent, broker: fakeBroker(false), catalog: fakeCatalog(false) });
+    expect(state.contextRoot).toBe(saved);
+    expect(state.hasProjectConfig).toBe(false);
+    expect(state.projectRoot).toBeNull();
+    expect(existsSync(saved)).toBe(false);
+  });
+
+  test("a nearest package project beats a scan-area instruction file when there is no Git root", async () => {
+    const home = prepareHome("nearest-package");
+    const repo = join(home, "dev", "alpha");
+    mkdirSync(repo, { recursive: true });
+    writeFileSync(join(home, "dev", "AGENTS.md"), "Scan-area instructions");
+    writeFileSync(join(repo, "package.json"), '{"name":"alpha"}');
+    const state = await loadOpenScoutOnboardingState({ currentDirectory: repo, broker: fakeBroker(false), catalog: fakeCatalog(false) });
+    expect(state.suggestedContextRoot).toBe(repo);
+    expect(state.sourceRoots).toEqual([join(home, "dev")]);
+  });
   test("does not count a plain repo root as project config", async () => {
     const home = prepareHome("project-config");
     const repo = join(home, "dev", "alpha");
@@ -345,6 +507,53 @@ describe("OpenScout onboarding contract", () => {
     });
     expect(ready.completedAt).toBe(13);
     expect(ready.hasReadyRuntime).toBe(true);
+  });
+
+  test("an available alternative never completes setup for the selected, logged-out agent", async () => {
+    const home = prepareHome("selected-readiness");
+    const repo = join(home, "dev", "alpha");
+    writeProjectConfig(repo);
+    await ensureOpenScoutOnboardingLocalConfig({ currentDirectory: repo, now: 10 });
+    await saveOpenScoutOnboardingIdentity({ currentDirectory: repo, name: "Ada", now: 11 });
+    await writeOpenScoutSettings({ agents: { defaultHarness: "codex", defaultTransport: "codex_app_server" } }, { currentDirectory: repo });
+    const catalog = fakeCatalog(true);
+    const codex = structuredClone(catalog.entries[0]!);
+    codex.name = "codex";
+    codex.harness = "codex";
+    codex.label = "Codex";
+    codex.readinessReport = { ...codex.readinessReport, state: "installed", configured: false, ready: false, detail: "Codex is installed but not authenticated yet.", loginCommand: "codex login" };
+    catalog.entries.push(codex);
+
+    const polled = await ensureOpenScoutOnboardingCompletion({ currentDirectory: repo, broker: fakeBroker(true), catalog, now: 12 });
+    expect(polled.readyRuntimeCount).toBe(1);
+    expect(polled.hasReadyRuntime).toBe(false);
+    expect(polled.selectedHarness).toMatchObject({ id: "codex", state: "installed", ready: false, loginCommand: "codex login" });
+    expect(polled.needed).toBe(true);
+    expect(polled.completedAt).toBeNull();
+    expect(polled.steps.find((step) => step.id === "runtimes")).toMatchObject({ complete: false, detail: "Codex is installed but not authenticated yet." });
+    const marked = await markOpenScoutOnboardingCommand({ command: "setup", currentDirectory: repo, broker: fakeBroker(true), catalog, now: 13 });
+    expect(marked.completedAt).toBeNull();
+
+    codex.readinessReport = { ...codex.readinessReport, state: "ready", configured: true, ready: true };
+    const done = await ensureOpenScoutOnboardingCompletion({ currentDirectory: repo, broker: fakeBroker(true), catalog, now: 14 });
+    expect(done.completedAt).toBe(14);
+    expect(done.hasReadyRuntime).toBe(true);
+    expect(done.selectedHarness?.detail).toContain("confirmed when an agent starts");
+    const returning = await ensureOpenScoutOnboardingCompletion({ currentDirectory: repo, broker: fakeBroker(false), catalog: fakeCatalog(false), now: 15 });
+    expect(returning.completedAt).toBe(14);
+    expect(returning.hasReadyRuntime).toBe(false);
+    expect(returning.needed).toBe(false);
+  }, 30_000);
+
+  test("a skipped setup stays skipped when the chosen agent is unavailable", async () => {
+    const home = prepareHome("selected-skipped");
+    mkdirSync(home, { recursive: true });
+    await writeOpenScoutSettings({ agents: { defaultHarness: "codex" }, onboarding: { skippedAt: 42 } }, { currentDirectory: home });
+    const state = await ensureOpenScoutOnboardingCompletion({ currentDirectory: home, broker: fakeBroker(true), catalog: fakeCatalog(true), now: 43 });
+    expect(state.hasReadyRuntime).toBe(false);
+    expect(state.skippedAt).toBe(42);
+    expect(state.needed).toBe(false);
+    expect(state.completedAt).toBeNull();
   });
 });
 

@@ -1,5 +1,5 @@
-import { describe, expect, test } from "bun:test";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { afterEach, describe, expect, mock, test } from "bun:test";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -12,8 +12,27 @@ import {
   useIsolatedOpenScoutHome,
 } from "../web-server-test-harness.ts";
 
+// Exercise real state reads and durable project saves without installing or
+// starting services. Setup must receive the chosen folder, never package cwd.
+const onboarding = await import("@openscout/runtime/onboarding");
+const loadOnboardingState = onboarding.loadOpenScoutOnboardingState;
+const setupCalls: Array<{ currentDirectory: string; contextRoot: string }> = [];
+mock.module("@openscout/runtime/onboarding", () => ({
+  ...onboarding,
+  runOpenScoutOnboardingSetup: async (input: { currentDirectory: string; contextRoot: string }) => {
+    setupCalls.push(input);
+    const state = await loadOnboardingState({ currentDirectory: input.currentDirectory });
+    return { setup: { currentProjectConfigPath: state.projectConfigPath }, broker: { reachable: false }, brokerWarning: null, state };
+  },
+}));
 await loadWebServerUnderTest();
 installWebServerTestHooks();
+
+const originalSetupCwd = process.env.OPENSCOUT_SETUP_CWD;
+afterEach(() => {
+  if (originalSetupCwd === undefined) delete process.env.OPENSCOUT_SETUP_CWD;
+  else process.env.OPENSCOUT_SETUP_CWD = originalSetupCwd;
+});
 
 type OnboardingBody = {
   needed: boolean;
@@ -29,12 +48,21 @@ function makeBasicStaticRoot(): string {
   return root;
 }
 
-async function basicServer() {
+async function basicServer(options: { packaged?: boolean } = {}) {
   const home = useIsolatedOpenScoutHome();
   process.env.OPENSCOUT_HOME = `${home}/.openscout`;
   delete process.env.OPENSCOUT_OPERATOR_NAME;
-  const currentDirectory = mkdtempSync(join(tmpdir(), "openscout-onboarding-cwd-"));
-  testDirectories.add(currentDirectory);
+  delete process.env.OPENSCOUT_SETUP_CWD;
+  setupCalls.length = 0;
+  const currentDirectory = options.packaged
+    ? join(home, ".bun", "install", "global", "node_modules", "@openscout", "scout")
+    : mkdtempSync(join(tmpdir(), "openscout-onboarding-cwd-"));
+  if (options.packaged) {
+    mkdirSync(currentDirectory, { recursive: true });
+    writeFileSync(join(currentDirectory, "package.json"), '{"name":"@openscout/scout"}');
+    // Match broker-web-control-service and web/server/index.ts production env.
+    process.env.OPENSCOUT_SETUP_CWD = currentDirectory;
+  } else testDirectories.add(currentDirectory);
   return createOpenScoutWebServer({
     currentDirectory,
     assetMode: "static",
@@ -129,5 +157,71 @@ describe("basic web server: first-run routes", () => {
     expect(body.choices).toContain("kimi");
     // Nothing was saved: setup still shows the old default.
     expect((await state(server.app)).needed).toBe(true);
+  });
+
+  test("setup with no selected project rejects the request before writing into the service cwd", async () => {
+    const server = await basicServer();
+    const response = await server.app.request("http://localhost/api/onboarding/setup", { method: "POST", body: "{}" });
+    expect(response.status).toBe(400);
+    expect((await response.json()).error).toBe("Choose an existing project folder before running setup.");
+  });
+
+  test("a file cannot be saved as a project folder", async () => {
+    const server = await basicServer();
+    const home = process.env.OPENSCOUT_HOME!;
+    const file = join(home, "not-a-folder.txt");
+    writeFileSync(file, "test");
+    const response = await server.app.request("http://localhost/api/onboarding/project", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ contextRoot: file, sourceRoots: [file], defaultHarness: "codex" }),
+    });
+    expect(response.status).toBe(400);
+    expect((await response.json()).error).toContain(file);
+  });
+
+  test("a broker-injected package cwd cannot be selected before or after saving a real project", async () => {
+    const server = await basicServer({ packaged: true });
+    const packaged = process.env.OPENSCOUT_SETUP_CWD!;
+    const before = await (await server.app.request("http://localhost/api/onboarding/state")).json();
+    expect(before.contextRoot).toBeNull();
+    expect(before.suggestedContextRoot).toBeNull();
+    const refused = await server.app.request("http://localhost/api/onboarding/setup", { method: "POST", body: "{}" });
+    expect(refused.status).toBe(400);
+    expect(setupCalls).toHaveLength(0);
+
+    const project = join(process.env.HOME!, "dev", "alpha");
+    mkdirSync(join(project, ".openscout"), { recursive: true });
+    writeFileSync(join(project, ".openscout", "project.json"), JSON.stringify({ version: 1, project: { id: "alpha", name: "Alpha", root: "." } }));
+    const saved = await server.app.request("http://localhost/api/onboarding/project", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ contextRoot: project, sourceRoots: [project], defaultHarness: "codex" }),
+    });
+    expect(saved.status).toBe(200);
+    const after = await (await server.app.request("http://localhost/api/onboarding/state")).json();
+    expect(after.contextRoot).toBe(project);
+    expect(after.projectRoot).toBe(project);
+    expect(after.hasProjectConfig).toBe(true);
+    const setup = await server.app.request("http://localhost/api/onboarding/setup", { method: "POST", body: "{}" });
+    expect(setup.status).toBe(200);
+    expect(setupCalls.map((call) => call.currentDirectory)).toEqual([project, project]);
+    expect(existsSync(join(packaged, ".openscout"))).toBe(false);
+  });
+
+  test("setup rejects a removed saved workspace before creating it again", async () => {
+    const server = await basicServer({ packaged: true });
+    const project = join(process.env.HOME!, "dev", "alpha");
+    mkdirSync(project, { recursive: true });
+    const saved = await server.app.request("http://localhost/api/onboarding/project", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ contextRoot: project, sourceRoots: [project], defaultHarness: "codex" }),
+    });
+    expect(saved.status).toBe(200);
+    setupCalls.length = 0;
+    rmSync(project, { recursive: true });
+    const refused = await server.app.request("http://localhost/api/onboarding/setup", { method: "POST", body: "{}" });
+    expect(refused.status).toBe(400);
+    expect((await refused.json()).error).toContain("no longer available");
+    expect(setupCalls).toHaveLength(0);
+    expect(existsSync(project)).toBe(false);
   });
 });

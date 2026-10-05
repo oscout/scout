@@ -44,6 +44,30 @@ test("no authenticated harness uses observed login, unknown never ready", () => 
   configured.catalog.entries[0]!.readinessReport.configured = true;
   expect(assessSetupCompletion(configured, local).nextStep).toBe("scout runtimes");
 });
+test("a ready alternative never completes setup for the chosen logged-out agent", () => {
+  const report = { ...input(), defaultHarness: "codex", catalog: { entries: [
+    { harness: "claude", readinessReport: { ready: true, state: "ready", installed: true, configured: true, loginCommand: "claude auth login" } },
+    { harness: "codex", readinessReport: { ready: false, state: "installed", installed: true, configured: false, loginCommand: "codex login" } },
+  ] } };
+  const pending = assessSetupCompletion(report, local);
+  expect(pending.outcome).toBe("running");
+  expect(pending.headline).toContain("Your chosen coding agent");
+  expect(pending.nextStep).toBe("codex login");
+  report.catalog.entries[1]!.readinessReport = { ready: true, state: "ready", installed: true, configured: true, loginCommand: "codex login" };
+  expect(assessSetupCompletion(report, local).outcome).toBe("ready");
+});
+test("a missing chosen agent cannot borrow another login, and legacy callers still accept any ready agent", () => {
+  const report = { ...input(), catalog: { entries: [
+    { harness: "claude", readinessReport: { ready: true, state: "ready", installed: true, configured: true, loginCommand: "claude auth login" } },
+  ] } };
+  expect(assessSetupCompletion(report, local).outcome).toBe("ready");
+  const pending = assessSetupCompletion({ ...report, defaultHarness: "codex" }, local);
+  expect(pending.outcome).toBe("running");
+  expect(pending.nextStep).toBe("scout runtimes");
+  const handoff = assessSetupCompletion({ ...report, defaultHarness: "codex", broker: { health: { ok: false }, serviceAdapter: "headless-foreground" }, brokerHandoff: { command: "openscout-runtime broker" } }, local);
+  expect(handoff.outcome).toBe("handoff");
+  expect(handoff.nextStep).toBe("openscout-runtime broker");
+});
 test("SSH, non-TTY and JSON presentation never recommends GUI as primary", () => {
   for (const surface of [{ ...local, ssh: true }, { ...local, interactive: false }]) {
     const result = assessSetupCompletion(input(), surface);

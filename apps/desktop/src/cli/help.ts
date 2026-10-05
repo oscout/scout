@@ -1,3 +1,4 @@
+import { QUICK_LINKS } from "../../../../packages/cli/bin/lifecycle-preflight.mjs";
 import {
   listScoutDeprecatedCommands,
   listScoutPrimaryCommands,
@@ -28,6 +29,8 @@ export function renderScoutHelp(version = "0.2.19", detail = false): string {
     "Help: scout <command> --help (or scout help <command>)",
     "All commands and examples: scout help --detail",
     "Structured output: --json (doctor retains its v1 NDJSON stream)",
+    "",
+    QUICK_LINKS,
   ].join("\n");
   const commandLines = listScoutPrimaryCommands()
     .map((command) => `  ${command.name.padEnd(12, " ")} ${command.summary}`)
@@ -178,5 +181,7 @@ export function renderScoutHelp(version = "0.2.19", detail = false): string {
     "Compatibility:",
     "  relay         Namespace alias for ask/send/speak/watch/card",
     "  scout         Canonical CLI binary",
+    "",
+    QUICK_LINKS,
   ].join("\n");
 }

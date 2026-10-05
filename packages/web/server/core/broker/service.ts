@@ -1156,20 +1156,17 @@ export async function readScoutConversationProjection(
 
 export async function readScoutBrokerRuntimeCatalog(
   baseUrl = resolveScoutBrokerUrl(),
-): Promise<{ catalog: ScoutOwnedRuntimeCatalog; warnings: string[] } | null> {
+  force = false,
+): Promise<{ catalog: ScoutOwnedRuntimeCatalog; warnings: string[]; source?: string; checkedAt?: number; nextCheckAt?: number } | null> {
   try {
-    return await brokerReadJson<{ catalog: ScoutOwnedRuntimeCatalog; warnings: string[] }>(
+    return await brokerReadJson<{ catalog: ScoutOwnedRuntimeCatalog; warnings: string[]; source?: string; checkedAt?: number; nextCheckAt?: number }>(
       baseUrl,
-      scoutBrokerPaths.v1.runtimeCatalog,
+      `${scoutBrokerPaths.v1.runtimeCatalog}${force ? "?force=true" : ""}`,
+      { signal: AbortSignal.timeout(6_000) },
     );
-  } catch {
-    return null;
-  }
+  } catch { return null; }
 }
 
-/** Compact tail event for the mobile snapshot — the broker `TailEvent` minus the
- *  heavy `raw` harness payload (which the phone never renders). Keeping only the
- *  fields the iOS Tail surface decodes keeps the poll cheap on cellular. */
 export interface ScoutBrokerTailEvent {
   id: string;
   ts: number;

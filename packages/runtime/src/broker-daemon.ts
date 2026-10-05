@@ -1001,7 +1001,7 @@ const readBrokerRuntimeCatalogSnapshot = runtimeCatalogService.read.bind(runtime
 const runtimeCatalogRefreshMs = resolveRuntimeCatalogRefreshMs(process.env);
 if (runtimeCatalogRefreshMs > 0) {
   setInterval(() => {
-    void runtimeCatalogService.read({ force: true });
+    void runtimeCatalogService.read();
   }, runtimeCatalogRefreshMs).unref();
 }
 void runtimeCatalogService.read();

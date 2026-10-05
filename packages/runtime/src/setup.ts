@@ -1895,11 +1895,12 @@ async function seedWorkspaceRoots(options: {
 }): Promise<string[]> {
   const roots = new Set<string>();
   const currentProjectRoot = options.currentDirectory
-    ? await findNearestProjectRoot(options.currentDirectory)
+    ? await findOnboardingProjectRoot(options.currentDirectory)
     : null;
 
   if (currentProjectRoot) {
-    roots.add(dirname(currentProjectRoot));
+    const parent = dirname(currentProjectRoot);
+    roots.add(parent === normalizePath(currentHomeDirectory()) || dirname(parent) === parent ? currentProjectRoot : parent);
   }
 
   const legacyRoot = options.legacyRelayConfig?.projectRoot?.trim();
@@ -1914,10 +1915,40 @@ async function seedWorkspaceRoots(options: {
   }
 
   if (roots.size === 0) {
-    roots.add(join(homedir(), "dev"));
+    roots.add(join(currentHomeDirectory(), "dev"));
   }
 
   return Array.from(roots);
+}
+
+/**
+ * A package/service working directory is not a user's project. In particular,
+ * npm/Bun package.json files and home-level AGENTS.md/CLAUDE.md files must not
+ * turn a fresh install into a scan of /Users or a workspace in node_modules.
+ * This is only inference: explicitly saved roots and setup overrides keep
+ * their existing authority.
+ */
+export async function findOnboardingProjectRoot(startDirectory: string): Promise<string | null> {
+  let current = normalizePath(startDirectory);
+  if (current.split(/[\\/]/u).some((part) => part === "node_modules" || part.endsWith(".app"))) {
+    return null;
+  }
+  if (!(await stat(current).catch(() => null))?.isDirectory()) return null;
+  const home = normalizePath(currentHomeDirectory());
+  let nearestCandidate: string | null = null;
+  while (current !== home && current !== dirname(home) && dirname(current) !== current) {
+    if (await pathExists(join(current, ".git"))) return current;
+    if (
+      await pathExists(projectConfigPath(current))
+      || await pathExists(join(current, "package.json"))
+      || await pathExists(join(current, "AGENTS.md"))
+      || await pathExists(join(current, "CLAUDE.md"))
+    ) {
+      nearestCandidate ??= current;
+    }
+    current = dirname(current);
+  }
+  return nearestCandidate;
 }
 
 export async function readOpenScoutSettings(options: { currentDirectory?: string } = {}): Promise<OpenScoutSettings> {

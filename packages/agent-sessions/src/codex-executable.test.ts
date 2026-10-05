@@ -6,6 +6,7 @@ import { delimiter, join } from "node:path";
 import {
   resolveCodexExecutableCandidates,
   resolveCodexExecutableInventory,
+  resolveCodexExecutableAsync,
 } from "./codex-executable.js";
 
 const tempPaths = new Set<string>();
@@ -19,7 +20,7 @@ afterEach(() => {
 
 function fakeCodex(directory: string, version: string): string {
   const executablePath = join(directory, "codex");
-  writeFileSync(executablePath, `#!/usr/bin/env bun
+  writeFileSync(executablePath, `#!${process.execPath}
 if (process.argv.includes("--version")) {
   console.log("codex-cli ${version}");
   process.exit(0);
@@ -95,5 +96,34 @@ describe("Codex executable inventory", () => {
     });
 
     expect(inventory.selectedPath).toBe(explicitBin);
+  });
+
+  test("bounded discovery uses the launch environment and the inventory's selection policy", async () => {
+    const homeRoot = mkdtempSync(join(tmpdir(), "openscout-codex-bounded-home-"));
+    tempPaths.add(homeRoot);
+    const pathRoot = join(homeRoot, "bin");
+    const bundleRoot = join(homeRoot, "Applications", "ChatGPT.app", "Contents", "Resources");
+    mkdirSync(pathRoot, { recursive: true });
+    mkdirSync(bundleRoot, { recursive: true });
+    fakeCodex(pathRoot, "999.0.0");
+    const bundled = fakeCodex(bundleRoot, "999.1.0");
+    const env = { HOME: homeRoot, PATH: pathRoot };
+    expect(await resolveCodexExecutableAsync(env)).toBe(bundled);
+    expect(await resolveCodexExecutableAsync(env)).toBe(resolveCodexExecutableInventory(env).selectedPath);
+    expect(await resolveCodexExecutableAsync({ ...env, OPENSCOUT_CODEX_BIN: join(pathRoot, "codex") })).toBe(join(pathRoot, "codex"));
+  });
+
+  test("an unresponsive version probe cannot block discovery beyond its deadline", async () => {
+    const root = mkdtempSync(join(tmpdir(), "openscout-codex-bounded-slow-"));
+    tempPaths.add(root);
+    const executable = fakeCodex(root, "999.0.0");
+    writeFileSync(executable, `#!${process.execPath}\nsetInterval(() => {}, 1000);\n`);
+    const validRoot = join(root, "valid");
+    mkdirSync(validRoot);
+    const valid = fakeCodex(validRoot, "999.1.0");
+    const startedAt = Date.now();
+    expect(await resolveCodexExecutableAsync({ HOME: root, PATH: [root, validRoot].join(delimiter) }, { timeoutMs: 80 })).toBe(valid);
+    expect(Date.now() - startedAt).toBeLessThan(1_000);
+    await expect(resolveCodexExecutableAsync({ HOME: root, PATH: root }, { signal: AbortSignal.abort() })).rejects.toThrow();
   });
 });

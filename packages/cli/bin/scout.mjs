@@ -5,7 +5,7 @@ import { spawnSync } from "node:child_process";
 import { delimiter, dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-import { preflightLifecycle } from "./lifecycle-preflight.mjs";
+import { preflightLifecycle, QUICK_LINKS } from "./lifecycle-preflight.mjs";
 
 const binDir = dirname(fileURLToPath(import.meta.url));
 const bunDistEntry = resolve(binDir, "../dist/main.mjs");
@@ -103,7 +103,7 @@ if (preferredHost === "bun") {
   console.error(
     "Scout was asked to use the Bun runtime, but Bun was not found.\n" +
     "Install Bun: curl -fsSL https://bun.sh/install | bash\n" +
-    "Or unset OPENSCOUT_RUNTIME_HOST to allow the Node headless runtime when it is packaged.",
+    "Or unset OPENSCOUT_RUNTIME_HOST to allow the Node headless runtime when it is packaged.\n\n" + QUICK_LINKS,
   );
   process.exit(1);
 }
@@ -117,7 +117,7 @@ console.error(
   "Scout could not find a runnable headless runtime.\n" +
   "This package version still needs Bun for the full CLI because the Node headless entrypoint is not packaged yet.\n" +
   "Install Bun: curl -fsSL https://bun.sh/install | bash\n" +
-  "Future @openscout/scout packages should run the headless broker through Node when Bun is unavailable.",
+  "Future @openscout/scout packages should run the headless broker through Node when Bun is unavailable.\n\n" + QUICK_LINKS,
 );
 process.exit(1);
 
@@ -199,7 +199,7 @@ function describeNodeEntrypointFailure(error) {
     "The Node headless entrypoint is not packaged yet or is incomplete, so this package version still needs Bun for the full CLI.\n" +
     "Install Bun: curl -fsSL https://bun.sh/install | bash\n" +
     "Future @openscout/scout packages should run the headless broker through Node when Bun is unavailable." +
-    reason;
+    reason + "\n\n" + QUICK_LINKS;
 }
 
 function renderNodeFallbackHelp(version) {
@@ -224,5 +224,7 @@ Full CLI commands:
 This package can be installed with npm, but the full CLI currently needs Bun
 until the Node headless entrypoint is packaged. Install Bun with:
   curl -fsSL https://bun.sh/install | bash
+
+${QUICK_LINKS}
 `;
 }

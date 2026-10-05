@@ -92,6 +92,39 @@ The sender may still use `who`, `latest`, or `session inspect` for debugging,
 but those should be follow-up tools, not required preflights for ordinary agent
 communication.
 
+## Published models and harness readiness
+
+Scout's versioned runtime catalog controls enabled model names, labels, ordering
+and reasoning levels. The broker reads the published JSON at
+`https://openscout.app/.well-known/runtime-catalog.v1.json` at most once per day
+by default. It saves the catalog, last check time and ETag, so restarting the
+broker does not trigger another normal request within that day. A failed check
+also saves its attempt time and warning while keeping the last valid contents.
+If no saved data exists, the bundled catalog is available offline.
+
+Model controls offer **Refresh models** for an explicit check inside that daily
+interval. The broker's `GET /v1/runtime-catalog?force=true` route coalesces
+concurrent refreshes and uses the saved ETag for conditional requests. The
+snapshot reports its source, revision, last check and refresh warnings. A
+published data update can enable a new model or change its reasoning levels
+without a Scout app or package update. Provider documentation may inform
+reviewed catalog updates; it does not directly enable choices.
+
+Installed adapters check that the selected harness can launch. Local Codex
+`model/list` or configuration reads do not filter Scout's published choices or
+preflight an ordinary submission. Actual app-server errors are returned as
+reported by the server. A catalog choice is not proof of successful inference;
+a completed task remains the end-to-end check.
+
+Default leaves both model and reasoning effort unset, allowing the harness to
+use its own configuration. Explicit choices retain the requested model and
+level. An existing task's named or continuation context is preserved, including
+when a choice later disappears from the new-task menu. Saved presets and
+successful-choice history remain stored; new-task menus filter them against
+current enabled data without deleting the user's preferences. A successful task
+records the runtime submitted for that task even if the catalog changes while
+it runs. Refreshing models keeps the composer draft.
+
 ## Endpoint State
 
 Endpoint state is the broker's best current view of a routable attachment. Keep

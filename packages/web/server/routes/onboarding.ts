@@ -1,5 +1,5 @@
 import type { Hono } from "hono";
-import { existsSync, rmSync } from "node:fs";
+import { rmSync, statSync } from "node:fs";
 import { resolve } from "node:path";
 import {
   loadUserConfig,
@@ -28,6 +28,7 @@ import { readJsonBody } from "../request-body.ts";
 
 export type OnboardingRouteDeps = {
   currentDirectory: string;
+  invalidateRunnerOptions?: () => void;
 };
 
 export function mountOnboardingRoutes(app: Hono, deps: OnboardingRouteDeps) {
@@ -80,7 +81,14 @@ export function mountOnboardingRoutes(app: Hono, deps: OnboardingRouteDeps) {
 
   app.post("/api/onboarding/setup", async (c) => {
     const state = await loadOpenScoutOnboardingState({ currentDirectory });
-    const contextRoot = state.contextRoot || state.projectRoot || state.currentDirectory;
+    const contextRoot = state.contextRoot || state.projectRoot || state.suggestedContextRoot;
+    if (!contextRoot) {
+      return c.json({ error: "Choose an existing project folder before running setup." }, 400);
+    }
+    const expanded = resolve(expandHomePath(contextRoot));
+    if (!statSync(expanded, { throwIfNoEntry: false })?.isDirectory()) {
+      return c.json({ error: `Choose an existing project folder. That folder is no longer available: ${expanded}` }, 400);
+    }
     try {
       const result = await runOpenScoutOnboardingSetup({
         currentDirectory: contextRoot,
@@ -88,6 +96,7 @@ export function mountOnboardingRoutes(app: Hono, deps: OnboardingRouteDeps) {
         sourceRoots: state.sourceRoots,
         defaultHarness: state.defaultHarness,
       });
+      deps.invalidateRunnerOptions?.();
       return c.json({
         ok: true,
         projectConfigPath: result.setup.currentProjectConfigPath,
@@ -128,7 +137,7 @@ export function mountOnboardingRoutes(app: Hono, deps: OnboardingRouteDeps) {
     // root gets silently `mkdir -p`'d by downstream setup.
     for (const candidate of [contextRoot, ...sourceRoots]) {
       const expanded = resolve(expandHomePath(candidate));
-      if (!existsSync(expanded)) {
+      if (!statSync(expanded, { throwIfNoEntry: false })?.isDirectory()) {
         return c.json({ error: `That folder doesn't exist: ${expanded}` }, 400);
       }
     }
@@ -140,6 +149,10 @@ export function mountOnboardingRoutes(app: Hono, deps: OnboardingRouteDeps) {
         sourceRoots,
         defaultHarness: harness,
       });
+      // Invalidate immediately after the durable save, including when the
+      // subsequent service/readiness step fails. Native Home can open in this
+      // same server process and must see the newly selected harness.
+      deps.invalidateRunnerOptions?.();
 
       const result = await runOpenScoutOnboardingSetup({
         currentDirectory: contextRoot,
@@ -147,6 +160,7 @@ export function mountOnboardingRoutes(app: Hono, deps: OnboardingRouteDeps) {
         sourceRoots,
         defaultHarness: harness,
       });
+      deps.invalidateRunnerOptions?.();
       return c.json({
         ok: true,
         projectConfigPath: result.setup.currentProjectConfigPath,

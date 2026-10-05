@@ -15,9 +15,13 @@ const GAP_LABEL: Record<SoloSetupGap, string> = {
   services: "the broker and an agent runtime",
 };
 
-/** Pro phases worth a line on Home; `active` needs nothing and `no_access` is an answer, not a step. */
+/**
+ * Pro phases worth a line on Home. Only setups already under way: both need an
+ * access check someone chose to run in Settings. `unconfirmed` gets no line, so
+ * a first load never asks about the account; `active` needs nothing and
+ * `no_access` is an answer, not a step.
+ */
 const PRO_LINE: Partial<Record<SoloProPhase, string>> = {
-  unconfirmed: "Have Solo Pro? Check this account's access.",
   finish_setup: "This account has Solo Pro. Finish installing it.",
   not_ready: "Solo Pro is installed but this server isn't serving it yet.",
 };
@@ -25,7 +29,7 @@ const PRO_LINE: Partial<Record<SoloProPhase, string>> = {
 /**
  * Home's next step for the basic web client, read from the same records the
  * takeover and Settings use: unfinished Solo setup first, then a first task,
- * plus one line toward Solo Pro. Renders nothing once there's nothing to do.
+ * plus one line when a Solo Pro setup is part way done. Renders nothing once there's nothing to do.
  */
 export function BasicNextStep() {
   const { onboarding, onboardingSkipped, resumeOnboarding, navigate } = useScout();

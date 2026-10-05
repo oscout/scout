@@ -25,6 +25,7 @@
   --sq-rule-strong: color-mix(in srgb, var(--ink) 18%, transparent);
   --sq-wash: color-mix(in srgb, var(--ink) 6%, transparent);
   --sq-live: var(--green);
+  --sq-accent: var(--hud-accent);
   --sq-danger: var(--red);
   --sq-display: "Inter Tight", var(--font-sans);
   --sq-sans: var(--font-sans);
@@ -306,6 +307,109 @@
   grid-template-columns: repeat(auto-fit, minmax(min(100%, 152px), 1fr));
 }
 
+/* ── visual choices ──────────────────────────────────────────────────────
+ * Appearance choices show themselves. Each tile draws its specimen in its own
+ * theme frame; the chosen one gets a firmer outline and a check, never a fill,
+ * so the specimen keeps its own colors. */
+
+.sq-tiles {
+  flex: 1;
+  min-width: 0;
+  display: grid;
+  grid-template-columns: repeat(var(--sq-tiles, 3), minmax(0, 1fr));
+  gap: 8px;
+}
+.sq-tile {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 2px;
+  min-width: 0;
+  padding: 6px 6px 8px;
+  border: 1px solid var(--sq-rule);
+  border-radius: 9px;
+  background: var(--sq-paper);
+  color: var(--sq-soft);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 160ms, box-shadow 160ms, color 160ms;
+}
+.sq-tile:hover { border-color: var(--sq-rule-strong); color: var(--sq-ink); }
+.sq-tile[aria-pressed="true"] {
+  border-color: var(--sq-ink);
+  box-shadow: inset 0 0 0 0.5px var(--sq-ink);
+  color: var(--sq-ink);
+}
+.sq-tile-art {
+  display: grid;
+  place-items: center;
+  min-height: 64px;
+  margin-bottom: 6px;
+  border-radius: 5px;
+  background: var(--sq-wash);
+  overflow: hidden;
+}
+.sq-tile-art > .s-settings-palette-sample { width: 100%; height: 64px; border: 0; border-radius: 5px; }
+.sq-tile-name {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  padding: 0 2px;
+  font-size: 12.5px;
+  font-weight: 500;
+}
+.sq-tile-name svg { flex: none; }
+.sq-tile-spec { padding: 0 2px; font: 10.5px/1.4 var(--sq-mono); color: var(--sq-label); }
+
+/* Accent: a row of swatches, not tiles. */
+.sq-tiles[data-variant="swatch"] { display: flex; flex-wrap: wrap; gap: 6px; flex: none; }
+.sq-tiles[data-variant="swatch"] .sq-tile {
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 10px 5px 6px;
+  border-radius: 999px;
+}
+.sq-tiles[data-variant="swatch"] .sq-tile-art { min-height: 0; margin: 0; background: none; }
+.sq-tiles[data-variant="swatch"] .sq-tile-name { gap: 6px; padding: 0; }
+
+.sq-faces { display: flex; align-items: center; gap: 6px; }
+.sq-shell { display: contents; }
+.sq-shell .s-settings-shell-sample { width: 100%; max-width: 132px; }
+.sq-shell[data-shell="slack"] .s-settings-shell-sample { grid-template-columns: 15px 39px minmax(0, 1fr); }
+.sq-shell[data-shell="slack"] .s-settings-shell-sample [data-part="top"],
+.sq-shell[data-shell="slack"] .s-settings-shell-sample [data-part="rail"] { background: oklch(0.31 0.085 325); }
+.sq-shell[data-shell="slack"] .s-settings-shell-sample [data-part="list"] { background: oklch(0.37 0.09 325); }
+
+/* The live specimen opens the Appearance page: the app in miniature, drawn
+ * with every choice below. */
+.sq-specimen { margin: 0; }
+.sq-specimen .s-settings-live-preview { box-shadow: 0 12px 32px -18px rgb(0 0 0 / 0.45); }
+.sq-specimen .s-settings-live-preview-shell { min-height: 212px; grid-template-columns: 28px 132px minmax(0, 1fr); }
+.sq-specimen-caption {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  margin: 10px 0 0;
+  padding: 0 2px;
+  font: 500 10.5px/1.4 var(--sq-mono);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--sq-label);
+}
+
+.sq-portrait {
+  display: grid;
+  place-items: center;
+  width: 52px;
+  height: 52px;
+  border: 1px solid var(--sq-rule);
+  border-radius: 12px;
+  background: var(--sq-wash);
+}
+
 /* ── narrow: the sidebar stays, and steps down ─────────────────────────────
  * Sized by the window, not the viewport: the Scout app's stage is ~680px wide
  * inside a full-width screen. Page list always visible; it narrows, then
@@ -331,26 +435,93 @@
   .sq-page { padding: 24px 16px 56px; }
   .sq-row { flex-wrap: wrap; gap: 12px; }
   .sq-row-control { flex-wrap: wrap; }
+  .sq-tiles[data-count="4"] { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .sq-specimen .s-settings-live-preview-shell { grid-template-columns: 28px minmax(0, 1fr); }
+  .sq-specimen .s-settings-live-preview-detail { display: none; }
 }
 
 /* The embed root (/embed/settings) gives the window a definite height. */
 .s-discovered-embed.sq-embed { height: 100vh; min-height: 0; }
 
-/* ── Solo Pro ────────────────────────────────────────────────────────────── */
+/* ── Solo Pro ────────────────────────────────────────────────────────────
+ * One plate that answers "where do I stand", then the three facts it rests on.
+ * The accent (amber by default) is spent once: on the sigil, and on the plate's
+ * top edge when access is confirmed and everything is running. */
 
 .sq-pro-summary {
-  padding: 18px 18px 16px;
+  position: relative;
+  padding: 20px 20px 18px;
   border: 1px solid var(--sq-rule);
-  border-left: 3px solid var(--sq-label);
-  border-radius: 10px;
-  background: var(--sq-card);
+  border-radius: 12px;
+  background:
+    radial-gradient(120% 90% at 0% 0%, color-mix(in srgb, var(--sq-accent) 7%, transparent), transparent 60%),
+    var(--sq-card);
+  overflow: hidden;
 }
-.sq-pro-summary[data-phase="active"] { border-left-color: var(--sq-live); }
-.sq-pro-summary[data-phase="finish_setup"],
-.sq-pro-summary[data-phase="not_ready"] { border-left-color: var(--sq-ink); }
-.sq-pro-headline { font: 600 17px/1.25 var(--sq-display); letter-spacing: -0.01em; color: var(--sq-ink); }
-.sq-pro-lead { margin: 6px 0 0; font-size: 13px; line-height: 1.5; color: var(--sq-soft); }
-.sq-pro-summary-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 14px; }
+.sq-pro-summary::before {
+  content: "";
+  position: absolute;
+  inset: 0 0 auto;
+  height: 1px;
+  background: linear-gradient(90deg, color-mix(in srgb, var(--sq-accent) 55%, transparent), transparent 70%);
+  opacity: 0.5;
+}
+.sq-pro-summary[data-phase="active"]::before { opacity: 1; }
+.sq-pro-kicker {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+  font: 500 10.5px/1 var(--sq-mono);
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--sq-soft);
+}
+.sq-pro-sigil {
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border: 1px solid color-mix(in srgb, var(--sq-accent) 40%, transparent);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--sq-accent) 10%, transparent);
+}
+.sq-pro-sigil .sq-mark { width: 13px; height: 13px; color: var(--sq-accent); }
+.sq-pro-headline { font: 600 21px/1.2 var(--sq-display); letter-spacing: -0.015em; color: var(--sq-ink); text-wrap: balance; }
+.sq-pro-lead { max-width: 56ch; margin: 6px 0 0; font-size: 13px; line-height: 1.5; color: var(--sq-soft); }
+
+.sq-pro-facts {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  margin: 16px 0 0;
+  border: 1px solid var(--sq-rule);
+  border-radius: 8px;
+  background: var(--sq-paper);
+}
+.sq-pro-facts > div { min-width: 0; padding: 10px 12px; }
+.sq-pro-facts > div + div { border-left: 1px solid var(--sq-rule); }
+.sq-pro-facts dt {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font: 500 10px/1 var(--sq-mono);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--sq-label);
+}
+.sq-pro-facts dt::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  flex: none;
+  border: 1px solid var(--sq-label);
+  border-radius: 50%;
+}
+.sq-pro-facts [data-tone="ok"] dt::before { border-color: var(--sq-live); background: var(--sq-live); }
+.sq-pro-facts [data-tone="bad"] dt::before { border-color: var(--sq-danger); }
+.sq-pro-facts dd { margin: 7px 0 0; font-size: 13px; font-weight: 500; color: var(--sq-ink); overflow-wrap: anywhere; }
+.sq-pro-facts dd small { display: block; margin-top: 2px; font: 11px var(--sq-mono); font-weight: 400; color: var(--sq-soft); }
+.sq-pro-summary-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 16px; }
 .sq-pro-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .sq-pro-command {
   display: inline-flex;
@@ -374,4 +545,6 @@
 .sq-pro { display: contents; }
 @container sq-win (max-width: 600px) {
   .sq-pro .sq-row-text { flex-basis: 100%; }
+  .sq-pro-facts { grid-template-columns: minmax(0, 1fr); }
+  .sq-pro-facts > div + div { border-left: 0; border-top: 1px solid var(--sq-rule); }
 }

@@ -18,10 +18,10 @@ export interface ScoutRuntimeHarnessDefaults {
 }
 
 /**
- * Scout's versioned product catalog. Harness vendors are execution adapters,
- * not catalog authorities: availability, ordering, labels, defaults, and the
- * per-model effort ladder come from runtime-catalog.v1.json. Running brokers
- * may replace this bundled last-known-good seed with a newer valid revision.
+ * Scout's published, versioned catalog controls enabled names, ordering,
+ * labels and model effort metadata. A running broker can adopt newer data
+ * without an app/package update. Adapters separately report harness readiness;
+ * actual execution errors remain authoritative for a particular task.
  */
 export const SCOUT_RUNTIME_CATALOG: ScoutOwnedRuntimeCatalog = SCOUT_RUNTIME_CATALOG_DATA;
 
@@ -331,6 +331,11 @@ export type ScoutRuntimeTuple = {
   harness?: string | null;
   model?: string | null;
   reasoningEffort?: string | null;
+  /** Existing task context remains usable after a published choice is disabled. */
+  session?: "new" | "reuse" | "existing" | "fork" | "any";
+  targetSessionId?: string;
+  forkFromSessionId?: string;
+  forkFromStateId?: string;
 };
 
 export interface ScoutRuntimeSpec {
@@ -373,6 +378,7 @@ export function scoutRuntimeLatestModelInFamily(
 export function normalizeScoutRuntimeModel(
   harness: string,
   input: string,
+  catalog: ScoutOwnedRuntimeCatalog = SCOUT_RUNTIME_CATALOG,
 ): ScoutRuntimeModelNormalization {
   const requested = input.trim();
   if (!requested) {
@@ -394,7 +400,7 @@ export function normalizeScoutRuntimeModel(
   }
   if (normalizedHarness === "claude") {
     const family = CLAUDE_FAMILY_ALIASES[lower];
-    const resolved = family ? scoutRuntimeLatestModelInFamily("claude", family) : undefined;
+    const resolved = family ? scoutRuntimeLatestModelInFamily("claude", family, catalog) : undefined;
     return { ok: true, requested, resolved: resolved ?? requested };
   }
   return { ok: true, requested, resolved: requested };
@@ -427,10 +433,8 @@ export function parseScoutRuntimeSpec(input: string): ScoutRuntimeSpecParseResul
       error: `unsupported reasoning effort "${effortRaw}"; expected one of: ${SCOUT_REASONING_EFFORTS.join(", ")}`,
     };
   }
-  const issues = validateScoutRuntimeTuple({ harness, model, reasoningEffort });
-  if (issues.length > 0) {
-    return { ok: false, error: issues.map((issue) => issue.message).join("; ") };
-  }
+  // Parse syntax locally. The broker validates model/effort legality against
+  // its current published catalog, which can be newer than this CLI package.
   return {
     ok: true,
     value: {
@@ -453,6 +457,7 @@ export function formatScoutRuntimeSpec(spec: ScoutRuntimeSpec): string {
 export type ScoutRuntimeTupleIssue = {
   code:
     | "unsupported_harness"
+    | "disabled_model"
     | "unsupported_reasoning_effort"
     | "reasoning_effort_harness_mismatch"
     | "unsupported_model_dimension"
@@ -544,9 +549,14 @@ export function validateScoutRuntimeTuple(
 ): ScoutRuntimeTupleIssue[] {
   const rawHarness = input.harness?.trim().toLowerCase();
   const harness = rawHarness === "oc" ? "opencode" : rawHarness;
-  const model = input.model?.trim();
+  const requestedModel = input.model?.trim();
+  const normalizedModel = harness && requestedModel
+    ? normalizeScoutRuntimeModel(harness, requestedModel, ownedCatalog) : null;
+  const model = normalizedModel?.ok ? normalizedModel.resolved : requestedModel;
   const effortRaw = input.reasoningEffort?.trim();
   const issues: ScoutRuntimeTupleIssue[] = [];
+  const existingContext = Boolean(input.targetSessionId || input.forkFromSessionId || input.forkFromStateId)
+    || input.session === "existing" || input.session === "fork";
 
   // Harness membership and model selectability come from the owned catalog —
   // the live broker snapshot when one is supplied, the bundled default
@@ -567,7 +577,7 @@ export function validateScoutRuntimeTuple(
       dimension: "reasoningEffort",
       message: `unsupported reasoning effort "${effortRaw}"; expected one of: ${SCOUT_REASONING_EFFORTS.join(", ")}`,
     });
-  } else if (effort && harness) {
+  } else if (effort && harness && !existingContext) {
     const catalogEffort = catalog?.efforts.find((candidate) => candidate.id === effort);
     let supported = catalogEffort
       ? catalogEffort.harnesses.includes(harness as ScoutLaunchableHarness)
@@ -594,7 +604,15 @@ export function validateScoutRuntimeTuple(
     }
   }
 
-  if (model && harness && !isModelSelectableHarness(harness, ownedCatalog)) {
+  const ownedHarness = harness ? scoutRuntimeHarness(harness, ownedCatalog) : undefined;
+  const publishedModel = ownedHarness?.models.find((candidate) => candidate.id.toLowerCase() === model?.toLowerCase());
+  if (model && publishedModel?.enabled === false && ownedHarness?.allowCustomModels !== true && !existingContext) {
+    issues.push({
+      code: "disabled_model",
+      dimension: "model",
+      message: `model "${model}" is disabled in the Scout runtime catalog`,
+    });
+  } else if (model && harness && !existingContext && !isModelSelectableHarness(harness, ownedCatalog)) {
     issues.push({
       code: "unsupported_model_dimension",
       dimension: "model",

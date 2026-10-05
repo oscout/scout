@@ -70,6 +70,7 @@ import {
   type ScoutVoicePlaybackSettings,
 } from "../../../shared/voice-playback.ts";
 import { VoiceHostStatusBanner, VoicePermissionsPanel } from "./VoicePermissionsPanel.tsx";
+import { AppearanceFrame, LiveAppearancePreview, PaletteSample, ShellSample } from "./AppearanceSamples.tsx";
 import "./settings-drawer.css";
 import "./voice-permissions-panel.css";
 
@@ -288,114 +289,6 @@ const AVATAR_SIZES = [
  *  renderer. */
 const AVATAR_SIZE_SPECIMENS = ["milo", "vex", "sprout"] as const;
 
-function AppearanceFrame({
-  className,
-  theme,
-  template,
-  palette,
-  contrast,
-  accent,
-  children,
-}: {
-  className: string;
-  theme: "light" | "dark";
-  template: ScoutThemeTemplate;
-  palette: ScoutThemePalette;
-  contrast: ScoutThemeContrast;
-  accent: ScoutThemeAccent;
-  children: React.ReactNode;
-}) {
-  return (
-    <div
-      className={className}
-      data-scout-theme={theme}
-      data-scout-theme-mode={theme}
-      data-scout-palette={palette}
-      data-scout-contrast={contrast}
-      data-scout-accent={accent}
-      data-hudson-theme={theme}
-      data-hudson-template={template}
-    >
-      {children}
-    </div>
-  );
-}
-
-function PaletteSample({
-  palette,
-  theme,
-  template,
-}: {
-  palette: ScoutThemePalette;
-  theme: "light" | "dark";
-  template: ScoutThemeTemplate;
-}) {
-  return (
-    <AppearanceFrame
-      className="s-settings-palette-sample"
-      theme={theme}
-      template={template}
-      palette={palette}
-      contrast="balanced"
-      accent="theme"
-    >
-      <span className="s-settings-palette-rail"><i /><i data-active /><i /><i /></span>
-      <span className="s-settings-palette-list"><i /><i data-selected /><i /></span>
-      <span className="s-settings-palette-detail"><i data-title /><i /><i /><i data-action /></span>
-    </AppearanceFrame>
-  );
-}
-
-function LiveAppearancePreview({
-  theme,
-  template,
-  palette,
-  contrast,
-  accent,
-}: {
-  theme: "light" | "dark";
-  template: ScoutThemeTemplate;
-  palette: ScoutThemePalette;
-  contrast: ScoutThemeContrast;
-  accent: ScoutThemeAccent;
-}) {
-  return (
-    <AppearanceFrame
-      className="s-settings-live-preview"
-      theme={theme}
-      template={template}
-      palette={palette}
-      contrast={contrast}
-      accent={accent}
-    >
-      <div className="s-settings-live-preview-bar">
-        <span><i /> SCOUT</span>
-        <span className="s-settings-live-preview-state"><i /> WORKING</span>
-      </div>
-      <div className="s-settings-live-preview-shell">
-        <div className="s-settings-live-preview-rail" aria-hidden="true">
-          <i data-active /><i /><i /><i /><i />
-        </div>
-        <div className="s-settings-live-preview-list">
-          <span className="s-settings-live-preview-kicker">CONVERSATIONS</span>
-          <span className="s-settings-live-preview-row" data-selected>
-            <i /><b>Openscout</b><small>now</small>
-          </span>
-          <span className="s-settings-live-preview-row"><i /><b>Hudson</b><small>8m</small></span>
-          <span className="s-settings-live-preview-row"><i /><b>Scout</b><small>1h</small></span>
-        </div>
-        <div className="s-settings-live-preview-detail">
-          <span className="s-settings-live-preview-kicker">ACTIVE FLIGHT</span>
-          <strong>Theme system review</strong>
-          <p>Separating palette, interface shape, and contrast keeps every choice honest.</p>
-          <div className="s-settings-live-preview-event"><i /> Agent is working · updated now</div>
-          <button type="button" tabIndex={-1}>Open trace</button>
-        </div>
-      </div>
-    </AppearanceFrame>
-  );
-}
-
 function AppearanceSection() {
   const appearance = useOptionalTheme();
   const { appearanceDetails, updateAppearanceDetails } = useScout();
@@ -431,12 +324,7 @@ function AppearanceSection() {
               aria-pressed={active}
               onClick={() => updateAppearanceDetails({ shell: option.id })}
             >
-              <span className="s-settings-shell-sample" aria-hidden="true">
-                <i data-part="top" />
-                <i data-part="rail" />
-                <i data-part="list"><b /><b /><b /></i>
-                <i data-part="content"><b /><b /><b /></i>
-              </span>
+              <ShellSample />
               <span className="s-settings-choice-copy">
                 <span className="s-settings-choice-title">
                   <strong>{option.label}</strong>

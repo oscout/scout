@@ -1146,6 +1146,13 @@ export class CodexAppServerTransport {
     this.starting = this.startSession();
     try {
       await this.starting;
+    } catch (error) {
+      // A failed start must not leave our child alive. Attached servers
+      // remain owned by their host and are only disconnected.
+      await this.connection?.close();
+      this.connection?.detach();
+      this.connection = null;
+      throw error;
     } finally {
       this.starting = null;
     }
@@ -1195,7 +1202,7 @@ export class CodexAppServerTransport {
     } else {
       const launchArgs = normalizeCodexAppServerLaunchArgs(this.options.launchArgs);
       connection = spawnCodexAppServerStdioConnection({
-        executable: resolveCodexExecutable(),
+        executable: resolveCodexExecutable(env),
         args: [
           "app-server",
           ...buildScoutMcpCodexLaunchArgs({
@@ -1342,9 +1349,6 @@ export class CodexAppServerTransport {
   private connectionHandlers(current: () => CodexAppServerConnection | undefined): CodexAppServerConnectionHandlers {
     return {
       onMessage: (text) => this.handleMessageText(text),
-      onStdout: (chunk) => {
-        void appendFile(this.stdoutLogPath, redactSecrets(chunk)).catch(() => undefined);
-      },
       onStderr: (chunk) => {
         void appendFile(this.stderrLogPath, redactSecrets(chunk)).catch(() => undefined);
       },
@@ -1389,7 +1393,12 @@ export class CodexAppServerTransport {
       return;
     }
 
-    if (this.connection?.mode === "attached") {
+    // Capability/config response IDs use their own namespace. Keeping this
+    // check independent of pending requests suppresses late responses after a
+    // timeout without an unbounded set of retained request-ID tombstones.
+    const privateCapabilityResponse = isResponse(message)
+      && typeof message.id === "string" && message.id.startsWith("scout-capability-");
+    if (!privateCapabilityResponse) {
       void appendFile(this.stdoutLogPath, `${redactSecrets(line)}\n`).catch(() => undefined);
     }
 
@@ -1573,7 +1582,9 @@ export class CodexAppServerTransport {
   }
 
   private async request<T>(method: string, params: unknown): Promise<T> {
-    const id = String(this.nextRequestId++);
+    const sequence = this.nextRequestId++;
+    const id = method === "model/list" || method === "config/read"
+      ? `scout-capability-${sequence}` : String(sequence);
 
     return new Promise<T>((resolve, reject) => {
       this.pendingRequests.set(id, {

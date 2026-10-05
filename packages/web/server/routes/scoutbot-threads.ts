@@ -14,6 +14,7 @@ import { readJsonBody } from "../request-body.ts";
 export type ScoutbotThreadRouteDeps = {
   currentDirectory: string;
   readRunnerOptions: (scope: ScoutRuntimeCapabilityCatalog["scope"], projectRoot: string) => ReturnType<typeof buildHudRunnerOptions>;
+  readRuntimeCatalog?: typeof loadBrokerRuntimeCatalog;
   scoutbot: ScoutbotWebServices;
 };
 
@@ -46,7 +47,8 @@ export function mountScoutbotThreadRoutes(app: Hono, deps: ScoutbotThreadRouteDe
     } | null;
     const model = typeof body?.model === "string" ? body.model.trim() : "";
     const effort = typeof body?.reasoningEffort === "string" ? body.reasoningEffort.trim() : "";
-    const catalog = (await loadBrokerRuntimeCatalog().catch(() => null))?.catalog ?? SCOUT_RUNTIME_CATALOG;
+    const live = await (deps.readRuntimeCatalog ?? loadBrokerRuntimeCatalog)().catch(() => null);
+    const catalog = live?.catalog ?? SCOUT_RUNTIME_CATALOG;
     if (!model || !scoutRuntimeModelCatalog(catalog).some((entry) => entry.id === model && entry.harnesses.includes("codex"))) {
       return c.json({ error: "Choose an available Codex model from the runtime catalog" }, 400);
     }

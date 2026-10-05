@@ -959,3 +959,11 @@ describe("parseCardCreateCommandOptions", () => {
     expect(options.projectPath).toBe("/tmp/worktree");
   });
 });
+
+
+test("CLI preserves a newly published model and effort without bundled-model legality checks", () => {
+  const literal = parseAskCommandOptions(["--runtime", "codex/gpt-published-next/ultra", "review"], "/repo");
+  expect(literal).toMatchObject({ harness: "codex", model: "gpt-published-next", reasoningEffort: "ultra", message: "review", session: "new" });
+  const natural = parseAskCommandOptions(["codex/gpt-published-next/max", "to", "review"], "/repo");
+  expect(natural).toMatchObject({ harness: "codex", model: "gpt-published-next", reasoningEffort: "max", message: "review", session: "new" });
+});

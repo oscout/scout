@@ -102,6 +102,13 @@ export type HostSettingsSnapshot = {
     playSound: boolean;
     dockBadge: boolean;
   } | null;
+  /** Which shared room the app's Spaces seat opens; absent from older hosts */
+  spaces?: {
+    origin: string;
+    originOptions: HostOption[];
+    /** host of the hosted room, e.g. chat.openscout.app */
+    hostedHost: string;
+  } | null;
   spokenReplies: {
     voice: string;
     voiceOptions: HostOption[];
@@ -129,6 +136,7 @@ export type HostSettingKey =
   | "attention.notifyWhenNeeded"
   | "attention.playSound"
   | "attention.dockBadge"
+  | "spaces.origin"
   | "spokenReplies.voice"
   | "spokenReplies.model"
   | "update.automaticChecks"

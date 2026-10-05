@@ -5,8 +5,10 @@ import { dirname, join, resolve } from "node:path";
 import {
   checkCatalogOutputs,
   renderCatalogOutputs,
+  renderLandingMirror,
   RUNTIME_CATALOG_SOURCE,
   RUNTIME_CATALOG_TS_OUTPUT,
+  verifyPublishedRuntimeCatalog,
 } from "../../../scripts/generate-runtime-catalog.ts";
 
 const repoRoot = resolve(import.meta.dir, "../../..");
@@ -43,5 +45,27 @@ describe("runtime catalog generation", () => {
     expect(tampered?.match).toBe(false);
     expect(tampered?.detail).toContain("first difference");
     expect(drifted.filter((result) => !result.match)).toHaveLength(1);
+  });
+
+  test("publication verification requires the exact reviewed data, independently of package versions", async () => {
+    const source = await Bun.file(join(repoRoot, RUNTIME_CATALOG_SOURCE)).json();
+    expect(await verifyPublishedRuntimeCatalog(repoRoot, async () => new Response(renderLandingMirror(source)))).toBe(source.revision);
+    const altered = structuredClone(source);
+    altered.harnesses[0].models[0].enabled = false;
+    delete altered.harnesses[0].models[0].default;
+    await expect(verifyPublishedRuntimeCatalog(repoRoot, async () => new Response(renderLandingMirror(altered)))).rejects.toThrow("does not match");
+  });
+
+  test("publication verification rejects extra fields and byte drift that client parsing would normalize", async () => {
+    const source = await Bun.file(join(repoRoot, RUNTIME_CATALOG_SOURCE)).json();
+    await expect(verifyPublishedRuntimeCatalog(repoRoot, async () => new Response(renderLandingMirror({ ...source, unexpected: true })))).rejects.toThrow("does not match");
+    await expect(verifyPublishedRuntimeCatalog(repoRoot, async () => Response.json(source))).rejects.toThrow("does not match");
+    const withBom = new Uint8Array([0xef, 0xbb, 0xbf, ...new TextEncoder().encode(renderLandingMirror(source))]);
+    await expect(verifyPublishedRuntimeCatalog(repoRoot, async () => new Response(withBom))).rejects.toThrow("does not match");
+  });
+
+  test("an unavailable or malformed public catalog cannot pass publication verification", async () => {
+    await expect(verifyPublishedRuntimeCatalog(repoRoot, async () => new Response("missing", { status: 404 }))).rejects.toThrow("HTTP 404");
+    await expect(verifyPublishedRuntimeCatalog(repoRoot, async () => Response.json({ revision: "2026-10-05.1" }))).rejects.toThrow("invalid");
   });
 });
