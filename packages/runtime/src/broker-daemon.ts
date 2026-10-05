@@ -1820,6 +1820,7 @@ const localInvocationService = new BrokerLocalInvocationService({
   createId: createRuntimeId,
   transitionInvocation,
   persistEndpoint,
+  persistEndpointWithoutRecovery: upsertEndpointDurably,
   // Lazily bound: dispatchRecoveryService is constructed later in this module,
   // and deferral only fires during dispatch, long after initialization.
   deferInvocationRetry: (invocationId, notBeforeTs) =>

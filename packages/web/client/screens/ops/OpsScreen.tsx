@@ -50,7 +50,8 @@ export function OpsScreen({
         {mode === "tail" && (
           <TailView
             navigate={navigate}
-            initialFilter={resolvedTailQuery}
+            initialFilter={resolvedTailQuery.query}
+            sessionId={resolvedTailQuery.sessionId}
             variant="tail"
           />
         )}

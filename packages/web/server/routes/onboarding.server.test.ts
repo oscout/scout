@@ -14,6 +14,21 @@ await loadWebServerUnderTest();
 installWebServerTestHooks();
 
 describe("createOpenScoutWebServer: onboarding routes", () => {
+  test("local setup and identity writes return the fresh state needed by the next step", async () => {
+    const home = useIsolatedOpenScoutHome();
+    process.env.OPENSCOUT_HOME = join(home, ".openscout");
+    const server = await createOpenScoutWebServer({ currentDirectory: home, assetMode: "static", staticRoot: makeStaticRoot() });
+    const init = await server.app.request("http://localhost/api/onboarding/init", { method: "POST", body: "{}", headers: { "content-type": "application/json" } });
+    expect(init.status).toBe(200);
+    expect((await init.json()).state).toMatchObject({ hasLocalConfig: true, hasOperatorName: false });
+    const identity = await server.app.request("http://localhost/api/user", {
+      method: "POST", body: JSON.stringify({ name: "Arach", bio: "Developer" }), headers: { "content-type": "application/json" },
+    });
+    expect(identity.status).toBe(200);
+    const result = await identity.json();
+    expect(result).toMatchObject({ name: "Arach", bio: "Developer", state: { hasLocalConfig: true, hasOperatorName: true, operatorName: "Arach" } });
+  });
+
   test("POST /api/user validates runtime lists and round-trips them", async () => {
     const home = useIsolatedOpenScoutHome();
     process.env.OPENSCOUT_HOME = join(home, ".openscout");

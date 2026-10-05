@@ -17,6 +17,7 @@ import {
   buildCompanionCard,
   cleanReportText,
   isCompanionRelevantEvent,
+  operatorActorIds,
   overflowSummary,
   projectInitials,
   type CompanionCardState,
@@ -150,15 +151,28 @@ describe("buildCompanionCard", () => {
     expect(card.statusTone).toBe("muted");
   });
 
-  test("interrupt attention is a blocker with the reported reason", () => {
+  test("interrupt attention is an observed flight failure, never a borrowed report", () => {
     const card = buildCompanionCard(work({
       attention: "interrupt",
-      state: "waiting",
-      timeline: [event(NOW - MIN, "waiting", "Signing identity missing")],
+      state: "working",
+      timeline: [event(NOW - MIN, "progressed", "Starting on the parser")],
+      allFlights: [
+        { ...flight("failed"), summary: "Old failure", completedAt: NOW - 30 * MIN },
+        { ...flight("failed"), summary: "Signing identity missing", completedAt: NOW - 2 * MIN },
+      ],
     }), { now: NOW, live: true });
     expect(card.state).toBe("blocked");
     expect(card.statusTone).toBe("error");
-    expect(card.callout).toEqual({ tone: "blocker", label: "Blocker · reported", text: "Signing identity missing" });
+    expect(card.callout).toEqual({ tone: "blocker", label: "Flight failed · observed", text: "Signing identity missing" });
+  });
+
+  test("a failed flight without a summary says so instead of quoting the agent", () => {
+    const card = buildCompanionCard(work({
+      attention: "interrupt",
+      timeline: [event(NOW - MIN, "progressed", "Starting on the parser")],
+      allFlights: [flight("failed")],
+    }), { now: NOW, live: true });
+    expect(card.callout?.text).toBe("The flight failed without detail.");
   });
 
   test("done shows the reported output", () => {
@@ -379,6 +393,52 @@ describe("surfacing", () => {
     ], { scopes, agents, pinnedIds: new Set(["pinned"]), now: NOW });
     expect(surfaced.map((item) => item.workId)).toEqual(["old-ask"]);
   });
+
+  test("order holds still across refreshes; new rows go after, asks first among them", () => {
+    const scopes = [{ kind: "agent" as const, id: "agent-1", label: null }];
+    const options = { scopes, agents, pinnedIds: new Set<string>(), now: NOW };
+    const at = (time: number) => ({ updatedAt: time, lastMeaningfulAt: time });
+    const first = selectSurfaced([
+      row("a", { ...at(NOW - 3 * MIN) }),
+      row("b", { ...at(NOW - 2 * MIN) }),
+    ], options);
+    expect(first.map((item) => item.workId)).toEqual(["b", "a"]);
+    // "a" moves and turns into a question; "c" and "d" are new.
+    const next = selectSurfaced([
+      row("a", { ...at(NOW), state: "waiting", nextMoveOwnerId: "operator" }),
+      row("b", { ...at(NOW - 2 * MIN) }),
+      row("c", { ...at(NOW - MIN) }),
+      row("d", { ...at(NOW - 4 * MIN), state: "review", nextMoveOwnerId: "operator" }),
+    ], { ...options, previousOrder: first.map((item) => item.workId) });
+    expect(next.map((item) => [item.workId, item.state])).toEqual([
+      ["b", "working"],
+      ["a", "question"],
+      ["d", "question"],
+      ["c", "working"],
+    ]);
+    // A row that drops out leaves no gap; the rest keep their places.
+    const after = selectSurfaced([row("a", { ...at(NOW) }), row("c", { ...at(NOW - MIN) })], {
+      ...options, previousOrder: next.map((item) => item.workId),
+    });
+    expect(after.map((item) => item.workId)).toEqual(["a", "c"]);
+  });
+
+  test("asks addressed to the configured name or handle count as the operator's", () => {
+    const ids = operatorActorIds({ name: "Arach", handle: "@arach" });
+    expect([...ids]).toEqual(["operator", "Arach", "arach"]);
+    expect([...operatorActorIds({ name: "Arach", handle: "" })]).toEqual(["operator", "Arach"]);
+    expect([...operatorActorIds(null)]).toEqual(["operator"]);
+    const ask = row("a", { state: "waiting", nextMoveOwnerId: "arach" });
+    expect(summaryState(ask, NOW)).toBe("waiting");
+    expect(summaryState(ask, NOW, ids)).toBe("question");
+    const surfaced = selectSurfaced([ask], {
+      scopes: [{ kind: "agent" as const, id: "agent-1", label: null }],
+      agents, pinnedIds: new Set(), now: NOW, operatorIds: ids,
+    });
+    expect(surfaced[0]?.needsOperator).toBe(true);
+    const card = buildCompanionCard(work({ state: "review", nextMoveOwnerId: "Arach" }), { now: NOW, live: true, operatorIds: ids });
+    expect(card.state).toBe("question");
+  });
 });
 
 
@@ -393,11 +453,20 @@ describe("session tail preview", () => {
     expect(card.lastActivityAt).not.toBe(NOW);
   });
   test("history never invents dates for synthetic offsets or exposes thinking", () => {
-    const payload = { data: { events: [
+    const payload = { fidelity: "timestamped", data: { events: [
       { id: "a", kind: "tool", t: 4, text: "Read a file" },
       { id: "b", kind: "message", t: 5, at: NOW - MIN, text: "Checks passed" },
       { id: "c", kind: "think", t: 6, at: NOW, text: "Private reasoning" },
     ] } } as Parameters<typeof sessionHistory>[0];
     expect(sessionHistory(payload)).toEqual([{ at: NOW - MIN, text: "Checks passed" }]);
+  });
+  test("a synthetic transcript contributes no history, even though the server stamps every event", () => {
+    // The server interpolates `at` (falling back to the read time) when the
+    // transcript has no timestamps; those times must not read as live.
+    const payload = { fidelity: "synthetic", data: { events: [
+      { id: "a", kind: "tool", t: 4, at: NOW, text: "Read a file" },
+      { id: "b", kind: "message", t: 5, at: NOW, text: "Checks passed" },
+    ] } } as Parameters<typeof sessionHistory>[0];
+    expect(sessionHistory(payload)).toEqual([]);
   });
 });

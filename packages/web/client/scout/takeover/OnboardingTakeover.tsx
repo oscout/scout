@@ -1,10 +1,23 @@
 import { useState, type ReactNode } from "react";
 import { api } from "../../lib/api.ts";
-import { useScout } from "../Provider.tsx";
+import { useScout, type OnboardingState } from "../Provider.tsx";
 import { friendlyOnboardingError } from "./onboarding-errors.ts";
 import { OnboardingHarnessPicker, onboardingHarnessDefault } from "./OnboardingHarnessPicker.tsx";
 
 const TOTAL_STEPS = 4;
+
+/** Apply the state observed by the write, avoiding an immediate duplicate read. */
+export async function submitOnboardingMutation(
+  path: string,
+  body: Record<string, unknown>,
+  refreshOnboarding: (state?: OnboardingState) => Promise<void>,
+) {
+  const result = await api<{ state?: OnboardingState }>(path, {
+    method: "POST", body: JSON.stringify(body),
+  });
+  // Older servers may omit the additive state field; the provider refreshes then.
+  await refreshOnboarding(result.state);
+}
 
 /* ── Top-level takeover — picks the first unresolved step and renders it ─── */
 export function OnboardingTakeover() {
@@ -181,8 +194,7 @@ function PortsStep({ step }: { step: number }) {
     setBusy(true);
     setError(null);
     try {
-      await api("/api/onboarding/init", { method: "POST", body: "{}" });
-      await refreshOnboarding();
+      await submitOnboardingMutation("/api/onboarding/init", {}, refreshOnboarding);
     } catch (err) {
       setError(friendlyOnboardingError("init", err));
     } finally {
@@ -229,11 +241,7 @@ function NameStep({ step }: { step: number }) {
     setBusy(true);
     setError(null);
     try {
-      await api("/api/user", {
-        method: "POST",
-        body: JSON.stringify({ name: trimmed }),
-      });
-      await refreshOnboarding();
+      await submitOnboardingMutation("/api/user", { name: trimmed }, refreshOnboarding);
     } catch (err) {
       setError(friendlyOnboardingError("identity", err));
     } finally {
@@ -295,15 +303,11 @@ function ProjectStep({ step }: { step: number }) {
     setBusy(true);
     setError(null);
     try {
-      await api("/api/onboarding/project", {
-        method: "POST",
-        body: JSON.stringify({
-          contextRoot: cleanContext,
-          sourceRoots: cleanRoots,
-          defaultHarness: harness,
-        }),
-      });
-      await refreshOnboarding();
+      await submitOnboardingMutation("/api/onboarding/project", {
+        contextRoot: cleanContext,
+        sourceRoots: cleanRoots,
+        defaultHarness: harness,
+      }, refreshOnboarding);
     } catch (err) {
       setError(friendlyOnboardingError("project", err));
     } finally {
@@ -396,7 +400,7 @@ function SetupStep({ step }: { step: number }) {
     setBusy(true);
     setError(null);
     try {
-      let result: { brokerWarning?: string | null } = {};
+      let result: { state?: OnboardingState; brokerWarning?: string | null } = {};
       if (harness !== onboarding?.defaultHarness) {
         result = await api("/api/onboarding/project", {
           method: "POST", body: JSON.stringify({
@@ -407,7 +411,7 @@ function SetupStep({ step }: { step: number }) {
       } else if (!onboarding?.brokerReachable) {
         result = await api("/api/onboarding/setup", { method: "POST", body: "{}" });
       }
-      await refreshOnboarding();
+      await refreshOnboarding(result.state);
       if (result.brokerWarning) {
         setError(friendlyOnboardingError("setup", result.brokerWarning));
       }

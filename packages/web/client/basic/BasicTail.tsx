@@ -10,7 +10,7 @@ export function BasicTail() {
 
   return (
     <div className="sb-tail">
-      <TailView navigate={navigate} initialFilter={resolvedQuery} variant="tail" inlineDetail />
+      <TailView navigate={navigate} initialFilter={resolvedQuery.query} sessionId={resolvedQuery.sessionId} variant="tail" inlineDetail />
     </div>
   );
 }

@@ -20,7 +20,19 @@ export const MAX_VISIBLE_CARDS = 3;
 export const REPORTED_LIMIT = 4;
 export const OBSERVED_LIMIT = 7;
 const NOW_WINDOW_MS = 60_000;
-const OPERATOR_IDS = new Set(["operator"]);
+/** Until `/api/user` answers, only the literal operator id counts. */
+export const DEFAULT_OPERATOR_IDS: ReadonlySet<string> = new Set(["operator"]);
+
+/**
+ * The actor ids that mean "the operator", as the server counts them
+ * (runtime `configuredOperatorActorIds`): the literal id, the configured
+ * name, and the handle (falling back to the name). Fed from `/api/user`.
+ */
+export function operatorActorIds(user: { name?: string | null; handle?: string | null } | null | undefined): ReadonlySet<string> {
+  const name = user?.name?.trim() || "operator";
+  const handle = user?.handle?.trim().replace(/^@+/, "") || name.replace(/^@+/, "") || name;
+  return new Set(["operator", name, handle]);
+}
 
 export type CompanionCardState =
   | "working"
@@ -80,6 +92,8 @@ export type CompanionCardContext = {
   history?: readonly CompanionLine[];
   project?: string | null;
   harness?: string | null;
+  /** Who counts as the operator; `DEFAULT_OPERATOR_IDS` when left out. */
+  operatorIds?: ReadonlySet<string>;
 };
 
 /** Agent replies carry an `[ask:<id>]` routing tag that means nothing on a card. */
@@ -145,8 +159,14 @@ function observedLines(detail: WorkDetail, tail: readonly CompanionLine[]): Comp
   return [...flights, ...tail].sort((a, b) => a.at - b.at).slice(-OBSERVED_LIMIT);
 }
 
-/** Keep real wall-clock times; synthetic transcript offsets must not look live. */
-export function sessionHistory(payload: AgentObservePayload): CompanionLine[] {
+/**
+ * Keep real wall-clock times; synthetic transcript offsets must not look live.
+ * The server stamps `at` on every event, interpolating (or falling back to the
+ * read time) when the transcript carries no timestamps, so only a
+ * `timestamped` payload's times are real.
+ */
+export function sessionHistory(payload: Pick<AgentObservePayload, "fidelity" | "data">): CompanionLine[] {
+  if (payload.fidelity !== "timestamped") return [];
   return payload.data.events
     .filter((event) => (event.kind === "tool" || event.kind === "message" || event.kind === "note") && event.at && Number.isFinite(event.at))
     .map((event) => ({ at: event.at!, text: (event.text || (event.tool ? `${event.tool}${event.arg ? ` · ${event.arg}` : ""}` : "")).replace(/\s+/g, " ").trim().slice(0, 500) }))
@@ -162,9 +182,19 @@ function sessionTailLines(tail: readonly TailEvent[], history: readonly Companio
     .sort((a, b) => a.at - b.at).slice(-OBSERVED_LIMIT);
 }
 
-function isOperatorOwned(detail: WorkDetail): boolean {
-  const next = detail.nextMoveOwnerId?.trim();
-  return Boolean(next && OPERATOR_IDS.has(next));
+function latestFailedFlight(detail: WorkDetail): WorkDetail["allFlights"][number] | null {
+  let latest: WorkDetail["allFlights"][number] | null = null;
+  for (const flight of detail.allFlights) {
+    if (flight.state !== "failed") continue;
+    const at = flight.completedAt ?? flight.startedAt ?? 0;
+    if (!latest || at >= (latest.completedAt ?? latest.startedAt ?? 0)) latest = flight;
+  }
+  return latest;
+}
+
+function isOperatorNext(nextMoveOwnerId: string | null | undefined, operatorIds: ReadonlySet<string>): boolean {
+  const next = nextMoveOwnerId?.trim();
+  return Boolean(next && operatorIds.has(next));
 }
 
 /**
@@ -208,16 +238,22 @@ export function buildCompanionCard(detail: WorkDetail, context: CompanionCardCon
     statusTone = "muted";
     headline = latestReport(events, ["cancelled"])?.text ?? "";
   } else if (detail.attention === "interrupt") {
+    // `interrupt` comes only from a failed flight: Scout saw it fail, the agent
+    // reported nothing, so the callout is observed and never borrows a report.
     state = "blocked";
     status = "Blocked";
     statusTone = "error";
     headline = "";
+    const failed = latestFailedFlight(detail);
     callout = {
       tone: "blocker",
-      label: "Blocker · reported",
-      text: latestReport(events, ["waiting"])?.text || reportedText || "The agent reported a blocker without detail.",
+      label: "Flight failed · observed",
+      text: cleanReportText(failed?.summary) || "The flight failed without detail.",
     };
-  } else if ((detail.state === "waiting" || detail.state === "review") && isOperatorOwned(detail)) {
+  } else if (
+    (detail.state === "waiting" || detail.state === "review")
+    && isOperatorNext(detail.nextMoveOwnerId, context.operatorIds ?? DEFAULT_OPERATOR_IDS)
+  ) {
     state = "question";
     const review = detail.state === "review";
     const ask = latestReport(events, review ? ["review_requested"] : ["waiting"]) ?? latest;
@@ -333,11 +369,15 @@ export function isCompanionRelevantEvent(event: { kind: string; payload?: unknow
 // work-list row that one bounded `/api/work?ids=` read returns.
 
 /** Session ended and quiet need the timeline and tail; a list row cannot tell. */
-export function summaryState(item: WorkItem, now: number): CompanionCardState {
+export function summaryState(
+  item: WorkItem,
+  now: number,
+  operatorIds: ReadonlySet<string> = DEFAULT_OPERATOR_IDS,
+): CompanionCardState {
   if (item.state === "done") return "done";
   if (item.state === "cancelled") return "cancelled";
   if (item.attention === "interrupt") return "blocked";
-  const operatorNext = Boolean(item.nextMoveOwnerId && OPERATOR_IDS.has(item.nextMoveOwnerId.trim()));
+  const operatorNext = isOperatorNext(item.nextMoveOwnerId, operatorIds);
   if ((item.state === "waiting" || item.state === "review") && operatorNext) return "question";
   if (item.state === "waiting" || item.state === "review") return "waiting";
   const last = Math.max(item.updatedAt, item.lastMeaningfulAt ?? 0);
@@ -466,7 +506,12 @@ function originLabel(scope: CompanionScopeRef): string {
  * Rows from the bounded reads → the Surfaced list. Pinned work stays a card
  * and is left out here. A row surfaces when it needs the operator (within the
  * attention window) or moved recently (within the progress window); finished
- * work drops out once it is no longer recent. Most urgent first, then newest.
+ * work drops out once it is no longer recent.
+ *
+ * Which rows make the cut is by urgency (needs-operator first, then newest),
+ * but the order holds still: rows already shown keep `previousOrder`, and
+ * new rows go after them, needs-operator first among the new ones. A row
+ * that changes state lights in place; it never jumps.
  */
 export function selectSurfaced(
   rows: readonly WorkItem[],
@@ -475,6 +520,9 @@ export function selectSurfaced(
     agents: readonly SurfaceAgent[];
     pinnedIds: ReadonlySet<string>;
     now: number;
+    operatorIds?: ReadonlySet<string>;
+    /** Work ids in the order the list last showed them. */
+    previousOrder?: readonly string[];
   },
 ): SurfacedItem[] {
   if (options.scopes.length === 0) return [];
@@ -485,7 +533,7 @@ export function selectSurfaced(
     seen.add(row.id);
     const scope = admittingScope(row, options.scopes, options.agents);
     if (!scope) continue;
-    const state = summaryState(row, options.now);
+    const state = summaryState(row, options.now, options.operatorIds);
     const needsOperator = state === "question" || state === "blocked";
     const last = Math.max(row.updatedAt, row.lastMeaningfulAt ?? 0);
     const age = options.now - last;
@@ -502,7 +550,13 @@ export function selectSurfaced(
       conversationId: row.conversationId,
     });
   }
-  return out
-    .sort((a, b) => Number(b.needsOperator) - Number(a.needsOperator) || b.lastActivityAt - a.lastActivityAt)
-    .slice(0, MAX_SURFACED);
+  const urgency = (a: SurfacedItem, b: SurfacedItem) =>
+    Number(b.needsOperator) - Number(a.needsOperator) || b.lastActivityAt - a.lastActivityAt;
+  const kept = out.sort(urgency).slice(0, MAX_SURFACED);
+  const shownAt = new Map((options.previousOrder ?? []).map((id, index) => [id, index]));
+  const shown = kept.filter((item) => shownAt.has(item.workId))
+    .sort((a, b) => shownAt.get(a.workId)! - shownAt.get(b.workId)!);
+  // `kept` is already in urgency order, so the new rows stay sorted.
+  const fresh = kept.filter((item) => !shownAt.has(item.workId));
+  return [...shown, ...fresh];
 }

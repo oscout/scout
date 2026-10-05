@@ -104,12 +104,14 @@ export function routeForFollowTarget(
     return tailRouteForFollowTarget(target);
   }
 
+  // A task's durable ticket remains useful before a session starts and after
+  // it finishes. Explicit Tail/Session/Chat links retain their own intent.
+  if (target.workId) {
+    return { view: "work", workId: target.workId };
+  }
   const observeRoute = observeRouteForFollowTarget(target);
   if (observeRoute) {
     return observeRoute;
-  }
-  if (target.workId) {
-    return { view: "work", workId: target.workId };
   }
   if (target.sessionId) {
     return {

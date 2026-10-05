@@ -863,7 +863,7 @@ export type AgentRouteDeps = {
   options: Pick<CreateOpenScoutWebServerOptions, "captureTmuxPane">;
   currentDirectory: string;
   shellStateCache: CachedSnapshot<OpenScoutWebShellState>;
-  readRunnerOptions: (scope: ScoutRuntimeCapabilityCatalog["scope"], projectRoot: string, force?: boolean) => ReturnType<typeof buildHudRunnerOptions>;
+  readRunnerOptions: (scope: ScoutRuntimeCapabilityCatalog["scope"], projectRoot?: string, force?: boolean) => ReturnType<typeof buildHudRunnerOptions>;
   tailRuntime: WebTailRuntime;
 };
 
@@ -890,7 +890,7 @@ export function mountAgentRoutes(app: Hono, deps: AgentRouteDeps) {
       : "global+project";
     return c.json(await readRunnerOptions(
       scope,
-      c.req.query("projectRoot") || currentDirectory,
+      c.req.query("projectRoot") || undefined,
       c.req.query("force") === "true" || c.req.query("force") === "1",
     ));
   });

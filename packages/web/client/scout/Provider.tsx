@@ -122,7 +122,7 @@ export interface ScoutContextValue {
   /** The operator's name, seeded from the last visit so it is never blank on
    *  the first frame. `null` only on a genuine first load. */
   operatorName: string | null;
-  refreshOnboarding: () => Promise<void>;
+  refreshOnboarding: (state?: OnboardingState) => Promise<void>;
   onboardingError: OnboardingError | null;
   onboardingSkipped: boolean;
   skipOnboarding: () => void;
@@ -488,9 +488,9 @@ export function ScoutProvider({
     }
   }, [agentInventoryUrl, markApiFailure, markApiOnline]);
 
-  const refreshOnboarding = useCallback(async () => {
+  const refreshOnboarding = useCallback(async (returnedState?: OnboardingState) => {
     try {
-      const state = await api<OnboardingState>("/api/onboarding/state");
+      const state = returnedState ?? await api<OnboardingState>("/api/onboarding/state");
       onboardingStaleRef.current = false;
       setOnboarding(state);
       setOnboardingError((current) => (current?.kind === "load" ? null : current));
@@ -525,10 +525,10 @@ export function ScoutProvider({
     // Keep the form and its answers until the service confirms the skip.
     // A failed write must remain visible on web as well as in the Mac embed.
     setOnboardingError((current) => (current?.kind === "skip" ? null : current));
-    void api("/api/onboarding/skip", { method: "POST", body: "{}" })
-      .then(() => {
+    void api<OnboardingState>("/api/onboarding/skip", { method: "POST", body: "{}" })
+      .then((state) => {
         setOnboardingSkipped(true);
-        return refreshOnboarding();
+        return refreshOnboarding(state);
       })
       .catch((cause) => {
         setOnboardingError({ kind: "skip", message: friendlyOnboardingError("setup", cause) });
@@ -537,9 +537,9 @@ export function ScoutProvider({
 
   const resumeOnboarding = useCallback(async () => {
     setOnboardingError(null);
-    await api("/api/onboarding/restart", { method: "POST", body: "{}" });
+    const state = await api<OnboardingState>("/api/onboarding/restart", { method: "POST", body: "{}" });
     setOnboardingSkipped(false);
-    await refreshOnboarding();
+    await refreshOnboarding(state);
   }, [refreshOnboarding]);
 
   useEffect(() => {

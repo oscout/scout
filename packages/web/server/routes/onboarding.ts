@@ -249,8 +249,9 @@ export function mountOnboardingRoutes(app: Hono, deps: OnboardingRouteDeps) {
     applyProvisionalAgentNamesFromBody(config, body);
 
     saveUserConfig(config);
+    let state;
     if (typeof body.name === "string" && body.name.trim()) {
-      await saveOpenScoutOnboardingIdentity({
+      state = await saveOpenScoutOnboardingIdentity({
         currentDirectory,
         name: body.name.trim(),
       });
@@ -274,6 +275,7 @@ export function mountOnboardingRoutes(app: Hono, deps: OnboardingRouteDeps) {
       runtimeShortlist: config.runtimeShortlist ?? [],
       runtimePresets: config.runtimePresets ?? [],
       ...provisionalAgentNamesApiFields(config),
+      ...(state ? { state } : {}),
     });
   });
 }

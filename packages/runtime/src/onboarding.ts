@@ -321,11 +321,21 @@ function buildSteps(input: {
   ];
 }
 
-export async function loadOpenScoutOnboardingState(options: {
+type OnboardingObservationOptions = {
   currentDirectory?: string;
   broker?: BrokerServiceStatus | null;
   catalog?: HarnessCatalogSnapshot | null;
-} = {}): Promise<OpenScoutOnboardingState> {
+};
+
+async function observeOnboardingReadiness(options: OnboardingObservationOptions) {
+  const [broker, catalog] = await Promise.all([
+    options.broker !== undefined ? options.broker : brokerServiceStatus().catch(() => null),
+    options.catalog !== undefined ? options.catalog : loadHarnessCatalogSnapshot({ localOnly: true }).catch(() => null),
+  ]);
+  return { broker, catalog };
+}
+
+export async function loadOpenScoutOnboardingState(options: OnboardingObservationOptions = {}): Promise<OpenScoutOnboardingState> {
   const currentDirectory = normalizePath(options.currentDirectory ?? process.cwd());
   const settings = await readOpenScoutSettings({ currentDirectory });
   const userConfig = loadUserConfig();
@@ -357,10 +367,9 @@ export async function loadOpenScoutOnboardingState(options: {
   const contextExists = contextRoot ? statSync(contextRoot, { throwIfNoEntry: false })?.isDirectory() === true : true;
   const project = contextExists
     ? await resolveProjectConfig({ currentDirectory: inferredProjectRoot ? currentDirectory : null, contextRoot }) : null;
-  const broker = options.broker ?? await brokerServiceStatus().catch(() => null);
   // This read is polled while setup is on screen (the Mac app's gate), so it
   // counts ready runtimes from local evidence without harness auth/status calls.
-  const catalog = options.catalog ?? await loadHarnessCatalogSnapshot({ localOnly: true }).catch(() => null);
+  const { broker, catalog } = await observeOnboardingReadiness(options);
   const readyRuntimeCount = catalog?.entries.filter((entry) => entry.readinessReport.ready).length ?? 0;
   const harnesses = catalog ? onboardingHarnessObservations(catalog) : undefined;
   const selectedHarnessId = parseOnboardingHarness(settings.agents.defaultHarness) ?? settings.agents.defaultHarness;
@@ -677,10 +686,10 @@ export async function markOpenScoutOnboardingCommand(input: {
     currentDirectory: input.currentDirectory,
   });
 
+  const observed = await observeOnboardingReadiness(input);
   const state = await loadOpenScoutOnboardingState({
     currentDirectory: input.currentDirectory,
-    broker: input.broker,
-    catalog: input.catalog,
+    ...observed,
   });
   if (!state.completedAt && !state.skippedAt) {
     const complete = state.hasLocalConfig
@@ -698,8 +707,7 @@ export async function markOpenScoutOnboardingCommand(input: {
       });
       return loadOpenScoutOnboardingState({
         currentDirectory: input.currentDirectory,
-        broker: input.broker,
-        catalog: input.catalog,
+        ...observed,
       });
     }
   }
@@ -721,7 +729,7 @@ export async function ensureOpenScoutOnboardingCompletion(options: {
   broker?: BrokerServiceStatus | null;
   catalog?: HarnessCatalogSnapshot | null;
 } = {}): Promise<OpenScoutOnboardingState> {
-  const observed = { broker: options.broker, catalog: options.catalog };
+  const observed = await observeOnboardingReadiness(options);
   const state = await loadOpenScoutOnboardingState({ currentDirectory: options.currentDirectory, ...observed });
   if (state.completedAt || state.skippedAt) {
     return state;
