@@ -1,6 +1,6 @@
 import type { RuntimeEnv } from "./portable-types.js";
 import { execFileSync } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { access, chmod, mkdir, readdir, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { homedir, hostname, userInfo } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
@@ -735,10 +735,8 @@ function normalizeOptionalTimestamp(value: unknown): number | null {
 
 function readEnvFileValue(filePath: string, key: string): string {
   try {
-    const raw = execFileSync("sh", ["-lc", `test -f ${JSON.stringify(filePath)} && cat ${JSON.stringify(filePath)} || true`], {
-      stdio: ["ignore", "pipe", "ignore"],
-      encoding: "utf8",
-    });
+    if (!statSync(filePath).isFile()) return "";
+    const raw = readFileSync(filePath, "utf8");
     for (const line of raw.split(/\r?\n/)) {
       const trimmed = line.trim();
       if (!trimmed || trimmed.startsWith("#")) continue;
@@ -1728,7 +1726,7 @@ export async function detectPreferredHarness(projectRoot: string, fallback: Agen
 
 async function normalizeSettingsRecord(
   value: unknown,
-  options: { currentDirectory?: string; legacyRelayConfig?: LegacyRelayConfig | null; legacyAgents?: Record<string, LegacyAgentRecord> } = {},
+  options: { currentDirectory?: string; legacyRelayConfig?: LegacyRelayConfig | null; legacyAgents?: Record<string, LegacyAgentRecord>; includeInferredWorkspaceRoots?: boolean } = {},
 ): Promise<OpenScoutSettings> {
   const base = defaultSettings();
   const candidate = typeof value === "object" && value ? value as Record<string, unknown> : {};
@@ -1745,7 +1743,9 @@ async function normalizeSettingsRecord(
   const ui = typeof candidate.ui === "object" && candidate.ui ? candidate.ui as Record<string, unknown> : {};
   const oldOperatorName = typeof candidate.operatorName === "string" ? candidate.operatorName : undefined;
 
-  const seededWorkspaceRoots = await seedWorkspaceRoots({
+  // Project selection can request saved folders only; ordinary discovery
+  // reads retain the existing cwd, legacy, and home scan-root inference.
+  const seededWorkspaceRoots = options.includeInferredWorkspaceRoots === false ? [] : await seedWorkspaceRoots({
     currentDirectory: options.currentDirectory,
     legacyRelayConfig: options.legacyRelayConfig ?? null,
     legacyAgents: options.legacyAgents ?? {},
@@ -1951,13 +1951,14 @@ export async function findOnboardingProjectRoot(startDirectory: string): Promise
   return nearestCandidate;
 }
 
-export async function readOpenScoutSettings(options: { currentDirectory?: string } = {}): Promise<OpenScoutSettings> {
+export async function readOpenScoutSettings(options: { currentDirectory?: string; includeInferredWorkspaceRoots?: boolean } = {}): Promise<OpenScoutSettings> {
   const supportPaths = resolveOpenScoutSupportPaths();
   const legacyRelayConfig = await readLegacyRelayConfig();
   const legacyAgents = await readLegacyAgentRegistry();
   const rawSettings = await readJsonFile<unknown>(supportPaths.settingsPath);
   return normalizeSettingsRecord(rawSettings, {
     currentDirectory: options.currentDirectory,
+    includeInferredWorkspaceRoots: options.includeInferredWorkspaceRoots,
     legacyRelayConfig,
     legacyAgents,
   });

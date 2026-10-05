@@ -1,5 +1,6 @@
 import {
   Activity,
+  Bot,
   Check,
   ChevronDown,
   CircleCheck,
@@ -9,11 +10,15 @@ import {
   Copy,
   ExternalLink,
   FileText,
+  Flag,
+  Folder,
+  GitBranch,
   Link2,
   MessageSquare,
   MoreHorizontal,
   Radio,
   Search,
+  Timer,
 } from "lucide-react";
 import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent, type ReactNode } from "react";
 import { useContextMenu } from "../../components/ContextMenu.tsx";
@@ -129,43 +134,122 @@ export function touchedMaterials(detail: WorkDetail): WorkMaterial[] {
 
 const STATUS_ICON = { done: CircleCheck, waiting: CirclePause, review: CirclePause } as const;
 
+/** How the status plate reads: live work pulses, paused work rests, done settles. */
+export function workStatusTone(detail: WorkDetail): "active" | "paused" | "done" | "idle" {
+  if (detail.state === "done") return "done";
+  if (detail.state === "waiting" || detail.state === "review") return "paused";
+  const askState = detail.primaryInvocation?.state;
+  if (detail.activeFlights.length > 0 || askState === "running" || askState === "waking" || detail.state === "working") return "active";
+  return "idle";
+}
+
+/** The latest summary without its routing tag ("[ask:f-…] Done: …"). */
+export function latestSummaryText(summary: string | null): string | null {
+  const text = summary?.replace(/^\s*\[ask:[^\]]+\]\s*/i, "").trim();
+  return text ? text : null;
+}
+
+export type WorkCue = {
+  label: string;
+  text: string;
+  tone: "blocked" | "waiting";
+  action?: { label: string; onClick: () => void };
+};
+
+/** The agent's last written milestone, verbatim; the final reply only when there is none. */
+function lastMilestone(detail: WorkDetail): { text: string; at: number } | null {
+  // A summary tagged "[ask:…]" is the final reply echoed onto the event, not a milestone.
+  const event = [...detail.timeline]
+    .filter((item) => item.kind === "collaboration_event" && item.detailKind !== "created" && item.summary?.trim() && !/^\s*\[ask:/i.test(item.summary))
+    .sort((a, b) => b.at - a.at)[0];
+  if (event?.summary) return { text: latestSummaryText(event.summary) ?? event.summary, at: event.at };
+  const text = latestSummaryText(detail.lastMeaningfulSummary);
+  return text ? { text, at: detail.lastMeaningfulAt } : null;
+}
+
+/** Say the state once: review + acceptance pending + your move is one phrase. */
+function stateLabel(detail: WorkDetail): { main: string; sub: string | null } {
+  const acceptance = detail.acceptanceState && detail.acceptanceState !== "none" ? detail.acceptanceState.replace(/_/g, " ") : null;
+  if (detail.state === "review" && (!acceptance || acceptance === "pending")) {
+    return { main: detail.nextMoveOwnerId === "operator" ? "Awaiting your review" : "In review", sub: null };
+  }
+  return { main: detail.currentPhase, sub: acceptance && acceptance !== "pending" ? `Acceptance ${acceptance}` : null };
+}
+
+/** How long the agent actually ran, not how long the ticket has been open. */
+function runSpan(detail: WorkDetail): number | null {
+  const started = detail.timeline.filter((item) => item.kind === "flight_started").map((item) => item.at);
+  const ended = detail.timeline.filter((item) => item.kind === "flight_completed").map((item) => item.at);
+  if (started.length === 0) return null;
+  const from = Math.min(...started);
+  if (detail.activeFlights.length > 0) return Date.now() - from;
+  return ended.length > 0 ? Math.max(...ended) - from : null;
+}
+
+type MastAgent = { projectRoot?: string | null; branch?: string | null; model?: string | null } | null | undefined;
+
+function homePath(path: string): string {
+  return path.replace(/^\/Users\/[^/]+/, "~");
+}
+
+function Glyph({ icon: Icon, title, children }: { icon: typeof Folder; title: string; children: ReactNode }) {
+  return (
+    <span className="s-wc-glyph" title={title}>
+      <Icon size={12} strokeWidth={1.8} aria-hidden="true" />
+      <span>{children}</span>
+    </span>
+  );
+}
+
 export function WorkMasthead({
   detail,
+  agent,
   embedded,
   leading,
   tools,
   progressLink,
   onJson,
+  onOpenChat,
   cue,
-  links,
+  navigate,
+  onSelectMaterial,
 }: {
   detail: WorkDetail;
+  agent?: MastAgent;
   embedded: boolean;
   leading?: ReactNode;
   tools?: ReactNode;
   progressLink: () => string;
   onJson: () => void;
-  cue: { eyebrow: string; title: string; body: string } | null;
-  links: ReactNode;
+  onOpenChat: (() => void) | null;
+  cue: WorkCue | null;
+  navigate: Navigate;
+  onSelectMaterial: (materialId: string) => void;
 }) {
+  const [open, setOpen] = useState(false);
   const done = detail.state === "done";
+  const tone = workStatusTone(detail);
   const Icon = STATUS_ICON[detail.state as keyof typeof STATUS_ICON] ?? CircleDot;
   const ask = detail.primaryInvocation;
   const closing = closingEvent(detail);
   const closedAt = closing?.at ?? detail.lastMeaningfulAt;
   const harness = ask?.resolvedHarness ?? ask?.requestedHarness;
-  const transport = ask?.resolvedTransport;
-  const reviewRounds = detail.timeline.filter((item) => item.detailKind === "review_requested").length;
-  const touched = touchedMaterials(detail).length;
-  const acceptance = detail.acceptanceState && detail.acceptanceState !== "none" ? detail.acceptanceState.replace(/_/g, " ") : null;
-  const facts = [
-    detail.ownerName ?? detail.ownerId,
-    harness ? (transport ? `${harness} over ${transport}` : harness) : null,
-    done ? `${span(closedAt - detail.createdAt)} start to finish` : `open ${span(Date.now() - detail.createdAt)}`,
-    reviewRounds > 0 ? `${reviewRounds} review round${reviewRounds === 1 ? "" : "s"}` : null,
-    touched > 0 ? `${touched} file${touched === 1 ? "" : "s"} touched` : null,
-    detail.priority ? `Priority ${detail.priority}` : null,
-  ].filter(Boolean);
+  const model = observedRuntime(detail).model ?? agent?.model ?? null;
+  const state = stateLabel(detail);
+  const milestone = lastMilestone(detail);
+  const run = runSpan(detail) ?? (done ? closedAt - detail.createdAt : null);
+  const age = timeAgoWithSuffix(done ? closedAt : detail.lastMeaningfulAt);
+  const timing = run != null ? `${tone === "active" ? "running " : ""}${span(run)} · ${age}` : age;
+  const timingTitle = [
+    run != null ? `Ran ${span(run)}` : null,
+    `opened ${new Date(detail.createdAt).toLocaleString()}`,
+    done
+      ? `closed${closing?.actorName ? ` by ${closing.actorName}` : ""} ${new Date(closedAt).toLocaleString()}`
+      : `updated ${new Date(detail.updatedAt).toLocaleString()}`,
+  ].filter(Boolean).join(" · ");
+  const root = agent?.projectRoot ?? null;
+  const owner = detail.ownerName ?? detail.ownerId;
+  const long = (milestone?.text.length ?? 0) > 180 || (milestone?.text.split("\n").length ?? 0) > 2;
 
   return (
     <header className="s-wc-mast">
@@ -179,45 +263,70 @@ export function WorkMasthead({
         <span className="s-wc-spacer" />
         <CopyButton value={progressLink} icon={<Link2 size={12} strokeWidth={1.8} aria-hidden="true" />}>Copy progress link</CopyButton>
         {tools}
-        <button type="button" className="s-wc-btn" onClick={onJson}>
-          <Code2 size={12} strokeWidth={1.8} aria-hidden="true" />
-          <span>View JSON</span>
+        <button type="button" className="s-wc-btn s-wc-icon-btn" onClick={onJson} title="View JSON" aria-label="View JSON">
+          <Code2 size={13} strokeWidth={1.8} aria-hidden="true" />
         </button>
         {embedded && (
-          <>
-            <span className="s-wc-top-sep" aria-hidden="true" />
-            <a className="s-wc-btn-strong" href={`/work/${encodeURIComponent(detail.id)}`} target="_blank" rel="noreferrer">
-              Open in Scout <ExternalLink size={12} strokeWidth={1.8} aria-hidden="true" />
-            </a>
-          </>
+          <a className="s-wc-btn-strong" href={`/work/${encodeURIComponent(detail.id)}`} target="_blank" rel="noreferrer">
+            Open in Scout <ExternalLink size={12} strokeWidth={1.8} aria-hidden="true" />
+          </a>
         )}
       </div>
 
-      <h1 className="s-wc-title">{detail.title}</h1>
-
-      <div className="s-wc-status">
-        <span className="s-wc-status-plate" data-done={done || undefined}>
-          <span className="s-wc-status-main">
-            <Icon size={14} strokeWidth={2} aria-hidden="true" />
-            {detail.currentPhase}
+      <div className="s-wc-headline">
+        <div className="s-wc-head">
+          <h1 className="s-wc-title">{detail.title}</h1>
+          <span className="s-wc-head-tools">
+            <WorkLinkIcons detail={detail} embedded={embedded} navigate={navigate} />
+            {onOpenChat && (
+              <button type="button" className="s-wc-btn" onClick={onOpenChat}>
+                <MessageSquare size={12} strokeWidth={1.8} aria-hidden="true" />
+                <span>Open chat</span>
+              </button>
+            )}
           </span>
-          {acceptance && (
-            <span className="s-wc-status-sub">Acceptance <b>{acceptance}</b></span>
+        </div>
+        <div className="s-wc-meta">
+          {root && <Glyph icon={Folder} title={root}>{homePath(root)}</Glyph>}
+          {agent?.branch && <Glyph icon={GitBranch} title="Branch">{agent.branch}</Glyph>}
+          <Glyph icon={Timer} title={timingTitle}>{timing}</Glyph>
+          {owner && <Glyph icon={Bot} title={[model, harness].filter(Boolean).join(" · ") || "Agent"}>{owner}</Glyph>}
+          {detail.priority && <Glyph icon={Flag} title="Priority">{detail.priority}</Glyph>}
+        </div>
+        <div className="s-wc-verdict" data-open={open || undefined}>
+          <span className="s-wc-state" data-tone={tone}>
+            {tone === "active"
+              ? <i className="s-wc-pulse" aria-hidden="true" />
+              : <Icon size={12} strokeWidth={2} aria-hidden="true" />}
+            {state.main}
+            {state.sub && <span className="s-wc-state-sub">{state.sub}</span>}
+          </span>
+          {milestone && (
+            <p className="s-wc-verdict-text" title={new Date(milestone.at).toLocaleString()}>
+              {renderWithMentions(milestone.text)}
+            </p>
           )}
-        </span>
-        <span className="s-wc-status-meta">
-          {done
-            ? <>Closed{closing?.actorName ? <> by <b>{closing.actorName}</b></> : null} at {clock(closedAt, false)} · {timeAgoWithSuffix(closedAt)} · {span(closedAt - detail.createdAt)} after the request</>
-            : <>Updated {timeAgoWithSuffix(detail.updatedAt)}{detail.nextMoveOwnerName ? <> · next move <b>{detail.nextMoveOwnerName}</b></> : null}</>}
-        </span>
+          {long && (
+            <button type="button" className="s-wc-verdict-more" aria-expanded={open} onClick={() => setOpen((value) => !value)}>
+              {open ? "Less" : "More"}
+            </button>
+          )}
+        </div>
       </div>
 
-      {detail.lastMeaningfulSummary && <p className="s-wc-outcome">{renderWithMentions(detail.lastMeaningfulSummary)}</p>}
-      <div className="s-wc-facts">{facts.map((fact) => <span key={fact}>{fact}</span>)}</div>
       {cue && (
-        <p className="s-wc-cue"><b>{cue.eyebrow}</b> {cue.title}. {cue.body}</p>
+        <div className="s-wc-cue" data-tone={cue.tone} role="status">
+          <CirclePause size={14} strokeWidth={1.8} aria-hidden="true" />
+          <p><b>{cue.label}</b> {cue.text}</p>
+          {cue.action && (
+            <button type="button" className="s-wc-btn" onClick={cue.action.onClick}>
+              <MessageSquare size={12} strokeWidth={1.8} aria-hidden="true" />
+              <span>{cue.action.label}</span>
+            </button>
+          )}
+        </div>
       )}
-      {links}
+      <WorkMade detail={detail} onSelectMaterial={onSelectMaterial} />
     </header>
   );
 }
@@ -244,6 +353,8 @@ const STUDY_PATH = /^design\/studio\/(?:app\/studies\/([^/]+)\/page\.tsx|views\/
 export function madeLinks(detail: WorkDetail): MadeLink[] {
   const out: MadeLink[] = [];
   for (const material of touchedMaterials(detail)) {
+    // git status alone is the shared checkout, not this agent; it must have written the file.
+    if (!material.evidence.some((e) => e === "trace-write" || e === "trace-edit" || e === "broker")) continue;
     const study = material.path.match(STUDY_PATH);
     const outside = material.path.startsWith("/") || material.path.startsWith("~");
     if (study) {
@@ -257,70 +368,91 @@ export function madeLinks(detail: WorkDetail): MadeLink[] {
   return out.slice(0, 6);
 }
 
-export function WorkLinks({
-  detail,
-  embedded,
-  navigate,
-  onSelectMaterial,
-}: {
-  detail: WorkDetail;
-  embedded: boolean;
-  navigate: Navigate;
-  onSelectMaterial: (materialId: string) => void;
-}) {
+/** Where this work lives in Scout, as icons beside the title. Chat is the Open chat button. */
+function WorkLinkIcons({ detail, embedded, navigate }: { detail: WorkDetail; embedded: boolean; navigate: Navigate }) {
   const { route } = useScout();
-  const scout = scoutLinks(detail);
-  const made = madeLinks(detail);
-  if (scout.length === 0 && made.length === 0) return null;
-  const all = () => [
-    ...scout.map((link) => `${link.label}: ${absoluteUrl(link.route)}`),
-    ...made.map((link) => `${link.label}: ${link.material.path}`),
-  ].join("\n");
-
+  const all = scoutLinks(detail);
+  const links = all.filter((link) => link.label !== "Chat");
+  if (all.length === 0) return null;
+  const copyAll = () => all.map((link) => `${link.label}: ${absoluteUrl(link.route)}`).join("\n");
   return (
-    <div className="s-wc-links">
-      {scout.length > 0 && (
-        <div className="s-wc-link-group">
-          <span className="s-wc-label">In Scout</span>
-          {scout.map((link) => {
-            const path = routePath(link.route);
-            return (
-              <div key={link.label} className="s-wc-link-row">
-                <a
-                  href={path}
-                  target={embedded ? "_blank" : undefined}
-                  rel={embedded ? "noreferrer" : undefined}
-                  onClick={(event: MouseEvent) => {
-                    if (embedded || event.metaKey || event.ctrlKey || event.shiftKey) return;
-                    event.preventDefault();
-                    openContent(navigate, link.route, { returnTo: route });
-                  }}
-                >
-                  {link.label}
-                </a>
-                <code title={path}>{path}</code>
-                <CopyMark value={absoluteUrl(link.route)} label={`Copy ${link.label.toLowerCase()} link`} />
-              </div>
-            );
-          })}
-        </div>
+    <nav className="s-wc-head-links" aria-label="This work in Scout">
+      {links.map((link) => {
+        const path = routePath(link.route);
+        const LinkGlyph = LINK_ICON[link.label] ?? ExternalLink;
+        return (
+          <a
+            key={link.label}
+            className="s-wc-head-link"
+            href={path}
+            title={`${link.label} · ${path}`}
+            aria-label={link.label}
+            target={embedded ? "_blank" : undefined}
+            rel={embedded ? "noreferrer" : undefined}
+            onClick={(event: MouseEvent) => {
+              if (embedded || event.metaKey || event.ctrlKey || event.shiftKey) return;
+              event.preventDefault();
+              openContent(navigate, link.route, { returnTo: route });
+            }}
+          >
+            <LinkGlyph size={14} strokeWidth={1.8} aria-hidden="true" />
+          </a>
+        );
+      })}
+      <CopyLinksIcon value={copyAll} />
+    </nav>
+  );
+}
+
+function CopyLinksIcon({ value }: { value: () => string }) {
+  const [copied, markCopied] = useCopied();
+  return (
+    <button
+      type="button"
+      className="s-wc-head-link"
+      title={copied ? "Copied" : "Copy all links"}
+      aria-label="Copy all links"
+      onClick={() => { copyText(value()); markCopied(); }}
+    >
+      {copied ? <Check size={14} strokeWidth={2} aria-hidden="true" /> : <Copy size={14} strokeWidth={1.8} aria-hidden="true" />}
+    </button>
+  );
+}
+
+/** What the work wrote, as one quiet line. */
+function WorkMade({ detail, onSelectMaterial }: { detail: WorkDetail; onSelectMaterial: (materialId: string) => void }) {
+  const [showAll, setShowAll] = useState(false);
+  const made = madeLinks(detail);
+  if (made.length === 0) return null;
+  const visible = showAll ? made : made.slice(0, MADE_PREVIEW);
+  return (
+    <div className="s-wc-made">
+      <span className="s-wc-made-label">Made</span>
+      {visible.map((link) => (
+        <span key={link.material.id} className="s-wc-made-item">
+          <button type="button" onClick={() => onSelectMaterial(link.material.id)} title={`${link.label} · show ${link.material.path} in Files`}>
+            {link.display}
+          </button>
+          <CopyMark value={link.material.path} label="Copy path" />
+        </span>
+      ))}
+      {made.length > MADE_PREVIEW && (
+        <button type="button" className="s-wc-made-more" onClick={() => setShowAll((value) => !value)}>
+          {showAll ? "fewer" : `+${made.length - MADE_PREVIEW}`}
+        </button>
       )}
-      {made.length > 0 && (
-        <div className="s-wc-link-group">
-          <span className="s-wc-label">Made by this work</span>
-          {made.map((link) => (
-            <div key={link.material.id} className="s-wc-link-row">
-              <button type="button" onClick={() => onSelectMaterial(link.material.id)} title="Show in Files">{link.label}</button>
-              <code title={link.material.path}>{link.display}</code>
-              <CopyMark value={link.material.path} label="Copy path" />
-            </div>
-          ))}
-        </div>
-      )}
-      <CopyButton value={all} className="s-wc-ghost s-wc-copy-all">Copy all</CopyButton>
     </div>
   );
 }
+
+const MADE_PREVIEW = 3;
+
+const LINK_ICON: Record<string, typeof ExternalLink> = {
+  Chat: MessageSquare,
+  Session: Radio,
+  Flight: Link2,
+  Tail: Activity,
+};
 
 /* ── request ─────────────────────────────────────────────────────────────── */
 
@@ -464,7 +596,7 @@ function Fact({ k, v, copy }: { k: string; v: string; copy?: string }) {
     <div>
       <dt>{k}</dt>
       <dd className={copy ? "s-wc-mono" : undefined} title={copy}>
-        {v}
+        <span>{v}</span>
         {copy && <CopyMark value={copy} label={`Copy ${k.toLowerCase()}`} />}
       </dd>
     </div>

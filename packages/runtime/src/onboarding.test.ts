@@ -151,6 +151,21 @@ function fakeCatalog(ready: boolean): HarnessCatalogSnapshot {
 }
 
 describe("OpenScout onboarding contract", () => {
+  test("consecutive state reads observe newly saved project and harness choices", async () => {
+    const home = prepareHome("fresh-saved-choices");
+    const alpha = join(home, "alpha");
+    const beta = join(home, "beta");
+    writeProjectConfig(alpha);
+    writeProjectConfig(beta);
+    await writeOpenScoutSettings({ discovery: { contextRoot: alpha, workspaceRoots: [alpha] }, agents: { defaultHarness: "claude" } }, { currentDirectory: alpha });
+    const observations = { broker: fakeBroker(true), catalog: fakeCatalog(true) };
+    const first = await loadOpenScoutOnboardingState({ currentDirectory: alpha, ...observations });
+    expect(first).toMatchObject({ contextRoot: alpha, sourceRoots: [alpha], defaultHarness: "claude", hasReadyRuntime: true });
+    await writeOpenScoutSettings({ discovery: { contextRoot: beta, workspaceRoots: [beta] }, agents: { defaultHarness: "codex" } }, { currentDirectory: alpha });
+    const next = await loadOpenScoutOnboardingState({ currentDirectory: alpha, ...observations });
+    expect(next).toMatchObject({ contextRoot: beta, sourceRoots: [beta], defaultHarness: "codex", hasReadyRuntime: false });
+  });
+
   for (const packagePath of ["node_modules/@openscout/scout", ".bun/install/global/node_modules/@openscout/scout", ".npm-global/lib/node_modules/@openscout/scout"]) {
     test(`packaged launch in ${packagePath} suggests a scan area without choosing a project`, async () => {
       const home = prepareHome("packaged-launch");

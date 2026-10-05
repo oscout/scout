@@ -25,6 +25,7 @@ import {
   type TailDisplayMode,
 } from "../../lib/tail-display.ts";
 import { useTailEvents } from "../../lib/tail-events.ts";
+import { mergeHydratedTailEvents } from "../../lib/tail-event-merge.ts";
 import { openContent } from "../../scout/slots/openContent.ts";
 import { useScout } from "../../scout/Provider.tsx";
 import type {
@@ -309,6 +310,7 @@ function publishOpsDetail(detail: unknown) {
 export function TailView({
   navigate,
   initialFilter,
+  sessionId,
   variant = "tail",
   chrome = "full",
   inlineDetail = false,
@@ -317,6 +319,7 @@ export function TailView({
 }: {
   navigate?: (r: Route) => void;
   initialFilter?: string;
+  sessionId?: string;
   variant?: TailViewVariant;
   chrome?: TailViewChrome;
   inlineDetail?: boolean;
@@ -329,6 +332,9 @@ export function TailView({
   const [events, setEvents] = useState<TailEvent[]>([]);
   const [discovery, setDiscovery] = useState<TailDiscoverySnapshot | null>(null);
   const [filter, setFilter] = useState(initialFilter ?? "");
+  // Editing/clearing the visible filter returns to ordinary fleet search.
+  // Do not leave an invisible session constraint behind after Escape.
+  const scopedSessionId = filter === initialFilter ? sessionId : undefined;
   const [filterOpen, setFilterOpen] = useState(Boolean(initialFilter) && !embedded);
   const [issueFilter, setIssueFilter] = useState<IssueFilter>("warn-plus");
   const [paused, setPaused] = useState(false);
@@ -341,13 +347,14 @@ export function TailView({
   const wasAtBottomRef = useRef(true);
 
   const handleEvent = useCallback((event: TailEvent) => {
+    if (scopedSessionId && event.sessionId !== scopedSessionId) return;
     setEvents((prev) => {
       const next = prev.length >= BUFFER_LIMIT
         ? [...prev.slice(prev.length - BUFFER_LIMIT + 1), event]
         : [...prev, event];
       return next;
     });
-  }, []);
+  }, [scopedSessionId]);
 
   useTailEvents(handleEvent);
 
@@ -366,24 +373,40 @@ export function TailView({
 
   useEffect(() => {
     let cancelled = false;
-    void (async () => {
+    let pending = false;
+    let hydrated = false;
+    const load = async () => {
+      if (pending || hydrated) return;
+      pending = true;
       try {
         const params = new URLSearchParams({ limit: String(DEFAULT_RECENT_LIMIT) });
+        if (scopedSessionId) params.set("sessionId", scopedSessionId);
         if (embedded || initialFilter) {
           params.set("transcripts", "true");
         }
         const result = await api<{ events: TailEvent[] }>(
           `/api/tail/recent?${params.toString()}`,
         );
-        if (!cancelled) setEvents(result.events ?? []);
+        hydrated = Boolean(result.events?.length);
+        if (!cancelled) setEvents((previous) => mergeHydratedTailEvents(
+          scopedSessionId ? previous.filter((event) => event.sessionId === scopedSessionId) : previous,
+          result.events ?? [],
+          BUFFER_LIMIT,
+        ));
       } catch {
-        /* swallow */
+        // A just-assigned session may not be discovered yet. Retry its
+        // bounded history until it arrives; keep any live events meanwhile.
+      } finally {
+        pending = false;
       }
-    })();
+    };
+    void load();
+    const timer = scopedSessionId ? setInterval(() => void load(), 5_000) : null;
     return () => {
       cancelled = true;
+      if (timer) clearInterval(timer);
     };
-  }, [embedded, initialFilter]);
+  }, [embedded, initialFilter, scopedSessionId]);
 
   useEffect(() => {
     if (embedded || inlineDetail) return;
@@ -423,10 +446,11 @@ export function TailView({
 
   const filtered = useMemo(() => {
     return classifiedEvents.filter(({ event, severity }) => {
+      if (scopedSessionId && event.sessionId !== scopedSessionId) return false;
       if (issueMode && !issueFilterAllows(severity, issueFilter)) return false;
       return matchesFilter(event, filter, severity, filterScope);
     });
-  }, [classifiedEvents, filter, filterScope, issueFilter, issueMode]);
+  }, [classifiedEvents, filter, filterScope, issueFilter, issueMode, scopedSessionId]);
 
   const displayRows = useMemo(() => {
     const narrowed = filtered.filter(({ event }) =>

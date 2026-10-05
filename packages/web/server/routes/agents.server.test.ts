@@ -1763,7 +1763,7 @@ test("named Codex targets retain their execution context even when their path al
   expect(askScoutQuestionCalls.map((call) => call.targetAgentId)).toEqual(["peer-agent", "local-agent"]);
 });
 
-test("manual model refresh bypasses the web options cache and exposes new published choices", async () => {
+test("manual model refresh persists broker choices across ordinary options reads", async () => {
   const projectRoot = mkdtempSync(join(tmpdir(), "openscout-refresh-models-"));
   testDirectories.add(projectRoot);
   const catalog = structuredClone(SCOUT_RUNTIME_CATALOG);
@@ -1772,11 +1772,13 @@ test("manual model refresh bypasses the web options cache and exposes new publis
   codex.models = codex.models.map((model) => ({ ...model, enabled: false, default: false }));
   codex.models.push({ id: "gpt-published-next", label: "Published Next", enabled: true, default: true, reasoningEfforts: ["high"] });
   const forceQueries: string[] = [];
+  let brokerCatalog = SCOUT_RUNTIME_CATALOG;
   globalThis.fetch = (async (input) => {
     const url = new URL(String(input));
     if (url.pathname !== "/v1/runtime-catalog") return new Response(null, { status: 404 });
     forceQueries.push(url.searchParams.get("force") ?? "");
-    return Response.json({ catalog: url.searchParams.has("force") ? catalog : SCOUT_RUNTIME_CATALOG,
+    if (url.searchParams.has("force")) brokerCatalog = catalog;
+    return Response.json({ catalog: brokerCatalog,
       source: "remote", checkedAt: 1_000, warnings: [] });
   }) as typeof fetch;
   const server = await createOpenScoutWebServer({ currentDirectory: projectRoot, assetMode: "static", staticRoot: makeStaticRoot(), backgroundServices: false });
@@ -1790,9 +1792,9 @@ test("manual model refresh bypasses the web options cache and exposes new publis
   expect(payload.checkedAt).toBe(1_000);
   expect(payload.models.some((model) => model.id === "gpt-published-next")).toBe(true);
   expect(payload.models.some((model) => model.id === "gpt-6-astra")).toBe(false);
-  const cached = await (await server.app.request("/api/runner/options")).json() as typeof payload;
-  expect(cached.catalogRevision).toBe(catalog.revision);
-  expect(forceQueries).toEqual(["", "true"]);
+  const ordinary = await (await server.app.request("/api/runner/options")).json() as typeof payload;
+  expect(ordinary.catalogRevision).toBe(catalog.revision);
+  expect(forceQueries).toEqual(["", "true", ""]);
   const submitted = await server.app.request("/api/sessions", { method: "POST", headers: { "content-type": "application/json" },
     body: JSON.stringify({ target: { projectPath: projectRoot }, execution: { harness: "codex", model: "gpt-published-next", reasoningEffort: "high" }, seed: { instructions: "Use published data" } }) });
   expect(submitted.status).toBe(200);

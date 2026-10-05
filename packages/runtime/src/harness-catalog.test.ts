@@ -3,7 +3,7 @@ import { isolateOpenScoutUserDataForTests } from "./test-user-data-isolation.ts"
 
 isolateOpenScoutUserDataForTests();
 
-import { mkdtempSync, rmSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -181,6 +181,81 @@ describe("harness catalog", () => {
     });
     expect(report.ready).toBe(true);
     expect(report.state).toBe("ready");
+  });
+
+  test("local presence requires an executable file, without executing it", () => {
+    const home = mkdtempSync(join(tmpdir(), "scout-harness-presence-"));
+    try {
+      const binary = "scout-readiness-fixture";
+      const path = join(home, binary);
+      const sentinel = join(home, "must-not-run");
+      const entry = { ...createBuiltInHarnessCatalog()[0]!, install: { binary } };
+      const options = { localOnly: true, env: { HOME: home, PATH: home, ANTHROPIC_API_KEY: "test" } };
+      mkdirSync(path);
+      expect(evaluateHarnessReadiness(entry, options).installed).toBe(false);
+      rmSync(path, { recursive: true });
+      writeFileSync(path, `#!/bin/sh\ntouch '${sentinel}'\n`, { mode: 0o600 });
+      expect(evaluateHarnessReadiness(entry, options).installed).toBe(false);
+      chmodSync(path, 0o700);
+      const report = evaluateHarnessReadiness(entry, options);
+      expect(report).toMatchObject({ installed: true, ready: true, binaryPath: path, binaryVersion: null });
+      expect(existsSync(sentinel)).toBe(false);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  test("Codex fallback and auth markers alone are not installed evidence", () => {
+    const codex = findHarnessEntry("codex")!;
+    const inspected: string[] = [];
+    const report = evaluateHarnessReadiness(codex, {
+      localOnly: true, env: { HOME: "/not-a-real-home", PATH: "", OPENAI_API_KEY: "test" },
+      executableExists: (path) => { inspected.push(path); return false; },
+      requirementExists: () => true,
+    });
+    expect(inspected).not.toContain("codex");
+    expect(report).toMatchObject({ state: "missing", installed: false, ready: false, binaryPath: null });
+  });
+
+  test("local Codex presence honors a real explicit binary without version selection", () => {
+    const home = mkdtempSync(join(tmpdir(), "scout-codex-presence-"));
+    try {
+      const binary = join(home, "codex-explicit");
+      writeFileSync(binary, "#!/bin/sh\nexit 99\n", { mode: 0o700 });
+      const report = evaluateHarnessReadiness(findHarnessEntry("codex")!, {
+        localOnly: true, env: { HOME: home, PATH: "", OPENSCOUT_CODEX_BIN: binary, OPENAI_API_KEY: "test" },
+      });
+      expect(report).toMatchObject({ installed: true, ready: true, binaryPath: binary,
+        binarySource: "env:OPENSCOUT_CODEX_BIN", binaryVersion: null });
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  test("macOS system path fragments preserve custom GUI install prefixes without a login shell", () => {
+    const home = mkdtempSync(join(tmpdir(), "scout-system-path-"));
+    try {
+      const prefix = join(home, "custom-npm-prefix", "bin");
+      mkdirSync(prefix, { recursive: true });
+      for (const binary of ["codex", "claude"]) writeFileSync(join(prefix, binary), "#!/bin/sh\nexit 99\n", { mode: 0o700 });
+      const options = { localOnly: true, platform: "darwin" as const, env: { HOME: home, PATH: "", OPENAI_API_KEY: "test" },
+        systemPathDirectories: () => [prefix], executableExists: (path: string) => path.startsWith(`${prefix}/`) && existsSync(path),
+        requirementExists: () => true,
+      };
+      // The filesystem check is separately tested; isolate global installations here.
+      expect(evaluateHarnessReadiness(findHarnessEntry("claude")!, options).binaryPath).toBe(join(prefix, "claude"));
+      expect(evaluateHarnessReadiness(findHarnessEntry("codex")!, options).binaryPath).toBe(join(prefix, "codex"));
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  test("local Codex presence includes Windows executable extensions without starting where", () => {
+    const report = evaluateHarnessReadiness(findHarnessEntry("codex")!, {
+      localOnly: true, platform: "win32", env: { HOME: "/fixture-home", PATH: "/fixture-bin", PATHEXT: ".EXE;.CMD", OPENAI_API_KEY: "test" },
+      executableExists: (path) => path === "/fixture-bin/codex.EXE", requirementExists: () => false,
+    });
+    expect(report).toMatchObject({ installed: true, ready: true, binaryPath: "/fixture-bin/codex.EXE", binaryVersion: null });
   });
 
   test("readiness reports pi ready when binary and auth file are present", () => {
@@ -371,4 +446,3 @@ describe("readiness derived from the harness auth model", () => {
     expect(keysFor("grok")).toEqual(keysFor("grok-acp"));
   });
 });
-

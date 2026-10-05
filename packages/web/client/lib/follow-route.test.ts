@@ -77,7 +77,7 @@ describe("follow route resolution", () => {
     });
   });
 
-  test("defaults to concrete agent session observe when agent and session are known", () => {
+  test("defaults to the work ticket even when agent and session are known", () => {
     expect(routeForFollowTarget({
       flightId: "flight-1",
       invocationId: "inv-1",
@@ -86,10 +86,8 @@ describe("follow route resolution", () => {
       sessionId: "session-1",
       targetAgentId: "agent.main",
     }, undefined)).toEqual({
-      view: "sessions",
-      flightId: "flight-1",
-      agentId: "agent.main",
-      sessionId: "session-1",
+      view: "work",
+      workId: "work-1",
     });
   });
 

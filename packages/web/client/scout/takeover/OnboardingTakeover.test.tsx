@@ -12,9 +12,17 @@ const { renderToStaticMarkup } = await import("../../../node_modules/react-dom/s
 mock.module("react", () => React);
 mock.module("react/jsx-runtime", () => ReactJsxRuntime);
 mock.module("react/jsx-dev-runtime", () => ReactJsxDevRuntime);
+const mutationRequests: Array<{ path: string; init?: RequestInit }> = [];
+let mutationResponse: { state?: OnboardingState } = {};
+let mutationError: Error | null = null;
+mock.module("../../lib/api.ts", () => ({ api: async (path: string, init?: RequestInit) => {
+  mutationRequests.push({ path, init });
+  if (mutationError) throw mutationError;
+  return mutationResponse;
+} }));
 let state: OnboardingState;
 mock.module("../Provider.tsx", () => ({ useScout: () => ({ onboarding: state, refreshOnboarding: async () => {}, skipOnboarding: async () => {} }) }));
-const { OnboardingTakeover } = await import("./OnboardingTakeover.tsx");
+const { OnboardingTakeover, submitOnboardingMutation } = await import("./OnboardingTakeover.tsx");
 const base: OnboardingState = {
   hasLocalConfig: true, hasOperatorName: true, hasProjectConfig: false,
   localConfigPath: "/home/arach/.openscout/config.json", projectRoot: null,
@@ -23,6 +31,33 @@ const base: OnboardingState = {
   defaultHarness: "codex", brokerReachable: true, hasReadyRuntime: false, needed: true,
 };
 const render = () => renderToStaticMarkup(React.createElement(OnboardingTakeover));
+
+describe("onboarding mutation state reuse", () => {
+  for (const path of ["/api/onboarding/init", "/api/user", "/api/onboarding/project"]) {
+    test(`${path} applies its returned state without requesting it again`, async () => {
+      mutationRequests.length = 0;
+      const next = { ...base, hasProjectConfig: true, contextRoot: "/home/arach/dev/alpha" };
+      mutationResponse = { state: next };
+      const applied: Array<OnboardingState | undefined> = [];
+      await submitOnboardingMutation(path, { name: "Arach" }, async (value) => { applied.push(value); });
+      expect(mutationRequests).toHaveLength(1);
+      expect(mutationRequests[0]).toMatchObject({ path, init: { method: "POST", body: '{"name":"Arach"}' } });
+      expect(applied).toEqual([next]);
+    });
+  }
+
+  test("older mutation responses request a normal provider refresh, and failures preserve state", async () => {
+    const applied: Array<OnboardingState | undefined> = [];
+    mutationResponse = {};
+    await submitOnboardingMutation("/api/user", { name: "Arach" }, async (value) => { applied.push(value); });
+    expect(applied).toEqual([undefined]);
+    mutationError = new Error("write failed");
+    try {
+      await expect(submitOnboardingMutation("/api/user", { name: "Arach" }, async (value) => { applied.push(value); })).rejects.toThrow("write failed");
+      expect(applied).toEqual([undefined]);
+    } finally { mutationError = null; }
+  });
+});
 
 describe("first-run project and selected-agent guidance", () => {
   test("a packaged launch asks for a workspace instead of selecting its runtime directory or scan suggestion", () => {

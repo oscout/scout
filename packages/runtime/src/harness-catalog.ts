@@ -1,11 +1,11 @@
 import type { RuntimeEnv, RuntimePlatform } from "./portable-types.js";
 import { execFileSync } from "node:child_process";
-import { existsSync, statSync } from "node:fs";
+import { accessSync, constants, existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { delimiter, dirname, join } from "node:path";
 
-import { resolveCodexExecutableInventory, type CodexExecutableCandidate } from "@openscout/agent-sessions/codex-executable";
+import { resolveCodexExecutableCandidateInputs, resolveCodexExecutableInventory, type CodexExecutableCandidate } from "@openscout/agent-sessions/codex-executable";
 import { harnessAuthModel } from "@openscout/agent-sessions/auth";
 import type { AgentCapability, AgentHarness } from "@openscout/protocol";
 
@@ -144,11 +144,14 @@ export type HarnessCatalogLoadOptions = {
   overridePath?: string;
   now?: () => number;
   whichBinary?: (binary: string) => string | null;
+  executableExists?: (path: string) => boolean;
+  systemPathDirectories?: () => string[];
   requirementExists?: (requirement: Extract<HarnessRequirement, { kind: "file" }>) => boolean;
   runCommand?: (command: string) => boolean;
   /**
-   * Readiness from local evidence only: binary on PATH plus credential env/file
-   * presence. Skips `verify` and `healthcheckCommand`, which run the harness
+   * Readiness from filesystem evidence only: executable presence plus credential
+   * env/file presence. Never starts a shell or probes a binary's version.
+   * Skips `verify` and `healthcheckCommand`, which run the harness
    * (some ask the provider, e.g. `cursor-agent status`). A harness whose
    * readiness rests on a skipped healthcheck reports `configured`, not ready.
    */
@@ -596,6 +599,58 @@ function defaultWhichBinary(binary: string, platform: RuntimePlatform): string |
   }
 }
 
+function executableFileExists(path: string, platform: RuntimePlatform): boolean {
+  try {
+    if (!statSync(path).isFile()) return false;
+    accessSync(path, platform === "win32" ? constants.F_OK : constants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function macSystemPathDirectories(): string[] {
+  let fragments: string[] = [];
+  try { fragments = readdirSync("/etc/paths.d").sort().slice(0, 64).map((name) => join("/etc/paths.d", name)); } catch { /* optional */ }
+  return ["/etc/paths", ...fragments].flatMap((path) => {
+    try {
+      const info = statSync(path);
+      if (!info.isFile() || info.size > 64 * 1024) return [];
+      return readFileSync(path, "utf8").split(/\r?\n/).map((line) => line.trim()).filter(Boolean).slice(0, 256);
+    } catch { return []; }
+  });
+}
+
+function localBinaryPath(
+  binary: string,
+  env: RuntimeEnv,
+  platform: RuntimePlatform,
+  executableExists: (path: string) => boolean,
+  systemDirectories: string[],
+): string | null {
+  if (binary.includes("/") || binary.includes("\\")) {
+    const path = expandHomePath(binary);
+    return executableExists(path) ? path : null;
+  }
+  const home = env.HOME?.trim() || homedir();
+  const directories = [
+    ...(env.PATH ?? "").split(platform === "win32" ? ";" : delimiter).filter(Boolean),
+    ...systemDirectories,
+    join(home, ".local", "bin"), join(home, ".bun", "bin"),
+    ...(platform === "win32" ? [] : ["/opt/homebrew/bin", "/usr/local/bin"]),
+  ];
+  const extensions = platform === "win32"
+    ? ["", ...(env.PATHEXT ?? ".COM;.EXE;.BAT;.CMD").split(";").filter(Boolean)]
+    : [""];
+  for (const directory of new Set(directories)) {
+    for (const extension of extensions) {
+      const path = join(directory, `${binary}${extension}`);
+      if (executableExists(path)) return path;
+    }
+  }
+  return null;
+}
+
 function defaultRunCommand(command: string, platform: RuntimePlatform): boolean {
   try {
     if (platform === "win32") {
@@ -881,17 +936,33 @@ export function evaluateHarnessReadiness(
 ): HarnessReadinessReport {
   const platform = options.platform ?? process.platform;
   const env = options.env ?? process.env;
-  const whichBinary = options.whichBinary ?? ((binary: string) => defaultWhichBinary(binary, platform));
+  const executableExists = options.executableExists ?? ((path: string) => executableFileExists(path, platform));
+  const systemDirectories = options.localOnly && !options.whichBinary && platform === "darwin"
+    ? (options.systemPathDirectories ?? macSystemPathDirectories)() : [];
+  const whichBinary = options.whichBinary ?? ((binary: string) => options.localOnly
+    ? localBinaryPath(binary, env, platform, executableExists, systemDirectories)
+    : defaultWhichBinary(binary, platform));
   const requirementExists = options.requirementExists ?? defaultRequirementExists;
   const runCommand = options.runCommand ?? ((command: string) => defaultRunCommand(command, platform));
 
   const binary = entry.install?.binary;
-  const codexInventory = entry.name === "codex" && !options.whichBinary
+  const codexInventory = entry.name === "codex" && !options.whichBinary && !options.localOnly
     ? resolveCodexExecutableInventory(env)
     : null;
+  // Presence is not execution resolution: onboarding never version-ranks or
+  // starts Codex. The task-launch resolver retains its existing policy.
+  const localCodex = entry.name === "codex" && !options.whichBinary && options.localOnly
+    ? [...resolveCodexExecutableCandidateInputs(env), ...systemDirectories.map((directory) => ({ path: join(directory, "codex"), source: "path" as const }))].find((candidate) =>
+      candidate.source !== "fallback" && candidate.path !== "codex" && executableExists(candidate.path))
+    : null;
+  const windowsCodexPath = !localCodex && entry.name === "codex" && !options.whichBinary && options.localOnly && platform === "win32"
+    ? localBinaryPath("codex", env, platform, executableExists, systemDirectories) : null;
   const binaryPath = codexInventory
-    ? codexInventory.selectedPath
-    : (binary ? whichBinary(binary) : null);
+    ? (codexInventory.selected && (codexInventory.selected.source !== "fallback" || codexInventory.selected.versionRaw)
+      ? codexInventory.selectedPath : null)
+    : entry.name === "codex" && !options.whichBinary && options.localOnly
+      ? localCodex?.path ?? windowsCodexPath
+      : (binary ? whichBinary(binary) : null);
   const verifyCommand = options.localOnly
     ? undefined
     : platform === "win32"
@@ -962,7 +1033,7 @@ export function evaluateHarnessReadiness(
     missing,
     binaryPath,
     binaryVersion: codexInventory?.selected?.version ?? null,
-    binarySource: codexInventory?.selected?.source ?? null,
+    binarySource: codexInventory?.selected?.source ?? localCodex?.source ?? (windowsCodexPath ? "path" : null),
     binaryCandidates: codexInventory?.candidates.map((candidate: CodexExecutableCandidate) =>
       codexCandidateReport(candidate, codexInventory.selectedPath)
     ),

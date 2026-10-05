@@ -750,16 +750,16 @@
   },
   {
     "path": "packages/runtime/src/onboarding-local-readiness.test.ts",
-    "symbol": "node:child_process",
+    "symbol": "spawnSync",
     "category": "test",
-    "reason": "Runs the local-readiness regression in an isolated child with a 20-second timeout so provider/auth and service mocks never leak into the runtime suite.",
+    "reason": "Runs a 20-second bounded isolated child test whose launch exports are replaced with throwing guards to verify subprocess-free onboarding readiness.",
     "owner": "tests"
   },
   {
     "path": "packages/runtime/src/onboarding-local-readiness.test.ts",
-    "symbol": "spawnSync",
+    "symbol": "node:child_process",
     "category": "test",
-    "reason": "Runs the local-readiness regression in an isolated child with a 20-second timeout so provider/auth and service mocks never leak into the runtime suite.",
+    "reason": "Runs a 20-second bounded isolated child test whose launch exports are replaced with throwing guards to verify subprocess-free onboarding readiness.",
     "owner": "tests"
   }
 ]

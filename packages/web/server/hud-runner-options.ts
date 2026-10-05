@@ -156,7 +156,8 @@ export function dedupeHudRunnerProjects(projects: HudRunnerProjectOption[]): Hud
   const result: HudRunnerProjectOption[] = [];
   for (const project of projects) {
     const root = normalizeHudRunnerRoot(project.root);
-    if (!seen.add(root)) continue;
+    if (seen.has(root)) continue;
+    seen.add(root);
     result.push({ ...project, root });
   }
   return result;
@@ -173,21 +174,38 @@ export async function buildHudRunnerOptions(
   // This endpoint sits on the global-hotkey path, so it deliberately avoids
   // the workspace scan performed by the full agent-configuration snapshot.
   const scope = input.scope ?? "global+project";
-  const scopedProjectRoot = normalizeHudRunnerRoot(input.projectRoot ?? currentDirectory);
   const [
     settingsResult,
     runtimeCatalogResult,
     userConfigResult,
-    projectConfigResult,
     harnessPreferencesResult,
   ] = await Promise.allSettled([
-    readOpenScoutSettings({ currentDirectory }),
+    // Scan-root inference is useful for discovery, but does not establish a
+    // saved composer choice. Keep genuine cwd/known-project fallbacks intact.
+    readOpenScoutSettings({ currentDirectory, includeInferredWorkspaceRoots: false }),
     loadBrokerRuntimeCatalog(input.force === true),
     Promise.resolve().then(() => loadUserConfigFresh()),
-    readProjectConfig(scopedProjectRoot),
     readHarnessModelPreferences(),
   ]);
   const settings = settingsResult.status === "fulfilled" ? settingsResult.value : null;
+  const isDirectory = (root: string) => {
+    try { return statSync(root).isDirectory(); } catch { return false; }
+  };
+  const chosenContext = settings?.discovery.contextRoot
+    ? normalizeHudRunnerRoot(settings.discovery.contextRoot) : null;
+  const hasContext = chosenContext !== null && isDirectory(chosenContext);
+  const missingContext = chosenContext !== null && !hasContext;
+  const workspaceRoots = (settings?.discovery.workspaceRoots ?? [])
+    .map(normalizeHudRunnerRoot).filter(isDirectory);
+  // Ordinary init/identity writes also persist seeded scan roots. Only a
+  // chosen task context establishes an automatic folder preference.
+  const configuredRoots = chosenContext !== null && hasContext ? [
+    { root: chosenContext, source: "contextRoot" },
+    ...workspaceRoots.map((root) => ({ root, source: "workspaceRoot" })),
+  ] : [];
+  const explicitRoot = input.projectRoot?.trim() ? normalizeHudRunnerRoot(input.projectRoot) : null;
+  const scopedProjectRoot = explicitRoot ?? chosenContext ?? normalizeHudRunnerRoot(currentDirectory);
+  const projectConfig = await readProjectConfig(scopedProjectRoot).catch(() => null);
   const liveRuntimeCatalog = runtimeCatalogResult.status === "fulfilled" ? runtimeCatalogResult.value : null;
   if (input.force && !liveRuntimeCatalog) {
     throw new Error("Could not refresh models. Keeping your saved choices; try again when Scout is connected.");
@@ -238,8 +256,24 @@ export async function buildHudRunnerOptions(
     });
   const currentProject = currentDirectoryProjectOption(currentDirectory, defaultHarness);
   if (currentProject) projectOptions.unshift(currentProject);
+  projectOptions.unshift(...configuredRoots.map(({ root, source }) => ({
+    id: `${source}:${root}`, title: basename(root) || root, root,
+    source, registrationKind: "configured", defaultHarness,
+  })));
+  if (explicitRoot) projectOptions.unshift({
+    id: `explicit:${explicitRoot}`, title: basename(explicitRoot) || explicitRoot, root: explicitRoot,
+    source: "explicit", registrationKind: "explicit", defaultHarness,
+  });
+  // A missing choice must be repaired explicitly, not replaced by a scan
+  // folder. Keep scan-only preferences manually usable without defaulting to
+  // them, including roots saved by older versions before project selection.
+  const defaultDirectory = explicitRoot
+    ?? (missingContext ? "" : projectOptions[0]?.root ?? normalizeHudRunnerRoot(currentDirectory));
+  if (!hasContext) projectOptions.push(...workspaceRoots.map((root) => ({
+    id: `workspaceScanRoot:${root}`, title: basename(root) || root, root,
+    source: "workspaceScanRoot", registrationKind: "configured", defaultHarness,
+  })));
   const projects = dedupeHudRunnerProjects(projectOptions);
-  const defaultDirectory = projects[0]?.root ?? normalizeHudRunnerRoot(currentDirectory);
   const models = scoutRuntimeModelCatalog(runtimeCatalog);
   const harnesses = Array.from(harnessesById.values());
   const defaultModel = defaultHudRunnerModel(defaultHarness, models, runtimeCatalog);
@@ -250,9 +284,7 @@ export async function buildHudRunnerOptions(
   const runtimeLists = resolveRuntimeListPreferences({
     catalog: runtimeCatalog,
     user: userConfigResult.status === "fulfilled" ? userConfigResult.value : undefined,
-    project: projectConfigResult.status === "fulfilled"
-      ? projectConfigResult.value?.agent?.runtime ?? null
-      : null,
+    project: projectConfig?.agent?.runtime ?? null,
     harness: harnessPreferencesResult.status === "fulfilled"
       ? harnessPreferencesResult.value
       : undefined,

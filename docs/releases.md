@@ -51,6 +51,11 @@ that state unchanged instead of demoting it. Marking a release Latest is a
 separate step owned by the native installer release after its DMG is attached
 and verified; package publication neither requires nor performs it.
 
+A released Mac app’s install card requests `@openscout/scout@<app-version>`,
+so publish and verify the matching npm version before distributing its DMG.
+The DMG may be built locally before npm publication; candidate validation
+and promotion continue to follow the existing gates below.
+
 ## Prepare and review
 
 Choose an explicit unused version. Never use `patch` to recover from registry

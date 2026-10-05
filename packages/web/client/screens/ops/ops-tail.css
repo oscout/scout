@@ -131,7 +131,9 @@
 }
 
 .s-tail--embedded .s-tail-status {
-  padding: var(--space-2xs) var(--space-md);
+  min-height: 22px;
+  padding: 0 var(--space-md);
+  line-height: 1;
   gap: var(--space-sm);
   font-size: var(--text-xs);
   background: color-mix(in srgb, var(--surface) 12%, var(--bg));

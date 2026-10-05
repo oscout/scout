@@ -6,6 +6,10 @@
   --radius-2xl: 4px;
 }
 
+/* The page owns its gutter; the embed root already pads. */
+.s-work-detail.s-work-casefile { box-sizing: border-box; width: 100%; max-width: 1240px; margin-inline: auto; padding: 20px clamp(16px, 3vw, 32px) 48px; }
+.s-work-embed .s-work-detail.s-work-casefile { padding: 0 0 32px; }
+
 .s-work-casefile .s-work-casefile-topbar {
   flex-wrap: wrap;
   gap: var(--space-sm);
@@ -75,28 +79,30 @@
 
 /* A continuous time axis: compact events, with long reports on demand. */
 .s-work-event-track { list-style: none; margin: 0; padding: 0; }
-.s-work-event { position: relative; display: grid; grid-template-columns: 88px 24px minmax(0, 1fr); column-gap: 14px; padding: 0 0 22px; }
+.s-work-event { position: relative; display: grid; grid-template-columns: 88px 24px minmax(0, 1fr); column-gap: 14px; padding: 0 0 18px; }
 .s-work-event:last-child { padding-bottom: 0; }
 .s-work-event:not(:last-child)::after { content: ""; position: absolute; top: 24px; bottom: 0; left: 113.5px; width: 1px; background: var(--border); }
 .s-work-event-time { display: flex; flex-direction: column; align-items: flex-end; gap: 3px; padding-top: 3px; color: var(--muted); font: var(--text-xs)/1.4 var(--font-mono); }
 .s-work-event-time time { color: var(--ink); }
 .s-work-event-date { margin-bottom: 2px; }
 .s-work-event-node { display: grid; place-items: center; width: 24px; height: 24px; box-sizing: border-box; border: 1px solid var(--border); border-radius: 50%; color: var(--accent); background: var(--surface); }
-.s-work-event[data-kind="message"] .s-work-event-node { color: var(--green); }
+.s-work-event-node { color: var(--muted); }
+.s-work-event[data-kind="message"] .s-work-event-node { color: var(--ink); }
+.s-work-event[data-outcome] .s-work-event-node { color: var(--green, var(--accent)); border-color: color-mix(in srgb, var(--green, var(--accent)) 45%, var(--border)); background: color-mix(in srgb, var(--green, var(--accent)) 10%, var(--surface)); }
 .s-work-event-content { min-width: 0; padding-top: 3px; }
 .s-work-event-heading { display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 12px; margin-bottom: 6px; }
-.s-work-event-heading strong { font-size: var(--text-md); font-weight: 600; color: var(--ink); text-transform: capitalize; }
+.s-work-event-heading strong { font-size: var(--text-md); font-weight: 600; color: var(--ink); }
 .s-work-event-heading > span { color: var(--muted); font-size: var(--text-sm); }
 .s-work-event-copy { color: var(--ink); font-size: var(--text-md); line-height: 1.55; white-space: pre-wrap; overflow-wrap: anywhere; }
 .s-work-event-detail summary { cursor: pointer; color: var(--muted); font-size: var(--text-md); line-height: 1.55; overflow-wrap: anywhere; }
 .s-work-event-detail summary:focus-visible { outline: 1px solid var(--accent); outline-offset: 3px; }
 .s-work-event-disclosure { display: inline-block; margin-left: 8px; color: var(--accent); font-size: var(--text-sm); }
 .s-work-event-detail[open] .s-work-event-copy { margin-top: 10px; }
-.s-work-event-more { align-self: flex-start; margin-left: 140px; }
+.s-work-event-more { justify-self: start; margin-left: 126px; }
 @media (max-width: 600px) {
   .s-work-event { grid-template-columns: 64px 24px minmax(0, 1fr); column-gap: 8px; }
   .s-work-event:not(:last-child)::after { left: 83.5px; }
-  .s-work-event-more { margin-left: 104px; }
+  .s-work-event-more { margin-left: 86px; }
 }
 
 /* Execution metadata is a compact record, independent of prompt length. */

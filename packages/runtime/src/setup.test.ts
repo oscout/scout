@@ -24,9 +24,15 @@ const originalControlHome = process.env.OPENSCOUT_CONTROL_HOME;
 const originalRelayHub = process.env.OPENSCOUT_RELAY_HUB;
 const originalSetupCwd = process.env.OPENSCOUT_SETUP_CWD;
 const originalSkipUserProjectHints = process.env.OPENSCOUT_SKIP_USER_PROJECT_HINTS;
+const telegramEnvKeys = ["TELEGRAM_BOT_TOKEN", "TELEGRAM_WEBHOOK_SECRET_TOKEN", "TELEGRAM_API_BASE_URL", "TELEGRAM_BOT_USERNAME"] as const;
+const originalTelegramEnv = Object.fromEntries(telegramEnvKeys.map((key) => [key, process.env[key]]));
 const testDirectories = new Set<string>();
 
 afterEach(() => {
+  for (const key of telegramEnvKeys) {
+    const original = originalTelegramEnv[key];
+    if (original === undefined) delete process.env[key]; else process.env[key] = original;
+  }
   process.env.HOME = originalHome;
   if (originalSupportDirectory === undefined) {
     delete process.env.OPENSCOUT_SUPPORT_DIRECTORY;
@@ -61,6 +67,75 @@ afterEach(() => {
 });
 
 describe("setup inventory", () => {
+  for (const savedProfile of [false, true]) {
+    test(`saved-only discovery excludes inferred roots with ${savedProfile ? "unrelated saved profile" : "missing settings"}`, async () => {
+      const home = join(tmpdir(), `openscout-saved-roots-${Date.now()}-${Math.random().toString(16).slice(2)}`);
+      testDirectories.add(home);
+      const scanRoot = join(home, "dev");
+      const projectRoot = join(scanRoot, "project");
+      const support = join(home, "support");
+      mkdirSync(projectRoot, { recursive: true });
+      mkdirSync(support, { recursive: true });
+      writeFileSync(join(projectRoot, "package.json"), '{"name":"saved-roots-fixture"}\n');
+      process.env.HOME = home;
+      process.env.OPENSCOUT_SUPPORT_DIRECTORY = support;
+      process.env.OPENSCOUT_CONTROL_HOME = join(home, "control");
+      process.env.OPENSCOUT_RELAY_HUB = join(home, "relay");
+      const settingsPath = join(support, "settings.json");
+      const raw = JSON.stringify({ profile: { operatorName: "Fixture Operator" } });
+      if (savedProfile) writeFileSync(settingsPath, raw);
+
+      const ordinary = await readOpenScoutSettings({ currentDirectory: projectRoot });
+      expect(ordinary.discovery.workspaceRoots).toEqual([scanRoot]);
+      const savedOnly = await readOpenScoutSettings({ currentDirectory: projectRoot, includeInferredWorkspaceRoots: false });
+      expect(savedOnly.discovery).toMatchObject({ contextRoot: null, workspaceRoots: [] });
+      if (savedProfile) {
+        expect(savedOnly.profile.operatorName).toBe("Fixture Operator");
+        expect(readFileSync(settingsPath, "utf8")).toBe(raw);
+      } else {
+        expect(existsSync(settingsPath)).toBe(false);
+      }
+
+      const contextRoot = join(home, "empty-context");
+      const workspaceRoot = join(home, "empty-workspace");
+      mkdirSync(contextRoot);
+      mkdirSync(workspaceRoot);
+      writeFileSync(settingsPath, JSON.stringify({ discovery: { contextRoot, workspaceRoots: [workspaceRoot] } }));
+      const saved = await readOpenScoutSettings({ currentDirectory: projectRoot, includeInferredWorkspaceRoots: false });
+      expect(saved.discovery).toMatchObject({ contextRoot, workspaceRoots: [workspaceRoot] });
+    });
+  }
+
+  for (const fixture of [
+    { name: "missing file", text: null, expected: "" },
+    { name: "nonregular file", text: null, expected: "" },
+    { name: "export and comments", text: "# ignored\n  export TELEGRAM_BOT_TOKEN=fixture-export  \n", expected: "fixture-export" },
+    { name: "double quotes", text: 'TELEGRAM_BOT_TOKEN="fixture value"\n', expected: "fixture value" },
+    { name: "single quotes", text: "TELEGRAM_BOT_TOKEN='fixture single'\n", expected: "fixture single" },
+    { name: "first matching assignment", text: "TELEGRAM_BOT_TOKEN=fixture-first\nTELEGRAM_BOT_TOKEN=fixture-second\n", expected: "fixture-first" },
+    { name: "literal path metacharacters", text: "TELEGRAM_BOT_TOKEN=fixture-literal\n", expected: "fixture-literal" },
+  ]) {
+    test(`settings env-file reads preserve ${fixture.name} without a shell`, async () => {
+      const home = join(tmpdir(), `openscout-env-file-${Date.now()}-${Math.random().toString(16).slice(2)}`);
+      testDirectories.add(home);
+      const sentinel = join(home, "must-not-run");
+      const directory = fixture.name === "literal path metacharacters"
+        ? join(home, `workspace space $(touch ${sentinel}) \`touch ${sentinel}\``) : join(home, "workspace");
+      mkdirSync(directory, { recursive: true });
+      process.env.HOME = home;
+      process.env.OPENSCOUT_SUPPORT_DIRECTORY = join(home, "support");
+      process.env.OPENSCOUT_CONTROL_HOME = join(home, "control");
+      process.env.OPENSCOUT_RELAY_HUB = join(home, "relay");
+      process.env.OPENSCOUT_SKIP_USER_PROJECT_HINTS = "1";
+      for (const key of telegramEnvKeys) delete process.env[key];
+      if (fixture.name === "nonregular file") mkdirSync(join(directory, ".env.local"));
+      else if (fixture.text !== null) writeFileSync(join(directory, ".env.local"), fixture.text);
+      const settings = await readOpenScoutSettings({ currentDirectory: directory });
+      expect(settings.bridges.telegram.botToken).toBe(fixture.expected);
+      expect(existsSync(sentinel)).toBe(false);
+    });
+  }
+
   test("configured agent ids use the persisted node qualifier", () => {
     const home = join(tmpdir(), `openscout-stable-node-test-${Date.now()}-${Math.random().toString(16).slice(2)}`);
     const supportDirectory = join(home, "support");

@@ -40,6 +40,7 @@ import {
   type PinSnapshot,
 } from "./companion-data.ts";
 import {
+  DEFAULT_OPERATOR_IDS,
   MAX_VISIBLE_CARDS,
   SURFACE_ROWS_PER_AGENT,
   ageLabel,
@@ -49,6 +50,7 @@ import {
   groupByState,
   groupLabel,
   isCompanionRelevantEvent,
+  operatorActorIds,
   overflowSummary,
   projectInitials,
   selectSurfaced,
@@ -156,9 +158,12 @@ export function CompanionScreen({ workIds, mode: previewMode }: { workIds?: stri
   const [opacityDraft, setOpacityDraft] = useState<number | null>(null);
   const [summaries, setSummaries] = useState<Map<string, WorkItem>>(new Map());
   const [surfaceByAgent, setSurfaceByAgent] = useState<Map<string, WorkItem[]>>(new Map());
+  const [operatorIds, setOperatorIds] = useState<ReadonlySet<string>>(DEFAULT_OPERATOR_IDS);
   const touchedAt = useRef(new Map<string, number>());
   const followCache = useRef(new Map<string, string | null>());
   const previous = useRef(new Map<string, { reportedAt: number; observedLine: string | null }>());
+  // The Surfaced list as last shown: refreshes keep this order.
+  const surfacedOrder = useRef<string[]>([]);
   // Read counters: a slow answer never overwrites a newer one.
   const reads = useRef({ pinned: 0, surfacing: 0 });
   const detailReads = useRef(new Map<string, number>());
@@ -271,14 +276,19 @@ export function CompanionScreen({ workIds, mode: previewMode }: { workIds?: stri
     markFailed("surfacing", results.some((result) => result.status === "rejected"));
   }, [surfaceAgentKey, markFailed]);
 
+  // The debounced refresh calls whatever loaders are current when it fires: a
+  // timer set before the pins changed must not run a read of the old pins,
+  // which would take a newer ticket than the fresh read and win.
+  const loaders = useRef({ loadPinned, loadSurfacing });
+  loaders.current = { loadPinned, loadSurfacing };
   const scheduleRefresh = useCallback(() => {
     if (refreshTimer.current) return;
     refreshTimer.current = setTimeout(() => {
       refreshTimer.current = null;
-      void loadPinned();
-      void loadSurfacing();
+      void loaders.current.loadPinned();
+      void loaders.current.loadSurfacing();
     }, REFRESH_DEBOUNCE_MS);
-  }, [loadPinned, loadSurfacing]);
+  }, []);
 
   // Waits for the host's state, so the first read is of the real pins: the
   // edge only treats work that appears after it as newly arrived.
@@ -327,6 +337,16 @@ export function CompanionScreen({ workIds, mode: previewMode }: { workIds?: stri
     });
   }, [hostKnown, pinKey]);
 
+  // Who the operator is, as the server counts it: asks addressed to the
+  // configured name or handle are questions too, not only "operator".
+  useEffect(() => {
+    let cancelled = false;
+    api<{ name?: string | null; handle?: string | null }>("/api/user")
+      .then((user) => { if (!cancelled) setOperatorIds(operatorActorIds(user)); })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, []);
+
   // One mesh read, on the edge only: the local node id is what makes a
   // visitor a visitor. Unknown means nobody is drawn as one.
   useEffect(() => {
@@ -349,6 +369,12 @@ export function CompanionScreen({ workIds, mode: previewMode }: { workIds?: stri
     return () => document.documentElement.classList.remove("ce-edge-mode");
   }, [edge]);
 
+  // Hiding (and unmounting) drops a pending refresh; nothing reads while hidden.
+  useEffect(() => {
+    if (visible) return;
+    if (refreshTimer.current) clearTimeout(refreshTimer.current);
+    refreshTimer.current = null;
+  }, [visible]);
   useEffect(() => () => {
     if (refreshTimer.current) clearTimeout(refreshTimer.current);
   }, []);
@@ -411,22 +437,23 @@ export function CompanionScreen({ workIds, mode: previewMode }: { workIds?: stri
           tailMatched: Boolean(session),
           project: agent?.project ?? null,
           harness: agent?.harness ?? null,
+          operatorIds,
         }),
       });
     }
     return out;
-  }, [agents, offline, detailPins, refTime, scopedAgentIds, snapshots, tail]);
+  }, [agents, offline, detailPins, operatorIds, refTime, scopedAgentIds, snapshots, tail]);
 
   // Detailed cards from full detail; every other pin from its list row.
   const states = useMemo(() => {
     const map = new Map<string, CompanionCardState>();
     for (const pin of pins) {
       const row = summaries.get(pin.workId);
-      if (row) map.set(pin.workId, summaryState(row, refTime));
+      if (row) map.set(pin.workId, summaryState(row, refTime, operatorIds));
     }
     for (const [id, entry] of cards) if (entry.card) map.set(id, entry.card.state);
     return map;
-  }, [cards, pins, summaries, refTime]);
+  }, [cards, operatorIds, pins, summaries, refTime]);
 
   const surfaced: SurfacedItem[] = useMemo(() => {
     const workScoped = scopes.filter((scope) => scope.kind === "work")
@@ -437,8 +464,11 @@ export function CompanionScreen({ workIds, mode: previewMode }: { workIds?: stri
       agents,
       pinnedIds: new Set(pins.map((pin) => pin.workId)),
       now: refTime,
+      operatorIds,
+      previousOrder: surfacedOrder.current,
     });
-  }, [agents, pins, refTime, scopes, summaries, surfaceRows]);
+  }, [agents, operatorIds, pins, refTime, scopes, summaries, surfaceRows]);
+  useEffect(() => { surfacedOrder.current = surfaced.map((item) => item.workId); }, [surfaced]);
 
   // One-shot motion cues: a new reported milestone draws the hairline, a new
   // observed line rolls in. Computed against the previous render, then stored.

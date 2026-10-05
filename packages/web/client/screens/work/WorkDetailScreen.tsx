@@ -1,5 +1,5 @@
-import { Activity, ExternalLink, FileText, MessageSquare, Radio } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
+import { Activity, ChevronRight, ExternalLink, FileText, MessageSquare, Radio } from "lucide-react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { DocumentFocusViewer, type DocumentFocusKind } from "../../components/DocumentFocusViewer.tsx";
 import { StatusPill } from "../../components/StatusPill.tsx";
 import { createTextDocument } from "../../components/TextDocumentSurface.tsx";
@@ -9,7 +9,7 @@ import {
   filterWorkDetailByMachineScope,
   machineScopedAgentIds,
 } from "../../lib/machine-scope.ts";
-import { routeMachineId } from "../../lib/router.ts";
+import { routeMachineId, routePath } from "../../lib/router.ts";
 import { useBrokerEvents } from "../../lib/sse.ts";
 import { workChildTone } from "../../lib/status-tone.ts";
 import { timeAgo } from "../../lib/time.ts";
@@ -25,24 +25,18 @@ import {
   copyText,
   formatBytes,
   WorkFileBrowser,
-  WorkLinks,
   WorkMasthead,
   WorkRequestCard,
   WorkRunCard,
+  workStatusTone,
+  type WorkCue,
 } from "./WorkCasefileSections.tsx";
 import { CompanionPinButton } from "../companion/CompanionPinButton.tsx";
 import { CompanionSurfaceButton } from "../companion/CompanionSurfaceButton.tsx";
 import { useEmbedHeadline } from "../../surfaces/useEmbedHeadline.ts";
 import "../agents/agents-detail-redesign.css";
 import "./work-detail.css";
-import type { Route, WorkDetail, WorkMaterial, WorkMaterialContent } from "../../lib/types.ts";
-
-type ActionCue = {
-  eyebrow: string;
-  title: string;
-  body: string;
-  tone: "attention" | "blocked" | "active" | "quiet";
-};
+import type { Agent, Route, WorkDetail, WorkMaterial, WorkMaterialContent } from "../../lib/types.ts";
 
 const ROUTE_CACHE_MAX_AGE_MS = 30_000;
 
@@ -65,119 +59,22 @@ function stateLabel(state: string): string {
   }
 }
 
-function signalLabel(attention: WorkDetail["attention"]): string | null {
-  switch (attention) {
-    case "badge":
-      return "Noteworthy";
-    case "interrupt":
-      return "Blocked signal";
-    default:
-      return null;
-  }
-}
-
-function buildActionCue({
-  detail,
-  signal,
-  ownerLabel,
-  nextMoveLabel,
-}: {
-  detail: WorkDetail;
-  signal: string | null;
-  ownerLabel: string;
-  nextMoveLabel: string;
-}): ActionCue {
-  const accountableLabel = nextMoveLabel === "—" ? ownerLabel : nextMoveLabel;
-
+/**
+ * A cue appears only when the ticket is blocked. Working, waiting, review and
+ * done read from the state chip, and Open chat sits beside the title.
+ */
+function buildActionCue(detail: WorkDetail, openChat: (() => void) | null): WorkCue | null {
+  const owner = detail.ownerName ?? detail.ownerId ?? "the owner";
+  const next = detail.nextMoveOwnerName ?? detail.nextMoveOwnerId ?? owner;
+  if (detail.state === "done") return null;
   if (detail.attention === "interrupt") {
     return {
-      eyebrow: "Network signal",
-      title: `Blocker surfaced for ${accountableLabel}`,
-      body: detail.conversationId
-        ? "Open the thread if you want the blocking context."
-        : "No thread is attached; the record and timeline hold the current context.",
+      label: "Blocked",
+      text: openChat ? `${next} surfaced a blocker. The chat has the context.` : `${next} surfaced a blocker. The timeline below has the context.`,
       tone: "blocked",
     };
   }
-
-  if (signal) {
-    return {
-      eyebrow: "Network signal",
-      title: `Plan activity from ${accountableLabel}`,
-      body: detail.conversationId
-        ? "A plan or spec discussion is active in the agent network. Open the thread only if you want context."
-        : "A plan or spec discussion is active in the agent network, but no thread is attached yet.",
-      tone: "attention",
-    };
-  }
-
-  if (detail.activeFlights.length > 0 || detail.state === "in_turn" || detail.state === "in_flight") {
-    return {
-      eyebrow: "Next move",
-      title: `${ownerLabel} is working`,
-      body: detail.conversationId
-        ? "The thread has the freshest working context."
-        : "Watch the flight list and timeline for the next update.",
-      tone: "active",
-    };
-  }
-
-  if (detail.state === "waiting" || detail.state === "review") {
-    return {
-      eyebrow: "Next move",
-      title: `Waiting on ${nextMoveLabel}`,
-      body: detail.conversationId
-        ? "The thread has the current unblock context."
-        : "No thread is attached; ownership and timeline are the best context.",
-      tone: "quiet",
-    };
-  }
-
-  if (detail.state === "done") {
-    return {
-      eyebrow: "Outcome",
-      title: "Work is done",
-      body: detail.conversationId
-        ? "The thread keeps the handoff and final context."
-        : "The record and timeline are preserved here.",
-      tone: "quiet",
-    };
-  }
-
-  return {
-    eyebrow: "Next move",
-    title: nextMoveLabel === "—" ? "No next owner set" : `Next move: ${nextMoveLabel}`,
-    body: detail.conversationId
-      ? "The thread has the latest context."
-      : "Use the record and timeline to decide where this should go next.",
-    tone: "quiet",
-  };
-}
-
-function WorkActionButton({
-  children,
-  icon,
-  onClick,
-  primary = false,
-  disabled = false,
-}: {
-  children: ReactNode;
-  icon: ReactNode;
-  onClick: () => void;
-  primary?: boolean;
-  disabled?: boolean;
-}) {
-  return (
-    <button
-      type="button"
-      className={`s-work-action-button${primary ? " s-work-action-button-primary" : ""}`}
-      onClick={onClick}
-      disabled={disabled}
-    >
-      {icon}
-      <span>{children}</span>
-    </button>
-  );
+  return null;
 }
 
 function askSourceLabel(source: string | null | undefined): string {
@@ -370,20 +267,27 @@ function timelineKindLabel(item: WorkDetail["timeline"][number]): string {
   return item.title ?? item.kind.replace(/_/g, " ");
 }
 
+function sentenceCase(label: string): string {
+  const text = label.replace(/_/g, " ").trim();
+  return text ? text[0]!.toUpperCase() + text.slice(1).toLowerCase() : text;
+}
+
+/** Events that carry an outcome; they get the accent node. */
+const OUTCOME_KINDS = new Set(["done", "review_requested", "completed"]);
+
 function WorkTimelinePanel({ detail }: { detail: WorkDetail }) {
   const [showAll, setShowAll] = useState(false);
   const rows = useMemo(() => workTimelineRows(detail.timeline), [detail.timeline]);
   const items = showAll ? rows : rows.slice(0, 18);
   if (items.length === 0) return null;
   return (
-    <section className="s-work-casefile-section s-work-timeline-panel">
-      <div className="s-agent-section-heading">
-        <div>
-          <h2 className="s-agent-section-title">Timeline</h2>
-          <p className="s-work-section-note">The request, progress, and replies · newest first</p>
-        </div>
-        <span className="s-work-section-note">
-          {detail.timeline.length} events{rows.length !== detail.timeline.length ? ` · ${rows.length} rows` : ""}
+    <section className="s-wc-card s-work-timeline-panel">
+      <div className="s-wc-card-head">
+        <h2>Timeline</h2>
+        <span className="s-wc-sub">Request, progress and replies · newest first</span>
+        <span className="s-wc-spacer" />
+        <span className="s-wc-count-note">
+          {detail.timeline.length} events{rows.length !== detail.timeline.length ? ` · ${rows.length} shown` : ""}
         </span>
       </div>
       <ol className="s-work-event-track">
@@ -394,6 +298,7 @@ function WorkTimelinePanel({ detail }: { detail: WorkDetail }) {
           const Icon = item.kind === "message" ? MessageSquare : item.kind.startsWith("flight") ? Radio : item.detailKind === "created" ? FileText : Activity;
           return (
             <li key={item.id} className="s-work-event" data-kind={item.kind}
+              data-outcome={OUTCOME_KINDS.has(item.detailKind ?? "") || undefined}
               data-flight-id={item.flightId ?? undefined} data-work-id={detail.id}
               data-conversation-id={item.conversationId ?? detail.conversationId ?? undefined}>
               <div className="s-work-event-time">
@@ -404,7 +309,7 @@ function WorkTimelinePanel({ detail }: { detail: WorkDetail }) {
               <span className="s-work-event-node" aria-hidden="true"><Icon size={12} strokeWidth={1.8} /></span>
               <div className="s-work-event-content">
                 <div className="s-work-event-heading">
-                  <strong>{timelineKindLabel(item).replace(/_/g, " ")}</strong>
+                  <strong>{sentenceCase(timelineKindLabel(item))}</strong>
                   <span>{item.actorName ?? item.actorId ?? "system"}</span>
                   {ref && <code className="s-work-event-ref" title={`ask:${ref}`}>{ref}<CopyMark value={ref} label="Copy ask handle" /></code>}
                 </div>
@@ -425,54 +330,73 @@ function WorkTimelinePanel({ detail }: { detail: WorkDetail }) {
           );
         })}
       </ol>
-      {rows.length > 18 && <button type="button" className="s-work-material-link s-work-event-more" onClick={() => setShowAll(!showAll)}>{showAll ? "Show recent events" : `Show all ${rows.length} rows`}</button>}
+      {rows.length > 18 && <button type="button" className="s-wc-ghost s-work-event-more" onClick={() => setShowAll(!showAll)}>{showAll ? "Show recent events" : `Show all ${rows.length} events`}</button>}
     </section>
   );
 }
 
 function WorkTailPanel({
   detail,
+  embedded,
   navigate,
 }: {
   detail: WorkDetail;
+  embedded: boolean;
   navigate: (r: Route) => void;
 }) {
   const { route } = useScout();
   const tailRoute = workTailRoute(detail);
   const tailQuery = useFollowTailQuery(tailRoute, detail.id);
   const tailLabel = detail.primaryInvocation?.targetAgentName ?? detail.ownerName ?? "this work session";
+  const live = workStatusTone(detail) === "active";
+  // Open while the task runs; a finished ticket keeps its tail one click away.
+  const [open, setOpen] = useState(detail.state !== "done");
+  const bodyId = `work-tail-${detail.id}`;
 
   return (
-    <section className="s-work-casefile-section s-work-tail-section">
-      <div className="s-agent-section-heading s-work-tail-heading">
-        <div>
-          <h2 className="s-agent-section-title s-work-tail-title">
-            <Activity aria-hidden="true" size={15} strokeWidth={1.8} />
-            Live tail
-          </h2>
-          <p className="s-work-section-note">Filtered to {tailLabel}</p>
-        </div>
-        <WorkActionButton
-          icon={<ExternalLink aria-hidden="true" size={13} strokeWidth={1.8} />}
-          onClick={() =>
-            openContent(
-              navigate,
-              tailRoute,
-              { returnTo: route },
-            )}
+    <section className="s-wc-card s-wc-tail" data-open={open || undefined}>
+      <div className="s-wc-card-head s-wc-tail-head">
+        <button
+          type="button"
+          className="s-wc-disclosure"
+          aria-expanded={open}
+          aria-controls={bodyId}
+          onClick={() => setOpen((value) => !value)}
         >
-          Scout tail
-        </WorkActionButton>
+          <ChevronRight size={14} strokeWidth={1.8} aria-hidden="true" />
+          <h2>Task tail</h2>
+        </button>
+        <span className="s-wc-sub">
+          {live && <i className="s-wc-pulse" aria-hidden="true" />}
+          {live ? "Live from" : "Session output from"} <b>{tailLabel}</b>
+        </span>
+        <span className="s-wc-spacer" />
+        <a
+          className="s-wc-ghost s-wc-tail-open"
+          href={routePath(tailRoute)}
+          target={embedded ? "_blank" : undefined}
+          rel={embedded ? "noreferrer" : undefined}
+          onClick={(event) => {
+            if (embedded || event.metaKey || event.ctrlKey || event.shiftKey) return;
+            event.preventDefault();
+            openContent(navigate, tailRoute, { returnTo: route });
+          }}
+        >
+          Open in Tail <ExternalLink aria-hidden="true" size={12} strokeWidth={1.8} />
+        </a>
       </div>
-      <div className="s-work-tail-frame">
-        <TailView
-          navigate={navigate}
-          initialFilter={tailQuery}
-          filterLabel={tailLabel}
-          filterScope="context"
-          chrome="embedded"
-        />
-      </div>
+      {open && (
+        <div id={bodyId} className="s-work-tail-frame">
+          <TailView
+            navigate={navigate}
+            initialFilter={tailQuery.query}
+            sessionId={tailQuery.sessionId}
+            filterLabel={tailLabel}
+            filterScope="context"
+            chrome="embedded"
+          />
+        </div>
+      )}
     </section>
   );
 }
@@ -562,6 +486,17 @@ export function WorkDetailScreen({
     [detail, scopedAgentIds],
   );
 
+  // Ended sessions drop out of the roster; the masthead still wants their path and branch.
+  const ownerId = detail?.ownerId ?? null;
+  const ownerListed = ownerId ? agents.some((agent) => agent.id === ownerId) : true;
+  const [fetchedOwner, setFetchedOwner] = useState<Agent | null>(null);
+  useEffect(() => {
+    if (ownerListed || !ownerId) return;
+    let live = true;
+    api<Agent>(`/api/agents/${encodeURIComponent(ownerId)}`).then((agent) => { if (live) setFetchedOwner(agent); }).catch(() => {});
+    return () => { live = false; };
+  }, [ownerListed, ownerId]);
+
   // Embedded (the Mac app's Work window) there is no picker to go back to;
   // the way out is the full page in Scout.
   const backControl = embedded
@@ -570,9 +505,26 @@ export function WorkDetailScreen({
 
   if (!loaded) {
     return (
-      <div>
-        {backControl}
-        <div className="s-empty"><p>Loading…</p></div>
+      <div className="s-work-detail s-work-casefile" aria-busy="true">
+        <header className="s-wc-mast">
+          <div className="s-wc-topbar">
+            {embedded ? null : <BackToPicker slot="work" fallback={{ view: "inbox" }} navigate={navigate} />}
+            <span className="s-wc-kind">Work</span>
+            <span className="s-wc-id-chip"><code>{workId}</code></span>
+            <span className="s-wc-spacer" />
+            {embedded && (
+              <a className="s-wc-btn-strong" href={`/work/${encodeURIComponent(workId)}`} target="_blank" rel="noreferrer">
+                Open in Scout <ExternalLink size={12} strokeWidth={1.8} aria-hidden="true" />
+              </a>
+            )}
+          </div>
+          <div className="s-wc-headline" role="status">
+            <span className="s-wc-skeleton s-wc-skeleton-title" />
+            <span className="s-wc-skeleton s-wc-skeleton-line" />
+            <span className="s-wc-sr-only">Loading work item…</span>
+          </div>
+        </header>
+        <div className="s-wc-card s-wc-skeleton-card" aria-hidden="true" />
       </div>
     );
   }
@@ -600,16 +552,15 @@ export function WorkDetailScreen({
   }
 
   const visibleDetail = scopedDetail;
-  const signal = signalLabel(visibleDetail.attention);
-  const ownerLabel = visibleDetail.ownerName ?? visibleDetail.ownerId ?? "Unassigned";
-  const nextMoveLabel = visibleDetail.nextMoveOwnerName ?? visibleDetail.nextMoveOwnerId ?? "—";
-  const actionCue = visibleDetail.state === "done"
-    ? null
-    : buildActionCue({ detail: visibleDetail, signal, ownerLabel, nextMoveLabel });
-  const hasLowerContent = visibleDetail.activeFlights.length > 0 || visibleDetail.childWork.length > 0;
+  const conversationId = visibleDetail.conversationId;
+  const openChat = conversationId ? () => openContent(navigate, { view: "conversation", conversationId }, { returnTo: route }) : null;
+  const actionCue = buildActionCue(visibleDetail, openChat);
+  // The Run card already covers the primary flight; list only the others.
+  const otherFlights = visibleDetail.activeFlights.filter((flight) => flight.id !== visibleDetail.primaryInvocation?.flightId);
+  const hasLowerContent = otherFlights.length > 0 || visibleDetail.childWork.length > 0;
   const briefSummary = visibleDetail.primaryInvocation?.task?.trim() || initialWorkBriefSummary(visibleDetail);
   const askState = visibleDetail.primaryInvocation?.state;
-  const ownerAgent = agents.find((agent) => agent.id === visibleDetail.ownerId);
+  const ownerAgent = agents.find((agent) => agent.id === visibleDetail.ownerId) ?? (fetchedOwner?.id.startsWith(visibleDetail.ownerId ?? "\0") ? fetchedOwner : undefined);
   const viewedMaterial = visibleDetail.inventory?.materials.find((m) => m.id === selectedMaterialId) ?? null;
 
   return (
@@ -629,8 +580,11 @@ export function WorkDetailScreen({
           return link.toString();
         }}
         onJson={() => setJsonOpen(true)}
+        onOpenChat={openChat}
         cue={actionCue}
-        links={<WorkLinks detail={visibleDetail} embedded={embedded} navigate={navigate} onSelectMaterial={setSelectedMaterialId} />}
+        agent={ownerAgent}
+        navigate={navigate}
+        onSelectMaterial={setSelectedMaterialId}
       />
 
       <DocumentFocusViewer
@@ -662,6 +616,8 @@ export function WorkDetailScreen({
             statusText={workAskStatusText(visibleDetail)}
             idsText={idsText(visibleDetail)}
           />
+          <WorkTimelinePanel detail={visibleDetail} />
+          <WorkTailPanel key={`${visibleDetail.id}:tail`} detail={visibleDetail} embedded={embedded} navigate={navigate} />
           <WorkFileBrowser
             detail={visibleDetail}
             selectedId={selectedMaterialId}
@@ -671,7 +627,6 @@ export function WorkDetailScreen({
             error={materialError}
             onOpen={() => setMaterialViewerOpen(true)}
           />
-          <WorkTimelinePanel detail={visibleDetail} />
         </div>
 
         <WorkBriefViewer
@@ -690,17 +645,16 @@ export function WorkDetailScreen({
           onClose={() => setMaterialViewerOpen(false)}
         />
 
-        <WorkTailPanel detail={visibleDetail} navigate={navigate} />
-
         {hasLowerContent && (
           <div className="s-work-casefile-main s-work-casefile-main-lower">
-            {visibleDetail.activeFlights.length > 0 && (
-              <section className="s-work-casefile-section">
-                <div className="s-agent-section-heading">
-                  <h2 className="s-agent-section-title">Flights</h2>
+            {otherFlights.length > 0 && (
+              <section className="s-wc-card">
+                <div className="s-wc-card-head">
+                  <h2>Other flights</h2>
+                  <span className="s-wc-sub">Also running for this work</span>
                 </div>
                 <div className="s-work-flight-list">
-                  {visibleDetail.activeFlights.map((flight) => (
+                  {otherFlights.map((flight) => (
                     <button
                       key={flight.id}
                       type="button"
@@ -728,9 +682,9 @@ export function WorkDetailScreen({
             )}
 
             {visibleDetail.childWork.length > 0 && (
-              <section className="s-work-casefile-section">
-                <div className="s-agent-section-heading">
-                  <h2 className="s-agent-section-title">Child work</h2>
+              <section className="s-wc-card">
+                <div className="s-wc-card-head">
+                  <h2>Child work</h2>
                 </div>
                 <div className="s-work-related-list">
                   {visibleDetail.childWork.map((child) => (
