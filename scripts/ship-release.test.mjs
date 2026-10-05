@@ -1009,6 +1009,8 @@ test("the isolated retained Scout candidate is normalized and passes the exact a
     mkdirSync(join(fixture, "candidate/dist/client"), { recursive: true });
     writeFileSync(join(fixture, "candidate/dist/main.mjs"), "export {};\n");
     writeFileSync(join(fixture, "candidate/dist/scout-control-plane-web.mjs"), "export {};\n");
+    const knowledgeIndexChildPath = join(fixture, "candidate/dist/knowledge-index-child.mjs");
+    writeFileSync(knowledgeIndexChildPath, "export {};\n");
     writeFileSync(
       join(fixture, "candidate/dist/scout-web-server.mjs"),
       'import "./scout-control-plane-web.mjs";\n',
@@ -1069,6 +1071,21 @@ test("the isolated retained Scout candidate is normalized and passes the exact a
     );
     assert.equal(packedManifest.status, 0, packedManifest.stderr);
     assert.doesNotMatch(packedManifest.stdout, /workspace:/);
+
+    // A working basic client is insufficient without its background index child.
+    rmSync(knowledgeIndexChildPath);
+    const missingChildPack = spawnSync("npm", ["pack", "--ignore-scripts", "--pack-destination", fixture], {
+      cwd: join(fixture, "candidate"), encoding: "utf8",
+      env: { ...process.env, npm_config_cache: join(fixture, "npm-cache") },
+    });
+    assert.equal(missingChildPack.status, 0, missingChildPack.stderr);
+    const missingChildAudit = spawnSync(process.execPath, ["scripts/check-packed-manifests.mjs", "--tarball", tarball], {
+      cwd: fixture, encoding: "utf8",
+    });
+    assert.notEqual(missingChildAudit.status, 0);
+    assert.match(missingChildAudit.stderr, /missing required packed files/);
+    assert.match(missingChildAudit.stderr, /package\/dist\/knowledge-index-child\.mjs/);
+    writeFileSync(knowledgeIndexChildPath, "export {};\n");
 
     const leakedCharacter = join(fixture, "candidate/dist/client/characters/sage/sage.glb");
     mkdirSync(dirname(leakedCharacter), { recursive: true });

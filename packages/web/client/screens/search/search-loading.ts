@@ -13,3 +13,13 @@ export function isSearchUnanswered(input: {
     && input.filterKey !== input.settledFilterKey
     && input.filterKey !== input.failedFilterKey;
 }
+
+/** A completed failure can arrive before the first in-progress status poll. */
+export function latestIndexFailure(status: {
+  indexing?: { startedAt: number } | null;
+  lastIndex?: { finishedAt: number; ok: boolean; error?: string } | null;
+} | null, requestedAt: number | null): string | null {
+  const last = status?.lastIndex;
+  if (requestedAt === null || status?.indexing || !last || last.ok || last.finishedAt < requestedAt) return null;
+  return `Indexing failed: ${last.error ?? "unknown error"}`;
+}

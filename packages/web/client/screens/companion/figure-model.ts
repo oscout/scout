@@ -56,14 +56,64 @@ export function figureWhere(figure: CompanionFigure | undefined): FigureWhere {
   return "placed";
 }
 
-/** Feet first: the rotation that points the figure's feet at `down`. */
-export function figureRotation(down: CompanionSide | null): number {
-  switch (down) {
-    case "top": return 180;
-    case "left": return 90;
-    case "right": return -90;
-    default: return 0;
+/**
+ * How far a held figure sits off its edge: half the hex plate, so the plate
+ * centred on the edge line touches the body. Kept under the host's 8pt
+ * cover probe (ghostOffset), so that probe lands on the body, not the gap.
+ */
+export const FIGURE_HEX_REACH = 6;
+/** How far the state plate overhangs the body's side, × size (edge.css .ce-fig__plate). */
+export const FIGURE_STATE_PLATE_OVERHANG = 0.24;
+
+export type FigureHoldSide = "top" | "left" | "right";
+
+/** Whether a figure on this edge rests against a hex plate. */
+export function figureHasPlate(down: CompanionSide | null): down is FigureHoldSide {
+  return down === "top" || down === "left" || down === "right";
+}
+
+/**
+ * Hex hold: the figure stays upright on every edge, so it never has to be
+ * read at a tilt. On a floor or a title bar (down "bottom", or none while
+ * dragged) it stands with its feet at the anchor. Under an edge or on a side
+ * a small hex dock plate sits across the edge line and the figure rests
+ * against it: hanging below it, or beside it centred on the anchor. The body
+ * is pushed against the plate inside its slot (see edge.css .is-hold-*).
+ *
+ * Returns the slot's top-left and the body's vertical extent, in page px.
+ */
+export function figureBox(
+  anchor: Pick<CompanionFigureAnchor, "x" | "y" | "down">,
+  size: number,
+  screen: { width: number; height: number },
+): { left: number; top: number; bodyTop: number; bodyBottom: number } {
+  const slot = figureSlot(size);
+  const gap = FIGURE_HEX_REACH;
+  let left: number;
+  let top: number;
+  let bodyOffset: number; // body top, from the slot's top
+  switch (anchor.down) {
+    case "top":
+      left = anchor.x - slot.width / 2; top = anchor.y + gap; bodyOffset = 0; break;
+    case "left":
+      left = anchor.x + gap; top = anchor.y - slot.height / 2; bodyOffset = (slot.height - size) / 2; break;
+    case "right":
+      left = anchor.x - gap - slot.width; top = anchor.y - slot.height / 2; bodyOffset = (slot.height - size) / 2; break;
+    default:
+      left = anchor.x - slot.width / 2; top = anchor.y - slot.height; bodyOffset = slot.height - size;
   }
+  // Slide along the held edge to stay on screen, never away from it: the
+  // figure stays on its plate and over the host's cover probe. Standing
+  // figures keep their feet on the anchor, as the host placed them.
+  // Under an edge the state plate overhangs the body's right side
+  // (edge.css .ce-fig__plate: right -0.24 × size); keep room for it too.
+  if (anchor.down === "top") {
+    // Body and plate scale 1.06 about the body's centre in the needs pose; 2pt spare.
+    const plateRight = slot.width / 2 + (size / 2 + size * FIGURE_STATE_PLATE_OVERHANG) * 1.06 + 2;
+    left = Math.max(0, Math.min(screen.width - Math.max(slot.width, plateRight), left));
+  }
+  if (anchor.down === "left" || anchor.down === "right") top = Math.max(0, Math.min(screen.height - slot.height, top));
+  return { left, top, bodyTop: top + bodyOffset, bodyBottom: top + bodyOffset + size };
 }
 
 /** A drag the host tracked is not also a click on the figure. */
@@ -96,9 +146,7 @@ export function placedPopover(
   margin = 12,
 ): { left: number; top?: number; bottom?: number; maxHeight: number } {
   const left = Math.max(margin, Math.min(screen.width - popWidth - margin, anchor.x - popWidth / 2));
-  // The figure's body is above its feet when upright, below when hanging.
-  const bodyTop = anchor.down === "top" ? anchor.y : anchor.y - size;
-  const bodyBottom = anchor.down === "top" ? anchor.y + size : anchor.y;
+  const { bodyTop, bodyBottom } = figureBox(anchor, size, screen);
   const above = bodyTop - margin * 2;
   const below = screen.height - bodyBottom - margin * 2;
   if (above >= Math.min(320, below) || above >= 240) {

@@ -4,7 +4,8 @@ import type { CompanionFigure } from "../../lib/companion-host.ts";
 import {
   figureMotion,
   figureNudge,
-  figureRotation,
+  figureBox,
+  figureHasPlate,
   figureSize,
   figureSlot,
   figureWhere,
@@ -54,11 +55,33 @@ describe("where a figure shows", () => {
   });
 
   test("feet first", () => {
-    expect(figureRotation(null)).toBe(0);
-    expect(figureRotation("bottom")).toBe(0);
-    expect(figureRotation("top")).toBe(180);
-    expect(figureRotation("left")).toBe(90);
-    expect(figureRotation("right")).toBe(-90);
+    const screen = { width: 1512, height: 982 };
+    // 24px figure: slot 30×34.
+    // Standing: feet at the anchor.
+    expect(figureBox({ x: 500, y: 600, down: "bottom" }, 24, screen)).toEqual({ left: 485, top: 566, bodyTop: 576, bodyBottom: 600 });
+    expect(figureBox({ x: 500, y: 600, down: null }, 24, screen)).toEqual({ left: 485, top: 566, bodyTop: 576, bodyBottom: 600 });
+    // Under an edge: hangs 6 below it, body at the top of the slot.
+    expect(figureBox({ x: 500, y: 300, down: "top" }, 24, screen)).toEqual({ left: 485, top: 306, bodyTop: 306, bodyBottom: 330 });
+    // On a side: 6 off it, body centred on the anchor.
+    expect(figureBox({ x: 0, y: 400, down: "left" }, 24, screen)).toEqual({ left: 6, top: 383, bodyTop: 388, bodyBottom: 412 });
+    expect(figureBox({ x: 1512, y: 400, down: "right" }, 24, screen)).toEqual({ left: 1476, top: 383, bodyTop: 388, bodyBottom: 412 });
+    expect([null, "bottom", "top", "left", "right"].filter((down) => figureHasPlate(down as never))).toEqual(["top", "left", "right"]);
+  });
+
+  test("a held figure slides along its edge to stay on screen, never off its plate", () => {
+    const screen = { width: 1512, height: 982 };
+    // Under the top of the screen near a corner: slides along the edge, still hangs 6 below it.
+    expect(figureBox({ x: 4, y: 33, down: "top" }, 24, screen)).toMatchObject({ left: 0, top: 39 });
+    // Near the right corner it leaves room for the state plate that overhangs the body.
+    const corner = figureBox({ x: 1481.76, y: 33, down: "top" }, 64, screen);
+    // Scaled 1.06 in the needs pose, about the body's centre.
+    expect(corner.left + 80 / 2 + (64 / 2 + 64 * 0.24) * 1.06).toBeLessThanOrEqual(1512);
+    // Beside a side near the bottom: slides up, still 6 off the edge.
+    expect(figureBox({ x: 0, y: 975, down: "left" }, 24, screen)).toMatchObject({ left: 6, top: 948 });
+    // Never pulled away from its edge, even if that runs off screen.
+    expect(figureBox({ x: 1490, y: 400, down: "left" }, 64, screen).left).toBe(1496);
+    // The host's 8pt cover probe lands on the body, not in the gap.
+    expect(figureBox({ x: 500, y: 300, down: "top" }, 24, screen).bodyTop).toBeLessThanOrEqual(308);
   });
 });
 
@@ -81,8 +104,10 @@ describe("placed popover", () => {
   test("above a figure with room, below one near the top, always on screen", () => {
     expect(placedPopover({ x: 700, y: 600, down: "bottom" }, 24, 348, screen)).toEqual({ left: 526, bottom: 418, maxHeight: 552 });
     expect(placedPopover({ x: 20, y: 60, down: "bottom" }, 24, 348, screen)).toEqual({ left: 12, top: 72, maxHeight: 898 });
-    // Hanging from the top edge: the body is below the feet.
-    expect(placedPopover({ x: 1500, y: 33, down: "top" }, 24, 348, screen)).toEqual({ left: 1152, top: 69, maxHeight: 901 });
+    // Under the top edge: the body hangs below the plate.
+    expect(placedPopover({ x: 1500, y: 33, down: "top" }, 24, 348, screen)).toEqual({ left: 1152, top: 75, maxHeight: 895 });
+    // On a side: the body is centred on the anchor.
+    expect(placedPopover({ x: 1500, y: 600, down: "right" }, 24, 348, screen)).toEqual({ left: 1152, bottom: 406, maxHeight: 564 });
   });
 });
 

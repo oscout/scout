@@ -109,6 +109,19 @@ html.ce-edge-mode #root { overflow: hidden !important; }
 
 .ce-fig.is-disconnected .ce-fig__body { filter: grayscale(1); opacity: 0.5; animation: none; }
 .ce-fig.is-reduced .ce-fig__body { animation: none; }
+/* Hanging under an edge, the hop is a swing from the plate: it stays where it
+   hangs instead of jumping into its window or off the screen. */
+.ce-placed.is-hold-top .ce-fig__body { transform-origin: 50% 0; }
+.ce-placed.is-hold-top .ce-fig.is-hop .ce-fig__body { animation-name: ce-swing; }
+@keyframes ce-swing {
+  0% { rotate: 0deg; }
+  22% { rotate: 9deg; }
+  44% { rotate: -7deg; }
+  62% { rotate: 4deg; }
+  80%, 100% { rotate: 0deg; }
+}
+/* On the right of a surface, the state plate moves to the open side. */
+.ce-placed.is-hold-right .ce-fig__plate { right: auto; left: calc(var(--fig) * -0.24); }
 
 /* ── arrivals ──────────────────────────────────────────────────────── */
 .ce-arrive, .ce-sway { display: grid; place-items: end center; position: relative; }
@@ -182,8 +195,9 @@ html.ce-edge-mode #root { overflow: hidden !important; }
 }
 
 /* ── figures you place ─────────────────────────────────────────────── */
-/* Feet at the anchor: the box's bottom centre sits on (left, top), and the
-   figure turns about that point so its feet face the surface. */
+/* Placed by figureBox: always upright. Standing on a floor or title bar with
+   its feet at the anchor, or resting against a hex plate under an edge or
+   beside a side. Kept on screen. */
 .ce-placed {
   position: absolute;
   padding: 0;
@@ -192,13 +206,22 @@ html.ce-edge-mode #root { overflow: hidden !important; }
   display: grid;
   place-items: end center;
   border-radius: 8px 8px 0 0;
-  transform: translate(-50%, -100%) rotate(var(--rot, 0deg));
-  transform-origin: 50% 100%;
   transition: opacity 200ms ease-out, background-color 160ms ease-out;
 }
 .ce-placed:hover, .ce-placed.is-open { background: color-mix(in oklch, var(--ce-ink) 8%, transparent); }
 /* Behind a window in front: a ghost, and not a hit region. */
 .ce-placed.is-covered { opacity: 0.22; }
+/* Held: the body sits against the plate, which is centred on the edge line
+   FIGURE_HEX_REACH (6) off the slot. */
+.ce-placed.is-hold-top { place-items: start center; border-radius: 0 0 8px 8px; }
+.ce-placed.is-hold-left { place-items: center start; border-radius: 0 8px 8px 0; }
+.ce-placed.is-hold-right { place-items: center end; border-radius: 8px 0 0 8px; }
+.ce-hex { position: absolute; overflow: visible; pointer-events: none; }
+.ce-hex.is-top { top: -12px; left: calc(50% - 7px); }
+.ce-hex.is-left { left: -12px; top: calc(50% - 7px); }
+.ce-hex.is-right { right: -12px; top: calc(50% - 7px); }
+.ce-hex path { fill: var(--ce-pop); stroke: color-mix(in oklch, var(--ce-ink) 62%, transparent); stroke-width: 1; }
+.ce-hex circle { fill: color-mix(in oklch, var(--ce-ink) 70%, transparent); }
 .ce-placed.is-dragging { cursor: grabbing; }
 /* The fall: ease-in, like something dropped. */
 .ce-placed.is-falling { transition: top 520ms cubic-bezier(0.55, 0, 1, 0.45), left 520ms cubic-bezier(0.55, 0, 1, 0.45), opacity 200ms ease-out; }

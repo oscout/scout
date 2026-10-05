@@ -22,6 +22,7 @@ import {
   bundleScoutWebServerBun,
   bundleScoutControlPlaneWebServerBun,
   bundleScoutTerminalRelayNode,
+  bundleScoutKnowledgeIndexChildBun,
   getOpenScoutRepoRoot,
   REFLECT_METADATA_BANNER,
   verifyBundleStaticChecks,
@@ -42,6 +43,7 @@ const updateHelperEntry = resolve(packageDirectory, "src/update-helper.ts");
 const updateHelperOutput = resolve(outputDirectory, "update-helper.mjs");
 const webServerOutput = resolve(outputDirectory, "scout-web-server.mjs");
 const controlPlaneWebOutput = resolve(outputDirectory, "scout-control-plane-web.mjs");
+const knowledgeIndexChildOutput = resolve(outputDirectory, "knowledge-index-child.mjs");
 const terminalRelayOutput = resolve(outputDirectory, "openscout-terminal-relay.mjs");
 const pairingRuntimeControllerOutput = resolve(outputDirectory, "pairing-runtime-controller.mjs");
 const runtimeOutputDirectory = resolve(outputDirectory, "runtime");
@@ -159,6 +161,12 @@ if (!buildAndPackageScoutd()) {
 }
 
 if (!bundleScoutControlPlaneWebServerBun(repoRoot, controlPlaneWebOutput)) {
+  process.exit(1);
+}
+
+// The web server resolves this child beside its installed bundle. Building the
+// standalone web package does not put the child in the published CLI's dist.
+if (!bundleScoutKnowledgeIndexChildBun(repoRoot, knowledgeIndexChildOutput)) {
   process.exit(1);
 }
 

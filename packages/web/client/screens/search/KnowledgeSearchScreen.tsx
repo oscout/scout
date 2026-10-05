@@ -1,4 +1,4 @@
-import { isSearchUnanswered } from "./search-loading.ts";
+import { isSearchUnanswered, latestIndexFailure } from "./search-loading.ts";
 import "./knowledge-search.css";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -100,6 +100,7 @@ async function fetchPrimitives(keys: string[]): Promise<SearchPrimitivesResponse
 async function searchKnowledge(
   q: string,
   filters: SearchFilters,
+  signal: AbortSignal,
 ): Promise<SearchResponse> {
   const params = new URLSearchParams({ q, limit: String(KNOWLEDGE_SEARCH_DEFAULTS.hitLimit) });
   if (filters.sourceKinds.length > 0) {
@@ -109,7 +110,7 @@ async function searchKnowledge(
   for (const project of filters.project) params.append("project", project);
   const sinceMs = searchTimeWindowMs(filters.timeWindow);
   if (sinceMs != null) params.set("updatedAfterMs", String(sinceMs));
-  return api<SearchResponse>(`/api/knowledge/search?${params.toString()}`);
+  return api<SearchResponse>(`/api/knowledge/search?${params.toString()}`, { signal });
 }
 
 /** Starts a session index in the background; progress is read from /status. */
@@ -248,12 +249,15 @@ export function KnowledgeSearchScreen({
   );
   const [failedFilterKey, setFailedFilterKey] = useState<string | null>(null);
   const searchGeneration = useRef(0);
+  const searchAbort = useRef<AbortController | null>(null);
+  const indexRequestedAt = useRef<number | null>(null);
   // True from pressing "Update index" (or the mount kick-off) until the server
   // confirms the run; after that, status.indexing carries it.
   const [indexing, setIndexing] = useState(false);
   const [searchMode, setSearchMode] = useState<SearchResponse["mode"]>("index");
   const [basicScan, setBasicScan] = useState<SearchResponse["basic"] | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [indexError, setIndexError] = useState<string | null>(null);
   const [statusLoaded, setStatusLoaded] = useState(storeSeed.status !== null);
   const [primitivesLoaded, setPrimitivesLoaded] = useState(storeSeed.facets !== null);
   const filtersRef = useRef(filters);
@@ -319,9 +323,12 @@ export function KnowledgeSearchScreen({
 
   const runSearch = useCallback(
     async (nextFilters: SearchFilters) => {
+      searchAbort.current?.abort();
+      const controller = new AbortController();
+      searchAbort.current = controller;
       const generation = ++searchGeneration.current;
       const requestKey = knowledgeSearchFilterKey(nextFilters);
-      const isCurrent = () => generation === searchGeneration.current
+      const isCurrent = () => !controller.signal.aborted && generation === searchGeneration.current
         && requestKey === knowledgeSearchFilterKey(filtersRef.current);
       const trimmed = nextFilters.query.trim();
       if (!trimmed) {
@@ -336,7 +343,7 @@ export function KnowledgeSearchScreen({
       setFailedFilterKey(null);
       try {
         setError(null);
-        const response = await searchKnowledge(trimmed, nextFilters);
+        const response = await searchKnowledge(trimmed, nextFilters, controller.signal);
         if (isCurrent()) applySearchResponse(nextFilters, response);
       } catch (err) {
         if (isCurrent()) {
@@ -359,7 +366,9 @@ export function KnowledgeSearchScreen({
   // Kicks off indexing without waiting on it. Search keeps answering (from the
   // basic scan until the index has content) and the poll below follows progress.
   const refreshIndex = useCallback(async (force = false) => {
+    indexRequestedAt.current = Date.now();
     setIndexing(true);
+    setIndexError(null);
     setError(null);
     try {
       const response = await startIndexSessions(force);
@@ -392,6 +401,11 @@ export function KnowledgeSearchScreen({
       setIndexing(false);
     }
   }, [applyStatus, runSearch]);
+
+  useEffect(() => {
+    const failure = latestIndexFailure(status, indexRequestedAt.current);
+    if (failure) setIndexError(failure);
+  }, [status]);
 
   // Refresh the default session window when the page opens, in the background.
   useEffect(() => {
@@ -445,10 +459,11 @@ export function KnowledgeSearchScreen({
     }
     if (!sawServerIndexing.current) return;
     sawServerIndexing.current = false;
-    updateKnowledgeSearchSnapshot({ indexedAt: Date.now() });
     const lastIndex = status?.lastIndex;
     if (lastIndex && !lastIndex.ok) {
-      setError(`Indexing failed: ${lastIndex.error ?? "unknown error"}`);
+      setIndexError(`Indexing failed: ${lastIndex.error ?? "unknown error"}`);
+    } else {
+      updateKnowledgeSearchSnapshot({ indexedAt: Date.now() });
     }
     setPrimitivesLoaded(false);
     const live = filtersRef.current;
@@ -491,7 +506,10 @@ export function KnowledgeSearchScreen({
     const timer = window.setTimeout(() => {
       void runSearch(filters);
     }, KNOWLEDGE_SEARCH_DEFAULTS.debounceMs);
-    return () => window.clearTimeout(timer);
+    return () => {
+      window.clearTimeout(timer);
+      searchAbort.current?.abort();
+    };
   }, [filters, runSearch]);
 
   const onSubmit = (event: FormEvent) => {
@@ -715,9 +733,9 @@ export function KnowledgeSearchScreen({
           </div>
         </section>
 
-        {error ? (
+        {error || indexError ? (
           <section className="ks-error" role="alert">
-            {error}
+            {error ?? indexError}
           </section>
         ) : null}
 

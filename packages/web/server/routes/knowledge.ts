@@ -83,29 +83,6 @@ type SessionKnowledgeIndexInput = {
 // instead of stacking writers; different parameters get 409 from the route.
 const SESSION_KNOWLEDGE_INDEX_TIMEOUT_MS = 15 * 60 * 1000;
 
-let activeSessionKnowledgeIndex: {
-  input: SessionKnowledgeIndexInput;
-  startedAt: number;
-  promise: Promise<SessionKnowledgeIndexOutcome>;
-} | null = null;
-
-// The outcome of the most recent run, so a client that started indexing in the
-// background (and stopped waiting on it) can still learn that it failed.
-let lastSessionKnowledgeIndex: {
-  finishedAt: number;
-  ok: boolean;
-  error?: string;
-} | null = null;
-
-function sessionKnowledgeIndexState() {
-  return {
-    indexing: activeSessionKnowledgeIndex
-      ? { startedAt: activeSessionKnowledgeIndex.startedAt }
-      : null,
-    lastIndex: lastSessionKnowledgeIndex,
-  };
-}
-
 function normalizeHarnessList(value: string | string[] | undefined): string[] {
   if (value == null) return [];
   const raw = Array.isArray(value) ? value : [value];
@@ -132,53 +109,79 @@ export function knowledgeIndexChildPath(base: string | URL = import.meta.url): s
   return found ? fileURLToPath(found) : null;
 }
 
-function startSessionKnowledgeIndex(input: SessionKnowledgeIndexInput): Promise<SessionKnowledgeIndexOutcome> {
-  if (activeSessionKnowledgeIndex) {
-    return sameSessionKnowledgeIndexInput(activeSessionKnowledgeIndex.input, input)
-      ? activeSessionKnowledgeIndex.promise
-      : Promise.resolve({ ok: false, busy: true, error: "session knowledge index already running" });
-  }
-  const promise = (async (): Promise<SessionKnowledgeIndexOutcome> => {
-    try {
-      const scriptPath = knowledgeIndexChildPath();
-      if (!scriptPath) return { ok: false, error: "knowledge index child script not found" };
-      const child = Bun.spawn([process.execPath, scriptPath, JSON.stringify(input)], {
-        stdout: "pipe",
-        stderr: "inherit",
-        env: process.env,
-      });
-      const timeout = setTimeout(() => child.kill(), SESSION_KNOWLEDGE_INDEX_TIMEOUT_MS);
-      const stdout = await new Response(child.stdout).text();
-      const exitCode = await child.exited;
-      clearTimeout(timeout);
-      const lastLine = stdout.trim().split("\n").filter(Boolean).at(-1);
-      if (lastLine) {
-        try {
-          return JSON.parse(lastLine) as SessionKnowledgeIndexOutcome;
-        } catch {
-          // fall through to the generic failure below
-        }
-      }
-      return {
-        ok: false,
-        error: `knowledge index child exited ${exitCode} without a result`,
-      };
-    } catch (error) {
-      return { ok: false, error: error instanceof Error ? error.message : String(error) };
-    } finally {
-      activeSessionKnowledgeIndex = null;
-    }
-  })().then((outcome) => {
-    lastSessionKnowledgeIndex = {
-      finishedAt: Date.now(),
-      ok: outcome.ok,
-      ...(outcome.ok ? {} : { error: outcome.error ?? "session indexing failed" }),
-    };
-    return outcome;
+function spawnKnowledgeIndexChild(scriptPath: string, input: SessionKnowledgeIndexInput) {
+  return Bun.spawn([process.execPath, scriptPath, JSON.stringify(input)], {
+    stdout: "pipe",
+    stderr: "inherit",
+    env: process.env,
   });
-  activeSessionKnowledgeIndex = { input, startedAt: Date.now(), promise };
-  return promise;
 }
+
+/** One shared writer, with completion published before the active slot is released. */
+export function createSessionKnowledgeIndexer(deps: {
+  childPath?: () => string | null;
+  spawn?: typeof spawnKnowledgeIndexChild;
+} = {}) {
+  let active: {
+    input: SessionKnowledgeIndexInput;
+    startedAt: number;
+    promise: Promise<SessionKnowledgeIndexOutcome>;
+  } | null = null;
+  let lastIndex: { finishedAt: number; ok: boolean; error?: string } | null = null;
+
+  function state() {
+    return { indexing: active ? { startedAt: active.startedAt } : null, lastIndex };
+  }
+
+  function start(input: SessionKnowledgeIndexInput): Promise<SessionKnowledgeIndexOutcome> {
+    if (active) {
+      return sameSessionKnowledgeIndexInput(active.input, input)
+        ? active.promise
+        : Promise.resolve({ ok: false, busy: true, error: "session knowledge index already running" });
+    }
+    // Defer execution until after publishing active. Missing-child returns and
+    // synchronous spawn errors must settle the same slot as asynchronous runs.
+    const promise = Promise.resolve().then(async (): Promise<SessionKnowledgeIndexOutcome> => {
+      try {
+        const scriptPath = (deps.childPath ?? knowledgeIndexChildPath)();
+        if (!scriptPath) return { ok: false, error: "knowledge index child script not found" };
+        const child = (deps.spawn ?? spawnKnowledgeIndexChild)(scriptPath, input);
+        const timeout = setTimeout(() => child.kill(), SESSION_KNOWLEDGE_INDEX_TIMEOUT_MS);
+        try {
+          const stdout = await new Response(child.stdout).text();
+          const exitCode = await child.exited;
+          const lastLine = stdout.trim().split("\n").filter(Boolean).at(-1);
+          if (lastLine) {
+            try {
+              return JSON.parse(lastLine) as SessionKnowledgeIndexOutcome;
+            } catch {
+              // fall through to the generic failure below
+            }
+          }
+          return { ok: false, error: `knowledge index child exited ${exitCode} without a result` };
+        } finally {
+          clearTimeout(timeout);
+        }
+      } catch (error) {
+        return { ok: false, error: error instanceof Error ? error.message : String(error) };
+      }
+    }).then((outcome) => {
+      lastIndex = {
+        finishedAt: Date.now(),
+        ok: outcome.ok,
+        ...(outcome.ok ? {} : { error: outcome.error ?? "session indexing failed" }),
+      };
+      return outcome;
+    }).finally(() => {
+      if (active?.promise === promise) active = null;
+    });
+    active = { input, startedAt: Date.now(), promise };
+    return promise;
+  }
+  return { start, state };
+}
+
+const sessionKnowledgeIndexer = createSessionKnowledgeIndexer();
 
 function parseKnowledgeSearchParams(rawUrl: string): {
   facets?: KnowledgeFacets;
@@ -461,15 +464,17 @@ async function readKnowledgeJsonlPreview(input: {
 
 export type KnowledgeRouteDeps = {
   currentDirectory: string;
+  sessionIndexer?: ReturnType<typeof createSessionKnowledgeIndexer>;
 };
 
 export function mountKnowledgeRoutes(app: Hono, deps: KnowledgeRouteDeps) {
   const { currentDirectory } = deps;
+  const indexer = deps.sessionIndexer ?? sessionKnowledgeIndexer;
 
   app.get("/api/knowledge/status", (c) => {
     const store = new SQLiteKnowledgeStore(undefined, undefined, { readonly: true });
     try {
-      return c.json({ ...store.status(), ...sessionKnowledgeIndexState() });
+      return c.json({ ...store.status(), ...indexer.state() });
     } finally {
       store.close();
     }
@@ -504,7 +509,7 @@ export function mountKnowledgeRoutes(app: Hono, deps: KnowledgeRouteDeps) {
     } finally {
       store.close();
     }
-    const indexState = sessionKnowledgeIndexState();
+    const indexState = indexer.state();
     const wantsBasic = c.req.query("basic") === "1"
       || status.chunks === 0
       || (indexState.indexing !== null && hits.length === 0);
@@ -519,6 +524,7 @@ export function mountKnowledgeRoutes(app: Hono, deps: KnowledgeRouteDeps) {
     const projects = facetValues("project");
     const scan = await scanRecentSessionKnowledge({
       q,
+      signal: c.req.raw.signal,
       harness: facetValues("harness"),
       updatedAfterMs: primitives.sourceUpdatedAfterMs,
       limit: projects ? limit * 3 : limit,
@@ -618,7 +624,7 @@ export function mountKnowledgeRoutes(app: Hono, deps: KnowledgeRouteDeps) {
         .map((entry) => entry.trim());
       if (list.length > 0) harness = list;
     }
-    const run = startSessionKnowledgeIndex({ days, hours, limit, force, harness });
+    const run = indexer.start({ days, hours, limit, force, harness });
     if (body.background === true) {
       // Return at once; the caller follows progress on /api/knowledge/status
       // (activeJobs, indexing, lastIndex). A run already in flight with other
@@ -627,7 +633,7 @@ export function mountKnowledgeRoutes(app: Hono, deps: KnowledgeRouteDeps) {
       if (early?.busy) {
         return c.json({ error: early.error ?? "session knowledge index already running" }, 409);
       }
-      return c.json({ started: true, ...sessionKnowledgeIndexState() }, 202);
+      return c.json({ started: true, ...indexer.state() }, 202);
     }
     const outcome = await run;
     if (outcome.busy) {

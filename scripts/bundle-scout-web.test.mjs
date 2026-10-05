@@ -1,9 +1,10 @@
+import { spawnSync } from "node:child_process";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { copyControlPlaneClient, findBasicClientLeaks } from "./bundle-scout-web.mjs";
+import { copyControlPlaneClient, findBasicClientLeaks, bundleScoutKnowledgeIndexChildBun, getOpenScoutRepoRoot } from "./bundle-scout-web.mjs";
 
 test("the full-app download keeps runtime portraits, eye patches, pose frames and reachable assets without authoring payload", () => {
   const root = mkdtempSync(join(tmpdir(), "scout-client-copy-"));
@@ -54,4 +55,33 @@ test("basic client check passes a Home/DMs/Tail build and names each full-app le
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+test("the CLI indexing child runs from a relocated installed-style dist fixture", () => {
+  const repo = getOpenScoutRepoRoot();
+  // Resolve normal runtime dependencies through this lane's install, while the
+  // emitted child itself has no source-tree sibling or source-relative imports.
+  const root = mkdtempSync(join(repo, "packages/cli/node_modules/.child-bundle-test-"));
+  const output = join(root, "dist/knowledge-index-child.mjs");
+  try {
+    assert.equal(bundleScoutKnowledgeIndexChildBun(repo, output), true);
+    const transcripts = join(root, "claude/project");
+    mkdirSync(transcripts, { recursive: true });
+    writeFileSync(join(transcripts, "fixture.jsonl"), JSON.stringify({
+      type: "user", cwd: root, sessionId: "packed-child-fixture",
+      message: { role: "user", content: "A packaged indexing child can read this fixture." },
+    }) + "\n");
+    const run = spawnSync("bun", [output, JSON.stringify({ harness: "claude", limit: 1 })], {
+      cwd: root, encoding: "utf8", timeout: 20_000,
+      env: { ...process.env, OPENSCOUT_CONTROL_HOME: join(root, "control"),
+        OPENSCOUT_SUPPORT_DIRECTORY: join(root, "support"),
+        OPENSCOUT_TAIL_CLAUDE_PROJECTS_ROOT: join(root, "claude") },
+    });
+    assert.equal(run.status, 0, run.stderr || run.error?.message);
+    const outcome = JSON.parse(run.stdout.trim().split("\n").at(-1));
+    assert.equal(outcome.ok, true);
+    assert.equal(outcome.result.discovered, 1);
+    assert.equal(outcome.result.failed, 0);
+    assert.ok(outcome.status.chunks > 0);
+  } finally { rmSync(root, { recursive: true, force: true }); }
 });

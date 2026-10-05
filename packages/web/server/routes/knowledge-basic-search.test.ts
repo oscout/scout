@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Hono } from "hono";
 
-import { mountKnowledgeRoutes } from "./knowledge.ts";
+import { mountKnowledgeRoutes, createSessionKnowledgeIndexer } from "./knowledge.ts";
 
 const ENV_KEYS = [
   "OPENSCOUT_CONTROL_HOME",
@@ -97,3 +97,77 @@ test("background indexing returns at once and status follows the run", async () 
   expect(indexed.mode).toBe("index");
   expect(indexed.hits.length).toBeGreaterThan(0);
 }, 40_000);
+
+for (const mode of ["missing-child", "spawn-throw"] as const) {
+  test(`an immediate ${mode} failure releases its slot and permits either retry`, async () => {
+    let attempts = 0;
+    const indexer = createSessionKnowledgeIndexer({
+      childPath: () => { attempts++; return mode === "missing-child" ? null : "/fixture/child.mjs"; },
+      spawn: () => { throw new Error("fixture spawn failure"); },
+    });
+    const input = { days: 1, limit: 5, force: false };
+    const first = indexer.start(input);
+    expect(indexer.state().indexing).not.toBeNull();
+    expect((await first).ok).toBe(false);
+    expect(indexer.state().indexing).toBeNull();
+    expect(indexer.state().lastIndex?.ok).toBe(false);
+    const retry = indexer.start(input);
+    expect(retry).not.toBe(first);
+    expect((await retry).busy).toBeUndefined();
+    expect((await indexer.start({ ...input, days: 2 })).busy).toBeUndefined();
+    expect(attempts).toBe(3);
+    expect(indexer.state().indexing).toBeNull();
+  });
+}
+
+test("background callers share one running child, reject other inputs, and retry after completion", async () => {
+  const root = useTempKnowledgeEnv();
+  let finish!: (code: number) => void;
+  let stdout!: ReadableStreamDefaultController<Uint8Array>;
+  let spawns = 0;
+  const indexer = createSessionKnowledgeIndexer({
+    childPath: () => "/fixture/child.mjs",
+    spawn: (() => {
+      spawns++;
+      return {
+        stdout: new ReadableStream<Uint8Array>({ start(controller) { stdout = controller; } }),
+        exited: new Promise<number>((resolve) => { finish = resolve; }), kill() {},
+      };
+    }) as NonNullable<Parameters<typeof createSessionKnowledgeIndexer>[0]>["spawn"],
+  });
+  const app = new Hono();
+  mountKnowledgeRoutes(app, { currentDirectory: root, sessionIndexer: indexer });
+  const start = (days: number) => app.request("/api/knowledge/sessions/index", {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ days, limit: 5, background: true }),
+  });
+  expect((await start(1)).status).toBe(202);
+  const running = indexer.start({ days: 1, limit: 5, force: false });
+  expect(indexer.start({ days: 1, limit: 5, force: false })).toBe(running);
+  expect((await start(1)).status).toBe(202);
+  expect((await start(2)).status).toBe(409);
+  expect(spawns).toBe(1);
+  stdout.enqueue(new TextEncoder().encode('{"ok":true}\n')); stdout.close(); finish(0);
+  expect((await running).ok).toBe(true);
+  expect(indexer.state().indexing).toBeNull();
+  expect((await start(2)).status).toBe(202);
+  const second = indexer.start({ days: 2, limit: 5, force: false });
+  expect(spawns).toBe(2);
+  stdout.enqueue(new TextEncoder().encode('{"ok":false,"error":"fixture failure"}\n')); stdout.close(); finish(1);
+  await second;
+  const status = await (await app.request("/api/knowledge/status")).json();
+  expect(status.indexing).toBeNull();
+  expect(status.lastIndex.error).toBe("fixture failure");
+});
+
+test("a disconnected search request forwards cancellation to basic discovery", async () => {
+  const root = useTempKnowledgeEnv();
+  const app = new Hono();
+  app.onError((error, c) => c.json({ error: error.message }, 499));
+  mountKnowledgeRoutes(app, { currentDirectory: root });
+  const controller = new AbortController();
+  controller.abort(new Error("query replaced by client"));
+  const response = await app.request(new Request("http://localhost/api/knowledge/search?q=before%20index", { signal: controller.signal }));
+  expect(response.status).toBe(499);
+  expect((await response.json()).error).toBe("query replaced by client");
+});

@@ -65,6 +65,16 @@ export function bundleScoutControlPlaneWebServerBun(repoRoot, outfile) {
   return verifyScoutWebBundle(outfile);
 }
 
+/** Bundle the sibling process used by installed session indexing. */
+export function bundleScoutKnowledgeIndexChildBun(repoRoot, outfile) {
+  mkdirSync(dirname(outfile), { recursive: true });
+  const result = spawnSync("bun", [
+    "build", resolve(repoRoot, "packages/web/server/knowledge-index-child.ts"),
+    "--target=bun", "--format=esm", "--outfile", outfile, REFLECT_METADATA_BANNER,
+  ], { cwd: repoRoot, stdio: "inherit" });
+  return (result.status ?? 1) === 0 && verifyBundleStaticChecks(outfile);
+}
+
 /**
  * Bundle the Node-hosted PTY relay used by the Scout web console.
  *

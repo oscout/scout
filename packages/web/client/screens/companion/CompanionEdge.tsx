@@ -57,7 +57,8 @@ import {
   FIGURE_SIZE_PRESETS,
   figureMotion,
   figureNudge,
-  figureRotation,
+  figureBox,
+  figureHasPlate,
   figureSize,
   figureSlot,
   figureWhere,
@@ -91,7 +92,6 @@ type Arrival = { kind: "chute" | "visitor"; at: number; until: number };
 type Walk = { target: number; n: number; until: number; facing: "left" | "right" };
 
 const POP_WIDTH = 348;
-const HOVER_GRACE_MS = 220;
 
 /** Drops entries once their `until` passes, on a timer to the earliest one. */
 function useExpiry<T extends { until: number }>(map: Map<string, T>, set: (update: (prev: Map<string, T>) => Map<string, T>) => void) {
@@ -255,6 +255,26 @@ export type CompanionEdgeProps = {
   onFiguresHome: () => void;
 };
 
+/**
+ * The hex dock plate a held figure rests against: 1px, centred on the edge
+ * line, on the figure's edge side. Drawn inside the figure's button so it
+ * moves with it; it takes no pointer.
+ */
+function HexPlate({ side }: { side: "top" | "left" | "right" }) {
+  // Flat side toward the figure: flat-topped under an edge, pointy-topped on a side.
+  return side === "top" ? (
+    <svg className="ce-hex is-top" width="14" height="12" viewBox="0 0 14 12" aria-hidden="true">
+      <path d="M3.75 0.5h6.5L13.5 6l-3.25 5.5h-6.5L0.5 6z" />
+      <circle cx="7" cy="6" r="1.4" />
+    </svg>
+  ) : (
+    <svg className={`ce-hex is-${side}`} width="12" height="14" viewBox="0 0 12 14" aria-hidden="true">
+      <path d="M6 0.5l5.5 3.25v6.5L6 13.5 0.5 10.25v-6.5z" />
+      <circle cx="6" cy="7" r="1.4" />
+    </svg>
+  );
+}
+
 export function CompanionEdge({
   works,
   geometry,
@@ -311,11 +331,10 @@ export function CompanionEdge({
   const motionOf = (workId: string): CompanionFigureMotion => figureMotion(figureById.get(workId), figureDefaults, reduced);
   const sizeOf = (workId: string): number => figureSize(figureById.get(workId), figureDefaults);
 
-  // Popover state: hover (reported by the host) shows it; click keeps it.
-  const [hover, setHover] = useState<string | null>(null);
+  // Popover state: only a click opens a figure's popover. Passing the
+  // pointer over the crew on the way to the Dock or menubar opens nothing.
   const [kept, setKept] = useState<string | null>(null);
   const [panel, setPanel] = useState<"settings" | "overflow" | `pin:${string}` | null>(null);
-  const hoverTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const stepCount = useRef(new Map<string, number>());
 
   const [arrivals, setArrivals] = useState<Map<string, Arrival>>(new Map());
@@ -471,7 +490,6 @@ export function CompanionEdge({
     setDrag(event);
     setKept(null);
     setPanel(null);
-    setHover(null);
   }), []);
   useEffect(() => onCompanionAnchors((update) => {
     setLiveAnchors(update.anchors);
@@ -486,7 +504,7 @@ export function CompanionEdge({
   if (overflow.length && stackAt !== null) slots.push({ kind: "stack", key: "stack", ids: overflow, x: stackAt });
   slots.sort((a, b) => a.x - b.x);
 
-  const open = kept ?? hover;
+  const open = kept;
   const openWork = open ? byId.get(open) ?? null : null;
   const openPlaced = openWork && placedWorks.some((work) => work.workId === openWork.workId) ? figureById.get(openWork.workId)?.anchor ?? null : null;
   // A placed figure is not in the row, so its popover hangs off its anchor,
@@ -504,33 +522,12 @@ export function CompanionEdge({
   );
   const pinXs = spreadPins(groups.map((group) => group.center), width);
 
-  // Host pointer reports stand in for hover; a click elsewhere on the desktop
-  // closes what was kept open.
-  const setHoverSoon = useCallback((id: string | null) => {
-    if (hoverTimer.current) clearTimeout(hoverTimer.current);
-    hoverTimer.current = null;
-    if (id) {
-      setHover(id);
-      return;
-    }
-    hoverTimer.current = setTimeout(() => setHover(null), HOVER_GRACE_MS);
-  }, []);
-  useEffect(() => onCompanionPointer(({ id, outside }) => {
-    if (outside) {
-      setKept(null);
-      setPanel(null);
-      setHoverSoon(null);
-      return;
-    }
-    // Over the popover or a pin: keep whatever is open.
-    if (id === "popover" || id?.startsWith("pin.") || id === "home" || id === "panel") {
-      if (hoverTimer.current) clearTimeout(hoverTimer.current);
-      hoverTimer.current = null;
-      return;
-    }
-    setHoverSoon(id);
-  }), [setHoverSoon]);
-  useEffect(() => () => { if (hoverTimer.current) clearTimeout(hoverTimer.current); }, []);
+  // The host reports a click elsewhere on the desktop: close what was open.
+  useEffect(() => onCompanionPointer(({ outside }) => {
+    if (!outside) return;
+    setKept(null);
+    setPanel(null);
+  }), []);
 
   useEffect(() => {
     if (!hosted) return;
@@ -555,7 +552,6 @@ export function CompanionEdge({
       if (kept) rootRef.current?.querySelector<HTMLElement>(`[data-slot="${CSS.escape(kept)}"]`)?.focus();
       setKept(null);
       setPanel(null);
-      setHover(null);
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
@@ -684,8 +680,8 @@ export function CompanionEdge({
         <span className="ce-in__cell ce-in__cell--acts"><i title={figure.label}>Place</i>
           <span>
             <button type="button" className="ce-in__link" disabled={figure.placement.kind === "home"} onClick={() => onFigure(work.workId, { home: true })}>Home</button>
-            <button type="button" className="ce-in__link" onClick={() => { setKept(null); setHover(null); onFigure(work.workId, { hidden: true }); }}>Hide</button>
-            <button type="button" className="ce-in__link" onClick={() => { setKept(null); setHover(null); onUnpin(work.workId); }}>Unpin</button>
+            <button type="button" className="ce-in__link" onClick={() => { setKept(null); onFigure(work.workId, { hidden: true }); }}>Hide</button>
+            <button type="button" className="ce-in__link" onClick={() => { setKept(null); onUnpin(work.workId); }}>Unpin</button>
           </span>
         </span>
         {reduced && <p className="ce-in__fignote">Reduce Motion is on, so every figure holds still.</p>}
@@ -776,7 +772,7 @@ export function CompanionEdge({
     </>
   );
 
-  // What the popover shows, if anything: a kept or hovered figure, "+N", a pin, or settings.
+  // What the popover shows, if anything: a clicked figure, "+N", a pin, or settings.
   let popover: { x: number; body: ReactNode; label: string } | null = null;
   if (panel === "settings") {
     popover = { x: homeX, label: "Companion settings", body: <>{renderSettings()}{renderFigureSettings()}</> };
@@ -880,10 +876,6 @@ export function CompanionEdge({
             type: "button" as const,
             tabIndex: index === 0 ? 0 : -1,
             onKeyDown: (event: KeyboardEvent<HTMLElement>) => onCrewKey(event, index),
-            onPointerEnter: hosted ? undefined : () => setHoverSoon(slot.key),
-            onPointerLeave: hosted ? undefined : () => setHoverSoon(null),
-            onFocus: () => setHover(slot.key),
-            onBlur: () => setHover((current) => (current === slot.key ? null : current)),
             onClick: (event: MouseEvent<HTMLElement>) => {
               if (wasDragged(event, slot.key)) return;
               setPanel(null);
@@ -1003,6 +995,8 @@ export function CompanionEdge({
           const size = sizeOf(work.workId);
           const motion = motionOf(work.workId);
           const box = figureSlot(size);
+          const held = figureBox(at, size, screen);
+          const hold = figureHasPlate(at.down) && !dragging ? at.down : null;
           const reading = edgeVisible(work.state, offline);
           const isOpen = open === work.workId && !panel;
           return (
@@ -1013,21 +1007,18 @@ export function CompanionEdge({
               data-placed={work.workId}
               // A ghosted figure is behind a window: clicks there belong to that window.
               data-hit={at.covered || dragging ? undefined : work.workId}
-              className={`ce-placed${isOpen ? " is-open" : ""}${at.covered ? " is-covered" : ""}${dragging ? " is-dragging" : ""}${falling.has(work.workId) && !dragging ? " is-falling" : ""}`}
-              style={{ left: at.x, top: at.y, width: box.width, height: box.height, "--rot": `${figureRotation(at.down)}deg` } as CSSProperties}
+              className={`ce-placed${hold ? ` is-hold-${hold}` : ""}${isOpen ? " is-open" : ""}${at.covered ? " is-covered" : ""}${dragging ? " is-dragging" : ""}${falling.has(work.workId) && !dragging ? " is-falling" : ""}`}
+              style={{ left: held.left, top: held.top, width: box.width, height: box.height } as CSSProperties}
               aria-label={`${nameOf(work)}: ${work.title}. ${EDGE_VISIBLE_LABEL[reading]}. ${figure?.label ?? ""}`}
               aria-pressed={kept === work.workId}
               onPointerDown={(event) => onFigurePointerDown(event, work)}
-              onPointerEnter={hosted ? undefined : () => setHoverSoon(work.workId)}
-              onPointerLeave={hosted ? undefined : () => setHoverSoon(null)}
-              onFocus={() => setHover(work.workId)}
-              onBlur={() => setHover((current) => (current === work.workId ? null : current))}
               onClick={(event) => {
                 if (wasDragged(event, work.workId)) return;
                 setPanel(null);
                 setKept((current) => (current === work.workId ? null : work.workId));
               }}
             >
+              {hold ? <HexPlate side={hold} /> : null}
               <EdgeCharacter
                 slug={castOf(work)}
                 name={nameOf(work)}

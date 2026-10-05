@@ -68,6 +68,7 @@ const REQUIRED_PACKED_FILES = {
   "@openscout/scout": [
     "package/bin/scoutd",
     "package/dist/scout-control-plane-web.mjs",
+    "package/dist/knowledge-index-child.mjs",
     "package/dist/scout-web-server.mjs",
     "package/dist/client/index.html",
   ],
