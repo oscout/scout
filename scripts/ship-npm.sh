@@ -19,11 +19,14 @@ case "$MODE" in
   publish) ;;
   --prepare) MODE="prepare" ;;
   --publish-prepared) MODE="publish-prepared" ;;
+  --publish-candidate) MODE="publish-candidate" ;;
+  --verify-candidate) MODE="verify-candidate" ;;
+  --promote-prepared) MODE="promote-prepared" ;;
   --dry-run) MODE="dry-run" ;;
   --verify-state) MODE="verify-state" ;;
   --verify-published) MODE="verify-published" ;;
   -h|--help)
-    echo "Usage: scripts/ship-npm.sh [--prepare|--publish-prepared|--dry-run|--verify-state|--verify-published]"
+    echo "Usage: scripts/ship-npm.sh [--prepare|--publish-prepared|--publish-candidate|--verify-candidate|--promote-prepared|--dry-run|--verify-state|--verify-published]"
     exit 0
     ;;
   *)
@@ -55,6 +58,10 @@ case "$NPM_AUTH_MODE" in
     exit 1
     ;;
 esac
+
+if [[ "$MODE" == "publish-candidate" || "$MODE" == "verify-candidate" || "$MODE" == "promote-prepared" ]]; then
+  [[ "${GITHUB_ACTIONS:-}" != "true" ]] || { echo "ERROR: candidate/promotion phases are local-only" >&2; exit 1; }
+fi
 
 NPM_REGISTRY_URL="https://registry.npmjs.org"
 FINAL_NPM_TAG="${NPM_TAG:-latest}"
@@ -147,7 +154,7 @@ RELEASE_RECEIPT_PATH="$RELEASE_STATE_DIR/receipt.json"
 RELEASE_LOCK_DIR="${RELEASE_STATE_DIR}.lock"
 # Local token publication is the default. Hosted OIDC remains an explicit,
 # separately verified workflow authority; neither path falls back to the other.
-if [[ "$MODE" == "publish" || "$MODE" == "prepare" || "$MODE" == "publish-prepared" ]]; then
+if [[ "$MODE" == "publish" || "$MODE" == "prepare" || "$MODE" == "publish-prepared" || "$MODE" == "publish-candidate" || "$MODE" == "promote-prepared" ]]; then
   if ! node -e 'const v=process.argv[1].split(".").map(Number); process.exit(v[0]===0 && (v[1]<2 || (v[1]===2 && v[2]<=90)) ? 1 : 0)' "$release_version"; then
     echo "ERROR: v${release_version} is historical and unsupported; publication is disabled" >&2
     exit 1
@@ -742,7 +749,7 @@ promote_package_set() {
 }
 
 case "$MODE" in
-  publish|prepare|publish-prepared) acquire_release_lock ;;
+  publish|prepare|publish-prepared|publish-candidate|promote-prepared) acquire_release_lock ;;
 esac
 
 # A restored bundle must be verified before registry state can be considered
@@ -772,7 +779,7 @@ if [[ "$MODE" == "dry-run" ]]; then
 fi
 
 case "$MODE" in
-  publish|prepare|publish-prepared)
+  publish|prepare|publish-prepared|publish-candidate|promote-prepared)
     assert_clean_publish_source
     assert_canonical_publish_ref
     ;;
@@ -815,9 +822,40 @@ if [[ "$MODE" == "verify-published" ]]; then
   exit 0
 fi
 
-if [[ "$MODE" == "publish-prepared" && "$RELEASE_RECEIPT_LOADED" != "1" ]]; then
-  echo "ERROR: --publish-prepared requires an exact retained candidate bundle at $RELEASE_STATE_DIR" >&2
+if [[ ( "$MODE" == "publish-prepared" || "$MODE" == "publish-candidate" || "$MODE" == "promote-prepared" || "$MODE" == "verify-candidate" ) && "$RELEASE_RECEIPT_LOADED" != "1" ]]; then
+  echo "ERROR: --$MODE requires an exact retained candidate bundle at $RELEASE_STATE_DIR" >&2
   exit 1
+fi
+
+# A candidate retry must never mislabel an already promoted pair. Promotion
+# accepts staged or already-promoted members so interrupted promotion can resume.
+verify_candidate_pair() {
+  all_artifacts_exist || { echo "ERROR: candidate requires both exact published artifacts" >&2; exit 1; }
+  local index staged
+  for index in "${!PACKAGE_NAMES[@]}"; do
+    staged=$(npm_view_field "${PACKAGE_NAMES[$index]}" "dist-tags.${STAGING_NPM_TAG}")
+    [[ "$staged" == "$release_version" || "${PACKAGE_LATEST[$index]}" == "$release_version" ]] || {
+      echo "ERROR: candidate staging tag is missing or changed for ${PACKAGE_NAMES[$index]}" >&2; exit 1;
+    }
+  done
+}
+if [[ "$MODE" == "verify-candidate" ]]; then
+  assert_clean_publish_source
+  assert_canonical_publish_ref
+  verify_candidate_pair
+  echo "✓ Exact candidate pair verified; no promotion performed."
+  exit 0
+fi
+assert_candidate_unpromoted() {
+  [[ "$MODE" == "publish-candidate" ]] || return 0
+  local latest
+  for latest in "${PACKAGE_LATEST[@]}"; do
+    [[ "$latest" != "$release_version" ]] || { echo "ERROR: candidate is already promoted; use the promotion phase to verify completion" >&2; exit 1; }
+  done
+}
+assert_candidate_unpromoted
+if [[ "$MODE" == "promote-prepared" ]]; then
+  verify_candidate_pair
 fi
 
 if all_artifacts_exist; then
@@ -826,6 +864,7 @@ if all_artifacts_exist; then
   # before the first upload can identify the exact accepted bytes on a retry.
   [[ "$RELEASE_RECEIPT_LOADED" == "1" ]] || load_release_receipt
   inspect_registry_state
+  assert_candidate_unpromoted
   if all_packages_promoted; then
     echo "✓ Public npm package set ${release_version} already matches the exact reviewed candidates and latest."
     exit 0
@@ -874,6 +913,12 @@ fi
 
 assert_clean_publish_source
 assert_canonical_publish_ref
+if [[ "$MODE" == "publish-candidate" ]]; then
+  assert_candidate_unpromoted
+  verify_candidate_pair
+  echo "✓ Exact candidate pair published under $STAGING_NPM_TAG; npm latest unchanged. Retained receipt: $RELEASE_RECEIPT_PATH"
+  exit 0
+fi
 promote_package_set
 inspect_registry_state
 all_artifacts_exist && all_packages_promoted || {

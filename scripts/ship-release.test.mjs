@@ -383,7 +383,7 @@ function createPublishFixture({
     '  fi',
     '  if [[ "$identity" == "@openscout/protocol" && "$field" == "dist-tags.latest" ]]; then cat "$state_dir/protocol-latest"; exit 0; fi',
     '  if [[ "$identity" == "@openscout/scout" && "$field" == "dist-tags.latest" ]]; then cat "$state_dir/scout-latest"; exit 0; fi',
-    `  if [[ "$field" == "dist-tags.${stagingTag}" ]]; then echo ${version}; exit 0; fi`,
+    `  if [[ "$field" == "dist-tags.${stagingTag}" ]]; then echo "\${FIXTURE_STAGING_VALUE:-${version}}"; exit 0; fi`,
     '  exit 7',
     'fi',
     'if [[ "$command" == "publish" ]]; then',
@@ -399,6 +399,7 @@ function createPublishFixture({
     '    if [[ "$1" == "--tag" ]]; then publish_tag="$2"; shift 2; else shift; fi',
     '  done',
     '  [[ -n "$publish_tag" ]] || exit 80',
+    '  if [[ "$key" == "scout" && "${FIXTURE_SCOUT_PUBLISH_FAILURE:-}" == "1" ]]; then echo "fixture publish failed" >&2; exit 1; fi',
     '  : > "$state_dir/${key}-exists"',
     '  if [[ "$publish_tag" == "latest" ]]; then echo ' +
       version +
@@ -1294,15 +1295,26 @@ state='${releaseState}'
 if [[ "$1 $2" == "release view" ]]; then
   if [[ ! -f "$state" ]]; then echo "release not found" >&2; exit 1; fi
   read -r draft prerelease < "$state"
-  assets='[]'
-  if [[ -f '${remoteReceipt}' ]]; then assets='[{"name":"receipt.json","size":${receipt.length},"url":"https://github.com/oscout/scout/releases/download/v0.2.99/receipt.json"}]'; fi
+  assets=''
+  comma=''
+  for name in receipt.json candidate-receipt.json; do
+    file='${fixture}/remote-'"$name"
+    if [[ -f "$file" ]]; then
+      size=$(wc -c < "$file" | tr -d ' ')
+      assets="$assets$comma"'{"name":"'"$name"'","size":'"$size"',"url":"https://github.com/oscout/scout/releases/download/v0.2.99/'"$name"'"}'
+      comma=','
+    fi
+  done
+  assets="[$assets]"
   echo '{"tagName":"v0.2.99","isDraft":'"$draft"',"isPrerelease":'"$prerelease"',"url":"https://github.com/oscout/scout/releases/tag/v0.2.99","assets":'"$assets"'}'
   exit 0
 fi
 if [[ "$1 $2" == "release create" ]]; then
   [[ ! -f "$state" ]] || exit 96
   echo "$*" >> '${fixture}/gh-release-calls.log'
-  echo "false false" > "$state"
+  prerelease=false
+  for arg in "$@"; do [[ "$arg" == "--prerelease" ]] && prerelease=true; done
+  echo "false $prerelease" > "$state"
   exit 0
 fi
 if [[ "$1 $2" == "release edit" ]]; then
@@ -1317,14 +1329,17 @@ if [[ "$1 $2" == "release edit" ]]; then
   exit 0
 fi
 if [[ "$1 $2" == "release upload" ]]; then
-  [[ ! -f '${remoteReceipt}' ]] || exit 97
-  cp "$4" '${remoteReceipt}'
+  name=$(basename "$4")
+  target='${fixture}/remote-'"$name"
+  if [[ "$name" == "candidate-receipt.json" && "\${FIXTURE_CANDIDATE_ASSET_FAILURE:-}" == "1" ]]; then exit 1; fi
+  [[ ! -f "$target" ]] || exit 97
+  cp "$4" "$target"
   echo upload >> '${fixture}/gh-mutations.log'
   exit 0
 fi
 exit 98
 `);
-  writeFileSync(join(fixture, "fake-bin/curl"), `#!/bin/bash\ncat '${remoteReceipt}'\n`);
+  writeFileSync(join(fixture, "fake-bin/curl"), `#!/bin/bash\nfor url in "$@"; do :; done\nname=\${url##*/}\ncat '${fixture}/remote-'"$name"\n`);
   chmodSync(join(fixture, "fake-bin/gh"), 0o755);
   chmodSync(join(fixture, "fake-bin/curl"), 0o755);
   return state;
@@ -1384,5 +1399,194 @@ test("retrying an existing final release preserves its GitHub Latest state", () 
     // the package publisher must not edit it, so it neither promotes nor demotes Latest.
     assert.equal(existsSync(join(fixture, "gh-release-calls.log")), false);
     assert.match(readFileSync(join(fixture, "gh-mutations.log"), "utf8"), /^upload$/m);
+  } finally { rmSync(fixture, { recursive: true, force: true }); }
+});
+
+function runCandidatePhase(fixture, phase, extraEnv = {}) {
+  return spawnSync(process.execPath, ["scripts/ship-release.mjs", "0.2.99", "--phase", phase, "--execute", "--yes"], {
+    cwd: fixture, encoding: "utf8", env: { ...registryEnv(fixture), NPM_TOKEN: "test-only", ...extraEnv },
+  });
+}
+
+for (const phase of ["candidate", "promote"]) {
+  test(`${phase} has an explicit local plan and requires confirmation`, () => {
+    const result = plan(currentVersion, "--phase", phase);
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, new RegExp(`Local ${phase} steps`));
+    assert.match(result.stdout, /candidate-receipt\.json/);
+    assert.doesNotMatch(result.stdout, /gh workflow run/);
+    const execute = plan(currentVersion, "--phase", phase, "--execute");
+    assert.notEqual(execute.status, 0);
+    assert.match(execute.stderr, /without --yes/);
+  });
+}
+
+test("candidate publication and explicit promotion reuse exact bytes and preserve both Latest channels until promotion", () => {
+  const { fixture, stateDir } = createLocalReleaseFixture({ initialRelease: "missing" });
+  try {
+    const receiptBefore = readFileSync(join(fixture, "release-state/receipt.json"));
+    const candidate = runCandidatePhase(fixture, "candidate");
+    assert.equal(candidate.status, 0, candidate.stderr);
+    const uploads = readFileSync(join(stateDir, "mutations.log"), "utf8");
+    assert.match(uploads, /publish protocol tag=scout-release-0-2-99[\s\S]*publish scout tag=scout-release-0-2-99/);
+    assert.doesNotMatch(uploads, /promote|remove-stage/);
+    for (const key of ["protocol", "scout"]) assert.equal(readFileSync(join(stateDir, `${key}-latest`), "utf8").trim(), "0.2.87");
+    assert.equal(readFileSync(join(fixture, "gh-release-state"), "utf8").trim(), "false true");
+    assert.match(readFileSync(join(fixture, "gh-release-calls.log"), "utf8"), /--prerelease --latest=false/);
+    assert.equal(existsSync(join(fixture, "remote-receipt.json")), false);
+    const markerPath = join(fixture, "release-state/candidate-receipt.json");
+    const markerBytes = readFileSync(markerPath);
+    const marker = JSON.parse(markerBytes);
+    assert.equal(marker.kind, "scout-npm-candidate");
+    assert.equal(marker.releaseState, "CANDIDATE");
+    assert.equal(marker.releaseSha, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+    assert.equal(marker.integrityReceiptSha256, createHash("sha256").update(receiptBefore).digest("hex"));
+    assert.deepEqual(marker.packages, JSON.parse(receiptBefore).packages);
+    assert.deepEqual(readFileSync(join(fixture, "remote-candidate-receipt.json")), markerBytes);
+    const retry = runCandidatePhase(fixture, "candidate");
+    assert.equal(retry.status, 0, retry.stderr);
+    assert.equal(readFileSync(join(stateDir, "mutations.log"), "utf8"), uploads);
+    const defaultRelease = runCandidatePhase(fixture, "release");
+    assert.notEqual(defaultRelease.status, 0);
+    assert.match(defaultRelease.stderr, /explicit --phase promote/);
+    assert.equal(readFileSync(join(stateDir, "mutations.log"), "utf8"), uploads);
+    const promote = runCandidatePhase(fixture, "promote");
+    assert.equal(promote.status, 0, promote.stderr);
+    const promotions = readFileSync(join(stateDir, "mutations.log"), "utf8").slice(uploads.length);
+    assert.match(promotions, /promote protocol[\s\S]*promote scout/);
+    assert.doesNotMatch(promotions, /publish/);
+    assert.doesNotMatch(promote.stdout, /Building packages|--prepare\b|--publish-prepared/);
+    assert.deepEqual(readFileSync(join(fixture, "release-state/receipt.json")), receiptBefore);
+    assert.deepEqual(readFileSync(markerPath), markerBytes);
+    assert.deepEqual(readFileSync(join(fixture, "remote-receipt.json")), receiptBefore);
+    assert.equal(readFileSync(join(fixture, "gh-release-state"), "utf8").trim(), "false false");
+    for (const call of readFileSync(join(fixture, "gh-release-calls.log"), "utf8").trim().split("\n")) assert.match(call, /--latest=false/);
+    const promotedMutations = readFileSync(join(stateDir, "mutations.log"), "utf8");
+    const repeated = runCandidatePhase(fixture, "promote");
+    assert.equal(repeated.status, 0, repeated.stderr);
+    assert.equal(readFileSync(join(stateDir, "mutations.log"), "utf8"), promotedMutations);
+    const lateCandidate = runCandidatePhase(fixture, "candidate");
+    assert.notEqual(lateCandidate.status, 0);
+    assert.equal(readFileSync(join(stateDir, "mutations.log"), "utf8"), promotedMutations);
+  } finally { rmSync(fixture, { recursive: true, force: true }); }
+});
+
+for (const conflict of ["local marker", "remote marker", "missing marker", "missing public marker", "retained tarball", "receipt source", "tag source", "partial pair", "newer latest", "staging tag"]) {
+  test(`promotion holds ${conflict} without npm publish, rebuild or Latest mutation`, () => {
+    const { fixture, stateDir } = createLocalReleaseFixture({ initialRelease: "missing" });
+    try {
+      const candidate = runCandidatePhase(fixture, "candidate");
+      assert.equal(candidate.status, 0, candidate.stderr);
+      const before = readFileSync(join(stateDir, "mutations.log"), "utf8");
+      const marker = join(fixture, "release-state/candidate-receipt.json");
+      const remoteMarker = join(fixture, "remote-candidate-receipt.json");
+      const corrupt = file => { const data = readFileSync(file); data[0] = 0; writeFileSync(file, data); };
+      let extraEnv = {};
+      if (conflict === "local marker") corrupt(marker);
+      if (conflict === "remote marker") corrupt(remoteMarker);
+      if (conflict === "missing marker") rmSync(marker);
+      if (conflict === "missing public marker") rmSync(remoteMarker);
+      if (conflict === "retained tarball") corrupt(join(fixture, "release-state/openscout-scout-0.2.99.tgz"));
+      if (conflict === "receipt source") {
+        const receiptPath = join(fixture, "release-state/receipt.json");
+        const receipt = JSON.parse(readFileSync(receiptPath)); receipt.releaseSha = "b".repeat(40); writeFileSync(receiptPath, JSON.stringify(receipt));
+      }
+      if (conflict === "tag source") {
+        const git = join(fixture, "fake-bin/git");
+        writeFileSync(git, readFileSync(git, "utf8").replace("printf 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "printf 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"));
+      }
+      if (conflict === "partial pair") rmSync(join(stateDir, "scout-exists"));
+      if (conflict === "newer latest") for (const key of ["protocol", "scout"]) writeFileSync(join(stateDir, `${key}-latest`), "0.3.0\n");
+      if (conflict === "staging tag") extraEnv.FIXTURE_STAGING_VALUE = "0.2.98";
+      const result = runCandidatePhase(fixture, "promote", extraEnv);
+      assert.notEqual(result.status, 0, result.stdout);
+      assert.equal(readFileSync(join(stateDir, "mutations.log"), "utf8"), before);
+      assert.doesNotMatch(result.stdout, /Building packages/);
+      assert.equal(readFileSync(join(fixture, "gh-release-state"), "utf8").trim(), "false true");
+    } finally { rmSync(fixture, { recursive: true, force: true }); }
+  });
+}
+
+test("interrupted candidate publication holds its protocol prefix and cannot auto-recover or promote", () => {
+  const { fixture, stateDir } = createLocalReleaseFixture({ initialRelease: "missing" });
+  try {
+    const interrupted = runCandidatePhase(fixture, "candidate", { FIXTURE_SCOUT_PUBLISH_FAILURE: "1" });
+    assert.notEqual(interrupted.status, 0);
+    const before = readFileSync(join(stateDir, "mutations.log"), "utf8");
+    assert.match(before, /^publish protocol tag=scout-release-0-2-99\n$/);
+    assert.equal(existsSync(join(fixture, "gh-release-state")), false);
+    for (const phase of ["candidate", "promote", "release"]) {
+      const retry = runCandidatePhase(fixture, phase);
+      assert.notEqual(retry.status, 0);
+      assert.match(retry.stderr, /incomplete npm package set/);
+      assert.equal(readFileSync(join(stateDir, "mutations.log"), "utf8"), before);
+    }
+    for (const key of ["protocol", "scout"]) assert.equal(readFileSync(join(stateDir, `${key}-latest`), "utf8").trim(), "0.2.87");
+  } finally { rmSync(fixture, { recursive: true, force: true }); }
+});
+
+for (const mode of ["--publish-candidate", "--verify-candidate", "--promote-prepared"]) {
+  test(`${mode} rejects hosted execution before publication`, () => {
+    const { fixture, stateDir } = createPublishFixture();
+    try {
+      const result = spawnSync("bash", ["scripts/ship-npm.sh", mode], { cwd: fixture, encoding: "utf8", env: { ...registryEnv(fixture), GITHUB_ACTIONS: "true" } });
+      assert.notEqual(result.status, 0);
+      assert.match(result.stderr, /local-only/);
+      assert.equal(readFileSync(join(stateDir, "mutations.log"), "utf8"), "");
+    } finally { rmSync(fixture, { recursive: true, force: true }); }
+  });
+}
+
+test("interrupted candidate asset handoff cannot be finalized through the default release command", () => {
+  const { fixture, stateDir } = createLocalReleaseFixture({ initialRelease: "missing" });
+  try {
+    const interrupted = runCandidatePhase(fixture, "candidate", { FIXTURE_CANDIDATE_ASSET_FAILURE: "1" });
+    assert.notEqual(interrupted.status, 0);
+    const before = readFileSync(join(stateDir, "mutations.log"), "utf8");
+    assert.doesNotMatch(before, /promote/);
+    const ordinary = runCandidatePhase(fixture, "release");
+    assert.notEqual(ordinary.status, 0);
+    assert.match(ordinary.stderr, /explicit --phase promote/);
+    assert.equal(readFileSync(join(stateDir, "mutations.log"), "utf8"), before);
+    const retry = runCandidatePhase(fixture, "candidate");
+    assert.equal(retry.status, 0, retry.stderr);
+    assert.equal(readFileSync(join(stateDir, "mutations.log"), "utf8"), before);
+    assert.equal(existsSync(join(fixture, "remote-candidate-receipt.json")), true);
+  } finally { rmSync(fixture, { recursive: true, force: true }); }
+});
+
+test("a public candidate marker holds default release when only the local marker is missing", () => {
+  const { fixture, stateDir } = createLocalReleaseFixture({ initialRelease: "missing" });
+  try {
+    const candidate = runCandidatePhase(fixture, "candidate");
+    assert.equal(candidate.status, 0, candidate.stderr);
+    const markerPath = join(fixture, "release-state/candidate-receipt.json");
+    const marker = readFileSync(markerPath);
+    const npmBefore = readFileSync(join(stateDir, "mutations.log"), "utf8");
+    const githubBefore = readFileSync(join(fixture, "gh-release-calls.log"), "utf8");
+    const uploadsBefore = readFileSync(join(fixture, "gh-mutations.log"), "utf8");
+    rmSync(markerPath);
+    for (const phase of ["release", "promote"]) {
+      const held = runCandidatePhase(fixture, phase);
+      assert.notEqual(held.status, 0, held.stdout);
+      assert.match(held.stderr, phase === "release" ? /explicit --phase promote/ : /Original candidate receipt is missing/);
+      assert.equal(readFileSync(join(stateDir, "mutations.log"), "utf8"), npmBefore);
+      assert.equal(readFileSync(join(fixture, "gh-release-calls.log"), "utf8"), githubBefore);
+      assert.equal(readFileSync(join(fixture, "gh-mutations.log"), "utf8"), uploadsBefore);
+      assert.doesNotMatch(held.stdout, /Building packages|^\$ bash scripts\/ship-npm\.sh --prepare/m);
+      assert.equal(readFileSync(join(fixture, "gh-release-state"), "utf8").trim(), "false true");
+    }
+    writeFileSync(markerPath, marker);
+    const promoted = runCandidatePhase(fixture, "promote");
+    assert.equal(promoted.status, 0, promoted.stderr);
+    const completedNpm = readFileSync(join(stateDir, "mutations.log"), "utf8");
+    const completedGithub = readFileSync(join(fixture, "gh-release-calls.log"), "utf8");
+    const completedUploads = readFileSync(join(fixture, "gh-mutations.log"), "utf8");
+    const stableRetry = runCandidatePhase(fixture, "release");
+    assert.equal(stableRetry.status, 0, stableRetry.stderr);
+    assert.equal(readFileSync(join(stateDir, "mutations.log"), "utf8"), completedNpm);
+    assert.equal(readFileSync(join(fixture, "gh-release-calls.log"), "utf8"), completedGithub);
+    assert.equal(readFileSync(join(fixture, "gh-mutations.log"), "utf8"), completedUploads);
+    assert.deepEqual(readFileSync(join(fixture, "remote-candidate-receipt.json")), marker);
   } finally { rmSync(fixture, { recursive: true, force: true }); }
 });
