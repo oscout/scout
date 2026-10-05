@@ -761,5 +761,12 @@
     "category": "test",
     "reason": "Runs a 20-second bounded isolated child test whose launch exports are replaced with throwing guards to verify subprocess-free onboarding readiness.",
     "owner": "tests"
+  },
+  {
+    "path": "packages/runtime/src/knowledge/session-indexer.ts",
+    "symbol": "node:child_process",
+    "category": "process-lifecycle",
+    "reason": "Bounded asynchronous ripgrep scan with caller cancellation, request deadline, output cap, and child termination/reaping.",
+    "owner": "runtime"
   }
 ]
