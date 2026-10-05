@@ -176,7 +176,13 @@ function createHarness(input: {
   const flights: Record<string, FlightRecord> = {};
   const endpoints: Record<string, AgentEndpoint> = {};
   const persistedFlights: FlightRecord[] = [];
+  const completionSnapshots: Array<{ flight: FlightRecord; endpoints: AgentEndpoint[] }> = [];
   const persistedEndpoints: AgentEndpoint[] = [];
+  const endpointPersistence: Array<{
+    state: AgentEndpoint["state"];
+    recoverQueuedFlights: boolean;
+    flightState: FlightRecord["state"] | undefined;
+  }> = [];
   const postedMessages: MessageRecord[] = [];
   const statusMessages: Array<{ invocation: InvocationRequest; flight: { summary?: string; error?: string } }> = [];
   const warnings: string[] = [];
@@ -197,6 +203,17 @@ function createHarness(input: {
   }
   if (endpoint) {
     endpoints[endpoint.id] = endpoint;
+  }
+
+  async function persistEndpoint(nextEndpoint: AgentEndpoint, recoverQueuedFlights: boolean) {
+    persistedEndpoints.push(nextEndpoint);
+    endpoints[nextEndpoint.id] = nextEndpoint;
+    endpointPersistence.push({
+      state: nextEndpoint.state,
+      recoverQueuedFlights,
+      flightState: Object.values(flights).find((flight) =>
+        flight.invocationId === nextEndpoint.metadata?.lastInvocationId)?.state,
+    });
   }
 
   const service = new BrokerLocalInvocationService({
@@ -255,11 +272,16 @@ function createHarness(input: {
       const next = applyInvocationStatusPatch(current, patch);
       persistedFlights.push(next);
       flights[next.id] = next;
+      if (next.state === "completed") {
+        completionSnapshots.push(structuredClone({ flight: next, endpoints: Object.values(endpoints) }));
+      }
       return next;
     },
-    async persistEndpoint(nextEndpoint) {
-      persistedEndpoints.push(nextEndpoint);
-      endpoints[nextEndpoint.id] = nextEndpoint;
+    persistEndpoint: (nextEndpoint) => persistEndpoint(nextEndpoint, true),
+    async persistEndpointWithoutRecovery(nextEndpoint) {
+      // Model a durable write that is not visible until its await completes.
+      await Promise.resolve();
+      await persistEndpoint(nextEndpoint, false);
     },
     async postInvocationStatusMessage(invocation, flight) {
       statusMessages.push({ invocation, flight });
@@ -296,6 +318,8 @@ function createHarness(input: {
 
   return {
     activeInvocationTasks,
+    completionSnapshots,
+    endpointPersistence,
     persistedFlights,
     persistedEndpoints,
     postedMessages,
@@ -395,12 +419,17 @@ describe("BrokerLocalInvocationService", () => {
       summary: "Agent One replied.",
       output: "done",
     }));
-    expect(harness.persistedEndpoints).toHaveLength(2);
+    expect(harness.persistedEndpoints).toHaveLength(3);
     expect(harness.persistedEndpoints[0]).toEqual(expect.objectContaining({
       id: "endpoint-pairing",
       state: "active",
     }));
     expect(harness.persistedEndpoints[1]).toEqual(expect.objectContaining({
+      id: "endpoint-pairing",
+      state: "active",
+      metadata: expect.objectContaining({ externalSessionId: "provider-session-2" }),
+    }));
+    expect(harness.persistedEndpoints[2]).toEqual(expect.objectContaining({
       id: "endpoint-pairing",
       state: "idle",
       sessionId: "session-1",
@@ -425,6 +454,56 @@ describe("BrokerLocalInvocationService", () => {
       }),
     }));
   });
+
+  for (const action of ["consult", "wake"] as const) {
+    test(`persists provider metadata before the first completed ${action} snapshot`, async () => {
+      const endpoint = testEndpoint({
+        harness: "pi",
+        transport: "pi_rpc",
+        metadata: { pendingExternalSession: true },
+      });
+      const observedRuntime = { harness: "pi", model: "pi-observed-model", reasoningEffort: "high" };
+      const harness = createHarness({
+        endpoint,
+        invokeResult: {
+          output: "done",
+          externalSessionId: "scout-adapter-session",
+          metadata: {
+            externalSessionId: "native-pi-session",
+            observedRuntime,
+            observedRuntimeAt: 19_500,
+          },
+        },
+        now: 20_000,
+      });
+
+      harness.seedFlight(testFlight());
+      await harness.service.execute(testInvocation({ action }));
+
+      expect(harness.completionSnapshots).toHaveLength(1);
+      const completedSnapshot = harness.completionSnapshots[0]!;
+      expect(completedSnapshot.flight.output).toBe("done");
+      expect(completedSnapshot.endpoints).toEqual([
+        expect.objectContaining({
+          id: endpoint.id,
+          sessionId: endpoint.sessionId,
+          state: "active",
+          metadata: expect.objectContaining({
+            externalSessionId: "native-pi-session",
+            pendingExternalSession: false,
+            observedRuntime,
+            observedRuntimeAt: 19_500,
+          }),
+        }),
+      ]);
+      expect(harness.persistedEndpoints.at(-1)?.state).toBe("idle");
+      expect(harness.endpointPersistence).toEqual([
+        { state: "active", recoverQueuedFlights: true, flightState: "waking" },
+        { state: "active", recoverQueuedFlights: false, flightState: "running" },
+        { state: "idle", recoverQueuedFlights: true, flightState: "completed" },
+      ]);
+    });
+  }
 
   test("promotes harness-observed runtime into the durable dispatch trace", async () => {
     const endpoint = testEndpoint({

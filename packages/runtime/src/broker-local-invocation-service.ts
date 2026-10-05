@@ -184,6 +184,8 @@ export type BrokerLocalInvocationServiceOptions = {
     patch: InvocationStatusPatch,
   ) => Promise<FlightRecord>;
   persistEndpoint: (endpoint: AgentEndpoint) => Promise<void>;
+  /** Durable metadata write that must not trigger queued dispatch recovery. */
+  persistEndpointWithoutRecovery: (endpoint: AgentEndpoint) => Promise<void>;
   deferInvocationRetry?: (invocationId: string, notBeforeTs: number) => void;
   postInvocationStatusMessage: (
     invocation: InvocationRequest,
@@ -440,6 +442,7 @@ export class BrokerLocalInvocationService {
       };
 
       if (invocation.action === "wake") {
+        await this.options.persistEndpointWithoutRecovery(completedEndpoint);
         await this.options.transitionInvocation(invocation.id, {
           state: "completed",
           summary: `${target.displayName} received the message.`,
@@ -496,6 +499,9 @@ export class BrokerLocalInvocationService {
         return;
       }
 
+      // Make provider identity visible with completion, without waking queued
+      // work until the existing post-completion idle transition below.
+      await this.options.persistEndpointWithoutRecovery(completedEndpoint);
       const completedFlight = await this.options.transitionInvocation(invocation.id, {
         state: "completed",
         summary: `${target.displayName} replied.`,
