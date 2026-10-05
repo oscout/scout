@@ -12,7 +12,7 @@
  */
 import { createHash } from "node:crypto";
 import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync, readFileSync, statSync } from "node:fs";
+import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -56,6 +56,8 @@ function usage() {
     "Options:",
     "  --execute              Resume or run the package release.",
     "  --yes                  Required with --execute.",
+    "  --phase <release|candidate|promote>",
+    "                         Default release; candidate holds both Latest channels.",
     "  --auth <token|npm-login>",
     "                         Local authentication mode; token is the default.",
     "  --release-notes-file <path>",
@@ -85,6 +87,7 @@ function parseArgs(argv) {
   const options = {
     execute: false,
     yes: false,
+    phase: "release",
     releaseNotesFile: null,
     auth: process.env.SCOUT_NPM_AUTH_MODE ?? "token",
   };
@@ -104,6 +107,8 @@ function parseArgs(argv) {
     }
     if (arg === "--execute") options.execute = true;
     else if (arg === "--yes") options.yes = true;
+    else if (arg === "--phase") options.phase = argv[++index];
+    else if (arg.startsWith("--phase=")) options.phase = arg.slice("--phase=".length);
     else if (arg === "--auth") {
       options.auth = argv[++index];
     } else if (arg.startsWith("--auth=")) {
@@ -123,6 +128,7 @@ function parseArgs(argv) {
   }
 
   if (!target) throw new Error("Missing release version target.");
+  if (!["release", "candidate", "promote"].includes(options.phase)) throw new Error("--phase must be release, candidate or promote.");
   if (!["token", "npm-login"].includes(options.auth)) {
     throw new Error("--auth must be token or npm-login.");
   }
@@ -273,6 +279,23 @@ function printVersionTable(version) {
 
 function printPlan(version, options) {
   const tag = "v" + version;
+  if (options.phase !== "release") {
+    console.log(`\nLocal ${options.phase} steps:`);
+    console.log("  DRY require clean current public main, exact reviewed version/source/tag and retained signed candidates");
+    console.log("  DRY local " + options.auth + " authentication; no OIDC provenance");
+    if (options.phase === "candidate") {
+      console.log("  DRY create/verify exact public version tag; ship-npm.sh --prepare");
+      console.log("  DRY ship-npm.sh --publish-candidate; --verify-candidate");
+      console.log("  DRY retain and upload candidate-receipt.json; prerelease --latest=false");
+      console.log("  DRY npm latest and GitHub Latest unchanged; validate exact candidates before promotion");
+    } else {
+      console.log("  DRY verify original retained bundle and public candidate-receipt.json before any mutation");
+      console.log("  DRY ship-npm.sh --verify-candidate; --promote-prepared; --verify-published (no rebuild or npm upload)");
+      console.log("  DRY attach ordinary receipt.json and finalize stable package release --latest=false");
+      console.log("  DRY GitHub Latest remains with the native installer owner");
+    }
+    return;
+  }
   console.log("\nRelease steps:");
   console.log("  DRY require clean oscout/scout main already versioned at " + version);
   console.log("  DRY git fetch --no-tags origin refs/heads/main");
@@ -434,25 +457,26 @@ function npmReleaseReceiptPath(version, releaseSha) {
   );
 }
 
-function ensureGithubReceiptAsset(tag, receiptPath) {
+function ensureGithubReceiptAsset(tag, receiptPath, assetName = "receipt.json", uploadMissing = true) {
   if (!existsSync(receiptPath) || !statSync(receiptPath).isFile()) {
     throw new Error("Verified npm release receipt is missing: " + receiptPath);
   }
   const expected = readFileSync(receiptPath);
   let release = inspectGithubRelease(tag);
-  let asset = release?.assets?.find((candidate) => candidate.name === "receipt.json");
+  let asset = release?.assets?.find((candidate) => candidate.name === assetName);
   if (!asset) {
+    if (!uploadMissing) throw new Error("Public candidate receipt is missing; promotion refused.");
     run("gh", [
       "release", "upload", tag, receiptPath,
       "--repo", CANONICAL_GITHUB_REPOSITORY,
     ]);
     release = inspectGithubRelease(tag);
-    asset = release?.assets?.find((candidate) => candidate.name === "receipt.json");
+    asset = release?.assets?.find((candidate) => candidate.name === assetName);
   }
   if (!asset || asset.size !== expected.length) {
     throw new Error("GitHub npm receipt asset size mismatch; refusing to overwrite it.");
   }
-  const publicUrl = `https://github.com/${CANONICAL_GITHUB_REPOSITORY}/releases/download/${tag}/receipt.json`;
+  const publicUrl = `https://github.com/${CANONICAL_GITHUB_REPOSITORY}/releases/download/${tag}/${assetName}`;
   const downloaded = execFileSync("curl", [
     "--disable", "--fail", "--location", "--silent", "--show-error",
     "--proto", "=https", "--proto-redir", "=https", "--max-time", "60", publicUrl,
@@ -462,7 +486,58 @@ function ensureGithubReceiptAsset(tag, receiptPath) {
     throw new Error("Public GitHub npm receipt bytes differ from retained receipt; refusing overwrite.");
   }
 
-  console.log("npm integrity receipt: " + asset.url);
+  console.log((assetName === "receipt.json" ? "npm integrity receipt" : "npm candidate receipt") + ": " + asset.url);
+}
+
+function candidateReceiptPath(receiptPath) {
+  return path.join(path.dirname(receiptPath), "candidate-receipt.json");
+}
+
+function candidateReceiptBytes(receiptPath, version, head) {
+  const original = readFileSync(receiptPath);
+  const receipt = JSON.parse(original);
+  if (receipt.schemaVersion !== 1 || receipt.repository !== CANONICAL_REPOSITORY ||
+      receipt.releaseVersion !== version || receipt.releaseSha !== head || receipt.authority !== "local-signed") {
+    throw new Error("Candidate must bind the exact local public integrity receipt.");
+  }
+  return Buffer.from(JSON.stringify({
+    schemaVersion: 1,
+    kind: "scout-npm-candidate",
+    releaseState: "CANDIDATE",
+    repository: receipt.repository,
+    releaseVersion: version,
+    releaseSha: head,
+    authority: receipt.authority,
+    provenance: "none",
+    stagingTag: `scout-release-${version.replaceAll(".", "-")}`,
+    integrityReceiptSha256: createHash("sha256").update(original).digest("hex"),
+    packages: receipt.packages,
+  }, null, 2) + "\n");
+}
+
+function verifyLocalCandidateReceipt(receiptPath, version, head, create = false) {
+  const target = candidateReceiptPath(receiptPath);
+  const expected = candidateReceiptBytes(receiptPath, version, head);
+  if (!existsSync(target)) {
+    if (!create) throw new Error("Original candidate receipt is missing; promotion refused.");
+    writeFileSync(target, expected, { flag: "wx", mode: 0o600 });
+  }
+  if (!readFileSync(target).equals(expected)) throw new Error("Original candidate receipt disagrees with retained source/artifacts.");
+  return target;
+}
+
+function ensureCandidateRelease(tag, options) {
+  let release = inspectGithubRelease(tag);
+  if (!release) {
+    const args = ["release", "create", tag, "--repo", CANONICAL_GITHUB_REPOSITORY,
+      "--verify-tag", "--title", `Scout ${tag} candidate`, "--prerelease", "--latest=false"];
+    if (options.releaseNotesFile) args.push("--notes-file", options.releaseNotesFile);
+    else args.push("--notes", "Candidate for validation. npm latest and GitHub Latest are not promoted by this phase.");
+    run("gh", args);
+    release = inspectGithubRelease(tag);
+  }
+  if (!release || release.isDraft || !release.isPrerelease) throw new Error("Candidate release must remain a non-draft prerelease.");
+  return release;
 }
 
 function main() {
@@ -499,9 +574,47 @@ function main() {
   if (currentHead() !== head) throw new Error("Release HEAD changed during package verification.");
   fetchAndVerifyRemoteMain(head);
   assertCleanWorktree();
+  const existingRelease = inspectGithubRelease(tag);
+  if (options.phase === "candidate" && existingRelease && (existingRelease.isDraft || !existingRelease.isPrerelease)) {
+    throw new Error("Candidate cannot relabel a draft or stable release.");
+  }
+  const receiptPath = npmReleaseReceiptPath(version, head);
+  if (options.phase === "release" && (!existingRelease || existingRelease.isPrerelease) && existsSync(candidateReceiptPath(receiptPath))) {
+    throw new Error("This is a retained candidate; use explicit --phase promote after validation.");
+  }
+  if (options.phase === "promote") {
+    const tags = assertMatchingTagState(tag, head);
+    if (tags.local !== head || tags.remote !== head) throw new Error("Promotion requires the original exact candidate tag.");
+    if (!existingRelease || existingRelease.isDraft) throw new Error("Original candidate release is missing or draft.");
+    const candidatePath = verifyLocalCandidateReceipt(receiptPath, version, head);
+    ensureGithubReceiptAsset(tag, candidatePath, "candidate-receipt.json", false);
+    run("bash", ["scripts/ship-npm.sh", "--verify-candidate"]);
+    run("bash", ["scripts/ship-npm.sh", "--promote-prepared"]);
+    run("bash", ["scripts/ship-npm.sh", "--verify-published"]);
+    ensureGithubRelease(tag, options);
+    ensureGithubReceiptAsset(tag, receiptPath);
+    if (remoteTagCommit(tag) !== head) throw new Error("Candidate tag changed during promotion.");
+    console.log(`Scout ${tag} promoted from the exact retained candidate at ${head}.`);
+    return;
+  }
   ensureRemoteTag(tag, head);
 
   run("bash", ["scripts/ship-npm.sh", "--prepare"]);
+  if (options.phase === "candidate") {
+    const candidatePath = verifyLocalCandidateReceipt(receiptPath, version, head, true);
+    // If a prior candidate exists, verify its bytes before another publication attempt.
+    if (existingRelease?.assets?.some(asset => asset.name === "candidate-receipt.json")) {
+      const prior = verifyLocalCandidateReceipt(receiptPath, version, head);
+      ensureGithubReceiptAsset(tag, prior, "candidate-receipt.json", false);
+    }
+    run("bash", ["scripts/ship-npm.sh", "--publish-candidate"]);
+    run("bash", ["scripts/ship-npm.sh", "--verify-candidate"]);
+    ensureCandidateRelease(tag, options);
+    ensureGithubReceiptAsset(tag, candidatePath, "candidate-receipt.json");
+    if (remoteTagCommit(tag) !== head) throw new Error("Candidate tag changed during publication.");
+    console.log(`Scout ${tag} candidate ready under scout-release-${version.replaceAll(".", "-")}; Latest channels unchanged.`);
+    return;
+  }
   run("bash", ["scripts/ship-npm.sh", "--publish-prepared"]);
   run("bash", ["scripts/ship-npm.sh", "--verify-published"]);
   ensureGithubRelease(tag, options);

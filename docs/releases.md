@@ -188,6 +188,82 @@ public GitHub release, without marking it Latest, and attaches `receipt.json`. E
 clobbered: their size and anonymously downloaded SHA-256 must match the retained
 receipt. An upload command succeeding alone is not a verified release.
 
+## Validate a candidate before promotion
+
+The full stable command above remains the default. For releases that require a
+real installation pass before changing npm `latest`, explicitly split candidate
+publication from promotion:
+
+```bash
+# From clean reviewed public main already versioned at the exact unused version.
+# Run in an interactive terminal using the operator's existing npm login.
+bun run ship -- <version> --phase candidate --execute --yes --auth npm-login
+
+# Install the exact published version and validate the retained candidate.
+# After operator approval of that result, promote the same source and bytes.
+bun run ship -- <version> --phase promote --execute --yes --auth npm-login
+```
+
+Candidate mode establishes the ordinary `v<version>` tag at the reviewed public
+source, prepares the exact signed pair once, and publishes both under the existing
+`scout-release-<version-with-dashes>` staging tag. It verifies the complete pair
+and staging tags, then creates or verifies a non-draft GitHub **prerelease** with
+`--latest=false`. It uploads `candidate-receipt.json`, clearly labeled
+`scout-npm-candidate` / `CANDIDATE`, binding the public source SHA, version,
+local authority, staging tag, both package measurements and the SHA-256 of the
+original integrity receipt. The ordinary `receipt.json` stays in the retained
+bundle until promotion. Candidate mode changes neither npm `latest` nor GitHub
+Latest; an exact version remains installable from npm for candidate validation.
+A candidate retry reuses the same bundle and verifies an existing public marker;
+it never rebuilds, overwrites conflicting assets, or relabels a stable release.
+
+Keep the original bundle, tag and candidate marker throughout validation.
+Promotion requires that same source on clean public `main` equal to freshly
+fetched remote `main`; if main has moved, stop rather than rebuild or infer a
+new candidate source. It verifies the original local bundle, exact tag, the
+anonymously downloaded public candidate marker and complete immutable registry
+pair before changing a dist-tag. It performs no package build or npm upload.
+Only then does it promote both npm `latest` tags, verify them, finalize the same
+GitHub release as stable with `--latest=false`, and attach the unchanged ordinary
+`receipt.json`. The candidate marker remains as historical validation identity.
+An interrupted promotion can verify already-promoted members and finish the
+remaining promotion/metadata without replacing bytes. An existing stable/native
+release's GitHub Latest state remains untouched by a completed retry.
+
+The public candidate release can retain a separately verified native DMG through
+an explicitly authorized operator handoff. That handoff must preserve the exact
+signed/notarized artifact, its private source/dependency receipt and public byte
+verification; it is not performed by the npm publisher. Candidate creation does
+not satisfy private native stable-promotion guards. After validation and public
+package promotion, the existing native owner can verify the ordinary stable
+receipt and promote GitHub Latest separately. Appcast/site publication remains
+another verified follow-up.
+
+The lower-level local modes are `ship-npm.sh --publish-candidate`,
+`--verify-candidate`, and `--promote-prepared`. They require the exact retained
+bundle and clean matching public source/tag. `--publish-candidate` verifies the
+pair and exits before npm promotion; `--promote-prepared` requires the complete
+published pair and never builds or uploads a missing package. These modes reject
+hosted execution. `--verify-candidate` accepts an exact staging tag or an
+already-promoted member so explicit promotion retries can complete safely.
+The top-level candidate/promotion commands additionally enforce the public
+candidate marker and GitHub release metadata.
+
+A partial candidate upload remains fail-closed. Preserve the original bundle
+and registry evidence and stop the campaign: do **not** use the ordinary local
+recovery command below, because it promotes `latest` and would bypass this
+validation gate. Candidate mode never invokes that recovery automatically.
+If installation validation fails, preserve the published immutable bytes,
+receipts and held staging tag. Fix the source through review and select a new
+explicit unused version for the next candidate; never rebuild or replace the
+failed version, roll it back, or promote it through partial-pair recovery.
+The default full release command refuses to finalize a retained candidate
+prerelease; use explicit `--phase promote` after validation. Wrong source,
+tampered/missing markers or bundles, changed staging tags, incomplete package
+pairs and newer `latest` versions stop promotion before mutation. No private npm
+publisher, automatic hosted fallback, rollback or credential-storage behavior
+is added by these phases.
+
 ## Recover a retained local release
 
 If npm accepts protocol but it becomes visible only after the publication wait
