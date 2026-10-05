@@ -1,7 +1,8 @@
-import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { afterEach, describe, expect, spyOn, test } from "bun:test";
+import { Database } from "bun:sqlite";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 import {
   deterministicKnowledgeChunkId,
@@ -104,6 +105,96 @@ describe("knowledge paths", () => {
 });
 
 describe("SQLiteKnowledgeStore", () => {
+  test("read-only startup waits for the first schema read within its existing busy bound", async () => {
+    const paths = useTempSupportPaths();
+    const initial = new SQLiteKnowledgeStore(undefined, paths);
+    try {
+      initial.upsertCollection(collection(paths));
+    } finally {
+      initial.close();
+    }
+
+    const writer = new Database(paths.sqlitePath);
+    // A rollback-journal exclusive lock makes the first schema read contend,
+    // including the same SQLITE_BUSY boundary as an initializing index writer.
+    writer.exec("PRAGMA journal_mode = DELETE; BEGIN EXCLUSIVE;");
+    let lockHeld = true;
+    const child = Bun.spawn([process.execPath, "--eval", `
+      import { SQLiteKnowledgeStore } from ${JSON.stringify(new URL("./knowledge/store.ts", import.meta.url).href)};
+      console.log("opening");
+      const store = new SQLiteKnowledgeStore(undefined, ${JSON.stringify(paths)}, { readonly: true });
+      try { console.log(JSON.stringify(store.status())); }
+      finally { store.close(); }
+    `], { stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+    const watchdog = setTimeout(() => child.kill("SIGKILL"), 4_000);
+    const stderr = new Response(child.stderr).text();
+    const reader = child.stdout.getReader();
+    const decoder = new TextDecoder();
+    let output = "";
+    try {
+      // The child announces the read while the parent still owns the lock;
+      // release is controlled here, not by filesystem speed or startup timing.
+      while (!output.includes("\n")) {
+        const part = await reader.read();
+        if (part.done) break;
+        output += decoder.decode(part.value, { stream: true });
+      }
+      expect(output.startsWith("opening\n")).toBe(true);
+      await Bun.sleep(150);
+      writer.exec("COMMIT;");
+      lockHeld = false;
+      while (true) {
+        const part = await reader.read();
+        if (part.done) break;
+        output += decoder.decode(part.value, { stream: true });
+      }
+      expect({ exitCode: await child.exited, stderr: await stderr }).toEqual({ exitCode: 0, stderr: "" });
+      expect(JSON.parse(output.slice("opening\n".length)).collections).toBe(1);
+    } finally {
+      clearTimeout(watchdog);
+      if (child.exitCode === null) child.kill("SIGKILL");
+      await child.exited;
+      reader.releaseLock();
+      if (lockHeld) writer.exec("ROLLBACK;");
+      writer.close();
+    }
+    expect(() => process.kill(child.pid, 0)).toThrow();
+  });
+
+  test("read-only startup closes a malformed candidate and propagates the database error", () => {
+    const paths = useTempSupportPaths();
+    mkdirSync(dirname(paths.sqlitePath), { recursive: true });
+    writeFileSync(paths.sqlitePath, "not a SQLite database");
+    const close = spyOn(Database.prototype, "close");
+    try {
+      expect(() => new SQLiteKnowledgeStore(undefined, paths, { readonly: true })).toThrow("not a database");
+      expect(close).toHaveBeenCalledTimes(1);
+      expect(readFileSync(paths.sqlitePath, "utf8")).toBe("not a SQLite database");
+    } finally {
+      close.mockRestore();
+    }
+  });
+
+  test("read-only startup closes an uninitialized candidate without initializing the persistent file", () => {
+    const paths = useTempSupportPaths();
+    mkdirSync(dirname(paths.sqlitePath), { recursive: true });
+    const original = new Database(paths.sqlitePath, { create: true });
+    original.exec("CREATE TABLE untouched (value TEXT);");
+    original.close();
+    const bytes = readFileSync(paths.sqlitePath);
+    const close = spyOn(Database.prototype, "close");
+    let store: SQLiteKnowledgeStore | undefined;
+    try {
+      store = new SQLiteKnowledgeStore(undefined, paths, { readonly: true });
+      expect(close).toHaveBeenCalledTimes(1);
+      expect(store.status().collections).toBe(0);
+      expect(readFileSync(paths.sqlitePath)).toEqual(bytes);
+    } finally {
+      store?.close();
+      close.mockRestore();
+    }
+  });
+
   test("stores collections, stable chunks, lexical search hits, and job status", () => {
     const paths = useTempSupportPaths();
     const store = new SQLiteKnowledgeStore(undefined, paths);

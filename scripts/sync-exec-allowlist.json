@@ -768,5 +768,12 @@
     "category": "process-lifecycle",
     "reason": "Bounded asynchronous ripgrep scan with caller cancellation, request deadline, output cap, and child termination/reaping.",
     "owner": "runtime"
+  },
+  {
+    "path": "packages/runtime/src/knowledge.test.ts",
+    "symbol": "Bun.spawn",
+    "category": "test",
+    "reason": "Owned SQLite reader child verifies read-only startup contention with bounded termination and reaping.",
+    "owner": "tests"
   }
 ]

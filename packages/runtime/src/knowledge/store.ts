@@ -468,9 +468,10 @@ function insertSourceRefs(db: Database, collectionId: string, chunkId: string | 
 
 /**
  * Open a read-only connection for search/status endpoints: no schema exec,
- * no migrations, no journal-mode changes — WAL gives snapshot reads that
- * never block or get blocked by the index writer. A missing or
- * never-initialized database is served from an empty in-memory schema
+ * no migrations, no journal-mode changes. WAL permits snapshot reads during
+ * indexing; the busy handler also covers the initial schema probe while a
+ * writer initializes the database. A missing or never-initialized database
+ * is served from an empty in-memory schema
  * instead of falling back to a writable connection running DDL on a GET.
  */
 function openReadonlyKnowledgeDatabase(sqlitePath: string): Database {
@@ -479,15 +480,20 @@ function openReadonlyKnowledgeDatabase(sqlitePath: string): Database {
       create?: boolean;
       strict?: boolean;
     });
-    const initialized = candidate
-      .query("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'collections'")
-      .get() !== null;
-    if (initialized) {
+    let retained = false;
+    try {
       candidate.exec("PRAGMA busy_timeout = 1000;");
-      candidate.exec("PRAGMA query_only = ON;");
-      return candidate;
+      const initialized = candidate
+        .query("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'collections'")
+        .get() !== null;
+      if (initialized) {
+        candidate.exec("PRAGMA query_only = ON;");
+        retained = true;
+        return candidate;
+      }
+    } finally {
+      if (!retained) candidate.close();
     }
-    candidate.close();
   }
   const memory = new Database(":memory:");
   memory.exec(KNOWLEDGE_SQLITE_SCHEMA);
