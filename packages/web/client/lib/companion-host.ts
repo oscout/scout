@@ -35,6 +35,15 @@
  *   engage     { engaged }                  → null   (companion only: a menu is open; do not fade)
  *   allow      { kind, id, label? }         → CompanionHostState  (operator grant to surface work here)
  *   disallow   { kind, id }                 → CompanionHostState
+ *   figureDrag { workId }                   → null   (companion only, edge mode: pointer went down on a
+ *                                                    pinned figure; the host tracks the mouse and places
+ *                                                    it on release by the modifier held then)
+ *   figure     { workId, size?, motion?, hidden?, home? } → CompanionHostState  (one pinned figure's
+ *                                                    settings; size 16–96 or "default", motion
+ *                                                    full|calm|still or "default", home: true only)
+ *   figureNudge { workId, dx, dy }          → CompanionHostState  (arrow keys, |d| ≤ 100pt, page +y down)
+ *   figureDefaults { size?, motion? }       → CompanionHostState
+ *   figuresHome                             → CompanionHostState  ("Send all home")
  *
  * Surfacing grants are operator choices. They let matching broker work
  * appear in the companion's Surfaced list with a badge; they never show the
@@ -44,6 +53,13 @@
  *   window.dispatchEvent(new CustomEvent("scout:companion-pointer", { detail: { id, outside } }))
  *   — which reported region the pointer is over (WebKit runs no hover in a
  *   panel that is not key), or that a click landed outside every region.
+ *   window.dispatchEvent(new CustomEvent("scout:companion-figure-drag", { detail }))
+ *   — during a figure drag `{ workId, x, y, mod, guide }` (page points, feet
+ *   at the pointer; mod "alt" | "shift" | null; guide where that modifier
+ *   would put it), then `{ workId: null, dropped, fall }` when it ends.
+ *   window.dispatchEvent(new CustomEvent("scout:companion-anchors", { detail: { figures, falling } }))
+ *   — placed figures moved with their windows, hid, ghosted or fell; up to
+ *   15 times a second while one rides on a window.
  *
  * The host validates every field again; this module only keeps honest pages
  * from sending junk.
@@ -77,10 +93,53 @@ export type CompanionDockEdge = "bottom" | "left" | "right" | "hidden";
 export type CompanionEdgeGeometry = {
   width: number;
   height: number;
+  /** The panel covers the whole display; these are page rectangles in it. */
+  band: CompanionRect | null;
+  visible: CompanionRect | null;
+  screen: { width: number; height: number } | null;
   anchor: CompanionEdgeAnchor;
   dock: CompanionDockEdge;
   obstacles: { start: number; end: number; label: string }[];
 };
+
+export type CompanionRect = { x: number; y: number; width: number; height: number };
+
+export type CompanionSide = "bottom" | "top" | "left" | "right";
+export type CompanionFigureMotion = "full" | "calm" | "still";
+
+/** Where the operator put a pinned figure. Fractions are of the visible frame. */
+export type CompanionFigurePlacement =
+  | { kind: "home" }
+  | { kind: "free"; x: number; y: number }
+  | { kind: "edge"; edge: CompanionSide; t: number }
+  | { kind: "window"; side: CompanionSide; t: number };
+
+/**
+ * Where the host resolved a placed figure's feet, in page points. `down` is
+ * the side its feet point to (null: upright, placed freely); `covered`: a
+ * window in front hides its spot, so it ghosts; `away`: its window is on
+ * another Space, hidden until it returns.
+ */
+export type CompanionFigureAnchor = { x: number; y: number; down: CompanionSide | null; covered: boolean; away: boolean };
+
+export type CompanionFigure = {
+  workId: string;
+  /** null follows the companion default. */
+  size: number | null;
+  motion: CompanionFigureMotion | null;
+  hidden: boolean;
+  placement: CompanionFigurePlacement;
+  /** Edge mode only; null at home or while the host has not found its spot. */
+  anchor: CompanionFigureAnchor | null;
+  /** "Home row", "Standing on the Safari window", … */
+  label: string;
+};
+
+export type CompanionFigureDefaults = { size: number; motion: CompanionFigureMotion };
+
+export const FIGURE_SIZE_MIN = 16;
+export const FIGURE_SIZE_MAX = 96;
+export const DEFAULT_FIGURE_DEFAULTS: CompanionFigureDefaults = { size: 24, motion: "full" };
 
 export type CompanionHitRegion = { id: string; x: number; y: number; width: number; height: number };
 
@@ -101,6 +160,9 @@ export type CompanionHostState = {
   edgeAnchor: CompanionEdgeAnchor;
   /** Native-read placement while in edge mode; null otherwise. */
   edge: CompanionEdgeGeometry | null;
+  /** One per pin, in pin order. */
+  figures: CompanionFigure[];
+  figureDefaults: CompanionFigureDefaults;
 };
 
 export const COMPANION_MAX_PINS = 200;
@@ -126,10 +188,99 @@ const CORNERS: readonly CompanionCorner[] = ["top-left", "top-right", "bottom-le
 const SCOPE_KINDS: readonly CompanionScopeKind[] = ["work", "agent", "project"];
 export const COMPANION_EVENT = "scout:companion";
 export const COMPANION_POINTER_EVENT = "scout:companion-pointer";
+export const COMPANION_FIGURE_DRAG_EVENT = "scout:companion-figure-drag";
+export const COMPANION_ANCHORS_EVENT = "scout:companion-anchors";
+const SIDES: readonly CompanionSide[] = ["bottom", "top", "left", "right"];
+const MOTIONS: readonly CompanionFigureMotion[] = ["full", "calm", "still"];
 const DOCK_EDGES: readonly CompanionDockEdge[] = ["bottom", "left", "right", "hidden"];
 
 function finite(value: unknown, min: number, max: number): number | null {
   return typeof value === "number" && Number.isFinite(value) && value >= min && value <= max ? value : null;
+}
+
+function parseRect(value: unknown): CompanionRect | null {
+  if (!value || typeof value !== "object") return null;
+  const raw = value as Record<string, unknown>;
+  const x = finite(raw.x, -20_000, 20_000);
+  const y = finite(raw.y, -20_000, 20_000);
+  const width = finite(raw.width, 1, 20_000);
+  const height = finite(raw.height, 1, 20_000);
+  return x === null || y === null || width === null || height === null ? null : { x, y, width, height };
+}
+
+function parseSize(value: unknown): { width: number; height: number } | null {
+  if (!value || typeof value !== "object") return null;
+  const raw = value as Record<string, unknown>;
+  const width = finite(raw.width, 1, 20_000);
+  const height = finite(raw.height, 1, 20_000);
+  return width === null || height === null ? null : { width, height };
+}
+
+export function isFigureSize(value: unknown): value is number {
+  return typeof value === "number" && Number.isInteger(value) && value >= FIGURE_SIZE_MIN && value <= FIGURE_SIZE_MAX;
+}
+
+function isMotion(value: unknown): value is CompanionFigureMotion {
+  return MOTIONS.includes(value as CompanionFigureMotion);
+}
+
+function isSide(value: unknown): value is CompanionSide {
+  return SIDES.includes(value as CompanionSide);
+}
+
+/** Narrow a placement; window ids and display ids stay with the host. */
+export function parseCompanionFigurePlacement(value: unknown): CompanionFigurePlacement {
+  if (!value || typeof value !== "object") return { kind: "home" };
+  const raw = value as Record<string, unknown>;
+  const unit = (n: unknown) => finite(n, 0, 1);
+  if (raw.kind === "free" && unit(raw.x) !== null && unit(raw.y) !== null) return { kind: "free", x: raw.x as number, y: raw.y as number };
+  if (raw.kind === "edge" && isSide(raw.edge) && unit(raw.t) !== null) return { kind: "edge", edge: raw.edge, t: raw.t as number };
+  if (raw.kind === "window" && isSide(raw.side) && unit(raw.t) !== null) return { kind: "window", side: raw.side, t: raw.t as number };
+  return { kind: "home" };
+}
+
+export function parseCompanionFigureAnchor(value: unknown): CompanionFigureAnchor | null {
+  if (!value || typeof value !== "object") return null;
+  const raw = value as Record<string, unknown>;
+  const x = finite(raw.x, -20_000, 20_000);
+  const y = finite(raw.y, -20_000, 20_000);
+  if (x === null || y === null) return null;
+  return { x, y, down: isSide(raw.down) ? raw.down : null, covered: raw.covered === true, away: raw.away === true };
+}
+
+function cleanLabel(value: unknown, fallback: string): string {
+  return typeof value === "string" && value.trim() ? value.trim().slice(0, 120) : fallback;
+}
+
+/** One figure per pin, in pin order; a missing or malformed entry is a default figure. */
+export function parseCompanionFigures(value: unknown, pins: readonly CompanionPin[]): CompanionFigure[] {
+  const byId = new Map<string, Record<string, unknown>>();
+  for (const entry of Array.isArray(value) ? value : []) {
+    if (!entry || typeof entry !== "object") continue;
+    const raw = entry as Record<string, unknown>;
+    if (isCompanionId(raw.workId) && !byId.has(raw.workId)) byId.set(raw.workId, raw);
+  }
+  return pins.map(({ workId }) => {
+    const raw = byId.get(workId) ?? {};
+    const placement = parseCompanionFigurePlacement(raw.placement);
+    return {
+      workId,
+      size: isFigureSize(raw.size) ? raw.size : null,
+      motion: isMotion(raw.motion) ? raw.motion : null,
+      hidden: raw.hidden === true,
+      placement,
+      anchor: placement.kind === "home" ? null : parseCompanionFigureAnchor(raw.anchor),
+      label: cleanLabel(raw.label, placement.kind === "home" ? "Home row" : "Placed"),
+    };
+  });
+}
+
+export function parseCompanionFigureDefaults(value: unknown): CompanionFigureDefaults {
+  const raw = value && typeof value === "object" ? value as Record<string, unknown> : {};
+  return {
+    size: isFigureSize(raw.size) ? raw.size : DEFAULT_FIGURE_DEFAULTS.size,
+    motion: isMotion(raw.motion) ? raw.motion : DEFAULT_FIGURE_DEFAULTS.motion,
+  };
 }
 
 /** Narrow the host's edge geometry; anything malformed becomes null. */
@@ -151,6 +302,9 @@ export function parseCompanionEdgeGeometry(value: unknown): CompanionEdgeGeometr
   return {
     width,
     height,
+    band: parseRect(raw.band),
+    visible: parseRect(raw.visible),
+    screen: parseSize(raw.screen),
     anchor: raw.anchor === "left" ? "left" : "right",
     dock: DOCK_EDGES.includes(raw.dock as CompanionDockEdge) ? raw.dock as CompanionDockEdge : "hidden",
     obstacles,
@@ -229,6 +383,8 @@ export function parseCompanionHostState(value: unknown): CompanionHostState | nu
     originPins: raw.originPins !== false,
     edgeAnchor: raw.edgeAnchor === "left" ? "left" : "right",
     edge: raw.mode === "edge" ? parseCompanionEdgeGeometry(raw.edge) : null,
+    figures: parseCompanionFigures(raw.figures, pins),
+    figureDefaults: parseCompanionFigureDefaults(raw.figureDefaults),
   };
 }
 
@@ -373,6 +529,11 @@ export function onCompanionPointer(listener: (event: { id: string | null; outsid
   return () => window.removeEventListener(COMPANION_POINTER_EVENT, onEvent);
 }
 
+/** A reply field opened: ask the host to make the panel key so typing lands. */
+export function focusCompanionInput(): void {
+  void call("focusInput").catch(() => {});
+}
+
 /** Tell the host a menu or sheet is open, so the panel does not fade under it. */
 export function setCompanionEngaged(engaged: boolean): void {
   void call("engage", { engaged }).catch(() => {});
@@ -410,4 +571,129 @@ export function onCompanionState(listener: (state: CompanionHostState) => void):
   };
   window.addEventListener(COMPANION_EVENT, onEvent);
   return () => window.removeEventListener(COMPANION_EVENT, onEvent);
+}
+
+// ── Figures you place (edge mode) ─────────────────────────────────────
+
+/** Pointer went down on a pinned figure: the host takes the drag from here. */
+export function beginFigureDrag(workId: string): void {
+  if (!isCompanionId(workId)) return;
+  void call("figureDrag", { workId }).catch(() => {});
+}
+
+export type CompanionFigurePatch = {
+  size?: number | "default";
+  motion?: CompanionFigureMotion | "default";
+  hidden?: boolean;
+  home?: true;
+};
+
+export function setCompanionFigure(workId: string, patch: CompanionFigurePatch): Promise<CompanionHostState> {
+  if (!isCompanionId(workId)) return Promise.reject(new Error("That figure cannot be changed."));
+  const params: Record<string, unknown> = { workId };
+  if (patch.size === "default" || isFigureSize(patch.size)) params.size = patch.size;
+  if (patch.motion === "default" || isMotion(patch.motion)) params.motion = patch.motion;
+  if (typeof patch.hidden === "boolean") params.hidden = patch.hidden;
+  if (patch.home === true) params.home = true;
+  if (Object.keys(params).length === 1) return Promise.reject(new Error("Nothing to change."));
+  return callState("figure", params);
+}
+
+export const FIGURE_NUDGE_MAX = 100;
+
+export function nudgeCompanionFigure(workId: string, dx: number, dy: number): Promise<CompanionHostState> {
+  const ok = (n: number) => Number.isFinite(n) && Math.abs(n) <= FIGURE_NUDGE_MAX;
+  if (!isCompanionId(workId) || !ok(dx) || !ok(dy)) return Promise.reject(new Error("That figure cannot be moved."));
+  return callState("figureNudge", { workId, dx, dy });
+}
+
+export function setCompanionFigureDefaults(patch: Partial<CompanionFigureDefaults>): Promise<CompanionHostState> {
+  const params: Record<string, unknown> = {};
+  if (isFigureSize(patch.size)) params.size = patch.size;
+  if (isMotion(patch.motion)) params.motion = patch.motion;
+  if (!Object.keys(params).length) return Promise.reject(new Error("Nothing to change."));
+  return callState("figureDefaults", params);
+}
+
+export function sendCompanionFiguresHome(): Promise<CompanionHostState> {
+  return callState("figuresHome");
+}
+
+type PagePoint = { x: number; y: number };
+export type CompanionFigureGuide =
+  | { kind: "perch"; spot: PagePoint; from: PagePoint | null; to: PagePoint | null; horizontal: boolean }
+  | { kind: "fall"; spot: PagePoint; horizontal: boolean };
+
+export type CompanionFigureDrag =
+  | { workId: string; x: number; y: number; mod: "alt" | "shift" | null; guide: CompanionFigureGuide | null }
+  | { workId: null; dropped: string | null; fall: boolean };
+
+function parsePoint(value: unknown): PagePoint | null {
+  if (!value || typeof value !== "object") return null;
+  const raw = value as Record<string, unknown>;
+  const x = finite(raw.x, -20_000, 20_000);
+  const y = finite(raw.y, -20_000, 20_000);
+  return x === null || y === null ? null : { x, y };
+}
+
+export function parseCompanionFigureDrag(value: unknown): CompanionFigureDrag | null {
+  if (!value || typeof value !== "object") return null;
+  const raw = value as Record<string, unknown>;
+  if (raw.workId === null) {
+    return { workId: null, dropped: isCompanionId(raw.dropped) ? raw.dropped : null, fall: raw.fall === true };
+  }
+  if (!isCompanionId(raw.workId)) return null;
+  const at = parsePoint(raw);
+  if (!at) return null;
+  const mod = raw.mod === "alt" || raw.mod === "shift" ? raw.mod : null;
+  let guide: CompanionFigureGuide | null = null;
+  if (raw.guide && typeof raw.guide === "object") {
+    const g = raw.guide as Record<string, unknown>;
+    const spot = parsePoint(g.spot);
+    const horizontal = g.horizontal !== false;
+    if (spot && g.kind === "perch") guide = { kind: "perch", spot, from: parsePoint(g.from), to: parsePoint(g.to), horizontal };
+    else if (spot && g.kind === "fall") guide = { kind: "fall", spot, horizontal };
+  }
+  return { workId: raw.workId, x: at.x, y: at.y, mod, guide };
+}
+
+/** Figure drags tracked by the host. Returns the unsubscribe function. */
+export function onCompanionFigureDrag(listener: (drag: CompanionFigureDrag) => void): () => void {
+  if (typeof window === "undefined") return () => {};
+  const onEvent = (event: Event) => {
+    const drag = parseCompanionFigureDrag((event as CustomEvent).detail);
+    if (drag) listener(drag);
+  };
+  window.addEventListener(COMPANION_FIGURE_DRAG_EVENT, onEvent);
+  return () => window.removeEventListener(COMPANION_FIGURE_DRAG_EVENT, onEvent);
+}
+
+export type CompanionAnchorUpdate = {
+  anchors: Map<string, { anchor: CompanionFigureAnchor | null; label: string | null }>;
+  falling: string[];
+};
+
+export function parseCompanionAnchors(value: unknown): CompanionAnchorUpdate | null {
+  if (!value || typeof value !== "object") return null;
+  const raw = value as Record<string, unknown>;
+  const anchors: CompanionAnchorUpdate["anchors"] = new Map();
+  for (const entry of Array.isArray(raw.figures) ? raw.figures.slice(0, COMPANION_MAX_PINS) : []) {
+    if (!entry || typeof entry !== "object") continue;
+    const f = entry as Record<string, unknown>;
+    if (!isCompanionId(f.workId)) continue;
+    anchors.set(f.workId, { anchor: parseCompanionFigureAnchor(f.anchor), label: typeof f.label === "string" ? cleanLabel(f.label, "") || null : null });
+  }
+  const falling = (Array.isArray(raw.falling) ? raw.falling : []).filter(isCompanionId);
+  return { anchors, falling };
+}
+
+/** Placed figures riding on windows. Returns the unsubscribe function. */
+export function onCompanionAnchors(listener: (update: CompanionAnchorUpdate) => void): () => void {
+  if (typeof window === "undefined") return () => {};
+  const onEvent = (event: Event) => {
+    const update = parseCompanionAnchors((event as CustomEvent).detail);
+    if (update) listener(update);
+  };
+  window.addEventListener(COMPANION_ANCHORS_EVENT, onEvent);
+  return () => window.removeEventListener(COMPANION_ANCHORS_EVENT, onEvent);
 }

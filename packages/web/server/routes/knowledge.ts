@@ -11,6 +11,7 @@ import { fileURLToPath } from "node:url";
 import { homedir } from "node:os";
 import {
   resolveOpenScoutKnowledgePaths,
+  scanRecentSessionKnowledge,
   SQLiteKnowledgeStore,
   type KnowledgeCollectionKind,
   type KnowledgeFacets,
@@ -84,8 +85,26 @@ const SESSION_KNOWLEDGE_INDEX_TIMEOUT_MS = 15 * 60 * 1000;
 
 let activeSessionKnowledgeIndex: {
   input: SessionKnowledgeIndexInput;
+  startedAt: number;
   promise: Promise<SessionKnowledgeIndexOutcome>;
 } | null = null;
+
+// The outcome of the most recent run, so a client that started indexing in the
+// background (and stopped waiting on it) can still learn that it failed.
+let lastSessionKnowledgeIndex: {
+  finishedAt: number;
+  ok: boolean;
+  error?: string;
+} | null = null;
+
+function sessionKnowledgeIndexState() {
+  return {
+    indexing: activeSessionKnowledgeIndex
+      ? { startedAt: activeSessionKnowledgeIndex.startedAt }
+      : null,
+    lastIndex: lastSessionKnowledgeIndex,
+  };
+}
 
 function normalizeHarnessList(value: string | string[] | undefined): string[] {
   if (value == null) return [];
@@ -101,19 +120,28 @@ function sameSessionKnowledgeIndexInput(a: SessionKnowledgeIndexInput, b: Sessio
     && normalizeHarnessList(a.harness).join("\0") === normalizeHarnessList(b.harness).join("\0");
 }
 
+// Dev serves the TS source from server/ (this file lives in server/routes/);
+// packaged builds bundle the child as an .mjs beside the server bundle in dist/
+// (see build:server). Return whichever exists.
+export function knowledgeIndexChildPath(base: string | URL = import.meta.url): string | null {
+  const candidates = [
+    new URL("../knowledge-index-child.ts", base),
+    new URL("./knowledge-index-child.mjs", base),
+  ];
+  const found = candidates.find((candidate) => existsSync(candidate));
+  return found ? fileURLToPath(found) : null;
+}
+
 function startSessionKnowledgeIndex(input: SessionKnowledgeIndexInput): Promise<SessionKnowledgeIndexOutcome> {
   if (activeSessionKnowledgeIndex) {
     return sameSessionKnowledgeIndexInput(activeSessionKnowledgeIndex.input, input)
       ? activeSessionKnowledgeIndex.promise
       : Promise.resolve({ ok: false, busy: true, error: "session knowledge index already running" });
   }
-  const promise = (async () => {
+  const promise = (async (): Promise<SessionKnowledgeIndexOutcome> => {
     try {
-      // Dev serves this file's TS source; packaged builds bundle the child as
-      // a sibling .mjs (see build:server). Prefer whichever exists.
-      const childTs = new URL("./knowledge-index-child.ts", import.meta.url);
-      const childMjs = new URL("./knowledge-index-child.mjs", import.meta.url);
-      const scriptPath = fileURLToPath(existsSync(childTs) ? childTs : childMjs);
+      const scriptPath = knowledgeIndexChildPath();
+      if (!scriptPath) return { ok: false, error: "knowledge index child script not found" };
       const child = Bun.spawn([process.execPath, scriptPath, JSON.stringify(input)], {
         stdout: "pipe",
         stderr: "inherit",
@@ -140,8 +168,15 @@ function startSessionKnowledgeIndex(input: SessionKnowledgeIndexInput): Promise<
     } finally {
       activeSessionKnowledgeIndex = null;
     }
-  })();
-  activeSessionKnowledgeIndex = { input, promise };
+  })().then((outcome) => {
+    lastSessionKnowledgeIndex = {
+      finishedAt: Date.now(),
+      ok: outcome.ok,
+      ...(outcome.ok ? {} : { error: outcome.error ?? "session indexing failed" }),
+    };
+    return outcome;
+  });
+  activeSessionKnowledgeIndex = { input, startedAt: Date.now(), promise };
   return promise;
 }
 
@@ -434,35 +469,74 @@ export function mountKnowledgeRoutes(app: Hono, deps: KnowledgeRouteDeps) {
   app.get("/api/knowledge/status", (c) => {
     const store = new SQLiteKnowledgeStore(undefined, undefined, { readonly: true });
     try {
-      return c.json(store.status());
+      return c.json({ ...store.status(), ...sessionKnowledgeIndexState() });
     } finally {
       store.close();
     }
   });
 
-  app.get("/api/knowledge/search", (c) => {
+  // Answers from the index when it has content. While there is no index yet,
+  // or one is building and has nothing for this query, it falls back to a
+  // time-boxed scan of the newest transcripts ("basic" mode) so search works
+  // from the first second.
+  app.get("/api/knowledge/search", async (c) => {
     const q = c.req.query("q") ?? "";
     const limit = parseOptionalPositiveInt(c.req.query("limit"), 30) ?? 30;
     const primitives = parseKnowledgeSearchParams(c.req.url);
+    const sourceKinds = primitives.sourceKinds ?? ["sessions"];
     const store = new SQLiteKnowledgeStore(undefined, undefined, { readonly: true });
+    let hits;
+    let status;
     try {
-      return c.json({
-        q,
-        hits: store.searchLexical({
+      status = store.status();
+      hits = status.chunks > 0
+        ? store.searchLexical({
           q,
-          sourceKinds: primitives.sourceKinds ?? ["sessions"],
+          sourceKinds,
           collections: primitives.collections,
           facets: primitives.facets,
           sourceUpdatedAfterMs: primitives.sourceUpdatedAfterMs,
           sourceUpdatedBeforeMs: primitives.sourceUpdatedBeforeMs,
           limit,
           mode: "lexical",
-        }),
-        status: store.status(),
-      });
+        })
+        : [];
     } finally {
       store.close();
     }
+    const indexState = sessionKnowledgeIndexState();
+    const wantsBasic = c.req.query("basic") === "1"
+      || status.chunks === 0
+      || (indexState.indexing !== null && hits.length === 0);
+    if (!wantsBasic || !q.trim() || !sourceKinds.includes("sessions") || primitives.collections) {
+      return c.json({ q, mode: "index", hits, status: { ...status, ...indexState } });
+    }
+    const facetValues = (key: string) => {
+      const value = primitives.facets?.[key];
+      if (value == null) return undefined;
+      return (Array.isArray(value) ? value : [value]).map(String);
+    };
+    const projects = facetValues("project");
+    const scan = await scanRecentSessionKnowledge({
+      q,
+      harness: facetValues("harness"),
+      updatedAfterMs: primitives.sourceUpdatedAfterMs,
+      limit: projects ? limit * 3 : limit,
+    });
+    const basicHits = (projects
+      ? scan.hits.filter((hit) => projects.includes(String(hit.facets.project)))
+      : scan.hits).slice(0, limit);
+    return c.json({
+      q,
+      mode: "basic",
+      hits: basicHits,
+      basic: {
+        scannedFiles: scan.scannedFiles,
+        totalFiles: scan.totalFiles,
+        truncated: scan.truncated,
+      },
+      status: { ...status, ...indexState },
+    });
   });
 
   app.get("/api/knowledge/search-primitives", (c) => {
@@ -519,6 +593,7 @@ export function mountKnowledgeRoutes(app: Hono, deps: KnowledgeRouteDeps) {
       limit?: unknown;
       force?: unknown;
       harness?: unknown;
+      background?: unknown;
     };
     const hours = typeof body.hours === "number" && Number.isFinite(body.hours) && body.hours > 0
       ? body.hours
@@ -543,7 +618,18 @@ export function mountKnowledgeRoutes(app: Hono, deps: KnowledgeRouteDeps) {
         .map((entry) => entry.trim());
       if (list.length > 0) harness = list;
     }
-    const outcome = await startSessionKnowledgeIndex({ days, hours, limit, force, harness });
+    const run = startSessionKnowledgeIndex({ days, hours, limit, force, harness });
+    if (body.background === true) {
+      // Return at once; the caller follows progress on /api/knowledge/status
+      // (activeJobs, indexing, lastIndex). A run already in flight with other
+      // parameters is reported as busy rather than queued.
+      const early = await Promise.race([run, Promise.resolve(null)]);
+      if (early?.busy) {
+        return c.json({ error: early.error ?? "session knowledge index already running" }, 409);
+      }
+      return c.json({ started: true, ...sessionKnowledgeIndexState() }, 202);
+    }
+    const outcome = await run;
     if (outcome.busy) {
       return c.json({ error: outcome.error ?? "session knowledge index already running" }, 409);
     }

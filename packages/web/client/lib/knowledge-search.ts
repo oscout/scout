@@ -22,6 +22,10 @@ export type KnowledgeStatus = {
     error?: string;
   }>;
   sqliteBytes: number;
+  /** Set while the server runs a session index (absent on older servers). */
+  indexing?: { startedAt: number } | null;
+  /** Outcome of the server's most recent session index run. */
+  lastIndex?: { finishedAt: number; ok: boolean; error?: string } | null;
 };
 
 export type PortablePath = {
@@ -61,7 +65,14 @@ export type KnowledgeHit = {
 
 export type SearchResponse = {
   q: string;
+  /** "basic" = index-free scan of recent transcripts (no index yet, or still building). */
+  mode?: "index" | "basic";
   hits: KnowledgeHit[];
+  basic?: {
+    scannedFiles: number;
+    totalFiles: number;
+    truncated: boolean;
+  };
   status: KnowledgeStatus;
 };
 
@@ -90,6 +101,15 @@ export type IndexResponse = {
     sessions: IndexedSession[];
   };
   status: KnowledgeStatus;
+};
+
+/** POST /api/knowledge/sessions/index with `background: true`. */
+export type IndexStartResponse = {
+  started?: boolean;
+  indexing?: KnowledgeStatus["indexing"];
+  lastIndex?: KnowledgeStatus["lastIndex"];
+  /** Present when an older server ran the index to completion before answering. */
+  status?: KnowledgeStatus;
 };
 
 export type WorktreeIndexResponse = {

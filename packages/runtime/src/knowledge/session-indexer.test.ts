@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { indexRecentSessionKnowledge, SQLiteKnowledgeStore } from "./index.ts";
+import { indexRecentSessionKnowledge, scanRecentSessionKnowledge, SQLiteKnowledgeStore } from "./index.ts";
 
 const roots = new Set<string>();
 const originalEnv = {
@@ -152,4 +152,55 @@ describe("session knowledge indexer (kimi)", () => {
       store.close();
     }
   });
+});
+
+describe("basic session scan (no index)", () => {
+  function writeClaudeFixture(projectsRoot: string): void {
+    const dir = join(projectsRoot, "-Users-art-dev-openscout");
+    mkdirSync(dir, { recursive: true });
+    const sessionId = "0f2c7a1e-basic-scan";
+    const base = {
+      cwd: "/Users/art/dev/openscout",
+      sessionId,
+      timestamp: new Date(Date.now() - 30_000).toISOString(),
+    };
+    const lines = [
+      { ...base, type: "attachment" },
+      { ...base, type: "user", message: { role: "user", content: "Why does the knowledge index child exit 1?" } },
+      { ...base, type: "assistant", message: { role: "assistant", content: [{ type: "text", text: "The child script path moved after the route split." }] } },
+      { ...base, type: "user", message: { role: "user", content: "Unrelated note about the header." } },
+    ];
+    writeFileSync(join(dir, `${sessionId}.jsonl`), `${lines.map((line) => JSON.stringify(line)).join("\n")}\n`, "utf8");
+  }
+
+  for (const engine of ["ripgrep", "reader"] as const) {
+    test(`finds matching transcript records without an index (${engine})`, async () => {
+      const root = tempRoot("openscout-basic-scan-");
+      const originalRg = process.env.OPENSCOUT_RG_PATH;
+      if (engine === "reader") process.env.OPENSCOUT_RG_PATH = "none";
+      try {
+        process.env.OPENSCOUT_TAIL_CLAUDE_PROJECTS_ROOT = join(root, "claude");
+        process.env.OPENSCOUT_TAIL_CODEX_SESSIONS_ROOT = join(root, "empty-codex");
+        process.env.OPENSCOUT_TAIL_KIMI_SESSIONS_ROOT = join(root, "empty-kimi");
+        writeClaudeFixture(process.env.OPENSCOUT_TAIL_CLAUDE_PROJECTS_ROOT);
+
+        const result = await scanRecentSessionKnowledge({ q: "index CHILD" });
+        expect(result.scannedFiles).toBe(1);
+        expect(result.totalFiles).toBe(1);
+        expect(result.truncated).toBe(false);
+        expect(result.hits).toHaveLength(1);
+        const hit = result.hits[0]!;
+        expect(hit.snippet).toContain("knowledge index child");
+        expect(hit.facets.harness).toBe("claude");
+        expect(hit.facets.project).toBe("openscout");
+        expect(hit.facets.match).toBe("basic");
+        expect(hit.sourceRefs[0]?.kind).toBe("harness_transcript");
+
+        const none = await scanRecentSessionKnowledge({ q: "nothing-matches-this" });
+        expect(none.hits).toHaveLength(0);
+      } finally {
+        restoreEnv("OPENSCOUT_RG_PATH", originalRg);
+      }
+    });
+  }
 });

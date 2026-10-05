@@ -218,3 +218,30 @@ describe("motion expiry", () => {
     expect(pruneExpired(afterHop, 2600).size).toBe(0);
   });
 });
+
+describe("resized figures", () => {
+  test("a wider figure keeps half of each width clear and counts the slots it needs", () => {
+    const free: [number, number][] = [[0, 200]];
+    const figures = [
+      { id: "big", visible: "working" as const, arriving: false, lastActivityAt: 2, width: 80 },
+      { id: "small", visible: "working" as const, arriving: false, lastActivityAt: 1 },
+    ];
+    const { pos, overflow } = solveEdge(figures, { prev: new Map([["big", 100], ["small", 100]]), free, anchor: "right", width: 200 });
+    expect(overflow).toEqual([]);
+    expect(Math.abs(pos.get("big")! - pos.get("small")!)).toBeGreaterThanOrEqual(55);
+    // 200pt holds six classic slots; a 96pt figure needs four of them.
+    const many = [
+      { id: "huge", visible: "needs" as const, arriving: false, lastActivityAt: 9, width: 120 },
+      ...[1, 2, 3].map((n) => ({ id: `s${n}`, visible: "resting" as const, arriving: false, lastActivityAt: n })),
+    ];
+    const full = solveEdge(many, { prev: new Map(), free, anchor: "right", width: 200 });
+    expect(full.pos.has("huge")).toBe(true);
+    expect(full.overflow.length).toBeGreaterThan(0);
+  });
+
+  test("unsized figures place exactly as before", () => {
+    expect(nearestFree(60, [[0, 200]], [50])).toBe(80);
+    expect(nearestFree(60, [[0, 200]], [{ x: 50, w: 30 }])).toBe(80);
+    expect(nearestFree(60, [[0, 200]], [{ x: 50, w: 80 }])).toBe(105);
+  });
+});

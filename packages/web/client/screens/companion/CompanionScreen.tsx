@@ -2,8 +2,16 @@ import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent, 
 import { ScoutMark } from "../../components/ScoutMark.tsx";
 import { api } from "../../lib/api.ts";
 import {
+  DEFAULT_FIGURE_DEFAULTS,
   DEFAULT_RESTING_OPACITY,
   RESTING_OPACITY_MIN,
+  nudgeCompanionFigure,
+  sendCompanionFiguresHome,
+  setCompanionFigure,
+  setCompanionFigureDefaults,
+  type CompanionFigure,
+  type CompanionFigureDefaults,
+  type CompanionFigurePatch,
   beginCompanionDrag,
   disallowCompanionScope,
   hideCompanion,
@@ -137,6 +145,8 @@ export function CompanionScreen({ workIds, mode: previewMode }: { workIds?: stri
       originPins: true,
       edgeAnchor: "right",
       edge: null,
+      figures: [],
+      figureDefaults: DEFAULT_FIGURE_DEFAULTS,
     },
   );
   const host = hosted ? hostHandle.state : local;
@@ -677,7 +687,7 @@ export function CompanionScreen({ workIds, mode: previewMode }: { workIds?: stri
         </div>
         <p className="co-hint">
           {edge
-            ? "Characters stand along the bottom of the screen. Clicks pass through everywhere else. The Scout menu can switch back to the stack."
+            ? "Characters stand along the bottom of the screen, or wherever you drag them. Clicks pass through everywhere else. The Scout menu can switch back to the stack."
             : "Edge characters puts each pinned item on the bottom edge of the screen as its agent's character."}
         </p>
       </div>
@@ -693,7 +703,7 @@ export function CompanionScreen({ workIds, mode: previewMode }: { workIds?: stri
                 </button>
               ))}
             </div>
-            <p className="co-hint">Scout cannot see other apps&rsquo; windows, so you choose the end that stays clear. Scout&rsquo;s own windows are stepped around.</p>
+            <p className="co-hint">The end the home row gathers toward. Scout&rsquo;s own windows are stepped around; drag a figure out of the row to place it anywhere.</p>
           </div>
           <label className="co-check">
             <input type="checkbox" checked={host.originPins} onChange={(event) => setPreferences({ originPins: event.currentTarget.checked })} />
@@ -879,6 +889,8 @@ export function CompanionScreen({ workIds, mode: previewMode }: { workIds?: stri
         lastActivityAt: card?.lastActivityAt ?? (row ? Math.max(row.updatedAt, row.lastMeaningfulAt ?? 0) : 0),
         visitorFrom: visitorFrom(pin.machineId, agent),
         origin: null,
+        report: card ? card.callout?.text || card.headline || card.observedLine || null : null,
+        harness: agent?.harness ?? null,
       });
     }
     for (const item of surfaced) {
@@ -894,9 +906,42 @@ export function CompanionScreen({ workIds, mode: previewMode }: { workIds?: stri
         lastActivityAt: item.lastActivityAt,
         visitorFrom: visitorFrom(null, agent),
         origin: item.origin,
+        report: null,
+        harness: agent?.harness ?? null,
       });
     }
     const surfacedById = new Map(surfaced.map((item) => [item.workId, item]));
+    // One figure per pin. The host sends them in pin order; the browser
+    // preview keeps its own and fills in pins it has not seen yet.
+    const figureFor = (workId: string): CompanionFigure => host.figures.find((figure) => figure.workId === workId)
+      ?? { workId, size: null, motion: null, hidden: false, placement: { kind: "home" }, anchor: null, label: "Home row" };
+    const figures = pins.map((pin) => figureFor(pin.workId));
+    const changeFigure = (workId: string, patch: CompanionFigurePatch) => {
+      if (!hosted) {
+        applyLocal((prev) => ({
+          figures: prev.pins.map((pin) => {
+            const figure = prev.figures.find((f) => f.workId === pin.workId) ?? figureFor(pin.workId);
+            if (pin.workId !== workId) return figure;
+            return {
+              ...figure,
+              size: patch.size === undefined ? figure.size : patch.size === "default" ? null : patch.size,
+              motion: patch.motion === undefined ? figure.motion : patch.motion === "default" ? null : patch.motion,
+              hidden: patch.hidden ?? figure.hidden,
+              ...(patch.home ? { placement: { kind: "home" } as const, anchor: null, label: "Home row" } : {}),
+            };
+          }),
+        }));
+        return;
+      }
+      setCompanionFigure(workId, patch).then(apply).catch(fail);
+    };
+    const changeFigureDefaults = (patch: Partial<CompanionFigureDefaults>) => {
+      if (!hosted) {
+        applyLocal((prev) => ({ figureDefaults: { ...prev.figureDefaults, ...patch } }));
+        return;
+      }
+      setCompanionFigureDefaults(patch).then(apply).catch(fail);
+    };
     return (
       <>
         {visible && <CompanionLiveFeed onRelevantEvent={scheduleRefresh} onTail={onTail} />}
@@ -911,11 +956,19 @@ export function CompanionScreen({ workIds, mode: previewMode }: { workIds?: stri
           ready={ready}
           visible={visible}
           hostError={hostError}
-          renderCard={(workId) => {
-            const pin = pins.find((p) => p.workId === workId);
-            return pin ? renderCard(pin) : null;
-          }}
           renderSettings={renderSettings}
+          figures={figures}
+          figureDefaults={host.figureDefaults}
+          onFigure={changeFigure}
+          onFigureNudge={(workId, dx, dy) => { if (hosted) nudgeCompanionFigure(workId, dx, dy).then(apply).catch(fail); }}
+          onFigureDefaults={changeFigureDefaults}
+          onFiguresHome={() => {
+            if (!hosted) {
+              applyLocal((prev) => ({ figures: prev.figures.map((figure) => ({ ...figure, placement: { kind: "home" }, anchor: null, label: "Home row" })) }));
+              return;
+            }
+            sendCompanionFiguresHome().then(apply).catch(fail);
+          }}
           onSelect={setSelectedId}
           onOpenSurfaced={(target, work) => {
             const item = surfacedById.get(work.workId);
@@ -925,6 +978,17 @@ export function CompanionScreen({ workIds, mode: previewMode }: { workIds?: stri
             const item = surfacedById.get(work.workId);
             if (item) pinSurfaced(item);
           }}
+          onOpenPinned={(target, work) => {
+            const pin = pins.find((p) => p.workId === work.workId);
+            const card = cards.get(work.workId)?.card ?? null;
+            if (pin && card) return open(target, card, pin);
+            if (!hosted) {
+              window.open(`/work/${encodeURIComponent(work.workId)}`, "_blank", "noopener");
+              return;
+            }
+            openFromCompanion(target, { workId: work.workId, machineId: pin?.machineId, conversationId: target === "thread" ? work.conversationId : null }).then(clearError, fail);
+          }}
+          onUnpin={unpin}
           onOpenThread={(conversationId, workId) => {
             if (!hosted) {
               window.open(`/work/${encodeURIComponent(workId)}`, "_blank", "noopener");

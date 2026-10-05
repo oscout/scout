@@ -10,6 +10,8 @@ import {
   statSync,
   writeFileSync,
 } from "node:fs";
+import { spawn } from "node:child_process";
+import { open, readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, join, relative, sep } from "node:path";
 
@@ -25,6 +27,7 @@ import type {
   KnowledgeFacets,
   KnowledgeIndexJob,
   KnowledgePortablePath,
+  KnowledgeSearchHit,
   KnowledgeSourceRef,
 } from "./types.js";
 
@@ -1324,4 +1327,278 @@ export async function indexRecentSessionKnowledge(
   } finally {
     store.close();
   }
+}
+
+export interface ScanRecentSessionKnowledgeInput {
+  q: string;
+  /** Lookback window in whole days (default 3). */
+  days?: number;
+  harness?: string | string[];
+  /** Only transcripts written at or after this time. */
+  updatedAfterMs?: number;
+  /** Newest transcripts to read (default 80). */
+  fileLimit?: number;
+  /** Hits to return (default 30). */
+  limit?: number;
+  /** Stop reading after this long and return what matched (default 2500ms). */
+  budgetMs?: number;
+}
+
+export interface ScanRecentSessionKnowledgeResult {
+  hits: KnowledgeSearchHit[];
+  scannedFiles: number;
+  totalFiles: number;
+  /** True when the time budget or hit limit ended the scan early. */
+  truncated: boolean;
+}
+
+const SCAN_HITS_PER_FILE = 3;
+const SCAN_RG_MAX_PER_FILE = 200;
+const SCAN_RG_MAX_OUTPUT_BYTES = 64 * 1024 * 1024;
+const SCAN_HEAD_BYTES = 256 * 1024;
+
+type ScanLine = { lineNo: number; byte: number; text: string };
+
+function scanSnippet(text: string, terms: string[]): string {
+  const compact = text.replace(/\s+/g, " ").trim();
+  if (compact.length <= 220) return compact;
+  const index = compact.toLowerCase().indexOf(terms[0] ?? "");
+  const start = Math.max(0, index >= 0 ? index - 70 : 0);
+  const end = Math.min(compact.length, start + 220);
+  return `${start > 0 ? "..." : ""}${compact.slice(start, end)}${end < compact.length ? "..." : ""}`;
+}
+
+let ripgrepPath: string | null | undefined;
+
+function findRipgrep(): string | null {
+  if (process.env.OPENSCOUT_RG_PATH === "none") return null;
+  if (ripgrepPath !== undefined) return ripgrepPath;
+  const candidates = [process.env.OPENSCOUT_RG_PATH, "/opt/homebrew/bin/rg", "/usr/local/bin/rg", "/usr/bin/rg"];
+  for (const dir of (process.env.PATH ?? "").split(":")) if (dir) candidates.push(join(dir, "rg"));
+  ripgrepPath = candidates.find((candidate): candidate is string => Boolean(candidate) && existsSync(candidate!)) ?? null;
+  return ripgrepPath;
+}
+
+/** Lines holding `needle` (case-insensitive) per file, via one ripgrep pass. Null when rg is unavailable. */
+function ripgrepLines(files: string[], needle: string, deadline: number): Promise<Map<string, ScanLine[]> | null> {
+  const rg = findRipgrep();
+  if (!rg || files.length === 0) return Promise.resolve(rg ? new Map() : null);
+  return new Promise((resolve) => {
+    const out = new Map<string, ScanLine[]>();
+    const child = spawn(rg, [
+      "--ignore-case", "--fixed-strings", "--line-number", "--byte-offset", "--no-heading",
+      "--with-filename", "--null", "--no-messages", "--max-count", String(SCAN_RG_MAX_PER_FILE),
+      "--", needle, ...files,
+    ], { stdio: ["ignore", "pipe", "ignore"] });
+    let carry = "";
+    let received = 0;
+    const timer = setTimeout(() => child.kill(), Math.max(0, deadline - Date.now()));
+    const take = (line: string) => {
+      const nul = line.indexOf("\0");
+      if (nul < 0) return;
+      const path = line.slice(0, nul);
+      const match = /^(\d+):(\d+):/u.exec(line.slice(nul + 1));
+      if (!match) return;
+      const text = line.slice(nul + 1 + match[0].length);
+      const list = out.get(path) ?? [];
+      list.push({ lineNo: Number(match[1]), byte: Number(match[2]), text });
+      out.set(path, list);
+    };
+    child.stdout.setEncoding("utf8");
+    child.stdout.on("data", (chunk: string) => {
+      received += chunk.length;
+      carry += chunk;
+      const lines = carry.split("\n");
+      carry = lines.pop() ?? "";
+      for (const line of lines) take(line);
+      if (received > SCAN_RG_MAX_OUTPUT_BYTES) child.kill();
+    });
+    const finish = () => {
+      clearTimeout(timer);
+      if (carry) take(carry);
+      resolve(out);
+    };
+    child.on("close", finish);
+    child.on("error", () => {
+      clearTimeout(timer);
+      resolve(null);
+    });
+  });
+}
+
+/** Lines holding every term, by reading each file in JS. The fallback when rg is missing. */
+async function readerLines(files: string[], terms: string[], deadline: number): Promise<{ lines: Map<string, ScanLine[]>; read: number }> {
+  const out = new Map<string, ScanLine[]>();
+  let read = 0;
+  for (const path of files) {
+    if (Date.now() > deadline) break;
+    let content: string;
+    try {
+      content = await readFile(path, "utf8");
+    } catch {
+      continue;
+    }
+    read++;
+    const lower = content.toLowerCase();
+    if (!terms.every((term) => lower.includes(term))) {
+      await yieldToEventLoop();
+      continue;
+    }
+    const list: ScanLine[] = [];
+    let byte = 0;
+    let lineNo = 0;
+    for (const text of content.split("\n")) {
+      lineNo++;
+      const lowerLine = text.toLowerCase();
+      if (terms.every((term) => lowerLine.includes(term))) list.push({ lineNo, byte, text });
+      byte += Buffer.byteLength(text, "utf8") + 1;
+    }
+    if (list.length > 0) out.set(path, list);
+    await yieldToEventLoop();
+  }
+  return { lines: out, read };
+}
+
+/** cwd and session id from the head of a transcript, without reading the whole file. */
+async function transcriptHead(file: SessionFile): Promise<{ cwd: string | null; sessionId: string | null }> {
+  let cwd: string | null = null;
+  let sessionId: string | null = file.harness === "kimi" ? readKimiSessionState(file.path).sessionId : null;
+  let head = "";
+  try {
+    const handle = await open(file.path, "r");
+    try {
+      const buffer = Buffer.alloc(Math.min(SCAN_HEAD_BYTES, file.size));
+      const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
+      head = buffer.subarray(0, bytesRead).toString("utf8");
+    } finally {
+      await handle.close();
+    }
+  } catch {
+    return { cwd, sessionId };
+  }
+  let index = 0;
+  for (const line of head.split("\n").slice(0, -1)) {
+    if (cwd && sessionId) break;
+    if (!line.trim()) continue;
+    try {
+      const value = JSON.parse(line) as unknown;
+      if (!value || typeof value !== "object" || Array.isArray(value)) continue;
+      const record = normalizeRecord(value as Record<string, unknown>, index++, 0, file.harness);
+      cwd ??= inferCwd(record);
+      sessionId ??= record.refs?.sessionId ?? stringValue(record.meta?.id) ?? stringValue(record.meta?.sessionId) ?? null;
+    } catch {
+      // partial or non-JSON head line
+    }
+  }
+  return { cwd, sessionId };
+}
+
+/**
+ * Index-free search: find transcript records whose text holds every query
+ * term, newest transcripts first. It answers while the session index is
+ * missing or still building, shaped like an indexed hit so the same UI renders
+ * it. Uses ripgrep when present (one pass over all files), else reads each file
+ * in JS; both stop at the time budget and return what matched.
+ */
+export async function scanRecentSessionKnowledge(
+  input: ScanRecentSessionKnowledgeInput,
+): Promise<ScanRecentSessionKnowledgeResult> {
+  const terms = [...new Set(input.q.toLowerCase().split(/\s+/u).filter((term) => term.length > 1))];
+  if (terms.length === 0) return { hits: [], scannedFiles: 0, totalFiles: 0, truncated: false };
+  const days = clampPositiveInt(input.days, DEFAULT_DAYS, 30);
+  const cutoffMs = Math.max(Date.now() - days * 24 * 60 * 60 * 1000, input.updatedAfterMs ?? 0);
+  const limit = clampPositiveInt(input.limit, 30, 200);
+  const deadline = Date.now() + clampPositiveInt(input.budgetMs, 2500, 15_000);
+  const files = discoverRecentSessionFiles(cutoffMs, clampPositiveInt(input.fileLimit, 80, 400), normalizeHarnessFilter(input.harness));
+  const paths = files.map((file) => file.path);
+  // The longest term is the likeliest to be rare, so it filters hardest.
+  const needle = [...terms].sort((left, right) => right.length - left.length)[0]!;
+
+  let lines = await ripgrepLines(paths, needle, deadline);
+  let scannedFiles = files.length;
+  let truncated = Date.now() > deadline;
+  if (!lines) {
+    const read = await readerLines(paths, terms, deadline);
+    lines = read.lines;
+    scannedFiles = read.read;
+    truncated = read.read < files.length;
+  }
+
+  const phrase = terms.join(" ");
+  const hits: KnowledgeSearchHit[] = [];
+  for (const file of files) {
+    if (hits.length >= limit) {
+      truncated = true;
+      break;
+    }
+    const candidates = lines.get(file.path);
+    if (!candidates?.length) continue;
+    const matches: Array<{ record: NormalizedRecord; text: string; byte: number; bytes: number; phrase: boolean }> = [];
+    for (const line of candidates) {
+      const lower = line.text.toLowerCase();
+      if (!terms.every((term) => lower.includes(term))) continue;
+      let record: NormalizedRecord;
+      try {
+        const value = JSON.parse(line.text) as unknown;
+        if (!value || typeof value !== "object" || Array.isArray(value)) continue;
+        record = normalizeRecord(value as Record<string, unknown>, line.lineNo - 1, line.byte, file.harness);
+      } catch {
+        continue;
+      }
+      if (record.kind === "system_record" || record.kind === "unknown" || record.kind === "session_meta") continue;
+      const text = record.text ?? summarizeRecord(record);
+      const haystack = text.toLowerCase();
+      if (!terms.every((term) => haystack.includes(term))) continue;
+      matches.push({ record, text, byte: line.byte, bytes: Buffer.byteLength(line.text, "utf8"), phrase: haystack.includes(phrase) });
+    }
+    if (matches.length === 0) continue;
+    // Exact phrase first, then the newest record.
+    matches.sort((left, right) => Number(right.phrase) - Number(left.phrase) || right.record.i - left.record.i);
+
+    const head = await transcriptHead(file);
+    const resolvedSession = head.sessionId ?? basename(file.path).replace(/\.jsonl$/u, "");
+    const project = projectName(head.cwd, file.path);
+    const collectionId = `sessions/${file.harness}/${resolvedSession.replace(/[^A-Za-z0-9_.-]+/gu, "-").slice(0, 80)}-${stableId(file.path, 10)}`;
+    const when = new Date(file.mtimeMs).toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+    for (const match of matches.slice(0, SCAN_HITS_PER_FILE)) {
+      if (hits.length >= limit) break;
+      const sourceRef: KnowledgeSourceRef = {
+        kind: "harness_transcript",
+        harness: file.harness,
+        path: portablePath(file.path),
+        sessionId: resolvedSession,
+        recordRange: [match.record.i, match.record.i],
+        byteRange: [match.byte, match.byte + match.bytes],
+        anchor: { sizeBytes: file.size, mtimeMs: file.mtimeMs },
+      };
+      const id = `basic:${stableId(`${file.path}\0${match.record.i}`)}`;
+      hits.push({
+        id,
+        collectionId,
+        documentId: `${collectionId}/basic`,
+        chunkId: id,
+        title: `${file.harness} ${project} ${when} - ${trimOneLine(match.text, 80)}`,
+        snippet: scanSnippet(match.text, terms),
+        score: 0,
+        scoreSource: "fts",
+        origin: "mechanical",
+        ownership: "observed_source",
+        freshness: "fresh",
+        sourceRefs: [sourceRef],
+        drilldown: [{ kind: "harness_transcript", sourceRef }],
+        facets: {
+          harness: file.harness,
+          project,
+          ...(head.cwd ? { projectPath: head.cwd } : {}),
+          source: "sessions",
+          transcriptPath: file.path,
+          sessionId: resolvedSession,
+          documentKind: "events",
+          match: "basic",
+        },
+      });
+    }
+  }
+
+  return { hits, scannedFiles, totalFiles: files.length, truncated };
 }

@@ -99,17 +99,26 @@ export function freeSpans(
   return spans;
 }
 
-/** Closest centre to `pref` that keeps a full slot clear of every neighbour and obstacle. */
-export function nearestFree(pref: number, free: readonly Span[], occupied: readonly number[], slot = EDGE_SLOT): number | null {
+/** A neighbour's centre, or its centre and width when figures differ in size. */
+export type Occupied = number | { x: number; w: number };
+
+/**
+ * Closest centre to `pref` that keeps a full slot clear of every neighbour
+ * and obstacle. A bare-number neighbour keeps `slot` between centres; a sized
+ * one keeps half of each width.
+ */
+export function nearestFree(pref: number, free: readonly Span[], occupied: readonly Occupied[], slot = EDGE_SLOT): number | null {
   let best: number | null = null;
   for (const [s, e] of free) {
     let segs: Span[] = s + slot / 2 <= e - slot / 2 ? [[s + slot / 2, e - slot / 2]] : [];
-    for (const o of occupied) {
+    for (const entry of occupied) {
+      const o = typeof entry === "number" ? entry : entry.x;
+      const gap = typeof entry === "number" ? slot : (slot + entry.w) / 2;
       segs = segs.flatMap(([a, b]) => {
-        if (o + slot <= a || o - slot >= b) return [[a, b] as Span];
+        if (o + gap <= a || o - gap >= b) return [[a, b] as Span];
         const out: Span[] = [];
-        if (o - slot >= a) out.push([a, o - slot]);
-        if (o + slot <= b) out.push([o + slot, b]);
+        if (o - gap >= a) out.push([a, o - gap]);
+        if (o + gap <= b) out.push([o + gap, b]);
         return out;
       });
     }
@@ -131,6 +140,8 @@ export type EdgeFigureInput = {
   stepTarget?: number | null;
   /** Earlier activity first when the edge is full. */
   lastActivityAt: number;
+  /** Slot width for a figure the operator resized; EDGE_SLOT when unset. */
+  width?: number;
 };
 
 export type EdgeSolution = {
@@ -161,12 +172,16 @@ export function solveEdge(
   const prev = regather ? new Map<string, number>() : options.prev;
   const pri = (f: EdgeFigureInput) => (f.arriving ? Math.min(PRIORITY[f.visible], 0.5) : PRIORITY[f.visible]);
   const capacityOf = (spans: readonly Span[]) => spans.reduce((sum, [a, b]) => sum + Math.max(0, Math.floor((b - a) / EDGE_SLOT)), 0);
+  // A resized figure takes as many classic slots as its width needs.
+  const widthOf = (f: EdgeFigureInput) => f.width ?? EDGE_SLOT;
+  const slotsOf = (f: EdgeFigureInput) => Math.max(1, Math.ceil(widthOf(f) / EDGE_SLOT));
+  const demand = (list: readonly EdgeFigureInput[]) => list.reduce((sum, f) => sum + slotsOf(f), 0);
   const anchorEnd = anchor === "left" ? (options.free[0]?.[0] ?? 0) : (options.free.at(-1)?.[1] ?? width);
   let free = options.free;
   let keep: readonly EdgeFigureInput[] = figures;
   const overflow: string[] = [];
   let stackAt: number | null = null;
-  if (figures.length > capacityOf(free)) {
+  if (demand(figures) > capacityOf(free)) {
     // Full edge: "+N" takes its own span at the anchor end, then the least
     // consequential, settled, least recently active figures go into it.
     const span = anchor === "left" ? { start: anchorEnd, end: anchorEnd + EDGE_STACK } : { start: anchorEnd - EDGE_STACK, end: anchorEnd };
@@ -175,19 +190,22 @@ export function solveEdge(
     const ranked = [...figures].sort((x, y) => pri(x) - pri(y)
       || (prev.has(x.id) ? 0 : 1) - (prev.has(y.id) ? 0 : 1)
       || y.lastActivityAt - x.lastActivityAt);
-    const room = capacityOf(free);
-    keep = ranked.slice(0, room);
-    overflow.push(...ranked.slice(room).map((f) => f.id));
+    let room = capacityOf(free);
+    let fit = 0;
+    while (fit < ranked.length && slotsOf(ranked[fit]!) <= room) room -= slotsOf(ranked[fit++]!);
+    keep = ranked.slice(0, fit);
+    overflow.push(...ranked.slice(fit).map((f) => f.id));
   }
   const rank = (f: EdgeFigureInput) => (!prev.has(f.id) ? 3 : f.stepTarget != null ? 2 : f.visible === "needs" ? 0 : 1);
   const order = [...keep].sort((x, y) => rank(x) - rank(y) || pri(x) - pri(y));
-  const occupied: number[] = [];
+  const occupied: { x: number; w: number }[] = [];
   const pos = new Map<string, number>();
   const byId = new Map(figures.map((f) => [f.id, f]));
   for (const figure of order) {
     const settled = prev.get(figure.id);
     const pref = (regather ? null : figure.stepTarget) ?? (Number.isFinite(settled) ? settled! : anchorEnd);
-    let x = nearestFree(pref, free, occupied);
+    const w = widthOf(figure);
+    let x = nearestFree(pref, free, occupied, w);
     if (x === null && pri(figure) < 1) {
       // Gaps between settled figures can be too narrow for one more. Needs-you
       // and arrivals never go to "+N": the least consequential figure yields.
@@ -197,9 +215,10 @@ export function solveEdge(
         .sort((a, b) => pri(b) - pri(a) || a.lastActivityAt - b.lastActivityAt)[0];
       if (victim) {
         const at = pos.get(victim.id)!;
-        occupied.splice(occupied.indexOf(at), 1);
-        x = nearestFree(pref, free, occupied);
-        if (x === null) occupied.push(at);
+        const index = occupied.findIndex((o) => o.x === at);
+        const [removed] = occupied.splice(index, 1);
+        x = nearestFree(pref, free, occupied, w);
+        if (x === null) occupied.push(removed!);
         else {
           pos.delete(victim.id);
           overflow.push(victim.id);
@@ -211,10 +230,10 @@ export function solveEdge(
       continue;
     }
     pos.set(figure.id, x);
-    occupied.push(x);
+    occupied.push({ x, w });
   }
   // Fragmentation alone overflowed: put "+N" in the gap nearest the anchor.
-  if (overflow.length && stackAt === null) stackAt = nearestFree(anchorEnd, free, occupied, EDGE_STACK) ?? anchorEnd;
+  if (overflow.length && stackAt === null) stackAt = nearestFree(anchorEnd, free, occupied.map((o) => o.x), EDGE_STACK) ?? anchorEnd;
   return { pos, overflow, stackAt };
 }
 

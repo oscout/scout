@@ -37,7 +37,7 @@ import {
   searchTimeWindowLabel,
   searchTimeWindowMs,
   transcriptSessionId,
-  type IndexResponse,
+  type IndexStartResponse,
   type KnowledgeFacetValue,
   type KnowledgeHit,
   type KnowledgeStatus,
@@ -52,6 +52,9 @@ import {
   knowledgeSearchFilterKey,
   updateKnowledgeSearchSnapshot,
 } from "./knowledge-search-store.ts";
+
+/** How often the page re-reads index status while a background index runs. */
+const INDEX_POLL_MS = 1500;
 
 /**
  * How long a search may run before the page admits it is running.
@@ -109,13 +112,15 @@ async function searchKnowledge(
   return api<SearchResponse>(`/api/knowledge/search?${params.toString()}`);
 }
 
-async function indexSessions(force = false): Promise<IndexResponse> {
-  return api<IndexResponse>("/api/knowledge/sessions/index", {
+/** Starts a session index in the background; progress is read from /status. */
+async function startIndexSessions(force = false): Promise<IndexStartResponse> {
+  return api<IndexStartResponse>("/api/knowledge/sessions/index", {
     method: "POST",
     body: JSON.stringify({
       days: KNOWLEDGE_SEARCH_DEFAULTS.days,
       limit: KNOWLEDGE_SEARCH_DEFAULTS.sessionLimit,
       force,
+      background: true,
     }),
   });
 }
@@ -243,7 +248,11 @@ export function KnowledgeSearchScreen({
   );
   const [failedFilterKey, setFailedFilterKey] = useState<string | null>(null);
   const searchGeneration = useRef(0);
+  // True from pressing "Update index" (or the mount kick-off) until the server
+  // confirms the run; after that, status.indexing carries it.
   const [indexing, setIndexing] = useState(false);
+  const [searchMode, setSearchMode] = useState<SearchResponse["mode"]>("index");
+  const [basicScan, setBasicScan] = useState<SearchResponse["basic"] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [statusLoaded, setStatusLoaded] = useState(storeSeed.status !== null);
   const [primitivesLoaded, setPrimitivesLoaded] = useState(storeSeed.facets !== null);
@@ -253,12 +262,16 @@ export function KnowledgeSearchScreen({
   const hasIndex = (status?.chunks ?? 0) > 0;
   const activeJob = status?.activeJobs[0] ?? null;
   const sessionResults = useMemo(() => groupHitsBySession(hits), [hits]);
-  const isBusy = indexing || Boolean(activeJob);
+  // Older servers do not report `indexing`; fall back to the job table there.
+  const serverIndexing = status?.indexing !== undefined
+    ? Boolean(status.indexing)
+    : Boolean(activeJob);
+  const isBusy = indexing || serverIndexing;
   const trimmedQuery = filters.query.trim();
   // Typed, but not yet answered — true through the input debounce as well as
   // the request itself, which is the whole window the operator is waiting in.
   const filterKey = knowledgeSearchFilterKey(filters);
-  const unanswered = isSearchUnanswered({ query: trimmedQuery, hasIndex, filterKey, settledFilterKey, failedFilterKey });
+  const unanswered = isSearchUnanswered({ query: trimmedQuery, filterKey, settledFilterKey, failedFilterKey });
   const waiting = Boolean(trimmedQuery) && (unanswered || searching);
   const filtersActive = searchFiltersAreActive(filters);
 
@@ -281,6 +294,8 @@ export function KnowledgeSearchScreen({
       const responseKey = knowledgeSearchFilterKey(next);
       if (responseKey !== knowledgeSearchFilterKey(filtersRef.current)) return;
       setHits(response.hits);
+      setSearchMode(response.mode ?? "index");
+      setBasicScan(response.basic ?? null);
       setSettledFilterKey(responseKey);
       setFailedFilterKey(null);
       setStatus(response.status);
@@ -335,26 +350,50 @@ export function KnowledgeSearchScreen({
     [applySearchResponse, clearKnowledgeHit],
   );
 
+  const applyStatus = useCallback((next: KnowledgeStatus) => {
+    setStatus(next);
+    setStatusLoaded(true);
+    updateKnowledgeSearchSnapshot({ status: next });
+  }, []);
+
+  // Kicks off indexing without waiting on it. Search keeps answering (from the
+  // basic scan until the index has content) and the poll below follows progress.
   const refreshIndex = useCallback(async (force = false) => {
     setIndexing(true);
+    setError(null);
     try {
-      setError(null);
-      const response = await indexSessions(force);
-      setStatus(response.status);
-      setStatusLoaded(true);
-      updateKnowledgeSearchSnapshot({ status: response.status, indexedAt: Date.now() });
-      const live = filtersRef.current;
-      if (response.status.chunks > 0 && live.query.trim()) {
-        applySearchResponse(live, await searchKnowledge(live.query.trim(), live));
+      const response = await startIndexSessions(force);
+      if (response.status) {
+        // An older server indexed to completion before answering.
+        applyStatus(response.status);
+        updateKnowledgeSearchSnapshot({ indexedAt: Date.now() });
+        const live = filtersRef.current;
+        if (live.query.trim()) void runSearch(live);
+      } else {
+        setStatus((current) => current
+          ? { ...current, indexing: response.indexing ?? null, lastIndex: response.lastIndex ?? null }
+          : current);
+        applyStatus(await fetchStatus());
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      const message = err instanceof Error ? err.message : String(err);
+      // Another run (other parameters) is already going: follow that one.
+      if (/already running/i.test(message)) {
+        try {
+          applyStatus(await fetchStatus());
+        } catch {
+          // the poll surfaces a lasting failure
+        }
+      } else {
+        setError(message);
+        setStatusLoaded(true);
+      }
     } finally {
       setIndexing(false);
     }
-  }, [applySearchResponse]);
+  }, [applyStatus, runSearch]);
 
-  // Always refresh the default session window when the page opens.
+  // Refresh the default session window when the page opens, in the background.
   useEffect(() => {
     let cancelled = false;
 
@@ -364,51 +403,57 @@ export function KnowledgeSearchScreen({
         const next = await fetchStatus();
         if (cancelled) return;
         freshStatus = next;
-        setStatus(next);
-        setStatusLoaded(true);
-        updateKnowledgeSearchSnapshot({ status: next });
+        applyStatus(next);
         setError(null);
       } catch {
-        // Indexing below will surface a hard failure if status is also unavailable.
+        // Starting the index below surfaces a hard failure if status is also unavailable.
       }
 
       if (cancelled) return;
-      // Skip the POST re-index when this session indexed recently and the
-      // live status still reports an indexed corpus; keep re-indexing when
-      // the recency window lapsed (new transcripts must become searchable),
-      // the index is missing, or the fresh status could not confirm it.
+      // Skip re-indexing when this session indexed recently and the live
+      // status still reports an indexed corpus, or a run is already going;
+      // keep re-indexing when the recency window lapsed (new transcripts must
+      // become searchable), the index is missing, or status was unavailable.
+      if (freshStatus?.indexing) return;
       const { indexedAt } = getKnowledgeSearchSnapshot();
       const recentlyIndexed = indexedAt !== null
         && Date.now() - indexedAt < KNOWLEDGE_SEARCH_REINDEX_TTL_MS;
       if (recentlyIndexed && (freshStatus?.chunks ?? 0) > 0) {
         return;
       }
-      setIndexing(true);
-      try {
-        setError(null);
-        const response = await indexSessions(false);
-        if (cancelled) return;
-        setStatus(response.status);
-        setStatusLoaded(true);
-        updateKnowledgeSearchSnapshot({ status: response.status, indexedAt: Date.now() });
-        const live = filtersRef.current;
-        if (response.status.chunks > 0 && live.query.trim()) {
-          applySearchResponse(live, await searchKnowledge(live.query.trim(), live));
-        }
-      } catch (err) {
-        if (!cancelled) {
-          setError(err instanceof Error ? err.message : String(err));
-          setStatusLoaded(true);
-        }
-      } finally {
-        if (!cancelled) setIndexing(false);
-      }
+      void refreshIndex(false);
     })();
 
     return () => {
       cancelled = true;
     };
-  }, [applySearchResponse]);
+  }, [applyStatus, refreshIndex]);
+
+  // While the server indexes, re-read status on a short beat so progress moves;
+  // when the run ends, re-ask the current query against the fresh index and
+  // surface a failed run.
+  const sawServerIndexing = useRef(false);
+  useEffect(() => {
+    if (serverIndexing) {
+      sawServerIndexing.current = true;
+      const timer = window.setTimeout(() => {
+        fetchStatus()
+          .then(applyStatus)
+          .catch(() => setStatus((current) => current ? { ...current } : current));
+      }, INDEX_POLL_MS);
+      return () => window.clearTimeout(timer);
+    }
+    if (!sawServerIndexing.current) return;
+    sawServerIndexing.current = false;
+    updateKnowledgeSearchSnapshot({ indexedAt: Date.now() });
+    const lastIndex = status?.lastIndex;
+    if (lastIndex && !lastIndex.ok) {
+      setError(`Indexing failed: ${lastIndex.error ?? "unknown error"}`);
+    }
+    setPrimitivesLoaded(false);
+    const live = filtersRef.current;
+    if (live.query.trim()) void runSearch(live);
+  }, [serverIndexing, status, applyStatus, runSearch]);
 
   // Lazy-load facet primitives once the index is ready (so we have values).
   useEffect(() => {
@@ -440,21 +485,17 @@ export function KnowledgeSearchScreen({
     return () => window.clearTimeout(timer);
   }, [waiting]);
 
-  // Re-run search whenever filters change AND we have an indexed corpus to query.
+  // Re-run search whenever filters change. Without an index the server
+  // answers from a basic scan of recent transcripts.
   useEffect(() => {
-    if (!hasIndex) return;
     const timer = window.setTimeout(() => {
       void runSearch(filters);
     }, KNOWLEDGE_SEARCH_DEFAULTS.debounceMs);
     return () => window.clearTimeout(timer);
-  }, [filters, hasIndex, runSearch]);
+  }, [filters, runSearch]);
 
   const onSubmit = (event: FormEvent) => {
     event.preventDefault();
-    if (!hasIndex && !indexing) {
-      void refreshIndex(false);
-      return;
-    }
     void runSearch(filters);
   };
 
@@ -525,15 +566,15 @@ export function KnowledgeSearchScreen({
     : "—";
 
   const footStatus = isBusy
-    ? activeJob
-      ? `Indexing ${formatCount(activeJob.progress.indexed ?? 0)} of ${formatCount(activeJob.progress.discovered ?? 0)}`
+    ? activeJob && (activeJob.progress.discovered ?? 0) > 0
+      ? `Indexing sessions in the background · ${formatCount(activeJob.progress.indexed ?? 0)} of ${formatCount(activeJob.progress.discovered ?? 0)}`
       : hasIndex
         ? `Refreshing last ${KNOWLEDGE_SEARCH_DEFAULTS.days} days in the background`
-        : `Building last ${KNOWLEDGE_SEARCH_DEFAULTS.days} days of sessions`
+        : `Building the index for the last ${KNOWLEDGE_SEARCH_DEFAULTS.days} days in the background`
     : hasIndex
       ? `${formatCount(status?.chunks ?? 0)} moments · last ${KNOWLEDGE_SEARCH_DEFAULTS.days} days · updated ${updatedLabel}`
       : statusLoaded
-        ? "No index yet"
+        ? "No index yet · basic search"
         : "Loading index";
 
   const harnessOptions = topFacetValues(primitives?.facets, "harness");
@@ -680,193 +721,190 @@ export function KnowledgeSearchScreen({
           </section>
         ) : null}
 
-        {!hasIndex && !error ? (
-          <div className="ks-empty-state">
-            <strong>{indexing ? "Preparing your session index" : "Preparing search"}</strong>
+        <div className="ks-hit-list" role="listbox" aria-label="Search results">
+          <div className="ks-hit-list-head" aria-live="polite">
             <span>
-              First load builds the last {KNOWLEDGE_SEARCH_DEFAULTS.days} days
-              {" "}(up to {formatCount(KNOWLEDGE_SEARCH_DEFAULTS.sessionLimit)} sessions).
-              You can keep this page open — results appear as soon as the index is ready.
+              {failedFilterKey === filterKey
+                ? "Search failed"
+                : waiting
+                ? "Searching…"
+                : trimmedQuery
+                  ? `${formatCount(sessionResults.length)} session${sessionResults.length === 1 ? "" : "s"}`
+                  : "Ready"}
             </span>
-          </div>
-        ) : null}
-
-        {hasIndex ? (
-          <div className="ks-hit-list" role="listbox" aria-label="Search results">
-            <div className="ks-hit-list-head" aria-live="polite">
-              <span>
-                {failedFilterKey === filterKey
-                  ? "Search failed"
-                  : waiting
-                  ? "Searching…"
-                  : trimmedQuery
-                    ? `${formatCount(sessionResults.length)} session${sessionResults.length === 1 ? "" : "s"}`
-                    : "Ready"}
-              </span>
-              {trimmedQuery && hits.length > 0 ? (
-                <span className="ks-hit-list-meta">
-                  {formatCount(hits.length)} moment{hits.length === 1 ? "" : "s"}
-                  {filtersActive ? <> · <button type="button" className="ks-text-action" onClick={clearAll}>Clear filters</button></> : null}
-                </span>
-              ) : null}
-            </div>
-
-            {pending && sessionResults.length === 0 ? (
-              <div className="ks-skeleton" aria-hidden="true">
-                {[0, 1, 2].map((row) => (
-                  <section className="ks-skeleton-session" key={row}>
-                    <span className="ks-skeleton-line ks-skeleton-line--meta" />
-                    <span className="ks-skeleton-line ks-skeleton-line--goal" />
-                    <div className="ks-skeleton-moments">
-                      <span className="ks-skeleton-line ks-skeleton-line--title" />
-                      <span className="ks-skeleton-line ks-skeleton-line--snippet" />
-                      <span className="ks-skeleton-line ks-skeleton-line--snippet-short" />
-                    </div>
-                  </section>
-                ))}
-              </div>
-            ) : null}
-
-            {trimmedQuery && sessionResults.length === 0 && !unanswered && !searching && failedFilterKey !== filterKey ? (
-              <div className="ks-empty-hit">
-                <strong>No matches for “{trimmedQuery}”</strong>
-                <span>
-                  Try a project name, file path, or topic from recent work
-                  {filtersActive ? ", or clear one of the filters above." : "."}
-                </span>
-                <div className="ks-empty-hit-actions">
-                  <button type="button" className="ks-text-action" onClick={() => updateFilters({ query: "" })}>
-                    Clear query
-                  </button>
-                  {filtersActive ? (
-                    <button type="button" className="ks-text-action" onClick={clearAll}>
-                      Clear all filters
-                    </button>
-                  ) : null}
-                </div>
-              </div>
-            ) : null}
-
-            {!trimmedQuery ? (
-              <div className="ks-empty-hit ks-empty-hit--quiet">
-                <strong>Start with a query</strong>
-                <span>
-                  Type a topic, file path, agent, or session hint. Use{" "}
-                  <kbd>/</kbd> to focus this field, <kbd>j</kbd>/<kbd>k</kbd> to walk results, <kbd>↵</kbd> to select, <kbd>⌘↵</kbd> to open the session.
-                </span>
-                <button type="button" className="ks-text-action" onClick={focusFirstHit} disabled={hits.length === 0}>
-                  Pick the first result automatically
-                </button>
-              </div>
-            ) : null}
-
-            <div className="ks-hit-list-body" aria-busy={searching}>
-              {sessionResults.map((session, sessionIndex) => {
-                const best = session.best;
-                const routing = resultRoutingContext(best);
-                const goal = resultSessionGoal(best);
-                const sessionId = transcriptSessionId(firstTranscriptRef(best));
-                const openSession = () => {
-                  if (!sessionId) return;
-                  navigate({ view: "sessions", sessionId });
-                };
-                const sessionSelected = session.moments.some(
-                  (moment) => selectedKnowledgeHit?.id === moment.id,
-                );
-
-                return (
-                  <section
-                    key={session.collectionId}
-                    className={`ks-session${sessionSelected ? " ks-session--selected" : ""}`}
-                    aria-label={`Session ${sessionIndex + 1}`}
+            {trimmedQuery && hits.length > 0 ? (
+              <span className="ks-hit-list-meta">
+                {searchMode === "basic" ? (
+                  <span
+                    className="ks-basic-note"
+                    title="Matched by scanning recent transcripts directly; ranked results arrive when the index is ready."
                   >
-                    <header className="ks-session-head">
-                      <div className="ks-session-topline">
-                        <div className="ks-session-meta">
-                          {routing.agent ? <span className="ks-hit-chip">{routing.agent}</span> : null}
-                          {routing.project ? <span>{routing.project}</span> : null}
-                          {routing.session ? (
-                            <span className="ks-hit-session" title={sessionId ?? routing.session}>
-                              session {routing.session}
-                            </span>
-                          ) : null}
-                          <span className="ks-session-count">
-                            {formatCount(session.moments.length)} match{session.moments.length === 1 ? "" : "es"}
-                          </span>
-                        </div>
-                        {routing.when ? <time className="ks-hit-when">{routing.when}</time> : null}
-                      </div>
-                      <button
-                        type="button"
-                        className="ks-session-goal"
-                        onClick={openSession}
-                        title={sessionId ? "Open session" : undefined}
-                      >
-                        {goal}
-                      </button>
-                    </header>
-
-                    <div className="ks-session-moments">
-                      {session.moments.map((hit) => {
-                        const momentHeadline = resultMomentHeadline(hit, filters.query);
-                        const selected = selectedKnowledgeHit?.id === hit.id;
-                        const resultSnippet = displaySnippet(hit, filters.query, 200);
-                        const momentBits = resultMomentBits(hit);
-                        const selectHit = () => inspectKnowledgeHit(hit, filters.query);
-                        const openMomentSession = () => {
-                          const id = transcriptSessionId(firstTranscriptRef(hit)) ?? sessionId;
-                          if (!id) {
-                            selectHit();
-                            return;
-                          }
-                          navigate({ view: "sessions", sessionId: id });
-                        };
-
-                        return (
-                          <article
-                            key={hit.id}
-                            className={`ks-hit${selected ? " ks-hit--selected" : ""}`}
-                            role="option"
-                            aria-selected={selected}
-                            tabIndex={0}
-                            onClick={selectHit}
-                            onDoubleClick={openMomentSession}
-                            onKeyDown={(event) => {
-                              if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
-                                event.preventDefault();
-                                openMomentSession();
-                                return;
-                              }
-                              activateHitFromKeyboard(event, selectHit);
-                            }}
-                          >
-                            <div className="ks-hit-body">
-                              {momentBits.length > 0 ? (
-                                <div className="ks-hit-details ks-hit-details--moment" aria-label="Turn">
-                                  {momentBits.map((bit) => (
-                                    <span key={bit} className="ks-hit-details-strong">{bit}</span>
-                                  ))}
-                                </div>
-                              ) : null}
-
-                              <h3 className="ks-hit-title">{momentHeadline}</h3>
-
-                              {resultSnippet && resultSnippet !== momentHeadline ? (
-                                <p className="ks-hit-snippet">
-                                  <HighlightedText text={resultSnippet} query={filters.query} />
-                                </p>
-                              ) : null}
-                            </div>
-                          </article>
-                        );
-                      })}
-                    </div>
-                  </section>
-                );
-              })}
-            </div>
+                    Basic matches
+                    {basicScan ? ` · ${formatCount(basicScan.scannedFiles)} recent sessions scanned` : ""}
+                    {" · "}
+                  </span>
+                ) : null}
+                {formatCount(hits.length)} moment{hits.length === 1 ? "" : "s"}
+                {filtersActive ? <> · <button type="button" className="ks-text-action" onClick={clearAll}>Clear filters</button></> : null}
+              </span>
+            ) : null}
           </div>
-        ) : null}
+
+          {pending && sessionResults.length === 0 ? (
+            <div className="ks-skeleton" aria-hidden="true">
+              {[0, 1, 2].map((row) => (
+                <section className="ks-skeleton-session" key={row}>
+                  <span className="ks-skeleton-line ks-skeleton-line--meta" />
+                  <span className="ks-skeleton-line ks-skeleton-line--goal" />
+                  <div className="ks-skeleton-moments">
+                    <span className="ks-skeleton-line ks-skeleton-line--title" />
+                    <span className="ks-skeleton-line ks-skeleton-line--snippet" />
+                    <span className="ks-skeleton-line ks-skeleton-line--snippet-short" />
+                  </div>
+                </section>
+              ))}
+            </div>
+          ) : null}
+
+          {trimmedQuery && sessionResults.length === 0 && !unanswered && !searching && failedFilterKey !== filterKey ? (
+            <div className="ks-empty-hit">
+              <strong>No matches for “{trimmedQuery}”</strong>
+              <span>
+                Try a project name, file path, or topic from recent work
+                {filtersActive ? ", or clear one of the filters above." : "."}
+              </span>
+              <div className="ks-empty-hit-actions">
+                <button type="button" className="ks-text-action" onClick={() => updateFilters({ query: "" })}>
+                  Clear query
+                </button>
+                {filtersActive ? (
+                  <button type="button" className="ks-text-action" onClick={clearAll}>
+                    Clear all filters
+                  </button>
+                ) : null}
+              </div>
+            </div>
+          ) : null}
+
+          {!trimmedQuery ? (
+            <div className="ks-empty-hit ks-empty-hit--quiet">
+              <strong>Start with a query</strong>
+              <span>
+                Type a topic, file path, agent, or session hint. Use{" "}
+                <kbd>/</kbd> to focus this field, <kbd>j</kbd>/<kbd>k</kbd> to walk results, <kbd>↵</kbd> to select, <kbd>⌘↵</kbd> to open the session.
+              </span>
+              <button type="button" className="ks-text-action" onClick={focusFirstHit} disabled={hits.length === 0}>
+                Pick the first result automatically
+              </button>
+            </div>
+          ) : null}
+
+          <div className="ks-hit-list-body" aria-busy={searching}>
+            {sessionResults.map((session, sessionIndex) => {
+              const best = session.best;
+              const routing = resultRoutingContext(best);
+              const goal = resultSessionGoal(best);
+              const sessionId = transcriptSessionId(firstTranscriptRef(best));
+              const openSession = () => {
+                if (!sessionId) return;
+                navigate({ view: "sessions", sessionId });
+              };
+              const sessionSelected = session.moments.some(
+                (moment) => selectedKnowledgeHit?.id === moment.id,
+              );
+
+              return (
+                <section
+                  key={session.collectionId}
+                  className={`ks-session${sessionSelected ? " ks-session--selected" : ""}`}
+                  aria-label={`Session ${sessionIndex + 1}`}
+                >
+                  <header className="ks-session-head">
+                    <div className="ks-session-topline">
+                      <div className="ks-session-meta">
+                        {routing.agent ? <span className="ks-hit-chip">{routing.agent}</span> : null}
+                        {routing.project ? <span>{routing.project}</span> : null}
+                        {routing.session ? (
+                          <span className="ks-hit-session" title={sessionId ?? routing.session}>
+                            session {routing.session}
+                          </span>
+                        ) : null}
+                        <span className="ks-session-count">
+                          {formatCount(session.moments.length)} match{session.moments.length === 1 ? "" : "es"}
+                        </span>
+                      </div>
+                      {routing.when ? <time className="ks-hit-when">{routing.when}</time> : null}
+                    </div>
+                    <button
+                      type="button"
+                      className="ks-session-goal"
+                      onClick={openSession}
+                      title={sessionId ? "Open session" : undefined}
+                    >
+                      {goal}
+                    </button>
+                  </header>
+
+                  <div className="ks-session-moments">
+                    {session.moments.map((hit) => {
+                      const momentHeadline = resultMomentHeadline(hit, filters.query);
+                      const selected = selectedKnowledgeHit?.id === hit.id;
+                      const resultSnippet = displaySnippet(hit, filters.query, 200);
+                      const momentBits = resultMomentBits(hit);
+                      const selectHit = () => inspectKnowledgeHit(hit, filters.query);
+                      const openMomentSession = () => {
+                        const id = transcriptSessionId(firstTranscriptRef(hit)) ?? sessionId;
+                        if (!id) {
+                          selectHit();
+                          return;
+                        }
+                        navigate({ view: "sessions", sessionId: id });
+                      };
+
+                      return (
+                        <article
+                          key={hit.id}
+                          className={`ks-hit${selected ? " ks-hit--selected" : ""}`}
+                          role="option"
+                          aria-selected={selected}
+                          tabIndex={0}
+                          onClick={selectHit}
+                          onDoubleClick={openMomentSession}
+                          onKeyDown={(event) => {
+                            if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+                              event.preventDefault();
+                              openMomentSession();
+                              return;
+                            }
+                            activateHitFromKeyboard(event, selectHit);
+                          }}
+                        >
+                          <div className="ks-hit-body">
+                            {momentBits.length > 0 ? (
+                              <div className="ks-hit-details ks-hit-details--moment" aria-label="Turn">
+                                {momentBits.map((bit) => (
+                                  <span key={bit} className="ks-hit-details-strong">{bit}</span>
+                                ))}
+                              </div>
+                            ) : null}
+
+                            <h3 className="ks-hit-title">{momentHeadline}</h3>
+
+                            {resultSnippet && resultSnippet !== momentHeadline ? (
+                              <p className="ks-hit-snippet">
+                                <HighlightedText text={resultSnippet} query={filters.query} />
+                              </p>
+                            ) : null}
+                          </div>
+                        </article>
+                      );
+                    })}
+                  </div>
+                </section>
+              );
+            })}
+          </div>
+        </div>
       </div>
 
       <footer className="ks-foot-status" aria-live="polite">
@@ -880,9 +918,9 @@ export function KnowledgeSearchScreen({
             type="button"
             className="ks-text-action"
             onClick={() => void refreshIndex(true)}
-            disabled={indexing}
+            disabled={isBusy}
           >
-            {indexing ? "Updating…" : "Update index"}
+            {isBusy ? "Indexing…" : "Update index"}
           </button>
         </div>
       </footer>

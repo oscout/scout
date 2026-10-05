@@ -1,10 +1,9 @@
 import { describe, expect, test } from "bun:test";
 import { isSearchUnanswered } from "./search-loading.ts";
-const pending = { query: "agent", hasIndex: true, filterKey: "agent:all", settledFilterKey: null, failedFilterKey: null };
+const pending = { query: "agent", filterKey: "agent:all", settledFilterKey: null, failedFilterKey: null };
 describe("search loading state", () => {
   test("includes the input debounce before the request starts", () => expect(isSearchUnanswered(pending)).toBe(true));
-  test("does not spin before an index exists or for blank input", () => {
-    expect(isSearchUnanswered({ ...pending, hasIndex: false })).toBe(false);
+  test("does not spin for blank input", () => {
     expect(isSearchUnanswered({ ...pending, query: "  " })).toBe(false);
   });
   test("stops pending after success and after failure", () => {
