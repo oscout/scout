@@ -1336,8 +1336,24 @@ export async function createOpenScoutWebServer(
   const readRunnerOptions = (
     scope: ScoutRuntimeCapabilityCatalog["scope"],
     projectRoot: string,
+    force = false,
   ) => {
     const key = `${scope}\0${projectRoot}`;
+    if (force) {
+      return buildHudRunnerOptions(currentDirectory, { scope, projectRoot, force: true }).then((value) => {
+        let seed = value as typeof value | undefined;
+        const read = coalesce(() => {
+          if (seed) {
+            const refreshed = seed;
+            seed = undefined;
+            return Promise.resolve(refreshed);
+          }
+          return buildHudRunnerOptions(currentDirectory, { scope, projectRoot });
+        }, 30_000);
+        runnerOptionsReaders.set(key, read);
+        return read();
+      });
+    }
     let read = runnerOptionsReaders.get(key);
     if (!read) {
       if (runnerOptionsReaders.size >= 32) runnerOptionsReaders.clear();
@@ -1576,7 +1592,10 @@ export async function createOpenScoutWebServer(
 
   mountLocalHttpsRoutes(app, { options });
 
-  mountOnboardingRoutes(app, { currentDirectory });
+  mountOnboardingRoutes(app, {
+    currentDirectory,
+    invalidateRunnerOptions: () => runnerOptionsReaders.clear(),
+  });
 
   {
     // A packaged build knows its Scout version (and so which full client

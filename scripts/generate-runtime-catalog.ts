@@ -11,6 +11,7 @@ export const RUNTIME_MODEL_WINDOWS_OUTPUT =
   "packages/agent-sessions/src/runtime-model-windows.generated.ts";
 const LANDING_MIRROR_DIR = "landing/openscout.app/public/.well-known";
 export const RUNTIME_CATALOG_LANDING_OUTPUT = `${LANDING_MIRROR_DIR}/runtime-catalog.v1.json`;
+export const RUNTIME_CATALOG_PUBLIC_URL = "https://openscout.app/.well-known/runtime-catalog.v1.json";
 
 export type CatalogOutput = {
   /** Repo-relative output path. */
@@ -96,9 +97,54 @@ export async function checkCatalogOutputs(root: string): Promise<CatalogCheckRes
   return results;
 }
 
+/** Verify data publication independently of any app, CLI or package release. */
+export async function verifyPublishedRuntimeCatalog(root: string, fetchImpl: typeof fetch = fetch): Promise<string> {
+  const sourceData = JSON.parse(await readFile(resolve(root, RUNTIME_CATALOG_SOURCE), "utf8"));
+  const source = parseScoutRuntimeCatalog(sourceData);
+  if (!source.ok) throw new Error(`source catalog is invalid: ${source.errors.join("; ")}`);
+  const response = await fetchImpl(RUNTIME_CATALOG_PUBLIC_URL, {
+    headers: { accept: "application/json" }, cache: "no-cache", signal: AbortSignal.timeout(10_000),
+  });
+  if (!response.ok) throw new Error(`published catalog request failed: HTTP ${response.status}`);
+  if (Number(response.headers.get("content-length")) > 1_048_576) throw new Error("published catalog exceeds the client size limit");
+  const reader = response.body?.getReader();
+  if (!reader) throw new Error("published catalog has no body");
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    size += value.byteLength;
+    if (size > 1_048_576) {
+      await reader.cancel();
+      throw new Error("published catalog exceeds the client size limit");
+    }
+    chunks.push(value);
+  }
+  const body = new Uint8Array(size);
+  let offset = 0;
+  for (const chunk of chunks) { body.set(chunk, offset); offset += chunk.byteLength; }
+  const publishedText = new TextDecoder("utf-8", { fatal: true }).decode(body);
+  const published = parseScoutRuntimeCatalog(JSON.parse(publishedText));
+  if (!published.ok) throw new Error(`published catalog is invalid: ${published.errors.join("; ")}`);
+  const expectedBytes = new TextEncoder().encode(renderLandingMirror(sourceData));
+  if (body.length !== expectedBytes.length || body.some((byte, index) => byte !== expectedBytes[index])) {
+    throw new Error(`published revision ${published.catalog.revision} does not match source revision ${source.catalog.revision} and contents`);
+  }
+  return published.catalog.revision;
+}
+
 async function main() {
   const root = resolve(import.meta.dir, "..");
-  if (process.argv.slice(2).includes("--check")) {
+  const args = process.argv.slice(2);
+  if (args.some((arg) => !["--check", "--verify-live"].includes(arg)) || args.length > 1) {
+    throw new Error("Use no arguments to generate, --check for local drift, or --verify-live after site publication.");
+  }
+  if (args.includes("--verify-live")) {
+    console.log(`Published runtime catalog matches source revision ${await verifyPublishedRuntimeCatalog(root)}.`);
+    return;
+  }
+  if (args.includes("--check")) {
     const results = await checkCatalogOutputs(root);
     let failed = false;
     for (const result of results) {

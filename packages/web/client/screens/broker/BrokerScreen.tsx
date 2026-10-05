@@ -14,8 +14,10 @@ import type { BrokerDiagnostics, BrokerHistoryKey, BrokerRouteAttempt, DispatchF
 import { useScout } from "../../scout/Provider.tsx";
 import { openContent } from "../../scout/slots/openContent.ts";
 import {
+  createRuntimeCatalogLoader,
   RUNTIME_CAPABILITY_SEED,
   runtimeCatalogFromCapabilities,
+  runtimeModelCatalogStatus,
   type RuntimeCapabilityCatalog,
 } from "../../lib/runtime-capabilities.ts";
 import { effortsFor, type RuntimeValue } from "../../lib/runtime-catalog.ts";
@@ -1216,6 +1218,9 @@ export function BrokerAttemptInspector({
   const [forwardModel, setForwardModel] = useState("");
   const [forwardEffort, setForwardEffort] = useState("medium");
   const [runtimeCapabilities, setRuntimeCapabilities] = useState<RuntimeCapabilityCatalog | null>(null);
+  const [refreshingModels, setRefreshingModels] = useState(false);
+  const [modelRefreshError, setModelRefreshError] = useState<string | null>(null);
+  const runtimeCatalogLoaderRef = useRef(createRuntimeCatalogLoader<RuntimeCapabilityCatalog>());
   const [forwardFiles, setForwardFiles] = useState<File[]>([]);
   const [forwardStatus, setForwardStatus] = useState<DispatchActionStatus>("idle");
   const [forwardMessage, setForwardMessage] = useState<string | null>(null);
@@ -1323,20 +1328,34 @@ export function BrokerAttemptInspector({
     setForwardModel((current) => current || defaultForwardAgent?.model?.trim() || "");
   }, [defaultForwardAgent, defaultForwardAgentId, firstRoutableAgentId, originalTargetAgentId]);
 
+  const refreshRuntimeModels = async () => {
+    const query = new URLSearchParams({ scope: "global+project", force: "true" });
+    const projectRoot = forwardProjectPath;
+    if (projectRoot) query.set("projectRoot", projectRoot);
+    setRefreshingModels(true);
+    setModelRefreshError(null);
+    await runtimeCatalogLoaderRef.current.load(
+      () => api<RuntimeCapabilityCatalog>(`/api/runner/options?${query}`),
+      {
+        publish: setRuntimeCapabilities,
+        failed: () => setModelRefreshError("Model refresh is unavailable. Your draft and saved choices are kept."),
+        finished: () => setRefreshingModels(false),
+      },
+    );
+  };
+
   useEffect(() => {
     const query = new URLSearchParams({ scope: "global+project" });
     if (forwardProjectPath) query.set("projectRoot", forwardProjectPath);
-    let cancelled = false;
-    void api<RuntimeCapabilityCatalog>(`/api/runner/options?${query.toString()}`)
-      .then((options) => {
-        if (!cancelled && options.schemaVersion === "openscout.runtime-capabilities.v1") {
-          setRuntimeCapabilities(options);
-        }
-      })
-      .catch(() => {
-        // The built-in seed remains available while the server is unreachable.
-      });
-    return () => { cancelled = true; };
+    const loader = runtimeCatalogLoaderRef.current;
+    setRefreshingModels(false);
+    setModelRefreshError(null);
+    void loader.load(() => api<RuntimeCapabilityCatalog>(`/api/runner/options?${query}`), {
+      publish: (options) => {
+        if (options.schemaVersion === "openscout.runtime-capabilities.v1") setRuntimeCapabilities(options);
+      },
+    });
+    return () => { loader.invalidate(); };
   }, [forwardProjectPath]);
 
   const openForwardDraft = useCallback(() => {
@@ -1910,6 +1929,10 @@ export function BrokerAttemptInspector({
                     </label>
                     <RuntimePicker
                       catalog={forwardCatalog}
+                      onRefreshModels={() => { void refreshRuntimeModels(); }}
+                      refreshingModels={refreshingModels}
+                      catalogStatus={runtimeModelCatalogStatus(runtimeCapabilities)}
+                      catalogWarning={modelRefreshError ?? runtimeCapabilities?.warnings?.[0]}
                       value={{ harness: forwardHarness, model: forwardModel, effort: forwardEffort }}
                       onChange={(next: RuntimeValue) => {
                         routingTouchedRef.current = true;

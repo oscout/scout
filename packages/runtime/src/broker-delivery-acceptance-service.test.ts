@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 
 import {
   buildScoutReturnAddress,
+  SCOUT_RUNTIME_CATALOG,
   type AgentDefinition,
   type AgentEndpoint,
   type ConversationDefinition,
@@ -1198,4 +1199,44 @@ describe("BrokerDeliveryAcceptanceService", () => {
       execution: { harness: "claude", model: "claude-opus-5" },
     })).rejects.toThrow("unsupported_model_dimension");
   });
+});
+
+
+test("delivery accepts remote-only models and effort metadata and rejects a disabled fresh choice", async () => {
+  const catalog = structuredClone(SCOUT_RUNTIME_CATALOG);
+  const codex = catalog.harnesses.find((harness) => harness.id === "codex")!;
+  codex.models = codex.models.map((model) => ({ ...model, enabled: false, default: false }));
+  codex.models.push({ id: "gpt-published-next", label: "Published Next", enabled: true, default: true, reasoningEfforts: ["max", "ultra"] });
+  const harness = createHarness({ runtimeCatalog: catalog });
+  const base = { body: "review", intent: "consult" as const, targetAgentId: "agent-1", caller: { actorId: "operator", nodeId: "node-1" } };
+  const accepted = await harness.service.accept({ ...base, id: "future-model", execution: { harness: "codex", model: "gpt-published-next", reasoningEffort: "ultra", session: "new" } });
+  expect(accepted.kind).toBe("delivery");
+  expect(harness.acceptedInvocations[0]?.execution).toMatchObject({ model: "gpt-published-next", reasoningEffort: "ultra" });
+  await expect(harness.service.accept({ ...base, id: "disabled-model", execution: { harness: "codex", model: "gpt-6-astra", session: "new" } })).rejects.toThrow("disabled_model");
+  expect(harness.acceptedInvocations).toHaveLength(1);
+});
+
+test("delivery resolves family aliases using live catalog data", async () => {
+  const catalog = structuredClone(SCOUT_RUNTIME_CATALOG);
+  const claude = catalog.harnesses.find((harness) => harness.id === "claude")!;
+  claude.models = [{ id: "claude-opus-future", label: "Future Opus", family: "Opus", enabled: true, default: true }];
+  const harness = createHarness({ runtimeCatalog: catalog });
+  await harness.service.accept({ id: "live-opus", body: "review", intent: "consult", targetAgentId: "agent-1",
+    caller: { actorId: "operator", nodeId: "node-1" }, execution: { harness: "claude", model: "opus" } });
+  expect(harness.acceptedInvocations[0]?.execution?.model).toBe("claude-opus-future");
+});
+
+test("exact-session delivery retains its disabled published runtime as continuation context", async () => {
+  const catalog = structuredClone(SCOUT_RUNTIME_CATALOG);
+  const codex = catalog.harnesses.find((entry) => entry.id === "codex")!;
+  codex.models = codex.models.map((entry) => ({ ...entry, enabled: entry.id !== "gpt-6-astra", default: false }));
+  const endpoint = testEndpoint({ id: "retained-endpoint", agentId: "retained-agent", sessionId: "retained-session" });
+  const harness = createHarness({ runtimeCatalog: catalog, resolution: { kind: "resolved_session", session: {
+    sessionId: "retained-session", actorId: "retained-agent", endpoint, label: "Retained task", nodeId: "node-1",
+  } } });
+  const result = await harness.service.accept({ id: "retained-model", body: "continue", intent: "consult",
+    target: { kind: "session_id", sessionId: "retained-session" },
+    caller: { actorId: "operator", nodeId: "node-1" }, execution: { harness: "codex", model: "gpt-6-astra", reasoningEffort: "high" } });
+  expect(result.kind).toBe("delivery");
+  expect(harness.acceptedInvocations[0]?.execution).toMatchObject({ model: "gpt-6-astra", reasoningEffort: "high", session: "existing", targetSessionId: "retained-session" });
 });

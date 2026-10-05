@@ -31,8 +31,10 @@ import { isAgentBusy, normalizeAgentState } from "../../lib/agent-state.ts";
 import { ensureAgentChat } from "../../lib/agent-chat.ts";
 import { usePersistentNumber, usePersistentString } from "../../lib/persistent-state.ts";
 import {
+  createRuntimeCatalogLoader,
   RUNTIME_CAPABILITY_SEED,
   runtimeCatalogFromCapabilities,
+  runtimeModelCatalogStatus,
   type RuntimeCapabilityCatalog,
 } from "../../lib/runtime-capabilities.ts";
 import {
@@ -1278,6 +1280,9 @@ function QuietStartPanel({
   const [agentId, setAgentId] = useState(() => catchupAgents[0]?.id ?? "");
   const selectedAgent = catchupAgents.find((agent) => agent.id === agentId) ?? null;
   const [runtimeCapabilities, setRuntimeCapabilities] = useState<RuntimeCapabilityCatalog | null>(null);
+  const [refreshingModels, setRefreshingModels] = useState(false);
+  const [modelRefreshError, setModelRefreshError] = useState<string | null>(null);
+  const runtimeCatalogLoaderRef = useRef(createRuntimeCatalogLoader<RuntimeCapabilityCatalog>());
   const [prompt, setPrompt] = useState("");
   const [harness, setHarness] = useState(selectedAgent?.harness?.trim() ?? "");
   const [model, setModel] = useState(selectedAgent?.model?.trim() ?? "");
@@ -1296,21 +1301,35 @@ function QuietStartPanel({
     setModel(selectedAgent?.model?.trim() ?? "");
   }, [selectedAgent?.id]);
 
+  const refreshRuntimeModels = async () => {
+    const query = new URLSearchParams({ scope: "global+project", force: "true" });
+    const projectRoot = selectedAgent?.projectRoot?.trim() || selectedAgent?.cwd?.trim();
+    if (projectRoot) query.set("projectRoot", projectRoot);
+    setRefreshingModels(true);
+    setModelRefreshError(null);
+    await runtimeCatalogLoaderRef.current.load(
+      () => api<RuntimeCapabilityCatalog>(`/api/runner/options?${query}`),
+      {
+        publish: setRuntimeCapabilities,
+        failed: () => setModelRefreshError("Model refresh is unavailable. Your draft and saved choices are kept."),
+        finished: () => setRefreshingModels(false),
+      },
+    );
+  };
+
   useEffect(() => {
     const projectRoot = selectedAgent?.projectRoot?.trim() || selectedAgent?.cwd?.trim();
     const query = new URLSearchParams({ scope: "global+project" });
     if (projectRoot) query.set("projectRoot", projectRoot);
-    let cancelled = false;
-    void api<RuntimeCapabilityCatalog>(`/api/runner/options?${query.toString()}`)
-      .then((options) => {
-        if (!cancelled && options.schemaVersion === "openscout.runtime-capabilities.v1") {
-          setRuntimeCapabilities(options);
-        }
-      })
-      .catch(() => {
-        // Keep the selected agent's observed runtime as the offline fallback.
-      });
-    return () => { cancelled = true; };
+    const loader = runtimeCatalogLoaderRef.current;
+    setRefreshingModels(false);
+    setModelRefreshError(null);
+    void loader.load(() => api<RuntimeCapabilityCatalog>(`/api/runner/options?${query}`), {
+      publish: (options) => {
+        if (options.schemaVersion === "openscout.runtime-capabilities.v1") setRuntimeCapabilities(options);
+      },
+    });
+    return () => { loader.invalidate(); };
   }, [selectedAgent?.cwd, selectedAgent?.projectRoot]);
 
   const effectiveHarness = harness || selectedAgent?.harness?.trim() || "";
@@ -1417,6 +1436,10 @@ function QuietStartPanel({
                harness and model selects — the harness reads as its mark. */
             <RuntimePicker
               catalog={runtimeCatalog}
+              onRefreshModels={() => { void refreshRuntimeModels(); }}
+              refreshingModels={refreshingModels}
+              catalogStatus={runtimeModelCatalogStatus(runtimeCapabilities)}
+              catalogWarning={modelRefreshError ?? runtimeCapabilities?.warnings?.[0]}
               value={{ harness: effectiveHarness, model, effort: reasoningEffort }}
               onChange={(next: RuntimeValue) => {
                 // "" keeps its meaning: run on the agent's own runtime.

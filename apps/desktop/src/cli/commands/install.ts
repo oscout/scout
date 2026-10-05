@@ -1,3 +1,4 @@
+import { INSTALL_HELP } from "../../../../../packages/cli/bin/lifecycle-preflight.mjs";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
@@ -137,30 +138,7 @@ type ResolvedInstallDependencies = {
 };
 
 export function renderInstallCommandHelp(): string {
-  return [
-    "scout install — download and install the Scout macOS app",
-    "",
-    "Usage:",
-    "  scout install                 # install or update to the latest signed release",
-    "  scout install --check         # report installed vs latest, install nothing",
-    "  scout install --version <tag> # install a specific release (e.g. v0.2.70)",
-    "  scout install --force         # reinstall even if already up to date",
-    "  scout install --no-restart    # do not relaunch Scout after installing",
-    "  scout install --candidate <receipt.json> --dmg <file> # explicit local signed candidate",
-    "",
-    "Behavior:",
-    "  Downloads the signed + notarized OpenScout.dmg from the GitHub release,",
-    "  verifies the published byte size and sha256 digest when GitHub provides one,",
-    "  then codesign and Gatekeeper-assess the DMG before mounting. Scout.app",
-    "  must match the pinned bundle id and Team ID, pass codesign --deep --strict,",
-    "  and pass Gatekeeper execute after staging. A running copy of the installed",
-    "  app and any stale ScoutMenu helpers from other checkouts are stopped first;",
-    "  replacement is staged and rolled back on failure.",
-    "  Quarantine attributes are not cleared.",
-    "",
-    "  The app uses the local scout CLI for the bundled runtime. Install the CLI",
-    "  with `bun add -g @openscout/scout`.",
-  ].join("\n");
+  return INSTALL_HELP;
 }
 
 export function parseInstallArgs(args: string[]): ScoutInstallOptions {

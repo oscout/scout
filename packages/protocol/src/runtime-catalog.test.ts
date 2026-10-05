@@ -11,7 +11,7 @@ describe("runtime catalog", () => {
     const parsed = parseScoutRuntimeCatalog(SCOUT_RUNTIME_CATALOG);
     expect(parsed.ok).toBe(true);
     if (!parsed.ok) return;
-    expect(parsed.catalog.revision).toBe("2026-10-01.1");
+    expect(parsed.catalog.revision).toMatch(/^\d{4}-\d{2}-\d{2}\.\d+$/u);
     expect(parsed.catalog.harnesses.find((entry) => entry.id === "codex")?.models[0])
       .toEqual(expect.objectContaining({
         id: "gpt-6-astra",
@@ -19,6 +19,8 @@ describe("runtime catalog", () => {
         default: true,
         contextWindowTokens: 1_050_000,
       }));
+    expect(parsed.catalog.harnesses.find((entry) => entry.id === "codex")?.models)
+      .toContainEqual(expect.objectContaining({ id: "gpt-6.1-sol", label: "6.1 Sol", enabled: true, contextWindowTokens: 1_050_000 }));
     const claude = parsed.catalog.harnesses.find((entry) => entry.id === "claude");
     expect(claude?.models)
       .toContainEqual(expect.objectContaining({ id: "claude-fable-5", label: "Fable 5" }));

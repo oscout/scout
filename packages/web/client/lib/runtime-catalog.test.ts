@@ -9,11 +9,13 @@ import {
   resolveModel,
   runtimeCatalogFromRunnerOptions,
   searchRuntimeOptions,
+  seedRuntime,
   valueForPreset,
   type RuntimeCatalog,
   type RuntimeValue,
 } from "./runtime-catalog.ts";
 import {
+  createRuntimeCatalogLoader,
   RUNTIME_CAPABILITY_SEED,
   runtimeCatalogFromCapabilities,
 } from "./runtime-capabilities.ts";
@@ -75,13 +77,13 @@ describe("reconcileRuntime", () => {
     expect(next.model).toBe("");
   });
 
-  test("keeps the effort when the new harness has the same rung", () => {
-    const next = reconcileRuntime(CATALOG, VALUE, { harness: "codex" });
+  test("keeps the effort when a named model in the new harness has the same rung", () => {
+    const next = reconcileRuntime(CATALOG, VALUE, { harness: "codex", model: "gpt-5.5" });
     expect(next.effort).toBe("high");
   });
 
   test("clamps effort by ladder position on a shorter ladder", () => {
-    const next = reconcileRuntime(CATALOG, { ...VALUE, effort: "xhigh" }, { harness: "codex" });
+    const next = reconcileRuntime(CATALOG, { ...VALUE, effort: "xhigh" }, { harness: "codex", model: "gpt-5.5" });
     // xhigh is rung 4 of 4; codex's 3-rung ladder clamps to its top rung.
     expect(next.effort).toBe("high");
   });
@@ -199,6 +201,7 @@ describe("Scout-owned runtime seed", () => {
     expect(codex.models.map((model) => model.label)).toEqual([
       "Default",
       "6 Astra",
+      "6.1 Sol",
       "6 Sol",
       "6 Luna",
       "5.6 Sol",
@@ -296,9 +299,9 @@ describe("effortsFor with a selected model", () => {
   const rungs = (harness: string, model?: string) =>
     effortsFor(SCOPED, harness, model)?.map((step) => step.value);
 
-  test("no model means the harness union", () => {
+  test("an unscoped query gets the union while Codex Default exposes no effort choices", () => {
     expect(rungs("codex")).toEqual(["low", "medium", "high", "xhigh", "max", "ultra"]);
-    expect(rungs("codex", "")).toEqual(["low", "medium", "high", "xhigh", "max", "ultra"]);
+    expect(rungs("codex", "")).toEqual([]);
   });
 
   test("narrows to the selected model's real ladder", () => {
@@ -414,4 +417,65 @@ describe("runtime lists — shortlist and presets", () => {
       { id: "fusion", label: "Fusion", harness: "claude", model: "claude-opus-5", origin: "broker-profile" },
     ]);
   });
+});
+
+
+test("Codex Default clears model and effort in reconciled and seeded picker values", () => {
+  const selected = { harness: "codex", model: "gpt-5.5", effort: "high" };
+  expect(reconcileRuntime(CATALOG, selected, { model: "" })).toEqual({ harness: "codex", model: "", effort: "" });
+  expect(reconcileRuntime(CATALOG, { harness: "codex", model: "", effort: "" }, { effort: "high" }).effort).toBe("");
+  expect(seedRuntime(CATALOG, { harness: "codex", model: "", effort: "high" })).toEqual({ harness: "codex", model: "", effort: "" });
+});
+
+function deferredCatalog() {
+  let resolve!: (value: { revision: string; projectRoot: string }) => void;
+  let reject!: (error: Error) => void;
+  const promise = new Promise<{ revision: string; projectRoot: string }>((done, failed) => { resolve = done; reject = failed; });
+  return { promise, resolve, reject };
+}
+
+test("a delayed normal catalog cannot replace a completed explicit refresh or its status", async () => {
+  const loader = createRuntimeCatalogLoader<{ revision: string; projectRoot: string }>();
+  const normal = deferredCatalog();
+  const forced = deferredCatalog();
+  const visible: string[] = [];
+  const finished: string[] = [];
+  const oldRead = loader.load(() => normal.promise, {
+    publish: (value) => visible.push(value.revision), finished: () => finished.push("normal"),
+  });
+  const refresh = loader.load(() => forced.promise, {
+    publish: (value) => visible.push(value.revision), finished: () => finished.push("forced"),
+  });
+  forced.resolve({ revision: "published-new", projectRoot: "/project-a" });
+  await refresh;
+  normal.resolve({ revision: "saved-old", projectRoot: "/project-a" });
+  await oldRead;
+  expect(visible).toEqual(["published-new"]);
+  expect(finished).toEqual(["forced"]);
+});
+
+test("changing project invalidates an old force result and its errors/loading publication", async () => {
+  const loader = createRuntimeCatalogLoader<{ revision: string; projectRoot: string }>();
+  const projectA = deferredCatalog();
+  const projectB = deferredCatalog();
+  const visible: string[] = [];
+  const status: string[] = [];
+  const oldRefresh = loader.load(() => projectA.promise, {
+    publish: (value) => visible.push(value.projectRoot), failed: () => status.push("A error"), finished: () => status.push("A finished"),
+  });
+  loader.invalidate(); // The Home/Broker project effect's cleanup also invalidates manual requests.
+  const current = loader.load(() => projectB.promise, { publish: (value) => visible.push(value.projectRoot) });
+  projectB.resolve({ revision: "project-b-new", projectRoot: "/project-b" });
+  await current;
+  projectA.resolve({ revision: "project-a-old", projectRoot: "/project-a" });
+  await oldRefresh;
+  expect(visible).toEqual(["/project-b"]);
+  expect(status).toEqual([]);
+  const unavailable = deferredCatalog();
+  const discarded = loader.load(() => unavailable.promise, { publish: () => visible.push("discarded"),
+    failed: () => status.push("stale error"), finished: () => status.push("stale finished") });
+  loader.invalidate();
+  unavailable.reject(new Error("old project is offline"));
+  await discarded;
+  expect(status).toEqual([]);
 });

@@ -37,7 +37,7 @@ import {
   type ComposerFrame,
   type ComposerResizeEdge,
 } from "../../lib/composer-frame.ts";
-import { RUNTIME_CAPABILITY_SEED } from "../../lib/runtime-capabilities.ts";
+import { RUNTIME_CAPABILITY_SEED, runtimeModelCatalogStatus } from "../../lib/runtime-capabilities.ts";
 import {
   createClientMessageId,
   stageAcceptedConversationTurn,
@@ -116,6 +116,10 @@ type RunnerEffortOption = {
 };
 
 type RunnerOptionsState = {
+  source?: string;
+  catalogRevision?: string;
+  checkedAt?: number;
+  warnings?: string[];
   projects?: ProjectLaunchTarget[];
   defaults: {
     harness: string;
@@ -168,7 +172,7 @@ const FALLBACK_RUNNER_OPTIONS: RunnerOptionsState = {
 };
 
 /**
- * The catalog only changes when the installed harness fleet does, so the last
+ * Model data can update independently of the installed harnesses. The last
  * good snapshot survives the dialog: reopening New task renders it instantly
  * and revalidates in the background, instead of showing "Loading the model
  * catalog…" on every open. Kept at module scope because the dialog unmounts
@@ -337,6 +341,7 @@ export function NewChatComposer({
   const routeAgent = sorted.find((candidate) => candidate.id === routeAgentId) ?? null;
   const preferredProjectRoot = routeAgent?.projectRoot ?? routeAgent?.cwd ?? null;
   const [configuration, setConfiguration] = useState<AgentConfigurationState | null>(null);
+  const [refreshingModels, setRefreshingModels] = useState(false);
   const [runnerOptions, setRunnerOptions] = useState<RunnerOptionsState | null>(() => (
     initialMachineId ? null : cachedRunnerOptions
     ?? peekApiGet<RunnerOptionsState>(RUNNER_OPTIONS_PATH, RUNNER_OPTIONS_CACHE_MAX_AGE_MS)
@@ -422,6 +427,7 @@ export function NewChatComposer({
   const dragDepthRef = useRef(0);
   const projectSelectionTouchedRef = useRef(Boolean(initialProjectPath));
   const runtimeSelectionTouchedRef = useRef(false);
+  const runnerOptionsGenerationRef = useRef(0);
 
   // ── Panel placement ────────────────────────────────────────────────────────
   // Null is the standing centered panel. It only becomes a frame once the
@@ -923,21 +929,24 @@ export function NewChatComposer({
   }, [configuration, loadConfiguration, projectPickerOpen, machineId]);
 
   // Callable so the picker's error state can offer a real retry.
-  const loadRunnerOptions = useCallback(() => {
+  const loadRunnerOptions = useCallback((force = false) => {
     let cancelled = false;
-    void api<RunnerOptionsState>(hostApiPath(machineId, RUNNER_OPTIONS_PATH))
+    const generation = ++runnerOptionsGenerationRef.current;
+    if (force) setRefreshingModels(true);
+    void api<RunnerOptionsState>(hostApiPath(machineId, `${RUNNER_OPTIONS_PATH}${force ? "?force=true" : ""}`))
       .then((snapshot) => {
-        if (cancelled) return;
+        if (cancelled || generation !== runnerOptionsGenerationRef.current) return;
         if (!machineId) cachedRunnerOptions = snapshot;
         setRunnerOptions(snapshot);
         setRunnerLoadError(null);
       })
       .catch(() => {
-        if (cancelled) return;
+        if (cancelled || generation !== runnerOptionsGenerationRef.current) return;
         setRunnerLoadError(machineId
           ? "This host is unavailable. Choose another host or retry; your draft is kept."
-          : "Live model availability is unavailable. Using the bundled catalog.");
-      });
+          : "Model refresh is unavailable. Your draft and saved choices are kept.");
+      })
+      .finally(() => { if (!cancelled && generation === runnerOptionsGenerationRef.current) setRefreshingModels(false); });
     return () => { cancelled = true; };
   }, [machineId]);
 
@@ -1531,6 +1540,10 @@ export function NewChatComposer({
                   <div className="s-newchat-forward-runtime">
                     <RuntimePicker
                       catalog={runtimeCatalog}
+                      onRefreshModels={() => { loadRunnerOptions(true); }}
+                      refreshingModels={refreshingModels}
+                      catalogStatus={runtimeModelCatalogStatus(runnerOptions)}
+                      catalogWarning={runnerOptions?.warnings?.[0] ?? runnerLoadError ?? undefined}
                       value={{ harness, model, effort: reasoningEffort }}
                       onChange={handleRuntimeChange}
                       status="ready"
@@ -1699,6 +1712,10 @@ export function NewChatComposer({
               tools={isForwarding ? undefined : (
                 <RuntimePicker
                   catalog={runtimeCatalog}
+                  onRefreshModels={() => { loadRunnerOptions(true); }}
+                  refreshingModels={refreshingModels}
+                  catalogStatus={runtimeModelCatalogStatus(runnerOptions)}
+                  catalogWarning={runnerOptions?.warnings?.[0] ?? runnerLoadError ?? undefined}
                   value={{ harness, model, effort: reasoningEffort }}
                   onChange={handleRuntimeChange}
                   status="ready"

@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, copyFileSync, writeFileSync, readdirSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, copyFileSync, writeFileSync, readdirSync, rmSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve, join } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -17,8 +17,10 @@ for (const wrapper of ["packages/runtime/bin/openscout-runtime.mjs", "packages/c
       copyFileSync(join(root, wrapper), join(dir, "bin/entry.mjs"));
       copyFileSync(join(root, "packages/cli/bin/lifecycle-preflight.mjs"), join(dir, "bin/lifecycle-preflight.mjs"));
       writeFileSync(join(dir, "package.json"), '{"version":"test"}');
-      // Poison every reachable runtime: importing any entry is a test failure.
-      const poison = 'throw new Error("LIFECYCLE ENTRY IMPORTED");';
+      // An external marker catches imports even when the launcher swallows an
+      // entrypoint error and falls back to help.
+      const marker = join(dir, "runtime-imported");
+      const poison = 'import { writeFileSync } from "node:fs"; writeFileSync(process.env.SCOUT_TEST_IMPORT_MARKER, "imported"); throw new Error("LIFECYCLE ENTRY IMPORTED");';
       for (const command of ["base-daemon", "broker-daemon", "broker-process-manager", "mesh-discover"]) {
         writeFileSync(join(dir, "dist", command + ".js"), poison);
         writeFileSync(join(dir, "dist/runtime", command + ".mjs"), poison);
@@ -30,12 +32,18 @@ for (const wrapper of ["packages/runtime/bin/openscout-runtime.mjs", "packages/c
       if (!runtime) {
         const run = args => spawnSync(process.execPath, [join(dir, "bin/entry.mjs"), ...args], {
           cwd: dir, timeout: 3000, encoding: "utf8",
-          env: { ...process.env, HOME: join(dir, "home"), PATH: "", OPENSCOUT_RUNTIME_HOST: "node" },
+          env: { ...process.env, HOME: join(dir, "home"), PATH: "", OPENSCOUT_RUNTIME_HOST: "node", SCOUT_TEST_IMPORT_MARKER: marker },
         });
-        for (const args of [["app", "help"], ["help", "setup"], ["--help", "up"], ["--json", "app", "restart", "--help"], ["relay", "app", "help"]]) {
+        for (const args of [["install", "--help"], ["help", "install"], ["app", "help"], ["help", "setup"], ["--help", "up"], ["--json", "app", "restart", "--help"], ["relay", "app", "help"]]) {
           const result = run(args);
           assert.equal(result.status, 0, result.stderr);
           assert.match(result.stdout, /Usage:/);
+          assert.equal(existsSync(marker), false, JSON.stringify(args));
+          if (args.includes("setup") || args.includes("install")) {
+            assert.match(result.stdout, /Install & setup: https:\/\/openscout\.app\/install\.md/);
+            assert.match(result.stdout, /Quickstart: +https:\/\/openscout\.app\/docs\/quickstart/);
+            assert.match(result.stdout, /Troubleshooting: scout doctor/);
+          }
         }
         for (const args of [
           ["app", "restart", "extra"], ["app", "restart", "--timeout="], ["setup", "--source-root="],
@@ -47,10 +55,13 @@ for (const wrapper of ["packages/runtime/bin/openscout-runtime.mjs", "packages/c
           assert.equal(result.status, 1, JSON.stringify(args));
           assert.doesNotMatch(result.stderr, /LIFECYCLE ENTRY IMPORTED/);
           assert.match(result.stderr, /unexpected|invalid|missing/);
+          assert.equal(existsSync(marker), false, JSON.stringify(args));
         }
         for (const args of [["up", ".", "--json"], ["--json", "up", "."], ["setup", "--source-root=.", "--json"], ["app", "restart", "--timeout=90s"]]) {
           // Valid inputs reach the poisoned runtime; the test never starts services.
           assert.match(run(args).stderr, /LIFECYCLE ENTRY IMPORTED/);
+          assert.equal(existsSync(marker), true, JSON.stringify(args));
+          rmSync(marker);
         }
         assert.deepEqual(readdirSync(join(dir, "home")), []);
       }
@@ -58,18 +69,20 @@ for (const wrapper of ["packages/runtime/bin/openscout-runtime.mjs", "packages/c
         for (const flag of ["--help", "-h"]) {
           const result = spawnSync(process.execPath, [join(dir, "bin/entry.mjs"), ...args, flag], {
             cwd: dir, timeout: 3000, encoding: "utf8",
-            env: { ...process.env, HOME: join(dir, "home"), PATH: "", OPENSCOUT_RUNTIME_HOST: "node", OPENSCOUT_RUNTIME_ENTRYPOINT: "dist" },
+            env: { ...process.env, HOME: join(dir, "home"), PATH: "", OPENSCOUT_RUNTIME_HOST: "node", OPENSCOUT_RUNTIME_ENTRYPOINT: "dist", SCOUT_TEST_IMPORT_MARKER: marker },
           });
           assert.equal(result.status, 0, result.stderr);
           assert.match(result.stdout, /Usage:/);
+          assert.equal(existsSync(marker), false, JSON.stringify(args));
           assert.deepEqual(readdirSync(join(dir, "home")), []);
         }
         {
           for (const flag of ["--unsupported", "-x"]) {
-            const result = spawnSync(process.execPath, [join(dir, "bin/entry.mjs"), ...args, flag], { cwd: dir, timeout: 3000, encoding: "utf8" });
+            const result = spawnSync(process.execPath, [join(dir, "bin/entry.mjs"), ...args, flag], { cwd: dir, timeout: 3000, encoding: "utf8", env: { ...process.env, SCOUT_TEST_IMPORT_MARKER: marker } });
             assert.equal(result.status, 1);
             assert.match(result.stderr, /Unsupported arguments|unexpected argument/);
             assert.doesNotMatch(result.stderr, /LIFECYCLE ENTRY IMPORTED/);
+            assert.equal(existsSync(marker), false, JSON.stringify(args));
           }
         }
       }

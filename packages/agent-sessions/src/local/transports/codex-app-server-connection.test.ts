@@ -356,3 +356,65 @@ process.stdin.on("data", (chunk) => {
   await client.shutdown({ reason: "test done" });
   expect(client.isAlive()).toBe(false);
 });
+
+
+test("published future choices and Default reach the app-server without model or config preflight", async () => {
+  for (const runtime of [undefined, { model: "gpt-published-next", effort: "ultra" }]) {
+    const dir = await tempDir();
+    const socketPath = join(dir, "p.sock");
+    const fake = await startFakeAppServer(socketPath, (request, reply) => {
+      if (request.method === "initialize") reply({ id: request.id, result: { userAgent: "Codex/test" } });
+      else if (request.method === "thread/start") reply({ id: request.id, result: { thread: { id: "published-thread", path: null } } });
+      else if (request.method === "turn/start") {
+        reply({ id: request.id, result: { turn: { id: "published-turn" } } });
+        reply({ method: "item/completed", params: { turnId: "published-turn", item: { type: "agentMessage", id: "reply", text: "done" } } });
+        reply({ method: "turn/completed", params: { threadId: "published-thread", turn: { id: "published-turn", status: "completed" } } });
+      } else if (request.method === "model/list" || request.method === "config/read") {
+        reply({ id: request.id, error: { message: "Discovery must not be required for published choices" } });
+      } else if (request.id !== undefined) reply({ id: request.id, result: {} });
+    });
+    const client = new CodexAppServerClient({ agentName: "published", sessionId: "published", cwd: dir, systemPrompt: "test",
+      runtimeDirectory: join(dir, "runtime"), logsDirectory: join(dir, "logs"),
+      ...(runtime ? { launchArgs: ["-c", `model="${runtime.model}"`, "-c", `model_reasoning_effort="${runtime.effort}"`] } : {}),
+      connection: { mode: "attach", socketPath } });
+    try {
+      expect((await client.invoke("hi")).output).toBe("done");
+      expect(fake.received.some((request) => request.method === "model/list" || request.method === "config/read")).toBe(false);
+      const start = fake.received.find((request) => request.method === "thread/start")!.params!;
+      const turn = fake.received.find((request) => request.method === "turn/start")!.params!;
+      if (runtime) {
+        expect(start.model).toBe(runtime.model);
+        expect(turn.model).toBe(runtime.model);
+        expect(turn.effort).toBe(runtime.effort);
+      } else {
+        expect(start).not.toHaveProperty("model");
+        expect(turn).not.toHaveProperty("model");
+        expect(turn).not.toHaveProperty("effort");
+      }
+    } finally { await client.shutdown(); }
+  }
+});
+
+test("a continuation keeps existing thread configuration without discovery or overrides", async () => {
+  const dir = await tempDir();
+  const socketPath = join(dir, "c.sock");
+  const fake = await startFakeAppServer(socketPath, (request, reply) => {
+    if (request.method === "initialize") reply({ id: request.id, result: { userAgent: "Codex/test" } });
+    else if (request.method === "thread/resume") reply({ id: request.id, result: { thread: { id: "existing-thread", path: null }, model: "retired-context-model" } });
+    else if (request.method === "turn/start") {
+      reply({ id: request.id, result: { turn: { id: "continuation-turn" } } });
+      reply({ method: "item/completed", params: { turnId: "continuation-turn", item: { type: "agentMessage", id: "reply", text: "continued" } } });
+      reply({ method: "turn/completed", params: { threadId: "existing-thread", turn: { id: "continuation-turn", status: "completed" } } });
+    } else if (request.method === "model/list" || request.method === "config/read") reply({ id: request.id, error: { message: "not required" } });
+    else if (request.id !== undefined) reply({ id: request.id, result: {} });
+  });
+  const client = new CodexAppServerClient({ agentName: "continued", sessionId: "continued", cwd: dir, systemPrompt: "test",
+    runtimeDirectory: join(dir, "runtime"), logsDirectory: join(dir, "logs"), threadId: "existing-thread", requireExistingThread: true,
+    connection: { mode: "attach", socketPath } });
+  try {
+    expect((await client.invoke("continue")).output).toBe("continued");
+    expect(fake.received.some((request) => request.method === "thread/start" || request.method === "model/list" || request.method === "config/read")).toBe(false);
+    expect(fake.received.find((request) => request.method === "turn/start")!.params).not.toHaveProperty("model");
+    expect(fake.received.find((request) => request.method === "turn/start")!.params).not.toHaveProperty("effort");
+  } finally { await client.shutdown(); }
+});

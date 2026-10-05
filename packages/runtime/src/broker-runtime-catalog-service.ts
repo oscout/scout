@@ -9,9 +9,9 @@ import {
 } from "@openscout/protocol";
 import { applyRuntimeModelContextWindows } from "@openscout/agent-sessions/model-catalog";
 
-import { resolveOpenScoutSupportPaths } from "./support-paths.js";
+import { assertTestIsolatedUserData, resolveOpenScoutSupportPaths } from "./support-paths.js";
 
-export const DEFAULT_RUNTIME_CATALOG_REFRESH_MS = 60_000;
+export const DEFAULT_RUNTIME_CATALOG_REFRESH_MS = 24 * 60 * 60 * 1_000;
 export const DEFAULT_RUNTIME_CATALOG_URL = "https://openscout.app/.well-known/runtime-catalog.v1.json";
 export const MAX_RUNTIME_CATALOG_BYTES = 1_048_576;
 
@@ -31,6 +31,8 @@ type PersistedRuntimeCatalog = {
   catalog: unknown;
   checkedAt: number;
   etag?: string;
+  url?: string;
+  warnings?: string[];
 };
 
 export type BrokerRuntimeCatalogServiceOptions = {
@@ -44,7 +46,9 @@ export type BrokerRuntimeCatalogServiceOptions = {
 };
 
 export function resolveRuntimeCatalogRefreshMs(env: RuntimeEnv = process.env): number {
-  const parsed = Number(env.OPENSCOUT_RUNTIME_CATALOG_REFRESH_MS?.trim());
+  const value = env.OPENSCOUT_RUNTIME_CATALOG_REFRESH_MS?.trim();
+  if (!value) return DEFAULT_RUNTIME_CATALOG_REFRESH_MS;
+  const parsed = Number(value);
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : DEFAULT_RUNTIME_CATALOG_REFRESH_MS;
 }
 
@@ -104,40 +108,57 @@ async function readBoundedJson(response: Response): Promise<unknown> {
 export class BrokerRuntimeCatalogService {
   private snapshot: BrokerRuntimeCatalogSnapshot | null = null;
   private loadPromise: Promise<BrokerRuntimeCatalogSnapshot> | null = null;
+  private forceRequested = false;
 
   constructor(private readonly options: BrokerRuntimeCatalogServiceOptions = {}) {}
 
   async read(options: { force?: boolean } = {}): Promise<BrokerRuntimeCatalogSnapshot> {
+    if (this.loadPromise) {
+      if (options.force) this.forceRequested = true;
+      return this.loadPromise;
+    }
     const now = this.now();
     const refreshMs = resolveRuntimeCatalogRefreshMs(this.options.env);
     if (!options.force && this.snapshot && now < this.snapshot.nextCheckAt) return this.snapshot;
-    if (this.loadPromise) return this.loadPromise;
-    this.loadPromise = this.refresh(now, refreshMs).finally(() => { this.loadPromise = null; });
+    this.forceRequested = options.force === true;
+    this.loadPromise = this.readOrRefresh(now, refreshMs)
+      .finally(() => { this.loadPromise = null; this.forceRequested = false; });
     return this.loadPromise;
+  }
+
+  private async readOrRefresh(now: number, refreshMs: number): Promise<BrokerRuntimeCatalogSnapshot> {
+    const persisted = this.snapshot ?? await this.readPersisted(refreshMs, now);
+    const bundled = this.bundled(now, refreshMs);
+    const fallback = persisted
+      && compareRuntimeCatalogRevisions(persisted.catalog.revision, bundled.catalog.revision) >= 0
+      ? persisted : bundled;
+    if (persisted && !this.forceRequested && now < persisted.nextCheckAt) {
+      return this.remember({ ...fallback, checkedAt: persisted.checkedAt, nextCheckAt: persisted.nextCheckAt });
+    }
+    return this.refresh(now, refreshMs, fallback);
   }
 
   private now(): number {
     return (this.options.now ?? Date.now)();
   }
 
-  private async refresh(now: number, refreshMs: number): Promise<BrokerRuntimeCatalogSnapshot> {
-    const persisted = this.snapshot ?? await this.readPersisted(refreshMs);
-    const bundled = this.bundled(now, refreshMs);
-    const fallback = persisted
-      && compareRuntimeCatalogRevisions(persisted.catalog.revision, bundled.catalog.revision) >= 0
-      ? persisted
-      : bundled;
+  private async refresh(now: number, refreshMs: number, fallback: BrokerRuntimeCatalogSnapshot): Promise<BrokerRuntimeCatalogSnapshot> {
     const url = resolveRuntimeCatalogUrl(this.options.env);
     try {
       const headers = new Headers({ accept: "application/json" });
-      if (fallback.etag) headers.set("if-none-match", fallback.etag);
+      if (fallback.etag && fallback.url === url) headers.set("if-none-match", fallback.etag);
       const response = await (this.options.fetch ?? fetch)(url, {
         headers,
         cache: "no-cache",
         signal: AbortSignal.timeout(5_000),
       });
       if (response.status === 304) {
-        return this.remember({ ...fallback, checkedAt: now, nextCheckAt: now + refreshMs, warnings: [] });
+        if (!headers.has("if-none-match")) throw new Error("received 304 without a cached ETag");
+        const unchanged = { ...fallback, checkedAt: now, nextCheckAt: now + refreshMs,
+          etag: response.headers.get("etag") ?? fallback.etag, warnings: [] };
+        this.remember(unchanged);
+        await this.writePersisted(unchanged);
+        return unchanged;
       }
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       const parsed = parseScoutRuntimeCatalog(await readBoundedJson(response));
@@ -163,13 +184,17 @@ export class BrokerRuntimeCatalogService {
       await this.writePersisted(snapshot);
       return snapshot;
     } catch (error) {
-      return this.remember({
+      const failed = this.remember({
         ...fallback,
         checkedAt: now,
         nextCheckAt: now + refreshMs,
         url,
+        // An ETag only validates contents at the endpoint that issued it.
+        etag: fallback.url === url ? fallback.etag : undefined,
         warnings: [`Runtime catalog refresh failed; using ${fallback.source} revision ${fallback.catalog.revision}: ${error instanceof Error ? error.message : String(error)}`],
       });
+      await this.writePersisted(failed);
+      return failed;
     }
   }
 
@@ -197,14 +222,15 @@ export class BrokerRuntimeCatalogService {
     return snapshot;
   }
 
-  private async readPersisted(refreshMs: number): Promise<BrokerRuntimeCatalogSnapshot | null> {
+  private async readPersisted(refreshMs: number, now: number): Promise<BrokerRuntimeCatalogSnapshot | null> {
     try {
       const raw = await (this.options.readTextFile ?? readFile)(
         (this.options.cachePath ?? defaultRuntimeCatalogCachePath)(),
         "utf8",
       );
       const cached = JSON.parse(raw) as PersistedRuntimeCatalog;
-      if (cached.schemaVersion !== "openscout.runtime-catalog-cache.v1" || !Number.isFinite(cached.checkedAt)) return null;
+      if (cached.schemaVersion !== "openscout.runtime-catalog-cache.v1" || !Number.isFinite(cached.checkedAt)
+        || cached.checkedAt < 0 || cached.checkedAt > now) return null;
       const parsed = parseScoutRuntimeCatalog(cached.catalog);
       if (!parsed.ok) return null;
       return {
@@ -212,10 +238,11 @@ export class BrokerRuntimeCatalogService {
         catalog: parsed.catalog,
         source: "persisted",
         checkedAt: cached.checkedAt,
-        nextCheckAt: cached.checkedAt + refreshMs,
-        url: resolveRuntimeCatalogUrl(this.options.env),
-        ...(cached.etag ? { etag: cached.etag } : {}),
-        warnings: [],
+        nextCheckAt: (cached.url ?? DEFAULT_RUNTIME_CATALOG_URL) !== resolveRuntimeCatalogUrl(this.options.env) ? 0 : cached.checkedAt + refreshMs,
+        url: cached.url ?? DEFAULT_RUNTIME_CATALOG_URL,
+        ...(typeof cached.etag === "string" ? { etag: cached.etag } : {}),
+        warnings: Array.isArray(cached.warnings)
+          ? cached.warnings.filter((warning): warning is string => typeof warning === "string") : [],
       };
     } catch {
       return null;
@@ -224,12 +251,17 @@ export class BrokerRuntimeCatalogService {
 
   private async writePersisted(snapshot: BrokerRuntimeCatalogSnapshot): Promise<void> {
     try {
+      if (!this.options.writeTextFile && !this.options.cachePath) {
+        assertTestIsolatedUserData("persist the runtime model catalog", "OPENSCOUT_SUPPORT_DIRECTORY");
+      }
       const path = (this.options.cachePath ?? defaultRuntimeCatalogCachePath)();
       await (this.options.ensureDirectory ?? mkdir)(dirname(path), { recursive: true });
       const value: PersistedRuntimeCatalog = {
         schemaVersion: "openscout.runtime-catalog-cache.v1",
         catalog: snapshot.catalog,
         checkedAt: snapshot.checkedAt,
+        url: snapshot.url,
+        ...(snapshot.warnings.length ? { warnings: snapshot.warnings } : {}),
         ...(snapshot.etag ? { etag: snapshot.etag } : {}),
       };
       await (this.options.writeTextFile ?? writeFile)(path, `${JSON.stringify(value, null, 2)}\n`, "utf8");

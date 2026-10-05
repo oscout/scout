@@ -1,5 +1,5 @@
 import { assessSetupCompletion } from "@openscout/runtime/onboarding";
-import { parseSetupCommandOptions, parseScoutArgv, preflightLifecycle } from "../bin/lifecycle-preflight.mjs";
+import { parseSetupCommandOptions, parseScoutArgv, preflightLifecycle, QUICK_LINKS, SETUP_HELP } from "../bin/lifecycle-preflight.mjs";
 import {
   brokerServiceStatus,
   type BrokerServiceStatus,
@@ -127,6 +127,8 @@ Run the headless broker in the foreground with:
 
 The full interactive CLI still uses Bun for commands that depend on the desktop,
 web server, native macOS service, or pairing runtimes.
+
+${QUICK_LINKS}
 `);
 }
 
@@ -318,7 +320,7 @@ async function runConfigCommand(args: string[]): Promise<void> {
 
 async function runSetupCommand(args: string[]): Promise<void> {
   if (args.includes("--help") || args.includes("-h")) {
-    console.log("Usage: scout setup [--source-root <path>] [--default-harness <name>] [--json]\nConfigure project discovery and install/start the local broker.");
+    console.log(SETUP_HELP);
     return;
   }
   const options = parseSetupOptions(args);

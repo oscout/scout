@@ -13,7 +13,8 @@ export function OnboardingTakeover() {
 
   if (!onboarding.hasLocalConfig) return <Frame><PortsStep step={1} /></Frame>;
   if (!onboarding.hasOperatorName) return <Frame><NameStep step={2} /></Frame>;
-  if (!onboarding.hasProjectConfig) return <Frame><ProjectStep step={3} /></Frame>;
+  const chosenContext = onboarding.contextRoot ?? onboarding.projectRoot ?? onboarding.suggestedContextRoot;
+  if (!onboarding.hasProjectConfig || !chosenContext) return <Frame><ProjectStep step={3} /></Frame>;
   // `needed === true` only comes from a real /api/onboarding/state response;
   // a missing `needed` means we are looking at a client-side placeholder and
   // must not take over the app.
@@ -273,8 +274,8 @@ function NameStep({ step }: { step: number }) {
 /* ── Step 2 — source roots + harness ────────────────────────────────────── */
 function ProjectStep({ step }: { step: number }) {
   const { onboarding, refreshOnboarding } = useScout();
-  const suggestedContext = onboarding?.contextRoot ?? onboarding?.projectRoot ?? onboarding?.currentDirectory ?? "";
-  const placeholderPath = suggestedContext || "~/dev";
+  const suggestedContext = onboarding?.suggestedContextRoot ?? onboarding?.contextRoot ?? onboarding?.projectRoot ?? "";
+  const placeholderPath = onboarding?.sourceRoots?.[0] || "~/dev";
   const [roots, setRoots] = useState<string[]>(() => onboarding?.sourceRoots?.length ? [...onboarding.sourceRoots] : [placeholderPath]);
   const [contextRoot, setContextRoot] = useState<string>(suggestedContext);
   const [harness, setHarness] = useState(() => onboardingHarnessDefault(onboarding?.defaultHarness));
@@ -320,6 +321,7 @@ function ProjectStep({ step }: { step: number }) {
 
       <div style={sectionStyle}>
         <label style={labelStyle}>Scan folders</label>
+        <div style={hintStyle}>Choose existing folders. You can use the same folder for scanning and your workspace.</div>
         <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
           {roots.map((root, i) => (
             <div key={i} style={{ display: "flex", gap: 8 }}>
@@ -357,7 +359,7 @@ function ProjectStep({ step }: { step: number }) {
           id="scout-onboarding-context"
           value={contextRoot}
           onChange={(e) => setContextRoot(e.target.value)}
-          placeholder={placeholderPath}
+          placeholder="Choose an existing project folder"
           style={inputStyle}
         />
         <div style={hintStyle}>
@@ -382,22 +384,32 @@ function ProjectStep({ step }: { step: number }) {
 /* Step 3: run setup and verify runtime readiness. */
 function SetupStep({ step }: { step: number }) {
   const { onboarding, refreshOnboarding } = useScout();
+  const [harness, setHarness] = useState(() => onboardingHarnessDefault(onboarding?.defaultHarness));
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const selected = onboarding?.harnesses?.find((entry) => entry.id === harness)
+    ?? (onboarding?.selectedHarness?.id === harness ? onboarding.selectedHarness : null);
+  const command = selected?.state === "missing" ? selected.installCommand
+    : selected?.state === "installed" ? selected.loginCommand : null;
 
   const run = async () => {
     setBusy(true);
     setError(null);
     try {
-      const result = await api<{ brokerWarning?: string | null; hasReadyRuntime?: boolean }>("/api/onboarding/setup", {
-        method: "POST",
-        body: "{}",
-      });
+      let result: { brokerWarning?: string | null } = {};
+      if (harness !== onboarding?.defaultHarness) {
+        result = await api("/api/onboarding/project", {
+          method: "POST", body: JSON.stringify({
+            contextRoot: onboarding?.contextRoot ?? onboarding?.projectRoot ?? onboarding?.suggestedContextRoot,
+            sourceRoots: onboarding?.sourceRoots ?? [], defaultHarness: harness,
+          }),
+        });
+      } else if (!onboarding?.brokerReachable) {
+        result = await api("/api/onboarding/setup", { method: "POST", body: "{}" });
+      }
       await refreshOnboarding();
       if (result.brokerWarning) {
         setError(friendlyOnboardingError("setup", result.brokerWarning));
-      } else if (result.hasReadyRuntime === false) {
-        setError("Scout couldn't find a ready coding agent. Install or sign in to your preferred tool, then choose Run setup again.");
       }
     } catch (err) {
       setError(friendlyOnboardingError("setup", err));
@@ -411,7 +423,7 @@ function SetupStep({ step }: { step: number }) {
       <Header
         eyebrow={`Setup · Step ${step} of ${TOTAL_STEPS}`}
         title="Finish setup"
-        description="Scout will connect your coding tools, start its local service, and check that an agent is ready for your first task."
+        description="Scout checks the local setup of your chosen coding agent. Your first task will confirm that it can connect and reply."
       />
       <ul style={checklistStyle}>
         <Row
@@ -425,14 +437,26 @@ function SetupStep({ step }: { step: number }) {
           hint={onboarding?.brokerReachable ? "connected" : "starts when you run setup"}
         />
         <Row
-          label="Coding agent"
-          done={Boolean(onboarding?.hasReadyRuntime)}
-          hint={onboarding?.hasReadyRuntime ? "ready" : "install or sign in to your preferred tool"}
+          label={selected?.label ?? "Your chosen coding agent"}
+          done={selected?.ready === true}
+          hint={selected?.detail ?? "Scout couldn't check this agent. Check again, or choose another agent below."}
         />
       </ul>
+      {command ? <div style={sectionStyle}>
+        <div style={descStyle}>{selected?.state === "missing" ? "Install this agent in Terminal:" : "Sign in to this agent in Terminal:"}</div>
+        <code style={{ ...inputStyle, display: "block", whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{command}</code>
+        <div style={hintStyle}>Then return to Scout and choose Check again.</div>
+      </div> : null}
+      {selected?.state === "configured" && !selected.ready ? <p style={descStyle}>
+        Sign-in needs to be confirmed by the agent itself. Choose Set up later to try a task, or choose another agent below.
+      </p> : null}
+      {selected?.homepage ? <a href={selected.homepage} target="_blank" rel="noreferrer" style={{ color: "var(--accent)", fontSize: 13 }}>
+        {selected.label} setup guide ↗
+      </a> : null}
+      <OnboardingHarnessPicker value={harness} onChange={setHarness} observations={onboarding?.harnesses} />
       <ErrorBanner message={error} />
       <Actions
-        primary="Run setup"
+        primary={harness !== onboarding?.defaultHarness ? "Use this agent" : onboarding?.brokerReachable ? "Check again" : "Run setup"}
         onPrimary={() => { void run(); }}
         busy={busy}
       />

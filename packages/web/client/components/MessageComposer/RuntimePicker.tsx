@@ -72,6 +72,10 @@ export type RuntimePickerProps = {
   status?: RuntimeStatus;
   statusMessage?: string;
   onRetry?: () => void;
+  onRefreshModels?: () => void;
+  refreshingModels?: boolean;
+  catalogStatus?: string;
+  catalogWarning?: string;
   disabled?: boolean;
   /**
    * Force the effort band on or off. Default follows the harness: a harness
@@ -448,6 +452,10 @@ export function RuntimePicker({
   status = "ready",
   statusMessage,
   onRetry,
+  onRefreshModels,
+  refreshingModels = false,
+  catalogStatus,
+  catalogWarning,
   disabled = false,
   showEffort,
   searchable = "auto",
@@ -938,6 +946,15 @@ export function RuntimePicker({
 
                 <section className="s-rt-band" style={{ animationDelay: "45ms" }}>
                   <BandHeading>Model</BandHeading>
+                  {onRefreshModels ? (
+                    <div className="s-rt-status">
+                      <span className="s-rt-status-message">{catalogStatus ?? "Model catalog"}</span>
+                      <button type="button" className="s-rt-retry" onClick={onRefreshModels} disabled={refreshingModels}>
+                        {refreshingModels ? "Refreshing…" : "Refresh models"}
+                      </button>
+                    </div>
+                  ) : null}
+                  {catalogWarning ? <p className="s-rt-band-note" role="status">{catalogWarning}</p> : null}
                   {isSearchable ? <SearchField ctx={ctx} /> : null}
                   <ModelOptions ctx={ctx} />
                   {description.model.note ? (

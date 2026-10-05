@@ -53,9 +53,12 @@ export function assessSetupCompletion(input: {
   // warning or install failure still fails setup.
   const handoff = !input.broker.health.ok && input.broker.reachable !== true ? input.brokerHandoff ?? null : null;
   const failed = (!input.broker.health.ok && !handoff) || Boolean(input.brokerWarning) || Boolean(input.failures?.length) || input.localEdge?.status === "error";
-  // Only an explicit positive observation is task readiness; installed/unknown is not.
-  const ready = input.catalog.entries.some((entry) => entry.readinessReport.ready === true && entry.readinessReport.state === "ready");
-  const candidates = [...input.catalog.entries].sort((a, b) => Number(b.harness === input.defaultHarness) - Number(a.harness === input.defaultHarness));
+  // A ready alternative cannot complete setup for the agent the user chose.
+  // Older callers without a default retain their any-agent interpretation.
+  const candidates = input.defaultHarness
+    ? input.catalog.entries.filter((entry) => entry.harness === input.defaultHarness)
+    : input.catalog.entries;
+  const ready = candidates.some((entry) => entry.readinessReport.ready === true && entry.readinessReport.state === "ready");
   const login = candidates.find((entry) => entry.readinessReport.installed && entry.readinessReport.configured === false && !entry.readinessReport.ready && entry.readinessReport.loginCommand)?.readinessReport.loginCommand;
   const outcome = failed ? "failed" : handoff ? "handoff" : ready ? "ready" : "running";
   return {
@@ -64,7 +67,9 @@ export function assessSetupCompletion(input: {
       ? "Scout setup failed."
       : handoff
         ? "Scout is set up. Start the broker to finish."
-        : ready ? "Scout is ready." : "Scout is running. No agent is ready yet.",
+        : ready ? "Scout is ready." : input.defaultHarness
+          ? "Scout is running. Your chosen coding agent still needs setup."
+          : "Scout is running. No agent is ready yet.",
     nextStep: failed
       ? (!input.broker.health.ok && input.broker.serviceAdapter === "headless-foreground" ? "openscout-runtime broker" : "scout setup")
       : handoff ? handoff.command

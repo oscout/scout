@@ -25,7 +25,7 @@ export function onboardingHarnessDefault(preferred?: string): string {
 
 export function onboardingHarnessStatus(observed?: OnboardingHarnessObservation): string {
   if (!observed) return "Not checked";
-  if (observed.ready) return "Ready";
+  if (observed.ready) return "Local setup found";
   if (observed.state === "missing") return "Not installed";
   if (observed.state === "installed" || observed.state === "configured") return "Needs setup";
   return "Not checked";

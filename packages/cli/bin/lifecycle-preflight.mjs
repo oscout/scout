@@ -4,6 +4,14 @@ import { resolve } from "node:path";
 
 export const DEFAULT_DRAIN_TIMEOUT_MS = 30 * 60_000;
 
+export const QUICK_LINKS = [
+  "Quick links:",
+  "  Install & setup: https://openscout.app/install.md",
+  "  Quickstart:      https://openscout.app/docs/quickstart",
+  "  Docs:            https://openscout.app/docs",
+  "Troubleshooting: scout doctor",
+].join("\n");
+
 export function parseScoutArgv(argv) {
   let command = null;
   let helpRequested = false;
@@ -156,7 +164,7 @@ export function parseAppCommand(args) {
 
 
 export const UP_HELP = "Usage: scout up <name|path> [--name <alias>] [--harness <harness>] [--provider <provider>] [--model <model>] [--reasoning-effort <effort>] [--permission-profile <profile>]\nStart a local agent.";
-export const SETUP_HELP = "Usage: scout setup [--source-root <path>] [--default-harness <name>] [--context-root <path>] [--json]\n\nConfigure project discovery and install/start the local broker.\nRepeat --source-root to add workspace roots. Prompts for a root in an interactive terminal.\nUse scout doctor to inspect readiness without requesting setup.";
+export const SETUP_HELP = "Usage: scout setup [--source-root <path>] [--default-harness <name>] [--context-root <path>] [--json]\n\nConfigure project discovery and install/start the local broker.\nRepeat --source-root to add workspace roots. Prompts for a root in an interactive terminal.\nUse scout doctor to inspect readiness without requesting setup." + "\n\n" + QUICK_LINKS;
 
 function flagValue(args, index, flag) {
   const inline = args[index].startsWith(flag + "=");
@@ -211,12 +219,43 @@ export function parseSetupCommandOptions(args, defaultCurrentDirectory) {
   return { currentDirectory, sourceRoots, defaultHarness };
 }
 
+export const INSTALL_HELP = [
+  "scout install — download and install the Scout macOS app",
+  "",
+  "Usage:",
+  "  scout install                 # install or update to the latest signed release",
+  "  scout install --check         # report installed vs latest, install nothing",
+  "  scout install --version <tag> # install a specific release (e.g. v0.2.70)",
+  "  scout install --force         # reinstall even if already up to date",
+  "  scout install --no-restart    # do not relaunch Scout after installing",
+  "  scout install --candidate <receipt.json> --dmg <file> # explicit local signed candidate",
+  "",
+  "Behavior:",
+  "  Downloads the signed + notarized OpenScout.dmg from the GitHub release,",
+  "  verifies the published byte size and sha256 digest when GitHub provides one,",
+  "  then codesign and Gatekeeper-assess the DMG before mounting. Scout.app",
+  "  must match the pinned bundle id and Team ID, pass codesign --deep --strict,",
+  "  and pass Gatekeeper execute after staging. A running copy of the installed",
+  "  app and any stale ScoutMenu helpers from other checkouts are stopped first;",
+  "  replacement is staged and rolled back on failure.",
+  "  Quarantine attributes are not cleared.",
+  "",
+  "  The app connects to the local service from @openscout/scout.",
+  "  Install with `npm install -g @openscout/scout` or `bun add -g @openscout/scout`.",
+  "  The normal macOS local service requires Bun 1.3 or newer.",
+  "",
+  QUICK_LINKS,
+].join("\n");
+
 // Return help or validate the complete lexical grammar before service maintenance.
 export function preflightLifecycle(argv, currentDirectory = process.cwd()) {
   const input = parseScoutArgv(argv);
   if (input.versionRequested) return null;
   let { command, args } = input;
   if (command === "relay") { command = args[0] ?? null; args = args.slice(1); }
+  // Installation help is also available before Bun or a runtime bundle exists.
+  // Actual install parsing and execution stay with the install command handler.
+  if (command === "install" && (input.helpRequested || args.some(arg => ["help", "--help", "-h"].includes(arg)))) return INSTALL_HELP;
   if (!["setup", "up", "app"].includes(command)) return null;
   if (input.helpRequested || args.includes("--help") || args.includes("-h") || (command === "app" && args.includes("help"))) {
     return command === "app" ? renderAppCommandHelp() : command === "up" ? UP_HELP : SETUP_HELP;

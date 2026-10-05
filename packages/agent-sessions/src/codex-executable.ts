@@ -1,4 +1,4 @@
-import { execFileSync } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import { accessSync, constants } from "node:fs";
 import { delimiter, join } from "node:path";
 
@@ -41,13 +41,14 @@ function isExecutable(filePath: string | undefined): boolean {
   }
 }
 
-function readCodexVersion(candidate: string): { version: string | null; versionRaw: string | null } {
+function readCodexVersion(candidate: string, env: Record<string, string | undefined>): { version: string | null; versionRaw: string | null } {
   if (!isExecutable(candidate)) {
     return { version: null, versionRaw: null };
   }
 
   try {
     const raw = execFileSync(candidate, ["--version"], {
+      env,
       encoding: "utf8",
       stdio: ["ignore", "pipe", "ignore"],
       timeout: 3_000,
@@ -206,7 +207,7 @@ export function resolveCodexExecutableInventory(
 ): CodexExecutableInventory {
   const candidates = resolveCodexExecutableCandidateInputs(env).map((candidate) => {
     const executable = isExecutable(candidate.path);
-    const version = readCodexVersion(candidate.path);
+    const version = readCodexVersion(candidate.path, env);
     return {
       ...candidate,
       executable,
@@ -224,4 +225,31 @@ export function resolveCodexExecutableInventory(
 
 export function resolveCodexExecutable(env: Record<string, string | undefined> = process.env): string {
   return resolveCodexExecutableInventory(env).selectedPath;
+}
+
+/** Same selection policy, with concurrent bounded probes for request paths. */
+export async function resolveCodexExecutableAsync(
+  env: Record<string, string | undefined> = process.env,
+  options: { signal?: AbortSignal; timeoutMs?: number } = {},
+): Promise<string> {
+  const signal = options.signal;
+  signal?.throwIfAborted();
+  const inputs = resolveCodexExecutableCandidateInputs(env);
+  // Explicit overrides win regardless of version; unrelated slow binaries
+  // must not delay or change that choice.
+  const explicit = inputs.find((candidate) => (candidate.source === "env:OPENSCOUT_CODEX_BIN" || candidate.source === "env:CODEX_BIN") && isExecutable(candidate.path));
+  if (explicit) return explicit.path;
+  const candidates = await Promise.all(inputs.map(async (candidate): Promise<CodexExecutableCandidate> => {
+    const executable = isExecutable(candidate.path);
+    const version = executable ? await new Promise<{ version: string | null; versionRaw: string | null }>((resolve) => {
+      execFile(candidate.path, ["--version"], { env, signal, timeout: options.timeoutMs ?? 3_000, killSignal: "SIGKILL", maxBuffer: 4_096, encoding: "utf8" }, (error, stdout) => {
+        if (error) { resolve({ version: null, versionRaw: null }); return; }
+        const raw = stdout.trim();
+        resolve({ version: raw.match(/\b(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)\b/)?.[1] ?? null, versionRaw: raw || null });
+      });
+    }) : { version: null, versionRaw: null };
+    return { ...candidate, executable, ...version };
+  }));
+  signal?.throwIfAborted();
+  return selectCodexCandidate(candidates)?.path ?? "codex";
 }

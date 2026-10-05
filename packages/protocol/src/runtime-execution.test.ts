@@ -5,7 +5,6 @@ import {
   parseScoutRuntimeSpec,
   formatScoutRuntimeSpec,
   isModelSelectableHarness,
-  isScoutRuntimeHarnessListed,
   normalizeScoutRuntimeModel,
   scoutRuntimeLatestModelInFamily,
   SCOUT_LAUNCHABLE_HARNESSES,
@@ -66,7 +65,7 @@ describe("runtime execution contracts", () => {
     expect(SCOUT_RUNTIME_EFFORT_CATALOG.find((entry) => entry.id === "ultra")).toEqual(
       expect.objectContaining({
         harnesses: ["codex"],
-        models: ["gpt-6-sol", "gpt-5.6-sol", "gpt-5.6-terra"],
+        models: ["gpt-6.1-sol", "gpt-6-sol", "gpt-5.6-sol", "gpt-5.6-terra"],
       }),
     );
   });
@@ -88,8 +87,8 @@ describe("runtime execution contracts", () => {
     expect(validateScoutRuntimeTuple({ harness: "codex", model: "gpt-6-luna", reasoningEffort: "ultra" }))
       .toEqual([expect.objectContaining({ code: "reasoning_effort_harness_mismatch" })]);
     expect(parseScoutRuntimeSpec("codex/gpt-5.6-luna/ultra")).toEqual({
-      ok: false,
-      error: 'reasoning effort "ultra" is not supported by harness "codex"',
+      ok: true,
+      value: { harness: "codex", model: "gpt-5.6-luna", reasoningEffort: "ultra" },
     });
   });
 
@@ -130,8 +129,8 @@ describe("runtime execution contracts", () => {
       },
     });
     expect(parseScoutRuntimeSpec("claude/fable/ultra")).toEqual({
-      ok: false,
-      error: 'reasoning effort "ultra" is not supported by harness "claude"',
+      ok: true,
+      value: { harness: "claude", model: "fable", reasoningEffort: "ultra" },
     });
     expect(parseScoutRuntimeSpec("grok/grok-4.6/xhigh")).toEqual({
       ok: true,
@@ -223,4 +222,21 @@ describe("runtime execution contracts", () => {
     expect(isModelSelectableHarness("kimi")).toBe(false);
     expect(isModelSelectableHarness("not-a-harness")).toBe(false);
   });
+});
+
+
+test("runtime literal grammar preserves a future model and effort for live broker validation", () => {
+  expect(parseScoutRuntimeSpec("codex/gpt-published-next/ultra")).toEqual({ ok: true,
+    value: { harness: "codex", model: "gpt-published-next", reasoningEffort: "ultra" } });
+  expect(parseScoutRuntimeSpec("codex/gpt-published-next/imaginary").ok).toBe(false);
+  expect(parseScoutRuntimeSpec("codex//ultra").ok).toBe(false);
+});
+
+test("published family alias normalization follows live data and keeps stable Codex aliases", () => {
+  const catalog = structuredClone(SCOUT_RUNTIME_CATALOG);
+  const claude = catalog.harnesses.find((harness) => harness.id === "claude")!;
+  claude.models = [{ id: "claude-opus-future", label: "Future Opus", family: "Opus", enabled: true, default: true }];
+  expect(normalizeScoutRuntimeModel("claude", "opus", catalog)).toEqual({ ok: true, requested: "opus", resolved: "claude-opus-future" });
+  expect(normalizeScoutRuntimeModel("codex", "6", catalog)).toEqual({ ok: true, requested: "6", resolved: "gpt-6-astra" });
+  expect(normalizeScoutRuntimeModel("codex", "gpt-6-sol", catalog)).toEqual({ ok: true, requested: "gpt-6-sol", resolved: "gpt-6-sol" });
 });

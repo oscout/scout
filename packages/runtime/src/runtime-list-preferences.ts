@@ -17,6 +17,7 @@
 import {
   isScoutRuntimeHarnessEnabled,
   normalizeScoutReasoningEffort,
+  normalizeScoutRuntimeModel,
   parseScoutRuntimeSpec,
   type ScoutOwnedRuntimeCatalog,
 } from "@openscout/protocol";
@@ -86,6 +87,13 @@ export function resolveRuntimeListPreferences(input: {
     return enabled.length === 0 || enabled.some((candidate) => candidate.id === model);
   };
 
+  const disabledPublishedModel = (harness: string, model: string): boolean => {
+    const normalized = normalizeScoutRuntimeModel(harness, model, catalog);
+    const resolved = (normalized.ok ? normalized.resolved : model).toLowerCase();
+    return catalog.harnesses.find((entry) => entry.id === harness)?.models
+      .some((entry) => entry.id.toLowerCase() === resolved && !entry.enabled) ?? false;
+  };
+
   const pushShortlist = (
     harness: string,
     model: string | undefined,
@@ -96,6 +104,7 @@ export function resolveRuntimeListPreferences(input: {
       warnings.push(`runtime shortlist entry "${harness}/${model}" ignored — harness "${harness}" is not enabled in the catalog`);
       return;
     }
+    if (disabledPublishedModel(harness, model)) return;
     if (origin.startsWith("harness-") && !catalogModel(harness, model)) {
       return; // another harness tool's alias — drop silently
     }
@@ -114,6 +123,7 @@ export function resolveRuntimeListPreferences(input: {
       warnings.push(`runtime preset "${preset.id}" ignored — harness "${preset.harness}" is not enabled in the catalog`);
       return;
     }
+    if (preset.model && disabledPublishedModel(preset.harness, preset.model)) return;
     if (origin === "harness-profile" && preset.model && !catalogModel(preset.harness, preset.model)) {
       return; // profile names another tool's model id — drop silently
     }

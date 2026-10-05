@@ -81,6 +81,9 @@ test("prints fallback help without requiring Bun", () => {
 
   assert.match(output, /Scout/);
   assert.match(output, /scout (setup|statusline claude)/);
+  assert.match(output, /Quick links:/);
+  assert.match(output, /https:\/\/openscout\.app\/docs\/quickstart/);
+  assert.match(output, /Troubleshooting: scout doctor/);
 });
 
 test("reports unsupported Node commands instead of failing in the shebang", () => {

@@ -79,28 +79,33 @@ export const HUD_PROJECT_MARKERS = [
   "go.mod",
 ] as const;
 
-export async function loadBrokerRuntimeCatalog(): Promise<{
+export async function loadBrokerRuntimeCatalog(force = false): Promise<{
   catalog: ScoutOwnedRuntimeCatalog;
   warnings: string[];
+  source?: "remote" | "persisted" | "bundled";
+  checkedAt?: number;
+  nextCheckAt?: number;
 } | null> {
   try {
-    const response = await fetch(new URL("/v1/runtime-catalog", resolveScoutBrokerUrl()), {
+    const url = new URL("/v1/runtime-catalog", resolveScoutBrokerUrl());
+    if (force) url.searchParams.set("force", "true");
+    const response = await fetch(url, {
       headers: { accept: "application/json" },
-      signal: AbortSignal.timeout(2_000),
+      signal: AbortSignal.timeout(6_000),
     });
     if (!response.ok) return null;
-    const value = await response.json() as { catalog?: unknown; warnings?: unknown };
+    const value = await response.json() as { catalog?: unknown; warnings?: unknown; source?: unknown; checkedAt?: unknown; nextCheckAt?: unknown };
     const parsed = parseScoutRuntimeCatalog(value.catalog);
     if (!parsed.ok) return null;
     return {
       catalog: parsed.catalog,
+      ...(value.source === "remote" || value.source === "persisted" || value.source === "bundled" ? { source: value.source } : {}),
+      ...(typeof value.checkedAt === "number" && Number.isFinite(value.checkedAt) ? { checkedAt: value.checkedAt } : {}),
+      ...(typeof value.nextCheckAt === "number" && Number.isFinite(value.nextCheckAt) ? { nextCheckAt: value.nextCheckAt } : {}),
       warnings: Array.isArray(value.warnings)
-        ? value.warnings.filter((entry): entry is string => typeof entry === "string")
-        : [],
+        ? value.warnings.filter((entry): entry is string => typeof entry === "string") : [],
     };
-  } catch {
-    return null;
-  }
+  } catch { return null; }
 }
 
 export function defaultHudRunnerModel(
@@ -162,6 +167,7 @@ export async function buildHudRunnerOptions(
   input: {
     scope?: ScoutRuntimeCapabilityCatalog["scope"];
     projectRoot?: string;
+    force?: boolean;
   } = {},
 ) {
   // This endpoint sits on the global-hotkey path, so it deliberately avoids
@@ -176,13 +182,16 @@ export async function buildHudRunnerOptions(
     harnessPreferencesResult,
   ] = await Promise.allSettled([
     readOpenScoutSettings({ currentDirectory }),
-    loadBrokerRuntimeCatalog(),
+    loadBrokerRuntimeCatalog(input.force === true),
     Promise.resolve().then(() => loadUserConfigFresh()),
     readProjectConfig(scopedProjectRoot),
     readHarnessModelPreferences(),
   ]);
   const settings = settingsResult.status === "fulfilled" ? settingsResult.value : null;
   const liveRuntimeCatalog = runtimeCatalogResult.status === "fulfilled" ? runtimeCatalogResult.value : null;
+  if (input.force && !liveRuntimeCatalog) {
+    throw new Error("Could not refresh models. Keeping your saved choices; try again when Scout is connected.");
+  }
   const runtimeCatalog = liveRuntimeCatalog?.catalog ?? SCOUT_RUNTIME_CATALOG;
   const allAgents = queryAgents(50);
   const projectAgents = allAgents.filter((agent) => {
@@ -204,9 +213,8 @@ export async function buildHudRunnerOptions(
       name: entry.id,
       label: entry.label,
       description: null,
-      // Full harness readiness executes local health checks and can take
-      // several seconds across the installed fleet. New task only needs the
-      // broker-owned launch catalog; launch remains the final authority.
+      // Published choices are independent of local readiness. Adapters
+      // verify the installed harness when a task actually launches.
       state: null,
       ready: null,
       detail: null,
@@ -252,13 +260,16 @@ export async function buildHudRunnerOptions(
   });
   const warnings = [
     ...(liveRuntimeCatalog?.warnings ?? []),
+    ...(!liveRuntimeCatalog ? ["Model catalog is offline; using bundled choices. Refresh models to check again."] : []),
     ...runtimeLists.warnings,
   ];
-
   return {
     schemaVersion: "openscout.runtime-capabilities.v1" as const,
     catalogVersion: runtimeCatalog.schemaVersion,
     catalogRevision: runtimeCatalog.revision,
+    source: liveRuntimeCatalog?.source ?? "bundled",
+    ...(liveRuntimeCatalog?.checkedAt !== undefined ? { checkedAt: liveRuntimeCatalog.checkedAt } : {}),
+    ...(liveRuntimeCatalog?.nextCheckAt !== undefined ? { nextCheckAt: liveRuntimeCatalog.nextCheckAt } : {}),
     generatedAt: Date.now(),
     scope,
     ...(scope !== "global" ? { projectRoot: scopedProjectRoot } : {}),

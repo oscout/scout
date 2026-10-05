@@ -159,6 +159,7 @@ export function effortsFor(
   model?: string,
 ): RuntimeEffort[] | null {
   const entry = harnessFor(catalog, harness);
+  if (harness === "codex" && model === RUNTIME_DEFAULT_VALUE) return [];
   const ladder = !entry
     ? catalog.efforts
     : entry.efforts === null
@@ -343,6 +344,9 @@ export function reconcileRuntime(
 ): RuntimeValue {
   const next: RuntimeValue = { ...value, ...patch };
   const harnessChanged = patch.harness !== undefined && patch.harness !== value.harness;
+  if (next.harness === "codex" && next.model === RUNTIME_DEFAULT_VALUE && !harnessChanged) {
+    return { ...next, effort: RUNTIME_DEFAULT_VALUE };
+  }
   if (!harnessChanged) {
     if (patch.model === undefined || patch.model === value.model) return next;
     // Model-only change: the ladder may narrow (ultra exists on some Codex
@@ -394,13 +398,14 @@ export function seedRuntime(
     efforts?.find((step) => step.note === "default")?.value ??
     efforts?.[Math.floor((efforts.length - 1) / 2)]?.value ??
     RUNTIME_DEFAULT_VALUE;
-  return {
-    harness,
-    model: seed?.model
+  const model = seed?.model
       ?? harnessFor(catalog, harness)?.defaultModel
       ?? modelsFor(catalog, harness)[1]?.value
-      ?? RUNTIME_DEFAULT_VALUE,
-    effort: efforts
+      ?? RUNTIME_DEFAULT_VALUE;
+  return {
+    harness,
+    model,
+    effort: harness === "codex" && model === RUNTIME_DEFAULT_VALUE ? RUNTIME_DEFAULT_VALUE : efforts
       ? (seed?.effort ?? harnessFor(catalog, harness)?.defaultEffort ?? fallbackEffort)
       : RUNTIME_DEFAULT_VALUE,
   };

@@ -5,6 +5,8 @@ export type ScoutSetupOptions = { currentDirectory: string; sourceRoots: string[
 export const DEFAULT_DRAIN_TIMEOUT_MS: number;
 export const UP_HELP: string;
 export const SETUP_HELP: string;
+export const INSTALL_HELP: string;
+export const QUICK_LINKS: string;
 export function parseScoutArgv(argv: string[]): ScoutCliInput;
 export function parseDrainTimeout(value: string): number | null;
 export function renderAppCommandHelp(): string;

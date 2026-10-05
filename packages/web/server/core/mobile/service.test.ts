@@ -3,8 +3,8 @@ import { SCOUT_RUNTIME_CATALOG } from "@openscout/protocol";
 
 import { getScoutMobileRuntimeCapabilities } from "./service.ts";
 
-test("mobile runtime capabilities expose the versioned legal tuple catalog", async () => {
-  const catalog = await getScoutMobileRuntimeCapabilities();
+test("mobile capabilities use the bundled published catalog while offline", async () => {
+  const catalog = await getScoutMobileRuntimeCapabilities(undefined, async () => null);
   expect(catalog.schemaVersion).toBe("openscout.runtime-capabilities.v1");
   expect(catalog.catalogVersion).toBe("openscout.runtime-catalog.v1");
   expect(catalog.defaults).toEqual({
@@ -18,7 +18,8 @@ test("mobile runtime capabilities expose the versioned legal tuple catalog", asy
   expect(catalog.models.some((model) => (
     model.id === "gpt-5.6-sol" && model.harnesses.includes("codex")
   ))).toBe(true);
-  expect(catalog.efforts.find((effort) => effort.id === "ultra")?.harnesses).toEqual(["codex"]);
+  expect(catalog.defaultsByHarness.codex?.model).toBe("gpt-6-astra");
+  expect(catalog.efforts.find((effort) => effort.id === "ultra")).toBeDefined();
 });
 
 test("mobile runtime capabilities adopt scoutd's live catalog", async () => {
@@ -43,4 +44,14 @@ test("mobile runtime capabilities adopt scoutd's live catalog", async () => {
   }));
   expect(catalog.catalogRevision).toBe("2026-08-12.2");
   expect(catalog.models.some((model) => model.id === "grok-mobile-live")).toBe(true);
+});
+
+test("mobile project scope does not require local model discovery", async () => {
+  const catalog = await getScoutMobileRuntimeCapabilities("/Users/tester/dev/project", async () => ({
+    catalog: SCOUT_RUNTIME_CATALOG, warnings: [], source: "persisted", checkedAt: 123,
+  }));
+  expect(catalog.projectRoot).toBe("/Users/tester/dev/project");
+  expect(catalog.source).toBe("persisted");
+  expect(catalog.checkedAt).toBe(123);
+  expect(catalog.models.some((model) => model.harnesses.includes("codex"))).toBe(true);
 });

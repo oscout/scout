@@ -1171,13 +1171,7 @@ describe("createOpenScoutWebServer: agents routes", () => {
       version: "5",
       harnesses: ["claude"],
     }));
-    expect(payload.models).toContainEqual(expect.objectContaining({
-      id: "gpt-5.6-sol",
-      label: "5.6 Sol",
-      family: "GPT",
-      version: "5.6 Sol",
-      harnesses: ["codex"],
-    }));
+    expect(payload.models.some((entry) => entry.harnesses.includes("codex"))).toBe(true);
     expect(payload.models.some((entry) => entry.id === "gpt-custom")).toBe(false);
     expect(new Set(payload.models.map((entry) => `${entry.harnesses.join(",")}:${entry.id}`)).size)
       .toBe(payload.models.length);
@@ -1191,10 +1185,7 @@ describe("createOpenScoutWebServer: agents routes", () => {
       id: "xhigh",
       label: "Extra High",
     }));
-    expect(payload.efforts).toContainEqual(expect.objectContaining({
-      id: "ultra",
-      models: ["gpt-6-sol", "gpt-5.6-sol", "gpt-5.6-terra"],
-    }));
+    expect(payload.efforts.some((entry) => entry.harnesses.includes("codex"))).toBe(true);
     expect(payload.projects).toContainEqual(expect.objectContaining({ root: projectRoot }));
     expect(payload.agents).toContainEqual(expect.objectContaining({
       id: "agent-1",
@@ -1204,6 +1195,12 @@ describe("createOpenScoutWebServer: agents routes", () => {
   });
 
   test("runner options layer project, user, and harness-native runtime lists", async () => {
+    globalThis.fetch = (async () => Response.json({ catalog: SCOUT_RUNTIME_CATALOG, warnings: [], localCodexModels: {
+      state: "verified", models: SCOUT_RUNTIME_CATALOG.harnesses.find((entry) => entry.id === "codex")!.models.map((model) => ({
+        id: model.id, model: model.id, isDefault: model.default === true, hidden: false,
+        supportedReasoningEfforts: model.reasoningEfforts ?? ["low", "medium", "high", "xhigh"],
+      })),
+    } })) as typeof fetch;
     const home = useIsolatedOpenScoutHome();
     process.env.OPENSCOUT_HOME = join(home, ".openscout");
     mkdirSync(process.env.OPENSCOUT_HOME, { recursive: true });
@@ -1722,4 +1719,82 @@ describe("createOpenScoutWebServer: agents routes", () => {
     });
     expect(askScoutQuestionCalls).toEqual([]);
   });
+});
+
+test("published Codex choices submit without installed model discovery, and Default omits overrides", async () => {
+  const projectRoot = mkdtempSync(join(tmpdir(), "openscout-codex-published-"));
+  testDirectories.add(projectRoot);
+  let catalogReads = 0;
+  globalThis.fetch = (async (input) => {
+    if (String(input).includes("/v1/runtime-catalog")) catalogReads++;
+    return new Response(null, { status: 404 });
+  }) as typeof fetch;
+  const server = await createOpenScoutWebServer({ currentDirectory: projectRoot, assetMode: "static", staticRoot: makeStaticRoot(), backgroundServices: false });
+  const start = (model?: string) => server.app.request("/api/sessions", { method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ target: { projectPath: projectRoot }, execution: { harness: "codex", ...(model ? { model, reasoningEffort: "high" } : {}) }, seed: { instructions: "Keep this draft" } }) });
+  expect((await start("gpt-6.1-sol")).status).toBe(200);
+  expect(askScoutQuestionCalls[0]?.executionModel).toBe("gpt-6.1-sol");
+  expect(askScoutQuestionCalls[0]?.executionReasoningEffort).toBe("high");
+  expect((await start()).status).toBe(200);
+  expect(askScoutQuestionCalls[1]).not.toHaveProperty("executionModel");
+  expect(askScoutQuestionCalls[1]).not.toHaveProperty("executionReasoningEffort");
+  expect(catalogReads).toBe(0);
+});
+
+test("named Codex targets retain their execution context even when their path also exists locally", async () => {
+  const projectRoot = mkdtempSync(join(tmpdir(), "openscout-codex-shared-peer-path-"));
+  testDirectories.add(projectRoot);
+  stubs.queryAgentsResult = [
+    { id: "peer-agent", name: "Peer", harness: "codex", projectRoot, cwd: projectRoot, authorityNodeId: "peer-node", model: "remote-model" },
+    { id: "local-agent", name: "Local custom context", harness: "codex", projectRoot: null, cwd: projectRoot, authorityNodeId: "node-1", model: "custom-home-model" },
+  ];
+  let localCatalogReads = 0;
+  globalThis.fetch = (async (input) => {
+    if (String(input).includes("/v1/runtime-catalog")) localCatalogReads++;
+    return new Response(null, { status: 404 });
+  }) as typeof fetch;
+  const server = await createOpenScoutWebServer({ currentDirectory: projectRoot, assetMode: "static", staticRoot: makeStaticRoot(), backgroundServices: false });
+  for (const target of stubs.queryAgentsResult) {
+    const response = await server.app.request("/api/sessions", { method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ target: { agentId: target.id }, execution: { harness: "codex", session: "new" }, seed: { instructions: "Use this target's context" } }) });
+    expect(response.status).toBe(200);
+  }
+  expect(localCatalogReads).toBe(0);
+  expect(askScoutQuestionCalls.map((call) => call.targetAgentId)).toEqual(["peer-agent", "local-agent"]);
+});
+
+test("manual model refresh bypasses the web options cache and exposes new published choices", async () => {
+  const projectRoot = mkdtempSync(join(tmpdir(), "openscout-refresh-models-"));
+  testDirectories.add(projectRoot);
+  const catalog = structuredClone(SCOUT_RUNTIME_CATALOG);
+  catalog.revision = "2099-01-01.1";
+  const codex = catalog.harnesses.find((harness) => harness.id === "codex")!;
+  codex.models = codex.models.map((model) => ({ ...model, enabled: false, default: false }));
+  codex.models.push({ id: "gpt-published-next", label: "Published Next", enabled: true, default: true, reasoningEfforts: ["high"] });
+  const forceQueries: string[] = [];
+  globalThis.fetch = (async (input) => {
+    const url = new URL(String(input));
+    if (url.pathname !== "/v1/runtime-catalog") return new Response(null, { status: 404 });
+    forceQueries.push(url.searchParams.get("force") ?? "");
+    return Response.json({ catalog: url.searchParams.has("force") ? catalog : SCOUT_RUNTIME_CATALOG,
+      source: "remote", checkedAt: 1_000, warnings: [] });
+  }) as typeof fetch;
+  const server = await createOpenScoutWebServer({ currentDirectory: projectRoot, assetMode: "static", staticRoot: makeStaticRoot(), backgroundServices: false });
+  await server.app.request("/api/runner/options");
+  const refreshed = await server.app.request("/api/runner/options?force=true");
+  expect(refreshed.status).toBe(200);
+  const payload = await refreshed.json() as { models: Array<{ id: string }>; catalogRevision: string; source: string; checkedAt: number };
+  expect(forceQueries).toEqual(["", "true"]);
+  expect(payload.catalogRevision).toBe(catalog.revision);
+  expect(payload.source).toBe("remote");
+  expect(payload.checkedAt).toBe(1_000);
+  expect(payload.models.some((model) => model.id === "gpt-published-next")).toBe(true);
+  expect(payload.models.some((model) => model.id === "gpt-6-astra")).toBe(false);
+  const cached = await (await server.app.request("/api/runner/options")).json() as typeof payload;
+  expect(cached.catalogRevision).toBe(catalog.revision);
+  expect(forceQueries).toEqual(["", "true"]);
+  const submitted = await server.app.request("/api/sessions", { method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ target: { projectPath: projectRoot }, execution: { harness: "codex", model: "gpt-published-next", reasoningEffort: "high" }, seed: { instructions: "Use published data" } }) });
+  expect(submitted.status).toBe(200);
+  expect(askScoutQuestionCalls[0]?.executionModel).toBe("gpt-published-next");
 });

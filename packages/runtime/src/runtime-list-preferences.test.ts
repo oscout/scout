@@ -198,3 +198,39 @@ describe("resolveRuntimeListPreferences", () => {
     expect(resolved.warnings).toEqual([]);
   });
 });
+
+
+test("disabled published models stay hidden in saved lists without rewriting preferences or custom IDs", () => {
+  const catalog = structuredClone(CATALOG);
+  const codex = catalog.harnesses.find((harness) => harness.id === "codex")!;
+  codex.models = [{ ...model("gpt-6-astra"), enabled: false }, model("gpt-published-next")];
+  const user = { runtimeShortlist: ["codex/gpt-6-astra", "codex/gpt-published-next", "codex/custom-context"],
+    runtimePresets: [{ id: "disabled", label: "Saved disabled", runtime: "codex/gpt-6-astra/high" },
+      { id: "future", label: "New published", runtime: "codex/gpt-published-next/ultra" },
+      { id: "custom", label: "Custom", runtime: "codex/custom-context" }] };
+  const stored = JSON.stringify(user);
+  const result = resolveRuntimeListPreferences({ catalog, user });
+  expect(result.shortlist.map((entry) => entry.model)).toEqual(["gpt-published-next", "custom-context"]);
+  expect(result.presets.map((entry) => entry.id)).toEqual(["future", "custom"]);
+  expect(JSON.stringify(user)).toBe(stored);
+  codex.models[0]!.enabled = true;
+  expect(resolveRuntimeListPreferences({ catalog, user }).presets.some((entry) => entry.id === "disabled")).toBe(true);
+});
+
+test("disabled published choices cannot return through supported aliases or case variants", () => {
+  const catalog = structuredClone(CATALOG);
+  catalog.harnesses.find((entry) => entry.id === "codex")!.models = [
+    { ...model("gpt-6-astra"), enabled: false }, model("gpt-6-sol"), model("gpt-6.1-sol"),
+  ];
+  const project = { shortlist: ["codex/ASTRA", "codex/GPT-6-ASTRA", "codex/gpt-6-sol"],
+    presets: [{ id: "alias", runtime: "codex/6/high" }, { id: "six-sol", runtime: "codex/gpt-6-sol" }] };
+  const user = { runtimeShortlist: ["codex/GpT-6", "codex/My-Custom-Model"],
+    runtimePresets: [{ id: "case", runtime: "codex/GPT-6-ASTRA" }, { id: "custom", runtime: "codex/My-Custom-Model" }] };
+  const stored = JSON.stringify({ project, user });
+  const resolved = resolveRuntimeListPreferences({ catalog, project, user });
+  expect(resolved.shortlist.map((entry) => entry.model)).toEqual(["gpt-6-sol", "My-Custom-Model"]);
+  expect(resolved.presets.map((entry) => [entry.id, entry.model])).toEqual([
+    ["six-sol", "gpt-6-sol"], ["custom", "My-Custom-Model"],
+  ]);
+  expect(JSON.stringify({ project, user })).toBe(stored);
+});

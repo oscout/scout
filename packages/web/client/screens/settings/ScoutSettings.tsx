@@ -13,12 +13,13 @@
  * Every choice is a select. States are small mono caps with a dot.
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { useOptionalFlag } from "hudsonkit/flags";
 import { useOptionalTheme } from "hudsonkit/theme";
 import {
   Activity,
   ArrowUpCircle,
+  Check,
   Info,
   KeyRound,
   MessageSquare,
@@ -78,7 +79,16 @@ import {
   publishScoutVoicePlaybackSettings,
   saveScoutVoicePlaybackSettings,
 } from "../../lib/voice-playback-settings.ts";
-import { normalizeScoutThemeTemplate } from "../../lib/theme.ts";
+import {
+  normalizeScoutThemeTemplate,
+  type ScoutAvatarSize,
+  type ScoutAvatarStyle,
+  type ScoutShellStyle,
+  type ScoutThemeAccent,
+  type ScoutThemeContrast,
+  type ScoutThemePalette,
+  type ScoutThemeTemplate,
+} from "../../lib/theme.ts";
 import { timeAgo } from "../../lib/time.ts";
 import type {
   MeshStatus,
@@ -87,8 +97,10 @@ import type {
   Route,
   SettingsSection,
 } from "../../lib/types.ts";
-import { CREW_ASSETS_AVAILABLE } from "../../lib/crew-registry.ts";
+import { CREW_ASSETS_AVAILABLE, rendererCoverage } from "../../lib/crew-registry.ts";
+import { placementSize } from "../../components/AgentAvatar.tsx";
 import { CastPicker } from "../../components/CastPicker.tsx";
+import { CrewAvatar } from "../../components/CrewAvatar.tsx";
 import { SpriteAvatar } from "../../components/SpriteAvatar.tsx";
 import { SCOUT_REALTIME_VOICE_FLAG } from "../../../shared/realtime-voice.ts";
 import type { LocalHttpsState } from "../../../shared/api/local-https.ts";
@@ -100,6 +112,8 @@ import {
 import { useScout } from "../../scout/Provider.tsx";
 import { OnboardingEmbedGate } from "../../scout/takeover/OnboardingEmbedGate.tsx";
 import { defineSurface } from "../../surfaces/types.ts";
+import { BASIC_WEB } from "../../basic/profile.ts";
+import { AppearanceFrame, LiveAppearancePreview, PaletteSample, ShellSample } from "./AppearanceSamples.tsx";
 // CastPicker is styled by the older settings sheet.
 import "./settings-drawer.css";
 import "./scout-settings.css";
@@ -611,58 +625,125 @@ const MODE_OPTIONS = [
   { value: "light", label: "Light" },
   { value: "dark", label: "Dark" },
 ] as const;
-const PALETTE_OPTIONS = [
-  { value: "scout", label: "Scout" },
-  { value: "graphite", label: "Graphite" },
-  { value: "polar", label: "Polar" },
-  { value: "solar", label: "Solar" },
-] as const;
-const ACCENT_OPTIONS = [
+
+type OptionValue<T extends readonly Opt[]> = T[number]["value"];
+
+/** A labelled visual choice: a specimen, a name, and one line of spec. */
+type Tile<T extends string> = { value: T; label: string; spec?: string };
+
+const PALETTE_TILES: Tile<ScoutThemePalette>[] = [
+  { value: "graphite", label: "Graphite", spec: "Neutral graphite" },
+  { value: "scout", label: "Scout", spec: "Slate control room" },
+  { value: "polar", label: "Polar", spec: "Arctic slate" },
+  { value: "solar", label: "Solar", spec: "Teal on paper" },
+];
+const ACCENT_TILES: Tile<ScoutThemeAccent>[] = [
+  { value: "amber", label: "Amber" },
   { value: "theme", label: "Theme" },
   { value: "lime", label: "Lime" },
   { value: "cyan", label: "Cyan" },
   { value: "violet", label: "Violet" },
-  { value: "amber", label: "Amber" },
-] as const;
-const CORNER_OPTIONS = [
-  { value: "hudson", label: "Rounded" },
-  { value: "editorial", label: "Compact" },
-  { value: "drafting", label: "Square" },
-] as const;
-const CONTRAST_OPTIONS = [
-  { value: "soft", label: "Soft" },
-  { value: "balanced", label: "Defined" },
-  { value: "strong", label: "Strong" },
-] as const;
-const DENSITY_OPTIONS = [
+];
+const CORNER_TILES: Tile<ScoutThemeTemplate>[] = [
+  { value: "hudson", label: "Rounded", spec: "8px" },
+  { value: "editorial", label: "Compact", spec: "4px" },
+  { value: "drafting", label: "Square", spec: "0px" },
+];
+const CONTRAST_TILES: Tile<ScoutThemeContrast>[] = [
+  { value: "soft", label: "Soft", spec: "Quiet" },
+  { value: "balanced", label: "Defined", spec: "Clear" },
+  { value: "strong", label: "Strong", spec: "Firm" },
+];
+const DENSITY_TILES: Tile<ScoutAvatarSize>[] = [
   { value: "compact", label: "Compact" },
   { value: "regular", label: "Regular" },
   { value: "large", label: "Large" },
-] as const;
-const AVATAR_OPTIONS = (CREW_ASSETS_AVAILABLE
-  ? [
-      { value: "crew", label: "Crew" },
-      { value: "sprite", label: "Generative" },
-      { value: "chip", label: "Pixel chip" },
-    ]
-  : [{ value: "sprite", label: "Generative" }]) as readonly Opt[];
-const LAYOUT_OPTIONS = [
-  { value: "scout", label: "Scout" },
-  { value: "slack", label: "Slack" },
-] as const;
+];
+/** Only the full app carries crew art; the basic build has the generative sprite alone. */
+const AVATAR_TILES: Tile<ScoutAvatarStyle>[] = [
+  { value: "crew", label: "Crew" },
+  { value: "sprite", label: "Generative" },
+  { value: "chip", label: "Pixel chip" },
+];
+const LAYOUT_TILES: Tile<ScoutShellStyle>[] = [
+  { value: "scout", label: "Scout", spec: "Control-room rail" },
+  { value: "slack", label: "Slack", spec: "Channels on the left" },
+];
+/** A pale, a dark and a mid member, so a size that loses one of them shows it. */
+const DENSITY_SPECIMENS = ["milo", "vex", "sprout"] as const;
 
-type OptionValue<T extends readonly Opt[]> = T[number]["value"];
+function Tiles<T extends string>({
+  label,
+  value,
+  options,
+  onChange,
+  render,
+  variant,
+}: {
+  label: string;
+  value: T;
+  options: readonly Tile<T>[];
+  onChange: (value: T) => void;
+  render: (option: Tile<T>) => ReactNode;
+  variant?: "swatch";
+}) {
+  return (
+    <div className="sq-tiles" role="group" aria-label={label} data-variant={variant} data-count={options.length} style={{ "--sq-tiles": options.length } as CSSProperties}>
+      {options.map((option) => {
+        const on = option.value === value;
+        return (
+          <button
+            key={option.value}
+            type="button"
+            className="sq-tile"
+            aria-pressed={on}
+            onClick={() => onChange(option.value)}
+          >
+            <span className="sq-tile-art" aria-hidden="true">{render(option)}</span>
+            <span className="sq-tile-name">
+              {option.label}
+              {on ? <Check size={13} strokeWidth={2.2} aria-hidden="true" /> : null}
+            </span>
+            {option.spec ? <span className="sq-tile-spec">{option.spec}</span> : null}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+function SpecimenFace({ slug, size, style }: { slug: string; size: number; style: ScoutAvatarStyle }) {
+  return CREW_ASSETS_AVAILABLE && style !== "sprite"
+    ? <CrewAvatar slug={slug} size={size} chip={style === "chip"} ring={false} badge={false} />
+    : <SpriteAvatar name={slug} size={size} />;
+}
 
 function AppearancePage({ host }: { host: Host }) {
   const appearance = useOptionalTheme();
   const { appearanceDetails, updateAppearanceDetails } = useScout();
   const win = host.snapshot?.window ?? null;
+  const theme = appearance?.resolvedTheme === "light" ? "light" : "dark";
+  const template = normalizeScoutThemeTemplate(appearance?.template) ?? "hudson";
+  const { palette, contrast, accent, avatarStyle, avatarSize, shell } = appearanceDetails;
+  const frame = { theme, template, palette, contrast, accent } as const;
+  const name = (tiles: readonly Tile<string>[], value: string) => tiles.find((tile) => tile.value === value)?.label ?? value;
 
   return (
     <>
-      {appearance ? (
-        <Section label="Color">
-          <Row title="Mode" detail={`System follows this device as it switches between day and night. Now ${appearance.resolvedTheme ?? "dark"}.`}>
+      <section className="sq-specimen" aria-label="Preview">
+        <LiveAppearancePreview {...frame} />
+        <p className="sq-specimen-caption">
+          <span>{name(PALETTE_TILES, palette)}</span>
+          <span>{name(ACCENT_TILES, accent)} accent</span>
+          <span>{name(CORNER_TILES, template)}</span>
+          <span>{name(CONTRAST_TILES, contrast)} lines</span>
+          <span>{theme}</span>
+        </p>
+      </section>
+
+      <Section label="Color">
+        {appearance ? (
+          <Row title="Mode" detail={`System follows this device as it switches between day and night. Now ${theme}.`}>
             <Select
               label="Mode"
               value={appearance.theme ?? "system"}
@@ -670,69 +751,96 @@ function AppearancePage({ host }: { host: Host }) {
               onChange={(value) => appearance.setTheme(value as OptionValue<typeof MODE_OPTIONS>)}
             />
           </Row>
-          <Row title="Theme" detail="Graphite with a touch of amber is the default. Scout, Polar and Solar offer other palettes.">
-            <Select
-              label="Theme"
-              value={appearanceDetails.palette}
-              options={PALETTE_OPTIONS}
-              onChange={(value) => updateAppearanceDetails({ palette: value as OptionValue<typeof PALETTE_OPTIONS> })}
-            />
-          </Row>
-          <Row title="Accent" detail="The one color Scout spends on what is live.">
-            <Select
-              label="Accent"
-              value={appearanceDetails.accent}
-              options={ACCENT_OPTIONS}
-              onChange={(value) => updateAppearanceDetails({ accent: value as OptionValue<typeof ACCENT_OPTIONS> })}
-            />
-          </Row>
-        </Section>
-      ) : null}
+        ) : null}
+        <Row title="Theme" detail="Graphite with a touch of amber is the default. Scout, Polar and Solar offer other palettes." stack>
+          <Tiles
+            label="Theme"
+            value={palette}
+            options={PALETTE_TILES}
+            onChange={(next) => updateAppearanceDetails({ palette: next })}
+            render={(option) => <PaletteSample palette={option.value} theme={theme} template={template} />}
+          />
+        </Row>
+        <Row title="Accent" detail="The one color Scout spends on what is live." stack>
+          <Tiles
+            label="Accent"
+            variant="swatch"
+            value={accent}
+            options={ACCENT_TILES}
+            onChange={(next) => updateAppearanceDetails({ accent: next })}
+            render={(option) => (
+              <AppearanceFrame className="s-settings-accent-dot" {...frame} accent={option.value}><i /></AppearanceFrame>
+            )}
+          />
+        </Row>
+      </Section>
 
       <Section label="Shape">
         {appearance ? (
-          <Row title="Corners" detail="Rounded is 8px, Compact 4px, Square none at all.">
-            <Select
+          <Row title="Corners" detail="How round panels, rows and buttons are." stack>
+            <Tiles
               label="Corners"
-              value={normalizeScoutThemeTemplate(appearance.template) ?? "hudson"}
-              options={CORNER_OPTIONS}
-              onChange={(value) => appearance.setTemplate(value as OptionValue<typeof CORNER_OPTIONS>)}
+              value={template}
+              options={CORNER_TILES}
+              onChange={(next) => appearance.setTemplate(next)}
+              render={(option) => (
+                <AppearanceFrame className="s-settings-shape-sample" {...frame} template={option.value}><i><i /></i></AppearanceFrame>
+              )}
             />
           </Row>
         ) : null}
-        <Row title="Separators" detail="How firmly lines divide one thing from the next.">
-          <Select
+        <Row title="Separators" detail="How firmly lines divide one thing from the next." stack>
+          <Tiles
             label="Separators"
-            value={appearanceDetails.contrast}
-            options={CONTRAST_OPTIONS}
-            onChange={(value) => updateAppearanceDetails({ contrast: value as OptionValue<typeof CONTRAST_OPTIONS> })}
+            value={contrast}
+            options={CONTRAST_TILES}
+            onChange={(next) => updateAppearanceDetails({ contrast: next })}
+            render={(option) => <span className="s-settings-contrast-lines" data-level={option.value}><i /><i /><i /></span>}
           />
         </Row>
-        <Row title="Density" detail="Compact fits more rows. Large makes faces legible at a glance.">
-          <Select
+        <Row title="Density" detail="Compact fits more rows. Large makes faces legible at a glance. Shown at list-row size." stack>
+          <Tiles
             label="Density"
-            value={appearanceDetails.avatarSize}
-            options={DENSITY_OPTIONS}
-            onChange={(value) => updateAppearanceDetails({ avatarSize: value as OptionValue<typeof DENSITY_OPTIONS> })}
+            value={avatarSize}
+            options={DENSITY_TILES.map((tile) => ({ ...tile, spec: `${placementSize("row", tile.value) ?? 24}px row` }))}
+            onChange={(next) => updateAppearanceDetails({ avatarSize: next })}
+            render={(option) => (
+              <span className="sq-faces">
+                {DENSITY_SPECIMENS.map((slug) => (
+                  <SpecimenFace key={slug} slug={slug} size={placementSize("row", option.value) ?? 24} style={avatarStyle} />
+                ))}
+              </span>
+            )}
           />
         </Row>
       </Section>
 
       <Section label="Workspace" note="Changes apply as you make them and are saved automatically.">
-        <Row title="Avatars" detail="How agents are drawn: the crew cast, a generated sprite, or a pixel chip.">
-          <Select
-            label="Avatars"
-            value={appearanceDetails.avatarStyle}
-            options={AVATAR_OPTIONS}
-            onChange={(value) => updateAppearanceDetails({ avatarStyle: value as typeof appearanceDetails.avatarStyle })}
-          />
-        </Row>
-        <Row title="Layout" detail="Slack puts channels on the left and threads beside the conversation.">
-          <Select
+        {CREW_ASSETS_AVAILABLE ? (
+          <Row title="Avatars" detail="How agents are drawn: the crew cast, a generated sprite, or a pixel chip." stack>
+            <Tiles
+              label="Avatars"
+              value={avatarStyle}
+              options={AVATAR_TILES.map((tile) => {
+                const coverage = rendererCoverage(tile.value);
+                return { ...tile, spec: coverage ? `${coverage.covered} of ${coverage.total} cast` : "Every agent" };
+              })}
+              onChange={(next) => updateAppearanceDetails({ avatarStyle: next })}
+              render={(option) => <SpecimenFace slug="milo" size={36} style={option.value} />}
+            />
+          </Row>
+        ) : (
+          <Row title="Avatars" detail="Every agent gets a generated sprite, drawn from its name.">
+            <span className="sq-portrait"><SpriteAvatar name="milo" size={36} /></span>
+          </Row>
+        )}
+        <Row title="Layout" detail="Slack puts channels on the left and threads beside the conversation." stack>
+          <Tiles
             label="Layout"
-            value={appearanceDetails.shell}
-            options={LAYOUT_OPTIONS}
-            onChange={(value) => updateAppearanceDetails({ shell: value as OptionValue<typeof LAYOUT_OPTIONS> })}
+            value={shell}
+            options={LAYOUT_TILES}
+            onChange={(next) => updateAppearanceDetails({ shell: next })}
+            render={(option) => <span className="sq-shell" data-shell={option.value}><ShellSample /></span>}
           />
         </Row>
       </Section>
@@ -836,7 +944,6 @@ function OperatorPage({ profile, update, saveError }: ProfileProps) {
           <Input label="Pronouns" value={profile.pronouns} onChange={(pronouns) => update({ pronouns })} />
         </Row>
         <Row title="Color" detail="Your hue, on your avatar and wherever you are named.">
-          {!CREW_ASSETS_AVAILABLE ? <SpriteAvatar name={profile.name || "Operator"} size={24} hue={profile.hue} /> : null}
           <div className="sq-hues" role="radiogroup" aria-label="Color">
             {HUE_PRESETS.map((hue) => (
               <button
@@ -861,7 +968,13 @@ function OperatorPage({ profile, update, saveError }: ProfileProps) {
               />
             </div>
           </Row>
-        ) : null}
+        ) : (
+          <Row title="Character" detail="Drawn from your name and color. Change either and it redraws.">
+            <span className="sq-portrait">
+              <SpriteAvatar name={profile.name || "Operator"} size={40} hue={profile.hue} />
+            </span>
+          </Row>
+        )}
       </Section>
 
       <Section label="What agents read first" note="Sent as context at the start of every conversation.">
@@ -952,6 +1065,7 @@ const TONE_OPTIONS = [
 function CommsPage({ profile, update, host }: ProfileProps & { host: Host }) {
   const attention = host.snapshot?.attention ?? null;
   const notifications = host.snapshot?.permissions.notifications ?? null;
+  const spaces = host.snapshot?.spaces ?? null;
   return (
     <>
       <Section
@@ -1025,6 +1139,21 @@ function CommsPage({ profile, update, host }: ProfileProps & { host: Host }) {
             onChange={(value) => update({ channel: value as OptionValue<typeof CHANNEL_OPTIONS> })}
           />
         </Row>
+        {spaces ? (
+          <Row
+            title="Spaces room"
+            detail={BASIC_WEB
+              ? `This Scout serves no local room, so Spaces appears in the sidebar only with Hosted, the room at ${spaces.hostedHost}.`
+              : `The shared room Spaces opens: this Mac's, or the one at ${spaces.hostedHost}.`}
+          >
+            <Select
+              label="Spaces room"
+              value={spaces.origin}
+              options={hostOptions(spaces.originOptions, spaces.origin)}
+              onChange={(value) => host.set("spaces.origin", value)}
+            />
+          </Row>
+        ) : null}
       </Section>
 
       <Section label="How they write">
@@ -2102,6 +2231,36 @@ function soloProReadyStatus(component: SoloProComponent) {
   }
 }
 
+type ProFact = { label: string; value: string; detail?: string; tone?: "ok" | "bad" };
+
+/** The three facts as one line each: required parts only, and only those that apply on this OS.
+ *  Running counts against what is installed, so a missing part reads once, under Installed. */
+function soloProFacts(status: SoloProStatus): ProFact[] {
+  const { access } = status;
+  const required = status.components.filter((component) => component.required && component.installed !== "not_applicable");
+  const installed = required.filter((component) => component.installed === "installed");
+  const ready = installed.filter((component) => component.ready === "ready");
+  const count = (n: number) => required.length === 0 ? "Nothing required" : `${n} of ${required.length} required`;
+  return [
+    {
+      label: "Access",
+      value: access.title,
+      detail: access.account ? access.account.label ?? access.account.login : undefined,
+      tone: access.state === "granted" ? "ok" : access.state === "credential_rejected" || access.state === "unavailable" ? "bad" : undefined,
+    },
+    {
+      label: "Installed here",
+      value: count(installed.length),
+      tone: required.length > 0 && installed.length === required.length ? "ok" : installed.length < required.length ? "bad" : undefined,
+    },
+    {
+      label: "Running",
+      value: installed.length === 0 ? "Nothing installed" : `${ready.length} of ${installed.length} installed`,
+      tone: installed.length === 0 ? undefined : ready.length === installed.length ? "ok" : "bad",
+    },
+  ];
+}
+
 function hasNavigationApi(): boolean {
   return typeof window !== "undefined" && "navigation" in window;
 }
@@ -2172,8 +2331,23 @@ function SoloProPage({ navigate }: { navigate: (route: Route) => void }) {
   return (
     <div className="sq-pro">
       <div className="sq-pro-summary" data-phase={status.phase} role="status">
+        <div className="sq-pro-kicker">
+          <span className="sq-pro-sigil" aria-hidden="true"><ScoutMark /></span>
+          Solo Pro
+        </div>
         <div className="sq-pro-headline">{status.headline}</div>
         <p className="sq-pro-lead">{SOLO_PRO_LEAD[status.phase]}</p>
+        <dl className="sq-pro-facts">
+          {soloProFacts(status).map((fact) => (
+            <div key={fact.label} data-tone={fact.tone}>
+              <dt>{fact.label}</dt>
+              <dd>
+                <span>{fact.value}</span>
+                {fact.detail ? <small>{fact.detail}</small> : null}
+              </dd>
+            </div>
+          ))}
+        </dl>
         <div className="sq-pro-summary-actions">
           <Button primary={status.phase === "active"} onClick={backToWork}>Back to your work</Button>
           <Button quiet disabled={loading} onClick={() => void load()}>{loading ? "Reading" : "Read again"}</Button>

@@ -1,6 +1,8 @@
 import { describe, expect, test } from "bun:test";
 
-import { brokerInvocationRequestSchema } from "./broker-command-boundary-schemas.js";
+import { brokerInvocationRequestSchema, brokerInvocationRequestSchemaFor } from "./broker-command-boundary-schemas.js";
+
+import { parseScoutRuntimeSpec, SCOUT_RUNTIME_CATALOG } from "@openscout/protocol";
 
 const baseInvocation = {
   id: "inv-1",
@@ -43,4 +45,32 @@ describe("brokerInvocationRequestSchema execution.turnBudgetMs", () => {
       expect(parsed.success).toBe(false);
     }
   });
+});
+
+
+test("new published model efforts traverse local grammar and the live broker boundary", () => {
+  const catalog = structuredClone(SCOUT_RUNTIME_CATALOG);
+  const codex = catalog.harnesses.find((harness) => harness.id === "codex")!;
+  codex.models = codex.models.map((model) => ({ ...model, enabled: false, default: false }));
+  codex.models.push({ id: "gpt-published-next", label: "Published Next", enabled: true, default: true, reasoningEfforts: ["max", "ultra"] });
+  const parsed = parseScoutRuntimeSpec("codex/gpt-published-next/ultra");
+  expect(parsed.ok).toBe(true);
+  if (!parsed.ok) throw new Error(parsed.error);
+  const liveBoundary = brokerInvocationRequestSchemaFor(catalog);
+  expect(liveBoundary.safeParse({ ...baseInvocation, execution: parsed.value }).success).toBe(true);
+  expect(liveBoundary.safeParse({ ...baseInvocation, execution: { ...parsed.value, reasoningEffort: "medium" } }).success).toBe(false);
+  expect(liveBoundary.safeParse({ ...baseInvocation, execution: { harness: "codex", model: "gpt-6-astra", session: "new" } }).success).toBe(false);
+  expect(liveBoundary.safeParse({ ...baseInvocation, execution: { harness: "codex", model: "gpt-6-astra", session: "reuse" } }).success).toBe(false);
+  expect(liveBoundary.safeParse({ ...baseInvocation, execution: { harness: "codex", model: "gpt-6-astra", reasoningEffort: "high", session: "existing", targetSessionId: "old-task" } }).success).toBe(true);
+  expect(liveBoundary.safeParse({ ...baseInvocation, execution: { harness: "codex" } }).success).toBe(true);
+});
+
+
+test("broker boundary validates family aliases using the live family's model-specific effort", () => {
+  const catalog = structuredClone(SCOUT_RUNTIME_CATALOG);
+  const claude = catalog.harnesses.find((harness) => harness.id === "claude")!;
+  claude.models = [{ id: "claude-opus-future", label: "Future Opus", family: "Opus", enabled: true, default: true, reasoningEfforts: ["ultra"] }];
+  const boundary = brokerInvocationRequestSchemaFor(catalog);
+  expect(boundary.safeParse({ ...baseInvocation, execution: { harness: "claude", model: "opus", reasoningEffort: "ultra" } }).success).toBe(true);
+  expect(boundary.safeParse({ ...baseInvocation, execution: { harness: "claude", model: "opus", reasoningEffort: "medium" } }).success).toBe(false);
 });

@@ -78,9 +78,17 @@ export interface OnboardingState {
   projectConfigPath?: string | null;
   currentDirectory: string | null;
   contextRoot?: string | null;
+  suggestedContextRoot?: string | null;
   sourceRoots?: string[];
   defaultHarness?: string;
-  harnesses?: Array<{ id: string; label: string; state: string; ready: boolean; detail: string }>;
+  harnesses?: Array<{
+    id: string; label: string; state: string; ready: boolean; detail: string;
+    installCommand?: string | null; loginCommand?: string | null; homepage?: string | null;
+  }>;
+  selectedHarness?: {
+    id: string; label: string; state: string; ready: boolean; detail: string;
+    installCommand?: string | null; loginCommand?: string | null; homepage?: string | null;
+  } | null;
   operatorName: string | null;
   operatorNameSuggestion: string | null;
   brokerReachable?: boolean;

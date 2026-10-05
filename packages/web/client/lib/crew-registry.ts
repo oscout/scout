@@ -11,7 +11,13 @@
 import { makeRng } from "./agent-identity.ts";
 
 export const CREW_PACK_BASE_URL = "/crew";
-export const CREW_ASSETS_AVAILABLE = true;
+/**
+ * Crew art is not Apache-2.0, so the public package's basic client ships
+ * without /crew (scripts/bundle-scout-web.mjs, check-packed-manifests). That
+ * build draws everyone with the generative sprite, which needs no files; the
+ * full app, which carries the pack, keeps the cast.
+ */
+export const CREW_ASSETS_AVAILABLE = import.meta.env.VITE_SCOUT_WEB_PROFILE !== "basic";
 
 export function crewAssetUrl(relativePath: string): string {
   return `${CREW_PACK_BASE_URL}/${relativePath.replace(/^\/+/u, "")}`;

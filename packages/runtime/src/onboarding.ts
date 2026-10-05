@@ -1,5 +1,5 @@
 export { assessSetupCompletion, hasUsableScoutApp, type SetupCompletion } from "./setup-completion.js";
-import { existsSync } from "node:fs";
+import { existsSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 
@@ -26,6 +26,7 @@ import {
 } from "./harness-catalog.js";
 import {
   DEFAULT_OPERATOR_NAME,
+  findOnboardingProjectRoot,
   installClaudeStatuslineTool,
   initializeOpenScoutSetup,
   installScoutSkillToHarnesses,
@@ -62,6 +63,8 @@ export type OpenScoutOnboardingStep = {
 export type OpenScoutOnboardingState = {
   currentDirectory: string;
   contextRoot: string | null;
+  /** Saved/explicit context or a real project; null requires a user choice. */
+  suggestedContextRoot: string | null;
   sourceRoots: string[];
   defaultHarness: AgentHarness;
   hasLocalConfig: boolean;
@@ -75,8 +78,10 @@ export type OpenScoutOnboardingState = {
   projectRoot: string | null;
   projectConfigPath: string | null;
   brokerReachable: boolean;
+  /** Local readiness of the chosen default harness, not any installed agent. */
   hasReadyRuntime: boolean;
   readyRuntimeCount: number;
+  selectedHarness: OnboardingHarnessObservation | null;
   skippedAt: number | null;
   completedAt: number | null;
   needed: boolean;
@@ -182,6 +187,9 @@ export type OnboardingHarnessObservation = {
   state: HarnessReadinessState;
   ready: boolean;
   detail: string;
+  installCommand?: string | null;
+  loginCommand?: string | null;
+  homepage?: string | null;
 };
 
 /** The setup choices, in catalog order, from a snapshot the caller already has. */
@@ -191,11 +199,18 @@ export function onboardingHarnessObservations(catalog: HarnessCatalogSnapshot): 
     if (!entry) return [];
     const label = SCOUT_RUNTIME_CATALOG.harnesses.find((harness) => harness.id === id)?.label ?? entry.label;
     const report = entry.readinessReport;
-    return [{ id, label, state: report.state, ready: report.ready, detail: report.detail }];
+    const installCommand = process.platform === "win32"
+      ? entry.install?.windows
+      : process.platform === "darwin" ? entry.install?.macos : entry.install?.linux;
+    const detail = report.ready
+      ? `${label}'s local setup was found. Sign-in and task execution are confirmed when an agent starts.`
+      : report.detail;
+    return [{ id, label, state: report.state, ready: report.ready, detail,
+      installCommand: installCommand ?? null, loginCommand: report.loginCommand, homepage: entry.homepage ?? null }];
   });
 }
 
-async function nearestProjectConfig(startDirectory: string | null | undefined): Promise<{
+async function nearestProjectConfig(startDirectory: string | null | undefined, stopAtHome = false): Promise<{
   projectRoot: string;
   projectConfigPath: string;
 } | null> {
@@ -203,7 +218,9 @@ async function nearestProjectConfig(startDirectory: string | null | undefined): 
   if (!trimmed) return null;
 
   let current = normalizePath(trimmed);
+  const home = normalizePath(process.env.HOME?.trim() || homedir());
   while (true) {
+    if (stopAtHome && (current === home || current === dirname(home))) break;
     const candidate = projectConfigPath(current);
     if (existsSync(candidate)) {
       return {
@@ -221,14 +238,14 @@ async function nearestProjectConfig(startDirectory: string | null | undefined): 
 }
 
 async function resolveProjectConfig(input: {
-  currentDirectory: string;
+  currentDirectory: string | null;
   contextRoot: string | null;
 }): Promise<{ projectRoot: string; projectConfigPath: string } | null> {
-  const direct = await nearestProjectConfig(input.currentDirectory);
-  if (direct) return direct;
-
   const configured = await nearestProjectConfig(input.contextRoot);
   if (configured) return configured;
+
+  const direct = await nearestProjectConfig(input.currentDirectory, true);
+  if (direct) return direct;
 
   return null;
 }
@@ -251,7 +268,7 @@ function buildSteps(input: {
   doctorRan: boolean;
   brokerReachable: boolean;
   hasReadyRuntime: boolean;
-  readyRuntimeCount: number;
+  selectedHarness: OnboardingHarnessObservation | null;
 }): OpenScoutOnboardingStep[] {
   return [
     {
@@ -296,10 +313,9 @@ function buildSteps(input: {
     },
     {
       id: "runtimes",
-      title: "Verify runtimes",
-      detail: input.hasReadyRuntime
-        ? `${input.readyRuntimeCount} runtime${input.readyRuntimeCount === 1 ? "" : "s"} ready.`
-        : "Install or sign into a supported harness such as Claude Code or Codex.",
+      title: "Check your coding agent",
+      detail: input.selectedHarness?.detail
+        ?? "Scout couldn't check your chosen coding agent. Check again before your first task.",
       complete: input.hasReadyRuntime,
     },
   ];
@@ -328,14 +344,28 @@ export async function loadOpenScoutOnboardingState(options: {
         ? "settings"
         : "default";
 
-  const contextRoot = settings.discovery.contextRoot ?? null;
-  const project = await resolveProjectConfig({ currentDirectory, contextRoot });
+  // The broker also injects this variable from its own startup directory. It
+  // is a safe inference fallback, never authority over a saved user choice.
+  const startupContext = process.env.OPENSCOUT_SETUP_CWD?.trim();
+  const inferredStartupRoot = !settings.discovery.contextRoot && startupContext
+    ? await findOnboardingProjectRoot(startupContext) : null;
+  const contextRoot = settings.discovery.contextRoot ?? inferredStartupRoot;
+  const inferredProjectRoot = await findOnboardingProjectRoot(currentDirectory);
+  const suggestedContextRoot = contextRoot ?? inferredProjectRoot;
+  // A removed saved folder must return to project selection, even if an
+  // ancestor or the service cwd happens to contain another project config.
+  const contextExists = contextRoot ? statSync(contextRoot, { throwIfNoEntry: false })?.isDirectory() === true : true;
+  const project = contextExists
+    ? await resolveProjectConfig({ currentDirectory: inferredProjectRoot ? currentDirectory : null, contextRoot }) : null;
   const broker = options.broker ?? await brokerServiceStatus().catch(() => null);
   // This read is polled while setup is on screen (the Mac app's gate), so it
   // counts ready runtimes from local evidence without harness auth/status calls.
   const catalog = options.catalog ?? await loadHarnessCatalogSnapshot({ localOnly: true }).catch(() => null);
   const readyRuntimeCount = catalog?.entries.filter((entry) => entry.readinessReport.ready).length ?? 0;
-  const hasReadyRuntime = readyRuntimeCount > 0;
+  const harnesses = catalog ? onboardingHarnessObservations(catalog) : undefined;
+  const selectedHarnessId = parseOnboardingHarness(settings.agents.defaultHarness) ?? settings.agents.defaultHarness;
+  const selectedHarness = harnesses?.find((entry) => entry.id === selectedHarnessId) ?? null;
+  const hasReadyRuntime = selectedHarness?.ready === true;
   const hasLocalConfig = localConfigExists();
   const hasOperatorName = Boolean(operatorName || settings.onboarding.operatorAnsweredAt);
   const hasProjectConfig = Boolean(project);
@@ -358,12 +388,13 @@ export async function loadOpenScoutOnboardingState(options: {
     doctorRan: Boolean(settings.onboarding.doctorRanAt),
     brokerReachable,
     hasReadyRuntime,
-    readyRuntimeCount,
+    selectedHarness,
   });
 
   return {
     currentDirectory,
     contextRoot,
+    suggestedContextRoot,
     sourceRoots: [...settings.discovery.workspaceRoots],
     defaultHarness: settings.agents.defaultHarness,
     hasLocalConfig,
@@ -379,11 +410,12 @@ export async function loadOpenScoutOnboardingState(options: {
     brokerReachable,
     hasReadyRuntime,
     readyRuntimeCount,
+    selectedHarness,
     skippedAt: settings.onboarding.skippedAt,
     completedAt: settings.onboarding.completedAt,
     needed: !(settings.onboarding.skippedAt || settings.onboarding.completedAt || coreComplete),
     steps,
-    ...(catalog ? { harnesses: onboardingHarnessObservations(catalog) } : {}),
+    ...(harnesses ? { harnesses } : {}),
   };
 }
 
@@ -598,7 +630,7 @@ export async function runOpenScoutOnboardingSetup(input: {
   // A broker that appeared during setup is no longer a foreground handoff.
   // Its current health must decide success, including a reachable failure.
   if (broker.reachable) brokerHandoff = null;
-  const catalog = await loadHarnessCatalogSnapshot();
+  const catalog = await loadHarnessCatalogSnapshot({ localOnly: true });
   await triggerMeshDiscovery(broker);
 
   await markOpenScoutOnboardingCommand({

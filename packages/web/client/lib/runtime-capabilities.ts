@@ -18,6 +18,10 @@ export type RuntimeCapabilityCatalog = {
   schemaVersion: "openscout.runtime-capabilities.v1";
   catalogVersion?: "openscout.runtime-catalog.v1";
   catalogRevision?: string;
+  source?: "remote" | "persisted" | "bundled";
+  checkedAt?: number;
+  nextCheckAt?: number;
+  warnings?: string[];
   generatedAt?: number;
   scope?: "global" | "project" | "global+project";
   projectRoot?: string;
@@ -43,6 +47,29 @@ export type RuntimeCapabilityCatalog = {
   shortlist?: RuntimeShortlistEntry[];
   presets?: RuntimePreset[];
 };
+
+/** Share one response order across normal loads, manual refreshes and context changes. */
+export function createRuntimeCatalogLoader<T>() {
+  let generation = 0;
+  return {
+    invalidate() { generation += 1; },
+    async load(read: () => Promise<T>, callbacks: {
+      publish: (value: T) => void;
+      failed?: (error: unknown) => void;
+      finished?: () => void;
+    }): Promise<void> {
+      const request = ++generation;
+      try {
+        const value = await read();
+        if (request === generation) callbacks.publish(value);
+      } catch (error) {
+        if (request === generation) callbacks.failed?.(error);
+      } finally {
+        if (request === generation) callbacks.finished?.();
+      }
+    },
+  };
+}
 
 const SEED_DEFAULT_HARNESS = scoutRuntimeDefaultHarness() ?? "";
 const SEED_DEFAULT_MODEL = scoutRuntimeDefaultModel(SEED_DEFAULT_HARNESS);
@@ -117,4 +144,12 @@ export function runtimeModelsForHarness(
   return catalog.models
     .filter((candidate) => candidate.harnesses.includes(harness))
     .map((candidate) => candidate.id);
+}
+
+export function runtimeModelCatalogStatus(value: { source?: string; catalogRevision?: string; checkedAt?: number } | null): string {
+  const source = value?.source === "remote" ? "Published" : value?.source === "persisted" ? "Saved" : "Included";
+  const parts = [source];
+  if (value?.catalogRevision) parts.push(value.catalogRevision);
+  if (value?.checkedAt !== undefined) parts.push(`Checked ${new Date(value.checkedAt).toLocaleString()}`);
+  return parts.join(" · ");
 }

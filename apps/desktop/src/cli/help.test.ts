@@ -33,8 +33,14 @@ describe("renderScoutHelp", () => {
 
  test("default help is short and points to command help and complete reference", () => {
   const help = renderScoutHelp("test");
-  expect(help.split("\n").length).toBeLessThan(26);
+  expect(help.split("\n").length).toBeLessThan(32);
   expect(help).toContain("scout help --detail");
   expect(help).toContain("scout <command> --help");
   expect(help).toContain("doctor");
+  for (const detail of [false, true]) {
+    const output = renderScoutHelp("test", detail);
+    expect(output).toContain("https://openscout.app/install.md");
+    expect(output).toContain("https://openscout.app/docs/quickstart");
+    expect(output).toContain("Troubleshooting: scout doctor");
+  }
 });
