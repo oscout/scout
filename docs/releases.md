@@ -249,10 +249,13 @@ already-promoted member so explicit promotion retries can complete safely.
 The top-level candidate/promotion commands additionally enforce the public
 candidate marker and GitHub release metadata.
 
-A partial candidate upload remains fail-closed. Preserve the original bundle
-and registry evidence and stop the campaign: do **not** use the ordinary local
-recovery command below, because it promotes `latest` and would bypass this
-validation gate. Candidate mode never invokes that recovery automatically.
+A partial candidate upload stops the ordinary candidate command. Preserve the
+original bundle and registry evidence; resume only with the explicitly reviewed
+candidate-only retained recovery below. It can upload only the missing original
+Scout tarball under the staging tag and stops before either Latest channel.
+The ordinary local recovery command refuses a local candidate marker or GitHub
+prerelease, because its promoting behavior would bypass installation validation.
+Candidate mode never invokes recovery automatically.
 If installation validation fails, preserve the published immutable bytes,
 receipts and held staging tag. Fix the source through review and select a new
 explicit unused version for the next candidate; never rebuild or replace the
@@ -264,6 +267,77 @@ pairs and newer `latest` versions stop promotion before mutation. No private npm
 publisher, automatic hosted fallback, rollback or credential-storage behavior
 is added by these phases.
 
+### Recover and finalize the original held candidate
+
+Recovery tooling may be reviewed and merged after the candidate's source. Keep
+the candidate identity separate from that newer tooling commit. From clean
+canonical public `main` equal to freshly observed remote `main`, supply the
+original source SHA, integrity-receipt SHA-256 and candidate-receipt SHA-256.
+Read these digests from the preserved files before execution; do not reconstruct
+or rewrite a missing marker. Both original local and remote version tags must
+still match the source, which must be an ancestor of the reviewed tooling.
+`SCOUT_NPM_RELEASE_STATE_DIR` is refused for these retained operations.
+
+```bash
+# 1. Complete only the missing exact staged Scout artifact. Omit --execute/--yes
+#    for a read-only plan; use an interactive terminal for existing npm login.
+node scripts/recover-local-npm-release.mjs \
+  --version <version> --source <original-source-sha> \
+  --receipt-sha256 <original-receipt-sha256> \
+  --candidate-receipt-sha256 <original-candidate-receipt-sha256> \
+  --phase candidate --execute --yes --auth npm-login
+
+# 2. Verify the complete pair and finalize its original prerelease/marker only.
+bun run ship -- <version> --phase candidate \
+  --source <original-source-sha> --receipt-sha256 <original-receipt-sha256> \
+  --candidate-receipt-sha256 <original-candidate-receipt-sha256> \
+  --execute --yes --auth npm-login
+
+# 3. Install and validate the exact npm/native candidate before approving promotion.
+
+# 4. Explicitly promote that same complete candidate after successful validation.
+bun run ship -- <version> --phase promote \
+  --source <original-source-sha> --receipt-sha256 <original-receipt-sha256> \
+  --candidate-receipt-sha256 <original-candidate-receipt-sha256> \
+  --execute --yes --auth npm-login
+```
+
+Unset `NPM_TOKEN` and `NODE_AUTH_TOKEN`; do not carry credential-free npm config
+overrides from a source audit into publication. Candidate recovery verifies
+source package identities, the original receipt, both retained tarballs and the
+exact marker digest and semantics. It requires protocol already staged, one
+unchanged older `latest` baseline for both packages, and verified registry
+metadata plus anonymously downloaded tarball bytes from the pinned public
+registry without following registry redirects. Only a structured exact-version
+E404 proves version absence; empty successful responses and unknown errors fail
+closed. Changed markers/tags/bytes, a foreign authority/repository, CLI-first
+state or an already/newer promoted version stop before mutation.
+
+Only the missing retained Scout tarball can be uploaded, with lifecycle scripts
+disabled and local provenance disabled. The tool waits for both its exact bytes
+and staging tag to become observable, preserves both receipts and the older
+Latest baseline, and never mutates a dist-tag in candidate mode. A complete
+staged pair skips upload and authentication. During bounded post-upload polling,
+an exact registry record can precede canonical tarball availability: only an
+HTTP 404 at the verified tarball path is treated as pending. Finalization and
+promotion still require every byte to match. A failed mutation performs one
+read-only state observation and reports exact bytes observable or an unknown
+upload outcome; a version not yet observable does not prove rejection. It never
+retries automatically or changes authentication. Preserve uncertain outcomes
+and inspect them before an explicitly authorized retry.
+
+Retained finalization and promotion never build, pack, upload a missing npm
+package, recreate a tag, or call the HEAD-bound publisher. They read all version
+sources from `git show <original-source-sha>:...`, locate the bundle under the
+Git common directory using that source, and leave its marker bytes unchanged.
+Candidate finalization creates/verifies a non-draft prerelease with
+`--latest=false` and the original public marker. Promotion requires that public
+marker byte-for-byte before changing npm `latest`, including when the lower-level
+recovery command is invoked directly with `--phase promote`. It verifies the complete
+pair before each tag change and attaches the unchanged ordinary receipt while
+finalizing GitHub metadata with `--latest=false`. Native GitHub Latest and
+appcast/site updates remain separately owned gates.
+
 ## Recover a retained local release
 
 If npm accepts protocol but it becomes visible only after the publication wait
@@ -271,6 +345,9 @@ expires, keep the original signed candidate bundle. Do not rebuild it or bump a
 version solely because registry propagation exceeded the wait. The ordinary
 publisher still rejects partial local state; recovery is a separate explicit
 command in reviewed public tooling (see [issue #23](https://github.com/oscout/scout/issues/23)).
+This ordinary promoting path is for an unmarked stable release only. A local
+`candidate-receipt.json`, a GitHub prerelease, or unknown GitHub release state
+refuses execution; use the explicit held-candidate sequence above instead.
 
 The recovery tooling can be merged after the candidate: run it from clean public
 `main` equal to remote `main`. Supply the **original** release SHA and original

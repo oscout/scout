@@ -1264,21 +1264,21 @@ test("local candidates cannot acquire a false OIDC receipt claim", () => {
   } finally { rmSync(fixture, { recursive: true, force: true }); }
 });
 
-function createLocalReleaseFixture({ corruptReceipt = false, initialRelease = "final" } = {}) {
-  const state = createPublishFixture();
+function createLocalReleaseFixture({ corruptReceipt = false, initialRelease = "final", version = "0.2.99" } = {}) {
+  const state = createPublishFixture({ version });
   const { fixture } = state;
   copyFileSync(new URL("ship-release.mjs", import.meta.url), join(fixture, "scripts/ship-release.mjs"));
   const manifests = [".", "apps/desktop", "packages/agent-sessions", "packages/cli", "packages/protocol", "packages/runtime", "packages/session-trace", "packages/session-trace-react", "packages/web"];
   for (const directory of manifests) {
     mkdirSync(join(fixture, directory), { recursive: true });
     if (!existsSync(join(fixture, directory, "package.json"))) {
-      writeFileSync(join(fixture, directory, "package.json"), JSON.stringify({ name: "fixture", version: "0.2.99" }));
+      writeFileSync(join(fixture, directory, "package.json"), JSON.stringify({ name: "fixture", version }));
     }
   }
-  writeFileSync(join(fixture, "bun.lock"), '{\n"workspaces": {\n' + manifests.filter(p => p !== ".").map(p => `    "${p}": {\n      "version": "0.2.99",\n    },`).join("\n") + '\n}\n}');
+  writeFileSync(join(fixture, "bun.lock"), '{\n"workspaces": {\n' + manifests.filter(p => p !== ".").map(p => `    "${p}": {\n      "version": "${version}",\n    },`).join("\n") + '\n}\n}');
   mkdirSync(join(fixture, "apps/desktop/src/shared"), { recursive: true });
-  writeFileSync(join(fixture, "apps/desktop/src/shared/product.ts"), 'export const SCOUT_APP_VERSION = process.env.SCOUT_APP_VERSION?.trim() || "0.2.99";');
-  writeFileSync(join(fixture, "docs.json"), '{"version":"0.2.99"}');
+  writeFileSync(join(fixture, "apps/desktop/src/shared/product.ts"), `export const SCOUT_APP_VERSION = process.env.SCOUT_APP_VERSION?.trim() || "${version}";`);
+  writeFileSync(join(fixture, "docs.json"), JSON.stringify({ version }));
   const receipt = readFileSync(join(fixture, "release-state/receipt.json"));
   const remoteReceipt = join(fixture, "remote-receipt.json");
   if (corruptReceipt) {
@@ -1301,12 +1301,12 @@ if [[ "$1 $2" == "release view" ]]; then
     file='${fixture}/remote-'"$name"
     if [[ -f "$file" ]]; then
       size=$(wc -c < "$file" | tr -d ' ')
-      assets="$assets$comma"'{"name":"'"$name"'","size":'"$size"',"url":"https://github.com/oscout/scout/releases/download/v0.2.99/'"$name"'"}'
+      assets="$assets$comma"'{"name":"'"$name"'","size":'"$size"',"url":"https://github.com/oscout/scout/releases/download/v${version}/'"$name"'"}'
       comma=','
     fi
   done
   assets="[$assets]"
-  echo '{"tagName":"v0.2.99","isDraft":'"$draft"',"isPrerelease":'"$prerelease"',"url":"https://github.com/oscout/scout/releases/tag/v0.2.99","assets":'"$assets"'}'
+  echo '{"tagName":"v${version}","isDraft":'"$draft"',"isPrerelease":'"$prerelease"',"url":"https://github.com/oscout/scout/releases/tag/v${version}","assets":'"$assets"'}'
   exit 0
 fi
 if [[ "$1 $2" == "release create" ]]; then
@@ -1589,4 +1589,204 @@ test("a public candidate marker holds default release when only the local marker
     assert.equal(readFileSync(join(fixture, "gh-mutations.log"), "utf8"), completedUploads);
     assert.deepEqual(readFileSync(join(fixture, "remote-candidate-receipt.json")), marker);
   } finally { rmSync(fixture, { recursive: true, force: true }); }
+});
+
+function createOriginalCandidateFixture() {
+  const version = "0.3.3", source = "2fed47b16bba310fa90ad47196b3eb5e697ea152", tooling = "b".repeat(40);
+  const state = createLocalReleaseFixture({ version, initialRelease: "missing" });
+  const { fixture, stateDir } = state;
+  copyFileSync(new URL("recover-local-npm-release.mjs", import.meta.url), join(fixture, "scripts/recover-local-npm-release.mjs"));
+  const common = join(fixture, ".git"), bundle = join(common, "scout-release/npm", `${version}-${source}`);
+  mkdirSync(bundle, { recursive: true });
+  const triples = [];
+  const names = ["@openscout/protocol", "@openscout/scout"];
+  for (let i = 0; i < names.length; i++) {
+    const stage = join(fixture, `original-package-${i}`);
+    mkdirSync(join(stage, "package"), { recursive: true });
+    writeFileSync(join(stage, "package/package.json"), JSON.stringify({ name: names[i], version, gitHead: source, repository: { url: "https://github.com/oscout/scout" } }));
+    const file = join(bundle, `openscout-${names[i].split('/').at(-1)}-${version}.tgz`);
+    const packed = spawnSync("tar", ["-czf", file, "-C", stage, "package"], { encoding: "utf8" });
+    assert.equal(packed.status, 0, packed.stderr);
+    triples.push(names[i], version, file);
+    writeFileSync(join(stateDir, `${i ? 'scout' : 'protocol'}-exists`), "");
+    writeFileSync(join(stateDir, `${i ? 'scout' : 'protocol'}-stage`), version);
+  }
+  const receiptPath = join(bundle, "receipt.json");
+  const created = spawnSync(process.execPath, ["scripts/npm-release-receipt.mjs", "create", receiptPath, "https://github.com/oscout/scout", version, source, "local-signed", ...triples], { cwd: fixture, encoding: "utf8" });
+  assert.equal(created.status, 0, created.stderr);
+  const digest = bytes => createHash("sha256").update(bytes).digest("hex");
+  const receipt = JSON.parse(readFileSync(receiptPath));
+  const markerPath = join(bundle, "candidate-receipt.json");
+  writeFileSync(markerPath, JSON.stringify({ schemaVersion: 1, kind: "scout-npm-candidate", releaseState: "CANDIDATE", repository: receipt.repository,
+    releaseVersion: version, releaseSha: source, authority: "local-signed", provenance: "none", stagingTag: "scout-release-0-3-3",
+    integrityReceiptSha256: digest(readFileSync(receiptPath)), packages: receipt.packages }, null, 2) + "\n");
+  const sourceFiles = ["package.json", "apps/desktop/package.json", "packages/agent-sessions/package.json", "packages/cli/package.json", "packages/protocol/package.json", "packages/runtime/package.json", "packages/session-trace/package.json", "packages/session-trace-react/package.json", "packages/web/package.json", "apps/desktop/src/shared/product.ts", "docs.json", "bun.lock"];
+  for (const file of sourceFiles) {
+    const target = join(fixture, "original-tree", file);
+    mkdirSync(dirname(target), { recursive: true });
+    copyFileSync(join(fixture, file), target);
+    // Tooling versions deliberately differ: retained identity comes from git show source.
+    writeFileSync(join(fixture, file), readFileSync(join(fixture, file), "utf8").replaceAll(version, "0.4.0"));
+  }
+  writeFileSync(join(fixture, "fake-bin/git"), `#!/bin/bash
+if [[ "$1" == "remote" ]]; then echo https://github.com/oscout/scout.git; exit 0; fi
+if [[ "$1" == "status" ]]; then [[ ! -f '${fixture}/dirty' ]] || echo ' M source'; exit 0; fi
+if [[ "$1" == "branch" ]]; then echo main; exit 0; fi
+if [[ "$1" == "fetch" ]]; then exit 0; fi
+if [[ "$1" == "merge-base" ]]; then [[ ! -f '${fixture}/nonancestor' ]]; exit $?; fi
+if [[ "$1" == "show" ]]; then [[ "$2" == ${source}:* ]] || exit 90; cat '${fixture}/original-tree/'"\${2#*:}"; exit $?; fi
+if [[ "$1" == "rev-parse" ]]; then
+  for arg in "$@"; do [[ "$arg" != --git-common-dir ]] || { echo '${common}'; exit 0; }; done
+  if [[ "$*" == *refs/tags/* ]]; then [[ ! -f '${fixture}/missing-tag' ]] || { echo 'fatal: needed a single revision' >&2; exit 1; }; echo ${source}; else echo ${tooling}; fi
+  exit 0
+fi
+if [[ "$1" == "ls-remote" ]]; then
+  printf '${tooling}\\trefs/heads/main\\n'
+  [[ -f '${fixture}/missing-tag' ]] || printf '${source}\\trefs/tags/v${version}^{}\\n'
+  exit 0
+fi
+echo "unexpected git mutation $*" >> '${fixture}/unexpected-git.log'; exit 99
+`);
+  writeFileSync(join(fixture, "fake-bin/npm"), `#!/usr/bin/env node
+const fs=require('node:fs'),path=require('node:path');
+const state=${JSON.stringify(stateDir)},bundle=${JSON.stringify(bundle)},version=${JSON.stringify(version)},source=${JSON.stringify(source)};
+const names=['@openscout/protocol','@openscout/scout'],keys=['protocol','scout'];
+const receipt=JSON.parse(fs.readFileSync(path.join(bundle,'receipt.json'))),a=process.argv.slice(2);
+const print=v=>console.log(typeof v==='string'?v:JSON.stringify(v));
+const get=(key,suffix)=>fs.readFileSync(path.join(state,key+'-'+suffix),'utf8').trim();
+if(a[0]==='whoami'){print('fixture-operator');process.exit(0);}
+if(a[0]==='view'){
+ const i=names.findIndex(n=>a[1]===n||a[1]===n+'@'+version),key=keys[i]; if(i<0)process.exit(91);
+ if(a[2]==='dist-tags'){print({latest:get(key,'latest'),['scout-release-0-3-3']:get(key,'stage')});process.exit(0);}
+ if(!fs.existsSync(path.join(state,key+'-exists'))){print({error:{code:'E404',summary:'No match found for version0.3.3'}});process.exit(1);}
+ print({name:names[i],version,gitHead:source,repository:{url:'https://github.com/oscout/scout'},dist:{integrity:receipt.packages[i].integrity,tarball:'https://registry.npmjs.org/'+names[i]+'/-/'+key+'-'+version+'.tgz'}});process.exit(0);
+}
+fs.appendFileSync(path.join(state,'mutations.log'),a.join(' ')+'\\n');
+if(a[0]==='dist-tag'&&a[1]==='add'){
+ const i=names.findIndex(n=>a[2]===n+'@'+version); if(i<0||a[3]!=='latest')process.exit(92);
+ fs.writeFileSync(path.join(state,keys[i]+'-latest'),version);
+ if(i===0&&process.env.FIXTURE_NEWER_AFTER_FIRST_PROMOTION==='1')fs.writeFileSync(path.join(state,'scout-latest'),'0.4.0');
+ process.exit(0);
+}
+process.exit(93);
+`);
+  writeFileSync(join(fixture, "fake-bin/curl"), `#!/bin/bash
+for url in "$@"; do :; done
+if [[ "$url" == https://registry.npmjs.org/* ]]; then
+  for arg in "$@"; do [[ "$arg" != --location ]] || exit 94; done
+  if [[ "$url" == */protocol/* ]]; then cat '${bundle}/openscout-protocol-${version}.tgz'; else cat '${bundle}/openscout-scout-${version}.tgz'; fi
+  printf '\\n200'
+else name=\${url##*/}; cat '${fixture}/remote-'"$name"; fi
+`);
+  for (const name of ["git", "npm", "curl"]) chmodSync(join(fixture, "fake-bin", name), 0o755);
+  const identityArgs = ["--source", source, "--receipt-sha256", digest(readFileSync(receiptPath)), "--candidate-receipt-sha256", digest(readFileSync(markerPath))];
+  const execute = (phase, extraEnv = {}, retained = true) => spawnSync(process.execPath, ["scripts/ship-release.mjs", version, "--phase", phase,
+    ...(retained ? identityArgs : []), "--execute", "--yes", "--auth", "npm-login"], {
+    cwd: fixture, encoding: "utf8", env: { ...process.env, PATH: join(fixture, "fake-bin") + ":" + process.env.PATH,
+      NPM_TOKEN: "", NODE_AUTH_TOKEN: "", SCOUT_NPM_RELEASE_STATE_DIR: "", GITHUB_ACTIONS: "", ...extraEnv },
+  });
+  return { ...state, version, source, tooling, bundle, receiptPath, markerPath, identityArgs, execute };
+}
+
+test("retained candidate and promotion keep original2fed identity when reviewed tooling HEAD and versions are newer", () => {
+  const f = createOriginalCandidateFixture();
+  try {
+    const receiptBefore = readFileSync(f.receiptPath), markerBefore = readFileSync(f.markerPath);
+    const result = f.execute("candidate");
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(readFileSync(join(f.stateDir, "mutations.log"), "utf8"), "");
+    assert.equal(existsSync(join(f.fixture, "unexpected-git.log")), false);
+    assert.doesNotMatch(result.stdout, /ship-npm\.sh|--prepare|--publish-candidate|Building packages/);
+    assert.match(readFileSync(join(f.fixture, "gh-release-calls.log"), "utf8"), /--prerelease --latest=false/);
+    assert.deepEqual(readFileSync(join(f.fixture, "remote-candidate-receipt.json")), markerBefore);
+    assert.equal(JSON.parse(markerBefore).releaseSha, f.source);
+    assert.notEqual(f.source, f.tooling);
+    for (const key of ["protocol", "scout"]) assert.equal(readFileSync(join(f.stateDir, key + "-latest"), "utf8"), "0.2.87");
+    const promote = f.execute("promote");
+    assert.equal(promote.status, 0, promote.stderr);
+    const mutations = readFileSync(join(f.stateDir, "mutations.log"), "utf8");
+    assert.equal(mutations.trim().split("\n").length, 2);
+    assert.doesNotMatch(mutations, /publish/);
+    assert.deepEqual(readFileSync(join(f.fixture, "remote-receipt.json")), receiptBefore);
+    assert.deepEqual(readFileSync(f.markerPath), markerBefore);
+    assert.equal(readFileSync(join(f.fixture, "gh-release-state"), "utf8").trim(), "false false");
+    const again = f.execute("promote"); assert.equal(again.status, 0, again.stderr);
+    assert.equal(readFileSync(join(f.stateDir, "mutations.log"), "utf8"), mutations);
+    for (const call of readFileSync(join(f.fixture, "gh-release-calls.log"), "utf8").trim().split("\n")) assert.match(call, /--latest=false/);
+  } finally { rmSync(f.fixture, { recursive: true, force: true }); }
+});
+
+for (const conflict of ["partial pair", "missing marker", "receipt digest", "marker digest", "missing tag", "nonancestor", "source version", "state override"]) {
+  test(`retained original candidate holds ${conflict} before release/npm mutation`, () => {
+    const f = createOriginalCandidateFixture();
+    try {
+      let extra = {};
+      if (conflict === "partial pair") rmSync(join(f.stateDir, "scout-exists"));
+      if (conflict === "missing marker") rmSync(f.markerPath);
+      if (conflict === "receipt digest") f.identityArgs[3] = "0".repeat(64);
+      if (conflict === "marker digest") f.identityArgs[5] = "0".repeat(64);
+      if (conflict === "missing tag") writeFileSync(join(f.fixture, "missing-tag"), "");
+      if (conflict === "nonancestor") writeFileSync(join(f.fixture, "nonancestor"), "");
+      if (conflict === "source version") writeFileSync(join(f.fixture, "original-tree/docs.json"), '{"version":"0.4.0"}');
+      if (conflict === "state override") extra.SCOUT_NPM_RELEASE_STATE_DIR = f.bundle;
+      const result = f.execute("candidate", extra);
+      assert.notEqual(result.status, 0, result.stdout);
+      assert.equal(readFileSync(join(f.stateDir, "mutations.log"), "utf8"), "");
+      assert.equal(existsSync(join(f.fixture, "gh-release-calls.log")), false);
+      assert.equal(existsSync(join(f.fixture, "gh-mutations.log")), false);
+    } finally { rmSync(f.fixture, { recursive: true, force: true }); }
+  });
+}
+
+test("retained promotion rechecks newer Latest before each mutation", () => {
+  const f = createOriginalCandidateFixture();
+  try {
+    const candidate = f.execute("candidate"); assert.equal(candidate.status, 0, candidate.stderr);
+    const fail = f.execute("promote", { FIXTURE_NEWER_AFTER_FIRST_PROMOTION: "1" });
+    assert.notEqual(fail.status, 0);
+    assert.equal(readFileSync(join(f.stateDir, "mutations.log"), "utf8").trim().split("\n").length, 1);
+    assert.equal(readFileSync(join(f.fixture, "gh-release-state"), "utf8").trim(), "false true");
+  } finally { rmSync(f.fixture, { recursive: true, force: true }); }
+});
+
+for (const conflict of ["partial pair", "missing public marker", "changed public marker"]) {
+  test(`retained promotion holds ${conflict} before any Latest mutation`, () => {
+    const f = createOriginalCandidateFixture();
+    try {
+      const candidate = f.execute("candidate"); assert.equal(candidate.status, 0, candidate.stderr);
+      const marker = join(f.fixture, "remote-candidate-receipt.json");
+      if (conflict === "partial pair") rmSync(join(f.stateDir, "scout-exists"));
+      if (conflict === "missing public marker") rmSync(marker);
+      if (conflict === "changed public marker") writeFileSync(marker, readFileSync(marker).toString().replace('CANDIDATE', 'XANDIDATE'));
+      const result = f.execute("promote");
+      assert.notEqual(result.status, 0);
+      assert.equal(readFileSync(join(f.stateDir, "mutations.log"), "utf8"), "");
+      assert.equal(readFileSync(join(f.fixture, "gh-release-state"), "utf8").trim(), "false true");
+    } finally { rmSync(f.fixture, { recursive: true, force: true }); }
+  });
+}
+
+test("default release and fresh candidate/promotion still require the current HEAD version tag", () => {
+  const f = createOriginalCandidateFixture();
+  try {
+    for (const file of ["package.json", "apps/desktop/package.json", "packages/agent-sessions/package.json", "packages/cli/package.json", "packages/protocol/package.json", "packages/runtime/package.json", "packages/session-trace/package.json", "packages/session-trace-react/package.json", "packages/web/package.json", "apps/desktop/src/shared/product.ts", "docs.json", "bun.lock"]) {
+      copyFileSync(join(f.fixture, "original-tree", file), join(f.fixture, file));
+    }
+    for (const phase of ["release", "candidate", "promote"]) {
+      const result = f.execute(phase, {}, false);
+      assert.notEqual(result.status, 0);
+      assert.match(result.stderr, /Local tag .* points to/);
+      assert.equal(readFileSync(join(f.stateDir, "mutations.log"), "utf8"), "");
+      assert.equal(existsSync(join(f.fixture, "gh-release-calls.log")), false);
+    }
+  } finally { rmSync(f.fixture, { recursive: true, force: true }); }
+});
+
+test("retained identity cannot be supplied incompletely or used for the default release phase", () => {
+  const source = "a".repeat(40), digest = "b".repeat(64);
+  for (const args of [["--phase", "candidate", "--source", source], ["--source", source, "--receipt-sha256", digest, "--candidate-receipt-sha256", digest]]) {
+    const result = plan(currentVersion, ...args);
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /must all be supplied|only supported for explicit/);
+  }
 });

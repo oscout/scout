@@ -60,6 +60,9 @@ function usage() {
     "                         Default release; candidate holds both Latest channels.",
     "  --auth <token|npm-login>",
     "                         Local authentication mode; token is the default.",
+    "  --source <original-sha> --receipt-sha256 <digest>",
+    "    --candidate-receipt-sha256 <digest>",
+    "                         Finalize/promote original retained candidate using newer tooling.",
     "  --release-notes-file <path>",
     "                         Use explicit GitHub release notes.",
     "",
@@ -74,13 +77,17 @@ function usage() {
   ].join("\n");
 }
 
-function readJson(relativePath) {
-  return JSON.parse(readFileSync(path.join(repoRoot, relativePath), "utf8"));
+function readSource(relativePath, source = null) {
+  return source ? capture("git", ["show", `${source}:${relativePath}`]) : readFileSync(path.join(repoRoot, relativePath), "utf8");
 }
 
-function packageVersion(relativeDir) {
+function readJson(relativePath, source = null) {
+  return JSON.parse(readSource(relativePath, source));
+}
+
+function packageVersion(relativeDir, source = null) {
   const manifestPath = relativeDir === "." ? "package.json" : relativeDir + "/package.json";
-  return readJson(manifestPath).version;
+  return readJson(manifestPath, source).version;
 }
 
 function parseArgs(argv) {
@@ -90,6 +97,9 @@ function parseArgs(argv) {
     phase: "release",
     releaseNotesFile: null,
     auth: process.env.SCOUT_NPM_AUTH_MODE ?? "token",
+    source: null,
+    receiptSha256: null,
+    candidateReceiptSha256: null,
   };
   let target = null;
 
@@ -109,6 +119,10 @@ function parseArgs(argv) {
     else if (arg === "--yes") options.yes = true;
     else if (arg === "--phase") options.phase = argv[++index];
     else if (arg.startsWith("--phase=")) options.phase = arg.slice("--phase=".length);
+    else if (["--source", "--receipt-sha256", "--candidate-receipt-sha256"].includes(arg)) {
+      const key = { "--source": "source", "--receipt-sha256": "receiptSha256", "--candidate-receipt-sha256": "candidateReceiptSha256" }[arg];
+      options[key] = argv[++index];
+    }
     else if (arg === "--auth") {
       options.auth = argv[++index];
     } else if (arg.startsWith("--auth=")) {
@@ -131,6 +145,15 @@ function parseArgs(argv) {
   if (!["release", "candidate", "promote"].includes(options.phase)) throw new Error("--phase must be release, candidate or promote.");
   if (!["token", "npm-login"].includes(options.auth)) {
     throw new Error("--auth must be token or npm-login.");
+  }
+  if (options.source || options.receiptSha256 || options.candidateReceiptSha256) {
+    if (options.phase === "release") throw new Error("Original retained identity is only supported for explicit candidate or promote phases.");
+    if (!/^[a-f0-9]{40}$/.test(options.source ?? "") ||
+        !/^[a-f0-9]{64}$/.test(options.receiptSha256 ?? "") ||
+        !/^[a-f0-9]{64}$/.test(options.candidateReceiptSha256 ?? "")) {
+      throw new Error("Original --source, --receipt-sha256 and --candidate-receipt-sha256 must all be supplied exactly.");
+    }
+    if (options.execute && options.auth !== "npm-login") throw new Error("Original candidate finalization/promotion requires --auth npm-login.");
   }
   if (!/^\d+\.\d+\.\d+$/.test(target)) {
     throw new Error("Invalid stable version: " + target);
@@ -217,15 +240,15 @@ function fetchAndVerifyRemoteMain(expectedHead) {
   }
 }
 
-function readAppVersion() {
-  const contents = readFileSync(path.join(repoRoot, APP_VERSION_SOURCE), "utf8");
+function readAppVersion(source = null) {
+  const contents = readSource(APP_VERSION_SOURCE, source);
   const match = APP_VERSION_PATTERN.exec(contents);
   if (!match) throw new Error("Could not read SCOUT_APP_VERSION from " + APP_VERSION_SOURCE);
   return match[1];
 }
 
-function lockfileWorkspaceVersion(relativePath) {
-  const contents = readFileSync(path.join(repoRoot, LOCKFILE_SOURCE), "utf8");
+function lockfileWorkspaceVersion(relativePath, source = null) {
+  const contents = readSource(LOCKFILE_SOURCE, source);
   const marker = `    "${relativePath}": {`;
   const start = contents.indexOf(marker);
   if (start < 0) throw new Error(`Could not find ${relativePath} in ${LOCKFILE_SOURCE}`);
@@ -236,25 +259,25 @@ function lockfileWorkspaceVersion(relativePath) {
   return version;
 }
 
-function verifyReleaseVersion(version) {
+function verifyReleaseVersion(version, source = null) {
   const drift = [];
   for (const relativeDir of VERSION_MANIFESTS) {
-    const found = packageVersion(relativeDir);
+    const found = packageVersion(relativeDir, source);
     if (found !== version) drift.push(relativeDir + "=" + found);
   }
-  const appVersion = readAppVersion();
+  const appVersion = readAppVersion(source);
   if (appVersion !== version) drift.push(APP_VERSION_SOURCE + "=" + appVersion);
-  const docsVersion = readJson(DOCS_VERSION_SOURCE).version;
+  const docsVersion = readJson(DOCS_VERSION_SOURCE, source).version;
   if (docsVersion !== version) drift.push(DOCS_VERSION_SOURCE + "=" + docsVersion);
   for (const relativeDir of VERSION_MANIFESTS.filter((entry) => entry !== ".")) {
-    const lockVersion = lockfileWorkspaceVersion(relativeDir);
+    const lockVersion = lockfileWorkspaceVersion(relativeDir, source);
     if (lockVersion !== version) drift.push(`${LOCKFILE_SOURCE}:${relativeDir}=${lockVersion}`);
   }
   if (drift.length > 0) {
     throw new Error("Reviewed release sources are not synced to " + version + ": " + drift.join(", "));
   }
   for (const pkg of PUBLIC_PACKAGES) {
-    const manifest = readJson(pkg.dir + "/package.json");
+    const manifest = readJson(pkg.dir + "/package.json", source);
     if (manifest.name !== pkg.name || manifest.version !== version) {
       throw new Error(
         "Published package identity mismatch in "
@@ -264,14 +287,14 @@ function verifyReleaseVersion(version) {
   }
 }
 
-function printVersionTable(version) {
+function printVersionTable(version, source = null) {
   console.log("Release source verification:");
   for (const relativeDir of VERSION_MANIFESTS) {
     const label = relativeDir === "." ? "root package.json" : relativeDir + "/package.json";
-    console.log("  " + label + ": " + packageVersion(relativeDir));
+    console.log("  " + label + ": " + packageVersion(relativeDir, source));
   }
-  console.log("  " + APP_VERSION_SOURCE + ": " + readAppVersion());
-  console.log("  " + DOCS_VERSION_SOURCE + ": " + readJson(DOCS_VERSION_SOURCE).version);
+  console.log("  " + APP_VERSION_SOURCE + ": " + readAppVersion(source));
+  console.log("  " + DOCS_VERSION_SOURCE + ": " + readJson(DOCS_VERSION_SOURCE, source).version);
   console.log(`  ${LOCKFILE_SOURCE}: all workspace versions ${version}`);
   console.log("\nPublished package set:");
   for (const pkg of PUBLIC_PACKAGES) console.log("  " + pkg.name + "@" + version);
@@ -283,6 +306,15 @@ function printPlan(version, options) {
     console.log(`\nLocal ${options.phase} steps:`);
     console.log("  DRY require clean current public main, exact reviewed version/source/tag and retained signed candidates");
     console.log("  DRY local " + options.auth + " authentication; no OIDC provenance");
+    if (options.source) {
+      console.log(`  DRY original candidate source ${options.source}; newer tooling HEAD never replaces artifact identity`);
+      console.log("  DRY verify original tag, ancestry, receipt and candidate-marker digests, tarball bytes and complete registry pair");
+      console.log("  DRY no build, tag creation or npm upload; partial pair requires separate candidate-only retained recovery");
+      console.log(options.phase === "candidate"
+        ? "  DRY finalize original candidate-receipt.json; prerelease --latest=false; both Latest channels held"
+        : "  DRY verify original public candidate-receipt.json, explicitly promote exact complete pair, finalize --latest=false");
+      return;
+    }
     if (options.phase === "candidate") {
       console.log("  DRY create/verify exact public version tag; ship-npm.sh --prepare");
       console.log("  DRY ship-npm.sh --publish-candidate; --verify-candidate");
@@ -540,10 +572,59 @@ function ensureCandidateRelease(tag, options) {
   return release;
 }
 
+function finalizeOriginalCandidate(version, options, toolingHead) {
+  const source = options.source;
+  const tag = "v" + version;
+  if (process.env.SCOUT_NPM_RELEASE_STATE_DIR) throw new Error("Original candidate requires the Git-common-directory bundle; overrides refused.");
+  const ancestry = spawnCapture("git", ["merge-base", "--is-ancestor", source, toolingHead]);
+  if (ancestry.status !== 0) throw new Error("Original candidate source must be an ancestor of reviewed tooling HEAD.");
+  const requireOriginalTag = () => {
+    const tags = assertMatchingTagState(tag, source);
+    if (tags.local !== source || tags.remote !== source) throw new Error("Original candidate requires both original local and remote tags; missing tags are not recreated.");
+  };
+  requireOriginalTag();
+  const receiptPath = npmReleaseReceiptPath(version, source);
+  const hash = bytes => createHash("sha256").update(bytes).digest("hex");
+  if (hash(readFileSync(receiptPath)) !== options.receiptSha256) throw new Error("Original integrity receipt SHA-256 mismatch.");
+  const markerPath = verifyLocalCandidateReceipt(receiptPath, version, source);
+  if (hash(readFileSync(markerPath)) !== options.candidateReceiptSha256) throw new Error("Original candidate receipt SHA-256 mismatch.");
+  const retainedArgs = ["scripts/recover-local-npm-release.mjs", "--version", version, "--source", source,
+    "--receipt-sha256", options.receiptSha256, "--candidate-receipt-sha256", options.candidateReceiptSha256,
+    "--phase", options.phase];
+  if (options.phase === "candidate") retainedArgs.push("--require-complete");
+  // Read-only full retained/public byte verification before any GitHub or npm mutation.
+  run("node", retainedArgs);
+  const release = inspectGithubRelease(tag);
+  if (options.phase === "candidate") {
+    if (release && (release.isDraft || !release.isPrerelease)) throw new Error("Candidate cannot relabel a draft or stable release.");
+    if (release?.assets?.some(asset => asset.name === "candidate-receipt.json")) ensureGithubReceiptAsset(tag, markerPath, "candidate-receipt.json", false);
+  } else {
+    if (!release || release.isDraft) throw new Error("Original candidate release is missing or draft.");
+    ensureGithubReceiptAsset(tag, markerPath, "candidate-receipt.json", false);
+  }
+  fetchAndVerifyRemoteMain(toolingHead);
+  assertCleanWorktree();
+  requireOriginalTag();
+  if (options.phase === "candidate") {
+    ensureCandidateRelease(tag, options);
+    ensureGithubReceiptAsset(tag, markerPath, "candidate-receipt.json");
+  } else {
+    run("node", [...retainedArgs, "--execute", "--yes", "--auth", "npm-login"]);
+    ensureGithubRelease(tag, options);
+    ensureGithubReceiptAsset(tag, receiptPath);
+  }
+  run("node", retainedArgs);
+  requireOriginalTag();
+  fetchAndVerifyRemoteMain(toolingHead);
+  assertCleanWorktree();
+  if (hash(readFileSync(receiptPath)) !== options.receiptSha256 || hash(readFileSync(markerPath)) !== options.candidateReceiptSha256) throw new Error("Original candidate receipts changed during finalization.");
+  console.log(`Scout ${tag} ${options.phase} finalized from original source ${source}; reviewed tooling ${toolingHead}.`);
+}
+
 function main() {
   const { version, options } = parseArgs(process.argv.slice(2));
-  verifyReleaseVersion(version);
-  printVersionTable(version);
+  verifyReleaseVersion(version, options.source);
+  printVersionTable(version, options.source);
   printPlan(version, options);
 
   if (!options.execute) {
@@ -565,6 +646,10 @@ function main() {
   const head = currentHead();
   fetchAndVerifyRemoteMain(head);
   assertCleanWorktree();
+  if (options.source) {
+    finalizeOriginalCandidate(version, options, head);
+    return;
+  }
 
   const tag = "v" + version;
   assertMatchingTagState(tag, head);
