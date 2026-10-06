@@ -26,9 +26,12 @@ scout setup
 scout doctor
 ```
 
-On Linux, `setup` initializes Scout but does not install a system service. Keep
-the broker running in a separate supervised process, then run `doctor` from
-another shell:
+On Linux, `setup` saves configuration but does not install a system service.
+On a fresh machine it exits nonzero and reports that the broker is not ready.
+The default is the foreground adapter: no `OPENSCOUT_SERVICE_ADAPTER` override
+is needed, and the bundled macOS `scoutd` is never executed on Linux. Keep the
+broker running in a separate supervised process, then rerun setup and doctor
+from another shell:
 
 ```bash
 scout setup
@@ -36,13 +39,17 @@ openscout-runtime broker
 ```
 
 ```bash
+scout setup
 scout doctor
 ```
 
 Installation is successful when `scout --version` prints a version and
 `scout doctor` reports no blocking setup error. `setup` owns the supported
 machine bootstrap. On Linux, the documented foreground broker is the supported
-lifecycle boundary; use your normal process manager to keep it alive.
+lifecycle boundary; use your normal process manager to keep it alive. Run it
+as your user with Bun on PATH. A healthy externally managed broker makes setup
+succeed; doctor marks the native supervisor as not applicable. Verify boot
+persistence separately through your process manager.
 
 ## Verify identity and routing
 
