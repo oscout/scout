@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="50" height="24" viewBox="0 0 50 24" role="img" aria-label="pi">
+<style>
+  .bg { fill: #f6f8fa; stroke: #d0d7de; }
+  .fg { fill: #1f2328; color: #1f2328; }
+  @media (prefers-color-scheme: dark) {
+    .bg { fill: #161b22; stroke: #30363d; }
+    .fg { fill: #e6edf3; color: #e6edf3; }
+  }
+</style>
+<rect class="bg" x="0.5" y="0.5" width="49" height="23" rx="5"/>
+<g class="fg"><svg x="8" y="5" width="14" height="14" viewBox="0 0 800 800"  ><rect width="800" height="800" rx="120" fill="#09090b"/>
+  <path fill="#fff" fill-rule="evenodd" d="M165.29 165.29H517.36V400H400V517.36H282.65V634.72H165.29ZM282.65 282.65V400H400V282.65Z"/>
+  <path fill="#fff" d="M517.36 400H634.72V634.72H517.36Z"/></svg></g>
+<text class="fg" x="28" y="12" dominant-baseline="central" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="11">pi</text>
+</svg>

@@ -12,6 +12,7 @@ tool.
 | `readme-hero.svg` / `readme-hero.png` | Repository README header |
 | `social-preview.svg` / `social-preview.png` | GitHub repository social preview |
 | `brand-tokens.json` | Shared colors and geometry values |
+| `agents/*.svg` | Supported-agent pills in the README; regenerate with `node .github/assets/agents/generate.mjs` |
 
 ## Render PNGs
 
