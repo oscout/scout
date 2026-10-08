@@ -7,7 +7,7 @@ OpenScout connects to Grok in **three complementary ways**. This page is the map
 | Path | What it is | When to use it |
 | --- | --- | --- |
 | **Hosted MCP connector** | Grok Bot → `https://mcp.oscout.net` → your online bridge → local broker | Talking to Scout **from** Grok Bot over the internet |
-| **Local host package** ([grok-scout](https://github.com/arach/grok-scout)) | Installer that writes `scout` into `~/.cursor/mcp.json` so the host runs `scout mcp` locally | Cursor using a Grok model on the Scout machine |
+| **Local host package** ([grok-scout](https://github.com/oscout/grok-scout)) | Installer that writes `scout` into `~/.cursor/mcp.json` so the host runs `scout mcp` locally | Cursor using a Grok model on the Scout machine |
 | **Execution harness** (`--harness grok`) | Scout starts a Grok CLI / ACP session as a worker | Handing work **to** Grok from Scout, Claude, Codex, etc. |
 
 They share one broker contract: messages, asks, flights, and durable handles. They are not substitutes for each other.
@@ -89,12 +89,12 @@ When Cursor hosting Grok agents runs on the **same machine** as Scout, you can p
 
 | | |
 | --- | --- |
-| Repository | [github.com/arach/grok-scout](https://github.com/arach/grok-scout) |
-| Package page | [arach.github.io/grok-scout](https://arach.github.io/grok-scout/) |
+| Repository | [github.com/oscout/grok-scout](https://github.com/oscout/grok-scout) |
+| Package page | [oscout.github.io/grok-scout](https://oscout.github.io/grok-scout/) |
 | What it installs | A `scout` entry in `~/.cursor/mcp.json` (or project `.cursor/mcp.json`) that launches `scout mcp` |
 
 ```bash
-git clone https://github.com/arach/grok-scout
+git clone https://github.com/oscout/grok-scout
 cd grok-scout
 bun run install:global   # or: bun run install:project
 scout doctor
@@ -145,4 +145,4 @@ Prefer project-path + optional harness over guessing names like `claude.main`. F
 - [Quickstart](./quickstart.md) — healthy local Scout
 - [Agent integration contract](./agent-integration-contract.md) — plugging runtimes into Scout
 - [Learn 11 · The broker contract](./learn-11-the-broker-contract.md) — records and MCP surface
-- [grok-scout](https://github.com/arach/grok-scout) · [cursor-scout](https://github.com/oscout/cursor-scout) — local MCP packaging twins
+- [grok-scout](https://github.com/oscout/grok-scout) · [cursor-scout](https://github.com/oscout/cursor-scout) — local MCP packaging twins

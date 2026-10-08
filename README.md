@@ -1,8 +1,14 @@
 # Scout — coordinate Claude Code, Codex, and other AI agents
 
+<!-- scout-illustration:start -->
 <p align="center">
-  <img src=".github/assets/readme-hero.svg" alt="Scout — your personal agent cloud" width="100%" />
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset=".github/assets/scout-illustration-dark.svg" />
+    <img src=".github/assets/scout-illustration-light.svg" alt="Scout connects distinct coding-agent surfaces through a shared local broker." width="100%" />
+  </picture>
 </p>
+<p align="center"><em>One local broker connects work across your coding-agent tools.</em></p>
+<!-- scout-illustration:end -->
 
 <p align="center">
   <strong>Your personal agent cloud.</strong><br />
@@ -96,35 +102,37 @@ first request.
 ## Choose your agent tool
 
 <p>
-  <a href="https://github.com/arach/claude-scout"><img src=".github/assets/agents/claude-code.svg" alt="Claude Code" height="24"></a>
-  <a href="https://github.com/arach/codex-scout"><img src=".github/assets/agents/codex.svg" alt="Codex" height="24"></a>
-  <a href="https://github.com/arach/cursor-scout"><img src=".github/assets/agents/cursor.svg" alt="Cursor" height="24"></a>
+  <a href="https://github.com/oscout/claude-scout"><img src=".github/assets/agents/claude-code.svg" alt="Claude Code" height="24"></a>
+  <a href="https://github.com/oscout/codex-scout"><img src=".github/assets/agents/codex.svg" alt="Codex" height="24"></a>
+  <a href="https://github.com/oscout/cursor-scout"><img src=".github/assets/agents/cursor.svg" alt="Cursor" height="24"></a>
   <a href="#choose-your-agent-tool"><img src=".github/assets/agents/grok.svg" alt="Grok CLI" height="24"></a>
   <a href="https://openscout.app/opencode"><img src=".github/assets/agents/opencode.svg" alt="OpenCode" height="24"></a>
   <a href="https://openscout.app/kimi"><img src=".github/assets/agents/kimi.svg" alt="Kimi Code" height="24"></a>
   <a href="https://openscout.app/devin"><img src=".github/assets/agents/devin.svg" alt="Devin" height="24"></a>
-  <a href="https://github.com/arach/pi-scout"><img src=".github/assets/agents/pi.svg" alt="pi" height="24"></a>
-  <a href="https://github.com/arach/hermes-scout"><img src=".github/assets/agents/hermes.svg" alt="Hermes Agent" height="24"></a>
-  <a href="https://github.com/ogulcancelik/herdr"><img src=".github/assets/agents/herdr.svg" alt="Herdr" height="24"></a>
+  <a href="https://github.com/oscout/pi-scout"><img src=".github/assets/agents/pi.svg" alt="pi" height="24"></a>
+  <a href="https://github.com/oscout/hermes-scout"><img src=".github/assets/agents/hermes.svg" alt="Hermes Agent" height="24"></a>
+  <a href="https://github.com/oscout/herdr-scout"><img src=".github/assets/agents/herdr.svg" alt="Herdr" height="24"></a>
   <a href="#mcp-server"><img src=".github/assets/agents/mcp.svg" alt="Any MCP client" height="24"></a>
 </p>
 
 A **harness** runs the coding agent. An **integration** connects a tool to Scout;
 some integrations expose MCP tools or terminal state without being execution
-harnesses. Use the setup link for the tool you already work in.
+harnesses. Use the setup link for the tool you already work in; every
+integration repository lives in the [oscout organization](https://github.com/oscout)
+for installation and usage.
 
 | Tool | What it is | How it connects to Scout |
 | --- | --- | --- |
-| **Claude Code** | Anthropic's coding agent for working in a repository. | Route review or implementation tasks with `--harness claude`; the [Claude Code plugin](https://github.com/arach/claude-scout) adds Scout commands and channel integration. |
-| **OpenAI Codex** | OpenAI's coding-agent tooling, including a CLI. | Route tasks with `--harness codex`; the [Codex plugin](https://github.com/arach/codex-scout) supplies MCP tools and coordination guidance. |
-| **Cursor** | An AI code editor with agent tooling. | The [Cursor integration](https://github.com/arach/cursor-scout) connects the editor to `scout mcp`. Scout's catalog also lists a `cursor` (Cursor CLI) execution route, which needs that CLI installed. |
-| **Grok CLI** | xAI's terminal coding agent (Grok Build), binary `grok`. | Route tasks with `--harness grok-acp`, which drives the CLI over the Agent Client Protocol; a hidden `grok` route also exists. Grok Bot, xAI's hosted agent product, can call Scout through a separate [hosted MCP connector](#choose-your-agent-tool), currently an operator-assisted pilot; it is not a launchable worker. |
+| **Claude Code** | Anthropic's coding agent for working in a repository. | Route review or implementation tasks with `--harness claude`; the [Claude Code plugin](https://github.com/oscout/claude-scout) adds Scout commands and channel integration. |
+| **OpenAI Codex** | OpenAI's coding-agent tooling, including a CLI. | Route tasks with `--harness codex`; the [Codex plugin](https://github.com/oscout/codex-scout) supplies MCP tools and coordination guidance. |
+| **Cursor** | An AI code editor with agent tooling. | The [Cursor integration](https://github.com/oscout/cursor-scout) connects the editor to `scout mcp`. Scout's catalog also lists a `cursor` (Cursor CLI) execution route, which needs that CLI installed. |
+| **Grok CLI** | xAI's terminal coding agent (Grok Build), binary `grok`. | Route tasks with `--harness grok-acp`, which drives the CLI over the Agent Client Protocol; a hidden `grok` route also exists. Grok Bot, xAI's hosted agent product, can call Scout through a separate [hosted MCP connector](https://github.com/oscout/grok-scout), currently an operator-assisted pilot; it is not a launchable worker. |
 | **OpenCode** | An open-source coding agent with configurable model providers. | Route tasks with `--harness opencode`. Its models depend on provider configuration; a Grok model inside OpenCode is still an OpenCode session. See the [OpenCode guide](https://openscout.app/opencode). |
 | **Kimi Code** | Kimi's terminal coding agent. | Route tasks with `--harness kimi`; see the [Kimi guide](https://openscout.app/kimi) for setup. |
 | **Devin** | Coding-agent tooling with its own execution environment. | Scout's catalog includes a Devin route. Follow the [Devin integration guide](https://openscout.app/devin) for its prerequisites and current limits; catalog presence alone does not establish account access. |
-| **pi** | An extensible terminal coding-agent tool. | The [pi extension](https://github.com/arach/pi-scout) brings Scout messages, requests, and agent discovery into pi sessions; Scout also lists a `pi` execution route. |
-| **Hermes Agent** | An agent host with its own sessions and tools. | The [Hermes plugin](https://github.com/arach/hermes-scout) bridges Scout MCP tools into those sessions. Hermes is an MCP host, not a Scout dispatch harness. |
-| **Herdr** | A terminal host for working with agent panes. | [Herdr](https://github.com/ogulcancelik/herdr) exposes terminal and agent-state surfaces around supported sessions. It is not a model or dispatch harness. |
+| **pi** | An extensible terminal coding-agent tool. | The [pi extension](https://github.com/oscout/pi-scout) brings Scout messages, requests, and agent discovery into pi sessions; Scout also lists a `pi` execution route. |
+| **Hermes Agent** | An agent host with its own sessions and tools. | The [Hermes plugin](https://github.com/oscout/hermes-scout) bridges Scout MCP tools into those sessions. Hermes is an MCP host, not a Scout dispatch harness. |
+| **Herdr** | A terminal host for working with agent panes. | [Herdr](https://github.com/ogulcancelik/herdr) exposes terminal and agent-state surfaces around supported sessions. It is not a model or dispatch harness. The [herdr plugin](https://github.com/oscout/herdr-scout) adds Scout ask and feed actions to its command palette. |
 | **Other MCP clients** | Applications that can connect to a local stdio MCP server. | Configure `scout mcp` using the [MCP setup below](#mcp-server). Calling Scout tools does not automatically make the client a launchable worker. |
 
 Run `scout runtimes --json` for the runtime and model combinations Scout knows

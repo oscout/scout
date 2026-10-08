@@ -11,15 +11,15 @@ making the integration surface discoverable.
 
 | Host | Repository | Page | Purpose |
 | --- | --- | --- | --- |
-| Grok Bot (hosted) | [Grok Scout](https://github.com/arach/grok-scout) | [Grok Bot setup](https://openscout.app/grokbot) | Hosted MCP and OAuth through an online provisioned bridge. Marketplace submission pending review. |
+| Grok Bot (hosted) | [Grok Scout](https://github.com/oscout/grok-scout) | [Grok Bot setup](https://openscout.app/grokbot) | Hosted MCP and OAuth through an online provisioned bridge. Marketplace submission pending review. |
 | Muse (hosted) | Remote client in this repository | [Muse setup](https://openscout.app/muse) | Python CLI calls the hosted MCP gateway using an operator-approved OAuth grant. Requires an online Scout bridge; no Muse execution harness. |
-| Grok | [Grok Scout](https://github.com/arach/grok-scout) | [Grok guide](https://openscout.app/grok) · [Full connection map](./scout-for-grok.md) | Scout launches the xAI Grok CLI over ACP (`grok-acp`; `grok` is an alias), and the Grok CLI can call `scout mcp` locally. Grok Bot, the hosted connector, is a separate row; see /grokbot. |
+| Grok | [Grok Scout](https://github.com/oscout/grok-scout) | [Grok guide](https://openscout.app/grok) · [Full connection map](./scout-for-grok.md) | Scout launches the xAI Grok CLI over ACP (`grok-acp`; `grok` is an alias), and the Grok CLI can call `scout mcp` locally. Grok Bot, the hosted connector, is a separate row; see /grokbot. |
 | Slack | `packages/slack` (private source; not in the public `oscout/scout` mirror) | [Scout for Slack](https://openscout.app/slack) | Socket Mode bridge from mentions, DMs, threads, and files into durable Scout coding work. Private preview until the package is published. |
-| pi | [`arach/pi-scout`](https://github.com/arach/pi-scout) | [`arach.github.io/pi-scout`](https://arach.github.io/pi-scout/) | pi extension for Scout `send`, `ask`, `who`, and broker-backed coordination from pi sessions. |
+| pi | [`oscout/pi-scout`](https://github.com/oscout/pi-scout) | [`oscout.github.io/pi-scout`](https://oscout.github.io/pi-scout/) | pi extension for Scout `send`, `ask`, `who`, and broker-backed coordination from pi sessions. |
 | Claude Code | [`oscout/claude-scout`](https://github.com/oscout/claude-scout) | [`oscout.github.io/claude-scout`](https://oscout.github.io/claude-scout/) | Claude Code plugin with `/scout:*` commands and Scout channel integration. |
 | Codex | [`oscout/codex-scout`](https://github.com/oscout/codex-scout) | [`oscout.github.io/codex-scout`](https://oscout.github.io/codex-scout/) | Codex plugin with Scout MCP tools and coordination guidance. |
 | Cursor | [`oscout/cursor-scout`](https://github.com/oscout/cursor-scout) | [`oscout.github.io/cursor-scout`](https://oscout.github.io/cursor-scout/) | Cursor MCP configuration and installer that points Cursor at `scout mcp`. |
-| Hermes Agent | [`arach/hermes-scout`](https://github.com/arach/hermes-scout) | [`github.com/arach/hermes-scout`](https://github.com/arach/hermes-scout) | Hermes plugin that bridges Scout MCP tools into Hermes sessions. |
+| Hermes Agent | [`oscout/hermes-scout`](https://github.com/oscout/hermes-scout) | [`github.com/oscout/hermes-scout`](https://github.com/oscout/hermes-scout) | Hermes plugin that bridges Scout MCP tools into Hermes sessions. |
 | Herdr | [`ogulcancelik/herdr`](https://github.com/ogulcancelik/herdr) | [`herdr.dev/docs`](https://herdr.dev/docs/) | Terminal host and agent-state surface for observing and controlling supported agent panes around Scout-compatible sessions. |
 
 ## Compatibility Model
