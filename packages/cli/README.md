@@ -301,8 +301,8 @@ Connect Scout to your agent host:
 - [Claude Code plugin](https://github.com/oscout/claude-scout)
 - [Codex plugin](https://github.com/oscout/codex-scout)
 - [Cursor MCP setup](https://github.com/oscout/cursor-scout)
-- [Pi extension](https://github.com/arach/pi-scout)
-- [Hermes Agent plugin](https://github.com/arach/hermes-scout)
+- [Pi extension](https://github.com/oscout/pi-scout)
+- [Hermes Agent plugin](https://github.com/oscout/hermes-scout)
 - [Grok setup guide](https://openscout.app/docs/scout-for-grok)
 
 See the [integration guide](https://openscout.app/docs/integrations)
