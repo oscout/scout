@@ -24,7 +24,7 @@ function assertReleaseIdentity(repository, releaseVersion, releaseSha, authority
   if (repository !== "https://github.com/oscout/scout") {
     fail(`unsupported repository ${repository || "(missing)"}`);
   }
-  if (!/^\d+\.\d+\.\d+$/.test(releaseVersion)) {
+  if (!/^\d+\.\d+\.\d+(?:-dev\.(?:0|[1-9]\d*))?$/.test(releaseVersion)) {
     fail(`invalid release version ${releaseVersion || "(missing)"}`);
   }
   if (!/^[0-9a-f]{40,64}$/.test(releaseSha)) {
@@ -47,7 +47,7 @@ function parsePackageTriples(entries) {
     if (!name.startsWith("@openscout/") || names.has(name)) {
       fail(`invalid or duplicate package name ${name || "(missing)"}`);
     }
-    if (!/^\d+\.\d+\.\d+$/.test(version)) {
+    if (!/^\d+\.\d+\.\d+(?:-dev\.(?:0|[1-9]\d*))?$/.test(version)) {
       fail(`invalid package version for ${name}: ${version || "(missing)"}`);
     }
     if (!existsSync(tarballPath) || !statSync(tarballPath).isFile()) {
@@ -69,7 +69,7 @@ function parsePackagePairs(entries) {
     if (!name.startsWith("@openscout/") || names.has(name)) {
       fail(`invalid or duplicate expected package name ${name || "(missing)"}`);
     }
-    if (!/^\d+\.\d+\.\d+$/.test(version)) {
+    if (!/^\d+\.\d+\.\d+(?:-dev\.(?:0|[1-9]\d*))?$/.test(version)) {
       fail(`invalid expected package version for ${name}: ${version || "(missing)"}`);
     }
     names.add(name);

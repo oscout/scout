@@ -381,6 +381,7 @@ function createPublishFixture({
     '    esac',
     '    exit 0',
     '  fi',
+    '  if [[ "$field" == "dist-tags.dev" ]]; then key="scout"; [[ "$identity" != "@openscout/protocol" ]] || key="protocol"; cat "$state_dir/${key}-dev" 2>/dev/null || true; exit 0; fi',
     '  if [[ "$identity" == "@openscout/protocol" && "$field" == "dist-tags.latest" ]]; then cat "$state_dir/protocol-latest"; exit 0; fi',
     '  if [[ "$identity" == "@openscout/scout" && "$field" == "dist-tags.latest" ]]; then cat "$state_dir/scout-latest"; exit 0; fi',
     `  if [[ "$field" == "dist-tags.${stagingTag}" ]]; then echo "\${FIXTURE_STAGING_VALUE:-${version}}"; exit 0; fi`,
@@ -404,6 +405,8 @@ function createPublishFixture({
     '  if [[ "$publish_tag" == "latest" ]]; then echo ' +
       version +
       ' > "$state_dir/${key}-latest"; fi',
+    '  if [[ "$publish_tag" == "dev" ]]; then echo ' + version + ' > "$state_dir/${key}-dev"; fi',
+    '  if [[ "$publish_tag" == "dev" && "${FIXTURE_CHANGE_LATEST:-}" == "1" ]]; then echo "0.3.3" > "$state_dir/${key}-latest"; fi',
     '  echo "publish $key tag=$publish_tag" >> "$state_dir/mutations.log"',
     '  exit 0',
     'fi',
@@ -1806,4 +1809,86 @@ test("retained identity cannot be supplied incompletely or used for the default 
     assert.notEqual(result.status, 0);
     assert.match(result.stderr, /must all be supplied|only supported for explicit/);
   }
+});
+
+function devEnv(fixture) {
+  return { ...registryEnv(fixture), GITHUB_ACTIONS: "true", NPM_TAG: "dev",
+    GITHUB_REPOSITORY: "oscout/scout",
+    GITHUB_WORKFLOW_REF: "oscout/scout/.github/workflows/release-package-npm.yml@refs/heads/main",
+    NPM_TOKEN: "", NODE_AUTH_TOKEN: "", NPM_DIST_TAG_VERIFY_ATTEMPTS: "1", NPM_DIST_TAG_VERIFY_DELAY_SECONDS: "0" };
+}
+
+test("dev OIDC publishes both prerelease artifacts directly to dev and leaves latest unchanged", () => {
+  const { fixture, stateDir } = createPublishFixture({ version: "0.3.6-dev.1", authority: "github-oidc", protocolLatest: "0.3.2", scoutLatest: "0.3.2" });
+  try {
+    for (const mode of ["--prepare", "--publish-prepared", "--verify-published", "--publish-prepared"]) {
+      const r = spawnSync("bash", ["scripts/ship-npm.sh", mode], { cwd: fixture, encoding: "utf8", env: devEnv(fixture) });
+      assert.equal(r.status, 0, r.stderr);
+    }
+    assert.equal(readFileSync(join(stateDir, "mutations.log"), "utf8"), "publish protocol tag=dev\npublish scout tag=dev\n");
+    for (const key of ["protocol", "scout"]) {
+      assert.equal(readFileSync(join(stateDir, `${key}-latest`), "utf8"), "0.3.2");
+      assert.equal(readFileSync(join(stateDir, `${key}-dev`), "utf8").trim(), "0.3.6-dev.1");
+    }
+  } finally { rmSync(fixture, { recursive: true, force: true }); }
+});
+
+test("dev OIDC recovery resumes only exact protocol-first dev prefix", () => {
+  const { fixture, stateDir } = createPublishFixture({ version: "0.3.6-dev.2", authority: "github-oidc" });
+  try {
+    const env = devEnv(fixture);
+    let r = spawnSync("bash", ["scripts/ship-npm.sh", "--publish-prepared"], { cwd: fixture, encoding: "utf8", env: { ...env, FIXTURE_SCOUT_PUBLISH_FAILURE: "1" } });
+    assert.notEqual(r.status, 0);
+    r = spawnSync("bash", ["scripts/ship-npm.sh", "--publish-prepared"], { cwd: fixture, encoding: "utf8", env });
+    assert.equal(r.status, 0, r.stderr);
+    assert.equal(readFileSync(join(stateDir, "mutations.log"), "utf8"), "publish protocol tag=dev\npublish scout tag=dev\n");
+  } finally { rmSync(fixture, { recursive: true, force: true }); }
+});
+
+for (const [label, version, overrides, priorDev] of [
+  ["stable version", "0.3.6", {}, ""],
+  ["prerelease to latest", "0.3.6-dev.1", { NPM_TAG: "latest" }, ""],
+  ["unknown channel", "0.3.6-dev.1", { NPM_TAG: "beta" }, ""],
+  ["local dev", "0.3.6-dev.1", { GITHUB_ACTIONS: "false" }, ""],
+  ["dev rollback", "0.3.6-dev.1", {}, "0.3.6-dev.2"],
+  ["historical prerelease", "0.2.90-dev.1", {}, ""],
+]) {
+  test(`dev fails closed: ${label}`, () => {
+    const { fixture, stateDir } = createPublishFixture({ version, authority: "github-oidc" });
+    try {
+      for (const key of ["protocol", "scout"]) writeFileSync(join(stateDir, `${key}-dev`), priorDev);
+      const r = spawnSync("bash", ["scripts/ship-npm.sh", "--publish-prepared"], { cwd: fixture, encoding: "utf8", env: { ...devEnv(fixture), ...overrides } });
+      assert.notEqual(r.status, 0);
+      assert.equal(readFileSync(join(stateDir, "mutations.log"), "utf8"), "");
+    } finally { rmSync(fixture, { recursive: true, force: true }); }
+  });
+}
+
+test("workflow release target guard strictly pairs versions and channels", () => {
+  const workflow = readFileSync(new URL("../.github/workflows/release-package-npm.yml", import.meta.url), "utf8");
+  const script = workflow.split("        run: |\n")[1].split("\n      - uses:")[0].split("\n").map(line => line.replace(/^          /, "")).join("\n");
+  const output = join(mkdtempSync(join(tmpdir(), "scout-dev-guard.")), "output");
+  try {
+    for (const [tag, channel, valid] of [
+      ["v0.3.6", "latest", true], ["v0.3.6-dev.1", "dev", true], ["v0.3.6-dev.0", "dev", true],
+      ["v0.3.6-dev.1", "latest", false], ["v0.3.6", "dev", false], ["v0.3.6-beta.1", "dev", false],
+      ["v0.3.6-dev.01", "dev", false], ["v0.3.6-dev.1", "beta", false], ["v0.2.90-dev.1", "dev", false],
+    ]) {
+      const r = spawnSync("bash", ["-c", script], { encoding: "utf8", env: { ...process.env, INPUT_TAG: tag, INPUT_NPM_TAG: channel, INPUT_RECOVERY_RUN_ID: "", GITHUB_OUTPUT: output } });
+      assert.equal(r.status === 0, valid, `${tag}/${channel}: ${r.stderr}`);
+    }
+    assert.match(workflow, /environment: Production/);
+    assert.match(workflow, /release_sha.*DISPATCH_SHA/);
+    assert.match(workflow, /merge-base --is-ancestor HEAD FETCH_HEAD/);
+  } finally { rmSync(dirname(output), { recursive: true, force: true }); }
+});
+
+test("dev verification fails if stable latest changes during publication", () => {
+  const { fixture, stateDir } = createPublishFixture({ version: "0.3.6-dev.1", authority: "github-oidc", protocolLatest: "0.3.2", scoutLatest: "0.3.2" });
+  try {
+    const r = spawnSync("bash", ["scripts/ship-npm.sh", "--publish-prepared"], { cwd: fixture, encoding: "utf8", env: { ...devEnv(fixture), FIXTURE_CHANGE_LATEST: "1" } });
+    assert.notEqual(r.status, 0);
+    assert.match(r.stderr, /latest changed during dev publication/);
+    assert.doesNotMatch(readFileSync(join(stateDir, "mutations.log"), "utf8"), /promote|tag=latest/);
+  } finally { rmSync(fixture, { recursive: true, force: true }); }
 });

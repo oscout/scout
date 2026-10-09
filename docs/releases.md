@@ -458,3 +458,97 @@ dist-tags, package repository metadata, and public source commit agree. Install
 the packed CLI in an empty directory and exercise `scout --version`, setup,
 broker health, and the baseline web server. A partial or mismatched publication
 is not promoted as a successful release.
+
+## Hosted dev channel (dogfood prereleases)
+
+`release-package-npm.yml` also accepts `npm_tag=dev`, **only** with a reviewed
+`vX.Y.Z-dev.N` tag. `latest` still accepts only plain `vX.Y.Z`. Both public
+packages publish directly to `dev` using the same Production environment,
+signing, OIDC, canonical main/SHA/reachability, retained candidate, integrity,
+and recovery gates. No dev command updates `latest` or invokes `npm dist-tag`.
+Local stable/candidate/promotion/recovery commands remain stable-only; do not
+use `bun run ship` for a dev release. The publisher rejects dev rollback and a
+dev version not newer than stable; it checks that stable tags remain unchanged
+within each run. Protocol-first recovery uses the selected `dev` tag and the
+original failed run's exact bundle, not a rebuild.
+
+The existing `scout-release-0-3-3` through `scout-release-0-3-5` tags are **held
+local stable-number candidates**, not a dev channel. They were produced by the
+local two-phase candidate path (`--phase candidate`, with retained recovery
+where needed), deliberately stopping before promotion. In particular, the
+[v0.3.5 release record](https://github.com/oscout/scout/releases/tag/v0.3.5)
+records local-signed artifacts, a blocked first-run preservation check, and
+`latest` held at 0.3.2. Do not relabel/promote those historical candidates.
+A new dev channel does not approve their onboarding or waive that blocker.
+
+### Repeatable cut
+
+Use a clean public checkout after this workflow change has merged. Choose an
+explicit unused version: e.g. `0.3.6-dev.1` for the next base after 0.3.5,
+then `0.3.6-dev.2`. Inspect registry versions first; never reuse an accepted
+version. The existing bumper now supports this exact prerelease shape and
+numeric ordering (dev.10 > dev.9, stable > dev on the same base).
+
+```bash
+# Prepare a review branch. This bumps ALL lockstep manifests, not just the CLI.
+VERSION=0.3.6-dev.1
+bunx npm view @openscout/scout versions --json
+bunx npm view @openscout/protocol versions --json
+git switch main
+git pull --ff-only
+git switch -c "release/v${VERSION}"
+bun scripts/bump-version.mjs "$VERSION"
+bun install
+bun run check
+bun run test:unit
+NPM_TAG=dev GITHUB_ACTIONS=true bash scripts/ship-npm.sh --dry-run
+# Review the version-only diff; commit only bumper/install output.
+git add package.json apps/desktop/package.json packages/*/package.json \
+  apps/desktop/src/shared/product.ts docs.json bun.lock
+git commit -m "🔖 Prepare v${VERSION} dev release"
+git push -u origin HEAD
+gh pr create --repo oscout/scout --base main --title "🔖 Prepare v${VERSION} dev release" \
+  --body "Lockstep dogfood prerelease; publish only to dev after review."
+```
+
+After that version PR is reviewed and merged, and publication is explicitly
+approved, run the following from clean public main. The tag **must equal the
+main dispatch SHA**, not merely an older ancestor; if main moves before dispatch,
+stop and prepare a new reviewed version rather than weakening that guard.
+These are operator instructions, not an automatic publish script:
+
+```bash
+VERSION=0.3.6-dev.1
+git switch main
+git pull --ff-only
+test -z "$(git status --porcelain)"
+test "$(bun -p 'require("./packages/cli/package.json").version')" = "$VERSION"
+git tag -a "v${VERSION}" -m "Scout ${VERSION} dev"
+git push origin "refs/tags/v${VERSION}"
+gh workflow run release-package-npm.yml --repo oscout/scout --ref main \
+  -f tag="v${VERSION}" -f npm_tag=dev
+# After successful artifact + registry verification:
+bunx npm view @openscout/scout dist-tags --json
+bunx npm view @openscout/protocol dist-tags --json
+bun add -g @openscout/scout@dev
+scout --version
+```
+
+The bumper keeps workspace versions and pinned first-party dependencies in
+lockstep. Packing resolves `workspace:*` to the exact prerelease (and
+`workspace:^`/`~` to ranges including that prerelease); workspace devDependencies
+are removed, and the CLI bundles its runtime. Protocol is uploaded first, so
+any shipped first-party dependency is available before Scout becomes visible.
+
+### npm.openscout.app recommendation
+
+Use a tiny static landing on the **existing openscout.app site deployment**,
+not a registry/proxy. Show `bun add -g @openscout/scout@dev` and fetch the current
+version anonymously from `https://registry.npmjs.org/@openscout%2fscout/dev`.
+Show “No dev release yet” on 404 and “Version unavailable” on network failure;
+keep the install command visible. An optional stable link can point to npmjs.com.
+The public repository has no existing site deployment to extend, so this change
+adds no landing, DNS, domain binding, or infrastructure. The site owner can add
+that page and bind npm.openscout.app only after operator approval. A redirect
+alone to npmjs.com is simpler but cannot show the requested dev install command
+and live version together.
