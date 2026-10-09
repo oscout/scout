@@ -2,7 +2,7 @@
 // Bumper for the release version and public npm package.
 //
 // Usage:
-//   node scripts/bump-version.mjs <new-version>   # e.g. 0.2.39
+//   bun scripts/bump-version.mjs <new-version>    # e.g. 0.3.6-dev.1
 //   node scripts/bump-version.mjs patch           # 0.2.38 -> 0.2.39
 //   node scripts/bump-version.mjs minor           # 0.2.38 -> 0.3.0
 //   node scripts/bump-version.mjs major           # 0.2.38 -> 1.0.0
@@ -63,13 +63,17 @@ function bumpSemver(current, kind) {
 }
 
 function compareSemver(left, right) {
-  const leftParts = left.split(".").map(Number);
-  const rightParts = right.split(".").map(Number);
+  const leftParts = left.split("-")[0].split(".").map(Number);
+  const rightParts = right.split("-")[0].split(".").map(Number);
   for (let index = 0; index < 3; index += 1) {
     const difference = (leftParts[index] ?? 0) - (rightParts[index] ?? 0);
     if (difference !== 0) return difference;
   }
-  return 0;
+  const leftDev = left.match(/-dev\.(\d+)$/)?.[1];
+  const rightDev = right.match(/-dev\.(\d+)$/)?.[1];
+  if (leftDev === undefined) return rightDev === undefined ? 0 : 1;
+  if (rightDev === undefined) return -1;
+  return Number(leftDev) - Number(rightDev);
 }
 
 function lockfileWorkspaceVersion(contents, relativePath) {
@@ -102,7 +106,7 @@ async function main() {
     ? bumpSemver(currentVersion, arg)
     : arg;
 
-  if (!/^\d+\.\d+\.\d+$/.test(nextVersion)) {
+  if (!/^\d+\.\d+\.\d+(?:-dev\.(?:0|[1-9]\d*))?$/.test(nextVersion)) {
     console.error(`Invalid version: ${nextVersion}`);
     process.exit(1);
   }

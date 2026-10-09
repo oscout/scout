@@ -2,8 +2,8 @@
 # Build, verify, and publish the public Scout npm package set.
 #
 # GitHub OIDC publication pre-verifies both immutable candidates, then publishes
-# them directly to latest in dependency order. npm trusted publishing authorizes
-# `npm publish`, but not the separate `npm dist-tag` mutations used by the
+# them directly to the selected channel in dependency order. Trusted publishing
+# authorizes `npm publish`, but not the separate `npm dist-tag` mutations used by the
 # local authenticated two-phase path. A completed release is idempotent; a
 # partial immutable package set fails closed so attempts cannot mix candidates.
 
@@ -35,8 +35,8 @@ case "$MODE" in
     ;;
 esac
 
-# Local overrides may provide NPM_TOKEN, but the stable registry and final
-# dist-tag are intentionally not configurable for a canonical public release.
+# Local overrides may provide NPM_TOKEN. The public registry is fixed; only
+# the explicitly supported latest/dev channels may be selected.
 readonly NPM_AUTH_MODE="${SCOUT_NPM_AUTH_MODE:-token}"
 [[ -f .env.local ]] && set -a && source .env.local && set +a
 [[ -f .env ]] && set -a && source .env && set +a
@@ -65,9 +65,19 @@ fi
 
 NPM_REGISTRY_URL="https://registry.npmjs.org"
 FINAL_NPM_TAG="${NPM_TAG:-latest}"
-if [[ "$FINAL_NPM_TAG" != "latest" ]]; then
-  echo "ERROR: canonical Scout publication requires NPM_TAG=latest, got $FINAL_NPM_TAG" >&2
+if [[ "$FINAL_NPM_TAG" != "latest" && "$FINAL_NPM_TAG" != "dev" ]]; then
+  echo "ERROR: canonical Scout publication requires NPM_TAG=latest or dev, got $FINAL_NPM_TAG" >&2
   exit 1
+fi
+
+# Dev is deliberately hosted-only: local candidate/promotion/recovery stay stable.
+if [[ "$FINAL_NPM_TAG" == "dev" && "${GITHUB_ACTIONS:-}" != "true" ]]; then
+  echo "ERROR: dev publication requires the canonical GitHub OIDC workflow" >&2
+  exit 1
+fi
+VERSION_PATTERN='^[0-9]+\.[0-9]+\.[0-9]+$'
+if [[ "$FINAL_NPM_TAG" == "dev" ]]; then
+  VERSION_PATTERN='^[0-9]+\.[0-9]+\.[0-9]+-dev\.(0|[1-9][0-9]*)$'
 fi
 
 export npm_config_cache="${npm_config_cache:-${TMPDIR:-/tmp}/openscout-npm-cache}"
@@ -107,7 +117,8 @@ NPM_READ_ARGS=(--registry "$NPM_REGISTRY_URL" "--@openscout:registry=$NPM_REGIST
 PACKAGE_NAMES=()
 PACKAGE_VERSIONS=()
 PACKAGE_EXISTS=()
-PACKAGE_LATEST=()
+PACKAGE_CHANNEL=() # Selected final channel (latest or dev).
+DEV_STABLE_BASELINE=()
 PACKAGE_TARBALLS=()
 PACKAGE_INTEGRITIES=()
 release_version=""
@@ -115,8 +126,8 @@ release_version=""
 for pkg in "${PUBLISH_PACKAGES[@]}"; do
   pkg_name=$(node -p "require('./packages/$pkg/package.json').name")
   pkg_version=$(node -p "require('./packages/$pkg/package.json').version")
-  [[ "$pkg_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
-    echo "ERROR: ${pkg_name} has invalid stable version ${pkg_version}" >&2
+  [[ "$pkg_version" =~ $VERSION_PATTERN ]] || {
+    echo "ERROR: ${pkg_name} has invalid version for $FINAL_NPM_TAG: ${pkg_version}" >&2
     exit 1
   }
   if [[ -z "$release_version" ]]; then
@@ -155,7 +166,7 @@ RELEASE_LOCK_DIR="${RELEASE_STATE_DIR}.lock"
 # Local token publication is the default. Hosted OIDC remains an explicit,
 # separately verified workflow authority; neither path falls back to the other.
 if [[ "$MODE" == "publish" || "$MODE" == "prepare" || "$MODE" == "publish-prepared" || "$MODE" == "publish-candidate" || "$MODE" == "promote-prepared" ]]; then
-  if ! node -e 'const v=process.argv[1].split(".").map(Number); process.exit(v[0]===0 && (v[1]<2 || (v[1]===2 && v[2]<=90)) ? 1 : 0)' "$release_version"; then
+  if ! node -e 'const v=process.argv[1].split("-")[0].split(".").map(Number); process.exit(v[0]===0 && (v[1]<2 || (v[1]===2 && v[2]<=90)) ? 1 : 0)' "$release_version"; then
     echo "ERROR: v${release_version} is historical and unsupported; publication is disabled" >&2
     exit 1
   fi
@@ -248,11 +259,42 @@ inspect_exact_artifact() {
   fi
 }
 
-validate_latest_baseline() {
+validate_channel_baseline() {
+  if [[ "$FINAL_NPM_TAG" == "dev" ]]; then
+    local index stable previous
+    for index in "${!PUBLISH_PACKAGES[@]}"; do
+      stable=$(npm_view_field "${PACKAGE_NAMES[$index]}" "dist-tags.latest")
+      [[ "$stable" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
+        echo "ERROR: dev requires a stable latest baseline" >&2; exit 1;
+      }
+      if [[ -n "${DEV_STABLE_BASELINE[$index]:-}" && "$stable" != "${DEV_STABLE_BASELINE[$index]}" ]]; then
+        echo "ERROR: latest changed during dev publication" >&2; exit 1
+      fi
+      DEV_STABLE_BASELINE[$index]="$stable"
+      previous="${PACKAGE_CHANNEL[$index]}"
+      node -e '
+        const parse = value => value.match(/^(\d+)\.(\d+)\.(\d+)(?:-dev\.(0|[1-9]\d*))?$/)
+          ?.slice(1).map(part => part === undefined ? Infinity : Number(part));
+        const compare = (left, right) => {
+          for (let i = 0; i < 4; i++) {
+            if (left[i] > right[i]) return 1;
+            if (left[i] < right[i]) return -1;
+          }
+          return 0;
+        };
+        const [target, stable, previous] = process.argv.slice(1);
+        if (compare(parse(target), parse(stable)) <= 0) process.exit(1);
+        if (previous && (!/-dev\./.test(previous) || !parse(previous) || compare(parse(target), parse(previous)) < 0)) process.exit(1);
+      ' "$release_version" "$stable" "$previous" || {
+        echo "ERROR: dev must advance latest and cannot roll back dev" >&2; exit 1;
+      }
+    done
+    return
+  fi
   local baseline=""
   local latest
   local skewed_baseline=0
-  for latest in "${PACKAGE_LATEST[@]}"; do
+  for latest in "${PACKAGE_CHANNEL[@]}"; do
     if [[ -z "$latest" ]]; then
       echo "ERROR: an npm package has no latest dist-tag" >&2
       exit 1
@@ -261,7 +303,7 @@ validate_latest_baseline() {
       continue
     fi
     if [[ ! "$latest" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-      echo "ERROR: npm latest has invalid stable version ${latest}" >&2
+      echo "ERROR: npm latest has invalid version for $FINAL_NPM_TAG: ${latest}" >&2
       exit 1
     fi
     node -e '
@@ -282,28 +324,28 @@ validate_latest_baseline() {
       if [[ "$DIRECT_FINAL_PUBLISH" == "1" ]]; then
         skewed_baseline=1
       else
-        echo "ERROR: npm latest baseline is split across the public package set: ${PACKAGE_LATEST[*]}" >&2
+        echo "ERROR: npm latest baseline is split across the public package set: ${PACKAGE_CHANNEL[*]}" >&2
         exit 1
       fi
     fi
   done
 
   if [[ "$skewed_baseline" == "1" ]]; then
-    echo "  WARN: npm latest is split across older versions (${PACKAGE_LATEST[*]}); ${release_version} will converge it"
+    echo "  WARN: npm latest is split across older versions (${PACKAGE_CHANNEL[*]}); ${release_version} will converge it"
   fi
 }
 
 inspect_registry_state() {
   local index name latest
   PACKAGE_EXISTS=()
-  PACKAGE_LATEST=()
+  PACKAGE_CHANNEL=()
   for index in "${!PUBLISH_PACKAGES[@]}"; do
     inspect_exact_artifact "$index"
     name="${PACKAGE_NAMES[$index]}"
-    latest=$(npm_view_field "$name" "dist-tags.latest")
-    PACKAGE_LATEST[$index]="$latest"
+    latest=$(npm_view_field "$name" "dist-tags.${FINAL_NPM_TAG}")
+    PACKAGE_CHANNEL[$index]="$latest"
   done
-  validate_latest_baseline
+  validate_channel_baseline
 }
 
 all_artifacts_exist() {
@@ -316,7 +358,7 @@ all_artifacts_exist() {
 
 all_packages_promoted() {
   local value
-  for value in "${PACKAGE_LATEST[@]}"; do
+  for value in "${PACKAGE_CHANNEL[@]}"; do
     [[ "$value" == "$release_version" ]] || return 1
   done
   return 0
@@ -339,7 +381,7 @@ assert_registry_preflight() {
   if [[ "$DIRECT_FINAL_PUBLISH" == "1" && "$RELEASE_RECEIPT_LOADED" == "1" ]]; then
     if [[ "${PACKAGE_EXISTS[0]}" == "1" \
       && "${PACKAGE_EXISTS[1]}" == "0" \
-      && "${PACKAGE_LATEST[0]}" == "$release_version" ]]; then
+      && "${PACKAGE_CHANNEL[0]}" == "$release_version" ]]; then
       echo "  ✓ exact protocol prefix is recoverable from the retained candidate bundle"
       return
     fi
@@ -724,7 +766,7 @@ promote_package_set() {
   for index in "${!PUBLISH_PACKAGES[@]}"; do
     name="${PACKAGE_NAMES[$index]}"
     version="${PACKAGE_VERSIONS[$index]}"
-    if [[ "${PACKAGE_LATEST[$index]}" != "$version" ]]; then
+    if [[ "${PACKAGE_CHANNEL[$index]}" != "$version" ]]; then
       run_npm_mutation dist-tag add "${name}@${version}" "$FINAL_NPM_TAG" \
         "${NPM_READ_ARGS[@]}"
     fi
@@ -834,7 +876,7 @@ verify_candidate_pair() {
   local index staged
   for index in "${!PACKAGE_NAMES[@]}"; do
     staged=$(npm_view_field "${PACKAGE_NAMES[$index]}" "dist-tags.${STAGING_NPM_TAG}")
-    [[ "$staged" == "$release_version" || "${PACKAGE_LATEST[$index]}" == "$release_version" ]] || {
+    [[ "$staged" == "$release_version" || "${PACKAGE_CHANNEL[$index]}" == "$release_version" ]] || {
       echo "ERROR: candidate staging tag is missing or changed for ${PACKAGE_NAMES[$index]}" >&2; exit 1;
     }
   done
@@ -849,7 +891,7 @@ fi
 assert_candidate_unpromoted() {
   [[ "$MODE" == "publish-candidate" ]] || return 0
   local latest
-  for latest in "${PACKAGE_LATEST[@]}"; do
+  for latest in "${PACKAGE_CHANNEL[@]}"; do
     [[ "$latest" != "$release_version" ]] || { echo "ERROR: candidate is already promoted; use the promotion phase to verify completion" >&2; exit 1; }
   done
 }
@@ -866,7 +908,7 @@ if all_artifacts_exist; then
   inspect_registry_state
   assert_candidate_unpromoted
   if all_packages_promoted; then
-    echo "✓ Public npm package set ${release_version} already matches the exact reviewed candidates and latest."
+    echo "✓ Public npm package set ${release_version} already matches the exact reviewed candidates and ${FINAL_NPM_TAG}."
     exit 0
   fi
   if [[ "$DIRECT_FINAL_PUBLISH" == "1" ]]; then
