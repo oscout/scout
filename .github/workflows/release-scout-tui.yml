@@ -56,6 +56,9 @@ jobs:
             echo "Tag $tag does not match packages/cli version $version" >&2
             exit 1
           fi
+          # checkout does not fetch tags unless this ref is the tag. Dev tags
+          # (vX.Y.Z-dev.N) and workflow_run checkouts are commits, so fetch it.
+          git fetch origin "refs/tags/${tag}:refs/tags/${tag}"
           tag_sha="$(git rev-parse "refs/tags/$tag^{commit}" 2>/dev/null || true)"
           if [[ "$tag_sha" != "$sha" ]]; then
             echo "Tag $tag resolves to ${tag_sha:-nothing}, expected $sha" >&2
