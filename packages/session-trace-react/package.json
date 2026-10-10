@@ -1,6 +1,6 @@
 {
   "name": "@openscout/session-trace-react",
-  "version": "0.3.5",
+  "version": "0.3.6-dev.1",
   "private": true,
   "description": "React presentation layer for OpenScout live session traces",
   "type": "module",

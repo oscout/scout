@@ -1,6 +1,6 @@
 {
   "name": "@scout/app",
-  "version": "0.3.5",
+  "version": "0.3.6-dev.1",
   "private": true,
   "type": "module",
   "exports": {
